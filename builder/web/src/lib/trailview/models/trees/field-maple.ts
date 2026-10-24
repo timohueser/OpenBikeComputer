@@ -14,7 +14,7 @@ export default {
   leaves: {
     winter: 'bare',
     spring: ['#5e7e2c', '#8aac42', '#c2d878'],
-    summer: ['#2e5026', '#467234', '#6c964a'],
+    summer: ['#2a421d', '#415f28', '#647e3a'],
     // Clear butter yellow, brighter than sycamore.
     autumn: ['#9e7614', '#d0a826', '#f0d652'],
   },

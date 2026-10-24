@@ -20,7 +20,7 @@ export default {
     winter: 'bare',
     spring: ['#4e7a2c', '#7aaa42', '#b6d874'],
     // Duller and darker than silver birch.
-    summer: ['#3a5a26', '#5a8034', '#8eae56'],
+    summer: ['#354b1c', '#536b28', '#839243'],
     autumn: ['#94661a', '#c6922a', '#e8c04e'],
   },
   // Purple-brown twigs give the bare crown a purple haze.

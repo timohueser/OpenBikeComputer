@@ -17,7 +17,7 @@ export default {
   leaves: {
     winter: 'bare',
     spring: ['#56683c', '#889e60', '#c2d098'],
-    summer: ['#46564a', '#788a76', '#b6c2ae'],
+    summer: ['#40473a', '#6f735d', '#a8a28a'],
     autumn: ['#6a6634', '#968f50', '#c6be7a'],
   },
   // Yellow-olive shoots give the bare crown a golden haze.

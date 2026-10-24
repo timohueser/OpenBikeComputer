@@ -15,7 +15,7 @@ export default {
     winter: 'bare',
     // Ash leafs last, and drops its leaves green or pale yellow.
     spring: ['#5e6a40', '#86945a', '#b4c08a'],
-    summer: ['#34563a', '#547c4c', '#88ac78'],
+    summer: ['#30472d', '#4e683b', '#7e905f'],
     autumn: ['#6a7034', '#9a9a48', '#c8c070'],
   },
   twigs: ['#5e5c56', '#807e76', '#a09e94'],

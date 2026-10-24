@@ -25,9 +25,13 @@ struct Forest {
     thin: f32,
     // The material code of orchards, whose trees the orchards stand (orchards.ts).
     orchard: u32,
-    unused: u32,
+    // The share of the canopy's trees that stand.
+    density: f32,
     // Trees per square metre of each stems class (specs/trailview-tiles.md#canopy).
     stems: array<vec4f, 2>,
+    // Per level of a cell the first entry of its part of the cell list, and the entries of the list.
+    parts: vec4u,
+    entries: u32,
 }
 
 // What the forest reads, in one buffer: the canopy's window, the points of a base cell, the species.
@@ -38,25 +42,29 @@ struct Data {
     tiles: array<u32, 64>,
     // Progressive blue noise in the unit square.
     points: array<vec2f, 512>,
-    // Per region SPECIES species: the model and leaf type (1 broadleaved, 2 needleleaved) as bits of an
-    // f32, the elevation band in metres and the weight; weight 0 ends a region's list.
-    species: array<vec4f>,
+    // The species choices of the regions (speciesTable of forest.ts).
+    choices: array<u32>,
 }
 
 // A cell of the list: its corner in base cells, its trees at most in the low 16 bits and its level in
-// the high bits, and the height of its middle (as bits of an f32).
+// the high bits, and the height of its middle (as bits of an f32). The list holds the cells of each
+// level in a part of its own, the nearer levels first, so the workgroups of `trees` that run side by
+// side hold cells of one level, with as many trees as far apart, and do the same work.
 struct CellList {
     // The workgroups of `trees`: one per cell of the list.
     groups: atomic<u32>,
     y: u32,
     z: u32,
     unused: u32,
+    // The cells of each level.
+    counts: array<atomic<u32>, 4>,
     list: array<vec4i>,
 }
 
 // The cell list as `trees` reads it.
 struct Listed {
     header: vec4u,
+    counts: vec4u,
     list: array<vec4i>,
 }
 
@@ -75,7 +83,6 @@ const LEVELS: u32 = 3u;
 // Units along a canopy cell edge: zoom 12 at 256 cells, 26 m at 47° N.
 const CANOPY_SHIFT: u32 = 10u;
 const UNKNOWN_CANOPY: u32 = 0xffffu;
-const SPECIES: u32 = 32u;
 const WINDOW: i32 = 8;
 // A tree that stands this far into the ground still meets it on a slope.
 const SINK_M: f32 = 0.3;
@@ -85,17 +92,18 @@ const CLEAR: f32 = 0.8;
 // CLEAR_SPREAD_M by its hash from it, so trees leave one by one and a still view draws none in part.
 const EYE_CLEAR_M: f32 = 4.0;
 const CLEAR_SPREAD_M: f32 = 3.0;
-// Far trees fade in over this share of a tree: a tree whose rank lies within it of the trees at its
-// distance draws on a share of its pixels.
-const RANK_FADE: f32 = 0.25;
+// A far tree fades out over this share of its own distance, drawn on a share of its pixels.
+const FADE: f32 = 0.1;
 // A tree takes its species by the region of a ground page of REGION_LEVEL, the region layer's own zoom
 // (specs/trailview-tiles.md), or finer, where each page holds the same regions, and by the terrain of BAND_LEVEL (105 m at 47° N), so it keeps its species
 // at every distance. Near the eye the pools hold finer terrain pages only: there the band reads the ground.
 const REGION_LEVEL: u32 = 10u;
 const BAND_LEVEL: u32 = 12u;
-// In a closed stand the crown starts at LIFT of the height, and up to LIFT_SPREAD of the height higher.
+// In a closed stand the crown starts at LIFT of the height, and up to LIFT_SPREAD of the height higher,
+// and reaches NARROW of the height from the trunk at most, as forest-grown trees do.
 const LIFT: f32 = 0.3;
 const LIFT_SPREAD: f32 = 0.2;
+const NARROW: f32 = 0.25;
 // The ground of a base cell lies within SLOPE_M of its middle's, and no tree is taller than TALLEST_M.
 const SLOPE_M: f32 = 60.0;
 const TALLEST_M: f32 = 64.0;
@@ -142,9 +150,10 @@ fn density(code: u32) -> f32 {
     return max(stems, 0.5 * cover / (3.14159 * crown * crown));
 }
 
-// The share of the trees that stand at a distance.
+// The share of the canopy's trees that stand at a distance: `density` near, and as few as `thin` keeps
+// farther. A lower density takes the last points of each cell and moves no tree's own distance.
 fn kept(d: f32) -> f32 {
-    return min(1.0, forest.thin / max(d, 1.0));
+    return min(forest.density, forest.thin / max(d, 1.0));
 }
 
 // The point of LOD space of whole world units plus a part.
@@ -209,64 +218,44 @@ fn find_cells(@builtin(global_invocation_id) id: vec3u) {
     if (count < 1.0) {
         return;
     }
-    let k = atomicAdd(&found.groups, 1u);
-    if (k < arrayLength(&found.list)) {
-        found.list[k] = vec4i(corner, i32(u32(count) | (level << 16u)), bitcast<i32>(ground));
+    let k = atomicAdd(&found.counts[level], 1u);
+    if (k < part_size(level)) {
+        atomicAdd(&found.groups, 1u);
+        found.list[forest.parts[level] + k] = vec4i(corner, i32(u32(count) | (level << 16u)), bitcast<i32>(ground));
     }
 }
 
 // The species of a tree of a region at an elevation, of a leaf type (0 any): of those in their band
-// with the leaf type, else in their band, else with the leaf type, else of all, by weight.
+// with the leaf type, else in their band, else with the leaf type, else of all, by weight. The choices
+// of each slot of the elevation among the region's band edges are listed (speciesTable of forest.ts).
 fn species_of(region: u32, elevation: f32, leaf: u32, pick: f32) -> u32 {
-    var totals = vec4f(0.0);
-    for (var k = 0u; k < SPECIES; k++) {
-        let s = data.species[region * SPECIES + k];
-        if (s.w <= 0.0) {
-            break;
-        }
-        let band = elevation >= s.y && elevation <= s.z;
-        let same = leaf == 0u || (bitcast<u32>(s.x) >> 16u) == leaf;
-        totals += s.w * vec4f(f32(band && same), f32(band), f32(same), 1.0);
-    }
-    var rule = 3u;
-    for (var r = 0u; r < 3u; r++) {
-        if (totals[r] > 0.0) {
-            rule = r;
-            break;
+    let at = data.choices[1u + region];
+    let n = data.choices[at];
+    // The edges below the elevation.
+    var below = 0u;
+    var above = n;
+    while (below < above) {
+        let middle = (below + above) / 2u;
+        if (bitcast<f32>(data.choices[at + 1u + middle]) < elevation) {
+            below = middle + 1u;
+        } else {
+            above = middle;
         }
     }
-    var left = pick * totals[rule];
+    let on_edge = below < n && bitcast<f32>(data.choices[at + 1u + below]) == elevation;
+    let list = at + 1u + n + 3u * (3u * (2u * below + select(0u, 1u, on_edge)) + leaf);
+    let start = data.choices[list];
+    var left = pick * bitcast<f32>(data.choices[list + 2u]);
     var model = 0xffffffffu;
-    for (var k = 0u; k < SPECIES; k++) {
-        let s = data.species[region * SPECIES + k];
-        if (s.w <= 0.0) {
+    for (var k = 0u; k < data.choices[list + 1u]; k++) {
+        model = data.choices[start + 2u * k];
+        left -= bitcast<f32>(data.choices[start + 2u * k + 1u]);
+        if (left < 0.0) {
             break;
-        }
-        let band = elevation >= s.y && elevation <= s.z;
-        let same = leaf == 0u || (bitcast<u32>(s.x) >> 16u) == leaf;
-        if (select(select(true, same, rule == 2u), select(band, band && same, rule == 0u), rule < 2u)) {
-            model = bitcast<u32>(s.x) & 0xffffu;
-            left -= s.w;
-            if (left < 0.0) {
-                break;
-            }
         }
     }
     return model;
 }
-
-// The region of the ground at a point, from the finest resident ground page; NO_REGION where only a
-// page coarser than REGION_LEVEL holds it.
-fn stable_region(s: vec2f) -> u32 {
-    let held = held_at(s, look.codes.y);
-    if (held.page < 0 || held.level < REGION_LEVEL) {
-        return NO_REGION;
-    }
-    let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
-    return textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0).b;
-}
-
-const NO_REGION: u32 = 0xffffffffu;
 
 // Point r of a base cell, if a tree stands there: emitted on the drawn surface. `ground_near` is the
 // height of the middle of the listed cell, and `slope` how far its ground may lie from it.
@@ -284,13 +273,12 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     }
     let s = lod_at(corner, part);
     let d = length(s);
-    let share = kept(d);
-    // Point r is a tree where r < n, the trees of the base cell; within `thin`, n holds still and the
-    // last tree stands or not by its hash. Past it n falls with the distance, and each tree fades out
-    // over RANK_FADE of a tree at a distance of its own, so a still view keeps few faded trees.
-    let n = density(code) * f32(CELL * CELL) * surface.unit * surface.unit * share;
-    let over = n - f32(r) - unit_float(mix_bits(h + 23u));
-    let appear = select(clamp(over / RANK_FADE, 0.0, 1.0), select(0.0, 1.0, over > 0.0), share >= 1.0);
+    // Point r is a tree where r plus its hash lies below the base cell's trees at the density. It stands
+    // to a distance of its own, where `thin` keeps fewer trees than its rank, and fades out over the last
+    // FADE of that distance: long in eye travel, and only ever thinner as the eye moves away.
+    let full = density(code) * f32(CELL * CELL) * surface.unit * surface.unit;
+    let rank = f32(r) + unit_float(mix_bits(h + 23u));
+    let appear = select(0.0, clamp((1.0 - rank * max(d, 1.0) / (full * forest.thin)) / FADE, 0.0, 1.0), rank < full * forest.density);
     if (appear <= 0.0 || d < EYE_CLEAR_M + CLEAR_SPREAD_M * unit_float(mix_bits(h + 37u))) {
         return;
     }
@@ -300,15 +288,25 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     if (!visible(centre, slope + height) || hidden(centre, slope + height)) {
         return;
     }
-    let ground = stand_height(s, at);
-    let region = stable_region(s);
-    // No data (255) or no page: no species. The orchards stand their own trees on their cells of the finest pages.
-    let material = finest_cell(s).r;
-    if (!known(ground) || region >= arrayLength(&data.species) / SPECIES || (material == forest.orchard && material != NO_CELL.r)) {
+    // The region from the finest resident ground page, of REGION_LEVEL or finer; no data (255) or no
+    // page: no species. The orchards stand their own trees on their cells of the finest pages.
+    let held = held_at(s, look.codes.y);
+    if (held.page < 0 || held.level < REGION_LEVEL) {
         return;
     }
+    let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
+    let found = textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0);
+    let region = found.b;
+    if (region >= data.choices[0] || (found.r == forest.orchard && held.level == look.codes.y)) {
+        return;
+    }
+    // The drawn ground costs the most of a tree: it comes last, for the trees that stand.
     let coarse = units_height(at, BAND_LEVEL);
-    let band = select(ground, coarse, known(coarse));
+    var stood = vec2f(NONE, 0.0);
+    if (!known(coarse)) {
+        stood = stand_ground(s, at);
+    }
+    let band = select(stood.x, coarse, known(coarse));
     // The leaf type: a mixed cell is half of each; an unknown one takes any species.
     var leaf = (code >> 14u) & 3u;
     if (leaf == 3u) {
@@ -319,12 +317,32 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     if (model == 0xffffffffu || on_road(s, CLEAR * models[model].spread * height)) {
         return;
     }
-    // Kept trees stand wider, so the forest keeps its cover as it thins.
-    let width = min(2.0, inverseSqrt(share));
-    let lift = (LIFT + LIFT_SPREAD * unit_float(mix_bits(h + 29u))) * smoothstep(0.5, 0.9, cover_of(code));
+    if (known(coarse)) {
+        stood = stand_ground(s, at);
+    }
+    if (!known(stood.x)) {
+        return;
+    }
+    // Kept trees stand wider, so the forest keeps its cover as it thins. In a closed stand the crowns
+    // grow narrow and high: their reach shrinks to NARROW of the height as the lift rises.
+    let closed = smoothstep(0.5, 0.9, cover_of(code));
+    let width = min(2.0, inverseSqrt(min(1.0, forest.thin * (1.0 - 0.5 * FADE) / (max(d, 1.0) * forest.density)))) * mix(1.0, min(1.0, NARROW / models[model].spread), closed);
+    let lift = (LIFT + LIFT_SPREAD * unit_float(mix_bits(h + 29u))) * closed;
     let yaw = 6.2831853 * unit_float(mix_bits(h + 17u));
-    emit_tree(model, render_at(s, ground - SINK_M), height, yaw, width, 0.88 + 0.24 * unit_float(mix_bits(h + 19u)), appear, lift,
-        unit_float(mix_bits(h + 31u)), snow_at(s), vec3f(0.0));
+    // The snow of the finest resident page of the drawn level: the page found above where none finer than it is resident.
+    let level = u32(ceil(lod(s)));
+    var drawn = held;
+    if (level < held.level) {
+        drawn = held_at(s, level);
+    }
+    let snow = snow_held(drawn);
+    emit_tree(model, render_at(s, stood.x - SINK_M), height, yaw, width, 0.88 + 0.24 * unit_float(mix_bits(h + 19u)), appear, lift, stood.y,
+        unit_float(mix_bits(h + 31u)), snow, vec3f(0.0));
+}
+
+// The entries of a level's part of the cell list.
+fn part_size(level: u32) -> u32 {
+    return select(forest.parts[min(level + 1u, LEVELS)], forest.entries, level == LEVELS) - forest.parts[level];
 }
 
 // The base cell of rank R of a cell of a level: its low 2 × level bits interleave x and y.
@@ -338,10 +356,16 @@ fn base_of(rank: u32, level: u32) -> vec2i {
 
 @compute @workgroup_size(64)
 fn trees(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) lane: u32) {
-    if (group.x >= arrayLength(&listed.list)) {
+    var k = group.x;
+    var part = 0u;
+    while (part <= LEVELS && k >= min(listed.counts[part], part_size(part))) {
+        k -= min(listed.counts[part], part_size(part));
+        part++;
+    }
+    if (part > LEVELS) {
         return;
     }
-    let entry = listed.list[group.x];
+    let entry = listed.list[forest.parts[part] + k];
     let count = u32(entry.z) & 0xffffu;
     let level = u32(entry.z) >> 16u;
     let slope = SLOPE_M * f32(1u << level);

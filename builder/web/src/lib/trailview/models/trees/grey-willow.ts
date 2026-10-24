@@ -15,7 +15,7 @@ export default {
   leaves: {
     winter: 'bare',
     spring: ['#4a5a36', '#74865a', '#aab88e'],
-    summer: ['#3a4a32', '#5e7050', '#94a284'],
+    summer: ['#353d26', '#575d3e', '#898768'],
     autumn: ['#56582e', '#7c7a44', '#a8a066'],
   },
   twigs: ['#4a3e36', '#665850', '#82746a'],

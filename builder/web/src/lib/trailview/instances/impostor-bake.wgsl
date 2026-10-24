@@ -25,7 +25,7 @@ struct BakeOut {
 @vertex
 fn bake_vertex(v: MeshIn, @builtin(instance_index) frame: u32) -> BakeOut {
     let cell = vec2f(f32(frame % 8u), f32(frame / 8u));
-    let d = hemi_decode((cell + 0.5) / FRAMES);
+    let d = hemi_decode(cell / (FRAMES - 1.0));
     let axes = view_axes(d);
     let m = models[bake.model];
     let model = v.position.xyz * m.extent;

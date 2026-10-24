@@ -10,7 +10,12 @@
 @group(1) @binding(2) var atlas_sampler: sampler;
 // Per model its layer of the atlas.
 @group(1) @binding(3) var<uniform> slots: array<vec4u, 64>;
+// Per model and frame the outline that holds the model in the frame and its neighbours (outlines of
+// instances.ts): its bottom and top in the frame, and its half widths there.
+@group(1) @binding(4) var<storage, read> outlines: array<vec4f>;
 
+// A crown whose base lies this share of the height up stands on a trunk that its impostor shows.
+const TRUNK_SHARE: f32 = 0.1;
 // Texels along a frame's side, and the atlas's mip levels: a frame of 32 texels down to 1.
 const FRAME_TEXELS: f32 = 32.0;
 const ATLAS_LEVELS: f32 = 6.0;
@@ -48,25 +53,44 @@ fn impostor_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> Imposto
     let toward = vec3f(t.x * d.x + t.y * d.y, -t.y * d.x + t.x * d.y, d.z);
     let axes = view_axes(d);
     let r = m.radius * i.at.w;
+    let far = length(centre);
+    // A frame spans the sphere's diameter.
+    let texels = FRAME_TEXELS * far * frame.pixel / (look.screen.z * 2.0 * r);
+    let level = clamp(log2(max(texels, 1.0)), 0.0, ATLAS_LEVELS - 1.0);
+    // The quad holds only the part of the frame that the model covers: the outline of the frame that
+    // holds the direction, which holds its neighbours too, as the fragments pick them, and 1.5 texels of
+    // the coarser level that the sample blends about it: half a texel to the centre of the last texel
+    // that the model covers, one that the bilinear filter reaches past it.
+    let margin = exp2(ceil(level)) * 3.0 / FRAME_TEXELS;
+    let at = clamp(vec2i(round(hemi_encode(toward) * (FRAMES - 1.0))), vec2i(0), vec2i(i32(FRAMES) - 1));
+    let outline = outlines[model * u32(FRAMES * FRAMES) + u32(at.y * i32(FRAMES) + at.x)];
+    // The quad's middle row lies at the crown's base, so that a lifted crown squeezes above it as the
+    // mesh does (lifted of draw.wgsl).
+    let crown_y = clamp((m.crown - 0.5) * axes[1].z / m.radius, outline.x, outline.y);
+    let y = select(crown_y, select(outline.x - margin, outline.y + margin, v.position.y > 0.0), v.position.y != 0.0);
+    let up = clamp((y - outline.x) / max(outline.y - outline.x, 1e-6), 0.0, 1.0);
+    let corner = clamp(vec2f(v.position.x * (mix(outline.z, outline.w, up) + margin), y), vec2f(-1.0), vec2f(1.0));
     // A tree widened by `width` is as wide seen from above as from the side.
-    let p = centre + r * (v.position.x * width * axes[0] + v.position.y * mix(1.0, width, abs(d.z)) * axes[1]);
+    var p = centre + r * (corner.x * width * axes[0] + corner.y * mix(1.0, width, abs(d.z)) * axes[1]);
+    let z = (p.z - i.at.z) / i.at.w;
+    let lift = f32((i.look >> 8u) & 255u) / 255.0;
+    // Below a crown that starts above TRUNK_SHARE, the trunk stretches; a crown from the ground has no
+    // trunk on its impostor, so the whole crown moves up.
+    p.z += i.at.w * (select(lifted(z, 0.0, m, lift), z * lifted(m.crown, 0.0, m, lift) / m.crown, z < m.crown && m.crown >= TRUNK_SHARE) - z);
     var out: ImpostorOut;
     out.clip = frame.view_proj * vec4f(p, 1.0);
     let haze = haze_at(centre);
     out.fog = haze.fog;
     out.air = haze.air;
-    out.corner = v.position.xy;
+    out.corner = corner;
     out.toward = toward;
     out.turn = t;
     out.look = i.look;
     out.slot = slots[model / 4u][model % 4u];
     out.ground = i.ground;
     out.tie = m.tie;
-    let far = length(centre);
     out.tint = (0.75 + 0.5 * f32(i.look & 255u) / 255.0) * far_tone(m, far);
-    // A frame spans the sphere's diameter.
-    let texels = FRAME_TEXELS * far * frame.pixel / (look.screen.z * 2.0 * r);
-    out.level = clamp(log2(max(texels, 1.0)), 0.0, ATLAS_LEVELS - 1.0);
+    out.level = level;
     return out;
 }
 
@@ -76,11 +100,12 @@ fn impostor_fragment(in: ImpostorOut) -> @location(0) vec4f {
         discard;
     }
     // The frame of the nearest direction, blended with its neighbours by a dither that the resolve averages.
-    let at = clamp(floor(hemi_encode(in.toward) * FRAMES + vec2f(dither(in.clip.xy + vec2f(13.0, 59.0)), dither(in.clip.xy + vec2f(71.0, 5.0))) - 0.5), vec2f(0.0), vec2f(FRAMES - 1.0));
+    let at = clamp(floor(hemi_encode(in.toward) * (FRAMES - 1.0) + vec2f(dither(in.clip.xy + vec2f(13.0, 59.0)), dither(in.clip.xy + vec2f(71.0, 5.0)))), vec2f(0.0), vec2f(FRAMES - 1.0));
     let uv = (at + 0.5 + vec2f(0.5 * in.corner.x, -0.5 * in.corner.y)) / FRAMES;
     let albedo = textureSampleLevel(atlas_albedo, atlas_sampler, uv, in.slot, in.level);
-    // The cover of a coarser level is a share, which the dither keeps on average.
-    if (albedo.a <= dither(in.clip.xy + vec2f(29.0, 43.0))) {
+    // The cover of a coarser level is a share, which the dither keeps on average. Each instance shifts
+    // the dither by its tint, so impostors that overlap keep different texels and cover as meshes do.
+    if (albedo.a <= dither(in.clip.xy + vec2f(29.0, 43.0) + f32(in.look & 255u) * vec2f(5.0, 3.0))) {
         discard;
     }
     let local = textureSampleLevel(atlas_normal, atlas_sampler, uv, in.slot, in.level).xyz / albedo.a * 2.0 - 1.0;

@@ -9,13 +9,20 @@ const DRAWS = MODELS * TIERS;
 /** Instances that a frame stages at most; past them it drops instances and lowers the detail. */
 const CAPACITY = 2 ** 17;
 /** Bytes of `Instance`, `Model`, `Tally` and `Mesh` in the WGSL, and of a vertex. */
-const INSTANCE_BYTES = 32, MODEL_BYTES = 48, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, VERTEX_BYTES = 16;
+const INSTANCE_BYTES = 32, MODEL_BYTES = 80, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, VERTEX_BYTES = 16;
 /** Lanes of the sort, as LANES in sort.wgsl. */
 const SORT_LANES = 16384;
 /** The stride of a dynamic uniform offset: the least that WebGPU allows. */
 const STRIDE = 256;
 /** The mesh pools: vertices and 32-bit indices. */
 const VERTEX_POOL = 4 * 2 ** 20, INDEX_POOL = 4 * 2 ** 20;
+/**
+ * The mesh tiers that draw without the dither's discard, as WHOLE_TIERS of emit.wgsl: an instance that
+ * draws on a share of its pixels stages in a farther tier.
+ */
+const WHOLE_TIERS = 2;
+/** A tree's sink table (`sinks`): its slopes, SINK_STEP apart from SINK_STEP, as in emit.wgsl. */
+const SINK_STEP = 0.25, SINK_SLOPES = 8;
 /** The render height in pixels that the tier distances are for. */
 const REFERENCE_PIXELS = 1120;
 /** The share of the capacity that the detail keeps to. */
@@ -28,12 +35,13 @@ const ROOM = [0.7, 0.9];
 const SLOTS = 32, ATLAS = 256, ATLAS_LEVELS = 6, FRAMES = 64, UNUSED_FRAMES = 60;
 /** Texels a side of level 0 of the depth pyramid, its levels, and the bytes of `Occlusion` in emit.wgsl. */
 const PYRAMID = 512, PYRAMID_LEVELS = 10, OCCLUSION_BYTES = 96;
-/** The quad of an impostor: corners at ±1. */
-const QUAD = { position: [-1, -1, 0, 1, -1, 0, -1, 1, 0, 1, 1, 0], normal: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1], color: new Array(12).fill(1), index: [0, 1, 2, 2, 1, 3] };
+/** The quad of an impostor: corners at ±1, and a middle row at y 0 that impostor.wgsl places at the crown's base. */
+const QUAD = { position: [-1, -1, 0, 1, -1, 0, -1, 0, 0, 1, 0, 0, -1, 1, 0, 1, 1, 0], normal: new Array(6).fill([0, 0, 1]).flat(), color: new Array(18).fill(1), index: [0, 1, 2, 2, 1, 3, 2, 3, 4, 4, 3, 5] };
 
 /**
  * A mesh: per vertex a position, a normal and a linear colour, in a model 1 tall; three indices per
- * triangle. A tree's first `trunk` vertices are its trunk, which stays when its crown lifts (draw.wgsl).
+ * triangle. A tree's first `trunk` vertices are its trunk, which stretches to meet its crown when the
+ * crown lifts (draw.wgsl).
  */
 export interface Mesh { position: ArrayLike<number>; normal: ArrayLike<number>; color: ArrayLike<number>; index: ArrayLike<number>; trunk?: number }
 
@@ -50,6 +58,8 @@ export interface ModelSpec {
     crown?: number;
     /** How far it takes its hue from the ground under it, 0 to 1 (draw.wgsl). */
     tie?: number;
+    /** The height in metres of an instance whose tiers end at `until`; the tiers of others end in proportion. */
+    sized?: number;
 }
 
 /** The last frame, for occlusion culling: its depth, its render pixels, its view projection and the eye's move since then. */
@@ -83,6 +93,7 @@ interface Resources {
     vertices: GPUBuffer;
     indices: GPUBuffer;
     slots: GPUBuffer;
+    outlines: GPUBuffer;
     bakes: GPUBuffer;
     albedo: GPUTexture;
     normal: GPUTexture;
@@ -92,6 +103,7 @@ interface Resources {
     placeDraws: GPUComputePipeline;
     scatter: GPUComputePipeline;
     mesh: GPURenderPipeline;
+    whole: GPURenderPipeline;
     impostor: GPURenderPipeline;
     bake: GPURenderPipeline;
     mips: GPUComputePipeline;
@@ -144,6 +156,8 @@ export class Instances {
     /** Models whose layer needs a bake. */
     private readonly unbaked = new Set<number>();
     private readonly producers: Producer[] = [];
+    /** The impostor outlines of each mesh and radius (`outline`). */
+    private readonly outlined = new WeakMap<Mesh, { radius: number; outlines: Float32Array<ArrayBuffer> }>();
     /** What `attach` took, for a producer that comes later. */
     private attached?: [Gpu, GPUBuffer, Surfaces];
     /** Whether the last frame baked an impostor: what the frames draw changed. */
@@ -227,6 +241,7 @@ export class Instances {
             vertices: gpu.buffer('instances', VERTEX_POOL, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST),
             indices: gpu.buffer('instances', INDEX_POOL, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST),
             slots: gpu.buffer('instances', MODELS * 4, uniform),
+            outlines: gpu.buffer('instances', MODELS * FRAMES * 16, storage),
             bakes: gpu.buffer('instances', SLOTS * STRIDE, uniform),
             albedo: atlas(),
             normal: atlas(),
@@ -247,7 +262,7 @@ export class Instances {
         ] });
         const atlasLayout = device.createBindGroupLayout({ entries: [
             { binding: 0, visibility: F, texture: { viewDimension: '2d-array' } }, { binding: 1, visibility: F, texture: { viewDimension: '2d-array' } },
-            { binding: 2, visibility: F, sampler: {} }, entry(3, V, 'uniform'),
+            { binding: 2, visibility: F, sampler: {} }, entry(3, V, 'uniform'), entry(4, V, 'read-only-storage'),
         ] });
         const bakeLayout = device.createBindGroupLayout({ entries: [entry(0, V | C, 'uniform', true)] });
         const mipLayout = device.createBindGroupLayout({ entries: [
@@ -283,17 +298,19 @@ export class Instances {
         };
         const depthStencil: GPUDepthStencilState = { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' };
         const sortPipeline = device.createPipelineLayout({ bindGroupLayouts: [sortLayout] });
-        const [countDraws, placeDraws, scatter, mesh, impostor, bake, mips] = await Promise.all([
+        const meshPipeline = (fragment: string) => device.createRenderPipelineAsync({
+            label: 'instances mesh', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, emptyLayout, groundLayout] }),
+            vertex: { module: drawModule, entryPoint: 'mesh_vertex', buffers: [vertexLayout] },
+            fragment: { module: drawModule, entryPoint: fragment, targets: [{ format }] },
+            // Leaves and twigs are single faces, seen from both sides.
+            primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil,
+        });
+        const [countDraws, placeDraws, scatter, mesh, whole, impostor, bake, mips] = await Promise.all([
             device.createComputePipelineAsync({ label: 'instances count', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'count_draws' } }),
             device.createComputePipelineAsync({ label: 'instances place', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'place_draws' } }),
             device.createComputePipelineAsync({ label: 'instances scatter', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'scatter' } }),
-            device.createRenderPipelineAsync({
-                label: 'instances mesh', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, emptyLayout, groundLayout] }),
-                vertex: { module: drawModule, entryPoint: 'mesh_vertex', buffers: [vertexLayout] },
-                fragment: { module: drawModule, entryPoint: 'mesh_fragment', targets: [{ format }] },
-                // Leaves and twigs are single faces, seen from both sides.
-                primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil,
-            }),
+            meshPipeline('mesh_fragment'),
+            meshPipeline('mesh_fragment_whole'),
             device.createRenderPipelineAsync({
                 label: 'impostors', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, atlasLayout, groundLayout] }),
                 vertex: { module: impostorModule, entryPoint: 'impostor_vertex', buffers: [vertexLayout] },
@@ -316,12 +333,12 @@ export class Instances {
         });
         const layers = (texture: GPUTexture, level?: number) => texture.createView({ dimension: '2d-array', ...(level === undefined ? {} : { baseMipLevel: level, mipLevelCount: 1 }) });
         this.resources = {
-            gpu, ...b, countDraws, placeDraws, scatter, mesh, impostor, bake, mips, pyramid, hizFirst, hizDown, firstLayout, downGroups,
+            gpu, ...b, countDraws, placeDraws, scatter, mesh, whole, impostor, bake, mips, pyramid, hizFirst, hizDown, firstLayout, downGroups,
             occlusion: gpu.buffer('instances', OCCLUSION_BYTES, uniform), viewport: gpu.buffer('instances', 16, uniform),
             sortGroup: group(sortLayout, [b.tally, b.meshes, b.args, b.bases, b.staged, b.lists]),
             renderGroup: group(renderLayout, [frame, b.lists, b.bases, b.models, [b.drawOf, 16]]),
             emptyGroup: group(emptyLayout, []),
-            atlasGroup: group(atlasLayout, [layers(b.albedo), layers(b.normal), device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' }), b.slots]),
+            atlasGroup: group(atlasLayout, [layers(b.albedo), layers(b.normal), device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' }), b.slots, b.outlines]),
             bakeGroup: group(bakeLayout, [[b.bakes, 16]]),
             mipGroups: Array.from({ length: ATLAS_LEVELS - 1 }, (_, k) => group(mipLayout, [layers(b.albedo, k), layers(b.normal, k), layers(b.albedo, k + 1), layers(b.normal, k + 1)])),
         };
@@ -383,6 +400,7 @@ export class Instances {
             const slot = this.atlas.get(model)?.slot, spec = this.specs[model], placed = this.placed[model];
             if (slot === undefined || !spec?.impostor || !placed.length) continue;
             const [first, count, base] = placed[spec.impostor.from];
+            r.gpu.device.queue.writeBuffer(r.outlines, model * FRAMES * 16, this.outline(spec.tiers[spec.impostor.from].mesh, radius(spec)));
             const data = new ArrayBuffer(16);
             new Uint32Array(data).set([model, 0, slot]);
             new Float32Array(data)[1] = radius(spec);
@@ -467,7 +485,6 @@ export class Instances {
     draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {
         const r = this.resources;
         if (!r || !this.uploaded) return;
-        pass.setPipeline(r.mesh);
         pass.setBindGroup(1, r.emptyGroup);
         pass.setBindGroup(2, ground);
         pass.setVertexBuffer(0, r.vertices);
@@ -476,8 +493,12 @@ export class Instances {
             pass.setBindGroup(0, r.renderGroup, [d * STRIDE]);
             pass.drawIndexedIndirect(r.args, d * 20);
         };
-        // An impostor draw without its layer draws the coarsest mesh (`aim`).
-        this.specs.forEach((spec, m) => spec.tiers.forEach((_, t) => indirect(m * TIERS + t)));
+        // Nearer tiers first, so that they fill the depth before the farther ones shade. An impostor draw
+        // without its layer draws the coarsest mesh (`aim`).
+        for (let t = 0; t < TIERS - 1; t++) {
+            pass.setPipeline(t < WHOLE_TIERS ? r.whole : r.mesh);
+            this.specs.forEach((spec, m) => t < spec.tiers.length && indirect(m * TIERS + t));
+        }
         this.specs.forEach((spec, m) => spec.impostor && !this.atlas.has(m) && indirect(m * TIERS + spec.tiers.length));
         if (!this.atlas.size) return;
         pass.setPipeline(r.impostor);
@@ -501,6 +522,15 @@ export class Instances {
         const slots = new Uint32Array(MODELS);
         for (const [m, held] of this.atlas) slots[m] = held.slot;
         r.gpu.device.queue.writeBuffer(r.slots, 0, slots);
+    }
+
+    /** The outlines of a mesh's impostor (`outlines`), once per mesh and radius. */
+    private outline(mesh: Mesh, radius: number): Float32Array<ArrayBuffer> {
+        const known = this.outlined.get(mesh);
+        if (known?.radius === radius) return known.outlines;
+        const made = outlines(mesh, radius);
+        this.outlined.set(mesh, { radius, outlines: made });
+        return made;
     }
 
     /** Writes the models and their meshes into the pools; every impostor bakes again. */
@@ -540,14 +570,14 @@ export class Instances {
             const placed = tiers.map(({ mesh, until }, t) => {
                 const at = putOnce(mesh, extent);
                 meshes.set([at[1], at[0], at[2], 0], (m * TIERS + t) * 4);
-                f[m * 12 + t] = until;
+                f[m * 20 + t] = until;
                 return at;
             });
             if (spec.impostor) {
-                f[m * 12 + tiers.length] = spec.impostor.until;
+                f[m * 20 + tiers.length] = spec.impostor.until;
                 if (this.atlas.has(m)) this.unbaked.add(m);
             }
-            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0, spec.tie ?? 0], m * 12 + 4);
+            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0, spec.tie ?? 0, spec.sized ?? 0, ...sinks(spec)], m * 20 + 4);
             return placed;
         });
         // A model that does not fit the pools draws nothing; the frames go on.
@@ -578,6 +608,68 @@ function radius(spec: ModelSpec): number {
     return most;
 }
 
+/**
+ * Per frame of a model's impostor (8 × 8, FRAMES of hemi.wgsl), the trapezoid of the frame's square
+ * (−1 to 1 over the sphere of `radius` about (0, 0, 0.5)) that holds the mesh seen along the frame and
+ * along its eight neighbours: its bottom and top, and its half widths there, the least in area.
+ */
+export function outlines(mesh: Mesh, radius: number): Float32Array<ArrayBuffer> {
+    const BANDS = 32, p = mesh.position, n = p.length / 3, own: number[][] = [];
+    const xs = new Float64Array(n), ys = new Float64Array(n);
+    for (let frame = 0; frame < FRAMES; frame++) {
+        // hemi_decode and view_axes of hemi.wgsl.
+        const ex = (frame % 8) / 3.5 - 1, ey = Math.floor(frame / 8) / 3.5 - 1, px = (ex + ey) / 2, py = (ex - ey) / 2;
+        const pz = 1 - Math.abs(px) - Math.abs(py), norm = Math.hypot(px, py, pz), d = [px / norm, py / norm, pz / norm];
+        const flat = Math.hypot(d[0], d[1]), right = Math.abs(d[2]) < 0.999 ? [-d[1] / flat, d[0] / flat, 0] : [1, 0, 0];
+        const up = [d[1] * right[2] - d[2] * right[1], d[2] * right[0] - d[0] * right[2], d[0] * right[1] - d[1] * right[0]];
+        let low = Infinity, high = -Infinity;
+        for (let k = 0; k < n; k++) {
+            const x = p[3 * k], y = p[3 * k + 1], z = p[3 * k + 2] - 0.5;
+            xs[k] = Math.abs(x * right[0] + y * right[1] + z * right[2]) / radius;
+            ys[k] = (x * up[0] + y * up[1] + z * up[2]) / radius;
+            low = Math.min(low, ys[k]);
+            high = Math.max(high, ys[k]);
+        }
+        // The widest |x| in each of BANDS bands of height, which the trapezoid holds at both ends of the band.
+        const span = Math.max(high - low, 1e-6), widest = new Float64Array(BANDS).fill(-1);
+        for (let k = 0; k < n; k++) {
+            const band = Math.min(BANDS - 1, Math.floor(((ys[k] - low) / span) * BANDS));
+            widest[band] = Math.max(widest[band], xs[k]);
+        }
+        // The least w0 + w1 where w0 (1 − t) + w1 t ≥ the widest at both ends t of every band: convex in w1.
+        const bottom = (top: number) => {
+            let w = 0;
+            for (let band = 0; band < BANDS; band++) {
+                const x = widest[band];
+                if (x < 0) continue;
+                // At the band's foot; its top binds harder unless it is the trapezoid's top.
+                w = Math.max(w, (x - (top * band) / BANDS) / (1 - band / BANDS));
+                if (band < BANDS - 1) w = Math.max(w, (x - (top * (band + 1)) / BANDS) / (1 - (band + 1) / BANDS));
+            }
+            return w;
+        };
+        // The top band's top needs w1 at least its widest.
+        let a = widest[BANDS - 1], b = Math.max(...widest);
+        for (let step = 0; step < 24; step++) {
+            const m1 = a + (b - a) / 3, m2 = b - (b - a) / 3;
+            if (m1 + bottom(m1) <= m2 + bottom(m2)) b = m2;
+            else a = m1;
+        }
+        own.push([low, high, bottom(b) + 1e-4, b + 1e-4]);
+    }
+    // A trapezoid holds its neighbours' where its edges hold their widest at its bottom and top: the
+    // widest of lines is convex, so it lies under the chord between those.
+    const out = new Float32Array(FRAMES * 4);
+    for (let frame = 0; frame < FRAMES; frame++) {
+        const x = frame % 8, y = Math.floor(frame / 8), near: number[][] = [];
+        for (let j = Math.max(0, y - 1); j <= Math.min(7, y + 1); j++) for (let i = Math.max(0, x - 1); i <= Math.min(7, x + 1); i++) near.push(own[8 * j + i]);
+        const low = Math.min(...near.map(o => o[0])), high = Math.max(...near.map(o => o[1]));
+        const width = (at: number) => Math.max(0, ...near.map(([l, h, w0, w1]) => w0 + ((w1 - w0) * (at - l)) / Math.max(h - l, 1e-6)));
+        out.set([low, high, width(low), width(high)], 4 * frame);
+    }
+    return out;
+}
+
 /** The farthest that a vertex of a model lies from its axis. */
 function spread(spec: ModelSpec): number {
     let most = 0;
@@ -586,13 +678,31 @@ function spread(spec: ModelSpec): number {
 }
 
 /**
+ * A tree's sink table (slope_sink of emit.wgsl): per slope SINK_STEP × (k + 1), the most that the drop
+ * of the ground under a crown vertex, the slope × its reach, exceeds its height above the crown's base;
+ * a vertex below the base counts as at it. Over the vertices of every tier but their trunks'.
+ */
+export function sinks(spec: ModelSpec): number[] {
+    const out = new Array<number>(SINK_SLOPES).fill(0), crown = spec.crown;
+    if (crown === undefined) return out;
+    for (const { mesh: { position: p, trunk = 0 } } of spec.tiers)
+        for (let i = 3 * trunk; i < p.length; i += 3) {
+            const reach = Math.hypot(p[i], p[i + 1]), above = Math.max(0, p[i + 2] - crown);
+            for (let k = 0; k < SINK_SLOPES; k++) out[k] = Math.max(out[k], SINK_STEP * (k + 1) * reach - above);
+        }
+    return out;
+}
+
+/**
  * The vertices of a mesh as the instance pipeline reads them, 16 bytes each: the position over
- * `extent` as snorm16 × 3 and 1 for a vertex of the trunk, the normal as snorm8 × 4 and the colour in
- * sRGB as unorm8 × 4.
+ * `extent` as snorm16 × 3 and, for a vertex of the trunk, the trunk's top in model units (else 0); the
+ * normal as snorm8 × 4 and the colour in sRGB as unorm8 × 4.
  */
 function quantize(mesh: Mesh, extent: number): ArrayBuffer {
     const count = mesh.position.length / 3, out = new ArrayBuffer(count * VERTEX_BYTES);
-    const i16 = new Int16Array(out), i8 = new Int8Array(out), u8 = new Uint8Array(out);
+    const i16 = new Int16Array(out), i8 = new Int8Array(out), u8 = new Uint8Array(out), trunk = mesh.trunk ?? 0;
+    let top = 0;
+    for (let k = 0; k < trunk; k++) top = Math.max(top, mesh.position[3 * k + 2]);
     const srgb = (c: number) => Math.round(255 * Math.min(1, Math.max(0, c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055)));
     for (let k = 0; k < count; k++) {
         for (let d = 0; d < 3; d++) {
@@ -600,7 +710,7 @@ function quantize(mesh: Mesh, extent: number): ArrayBuffer {
             i8[16 * k + 8 + d] = Math.round(127 * (mesh.normal[3 * k + d] ?? 0));
             u8[16 * k + 12 + d] = srgb(mesh.color[3 * k + d] ?? 1);
         }
-        i16[8 * k + 3] = k < (mesh.trunk ?? 0) ? 32767 : 0;
+        i16[8 * k + 3] = k < trunk ? Math.max(1, Math.round(32767 * Math.min(1, top))) : 0;
         u8[16 * k + 15] = 255;
     }
     return out;

@@ -15,7 +15,7 @@ export default {
     winter: 'bare',
     // White blossom on black twigs before the leaves.
     spring: ['#7a7470', '#d4d0c8', '#f6f4ee'],
-    summer: ['#24391e', '#38542a', '#5c7a42'],
+    summer: ['#212f16', '#334620', '#556633'],
     autumn: ['#4a4426', '#6a6034', '#8e8248'],
   },
   twigs: ['#262020', '#3a3230', '#504644'],

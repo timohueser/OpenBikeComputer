@@ -13,7 +13,7 @@ export default {
   leaves: {
     winter: 'bare',
     spring: ['#3a5e28', '#5a8436', '#8cb060'],
-    summer: ['#1e3a1c', '#2e5228', '#4e7440'],
+    summer: ['#1b3014', '#2a441e', '#486132'],
     // Alder drops its leaves green or brown, without autumn colour.
     autumn: ['#2e3e1e', '#4a5a2c', '#6e7640'],
   },

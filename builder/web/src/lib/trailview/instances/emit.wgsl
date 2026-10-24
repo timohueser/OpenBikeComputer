@@ -24,7 +24,13 @@ struct Model {
     trunk: f32,
     // How far the model takes its hue from the ground under it (draw.wgsl): 0 for a tree.
     tie: f32,
-    unused2: f32,
+    // The height in metres of an instance whose tiers end at `until`; a taller one keeps each tier
+    // farther, as it draws as large. 0: the tiers end at `until` at every height.
+    sized: f32,
+    // A tree's sink table (sinks of instances.ts), at the slopes SINK_STEP × (k + 1) for k 0 to 3 and
+    // 4 to 7: how far a crown vertex lies below the line of that slope through the crown's base, at most.
+    sink_low: vec4f,
+    sink_high: vec4f,
 }
 
 // One instance of a draw: its base in render space and its height in metres; its turn and width as
@@ -57,10 +63,11 @@ struct Params {
     unused: u32,
 }
 
-// Where a tier of a model ends: a model's last tier ends where the model does, at any resolution.
-fn tier_end(m: Model, tier: u32) -> f32 {
+// Where a tier of an instance `height` metres tall ends: a model's last tier ends where the model does,
+// at any resolution and height.
+fn tier_end(m: Model, tier: u32, height: f32) -> f32 {
     let last = tier + 1u == TIERS || m.until[tier + 1u] <= 0.0;
-    return m.until[tier] * select(params.lod, params.detail, last);
+    return m.until[tier] * select(params.lod * select(1.0, height / m.sized, m.sized > 0.0), params.detail, last);
 }
 
 @group(0) @binding(1) var<uniform> models: array<Model, 256>;
@@ -82,6 +89,10 @@ struct Occlusion {
 
 // Draws per model: three mesh tiers and the far tier, as TIERS of instances.ts.
 const TIERS: u32 = 4u;
+// The mesh tiers that draw without the dither (WHOLE_TIERS of instances.ts), and the slopes of the sink
+// table (SINK_STEP of instances.ts).
+const WHOLE_TIERS: u32 = 2u;
+const SINK_STEP: f32 = 0.25;
 // The hashes of the producers: a place's values come from whole world cells, the same at every distance.
 fn mix_bits(a: u32) -> u32 {
     var x = a * 747796405u + 2891336453u;
@@ -163,7 +174,7 @@ fn byte_of(share: f32) -> u32 {
 // `yaw` and `width` times as wide as its model, its colour times `tint` (0.75 to 1.25), and drawn on
 // the share `appear` of its pixels. Its yaw and height pick where in a tier's fade it switches tiers.
 fn emit(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32) {
-    emit_tree(model, base, height, yaw, width, tint, appear, 0.0, pick_of(yaw, height), 0.0, vec3f(0.0));
+    emit_tree(model, base, height, yaw, width, tint, appear, 0.0, 0.0, pick_of(yaw, height), 0.0, vec3f(0.0));
 }
 
 // A share 0 to 1 that is stable per instance, from its yaw and height.
@@ -171,25 +182,57 @@ fn pick_of(yaw: f32, height: f32) -> f32 {
     return f32(((bitcast<u32>(yaw) ^ bitcast<u32>(height)) * 2654435761u) >> 8u) / 16777216.0;
 }
 
-// As `emit`, with the crown's base raised to `lift` of the height, the share `snow` of snow on its
-// upward faces, and the albedo of the `ground` under it for a model with a tie (draw.wgsl). The
-// instance switches to the next tier at the share `pick` (0 to 1, stable per instance) of a tier's last
-// share `fade`, and past its last tier ends there: a still view draws each instance whole, in one tier.
-fn emit_tree(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32, lift: f32, pick: f32, snow: f32, ground: vec3f) {
+// How deep a tree sinks on a slope, in model units. Downhill the ground under a crown vertex drops by
+// `slope` × its reach; the tree sinks so that this drop, less the sink, nowhere exceeds the vertex's
+// height. A vertex below the crown's base counts as at the base, so no tree sinks on flat ground. A
+// crown lifted to `lift` (lifted of draw.wgsl) squeezes its heights above its base by `raise`, which
+// the table's slope undoes. `slope` is the rise per metre (stand_ground), at most 1.
+fn slope_sink(m: Model, slope: f32, width: f32, lift: f32) -> f32 {
+    if (m.crown < 0.0) {
+        return 0.0;
+    }
+    let base = select(m.crown, lift, m.trunk != 0.0 && lift > m.crown);
+    let raise = (1.0 - base) / (1.0 - m.crown);
+    // The table between its slopes, from 0 at slope 0; past its last slope, along its last step.
+    let t = min(slope, 1.0) * width / raise / SINK_STEP;
+    let k = min(u32(t), 7u);
+    let a = select(0.0, sink_at(m, max(k, 1u) - 1u), k > 0u);
+    return max(0.0, raise * mix(a, sink_at(m, k), t - f32(k)) - base);
+}
+
+// Entry k of a model's sink table.
+fn sink_at(m: Model, k: u32) -> f32 {
+    return select(m.sink_high, m.sink_low, k < 4u)[k % 4u];
+}
+
+// As `emit`, with the crown's base raised to `lift` of the height, on ground of the rise `slope` per
+// metre, which sinks it (slope_sink), the share `snow` of snow on its upward faces, and the albedo of
+// the `ground` under it for a model with a tie (draw.wgsl). The instance switches to the next tier at
+// the share `pick` (0 to 1, stable per instance) of a tier's last share `fade`, and past its last tier
+// ends there: a still view draws each instance whole, in one tier.
+fn emit_tree(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32, lift: f32, slope: f32, pick: f32, snow: f32, ground: vec3f) {
     let m = models[model];
-    let centre = base + vec3f(0.0, 0.0, 0.5 * height);
-    let radius = m.radius * height * max(width, 1.0);
-    if (appear <= 0.0 || !visible(centre, radius) || hidden(centre, radius)) {
+    if (appear <= 0.0) {
         return;
     }
     let d = length(base);
     var tier = 0u;
-    while (tier < TIERS && m.until[tier] > 0.0 && d > tier_end(m, tier) * (1.0 - m.fade * pick)) {
+    while (tier < TIERS && m.until[tier] > 0.0 && d > tier_end(m, tier, height) * (1.0 - m.fade * pick)) {
         tier++;
+    }
+    // An instance drawn on a share of its pixels draws with the dither.
+    if (appear < 1.0) {
+        tier = max(tier, WHOLE_TIERS);
     }
     if (tier == TIERS || m.until[tier] <= 0.0) {
         return;
     }
+    let at = base - vec3f(0.0, 0.0, height * slope_sink(m, slope, width, lift));
+    let centre = at + vec3f(0.0, 0.0, 0.5 * height);
+    let radius = m.radius * height * max(width, 1.0);
+    if (!visible(centre, radius) || hidden(centre, radius)) {
+        return;
+    }
     let look = byte_of((tint - 0.75) * 2.0) | (byte_of(lift) << 8u) | (byte_of(snow) << 16u) | (byte_of(appear) << 24u);
-    stage(model * TIERS + tier, vec4f(base, height), pack2x16float(width * vec2f(cos(yaw), sin(yaw))), pack4x8unorm(vec4f(sqrt(ground), 0.0)), look);
+    stage(model * TIERS + tier, vec4f(at, height), pack2x16float(width * vec2f(cos(yaw), sin(yaw))), pack4x8unorm(vec4f(sqrt(ground), 0.0)), look);
 }

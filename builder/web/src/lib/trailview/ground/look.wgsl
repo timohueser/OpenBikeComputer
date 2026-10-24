@@ -250,7 +250,10 @@ fn region_at(s: vec2f) -> u32 {
 
 // The snow on the ground at a point on the date, 0 to 1, from the finest resident ground page.
 fn snow_at(s: vec2f) -> f32 {
-    let held = held_at(s, u32(ceil(lod(s))));
+    return snow_held(held_at(s, u32(ceil(lod(s)))));
+}
+
+fn snow_held(held: Held) -> f32 {
     if (held.page < 0) {
         return 0.0;
     }

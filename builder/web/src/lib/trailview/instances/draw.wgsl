@@ -21,7 +21,9 @@ struct Model {
     crown: f32,
     trunk: f32,
     tie: f32,
-    unused2: f32,
+    sized: f32,
+    sink_low: vec4f,
+    sink_high: vec4f,
 }
 
 @group(0) @binding(1) var<storage, read> lists: array<Instance>;
@@ -107,12 +109,18 @@ fn far_tone(m: Model, d: f32) -> f32 {
 
 // The height of a point of a tree in model units, with its crown's base raised to `lift`: in a dense
 // stand the low branches die, so a walker sees trunks under a roof. The crown keeps its width and
-// squeezes into the height above `lift`; the trunk stays. A model without a trunk keeps its shape.
-fn lifted(z: f32, trunk: bool, m: Model, lift: f32) -> f32 {
-    if (trunk || m.trunk == 0.0 || lift <= m.crown) {
+// squeezes into the height above `lift`. The trunk, whose vertices carry its top (`top` > 0),
+// stretches so that its top meets the point of the crown that it met before: the crown never floats
+// above its trunk, and the trunk stands on the ground. A model without a trunk keeps its shape.
+fn lifted(z: f32, top: f32, m: Model, lift: f32) -> f32 {
+    if (m.trunk == 0.0 || lift <= m.crown) {
         return z;
     }
-    return lift + (z - m.crown) * (1.0 - lift) / (1.0 - m.crown);
+    let raise = (1.0 - lift) / (1.0 - m.crown);
+    if (top > 0.0) {
+        return z * max(1.0, (lift + (top - m.crown) * raise) / top);
+    }
+    return lift + (z - m.crown) * raise;
 }
 
 @vertex
@@ -121,7 +129,7 @@ fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     let m = models[draw.x / TIERS];
     let turn = unpack2x16float(i.turn);
     let model = v.position.xyz * m.extent;
-    let local = vec3f(model.xy, lifted(model.z, v.position.w > 0.5, m, f32((i.look >> 8u) & 255u) / 255.0));
+    let local = vec3f(model.xy, lifted(model.z, v.position.w, m, f32((i.look >> 8u) & 255u) / 255.0));
     let p = i.at.xyz + i.at.w * vec3f(turn.x * local.x - turn.y * local.y, turn.y * local.x + turn.x * local.y, local.z);
     let t = normalize(turn);
     var out: MeshOut;
@@ -154,6 +162,17 @@ fn mesh_fragment(in: MeshOut) -> @location(0) vec4f {
     if (!kept(in.clip.xy, in.look)) {
         discard;
     }
+    return mesh_lit(in);
+}
+
+// The near tiers, whose instances are whole (WHOLE_TIERS of instances.ts): without a discard, a tiled
+// GPU hides what they cover before it shades it.
+@fragment
+fn mesh_fragment_whole(in: MeshOut) -> @location(0) vec4f {
+    return mesh_lit(in);
+}
+
+fn mesh_lit(in: MeshOut) -> vec4f {
     let n = normalize(in.normal);
     return vec4f(in.fog * light_up(in.albedo, n, 1.0, 1.0, look.horizon.w) + in.air, 1.0);
 }
