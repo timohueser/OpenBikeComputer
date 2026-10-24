@@ -2,7 +2,9 @@
 day step, as specs/trailview-tiles.md defines them."""
 
 import gzip
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
@@ -32,6 +34,19 @@ class SnowDaysTest(unittest.TestCase):
         tile_id, bodies = snow.encode((7, gzip.compress(tile((snow.NO_SNOW, snow.NO_SNOW))), 1))
         self.assertEqual(len(bodies), snow.BANDS)
         self.assertEqual(set(gzip.decompress(bodies[0])), {16})
+
+    def test_a_snow_archive_without_data_fails_the_bake(self):
+        from pmtiles.tile import Compression, TileType
+        from pmtiles.writer import Writer
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "snow.pmtiles"
+            with path.open("wb") as stream:
+                writer = Writer(stream)
+                writer.write_tile(0, gzip.compress(tile((snow.NO_DATA, snow.NO_DATA))))
+                writer.finalize({"tile_type": TileType.UNKNOWN, "tile_compression": Compression.GZIP}, {"step_days": 2, "seasons": 1})
+            with self.assertRaisesRegex(ValueError, "no tile with data"):
+                snow.bake(path, Path(folder) / "out", workers=1)
 
 
 if __name__ == "__main__":

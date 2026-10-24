@@ -87,10 +87,12 @@ def bake(snow, output, workers=None):
                             sizes[band] += len(data)
             finally:
                 pool.shutdown(cancel_futures=True)
+            if not any(sizes):
+                raise ValueError("The snow archive has no tile with data")
             keys = ("min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7", "center_zoom", "center_lon_e7", "center_lat_e7")
             for band, (writer, stream) in enumerate(zip(writers, streams)):
                 writer.finalize({"tile_type": TileType.UNKNOWN, "tile_compression": Compression.GZIP, **{key: header[key] for key in keys}}, {
-                    "trailview_format": tiles.FORMAT, "band": band, "band_steps": BAND_STEPS, "day_step": day_step(band),
+                    "trailview_format": tiles.FORMAT, "archive": f"snow-{band:02}", "band": band, "band_steps": BAND_STEPS, "day_step": day_step(band),
                     "first_season": metadata["first_season"], "seasons": seasons, "source": metadata["source"],
                     "attribution": metadata["attribution"],
                 })

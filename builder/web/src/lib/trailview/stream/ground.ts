@@ -23,6 +23,12 @@ const BODIES = 16 * 2 ** 20;
 /** The snow day band of a day step. */
 export const snowBand = (step: number) => Math.min(SNOW_BANDS - 1, Math.floor(step / BAND_STEPS));
 const snowName = (band: number) => `trailview-snow-${String(band).padStart(2, '0')}`;
+/** The source of the snow day archive of a band; undefined where the release has none. */
+const snowSource = (urls: Partial<Record<string, string>>, band: number) => {
+    const url = urls[snowName(band)];
+    return url ? openSource(url) : Promise.resolve(undefined);
+};
+const leftOut = (name: string) => (error: unknown) => void console.warn(`TrailView leaves out ${name}: ${error instanceof Error ? error.message : error}`);
 
 /** An open archive and the bodies of its tiles. */
 interface Archive { source: Source; tiles: Tiles<ArrayBuffer> }
@@ -74,14 +80,19 @@ export class GroundSource {
         const response = await releaseFetch(config.trailview_rules, { signal: requestSignal() });
         if (!response.ok) throw new Error(`The TrailView rules answered ${response.status}.`);
         const rules = rulesOf(await response.json());
-        const entries = await Promise.all(Object.entries(NAMES).map(async ([layer, name]) => {
-            const url = urls[name];
-            if (!url) return [layer, undefined] as const;
-            const opened = openSource(url);
-            return [layer, await (layer === 'material' ? opened : opened.catch(error => void console.warn(`TrailView leaves out ${name}: ${error instanceof Error ? error.message : error}`)))] as const;
-        }));
+        const band = snowBand(seasonDay(date).index);
+        const [entries, snow] = await Promise.all([
+            Promise.all(Object.entries(NAMES).map(async ([layer, name]) => {
+                const url = urls[name];
+                if (!url) return [layer, undefined] as const;
+                const opened = openSource(url);
+                return [layer, await (layer === 'material' ? opened : opened.catch(leftOut(name)))] as const;
+            })),
+            snowSource(urls, band).catch(leftOut(snowName(band))),
+        ]);
         const ground = new GroundSource(rules, Object.fromEntries(entries.filter(([, source]) => source)), urls);
-        await ground.snowDays(snowBand(seasonDay(date).index));
+        // A band that did not open opens again on the first load.
+        if (snow) ground.snow = { band, archive: Promise.resolve(ground.snowArchive(snow)) };
         return ground;
     }
 
@@ -122,7 +133,7 @@ export class GroundSource {
         };
         const colour = this.archives.q1?.source, zc = Math.min(z, colour?.maxZoom ?? -1);
         const coloured = colour !== undefined && zc >= colour.minZoom;
-        const days = await this.snowDays(snowBand(date.snowIndex)), zs = z + 1;
+        const days = await this.snowDays(snowBand(date.snowIndex)).catch(() => void (complete = false)), zs = z + 1;
         const finer = days && zs <= days.source.maxZoom ? [0, 1, 2, 3].map(q => [2 * x + (q & 1), 2 * y + (q >> 1)]) : [];
         const coarse = finer.length > 0 && !fine && finer.some(([sx, sy]) => days!.tiles.loaded(zs, sx, sy) === undefined);
         const snowBodies = !days ? [] : finer.length && !coarse
@@ -153,22 +164,30 @@ export class GroundSource {
         return body ? { key: `${name}/${zoom}/${tx}/${ty}`, z: zoom, x: tx, y: ty, body: body.slice(0), planar } : undefined;
     }
 
-    /** The snow day archive of a band; undefined where the release has none or it does not open. */
+    /**
+     * The snow day archive of a band; undefined where the release has none. A band that does not open
+     * fails the loads that wait for it, and the next load opens it again.
+     */
     private snowDays(band: number): Promise<Archive | undefined> {
         if (this.snow?.band !== band) {
-            const name = snowName(band), url = this.urls[name];
-            const archive = !url ? Promise.resolve(undefined) : openSource(url).then(source => {
-                this.snowCredit = String(source.metadata.attribution ?? '');
-                return {
-                    source, tiles: this.kept(source, body => {
-                        if (body.byteLength !== SNOW_DAY) throw new Error(`A snow day tile has ${body.byteLength} bytes.`);
-                        return body.buffer;
-                    }),
-                };
-            }, error => void console.warn(`TrailView leaves out ${name}: ${error instanceof Error ? error.message : error}`));
+            const archive = snowSource(this.urls, band).then(source => source && this.snowArchive(source));
+            archive.catch(error => {
+                leftOut(snowName(band))(error);
+                if (this.snow?.archive === archive) this.snow = undefined;
+            });
             this.snow = { band, archive };
         }
         return this.snow.archive;
+    }
+
+    private snowArchive(source: Source): Archive {
+        this.snowCredit = String(source.metadata.attribution ?? '');
+        return {
+            source, tiles: this.kept(source, body => {
+                if (body.byteLength !== SNOW_DAY) throw new Error(`A snow day tile has ${body.byteLength} bytes.`);
+                return body.buffer;
+            }),
+        };
     }
 
     /** The bodies of the tiles of an archive, counted in the requests, the bytes and the failures. */

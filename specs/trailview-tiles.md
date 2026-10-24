@@ -129,17 +129,18 @@ view reads the snow of its date only. It has one archive per band of day steps,
 `trailview-snow-00` to `trailview-snow-45`. Band b holds the day steps 4b to 4b + 3 and shows day
 step min(4b + 2, 182). A date reads the band of its day step, ⌊day step ÷ 4⌋.
 
-The archives differ from the table in [Archives](#archives): they have the tiles and the zooms of
-the snow archive, 256 × 256 pixels, tile type `unknown` (0) and gzip compression. A tile is 65,536
-bytes in row order, one byte per pixel:
+The archives differ from the table in [Archives](#archives): a tile is a tile of the snow archive,
+256 × 256 pixels, tile type `unknown` (0) and gzip compression. A tile is 65,536 bytes in row
+order, one byte per pixel:
 
 | Bits | Meaning |
 | --- | --- |
 | 4–7 | The seasons with data at the pixel: not 255 in the snow archive. 0 is no data |
 | 0–3 | The seasons with snow on the band's day step, as the snow archive defines it |
 
-A tile where no season has data is not in the archive. A snow archive with more than 15 seasons
-needs a new format. Each archive has the metadata of [Archives](#archives) without `layer`, and:
+A tile where no season has data is not in the archive, so the first zoom can be finer than in the
+snow archive. A snow archive with more than 15 seasons needs a new format. Each archive has the
+metadata of [Archives](#archives) without `layer`, with `archive` `snow-00` to `snow-45`, and:
 
 | Key | Value |
 | --- | --- |
