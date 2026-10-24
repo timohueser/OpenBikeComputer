@@ -33,7 +33,7 @@ export default {
         const { pylon: high, sag, spacing } = RIGS[rig], low = CABLE_AT_STATION_M[rig], T = TRACK_HALF_M[rig];
         // One livery per lift, from what each tile of it holds: its class and its name.
         const seed = seedOf(`${tags.aerialway} ${tags.name ?? ''}`);
-        // The bake's `stations` names the ends that have a station of their own; another end lies in a building or shares a station.
+        // The bake's `stations` names the ends that have a station of their own; another end shares the station of another lift.
         const own = [!tags.stations || tags.stations === 'start', !tags.stations || tags.stations === 'end'];
         for (const { xy } of parts) {
             const n = xy.length / 2, at = (v: number): [number, number] => [xy[2 * v], xy[2 * v + 1]];

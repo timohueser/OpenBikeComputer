@@ -53,15 +53,17 @@ class Pylons(unittest.TestCase):
 class Stations(unittest.TestCase):
     def test_a_way_through_the_end_of_another_lift_splits_there_and_one_station_stands(self):
         a, m, b, c = at(0, 0), at(300, 0), at(600, 0), at(300, 300)
-        out, metrics = lifts.rigged([({"aerialway": "gondola"}, [a, m, b]), ({"aerialway": "chair_lift"}, [m, c])], [])
+        out, _, metrics = lifts.rigged([({"aerialway": "gondola"}, [a, m, b]), ({"aerialway": "chair_lift"}, [m, c])], [])
         self.assertEqual([points for _, points in out], [[a, m], [m, b], [m, c]])
         self.assertEqual([tags.get("stations") for tags, _ in out], [None, "end", "end"])
         self.assertEqual(metrics["shared_ends"], 2)
 
-    def test_an_end_in_a_building_has_no_station_of_its_own(self):
-        hall = np.array([at(-10, -10), at(10, -10), at(10, 10), at(-10, 10)])
-        out, _ = lifts.rigged([({"aerialway": "drag_lift"}, [at(0, 0), at(100, 0)])], [hall])
-        self.assertEqual(out[0][0]["stations"], "end")
+    def test_the_station_replaces_the_building_that_holds_its_end_and_other_buildings_stay(self):
+        def square(e, s):
+            return [np.array([at(e - 10, s - 10), at(e + 10, s - 10), at(e + 10, s + 10), at(e - 10, s + 10)])]
+        out, stations, _ = lifts.rigged([({"aerialway": "drag_lift"}, [at(0, 0), at(100, 0)])], [square(200, 0), square(0, 0)])
+        self.assertNotIn("stations", out[0][0])
+        self.assertEqual(stations, {1})
 
 
 if __name__ == "__main__":

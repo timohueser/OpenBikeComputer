@@ -2,7 +2,8 @@
 at the ends of its way and a pylon at each vertex between, but often maps no pylon. The bake adds a pylon
 in a span that is longer than its rig allows, or under whose cable a carrier comes nearer the terrain than
 its clearance. The pylon stands where the carrier comes nearest, as a real pylon stands on a knoll. A way
-that runs through the end of another lift splits there: that vertex is a station, not a pylon."""
+that runs through the end of another lift splits there: that vertex is a station, not a pylon. A station
+replaces the building that holds its end."""
 
 import math
 
@@ -64,21 +65,23 @@ def pylons(tags, points, terrain):
 def rigged(ways, buildings, terrain=None):
     """The lifts (tags, points) as the tiles keep them, in world coordinates: each way split at its vertices
     where another lift ends, with the pylons that it lacks when there is a `terrain`, and the tag `stations`
-    where an end has no station of its own: the end lies in one of the `buildings` (outer rings), or a lift
-    before it in the list has its station there. Also the metrics."""
+    where a lift before it in the list has the station at an end. Also the indices of the `buildings` (each
+    a list of outer rings) that hold a lift's end: the station stands there in place of the building. Also
+    the metrics."""
     ends = {p for _, points in ways for p in (points[0], points[-1])}
     split = []
     for tags, points in ways:
         cut = [0] + [i for i in range(1, len(points) - 1) if points[i] in ends] + [len(points) - 1]
         split += [(tags, points[a:b + 1]) for a, b in zip(cut, cut[1:])]
-    housed = inside(ends, buildings)
-    held, out, metrics = set(), [], {"lifts": len(split), "added_pylons": 0, "housed_ends": 0, "shared_ends": 0}
+    housing = inside(ends, buildings)
+    held, out = set(), []
+    metrics = {"lifts": len(split), "added_pylons": 0, "housed_ends": len(housing), "shared_ends": 0,
+               "dropped_buildings": len(set(housing.values()))}
     for tags, points in split:
         own = []
         for p in (points[0], points[-1]):
-            own.append(p not in housed and p not in held)
-            metrics["housed_ends"] += p in housed
-            metrics["shared_ends"] += p not in housed and p in held
+            own.append(p not in held)
+            metrics["shared_ends"] += p in held
             held.add(p)
         if terrain is not None:
             rig = pylons(tags, points, terrain)
@@ -86,23 +89,24 @@ def rigged(ways, buildings, terrain=None):
             points = rig
         stations = {(True, False): "start", (False, True): "end", (False, False): "none"}.get(tuple(own))
         out.append(({**tags, "stations": stations} if stations else tags, points))
-    return out, metrics
+    return out, set(housing.values()), metrics
 
 
-def inside(points, rings):
-    """The points that lie inside one of the rings."""
+def inside(points, buildings):
+    """The building that holds each point that lies inside an outer ring of one."""
+    rings = [(n, ring) for n, outer in enumerate(buildings) for ring in outer]
     points = list(points)
     if not points or not rings:
-        return set()
+        return {}
     xy = np.array(points)
-    boxes = np.array([(r[:, 0].min(), r[:, 1].min(), r[:, 0].max(), r[:, 1].max()) for r in rings])
-    out = set()
+    boxes = np.array([(r[:, 0].min(), r[:, 1].min(), r[:, 0].max(), r[:, 1].max()) for _, r in rings])
+    out = {}
     for p, (x, y) in zip(points, xy):
         for k in np.flatnonzero((boxes[:, 0] <= x) & (x <= boxes[:, 2]) & (boxes[:, 1] <= y) & (y <= boxes[:, 3])):
-            ring = rings[k]
+            n, ring = rings[k]
             ax, ay, bx, by = ring[:, 0], ring[:, 1], np.roll(ring[:, 0], -1), np.roll(ring[:, 1], -1)
             crosses = (ay > y) != (by > y)
             if np.count_nonzero(crosses & (x < ax + (y - ay) * (bx - ax) / np.where(by == ay, 1, by - ay))) % 2:
-                out.add(p)
+                out[p] = n
                 break
     return out
