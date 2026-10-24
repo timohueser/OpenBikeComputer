@@ -63,6 +63,16 @@ class RulesetTest(unittest.TestCase):
         ruleset["regions"]["world.extra-last"] = ruleset["regions"]["world.extra-0"]
         self.assertIn("regions/: 256 regions, more than the 255 that one byte of the region tiles holds", rules.validate(ruleset))
 
+    def test_a_pack_with_more_tree_species_than_the_forest_holds_or_an_unknown_model_is_a_problem(self):
+        ruleset = copy.deepcopy(RULESET)
+        trees = ruleset["packs"]["alps"]["trees"]
+        spruce = {**trees["norway-spruce"], "model": "norway-spruce"}
+        trees.update({f"spruce-{i}": spruce for i in range(rules.MAX_TREE_SPECIES)})
+        trees["swiss-stone-pine"] = {**spruce, "model": "swiss-stone-pine"}
+        problems = rules.validate(ruleset)
+        self.assertTrue(any(p.startswith("regions/alps.json: pack alps has ") and p.endswith("more than the 32 that the forest holds") for p in problems), problems)
+        self.assertIn("regions/alps.json: pack alps: tree swiss-stone-pine has no model swiss-stone-pine", problems)
+
     def test_a_number_that_json_does_not_have_is_a_problem(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "trailview"

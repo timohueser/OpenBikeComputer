@@ -5,10 +5,11 @@
 // #include hemi.wgsl
 
 struct Bake {
-    // The model, and its radius about (0, 0, 0.5) in model units.
+    // The model, its radius about (0, 0, 0.5) in model units, and its layer of the atlas.
     model: u32,
     radius: f32,
-    unused: vec2f,
+    layer: u32,
+    unused: u32,
 }
 
 @group(1) @binding(0) var<uniform> bake: Bake;
@@ -26,14 +27,16 @@ fn bake_vertex(v: MeshIn, @builtin(instance_index) frame: u32) -> BakeOut {
     let cell = vec2f(f32(frame % 8u), f32(frame / 8u));
     let d = hemi_decode((cell + 0.5) / FRAMES);
     let axes = view_axes(d);
-    let p = v.position.xyz * models[bake.model].extent - vec3f(0.0, 0.0, 0.5);
+    let m = models[bake.model];
+    let model = v.position.xyz * m.extent;
+    let p = model - vec3f(0.0, 0.0, 0.5);
     let local = vec2f(dot(p, axes[0]), dot(p, axes[1])) / bake.radius;
     let depth = 0.5 + 0.5 * dot(p, d) / bake.radius;
     var out: BakeOut;
     // The cell's square of the atlas, y down.
     out.clip = vec4f((cell.x + 0.5 + 0.5 * local.x) / FRAMES * 2.0 - 1.0, 1.0 - (cell.y + 0.5 - 0.5 * local.y) / FRAMES * 2.0, depth, 1.0);
     out.normal = v.normal.xyz;
-    out.albedo = linear(v.colour.rgb);
+    out.albedo = linear(v.colour.rgb) * crown_shade(model, m);
     return out;
 }
 

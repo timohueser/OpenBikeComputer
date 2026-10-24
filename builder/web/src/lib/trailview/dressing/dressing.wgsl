@@ -53,9 +53,6 @@ const CLEAR_M: f32 = 6.0;
 const ROCK_HEIGHT_M: vec2f = vec2f(0.25, 1.3);
 const SLABS: u32 = 3u;
 const STEEPEST: f32 = 0.85;
-// Things nearer than this stand on drawnHeight, farther ones on the level that draws them.
-const MESH_HEIGHT_M: f32 = 400.0;
-
 fn mix_bits(a: u32) -> u32 {
     var x = a * 747796405u + 2891336453u;
     x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
@@ -76,13 +73,6 @@ fn on_road(s: vec2f) -> bool {
     return mask.level != 0u && mask.kind.x != 0u && mask_metres(mask.shape.x) < 1.0;
 }
 
-fn stand_height(s: vec2f, u: vec2i) -> f32 {
-    if (length(s) < MESH_HEIGHT_M) {
-        return plain_height(s);
-    }
-    return units_height(u, u32(ceil(lod(s))));
-}
-
 fn grazes(herd: Herd, material: u32) -> bool {
     return material < 64u && ((herd.grazes[material >> 5u] >> (material & 31u)) & 1u) == 1u;
 }
@@ -95,7 +85,7 @@ fn herds_of(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index
     let size = 1 << HERD_SHIFT;
     let corner = cell << vec2u(HERD_SHIFT);
     if (lane == 0u) {
-        cell_region = cell_at(lod_space(vec2f(corner - surface.anchor) + 0.5 * f32(size))).b;
+        cell_region = region_at(lod_space(vec2f(corner - surface.anchor) + 0.5 * f32(size)));
     }
     let region = workgroupUniformLoad(&cell_region);
     let area = f32(size) * f32(size) * surface.unit * surface.unit;
@@ -112,7 +102,7 @@ fn herds_of(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index
             }
             let middle = corner + vec2i(vec2f(unit_float(mix_bits(h + 1u)), unit_float(mix_bits(h + 2u))) * f32(size));
             let centre = lod_space(vec2f(middle - surface.anchor));
-            if (length(centre) > dressing.reach.x || !grazes(herd, cell_at(centre).r)) {
+            if (length(centre) > dressing.reach.x || !grazes(herd, cell_at(centre, u32(ceil(lod(centre)))).r)) {
                 continue;
             }
             let count = u32(herd.size.x + unit_float(mix_bits(h + 3u)) * (herd.size.y - herd.size.x + 1.0));
@@ -121,7 +111,7 @@ fn herds_of(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index
                 let a = mix_bits(h ^ (i * 2654435761u));
                 let at = middle + vec2i((vec2f(unit_float(mix_bits(a + 5u)), unit_float(mix_bits(a + 6u))) - 0.5) * spread);
                 let s = lod_space(vec2f(at - surface.anchor));
-                if (length(s) < CLEAR_M || !grazes(herd, cell_at(s).r) || on_road(s)) {
+                if (length(s) < CLEAR_M || !grazes(herd, cell_at(s, u32(ceil(lod(s)))).r) || on_road(s)) {
                     continue;
                 }
                 let ground = stand_height(s, at);
@@ -155,7 +145,7 @@ fn rocks_of(@builtin(global_invocation_id) id: vec3u) {
     if (!known(coarse) || !visible(render_at(s, coarse), 2.0 * ROCK_HEIGHT_M.y)) {
         return;
     }
-    let cell = cell_at(s);
+    let cell = cell_at(s, u32(ceil(lod(s))));
     let kinds = rule(cell.b, slot_kinds() + i32(cell.r));
     let outcrops = rule(cell.b, slot_cliff() + 3).x;
     // Open ground or exposed rock: kinds.a open, kinds.z rocky.

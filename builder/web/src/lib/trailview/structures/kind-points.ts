@@ -1,6 +1,6 @@
 import type { Instances } from '../instances/instances';
 import { Points, POINT_WORDS } from '../instances/points';
-import { KINDS, POINT_MODELS } from '../kinds';
+import { KINDS } from '../kinds';
 
 /** Points of the kinds on the GPU at most. */
 const CAPACITY = 2 ** 15;
@@ -17,12 +17,7 @@ export class KindPoints {
     constructor(instances: Instances) {
         const specs = [...KINDS].flatMap(([, kind]) => Object.values(kind.models ?? {}));
         this.first = specs.length ? specs.map(spec => instances.add(spec()))[0] : 0;
-        if (specs.length !== POINT_MODELS.length) throw new Error('The kinds name their models twice.');
         this.pool = new Points(instances, CAPACITY);
-    }
-
-    attach(...args: Parameters<Points['attach']>): Promise<void> {
-        return this.pool.attach(...args);
     }
 
     /** The points of the drawn nodes' kinds, each list as `packPoints` packs it; a new set of lists replaces the pool's points. */

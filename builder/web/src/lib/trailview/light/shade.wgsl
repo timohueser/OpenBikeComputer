@@ -34,8 +34,7 @@ struct Look {
     codes: vec4u,
     // x: the debug view of terrain.wgsl. y: the jittered frame's sample, which turns the dithers. z, w: unused.
     modes: vec4u,
-    // xy: this frame's jitter in clip space. z: render pixels per output pixel, the render scale. w: the
-    // metres from the eye where the trees end and woodland turns into its shell.
+    // xy: this frame's jitter in clip space. z: render pixels per output pixel, the render scale. w: unused.
     screen: vec4f,
 }
 

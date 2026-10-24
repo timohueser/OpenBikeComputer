@@ -2,7 +2,7 @@ import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
-import { Instances, type Producer } from '../instances/instances';
+import { Instances, type Producer, type Surfaces } from '../instances/instances';
 import { animal, BREEDS } from '../models/animals';
 import { geometry, type Model } from '../models/flat';
 import { rock } from '../models/rocks';
@@ -54,7 +54,7 @@ export class Dressing implements Producer {
         });
     }
 
-    async attach(gpu: Gpu, frame: GPUBuffer, surface: { layout: GPUBindGroupLayout; group: GPUBindGroup }, features: { layout: GPUBindGroupLayout; group: GPUBindGroup }, ground: GPUBindGroupLayout): Promise<void> {
+    async attach(gpu: Gpu, frame: GPUBuffer, { surface, features, ground }: Surfaces): Promise<void> {
         this.resources = undefined;
         const { device } = gpu, C = GPUShaderStage.COMPUTE;
         const herds = gpu.buffer('dressing', this.table.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);

@@ -192,10 +192,11 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     let along_w = max(abs(dpdx(in.sleepers)), abs(dpdy(in.sleepers))) * SLEEPER_SPACING_M;
     if ((flags & ROAD_FACE) != 0u) {
         let across = abs(in.road.x);
-        albedo = road_surface(cell_at(lod_space(in.u)).b, u32(round(in.colour.r * 255.0)), max(in.road.y - across, 0.0), across, in.road.y, in.sleepers, look.place.xy + in.relative.xy, w, w, along_w).rgb;
+        albedo = road_surface(region_at(lod_space(in.u)), u32(round(in.colour.r * 255.0)), max(in.road.y - across, 0.0), across, in.road.y, in.sleepers, look.place.xy + in.relative.xy, w, w, along_w).rgb;
     }
     if ((flags & STONE_FACE) != 0u) {
-        let cell = cell_at(lod_space(in.u));
+        let su = lod_space(in.u);
+        let cell = cell_at(su, u32(ceil(lod(su))));
         albedo *= rule(cell.b, slot_lithologies() + i32(cell.g)).rgb / ROCK_GREY;
     }
     // A cable narrower than its ribbon covers a share of it: the dither of that share resolves over the jittered frames.

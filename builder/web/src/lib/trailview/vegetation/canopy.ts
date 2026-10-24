@@ -9,8 +9,8 @@ export const CANOPY_ZOOM = 12, CELLS = 256;
 const SLOTS = 32, WINDOW = 8, LOADS = 4;
 /** Mip levels of a tile, 256 cells a side to 1. */
 const MIPS = 9;
-/** Tiles about the eye's tile that a view wants: those within this many tiles. */
-const AROUND = 1;
+/** A view wants the tiles within this many tiles of the eye's at most: 5 × 5 fit the slots and the window. */
+export const AROUND = 2;
 
 interface Slot { key: string; x: number; y: number; slot: number; used: number }
 
@@ -58,12 +58,15 @@ export class Canopy {
         return this.texture;
     }
 
-    /** Asks for the tiles about the eye at world pixel (x, y) of zoom CANOPY_ZOOM and puts the arrived ones on the GPU. */
-    update(x: number, y: number): void {
+    /**
+     * Asks for the tiles within `around` tiles (AROUND at most) of the eye at world pixel (x, y) of zoom
+     * CANOPY_ZOOM and puts the arrived ones on the GPU.
+     */
+    update(x: number, y: number, around: number): void {
         this.changed = false;
         this.frame++;
         const tx = Math.floor(x), ty = Math.floor(y), wanted: [number, number][] = [];
-        for (let j = -AROUND; j <= AROUND; j++) for (let i = -AROUND; i <= AROUND; i++) wanted.push([tx + i, ty + j]);
+        for (let j = -around; j <= around; j++) for (let i = -around; i <= around; i++) wanted.push([tx + i, ty + j]);
         wanted.sort((a, b) => Math.hypot(a[0] + 0.5 - x, a[1] + 0.5 - y) - Math.hypot(b[0] + 0.5 - x, b[1] + 0.5 - y));
         for (const [i, j] of wanted) {
             const key = `${i}/${j}`, slot = this.slots.get(key);
@@ -112,7 +115,9 @@ export class Canopy {
             for (let i = 0; i < codes.length; i++) codes[i] = data[4 * i] | (data[4 * i + 1] << 8);
             this.arrived.push({ x, y, codes });
         }).catch(error => {
+            // A tile that fails stays out, as an absent one.
             this.failed++;
+            this.absent.add(key);
             console.warn(`Canopy tile ${key}: ${error instanceof Error ? error.message : error}`);
         }).finally(() => {
             this.loading.delete(key);
