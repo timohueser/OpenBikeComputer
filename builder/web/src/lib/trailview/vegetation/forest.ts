@@ -16,7 +16,7 @@ const CELL = 2048, POINTS = 512;
 const SPECIES = 32;
 /** Trees per hectare of each stems class: the middle of its range, and 700 for 600 or more (specs/trailview-tiles.md#canopy). */
 const STEMS_HA = [25, 75, 125, 175, 250, 350, 500, 700];
-const FOREST_BYTES = 64;
+const FOREST_BYTES = 96;
 /** Where `Data` of forest.wgsl holds the points and the species; the canopy window comes first. */
 const POINTS_AT = 272, SPECIES_AT = POINTS_AT + 8 * POINTS;
 /** Units along a canopy tile's edge (zoom CANOPY_ZOOM). */
@@ -80,7 +80,7 @@ export class Forest implements Producer {
         const { device } = gpu, C = GPUShaderStage.COMPUTE;
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const data = gpu.buffer('vegetation', SPECIES_AT + Math.max(16, this.species.byteLength), storage);
-        const cells = gpu.buffer('vegetation', 16 + 16 * this.most * this.most, storage | GPUBufferUsage.INDIRECT);
+        const cells = gpu.buffer('vegetation', 32 + 16 * listParts(this.most).at(-1)!, storage | GPUBufferUsage.INDIRECT);
         const params = gpu.buffer('vegetation', FOREST_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         const texture = this.canopy.attach(gpu, data);
         device.queue.writeBuffer(data, POINTS_AT, bluePoints(POINTS));
@@ -128,8 +128,9 @@ export class Forest implements Producer {
         floats.set([this.reach, THIN_M], 4);
         new Uint32Array(params)[6] = this.orchard;
         floats.set(STEMS_HA.map(n => n / 1e4), 8);
+        new Uint32Array(params).set(listParts(this.most), 16);
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
-        r.gpu.device.queue.writeBuffer(r.cells, 0, new Uint32Array([0, 1, 1, 0]));
+        r.gpu.device.queue.writeBuffer(r.cells, 0, new Uint32Array([0, 1, 1, 0, 0, 0, 0, 0]));
     }
 
     /** Encodes the placement into a compute pass, with the ground pages in group 2. */
@@ -185,6 +186,16 @@ export function speciesTable(regions: Species[][]): Uint32Array<ArrayBuffer> {
         words.push(...lists);
     });
     return Uint32Array.from(words);
+}
+
+/**
+ * Where the cells of each level start in the cell list (forest.wgsl), and its entries: room for every
+ * cell of a level in a window of `side` base cells.
+ */
+function listParts(side: number): number[] {
+    const parts = [0];
+    for (let level = 0; level <= 3; level++) parts.push(parts[level] + ((side >> level) + 1) ** 2);
+    return parts;
 }
 
 /** Base cells a side of the window that holds the reach at a latitude, in whole cells of the coarsest level and their margin. */

@@ -28,6 +28,9 @@ struct Forest {
     unused: u32,
     // Trees per square metre of each stems class (specs/trailview-tiles.md#canopy).
     stems: array<vec4f, 2>,
+    // Per level of a cell the first entry of its part of the cell list, and the entries of the list.
+    parts: vec4u,
+    entries: u32,
 }
 
 // What the forest reads, in one buffer: the canopy's window, the points of a base cell, the species.
@@ -43,19 +46,24 @@ struct Data {
 }
 
 // A cell of the list: its corner in base cells, its trees at most in the low 16 bits and its level in
-// the high bits, and the height of its middle (as bits of an f32).
+// the high bits, and the height of its middle (as bits of an f32). The list holds the cells of each
+// level in a part of its own, the nearer levels first, so the trees stage roughly from near to far and
+// the near ones fill the depth before the far ones shade.
 struct CellList {
     // The workgroups of `trees`: one per cell of the list.
     groups: atomic<u32>,
     y: u32,
     z: u32,
     unused: u32,
+    // The cells of each level.
+    counts: array<atomic<u32>, 4>,
     list: array<vec4i>,
 }
 
 // The cell list as `trees` reads it.
 struct Listed {
     header: vec4u,
+    counts: vec4u,
     list: array<vec4i>,
 }
 
@@ -209,9 +217,10 @@ fn find_cells(@builtin(global_invocation_id) id: vec3u) {
     if (count < 1.0) {
         return;
     }
-    let k = atomicAdd(&found.groups, 1u);
-    if (k < arrayLength(&found.list)) {
-        found.list[k] = vec4i(corner, i32(u32(count) | (level << 16u)), bitcast<i32>(ground));
+    let k = atomicAdd(&found.counts[level], 1u);
+    if (k < part_size(level)) {
+        atomicAdd(&found.groups, 1u);
+        found.list[forest.parts[level] + k] = vec4i(corner, i32(u32(count) | (level << 16u)), bitcast<i32>(ground));
     }
 }
 
@@ -331,6 +340,11 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
         unit_float(mix_bits(h + 31u)), snow, vec3f(0.0));
 }
 
+// The entries of a level's part of the cell list.
+fn part_size(level: u32) -> u32 {
+    return select(forest.parts[min(level + 1u, LEVELS)], forest.entries, level == LEVELS) - forest.parts[level];
+}
+
 // The base cell of rank R of a cell of a level: its low 2 × level bits interleave x and y.
 fn base_of(rank: u32, level: u32) -> vec2i {
     var at = vec2u(0u);
@@ -342,10 +356,16 @@ fn base_of(rank: u32, level: u32) -> vec2i {
 
 @compute @workgroup_size(64)
 fn trees(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) lane: u32) {
-    if (group.x >= arrayLength(&listed.list)) {
+    var k = group.x;
+    var part = 0u;
+    while (part <= LEVELS && k >= min(listed.counts[part], part_size(part))) {
+        k -= min(listed.counts[part], part_size(part));
+        part++;
+    }
+    if (part > LEVELS) {
         return;
     }
-    let entry = listed.list[group.x];
+    let entry = listed.list[forest.parts[part] + k];
     let count = u32(entry.z) & 0xffffu;
     let level = u32(entry.z) >> 16u;
     let slope = SLOPE_M * f32(1u << level);
