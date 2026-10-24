@@ -497,10 +497,13 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
     let mut rows = Vec::new();
     for source in sorted {
         let mut targets = BTreeMap::new();
-        for (name, release) in &served {
+        // A target without a release reads nothing yet, by the policies of `data/sources.toml`.
+        for name in all.keys() {
+            let release = served.iter().find(|(served, _)| served == name).map(|(_, release)| release);
+            let settings = release.map(|release| release.settings.clone()).unwrap_or_default();
             let mut policy = vec![source.clone()];
-            release.settings.policies(&mut policy).map_err(|e| Code::InvalidData.error(e))?;
-            let versions = release.versions();
+            settings.policies(&mut policy).map_err(|e| Code::InvalidData.error(e))?;
+            let versions = release.map(Release::versions).unwrap_or_default();
             let keys = versions.keys().filter(|(id, _)| *id == source.id).cloned().collect();
             let requests = freshness::requests(&store, &http, &policy[0], &keys, &versions, check_now);
             let state = requests.iter().map(|request| request.state).min().unwrap_or(State::Unused);
@@ -533,7 +536,7 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
     if json {
         return print_json(&Sources { sources: rows });
     }
-    let names: Vec<&str> = served.iter().map(|(name, _)| name.as_str()).collect();
+    let names: Vec<&str> = all.keys().map(String::as_str).collect();
     let mut table = vec![[
         vec!["SOURCE".to_string(), "LICENCE".into(), "COPY".into()],
         names.iter().map(|n| n.to_uppercase()).collect(),
