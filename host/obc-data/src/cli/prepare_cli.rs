@@ -26,10 +26,10 @@ use crate::target::Target;
 pub struct PrepareArgs {
     /// The prepared source, as `data/sources.toml` names it.
     id: String,
-    /// Only a region of `data/regions/`, or Geofabrik paths joined by `,`. For `prod`, only `wiki` and `terrain` take a region.
+    /// Only a region of `data/regions/`, or Geofabrik paths joined by `,`. For `prod`, only `wiki`, `terrain` and `forest` take a region.
     #[arg(long, conflicts_with = "bbox")]
     region: Option<String>,
-    /// Only a box: west,south,east,north in degrees. For `prod`, only `wiki` and `terrain` take a region.
+    /// Only a box: west,south,east,north in degrees. For `prod`, only `wiki`, `terrain` and `forest` take a region.
     #[arg(long = "box", allow_hyphen_values = true)]
     bbox: Option<String>,
     /// Wiki article languages, joined by commas; all supported languages by default.
