@@ -143,3 +143,10 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
     }
     return Mask(vec4f(0.5), vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0));
 }
+
+// Whether the mask keeps a thing off a point: on a road, a path or a track, or nearer to its edge than
+// `clear` metres.
+fn on_road(s: vec2f, clear: f32) -> bool {
+    let mask = mask_at(s, u32(ceil(lod(s))), true);
+    return mask.level != 0u && mask.kind.x != 0u && mask_metres(mask.shape.x) < clear;
+}

@@ -11,18 +11,19 @@ const CAPACITY = 2 ** 15;
  */
 export class KindPoints {
     private readonly pool: Points;
-    private readonly first: number;
+    private readonly first?: number;
     private lists: Uint32Array[] = [];
 
     constructor(instances: Instances) {
         const specs = [...KINDS].flatMap(([, kind]) => Object.values(kind.models ?? {}));
-        this.first = specs.length ? specs.map(spec => instances.add(spec()))[0] : 0;
+        this.first = instances.add(...specs.map(spec => spec()));
         this.pool = new Points(instances, CAPACITY);
     }
 
     /** The points of the drawn nodes' kinds, each list as `packPoints` packs it; a new set of lists replaces the pool's points. */
     update(lists: Uint32Array[]): void {
-        if (lists.length === this.lists.length && lists.every((list, i) => list === this.lists[i])) return;
+        const first = this.first;
+        if (first === undefined || (lists.length === this.lists.length && lists.every((list, i) => list === this.lists[i]))) return;
         this.lists = lists;
         const out = new Uint32Array(lists.reduce((n, list) => n + list.length, 0));
         let at = 0;
@@ -31,7 +32,7 @@ export class KindPoints {
             at += list.length;
         }
         // A point's model is its number in POINT_MODELS: the instances number them from `first`.
-        for (let i = 2; i < out.length; i += POINT_WORDS) out[i] = (out[i] & 0xffff0000) | ((out[i] & 0xffff) + this.first);
+        for (let i = 2; i < out.length; i += POINT_WORDS) out[i] = (out[i] & 0xffff0000) | ((out[i] & 0xffff) + first);
         this.pool.write(out);
     }
 }

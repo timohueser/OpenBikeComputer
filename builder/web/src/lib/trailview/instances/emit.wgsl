@@ -22,15 +22,18 @@ struct Model {
     crown: f32,
     // 1 for a model whose meshes mark their trunk (Mesh.trunk of instances.ts), else 0.
     trunk: f32,
-    unused2: vec2f,
+    // How far the model takes its hue from the ground under it (draw.wgsl): 0 for a tree.
+    tie: f32,
+    unused2: f32,
 }
 
 // One instance of a draw: its base in render space and its height in metres; its turn and width as
-// the f16 pair (cos, sin) × width; its model; its look (TINT, LIFT and APPEAR bytes); the draw.
+// the f16 pair (cos, sin) × width; the ground's albedo under it, its square root as unorm8 × 3; its
+// look (tint, lift, snow and appear bytes); the draw, which names its model and tier.
 struct Instance {
     at: vec4f,
     turn: u32,
-    model: u32,
+    ground: u32,
     look: u32,
     draw: u32,
 }
@@ -40,7 +43,7 @@ struct Tally {
     dropped: atomic<u32>,
     unused: vec2u,
     // Instances per draw, which sort.wgsl counts.
-    draws: array<u32, 512>,
+    draws: array<u32, 1024>,
 }
 
 struct Params {
@@ -60,7 +63,7 @@ fn tier_end(m: Model, tier: u32) -> f32 {
     return m.until[tier] * select(params.lod, params.detail, last);
 }
 
-@group(0) @binding(1) var<uniform> models: array<Model, 128>;
+@group(0) @binding(1) var<uniform> models: array<Model, 256>;
 @group(0) @binding(2) var<storage, read_write> staged: array<Instance>;
 @group(0) @binding(3) var<storage, read_write> tally: Tally;
 @group(0) @binding(4) var<uniform> params: Params;
@@ -143,10 +146,10 @@ fn hidden(centre: vec3f, radius: f32) -> bool {
     return clip.z / w < far;
 }
 
-fn stage(draw: u32, at: vec4f, turn: u32, model: u32, look: u32) {
+fn stage(draw: u32, at: vec4f, turn: u32, ground: u32, look: u32) {
     let k = atomicAdd(&tally.staged, 1u);
     if (k < params.capacity) {
-        staged[k] = Instance(at, turn, model, look, draw);
+        staged[k] = Instance(at, turn, ground, look, draw);
     } else {
         atomicAdd(&tally.dropped, 1u);
     }
@@ -160,14 +163,19 @@ fn byte_of(share: f32) -> u32 {
 // `yaw` and `width` times as wide as its model, its colour times `tint` (0.75 to 1.25), and drawn on
 // the share `appear` of its pixels. Its yaw and height pick where in a tier's fade it switches tiers.
 fn emit(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32) {
-    let pick = f32(((bitcast<u32>(yaw) ^ bitcast<u32>(height)) * 2654435761u) >> 8u) / 16777216.0;
-    emit_tree(model, base, height, yaw, width, tint, appear, 0.0, pick);
+    emit_tree(model, base, height, yaw, width, tint, appear, 0.0, pick_of(yaw, height), 0.0, vec3f(0.0));
 }
 
-// As `emit`, with the crown's base raised to `lift` of the height (draw.wgsl). The instance switches to
-// the next tier at the share `pick` (0 to 1, stable per instance) of a tier's last share `fade`, and
-// past its last tier ends there: a still view draws each instance whole, in one tier.
-fn emit_tree(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32, lift: f32, pick: f32) {
+// A share 0 to 1 that is stable per instance, from its yaw and height.
+fn pick_of(yaw: f32, height: f32) -> f32 {
+    return f32(((bitcast<u32>(yaw) ^ bitcast<u32>(height)) * 2654435761u) >> 8u) / 16777216.0;
+}
+
+// As `emit`, with the crown's base raised to `lift` of the height, the share `snow` of snow on its
+// upward faces, and the albedo of the `ground` under it for a model with a tie (draw.wgsl). The
+// instance switches to the next tier at the share `pick` (0 to 1, stable per instance) of a tier's last
+// share `fade`, and past its last tier ends there: a still view draws each instance whole, in one tier.
+fn emit_tree(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32, lift: f32, pick: f32, snow: f32, ground: vec3f) {
     let m = models[model];
     let centre = base + vec3f(0.0, 0.0, 0.5 * height);
     let radius = m.radius * height * max(width, 1.0);
@@ -182,6 +190,6 @@ fn emit_tree(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f
     if (tier == TIERS || m.until[tier] <= 0.0) {
         return;
     }
-    let look = byte_of((tint - 0.75) * 2.0) | (byte_of(lift) << 8u) | (byte_of(appear) << 24u);
-    stage(model * TIERS + tier, vec4f(base, height), pack2x16float(width * vec2f(cos(yaw), sin(yaw))), model, look);
+    let look = byte_of((tint - 0.75) * 2.0) | (byte_of(lift) << 8u) | (byte_of(snow) << 16u) | (byte_of(appear) << 24u);
+    stage(model * TIERS + tier, vec4f(base, height), pack2x16float(width * vec2f(cos(yaw), sin(yaw))), pack4x8unorm(vec4f(sqrt(ground), 0.0)), look);
 }

@@ -23,6 +23,9 @@ struct Forest {
     // Trees stand within `reach` metres; past `thin` metres they thin.
     reach: f32,
     thin: f32,
+    // The material code of orchards, whose trees the orchards stand (orchards.ts).
+    orchard: u32,
+    unused: u32,
     // Trees per square metre of each stems class (specs/trailview-tiles.md#canopy).
     stems: array<vec4f, 2>,
 }
@@ -252,13 +255,6 @@ fn species_of(region: u32, elevation: f32, leaf: u32, pick: f32) -> u32 {
     return model;
 }
 
-// Whether the feature mask keeps a tree off a point: on a road, a path or a track, or nearer to its edge
-// than `clear` metres. The canopy keeps trees off water and houses.
-fn off_ground(s: vec2f, clear: f32) -> bool {
-    let mask = mask_at(s, u32(ceil(lod(s))), true);
-    return mask.level != 0u && mask.kind.x != 0u && mask_metres(mask.shape.x) < clear;
-}
-
 // The region of the ground at a point, from the finest resident ground page; NO_REGION where only a
 // page coarser than REGION_LEVEL holds it.
 fn stable_region(s: vec2f) -> u32 {
@@ -306,8 +302,9 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     }
     let ground = stand_height(s, at);
     let region = stable_region(s);
-    // No data (255) or no page: no species.
-    if (!known(ground) || region >= arrayLength(&data.species) / SPECIES) {
+    // No data (255) or no page: no species. The orchards stand their own trees on their cells of the finest pages.
+    let material = finest_cell(s).r;
+    if (!known(ground) || region >= arrayLength(&data.species) / SPECIES || (material == forest.orchard && material != NO_CELL.r)) {
         return;
     }
     let coarse = units_height(at, BAND_LEVEL);
@@ -318,8 +315,8 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
         leaf = select(1u, 2u, unit_float(mix_bits(h + 7u)) < 0.5);
     }
     let model = species_of(region, band, leaf, unit_float(mix_bits(h + 11u)));
-    // A road or a path is a lane through the forest: crowns reach a little over it.
-    if (model == 0xffffffffu || off_ground(s, CLEAR * models[model].spread * height)) {
+    // A road or a path is a lane through the forest: crowns reach a little over it. The canopy keeps trees off water and houses.
+    if (model == 0xffffffffu || on_road(s, CLEAR * models[model].spread * height)) {
         return;
     }
     // Kept trees stand wider, so the forest keeps its cover as it thins.
@@ -327,7 +324,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     let lift = (LIFT + LIFT_SPREAD * unit_float(mix_bits(h + 29u))) * smoothstep(0.5, 0.9, cover_of(code));
     let yaw = 6.2831853 * unit_float(mix_bits(h + 17u));
     emit_tree(model, render_at(s, ground - SINK_M), height, yaw, width, 0.88 + 0.24 * unit_float(mix_bits(h + 19u)), appear, lift,
-        unit_float(mix_bits(h + 31u)));
+        unit_float(mix_bits(h + 31u)), snow_at(s), vec3f(0.0));
 }
 
 // The base cell of rank R of a cell of a level: its low 2 × level bits interleave x and y.

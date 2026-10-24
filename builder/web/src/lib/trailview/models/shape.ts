@@ -26,6 +26,16 @@ export class V {
     negate(): this { return this.multiplyScalar(-1); }
     cross(v: V): this { return this.set(this.y * v.z - this.z * v.y, this.z * v.x - this.x * v.z, this.x * v.y - this.y * v.x); }
     toArray(): Vec { return [this.x, this.y, this.z]; }
+    crossVectors(a: V, b: V): this { return this.copy(a).cross(b); }
+    copy(v: V): this { return this.set(v.x, v.y, v.z); }
+    multiply(v: V): this { return this.set(this.x * v.x, this.y * v.y, this.z * v.z); }
+    distanceTo(v: V): number { return Math.hypot(this.x - v.x, this.y - v.y, this.z - v.z); }
+    projectOnPlane(n: V): this { return this.addScaledVector(n, -this.dot(n) / n.lengthSq()); }
+    /** Turns the vector by `angle` about the unit axis, by Rodrigues' formula. */
+    applyAxisAngle(axis: V, angle: number): this {
+        const c = Math.cos(angle), s = Math.sin(angle), k = axis, d = k.dot(this), x = k.clone().cross(this);
+        return this.multiplyScalar(c).addScaledVector(x, s).addScaledVector(k, d * (1 - c));
+    }
     /** The vector at index i of a flat array of triples. */
     from(array: ArrayLike<number>, i: number): this { return this.set(array[3 * i], array[3 * i + 1], array[3 * i + 2]); }
 }
@@ -229,7 +239,7 @@ export function lump(r: number, detail: number): Geometry {
 }
 
 /** A surface of revolution about z from points (radius, z) bottom up, `segments` around, faces outward. */
-function revolve(points: [number, number][], segments: number): Geometry {
+export function revolve(points: [number, number][], segments: number): Geometry {
     const geo = empty(), n = points.length;
     for (let i = 0; i <= segments; i++) {
         const phi = (i / segments) * 2 * Math.PI;

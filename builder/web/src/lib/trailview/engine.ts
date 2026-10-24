@@ -18,6 +18,10 @@ import { featureTiles, pageDecoder, releaseTiles } from './stream/terrain';
 import { Terrain, type Audit, type TerrainStats } from './terrain/terrain';
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
+import { TreeModels } from './vegetation/tree-models';
+import { Orchards } from './vegetation/orchards';
+import { Plants } from './vegetation/plants';
+import type { Labs } from './labs';
 import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
@@ -80,7 +84,10 @@ export class TrailView {
     private readonly groundLook: Ground;
     private readonly houses: Houses;
     private readonly instances = new Instances();
+    private readonly trees: TreeModels;
     private readonly forest: Forest;
+    private readonly plants: Plants;
+    private readonly orchards: Orchards;
     private readonly kindPoints: KindPoints;
     private readonly dressing: Dressing;
     private readonly sky = new Sky();
@@ -109,7 +116,7 @@ export class TrailView {
     /** The last frame that drew, for occlusion culling: its depth, pixels and view projection, and its eye. */
     private lastFrame?: Omit<LastFrame, 'moved'> & { eye: number[] };
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, private readonly scale: number) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, private readonly scale: number, labs: Labs) {
         this.context = canvas.getContext('webgpu')!;
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
@@ -117,7 +124,10 @@ export class TrailView {
         this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, featureTiles(config), config.bounds, () => this.request());
         this.groundLook = new Ground(ground, () => this.request());
         this.houses = new Houses(this.frame, featureTiles(config), this.groundLook.rules, () => this.request());
-        this.forest = new Forest(config, this.groundLook.rules, this.instances, () => this.request());
+        this.trees = new TreeModels(this.instances, () => this.request());
+        this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request());
+        this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, labs.grass === 'blades', () => this.request());
+        this.orchards = new Orchards(this.groundLook.rules, this.trees, this.instances, featureTiles(config), () => this.request());
         this.kindPoints = new KindPoints(this.instances);
         this.dressing = new Dressing(this.groundLook.rules, this.instances);
         this.controls = new Controls(canvas, {
@@ -129,9 +139,9 @@ export class TrailView {
     }
 
     /** Reads the ruleset and opens the ground layers, compiles the pipelines, then starts the tile loads. `scale` is the render scale. */
-    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number): Promise<TrailView> {
+    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number, labs: Labs): Promise<TrailView> {
         const ground = await GroundSource.open(config).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
-        const engine = new TrailView(canvas, config, view, ground ?? undefined, scale);
+        const engine = new TrailView(canvas, config, view, ground ?? undefined, scale, labs);
         await engine.attach(gpu);
         engine.request();
         return engine;
@@ -200,7 +210,7 @@ export class TrailView {
     async waitForIdle(): Promise<void> {
         await this.nextFrame();
         // A tile or a probe that arrives draws the next frame.
-        while (!this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.forest.idle || !this.instances.idle || !this.settled() || this.converging) await new Promise<void>(resolve => this.rendered.push(resolve));
+        while (!this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.trees.idle || !this.forest.idle || !this.plants.idle || !this.orchards.idle || !this.instances.idle || !this.settled() || this.converging) await new Promise<void>(resolve => this.rendered.push(resolve));
         await this.gpu.device.queue.onSubmittedWorkDone();
     }
 
@@ -215,7 +225,7 @@ export class TrailView {
         await this.terrain.attach(gpu, uniform, targets.format, DEPTH, layouts.render);
         await Promise.all([this.groundLook.attach(gpu, look, this.terrain.surface!), this.sky.attach(gpu, layouts.render, targets.format, DEPTH), this.resolve.attach(gpu, layouts.render)]);
         await this.houses.attach(gpu, uniform, this.terrain.surface!, this.terrain.features!, { render: layouts.render, compute: layouts.compute[1] }, targets.format, DEPTH);
-        await this.instances.attach(gpu, uniform, targets.format, DEPTH, layouts.render, { surface: this.terrain.surface!, features: this.terrain.features!, ground: layouts.compute[1] });
+        await this.instances.attach(gpu, uniform, targets.format, DEPTH, layouts.render, { surface: this.terrain.surface!, features: this.terrain.features!, ground: layouts.render });
         // A lost device is created again and gets every pool again, without a reload of the page.
         gpu.device.lost.then(async info => {
             console.warn(`The WebGPU device was lost (${info.reason}): ${info.message}`);
@@ -325,7 +335,10 @@ export class TrailView {
         const { drawn, wanted, refreshed, origins } = this.terrain.selected;
         this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date, lonLat);
         this.houses.update(lonLat, eye && { viewProj, eye: [eye.east, eye.north, eye.z] });
-        this.forest.update(lonLat, this.extras.date);
+        this.trees.update(this.extras.date);
+        this.forest.update(lonLat);
+        this.plants.update(lonLat, this.extras.date, place.above);
+        this.orchards.update(lonLat, (lon, lat) => [...this.groundLook.regionsAt(lon, lat)].sort((a, b) => b[1] - a[1])[0]?.[0]);
         this.dressing.update(lonLat);
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
@@ -333,7 +346,7 @@ export class TrailView {
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, scale], extras = JSON.stringify(this.extras);
             moved = camera.some((value, i) => value !== this.camera[i]);
-            changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.forest.newContent || this.instances.newContent || extras !== this.drawnExtras;
+            changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || extras !== this.drawnExtras;
             this.camera = camera;
             this.drawnExtras = extras;
             step = this.temporal.next(moved, changed, debug ? 1 : STILL_FRAMES);
@@ -398,7 +411,7 @@ export class TrailView {
      * none draws), with the last frame's depth hiding what it hid.
      */
     private vegetation(encoder: GPUCommandEncoder, pixels: number, last: LastFrame | undefined, timing: () => GPUComputePassTimestampWrites | undefined): () => void {
-        const ground = this.groundLook.computeGroup;
+        const ground = this.groundLook.group;
         if (!pixels || !ground) return () => {};
         this.instances.begin(pixels);
         this.instances.occlude(encoder, last);

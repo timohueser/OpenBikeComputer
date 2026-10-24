@@ -14,6 +14,7 @@ const region: Region = {
     },
     houses: [0, 0],
     trees: [], herds: [],
+    ground: [],
 };
 
 describe('the rules of the ground', () => {

@@ -1,5 +1,6 @@
 // The producer of stored point instances (points.ts): one lane per instance stands it on the drawn
-// surface and emits it.
+// surface and emits it. A tree takes the snow of the ground under it.
+// #include ../ground/look.wgsl
 // #include emit.wgsl
 
 // As points.ts packs it: the point in whole world units; the model (16 bits), the turn (8 bits) and
@@ -26,6 +27,9 @@ fn stand(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let bits = p.model_turn_tint;
-    emit(bits & 0xffffu, render_at(s, ground), unpack2x16float(p.height).x, f32((bits >> 16u) & 255u) / 256.0 * 6.2831853, 1.0,
-        0.75 + 0.5 * f32(bits >> 24u) / 255.0, 1.0);
+    let model = bits & 0xffffu;
+    let height = unpack2x16float(p.height).x;
+    let yaw = f32((bits >> 16u) & 255u) / 256.0 * 6.2831853;
+    let snow = select(0.0, snow_at(s), models[model].crown >= 0.0);
+    emit_tree(model, render_at(s, ground), height, yaw, 1.0, 0.75 + 0.5 * f32(bits >> 24u) / 255.0, 1.0, 0.0, pick_of(yaw, height), snow, vec3f(0.0));
 }

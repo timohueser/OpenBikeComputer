@@ -6,7 +6,7 @@
 struct Instance {
     at: vec4f,
     turn: u32,
-    model: u32,
+    ground: u32,
     look: u32,
     draw: u32,
 }
@@ -20,14 +20,18 @@ struct Model {
     spread: f32,
     crown: f32,
     trunk: f32,
-    unused2: vec2f,
+    tie: f32,
+    unused2: f32,
 }
 
 @group(0) @binding(1) var<storage, read> lists: array<Instance>;
 @group(0) @binding(2) var<storage, read> bases: array<u32>;
-@group(0) @binding(3) var<uniform> models: array<Model, 128>;
-// The draw of this draw call.
+@group(0) @binding(3) var<uniform> models: array<Model, 256>;
+// The draw of this draw call: x its model × TIERS + its tier.
 @group(0) @binding(4) var<uniform> draw: vec4u;
+
+// Draws per model, as TIERS of emit.wgsl.
+const TIERS: u32 = 4u;
 
 // Far crowns darken to this share from FAR_FROM_M to FAR_TO_M, as the crowns of a forest shade each other.
 const FAR_TONE: f32 = 0.82;
@@ -77,6 +81,26 @@ fn crown_shade(p: vec3f, m: Model) -> f32 {
     return mix(0.55, 1.0, clamp(0.6 * (up + out), 0.0, 1.0));
 }
 
+// SNOW of ground/rules.ts, linear.
+const SNOW: vec3f = vec3f(0.855, 0.888, 0.922);
+
+// The albedo of a model's colour on an instance: a model with a tie takes the hue of the ground under
+// it, shaded from root to tip about the ground's own brightness and never much brighter than it, so a
+// meadow of tufts reads as the meadow (the prototype's `tie`).
+fn tied(colour: vec3f, tint: f32, tie: f32, ground: u32) -> vec3f {
+    let own = colour * tint;
+    if (tie <= 0.0) {
+        return own;
+    }
+    let g = unpack4x8unorm(ground).rgb;
+    return mix(own, g * g * clamp(luma(colour) / 0.3, 0.5, 1.2) * tint, tie);
+}
+
+// An albedo under the share of snow of an instance's look, which settles on the faces that turn up.
+fn snowed(albedo: vec3f, up: f32, look: u32) -> vec3f {
+    return mix(albedo, SNOW, f32((look >> 16u) & 255u) / 255.0 * smoothstep(0.1, 0.5, up));
+}
+
 fn far_tone(m: Model, d: f32) -> f32 {
     return select(mix(1.0, FAR_TONE, smoothstep(FAR_FROM_M, FAR_TO_M, d)), 1.0, m.crown < 0.0);
 }
@@ -94,7 +118,7 @@ fn lifted(z: f32, trunk: bool, m: Model, lift: f32) -> f32 {
 @vertex
 fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     let i = lists[bases[draw.x] + instance];
-    let m = models[i.model];
+    let m = models[draw.x / TIERS];
     let turn = unpack2x16float(i.turn);
     let model = v.position.xyz * m.extent;
     let local = vec3f(model.xy, lifted(model.z, v.position.w > 0.5, m, f32((i.look >> 8u) & 255u) / 255.0));
@@ -106,7 +130,9 @@ fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     out.fog = haze.fog;
     out.air = haze.air;
     out.normal = vec3f(t.x * v.normal.x - t.y * v.normal.y, t.y * v.normal.x + t.x * v.normal.y, v.normal.z);
-    out.albedo = linear(v.colour.rgb) * (0.75 + 0.5 * f32(i.look & 255u) / 255.0) * crown_shade(model, m) * far_tone(m, length(p));
+    // The snow last, as on an impostor, whose atlas holds the shaded crown.
+    let tint = 0.75 + 0.5 * f32(i.look & 255u) / 255.0;
+    out.albedo = snowed(tied(linear(v.colour.rgb), tint, m.tie, i.ground) * crown_shade(model, m) * far_tone(m, length(p)), v.normal.z, i.look);
     out.look = i.look;
     return out;
 }

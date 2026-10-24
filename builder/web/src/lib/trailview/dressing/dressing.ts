@@ -24,18 +24,18 @@ interface Resources { gpu: Gpu; herds: GPUComputePipeline; rocks: GPUComputePipe
 export class Dressing implements Producer {
     private resources?: Resources;
     private readonly table: Uint32Array<ArrayBuffer>;
-    private readonly rockModel: number;
+    private readonly rockModel?: number;
     private herdSide = 0;
     private rockSide = 0;
 
     constructor(rules: Rules, private readonly instances: Instances) {
         instances.produce(this);
-        const add = (model: Model, until: number) => instances.add({ tiers: [{ mesh: geometry(model), until }] });
-        const rocks = (['slab', 'boulder'] as const).flatMap(name => Array.from({ length: SLABS }, (_, k) => add(rock(name, k + 1), ROCK_REACH_M)));
-        this.rockModel = rocks[0];
+        const spec = (model: Model, until: number) => ({ tiers: [{ mesh: geometry(model), until }] });
+        this.rockModel = instances.add(...(['slab', 'boulder'] as const).flatMap(name => Array.from({ length: SLABS }, (_, k) => spec(rock(name, k + 1), ROCK_REACH_M))));
         const breeds = new Map<string, number>(), used = new Set(rules.regions.flatMap(region => region.herds.map(herd => herd.model)).filter(name => name in BREEDS));
         for (const name of used) {
-            breeds.set(name, BREEDS[name].coats.map((_, coat) => add(animal(name, coat), HERD_REACH_M))[0]);
+            const first = instances.add(...BREEDS[name].coats.map((_, coat) => spec(animal(name, coat), HERD_REACH_M)));
+            if (first !== undefined) breeds.set(name, first);
         }
         const materials = rules.vocabulary.materials.map(material => material.id);
         this.table = new Uint32Array(Math.max(1, rules.regions.length) * HERDS * HERD_WORDS);
@@ -88,7 +88,7 @@ export class Dressing implements Producer {
         ints.set([Math.floor(ux / HERD_CELL) - this.herdSide / 2, Math.floor(uy / HERD_CELL) - this.herdSide / 2]);
         words.set([this.herdSide, this.rockSide], 2);
         ints.set([Math.floor(ux / ROCK_CELL) - this.rockSide / 2, Math.floor(uy / ROCK_CELL) - this.rockSide / 2], 4);
-        words[6] = this.rockModel;
+        words[6] = this.rockModel ?? 0;
         floats.set([HERD_REACH_M, ROCK_REACH_M], 8);
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
     }
@@ -102,6 +102,7 @@ export class Dressing implements Producer {
         pass.setBindGroup(3, this.features);
         pass.setPipeline(r.herds);
         pass.dispatchWorkgroups(this.herdSide, this.herdSide);
+        if (this.rockModel === undefined) return;
         pass.setPipeline(r.rocks);
         pass.dispatchWorkgroups(Math.ceil(this.rockSide / 8), Math.ceil(this.rockSide / 8));
     }

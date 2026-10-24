@@ -28,6 +28,7 @@ const NEUTRAL: Rules = {
         },
         houses: [0, 0],
         trees: [], herds: [],
+        ground: [],
     }],
     styles: [],
 };
@@ -112,10 +113,11 @@ export class Ground {
             { binding: 3, visibility: stages, texture: { sampleType: 'unfilterable-float' } },
             { binding: 4, visibility: stages, sampler: {} },
         ];
-        // The compute writes the cache: its bind group does not hold it for sampling.
+        // The compute writes the cache: its bind group does not hold it for sampling. The producers of
+        // instances read the snow in it.
         this.layout = {
             render: device.createBindGroupLayout({ entries: [
-                ...entries, { binding: 5, visibility: GPUShaderStage.FRAGMENT, ...array('float') }, { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+                ...entries, { binding: 5, visibility: GPUShaderStage.FRAGMENT | compute, ...array('float') }, { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
             ] }),
             compute: [
                 device.createBindGroupLayout({ entries: [
