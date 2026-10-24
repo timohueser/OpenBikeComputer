@@ -1,57 +1,60 @@
 // Builds tree models off the main thread: three tiers of each, as plain arrays.
-import { SEASONS } from '../rules/regions';
+import { SEASONS, type Season } from '../rules/regions';
 import { bareIn, tree } from '../models/library';
+import { lit, simplified, simplifierReady } from '../models/simplify';
 import { fits, tone } from '../models/tone';
-import { simplified, simplifierReady } from '../models/simplify';
 import type { Grown, Lod } from '../models/trees';
 import { SUMMER } from './phenology';
 
 /**
  * The crown triangles of tiers 1 and 2, which the simplifier makes from tier 0. A bare crown's tiers
- * stay as the models build them: their twigs grow fewer and wider with the distance.
+ * grow from the same tree (trees.ts).
  */
 const TRIANGLES = [600, 200];
 /** A phase draws the summer crown through a colour matrix where that turns every crown vertex within this many sRGB steps of 255. */
 const FIT = 8;
 
-/**
- * The models to build: a species, kept green all year or not, and the phases (phenology.ts) that its
- * trees have on the date.
- */
-export interface ModelJob { id: number; models: { model: string; evergreen: boolean; phases: number[] }[] }
+/** A job: species to build in summer, kept green all year or not, and crowns of a species in a phase. */
+export interface ModelJob { id: number; leafy: { model: string; evergreen: boolean }[]; crowns: { model: string; phase: number }[] }
 export interface BuiltTier { position: Float32Array; normal: Float32Array; color: Float32Array; index: Uint32Array }
 /** A model's tiers, each with its trunk's vertices first, and its crown's lowest point in model units at every tier. */
 export interface BuiltModel { tiers: (BuiltTier & { trunk: number })[]; crown: number }
 /**
- * A species: its leafy crown in summer, with per phase (winter first) the colour matrix (3 × 3, columns
- * first) that turns its colours into that phase's, of the least error; and per phase that the date
- * has, a crown of its own where the matrix does not turn the summer crown within FIT: a bare crown, or
- * flecks that the season moves. A crown of its own that differs only in colour draws the summer
- * crown's impostor through the matrix: far away its flecks merge.
+ * A species' leafy crown in summer, with per phase (winter first) the colour matrix (3 × 3, columns
+ * first) of the least error that turns it into that phase's, and whether the phase needs a crown of its
+ * own: a bare crown, or flecks that the season moves, which the matrix does not turn within FIT.
  */
-export interface BuiltSpecies { leafy: BuiltModel & { tones: (number[] | undefined)[] }; own: (BuiltModel | undefined)[] }
+export interface BuiltLeafy extends BuiltModel { tones: (number[] | undefined)[]; own: boolean[] }
 
-self.onmessage = async ({ data: { id, models } }: MessageEvent<ModelJob>) => {
+self.onmessage = async ({ data: { id, leafy, crowns } }: MessageEvent<ModelJob>) => {
     try {
         await simplifierReady;
-        const built = models.map(({ model, evergreen, phases }): BuiltSpecies => {
+        const species = leafy.map(({ model, evergreen }): BuiltLeafy => {
             const summer = ([0, 1, 2] as Lod[]).map(lod => tree(model, 'summer', lod));
-            const leafy = [summer[0], simplified(summer[0], summer[1], TRIANGLES[0]), simplified(summer[0], summer[2], TRIANGLES[1])];
-            const tones: (number[] | undefined)[] = [], own: (BuiltModel | undefined)[] = [];
+            const tones: (number[] | undefined)[] = [], own: boolean[] = [];
             SEASONS.forEach((season, phase) => {
                 if (evergreen || phase === SUMMER) return;
                 const near = bareIn(model, season) ? undefined : tree(model, season, 0), matrix = near && tone(summer[0], near);
                 tones[phase] = matrix;
-                if ((!matrix || !fits(matrix, summer[0], near!, FIT)) && phases.includes(phase)) own[phase] = arrays(near ? [near, simplified(near, tree(model, season, 1), TRIANGLES[0]), simplified(near, tree(model, season, 2), TRIANGLES[1])] : ([0, 1, 2] as Lod[]).map(lod => tree(model, season, lod)));
+                own[phase] = !matrix || !fits(matrix, summer[0], near!, FIT);
             });
-            return { leafy: { ...arrays(leafy), tones }, own };
+            return { ...arrays(tiers(summer)), tones, own };
         });
-        const all = built.flatMap(({ leafy, own }) => [leafy, ...own.filter(crown => crown !== undefined)]);
-        self.postMessage({ id, built }, { transfer: all.flatMap(m => m.tiers).flatMap(t => [t.position.buffer, t.normal.buffer, t.color.buffer, t.index.buffer]) });
+        const built = crowns.map(({ model, phase }) => {
+            const season: Season = SEASONS[phase], grown = ([0, 1, 2] as Lod[]).map(lod => tree(model, season, lod));
+            return arrays(bareIn(model, season) ? grown : tiers(grown));
+        });
+        self.postMessage({ id, leafy: species, crowns: built }, { transfer: [...species, ...built].flatMap(m => m.tiers).flatMap(t => [t.position.buffer, t.normal.buffer, t.color.buffer, t.index.buffer]) });
     } catch (error) {
         self.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
     }
 };
+
+/** Tier 0, and tiers 1 and 2 simplified from it, each with its own trunk. */
+function tiers([near, middle, far]: Grown[]): Grown[] {
+    const want = lit(near);
+    return [near, simplified(near, middle, TRIANGLES[0], want), simplified(near, far, TRIANGLES[1], want)];
+}
 
 function arrays(grown: Grown[]): BuiltModel {
     return {
