@@ -277,7 +277,7 @@ function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): Built {
                 const from = v3(0, 0, z + 0.3 * height);
                 const end = v3(shift + r * Math.cos(a), r * Math.sin(a), z - spec.droop * height);
                 // Branches thinner than a broadleaf's limbs go flat a level sooner.
-                bough(parts, twigs, from, end, spec.trunk * 0.3, () => mid, DETAIL[lod + 1]?.limbs ?? 0);
+                bough(parts, twigs, from, end, spec.trunk * 0.3, () => mid, DETAIL[lod + 1]?.limbs ?? 0, 5 * i + k);
                 // A conifer's crown is narrow, so each branch has a thirtieth of a broadleaf crown's twigs.
                 for (let j = 0; j < TWIGS / 30; j++) {
                     const root = from.clone().lerp(end, 0.3 + 0.7 * rand());
@@ -417,12 +417,12 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
         const [dead, share] = flecks ? [hex(flecks[0]), flecks[1]] : [mid, 0];
         const weep = spec.weep ?? 0;
         let kept = 0;
-        for (const { at, r } of crown) {
+        for (const [n, { at, r }] of crown.entries()) {
             const out = at.clone().normalize();
             const end = toTree(at.clone().addScaledVector(out, 0.5 * r));
             // No limb leaves the trunk above its top, so the top lump of an open crown grows from it.
             const from = v3(0, 0, spec.stagger ? Math.min(top, Math.max(spec.fork, end.z - 0.6 * Math.hypot(end.x, end.y))) : spec.fork);
-            bough(parts, twigs, from, end, spec.trunk * 0.45, bark, DETAIL[lod].limbs);
+            bough(parts, twigs, from, end, spec.trunk * 0.45, bark, DETAIL[lod].limbs, n);
             for (let k = 0; k < TWIGS / crown.length; k++) {
                 const root = from.clone().lerp(end, 0.5 + 0.5 * rand());
                 // Twigs reach out to the lump's far side; a weeping tree's droop to its underside and hang below.
@@ -460,11 +460,13 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
     return { geo, trunk: vertices(parts.slice(0, trunks)), crown: trunks ? lowest(parts.slice(trunks)) : 0 };
 }
 
-/** A bare limb: round with `sides` sides, or at 0 sides one flat triangle among the twigs. */
-/** A limb with `sides` sides, or at 0 a flat one: one upright triangle, which draws no random number, so every level draws the same twigs. */
-function bough(parts: Geometry[], twigs: Sheet, from: V, to: V, radius: number, bark: (p: V) => Colour, sides: number): void {
+/**
+ * Bare limb `k`: round with `sides` sides, or at 0 sides one upright triangle among the twigs, which
+ * faces by k and draws no random number, so every level draws the same twigs.
+ */
+function bough(parts: Geometry[], twigs: Sheet, from: V, to: V, radius: number, bark: (p: V) => Colour, sides: number, k: number): void {
     if (sides) parts.push(limb(from.toArray(), to.toArray(), radius, bark, 0, sides));
-    else upright(twigs, from, to, 2 * radius, [bark(from), bark(to)], 1);
+    else upright(twigs, from, to, 2 * radius, [bark(from), bark(to)], k % 2 ? -1 : 1);
 }
 
 /** Twig `k` of a bare crown at a level: every `thin`-th twig stands, `thin` times as wide (DETAIL, TWIGS). */
