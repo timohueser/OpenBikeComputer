@@ -51,12 +51,11 @@ export class Forest implements Producer {
     /** Base cells a side of the window at the highest latitude that the view serves: the cell list's size. */
     private readonly most: number;
     /** Metres from the eye where trees stand, at the instances' detail 1. */
-    readonly reach: number;
+    readonly reach = TREE_REACH_M;
     /** Whether the last update changed what the forest draws, other than by the camera. */
     newContent = false;
 
-    constructor(config: PlannerConfig, rules: Rules, trees: TreeModels, private readonly instances: Instances, wake: () => void, private readonly thin = THIN_M) {
-        this.reach = trees.reach;
+    constructor(config: PlannerConfig, rules: Rules, trees: TreeModels, private readonly instances: Instances, wake: () => void) {
         instances.produce(this);
         this.canopy = new Canopy(config, wake);
         this.most = windowSide(Math.max(Math.abs(config.bounds[1]), Math.abs(config.bounds[3])));
@@ -128,7 +127,7 @@ export class Forest implements Producer {
         const params = new ArrayBuffer(FOREST_BYTES), ints = new Int32Array(params), floats = new Float32Array(params);
         ints.set(this.window);
         new Uint32Array(params).set([this.side, POINTS], 2);
-        floats.set([this.reach, this.thin], 4);
+        floats.set([this.reach, THIN_M], 4);
         new Uint32Array(params)[6] = this.orchard;
         floats[7] = DENSITY;
         floats.set(STEMS_HA.map(n => n / 1e4), 8);

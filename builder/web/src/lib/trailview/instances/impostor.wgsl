@@ -17,8 +17,8 @@
 // A crown whose base lies this share of the height up stands on a trunk that its impostor shows.
 const TRUNK_SHARE: f32 = 0.1;
 // Texels along a frame's side, and the atlas's mip levels: a frame of 32 texels down to 1.
-override FRAME_TEXELS: f32 = 32.0;
-override ATLAS_LEVELS: f32 = 6.0;
+const FRAME_TEXELS: f32 = 32.0;
+const ATLAS_LEVELS: f32 = 6.0;
 
 struct ImpostorOut {
     @builtin(position) clip: vec4f,
