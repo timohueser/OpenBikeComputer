@@ -96,7 +96,8 @@ export class Water {
         const draws = new Map<string, Draw>();
         drawing.forEach((node, i) => {
             for (let { level, x, y } = node; level >= COARSEST; level--, x >>= 1, y >>= 1) {
-                const known = this.stamps.known({ level, x, y });
+                // A resident page outlives its features in the stamp cache: the node asks for them again.
+                const known = level === node.level ? this.stamps.get(node) : this.stamps.known({ level, x, y });
                 if (!known) continue;
                 if (!known.water) return;
                 const name = key({ level, x, y }), draw = draws.get(name) ?? { mesh: known.water, level, nodes: [] };
