@@ -16,6 +16,11 @@ const SORT_LANES = 16384;
 const STRIDE = 256;
 /** The mesh pools: vertices and 32-bit indices. */
 const VERTEX_POOL = 4 * 2 ** 20, INDEX_POOL = 4 * 2 ** 20;
+/**
+ * The mesh tiers whose instances always draw whole, so they draw without the dither's discard: they
+ * end by 150 m, and only the forest fades trees in, past its THIN_M of 600 m.
+ */
+const WHOLE_TIERS = 2;
 /** The render height in pixels that the tier distances are for. */
 const REFERENCE_PIXELS = 1120;
 /** The share of the capacity that the detail keeps to. */
@@ -93,6 +98,7 @@ interface Resources {
     placeDraws: GPUComputePipeline;
     scatter: GPUComputePipeline;
     mesh: GPURenderPipeline;
+    whole: GPURenderPipeline;
     impostor: GPURenderPipeline;
     bake: GPURenderPipeline;
     mips: GPUComputePipeline;
@@ -286,17 +292,19 @@ export class Instances {
         };
         const depthStencil: GPUDepthStencilState = { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' };
         const sortPipeline = device.createPipelineLayout({ bindGroupLayouts: [sortLayout] });
-        const [countDraws, placeDraws, scatter, mesh, impostor, bake, mips] = await Promise.all([
+        const meshPipeline = (fragment: string) => device.createRenderPipelineAsync({
+            label: 'instances mesh', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, emptyLayout, groundLayout] }),
+            vertex: { module: drawModule, entryPoint: 'mesh_vertex', buffers: [vertexLayout] },
+            fragment: { module: drawModule, entryPoint: fragment, targets: [{ format }] },
+            // Leaves and twigs are single faces, seen from both sides.
+            primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil,
+        });
+        const [countDraws, placeDraws, scatter, mesh, whole, impostor, bake, mips] = await Promise.all([
             device.createComputePipelineAsync({ label: 'instances count', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'count_draws' } }),
             device.createComputePipelineAsync({ label: 'instances place', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'place_draws' } }),
             device.createComputePipelineAsync({ label: 'instances scatter', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'scatter' } }),
-            device.createRenderPipelineAsync({
-                label: 'instances mesh', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, emptyLayout, groundLayout] }),
-                vertex: { module: drawModule, entryPoint: 'mesh_vertex', buffers: [vertexLayout] },
-                fragment: { module: drawModule, entryPoint: 'mesh_fragment', targets: [{ format }] },
-                // Leaves and twigs are single faces, seen from both sides.
-                primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil,
-            }),
+            meshPipeline('mesh_fragment'),
+            meshPipeline('mesh_fragment_whole'),
             device.createRenderPipelineAsync({
                 label: 'impostors', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, atlasLayout, groundLayout] }),
                 vertex: { module: impostorModule, entryPoint: 'impostor_vertex', buffers: [vertexLayout] },
@@ -319,7 +327,7 @@ export class Instances {
         });
         const layers = (texture: GPUTexture, level?: number) => texture.createView({ dimension: '2d-array', ...(level === undefined ? {} : { baseMipLevel: level, mipLevelCount: 1 }) });
         this.resources = {
-            gpu, ...b, countDraws, placeDraws, scatter, mesh, impostor, bake, mips, pyramid, hizFirst, hizDown, firstLayout, downGroups,
+            gpu, ...b, countDraws, placeDraws, scatter, mesh, whole, impostor, bake, mips, pyramid, hizFirst, hizDown, firstLayout, downGroups,
             occlusion: gpu.buffer('instances', OCCLUSION_BYTES, uniform), viewport: gpu.buffer('instances', 16, uniform),
             sortGroup: group(sortLayout, [b.tally, b.meshes, b.args, b.bases, b.staged, b.lists]),
             renderGroup: group(renderLayout, [frame, b.lists, b.bases, b.models, [b.drawOf, 16]]),
@@ -470,7 +478,6 @@ export class Instances {
     draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {
         const r = this.resources;
         if (!r || !this.uploaded) return;
-        pass.setPipeline(r.mesh);
         pass.setBindGroup(1, r.emptyGroup);
         pass.setBindGroup(2, ground);
         pass.setVertexBuffer(0, r.vertices);
@@ -481,7 +488,10 @@ export class Instances {
         };
         // Nearer tiers first, so that they fill the depth before the farther ones shade. An impostor draw
         // without its layer draws the coarsest mesh (`aim`).
-        for (let t = 0; t < TIERS - 1; t++) this.specs.forEach((spec, m) => t < spec.tiers.length && indirect(m * TIERS + t));
+        for (let t = 0; t < TIERS - 1; t++) {
+            pass.setPipeline(t < WHOLE_TIERS ? r.whole : r.mesh);
+            this.specs.forEach((spec, m) => t < spec.tiers.length && indirect(m * TIERS + t));
+        }
         this.specs.forEach((spec, m) => spec.impostor && !this.atlas.has(m) && indirect(m * TIERS + spec.tiers.length));
         if (!this.atlas.size) return;
         pass.setPipeline(r.impostor);

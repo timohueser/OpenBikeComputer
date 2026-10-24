@@ -160,6 +160,17 @@ fn mesh_fragment(in: MeshOut) -> @location(0) vec4f {
     if (!kept(in.clip.xy, in.look)) {
         discard;
     }
+    return mesh_lit(in);
+}
+
+// The near tiers, whose instances are whole (WHOLE_TIERS of instances.ts): without a discard, a tiled
+// GPU hides what they cover before it shades it.
+@fragment
+fn mesh_fragment_whole(in: MeshOut) -> @location(0) vec4f {
+    return mesh_lit(in);
+}
+
+fn mesh_lit(in: MeshOut) -> vec4f {
     let n = normalize(in.normal);
     return vec4f(in.fog * light_up(in.albedo, n, 1.0, 1.0, look.horizon.w) + in.air, 1.0);
 }
