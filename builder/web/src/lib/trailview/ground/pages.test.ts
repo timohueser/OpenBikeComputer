@@ -72,6 +72,23 @@ describe('the ground pages', () => {
         expect(pages.pages.get('10/536/360')?.date).toBe(pages.date);
     });
 
+    it('load pages with coarser snow again with their own once every kept page has content', async () => {
+        const asked: string[] = [];
+        const source: GroundTiles = {
+            async pages(z, x, y, _quarters, _date, _world, fine) {
+                asked.push(`${z}/${x}/${y}${fine ? ' fine' : ''}`);
+                return { pages: [page(), page(), page(), page()], complete: true, coarse: !fine };
+            },
+        };
+        const pages = new GroundPages(source, 32, 14, [0.5], 0, () => {});
+        pages.setDate('2026-08-15');
+        await settle(pages, row(8580, 8));
+        const first = asked.filter(tile => !tile.endsWith(' fine'));
+        expect(first).toContain('13/4293/2885');
+        expect(asked).toEqual([...first, ...first.map(tile => `${tile} fine`)]);
+        expect([...pages.pages.values()].some(slot => slot.coarse)).toBe(false);
+    });
+
     it('keep the openness refreshes that a frame has no room for', async () => {
         const pages = new GroundPages(tiles(), 32, 14, [0.5], 0, () => {});
         pages.setDate('2026-08-15');

@@ -19,14 +19,15 @@ const RETRY_MS = 2000, RETRY_MAX_MS = 60_000;
 /** The look at the eye blends the regions at the nodes of this level about it (0.84 km at 47°), with a tent weight of this reach in nodes. */
 const LOOK_LEVEL = 15, LOOK_REACH = 3;
 
-/** The four pages of a material tile, null where it has no ground; not complete when a layer failed to load. */
-export interface GroundResult { pages: (GroundPage | null)[]; complete: boolean }
+/** The four pages of a material tile, null where it has no ground; not complete when a layer failed to load; coarse when their snow is one level coarser. */
+export interface GroundResult { pages: (GroundPage | null)[]; complete: boolean; coarse?: boolean }
 
 /** The ground pages of material tile z/x/y on a date. */
 export interface GroundTiles {
     /** The coarsest level whose pages carry the satellite colour. */
     readonly coloured?: number;
-    pages(z: number, x: number, y: number, quarters: [number, number], date: GroundDate, world: number): Promise<GroundResult>;
+    /** `fine`: the pages wait for their own snow instead of taking a coarser tile. */
+    pages(z: number, x: number, y: number, quarters: [number, number], date: GroundDate, world: number, fine?: boolean): Promise<GroundResult>;
 }
 
 export interface Slot {
@@ -40,6 +41,8 @@ export interface Slot {
     regions?: Uint8Array;
     /** A layer of the content failed to load: the page loads again after its tile's wait. */
     partial?: boolean;
+    /** The snow is one level coarser: the page loads again with its own once every kept page has content. */
+    coarse?: boolean;
 }
 
 /** The GPU work of a frame. */
@@ -59,7 +62,9 @@ export interface GroundWork {
  * needed pages, and their cover draws in their place. A page takes its slot when its content
  * arrives, so the page it replaces draws until then. A node finer than the ground draws the ground
  * of its ancestor. A tile that has no ground stays out for the page's life; a tile that fails to
- * load, or loads without a layer, loads again after a wait that grows with each failure.
+ * load, or loads without a layer, loads again after a wait that grows with each failure. A page
+ * with coarser snow loads again with its own once every kept page has content, so the first view
+ * waits for one snow tile per material tile instead of four.
  */
 export class GroundPages {
     wanted = 0;
@@ -79,7 +84,7 @@ export class GroundPages {
     private loads = 0;
     /** Material tiles of the date in flight, or whose pages wait in `arrivals`, with the pages that wait. */
     private readonly loading = new Map<string, number>();
-    private arrivals: { node: Node; page: GroundPage; date: number; partial: boolean }[] = [];
+    private arrivals: { node: Node; page: GroundPage; date: number; partial: boolean; coarse: boolean }[] = [];
     private readonly refresh = new Set<Slot>();
     /** Wanted pages without the content of the date. */
     private missing = 0;
@@ -155,23 +160,30 @@ export class GroundPages {
         // Every kept page is used before the first allocation, so none leaves for a later one of this frame.
         this.kept = new Set(kept.map(key));
         this.reads = [...new Map(kept.flatMap(node => reliefReads(node, this.finest)).map(node => [key(node), node])).values()];
+        const coarse: Node[] = [];
         for (const node of kept) {
             const page = this.pages.get(key(node));
             if (page) page.used = this.frame;
             // A tile that waits after a failure is not missing: its timer wakes the next load.
-            if ((page?.date !== this.date || page.partial) && !this.waits(node)) {
+            if (this.waits(node)) continue;
+            if (page?.date !== this.date || page.partial) {
                 this.missing++;
                 this.load(node);
+            } else if (page.coarse) {
+                this.missing++;
+                coarse.push(node);
             }
         }
+        if (coarse.length === this.missing) for (const node of coarse) this.load(node, true);
         while (work.uploads.length < ARRIVALS && this.arrivals.length) {
-            const { node, page: data, date, partial } = this.arrivals.shift()!;
+            const { node, page: data, date, partial, coarse } = this.arrivals.shift()!;
             this.settle(tileOf(node, date));
             if (date !== this.date || !this.kept.has(key(node))) continue;
             const page = this.pages.get(key(node)) ?? this.allocate(node);
             if (!page) continue;
             page.date = date;
             page.partial = partial;
+            page.coarse = coarse;
             page.regions ??= new Uint8Array(PAGE * PAGE);
             for (let i = 0; i < PAGE * PAGE; i++) page.regions[i] = data.cells[4 * i + 2];
             this.refresh.delete(page);
@@ -241,18 +253,18 @@ export class GroundPages {
         return undefined;
     }
 
-    /** Requests the four pages of the material tile of a node, on the current date. */
-    private load(node: Node): void {
+    /** Requests the four pages of the material tile of a node, on the current date; `fine` with their own snow. */
+    private load(node: Node, fine = false): void {
         const z = node.level - 1, x = node.x >> 1, y = node.y >> 1, name = tileOf(node, this.date);
         if (!this.source || this.loading.has(name) || this.loads >= LOADS) return;
         const date = this.date, { quarters, weight, snowIndex } = this.today;
         const quarter = (q: number) => ({ level: z + 1, x: 2 * x + (q & 1), y: 2 * y + (q >> 1) });
         this.loads++;
         this.loading.set(name, 1);
-        this.source.pages(z, x, y, quarters, { weight, snowIndex, shares: this.shares }, this.world).then(({ pages, complete }) => {
+        this.source.pages(z, x, y, quarters, { weight, snowIndex, shares: this.shares }, this.world, fine).then(({ pages, complete, coarse = false }) => {
             pages.forEach((page, q) => {
                 if (!page) return this.absent.add(key(quarter(q)));
-                this.arrivals.push({ node: quarter(q), page, date, partial: !complete });
+                this.arrivals.push({ node: quarter(q), page, date, partial: !complete, coarse });
                 this.loading.set(name, this.loading.get(name)! + 1);
             });
             if (complete) this.failures.delete(`${z}/${x}/${y}`);
