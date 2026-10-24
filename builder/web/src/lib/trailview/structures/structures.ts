@@ -94,15 +94,18 @@ export class Structures {
     private anchorWords = new Uint32Array(0);
     /** The models on the surface of the kinds of the drawn nodes, a list per node. */
     points: Uint32Array[] = [];
-    private drawn = '';
+    /** The meshes of the drawn owners, and whether each is near: the last frame's, to compare. */
+    private drawn: { meshes: NodeMeshes; near: boolean }[] = [];
+    /** The anchored meshes of the frame whose anchors did not fit. */
+    private unanchored = 0;
     /** Whether the anchors of the frame are not on the GPU yet. */
     private fresh = false;
 
     constructor(private readonly stamps: Stamps) {}
 
-    /** The meshes of the last frame that did not fit in the pools. */
+    /** The meshes of the last frame that did not fit in the pools, or whose anchors did not fit. */
     get dropped(): number {
-        return (this.resources?.structures.dropped ?? 0) + (this.resources?.anchored.dropped ?? 0);
+        return (this.resources?.structures.dropped ?? 0) + (this.resources?.anchored.dropped ?? 0) + this.unanchored;
     }
 
     async attach(gpu: Gpu, frame: GPUBuffer, surfaceLayout: GPUBindGroupLayout, groundLayout: GPUBindGroupLayout, featureLayout: GPUBindGroupLayout, format: GPUTextureFormat, depthFormat: GPUTextureFormat): Promise<void> {
@@ -146,17 +149,17 @@ export class Structures {
                 compute: { module, entryPoint: 'anchor_heights' },
             }),
         ]);
-        const pool = (vertexBytes: number, indexBytes: number, stride: number) =>
-            new Pool(device, gpu.buffer('structures', vertexBytes, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), gpu.buffer('structures', indexBytes, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST), stride);
-        this.drawn = '';
+        const pool = (label: string, vertexBytes: number, indexBytes: number, stride: number) =>
+            new Pool(device, gpu.buffer(label, vertexBytes, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), gpu.buffer(label, indexBytes, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST), stride);
+        this.drawn = [];
         this.fresh = true;
         this.resources = {
             device, pipeline, anchoredPipeline, heightsPipeline, anchors, count,
             group: device.createBindGroup({ layout, entries: [[0, frame], [1, anchors], [4, heights]].map(([binding, buffer]) => ({ binding: binding as number, resource: { buffer: buffer as GPUBuffer } })) }),
             emptyGroup: device.createBindGroup({ layout: empty, entries: [] }),
             computeGroup: device.createBindGroup({ layout: computeLayout, entries: [frame, anchors, heights, count].map((buffer, binding) => ({ binding, resource: { buffer } })) }),
-            structures: pool(VERTEX_BYTES, INDEX_BYTES, STRUCTURE_VERTEX),
-            anchored: pool(ANCHORED_BYTES, ANCHORED_INDEX_BYTES, ANCHORED_VERTEX),
+            structures: pool('structures', VERTEX_BYTES, INDEX_BYTES, STRUCTURE_VERTEX),
+            anchored: pool('kinds', ANCHORED_BYTES, ANCHORED_INDEX_BYTES, ANCHORED_VERTEX),
         };
     }
 
@@ -168,24 +171,34 @@ export class Structures {
             const node = { level: OWNER, x: x >> (level - OWNER), y: y >> (level - OWNER) }, name = key(node);
             owners.set(name, { node, near: owners.get(name)?.near || level >= NEAR_LEVEL });
         }
-        const names: string[] = [], words: Uint32Array[] = [];
+        const now: { meshes: NodeMeshes; near: boolean }[] = [];
+        for (const { node, near } of owners.values()) {
+            const meshes = this.stamps.get(node)?.meshes;
+            if (meshes) now.push({ meshes, near });
+        }
+        if (now.length === this.drawn.length && now.every((o, i) => o.meshes === this.drawn[i].meshes && o.near === this.drawn[i].near)) return false;
+        this.drawn = now;
+        this.fresh = true;
+        const words: Uint32Array[] = [];
         let anchor = 0;
         this.draws = [];
         this.hung = [];
         this.points = [];
-        for (const [name, { node, near }] of owners) {
-            const meshes: NodeMeshes | null | undefined = this.stamps.get(node)?.meshes;
-            if (!meshes) continue;
+        this.unanchored = 0;
+        for (const { meshes, near } of now) {
             const parts = near ? [meshes.far, meshes.near] : [meshes.far];
-            if (meshes.points) this.points.push(meshes.points);
+            // The models on the surface reach no farther than the near meshes.
+            if (near && meshes.points) this.points.push(meshes.points);
             for (const { structures } of parts) if (structures) this.draws.push(structures);
-            const count = (meshes.anchors?.byteLength ?? 0) / (ANCHOR_WORDS * 4);
-            if (meshes.anchors && anchor + count <= ANCHORS) {
-                for (const { anchored } of parts) if (anchored) this.hung.push({ mesh: anchored, anchor });
-                words.push(new Uint32Array(meshes.anchors));
-                anchor += count;
+            const count = (meshes.anchors?.byteLength ?? 0) / (ANCHOR_WORDS * 4), hung = parts.map(({ anchored }) => anchored).filter(mesh => mesh !== null);
+            if (!meshes.anchors) continue;
+            if (anchor + count > ANCHORS) {
+                this.unanchored += hung.length;
+                continue;
             }
-            names.push(`${name}${near ? '+' : ''}`);
+            for (const mesh of hung) this.hung.push({ mesh, anchor });
+            words.push(new Uint32Array(meshes.anchors));
+            anchor += count;
         }
         this.anchorWords = new Uint32Array(anchor * ANCHOR_WORDS);
         let at = 0;
@@ -193,10 +206,6 @@ export class Structures {
             this.anchorWords.set(list, at);
             at += list.length;
         }
-        const now = names.join(' ');
-        if (now === this.drawn) return false;
-        this.drawn = now;
-        this.fresh = true;
         return true;
     }
 
