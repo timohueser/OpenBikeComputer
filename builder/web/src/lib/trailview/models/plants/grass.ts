@@ -2,8 +2,8 @@ import type { Plant } from '../plant-library';
 import { blade, byHeight, merge, paint, ramp, random, type Geometry, type Ramp, type Vec } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
-/** The grass's colours, root to tip, by season; the blades (blades.ts) take them too. */
-export const GRASS: Record<Season, Ramp> = {
+/** The grass's colours, root to tip, by season. */
+const GRASS: Record<Season, Ramp> = {
     winter: ['#6e6a4c', '#9a9168', '#c2b88c'],
     spring: ['#4f7a35', '#7fae4a', '#b4d36e'],
     summer: ['#557a34', '#86a84a', '#c2c46a'],

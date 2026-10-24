@@ -11,13 +11,11 @@
 
 struct Plants {
     // Per grid the first world cell of its window and its cells a side (0: no dispatch): the ground
-    // plants, the shrubs, and the blades with the model of their patch in w.
+    // plants and the shrubs.
     ground: vec4i,
     shrubs: vec4i,
-    blades: vec4i,
-    // x: the first model of the plant that the blades stand for within BLADES_M, or NO_PLANT. y: the
-    // eye's height above the ground in metres (bits of an f32).
-    sward: vec4u,
+    // The eye's height above the ground in metres.
+    above: f32,
 }
 
 // Per material code (4 to a vec4) its cover, as COVER_ORDER of ground/rules.ts, and MOOR at bit 8.
@@ -34,20 +32,15 @@ struct Data {
 @group(0) @binding(8) var<storage, read> data: Data;
 @group(0) @binding(9) var<uniform> plants: Plants;
 
-// Units along a cell of the ground plants' grid, the shrubs' grid and the blades' grid: 0.8 m, 6.5 m
-// and 0.33 m at 47° N.
+// Units along a cell of the ground plants' grid and the shrubs' grid: 0.8 m and 6.5 m at 47° N.
 const GROUND_UNITS: i32 = 32;
 const SHRUB_UNITS: i32 = 256;
-const BLADE_UNITS: i32 = 13;
 // The reaches, and the ways over which the ground plants and the shrubs thin out before them.
 const GROUND_M: f32 = 60.0;
 const GROUND_EDGE_M: f32 = 10.0;
 const SHRUB_M: f32 = 500.0;
 const SHRUB_EDGE_M: f32 = 60.0;
 const FULL_M: f32 = 20.0;
-// The blades thin out over the last BLEND_M of BLADES_M, as the tufts of their plant come in.
-const BLADES_M: f32 = 30.0;
-const BLEND_M: f32 = 6.0;
 // A plant grows from nothing over this share of its keep (grown).
 const GROW: f32 = 0.15;
 // The eye stands clear of each ground plant by CLEAR_M plus up to CLEAR_SPREAD_M by its hash, and of
@@ -108,7 +101,7 @@ fn grid_point(cell: vec2i, units: i32) -> vec2i {
 
 // Metres from the eye to a point of LOD space on the ground about the eye's own.
 fn reach_of(s: vec2f) -> f32 {
-    return length(vec3f(s, bitcast<f32>(plants.sward.y)));
+    return length(vec3f(s, plants.above));
 }
 
 @compute @workgroup_size(8, 8)
@@ -125,7 +118,7 @@ fn ground_plants(@builtin(global_invocation_id) id: vec3u) {
     }
     // Past FULL_M a share of the plants stands, a little larger: from afar the count shows less than the cost.
     let thin = select(max(0.3, FULL_M / d), 1.0, d < FULL_M);
-    var size = grown(thin * smoothstep(GROUND_M, GROUND_M - GROUND_EDGE_M, d), plant_hash(cell, 3u));
+    let size = grown(thin * smoothstep(GROUND_M, GROUND_M - GROUND_EDGE_M, d), plant_hash(cell, 3u));
     if (size <= 0.0) {
         return;
     }
@@ -167,13 +160,6 @@ fn ground_plants(@builtin(global_invocation_id) id: vec3u) {
     // Snow covers the share of the ground plants that it lies on.
     if (pick == NO_PLANT || plant_hash(cell, 7u) < snow_at(s) || on_road(s, 0.3)) {
         return;
-    }
-    // Where the blades stand for this plant, its tufts come in as the blades thin out.
-    if (pick == plants.sward.x) {
-        size *= grown(clamp((d - BLADES_M + BLEND_M) / BLEND_M, 0.0, 1.0), plant_hash(cell, 9u));
-        if (size <= 0.0) {
-            return;
-        }
     }
     let h = stand_height(s, u);
     if (!known(h)) {
@@ -257,36 +243,4 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
     }
     let yaw = 6.2831853 * plant_hash(cell, 5u);
     emit_tree(model, render_at(s, h), height, yaw, 1.0, 0.88 + 0.24 * plant_hash(cell, 6u), 1.0, 0.0, stood.y, pick_of(yaw, height), snow_at(s), ground_albedo(t));
-}
-
-// The near sward: a patch of blades on a grid of 0.33 m within BLADES_M, on grass and crops off the
-// moor, where the blades stand for the plant `sward`.
-@compute @workgroup_size(8, 8)
-fn blades(@builtin(global_invocation_id) id: vec3u) {
-    if (any(id.xy >= vec2u(u32(plants.blades.z)))) {
-        return;
-    }
-    let cell = plants.blades.xy + vec2i(id.xy);
-    let u = grid_point(cell, BLADE_UNITS);
-    let s = lod_space(vec2f(u - surface.anchor));
-    let d = reach_of(s);
-    let size = grown(clamp((BLADES_M - d) / BLEND_M, 0.0, 1.0), plant_hash(cell, 3u));
-    if (size <= 0.0 || d < CLEAR_M * plant_hash(cell, 8u) || !roughly_visible(s, length(s))) {
-        return;
-    }
-    let t = finest_texel(s);
-    if (t.z < 0) {
-        return;
-    }
-    let cover = cover_of(textureLoad(cells, t.xy, t.z, 0).r);
-    if (((cover & 255u) != COVER_GRASS && (cover & 255u) != COVER_CROP) || (cover & MOOR) != 0u || plant_hash(cell, 7u) < snow_at(s) || on_road(s, 0.2)) {
-        return;
-    }
-    let h = stand_height(s, u);
-    if (!known(h)) {
-        return;
-    }
-    let height = (0.25 + 0.15 * plant_hash(cell, 4u)) * size;
-    let yaw = 6.2831853 * plant_hash(cell, 5u);
-    emit_tree(u32(plants.blades.w), render_at(s, h), height, yaw, 1.0, 0.85 + 0.3 * plant_hash(cell, 6u), 1.0, 0.0, 0.0, pick_of(yaw, height), 0.0, ground_albedo(t));
 }
