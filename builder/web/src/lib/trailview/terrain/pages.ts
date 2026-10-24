@@ -118,6 +118,8 @@ export class Pages {
     private readonly refresh = new Set<Page>();
     /** The tiles that the frame's pages wait for, by name: the frame starts the most needed of them. */
     private readonly wishes = new Map<string, Node>();
+    /** The pages that the frame draws or synthesizes from, by name: an arrival among them evicts none of them. */
+    private readonly needs = new Set<string>();
     private frame = 0;
     /** Tile loads and decodes in flight. */
     loads = 0;
@@ -179,14 +181,14 @@ export class Pages {
         }
         const holders = this.holders(wanted, anchor);
         this.wishes.clear();
+        this.needs.clear();
         for (const node of wanted) this.want(node, work, holders);
         this.start(anchor);
-        const keys = new Set(wanted.map(key));
         while (work.uploads.length + work.syntheses.length < ARRIVALS && this.arrivals.length) {
             const { node, data } = this.arrivals.shift()!;
             const tile = `${node.level - 1}/${node.x >> 1}/${node.y >> 1}`, heights: [number, number] = [data.min - summit(node.level), data.max + summit(node.level)];
             this.queued.set(tile, this.queued.get(tile)! - 1);
-            const page = this.pages.get(key(node)) ?? this.allocate(node, 'stored', heights, keys.has(key(node)));
+            const page = this.pages.get(key(node)) ?? this.allocate(node, 'stored', heights, this.needs.has(key(node)));
             if (!page || page.ready) continue;
             page.range = heights;
             page.complete = data.complete;
@@ -243,7 +245,7 @@ export class Pages {
         if (stored !== 'no') {
             this.wanted.stored++;
             this.missing++;
-            this.load(node.level - 1, node.x >> 1, node.y >> 1);
+            this.load(node);
             return;
         }
         const ancestor = this.storedAncestor(node);
@@ -260,7 +262,7 @@ export class Pages {
         });
         const ready = inputs.every(({ near, page }) => {
             if (page?.ready || this.stored(near) === 'no') return true;
-            if (!page) this.load(near.level - 1, near.x >> 1, near.y >> 1);
+            if (!page) this.load(near);
             return false;
         });
         if (!ready) return;
@@ -368,7 +370,7 @@ export class Pages {
             const page = this.pages.get(key(parent));
             if (page) page.used = this.frame;
             if (state === 'yes' && page?.ready) return parent;
-            this.load(level - 1, x >> 1, y >> 1);
+            this.load(parent);
             return 'wait';
         }
         return undefined;
@@ -390,24 +392,27 @@ export class Pages {
         return this.around(node).flatMap(near => this.pages.get(key(near)) ?? []).filter(page => page.node !== node);
     }
 
-    /** A tile that a page waits for: the frame loads it if it is among the most needed. */
-    private load(z: number, x: number, y: number): void {
-        const name = `${z}/${x}/${y}`, tile = this.tiles.get(name);
-        if ((tile && tile.state !== 'done') || this.queued.get(name)) return;
-        this.wishes.set(name, { level: z, x, y });
+    /** A stored page that the frame needs: the frame loads its tile if it is among the most needed. */
+    private load(node: Node): void {
+        this.needs.add(key(node));
+        const tile: Node = { level: node.level - 1, x: node.x >> 1, y: node.y >> 1 }, name = key(tile), state = this.tiles.get(name)?.state;
+        if ((state && state !== 'done') || this.queued.get(name)) return;
+        this.wishes.set(name, tile);
     }
 
     /**
-     * Starts the wished tiles nearest first in tile sizes, coarse first among the tiles under the eye.
+     * Starts the wished tiles nearest first in tile sizes, coarse first among the tiles under the eye,
+     * so the level-1 pages under the eye load first.
      * The screen error of the coarser page that draws in a tile's place grows with the tile's size over
      * its distance, so the fine tile under the eye goes before the coarser tiles away from it, and the
-     * coarse cover, a few levels above the drawn nodes, still goes first. Level by level, the near field
-     * would wait for every coarser tile of the view.
+     * coarse cover tiles take turns with the near field. Level by level, the near field would wait for
+     * every coarser tile of the view.
      */
     private start(anchor: Anchor): void {
+        if (this.loads >= LOADS) return;
         const view = (tile: Node) => distances({ anchor, above: 0 }, tile)[0] / (size(tile.level) * anchor.unit);
         const order = [...this.wishes.values()].map(tile => ({ tile, view: view(tile) })).sort((a, b) => a.view - b.view || a.tile.level - b.tile.level);
-        for (const { tile } of order.slice(0, Math.max(0, LOADS - this.loads))) this.fetch(tile.level, tile.x, tile.y);
+        for (const { tile } of order.slice(0, LOADS - this.loads)) this.fetch(tile.level, tile.x, tile.y);
     }
 
     /** Requests a stored tile, or decodes its kept body again. */
@@ -454,17 +459,17 @@ export class Pages {
 
     /**
      * A slot for a page: a free one, or the one that the frames wanted longest ago. None when this
-     * frame wants them all: a shortage when the frame wants the new page too.
+     * frame wants them all: a shortage when the frame needs the new page too.
      */
-    private allocate(node: Node, kind: Kind, heights: [number, number], wanted: boolean): Page | undefined {
+    private allocate(node: Node, kind: Kind, heights: [number, number], needed: boolean): Page | undefined {
         const slot = this.slot(kind);
         if (slot === undefined) {
-            if (wanted) this.shortage++;
+            if (needed) this.shortage++;
             return undefined;
         }
         // A synthesized page reads its stored ancestors only, and `heights` holds all that they draw.
-        // A page that the frame does not want counts as used a frame ago: a wanted arrival of the frame can take its slot.
-        const page: Page = { node, kind, slot, used: wanted ? this.frame : this.frame - 1, range: heights, complete: true, ready: false };
+        // A page that the frame does not need counts as used a frame ago: a needed arrival of the frame can take its slot.
+        const page: Page = { node, kind, slot, used: needed ? this.frame : this.frame - 1, range: heights, complete: true, ready: false };
         this.pages.set(key(node), page);
         return page;
     }

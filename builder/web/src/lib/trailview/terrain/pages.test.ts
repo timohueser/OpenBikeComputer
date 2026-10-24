@@ -121,6 +121,16 @@ describe('the page pools', () => {
         expect(around.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
         expect(pages.shortage).toBe(1);
     });
+
+    it('keep the inputs of a synthesis that arrive together in a pool that just holds them', async () => {
+        const [w, n] = worldPixel([7.6, 47.25], UNITS), [e, s] = worldPixel([8.95, 46.46], UNITS);
+        const at = (level: number) => ({ level, x: Math.floor((anchor.whole[0] + anchor.part[0]) / size(level)), y: Math.floor((anchor.whole[1] + anchor.part[1]) / size(level)) });
+        // The synthesis reads the stored page of level 13 and its eight neighbours, which no frame wants.
+        const pages = new Pages(source(), { stored: 9, synth: 1 }, [w, n, e, s], () => {});
+        const works = await settle(pages, [at(14)], 100);
+        expect(works.flatMap(work => work.syntheses).map(({ page }) => key(page.node))).toEqual([key(at(14))]);
+        expect(pages.idle).toBe(true);
+    });
 });
 
 describe('the stamps', () => {
