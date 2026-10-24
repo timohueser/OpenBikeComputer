@@ -11,8 +11,6 @@ export const LABS: Record<string, readonly string[]> = {
     thin: ['600', '300'],
     atlas: ['32', '16'],
     meshes: ['700', '400'],
-    // The share of the canopy's trees that stand, in per cent; the owner picks it by eye.
-    density: ['70', '100', '90', '80', '60', '50'],
 };
 
 export type Labs = Record<string, string>;

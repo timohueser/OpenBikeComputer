@@ -10,6 +10,8 @@ import { TREE_REACH_M, type TreeModels } from './tree-models';
 
 /** Past this many metres the trees thin with the distance; cells of 2^k × 2^k base cells start at 2^k times it. */
 const THIN_M = 600;
+/** The share of the canopy's trees that stand: the owner's choice by eye. A lower share takes the last points of each cell and moves no other tree. */
+const DENSITY = 0.5;
 /** Units along a cell edge, as CELL in forest.wgsl, and blue-noise points per cell. */
 const CELL = 2048, POINTS = 512;
 /** Tree species per region, as tools/trailview/rules.py checks. */
@@ -53,7 +55,7 @@ export class Forest implements Producer {
     /** Whether the last update changed what the forest draws, other than by the camera. */
     newContent = false;
 
-    constructor(config: PlannerConfig, rules: Rules, trees: TreeModels, private readonly instances: Instances, wake: () => void, private readonly thin = THIN_M, private readonly density = 1) {
+    constructor(config: PlannerConfig, rules: Rules, trees: TreeModels, private readonly instances: Instances, wake: () => void, private readonly thin = THIN_M) {
         this.reach = trees.reach;
         instances.produce(this);
         this.canopy = new Canopy(config, wake);
@@ -128,7 +130,7 @@ export class Forest implements Producer {
         new Uint32Array(params).set([this.side, POINTS], 2);
         floats.set([this.reach, this.thin], 4);
         new Uint32Array(params)[6] = this.orchard;
-        floats[7] = this.density;
+        floats[7] = DENSITY;
         floats.set(STEMS_HA.map(n => n / 1e4), 8);
         new Uint32Array(params).set(listParts(this.most), 16);
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
