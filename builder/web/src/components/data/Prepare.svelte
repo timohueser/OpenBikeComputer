@@ -1,31 +1,44 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import contentLanguages from "../../../../../specs/content-languages.json";
+    import { boundsOf, nameOf, parseBox, type Areas } from "../../lib/data/areas";
     import { command } from "../../lib/data/cli";
     import { CliQuery } from "../../lib/data/query.svelte";
-    import { list, size, span, when, type Started, type Target } from "../../lib/data/shapes";
-    import { family, type PrepareReview, type SourceRow } from "../../lib/data/sources";
+    import { prepareHash, type BakeRoute } from "../../lib/data/screens";
+    import { list, size, span, type Started, type Target } from "../../lib/data/shapes";
+    import { family, FAMILIES, type PrepareReview, type SourceRow } from "../../lib/data/sources";
     import Action from "./Action.svelte";
+    import BakeArea from "./BakeArea.svelte";
     import Failure from "./Failure.svelte";
 
-    // With `rows`: the versions of a prepared source on each target, or the chips of a family, such as
-    // `terrain-reference`. With `to`: the review of a new version for that target, and its Start,
-    // which waits for `kind`, the kind of that target.
-    let { id, rows = [], to, kind = null, region = "" }: { id: string; rows?: SourceRow[]; to?: string; kind?: Target["kind"] | null; region?: string } = $props();
+    // The review of a new version of reference `id` on target `to`, and its Start. Wiki and a version
+    // for this computer cover an area; R2 holds all of a terrain or forest member.
+    let {
+        id,
+        row,
+        to,
+        area,
+        targets,
+        areas,
+    }: { id: string; row: SourceRow | null; to: string; area: BakeRoute["area"]; targets: Target[]; areas: Areas | null } = $props();
 
-    // svelte-ignore state_referenced_locally
-    let area = $state(region);
-    let worldwide = $state(false);
+    const kind = $derived(targets.find((at) => at.target === to)?.kind ?? null);
+    const wiki = $derived(id === "wiki");
+    const title = $derived(FAMILIES.find((at) => at.family === family(id))?.title ?? id);
+    let whole = $state(false);
     let languages = $state(contentLanguages.map(([code]) => code));
     const languageName = new Intl.DisplayNames(["en"], { type: "language" });
     // Only `wiki` publishes a region to `prod`; the other producers prepare all of it there.
-    const scoped = $derived(id === "wiki" || (to !== undefined && to !== "prod"));
+    const scoped = $derived(wiki || to !== "prod");
+    const covered = $derived(scoped && !whole && area);
     const args = $derived([
-        "source", "prepare", id, "--to", to ?? "prod",
-        ...(scoped && !worldwide ? ["--region", area.trim()] : []),
-        ...(id === "wiki" ? ["--languages", languages.join(",")] : []),
+        "source", "prepare", id, "--to", to,
+        ...(covered ? [area!.flag, area!.value] : []),
+        ...(wiki ? ["--languages", languages.join(",")] : []),
         "--dry-run",
     ]);
+    const bounds = $derived(area ? (area.flag === "--box" ? parseBox(area.value) : areas && boundsOf(area.value, areas)) : null);
+    const extent = $derived(row?.extent ? [{ west: row.extent[0], south: row.extent[1], east: row.extent[2], north: row.extent[3] }] : []);
     let query = $state<CliQuery<PrepareReview> | null>(null);
     // A changed selection cannot start an earlier review, including a response still in flight.
     const review = $derived(query?.args.join("\0") === args.join("\0") ? query : null);
@@ -33,163 +46,167 @@
         query = new CliQuery<PrepareReview>(args);
         void query.refresh();
     }
-    onMount(() => { if (to && !scoped) inspect(); });
+    onMount(() => {
+        if (!scoped) inspect();
+    });
     const start = $derived(review?.output ? [...review.output.args, ...(kind === "r2" ? ["--yes"] : [])] : []);
-    const names = $derived([...new Set(rows.flatMap((row) => Object.keys(row.prepared)))]);
-    let target = $state("prod");
-    function chip(row: SourceRow, name: string): string {
-        const on = row.prepared[name];
-        if (on?.error) return "cannot be read";
-        if (on?.lock) return on.lock.died || on.lock.stale ? `lock left on ${on.lock.machine}` : `preparing on ${on.lock.machine}`;
-        return on?.versions.length ? `prepared ${on.versions.at(-1)!.version}` : "not prepared";
-    }
+    const where = (target: string) => (targets.find((at) => at.target === target)?.kind ?? (target === "prod" ? "r2" : "dir")) === "r2";
 </script>
 
-{#if to}
-    <h1>Prepare {id} for {to}</h1>
-    <a href="#/sources/{encodeURIComponent(id)}">Back to {id}</a>
-    {#if scoped}
-        <form class="card options" onsubmit={(event) => { event.preventDefault(); inspect(); }}>
-            <h2>{id === "wiki" ? "Coverage and languages" : "Coverage"}</h2>
-            <label><input type="checkbox" bind:checked={worldwide} /> {id === "wiki" ? "Worldwide" : `All of ${id}`}</label>
-            {#if !worldwide}
-                <label>Region or Geofabrik area <input required bind:value={area} placeholder="europe/dach" /></label>
-            {/if}
-            {#if id === "wiki"}
-                <fieldset>
-                    <legend>Article languages</legend>
-                    {#each contentLanguages as [code] (code)}
-                        <label><input type="checkbox" bind:group={languages} value={code} /> {languageName.of(code)}</label>
-                    {/each}
-                </fieldset>
-                <p class="soft">Photos are fetched only for selected subjects in this coverage. The selected language archives are worldwide inputs.</p>
-            {/if}
-            <code>{command(args)}</code>
-            <button type="submit" disabled={(id === "wiki" && !languages.length) || (!worldwide && !area.trim())}>Review preparation</button>
-        </form>
-    {/if}
-    {#if review?.error}<Failure error={review.error} />{/if}
-    {#if review?.output}
-        {@const r = review.output}
-        <section class="card review" aria-labelledby="prepare">
-            <h2 id="prepare">Review {r.id}: version {r.version} of {r.source}</h2>
-            {#if id === "wiki"}
-                <p><b>Coverage</b> · {r.scope?.region ?? "Worldwide"} · <b>Languages</b> · {list(r.languages.map((code) => languageName.of(code) ?? code))}</p>
-            {:else}
-                <p><b>Coverage</b> · {r.scope?.region ?? `all of ${r.source}`}</p>
-            {/if}
-            <h3>Inputs</h3>
-            <ul class="inputs">
-                {#each r.inputs as input}
-                    <li>
-                        <span>{input.params.find(([key]) => key === "file")?.[1] ?? `${input.source} ${input.version ?? "newest"}`}</span>
-                        <b>{input.bytes === null ? "Size unknown" : size(input.bytes)}{input.download_bytes === null ? "" : input.download_bytes === 0 ? " · Cached" : " · To download"}</b>
-                    </li>
-                {/each}
-            </ul>
-            {#if id === "wiki"}
-                <p><b>Download</b> · {size(r.inputs.reduce((total, input) => total + (input.download_bytes ?? 0), 0))}. Start downloads missing archives, then prepares the selected region. Interrupted downloads resume.</p>
-            {/if}
-            <p>
-                <b>Files</b> · {r.files === null ? "counted by the run" : `up to ${r.files}`}{r.publish_text === null
-                    ? ""
-                    : r.publish_text
-                      ? " · text published"
-                      : " · text kept local"}
-            </p>
-            <p>
-                <b>Cost</b> · {r.cost.wall_ms === null ? "time unknown" : `about ${span(r.cost.wall_ms)} here`} · store {size(r.cost.store_bytes)}{r.cost
-                    .upload_bytes === null
-                    ? ""
-                    : ` · upload ${size(r.cost.upload_bytes)}`}{r.cost.unknown.length ? ` · no size for ${list(r.cost.unknown)}` : ""}
-            </p>
-            <p><b>Peak memory</b> · {r.cost.peak_rss_bytes === null ? "unknown" : size(r.cost.peak_rss_bytes)} · <b>Upload</b> · {r.cost.upload_bytes === null ? "unknown" : size(r.cost.upload_bytes)}</p>
-            <p>
-                <b>This machine</b> · {#if r.machine.refusals.length}<span class="missing">cannot do it: {r.machine.refusals.join("; ")}</span
-                    >{:else}no known refusal{/if}
-            </p>
-            {#if r.abandoned}<p><b>Abandoned</b> · the stopped version {r.abandoned} does not resume.</p>{/if}
-            <p><b>When it finishes</b> · {list(r.stale.map((at) => `${at.target}: ${at.layers.length ? list(at.layers) : "nothing"} stale`))}</p>
-            {#if kind === "r2"}<p><b>Publishes version {r.version} of {r.source} to {to}, which serves riders.</b></p>{/if}
-            <Action
-                label="Start"
-                args={start}
-                disabled={!kind || !!r.machine.refusals.length}
-                ondone={(started: Started) => (location.hash = `#/runs/${started.run}`)}
-            />
-        </section>
-    {:else if review && !review.error}
-        <p class="soft">Reviewing the prepare…</p>
-    {/if}
-{:else}
-    <section class="card" aria-labelledby="versions">
-        <h2 id="versions">Prepared versions</h2>
-        {#each names as name (name)}
-            <div class="target">
-                <b>{name}</b>
-                {#if rows.length > 1 || rows[0]?.id !== id}
-                    <div class="title">
-                        {#each rows as row (row.id)}
-                            <a class="chip" href="#/sources/{encodeURIComponent(row.id)}">{row.id.slice(family(row.id).length + 1)} · {chip(row, name)}</a>
-                        {/each}
-                    </div>
-                {:else}
-                    {@const on = rows[0].prepared[name]}
-                    {@const serving = rows[0].targets[name]?.requests.map((request) => request.serving) ?? []}
-                    {#if on.error}<span class="missing">{on.error}</span>{/if}
-                    {#each on.versions as version (version.version)}
-                        <span>{version.version} · {size(version.bytes)} · complete {when(version.time)}{serving.includes(version.version) ? " · serves" : ""}</span>
-                    {:else}
-                        <span class="soft">no version</span>
-                    {/each}
-                    {#if on.lock?.died}
-                        <span class="missing">Run {on.lock.run} ended without freeing the lock. The next preparation takes it over.</span>
-                    {:else if on.lock?.stale}
-                        <span class="missing"
-                            >No heartbeat from run {on.lock.run} on {on.lock.machine} since {when(on.lock.heartbeat)}: it likely ended without freeing the
-                            lock. <code>{command(["unlock", name, "--source", id, "--from", on.lock.machine])}</code></span
-                        >
-                    {:else if on.lock}
-                        <span class="running">Preparing on {on.lock.machine}: run {on.lock.run}, phase {on.lock.phase}</span>
-                    {/if}
-                {/if}
-            </div>
-        {/each}
-        {#if rows.length === 1 && rows[0].id === id}
-            <form class="title" onsubmit={(event) => (event.preventDefault(), (location.hash = `#/sources/${encodeURIComponent(id)}/prepare?to=${target}`))}>
-                <label>Target <select bind:value={target}>{#each names as name (name)}<option value={name}>{name}</option>{/each}</select></label>
-                <button type="submit">Prepare a new version…</button>
-            </form>
-        {/if}
+<a href="#/references">All references</a>
+<div class="title">
+    <h1>Prepare {title}</h1>
+    {#if !wiki && row?.use}<span class="soft">{row.use}</span>{/if}
+</div>
+
+{#if targets.length}
+    <section class="card options" aria-labelledby="where">
+        <h2 id="where">Where it goes</h2>
+        <div class="where" role="radiogroup" aria-labelledby="where">
+            {#each targets as at (at.target)}
+                <button type="button" role="radio" aria-checked={at.target === to} onclick={() => (location.hash = prepareHash(id, at.target, area))}>
+                    <b>{at.kind === "r2" ? "On R2" : "On this computer only"}</b>
+                    <span>{at.kind === "r2" ? "Every bake can use it" : "Only the bakes here"}</span>
+                </button>
+            {/each}
+        </div>
     </section>
 {/if}
 
+{#if scoped}
+    <form class="card options" onsubmit={(event) => (event.preventDefault(), inspect())}>
+        <h2>{wiki ? "Coverage and languages" : "Coverage"}</h2>
+        <label><input type="checkbox" bind:checked={whole} /> {wiki ? "Worldwide" : "All of it"}</label>
+        {#if !whole}
+            <BakeArea {areas} chosen={area} {bounds} served={extent} choose={(next) => (location.hash = prepareHash(id, to, next))} />
+            <p class:soft={!!area} class:missing={!area}>{area ? `Covers ${area.flag === "--box" ? `the box ${area.value}` : nameOf(area.value, areas)}` : "Choose an area."}</p>
+        {/if}
+        {#if wiki}
+            <fieldset>
+                <legend>Article languages</legend>
+                {#each contentLanguages as [code] (code)}
+                    <label><input type="checkbox" bind:group={languages} value={code} /> {languageName.of(code)}</label>
+                {/each}
+            </fieldset>
+            <p class="soft">Photos come only for the subjects in this coverage. The language archives are worldwide downloads.</p>
+        {/if}
+        <button type="submit" class="primary" disabled={(wiki && !languages.length) || (!whole && !area)}>Review preparation</button>
+        <details class="terminal"><summary>In a terminal</summary><code>{command(args)}</code></details>
+    </form>
+{/if}
+
+{#if review?.error}<Failure error={review.error} />{/if}
+{#if review?.output}
+    {@const r = review.output}
+    <section class="card review" aria-labelledby="prepare">
+        <h2 id="prepare">Version {r.version}</h2>
+        <p>
+            <b>Coverage</b> · {r.scope ? nameOf(r.scope.region, areas) : wiki ? "Worldwide" : "All of it"}{#if wiki}
+                · <b>Languages</b> · {list(r.languages.map((code) => languageName.of(code) ?? code))}{/if}
+        </p>
+        <h3>Inputs</h3>
+        <ul class="inputs">
+            {#each r.inputs as input}
+                <li>
+                    <span>{input.params.find(([key]) => key === "file")?.[1] ?? `${input.source} ${input.version ?? "newest"}`}</span>
+                    <b>{input.bytes === null ? "Size unknown" : size(input.bytes)}{input.download_bytes === null ? "" : input.download_bytes === 0 ? " · Cached" : " · To download"}</b>
+                </li>
+            {/each}
+        </ul>
+        {#if wiki}
+            <p><b>Download</b> · {size(r.inputs.reduce((total, input) => total + (input.download_bytes ?? 0), 0))}. Start downloads missing archives, then prepares the selected region. Interrupted downloads resume.</p>
+        {/if}
+        <p>
+            <b>Files</b> · {r.files === null ? "counted by the run" : `up to ${r.files}`}{r.publish_text === null
+                ? ""
+                : r.publish_text
+                  ? " · text published"
+                  : " · text kept local"}
+        </p>
+        <p>
+            <b>Cost</b> · {r.cost.wall_ms === null ? "time unknown" : `about ${span(r.cost.wall_ms)} here`} · store {size(r.cost.store_bytes)}{r.cost.unknown.length
+                ? ` · no size for ${list(r.cost.unknown)}`
+                : ""}
+        </p>
+        <p><b>Peak memory</b> · {r.cost.peak_rss_bytes === null ? "unknown" : size(r.cost.peak_rss_bytes)} · <b>Upload</b> · {r.cost.upload_bytes === null ? "none" : size(r.cost.upload_bytes)}</p>
+        {#if r.machine.refusals.length}<p class="missing"><b>This machine cannot do it</b> · {r.machine.refusals.join("; ")}</p>{/if}
+        {#if r.abandoned}<p><b>Abandoned</b> · the stopped version {r.abandoned} does not resume.</p>{/if}
+        <p>
+            <b>When it finishes</b> · {list(r.stale.map((at) => `${where(at.target) ? "Production" : "This computer"}: ${at.layers.length ? list(at.layers) : "nothing"} to bake again`))}
+        </p>
+        {#if kind === "r2"}<p><b>Publishes version {r.version} to R2, where every bake can read it.</b></p>{/if}
+        <Action
+            label="Start"
+            args={start}
+            primary
+            folded
+            disabled={!kind || !!r.machine.refusals.length}
+            ondone={(started: Started) => (location.hash = `#/runs/${started.run}`)}
+        />
+    </section>
+{:else if review && !review.error}
+    <p class="soft">Reviewing the preparation…</p>
+{/if}
+
 <style>
-    .options { display: flex; flex-direction: column; gap: 12px; }
-    fieldset { display: flex; flex-wrap: wrap; gap: 16px; }
-    .options code { overflow-wrap: anywhere; }
-    .options input:not([type="checkbox"]) { margin-left: 8px; padding: 8px; font: inherit; }
-    .options button { align-self: flex-start; }
-
-    .inputs { padding-left: 20px; }
-    .inputs li { margin: 8px 0; overflow-wrap: anywhere; }
-    .inputs b { display: block; }
-
-    .review {
-        border: 2px solid var(--ink);
+    .options {
+        gap: 12px;
     }
-    .target {
+    .where {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .where button {
         display: flex;
         flex-direction: column;
-        gap: 4px;
-        padding: 8px 0;
-        border-bottom: 1px solid var(--line);
+        align-items: flex-start;
+        min-height: 56px;
+        padding: 8px 16px;
+        border-color: var(--line-strong);
+        font-weight: 400;
+        text-align: left;
     }
-    .chip {
-        padding: 2px 10px;
-        border: 1px solid var(--line-strong);
-        border-radius: 999px;
-        text-decoration: none;
-        color: inherit;
+    .where button span {
+        color: var(--ink-soft);
+        font-size: 13px;
+        line-height: 18px;
+    }
+    .where button[aria-checked="true"] {
+        border-color: var(--ink);
+        box-shadow: inset 0 0 0 1px var(--ink);
+    }
+    .where button:focus-visible {
+        outline: 2px solid var(--running);
+        outline-offset: 2px;
+    }
+    fieldset {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+    }
+    .options > button {
+        align-self: flex-start;
+    }
+    .terminal summary {
+        color: var(--ink-soft);
+        cursor: pointer;
+    }
+    .terminal code {
+        display: block;
+        margin-top: 8px;
+    }
+    .inputs {
+        padding-left: 20px;
+    }
+    .inputs li {
+        margin: 8px 0;
+        overflow-wrap: anywhere;
+    }
+    .inputs b {
+        display: block;
+    }
+    .review {
+        border: 2px solid var(--ink);
     }
 </style>
