@@ -65,9 +65,9 @@ impl Prepared for TerrainReference {
         scope: Option<&Scope>,
         _: &[String],
     ) -> Result<Plan, String> {
-        let bbox = scope.map(regions).transpose()?.and_then(|(parts, id)| parts.bounds(&id));
+        let (bbox, countries) = area(scope)?;
         let (mut inputs, mut tiles) = (Vec::new(), BTreeSet::new());
-        for model in models(planning.sources, bbox.as_ref()) {
+        for model in models(planning.sources, bbox.as_ref(), &countries) {
             let mut inside = extent_tiles(model)?;
             if let Some(bbox) = &bbox {
                 let held = box_tiles(bbox)?;
@@ -91,10 +91,10 @@ impl Prepared for TerrainReference {
             Some(scope) => Some(scope_tiles(job, &scope)?),
             None => None,
         };
-        let bbox = job.scope.as_ref().map(regions).transpose()?.and_then(|(parts, id)| parts.bounds(&id));
+        let (bbox, countries) = area(job.scope.as_ref())?;
         // The models of each tile, in the order of `data/sources.toml`.
         let mut keys: BTreeMap<CellId, Vec<String>> = BTreeMap::new();
-        for model in models(job.sources(), bbox.as_ref()) {
+        for model in models(job.sources(), bbox.as_ref(), &countries) {
             let mut tiles = extent_tiles(model)?;
             if !model.areas.is_empty() {
                 let mut inside = BTreeSet::new();
@@ -196,12 +196,26 @@ impl Prepared for TerrainReference {
     }
 }
 
-/// The national models of `sources` that may be given to others and that meet `bbox`, or all of them.
-fn models<'a>(sources: &'a [Source], bbox: Option<&'a Bbox>) -> impl Iterator<Item = &'a Source> {
+/// The box of the region of `scope` and its countries; none for a version of everything.
+fn area(scope: Option<&Scope>) -> Result<(Option<Bbox>, Vec<String>), String> {
+    let Some((regions, id)) = scope.map(regions).transpose()? else { return Ok((None, Vec::new())) };
+    let countries = regions.get(&id).map(|region| region.countries.clone()).unwrap_or_default();
+    Ok((regions.bounds(&id), countries))
+}
+
+/// The national models of `sources` that may be given to others, that meet `bbox`, and that are
+/// of one of `countries` when the region names some: `dtm-de-by` is of `DE`.
+fn models<'a>(
+    sources: &'a [Source],
+    bbox: Option<&'a Bbox>,
+    countries: &'a [String],
+) -> impl Iterator<Item = &'a Source> {
     sources.iter().filter(move |source| {
+        let country = source.id.trim_start_matches("dtm-").split('-').next().unwrap_or_default().to_uppercase();
         source.id.starts_with("dtm-")
             && source.redistribute
             && bbox.is_none_or(|b| source.meets([b.west, b.south, b.east, b.north]))
+            && (countries.is_empty() || countries.contains(&country))
     })
 }
 
