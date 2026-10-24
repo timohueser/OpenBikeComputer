@@ -11,7 +11,7 @@ import { GroundPages, type Slot } from './pages';
 import { packRulesOn, slots } from './rules';
 
 /** Ground pages: whole layers of SIDE × SIDE pages, as GROUND_SIDE in look.wgsl. */
-const SIDE = 4, LAYER_PAGES = SIDE * SIDE, POOL = 128;
+const SIDE = 4, LAYER_PAGES = SIDE * SIDE, POOL = 192;
 /** Compute jobs per frame at most: the pages that arrive and the pages whose heights changed, as `GroundPages` takes them. */
 const JOBS = 16, JOB_BYTES = 32;
 const RAD = Math.PI / 180;
