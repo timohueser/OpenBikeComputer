@@ -196,10 +196,15 @@ impl Prepared for TerrainReference {
     }
 }
 
-/// The box of the region of `scope` and its countries; none for a version of everything. A union has
-/// the countries of its parts, and none when a part names none: that part reads every country.
+/// The box of the region of `scope` and its countries; none for a version of everything. A region
+/// that names no countries has those of its leaves, and none when a leaf names none: that leaf reads
+/// every country. The planner reads the same list.
 pub(crate) fn area(scope: Option<&Scope>) -> Result<(Option<Bbox>, Vec<String>), String> {
     let Some((regions, id)) = scope.map(regions).transpose()? else { return Ok((None, Vec::new())) };
+    let own = regions.get(&id).map(|region| region.countries.clone()).unwrap_or_default();
+    if !own.is_empty() {
+        return Ok((regions.bounds(&id), own));
+    }
     let mut countries = Vec::new();
     for leaf in regions.leaves(&id)? {
         let named = &regions.get(leaf).expect("a leaf is a region").countries;
@@ -633,7 +638,7 @@ esac
     }
 
     #[test]
-    fn a_union_has_the_countries_of_its_parts_and_none_when_a_part_names_none() {
+    fn a_union_has_its_own_countries_else_those_of_its_parts_and_none_when_a_part_names_none() {
         let region = |text: &str| text.to_string();
         let definitions = |box_countries: &str| -> BTreeMap<String, String> {
             [
@@ -648,5 +653,12 @@ esac
         assert_eq!(countries, ["AT", "CH", "LI"]);
         let (_, countries) = area(Some(&scope(""))).unwrap();
         assert!(countries.is_empty(), "a part without countries reads every country: {countries:?}");
+        let mut named = scope("");
+        named.definitions.insert(
+            "both".into(),
+            region("name = \"Both\"\nkind = \"union\"\nunion = [\"swiss\", \"east\"]\ncountries = [\"CH\", \"AT\"]\n"),
+        );
+        let (_, countries) = area(Some(&named)).unwrap();
+        assert_eq!(countries, ["CH", "AT"], "the union's own list wins, as in the planner");
     }
 }

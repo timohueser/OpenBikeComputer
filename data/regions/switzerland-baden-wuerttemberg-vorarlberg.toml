@@ -1,4 +1,6 @@
 name = "Switzerland, Baden-Württemberg and Vorarlberg"
 kind = "union"
 union = ["europe/switzerland", "europe/germany/baden-wuerttemberg", "vorarlberg"]
+# The first country is the one of a place that lies in no country, such as on Lake Constance.
+countries = ["CH", "DE", "AT", "LI"]
 time_zone = "Europe/Zurich"
