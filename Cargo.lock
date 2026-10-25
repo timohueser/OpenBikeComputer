@@ -3832,6 +3832,7 @@ dependencies = [
  "obc-map-core",
  "obc-places",
  "osmpbfreader",
+ "rayon",
  "regex",
  "rstar",
  "serde_json",
