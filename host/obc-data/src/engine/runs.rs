@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::plan::{Build, Plan};
+use super::plan::{Build, Estimate, Plan};
 use super::{build_step, order, panicked, prepare, reusable, Built, Receipt, Shape, Step};
 use crate::date;
 use crate::fetch::{self, http::Http};
@@ -516,9 +516,9 @@ impl Run {
         self.fetch(context, plan)?;
 
         let planned: HashMap<&str, &Build> = plan.builds().map(|build| (build.step.as_str(), build)).collect();
-        let peak = |build: &Build| build.estimate.and_then(|estimate| estimate.peak_rss_bytes);
+        let exact = |build: &Build| build.estimate.filter(|estimate| !estimate.guess)?.peak_rss_bytes;
         let mut measured = HashMap::new();
-        if limits.memory_bytes.is_some() && planned.values().any(|build| peak(build).is_none()) {
+        if limits.memory_bytes.is_some() && planned.values().any(|build| exact(build).is_none()) {
             store.layers()?.iter().for_each(|receipt| learn(&mut measured, receipt));
         }
         // The planned steps and the layers that they read, in dependency order.
@@ -626,7 +626,7 @@ impl Run {
                 // A step that reserves more than the memory runs alone, as one that reserves all.
                 let cost = match (&prepared, limits.memory_bytes) {
                     (Ok((receipt, _)), Some(memory)) => {
-                        reservation(peak(build), measured.get(kind(&receipt.step)), receipt.bytes_in).min(memory)
+                        reservation(build.estimate, measured.get(kind(&receipt.step)), receipt.bytes_in).min(memory)
                     }
                     _ => 0,
                 };
@@ -844,18 +844,20 @@ struct Measured {
 /// parses OSM data can peak at 15 times the bytes that it reads.
 const UNMEASURED: (u64, u64) = (512 << 20, 16);
 
-/// The memory that a step that reads `bytes_in` reserves: its estimated `peak`, else the smallest
-/// measured peak of the step or, when that is more, its input bytes times the peak per input byte
-/// of the measured run that read the most. The per-byte peak of a run that read little is mostly
-/// the fixed memory of a process. Else [`UNMEASURED`].
-fn reservation(peak: Option<u64>, measured: Option<&Measured>, bytes_in: u64) -> u64 {
-    match (peak, measured) {
-        (Some(peak), _) => peak,
-        (None, Some(&Measured { smallest, largest: (read, most) })) => {
-            smallest.max((bytes_in as f64 * most as f64 / read as f64).ceil() as u64)
-        }
-        (None, None) => UNMEASURED.0.saturating_add(bytes_in.saturating_mul(UNMEASURED.1)),
+/// The memory that a step that reads `bytes_in` reserves: the peak of its estimate. For a guess, or
+/// an estimate without a peak, the larger of that peak and what the measured runs of the step tell:
+/// their smallest peak or, when that is more, its input bytes times the peak per input byte of the
+/// run that read the most. The per-byte peak of a run that read little is mostly the fixed memory of
+/// a process. Else [`UNMEASURED`].
+fn reservation(estimate: Option<Estimate>, measured: Option<&Measured>, bytes_in: u64) -> u64 {
+    let peak = estimate.and_then(|estimate| estimate.peak_rss_bytes);
+    if let Some(peak) = peak.filter(|_| estimate.is_some_and(|estimate| !estimate.guess)) {
+        return peak;
     }
+    let learned = measured.map(|&Measured { smallest, largest: (read, most) }| {
+        smallest.max((bytes_in as f64 * most as f64 / read as f64).ceil() as u64)
+    });
+    peak.max(learned).unwrap_or_else(|| UNMEASURED.0.saturating_add(bytes_in.saturating_mul(UNMEASURED.1)))
 }
 
 /// The step without its leaf: the leaves of a tiled step run one program.
@@ -1455,7 +1457,6 @@ pub fn bytes(n: u64) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::engine::plan::Estimate;
     use crate::engine::tests::{fixture, pipeline, snapshot, step, summary, write, JOIN, NAMED};
     use crate::engine::{Function, Input, Request, Run as StepRun};
     use crate::store::Requested;
@@ -1823,6 +1824,16 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
         let other = fixture("runs-memory-other-step");
         measured(&other, "test/other", 100);
         assert!(!together(&other, [None, Some(100)], 1000), "another step of the layer does not count");
+    }
+
+    #[test]
+    fn a_guess_reserves_also_what_the_measured_runs_tell_of_its_input_bytes() {
+        // A run measured 100 bytes for 10 bytes of input; the step reads 50 now.
+        let measured = Measured { smallest: 100, largest: (10, 100) };
+        let of = |guess| Some(Estimate { guess, ..estimate(0, Some(200)).unwrap() });
+        assert_eq!(reservation(of(false), Some(&measured), 50), 200, "a peak with the same options");
+        assert_eq!(reservation(of(true), Some(&measured), 50), 500, "a guess: 50 bytes at 10 per byte");
+        assert_eq!(reservation(of(true), Some(&measured), 1), 200, "a guess: no less than its peak");
     }
 
     #[test]

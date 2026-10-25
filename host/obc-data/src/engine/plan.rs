@@ -227,10 +227,11 @@ impl Plan {
 }
 
 /// From the newest receipt of the step with the same options, else from the cost of its output in
-/// the release, else from the newest receipt of the step. A peak comes only from a receipt of a step
-/// that ran in a process of its own: the cost in a release does not tell. An estimate from other
-/// options is a guess: it scales by the input size of the step. Its peak scales up, never down: much
-/// of a peak can be fixed, such as a whole extract that a small region reads.
+/// the release with the same options, else from the newest receipt of the step, else from that
+/// cost. A peak comes only from a receipt of a step that ran in a process of its own: the cost in a
+/// release does not tell. An estimate from other options is a guess: it scales by the input size of
+/// the step, but its peak does not scale. A peak is that of the largest process, and a step that
+/// works by chunks keeps it at any size; so it is a lower bound.
 fn estimate<'c>(costs: &'c Costs, step: &Step, bytes_in: Option<u64>) -> Option<Estimate> {
     let newest = |same_options: bool| {
         let receipts = costs.receipts.iter();
@@ -262,8 +263,9 @@ fn estimate<'c>(costs: &'c Costs, step: &Step, bytes_in: Option<u64>) -> Option<
         };
         (estimate, &output.options, None)
     });
+    let same = served.filter(|(_, options, _)| **options == step.options);
     let (estimate, options, then) =
-        newest(true).map(of_receipt).or(served).or_else(|| newest(false).map(of_receipt))?;
+        newest(true).map(of_receipt).or(same).or_else(|| newest(false).map(of_receipt)).or(served)?;
     if *options == step.options {
         return Some(estimate);
     }
@@ -276,8 +278,8 @@ fn estimate<'c>(costs: &'c Costs, step: &Step, bytes_in: Option<u64>) -> Option<
         wall_ms: scaled(estimate.wall_ms),
         bytes_out: scaled(estimate.bytes_out),
         client_bytes: scaled(estimate.client_bytes),
-        peak_rss_bytes: estimate.peak_rss_bytes.map(|peak| peak.max(scaled(peak))),
         guess: true,
+        ..estimate
     })
 }
 
@@ -422,9 +424,12 @@ pub(crate) mod tests {
         };
         step.options = serde_json::json!({ "size": 1 });
         assert_eq!(wall_ms(&release, &step), Some((1000, false)), "the same options, though older");
+        step.options = served.options.clone();
+        assert_eq!(wall_ms(&release, &step), Some((3000, false)), "else the cost in the release");
         step.options = serde_json::json!({ "size": 3 });
-        assert_eq!(wall_ms(&release, &step), Some((3000, true)), "else the cost in the release");
-        assert_eq!(wall_ms(&none, &step), Some((2000, true)), "else the newest of the step");
+        assert_eq!(wall_ms(&release, &step), Some((2000, true)), "else the newest of the step");
+        let only_served = estimate(&Costs { receipts: Vec::new(), release: &release }, &step, None);
+        assert_eq!(only_served.map(|estimate| (estimate.wall_ms, estimate.guess)), Some((3000, true)), "else the cost");
 
         // A peak comes only from a step that ran in a process of its own, with the same options.
         let peak = |receipts: Vec<Receipt>, release: &BTreeMap<&str, &Output>, step: &Step| {
@@ -446,8 +451,8 @@ pub(crate) mod tests {
             let estimate = estimate(&costs, &step, bytes_in).unwrap();
             (estimate.wall_ms, estimate.peak_rss_bytes)
         };
-        assert_eq!(scaled(Some(250)), (500, Some(1 << 30)), "a quarter of the input bytes; the peak does not fall");
+        assert_eq!(scaled(Some(250)), (500, Some(1 << 30)), "a quarter of the input bytes; the same peak");
         assert_eq!(scaled(None), (1000, Some(1 << 30)), "half of the area");
-        assert_eq!(scaled(Some(3000)), (6000, Some(3 << 30)), "three times the input bytes and the peak");
+        assert_eq!(scaled(Some(3000)), (6000, Some(1 << 30)), "three times the input bytes; the same peak");
     }
 }

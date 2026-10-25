@@ -174,8 +174,8 @@ pub struct Request {
     pub output: PathBuf,
     /// Where the step may write a JSON object of metrics.
     pub metrics: PathBuf,
-    /// The memory that the other steps of the run leave free when it starts: the step gets it as
-    /// `OBC_DATA_MEMORY_BYTES`.
+    /// The memory that the other steps of the run leave free when it starts. It is not in the JSON:
+    /// the process of the step gets it as `OBC_DATA_MEMORY_BYTES`.
     #[serde(skip)]
     pub memory_bytes: Option<u64>,
 }
