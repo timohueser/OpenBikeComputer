@@ -38,20 +38,20 @@
             "step": "device/map/9-268-178",
             "recipe": "device-map",
             "key": "a100000000000000000000000000000000000000000000000000000000000000",
-            "estimate": {"wall_ms": 312000, "bytes_out": 52428800, "client_bytes": 52428800, "peak_rss_bytes": 2147483648},
+            "estimate": {"wall_ms": 312000, "bytes_out": 52428800, "client_bytes": 52428800, "peak_rss_bytes": 2147483648, "guess": false},
             "again": false
         },
         {
             "step": "device/map/9-268-179",
             "recipe": "device-map",
             "key": "a200000000000000000000000000000000000000000000000000000000000000",
-            "estimate": {"wall_ms": 298000, "bytes_out": 50331648, "client_bytes": 50331648, "peak_rss_bytes": 2013265920},
+            "estimate": {"wall_ms": 298000, "bytes_out": 50331648, "client_bytes": 50331648, "peak_rss_bytes": 2013265920, "guess": false},
             "again": false
         },
         {"step": "device/catalog", "recipe": "device-catalog", "key": null, "estimate": null, "again": false}
     ],
     "downloads": {"files": 12, "bytes": 734003200},
-    "cost": {"wall_ms": 610000, "peak_rss_bytes": 2147483648, "store_bytes": 1258291200, "upload_bytes": 102760448, "unknown": {"estimate": ["device/catalog"], "peak": [], "size": []}},
+    "cost": {"wall_ms": 610000, "peak_rss_bytes": 2147483648, "store_bytes": 1258291200, "upload_bytes": 102760448, "unknown": {"estimate": ["device/catalog"], "peak": [], "guess": [], "size": []}},
     "machine": {"memory_bytes": 34359738368, "store_free_bytes": 442381631488, "refusals": []},
     "after": {"rollback": "0d9e444444444444444444444444444444444444444444444444444444444444", "collects": null},
     "args": ["update", "local", "--expect", "4c1e0d2a91b7", "--accept-format-change"],

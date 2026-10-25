@@ -4,6 +4,7 @@ use super::{
 };
 use geo::{Distance, Euclidean, Geometry, Intersects, Point};
 use osmpbfreader::{OsmId, Tags};
+use rayon::prelude::*;
 use rstar::{Envelope, RTree, AABB};
 use std::collections::{BTreeMap, BTreeSet};
 use unicode_normalization::UnicodeNormalization;
@@ -63,8 +64,9 @@ pub struct Index<'a> {
 impl<'a> Index<'a> {
     pub fn new(input: &'a Input, countries: &'a [&'a str], policy: &'a super::policy::Policy) -> Self {
         assert_eq!(input.features.len(), countries.len());
-        let mut centers: Vec<_> = input.features.iter().map(|f| center(&f.geometry)).collect();
-        let mut ranks: Vec<_> = input.features.iter().enumerate().map(|(i, f)| policy.ranks(f, countries[i])).collect();
+        let mut centers: Vec<_> = input.features.par_iter().map(|f| center(&f.geometry)).collect();
+        let mut ranks: Vec<_> =
+            input.features.par_iter().enumerate().map(|(i, f)| policy.ranks(f, countries[i])).collect();
         let sources: BTreeMap<_, _> = input
             .features
             .iter()
@@ -137,14 +139,16 @@ impl<'a> Index<'a> {
                 .filter_map(|id| sources.get(id))
                 .find(|&&j| !input.features[j].tag("place").is_empty() && !linked_nodes.contains(&j))
                 .copied();
+            let name = normalized(f.name());
             let matched = nodes
                 .locate_in_envelope_intersecting(&envelope(&f.geometry))
                 .filter(|e| {
                     let n = &input.features[e.index];
+                    // The point test is the expensive one, so it comes last.
                     !linked_nodes.contains(&e.index)
-                        && f.geometry.intersects(&centers[e.index])
                         && ((!f.tag("wikidata").is_empty() && f.tag("wikidata") == n.tag("wikidata"))
-                            || (normalized(f.name()) == normalized(n.name()) && rank == ranks[e.index].1))
+                            || (rank == ranks[e.index].1 && name == normalized(n.name())))
+                        && f.geometry.intersects(&centers[e.index])
                 })
                 .min_by_key(|e| e.index)
                 .map(|e| e.index);
@@ -285,16 +289,21 @@ impl<'a> Index<'a> {
                 .postcode(input.features[i].tag("addr:postcode"), countries[i])
                 .or_else(|| result.context(i, false).remove("postcode"));
         }
-        for (i, f) in
-            input.features.iter().enumerate().filter(|(i, f)| f.road() || (4..26).contains(&result.ranks[*i].1))
-        {
-            let mut context = result.context(i, true);
-            if !f.road() {
-                context.insert(part(result.ranks[i].1).into(), f.name().into());
-            }
-            result.overlay(&mut context, &f.tags, countries[i]);
-            result.road_contexts.insert(i, context);
-        }
+        let road_contexts = input
+            .features
+            .par_iter()
+            .enumerate()
+            .filter(|(i, f)| f.road() || (4..26).contains(&result.ranks[*i].1))
+            .map(|(i, f)| {
+                let mut context = result.context(i, true);
+                if !f.road() {
+                    context.insert(part(result.ranks[i].1).into(), f.name().into());
+                }
+                result.overlay(&mut context, &f.tags, countries[i]);
+                (i, context)
+            })
+            .collect::<Vec<_>>();
+        result.road_contexts = road_contexts.into_iter().collect();
         result
     }
 
@@ -936,6 +945,7 @@ mod tests {
             incomplete_geometries: 0,
             nodes: 0,
         };
+        // One address gives its code a position: no other code has addresses near it.
         let countries = vec!["us", "us", "us", "de"];
         let policy = super::super::policy::Policy::test_policy();
         let index = Index::new(&input, &countries, &policy);
@@ -943,5 +953,28 @@ mod tests {
         assert_eq!(index.address(1).0.get("postcode").unwrap(), "80481");
         assert!(!index.address(2).0.contains_key("postcode"));
         assert!(!index.address(3).0.contains_key("postcode"));
+    }
+
+    /// A mistagged address among the addresses of another code gives its code no position, and two
+    /// addresses 70 km away do not move the position of theirs.
+    #[test]
+    fn a_postcode_position_ignores_mistagged_and_far_addresses() {
+        let address = |id: i64, x: f64, code: Option<&'static str>| {
+            let mut tags = vec![("addr:housenumber", "1"), ("addr:place", "Farm")];
+            tags.extend(code.map(|code| ("addr:postcode", code)));
+            feature(id, Point::new(x, 48.001).into(), &tags)
+        };
+        let mut features: Vec<_> = (0..20).map(|k| address(k, 8. + 0.0002 * k as f64, Some("80001"))).collect();
+        features.extend([
+            address(20, 8.002, Some("80002")),
+            address(21, 9., Some("80001")),
+            address(22, 9.001, Some("80001")),
+        ]);
+        features.push(address(23, 8.002, None));
+        let input = input(features);
+        let policy = super::super::policy::Policy::test_policy();
+        let countries = vec!["de"; input.features.len()];
+        let index = Index::new(&input, &countries, &policy);
+        assert_eq!(index.address(23).0.get("postcode").unwrap(), "80001");
     }
 }

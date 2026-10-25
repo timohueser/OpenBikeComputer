@@ -126,6 +126,24 @@ impl ShardRunner for OsmiumRunner {
 }
 
 impl OsmiumRunner {
+    /// Write the smart extract of `bbox` (west, south, east, north) of `input` to `output`. Each
+    /// multipolygon and each boundary that the box touches is complete: a place near the edge of
+    /// the box lies in the whole outline of its area.
+    pub fn cut(&self, input: &Path, output: &Path, bbox: [f64; 4]) -> Result<(), String> {
+        let status = Command::new(&self.binary)
+            .args(["extract", "-F", "pbf", "--bbox", &bbox.map(|value| value.to_string()).join(",")])
+            .args(["--strategy", "smart", "-S", "types=multipolygon,boundary"])
+            .args(["--set-bounds", "--generator", GENERATOR, "--overwrite", "--output"])
+            .arg(output)
+            .arg(input)
+            .status()
+            .map_err(|e| format!("run {} extract: {e}", self.binary.display()))?;
+        match status.success() {
+            true => Ok(()),
+            false => Err(format!("{} extract failed with {status}", self.binary.display())),
+        }
+    }
+
     /// The first line of `osmium --version`.
     pub fn version(&self) -> Result<String, String> {
         let out = Command::new(&self.binary).arg("--version").output();
@@ -407,6 +425,40 @@ mod tests {
             assert_eq!(header["generator"], GENERATOR);
             assert!(!header.keys().any(|key| key.starts_with("osmosis_replication")), "{header:?}");
         }
+    }
+
+    /// A cut keeps each boundary that the box touches complete, and of another relation only what
+    /// the box holds.
+    #[test]
+    fn a_cut_completes_the_boundaries_that_the_box_touches() {
+        let runner = OsmiumRunner::default();
+        if runner.check().is_err() {
+            return;
+        }
+        let temp = Temp::new("cut");
+        // Node 1 is in the box [0, 0, 1, 1]. The ring 101, 102, 103 of boundary 201 leaves the box;
+        // way 102 has no node in it. Route 202 holds way 101 and the far way 104.
+        let osm = r#"<?xml version="1.0"?><osm version="0.6">
+            <node id="1" version="1" lat="0.5" lon="0.5"/><node id="2" version="1" lat="1.5" lon="0.5"/>
+            <node id="3" version="1" lat="1.5" lon="1.5"/><node id="4" version="1" lat="0.5" lon="1.5"/>
+            <node id="5" version="1" lat="3" lon="3"/><node id="6" version="1" lat="3.1" lon="3"/>
+            <way id="101" version="1"><nd ref="1"/><nd ref="2"/></way>
+            <way id="102" version="1"><nd ref="2"/><nd ref="3"/><nd ref="4"/></way>
+            <way id="103" version="1"><nd ref="4"/><nd ref="1"/></way>
+            <way id="104" version="1"><nd ref="5"/><nd ref="6"/></way>
+            <relation id="201" version="1"><member type="way" ref="101" role="outer"/>
+                <member type="way" ref="102" role="outer"/><member type="way" ref="103" role="outer"/>
+                <tag k="type" v="boundary"/><tag k="boundary" v="administrative"/></relation>
+            <relation id="202" version="1"><member type="way" ref="101" role=""/><member type="way" ref="104" role=""/>
+                <tag k="type" v="route"/><tag k="route" v="bicycle"/></relation>
+            </osm>"#;
+        std::fs::write(temp.0.join("base.osm"), osm).unwrap();
+        let osmium = |args: &[&str]| Command::new(&runner.binary).args(args).current_dir(&temp.0).output().unwrap();
+        assert!(osmium(&["cat", "base.osm", "-o", "base.osm.pbf"]).status.success());
+        runner.cut(&temp.0.join("base.osm.pbf"), &temp.0.join("cut.osm.pbf"), [0.0, 0.0, 1.0, 1.0]).unwrap();
+        let opl = String::from_utf8(osmium(&["cat", "cut.osm.pbf", "-f", "opl"]).stdout).unwrap();
+        let ids: Vec<&str> = opl.lines().filter_map(|line| line.split(' ').next()).collect();
+        assert_eq!(ids, ["n1", "n2", "n3", "n4", "w101", "w102", "w103", "r201", "r202"]);
     }
 
     /// The operator page draws a leaf from its id: builder/web/src/lib/data/leaf.test.ts has these numbers.

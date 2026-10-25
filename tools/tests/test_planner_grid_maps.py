@@ -106,17 +106,20 @@ class MapGrid(unittest.TestCase):
                 planner_verify.archive(path, "basemap")
 
     def test_trailview_archives_verify_as_their_raster_tiles(self):
-        def tile(format, **options):
+        def tile(format, size=512, **options):
             image = io.BytesIO()
-            Image.new("RGBA", (2, 2), (90, 120, 60, 200)).save(image, format=format, **options)
+            Image.new("RGBA", (size, size), (90, 120, 60, 200)).save(image, format=format, **options)
             return image.getvalue()
 
-        webp, avif = tile("WEBP", lossless=True), tile("AVIF")
+        webp, avif, ndvi = tile("WEBP", lossless=True), tile("AVIF"), tile("WEBP", 256, lossless=True)
         for kind, tile_type, data, ok in [("trailview-ground", TileType.WEBP, webp, True),
-                                          ("trailview-colour-q1", TileType.AVIF, avif, True),
-                                          ("trailview-colour-q1", TileType.WEBP, webp, True),
+                                          ("trailview-colour-q1", TileType.UNKNOWN, ndvi + avif, True),
+                                          ("trailview-colour-q1", TileType.UNKNOWN, ndvi + webp, True),
+                                          ("trailview-colour-q1", TileType.UNKNOWN, webp + ndvi, False),
+                                          ("trailview-snow-04", TileType.WEBP, webp, True),
+                                          ("trailview-snow-04", TileType.WEBP, ndvi, False),
                                           ("trailview-ground", TileType.AVIF, avif, False)]:
-            with self.subTest(kind=kind, tile_type=tile_type), tempfile.TemporaryDirectory() as temporary:
+            with self.subTest(kind=kind, tile_type=tile_type, ok=ok), tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "archive.pmtiles"
                 with write(path) as writer:
                     writer.write_tile(zxy_to_tileid(9, 0, 0), data)
@@ -125,7 +128,7 @@ class MapGrid(unittest.TestCase):
                 if ok:
                     planner_verify.archive(path, kind)
                 else:
-                    with self.assertRaisesRegex(ValueError, "tile format"):
+                    with self.assertRaisesRegex(ValueError, "tile (format|size)"):
                         planner_verify.archive(path, kind)
 
     def test_changed_binary_archives_check_the_decoded_consumer_layouts(self):

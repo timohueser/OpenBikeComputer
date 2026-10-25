@@ -4,8 +4,15 @@ use super::{
 };
 use geo::{CoordsIter, Distance, Euclidean, Geometry, Intersects, Point};
 use osmpbfreader::OsmId;
-use rstar::{Envelope, RTree, AABB};
-use std::collections::{BTreeMap, BTreeSet};
+use rstar::{primitives::GeomWithData, Envelope, RTree, AABB};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+/// A code that fewer addresses carry gets a position only where no other code has more addresses
+/// within `NEAR_M` of it. So a few mistagged addresses among the addresses of another code give
+/// none, also in an input cut to a box that keeps only them of their code; the addresses of a
+/// small village with its own code do.
+const MIN_ADDRESSES: usize = 5;
+const NEAR_M: f64 = 250.;
 
 struct Postcode {
     country: String,
@@ -44,7 +51,7 @@ impl Postcodes {
                 });
             }
         }
-        let mut sums: BTreeMap<(String, String), (f64, f64, usize)> = BTreeMap::new();
+        let mut points: BTreeMap<(String, String), Vec<Point>> = BTreeMap::new();
         let mut seen = BTreeSet::new();
         let areas = RTree::bulk_load(
             entries.iter().enumerate().map(|(index, pc)| Entry { index, envelope: pc.envelope }).collect(),
@@ -72,22 +79,53 @@ impl Postcodes {
             if !seen.insert((country.to_string(), code.clone(), point)) {
                 continue;
             }
-            let sum = sums.entry((country.to_string(), code)).or_default();
-            sum.0 += p.x();
-            sum.1 += p.y();
-            sum.2 += 1;
+            points.entry((country.to_string(), code)).or_default().push(p);
         }
-        for ((country, code), (x, y, n)) in sums {
-            let metres = policy.postcode_extent(&country);
-            let p = Point::new(x / n as f64, y / n as f64);
+        // The median, not the mean: a few addresses far away, also outside the input, do not move it.
+        let median = |mut values: Vec<f64>| {
+            values.sort_by(f64::total_cmp);
+            let n = values.len();
+            if n % 2 == 1 {
+                values[n / 2]
+            } else {
+                (values[n / 2 - 1] + values[n / 2]) / 2.
+            }
+        };
+        let around = |p: Point, metres: f64| {
             let dy = metres / 111320.;
             let dx = dy / p.y().to_radians().cos().abs().max(0.01);
+            AABB::from_corners([p.x() - dx, p.y() - dy], [p.x() + dx, p.y() + dy])
+        };
+        let points: Vec<_> = points.into_iter().collect();
+        // Each address point, with the index of its code.
+        let near = RTree::bulk_load(
+            points
+                .iter()
+                .enumerate()
+                .flat_map(|(i, (_, points))| points.iter().map(move |p| GeomWithData::new([p.x(), p.y()], i)))
+                .collect(),
+        );
+        for (i, ((country, code), points)) in points.iter().enumerate() {
+            let p = Point::new(
+                median(points.iter().map(|p| p.x()).collect()),
+                median(points.iter().map(|p| p.y()).collect()),
+            );
+            if points.len() < MIN_ADDRESSES {
+                let mut counts = HashMap::<usize, usize>::new();
+                for point in near.locate_in_envelope(&around(p, NEAR_M)) {
+                    *counts.entry(point.data).or_default() += 1;
+                }
+                let own = counts.get(&i).copied().unwrap_or(0);
+                if counts.values().any(|&n| n > own) {
+                    continue;
+                }
+            }
             entries.push(Postcode {
-                country,
-                code,
+                country: country.clone(),
+                code: code.clone(),
                 geometry: None,
                 center: p,
-                envelope: AABB::from_corners([p.x() - dx, p.y() - dy], [p.x() + dx, p.y() + dy]),
+                envelope: around(p, policy.postcode_extent(country)),
             });
         }
         let tree = RTree::bulk_load(

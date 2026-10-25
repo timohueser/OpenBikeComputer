@@ -20,6 +20,8 @@ def worker_count(memory=1 << 30):
         free = sizes["MemAvailable"] - sizes["MemTotal"] // 4
     except (OSError, KeyError):
         return cores()
+    # The memory that the other steps of the run leave free: `obc data` reserves only the largest process of a step.
+    free = min(free, int(os.environ.get("OBC_DATA_MEMORY_BYTES", free)))
     return max(1, min(cores(), free // memory))
 
 

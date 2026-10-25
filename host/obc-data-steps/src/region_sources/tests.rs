@@ -79,6 +79,30 @@ fn a_box_descends_into_both_countries_and_rejects_uncovered_ground() {
     );
 }
 
+/// The outlines of a union, which give the planner its bounds and its cut, are its box and the
+/// areas that it names: not the extract that its box selects.
+#[test]
+fn a_union_of_an_area_and_a_box_is_outlined_by_its_parts() {
+    let temporary = temp("union-source-outlines");
+    let store = Store::at(temporary.0.join("store"));
+    fixture_index(&store);
+    source(&store, "europe/west", "2026-01-01", "1", &poly(7.0, 8.0));
+    source(&store, "europe/east", "2026-02-01", "1", &poly(8.0, 9.0));
+    let regions = Regions::new(vec![
+        parse_region("west", "name='West'\nkind='geofabrik'\nareas=['europe/west']\ncountries=['DE']\n").unwrap(),
+        parse_region("box", "name='Box'\nkind='box'\nbox=[8.2,47.2,8.6,47.6]\ncountries=['CH']\n").unwrap(),
+        parse_region("both", "name='Both'\nkind='union'\nunion=['west','box']\ncountries=['DE']\n").unwrap(),
+    ])
+    .unwrap();
+    let selected = resolve(&inputs("both"), &regions, &store, &mut Vec::new()).unwrap().unwrap();
+    assert_eq!(
+        selected.sources.iter().map(|source| source.id.as_str()).collect::<Vec<_>>(),
+        ["europe/east", "europe/west"]
+    );
+    let outlines = Coverage::union(&selected.outlines.iter().collect::<Vec<_>>()).unwrap();
+    assert_eq!(outlines.bbox(), (7_000_000, 47_000_000, 8_600_000, 48_000_000));
+}
+
 #[test]
 fn a_box_skips_an_aggregate_that_overlaps_its_sibling_countries() {
     let feature = |id: &str, parent: Option<&str>, west: f64, east: f64| {

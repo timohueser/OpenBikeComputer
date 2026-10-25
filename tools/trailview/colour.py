@@ -28,11 +28,13 @@ BANDS = ("B02", "B03", "B04", "B08", "observations")
 # A pixel with fewer valid looks in its quarter falls back to the palette.
 MIN_OBSERVATIONS = 3
 # `trailview_format` of the colour archives, which the readers check.
-FORMAT = 1
+FORMAT = 2
 # Below this visible reflectance a winter pixel is mostly terrain shadow, so its chroma comes from summer.
 DARK = 0.025
 # The alpha code of a quarter's texel that saw snow (snow_free); a measured NDVI never takes it.
 SNOW_MARK = 1
+# The mark of a measured texel in the NDVI tile; the other marks are the codes 0 and SNOW_MARK.
+MEASURED = 2
 # Heath from the satellite: open ground that reflects as much red as green (the midpoint of 1.1 to 1.4)
 # while it grows. Mediterranean summer ground is as red, but dry: its NDVI is low and past its spring peak.
 MOOR_GREEN_RED = 1.25
@@ -41,7 +43,7 @@ MOOR_PEAK = 0.1
 # The prototype's colour reaches 156 m texels; zoom 9 has 0.17 km texels at 47° N.
 BOTTOM_ZOOM = 9
 # Variant: codec, last zoom and chroma subsampling. 4:2:0 halves the chroma resolution of the texels:
-# at zoom 12 the texels are 13 m at 47° N, and the chroma and the NDVI in alpha 26 m.
+# at zoom 12 the texels are 13 m at 47° N, and the chroma and the NDVI 26 m.
 VARIANTS = {
     "webp-13": ("webp", 13, "4:2:0"), "webp-12": ("webp", 12, "4:2:0"), "webp-11": ("webp", 11, "4:2:0"),
     "avif-12": ("avif", 12, "4:2:0"), "avif-11": ("avif", 11, "4:2:0"), "avif444-12": ("avif", 12, "4:4:4"),
@@ -204,9 +206,21 @@ def stored_ndvi(alpha):
     return np.where(measured, code.repeat(2, axis=0).repeat(2, axis=1), alpha).astype(np.uint8)
 
 
+def ndvi_tile(alpha):
+    """The NDVI tile of a quarter's alpha (specs/trailview-tiles.md#colour): per aligned 2 × 2 block,
+    the code of `stored_ndvi` that its measured texels share, 0 where none is measured, and the marks of
+    its four texels, 2 bits each in reading order from bit 0."""
+    stored = stored_ndvi(alpha)
+    blocks = lambda texels: texels.reshape(tiles.TILE // 2, 2, tiles.TILE // 2, 2)
+    code = blocks(np.where(stored > SNOW_MARK, stored, 0)).max(axis=(1, 3))
+    mark = blocks(np.where(stored > SNOW_MARK, MEASURED, stored))
+    marks = mark[:, 0, :, 0] | mark[:, 0, :, 1] << 2 | mark[:, 1, :, 0] << 4 | mark[:, 1, :, 1] << 6
+    return np.stack([code, marks], axis=-1).astype(np.uint8)
+
+
 def encoder(variant):
-    """The encode of a tile of the four quarters: an archive per quarter, `q1` to `q4`, with the NDVI
-    of `stored_ndvi`."""
+    """The encode of a tile of the four quarters: an archive per quarter, `q1` to `q4`. A body is the
+    NDVI tile as lossless WebP, then the colour without alpha in the codec of the variant."""
     from PIL import Image
     from pmtiles.tile import TileType
 
@@ -218,13 +232,12 @@ def encoder(variant):
         out = {}
         for q in range(4):
             stream = io.BytesIO()
-            image = Image.fromarray(np.dstack([texels[q][..., :3], stored_ndvi(texels[q][..., 3])]), "RGBA")
+            image = Image.fromarray(np.ascontiguousarray(texels[q][..., :3]), "RGB")
             if codec == "webp":
-                image.save(stream, "WEBP", quality=QUALITY, alpha_quality=100)
-                out[f"q{q + 1}"] = (TileType.WEBP, stream.getvalue())
+                image.save(stream, "WEBP", quality=QUALITY)
             else:
                 image.save(stream, "AVIF", quality=QUALITY, subsampling=subsampling, max_threads=1)
-                out[f"q{q + 1}"] = (TileType.AVIF, stream.getvalue())
+            out[f"q{q + 1}"] = (TileType.UNKNOWN, tiles.lossless(ndvi_tile(texels[q][..., 3]))[1] + stream.getvalue())
         return out
 
     return encode

@@ -161,6 +161,7 @@ The options of the [planner layers](#planner) that are the same for each region.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
+| `osm.margin_m` | number | `planner/osm/bounds` of a region with a box reaches at least this far around the region, in metres: the search puts a place in the town of a place node up to 15 km away |
 | `terrain.margin_m` | number | The terrain reaches at least this far around the region, in metres: the horizon of the sun layer |
 | `routing.profiles` | array of strings | The profiles of the routing package. The route catalog needs `touring`, `road`, `gravel`, `mtb` and `hiking` |
 | `climate.first_year` | integer | The first of the ten years of ERA5-Land that the climate layer reads |
@@ -434,7 +435,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 
 | Layer | Steps |
 | --- | --- |
-| `osm` | `device/source/<area>`, `device/region-osm`, `device/osm`, `planner/source/<area>`, `planner/osm` |
+| `osm` | `device/source/<area>`, `device/region-osm`, `device/osm`, `planner/source/<area>`, `planner/osm`, `planner/osm/bounds` |
 | `device/terrain` | `device/reference/<i>-<j>`, `device/terrain/<i>-<j>` |
 | `device/map` | `device/map/<i>-<j>` |
 | `device/landmarks` | `device/landmark-content…`, `device/peak-content…`, `device/landmarks/<i>-<j>`, `device/peaks/<i>-<j>` |
@@ -596,9 +597,19 @@ fetch. An `id` names a group only in the plan that it comes from.
 
 The estimate of a build is `wall_ms`, `bytes_out`, `client_bytes` (the size of the files that a
 client reads) and `peak_rss_bytes` of the newest receipt, by `built`, of the same step with the same
-options. Without one, it is the `cost` of the output of the step in the serving release, else the
-newest receipt of the step, or `null`. Its `peak_rss_bytes` is `null` unless it comes from a
-receipt with `own_process`: the cost in a release does not tell whose peak it is. The `bytes` of a fetch is the size of its files in the
+options. Without one, it is the `cost` of the output of the step in the serving release with the
+same options, else the newest receipt of the step, else that `cost` with other options, or `null`. Its `peak_rss_bytes` is `null` unless it comes from a
+receipt with `own_process`: the cost in a release does not tell whose peak it is.
+An estimate from a receipt or a cost with other options than the step, such as another region, is
+a guess (`guess`). It scales `wall_ms`, `bytes_out` and `client_bytes` by the input size of the
+step against theirs: the input bytes (`bytes_in`) when the store has every input of the step and
+the receipt read some, else the area of the option `bounds` (`[west, south, east, north]` in
+degrees, on a sphere) when both have it, else not at all. Its `peak_rss_bytes` does not scale: it
+is the peak of the largest process, and a step that works by chunks keeps it at any size. So it is
+a lower bound. On a first bake of a region the store seldom has every input of a step, so a guess
+mostly scales by area.
+
+The `bytes` of a fetch is the size of its files in the
 record of the version. When that record does not list them all, it is the size in the record of
 another version that lists them all, the last in byte order. Without `files`, the files are those
 that a fetch with the same `params` gave, or else every file. Otherwise `bytes` is `null`. A run
@@ -651,15 +662,22 @@ after a refresh of the extract, does not bake on any machine.
 - Of the steps that can start, the step with the longest chain of planned steps from it to the
   end of the run starts first: its estimated `wall_ms` and that of the longest chain of the steps
   that read it. A step without an estimate counts as the longest.
-- The memory that the steps that run at the same time reserve is not more than the physical
-  memory of the machine. A step reserves its estimated peak (`peak_rss_bytes` of the estimate).
-  A step without one reserves from the measured steps of its layer, the receipts with
-  `own_process`, a peak and input bytes, in the store or of this run: their smallest peak, or,
-  when that is more, its input bytes (`bytes_in`) times the peak per input byte of the measured
-  step that read the most. The peak per input byte of a step that read little is mostly the fixed
-  memory of a process. A step of a layer without a measured step reserves the whole memory, so the
-  first step of such a layer runs alone. A step that reserves more than the memory runs alone. A
-  step with worker processes reserves its largest process, not their sum.
+- The memory that the steps that run at the same time reserve is not more than three quarters of
+  the physical memory of the machine. The rest is for the engine, the page cache and other
+  programs. A step reserves its estimated peak (`peak_rss_bytes` of the estimate).
+  A step with a guess, or without a peak, reserves from its measured runs too, the larger of the
+  two: the receipts of the step, also with other options or of another leaf of its tiled step,
+  with `own_process`, a peak and input bytes, in the store or of this run. They give their
+  smallest peak, or, when that is more, its input bytes (`bytes_in`) times the peak per input byte
+  of the run that read the most. The peak per input byte of a run that read little is mostly the
+  fixed memory of a process. Another step of the layer does not count: a copy and a parse of one
+  extract differ greatly in memory. A step without a peak and without a measured run reserves
+  512 MiB and 16 times its input bytes. A step that reserves more than the memory runs alone.
+- A step with worker processes reserves its largest process, not their sum. It gets
+  `OBC_DATA_MEMORY_BYTES`: the part of the budget that the steps that run do not reserve when it
+  starts. A Python step pool forks no more workers than fit in it. This does not keep the budget:
+  the steps that start after a pool step do not see its workers, and can take the memory that
+  they use.
 - A step that does not fit in the free memory holds back the steps after it, so that it starts
   first.
 - After a fetch fails, no step starts. After a step fails, no other step starts, and the steps
@@ -801,9 +819,10 @@ wins. Unique supplied objects remain. An extract cannot reveal a deletion absent
 this is a union of available snapshots, not a snapshot at one common date. Conflicting payloads
 at the same object type, id and version are malformed OSM inputs.
 
-The merge and the map crop run the Osmium of `OBC_OSMIUM`, or else `osmium` on the `PATH`.
-Without it, an update blocks their layers and asks to install Osmium or set `OBC_OSMIUM`. It does
-not download or install a tool.
+The merge, the map crop and the cut of the planner run the Osmium of `OBC_OSMIUM`, or else
+`osmium` on the `PATH`. Without it, an update blocks the device layers that need it, and the plan
+of the planner fails for more than one source area, a box or `planner/trailview-features`. Each
+asks to install Osmium or set `OBC_OSMIUM`. It does not download or install a tool.
 
 The steps read `copernicus-glo-30` and the national terrain models of `terrain`,
 and the step list reads files such as a `.poly` and the GLO-30 tile list, each at its version (see
@@ -862,15 +881,16 @@ of the version of `terrain` that the target reads, and `mean/index.json`.
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
 | `planner/osm` | The selected PBF of each `planner/source/<area>` | `path`: `osm.pbf` for one area; none for multiple areas | `osm.pbf`: one extract as it is, or the available-snapshot union |
-| `planner/basemap` | `planner/osm`; The selected jar of `protomaps-basemaps`; `natural-earth`, `water-polygons`, `land-polygons`, `daylight-landcover`, `qrank`, `pgf-encoding` | `bounds` of the region; `attribution` of `osm-planet`, `natural-earth` and `daylight-landcover` | `basemap.pmtiles`: the Protomaps map at zooms 0 to 14 |
+| `planner/osm/bounds` | `planner/osm` | For a region with a box, `bbox`: west, south, east and north of the bounds of the region, widened by `osm.margin_m`, within ±180° and ±90°. For a region without a box, `path`: `osm.pbf` | `osm.pbf`: for a region with a box, the `osmium extract --strategy smart -S types=multipolygon,boundary --set-bounds --generator obc-data` of `bbox`, in which each multipolygon and each boundary that `bbox` touches is complete, and the metrics name the version (`osmium`). For a region without a box, `planner/osm` as it is: its extracts are its whole area |
+| `planner/basemap` | `planner/osm/bounds`; The selected jar of `protomaps-basemaps`; `natural-earth`, `water-polygons`, `land-polygons`, `daylight-landcover`, `qrank`, `pgf-encoding` | `bounds` of the region; `attribution` of `osm-planet`, `natural-earth` and `daylight-landcover` | `basemap.pmtiles`: the Protomaps map at zooms 0 to 14 |
 | `planner/reference` | `terrain`, without params: the mean tiles in `bounds` of `planner/terrain` and `mean/index.json`; only when the version has one of them | `source` and `tiles` as for `device/reference`, of the tiles of `bounds`; `pool`: `mean` | `reference/`: the mean archive of those tiles. A Python step with the group `terrain-reference` |
 | `planner/terrain` | The GLO-30 tiles of `bounds`; `planner/reference` when there is one | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds; `attribution`: the credit of GLO-30 | `terrain.mbtiles`: the terrain tiles of [the planner release](planner-release.md#terrain-tiles), the bytes that `planner-dem` writes from the same tiles and archive |
-| `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`; `attribution` and `terrain_attribution`: the credits of OSM and GLO-30. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
+| `planner/routing` | `planner/osm/bounds`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`; `attribution` and `terrain_attribution`: the credits of OSM and GLO-30. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
 | `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
 | `planner/assets` | `protomaps-assets`, `tangrams-icons` | None | `assets/fonts/` and `assets/sprites/` of the assets archive; `assets/sprites/LICENSE.txt`: the MIT notice of `tangrams-icons` |
 | `planner/model` | `query-model` | None | `model/`: `model.int8.onnx`, `tokenizer.json` and `tokenizer_config.json` of the archive, and `labels.json`, the labels of the query schema |
 | `planner/search/policy` | `nominatim-country-data` | None | `policy.json`: the country names, postcode formats and address levels of the archive; `country_osm_grid.sql.gz`: the country grid of the archive, as it is |
-| `planner/search/dump` | `planner/osm`, `planner/search/policy` | `country`: the first of `countries` in lowercase, the country of a place outside each country polygon | `search.jsonl.zst`: the search records that `obc-search-bake` writes, one JSON object per line, with the keys of each object in byte order |
+| `planner/search/dump` | `planner/osm/bounds`, `planner/search/policy` | `country`: the first of `countries` in lowercase, the country of a place outside each country polygon | `search.jsonl.zst`: the search records that `obc-search-bake` writes, one JSON object per line, with the keys of each object in byte order |
 | `planner/search/records` | `planner/search/dump` | None | `pois.jsonl.zst` and `addresses.jsonl.zst`: the records of the dump with a POI and with an address |
 | `planner/search/pois`, `planner/search/addresses` | `planner/search/records`; POIs also read the selected `device/landmark-content*` and `device/peak-content*` outputs | `component` (`pois` or `addresses`); `region`, `bounds` and `countries` as for `planner/routing`; `time_zone` of the region; `attribution` of `osm-planet` | `<component>/<region>.sqlite`: the search database of the component, schema 6. The key holds no SQLite version: another Python patch release can give other database bytes. The metrics name the version as `sqlite` |
 | `planner/places` | `planner/search/pois` | None | `places.pmtiles`: the rider places of the POI database, at zoom 11 |
@@ -1300,14 +1320,14 @@ the store only, and it never writes to the target.
   what this machine fetches upstream, downloads from the target and bakes. A step whose output is
   in the store already does not bake.
 - `cost`: each bake has the estimate of the newest receipt in the store of the step with the same
-  options, else of the `cost` of the step in the serving release, else of the newest receipt of the
-  step. `upload_bytes` is the size of the files of the bakes that a client reads, and of the copies
+  options, else of the `cost` of the step in the serving release with the same options, else of
+  the newest receipt of the step, else of that `cost`. `upload_bytes` is the size of the files of the bakes that a client reads, and of the copies
   under `sources/` that the serving release does not name, as the store records them. `unknown`
-  lists each bake without an estimate or without a peak, and each fetch whose size is not known,
-  also of a new copy that the store lacks yet.
+  lists each bake without an estimate, with a guess or without a peak, and each fetch whose size
+  is not known, also of a new copy that the store lacks yet.
 - `machine`: the memory of the machine and the free bytes of the disk of the store after the
-  listing. A bake whose estimated peak is more than the memory, or fetches, downloads and bakes
-  that leave less than 4 GiB free on the disk, refuse the update.
+  listing. A bake whose estimated peak, also a guess, is more than the memory, or fetches,
+  downloads and bakes that leave less than 4 GiB free on the disk, refuse the update.
 - `after`: the release that becomes the rollback, and the rollback of now, which the collection
   drops, with the keys that the serving release does not name: what it deletes at most.
 - `args`: the arguments after `obc data` that start the update of this review.
@@ -1535,7 +1555,8 @@ the same format; `prod` takes a version of a region.
 
 - The models are the `dtm-*` rows with `redistribute = true` whose `extent` meets the box of the
   region and, when the region names `countries`, whose key is of one of them (`dtm-de-by` is of
-  `DE`); all of them for a version of everything. The tiles of a model are those that meet its
+  `DE`); all of them for a version of everything. A region that names no `countries` has those of its
+  leaves, and none when a leaf names none. The tiles of a model are those that meet its
   `extent` and the `geofabrik-poly` polygon of one of its `areas`: the boundary of the polygon
   crosses the tile, or the polygon holds the centre of the tile. A version of a region has only
   those tiles in its boxes and in the polygons of its areas. A run keeps the version of each
@@ -1574,7 +1595,7 @@ region to the newest complete version of `forest` on the target before it, in th
 - The canopy models are the `canopy-<key>` rows, one per country: the key is the lowercase
   country code. A version reads each model whose `extent` meets the box of the region and, when
   the region names `countries`, whose country is one of them; all of them for a version of
-  everything. Its tiles are the zoom 12 tiles whose inside meets the
+  everything. A region that names no `countries` has those of its leaves, as for `terrain`. Its tiles are the zoom 12 tiles whose inside meets the
   `extent` of a model and the box of the region. A tile that two models meet takes the first.
 - For each tile, `python -m tools.forest_reference fetch <key> --tile 12-<x>-<y>` writes
   `12/<x>/<y>.tif` and then `12-<x>-<y>.sha256`, the SHA-256 of its pixels. Where the model has no
@@ -2501,6 +2522,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "minimum": 0,
           "type": "integer"
         },
+        "guess": {
+          "description": "It comes from a build of the step with other options, such as another region, scaled to the\ninput size of the step.",
+          "type": "boolean"
+        },
         "peak_rss_bytes": {
           "format": "uint64",
           "minimum": 0,
@@ -2519,7 +2544,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "wall_ms",
         "bytes_out",
         "client_bytes",
-        "peak_rss_bytes"
+        "peak_rss_bytes",
+        "guess"
       ],
       "type": "object"
     },
@@ -5729,6 +5755,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "guess": {
+          "description": "The bakes whose estimate is a guess from a build with other options.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "peak": {
           "description": "The bakes whose estimate has no peak.",
           "items": {
@@ -5747,6 +5780,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "estimate",
         "peak",
+        "guess",
         "size"
       ],
       "type": "object"

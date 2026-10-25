@@ -484,6 +484,7 @@ mod tests {
             options: serde_json::to_value(&options).unwrap(),
             output: dir.join("output"),
             metrics: dir.join("metrics"),
+            memory_bytes: None,
         };
         build(&request).unwrap();
         let root: Catalog = serde_json::from_slice(&fs::read(request.output.join("catalog.json")).unwrap()).unwrap();
