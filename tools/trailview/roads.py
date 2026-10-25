@@ -22,7 +22,7 @@ import numpy as np
 from scipy import sparse
 from scipy.spatial import cKDTree
 from scipy.sparse.csgraph import connected_components, dijkstra
-from scipy.sparse.linalg import splu
+from scipy.sparse.linalg import LinearOperator, gmres, splu
 
 from .profiles import metres
 from .structures import BORE_M, BORE_PATH_M, BORE_RAIL_M, is_track, road_half
@@ -59,6 +59,8 @@ PARALLEL_M, PARALLEL_COS, PARALLEL_RISE_M, PARALLEL_FREE_M = 6.0, 0.9, 0.5, 100.
 # a row that pins a junction approach, a ford or a slope limit, and per metre of a bridge or tunnel the
 # preference for level, so that one that meets a road at one end only is level from there.
 FREE, PIN, LEVEL = 1e-4, 1e8, 1e-3
+# GMRES refines each solve to REFINE_M, in at most REFINE_STEPS steps.
+REFINE_M, REFINE_STEPS = 1e-6, 30
 # Solves of the whole network, the first ones with the Huber weights of the solve before. Then rounds
 # of the slope limits solve only the network within REGION_M of the segments whose limit changed, and
 # the bridges and tunnels it meets: the terrain anchors the rest.
@@ -413,12 +415,29 @@ def solve(features, terrain, rivers=(), classes=CLASSES, owned=None):
     bound = grade[limited] * length[limited]
     level = np.flatnonzero(free & known[a] & known[b])
     L1 = sparse.csr_matrix((np.tile([-1.0, 1.0], len(level)), (np.repeat(np.arange(len(level)), 2), np.column_stack([a[level], b[level]]).ravel())), shape=(len(level), n))
-    fixed = (D2.T @ sparse.diags(lam) @ D2 + PIN * (P.T @ P) + L1.T @ sparse.diags(LEVEL / np.maximum(length[level], 0.01)) @ L1
-             + sparse.diags(np.where(known, 0.0, 1.0)))
-    pinned = PIN * (P.T @ values)
+    unknown = np.flatnonzero(~known)
+    # The rows (A, w, c) of the least squares Σ w·(A·z − c)² that every solve holds.
+    fixed = [(D2, lam, 0.0), (L1, LEVEL / np.maximum(length[level], 0.01), 0.0), (P, PIN, values),
+             (sparse.csr_matrix((np.ones(len(unknown)), (np.arange(len(unknown)), unknown)), shape=(len(unknown), n)), 1.0, 0.0)]
+    samples = sparse.csr_matrix((np.concatenate([1 - t, t]), (np.tile(np.arange(len(seg)), 2), np.concatenate([a[seg], b[seg]]))), shape=(len(seg), n))
 
-    def factor(matrix):
-        return splu(matrix.tocsc(), permc_spec="MMD_AT_PLUS_A", diag_pivot_thresh=0.0, options={"SymmetricMode": True})
+    def fit(rows, z=None, moved=None):
+        """The heights at the least squares of the rows (A, w, c), or z with only its heights `moved` at it. The
+        factorization of the normal matrix loses a height that only weak rows hold, such as the end of a tunnel that
+        meets no way, in the round-off of the PIN rows times the heights. GMRES with that factorization then solves
+        against the residuals of the rows, which keep it."""
+        rows = [(A if z is None else A[:, moved], np.broadcast_to(w, A.shape[:1]), c if z is None else c - A @ z) for A, w, c in rows]
+        normal = sum(A.T @ sparse.diags(w) @ A for A, w, _ in rows)
+        lu = splu(normal.tocsc(), permc_spec="MMD_AT_PLUS_A", diag_pivot_thresh=0.0, options={"SymmetricMode": True})
+        apply = lambda v: lu.solve(sum(A.T @ (w * (A @ v)) for A, w, _ in rows))
+        step = lu.solve(sum(A.T @ (w * c) for A, w, c in rows))
+        rest = lu.solve(sum(A.T @ (w * (c - A @ step)) for A, w, c in rows))
+        more, _ = gmres(LinearOperator(normal.shape, apply), rest, rtol=0.0, atol=REFINE_M, restart=REFINE_STEPS, maxiter=1)
+        if z is None:
+            return step + more
+        out = z.copy()
+        out[moved] += step + more
+        return out
 
     def update(held, gz, release=True):
         """The slope limits after a solve: a segment past its limit holds it, a held one that the solve
@@ -430,16 +449,15 @@ def solve(features, terrain, rivers=(), classes=CLASSES, owned=None):
         out[gz < -bound - TOLERANCE_M] = -1
         return out
 
+    def held_rows():
+        """The rows of a solve: those of `fixed`, the terrain samples and the slope limits that hold."""
+        on = np.flatnonzero(held)
+        return fixed + [(samples, w, h), (G[on], PIN, held[on] * bound[on])]
+
     held = np.zeros(len(limited))
     w = weight
     for solves_ in range(SOLVES):
-        ca, cb = 1 - t, t
-        aa, bb, ab = (np.bincount(seg, w * c, m) for c in (ca * ca, cb * cb, ca * cb))
-        base = sparse.csr_matrix((np.concatenate([aa, bb, ab, ab]), (np.concatenate([a, b, a, b]), np.concatenate([a, b, b, a]))), shape=(n, n)) + fixed
-        rhs = np.bincount(a, np.bincount(seg, w * ca * h, m), n) + np.bincount(b, np.bincount(seg, w * cb * h, m), n) + pinned
-        on = np.flatnonzero(held)
-        limits = G[on]
-        z = factor(base + PIN * (limits.T @ limits)).solve(rhs + PIN * (limits.T @ (held[on] * bound[on])))
+        z = fit(held_rows())
         if solves_ < SOLVES - 1:
             residual = np.abs(z[a[seg]] * (1 - t) + z[b[seg]] * t - h)
             w = weight * np.minimum(1.0, HUBER_M / np.maximum(residual, 1e-9))
@@ -447,30 +465,23 @@ def solve(features, terrain, rivers=(), classes=CLASSES, owned=None):
             # its least height from the next solve on.
             culvert = culverts_of(net, z, seg, t, h, finite)
             low = (C @ z < least - TOLERANCE_M) & ~(clear & culvert[deck_way])
-            fixed = fixed + PIN * (C[low].T @ C[low])
-            pinned = pinned + PIN * (C[low].T @ least[low])
+            fixed.append((C[low], PIN, least[low]))
             # Ways that pass too near hold the margin from the next solve on; a tunnel under a road holds
             # the road's height less the margin.
             near = U @ z - L @ z < need - TOLERANCE_M
             target = np.where(under[6][held_up], need, need - U @ z)
-            fixed = fixed + PIN * (apart[near].T @ apart[near])
-            pinned = pinned + PIN * (apart[near].T @ target[near])
+            fixed.append((apart[near], PIN, target[near]))
         before, held = held, update(held, G @ z)
     # Rounds of the slope limits near the segments whose limit changed, the rest of the network fixed.
     # Nothing anchors a bridge or a tunnel but its ends: a region takes it whole.
     graph = sparse.csr_matrix((np.where(free, 1e-6, np.maximum(length, 0.01)), (a, b)), shape=(n, n))
     graph = graph + graph.T
     rounds = 0
-    base = base.tocsr()
     while rounds < ROUNDS and np.any(changed := held != before):
         rounds += 1
         sources = np.unique(np.concatenate([a[limited[changed]], b[limited[changed]]]))
         region = np.flatnonzero(np.isfinite(dijkstra(graph, indices=sources, limit=REGION_M, min_only=True)))
-        on = np.flatnonzero(held)
-        limits = G[on]
-        local = limits[:, region]
-        residual = (rhs[region] + PIN * (local.T @ (held[on] * bound[on])) - base[region] @ z - PIN * (local.T @ (limits @ z)))
-        z[region] += factor(base[region][:, region] + PIN * (local.T @ local)).solve(residual)
+        z = fit(held_rows(), z, region)
         before, held = held, update(held, G @ z, rounds < ROUNDS // 2)
 
     culvert = culverts_of(net, z, seg, t, h, finite)

@@ -135,6 +135,14 @@ class RoadSolverTest(unittest.TestCase):
         self.assertLess(np.max(np.abs(z - np.interp(along, [along[0], along[-1]], [z[0], z[-1]]))), 0.05)
         self.assertEqual(solved[7][0][2], [None] * len(solved[7][0][1]))
 
+    def test_a_tunnel_that_ends_in_the_mountain_is_level_from_the_road_that_it_leaves(self):
+        terrain = Terrain(lambda east, north: 1000 + 0.3 * np.maximum(east, 0))
+        features = [road("road", "residential", line((0, -300), (0, 300), step=20)),
+                    road("tunnel", "footway", line((0, 0), (400, 0), step=5), tunnel="yes")]
+        out, *_ = roads.solve(features, terrain)
+        _, z = profile(out[1][0])
+        self.assertLess(np.max(np.abs(z - z[0])), 1e-3)
+
     def test_a_way_on_the_ground_of_a_higher_layer_passes_over_and_one_indoors_stays_on_the_terrain(self):
         terrain = Terrain(lambda east, north: 1000 + 0 * east)
         street = road("road", "residential", line((-100, 0), (100, 0), step=20))
