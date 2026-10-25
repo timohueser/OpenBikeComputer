@@ -49,6 +49,7 @@ const TRACK_RANGE: f32 = 3.2;
 const WALL_FLAG: u32 = 1u;
 const CONFLICT_FLAG: u32 = 2u;
 const FORD_FLAG: u32 = 4u;
+const TAKEN_FLAG: u32 = 8u;
 // A mesh vertex moves onto a road edge within this many texels of its level: 3/4 of a mesh cell, so
 // that on every level with masks each triangle along an edge has a vertex on it.
 const SNAP_TEXELS: f32 = 3.0;
@@ -93,7 +94,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         }
         // A cut or a fill face of a road, where the look draws a retaining wall if it is steep.
         let faced = known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M));
-        let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0);
+        let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
         let surface = select(0u, s.surface, s.road < MASK_RANGE);
         let across = select(distance_code(s.across), clamp(s.across / (2.0 * TRACK_RANGE) + 0.5, 0.0, 1.0), surface >= TRACK_CODE);
         textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,

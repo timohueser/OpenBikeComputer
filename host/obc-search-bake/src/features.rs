@@ -2,6 +2,7 @@ use super::geometry::{coordinates, polygons, rings};
 use geo::Intersects;
 use geo::{Geometry, Point, Polygon};
 use osmpbfreader::{OsmId, OsmObj, Relation, Tags, Way};
+use rayon::prelude::*;
 use rstar::RTree;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -239,21 +240,35 @@ pub fn read(path: &Path) -> Result<Input, Box<dyn std::error::Error>> {
     let mut ways: Vec<Way> = Vec::new();
     let mut relations = Vec::new();
     let mut needed = BTreeSet::new();
-    super::input::read(path, |object| match object {
-        OsmObj::Node(n) => {
-            nodes.push((n.id.0, n.decimicro_lon, n.decimicro_lat));
-            if wanted(&n.tags) {
-                input.features.push(Feature {
-                    source: OsmId::Node(n.id),
-                    geometry: Point::new(f64::from(n.decimicro_lon) / 1e7, f64::from(n.decimicro_lat) / 1e7).into(),
-                    tags: address_tags(n.tags),
-                });
-            }
+    // `wanted` and `address_tags` run on the decoding cores; a relation keeps its tags for the type test.
+    let prepare = |object| match object {
+        OsmObj::Node(mut n) => {
+            let wanted = wanted(&n.tags);
+            n.tags = if wanted { address_tags(n.tags) } else { Tags::new() };
+            Some((OsmObj::Node(n), wanted))
         }
         OsmObj::Way(mut w) if wanted(&w.tags) => {
             w.tags = address_tags(w.tags);
-            ways.push(w);
+            Some((OsmObj::Way(w), true))
         }
+        OsmObj::Way(_) => None,
+        OsmObj::Relation(r) => {
+            let wanted = wanted(&r.tags);
+            Some((OsmObj::Relation(r), wanted))
+        }
+    };
+    super::input::read(path, prepare, |(object, wanted)| match object {
+        OsmObj::Node(n) => {
+            nodes.push((n.id.0, n.decimicro_lon, n.decimicro_lat));
+            if wanted {
+                input.features.push(Feature {
+                    source: OsmId::Node(n.id),
+                    geometry: Point::new(f64::from(n.decimicro_lon) / 1e7, f64::from(n.decimicro_lat) / 1e7).into(),
+                    tags: n.tags,
+                });
+            }
+        }
+        OsmObj::Way(w) => ways.push(w),
         OsmObj::Relation(r) if r.tags.get("type").is_some_and(|v| v == "associatedStreet") => {
             let streets: Vec<_> = r.refs.iter().filter(|m| m.role == "street").map(|m| m.member).collect();
             for m in r.refs.iter().filter(|m| m.role == "house" || m.role == "address") {
@@ -261,7 +276,7 @@ pub fn read(path: &Path) -> Result<Input, Box<dyn std::error::Error>> {
             }
         }
         OsmObj::Relation(mut r)
-            if wanted(&r.tags) && r.tags.get("type").is_some_and(|v| v == "multipolygon" || v == "boundary") =>
+            if wanted && r.tags.get("type").is_some_and(|v| v == "multipolygon" || v == "boundary") =>
         {
             input
                 .labels
@@ -279,13 +294,16 @@ pub fn read(path: &Path) -> Result<Input, Box<dyn std::error::Error>> {
     input.nodes = nodes.len();
     nodes.sort_unstable_by_key(|n| n.0);
     let mut members = BTreeMap::new();
-    super::input::read(path, |object| {
-        if let OsmObj::Way(w) = object {
-            if needed.contains(&w.id.0) {
-                members.insert(w.id.0, w.nodes.iter().map(|n| n.0).collect());
-            }
-        }
-    })?;
+    super::input::read(
+        path,
+        |object| match object {
+            OsmObj::Way(w) if needed.contains(&w.id.0) => Some((w.id.0, w.nodes.iter().map(|n| n.0).collect())),
+            _ => None,
+        },
+        |(id, nodes)| {
+            members.insert(id, nodes);
+        },
+    )?;
     let endpoints: BTreeMap<_, _> = input
         .features
         .iter()
@@ -294,32 +312,49 @@ pub fn read(path: &Path) -> Result<Input, Box<dyn std::error::Error>> {
             _ => None,
         })
         .collect();
-    let mut interpolated = Vec::new();
-    for w in ways {
-        let ids: Vec<_> = w.nodes.iter().map(|n| n.0).collect();
-        let geometry = line(&ids, &nodes).filter(|l| l.0.len() >= 2).map(|l| {
-            if ids.len() >= 4
-                && ids.first() == ids.last()
-                && (!w.tags.contains_key("highway") || w.tags.get("area").is_some_and(|v| v == "yes"))
-            {
-                Geometry::Polygon(Polygon::new(l, vec![]))
-            } else {
-                Geometry::LineString(l)
-            }
-        });
-        if let Some(geometry) = geometry {
-            if let Geometry::LineString(line) = &geometry {
-                if w.tags.contains_key("addr:interpolation") {
-                    let numbered: Vec<_> =
-                        ids.iter().enumerate().filter_map(|(i, id)| endpoints.get(id).map(|tags| (i, *tags))).collect();
-                    interpolated.extend(super::interpolation::ranges(OsmId::Way(w.id), line, &w.tags, &numbered));
+    // A chunk at a time, so that the features of a chunk exist only once more while they move.
+    let mut interpolated = Vec::with_capacity(ways.len());
+    for chunk in ways.chunks_mut(1 << 16) {
+        let built: Vec<_> = chunk
+            .par_iter_mut()
+            .map(|w| {
+                let ids: Vec<_> = std::mem::take(&mut w.nodes).into_iter().map(|n| n.0).collect();
+                let tags = std::mem::replace(&mut w.tags, Tags::new());
+                let geometry = line(&ids, &nodes).filter(|l| l.0.len() >= 2).map(|l| {
+                    if ids.len() >= 4
+                        && ids.first() == ids.last()
+                        && (!tags.contains_key("highway") || tags.get("area").is_some_and(|v| v == "yes"))
+                    {
+                        Geometry::Polygon(Polygon::new(l, vec![]))
+                    } else {
+                        Geometry::LineString(l)
+                    }
+                })?;
+                let mut ranges = Vec::new();
+                if let Geometry::LineString(line) = &geometry {
+                    if tags.contains_key("addr:interpolation") {
+                        let numbered: Vec<_> = ids
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, id)| endpoints.get(id).map(|tags| (i, *tags)))
+                            .collect();
+                        ranges = super::interpolation::ranges(OsmId::Way(w.id), line, &tags, &numbered);
+                    }
                 }
+                Some((ranges, Feature { source: OsmId::Way(w.id), tags, geometry }))
+            })
+            .collect();
+        for features in built {
+            match features {
+                Some((ranges, way)) => {
+                    interpolated.extend(ranges);
+                    interpolated.push(way);
+                }
+                None => input.incomplete_geometries += 1,
             }
-            interpolated.push(Feature { source: OsmId::Way(w.id), tags: w.tags, geometry });
-        } else {
-            input.incomplete_geometries += 1;
         }
     }
+    drop(ways);
     input.features.extend(interpolated);
     for r in relations {
         if let Some(geometry) = relation_geometry(&r, &members, &nodes) {

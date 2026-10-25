@@ -202,7 +202,8 @@ class Bake(unittest.TestCase):
              (18, 2000, 1000), (19, 2600, 1000), (20, 2600, 1600), (21, 2000, 1600), (22, 1500, 500),
              (23, 1700, 700), (24, 1800, 900), (25, 6000, 1000), (26, 6300, 1000), (27, 6300, 1100),
              (28, 7000, 1000), (29, 7300, 1000), (30, 7300, 1100), (31, 6000, 2000), (32, 6200, 2000),
-             (33, 6000, 2500), (34, 6400, 2500), (35, 6000, 3000)]
+             (33, 6000, 2500), (34, 6400, 2500), (35, 6000, 3000), (36, 2900, 2900), (37, 3500, 2900),
+             (38, 3500, 3500), (39, 2900, 3500)]
     NODE_TAGS = {35: {"waterway": "weir"}}
     WAYS = [(100, [1, 2], {"highway": "track", "surface": "gravel", "name": "Alpweg"}),
             (101, [3, 4, 5, 6, 3], {}), (102, [7, 8, 9, 10, 7], {}),
@@ -215,7 +216,8 @@ class Bake(unittest.TestCase):
             (108, [25, 26, 27, 25], {"waterway": "dam"}),
             (109, [28, 29, 30, 28], {"waterway": "dam", "area": "yes"}),
             (110, [31, 32], {"waterway": "dam"}),
-            (111, [33, 34], {"highway": "construction", "tunnel": "yes"})]
+            (111, [33, 34], {"highway": "construction", "tunnel": "yes"}),
+            (112, [36, 37, 38, 39, 36], {"landuse": "farmyard"})]
 
     def osm(self):
         tag = lambda tags: "".join(f'<tag k="{key}" v="{value}"/>' for key, value in tags.items())
@@ -285,6 +287,8 @@ class Bake(unittest.TestCase):
         self.assertEqual(kinds(left), ["building", "dam", "dam-area", "dam-area", "dam-point", "lake", "main-road", "railway",
                                        "river", "road", "ruin"])
         self.assertEqual(kinds(right), ["road"])
+        # The building in the farmyard keeps its landuse; the farmyard is no feature.
+        self.assertEqual(next(feature for feature in left if feature["kind"] == "building")["tags"], {"building": "yes", "landuse": "farmyard"})
         self.assertEqual({key[0] for key in tiles}, set(range(features.MIN_ZOOM, features.MAX_ZOOM + 1)))
         dam = next(feature for feature in left if feature["kind"] == "dam")
         self.assertEqual(len(dam["parts"][0]["xy"]), 2, "a closed dam way is an area, not a ring line")

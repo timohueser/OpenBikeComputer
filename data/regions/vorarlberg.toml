@@ -1,0 +1,6 @@
+name = "Vorarlberg"
+kind = "box"
+# west, south, east, north. Geofabrik has no extract of the state, so the box selects Austria's.
+box = [9.53, 46.84, 10.24, 47.6]
+countries = ["AT", "CH", "DE", "LI"]
+time_zone = "Europe/Vienna"

@@ -168,6 +168,9 @@ const HOUSE: u32 = 1u;
 const BARN: u32 = 3u;
 const BLOCK: u32 = 4u;
 const CHURCH: u32 = 5u;
+const INDUSTRIAL: u32 = 6u;
+// The style of industrial halls, the same in every region: the last of `styles`, as houses.ts writes it.
+const INDUSTRIAL_STYLE: u32 = 31u;
 const SHUTTERS: u32 = 1u;
 const BALCONIES: u32 = 2u;
 const ONION_DOME: u32 = 4u;
@@ -202,13 +205,15 @@ struct Kind {
     opening: vec2f,
 }
 
-const KINDS = array<Kind, 6>(
+const KINDS = array<Kind, 7>(
     Kind(2.6, 1.0, vec2f(0.8, 2.2), 0.9, vec2f(0.35, 0.8)),
     Kind(2.7, 2.0, vec2f(1.0, 2.6), 1.0, vec2f(0.35, 0.8)),
     Kind(2.8, 2.0, vec2f(0.9, 2.2), 1.2, vec2f(0.35, 0.8)),
     Kind(4.2, 1.0, vec2f(0.7, 6.0), 3.0, vec2f(0.55, 0.75)),
     Kind(3.0, 4.0, vec2f(1.4, 2.8), 1.6, vec2f(0.35, 0.8)),
     Kind(6.5, 1.0, vec2f(1.2, 3.6), 1.8, vec2f(0.3, 0.75)),
+    // A hall: a band of wide windows under the eaves and a loading door.
+    Kind(7.0, 1.0, vec2f(2.4, 6.0), 4.0, vec2f(0.62, 0.82)),
 );
 
 const GLASS = vec3f(0.212, 0.259, 0.298);
@@ -243,7 +248,8 @@ fn kind_table(kind: u32) -> Kind {
         case 2u: { return KINDS[2]; }
         case 3u: { return KINDS[3]; }
         case 4u: { return KINDS[4]; }
-        default: { return KINDS[5]; }
+        case 5u: { return KINDS[5]; }
+        default: { return KINDS[6]; }
     }
 }
 
@@ -455,7 +461,7 @@ fn refit(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) l
     let styles_of = params.regions[region / 2u];
     let regional = select(styles_of.xy, styles_of.zw, region % 2u == 1u);
     let kind = kind_of(h);
-    out.style = min(select(regional.x, regional.y, kind == COTTAGE || kind == HOUSE), 31u);
+    out.style = select(min(select(regional.x, regional.y, kind == COTTAGE || kind == HOUSE), INDUSTRIAL_STYLE - 1u), INDUSTRIAL_STYLE, kind == INDUSTRIAL);
     let storey = shape_of(h, out.style).storey;
     // Half a storey stands in the ground uphill, a full one on a slope that would show two storeys or more
     // of basement downhill; on flat ground the floor stands over all of it.
@@ -633,7 +639,7 @@ fn facade(d: Drawn, wall: u32, first: u32, u: f32, len: f32, z: f32, front: bool
     let column = clamp(floor(u / len * n), 0.0, n - 1.0);
     let centre = len * (column + 0.5) / n;
     let seed = d.bits >> 16u;
-    let lived = kind != BARN && seeded(seed, 99u) >= DARK_HOUSES;
+    let lived = kind != BARN && kind != INDUSTRIAL && seeded(seed, 99u) >= DARK_HOUSES;
     // Whether the window of the pixel's cell shines, and the share of its cell that it fills: far off,
     // a pixel shows one window's light at that share, so a far village is lit dots of the same light.
     let storey = clamp(floor(z / d.storey), 0.0, d.storeys - 1.0);

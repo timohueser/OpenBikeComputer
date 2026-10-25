@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, EXTENT, unitScale } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
-import { BRIDGE, CELL, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, TUNNEL, WARP_M, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WARP_M, type Line, type Profile } from './bins';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -105,6 +105,33 @@ describe('the stamp data of a node', () => {
             }
         }
         expect(inside).toBeGreaterThan(0);
+    });
+
+    it('takes the points inside the buildings and the river areas, from each cell origin and the edges that the cell lists', () => {
+        // Engelberg: a level-17 node on the river through the village.
+        const tile = { level: 13, x: 4287, y: 2887 }, list = fixture(tile.level, tile.x, tile.y), { areas, buildings } = features(list, tile);
+        const [x, y] = areas[0].rings[0], NODE = { level: 17, x: Math.floor(x / 2 ** 13), y: Math.floor(y / 2 ** 13) };
+        const { data } = nodeStamps(list, tile, NODE);
+        const records = 2 + GRID * GRID + 1 + data![1], word = (r: number, i: number) => data![records + RECORD * r + i] | 0;
+        const shift = 22 - NODE.level, cell = CELL * 2 ** shift, x0 = NODE.x * PAGE * 2 ** shift - cell, y0 = NODE.y * PAGE * 2 ** shift - cell;
+        const seen = new Set<boolean>();
+        for (let j = 1; j < GRID - 1; j++) for (let i = 1; i < GRID - 1; i++) {
+            const { entries, origin } = cellOf(data!, NODE, j * GRID + i);
+            for (let v = 0; v < 4; v++) for (let u = 0; u < 4; u++) {
+                const p = [x0 + (i + (u + 0.3) / 4) * cell, y0 + (j + (v + 0.3) / 4) * cell];
+                // As stamp_at: an outline holds p where the edges before its marker cross the way from the origin an odd number of times, or none where the origin is inside.
+                let crossed = false, taken = false;
+                for (const entry of entries) {
+                    const r = entry & ~INSIDE, kind = word(r, 4);
+                    if (kind === EDGE) crossed = crossed !== crosses(origin, p, [0, 1, 2, 3].map(k => word(r, k)));
+                    if (kind === AREA) taken ||= ((entry & INSIDE) !== 0) !== crossed;
+                    if (kind !== EDGE) crossed = false;
+                }
+                expect(taken, `${p}`).toBe([...areas, ...buildings].some(({ rings }) => insideRings(rings, p[0], p[1])));
+                seen.add(taken);
+            }
+        }
+        expect(seen.size).toBe(2);
     });
 });
 
