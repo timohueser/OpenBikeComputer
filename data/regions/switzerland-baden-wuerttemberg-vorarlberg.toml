@@ -1,0 +1,4 @@
+name = "Switzerland, Baden-Württemberg and Vorarlberg"
+kind = "union"
+union = ["europe/switzerland", "europe/germany/baden-wuerttemberg", "vorarlberg"]
+time_zone = "Europe/Zurich"
