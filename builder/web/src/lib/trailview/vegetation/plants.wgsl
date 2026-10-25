@@ -158,7 +158,7 @@ fn ground_plants(@builtin(global_invocation_id) id: vec3u) {
         }
     }
     // Snow covers the share of the ground plants that it lies on.
-    if (pick == NO_PLANT || plant_hash(cell, 7u) < snow_at(s) || on_road(s, 0.3)) {
+    if (pick == NO_PLANT || plant_hash(cell, 7u) < snow_at(s) || kept_off(s, 0.3)) {
         return;
     }
     let h = stand_height(s, u);
@@ -238,7 +238,7 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
     }
     let heights = unpack2x16float(pick.w);
     let height = mix(heights.x, heights.y, plant_hash(cell, 4u)) * size;
-    if (on_road(s, models[model].spread * height)) {
+    if (kept_off(s, models[model].spread * height)) {
         return;
     }
     let yaw = 6.2831853 * plant_hash(cell, 5u);

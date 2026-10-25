@@ -19,9 +19,10 @@ export const INSIDE = 1 << 30;
  * Primitive kinds, as in stamp-core.wgsl. A stream shapes no terrain: only its water draws. A bridge holds
  * the ground under its deck, and a tunnel holds the ground over its bore. A track holds its bed as a road
  * does, and counts its sleepers where a road has its tilts. A pad holds the ground inside its edges under
- * its level, as a platform does.
+ * its level, as a platform does. An area, a building or a river area, holds no ground: the mask takes its
+ * inside, where nothing stands.
  */
-export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6, STREAM = 7, BRIDGE = 8, TUNNEL = 9, RAIL = 10, PAD = 11;
+export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6, STREAM = 7, BRIDGE = 8, TUNNEL = 9, RAIL = 10, PAD = 11, AREA = 12;
 /** Road flags: a ford, the round caps of the core and the cone at the start and the end, and of the paint where the through road runs on into another line. */
 export const FORD = 1, CORE_A = 2, CORE_B = 4, CONE_A = 8, CONE_B = 16, JOIN_A = 32, JOIN_B = 64;
 /** No stamp reaches further than the feature tiles' buffer, so a primitive goes to each cell within it. */
@@ -162,8 +163,8 @@ export interface Line {
 }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
-/** The shapes of a tile: lines and lakes with heights, the river areas, which lie on the drawn surface, and the pads under the platforms. */
-export interface Shapes { lines: Line[]; lakes: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[] }
+/** The shapes of a tile: lines and lakes with heights, the river areas, which lie on the drawn surface, the pads under the platforms, and the buildings. */
+export interface Shapes { lines: Line[]; lakes: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Omit<Lake, 'level'>[] }
 
 /**
  * The numbers of stamp-core.wgsl that the gates of a line and the shore samples of the audit use.
@@ -186,7 +187,7 @@ export function shows({ kind, h, profile }: Line, texel: number): boolean {
 /** The shapes of each decoded tile, made once: the stamps and the water of each of its nodes read them. */
 const shapes = new WeakMap<Feature[], Shapes & { tile: string }>();
 
-/** The roads, paths, rivers and lakes of a tile that have heights, and its river areas, in world units. */
+/** The roads, paths, rivers and lakes of a tile that have heights, its river areas and its buildings, in world units. */
 export function features(list: Feature[], tile: Node): Shapes {
     const name = `${tile.level}/${tile.x}/${tile.y}`;
     let known = shapes.get(list);
@@ -197,7 +198,7 @@ export function features(list: Feature[], tile: Node): Shapes {
 function shapesOf(list: Feature[], tile: Node): Shapes {
     const scale = unitScale(tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
     const world = (xy: Int32Array, v: number) => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
-    const lines: Line[] = [], lakes: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [];
+    const lines: Line[] = [], lakes: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [], buildings: Shapes['buildings'] = [];
     const area = (parts: Feature['parts']) => ({ rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
     for (const { kind, tags, parts } of list) {
         if (kind === 'lake') {
@@ -208,6 +209,10 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         }
         if (kind === 'river-area') {
             areas.push(area(parts));
+            continue;
+        }
+        if (kind === 'building') {
+            buildings.push(area(parts));
             continue;
         }
         if (kind === 'platform') {
@@ -252,7 +257,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     }
     junctionPlanes(lines);
     abutments(lines);
-    return { lines, lakes, areas, pads };
+    return { lines, lakes, areas, pads, buildings };
 }
 
 /**
@@ -492,7 +497,7 @@ export interface NodeStamps {
  * order of stamp-core.wgsl: a lake's edges before its marker, a line's segments together.
  */
 export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps {
-    const { lines, lakes, pads } = features(list, tile);
+    const { lines, lakes, pads, areas, buildings } = features(list, tile);
     const shift = 22 - node.level, cell = CELL * 2 ** shift;
     const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, span = GRID * cell;
     // Units per metre grow toward the pole: the node's poleward edge bounds them.
@@ -548,21 +553,25 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             heights ||= stamps;
         }
     });
-    // Per lake and pad near the node, its edges in each cell that they reach.
-    const outlines = [...lakes.map(lake => ({ lake, kind: LAKE })), ...(node.level >= PAD_LEVEL ? pads.map(lake => ({ lake, kind: PAD })) : [])];
+    // Per lake, pad and area near the node, its edges in each cell that they reach.
+    const outlines = [...lakes.map(lake => ({ lake, kind: LAKE })), ...(node.level >= PAD_LEVEL ? pads.map(lake => ({ lake, kind: PAD })) : []),
+        ...(node.level >= NEAR ? [...areas, ...buildings].map(area => ({ lake: { level: 0, ...area }, kind: AREA })) : [])];
+    const all = Array.from({ length: GRID * GRID }, (_, c) => c);
     const near = outlines.flatMap(({ lake, kind }) => {
         const xs = lake.rings.flatMap(ring => ring.filter((_, i) => i % 2 === 0)), ys = lake.rings.flatMap(ring => ring.filter((_, i) => i % 2 === 1));
-        const reach = REACH_M * units;
+        // An area acts only inside it: its edges go to the cells that they cross, so a village's cells stay short.
+        const metres = kind === AREA ? 0 : REACH_M, reach = metres * units;
         if (Math.max(...xs) < x0 - reach || Math.min(...xs) > x0 + span + reach || Math.max(...ys) < y0 - reach || Math.min(...ys) > y0 + span + reach) return [];
         const edges = new Map<number, number[]>();
         for (const ring of lake.rings) for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
             const [ax, ay, bx, by] = [ring[j], ring[j + 1], ring[i], ring[i + 1]];
-            const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], REACH_M);
+            const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], metres);
             if (!touched.length) continue;
             const at = record([ax, ay, bx, by, EDGE]);
             for (const c of touched) edges.set(c, [...(edges.get(c) ?? []), at]);
         }
-        return [{ lake, kind, edges }];
+        const cells = kind === AREA ? within([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], 0) : all;
+        return [{ lake, kind, edges, cells }];
     });
     // The origin of the lake crossings of a cell: its centre, held inside the node, as stamp-core.wgsl
     // has it, and moved a few units off every lake edge of the cell, so that no rule of a point on a
@@ -582,15 +591,15 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
         throw new Error(`No origin off the shores in cell ${c} of node ${node.level}/${node.x}/${node.y}`);
     };
     const origins = Array.from({ length: GRID * GRID }, (_, c): [number, number] => (near.length ? origin(c) : [0, 0]));
-    for (const { lake, kind, edges } of near) {
+    for (const { lake, kind, edges, cells: reached } of near) {
         // A cell lists the lake after its edges, where an edge is near or where its origin lies inside it.
         const marker = record([0, 0, 0, 0, kind, 0, f(lake.level)]);
-        for (let c = 0; c < GRID * GRID; c++) {
+        for (const c of reached) {
             const inside = insideRings(lake.rings, ...origins[c]);
             if (!inside && !edges.has(c)) continue;
             cells[1][c].push(...(edges.get(c) ?? []), marker | (inside ? INSIDE : 0));
         }
-        heights = true;
+        heights ||= kind !== AREA;
     }
     if (!records.length || (!heights && node.level < NEAR)) return { data: null, heights: false };
     const entries = cells[0].map((_, c) => [...cells[0][c], ...cells[1][c], ...cells[2][c]]);
