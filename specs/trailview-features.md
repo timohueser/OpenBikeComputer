@@ -157,7 +157,7 @@ has no length here, so the solve holds it whole, and the ways that it crosses jo
 it in a straight line. Each vertex of OSM in an area, and each vertex that the solver adds after it up to
 the next vertex of OSM, takes its height from the solve of that area. A network of bridges and tunnels
 that share a point joins the solve whole, also where it runs past the region, with each way on the
-ground that meets one of its ends there. In the order of the OSM data that the rules above use, such a
+ground that meets one of its ends there. In the order of the OSM data that the rules above use, each
 way past the region comes after each way of the region. The bake reads OSM to 20 km and one zoom-13
 tile past the region. A network with an end past that which meets no way has no heights: the input cuts
 it, so it has no ends to run between. A bridge is a culvert, and a
@@ -238,8 +238,8 @@ or `landuse=reservoir`) the median of the terrain on its outline: its full level
 within 1.5 m of the level wins. Other kinds have no height yet.
 
 The water solver solves each network apart, with each lake whose bounding box comes within 120 m of the
-bounding box of the network, and each other lake
-alone. A level depends only on its network and on the lakes near it, so the levels are those of one solve
+bounding box of one of its waterways, and each other lake alone. A lake near two networks joins them into
+one solve. A level depends only on its network and on the lakes near it, so the levels are those of one solve
 of all waterways and lakes.
 
 With `has_z` 1, each vertex has a `z_code`. `z_code` 0 means not solved: the height is unknown,
