@@ -74,8 +74,8 @@ CHUNK, GRID_UNITS = 1 << 21, 2.5e-6
 AREA_ZOOM, HALO_M = 10, 500.0
 FREE_STEP_M = 50.0
 # A job holds about this many bytes per metre of its ways, most of it in the factorization of its system, and its
-# worker caches up to TERRAIN_BYTES of terrain tiles. Measured on the bake of central-switzerland at a halo of
-# 500 m: the largest job, 8.9 million metres of ways, peaked at 3.4 GB private with the cache.
+# worker caches up to TERRAIN_BYTES of terrain tiles. Measured on the largest job of the bake of
+# central-switzerland at a halo of 500 m.
 JOB_BYTES_PER_M = 370
 TERRAIN_BYTES = CACHED * TILE * TILE * 4
 
@@ -531,8 +531,8 @@ def compact(kind, tags, parts):
 
 def context(features, beyond, inside):
     """The features of `beyond`, from `compact`, that the solve of `features` needs: each bridge and tunnel of a
-    network of them that holds a bridge or a tunnel of `features`, and each way on the ground that a vertex
-    shares with an end of such a network. Then the numbers of the features of a network with an end that meets
+    network of them that holds a bridge or a tunnel of `features`, and each way on the ground with a vertex at
+    an end of such a network. Then the numbers of the features of a network with an end that meets
     no way where `inside(xy)` is false: the input cuts that network, so it has no ends to run between."""
     every, count = features + beyond, len(features)
     parts = [(f, xy) for f, (_, _, ps) in enumerate(every) for _, points, _ in ps if len(xy := distinct(points)) >= 2]
