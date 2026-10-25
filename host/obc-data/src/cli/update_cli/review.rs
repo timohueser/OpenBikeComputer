@@ -10,7 +10,6 @@ use serde::Serialize;
 
 use crate::cli::{print_json, print_table, Code, Error};
 use crate::engine::plan::{Build, Cause, Fetch, Kept, Plan};
-use crate::engine::runs::Limits;
 use crate::engine::state::{self, Field, LayerState, Verdict};
 use crate::engine::{leaf, partition, Input, Reader, Shape, Step};
 use crate::product::{Note, RequestKey, Versions};
@@ -132,6 +131,8 @@ pub struct Unknown {
     pub estimate: Vec<String>,
     /// The bakes whose estimate has no peak.
     pub peak: Vec<String>,
+    /// The bakes whose estimate is a guess from a build with other options.
+    pub guess: Vec<String>,
     /// The fetches whose size is not known, as `SOURCE@VERSION`.
     pub size: Vec<String>,
 }
@@ -155,7 +156,7 @@ impl MachineCheck {
     pub fn this(store: &Store) -> Result<Self, String> {
         let free = crate::store::free_bytes(store.root())?.map(|(_, free)| free);
         Ok(MachineCheck {
-            memory_bytes: Limits::machine().memory_bytes,
+            memory_bytes: crate::engine::runs::memory(),
             store_free_bytes: free,
             refusals: Vec::new(),
             planner_missing: crate::cli::setup_cli::planner_missing(),
@@ -366,6 +367,9 @@ pub fn review(parts: Parts) -> Review {
         cost.wall_ms += estimate.wall_ms;
         cost.store_bytes += estimate.bytes_out;
         cost.upload_bytes += estimate.client_bytes;
+        if estimate.guess {
+            cost.unknown.guess.push(build.step.clone());
+        }
         match estimate.peak_rss_bytes {
             Some(bytes) => cost.peak_rss_bytes = cost.peak_rss_bytes.max(Some(bytes)),
             None => cost.unknown.peak.push(build.step.clone()),
@@ -419,14 +423,13 @@ fn refusals(machine: &MachineCheck, (bakes, planner): (&[Build], bool), store_by
         ));
     }
     if let Some(memory) = machine.memory_bytes {
-        for build in bakes {
-            if let Some(peak) =
-                build.estimate.and_then(|estimate| estimate.peak_rss_bytes).filter(|peak| *peak > memory)
-            {
+        for (build, estimate) in bakes.iter().filter_map(|build| Some(build).zip(build.estimate)) {
+            if let Some(peak) = estimate.peak_rss_bytes.filter(|peak| *peak > memory) {
                 refusals.push(format!(
-                    "step `{}` needs about {} of memory, and this machine has {}",
+                    "step `{}` needs about {} of memory{}, and this machine has {}",
                     build.step,
                     size(peak),
+                    if estimate.guess { ", a guess from other options" } else { "" },
                     size(memory)
                 ));
             }
@@ -535,9 +538,10 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
     if let Some(peak) = cost.peak_rss_bytes {
         text += &format!(", peak {} memory", size(peak));
     }
-    let Unknown { estimate, peak, size: sizes } = &cost.unknown;
+    let Unknown { estimate, peak, guess, size: sizes } = &cost.unknown;
     let unknown: Vec<String> = [
         (estimate.len(), "bakes without an estimate"),
+        (guess.len(), "bakes guessed from other options"),
         (peak.len(), "bakes without a RAM estimate"),
         (sizes.len(), "fetches of unknown size"),
     ]

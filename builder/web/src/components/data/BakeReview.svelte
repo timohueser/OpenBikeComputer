@@ -108,6 +108,7 @@
             <dd>
                 {unknown === review.bakes.length && unknown ? "unknown" : `${unknown ? "at least " : "about "}${span(review.cost.wall_ms)}`}
                 {#if unknown}<span class="soft">· {unknown} of {review.bakes.length} steps never ran here</span>{/if}
+                {#if review.cost.unknown.guess.length}<span class="soft">· {review.cost.unknown.guess.length} guessed from other options</span>{/if}
             </dd>
         </div>
         <div>

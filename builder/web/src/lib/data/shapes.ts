@@ -158,7 +158,7 @@ export interface Review {
         peak_rss_bytes: number | null;
         store_bytes: number;
         upload_bytes: number;
-        unknown: { estimate: string[]; peak: string[]; size: string[] };
+        unknown: { estimate: string[]; peak: string[]; guess: string[]; size: string[] };
     };
     machine: { refusals: string[] };
     after: { rollback: string | null; collects: { release: string; keys: number; bytes: number } | null };

@@ -192,7 +192,7 @@ pub fn overview(
         name,
         os: std::env::consts::OS.into(),
         cores: limits.jobs,
-        memory_bytes: limits.memory_bytes,
+        memory_bytes: runs::memory(),
         store_free_bytes: free,
         load: load(),
         memory_available_bytes: memory_available(),

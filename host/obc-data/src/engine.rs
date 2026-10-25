@@ -174,6 +174,10 @@ pub struct Request {
     pub output: PathBuf,
     /// Where the step may write a JSON object of metrics.
     pub metrics: PathBuf,
+    /// The memory that the other steps of the run leave free when it starts. It is not in the JSON:
+    /// the process of the step gets it as `OBC_DATA_MEMORY_BYTES`.
+    #[serde(skip)]
+    pub memory_bytes: Option<u64>,
 }
 
 /// The record of what one step made: its key, its files, and what building it cost.
@@ -576,6 +580,7 @@ fn prepare(store: &Store, step: &Step, layers: &HashMap<&str, Output>) -> Result
         options: step.options.clone(),
         output: PathBuf::new(),
         metrics: PathBuf::new(),
+        memory_bytes: None,
     };
     let mut inputs = Vec::new();
     let mut bytes_in = 0;

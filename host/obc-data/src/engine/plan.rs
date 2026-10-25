@@ -92,6 +92,9 @@ pub struct Estimate {
     /// The size of the files that a client reads: what a target gets.
     pub client_bytes: u64,
     pub peak_rss_bytes: Option<u64>,
+    /// It comes from a build of the step with other options, such as another region, scaled to the
+    /// input size of the step.
+    pub guess: bool,
 }
 
 /// What estimates a build: the receipts in the store, and the outputs of the release by step.
@@ -107,6 +110,8 @@ pub(super) struct Walked<'a> {
     pub fetches: Vec<Fetch>,
     /// `None` until the store has every snapshot and layer that the step reads.
     pub key: Option<String>,
+    /// The input bytes of the step: known as its key is.
+    pub bytes_in: Option<u64>,
     /// The output of `key`: kept by reference, or else the store's layer with all of its objects.
     pub stored: Option<Output>,
 }
@@ -120,12 +125,12 @@ pub(super) fn walk<'a>(store: &Store, steps: &'a [Step], kept: &Kept) -> Result<
         if let Some(output) = kept.get(&step.name) {
             reused.insert(&step.name, output.clone());
             let (key, stored) = (Some(output.key.clone()), Some(output.clone()));
-            walked.push(Walked { step, fetches: Vec::new(), key, stored });
+            walked.push(Walked { step, fetches: Vec::new(), key, bytes_in: None, stored });
             continue;
         }
         let named = |e: String| format!("step `{}`: {e}", step.name);
         let fetches = missing(store, step)?;
-        let (mut key, mut stored) = (None, None);
+        let (mut key, mut bytes_in, mut stored) = (None, None, None);
         if fetches.is_empty() && step.reads().all(|name| reused.contains_key(name)) {
             let (receipt, _) = prepare(store, step, &reused).map_err(named)?;
             stored = reusable(store, &receipt.key)?.map(|mut stored| {
@@ -135,9 +140,9 @@ pub(super) fn walk<'a>(store: &Store, steps: &'a [Step], kept: &Kept) -> Result<
             if let Some(stored) = &stored {
                 reused.insert(&step.name, stored.clone());
             }
-            key = Some(receipt.key);
+            (key, bytes_in) = (Some(receipt.key), Some(receipt.bytes_in));
         }
-        walked.push(Walked { step, fetches, key, stored });
+        walked.push(Walked { step, fetches, key, bytes_in, stored });
     }
     Ok(walked)
 }
@@ -153,7 +158,7 @@ pub(super) fn build_of(walked: &Walked, costs: &Costs) -> Build {
         step: walked.step.name.clone(),
         recipe: recipe(walked.step),
         key: walked.key.clone(),
-        estimate: estimate(costs, walked.step),
+        estimate: estimate(costs, walked.step, walked.bytes_in),
         again: false,
     }
 }
@@ -222,27 +227,68 @@ impl Plan {
 }
 
 /// From the newest receipt of the step with the same options, else from the cost of its output in
-/// the release, else from the newest receipt of the step. A peak comes only from a receipt of a step
-/// that ran in a process of its own: the cost in a release does not tell.
-fn estimate(costs: &Costs, step: &Step) -> Option<Estimate> {
+/// the release with the same options, else from the newest receipt of the step, else from that
+/// cost. A peak comes only from a receipt of a step that ran in a process of its own: the cost in a
+/// release does not tell. An estimate from other options is a guess: it scales by the input size of
+/// the step, but its peak does not scale. A peak is that of the largest process, and a step that
+/// works by chunks keeps it at any size; so it is a lower bound.
+fn estimate<'c>(costs: &'c Costs, step: &Step, bytes_in: Option<u64>) -> Option<Estimate> {
     let newest = |same_options: bool| {
         let receipts = costs.receipts.iter();
         let receipts = receipts.filter(|r| r.step == step.name && (!same_options || r.options == step.options));
         receipts.max_by(|a, b| a.built.cmp(&b.built))
     };
-    let of_receipt = |receipt: &Receipt| Estimate {
-        wall_ms: receipt.wall_ms,
-        bytes_out: receipt.bytes_out,
-        client_bytes: receipt.files.iter().filter(|file| step.client.includes(&file.path)).map(|file| file.size).sum(),
-        peak_rss_bytes: receipt.peak_rss_bytes.filter(|_| receipt.own_process),
+    let of_receipt = |receipt: &'c Receipt| {
+        let estimate = Estimate {
+            wall_ms: receipt.wall_ms,
+            bytes_out: receipt.bytes_out,
+            client_bytes: receipt
+                .files
+                .iter()
+                .filter(|file| step.client.includes(&file.path))
+                .map(|file| file.size)
+                .sum(),
+            peak_rss_bytes: receipt.peak_rss_bytes.filter(|_| receipt.own_process),
+            guess: false,
+        };
+        (estimate, &receipt.options, Some(receipt.bytes_in))
     };
-    let served = costs.release.get(step.name.as_str()).map(|output| Estimate {
-        wall_ms: output.cost.wall_ms,
-        bytes_out: output.cost.bytes_out,
-        client_bytes: output.client_files().map(|file| file.size).sum(),
-        peak_rss_bytes: None,
+    let served = costs.release.get(step.name.as_str()).map(|output| {
+        let estimate = Estimate {
+            wall_ms: output.cost.wall_ms,
+            bytes_out: output.cost.bytes_out,
+            client_bytes: output.client_files().map(|file| file.size).sum(),
+            peak_rss_bytes: None,
+            guess: false,
+        };
+        (estimate, &output.options, None)
     });
-    newest(true).map(of_receipt).or(served).or_else(|| newest(false).map(of_receipt))
+    let same = served.filter(|(_, options, _)| **options == step.options);
+    let (estimate, options, then) =
+        newest(true).map(of_receipt).or(same).or_else(|| newest(false).map(of_receipt)).or(served)?;
+    if *options == step.options {
+        return Some(estimate);
+    }
+    let ratio = match (bytes_in, then.filter(|then| *then > 0)) {
+        (Some(now), Some(then)) => now as f64 / then as f64,
+        _ => area(&step.options).zip(area(options)).map_or(1.0, |(now, then)| now / then),
+    };
+    let scaled = |value: u64| (value as f64 * ratio).round() as u64;
+    Some(Estimate {
+        wall_ms: scaled(estimate.wall_ms),
+        bytes_out: scaled(estimate.bytes_out),
+        client_bytes: scaled(estimate.client_bytes),
+        guess: true,
+        ..estimate
+    })
+}
+
+/// The area of the option `bounds`, `[west, south, east, north]` in degrees, on a sphere of radius 1.
+fn area(options: &serde_json::Value) -> Option<f64> {
+    let bounds: Option<Vec<f64>> = options.get("bounds")?.as_array()?.iter().map(serde_json::Value::as_f64).collect();
+    let [west, south, east, north] = bounds?[..] else { return None };
+    let area = (east - west).to_radians() * (north.to_radians().sin() - south.to_radians().sin());
+    (area > 0.0).then_some(area)
 }
 
 /// The snapshot inputs of `step` whose files the store lacks.
@@ -355,7 +401,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_estimate_comes_from_the_newest_receipt_with_the_same_options() {
+    fn an_estimate_comes_from_the_newest_receipt_with_the_same_options_else_it_is_a_scaled_guess() {
         let fixture = fixture("plan-estimate");
         let built = fixture.build(&steps("1")).unwrap();
         let lower = built.into_iter().find(|built| built.receipt.step == "test/lower").unwrap().receipt;
@@ -373,21 +419,40 @@ pub(crate) mod tests {
         };
         let (none, release) = (BTreeMap::new(), BTreeMap::from([("test/lower", &served)]));
         let wall_ms = |release: &BTreeMap<&str, &Output>, step: &Step| {
-            estimate(&Costs { receipts: receipts.clone(), release }, step).map(|estimate| estimate.wall_ms)
+            let estimate = estimate(&Costs { receipts: receipts.clone(), release }, step, None);
+            estimate.map(|estimate| (estimate.wall_ms, estimate.guess))
         };
         step.options = serde_json::json!({ "size": 1 });
-        assert_eq!(wall_ms(&release, &step), Some(1000), "the same options, though older");
+        assert_eq!(wall_ms(&release, &step), Some((1000, false)), "the same options, though older");
+        step.options = served.options.clone();
+        assert_eq!(wall_ms(&release, &step), Some((3000, false)), "else the cost in the release");
         step.options = serde_json::json!({ "size": 3 });
-        assert_eq!(wall_ms(&release, &step), Some(3000), "else the cost in the release");
-        assert_eq!(wall_ms(&none, &step), Some(2000), "else the newest of the step");
+        assert_eq!(wall_ms(&release, &step), Some((2000, true)), "else the newest of the step");
+        let only_served = estimate(&Costs { receipts: Vec::new(), release: &release }, &step, None);
+        assert_eq!(only_served.map(|estimate| (estimate.wall_ms, estimate.guess)), Some((3000, true)), "else the cost");
 
-        // A peak comes only from a step that ran in a process of its own.
-        let peak = |receipts: Vec<Receipt>, release: &BTreeMap<&str, &Output>| {
-            estimate(&Costs { receipts, release }, &step).and_then(|estimate| estimate.peak_rss_bytes)
+        // A peak comes only from a step that ran in a process of its own, with the same options.
+        let peak = |receipts: Vec<Receipt>, release: &BTreeMap<&str, &Output>, step: &Step| {
+            estimate(&Costs { receipts, release }, step, None).and_then(|estimate| estimate.peak_rss_bytes)
         };
         let measured = Receipt { peak_rss_bytes: Some(1 << 30), ..receipts[1].clone() };
-        assert_eq!(peak(vec![measured.clone()], &none), Some(1 << 30));
-        assert_eq!(peak(vec![Receipt { own_process: false, ..measured }], &none), None, "the peak of an engine");
-        assert_eq!(peak(Vec::new(), &release), None, "a release does not tell");
+        step.options = measured.options.clone();
+        assert_eq!(peak(vec![measured.clone()], &none, &step), Some(1 << 30));
+        let engine = Receipt { own_process: false, ..measured.clone() };
+        assert_eq!(peak(vec![engine], &none, &step), None, "the peak of an engine");
+        step.options = served.options.clone();
+        assert_eq!(peak(Vec::new(), &release, &step), None, "a release does not tell");
+
+        // A guess scales by the input bytes when the store has the inputs, else by the area.
+        let wide = Receipt { options: serde_json::json!({ "bounds": [7, 46, 9, 47] }), bytes_in: 1000, ..measured };
+        step.options = serde_json::json!({ "bounds": [7, 46, 8, 47] });
+        let costs = Costs { receipts: vec![wide], release: &none };
+        let scaled = |bytes_in| {
+            let estimate = estimate(&costs, &step, bytes_in).unwrap();
+            (estimate.wall_ms, estimate.peak_rss_bytes)
+        };
+        assert_eq!(scaled(Some(250)), (500, Some(1 << 30)), "a quarter of the input bytes; the same peak");
+        assert_eq!(scaled(None), (1000, Some(1 << 30)), "half of the area");
+        assert_eq!(scaled(Some(3000)), (6000, Some(1 << 30)), "three times the input bytes; the same peak");
     }
 }

@@ -155,7 +155,8 @@
                     "wall_ms": 312000,
                     "bytes_out": 52428800,
                     "client_bytes": 52428800,
-                    "peak_rss_bytes": 2147483648
+                    "peak_rss_bytes": 2147483648,
+                    "guess": false
                 },
                 "again": false
             },
@@ -167,7 +168,8 @@
                     "wall_ms": 298000,
                     "bytes_out": 50331648,
                     "client_bytes": 50331648,
-                    "peak_rss_bytes": 2013265920
+                    "peak_rss_bytes": 2013265920,
+                    "guess": false
                 },
                 "again": false
             },
@@ -193,6 +195,7 @@
                     "device/catalog"
                 ],
                 "peak": [],
+                "guess": [],
                 "size": []
             }
         },

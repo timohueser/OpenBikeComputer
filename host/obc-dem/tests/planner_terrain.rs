@@ -49,6 +49,7 @@ fn the_step_writes_the_mbtiles_of_planner_dem_from_the_same_tile() {
         }),
         output: output.clone(),
         metrics: temp.0.join("metrics.json"),
+        memory_bytes: None,
     };
     planner_terrain(&request).unwrap();
     let layer = output.join("terrain.mbtiles");

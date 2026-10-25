@@ -69,6 +69,10 @@ pub fn run(root: &Path, run: &Run, request: &Request, stop: &AtomicBool) -> Resu
     let temporary = request.output.with_file_name("tmp");
     std::fs::create_dir_all(&temporary).map_err(|e| format!("{}: {e}", temporary.display()))?;
     command.env("TMPDIR", &temporary);
+    // A step with worker processes sizes its pool from it: the run reserves only its largest process.
+    if let Some(memory) = request.memory_bytes {
+        command.env("OBC_DATA_MEMORY_BYTES", memory.to_string());
+    }
     command.stdin(Stdio::piped()).stdout(std::io::stderr()).stderr(Stdio::piped());
     #[cfg(unix)]
     {
