@@ -71,7 +71,7 @@ TOLERANCE_M = 1e-3
 CHUNK, GRID_UNITS = 1 << 21, 2.5e-6
 # An area of `solve_by_area` is a tile of AREA_ZOOM, about 27 km at 47° N. Its job holds the ways within
 # HALO_M of it.
-AREA_ZOOM, HALO_M = 10, 1000.0
+AREA_ZOOM, HALO_M = 10, 750.0
 FREE_STEP_M = 50.0
 # A job holds about this many bytes per metre of its ways, most of it in the factorization of its system.
 JOB_BYTES_PER_M = 300
