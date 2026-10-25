@@ -152,7 +152,7 @@ road meets the track. It is part of the options of the step. The road solver:
   with a waterway, 0.2 m below the water.
 
 The road solver works by area: an area is a tile of zoom 10. The solve of an area holds each way within
-750 m of the area, along the ways from the nearest point of a way in a straight line. A bridge or a tunnel
+500 m of the area, along the ways from the nearest point of a way in a straight line. A bridge or a tunnel
 has no length here, so the solve holds it whole, and the ways that it crosses join at their distance from
 it in a straight line. Each vertex of OSM in an area, and each vertex that the solver adds after it up to
 the next vertex of OSM, takes its height from the solve of that area. A network of bridges and tunnels
