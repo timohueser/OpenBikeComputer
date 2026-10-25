@@ -1,3 +1,4 @@
+// #include water-cut.wgsl
 // The water: the meshes of water-mesh.ts, drawn after the terrain and hidden where the terrain stands
 // above them. Each drawn node draws the mesh of the node whose page it draws and keeps the part over
 // its own square. A lake lies at its level, a river area on the mesh without its snap (plain_height). A
@@ -40,24 +41,6 @@ struct WaterIn {
     @location(3) half: f32,
 }
 
-struct WaterOut {
-    @builtin(position) clip: vec4f,
-    // Units about the anchor, and the node's square.
-    @location(0) u: vec2f,
-    @location(1) @interpolate(flat) low: vec2f,
-    @location(2) @interpolate(flat) high: vec2f,
-    @location(3) relative: vec3f,
-    @location(4) altitude: f32,
-    // A ribbon's side from −1 to 1, its share of the drawn width and its drawn half-width in pixels.
-    @location(5) side: f32,
-    @location(6) share: f32,
-    @location(7) pixels: f32,
-    // 1 where the height of the vertices is known.
-    @location(8) known: f32,
-    // How steeply a ribbon's bed falls along its flow.
-    @location(9) fall: f32,
-}
-
 // The body of the water in linear light.
 const BODY: vec3f = vec3f(0.025, 0.098, 0.175);
 // A ribbon turns white where its bed falls more steeply than FOAM_LOW along its flow, up to FOAM_MOST at FOAM_HIGH.
@@ -97,31 +80,28 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
         let flow = normalize(vec2f(v.across.y, v.across.x) + 1e-9);
         out.fall = abs(dot(n.xy, flow)) / n.z;
     }
-    // A vertex of unknown height stands on the ground under the eye, as the terrain's does; the fragment drops its triangle.
-    out.known = select(0.0, 1.0, known(z));
+    // A vertex of unknown height stands on the ground under the eye, as the terrain's does, and its
+    // triangle draws nothing; nor does any water in the crack and surface views, which show the terrain alone.
+    let low = vec2f(node.origin);
+    let high = low + f32(1 << (30u - node.level));
+    mark_cut(&out, vec4f(u - low, high - u), known(z) && frame.debug != 3u && frame.debug != 4u);
     z = select(frame.eye - surface.above, z, known(z)) + lift;
     var p = vec3f(to_render(lod_space(u)), z - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
     out.clip = frame.view_proj * vec4f(p, 1.0);
-    out.u = u;
-    out.low = vec2f(node.origin);
-    out.high = out.low + f32(1 << (30u - node.level));
     out.relative = p;
     out.altitude = z;
     return out;
 }
 
 @fragment
-fn water_fragment(in: WaterOut) -> @location(0) vec4f {
-    // The crack and surface views show the terrain alone.
-    if (any(in.u < in.low) || any(in.u >= in.high) || in.known < 0.999 || frame.debug == 3u || frame.debug == 4u) {
-        discard;
-    }
+fn water_fragment(in: WaterFragment) -> @location(0) vec4f {
+    drop_cut(in);
     let edge = clamp((1.0 - abs(in.side)) * in.pixels + 0.5, 0.0, 1.0);
     return vec4f(atmosphere(water_colour(in), in.relative, in.altitude), in.share * edge);
 }
 
-fn water_colour(in: WaterOut) -> vec3f {
+fn water_colour(in: WaterFragment) -> vec3f {
     let dir = normalize(in.relative);
     let world = in.relative.xy + look.place.xy;
     // Small waves tilt the surface by the slope of the noise; far away, where a pixel spans several, it lies calm.
