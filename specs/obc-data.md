@@ -1535,7 +1535,8 @@ the same format; `prod` takes a version of a region.
 
 - The models are the `dtm-*` rows with `redistribute = true` whose `extent` meets the box of the
   region and, when the region names `countries`, whose key is of one of them (`dtm-de-by` is of
-  `DE`); all of them for a version of everything. The tiles of a model are those that meet its
+  `DE`); all of them for a version of everything. A region that names no `countries` has those of its
+  leaves, and none when a leaf names none. The tiles of a model are those that meet its
   `extent` and the `geofabrik-poly` polygon of one of its `areas`: the boundary of the polygon
   crosses the tile, or the polygon holds the centre of the tile. A version of a region has only
   those tiles in its boxes and in the polygons of its areas. A run keeps the version of each
@@ -1574,7 +1575,7 @@ region to the newest complete version of `forest` on the target before it, in th
 - The canopy models are the `canopy-<key>` rows, one per country: the key is the lowercase
   country code. A version reads each model whose `extent` meets the box of the region and, when
   the region names `countries`, whose country is one of them; all of them for a version of
-  everything. Its tiles are the zoom 12 tiles whose inside meets the
+  everything. A region that names no `countries` has those of its leaves, as for `terrain`. Its tiles are the zoom 12 tiles whose inside meets the
   `extent` of a model and the box of the region. A tile that two models meet takes the first.
 - For each tile, `python -m tools.forest_reference fetch <key> --tile 12-<x>-<y>` writes
   `12/<x>/<y>.tif` and then `12-<x>-<y>.sha256`, the SHA-256 of its pixels. Where the model has no
