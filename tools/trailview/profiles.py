@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import threading
 
 import numpy as np
 
@@ -18,19 +19,26 @@ CACHED = 256
 class Terrain:
     """The master terrain: Terrarium WebP tiles of 512 px, R × 256 + G + B / 256 − 32768 metres, unknown
     unless opaque, from `read(z, x, y)` up to zoom `top`. A point reads the deepest zoom that knows its
-    four pixels."""
+    four pixels. The workers of a step share one: as forked processes, or as threads where a fork is not safe."""
 
     def __init__(self, read, top):
         self.read, self.top = read, top
-        self.cache = OrderedDict()
+        self.cache, self.lock = OrderedDict(), threading.Lock()
 
     @classmethod
     def mbtiles(cls, path):
-        """The terrain of a `planner-dem` MBTiles file."""
-        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        """The terrain of a `planner-dem` MBTiles file. Each process and thread opens its own connection: SQLite
+        shares one neither across a fork nor between threads."""
+        local = threading.local()
+
+        def db():
+            if getattr(local, "pid", None) != os.getpid():
+                local.db, local.pid = sqlite3.connect(f"file:{path}?mode=ro", uri=True), os.getpid()
+            return local.db
+
         query = "SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?"
-        read = lambda z, x, y: (row := db.execute(query, (z, x, (1 << z) - 1 - y)).fetchone()) and row[0]
-        return cls(read, db.execute("SELECT max(zoom_level) FROM tiles").fetchone()[0])
+        read = lambda z, x, y: (row := db().execute(query, (z, x, (1 << z) - 1 - y)).fetchone()) and row[0]
+        return cls(read, db().execute("SELECT max(zoom_level) FROM tiles").fetchone()[0])
 
     @classmethod
     def grid(cls, files):
@@ -58,9 +66,10 @@ class Terrain:
 
     def tile(self, z, x, y):
         key = (z, x, y)
-        if key in self.cache:
-            self.cache.move_to_end(key)
-            return self.cache[key]
+        with self.lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+                return self.cache[key]
         from PIL import Image
 
         data = self.read(z, x, y)
@@ -69,9 +78,10 @@ class Terrain:
             rgba = np.asarray(Image.open(io.BytesIO(data)).convert("RGBA"), np.float32)
             heights = rgba[..., 0] * 256 + rgba[..., 1] + rgba[..., 2] / 256 - 32768
             heights[rgba[..., 3] < 255] = np.nan
-        self.cache[key] = heights
-        if len(self.cache) > CACHED:
-            self.cache.popitem(last=False)
+        with self.lock:
+            self.cache[key] = heights
+            if len(self.cache) > CACHED:
+                self.cache.popitem(last=False)
         return heights
 
     def pixels(self, z, i, j):
