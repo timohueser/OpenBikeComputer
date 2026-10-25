@@ -1,5 +1,12 @@
 # The options of the planner layers that are the same for each region: specs/obc-data.md, `planner`.
 
+[osm]
+# The basemap, the routing and the search read the OSM of the region bounds and this margin. The
+# search puts an address in the town of a place node up to 15 km away (`fuzzy_area` of
+# host/obc-search-bake/src/enrich.rs). The routing and the basemap need no margin: the routing
+# clips its graph to the bounds, and a smart extract keeps each way and area that the bounds touch.
+margin_m = 15000
+
 [terrain]
 # The sun layer reads the horizon this far around the region, so the terrain covers it.
 margin_m = 30000

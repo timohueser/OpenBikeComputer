@@ -5,6 +5,7 @@ use obc_data::engine::Function;
 
 pub static AREA: Function = Function { name: "obc-osm/area", run: obc_osm::step::area };
 pub static OSM: Function = Function { name: "obc-osm/osm", run: obc_osm::step::osm };
+pub static CUT: Function = Function { name: "obc-osm/cut", run: obc_osm::step::cut };
 pub static LANDMARK_CONTENT: Function =
     Function { name: "obc-pack/landmark-content", run: obc_pack::step::landmark_content };
 pub static PEAK_CONTENT: Function = Function { name: "obc-pack/peak-content", run: obc_pack::step::peak_content };
@@ -24,6 +25,7 @@ pub static PLANNER_CATALOG: Function =
 pub const FUNCTIONS: &[&Function] = &[
     &AREA,
     &OSM,
+    &CUT,
     &LANDMARK_CONTENT,
     &PEAK_CONTENT,
     &LANDMARKS,

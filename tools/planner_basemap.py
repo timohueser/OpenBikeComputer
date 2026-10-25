@@ -33,7 +33,7 @@ def step(request):
     output = Path(request["output"]).absolute()
     jar = one(step_request.files(request, "protomaps-basemaps"), "protomaps-basemaps")
     inputs = {name: one(step_request.files(request, source), source) for source, name in SOURCES.items()}
-    osm = one(request["layers"]["planner/osm"], "planner/osm")
+    osm = one(request["layers"]["planner/osm/bounds"], "planner/osm/bounds")
     # Upstream downloads QRank and PGF even without --download when their paths are absent.
     with tempfile.TemporaryDirectory(dir=output.parent) as temporary:
         work = Path(temporary)

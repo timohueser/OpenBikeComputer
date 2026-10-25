@@ -1,5 +1,5 @@
 //! The planner. Its layers cover the region of the settings: `planner/osm` is the OSM of the
-//! region, `planner/basemap` the offline Protomaps map, `planner/terrain` the terrain of the maps,
+//! region, `planner/osm/bounds` its cut to the bounds and a margin, `planner/basemap` the offline Protomaps map, `planner/terrain` the terrain of the maps,
 //! `planner/routing` the routing package with its grid, and `planner/search/dump` the search records of the OSM. `planner/overlays`,
 //! `planner/assets`, `planner/model`, `planner/places`, the other `planner/search/*` layers and
 //! the optional layers `planner/climate`, `planner/snow`, `planner/sun` and `planner/trailview-*` are
@@ -90,6 +90,7 @@ const BASEMAP_SOURCES: [&str; 7] = [
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    osm: Osm,
     terrain: Terrain,
     routing: Routing,
     climate: Climate,
@@ -122,6 +123,12 @@ struct Snow {
 struct Sun {
     horizon_samples: u8,
     horizon_directions: u8,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Osm {
+    margin_m: f64,
 }
 
 #[derive(Deserialize)]
@@ -190,7 +197,7 @@ impl Product for Planner {
 }
 
 impl Planner {
-    /// Its steps. `osmium` says whether Osmium runs here: more than one source area needs it.
+    /// Its steps. `osmium` says whether Osmium runs here: the cut of the OSM to the bounds needs it.
     pub fn steps_with_tool(
         &self,
         root: &Path,
@@ -262,10 +269,20 @@ impl Planner {
                 client: Client::None,
             }
         } else {
-            osmium.clone().map_err(Unplanned::Invalid)?;
             crate::region_sources::combined("planner/osm", &source_steps)
         };
-        let mut reads = vec![Input::step(osm.name.clone())];
+        osmium.map_err(Unplanned::Invalid)?;
+        // The TrailView steps read `planner/osm`: they look past the bounds.
+        let cut = Step {
+            layer: &OSM,
+            name: "planner/osm/bounds".into(),
+            inputs: vec![Input::step(osm.name.clone())],
+            options: json!({"bbox": around(bounds, config.osm.margin_m)}),
+            outputs: vec!["osm.pbf".into()],
+            run: Run::Rust(&functions::CUT),
+            client: Client::None,
+        };
+        let mut reads = vec![Input::step(cut.name.clone())];
         for source in BASEMAP_SOURCES {
             let mut input = snapshot(inputs, store, source, Vec::new(), &mut wanted)?;
             if let Input::Snapshot { files, .. } = &mut input {
@@ -302,7 +319,7 @@ impl Planner {
         let routing = Step {
             layer: &PLANNER_ROUTING,
             name: "planner/routing".into(),
-            inputs: std::iter::once(Input::step(osm.name.clone())).chain(tiles(bounds, &land, &glo30)).collect(),
+            inputs: std::iter::once(Input::step(cut.name.clone())).chain(tiles(bounds, &land, &glo30)).collect(),
             options: json!({
                 "region": name,
                 "bounds": bounds,
@@ -347,7 +364,7 @@ impl Planner {
         let dump = Step {
             layer: &PLANNER_SEARCH,
             name: "planner/search/dump".into(),
-            inputs: vec![Input::step(osm.name.clone()), Input::step(policy.name.clone())],
+            inputs: vec![Input::step(cut.name.clone()), Input::step(policy.name.clone())],
             options: json!({"country": countries[0].to_lowercase()}),
             outputs: vec!["search.jsonl.zst".into()],
             run: Run::Rust(&functions::SEARCH),
@@ -414,7 +431,8 @@ impl Planner {
         steps.extend(content.steps);
         steps.extend(reference);
         steps.extend([
-            osm, terrain, routing, overlays, assets, model, policy, dump, records, pois, addresses, places, basemap,
+            osm, cut, terrain, routing, overlays, assets, model, policy, dump, records, pois, addresses, places,
+            basemap,
         ]);
         if on("climate") {
             let first_year = config.climate.first_year;
@@ -449,7 +467,6 @@ impl Planner {
             ));
         }
         if on("trailview-features") {
-            osmium.map_err(Unplanned::Invalid)?;
             let kinds: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/kinds.json"))
                 .map_err(|e| Unplanned::Failed(format!("data/trailview/kinds.json: {e}")))?;
             let roads: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/roads.json"))
@@ -1025,16 +1042,16 @@ fn canopy_tiles([west, south, east, north]: [f64; 4]) -> Vec<String> {
 /// The terrain of the maps around `bounds`: the zoom 10 tiles that it touches and their
 /// neighbours, because the contours of a tile read a 3 × 3 tile neighbourhood; and at least
 /// `margin_m` metres around `bounds`.
-fn terrain_bounds([west, south, east, north]: [f64; 4], margin_m: f64) -> [f64; 4] {
+fn terrain_bounds(bounds: [f64; 4], margin_m: f64) -> [f64; 4] {
+    let (tiles, around) = (zoom_10_neighbourhood(bounds), around(bounds, margin_m));
+    [tiles[0].min(around[0]), tiles[1].min(around[1]), tiles[2].max(around[2]), tiles[3].max(around[3])]
+}
+
+/// `bounds` and at least `margin_m` metres around them.
+fn around([west, south, east, north]: [f64; 4], margin_m: f64) -> [f64; 4] {
     let latitude = margin_m / 110_000.0;
     let longitude = latitude / south.abs().max(north.abs()).to_radians().cos();
-    let tiles = zoom_10_neighbourhood([west, south, east, north]);
-    [
-        tiles[0].min(west - longitude),
-        tiles[1].min(south - latitude),
-        tiles[2].max(east + longitude),
-        tiles[3].max(north + latitude),
-    ]
+    [west - longitude, south - latitude, east + longitude, north + latitude]
 }
 
 fn zoom_10_neighbourhood([west, south, east, north]: [f64; 4]) -> [f64; 4] {
@@ -1285,6 +1302,7 @@ mod tests {
         let layers = [
             "source/europe/test",
             "osm",
+            "osm/bounds",
             "terrain",
             "routing",
             "overlays",
@@ -1322,6 +1340,7 @@ mod tests {
                 "device/landmark-content",
                 "device/peak-content",
                 "planner/osm",
+                "planner/osm/bounds",
                 "planner/terrain",
                 "planner/routing",
                 "planner/overlays",
@@ -1355,7 +1374,19 @@ mod tests {
             ["N47_00_E007", "N48_00_E007"],
             "the tile list names no square east of 8°"
         );
-        assert!(matches!(&routing.inputs[0], Input::Step { name, files } if name == "planner/osm" && files.is_empty()));
+        // The basemap, the routing and the search read the OSM of the bounds and 15 km around them.
+        let cut = get("planner/osm/bounds");
+        assert!(matches!(&cut.inputs[..], [Input::Step { name, files }] if name == "planner/osm" && files.is_empty()));
+        assert_eq!(
+            cut.options["bbox"],
+            json!([7.5861286945852555, 47.85363636363637, 8.023871305414746, 48.156363636363636])
+        );
+        for reader in ["planner/routing", "planner/basemap", "planner/search/dump"] {
+            assert!(get(reader)
+                .inputs
+                .iter()
+                .any(|input| matches!(input, Input::Step { name, .. } if name == "planner/osm/bounds")));
+        }
         assert_eq!(tiles(&routing.inputs[1]), ["N47_00_E007", "N48_00_E007"]);
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.82, 48.02]));
         assert_eq!((&routing.options["region"], &routing.options["countries"]), (&json!("test"), &json!(["DE"])));
@@ -1487,7 +1518,9 @@ mod tests {
         let layer = |name: &str| {
             let parts: Vec<&str> = name.split('/').collect();
             match parts[..] {
-                ["device" | "planner", "source", ..] | ["device", "region-osm" | "osm"] | ["planner", "osm"] => "osm",
+                ["device" | "planner", "source", ..] | ["device", "region-osm" | "osm"] | ["planner", "osm", ..] => {
+                    "osm"
+                }
                 ["device", "reference" | "terrain", _] => "device/terrain",
                 ["device", "map", _] => "device/map",
                 ["device", "landmark-content" | "peak-content", ..] | ["device", "landmarks" | "peaks", _] => {
@@ -1591,14 +1624,11 @@ mod tests {
     }
 
     #[test]
-    fn trailview_features_need_osmium_in_the_plan() {
-        let temp = temp("planner-trailview-features");
+    fn the_planner_needs_osmium_in_the_plan() {
+        let temp = temp("planner-osmium");
         let store = store(&temp, &["2026-10-01"]);
-        let plan = |layers: &[&str]| {
-            Planner.steps_with_tool(&root(), &inputs(AREA, layers), &regions(), &store, Err("no osmium".into()))
-        };
-        assert!(plan(&[]).is_ok(), "one source area needs no Osmium");
-        assert!(matches!(plan(&["trailview-features"]), Err(Unplanned::Invalid(reason)) if reason == "no osmium"));
+        let plan = Planner.steps_with_tool(&root(), &inputs(AREA, &[]), &regions(), &store, Err("no osmium".into()));
+        assert!(matches!(plan, Err(Unplanned::Invalid(reason)) if reason == "no osmium"));
     }
 
     #[test]

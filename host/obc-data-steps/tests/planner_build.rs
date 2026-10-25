@@ -153,7 +153,8 @@ time_zone = "Europe/Berlin"
         let planned = Planner.steps(&root, inputs, &regions, &store).unwrap();
         assert!(planned.blocked.is_empty());
         let mut steps = planned.steps;
-        let rust = ["planner/source/europe/test", "planner/osm", "planner/terrain", "planner/routing"];
+        let rust =
+            ["planner/source/europe/test", "planner/osm", "planner/osm/bounds", "planner/terrain", "planner/routing"];
         steps.retain(|step| python || rust.contains(&step.name.as_str()));
         for step in &mut steps {
             if step.name == "planner/basemap" {
@@ -187,12 +188,15 @@ time_zone = "Europe/Berlin"
 
     let built = build(&steps(false, &inputs));
     let names: Vec<&str> = built.iter().map(|built| built.receipt.step.as_str()).collect();
-    assert_eq!(names.len(), 4);
-    for name in ["planner/osm", "planner/terrain", "planner/routing"] {
+    assert_eq!(names.len(), 5);
+    for name in ["planner/osm", "planner/osm/bounds", "planner/terrain", "planner/routing"] {
         assert!(names.contains(&name), "{name} is not built");
     }
     let osm = &built.iter().find(|built| built.receipt.step == "planner/osm").unwrap().receipt;
     assert_eq!(osm.files[0].sha256, sha256_hex(&pbf), "the layer is the extract");
+    // The search and the routing read the cut of the extract: the release names its digest.
+    let cut =
+        built.iter().find(|built| built.receipt.step == "planner/osm/bounds").unwrap().receipt.files[0].sha256.clone();
 
     let routing = &built.iter().find(|built| built.receipt.step == "planner/routing").unwrap().receipt;
     let package: BTreeMap<String, PathBuf> = routing
@@ -355,7 +359,7 @@ for name, entry in catalog['files'].items():
 "#,
         ])
         .arg(&verification)
-        .arg(sha256_hex(&pbf))
+        .arg(&cut)
         .current_dir(&root)
         .status()
         .unwrap();
