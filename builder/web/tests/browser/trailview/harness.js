@@ -15,7 +15,9 @@ export const EXECUTABLE = process.env.OBC_CHROMIUM || undefined;
  */
 export function launch(gpu) {
     if (process.env.OBC_BROWSER_WS) return chromium.connect(process.env.OBC_BROWSER_WS);
-    return chromium.launch({ executablePath: EXECUTABLE, headless: !gpu, args: gpu ? ['--enable-webgpu-developer-features'] : SWIFTSHADER });
+    // Chromium on Linux gives no WebGPU adapter without Vulkan.
+    const linux = process.platform === 'linux' ? ['--enable-unsafe-webgpu', '--enable-features=Vulkan'] : [];
+    return chromium.launch({ executablePath: EXECUTABLE, headless: !gpu, args: gpu ? ['--enable-webgpu-developer-features', ...linux] : SWIFTSHADER });
 }
 export const DIST = new URL('../../../dist/trailview/', import.meta.url).pathname;
 const FIXTURE = new URL('./fixture/terrain/', import.meta.url).pathname;

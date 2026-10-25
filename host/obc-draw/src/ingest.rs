@@ -39,7 +39,7 @@ use obc_pbf::bbox::Bbox;
 use obc_pbf::scan::{par_sources, scan_blobs, Keyed, Scan};
 use obc_pbf::selection::{Crop, IdSet};
 use obc_places::metadata::{self as poi, Poi};
-use obc_places::osm::{push_node_poi, push_routable_way, resolve_coords};
+use obc_places::osm::{push_node_poi, push_routable_way, resolve_coords, NodeCoords};
 use obc_places::routing::RoutableWay;
 
 pub struct IngestFeature {
@@ -259,7 +259,7 @@ fn select_crop(
 /// One source's pass-1 harvest.
 struct NodeScan {
     links: Keyed<poi::LandmarkLink>,
-    nodes: HashMap<i64, (i32, i32)>,
+    nodes: NodeCoords,
     pois: Keyed<Poi>,
     rels: Keyed<PendingRelation>,
 }
@@ -406,7 +406,7 @@ fn read_nodes(
     tagged: bool,
     progress: &Progress,
 ) -> Result<NodeScan, String> {
-    let mut nodes: HashMap<i64, (i32, i32)> = HashMap::new();
+    let mut nodes = NodeCoords::default();
     let mut pois = Keyed::new(tagged);
     let mut rels = Keyed::new(tagged);
     let mut links = Keyed::new(tagged);
@@ -415,11 +415,11 @@ fn read_nodes(
     scan_blobs(path, None, progress, |el| {
         match el {
             Element::Node(n) if keeps_node(n.id()) => {
-                nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
+                nodes.push(n.id(), n.decimicro_lon(), n.decimicro_lat());
                 push_node_poi(n.id(), n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut pois);
             }
             Element::DenseNode(n) if keeps_node(n.id()) => {
-                nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
+                nodes.push(n.id(), n.decimicro_lon(), n.decimicro_lat());
                 push_node_poi(n.id(), n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut pois);
             }
             Element::Relation(r) => {
@@ -436,6 +436,7 @@ fn read_nodes(
         Scan::Continue
     })
     .map_err(|e| format!("pass 1: {e}"))?;
+    nodes.freeze();
     Ok(NodeScan { nodes, pois, rels, links })
 }
 
@@ -448,15 +449,13 @@ fn fold_node_scans(scans: Vec<NodeScan>, merging: bool) -> NodeScan {
     for mut next in it {
         // Ownership is tested BEFORE this source's nodes land in `acc`, so the question is whether
         // an earlier source already had this node — and the whole object loses, tags and all.
-        next.pois.retain_keys(|id| !acc.nodes.contains_key(&id));
+        next.pois.retain_keys(|id| !acc.nodes.contains(id));
         next.rels.retain_keys(|id| seen_rels.insert(id));
         next.links.retain_keys(|id| seen_links.insert(id));
         acc.links.append(next.links);
         acc.pois.append(next.pois);
         acc.rels.append(next.rels);
-        for (id, coord) in next.nodes {
-            acc.nodes.entry(id).or_insert(coord);
-        }
+        acc.nodes.merge(next.nodes);
     }
     if merging {
         acc.pois.sort();
@@ -478,7 +477,7 @@ fn read_ways(
     ways_at: Option<ByteOffset>,
     config: &Config,
     crop: Option<&Crop>,
-    nodes: &HashMap<i64, (i32, i32)>,
+    nodes: &NodeCoords,
     needed_ways: &HashSet<i64>,
     tagged: bool,
     progress: &Progress,

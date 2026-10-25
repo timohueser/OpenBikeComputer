@@ -10,7 +10,7 @@ export const RECORD_WORDS = 8;
 export const OUTLINE_WORDS = 4;
 
 /** The kinds of house, as `KINDS` in houses.wgsl. */
-export const COTTAGE = 0, HOUSE = 1, FARMHOUSE = 2, BARN = 3, BLOCK = 4, CHURCH = 5;
+export const COTTAGE = 0, HOUSE = 1, FARMHOUSE = 2, BARN = 3, BLOCK = 4, CHURCH = 5, INDUSTRIAL = 6;
 /** Shapes: a template of models/house.ts by its kind, or an outline mesh. */
 export const TEMPLATE = 0, OUTLINE = 1;
 /** Roofs that OSM names, as `shape_of` in houses.wgsl reads them: the style's, or a gable, a hip or a half hip. A flat roof is a flag. */
@@ -27,6 +27,8 @@ const BLOCKS = new Set([
 ]);
 /** Blocks of these kinds are one tall storey or two, not flats. */
 const LOW = new Set(['industrial', 'warehouse', 'supermarket', 'retail', 'manufacture', 'sports_hall', 'service']);
+/** Halls of the same look in every region; so is a `yes` building in an industrial area. */
+const INDUSTRIES = new Set(['industrial', 'warehouse', 'manufacture']);
 const STOREY_M = 2.8;
 /**
  * A footprint that fills this much of its rectangle draws as that rectangle. A footprint that fills
@@ -52,12 +54,17 @@ export interface TileHouses {
     outlines: Uint32Array<ArrayBuffer>;
 }
 
-function kindOf(tag: string, area: number): number {
+/** The kind of a building by its tag, its area in m² and the landuse that the bake gives it. */
+function kindOf(tag: string, area: number, landuse?: string): number {
     if (SHEDS.has(tag)) return BARN;
     if (CHURCHES.has(tag)) return CHURCH;
     if (tag === 'farm') return FARMHOUSE;
+    if (INDUSTRIES.has(tag)) return INDUSTRIAL;
     if (BLOCKS.has(tag)) return area < 260 ? HOUSE : BLOCK;
     if (area < 30) return BARN;
+    if (landuse === 'industrial' && tag === 'yes') return INDUSTRIAL;
+    // A farmyard has one house or two of a farm's size; the buildings smaller or larger are its sheds and barns.
+    if (landuse === 'farmyard' && tag === 'yes') return area >= 60 && area < 250 ? FARMHOUSE : BARN;
     if (area < 110) return COTTAGE;
     if (area < 260) return HOUSE;
     if (area < 700) return FARMHOUSE;
@@ -170,9 +177,9 @@ export function tileHouses(list: Feature[], tile: Node, owned: Node = tile): Til
         if (area <= 0 || fit.width <= 0 || fit.depth <= 0) continue;
         const tx = x0 + fit.x / m, ty = y0 - fit.y / m;
         if (tx < west || tx >= west + size || ty < north || ty >= north + size) continue;
-        const kind = kindOf(tag, area), levels = parseFloat(feature.tags['building:levels'] ?? ''), height = parseFloat(feature.tags.height ?? '');
+        const kind = kindOf(tag, area, feature.tags.landuse), levels = parseFloat(feature.tags['building:levels'] ?? ''), height = parseFloat(feature.tags.height ?? '');
         // A large footprint without a kind is a hall or a barn more often than flats.
-        const low = LOW.has(tag) || (kind === BLOCK && !BLOCKS.has(tag));
+        const low = LOW.has(tag) || kind === INDUSTRIAL || (kind === BLOCK && !BLOCKS.has(tag));
         const wall = levels > 0 ? levels * STOREY_M : height > 0 ? 0.65 * height : low ? 7 : 0;
         const pieces = area / (fit.width * fit.depth) >= RECTANGULAR ? [fit] : parts(ring, fit), outline = !pieces;
         // All parts of a building take the seed of its rectangle, so they share its colours and its pitch.

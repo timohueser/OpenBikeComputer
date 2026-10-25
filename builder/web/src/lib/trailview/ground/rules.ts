@@ -60,8 +60,8 @@ const lerp = (a: number[], b: number[], t: number) => a.map((v, i) => v + (b[i] 
  * (alpha its share), the terrain scalars (outcrops, cos turf_deg, snow_share; alpha the speckle
  * size), the bedding normal (alpha the season's bare_luma, 0 for none) and the palette snap; the
  * sea's deep and shallow colours, the road surfaces and the edge line of main roads. Then the
- * vocabulary, the same in every row: per material its cover, moor, rocky and rough; per lithology
- * its hardness.
+ * vocabulary: per material its cover, moor (only in a region with heather, so that no other region
+ * runs the heather), rocky and rough; per lithology its hardness.
  */
 export function slots(vocabulary: Vocabulary) {
     const materials = 3 * COVER_ORDER.length, m = vocabulary.materials.length, l = vocabulary.lithologies.length;
@@ -99,7 +99,7 @@ export function packRules(regions: Region[], vocabulary: Vocabulary, season: num
             set(SLOT.satellite + i, [look.materials?.[id]?.satellite ?? 0, 0, 0], 1);
             const cover = COVER_ORDER.indexOf(vocabulary.materials[i].cover as (typeof COVER_ORDER)[number]);
             const open = OPEN.includes(vocabulary.materials[i].cover) && id !== 'pasture';
-            set(SLOT.kinds + i, [cover, +MOOR.includes(id), +ROCKY.includes(id)], +open);
+            set(SLOT.kinds + i, [cover, +(MOOR.includes(id) && !!look.moor), +ROCKY.includes(id)], +open);
         });
         lithologies.forEach((id, i) => {
             const rock = look.lithology?.[id];

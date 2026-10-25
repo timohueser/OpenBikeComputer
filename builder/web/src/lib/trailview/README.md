@@ -74,12 +74,13 @@ npm run pretest:trailview                  # the page against the fixture
 node trailview/shoot.mjs [--views FILE] [--out DIR] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--hud] [--gpu] [--audit]
 node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--cracks N] [--audit N]
 node trailview/skyline.mjs [--tiles FILE] [--lab LAB] [--gpu]
+trailview/box.sh [view | flight ARGS]       # bake the Engelberg box without obc data; open it; time it
 npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
 ```
 
-`shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs give the same
-bytes. `flight.mjs` prints the GPU time per pass, the CPU selection time, the nodes, triangles and
-pages of each flight of `flights.json`. The `ground` pass runs only when ground pages arrive:
+`shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs can differ
+in a few pixels by a few levels: compare shots by their difference. `flight.mjs` prints the GPU
+time per pass, the CPU selection time, the nodes, triangles and pages of each flight of `flights.json`. The `ground` pass runs only when ground pages arrive:
 read its `amortized` time. Run it on the M1 Pro with `--gpu`: Chrome then draws
 2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
 of the fixture, and `--features` a folder `z/x/y.bin`; build the page with a config

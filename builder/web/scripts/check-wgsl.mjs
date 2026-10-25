@@ -18,4 +18,5 @@ const check = (file, swap = {}) => {
 };
 files.forEach(file => check(file));
 check('terrain/terrain.wgsl', CLIP_DISTANCES);
+check('terrain/water.wgsl', CLIP_DISTANCES);
 process.exit(failed ? 1 : 0);
