@@ -12,6 +12,7 @@ pub mod step;
 
 use enrich::{house_addresses, Index};
 use osmpbfreader::OsmId;
+use rayon::prelude::*;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
@@ -64,34 +65,29 @@ pub fn bake(
     );
     let grid = countries::Countries::read(country_grid, &input)?;
     let countries: Vec<_> =
-        input.features.iter().map(|f| grid.at(geometry::center(&f.geometry)).unwrap_or(country)).collect();
+        input.features.par_iter().map(|f| grid.at(geometry::center(&f.geometry)).unwrap_or(country)).collect();
     eprintln!("Resolved country polygons; build address indexes");
     let index = Index::new(&input, &countries, &policy);
     eprintln!("Write address records");
-    let count = write_dump(output, |mut stream| {
-        write_line(
-            &mut stream,
-            json!({"type":"NominatimDumpFile","content":{
-                "generator":"obc-search-bake","scope":"all","osm_sha256":osm_hash,"data_timestamp":null,
-                "default_country":country,"country_grid_sha256":grid_hash,"policy_sha256":policy_hash
-            }}),
-        )?;
-        let mut count = 0;
-        for (i, f) in input
-            .features
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| f.road() && !f.name().is_empty())
-            .chain(input.features.iter().enumerate().filter(|(_, f)| !f.road()))
-        {
+    let count = write_dump(output, |stream| {
+        stream.write_all(&line(json!({"type":"NominatimDumpFile","content":{
+            "generator":"obc-search-bake","scope":"all","osm_sha256":osm_hash,"data_timestamp":null,
+            "default_country":country,"country_grid_sha256":grid_hash,"policy_sha256":policy_hash
+        }})))?;
+        let addresses: Vec<_> = (0..input.features.len())
+            .filter(|&i| input.features[i].road() && !input.features[i].name().is_empty())
+            .chain((0..input.features.len()).filter(|&i| !input.features[i].road()))
+            .collect();
+        let mut count = write_lines(stream, &addresses, |&i, lines| {
+            let f = &input.features[i];
             let tags = index.tags(i);
             let houses = house_addresses(tags);
             if !f.road() && houses.is_empty() {
-                continue;
+                return Ok(());
             }
             let (a, country) = index.address(i);
             if !f.road() && a.get("street").is_none_or(|s| s.is_empty()) {
-                continue;
+                return Ok(());
             }
             let p = index.center(i);
             let extent = geometry::envelope(&f.geometry);
@@ -115,8 +111,7 @@ pub fn bake(
                 "country_code":country,"centroid":[p.x(),p.y()],"bbox":[extent.lower()[0],extent.lower()[1],extent.upper()[0],extent.upper()[1]],
                 "name":if f.road() { json!(name) } else { json!({}) },"address":a,"postcode":a.get("postcode").map(|s| s.as_str()).unwrap_or(""),"importance":0.05});
             if houses.is_empty() {
-                write_line(&mut stream, json!({"type":"Place","content":[record]}))?;
-                count += 1;
+                lines.push((None, line(json!({"type":"Place","content":[record]}))));
             } else {
                 for (house, street) in houses {
                     record["housenumber"] = json!(house);
@@ -124,8 +119,8 @@ pub fn bake(
                         (&f.geometry, f.tags.get("_interpolation_range"))
                     {
                         if let Some((first, last)) = range.split_once(':') {
-                            let (first, last, number) =
-                                (first.parse::<f64>()?, last.parse::<f64>()?, house.parse::<f64>()?);
+                            let number = |s: &str| s.parse::<f64>().map_err(|e| e.to_string());
+                            let (first, last, number) = (number(first)?, number(last)?, number(house)?);
                             let p = interpolation::point(line, (number - first) / (last - first));
                             record["centroid"] = json!([p.x(), p.y()]);
                         }
@@ -134,21 +129,20 @@ pub fn bake(
                     if let Some(street) = street {
                         record["address"]["street"] = json!(street);
                     }
-                    write_line(&mut stream, json!({"type":"Place","content":[&record]}))?;
-                    count += 1;
+                    lines.push((None, line(json!({"type":"Place","content":[&record]}))));
                 }
             }
-        }
+            Ok(())
+        })?;
         eprintln!("Wrote {count} address records; write POIs and localities");
-        let mut emitted = std::collections::BTreeSet::new();
-        for (i, f) in input.features.iter().enumerate() {
+        let features: Vec<_> = (0..input.features.len()).collect();
+        count += write_lines(stream, &features, |&i, lines| {
+            let f = &input.features[i];
             if let Some(record) = places::record(f, i, &index) {
-                if emitted.insert(f.source) {
-                    write_line(&mut stream, json!({"type":"Place","content":[record]}))?;
-                    count += 1;
-                }
+                lines.push((Some(f.source), line(json!({"type":"Place","content":[record]}))));
             }
-        }
+            Ok(())
+        })?;
         Ok(count)
     })?;
     Ok(
@@ -156,12 +150,55 @@ pub fn bake(
     )
 }
 
-/// Write `value` as one line, with the keys of each object in byte order: the order of the dump also
-/// in a binary in which another crate enables `serde_json/preserve_order`.
-fn write_line(stream: &mut dyn Write, value: serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
-    serde_json::to_writer(&mut *stream, &sort_keys(value))?;
-    writeln!(stream)?;
-    Ok(())
+/// `value` as one line, with the keys of each object in byte order: the order of the dump also in a
+/// binary in which another crate enables `serde_json/preserve_order`.
+fn line(value: serde_json::Value) -> Vec<u8> {
+    let mut line = serde_json::to_vec(&sort_keys(value)).expect("a JSON value serializes");
+    line.push(b'\n');
+    line
+}
+
+/// The lines of one item. Of adjacent lines with the same OSM object, only the first is written; a
+/// line without an object is always written.
+type Lines = Vec<(Option<OsmId>, Vec<u8>)>;
+
+/// Write the lines of each of `items` in order and return their count. The lines of a batch build
+/// on every core, while this thread compresses the batch before it.
+fn write_lines<T: Sync>(
+    stream: &mut dyn Write,
+    items: &[T],
+    lines: impl Fn(&T, &mut Lines) -> Result<(), String> + Sync,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let (sender, batches) = std::sync::mpsc::sync_channel(1);
+    let lines = &lines;
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            for batch in items.chunks(1 << 14) {
+                let built = batch
+                    .par_chunks(256)
+                    .map(|chunk| {
+                        let mut built = Vec::new();
+                        chunk.iter().try_for_each(|item| lines(item, &mut built)).map(|()| built)
+                    })
+                    .collect::<Result<Vec<_>, _>>();
+                let failed = built.is_err();
+                if sender.send(built).is_err() || failed {
+                    break;
+                }
+            }
+        });
+        let (mut count, mut last) = (0, None);
+        for built in batches {
+            for (source, line) in built?.into_iter().flatten() {
+                if source.is_none() || source != last {
+                    stream.write_all(&line)?;
+                    count += 1;
+                    last = source;
+                }
+            }
+        }
+        Ok(count)
+    })
 }
 
 fn sort_keys(value: serde_json::Value) -> serde_json::Value {
