@@ -24,7 +24,7 @@ from scipy.spatial import cKDTree
 from scipy.sparse.csgraph import connected_components, dijkstra
 from scipy.sparse.linalg import LinearOperator, gmres, splu
 
-from .profiles import metres
+from .profiles import CACHED, TILE, metres
 from .structures import BORE_M, BORE_PATH_M, BORE_RAIL_M, is_track, road_half
 
 TABLE = Path(__file__).resolve().parents[2] / "data/trailview/roads.json"
@@ -73,8 +73,11 @@ CHUNK, GRID_UNITS = 1 << 21, 2.5e-6
 # HALO_M of it.
 AREA_ZOOM, HALO_M = 10, 500.0
 FREE_STEP_M = 50.0
-# A job holds about this many bytes per metre of its ways, most of it in the factorization of its system.
-JOB_BYTES_PER_M = 300
+# A job holds about this many bytes per metre of its ways, most of it in the factorization of its system, and its
+# worker caches up to TERRAIN_BYTES of terrain tiles. Measured on the bake of central-switzerland at a halo of
+# 500 m: the largest job, 8.9 million metres of ways, peaked at 3.4 GB private with the cache.
+JOB_BYTES_PER_M = 370
+TERRAIN_BYTES = CACHED * TILE * TILE * 4
 
 
 def validate(classes):
@@ -636,7 +639,7 @@ def solve_by_area(features, terrain, rivers=(), classes=CLASSES, halo_m=HALO_M, 
     wanted = {tuple(area) for area in np.unique(region.area[np.unique(region.vertex[region.feature < count])], axis=0).tolist()}
     jobs = sorted(wanted & region.areas.keys(), key=lambda area: -region.areas[area])
     if jobs and not workers:
-        workers = step_pool.worker_count(JOB_BYTES_PER_M * int(region.metres[region.near(jobs[0], halo_m)].sum()) + 1)
+        workers = step_pool.worker_count(JOB_BYTES_PER_M * int(region.metres[region.near(jobs[0], halo_m)].sum()) + TERRAIN_BYTES)
     out = [[(outer, points, None) for outer, points, _ in parts] for _, _, parts in features[:count]]
     pieces, culverts, underpasses, metrics = {}, set(), set(), {}
     shared = (features, terrain, rivers, boxes, classes, region, halo_m)
