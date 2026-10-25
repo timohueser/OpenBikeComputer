@@ -161,7 +161,7 @@ The options of the [planner layers](#planner) that are the same for each region.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `osm.margin_m` | number | `planner/osm/bounds` reaches at least this far around the region, in metres: the search puts a place in the town of a place node up to 15 km away |
+| `osm.margin_m` | number | `planner/osm/bounds` of a region with a box reaches at least this far around the region, in metres: the search puts a place in the town of a place node up to 15 km away |
 | `terrain.margin_m` | number | The terrain reaches at least this far around the region, in metres: the horizon of the sun layer |
 | `routing.profiles` | array of strings | The profiles of the routing package. The route catalog needs `touring`, `road`, `gravel`, `mtb` and `hiking` |
 | `climate.first_year` | integer | The first of the ten years of ERA5-Land that the climate layer reads |
@@ -803,9 +803,9 @@ this is a union of available snapshots, not a snapshot at one common date. Confl
 at the same object type, id and version are malformed OSM inputs.
 
 The merge, the map crop and the cut of the planner run the Osmium of `OBC_OSMIUM`, or else
-`osmium` on the `PATH`. Without it, an update blocks the device layers that need it, the plan of
-the planner fails, and each asks to install Osmium or set `OBC_OSMIUM`. It does not download or
-install a tool.
+`osmium` on the `PATH`. Without it, an update blocks the device layers that need it, and the plan
+of the planner fails for more than one source area, a box or `planner/trailview-features`. Each
+asks to install Osmium or set `OBC_OSMIUM`. It does not download or install a tool.
 
 The steps read `copernicus-glo-30` and the national terrain models of `terrain`,
 and the step list reads files such as a `.poly` and the GLO-30 tile list, each at its version (see
@@ -864,7 +864,7 @@ of the version of `terrain` that the target reads, and `mean/index.json`.
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
 | `planner/osm` | The selected PBF of each `planner/source/<area>` | `path`: `osm.pbf` for one area; none for multiple areas | `osm.pbf`: one extract as it is, or the available-snapshot union |
-| `planner/osm/bounds` | `planner/osm` | `bbox`: west, south, east and north of the bounds of the region, widened by `osm.margin_m` | `osm.pbf`: the `osmium extract --strategy smart -S types=multipolygon,boundary --set-bounds --generator obc-data` of `bbox`. Each multipolygon and each boundary that `bbox` touches is complete. The metrics name the version (`osmium`) |
+| `planner/osm/bounds` | `planner/osm` | For a region with a box, `bbox`: west, south, east and north of the bounds of the region, widened by `osm.margin_m`, within ±180° and ±90°. For a region without a box, `path`: `osm.pbf` | `osm.pbf`: for a region with a box, the `osmium extract --strategy smart -S types=multipolygon,boundary --set-bounds --generator obc-data` of `bbox`, in which each multipolygon and each boundary that `bbox` touches is complete, and the metrics name the version (`osmium`). For a region without a box, `planner/osm` as it is: its extracts are its whole area |
 | `planner/basemap` | `planner/osm/bounds`; The selected jar of `protomaps-basemaps`; `natural-earth`, `water-polygons`, `land-polygons`, `daylight-landcover`, `qrank`, `pgf-encoding` | `bounds` of the region; `attribution` of `osm-planet`, `natural-earth` and `daylight-landcover` | `basemap.pmtiles`: the Protomaps map at zooms 0 to 14 |
 | `planner/reference` | `terrain`, without params: the mean tiles in `bounds` of `planner/terrain` and `mean/index.json`; only when the version has one of them | `source` and `tiles` as for `device/reference`, of the tiles of `bounds`; `pool`: `mean` | `reference/`: the mean archive of those tiles. A Python step with the group `terrain-reference` |
 | `planner/terrain` | The GLO-30 tiles of `bounds`; `planner/reference` when there is one | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds; `attribution`: the credit of GLO-30 | `terrain.mbtiles`: the terrain tiles of [the planner release](planner-release.md#terrain-tiles), the bytes that `planner-dem` writes from the same tiles and archive |
