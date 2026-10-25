@@ -135,6 +135,9 @@ pub fn bake(
             Ok(())
         })?;
         eprintln!("Wrote {count} address records; write POIs and localities");
+        // One OSM object writes one place record. `features::read` sorts the features by source, so
+        // the copies of an object are adjacent and `write_lines` drops the later ones.
+        debug_assert!(input.features.windows(2).all(|pair| pair[0].source <= pair[1].source));
         let features: Vec<_> = (0..input.features.len()).collect();
         count += write_lines(stream, &features, |&i, lines| {
             let f = &input.features[i];
@@ -180,6 +183,9 @@ fn write_lines<T: Sync>(
                         let mut built = Vec::new();
                         chunk.iter().try_for_each(|item| lines(item, &mut built)).map(|()| built)
                     })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    // The first failure in item order, whichever core reaches it first.
                     .collect::<Result<Vec<_>, _>>();
                 let failed = built.is_err();
                 if sender.send(built).is_err() || failed {
@@ -231,6 +237,36 @@ fn write_dump(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parallel_batches_write_the_lines_of_a_sequential_loop() {
+        // Three batches, and copies of one object across a chunk and a batch boundary.
+        let items: Vec<i64> = (0..40_000).map(|i| i / 3).collect();
+        let lines = |&item: &i64, lines: &mut Lines| {
+            if item % 7 == 0 {
+                return Ok(());
+            }
+            lines.push((Some(OsmId::Node(osmpbfreader::NodeId(item))), format!("place {item}\n").into_bytes()));
+            Ok(())
+        };
+        let mut expected = Vec::new();
+        let mut emitted = std::collections::BTreeSet::new();
+        for item in &items {
+            let mut built = Vec::new();
+            lines(item, &mut built).unwrap();
+            for (source, line) in built {
+                if source.is_none_or(|source| emitted.insert(source)) {
+                    expected.extend(line);
+                }
+            }
+        }
+        let mut written = Vec::new();
+        let count = write_lines(&mut written, &items, lines).unwrap();
+        assert_eq!(count, expected.iter().filter(|&&b| b == b'\n').count());
+        assert!(written == expected);
+        let failing = |&item: &i64, _: &mut Lines| if item % 500 == 499 { Err(format!("item {item}")) } else { Ok(()) };
+        assert_eq!(write_lines(&mut Vec::new(), &items, failing).unwrap_err().to_string(), "item 499");
+    }
 
     #[test]
     fn output_is_complete_before_publication_and_never_overwrites_a_previous_bake() {
