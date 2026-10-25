@@ -63,7 +63,7 @@ class BasemapTest(unittest.TestCase):
             osm.write_bytes(b"osm")
             snapshots["protomaps-basemaps"] = {"basemap.jar": str(jar)}
             request = {"output": str(output), "snapshots": snapshots,
-                       "layers": {"planner/osm": {"osm.pbf": str(osm)}},
+                       "layers": {"planner/osm/bounds": {"osm.pbf": str(osm)}},
                        "options": {"bounds": [7, 47, 8, 48], "attribution": "credits"}}
 
             def bake(argv, *, cwd, check):
