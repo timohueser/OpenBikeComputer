@@ -38,4 +38,10 @@ describe('the rules of the ground', () => {
         expect(mid[3]).toBeCloseTo(1 - mosaicsAt(1).weight, 5);
         expect(mid.slice(0, 3)).toEqual(autumn.slice(0, 3));
     });
+
+    it('marks heath as moor only in a region with heather', () => {
+        const SLOT = slots(vocabulary), moor = (look: Region['look']) => packRulesOn([{ ...region, look }], vocabulary, 180)[4 * (SLOT.kinds + 1) + 1];
+        expect(moor(region.look)).toBe(0);
+        expect(moor({ ...region.look, moor: { heather: '#5e4552', share: 0.35 } })).toBe(1);
+    });
 });
