@@ -685,7 +685,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
             for n, parts in zip(kept, solved):
                 heights[n] = parts
             culverts, underpasses = {kept[n] for n in culverts}, {kept[n] for n in underpasses}
-            metrics["roads"]["cut_chains"] = len(cut)
+            metrics["roads"]["cut_features"] = len(cut)
             # A culvert is a road: the stamps build it over the ground.
             ways = [(entry, {k: v for k, v in tags.items() if k != "bridge"} if n in culverts else tags, parts) for n, ((entry, tags, _), parts) in enumerate(zip(ways, heights))]
             decks = [(n, entry["kind"], tags, parts[0]) for n, (entry, tags, parts) in enumerate(ways) if structures.is_bridge(entry["kind"], tags) and parts[0][2]]
@@ -698,11 +698,11 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
                 if entry["kind"] == "gallery" and parts[0][2]:
                     extra[n] = {"uphill": structures.uphill(parts[0][1], terrain)}
                 if entry["kind"] == "tunnel" and tags.get("tunnel") != "building_passage":
-                    kept = [part for part in parts if not (part[2] and structures.floating(part[1], part[2], terrain))]
-                    metrics["roads"]["floating_tunnels"] = metrics["roads"].get("floating_tunnels", 0) + len(parts) - len(kept)
-                    if not kept:
+                    under_ground = [part for part in parts if not (part[2] and structures.floating(part[1], part[2], terrain))]
+                    metrics["roads"]["floating_tunnels"] = metrics["roads"].get("floating_tunnels", 0) + len(parts) - len(under_ground)
+                    if not under_ground:
                         continue
-                    parts = kept
+                    parts = under_ground
                 if (entry["kind"] == "tunnel" and tags.get("tunnel") != "building_passage" and n not in underpasses and any(z for *_, z in parts)
                         and all(structures.shallow(tags, points, z, terrain) for _, points, z in parts if z)):
                     # A tunnel under what the terrain leaves out, such as a building, is a road on the ground.

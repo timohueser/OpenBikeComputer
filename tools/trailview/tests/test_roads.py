@@ -157,7 +157,7 @@ class RoadSolverTest(unittest.TestCase):
 
 
 class AreasTest(unittest.TestCase):
-    def test_a_network_over_four_areas_solves_by_area_as_it_solves_whole(self):
+    def test_the_jobs_of_four_areas_that_each_hold_the_whole_network_stitch_into_its_one_solve(self):
         n = 1 << roads.AREA_ZOOM
         corner = ((math.floor(X0 * n) + 1) / n - X0) / UNIT, (Y0 - math.floor(Y0 * n) / n) / UNIT
         near = lambda *points: [(corner[0] + east, corner[1] + north) for east, north in points]
