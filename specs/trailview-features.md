@@ -128,8 +128,9 @@ road meets the track. It is part of the options of the step. The road solver:
   flyover,
 - ignores the terrain under a bridge and in a tunnel: these run between their ends. A tunnel runs in a
   straight line between the two ends of its chain of tunnel ways that meet end to end, so a side tunnel
-  or a shaft that joins it follows it and does not lift it. A bridge never sags under the straight line
-  between the two ends of its chain of bridge ways,
+  or a shaft that joins it follows it and does not lift it. A tunnel chain with an end that meets no way
+  runs level from its other end, or on the grade of the road that runs on into it there. A bridge never
+  sags under the straight line between the two ends of its chain of bridge ways,
 - raises a bridge that is not a culvert where it crosses a waterway, or a road, a path or a track on
   the ground that it does not meet: its road lies at least 1.5 m (water), 4.5 m (road), 2.5 m (path) or
   6 m (track) over it, plus a deck of 1 m, or 0.4 m for a path. The way below may sink to give the room. A bridge whose end
@@ -151,7 +152,7 @@ road meets the track. It is part of the options of the step. The road solver:
   with a waterway, 0.2 m below the water.
 
 The road solver works by area: an area is a tile of zoom 10. The solve of an area holds each way within
-1 km of the area, along the ways from the nearest point of a way in a straight line. A bridge or a tunnel
+750 m of the area, along the ways from the nearest point of a way in a straight line. A bridge or a tunnel
 has no length here, so the solve holds it whole, and the ways that it crosses join at their distance from
 it in a straight line. Each vertex of OSM in an area, and each vertex that the solver adds after it up to
 the next vertex of OSM, takes its height from the solve of that area. A bridge is a culvert, and a
