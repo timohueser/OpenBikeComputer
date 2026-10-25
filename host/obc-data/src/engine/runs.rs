@@ -1535,10 +1535,10 @@ pub(crate) mod tests {
 
         fixture.run(&steps, &plan, Limits::machine()).unwrap();
         let built = &status(&fixture.store, &list(&fixture.store).unwrap()[0].id).unwrap().layers[0];
-        assert_eq!(
-            (built.done, &built.leaves_done[..], built.leaves_baking.len()),
-            (2, &["0001-0002".to_string(), "0001-0003".to_string()][..], 0)
-        );
+        // The leaves run together, so they finish in any order.
+        let mut done: Vec<&str> = built.leaves_done.iter().map(String::as_str).collect();
+        done.sort();
+        assert_eq!((built.done, &done[..], built.leaves_baking.len()), (2, &["0001-0002", "0001-0003"][..], 0));
     }
 
     #[test]
