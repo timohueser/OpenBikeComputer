@@ -11,9 +11,26 @@ const NO_DATA_BIT = 0x80, MATERIAL_BITS = 0x3f;
 const NO_REGION = 255;
 /** The colour alpha codes: fewer than 3 looks, and a quarter that saw snow. */
 const UNSEEN = 0, SNOW_MARK = 1;
+/** The mark of a measured texel in the NDVI tile of a colour tile; the other marks are the alpha codes. */
+const MEASURED = 2;
 
 /** Decoded pixels of tile z/x/y: `channels` bytes per pixel, `size` pixels a side. */
 export interface Raster { z: number; x: number; y: number; size: number; channels: number; data: Uint8Array }
+
+/**
+ * A colour tile as RGBA with its NDVI code in alpha, from its NDVI tile and its colour, both decoded as
+ * RGBA (specs/trailview-tiles.md#colour). The NDVI tile has the code of each 2 × 2 block in red and the
+ * marks of its four texels in green, 2 bits each in reading order. Writes the alpha into `rgb`.
+ */
+export function colourTexels(ndvi: Uint8Array, rgb: Uint8Array): Uint8Array {
+    for (let row = 0; row < TILE; row++) {
+        for (let col = 0; col < TILE; col++) {
+            const block = 4 * ((row >> 1) * (TILE / 2) + (col >> 1)), mark = (ndvi[block + 1] >> (2 * (2 * (row & 1) + (col & 1)))) & 3;
+            rgb[4 * (row * TILE + col) + 3] = mark === MEASURED ? ndvi[block] : mark;
+        }
+    }
+    return rgb;
+}
 
 /** The date of the pages: the weight of the second quarter, the snow day index, and per region its snow_share. */
 export interface GroundDate { weight: number; snowIndex: number; shares: ArrayLike<number> }

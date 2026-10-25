@@ -73,16 +73,22 @@ class ColourTest(unittest.TestCase):
         self.assertEqual(stored[:2, :4].tolist(), [[2, 2, 2, 2]] * 2)
         self.assertEqual(stored[4, 4], 254)
 
-    def test_the_webp_variant_stores_the_ndvi_codes_and_the_highest_code_exactly(self):
+    def test_a_colour_body_is_the_ndvi_tile_then_the_colour_and_gives_back_the_stored_ndvi(self):
         rng = np.random.default_rng(1)
         stack = np.zeros((4, tiles.TILE, tiles.TILE, 4), np.uint8)
         stack[..., :3] = (np.arange(tiles.TILE) // 2)[None, :, None, None]
         stack[..., 3] = rng.choice([0, 1, 2, 90, 255], (4, tiles.TILE, tiles.TILE))
         encoded = colour.encoder("webp-12")(stack)
         self.assertEqual(sorted(encoded), ["q1", "q2", "q3", "q4"])
-        alpha = np.asarray(Image.open(io.BytesIO(encoded["q3"][1])).convert("RGBA"))[..., 3]
+        body = encoded["q3"][1]
+        split = 8 + int.from_bytes(body[4:8], "little")
+        ndvi = np.asarray(Image.open(io.BytesIO(body[:split])).convert("RGB"))
+        rgb = Image.open(io.BytesIO(body[split:]))
+        self.assertEqual((ndvi.shape, rgb.size, rgb.mode), ((tiles.TILE // 2, tiles.TILE // 2, 3), (tiles.TILE, tiles.TILE), "RGB"))
+        shift = 2 * (2 * (np.arange(tiles.TILE)[:, None] % 2) + np.arange(tiles.TILE)[None, :] % 2)
+        mark = ndvi[..., 1].repeat(2, axis=0).repeat(2, axis=1) >> shift & 3
+        alpha = np.where(mark == colour.MEASURED, ndvi[..., 0].repeat(2, axis=0).repeat(2, axis=1), mark)
         self.assertTrue((alpha == colour.stored_ndvi(stack[2, ..., 3])).all())
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -43,7 +43,7 @@ describe('the snow days of the ground', () => {
         const snow = vi.fn()
             .mockRejectedValueOnce(new Error('timeout'))
             .mockRejectedValueOnce(new Error('timeout'))
-            .mockResolvedValue(source(get));
+            .mockResolvedValue(source(get, { trailview_format: 3 }));
         const pages = await ground(snow);
         expect((await pages()).complete).toBe(false);
         expect((await pages()).complete).toBe(true);

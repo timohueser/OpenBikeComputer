@@ -13,7 +13,7 @@ Each archive is a tile pyramid over the region bounds.
 | --- | --- |
 | Format | PMTiles v3 |
 | Tiles | Web Mercator XYZ, 512 × 512 texels |
-| Tile type | `webp` (4), or `avif` (5) for a colour variant |
+| Tile type | `webp` (4); `unknown` (0) in a colour archive, see [Colour](#colour) |
 | Tile compression | none |
 | Bounds | The region bounds |
 
@@ -33,7 +33,7 @@ The archive metadata is a JSON object:
 
 | Key | Value |
 | --- | --- |
-| `trailview_format` | `3` in the ground archive, `1` in a colour archive. A reader reads only the format that it knows |
+| `trailview_format` | `3` in the ground archive, `2` in a colour archive. A reader reads only the format that it knows |
 | `archive` | The name of the archive: `ground`, or `q1` to `q4` |
 | `variant` | Only in a colour archive: the variant of the table in [Colour](#colour) |
 | `attribution` | Text to show with the layer |
@@ -93,18 +93,17 @@ the smallest on a tie, until none does.
 ## Colour
 
 `trailview-colour` has four archives from the Sentinel-2 quarterly mosaics of one year, `q1` to
-`q4`. Quarter q holds the months 3q − 2 to 3q. A texel is RGBA: the colour of the quarter, and its
-NDVI code in alpha.
+`q4`. Quarter q holds the months 3q − 2 to 3q. A texel has the colour of the quarter and its NDVI
+code.
 
 The colour is the visible reflectance `refl` of the red, green and blue bands, as
-round(255 × refl^(1/2.2)). A WebP variant keeps the alpha lossless. An AVIF variant codes the alpha
-at the quality of the colour, so its codes 0 and 1 are not exact.
+round(255 × refl^(1/2.2)).
 
-| Alpha | Meaning |
+| Code | Meaning |
 | --- | --- |
 | 0 | Fewer than 3 valid looks in the quarter: the engine paints the palette |
 | 1 | The quarter saw snow. The colour is that of the nearest quarter without snow, the previous one first, or black |
-| 2–255 | NDVI = (alpha − 1) / 127 − 1 |
+| 2–255 | NDVI = (code − 1) / 127 − 1 |
 
 The NDVI has half the resolution of the texels: a texel with a code of 2 or more takes the mean code
 m of the texels with a code of 2 or more in its aligned 2 × 2 block, which starts at even texel
@@ -112,12 +111,22 @@ coordinates. m is rounded half to even and stored as 128 + 4 × floor((m − 128
 code is a multiple of 4 plus 2, and it is below 128 when m is below 128. Codes 0 and 1 stay as they are. This is the last step of the bake, on
 each tile of each zoom.
 
+A tile is two images, one after the other:
+
+1. The NDVI tile: a lossless WebP of 256 × 256 pixels, one pixel per aligned 2 × 2 block of texels.
+   Red is the code that the measured texels of the block share, or 0 where no texel is measured.
+   Green holds a mark of 2 bits for each of the four texels, in reading order from bit 0: north-west,
+   north-east, south-west, south-east. A mark is 0 or 1, the code of the texel, or 2: the texel
+   has the code in red. The length of the image is 8 + the RIFF size in bytes 4 to 7, little
+   endian.
+2. The colour: an RGB image of 512 × 512 texels in the codec of the variant.
+
 In the first and the last quarter, a texel darker than 0.025 in visible reflectance is terrain
 shadow, unless it is snow in shade. Where the third quarter looked, it takes the chroma of the third
 quarter at its own brightness.
 
 The archives hold zoom 9 to the last zoom of the variant. A coarser texel is the mean colour, in
-linear light, of its children that looked, without the black of a child with alpha 1; and the mean
+linear light, of its children that looked, without the black of a child with code 1; and the mean
 NDVI code of those that measured one. It is 1 where more children saw snow than measured an NDVI.
 
 | Variant | Codec | Last zoom | Chroma at 47° N | NDVI at 47° N |
@@ -139,9 +148,9 @@ view reads the snow of its date only. It has one archive per band of day steps,
 step min(4b + 2, 182). A date reads the band of its day step, ⌊day step ÷ 4⌋.
 
 The archives differ from the table in [Archives](#archives): a tile is 512 × 512 pixels, tile type
-`unknown` (0) and gzip compression. Tile z/x/y holds the four tiles of zoom z + 1 of the snow
-archive that it covers, so its zooms are one coarser than those of the snow archive. A tile is
-262,144 bytes in row order, one byte per pixel:
+`webp` (4), lossless. Tile z/x/y holds the four tiles of zoom z + 1 of the snow
+archive that it covers, so its zooms are one coarser than those of the snow archive. A pixel is one
+byte, which decodes as red, green and blue:
 
 | Bits | Meaning |
 | --- | --- |
@@ -150,7 +159,7 @@ archive that it covers, so its zooms are one coarser than those of the snow arch
 
 A pixel that the snow archive has no tile for has no data. A tile where no season has data is not
 in the archive. A snow archive with more than 15 seasons needs a new format. Each archive has the
-metadata of [Archives](#archives), with `trailview_format` `2`, `archive` `snow-00` to `snow-45`,
+metadata of [Archives](#archives), with `trailview_format` `3`, `archive` `snow-00` to `snow-45`,
 and:
 
 | Key | Value |

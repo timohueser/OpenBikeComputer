@@ -59,9 +59,9 @@ pub static PLANNER_TRAILVIEW_RULES: Layer =
 pub static PLANNER_TRAILVIEW_GROUND: Layer = whole("planner/trailview-ground", 3, &[&WEB_PLANNER]);
 /// The TrailView colour tiles. Its format is `trailview_format` of a colour archive in
 /// `specs/trailview-tiles.md`.
-pub static PLANNER_TRAILVIEW_COLOUR: Layer = whole("planner/trailview-colour", 1, &[&WEB_PLANNER]);
+pub static PLANNER_TRAILVIEW_COLOUR: Layer = whole("planner/trailview-colour", 2, &[&WEB_PLANNER]);
 /// The TrailView snow days. Its format is `trailview_format` of `specs/trailview-tiles.md`.
-pub static PLANNER_TRAILVIEW_SNOW: Layer = whole("planner/trailview-snow", 2, &[&WEB_PLANNER]);
+pub static PLANNER_TRAILVIEW_SNOW: Layer = whole("planner/trailview-snow", 3, &[&WEB_PLANNER]);
 /// The bands of the snow days, `BANDS` of `tools/trailview/snow.py`.
 pub const SNOW_BANDS: usize = 46;
 /// Its format is `canopy_format` of `specs/trailview-tiles.md`.
