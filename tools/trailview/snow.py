@@ -22,7 +22,7 @@ from . import tiles
 from .. import step_pool, step_request
 
 # `trailview_format` of the snow day archives.
-FORMAT = 2
+FORMAT = 3
 # The day steps of a season (specs/planner-snow-tiles.md), the steps per band, and the bands.
 DAY_STEPS = 183
 BAND_STEPS = 4
@@ -52,8 +52,8 @@ def days(body, seasons):
 
 
 def encode(entry):
-    """The gzip bodies of the bands of one snow day tile from its four snow tiles (north-west first, None
-    where the snow archive has none); none where no season has data."""
+    """The lossless WebP bodies of the bands of one snow day tile from its four snow tiles (north-west
+    first, None where the snow archive has none); none where no season has data."""
     tile_id, bodies, seasons = entry
     planes, half = np.zeros((BANDS, SIZE, SIZE), np.uint8), SIZE // 2
     for q, body in enumerate(bodies):
@@ -62,7 +62,7 @@ def encode(entry):
             planes[:, row:row + half, col:col + half] = days(gzip.decompress(body), seasons).reshape(BANDS, half, half)
     if not planes.any():
         return tile_id, None
-    return tile_id, [gzip.compress(plane.tobytes(), compresslevel=6, mtime=0) for plane in planes]
+    return tile_id, [tiles.lossless(plane)[1] for plane in planes]
 
 
 def parents(snow_tiles, seasons):
@@ -120,7 +120,7 @@ def bake(snow, output, workers=None):
                 raise ValueError("The snow archive has no tile with data")
             keys = ("min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7", "center_zoom", "center_lon_e7", "center_lat_e7")
             for band, (writer, stream) in enumerate(zip(writers, streams)):
-                writer.finalize({"tile_type": TileType.UNKNOWN, "tile_compression": Compression.GZIP, **{key: header[key] for key in keys}}, {
+                writer.finalize({"tile_type": TileType.WEBP, "tile_compression": Compression.NONE, **{key: header[key] for key in keys}}, {
                     "trailview_format": FORMAT, "archive": f"snow-{band:02}", "band": band, "band_steps": BAND_STEPS, "day_step": day_step(band),
                     "first_season": metadata["first_season"], "seasons": seasons, "source": metadata["source"],
                     "attribution": metadata["attribution"],

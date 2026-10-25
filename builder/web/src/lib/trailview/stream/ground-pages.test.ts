@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dateColour, groundPages, snowState, type Raster } from './ground-pages';
+import { colourTexels, dateColour, groundPages, snowState, type Raster } from './ground-pages';
 
 describe('the ground pages', () => {
     it('blends the two quarters about the date, and a quarter that saw nothing hands its weight to the other', () => {
@@ -13,6 +13,15 @@ describe('the ground pages', () => {
         const snow = dateColour(one([100, 0, 0, 1]), one([0, 200, 0, 150]), 0.25);
         expect(snow.mark[0]).toBe(1);
         expect(snow.ndvi[0]).toBeCloseTo(0.25 * (149 / 127 - 1), 5);
+    });
+
+    it('gives each texel of a colour tile its block code where it is measured, else its mark', () => {
+        const ndvi = new Uint8Array(4 * 256 * 256), rgb = new Uint8Array(4 * 512 * 512).fill(7);
+        // Block (1, 0): code 130; north-west measured, north-east no looks, south-west snow, south-east measured.
+        ndvi.set([130, 2 | (0 << 2) | (1 << 4) | (2 << 6)], 4);
+        const alpha = (row: number, col: number) => colourTexels(ndvi, rgb)[4 * (512 * row + col) + 3];
+        expect([alpha(0, 2), alpha(0, 3), alpha(1, 2), alpha(1, 3), alpha(0, 0)]).toEqual([130, 0, 1, 130, 0]);
+        expect(rgb[4 * 2]).toBe(7);
     });
 
     it('has snow where at least the share of seasons with data had snow on the day', () => {

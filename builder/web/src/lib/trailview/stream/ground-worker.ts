@@ -1,8 +1,8 @@
 // Decodes the ground, colour and snow tiles of a ground tile and builds its pages, off the main thread.
-import { groundPages, type GroundDate, type Raster } from './ground-pages';
+import { colourTexels, groundPages, type GroundDate, type Raster } from './ground-pages';
 
-/** A tile body: an image, or the bytes of a snow day. */
-export interface Body { key: string; z: number; x: number; y: number; body: ArrayBuffer; planar?: boolean }
+/** A tile body of a layer of specs/trailview-tiles.md. */
+export interface Body { key: string; z: number; x: number; y: number; body: ArrayBuffer; layer: 'ground' | 'colour' | 'snow' }
 
 export interface GroundJob {
     z: number; x: number; y: number;
@@ -61,18 +61,33 @@ function probe(): Promise<void> {
     return probed;
 }
 
+/** The bytes of a tile as `groundPages` reads them. */
+async function decode({ body, layer }: Body): Promise<{ size: number; channels: number; data: Uint8Array }> {
+    if (layer === 'colour') {
+        // The NDVI tile, then the colour: the RIFF header of the NDVI tile gives its length.
+        const split = 8 + new DataView(body).getUint32(4, true);
+        const [ndvi, rgb] = await Promise.all([straightPixels(body.slice(0, split)), straightPixels(body.slice(split))]);
+        if (ndvi.size !== 256 || rgb.size !== 512) throw new Error(`A colour tile has a ${ndvi.size} px NDVI tile and ${rgb.size} px colour.`);
+        return { size: rgb.size, channels: 4, data: colourTexels(ndvi.data, rgb.data) };
+    }
+    const { size, data } = await straightPixels(body);
+    if (layer === 'ground') return { size, channels: 4, data };
+    // A snow day is gray: its byte is the red of each pixel.
+    const gray = new Uint8Array(size * size);
+    for (let i = 0; i < gray.length; i++) gray[i] = data[4 * i];
+    return { size, channels: 1, data: gray };
+}
+
 function raster(body: Body | undefined): Promise<Raster | undefined> {
     if (!body) return Promise.resolve(undefined);
     const { key, z, x, y } = body;
-    // A planar body is its raster, and the main thread keeps it.
-    if (body.planar) return Promise.resolve({ z, x, y, size: Math.sqrt(body.body.byteLength), channels: 1, data: new Uint8Array(body.body) });
     let entry = decoded.get(key);
     if (entry) {
         decoded.delete(key);
         decoded.set(key, entry);
         return entry;
     }
-    entry = straightPixels(body.body).then(({ size, data }) => ({ z, x, y, size, channels: 4, data }));
+    entry = decode(body).then(pixels => ({ z, x, y, ...pixels }));
     decoded.set(key, entry);
     entry.then(out => {
         if (decoded.get(key) !== entry) return;

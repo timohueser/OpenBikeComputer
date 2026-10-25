@@ -2,11 +2,13 @@
 day step, as specs/trailview-tiles.md defines them."""
 
 import gzip
+import io
 import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 from tools.trailview import snow
 
@@ -33,7 +35,8 @@ class SnowDaysTest(unittest.TestCase):
         self.assertEqual(snow.encode((7, [empty, None, None, None], 1)), (7, None))
         tile_id, bodies = snow.encode((7, [None, gzip.compress(tile((snow.NO_SNOW, snow.NO_SNOW))), None, None], 1))
         self.assertEqual(len(bodies), snow.BANDS)
-        plane = np.frombuffer(gzip.decompress(bodies[0]), np.uint8).reshape(snow.SIZE, snow.SIZE)
+        plane = np.asarray(Image.open(io.BytesIO(bodies[0])).convert("L"))
+        self.assertEqual(plane.shape, (snow.SIZE, snow.SIZE))
         self.assertTrue((plane[:256, 256:] == 16).all(), "the north-east tile has one season with data")
         self.assertEqual(int(plane[:256, :256].max()) + int(plane[256:].max()), 0)
 
