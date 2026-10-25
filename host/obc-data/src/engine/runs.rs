@@ -648,7 +648,8 @@ impl Run {
                 });
                 let started = self.record(&Event::StepStarted { step: step.name.clone() });
                 match prepared.and_then(|prepared| started.map(|()| prepared)) {
-                    Ok((receipt, request)) => {
+                    Ok((receipt, mut request)) => {
+                        request.memory_bytes = limits.memory_bytes.map(|memory| memory.saturating_sub(reserved));
                         let (sender, stop) = (sender.clone(), &steps_stop);
                         scope.spawn(move || {
                             // The loop waits for every step that it started, also one that panics.
@@ -832,16 +833,15 @@ fn longest_first(pending: &mut [&Step], planned: &HashMap<&str, &Build>) {
 
 /// What the measured runs of a step tell of its memory: the smallest peak, and the input bytes and
 /// the peak of the run that read the most. A run of a step in another region, or of another leaf of
-/// a tiled step, counts. The memory of two steps of one layer can differ more than 500 times, as
-/// that of the copy `planner/osm` and the parse `device/osm` does.
+/// a tiled step, counts. Another step of the same layer does not: a copy and a parse of one extract
+/// differ greatly in memory.
 struct Measured {
     smallest: u64,
     largest: (u64, u64),
 }
 
-/// What an unmeasured step reserves: a part for its process, and a part per input byte. In the bake
-/// of central-switzerland, the most per input byte of a step that read over 100 MB was 15
-/// (`device/osm`: 7.8 GB for 0.5 GB), and the largest peak of a step that read less was 0.4 GB.
+/// What an unmeasured step reserves: a part for its process, and a part per input byte. A step that
+/// parses OSM data can peak at 15 times the bytes that it reads.
 const UNMEASURED: (u64, u64) = (512 << 20, 16);
 
 /// The memory that a step that reads `bytes_in` reserves: its estimated `peak`, else the smallest
@@ -1787,6 +1787,8 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
         assert!(!together(&unknown, [None, Some(100)], 1000), "an unmeasured step reserves 512 MiB");
         let room = 2 * UNMEASURED.0 + (1 << 10);
         assert!(together(&fixture("runs-memory-unmeasured"), [None, None], room), "a 512 MiB part and 16 per byte");
+        let tight = fixture("runs-memory-unmeasured-tight");
+        assert!(!together(&tight, [None, None], 2 * UNMEASURED.0 + 1), "the part per byte counts");
 
         // A receipt of the step measured 100 bytes for 5 bytes of input: the step without an
         // estimate that reads 5 bytes reserves 100.
@@ -1829,6 +1831,29 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
         let spans = spans(&fixture("runs-memory-learn"), &[(a, None), (b, None), (c, None)], memory);
         assert!(!overlap(spans[a], spans[b]) && !overlap(spans[a], spans[c]), "{spans:?}");
         assert!(overlap(spans[b], spans[c]), "{spans:?}");
+    }
+
+    #[test]
+    fn a_step_gets_the_memory_that_the_steps_before_it_leave_free() {
+        let fixture = fixture("runs-memory-env");
+        let script = "import json, os, sys
+request = json.load(sys.stdin)
+open(os.path.join(request['output'], 'out.txt'), 'w').write(os.environ['OBC_DATA_MEMORY_BYTES'])
+";
+        write(&fixture.root().join("env.py"), script);
+        let command = || StepRun::Command(vec!["python3".into(), "env.py".into()]);
+        let steps: Vec<Step> =
+            ["test/a", "test/b"].map(|name| step(name, vec![snapshot("head", "1", &[])], "out.txt", command())).into();
+        let mut plan = fixture.plan(&steps).unwrap();
+        for build in plan.groups.iter_mut().flat_map(|group| &mut group.builds) {
+            build.estimate = if build.step == "test/a" { estimate(2000, Some(300)) } else { estimate(1000, Some(100)) };
+        }
+        let built = fixture.run(&steps, &plan, Limits { jobs: 2, memory_bytes: Some(1000) }).unwrap();
+        let free = |name: &str| {
+            let built = built.iter().find(|built| built.receipt.step == name).unwrap();
+            std::fs::read_to_string(fixture.store.object(&built.receipt.files[0].sha256)).unwrap()
+        };
+        assert_eq!((free("test/a"), free("test/b")), ("1000".into(), "700".into()));
     }
 
     #[test]

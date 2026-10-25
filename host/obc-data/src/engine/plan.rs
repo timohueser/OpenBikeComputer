@@ -229,8 +229,8 @@ impl Plan {
 /// From the newest receipt of the step with the same options, else from the cost of its output in
 /// the release, else from the newest receipt of the step. A peak comes only from a receipt of a step
 /// that ran in a process of its own: the cost in a release does not tell. An estimate from other
-/// options is a guess: it scales by the input size of the step, and has no peak, so that a run
-/// reserves the memory of the step from the input bytes that it reads.
+/// options is a guess: it scales by the input size of the step. Its peak scales up, never down: much
+/// of a peak can be fixed, such as a whole extract that a small region reads.
 fn estimate<'c>(costs: &'c Costs, step: &Step, bytes_in: Option<u64>) -> Option<Estimate> {
     let newest = |same_options: bool| {
         let receipts = costs.receipts.iter();
@@ -276,7 +276,7 @@ fn estimate<'c>(costs: &'c Costs, step: &Step, bytes_in: Option<u64>) -> Option<
         wall_ms: scaled(estimate.wall_ms),
         bytes_out: scaled(estimate.bytes_out),
         client_bytes: scaled(estimate.client_bytes),
-        peak_rss_bytes: None,
+        peak_rss_bytes: estimate.peak_rss_bytes.map(|peak| peak.max(scaled(peak))),
         guess: true,
     })
 }
@@ -431,7 +431,6 @@ pub(crate) mod tests {
             estimate(&Costs { receipts, release }, step, None).and_then(|estimate| estimate.peak_rss_bytes)
         };
         let measured = Receipt { peak_rss_bytes: Some(1 << 30), ..receipts[1].clone() };
-        assert_eq!(peak(vec![measured.clone()], &none, &step), None, "a guess has no peak");
         step.options = measured.options.clone();
         assert_eq!(peak(vec![measured.clone()], &none, &step), Some(1 << 30));
         let engine = Receipt { own_process: false, ..measured.clone() };
@@ -443,8 +442,12 @@ pub(crate) mod tests {
         let wide = Receipt { options: serde_json::json!({ "bounds": [7, 46, 9, 47] }), bytes_in: 1000, ..measured };
         step.options = serde_json::json!({ "bounds": [7, 46, 8, 47] });
         let costs = Costs { receipts: vec![wide], release: &none };
-        let scaled = |bytes_in| estimate(&costs, &step, bytes_in).map(|estimate| estimate.wall_ms);
-        assert_eq!(scaled(Some(250)), Some(500), "a quarter of the input bytes");
-        assert_eq!(scaled(None), Some(1000), "half of the area");
+        let scaled = |bytes_in| {
+            let estimate = estimate(&costs, &step, bytes_in).unwrap();
+            (estimate.wall_ms, estimate.peak_rss_bytes)
+        };
+        assert_eq!(scaled(Some(250)), (500, Some(1 << 30)), "a quarter of the input bytes; the peak does not fall");
+        assert_eq!(scaled(None), (1000, Some(1 << 30)), "half of the area");
+        assert_eq!(scaled(Some(3000)), (6000, Some(3 << 30)), "three times the input bytes and the peak");
     }
 }

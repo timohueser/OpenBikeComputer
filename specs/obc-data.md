@@ -603,8 +603,9 @@ An estimate from a receipt or a cost with other options than the step, such as a
 a guess (`guess`). It scales `wall_ms`, `bytes_out` and `client_bytes` by the input size of the
 step against theirs: the input bytes (`bytes_in`) when the store has every input of the step and
 the receipt read some, else the area of the option `bounds` (`[west, south, east, north]` in
-degrees, on a sphere) when both have it, else not at all. A guess has no `peak_rss_bytes`: a
-run reserves the memory of the step from the input bytes that it reads.
+degrees, on a sphere) when both have it, else not at all. Its `peak_rss_bytes` scales up, never
+down: much of a peak can be fixed, such as a whole extract that a small region reads. On a first
+bake of a region the store seldom has every input of a step, so a guess mostly scales by area.
 
 The `bytes` of a fetch is the size of its files in the
 record of the version. When that record does not list them all, it is the size in the record of
@@ -667,9 +668,11 @@ after a refresh of the extract, does not bake on any machine.
   store or of this run. It reserves their smallest peak, or, when that is more, its input bytes
   (`bytes_in`) times the peak per input byte of the run that read the most. The peak per input
   byte of a run that read little is mostly the fixed memory of a process. Another step of the
-  layer does not count: its memory can differ more than 500 times. A step without a measured run
-  reserves 512 MiB and 16 times its input bytes. A step that reserves more than the memory runs alone. A step with worker processes
-  reserves its largest process, not their sum.
+  layer does not count: a copy and a parse of one extract differ greatly in memory. A step without a measured run
+  reserves 512 MiB and 16 times its input bytes. A step that reserves more than the memory runs
+  alone. A step with worker processes reserves its largest process, not their sum. So a step gets
+  `OBC_DATA_MEMORY_BYTES`: the part of the budget that the steps that run do not reserve when it
+  starts. A Python step pool forks no more workers than fit in it.
 - A step that does not fit in the free memory holds back the steps after it, so that it starts
   first.
 - After a fetch fails, no step starts. After a step fails, no other step starts, and the steps
@@ -1316,8 +1319,8 @@ the store only, and it never writes to the target.
   lists each bake without an estimate, with a guess or without a peak, and each fetch whose size
   is not known, also of a new copy that the store lacks yet.
 - `machine`: the memory of the machine and the free bytes of the disk of the store after the
-  listing. A bake whose estimated peak is more than the memory, or fetches, downloads and bakes
-  that leave less than 4 GiB free on the disk, refuse the update.
+  listing. A bake whose estimated peak, also a guess, is more than the memory, or fetches,
+  downloads and bakes that leave less than 4 GiB free on the disk, refuse the update.
 - `after`: the release that becomes the rollback, and the rollback of now, which the collection
   drops, with the keys that the serving release does not name: what it deletes at most.
 - `args`: the arguments after `obc data` that start the update of this review.

@@ -235,6 +235,7 @@ mod tests {
                 options: serde_json::json!({}),
                 output: dir.join(collection).join("output"),
                 metrics: dir.join(collection).join("metrics.json"),
+                memory_bytes: None,
             };
             compile(&request).unwrap();
             let content: Value =
@@ -285,6 +286,7 @@ mod tests {
             options: serde_json::json!({"cell_log2":18,"cells":[[cell.i,cell.j]]}),
             output: dir.join("output"),
             metrics: dir.join("metrics"),
+            memory_bytes: None,
         };
         peaks(&request).unwrap();
         let bytes = std::fs::read(request.output.join(format!("peaks/{:04}/{:04}.bin", cell.i, cell.j))).unwrap();

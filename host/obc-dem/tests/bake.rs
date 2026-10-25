@@ -392,6 +392,7 @@ fn the_terrain_step_reads_its_reference_layer_as_the_archive_of_the_old_bake() {
         options: serde_json::json!({"posting_log2": POSTING_LOG2, "cell_log2": CELL_LOG2, "cells": cells}),
         output: output.clone(),
         metrics: scratch.join("step/metrics.json"),
+        memory_bytes: None,
     };
     obc_dem::step::terrain(&request).unwrap();
 

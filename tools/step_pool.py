@@ -17,6 +17,8 @@ def worker_count():
             free = next(int(line.split()[1]) << 10 for line in meminfo if line.startswith("MemAvailable:"))
     except (OSError, StopIteration):
         return cores()
+    # The memory that the other steps of the run leave free: `obc data` reserves only the largest process of a step.
+    free = min(free, int(os.environ.get("OBC_DATA_MEMORY_BYTES", free)))
     return max(1, min(cores(), free >> 30))
 
 

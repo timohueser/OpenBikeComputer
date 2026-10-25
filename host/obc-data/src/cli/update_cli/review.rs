@@ -423,14 +423,13 @@ fn refusals(machine: &MachineCheck, (bakes, planner): (&[Build], bool), store_by
         ));
     }
     if let Some(memory) = machine.memory_bytes {
-        for build in bakes {
-            if let Some(peak) =
-                build.estimate.and_then(|estimate| estimate.peak_rss_bytes).filter(|peak| *peak > memory)
-            {
+        for (build, estimate) in bakes.iter().filter_map(|build| Some(build).zip(build.estimate)) {
+            if let Some(peak) = estimate.peak_rss_bytes.filter(|peak| *peak > memory) {
                 refusals.push(format!(
-                    "step `{}` needs about {} of memory, and this machine has {}",
+                    "step `{}` needs about {} of memory{}, and this machine has {}",
                     build.step,
                     size(peak),
+                    if estimate.guess { ", a guess from other options" } else { "" },
                     size(memory)
                 ));
             }
