@@ -21,6 +21,8 @@ struct Masks {
 const WALL: u32 = 1u;
 const CONFLICT: u32 = 2u;
 const FORDED: u32 = 4u;
+// In water or in a building.
+const TAKEN: u32 = 8u;
 // The coarsest level with masks, as NEAR of bins.ts.
 const MASK_LEVEL: u32 = 16u;
 // As MASK_RANGE of stamp.wgsl.
@@ -108,7 +110,7 @@ fn half_width(texel: vec4f) -> f32 {
 // The mask at a point, from the finest page at or above `top` that has a mask: the shapes and the
 // faces filtered between the four texels around the point, held in that page, so that an edge is
 // smooth below a texel; the kinds of the nearest texel.
-// With `roads`, none where the nearest texel holds no road within MASK_M: one texel read decides.
+// With `roads`, none where the nearest texel holds no road within MASK_M and is not taken: one texel read decides.
 fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
     for (var level = top; level >= MASK_LEVEL; level--) {
         let t = texel_of(s, level);
@@ -117,7 +119,7 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
         if (slot != 0u) {
             let page = slot - 1u;
             let byte = mask_byte(page, whole);
-            if (roads && (byte & 15u) == 0u) {
+            if (roads && (byte & 15u) == 0u && ((byte >> 4u) & TAKEN) == 0u) {
                 break;
             }
             let first = (whole >> vec2u(8u)) << vec2u(8u);
@@ -144,9 +146,9 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
     return Mask(vec4f(0.5), vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0));
 }
 
-// Whether the mask keeps a thing off a point: on a road, a path or a track, or nearer to its edge than
-// `clear` metres.
-fn on_road(s: vec2f, clear: f32) -> bool {
+// Whether the mask keeps a thing off a point: in water or in a building, on a road, a path or a track,
+// or nearer to a road's edge than `clear` metres.
+fn kept_off(s: vec2f, clear: f32) -> bool {
     let mask = mask_at(s, u32(ceil(lod(s))), true);
-    return mask.level != 0u && mask.kind.x != 0u && mask_metres(mask.shape.x) < clear;
+    return mask.level != 0u && ((mask.kind.y & TAKEN) != 0u || (mask.kind.x != 0u && mask_metres(mask.shape.x) < clear));
 }

@@ -4,6 +4,7 @@ use super::{
 };
 use geo::{Distance, Euclidean, Geometry, Intersects, Point};
 use osmpbfreader::{OsmId, Tags};
+use rayon::prelude::*;
 use rstar::{Envelope, RTree, AABB};
 use std::collections::{BTreeMap, BTreeSet};
 use unicode_normalization::UnicodeNormalization;
@@ -63,8 +64,9 @@ pub struct Index<'a> {
 impl<'a> Index<'a> {
     pub fn new(input: &'a Input, countries: &'a [&'a str], policy: &'a super::policy::Policy) -> Self {
         assert_eq!(input.features.len(), countries.len());
-        let mut centers: Vec<_> = input.features.iter().map(|f| center(&f.geometry)).collect();
-        let mut ranks: Vec<_> = input.features.iter().enumerate().map(|(i, f)| policy.ranks(f, countries[i])).collect();
+        let mut centers: Vec<_> = input.features.par_iter().map(|f| center(&f.geometry)).collect();
+        let mut ranks: Vec<_> =
+            input.features.par_iter().enumerate().map(|(i, f)| policy.ranks(f, countries[i])).collect();
         let sources: BTreeMap<_, _> = input
             .features
             .iter()
@@ -137,14 +139,16 @@ impl<'a> Index<'a> {
                 .filter_map(|id| sources.get(id))
                 .find(|&&j| !input.features[j].tag("place").is_empty() && !linked_nodes.contains(&j))
                 .copied();
+            let name = normalized(f.name());
             let matched = nodes
                 .locate_in_envelope_intersecting(&envelope(&f.geometry))
                 .filter(|e| {
                     let n = &input.features[e.index];
+                    // The point test is the expensive one, so it comes last.
                     !linked_nodes.contains(&e.index)
-                        && f.geometry.intersects(&centers[e.index])
                         && ((!f.tag("wikidata").is_empty() && f.tag("wikidata") == n.tag("wikidata"))
-                            || (normalized(f.name()) == normalized(n.name()) && rank == ranks[e.index].1))
+                            || (rank == ranks[e.index].1 && name == normalized(n.name())))
+                        && f.geometry.intersects(&centers[e.index])
                 })
                 .min_by_key(|e| e.index)
                 .map(|e| e.index);
@@ -285,16 +289,21 @@ impl<'a> Index<'a> {
                 .postcode(input.features[i].tag("addr:postcode"), countries[i])
                 .or_else(|| result.context(i, false).remove("postcode"));
         }
-        for (i, f) in
-            input.features.iter().enumerate().filter(|(i, f)| f.road() || (4..26).contains(&result.ranks[*i].1))
-        {
-            let mut context = result.context(i, true);
-            if !f.road() {
-                context.insert(part(result.ranks[i].1).into(), f.name().into());
-            }
-            result.overlay(&mut context, &f.tags, countries[i]);
-            result.road_contexts.insert(i, context);
-        }
+        let road_contexts = input
+            .features
+            .par_iter()
+            .enumerate()
+            .filter(|(i, f)| f.road() || (4..26).contains(&result.ranks[*i].1))
+            .map(|(i, f)| {
+                let mut context = result.context(i, true);
+                if !f.road() {
+                    context.insert(part(result.ranks[i].1).into(), f.name().into());
+                }
+                result.overlay(&mut context, &f.tags, countries[i]);
+                (i, context)
+            })
+            .collect::<Vec<_>>();
+        result.road_contexts = road_contexts.into_iter().collect();
         result
     }
 

@@ -51,7 +51,7 @@ pub static PLANNER_SNOW: Layer = whole("planner/snow", 1, &[&WEB_PLANNER]);
 pub static PLANNER_SUN: Layer = whole("planner/sun", 3, &[&WEB_PLANNER]);
 /// Its format is `features_format` of `specs/trailview-features.md`.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 4, ..whole("planner/trailview-features", 2, &[&WEB_PLANNER]) };
+    Layer { revision: 5, ..whole("planner/trailview-features", 2, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
     whole("planner/trailview-rules", 1, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_GROUND]);

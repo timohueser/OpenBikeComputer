@@ -312,8 +312,8 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
         leaf = select(1u, 2u, unit_float(mix_bits(h + 7u)) < 0.5);
     }
     let model = species_of(region, band, leaf, unit_float(mix_bits(h + 11u)));
-    // A road or a path is a lane through the forest: crowns reach a little over it. The canopy keeps trees off water and houses.
-    if (model == 0xffffffffu || on_road(s, CLEAR * models[model].spread * height)) {
+    // A road or a path is a lane through the forest: crowns reach a little over it.
+    if (model == 0xffffffffu || kept_off(s, CLEAR * models[model].spread * height)) {
         return;
     }
     if (known(coarse)) {
