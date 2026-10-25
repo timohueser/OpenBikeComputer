@@ -4,12 +4,15 @@ use super::{
 };
 use geo::{CoordsIter, Distance, Euclidean, Geometry, Intersects, Point};
 use osmpbfreader::OsmId;
-use rstar::{Envelope, RTree, AABB};
-use std::collections::{BTreeMap, BTreeSet};
+use rstar::{primitives::GeomWithData, Envelope, RTree, AABB};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// A code that fewer addresses carry gives no position: a few mistagged addresses, or the few
-/// addresses that an input cut to a box keeps of a code whose area lies outside it.
+/// A code that fewer addresses carry gets a position only where no other code has more addresses
+/// within `NEAR_M` of it. So a few mistagged addresses among the addresses of another code give
+/// none, also in an input cut to a box that keeps only them of their code; the addresses of a
+/// small village with its own code do.
 const MIN_ADDRESSES: usize = 5;
+const NEAR_M: f64 = 250.;
 
 struct Postcode {
     country: String,
@@ -88,23 +91,41 @@ impl Postcodes {
                 (values[n / 2 - 1] + values[n / 2]) / 2.
             }
         };
-        for ((country, code), points) in points {
-            if points.len() < MIN_ADDRESSES {
-                continue;
-            }
-            let metres = policy.postcode_extent(&country);
+        let around = |p: Point, metres: f64| {
+            let dy = metres / 111320.;
+            let dx = dy / p.y().to_radians().cos().abs().max(0.01);
+            AABB::from_corners([p.x() - dx, p.y() - dy], [p.x() + dx, p.y() + dy])
+        };
+        let points: Vec<_> = points.into_iter().collect();
+        // Each address point, with the index of its code.
+        let near = RTree::bulk_load(
+            points
+                .iter()
+                .enumerate()
+                .flat_map(|(i, (_, points))| points.iter().map(move |p| GeomWithData::new([p.x(), p.y()], i)))
+                .collect(),
+        );
+        for (i, ((country, code), points)) in points.iter().enumerate() {
             let p = Point::new(
                 median(points.iter().map(|p| p.x()).collect()),
                 median(points.iter().map(|p| p.y()).collect()),
             );
-            let dy = metres / 111320.;
-            let dx = dy / p.y().to_radians().cos().abs().max(0.01);
+            if points.len() < MIN_ADDRESSES {
+                let mut counts = HashMap::<usize, usize>::new();
+                for point in near.locate_in_envelope(&around(p, NEAR_M)) {
+                    *counts.entry(point.data).or_default() += 1;
+                }
+                let own = counts.get(&i).copied().unwrap_or(0);
+                if counts.values().any(|&n| n > own) {
+                    continue;
+                }
+            }
             entries.push(Postcode {
-                country,
-                code,
+                country: country.clone(),
+                code: code.clone(),
                 geometry: None,
                 center: p,
-                envelope: AABB::from_corners([p.x() - dx, p.y() - dy], [p.x() + dx, p.y() + dy]),
+                envelope: around(p, policy.postcode_extent(country)),
             });
         }
         let tree = RTree::bulk_load(

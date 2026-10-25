@@ -930,21 +930,14 @@ mod tests {
                 feature(2, Point::new(-105.001, 40.001).into(), &[("addr:housenumber", "2"), ("addr:place", "Farm")]),
                 feature(3, Point::new(-104., 40.).into(), &[("addr:housenumber", "3"), ("addr:place", "Farm")]),
                 feature(4, Point::new(-105.001, 40.001).into(), &[("addr:housenumber", "4"), ("addr:place", "Farm")]),
-            ]
-            .into_iter()
-            // A code needs five addresses for a position.
-            .chain((5..9).map(|id| {
-                let house = id.to_string();
-                let tags = [("addr:postcode", "80481"), ("addr:housenumber", house.as_str()), ("addr:place", "Farm")];
-                feature(id, Point::new(-105. + 0.0001 * id as f64, 40.).into(), &tags)
-            }))
-            .collect(),
+            ],
             associated: BTreeMap::new(),
             labels: BTreeMap::new(),
             incomplete_geometries: 0,
             nodes: 0,
         };
-        let countries = vec!["us", "us", "us", "de", "us", "us", "us", "us"];
+        // One address gives its code a position: no other code has addresses near it.
+        let countries = vec!["us", "us", "us", "de"];
         let policy = super::super::policy::Policy::test_policy();
         let index = Index::new(&input, &countries, &policy);
         assert_eq!(index.address(0).0.get("postcode").unwrap(), "80481");
@@ -953,8 +946,8 @@ mod tests {
         assert!(!index.address(3).0.contains_key("postcode"));
     }
 
-    /// A mistagged address gives its code no position, and two addresses 70 km away do not move
-    /// the position of theirs.
+    /// A mistagged address among the addresses of another code gives its code no position, and two
+    /// addresses 70 km away do not move the position of theirs.
     #[test]
     fn a_postcode_position_ignores_mistagged_and_far_addresses() {
         let address = |id: i64, x: f64, code: Option<&'static str>| {
