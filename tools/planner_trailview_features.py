@@ -612,7 +612,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
     if held:
         waters = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is water]
         ways = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is roads]
-        levels, metrics["water"] = water.solve([(entry["kind"], tags, parts) for entry, tags, parts in waters], terrain)
+        levels, metrics["water"] = water.solve_by_network([(entry["kind"], tags, parts) for entry, tags, parts in waters], terrain)
         rivers = [(points, z) for (entry, _, parts), heights in zip(waters, levels) if entry["kind"] in water.RIVERS
                   for (_, points, _), z in zip(parts, heights) if z]
         for (entry, tags, parts), heights in zip(waters, levels):

@@ -45,6 +45,8 @@ RIVER_NEAR_M = 30.0
 LAKE_POINTS = 250_000
 TILE = 512
 EQUATOR_M = 40075016.686
+# A worker of `solve_by_network` holds up to this much: its terrain tiles and the samples of its rivers.
+WORKER_BYTES = 3 << 29
 
 
 def solves(kind, tags):
@@ -299,6 +301,84 @@ def solve(features, terrain):
         near = [ways[i] for i in overlapping(boxes, (bounds[0] - margin, bounds[1] - margin, bounds[2] + margin, bounds[3] + margin))]
         spilling += math.isfinite(level) and spills(level, rings, terrain, near)
     return out, {"lakes": len(lakes), "lakes_spilling": int(spilling), "river_parts": len(ways), "turned": turned}
+
+
+def groups(features):
+    """The indices of the features (kind, tags, parts) that `solve` can set apart from the others, as lists in
+    their order: each network of rivers and streams that share a point, with each lake that comes within
+    4 × RIVER_NEAR_M of it and the networks of those lakes; each other lake alone. A level depends on its
+    whole network, a lake on the rivers that it pins and that `spills` looks at, at most 2 × RIVER_NEAR_M
+    from it. The marks only split smoothing near them: no group holds them."""
+    parent = list(range(len(features)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    first, boxes, owners = {}, [], []
+    for index, (kind, _, parts) in enumerate(features):
+        if kind not in RIVERS:
+            continue
+        for _, points, *_ in parts:
+            for point in points:
+                parent[root(first.setdefault(point, index))] = root(index)
+            if points:
+                boxes.append(box([points]))
+                owners.append(index)
+    boxes = np.array(boxes).reshape(-1, 4)
+    for index, (kind, _, parts) in enumerate(features):
+        if kind in LAKES and parts:
+            bounds = box([points for _, points, *_ in parts])
+            margin = 4 * RIVER_NEAR_M / metres(bounds[1])
+            for i in overlapping(boxes, (bounds[0] - margin, bounds[1] - margin, bounds[2] + margin, bounds[3] + margin)):
+                parent[root(owners[i])] = root(index)
+    out = {}
+    for index, (kind, _, _) in enumerate(features):
+        if kind in RIVERS | LAKES:
+            out.setdefault(root(index), []).append(index)
+    return list(out.values())
+
+
+def solve_by_network(features, terrain, workers=None):
+    """`solve` of each of the `groups` apart, in a `step_pool.pool` of `workers`: the same heights and metrics."""
+    from .. import step_pool
+
+    marks = [index for index, (kind, _, _) in enumerate(features) if kind in MARKS]
+    workers = workers or step_pool.worker_count(WORKER_BYTES)
+    # The largest groups first, then each into the batch with the fewest points.
+    size = lambda group: sum(len(points) for i in group for _, points, *_ in features[i][2])
+    found = sorted(groups(features), key=size, reverse=True)
+    batches = [[] for _ in range(min(len(found), 4 * workers))]
+    load = [0] * len(batches)
+    for group in found:
+        least = load.index(min(load))
+        batches[least] += group
+        load[least] += size(group)
+    out = [[None] * len(parts) for _, _, parts in features]
+    metrics = {"lakes": 0, "lakes_spilling": 0, "river_parts": 0, "turned": 0}
+    for indices, heights, turned, counts in step_pool.forked(solve_batch, (features, terrain, marks), batches, workers):
+        for index, z in zip(indices, heights):
+            out[index] = z
+        for index, n in turned:
+            features[index][2][n][1].reverse()
+        for name, count in counts.items():
+            metrics[name] += count
+    return out, metrics
+
+
+def solve_batch(shared, batch):
+    """The heights of the features of `batch`, the parts that turned round and the metrics: `solve` with
+    the marks, on copies of the points that it may turn."""
+    features, terrain, marks = shared
+    indices = sorted(batch)
+    chosen = sorted(batch + marks)
+    copies = [(kind, tags, [(outer, list(points), *rest) for outer, points, *rest in parts]) for kind, tags, parts in (features[i] for i in chosen)]
+    heights, metrics = solve(copies, terrain)
+    solved = dict(zip(chosen, zip(heights, copies)))
+    turned = [(i, n) for i in indices for n, ((_, points, *_), (_, before, *_)) in enumerate(zip(solved[i][1][2], features[i][2])) if points != before]
+    return indices, [solved[i][0] for i in indices], turned, metrics
 
 
 def half_width(tags):

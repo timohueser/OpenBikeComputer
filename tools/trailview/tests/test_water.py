@@ -144,5 +144,30 @@ class Lakes(unittest.TestCase):
         self.assertEqual(metrics["lakes"], 1)
 
 
+class Networks(unittest.TestCase):
+    def test_the_networks_and_the_lakes_solve_apart_to_the_same_levels(self):
+        noise = np.random.default_rng(2).normal(0, 0.3, 4000)
+        slope = Terrain(lambda e, s: 900 - 0.02 * e + 0.01 * np.abs(s - 200) + noise[np.clip((np.abs(e) / 0.5).astype(int), 0, 3999)])
+        square = lambda e, s, size: [at(e, s), at(e + size, s), at(e + size, s + size), at(e, s + size)]
+        features = [
+            # A confluence whose river runs through a lake, with a fall below it.
+            ("stream", {"waterway": "stream"}, [(False, [at(-400, -300), at(-200, -150), at(0, 0)], None)]),
+            ("stream", {"waterway": "stream"}, [(False, [at(-400, 300), at(-200, 150), at(0, 0)], None)]),
+            ("river", {"waterway": "river"}, [(False, [at(0, 0), at(300, 0), at(600, 0), at(900, 0)], None)]),
+            ("lake", {}, [(True, square(350, -50, 100), None)]),
+            ("waterfall", {}, [(False, [at(750, 0)], None)]),
+            # A stream drawn uphill, with a lake that does not touch it but lies near it.
+            ("stream", {"waterway": "stream"}, [(False, [at(1600, 400), at(1300, 400), at(1000, 400)], None)]),
+            ("lake", {}, [(True, square(1200, 440, 80), None)]),
+            ("lake", {}, [(True, square(0, 1000, 200), None)]),
+        ]
+        self.assertEqual(sorted(water.groups(features)), [[0, 1, 2, 3], [5, 6], [7]])
+        copy = lambda: [(kind, tags, [(outer, list(points), z) for outer, points, z in parts]) for kind, tags, parts in features]
+        whole, apart = copy(), copy()
+        self.assertEqual(water.solve(whole, slope), water.solve_by_network(apart, slope, workers=2))
+        self.assertEqual(whole, apart, "a way turns round in the same place")
+        self.assertNotEqual(whole[5], features[5])
+
+
 if __name__ == "__main__":
     unittest.main()

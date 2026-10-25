@@ -9,15 +9,16 @@ def cores():
     return len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
 
 
-def worker_count():
-    """One worker for each core that this process can use, and one at most for each GB of free memory: a snow worker
-    holds the planes of one chunk, about 0.6 GB for nine seasons of HR-WSI at 48° N (measured with two seasons)."""
+def worker_count(memory=1 << 30):
+    """One worker for each core that this process can use, and one at most for each `memory` bytes of free memory. The
+    default is a GB: a snow worker holds the planes of one chunk, about 0.6 GB for nine seasons of HR-WSI at 48° N
+    (measured with two seasons)."""
     try:
         with open("/proc/meminfo") as meminfo:
             free = next(int(line.split()[1]) << 10 for line in meminfo if line.startswith("MemAvailable:"))
     except (OSError, StopIteration):
         return cores()
-    return max(1, min(cores(), free >> 30))
+    return max(1, min(cores(), free // memory))
 
 
 def end_with(parent):
@@ -41,3 +42,26 @@ def pool(workers=None):
         return ProcessPoolExecutor(workers or worker_count(), mp_context=multiprocessing.get_context("fork"),
                                    initializer=end_with, initargs=(os.getpid(),))
     return ThreadPoolExecutor(workers or 4)
+
+
+_shared = None
+
+
+def _call(function, item):
+    return function(_shared, item)
+
+
+def forked(function, shared, items, workers=None):
+    """function(shared, item) for each of `items` in a `pool` of `workers`, as each one ends. The workers fork
+    once `shared` is set, so they read it without a copy."""
+    from concurrent.futures import as_completed
+
+    global _shared
+    _shared = shared
+    executor = pool(workers)
+    try:
+        for done in as_completed([executor.submit(_call, function, item) for item in items]):
+            yield done.result()
+    finally:
+        executor.shutdown(cancel_futures=True)
+        _shared = None
