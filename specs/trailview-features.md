@@ -155,7 +155,11 @@ The road solver works by area: an area is a tile of zoom 10. The solve of an are
 750 m of the area, along the ways from the nearest point of a way in a straight line. A bridge or a tunnel
 has no length here, so the solve holds it whole, and the ways that it crosses join at their distance from
 it in a straight line. Each vertex of OSM in an area, and each vertex that the solver adds after it up to
-the next vertex of OSM, takes its height from the solve of that area. A bridge is a culvert, and a
+the next vertex of OSM, takes its height from the solve of that area. A network of bridges and tunnels
+that share a point joins the solve whole, also where it runs past the region, with the end segment of
+each way on the ground that meets one of its ends there. The bake reads OSM to 20 km and one zoom-13
+tile past the region. A network with an end past that which meets no way has no heights: the input cuts
+it, so it has no ends to run between. A bridge is a culvert, and a
 tunnel passes under a road, by the solve of the area of its first vertex.
 
 The tiles keep the vertices of OSM and the vertex at the end of each approach of a side road, and add
