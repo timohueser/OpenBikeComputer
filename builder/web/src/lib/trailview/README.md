@@ -78,9 +78,9 @@ trailview/box.sh [view | flight ARGS]       # bake the Engelberg box without obc
 npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
 ```
 
-`shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs give the same
-bytes. `flight.mjs` prints the GPU time per pass, the CPU selection time, the nodes, triangles and
-pages of each flight of `flights.json`. The `ground` pass runs only when ground pages arrive:
+`shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs can differ
+in a few pixels by a few levels: compare shots by their difference. `flight.mjs` prints the GPU
+time per pass, the CPU selection time, the nodes, triangles and pages of each flight of `flights.json`. The `ground` pass runs only when ground pages arrive:
 read its `amortized` time. Run it on the M1 Pro with `--gpu`: Chrome then draws
 2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
 of the fixture, and `--features` a folder `z/x/y.bin`; build the page with a config
