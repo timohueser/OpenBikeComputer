@@ -7,6 +7,10 @@ use osmpbfreader::OsmId;
 use rstar::{Envelope, RTree, AABB};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// A code that fewer addresses carry gives no position: a few mistagged addresses, or the few
+/// addresses that an input cut to a box keeps of a code whose area lies outside it.
+const MIN_ADDRESSES: usize = 5;
+
 struct Postcode {
     country: String,
     code: String,
@@ -44,7 +48,7 @@ impl Postcodes {
                 });
             }
         }
-        let mut sums: BTreeMap<(String, String), (f64, f64, usize)> = BTreeMap::new();
+        let mut points: BTreeMap<(String, String), Vec<Point>> = BTreeMap::new();
         let mut seen = BTreeSet::new();
         let areas = RTree::bulk_load(
             entries.iter().enumerate().map(|(index, pc)| Entry { index, envelope: pc.envelope }).collect(),
@@ -72,14 +76,27 @@ impl Postcodes {
             if !seen.insert((country.to_string(), code.clone(), point)) {
                 continue;
             }
-            let sum = sums.entry((country.to_string(), code)).or_default();
-            sum.0 += p.x();
-            sum.1 += p.y();
-            sum.2 += 1;
+            points.entry((country.to_string(), code)).or_default().push(p);
         }
-        for ((country, code), (x, y, n)) in sums {
+        // The median, not the mean: a few addresses far away, also outside the input, do not move it.
+        let median = |mut values: Vec<f64>| {
+            values.sort_by(f64::total_cmp);
+            let n = values.len();
+            if n % 2 == 1 {
+                values[n / 2]
+            } else {
+                (values[n / 2 - 1] + values[n / 2]) / 2.
+            }
+        };
+        for ((country, code), points) in points {
+            if points.len() < MIN_ADDRESSES {
+                continue;
+            }
             let metres = policy.postcode_extent(&country);
-            let p = Point::new(x / n as f64, y / n as f64);
+            let p = Point::new(
+                median(points.iter().map(|p| p.x()).collect()),
+                median(points.iter().map(|p| p.y()).collect()),
+            );
             let dy = metres / 111320.;
             let dx = dy / p.y().to_radians().cos().abs().max(0.01);
             entries.push(Postcode {
