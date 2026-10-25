@@ -148,5 +148,29 @@ class RoadSolverTest(unittest.TestCase):
                 self.assertLess(over, rise + 0.5)
 
 
+class AreasTest(unittest.TestCase):
+    def test_a_network_over_four_areas_solves_by_area_as_it_solves_whole(self):
+        n = 1 << roads.AREA_ZOOM
+        corner = ((math.floor(X0 * n) + 1) / n - X0) / UNIT, (Y0 - math.floor(Y0 * n) / n) / UNIT
+        near = lambda *points: [(corner[0] + east, corner[1] + north) for east, north in points]
+        noise = np.random.default_rng(3).normal(0, 0.4, 20000)
+        terrain = Terrain(lambda east, north: 1000 + 0.15 * east - 0.03 * north + noise[(np.abs(east + 3 * north) / 0.5).astype(int) % 20000])
+        features = [
+            road("main-road", "secondary", line(*near((-600, -400), (0, 0), (600, 300)), step=40)),
+            road("road", "residential", line(*near((0, 0), (-200, 300), (-300, 500)), step=30)),
+            road("road", "track", line(*near((200, -300), (220, -200)), step=10), bridge="yes"),
+            road("road", "track", line(*near((-500, 200), (-100, 200)), step=50)),
+            road("tunnel", "residential", line(*near((-300, -100), (300, -100)), step=60), tunnel="yes"),
+            road("road", "track", line(*near((40, 100), (46, 100))), bridge="yes"),
+        ]
+        stream = [at(*point) for point in near((210, -260), (180, -240))]
+        rivers = [(stream, [990.0, 989.5])]
+        self.assertEqual(len(roads.Region(features).areas), 4)
+        whole = roads.solve(features, terrain, rivers)
+        apart = roads.solve_by_area(features, terrain, rivers, workers=2)
+        self.assertEqual(whole[:3], apart[:3])
+        self.assertEqual({k: v for k, v in whole[3].items() if k != "residual_p99_m"}, {k: v for k, v in apart[3].items() if k != "residual_p99_m"})
+
+
 if __name__ == "__main__":
     unittest.main()
