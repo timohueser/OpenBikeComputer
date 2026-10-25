@@ -152,12 +152,13 @@ road meets the track. It is part of the options of the step. The road solver:
   with a waterway, 0.2 m below the water.
 
 The road solver works by area: an area is a tile of zoom 10. The solve of an area holds each way within
-500 m of the area, along the ways from the nearest point of a way in a straight line. A bridge or a tunnel
+500 m of the area, along the ways from the nearest vertex of OSM of a way in a straight line. A bridge or a tunnel
 has no length here, so the solve holds it whole, and the ways that it crosses join at their distance from
 it in a straight line. Each vertex of OSM in an area, and each vertex that the solver adds after it up to
 the next vertex of OSM, takes its height from the solve of that area. A network of bridges and tunnels
-that share a point joins the solve whole, also where it runs past the region, with the end segment of
-each way on the ground that meets one of its ends there. The bake reads OSM to 20 km and one zoom-13
+that share a point joins the solve whole, also where it runs past the region, with each way on the
+ground that meets one of its ends there. In the order of the OSM data that the rules above use, such a
+way past the region comes after each way of the region. The bake reads OSM to 20 km and one zoom-13
 tile past the region. A network with an end past that which meets no way has no heights: the input cuts
 it, so it has no ends to run between. A bridge is a culvert, and a
 tunnel passes under a road, by the solve of the area of its first vertex.
@@ -236,7 +237,8 @@ A pond (`water=pond`) takes the lowest terrain 2 m inside its shore, a reservoir
 or `landuse=reservoir`) the median of the terrain on its outline: its full level. An `ele` tag
 within 1.5 m of the level wins. Other kinds have no height yet.
 
-The water solver solves each network apart, with each lake within 120 m of it, and each other lake
+The water solver solves each network apart, with each lake whose bounding box comes within 120 m of the
+bounding box of the network, and each other lake
 alone. A level depends only on its network and on the lakes near it, so the levels are those of one solve
 of all waterways and lakes.
 
