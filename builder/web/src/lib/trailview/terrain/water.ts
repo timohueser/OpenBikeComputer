@@ -1,4 +1,5 @@
 import type { Gpu } from '../gpu/device';
+import { CLIP_DISTANCES } from '../gpu/include';
 import { wgsl } from '../gpu/wgsl';
 import { COARSEST, key, type Node } from './lod';
 import type { Stamps } from './stamps';
@@ -61,7 +62,7 @@ export class Water {
         ] });
         // A node index and a level per instance, at most one instance per node.
         const instances = gpu.buffer('water', nodes.size / 2, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
-        const module = device.createShaderModule({ label: 'water', code: wgsl('terrain/water.wgsl') });
+        const module = device.createShaderModule({ label: 'water', code: wgsl('terrain/water.wgsl', device.features.has('clip-distances') ? CLIP_DISTANCES : {}) });
         const blend: GPUBlendComponent = { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' };
         const pipeline = (kind: Kind) => device.createRenderPipelineAsync({
             label: kind, layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surfaceLayout, groundLayout, featureLayout] }),
