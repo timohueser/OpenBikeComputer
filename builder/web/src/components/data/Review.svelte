@@ -143,6 +143,7 @@
         const parts = [`${least}${span(cost.wall_ms)} here`, `store ${least}${size(cost.store_bytes)}`, upload];
         if (cost.peak_rss_bytes !== null) parts.splice(1, 0, `peak RAM ${least}${size(cost.peak_rss_bytes)}`);
         if (unknown) parts.push(`${unknown} of ${bakes.length} bakes have no estimate`);
+        if (cost.unknown.guess.length) parts.push(`${cost.unknown.guess.length} of ${bakes.length} bakes guessed from other options`);
         return parts.join(" · ");
     }
     const area_of = (params: [string, string][]) => params.map(([, value]) => value).join(", ");

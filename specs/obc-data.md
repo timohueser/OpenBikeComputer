@@ -598,7 +598,15 @@ The estimate of a build is `wall_ms`, `bytes_out`, `client_bytes` (the size of t
 client reads) and `peak_rss_bytes` of the newest receipt, by `built`, of the same step with the same
 options. Without one, it is the `cost` of the output of the step in the serving release, else the
 newest receipt of the step, or `null`. Its `peak_rss_bytes` is `null` unless it comes from a
-receipt with `own_process`: the cost in a release does not tell whose peak it is. The `bytes` of a fetch is the size of its files in the
+receipt with `own_process`: the cost in a release does not tell whose peak it is.
+An estimate from a receipt or a cost with other options than the step, such as another region, is
+a guess (`guess`). It scales `wall_ms`, `bytes_out` and `client_bytes` by the input size of the
+step against theirs: the input bytes (`bytes_in`) when the store has every input of the step and
+the receipt read some, else the area of the option `bounds` (`[west, south, east, north]` in
+degrees, on a sphere) when both have it, else not at all. A guess has no `peak_rss_bytes`: a
+run reserves the memory of the step from the input bytes that it reads.
+
+The `bytes` of a fetch is the size of its files in the
 record of the version. When that record does not list them all, it is the size in the record of
 another version that lists them all, the last in byte order. Without `files`, the files are those
 that a fetch with the same `params` gave, or else every file. Otherwise `bytes` is `null`. A run
@@ -651,15 +659,17 @@ after a refresh of the extract, does not bake on any machine.
 - Of the steps that can start, the step with the longest chain of planned steps from it to the
   end of the run starts first: its estimated `wall_ms` and that of the longest chain of the steps
   that read it. A step without an estimate counts as the longest.
-- The memory that the steps that run at the same time reserve is not more than the physical
-  memory of the machine. A step reserves its estimated peak (`peak_rss_bytes` of the estimate).
-  A step without one reserves from the measured steps of its layer, the receipts with
-  `own_process`, a peak and input bytes, in the store or of this run: their smallest peak, or,
-  when that is more, its input bytes (`bytes_in`) times the peak per input byte of the measured
-  step that read the most. The peak per input byte of a step that read little is mostly the fixed
-  memory of a process. A step of a layer without a measured step reserves the whole memory, so the
-  first step of such a layer runs alone. A step that reserves more than the memory runs alone. A
-  step with worker processes reserves its largest process, not their sum.
+- The memory that the steps that run at the same time reserve is not more than three quarters of
+  the physical memory of the machine. The rest is for the engine, the page cache and other
+  programs. A step reserves its estimated peak (`peak_rss_bytes` of the estimate).
+  A step without one reserves from its measured runs: the receipts of the step, also with other
+  options or of another leaf of its tiled step, with `own_process`, a peak and input bytes, in the
+  store or of this run. It reserves their smallest peak, or, when that is more, its input bytes
+  (`bytes_in`) times the peak per input byte of the run that read the most. The peak per input
+  byte of a run that read little is mostly the fixed memory of a process. Another step of the
+  layer does not count: its memory can differ more than 500 times. A step without a measured run
+  reserves 512 MiB and 16 times its input bytes. A step that reserves more than the memory runs alone. A step with worker processes
+  reserves its largest process, not their sum.
 - A step that does not fit in the free memory holds back the steps after it, so that it starts
   first.
 - After a fetch fails, no step starts. After a step fails, no other step starts, and the steps
@@ -1303,8 +1313,8 @@ the store only, and it never writes to the target.
   options, else of the `cost` of the step in the serving release, else of the newest receipt of the
   step. `upload_bytes` is the size of the files of the bakes that a client reads, and of the copies
   under `sources/` that the serving release does not name, as the store records them. `unknown`
-  lists each bake without an estimate or without a peak, and each fetch whose size is not known,
-  also of a new copy that the store lacks yet.
+  lists each bake without an estimate, with a guess or without a peak, and each fetch whose size
+  is not known, also of a new copy that the store lacks yet.
 - `machine`: the memory of the machine and the free bytes of the disk of the store after the
   listing. A bake whose estimated peak is more than the memory, or fetches, downloads and bakes
   that leave less than 4 GiB free on the disk, refuse the update.
@@ -2501,6 +2511,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "minimum": 0,
           "type": "integer"
         },
+        "guess": {
+          "description": "It comes from a build of the step with other options, such as another region, scaled to the\ninput size of the step.",
+          "type": "boolean"
+        },
         "peak_rss_bytes": {
           "format": "uint64",
           "minimum": 0,
@@ -2519,7 +2533,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "wall_ms",
         "bytes_out",
         "client_bytes",
-        "peak_rss_bytes"
+        "peak_rss_bytes",
+        "guess"
       ],
       "type": "object"
     },
@@ -5729,6 +5744,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "guess": {
+          "description": "The bakes whose estimate is a guess from a build with other options.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "peak": {
           "description": "The bakes whose estimate has no peak.",
           "items": {
@@ -5747,6 +5769,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "estimate",
         "peak",
+        "guess",
         "size"
       ],
       "type": "object"

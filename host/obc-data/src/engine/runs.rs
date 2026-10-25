@@ -30,21 +30,24 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// One step per core, and the physical memory of the machine.
+    /// One step per core, and three quarters of the physical memory: the rest is for the engine,
+    /// the page cache and the other programs of the machine.
     pub fn machine() -> Self {
-        Self { jobs: std::thread::available_parallelism().map_or(1, |n| n.get()), memory_bytes: memory() }
+        let jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
+        Self { jobs, memory_bytes: memory().map(|memory| memory - memory / 4) }
     }
 }
 
+/// The physical memory of the machine.
 #[cfg(unix)]
-fn memory() -> Option<u64> {
+pub fn memory() -> Option<u64> {
     // SAFETY: sysconf reads a system value.
     let (pages, size) = unsafe { (libc::sysconf(libc::_SC_PHYS_PAGES), libc::sysconf(libc::_SC_PAGESIZE)) };
     (pages > 0 && size > 0).then(|| pages as u64 * size as u64)
 }
 
 #[cfg(not(unix))]
-fn memory() -> Option<u64> {
+pub fn memory() -> Option<u64> {
     None
 }
 
@@ -623,8 +626,7 @@ impl Run {
                 // A step that reserves more than the memory runs alone, as one that reserves all.
                 let cost = match (&prepared, limits.memory_bytes) {
                     (Ok((receipt, _)), Some(memory)) => {
-                        let reserved = reservation(peak(build), measured.get(&receipt.layer), receipt.bytes_in);
-                        reserved.map_or(memory, |reserved| reserved.min(memory))
+                        reservation(peak(build), measured.get(kind(&receipt.step)), receipt.bytes_in).min(memory)
                     }
                     _ => 0,
                 };
@@ -828,34 +830,48 @@ fn longest_first(pending: &mut [&Step], planned: &HashMap<&str, &Build>) {
     pending.sort_by_key(|step| std::cmp::Reverse(chain[step.name.as_str()]));
 }
 
-/// What the measured steps of a layer tell of the memory of its other steps: the smallest peak,
-/// and the input bytes and the peak of the step that read the most.
+/// What the measured runs of a step tell of its memory: the smallest peak, and the input bytes and
+/// the peak of the run that read the most. A run of a step in another region, or of another leaf of
+/// a tiled step, counts. The memory of two steps of one layer can differ more than 500 times, as
+/// that of the copy `planner/osm` and the parse `device/osm` does.
 struct Measured {
     smallest: u64,
     largest: (u64, u64),
 }
 
+/// What an unmeasured step reserves: a part for its process, and a part per input byte. In the bake
+/// of central-switzerland, the most per input byte of a step that read over 100 MB was 15
+/// (`device/osm`: 7.8 GB for 0.5 GB), and the largest peak of a step that read less was 0.4 GB.
+const UNMEASURED: (u64, u64) = (512 << 20, 16);
+
 /// The memory that a step that reads `bytes_in` reserves: its estimated `peak`, else the smallest
-/// measured peak of its layer or, when that is more, its input bytes times the peak per input byte
-/// of the measured step of its layer that read the most. The per-byte peak of a step that read
-/// little is mostly the fixed memory of a process. `None` when neither is known: the step reserves
-/// the whole memory, so that it runs alone.
-fn reservation(peak: Option<u64>, measured: Option<&Measured>, bytes_in: u64) -> Option<u64> {
-    peak.or_else(|| {
-        let Measured { smallest, largest: (read, most) } = *measured?;
-        Some(smallest.max((bytes_in as f64 * most as f64 / read as f64).ceil() as u64))
-    })
+/// measured peak of the step or, when that is more, its input bytes times the peak per input byte
+/// of the measured run that read the most. The per-byte peak of a run that read little is mostly
+/// the fixed memory of a process. Else [`UNMEASURED`].
+fn reservation(peak: Option<u64>, measured: Option<&Measured>, bytes_in: u64) -> u64 {
+    match (peak, measured) {
+        (Some(peak), _) => peak,
+        (None, Some(&Measured { smallest, largest: (read, most) })) => {
+            smallest.max((bytes_in as f64 * most as f64 / read as f64).ceil() as u64)
+        }
+        (None, None) => UNMEASURED.0.saturating_add(bytes_in.saturating_mul(UNMEASURED.1)),
+    }
 }
 
-/// Add the peak of `receipt` to what the measured steps of its layer tell.
+/// The step without its leaf: the leaves of a tiled step run one program.
+fn kind(step: &str) -> &str {
+    super::leaf(step).map_or(step, |leaf| &step[..step.len() - leaf.len() - 1])
+}
+
+/// Add the peak of `receipt` to what the measured runs of its step tell.
 fn learn(measured: &mut HashMap<String, Measured>, receipt: &Receipt) {
     let Some(peak) = receipt.peak_rss_bytes.filter(|_| receipt.own_process && receipt.bytes_in > 0) else {
         return;
     };
     let read = (receipt.bytes_in, peak);
-    let layer = measured.entry(receipt.layer.clone()).or_insert(Measured { smallest: peak, largest: read });
-    layer.smallest = layer.smallest.min(peak);
-    layer.largest = layer.largest.max(read);
+    let step = measured.entry(kind(&receipt.step).into()).or_insert(Measured { smallest: peak, largest: read });
+    step.smallest = step.smallest.min(peak);
+    step.largest = step.largest.max(read);
 }
 
 /// Whether a step with `key` keeps `output` of the serving release: the keys are the same, and the
@@ -1748,7 +1764,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
     }
 
     fn estimate(wall_ms: u64, peak_rss_bytes: Option<u64>) -> Option<Estimate> {
-        Some(Estimate { wall_ms, bytes_out: 0, client_bytes: 0, peak_rss_bytes })
+        Some(Estimate { wall_ms, bytes_out: 0, client_bytes: 0, peak_rss_bytes, guess: false })
     }
 
     fn overlap(a: (f64, f64), b: (f64, f64)) -> bool {
@@ -1768,14 +1784,16 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
         let alone = fixture("runs-memory-alone");
         assert!(!together(&alone, [Some(1500), Some(100)], 1000), "a step over the budget runs alone");
         let unknown = fixture("runs-memory-unknown");
-        assert!(!together(&unknown, [None, Some(100)], 1000), "a step of a layer without a peak runs alone");
+        assert!(!together(&unknown, [None, Some(100)], 1000), "an unmeasured step reserves 512 MiB");
+        let room = 2 * UNMEASURED.0 + (1 << 10);
+        assert!(together(&fixture("runs-memory-unmeasured"), [None, None], room), "a 512 MiB part and 16 per byte");
 
-        // A receipt of the layer measured 100 bytes for 5 bytes of input: a step without an
+        // A receipt of the step measured 100 bytes for 5 bytes of input: the step without an
         // estimate that reads 5 bytes reserves 100.
-        let measured = |fixture: &crate::engine::tests::Fixture, peak: u64| {
+        let measured = |fixture: &crate::engine::tests::Fixture, step: &str, peak: u64| {
             let receipt = Receipt {
                 layer: "test".into(),
-                step: "test/old".into(),
+                step: step.into(),
                 format: 1,
                 revision: 1,
                 key: crate::store::sha256_hex(b"old"),
@@ -1795,18 +1813,22 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
             fixture.store.put_layer(&receipt).unwrap();
         };
         let scaled = fixture("runs-memory-scaled");
-        measured(&scaled, 100);
-        assert!(together(&scaled, [None, Some(100)], 1000), "it reserves the peak per input byte of its layer");
+        measured(&scaled, "test/a", 100);
+        assert!(together(&scaled, [None, Some(100)], 1000), "it reserves the peak per input byte of the step");
         let large = fixture("runs-memory-scaled-large");
-        measured(&large, 600);
+        measured(&large, "test/a", 600);
         assert!(!together(&large, [None, Some(600)], 1000));
+        let other = fixture("runs-memory-other-step");
+        measured(&other, "test/other", 100);
+        assert!(!together(&other, [None, Some(100)], 1000), "another step of the layer does not count");
     }
 
     #[test]
-    fn the_first_step_of_a_layer_without_a_peak_runs_alone_and_the_others_reserve_its_peak() {
-        let spans = spans(&fixture("runs-memory-learn"), &[("a", None), ("b", None), ("c", None)], 1 << 30);
-        assert!(!overlap(spans["a"], spans["b"]) && !overlap(spans["a"], spans["c"]), "{spans:?}");
-        assert!(overlap(spans["b"], spans["c"]), "{spans:?}");
+    fn the_first_leaf_of_an_unmeasured_step_runs_alone_and_the_others_reserve_its_peak() {
+        let (memory, [a, b, c]) = (UNMEASURED.0 * 3 / 2, ["a/0000-0000", "a/0000-0001", "a/0000-0002"]);
+        let spans = spans(&fixture("runs-memory-learn"), &[(a, None), (b, None), (c, None)], memory);
+        assert!(!overlap(spans[a], spans[b]) && !overlap(spans[a], spans[c]), "{spans:?}");
+        assert!(overlap(spans[b], spans[c]), "{spans:?}");
     }
 
     #[test]
