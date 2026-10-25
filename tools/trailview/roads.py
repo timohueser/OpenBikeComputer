@@ -518,6 +518,43 @@ def solve(features, terrain, rivers=(), classes=CLASSES, owned=None):
     return out, culverts, {net.ways[w][0] for w in under[5][held_up & under[7]].tolist() if way_mine[w]}, metrics
 
 
+def ends(kind, tags, parts):
+    """What `context` needs of a road feature past the region: a bridge or a tunnel whole, of another way the
+    segment at each end of each part."""
+    if is_free(kind, tags):
+        return kind, tags, parts
+    return kind, tags, [(False, points[i:i + 2], None) for _, points, _ in parts if len(points) >= 2 for i in (0, len(points) - 2)]
+
+
+def context(features, beyond, inside):
+    """The features of `beyond`, from `ends`, that the solve of `features` needs: each bridge and tunnel of a
+    network of them that holds a bridge or a tunnel of `features`, and each way on the ground whose end meets an
+    end of such a network. Then the numbers of the features of a network with an end that meets no way where
+    `inside(xy)` is false: the input cuts that network, so it has no ends to run between."""
+    every, count = features + beyond, len(features)
+    parts = [(f, xy) for f, (_, _, ps) in enumerate(every) for _, points, _ in ps if len(xy := distinct(points)) >= 2]
+    if not parts:
+        return [], set()
+    free = np.array([is_free(*every[f][:2]) for f in range(len(every))], bool)
+    owner = np.repeat([f for f, _ in parts], [len(xy) for _, xy in parts])
+    xy = np.concatenate([xy for _, xy in parts])
+    keys, vertex = np.unique(key(xy), return_inverse=True)
+    on = free[owner]
+    links = sparse.csr_matrix((np.ones(np.count_nonzero(on)), (owner[on], vertex[on])), shape=(len(every), len(keys)))
+    _, network = connected_components(sparse.bmat([[None, links], [links.T, None]]), directed=False)
+    network = network[:len(every)]
+    joined = free & np.isin(network, network[:count][free[:count]])
+    last = np.cumsum([len(xy) for _, xy in parts]) - 1
+    tips = np.concatenate([last - [len(xy) - 1 for _, xy in parts], last])
+    tips = tips[joined[owner[tips]]]
+    loose = tips[(np.bincount(vertex, minlength=len(keys))[vertex[tips]] < 2) & ~inside(xy[tips])]
+    whole = joined & ~np.isin(network, network[owner[loose]])
+    landed = np.zeros(len(every), bool)
+    landed[owner[np.isin(vertex, vertex[tips[whole[owner[tips]]]]) & ~on]] = True
+    cut = set(np.flatnonzero((joined & ~whole)[:count]).tolist())
+    return [beyond[f - count] for f in np.flatnonzero((whole | landed)[count:]) + count], cut
+
+
 class Region:
     """The OSM vertices of the ways of the features as one graph, for the jobs of `solve_by_area`: `point` and
     `area` per vertex; `vertex` and `feature` per occurrence; the OSM segments as edges of their metres, a
@@ -586,18 +623,21 @@ class Region:
             entry[tied] = np.minimum(entry[tied], gap[tied] + distance[self.free_vertex[free]][i[tied]])
 
 
-def solve_by_area(features, terrain, rivers=(), classes=CLASSES, halo_m=HALO_M, workers=None):
+def solve_by_area(features, terrain, rivers=(), classes=CLASSES, halo_m=HALO_M, workers=None, context=()):
     """`solve` by area, in a `step_pool.pool` of `workers`: a job solves the features within halo_m of its area,
     and each OSM vertex of the area takes its height from there, with the vertices that follow it to the next
-    one. A metric adds up over the areas; `rounds`, `residual_p99_m` and `grade_excess_m` are the largest."""
+    one. The features of `context` join the jobs, but only the areas of `features` have one. A metric adds up
+    over the areas; `rounds`, `residual_p99_m` and `grade_excess_m` are the largest."""
     from .. import step_pool
 
+    count, features = len(features), list(features) + list(context)
     region = Region(features)
     boxes = np.array([(*np.min(points, 0), *np.max(points, 0)) for points, _ in rivers]).reshape(-1, 4)
-    jobs = sorted(region.areas, key=lambda area: -region.areas[area])
+    wanted = {tuple(area) for area in np.unique(region.area[np.unique(region.vertex[region.feature < count])], axis=0).tolist()}
+    jobs = sorted(wanted & region.areas.keys(), key=lambda area: -region.areas[area])
     if jobs and not workers:
         workers = step_pool.worker_count(JOB_BYTES_PER_M * int(region.metres[region.near(jobs[0], halo_m)].sum()) + 1)
-    out = [[(outer, points, None) for outer, points, _ in parts] for _, _, parts in features]
+    out = [[(outer, points, None) for outer, points, _ in parts] for _, _, parts in features[:count]]
     pieces, culverts, underpasses, metrics = {}, set(), set(), {}
     shared = (features, terrain, rivers, boxes, classes, region, halo_m)
     for found, culverts_, underpasses_, metrics_ in step_pool.forked(solve_area, shared, jobs, workers):
@@ -614,9 +654,11 @@ def solve_by_area(features, terrain, rivers=(), classes=CLASSES, halo_m=HALO_M, 
             elif name != "grade_excess_at":
                 metrics[name] = metrics.get(name, 0) + value
     for (f, p), runs in pieces.items():
+        if f >= count:
+            continue
         runs.sort(key=lambda run: run[0])
         out[f][p] = (out[f][p][0], [point for run in runs for point in run[1]], [z for run in runs for z in run[2]])
-    return out, culverts, underpasses, metrics
+    return out, {f for f in culverts if f < count}, {f for f in underpasses if f < count}, metrics
 
 
 def solve_area(shared, area):
