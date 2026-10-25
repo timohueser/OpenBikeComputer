@@ -647,7 +647,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
             if entry["kind"] == "river-area":
                 river_areas.append([points for _, points, _ in parts])
             if terrain and roads.solves(entry["kind"], tags):
-                beyond.append(roads.ends(entry["kind"], tags, parts))
+                beyond.append(roads.compact(entry["kind"], tags, parts))
     work.cleanup()
     values = landuse_of([parts for _, _, parts in houses], landuse)
     for (entry, tags, parts), value in zip(houses, values):

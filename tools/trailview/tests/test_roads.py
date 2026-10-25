@@ -179,15 +179,15 @@ class AreasTest(unittest.TestCase):
         self.assertEqual(whole[:3], apart[:3])
         self.assertEqual({k: v for k, v in whole[3].items() if k != "residual_p99_m"}, {k: v for k, v in apart[3].items() if k != "residual_p99_m"})
 
-    def test_a_tunnel_runs_straight_to_its_portal_past_the_region_and_one_that_the_input_cuts_has_none(self):
+    def test_a_tunnel_runs_straight_to_its_portal_on_a_road_past_the_region_and_one_that_the_input_cuts_has_none(self):
         terrain = Terrain(lambda east, north: 1000 - 0.02 * east + np.where(np.abs(east - 3000) < 2900, 800, 0))
         features = [road("road", "residential", line((-300, 0), (0, 0), step=20)),
                     road("tunnel", "residential", line((0, 0), (2000, 0), step=50), tunnel="yes")]
-        beyond = [roads.ends(*road("tunnel", "residential", line((2000, 0), (6000, 0), step=50), tunnel="yes")),
-                  roads.ends(*road("road", "residential", line((6000, 0), (6300, 0), step=20))),
-                  roads.ends(*road("road", "residential", line((0, 5000), (300, 5000), step=20)))]
+        beyond = [roads.compact(*road("tunnel", "residential", line((2000, 0), (6000, 0), step=50), tunnel="yes")),
+                  roads.compact(*road("road", "residential", line((6000, -300), (6000, 0), (6000, 300), step=20))),
+                  roads.compact(*road("road", "residential", line((0, 5000), (300, 5000), step=20)))]
         context, cut = roads.context(features, beyond, lambda xy: np.ones(len(xy), bool))
-        self.assertEqual((context, cut), (beyond[:2], set()))
+        self.assertEqual(([id(feature) for feature in context], cut), ([id(feature) for feature in beyond[:2]], set()))
         heights, *_ = roads.solve_by_area(features, terrain, context=context, workers=1)
         along, z = profile(heights[1][0])
         self.assertLess(np.max(np.abs(z - np.interp(along, [0, 6000], [1000, 880]))), 0.5)

@@ -518,19 +518,17 @@ def solve(features, terrain, rivers=(), classes=CLASSES, owned=None):
     return out, culverts, {net.ways[w][0] for w in under[5][held_up & under[7]].tolist() if way_mine[w]}, metrics
 
 
-def ends(kind, tags, parts):
-    """What `context` needs of a road feature past the region: a bridge or a tunnel whole, of another way the
-    segment at each end of each part."""
-    if is_free(kind, tags):
-        return kind, tags, parts
-    return kind, tags, [(False, points[i:i + 2], None) for _, points, _ in parts if len(points) >= 2 for i in (0, len(points) - 2)]
+def compact(kind, tags, parts):
+    """A road feature past the region as `context` reads it: its points as arrays, a fraction of the memory of
+    their tuples."""
+    return kind, tags, [(outer, np.asarray(points, np.float64), None) for outer, points, _ in parts]
 
 
 def context(features, beyond, inside):
-    """The features of `beyond`, from `ends`, that the solve of `features` needs: each bridge and tunnel of a
-    network of them that holds a bridge or a tunnel of `features`, and each way on the ground whose end meets an
-    end of such a network. Then the numbers of the features of a network with an end that meets no way where
-    `inside(xy)` is false: the input cuts that network, so it has no ends to run between."""
+    """The features of `beyond`, from `compact`, that the solve of `features` needs: each bridge and tunnel of a
+    network of them that holds a bridge or a tunnel of `features`, and each way on the ground that a vertex
+    shares with an end of such a network. Then the numbers of the features of a network with an end that meets
+    no way where `inside(xy)` is false: the input cuts that network, so it has no ends to run between."""
     every, count = features + beyond, len(features)
     parts = [(f, xy) for f, (_, _, ps) in enumerate(every) for _, points, _ in ps if len(xy := distinct(points)) >= 2]
     if not parts:
