@@ -415,7 +415,7 @@ def solve(features, terrain, rivers=(), classes=CLASSES, owned=None):
     bound = grade[limited] * length[limited]
     level = np.flatnonzero(free & known[a] & known[b])
     L1 = sparse.csr_matrix((np.tile([-1.0, 1.0], len(level)), (np.repeat(np.arange(len(level)), 2), np.column_stack([a[level], b[level]]).ravel())), shape=(len(level), n))
-    unknown = np.flatnonzero(~known)
+    unknown, unconverged = np.flatnonzero(~known), [0]
     # The rows (A, w, c) of the least squares Σ w·(A·z − c)² that every solve holds.
     fixed = [(D2, lam, 0.0), (L1, LEVEL / np.maximum(length[level], 0.01), 0.0), (P, PIN, values),
              (sparse.csr_matrix((np.ones(len(unknown)), (np.arange(len(unknown)), unknown)), shape=(len(unknown), n)), 1.0, 0.0)]
@@ -432,7 +432,8 @@ def solve(features, terrain, rivers=(), classes=CLASSES, owned=None):
         apply = lambda v: lu.solve(sum(A.T @ (w * (A @ v)) for A, w, _ in rows))
         step = lu.solve(sum(A.T @ (w * c) for A, w, c in rows))
         rest = lu.solve(sum(A.T @ (w * (c - A @ step)) for A, w, c in rows))
-        more, _ = gmres(LinearOperator(normal.shape, apply), rest, rtol=0.0, atol=REFINE_M, restart=REFINE_STEPS, maxiter=1)
+        more, info = gmres(LinearOperator(normal.shape, apply), rest, rtol=0.0, atol=REFINE_M, restart=REFINE_STEPS, maxiter=1)
+        unconverged[0] += info != 0
         if z is None:
             return step + more
         out = z.copy()
@@ -514,6 +515,7 @@ def solve(features, terrain, rivers=(), classes=CLASSES, owned=None):
         "grade_excess_m": round(float(np.max(excess, initial=0)), 4), "grade_excess_at": [round(lat, 5), round(lon, 5)],
         "grade_excess_over_1cm": int(np.count_nonzero(excess > 0.01)),
         "residual_p99_m": round(float(np.percentile(residual[fitted], 99)), 2) if fitted.any() else 0,
+        "refinements_unconverged": unconverged[0],
     }
     return out, culverts, {net.ways[w][0] for w in under[5][held_up & under[7]].tolist() if way_mine[w]}, metrics
 
