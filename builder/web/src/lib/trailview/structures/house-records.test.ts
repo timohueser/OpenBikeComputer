@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EXTENT, type Feature } from '../stream/features';
 import { metresPerUnit } from '../terrain/bins';
-import { BARN, CHURCH, OUTLINE, OUTLINE_WORDS, RECORD_WORDS, TEMPLATE, tileHouses } from './house-records';
+import { BARN, CHURCH, FARMHOUSE, INDUSTRIAL, OUTLINE, OUTLINE_WORDS, RECORD_WORDS, TEMPLATE, tileHouses } from './house-records';
 
 /** A zoom 13 tile at Wengen; 8 world units per tile unit. */
 const TILE = { level: 13, x: 4276, y: 2907 };
@@ -52,5 +52,15 @@ describe('the house records of a feature tile', () => {
         expect(one[7] & 7).toBe(BARN);
         // Six vertices of wall per edge, and three per roof triangle.
         expect(outlines.length / OUTLINE_WORDS).toBe(6 * 8 + 3 * 6);
+    });
+
+    it('draws a building in an industrial area as a hall, and the buildings of a farmyard as its house and its barns', () => {
+        const kind = (tags: Record<string, string>, side: number) =>
+            tileHouses([{ ...building('yes', rectangle(4000, 4000, side, side, 0)), tags: { building: 'yes', ...tags } }], TILE).records[7] & 7;
+        // A tile unit is about 0.2 m at Wengen: 60 units square are about 150 m², 300 units about 3800 m².
+        expect(kind({ landuse: 'industrial' }, 100)).toBe(INDUSTRIAL);
+        expect(kind({ building: 'warehouse' }, 100)).toBe(INDUSTRIAL);
+        expect(kind({ landuse: 'farmyard' }, 60)).toBe(FARMHOUSE);
+        expect(kind({ landuse: 'farmyard' }, 300)).toBe(BARN);
     });
 });

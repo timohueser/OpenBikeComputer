@@ -34,6 +34,9 @@ HEIGHTS = ("surface", "pad", "profile", "none")
 FIELDS = {"kind", "geometry", "match", "keep", "height", "min_zoom", "active"}
 EXPORTED = {"Point": "point", "LineString": "line", "MultiPolygon": "area"}
 TABLE = Path(__file__).resolve().parent.parent / "data/trailview/kinds.json"
+# The landuse areas whose value a building in them keeps as its tag `landuse`. They are not features.
+LANDUSE = {"industrial", "farmyard"}
+LANDUSE_AREA = {"kind": "landuse", "keep": ["landuse"]}
 
 
 def validate(kinds):
@@ -101,7 +104,8 @@ def objects(kinds, pbf, binary):
         for line in process.stdout:
             feature = json.loads(line)
             geometry, tags = feature["geometry"], feature["properties"]
-            entry = (kind := EXPORTED.get(geometry["type"])) and kind_of(kinds, kind, tags)
+            entry = (kind := EXPORTED.get(geometry["type"])) and (
+                kind_of(kinds, kind, tags) or kind == "area" and tags.get("landuse") in LANDUSE and LANDUSE_AREA)
             if not entry or not entry.get("active", True):
                 continue
             coordinates = geometry["coordinates"]
@@ -500,6 +504,35 @@ def decode(data):
     return features
 
 
+def landuse_of(buildings, areas):
+    """Per building, the `landuse` of the smallest of `areas` that holds the middle of its outer ring,
+    or None. A building is its parts, an area (tags, parts). A point lies in an area when it lies inside
+    an odd number of its rings."""
+    import numpy as np
+
+    rings = [[np.array(points) for _, points, _ in parts] for _, parts in areas]
+    if not rings:
+        return [None] * len(buildings)
+    boxes = np.array([(*np.vstack(r).min(0), *np.vstack(r).max(0)) for r in rings])
+    twice = lambda r: abs(np.dot(r[:, 0], np.roll(r[:, 1], -1)) - np.dot(r[:, 1], np.roll(r[:, 0], -1)))
+    sizes = [sum(twice(r) * (1 if outer else -1) for r, (outer, *_) in zip(area, parts)) for area, (_, parts) in zip(rings, areas)]
+
+    def holds(x, y, area):
+        crossings = 0
+        for r in area:
+            ax, ay, bx, by = r[:, 0], r[:, 1], np.roll(r[:, 0], -1), np.roll(r[:, 1], -1)
+            crossings += np.count_nonzero(((ay > y) != (by > y)) & (x < ax + (y - ay) * (bx - ax) / np.where(by == ay, 1, by - ay)))
+        return crossings % 2 == 1
+
+    out = []
+    for parts in buildings:
+        x, y = np.mean(parts[0][1], axis=0)
+        near = np.flatnonzero((boxes[:, 0] <= x) & (x <= boxes[:, 2]) & (boxes[:, 1] <= y) & (y <= boxes[:, 3]))
+        hits = [k for k in near if holds(x, y, rings[k])]
+        out.append(areas[min(hits, key=lambda k: sizes[k])][0]["landuse"] if hits else None)
+    return out
+
+
 def area_km2(bounds):
     west, south, east, north = bounds
     return EARTH_RADIUS_KM ** 2 * math.radians(east - west) * (math.sin(math.radians(north)) - math.sin(math.radians(south)))
@@ -530,15 +563,23 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
                     shared[point] = shared.get(point, 0) + 1
 
     # The lifts wait for the buildings and the other lifts: a station shares their places.
-    ways, buildings, lift_entry = [], [], None
+    # The buildings of the region wait for the landuse areas that hold them.
+    ways, buildings, lift_entry, houses, landuse = [], [], None, [], []
     for entry, tags, parts in objects(kinds, pbf, binary):
         if lifts.solves(entry["kind"], tags):
             lift_entry = entry
             ways += [(tags, points) for _, points in parts]
             continue
-        if entry["kind"] == "building":
-            buildings += [np.array(points) for outer, points in parts if outer]
         parts = [(outer, points, None) for outer, points in parts]
+        if entry is LANDUSE_AREA:
+            if tiles.meets(MAX_ZOOM, parts):
+                landuse.append((tags, parts))
+            continue
+        if entry["kind"] == "building":
+            buildings += [np.array(points) for outer, points, _ in parts if outer]
+            if tiles.meets(MAX_ZOOM, parts):
+                houses.append((entry, tags, parts))
+            continue
         solver = terrain and tiles.meets(MAX_ZOOM, parts) and next((m for m in (water, roads, rails) if m.solves(entry["kind"], tags)), None)
         if solver:
             held.append((solver, entry, tags, parts))
@@ -546,6 +587,11 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
             place(entry, tags, parts)
             if entry["kind"] == "river-area":
                 river_areas.append([points for _, points, _ in parts])
+    values = landuse_of([parts for _, _, parts in houses], landuse)
+    for (entry, tags, parts), value in zip(houses, values):
+        place(entry, {**tags, "landuse": value} if value else tags, parts)
+    metrics["landuse"] = {value: values.count(value) for value in sorted(LANDUSE)}
+    del houses, landuse
     if ways:
         rigged, metrics["lifts"] = lifts.rigged(ways, buildings, terrain)
         for tags, points in rigged:

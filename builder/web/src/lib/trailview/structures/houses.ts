@@ -72,10 +72,11 @@ interface Resources {
     features: GPUBindGroup;
 }
 
-/** The style table of houses.wgsl: `Style` per style, then the styles of each region. */
+/** The style table of houses.wgsl: `Style` per style, INDUSTRIAL last, then the styles of each region. */
 function styleWords(rules: Rules): { styles: Uint32Array<ArrayBuffer>; regions: Uint32Array<ArrayBuffer> } {
-    const list: HouseStyle[] = rules.styles.length ? rules.styles : [FALLBACK];
-    const words = new ArrayBuffer(list.length * STYLE_WORDS * 4), u = new Uint32Array(words), f = new Float32Array(words);
+    const list: HouseStyle[] = [...(rules.styles.length ? rules.styles : [FALLBACK]).slice(0, STYLES - 1)];
+    list[STYLES - 1] = INDUSTRIAL;
+    const words = new ArrayBuffer(STYLES * STYLE_WORDS * 4), u = new Uint32Array(words), f = new Float32Array(words);
     const colour = (hex: string) => parseInt(hex.slice(1, 3), 16) | (parseInt(hex.slice(3, 5), 16) << 8) | (parseInt(hex.slice(5, 7), 16) << 16);
     list.forEach((style, i) => {
         const at = i * STYLE_WORDS, { palette } = style, lists = [palette.render, palette.wood, palette.roof, palette.door, palette.shutter];
@@ -92,6 +93,15 @@ function styleWords(rules: Rules): { styles: Uint32Array<ArrayBuffer>; regions: 
 const FALLBACK: HouseStyle = {
     name: 'House', pitch: [30, 40], eave: 0.5, verge: 0.4, hip: 0, timber: 'none', shutters: false, chimneys: 1,
     palette: { render: ['#f1ece0'], wood: ['#5e4030'], roof: ['#6a5d52'], door: ['#5e4030'], shutter: ['#3f6a42'], plinth: '#8f8a80', chimney: '#a39a8e' },
+};
+
+/** The style of industrial halls in every region: metal cladding under a low roof of sheet metal. */
+const INDUSTRIAL: HouseStyle = {
+    name: 'Industrial hall', pitch: [4, 10], eave: 0.3, verge: 0.2, hip: 0, timber: 'none', shutters: false, chimneys: 0,
+    palette: {
+        render: ['#c9ccc8', '#b9c0c4', '#d9d5c9', '#a3acb0'], wood: ['#5f6a70'], roof: ['#8a8f91', '#9a9c98', '#7a8286'],
+        door: ['#6f7a80', '#a9adab', '#3f5a73'], shutter: ['#5f6a70'], plinth: '#8f8c85', chimney: '#9a9c98',
+    },
 };
 
 /**
@@ -162,7 +172,7 @@ export class Houses {
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const { styles, regions } = styleWords(this.rules);
         this.regions = regions;
-        this.styles = styles.subarray(0, STYLES * STYLE_WORDS);
+        this.styles = styles;
         const words = new Uint32Array(TEMPLATES.flatMap(name => [...MESHES[name].words]));
         const upload = (pool: string, data: Uint32Array<ArrayBuffer>) => {
             const buffer = gpu.buffer(pool, Math.max(16, data.byteLength), storage);
