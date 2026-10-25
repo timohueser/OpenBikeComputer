@@ -10,13 +10,15 @@ def cores():
 
 
 def worker_count(memory=1 << 30):
-    """One worker for each core that this process can use, and one at most for each `memory` bytes of free memory. The
-    default is a GB: a snow worker holds the planes of one chunk, about 0.6 GB for nine seasons of HR-WSI at 48° N
+    """One worker for each core that this process can use, and one at most for each `memory` bytes of free memory
+    past a quarter of the machine's memory: other work shares the machine, and its memory grows while the step runs.
+    The default is a GB: a snow worker holds the planes of one chunk, about 0.6 GB for nine seasons of HR-WSI at 48° N
     (measured with two seasons)."""
     try:
         with open("/proc/meminfo") as meminfo:
-            free = next(int(line.split()[1]) << 10 for line in meminfo if line.startswith("MemAvailable:"))
-    except (OSError, StopIteration):
+            sizes = {line.split(":")[0]: int(line.split()[1]) << 10 for line in meminfo}
+        free = sizes["MemAvailable"] - sizes["MemTotal"] // 4
+    except (OSError, KeyError):
         return cores()
     return max(1, min(cores(), free // memory))
 
