@@ -22,9 +22,9 @@ import numpy as np
 from scipy import sparse
 from scipy.spatial import cKDTree
 from scipy.sparse.csgraph import connected_components, dijkstra
-from scipy.sparse.linalg import splu
+from scipy.sparse.linalg import LinearOperator, gmres, splu
 
-from .profiles import metres
+from .profiles import CACHED, TILE, metres
 from .structures import BORE_M, BORE_PATH_M, BORE_RAIL_M, is_track, road_half
 
 TABLE = Path(__file__).resolve().parents[2] / "data/trailview/roads.json"
@@ -59,6 +59,8 @@ PARALLEL_M, PARALLEL_COS, PARALLEL_RISE_M, PARALLEL_FREE_M = 6.0, 0.9, 0.5, 100.
 # a row that pins a junction approach, a ford or a slope limit, and per metre of a bridge or tunnel the
 # preference for level, so that one that meets a road at one end only is level from there.
 FREE, PIN, LEVEL = 1e-4, 1e8, 1e-3
+# GMRES refines each solve to REFINE_M, in at most REFINE_STEPS steps.
+REFINE_M, REFINE_STEPS = 1e-6, 30
 # Solves of the whole network, the first ones with the Huber weights of the solve before. Then rounds
 # of the slope limits solve only the network within REGION_M of the segments whose limit changed, and
 # the bridges and tunnels it meets: the terrain anchors the rest.
@@ -67,6 +69,15 @@ SOLVES, ROUNDS, REGION_M = 2, 40, 300.0
 TOLERANCE_M = 1e-3
 # Terrain samples per call, and the cell of the grid of waterways in world units (about 100 m).
 CHUNK, GRID_UNITS = 1 << 21, 2.5e-6
+# An area of `solve_by_area` is a tile of AREA_ZOOM, about 27 km at 47° N. Its job holds the ways within
+# HALO_M of it.
+AREA_ZOOM, HALO_M = 10, 500.0
+FREE_STEP_M = 50.0
+# A job holds about this many bytes per metre of its ways, most of it in the factorization of its system, and its
+# worker caches up to TERRAIN_BYTES of terrain tiles. Measured on the largest job of the bake of
+# central-switzerland at a halo of 500 m.
+JOB_BYTES_PER_M = 370
+TERRAIN_BYTES = CACHED * TILE * TILE * 4
 
 
 def validate(classes):
@@ -117,6 +128,18 @@ def key(points):
     return points[..., 0] + 1j * points[..., 1]
 
 
+def distinct(points):
+    """The points of a part as an array, without a vertex that repeats the one before it: it has no length to
+    solve along."""
+    xy = np.asarray(points, np.float64).reshape(-1, 2)
+    return xy[np.concatenate([[True], np.any(np.diff(xy, axis=0) != 0, axis=1)])] if len(xy) else xy
+
+
+def is_free(kind, tags):
+    """Whether a way is a bridge or a tunnel: it ignores the terrain under it."""
+    return kind == "tunnel" or tags.get("bridge", "no") != "no"
+
+
 class Network:
     """The ways as arrays. An OSM vertex is an occurrence of a point in a way; ways that share a point
     share its variable. Between two occurrences a way gets vertices so that no segment is longer than
@@ -128,11 +151,9 @@ class Network:
         self.ways = []
         for f, (kind, tags, parts) in enumerate(features):
             rule = names.index(rule_of(kind, tags, classes))
-            free = kind == "tunnel" or tags.get("bridge", "no") != "no"
+            free = is_free(kind, tags)
             for p, (_, points, _) in enumerate(parts):
-                xy = np.asarray(points, np.float64).reshape(-1, 2)
-                # A repeated vertex has no length to solve along.
-                xy = xy[np.concatenate([[True], np.any(np.diff(xy, axis=0) != 0, axis=1)])] if len(xy) else xy
+                xy = distinct(points)
                 if len(xy) >= 2:
                     self.ways.append((f, p, xy, rule, free, tags.get("ford", "no") != "no"))
         if not self.ways:
@@ -272,16 +293,25 @@ class Network:
         return [np.array(column, float if c == 2 else np.int64) for c, column in enumerate(out)], np.array(pairs, np.int64).reshape(-1, 4)
 
 
-def solve(features, terrain, rivers=(), classes=CLASSES):
+def solve(features, terrain, rivers=(), classes=CLASSES, owned=None):
     """Per feature (kind, tags, parts): its parts (outer, points, heights) with the heights solved, None
     where the terrain is unknown, and vertices added where the profile bends between two of OSM; the
     features that are culverts; the tunnels that pass under a road or a path; and the metrics of the solve. `rivers` lists (points, levels) of the
-    solved waterways, for the fords and the decks."""
+    solved waterways, for the fords and the decks. `owned(xy)` marks the OSM vertices of the area of a job of
+    `solve_by_area`: the culverts, the tunnels and the metrics count only the ways that start on one of them, and
+    the vertices from one of them to the next vertex of OSM."""
     out = [[(outer, points, None) for outer, points, _ in parts] for _, _, parts in features]
     net = Network(features, classes)
     if not net.ways:
         return out, set(), set(), {}
     n, a, b, length = net.count, net.a, net.b, net.length
+    total = len(net.vertex_xy)
+    mine = np.ones(total, bool)
+    if owned is not None:
+        mine = owned(net.vertex_xy[np.maximum.accumulate(np.where(net.vertex_osm, np.arange(total), 0))])
+    var_mine = np.zeros(n, bool)
+    var_mine[net.vertex_var] = mine
+    segment_mine = mine[net.segment_start]
     rows = [classes[name] for name in classes]
     # Samples: k per segment from its start, and the last vertex of each way. Ordered by terrain tile, so
     # that each tile decodes about once.
@@ -337,6 +367,7 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     whole = np.all(known[above[0]], axis=1)
     C = sparse.csr_matrix((above[1].ravel(), (np.repeat(np.arange(len(above[2])), 4), above[0].ravel())), shape=(len(above[2]), n))[whole]
     least, deck_way = above[2][whole], above[3][whole]
+    deck_first = above[0][whole][:, 0]
     clear = deck_way >= 0
     under = passes(net, classes)
     held_up = np.all(known[under[0]], axis=1) & np.all(known[under[2]], axis=1)
@@ -348,6 +379,7 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     coefficients = np.concatenate([approach[1], fords[1], bores[1], beside[1]])
     values = np.concatenate([approach[2], fords[2], bores[2], beside[2]])
     ok = np.all(known[variables], axis=1)
+    counted = ok & var_mine[variables[:, 0]]
     variables, coefficients, values = variables[ok], coefficients[ok], values[ok]
     P = sparse.csr_matrix((coefficients.ravel(), (np.repeat(np.arange(len(values)), 3), variables.ravel())), shape=(len(values), n))
 
@@ -386,12 +418,30 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     bound = grade[limited] * length[limited]
     level = np.flatnonzero(free & known[a] & known[b])
     L1 = sparse.csr_matrix((np.tile([-1.0, 1.0], len(level)), (np.repeat(np.arange(len(level)), 2), np.column_stack([a[level], b[level]]).ravel())), shape=(len(level), n))
-    fixed = (D2.T @ sparse.diags(lam) @ D2 + PIN * (P.T @ P) + L1.T @ sparse.diags(LEVEL / np.maximum(length[level], 0.01)) @ L1
-             + sparse.diags(np.where(known, 0.0, 1.0)))
-    pinned = PIN * (P.T @ values)
+    unknown, unconverged = np.flatnonzero(~known), [0]
+    # The rows (A, w, c) of the least squares Σ w·(A·z − c)² that every solve holds.
+    fixed = [(D2, lam, 0.0), (L1, LEVEL / np.maximum(length[level], 0.01), 0.0), (P, PIN, values),
+             (sparse.csr_matrix((np.ones(len(unknown)), (np.arange(len(unknown)), unknown)), shape=(len(unknown), n)), 1.0, 0.0)]
+    samples = sparse.csr_matrix((np.concatenate([1 - t, t]), (np.tile(np.arange(len(seg)), 2), np.concatenate([a[seg], b[seg]]))), shape=(len(seg), n))
 
-    def factor(matrix):
-        return splu(matrix.tocsc(), permc_spec="MMD_AT_PLUS_A", diag_pivot_thresh=0.0, options={"SymmetricMode": True})
+    def fit(rows, z=None, moved=None):
+        """The heights at the least squares of the rows (A, w, c), or z with only its heights `moved` at it. The
+        factorization of the normal matrix loses a height that only weak rows hold, such as the end of a tunnel that
+        meets no way, in the round-off of the PIN rows times the heights. GMRES with that factorization then solves
+        against the residuals of the rows, which keep it."""
+        rows = [(A if z is None else A[:, moved], np.broadcast_to(w, A.shape[:1]), c if z is None else c - A @ z) for A, w, c in rows]
+        normal = sum(A.T @ sparse.diags(w) @ A for A, w, _ in rows)
+        lu = splu(normal.tocsc(), permc_spec="MMD_AT_PLUS_A", diag_pivot_thresh=0.0, options={"SymmetricMode": True})
+        apply = lambda v: lu.solve(sum(A.T @ (w * (A @ v)) for A, w, _ in rows))
+        step = lu.solve(sum(A.T @ (w * c) for A, w, c in rows))
+        rest = lu.solve(sum(A.T @ (w * (c - A @ step)) for A, w, c in rows))
+        more, info = gmres(LinearOperator(normal.shape, apply), rest, rtol=0.0, atol=REFINE_M, restart=REFINE_STEPS, maxiter=1)
+        unconverged[0] += info != 0
+        if z is None:
+            return step + more
+        out = z.copy()
+        out[moved] += step + more
+        return out
 
     def update(held, gz, release=True):
         """The slope limits after a solve: a segment past its limit holds it, a held one that the solve
@@ -403,16 +453,15 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
         out[gz < -bound - TOLERANCE_M] = -1
         return out
 
+    def held_rows():
+        """The rows of a solve: those of `fixed`, the terrain samples and the slope limits that hold."""
+        on = np.flatnonzero(held)
+        return fixed + [(samples, w, h), (G[on], PIN, held[on] * bound[on])]
+
     held = np.zeros(len(limited))
     w = weight
     for solves_ in range(SOLVES):
-        ca, cb = 1 - t, t
-        aa, bb, ab = (np.bincount(seg, w * c, m) for c in (ca * ca, cb * cb, ca * cb))
-        base = sparse.csr_matrix((np.concatenate([aa, bb, ab, ab]), (np.concatenate([a, b, a, b]), np.concatenate([a, b, b, a]))), shape=(n, n)) + fixed
-        rhs = np.bincount(a, np.bincount(seg, w * ca * h, m), n) + np.bincount(b, np.bincount(seg, w * cb * h, m), n) + pinned
-        on = np.flatnonzero(held)
-        limits = G[on]
-        z = factor(base + PIN * (limits.T @ limits)).solve(rhs + PIN * (limits.T @ (held[on] * bound[on])))
+        z = fit(held_rows())
         if solves_ < SOLVES - 1:
             residual = np.abs(z[a[seg]] * (1 - t) + z[b[seg]] * t - h)
             w = weight * np.minimum(1.0, HUBER_M / np.maximum(residual, 1e-9))
@@ -420,30 +469,23 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
             # its least height from the next solve on.
             culvert = culverts_of(net, z, seg, t, h, finite)
             low = (C @ z < least - TOLERANCE_M) & ~(clear & culvert[deck_way])
-            fixed = fixed + PIN * (C[low].T @ C[low])
-            pinned = pinned + PIN * (C[low].T @ least[low])
+            fixed.append((C[low], PIN, least[low]))
             # Ways that pass too near hold the margin from the next solve on; a tunnel under a road holds
             # the road's height less the margin.
             near = U @ z - L @ z < need - TOLERANCE_M
             target = np.where(under[6][held_up], need, need - U @ z)
-            fixed = fixed + PIN * (apart[near].T @ apart[near])
-            pinned = pinned + PIN * (apart[near].T @ target[near])
+            fixed.append((apart[near], PIN, target[near]))
         before, held = held, update(held, G @ z)
     # Rounds of the slope limits near the segments whose limit changed, the rest of the network fixed.
     # Nothing anchors a bridge or a tunnel but its ends: a region takes it whole.
     graph = sparse.csr_matrix((np.where(free, 1e-6, np.maximum(length, 0.01)), (a, b)), shape=(n, n))
     graph = graph + graph.T
     rounds = 0
-    base = base.tocsr()
     while rounds < ROUNDS and np.any(changed := held != before):
         rounds += 1
         sources = np.unique(np.concatenate([a[limited[changed]], b[limited[changed]]]))
         region = np.flatnonzero(np.isfinite(dijkstra(graph, indices=sources, limit=REGION_M, min_only=True)))
-        on = np.flatnonzero(held)
-        limits = G[on]
-        local = limits[:, region]
-        residual = (rhs[region] + PIN * (local.T @ (held[on] * bound[on])) - base[region] @ z - PIN * (local.T @ (limits @ z)))
-        z[region] += factor(base[region][:, region] + PIN * (local.T @ local)).solve(residual)
+        z = fit(held_rows(), z, region)
         before, held = held, update(held, G @ z, rounds < ROUNDS // 2)
 
     culvert = culverts_of(net, z, seg, t, h, finite)
@@ -455,22 +497,203 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
         v = net.vertex_var[span][mask]
         heights = np.where(known[v], z[v], np.nan).tolist()
         out[f][p] = (out[f][p][0], points, [None if math.isnan(value) else value for value in heights])
-    culverts = {net.ways[w][0] for w in np.flatnonzero(culvert).tolist()}
-    excess = np.abs(G @ z) - bound
-    worst = limited[np.argmax(excess)] if len(excess) else 0
+    way_mine = mine[net.way_first]
+    culverts = {net.ways[w][0] for w in np.flatnonzero(culvert & way_mine).tolist()}
+    deck_mine = clear & ~culvert[deck_way] & var_mine[deck_first]
+    pass_mine = var_mine[under[0][held_up][:, 0]]
+    excess = (np.abs(G @ z) - bound)[segment_mine[limited]]
+    limited_mine = limited[segment_mine[limited]]
+    worst = limited_mine[np.argmax(excess)] if len(excess) else 0
     lon, lat = world_degrees(net.vertex_xy[net.segment_start[worst]]) if len(excess) else (0, 0)
     residual = np.abs(z[a[seg]] * (1 - t) + z[b[seg]] * t - h)
+    fitted = ~free[seg] & (weight > 0) & segment_mine[seg]
     metrics = {
-        "ways": len(net.ways), "variables": n, "known": int(known.sum()), "approaches": int(np.count_nonzero(ok[:len(approach[2])])),
-        "fords": int(np.count_nonzero(ok[len(approach[2]):len(approach[2]) + len(fords[2])])), "culverts": len(culverts), "rounds": rounds, "held": int(np.count_nonzero(held)),
-        "clearances": int(np.count_nonzero(clear & ~culvert[deck_way])),
-        "clearances_low_cm": int(np.count_nonzero((C @ z < least - 0.01) & clear & ~culvert[deck_way])),
-        "passes": len(need), "passes_near_cm": int(np.count_nonzero(U @ z - L @ z < need - 0.01)),
+        "ways": int(way_mine.sum()), "variables": int(var_mine.sum()), "known": int((known & var_mine).sum()),
+        "approaches": int(np.count_nonzero(counted[:len(approach[2])])),
+        "fords": int(np.count_nonzero(counted[len(approach[2]):len(approach[2]) + len(fords[2])])), "culverts": len(culverts), "rounds": rounds,
+        "held": int(np.count_nonzero(held[segment_mine[limited]])),
+        "clearances": int(np.count_nonzero(deck_mine)),
+        "clearances_low_cm": int(np.count_nonzero((C @ z < least - 0.01) & deck_mine)),
+        "passes": int(np.count_nonzero(pass_mine)), "passes_near_cm": int(np.count_nonzero((U @ z - L @ z < need - 0.01) & pass_mine)),
         "grade_excess_m": round(float(np.max(excess, initial=0)), 4), "grade_excess_at": [round(lat, 5), round(lon, 5)],
         "grade_excess_over_1cm": int(np.count_nonzero(excess > 0.01)),
-        "residual_p99_m": round(float(np.percentile(residual[~free[seg] & (weight > 0)], 99)), 2) if (~free[seg] & (weight > 0)).any() else 0,
+        "residual_p99_m": round(float(np.percentile(residual[fitted], 99)), 2) if fitted.any() else 0,
+        "refinements_unconverged": unconverged[0],
     }
-    return out, culverts, {net.ways[w][0] for w in under[5][held_up & under[7]].tolist()}, metrics
+    return out, culverts, {net.ways[w][0] for w in under[5][held_up & under[7]].tolist() if way_mine[w]}, metrics
+
+
+def compact(kind, tags, parts):
+    """A road feature past the region as `context` reads it: its points as arrays, a fraction of the memory of
+    their tuples."""
+    return kind, tags, [(outer, np.asarray(points, np.float64), None) for outer, points, _ in parts]
+
+
+def context(features, beyond, inside):
+    """The features of `beyond`, from `compact`, that the solve of `features` needs: each bridge and tunnel of a
+    network of them that holds a bridge or a tunnel of `features`, and each way on the ground with a vertex at
+    an end of such a network. Then the numbers of the features of a network with an end that meets
+    no way where `inside(xy)` is false: the input cuts that network, so it has no ends to run between."""
+    every, count = features + beyond, len(features)
+    parts = [(f, xy) for f, (_, _, ps) in enumerate(every) for _, points, _ in ps if len(xy := distinct(points)) >= 2]
+    if not parts:
+        return [], set()
+    free = np.array([is_free(*every[f][:2]) for f in range(len(every))], bool)
+    owner = np.repeat([f for f, _ in parts], [len(xy) for _, xy in parts])
+    xy = np.concatenate([xy for _, xy in parts])
+    keys, vertex = np.unique(key(xy), return_inverse=True)
+    on = free[owner]
+    links = sparse.csr_matrix((np.ones(np.count_nonzero(on)), (owner[on], vertex[on])), shape=(len(every), len(keys)))
+    _, network = connected_components(sparse.bmat([[None, links], [links.T, None]]), directed=False)
+    network = network[:len(every)]
+    joined = free & np.isin(network, network[:count][free[:count]])
+    last = np.cumsum([len(xy) for _, xy in parts]) - 1
+    tips = np.concatenate([last - [len(xy) - 1 for _, xy in parts], last])
+    tips = tips[joined[owner[tips]]]
+    loose = tips[(np.bincount(vertex, minlength=len(keys))[vertex[tips]] < 2) & ~inside(xy[tips])]
+    whole = joined & ~np.isin(network, network[owner[loose]])
+    landed = np.zeros(len(every), bool)
+    landed[owner[np.isin(vertex, vertex[tips[whole[owner[tips]]]]) & ~on]] = True
+    cut = set(np.flatnonzero((joined & ~whole)[:count]).tolist())
+    return [beyond[f - count] for f in np.flatnonzero((whole | landed)[count:]) + count], cut
+
+
+class Region:
+    """The OSM vertices of the ways of the features as one graph, for the jobs of `solve_by_area`: `point` and
+    `area` per vertex; `vertex` and `feature` per occurrence; the OSM segments as edges of their metres, a
+    bridge or a tunnel of almost none, as in the rounds of `solve`."""
+
+    def __init__(self, features):
+        parts = [(f, distinct(points), is_free(kind, tags)) for f, (kind, tags, ps) in enumerate(features) for _, points, _ in ps]
+        parts = [(f, xy, free) for f, xy, free in parts if len(xy) >= 2]
+        xy = np.concatenate([xy for _, xy, _ in parts]) if parts else np.zeros((0, 2))
+        counts = np.array([len(xy) for _, xy, _ in parts], np.int64)
+        self.feature = np.repeat([f for f, _, _ in parts], counts).astype(np.int64)
+        _, first, self.vertex = np.unique(key(xy), return_index=True, return_inverse=True)
+        self.point = xy[first]
+        self.area = np.floor(self.point * (1 << AREA_ZOOM)).astype(np.int64)
+        way = np.repeat(np.arange(len(parts)), counts)
+        start = np.flatnonzero(way[:-1] == way[1:])
+        d = xy[start + 1] - xy[start]
+        span = np.hypot(*d.T) * metres(xy[start, 1] + d[:, 1] / 2)
+        length = np.where(np.array([free for _, _, free in parts], bool)[way[start]], 1e-6, np.maximum(span, 0.01))
+        # Of two ways along one segment, the shorter edge holds.
+        lo, hi = np.minimum(self.vertex[start], self.vertex[start + 1]), np.maximum(self.vertex[start], self.vertex[start + 1])
+        order = np.lexsort((length, hi, lo))
+        lo, hi, length = lo[order], hi[order], length[order]
+        once = np.concatenate([[True], (lo[1:] != lo[:-1]) | (hi[1:] != hi[:-1])])
+        lo, hi, length = lo[once], hi[once], length[once]
+        n = len(self.point)
+        self.graph = sparse.csr_matrix((np.concatenate([length, length]), (np.concatenate([lo, hi]), np.concatenate([hi, lo]))), shape=(n, n))
+        # Per area that holds a vertex, the metres of the segments that start in it: what its job weighs.
+        areas, at = np.unique(self.area, axis=0, return_inverse=True)
+        weight = np.bincount(at.ravel()[self.vertex[start]], span, len(areas))
+        self.areas = {tuple(area): float(m) for area, m in zip(areas.tolist(), weight)}
+        self.metres = np.bincount(self.feature[start], span, len(features))
+        # Points every FREE_STEP_M along each bridge and tunnel, and a vertex of its segment.
+        bare = length == 1e-6
+        a, b = self.point[lo[bare]], self.point[hi[bare]]
+        steps = np.maximum(1, np.ceil(np.hypot(*(b - a).T) * metres(a[:, 1]) / FREE_STEP_M)).astype(np.int64)
+        segment = np.repeat(np.arange(len(a)), steps + 1)
+        t = (np.arange(len(segment)) - np.repeat(np.cumsum(steps + 1) - steps - 1, steps + 1)) / steps[segment]
+        self.free_point = a[segment] + t[:, None] * (b - a)[segment]
+        self.free_vertex = lo[bare][segment]
+
+    def near(self, area, halo_m):
+        """The features of the ways within halo_m of an area: from the nearest point of the area in a straight
+        line, then along the ways."""
+        n, (x, y) = 1 << AREA_ZOOM, area
+        px, py = self.point.T
+        dx = np.maximum(np.maximum(x / n - px, px - (x + 1) / n), 0)
+        dy = np.maximum(np.maximum(y / n - py, py - (y + 1) / n), 0)
+        entry = np.hypot(dx, dy) * metres(py)
+        count = len(self.point)
+        graph = sparse.hstack([self.graph, sparse.csr_matrix((count, 1))])
+        scale = float(metres((y + 0.5) / n))
+        ties = 0
+        while True:
+            starts = np.flatnonzero(entry <= halo_m)
+            source = sparse.csr_matrix((np.maximum(entry[starts], 1e-9), (np.zeros(len(starts), np.int64), starts)), shape=(1, count + 1))
+            distance = dijkstra(sparse.vstack([graph, source], format="csr"), indices=count, limit=halo_m)[:count]
+            # A deck or a bore ties the ways that it crosses without a vertex, however far along it: they enter at
+            # the distance of the bridge or the tunnel and their gap to it.
+            free = np.isfinite(distance[self.free_vertex])
+            if np.count_nonzero(free) == ties:
+                return np.unique(self.feature[np.isfinite(distance)[self.vertex]]).tolist()
+            ties = np.count_nonzero(free)
+            gap, i = cKDTree(self.free_point[free] * scale).query(self.point * scale, distance_upper_bound=halo_m)
+            tied = np.isfinite(gap)
+            entry[tied] = np.minimum(entry[tied], gap[tied] + distance[self.free_vertex[free]][i[tied]])
+
+
+def solve_by_area(features, terrain, rivers=(), classes=CLASSES, halo_m=HALO_M, workers=None, context=()):
+    """`solve` by area, in a `step_pool.pool` of `workers`: a job solves the features within halo_m of its area,
+    and each OSM vertex of the area takes its height from there, with the vertices that follow it to the next
+    one. The features of `context` join the jobs, but only the areas of `features` have one. A metric adds up
+    over the areas; `rounds`, `residual_p99_m` and `grade_excess_m` are the largest."""
+    from .. import step_pool
+
+    count, features = len(features), list(features) + list(context)
+    region = Region(features)
+    boxes = np.array([(*np.min(points, 0), *np.max(points, 0)) for points, _ in rivers]).reshape(-1, 4)
+    wanted = {tuple(area) for area in np.unique(region.area[np.unique(region.vertex[region.feature < count])], axis=0).tolist()}
+    jobs = sorted(wanted & region.areas.keys(), key=lambda area: -region.areas[area])
+    if jobs and not workers:
+        workers = step_pool.worker_count(JOB_BYTES_PER_M * int(region.metres[region.near(jobs[0], halo_m)].sum()) + TERRAIN_BYTES)
+    out = [[(outer, points, None) for outer, points, _ in parts] for _, _, parts in features[:count]]
+    pieces, culverts, underpasses, metrics = {}, set(), set(), {}
+    shared = (features, terrain, rivers, boxes, classes, region, halo_m)
+    for found, culverts_, underpasses_, metrics_ in step_pool.forked(solve_area, shared, jobs, workers):
+        for way, runs in found:
+            pieces.setdefault(way, []).extend(runs)
+        culverts |= culverts_
+        underpasses |= underpasses_
+        for name, value in metrics_.items():
+            if name == "grade_excess_m":
+                if (value, metrics_["grade_excess_at"]) > (metrics.get(name, -1.0), metrics.get("grade_excess_at", [])):
+                    metrics[name], metrics["grade_excess_at"] = value, metrics_["grade_excess_at"]
+            elif name in ("rounds", "residual_p99_m"):
+                metrics[name] = max(metrics.get(name, 0), value)
+            elif name != "grade_excess_at":
+                metrics[name] = metrics.get(name, 0) + value
+    for (f, p), runs in pieces.items():
+        if f >= count:
+            continue
+        runs.sort(key=lambda run: run[0])
+        out[f][p] = (out[f][p][0], [point for run in runs for point in run[1]], [z for run in runs for z in run[2]])
+    return out, {f for f in culverts if f < count}, {f for f in underpasses if f < count}, metrics
+
+
+def solve_area(shared, area):
+    """The job of an area: per way (feature, part) that it solves, the runs (OSM vertex, points, heights) of
+    its vertices in the area; the culverts, the tunnels and the metrics of the area."""
+    features, terrain, rivers, boxes, classes, region, halo_m = shared
+    chosen = region.near(area, halo_m)
+    n, (x, y) = 1 << AREA_ZOOM, area
+    owned = lambda xy: (np.floor(xy[:, 0] * n) == x) & (np.floor(xy[:, 1] * n) == y)
+    xy = np.concatenate([distinct(points) for f in chosen for _, points, _ in features[f][2]])
+    bounds = (*xy.min(0), *xy.max(0))
+    near = [rivers[i] for i in np.flatnonzero((boxes[:, 0] <= bounds[2]) & (boxes[:, 2] >= bounds[0]) & (boxes[:, 1] <= bounds[3]) & (boxes[:, 3] >= bounds[1]))]
+    out, culverts, underpasses, metrics = solve([features[f] for f in chosen], terrain, near, classes, owned)
+    found = []
+    for f, parts in zip(chosen, out):
+        for p, (_, points, heights) in enumerate(parts):
+            if heights is None:
+                continue
+            osm = distinct(features[f][2][p][1])
+            mine, stops = owned(osm), list(map(tuple, osm.tolist()))
+            # The solve keeps every OSM vertex: a point that is the next one starts its stretch.
+            runs, k, last = [], 0, None
+            for i, (point, z) in enumerate(zip(points, heights)):
+                k += k + 1 < len(stops) and point == stops[k + 1]
+                if mine[k]:
+                    if last != i - 1:
+                        runs.append((k, [], []))
+                    runs[-1][1].append(point)
+                    runs[-1][2].append(z)
+                    last = i
+            found.append(((f, p), runs))
+    return found, {chosen[i] for i in culverts}, {chosen[i] for i in underpasses}, metrics
 
 
 def world_degrees(point):

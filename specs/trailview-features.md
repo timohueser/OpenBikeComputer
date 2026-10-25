@@ -77,7 +77,9 @@ vertex  = zigzag dx, zigzag dy, then varint z_code when has_z is 1
 ```
 
 `kind`, `key` and `value` are indices from 0 into the strings of the tile. The tags of a feature
-are sorted by key. `geometry` is 0 for a point, 1 for a line and 2 for an area.
+are sorted by key. `geometry` is 0 for a point, 1 for a line and 2 for an area. The features of a tile
+come in the order of the OSM file: first the points and the lines, then the areas. So the bytes of
+a tile do not depend on how much of the file lies outside the region.
 
 ### Coordinates
 
@@ -126,8 +128,9 @@ road meets the track. It is part of the options of the step. The road solver:
   flyover,
 - ignores the terrain under a bridge and in a tunnel: these run between their ends. A tunnel runs in a
   straight line between the two ends of its chain of tunnel ways that meet end to end, so a side tunnel
-  or a shaft that joins it follows it and does not lift it. A bridge never sags under the straight line
-  between the two ends of its chain of bridge ways,
+  or a shaft that joins it follows it and does not lift it. A tunnel chain with an end that meets no way
+  runs level from its other end, or on the grade of the road that runs on into it there. A bridge never
+  sags under the straight line between the two ends of its chain of bridge ways,
 - raises a bridge that is not a culvert where it crosses a waterway, or a road, a path or a track on
   the ground that it does not meet: its road lies at least 1.5 m (water), 4.5 m (road), 2.5 m (path) or
   6 m (track) over it, plus a deck of 1 m, or 0.4 m for a path. The way below may sink to give the room. A bridge whose end
@@ -147,6 +150,18 @@ road meets the track. It is part of the options of the step. The road solver:
   it,
 - puts a vertex that a road shares with a river or a stream, and the crossing of a way tagged `ford`
   with a waterway, 0.2 m below the water.
+
+The road solver works by area: an area is a tile of zoom 10. The solve of an area holds each way within
+500 m of the area, along the ways from the nearest vertex of OSM of a way in a straight line. A bridge or a tunnel
+has no length here, so the solve holds it whole, and the ways that it crosses join at their distance from
+it in a straight line. Each vertex of OSM in an area, and each vertex that the solver adds after it up to
+the next vertex of OSM, takes its height from the solve of that area. A network of bridges and tunnels
+that share a point joins the solve whole, also where it runs past the region, with each way on the
+ground that meets one of its ends there. In the order of the OSM data that the rules above use, each
+way past the region comes after each way of the region. The bake reads OSM to 20 km and one zoom-13
+tile past the region. A network with an end past that which meets no way has no heights: the input cuts
+it, so it has no ends to run between. A bridge is a culvert, and a
+tunnel passes under a road, by the solve of the area of its first vertex.
 
 The tiles keep the vertices of OSM and the vertex at the end of each approach of a side road, and add
 a vertex between two of them where the solved height leaves the straight line between them by more
@@ -221,6 +236,12 @@ that terrain lies within 0.3 m of it; else the 15th percentile of the terrain 2 
 A pond (`water=pond`) takes the lowest terrain 2 m inside its shore, a reservoir (`water=reservoir`
 or `landuse=reservoir`) the median of the terrain on its outline: its full level. An `ele` tag
 within 1.5 m of the level wins. Other kinds have no height yet.
+
+The water solver solves each network apart, with each lake whose bounding box comes within 120 m of the
+bounding box of one of its waterways, and each other lake alone. A lake near two networks joins them into
+one solve. A level depends only on its network and on the lakes near it, so the levels are those of one solve
+of all waterways and lakes.
+
 With `has_z` 1, each vertex has a `z_code`. `z_code` 0 means not solved: the height is unknown,
 never 0 m. Otherwise `z_code − 1` is the zigzag difference in centimetres from the last solved
 height of the feature, which starts at 0. A height is in metres in the vertical datum of

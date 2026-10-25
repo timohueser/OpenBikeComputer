@@ -14,8 +14,9 @@ import math
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 
-from . import region_osm, step_request
+from . import planner_geo as geo, region_osm, step_request
 from .trailview import lifts, profiles, structures, water
 
 FORMAT = 2
@@ -34,6 +35,10 @@ HEIGHTS = ("surface", "pad", "profile", "none")
 FIELDS = {"kind", "geometry", "match", "keep", "height", "min_zoom", "active"}
 EXPORTED = {"Point": "point", "LineString": "line", "MultiPolygon": "area"}
 TABLE = Path(__file__).resolve().parent.parent / "data/trailview/kinds.json"
+# A lift station shares its place with the buildings and the lifts near it: the near area of the
+# input reaches this far past the tiles of the region, more than the longest aerial lift.
+LIFT_REACH_M = 20000.0
+METRES_PER_DEGREE = 111320.0
 # The landuse areas whose value a building in them keeps as its tag `landuse`. They are not features.
 LANDUSE = {"industrial", "farmyard"}
 LANDUSE_AREA = {"kind": "landuse", "keep": ["landuse"]}
@@ -96,10 +101,62 @@ def world(lon, lat):
     return (lon + 180) / 360, (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2
 
 
+def reach(tiles, zoom, reach_m=0.0):
+    """The box (west, south, east, north) of the tiles of the region at `zoom`, one more tile around them and
+    `reach_m` more."""
+    c0, r0, c1, r1 = tiles.span(zoom)
+    west, _, _, north = geo.tile_bounds(zoom, c0 - 1, r0 - 1)
+    _, south, east, _ = geo.tile_bounds(zoom, c1 + 1, r1 + 1)
+    dlat = reach_m / METRES_PER_DEGREE
+    dlon = dlat / math.cos(math.radians(min(max(abs(south), abs(north)) + dlat, 85)))
+    return max(west - dlon, -180), max(south - dlat, -85), min(east + dlon, 180), min(north + dlat, 85)
+
+
+def selected(kinds, pbf, binary, tiles, work):
+    """The OSM of `pbf` that the bake can read, in the order of `pbf`: each object that an active kind can
+    select within one zoom-13 tile and LIFT_REACH_M of the region, and each that a kind below zoom 13
+    can select within one tile of its zoom. Osmium cuts and filters, so Python parses only these."""
+    active = [entry for entry in kinds if entry.get("active", True)]
+    low = [entry for entry in active if entry.get("min_zoom", MAX_ZOOM) < MAX_ZOOM]
+
+    def expressions(entries):
+        """A filter that keeps each object that a selector of `entries` matches: by its first key."""
+        firsts = [next(iter(selector.items())) for entry in entries for selector in entry["match"]]
+        return sorted({f"nwr/{key}" if values == "*" else f"nwr/{key}={','.join(values)}" for key, values in firsts})
+
+    def area(zoom, reach_m=0.0):
+        return ",".join(f"{value:.7f}" for value in reach(tiles, zoom, reach_m))
+
+    def cut(name, box, entries, more=()):
+        """The objects of `pbf` in `box` that a selector of `entries` can match. The cut comes first:
+        the filter keeps the nodes of each way that it keeps, so alone it leaves most of a file."""
+        area_pbf, kept = work / f"{name}-area.osm.pbf", work / f"{name}.osm.pbf"
+        region_osm.run(binary, "extract", "-b", box, "-s", "smart", pbf, "-o", area_pbf)
+        region_osm.run(binary, "tags-filter", area_pbf, *expressions(entries), *more, "-o", kept)
+        area_pbf.unlink()
+        return kept
+
+    # A building of the region keeps the landuse of the area that holds it.
+    paths = [cut("near", area(MAX_ZOOM, LIFT_REACH_M), active, [f"nwr/landuse={','.join(sorted(LANDUSE))}"])]
+    if low:
+        paths.append(cut("wide", area(min(entry["min_zoom"] for entry in low)), low))
+    out = work / "osm.pbf"
+    region_osm.run(binary, "merge", *paths, "-o", out)
+    return out
+
+
 def objects(kinds, pbf, binary):
     """(entry, tags, parts) of each object of an active kind. A part is (outer, points) in world
-    coordinates; a ring does not repeat its first point, and each outer ring precedes its holes."""
-    command = [binary, "export", pbf, "-f", "geojsonseq", "-x", "print_record_separator=false", "-o", "-"]
+    coordinates; a ring does not repeat its first point, and each outer ring precedes its holes. The points
+    and lines come first and then the areas, each in the order of the file."""
+    # Osmium writes a point or a line as it reads it, but buffers the areas, so in one export an area
+    # lands among the lines where its buffer ran full: an order that changes with the size of the file.
+    for types in ("point,linestring", "polygon"):
+        yield from exported(kinds, pbf, binary, types)
+
+
+def exported(kinds, pbf, binary, types):
+    command = [binary, "export", pbf, "-f", "geojsonseq", "--geometry-types", types, "-x", "print_record_separator=false", "-o", "-"]
     with subprocess.Popen(list(map(str, command)), stdout=subprocess.PIPE, text=True) as process:
         for line in process.stdout:
             feature = json.loads(line)
@@ -562,10 +619,12 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
                 for point in points:
                     shared[point] = shared.get(point, 0) + 1
 
+    work = tempfile.TemporaryDirectory(dir=output.parent, prefix=".trailview-osm-")
+    osm = selected(kinds, pbf, binary, tiles, Path(work.name))
     # The lifts wait for the buildings and the other lifts: a station shares their places.
     # The buildings of the region wait for the landuse areas that hold them.
-    ways, buildings, lift_entry, houses, landuse = [], [], None, [], []
-    for entry, tags, parts in objects(kinds, pbf, binary):
+    ways, buildings, lift_entry, houses, landuse, beyond = [], [], None, [], [], []
+    for entry, tags, parts in objects(kinds, osm, binary):
         if lifts.solves(entry["kind"], tags):
             lift_entry = entry
             ways += [(tags, points) for _, points in parts]
@@ -587,6 +646,9 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
             place(entry, tags, parts)
             if entry["kind"] == "river-area":
                 river_areas.append([points for _, points, _ in parts])
+            if terrain and roads.solves(entry["kind"], tags):
+                beyond.append(roads.compact(entry["kind"], tags, parts))
+    work.cleanup()
     values = landuse_of([parts for _, _, parts in houses], landuse)
     for (entry, tags, parts), value in zip(houses, values):
         place(entry, {**tags, "landuse": value} if value else tags, parts)
@@ -603,13 +665,27 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
     if held:
         waters = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is water]
         ways = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is roads]
-        levels, metrics["water"] = water.solve([(entry["kind"], tags, parts) for entry, tags, parts in waters], terrain)
+        levels, metrics["water"] = water.solve_by_network([(entry["kind"], tags, parts) for entry, tags, parts in waters], terrain)
         rivers = [(points, z) for (entry, _, parts), heights in zip(waters, levels) if entry["kind"] in water.RIVERS
                   for (_, points, _), z in zip(parts, heights) if z]
         for (entry, tags, parts), heights in zip(waters, levels):
             place(entry, tags, [(outer, points, z) for (outer, points, _), z in zip(parts, heights)])
         if ways:
-            heights, culverts, underpasses, metrics["roads"] = roads.solve([(entry["kind"], tags, parts) for entry, tags, parts in ways], terrain, rivers, classes)
+            # A bridge or a tunnel runs between the ends of its chain, also where they lie past the region. A chain
+            # that the input cuts has no ends to run between.
+            west, south, east, north = reach(tiles, MAX_ZOOM, LIFT_REACH_M)
+            (x0, y1), (x1, y0) = world(west, south), world(east, north)
+            context, cut = roads.context([(entry["kind"], tags, parts) for entry, tags, parts in ways], beyond,
+                                         lambda xy: (xy[:, 0] > x0) & (xy[:, 0] < x1) & (xy[:, 1] > y0) & (xy[:, 1] < y1))
+            del beyond
+            kept = [n for n in range(len(ways)) if n not in cut]
+            solved, culverts, underpasses, metrics["roads"] = roads.solve_by_area([(ways[n][0]["kind"], *ways[n][1:]) for n in kept], terrain, rivers, classes,
+                                                                                 context=context)
+            heights = [parts for _, _, parts in ways]
+            for n, parts in zip(kept, solved):
+                heights[n] = parts
+            culverts, underpasses = {kept[n] for n in culverts}, {kept[n] for n in underpasses}
+            metrics["roads"]["cut_features"] = len(cut)
             # A culvert is a road: the stamps build it over the ground.
             ways = [(entry, {k: v for k, v in tags.items() if k != "bridge"} if n in culverts else tags, parts) for n, ((entry, tags, _), parts) in enumerate(zip(ways, heights))]
             decks = [(n, entry["kind"], tags, parts[0]) for n, (entry, tags, parts) in enumerate(ways) if structures.is_bridge(entry["kind"], tags) and parts[0][2]]
@@ -622,12 +698,12 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
                 if entry["kind"] == "gallery" and parts[0][2]:
                     extra[n] = {"uphill": structures.uphill(parts[0][1], terrain)}
                 if entry["kind"] == "tunnel" and tags.get("tunnel") != "building_passage":
-                    kept = [part for part in parts if not (part[2] and structures.floating(part[1], part[2], terrain))]
-                    metrics["roads"]["floating_tunnels"] = metrics["roads"].get("floating_tunnels", 0) + len(parts) - len(kept)
-                    if not kept:
+                    under_ground = [part for part in parts if not (part[2] and structures.floating(part[1], part[2], terrain))]
+                    metrics["roads"]["floating_tunnels"] = metrics["roads"].get("floating_tunnels", 0) + len(parts) - len(under_ground)
+                    if not under_ground:
                         continue
-                    parts = kept
-                if (entry["kind"] == "tunnel" and tags.get("tunnel") != "building_passage" and n not in underpasses
+                    parts = under_ground
+                if (entry["kind"] == "tunnel" and tags.get("tunnel") != "building_passage" and n not in underpasses and any(z for *_, z in parts)
                         and all(structures.shallow(tags, points, z, terrain) for _, points, z in parts if z)):
                     # A tunnel under what the terrain leaves out, such as a building, is a road on the ground.
                     tags = {k: v for k, v in tags.items() if k != "tunnel"}

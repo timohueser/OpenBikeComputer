@@ -135,6 +135,14 @@ class RoadSolverTest(unittest.TestCase):
         self.assertLess(np.max(np.abs(z - np.interp(along, [along[0], along[-1]], [z[0], z[-1]]))), 0.05)
         self.assertEqual(solved[7][0][2], [None] * len(solved[7][0][1]))
 
+    def test_a_tunnel_that_ends_in_the_mountain_is_level_from_the_road_that_it_leaves(self):
+        terrain = Terrain(lambda east, north: 1000 + 0.3 * np.maximum(east, 0))
+        features = [road("road", "residential", line((0, -300), (0, 300), step=20)),
+                    road("tunnel", "footway", line((0, 0), (400, 0), step=5), tunnel="yes")]
+        out, *_ = roads.solve(features, terrain)
+        _, z = profile(out[1][0])
+        self.assertLess(np.max(np.abs(z - z[0])), 1e-3)
+
     def test_a_way_on_the_ground_of_a_higher_layer_passes_over_and_one_indoors_stays_on_the_terrain(self):
         terrain = Terrain(lambda east, north: 1000 + 0 * east)
         street = road("road", "residential", line((-100, 0), (100, 0), step=20))
@@ -146,6 +154,45 @@ class RoadSolverTest(unittest.TestCase):
                 self.assertEqual(metrics["passes"], 1 if rise else 0)
                 self.assertGreaterEqual(over, rise - roads.KEEP_M)
                 self.assertLess(over, rise + 0.5)
+
+
+class AreasTest(unittest.TestCase):
+    def test_the_jobs_of_four_areas_that_each_hold_the_whole_network_stitch_into_its_one_solve(self):
+        n = 1 << roads.AREA_ZOOM
+        corner = ((math.floor(X0 * n) + 1) / n - X0) / UNIT, (Y0 - math.floor(Y0 * n) / n) / UNIT
+        near = lambda *points: [(corner[0] + east, corner[1] + north) for east, north in points]
+        noise = np.random.default_rng(3).normal(0, 0.4, 20000)
+        terrain = Terrain(lambda east, north: 1000 + 0.15 * east - 0.03 * north + noise[(np.abs(east + 3 * north) / 0.5).astype(int) % 20000])
+        features = [
+            road("main-road", "secondary", line(*near((-600, -400), (0, 0), (600, 300)), step=40)),
+            road("road", "residential", line(*near((0, 0), (-200, 300), (-300, 500)), step=30)),
+            road("road", "track", line(*near((200, -300), (220, -200)), step=10), bridge="yes"),
+            road("road", "track", line(*near((-500, 200), (-100, 200)), step=50)),
+            road("tunnel", "residential", line(*near((-300, -100), (300, -100)), step=60), tunnel="yes"),
+            road("road", "track", line(*near((40, 100), (46, 100))), bridge="yes"),
+        ]
+        stream = [at(*point) for point in near((210, -260), (180, -240))]
+        rivers = [(stream, [990.0, 989.5])]
+        self.assertEqual(len(roads.Region(features).areas), 4)
+        whole = roads.solve(features, terrain, rivers)
+        apart = roads.solve_by_area(features, terrain, rivers, workers=2)
+        self.assertEqual(whole[:3], apart[:3])
+        self.assertEqual({k: v for k, v in whole[3].items() if k != "residual_p99_m"}, {k: v for k, v in apart[3].items() if k != "residual_p99_m"})
+
+    def test_a_tunnel_runs_straight_to_its_portal_on_a_road_past_the_region_and_one_that_the_input_cuts_has_none(self):
+        terrain = Terrain(lambda east, north: 1000 - 0.02 * east + np.where(np.abs(east - 3000) < 2900, 800, 0))
+        features = [road("road", "residential", line((-300, 0), (0, 0), step=20)),
+                    road("tunnel", "residential", line((0, 0), (2000, 0), step=50), tunnel="yes")]
+        beyond = [roads.compact(*road("tunnel", "residential", line((2000, 0), (6000, 0), step=50), tunnel="yes")),
+                  roads.compact(*road("road", "residential", line((6000, -300), (6000, 0), (6000, 300), step=20))),
+                  roads.compact(*road("road", "residential", line((0, 5000), (300, 5000), step=20)))]
+        context, cut = roads.context(features, beyond, lambda xy: np.ones(len(xy), bool))
+        self.assertEqual(([id(feature) for feature in context], cut), ([id(feature) for feature in beyond[:2]], set()))
+        heights, *_ = roads.solve_by_area(features, terrain, context=context, workers=1)
+        along, z = profile(heights[1][0])
+        self.assertLess(np.max(np.abs(z - np.interp(along, [0, 6000], [1000, 880]))), 0.5)
+        _, cut = roads.context(features, beyond[:1], lambda xy: (xy[:, 0] - X0) / UNIT < 5000)
+        self.assertEqual(cut, {1})
 
 
 if __name__ == "__main__":
