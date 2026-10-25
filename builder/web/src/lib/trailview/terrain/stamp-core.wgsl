@@ -45,6 +45,7 @@ const BRIDGE: u32 = 8u;
 const TUNNEL: u32 = 9u;
 const RAIL: u32 = 10u;
 const PAD: u32 = 11u;
+const AREA: u32 = 12u;
 // As RAIL_CODE and SLEEPER_M of bins.ts: the surface code of the first track, and the spacing of its sleepers.
 const TRACK_CODE: u32 = 8u;
 const SLEEPER_M: f32 = 0.6;
@@ -308,12 +309,14 @@ struct Stamp {
     // Whether the cones of the roads hold the lower bound (a fill) and the upper bound (a cut).
     fill: bool,
     cut: bool,
+    // Whether p lies in water or in a building, where nothing stands.
+    taken: bool,
 }
 
 // The stamp of world point p, a texel centre of a node of `level` whose first texel is `first`, from
 // the node's data at `data`.
 fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
-    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, false, 0.0, INF, false, false);
+    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, false, 0.0, INF, false, false, false);
     if (data == NO_DATA) {
         return out;
     }
@@ -374,6 +377,10 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             if (((entry & INSIDE) != 0u) != crossed) {
                 hi[BANKS] = min(hi[BANKS], real(r + 6u));
             }
+            crossed = false;
+            shore = INF;
+        } else if (kind == AREA) {
+            out.taken = out.taken || ((entry & INSIDE) != 0u) != crossed;
             crossed = false;
             shore = INF;
         } else if (kind == LAKE) {
@@ -524,6 +531,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     }
     out.conflict = out.conflict || (line_near && !line_held);
     out.water = water_in;
+    out.taken = out.taken || water_in > -1e30;
     // Under a deck the ground falls away: no fill of a road or a path holds it up. Their cuts hold, so a
     // road under a bridge keeps its cut slopes. Beside the deck the fills of the roads there hold: the
     // deck's face hides their step.
