@@ -150,6 +150,13 @@ road meets the track. It is part of the options of the step. The road solver:
 - puts a vertex that a road shares with a river or a stream, and the crossing of a way tagged `ford`
   with a waterway, 0.2 m below the water.
 
+The road solver works by area: an area is a tile of zoom 10. The solve of an area holds each way within
+1 km of the area, along the ways from the nearest point of a way in a straight line. A bridge or a tunnel
+has no length here, so the solve holds it whole, and the ways that it crosses join at their distance from
+it in a straight line. Each vertex of OSM in an area, and each vertex that the solver adds after it up to
+the next vertex of OSM, takes its height from the solve of that area. A bridge is a culvert, and a
+tunnel passes under a road, by the solve of the area of its first vertex.
+
 The tiles keep the vertices of OSM and the vertex at the end of each approach of a side road, and add
 a vertex between two of them where the solved height leaves the straight line between them by more
 than 20 cm. A bridge shorter than 8 m whose deck lies
@@ -219,6 +226,11 @@ that terrain lies within 0.3 m of it; else the 15th percentile of the terrain 2 
 A pond (`water=pond`) takes the lowest terrain 2 m inside its shore, a reservoir (`water=reservoir`
 or `landuse=reservoir`) the median of the terrain on its outline: its full level. An `ele` tag
 within 1.5 m of the level wins. Other kinds have no height yet.
+
+The water solver solves each network apart, with each lake within 120 m of it, and each other lake
+alone. A level depends only on its network and on the lakes near it, so the levels are those of one solve
+of all waterways and lakes.
+
 With `has_z` 1, each vertex has a `z_code`. `z_code` 0 means not solved: the height is unknown,
 never 0 m. Otherwise `z_code − 1` is the zigzag difference in centimetres from the last solved
 height of the feature, which starts at 0. A height is in metres in the vertical datum of
