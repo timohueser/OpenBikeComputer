@@ -18,7 +18,8 @@ pub fn extract_zip(archive: &Path, dest_dir: &Path, progress: &Progress) -> Resu
         progress.check()?;
         let mut entry = zip.by_index(i).map_err(|e| format!("entry {i} of {}: {e}", archive.display()))?;
         let name = entry.enclosed_name().ok_or_else(|| {
-            format!("{}: entry {:?} escapes the destination directory", archive.display(), entry.name())
+            let name = String::from_utf8_lossy(entry.name_raw());
+            format!("{}: entry {name:?} escapes the destination directory", archive.display())
         })?;
         let out = dest_dir.join(name);
         if entry.is_dir() {
@@ -52,8 +53,7 @@ mod tests {
     fn sample_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut buf = std::io::Cursor::new(Vec::new());
         let mut w = zip::ZipWriter::new(&mut buf);
-        let opts: zip::write::FileOptions<'_, ()> =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         for (name, body) in entries {
             w.start_file(*name, opts).expect("start entry");
             w.write_all(body).expect("write entry");
@@ -95,7 +95,7 @@ mod tests {
 
         let out = dir.join("out");
         let err = extract_zip(&archive, &out, &Progress::silent()).expect_err("must refuse");
-        assert!(err.contains("escapes"), "the refusal must say why: {err}");
+        assert!(err.contains("entry \"../escaped.txt\" escapes"), "the refusal must say why: {err}");
         assert!(!dir.join("escaped.txt").exists(), "nothing may be written outside the destination");
         let _ = std::fs::remove_dir_all(&dir);
     }

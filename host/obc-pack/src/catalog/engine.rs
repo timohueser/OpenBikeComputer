@@ -83,15 +83,10 @@ pub fn build(request: &Request) -> Result<(), String> {
         }
         for file in metadata {
             let path = &paths[&file.path];
-            let logical = if let Some(name) = file.path.strip_prefix("metadata/") {
-                let kind = layer.split('/').nth(1).ok_or("catalog input layer has no kind")?;
-                if kind == "terrain" {
-                    format!("terrain/{name}")
-                } else {
-                    format!("cells/{kind}/{name}")
-                }
-            } else {
-                file.path.clone()
+            // A map layer lists its empty cells in `cells/<band>/`; a terrain layer, in `metadata/`.
+            let logical = match file.path.strip_prefix("metadata/") {
+                Some(name) => format!("terrain/{name}"),
+                None => file.path.clone(),
             };
             let pin =
                 ArtifactRef { bytes: file.size, sha256: file.sha256.clone(), url: format!("/objects/{}", file.sha256) };
@@ -474,11 +469,14 @@ mod tests {
         let mut request = Request {
             step: "maps/catalog".into(),
             snapshots: BTreeMap::new(),
-            layers: BTreeMap::from([("maps/fine/leaf".into(), BTreeMap::from([("metadata/empty.json".into(), path)]))]),
+            layers: BTreeMap::from([(
+                "device/map/leaf".into(),
+                BTreeMap::from([("cells/fine/empty.json".into(), path)]),
+            )]),
             layer_files: BTreeMap::from([(
-                "maps/fine/leaf".into(),
+                "device/map/leaf".into(),
                 vec![LayerFile {
-                    path: "metadata/empty.json".into(),
+                    path: "cells/fine/empty.json".into(),
                     size: body.len() as u64,
                     sha256: obc_data::store::sha256_hex(&body),
                 }],

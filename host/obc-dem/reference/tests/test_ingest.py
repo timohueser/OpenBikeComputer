@@ -468,20 +468,63 @@ class Fetch(ArchiveCase):
         for tile, digest in tiles.items():
             ti, tj = (int(part) for part in tile.split("/"))
             name, path = f"{ti:04}-{tj:04}", f"16/{tile}.tif"
-            self.assertEqual(self.fetch("ch", name), (0, [path, f"{name}.sha256"]))
+            files = [path, f"{name}.keys", f"{name}.mean.sha256", f"{name}.sha256", f"mean/{path}"]
+            self.assertEqual(self.fetch("ch", name), (0, files))
             self.assertEqual(service.boxes[-1], ingest.tile_bounds(ti, tj))
             self.assertEqual((self.root / "out" / f"{name}.sha256").read_text(encoding="utf-8"), digest)
             self.assertEqual(ingest.tile_problems(self.root / "out" / path, ti, tj), [])
+            self.assertEqual(ingest.tile_problems(self.root / "out" / "mean" / path, ti, tj, "mean"), [])
             self.assertFalse((self.root / "work").exists())
             digests[tile] = (self.root / "out" / f"{name}.sha256").read_text(encoding="utf-8")
 
-        index, listed = self.root / "index.json", self.root / "digests.json"
+        index, listed, keys = self.root / "index.json", self.root / "digests.json", self.root / "keys.json"
         listed.write_text(json.dumps(digests), encoding="utf-8")
-        self.assertEqual(ingest.main(["index-tiles", "ch", "--fetched", "2026-10-01", "--digests",
-                                      str(listed), "--out", str(index)]), 0)
+        keys.write_text(json.dumps({tile: ["ch"] for tile in tiles}), encoding="utf-8")
+        self.assertEqual(ingest.main(["index-terrain", "--fetched", "2026-10-01", "--digests", str(listed),
+                                      "--keys", str(keys), "--models", "ch", "--out", str(index)]), 0)
         index = json.loads(index.read_text(encoding="utf-8"))
         self.assertEqual((index["sha256"], index["sources"]["ch"]["fetched"]), (tiles, "2026-10-01"))
         self.assertEqual(index["contributors"], {tile: ["ch"] for tile in tiles})
+
+        # A next version keeps the tiles before and the facts of a model that it did not fetch.
+        first = sorted(tiles)[0]
+        later = self.root / "later.json"
+        listed.write_text(json.dumps({first: "new pixels"}), encoding="utf-8")
+        keys.write_text(json.dumps({first: ["nl", "ch"]}), encoding="utf-8")
+        self.stand_in("nl")
+        self.assertEqual(ingest.main(["index-terrain", "--base", str(self.root / "index.json"), "--fetched", "2026-10-24",
+                                      "--digests", str(listed), "--keys", str(keys), "--models", "nl",
+                                      "--out", str(later)]), 0)
+        later = json.loads(later.read_text(encoding="utf-8"))
+        self.assertEqual(later["sha256"], {**tiles, first: "new pixels"})
+        self.assertEqual((later["tiles"][first], later["contributors"][first]), ("nl", ["nl", "ch"]))
+        self.assertEqual((later["sources"]["ch"]["fetched"], later["sources"]["nl"]["fetched"]), ("2026-10-01", "2026-10-24"))
+
+    def test_the_mean_is_beside_the_maximum_over_every_raster_of_the_tile(self):
+        """A 32 µdeg source puts four centres in each lattice pixel. Cut in two between the
+        centres of one lattice pixel, its two rasters still give that pixel the mean of all
+        four, in decimetres, beside their maximum in metres."""
+
+        transform, _, _ = wgs84_grid(32)
+        rows, cols = np.mgrid[0:40, 0:40]
+        values = (1000.0 + 0.37 * cols + 0.11 * rows).astype("float32")
+        values[20, 21] = TOWER
+        rasters = []
+        for name, first, last in (("west", 0, 21), ("east", 21, 40)):
+            path = source_raster(self.inputs / f"{name}.tif", values[:, first:last],
+                                 transform=transform * Affine.translation(first, 0))
+            with rasterio.open(path, "r+") as dst:
+                dst.crs = ingest.WGS84
+            rasters.append(path)
+        maximum, mean = ingest.pool_tile(rasters, ingest.SOURCES["ch"], 4812, 4223)
+
+        quads = values.astype("float64").reshape(20, 2, 20, 2)
+        held = np.s_[100:120, 100:120]
+        self.assertTrue((mean[held] == np.floor(quads.mean(axis=(1, 3)) * 10 + 0.5)).all())
+        self.assertTrue((maximum[held] == np.floor(quads.max(axis=(1, 3)) + 0.5)).all())
+        self.assertEqual(int(maximum[110, 110]), round(TOWER))
+        self.assertEqual((int((mean != ingest.MEAN_NODATA).sum()), int((maximum != ingest.NODATA).sum())),
+                         (400, 400))
 
     def test_a_tile_without_a_height_is_a_none_file_and_a_failure_keeps_no_raw_raster(self):
         class Service(ingest.Source):
@@ -517,66 +560,84 @@ class Fetch(ArchiveCase):
         with unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_AU_INPUT": str(self.inputs)}):
             self.assertEqual(self.fetch("au", name)[0], 1, "the datum of the order is not confirmed")
             os.environ["OBC_REFERENCE_AU_DATUM"] = "AHD"
-            self.assertEqual(self.fetch("au", name), (0, [f"16/{ti:04}/{tj:04}.tif", f"{name}.sha256"]))
+            path = f"16/{ti:04}/{tj:04}.tif"
+            files = [path, f"{name}.keys", f"{name}.mean.sha256", f"{name}.sha256", f"mean/{path}"]
+            self.assertEqual(self.fetch("au", name), (0, files))
             os.environ["OBC_REFERENCE_AU_INPUT"] = os.path.relpath(self.inputs)
             self.assertEqual(self.fetch("au", name)[0], 1, "a relative path names another directory in the step")
         self.assertEqual(sorted(path.name for path in self.inputs.rglob("*")), ["dem.tif", "order"])
 
 
+class SwissSurveys(unittest.TestCase):
+    def test_a_square_reads_its_newest_survey_only(self):
+        """swissALTI3D publishes a square again after each survey: an older one would raise the
+        maximum and move the mean."""
+
+        def item(square, year, east):
+            name = f"swissalti3d_{year}_{east}-1182_2_2056_5728.tif"
+            return {"bbox": list(square), "properties": {"datetime": f"{year}-06-01T00:00:00Z"},
+                    "assets": {name: {"href": f"https://example.invalid/{name}"},
+                               name.replace("_2_", "_0.5_"): {"href": "https://example.invalid/fine.tif"}}}
+
+        one, two = (8.38, 46.79, 8.39, 46.80), (8.39, 46.79, 8.40, 46.80)
+        items = [item(one, 2019, 2672), item(two, 2019, 2673), item(one, 2022, 2672)]
+        with unittest.mock.patch("ingest.sources.ch.stac_items", return_value=iter(items)):
+            assets = ingest.SOURCES["ch"].assets((8.38, 46.79, 8.40, 46.80))
+        self.assertEqual([name for name, _ in assets],
+                         ["swissalti3d_2019_2673-1182_2_2056_5728.tif", "swissalti3d_2022_2672-1182_2_2056_5728.tif"])
+
+
+class Fold(unittest.TestCase):
+    """`fold_tiles`: a model into the tile of the version before."""
+
+    def test_a_better_model_wins_where_it_has_a_height_and_a_worse_one_fills_the_gaps(self):
+        nodata = ingest.NODATA
+        existing = np.array([900, nodata, 900], dtype="int16")
+        incoming = np.array([800, 800, nodata], dtype="int16")
+        # `nl` ranks better than `es`, and `es` worse than `nl`.
+        self.assertEqual(ingest.fold_tiles(existing, incoming, {"es"}, "nl", nodata).tolist(), [800, 800, 900])
+        self.assertEqual(ingest.fold_tiles(existing, incoming, {"nl"}, "es", nodata).tolist(), [900, 800, 900])
+        # A newer survey of the same model replaces its pixels, also where they are lower.
+        self.assertEqual(ingest.fold_tiles(existing, incoming, {"es"}, "es", nodata).tolist(), [800, 800, 900])
+
+
 class MergeStep(ArchiveCase):
-    """The step of a map leaf: its models, best first, into an empty archive."""
+    """The step of a map leaf: the tiles of a version of `terrain` that it reads, and their index."""
 
-    def request(self, output, models, tiles):
-        """The request of a step with `models` as (source, version, files), whose output is in a
-        directory of its own, as the engine gives it."""
+    def version(self, pool):
+        """A version of `terrain` with two tiles of `pool`: its files by name, and the two tile ids."""
 
-        output.mkdir(parents=True)
-        snapshots = {source: {f"16/{path.stem.replace('-', '/')}.tif": str(path) for path in paths}
-                     for source, _, paths in models}
-        options = {"models": [{"source": source, "version": version, "credit": f"credit of {source}"}
-                              for source, version, _ in models],
-                   "tiles": tiles}
-        return {"options": options, "snapshots": snapshots, "output": str(output)}
+        prefix, dtype = ("mean/", "int32") if pool == "mean" else ("", "int16")
+        files, tiles = {}, [(4812, 4223), (4812, 4224)]
+        for ti, tj in tiles:
+            name = f"{prefix}16/{ti:04}/{tj:04}.tif"
+            files[name] = self.root / "version" / name
+            ingest.write_tile(files[name], ti, tj, np.full((ingest.TILE_PX,) * 2, 9000, dtype))
+        ids = [ingest.tile_id(ti, tj) for ti, tj in tiles]
+        facts = {key: {"product": key, "attribution": f"credit of {key}", "licence": "CC0",
+                       "vertical_datum": "EGM2008", "fetched": "2026-10-24"} for key in ("es", "nl")}
+        index = {"schema": 1, "step_log2": 6, "tile_log2": 16, "pool": pool, "sources": facts,
+                 "tiles": {ids[0]: "nl", ids[1]: "es"}, "contributors": {ids[0]: ["nl", "es"], ids[1]: ["es"]},
+                 "sha256": {ids[0]: "a", ids[1]: "b"}}
+        files[f"{prefix}index.json"] = self.root / "version" / f"{prefix}index.json"
+        files[f"{prefix}index.json"].write_text(json.dumps(index), encoding="utf-8")
+        return files, ids
 
-    def test_the_step_writes_the_archive_of_ingest_best_first_dated_by_each_fetch(self):
-        coarse = source_raster(self.inputs / "coarse.tif", np.full((SIDE, SIDE), 1000.0, dtype="float32"))
-        (self.root / "corner").mkdir()
-        corner = source_raster(self.root / "corner" / "corner.tif",
-                               np.full((SIDE // 2, SIDE // 2), 900.0, dtype="float32"))
-        # What `ingest` of each model, the better one first, writes.
-        self.ingest("nl", corner, inputs=corner.parent)
-        self.ingest("es", coarse)
-        tile, path = self.only_tile()
-        with rasterio.open(path) as src:
-            expected = src.read(1)
-
-        # The tile of each model, as a version of `terrain-reference/<key>` holds it.
-        name = tile.replace("/", "-")
-        pooled = []
-        for key, raster in (("es", coarse), ("nl", corner)):
-            alone = self.root / key
-            self.assertEqual(ingest.main(["ingest", key, "--bbox", bbox_of(raster), "--archive", str(alone),
-                                          "--input", str(raster.parent)]), 0)
-            pooled.append(alone / f"{name}.tif")
-            ingest.tile_path(alone, *map(int, tile.split("/"))).rename(pooled[-1])
-
-        # The request names the worse model first.
-        models = [("terrain-reference/es", "2026-01-02", [pooled[0]]),
-                  ("terrain-reference/nl", "2026-02-03", [pooled[1]])]
-        output = self.root / "step" / "output"
-        metrics = merge.merge(self.request(output, models, [tile, "0000/0000"]))
-        layer = output / "reference"
-        self.assertEqual(metrics, {"tiles": 1, "sources": ["es", "nl"]})
-        index = ingest.read_index(layer)
-        self.assertEqual(index["contributors"], {tile: ["nl", "es"]})
-        with rasterio.open(ingest.tile_path(layer, *map(int, tile.split("/")))) as src:
-            self.assertTrue((src.read(1) == expected).all())
-        self.assertEqual((index["sources"]["nl"]["fetched"], index["sources"]["nl"]["attribution"]),
-                         ("2026-02-03", "credit of terrain-reference/nl"))
-
-        # A tile that no terrain cell of the leaf reads stays out.
-        output = self.root / "other" / "output"
-        self.assertEqual(merge.merge(self.request(output, models, ["0000/0000"]))["tiles"], 0)
+    def test_the_step_cuts_the_tiles_of_the_leaf_and_their_index(self):
+        for pool in ("max", "mean"):
+            files, ids = self.version(pool)
+            output = self.root / pool / "output"
+            output.mkdir(parents=True)
+            options = {"source": "terrain", "tiles": [ids[1], "0000/0000"], **({"pool": pool} if pool == "mean" else {})}
+            request = {"options": options, "snapshots": {"terrain": {name: str(path) for name, path in files.items()}},
+                       "output": str(output)}
+            self.assertEqual(merge.merge(request), {"tiles": 1, "sources": ["es"]})
+            layer = output / "reference"
+            index = ingest.read_index(layer)
+            self.assertEqual((index["pool"], index["contributors"], list(index["sources"])), (pool, {ids[1]: ["es"]}, ["es"]))
+            self.assertTrue(ingest.tile_path(layer, 4812, 4224).is_file())
+            self.assertFalse(ingest.tile_path(layer, 4812, 4223).exists(), "a tile that the leaf does not read stays out")
+            shutil.rmtree(self.root / "version")
 
 
 class PerTile(ArchiveCase):

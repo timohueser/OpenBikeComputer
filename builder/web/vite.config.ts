@@ -20,9 +20,9 @@ const HOSTS = {
 
 type HostName = keyof typeof HOSTS;
 
-// Modes that build one page of their own, into `dist/MODE`: the route planner and the
-// operator page of `obc data ui`.
-const PAGES: Record<string, string> = { planner: "planner.html", data: "data.html" };
+// Modes that build one page of their own, into `dist/MODE`: the route planner, the operator page
+// of `obc data ui` and the TrailView 3D view.
+const PAGES: Record<string, string> = { planner: "planner.html", data: "data.html", trailview: "trailview.html" };
 
 // `vite`/`vite build` default to development/production, and vitest to test — all
 // three are the dev host. `--mode web|desktop` opts into the others. Anything else is
@@ -42,7 +42,7 @@ export default defineConfig(({ mode }) => {
     const host = HOSTS[hostFor(mode)];
     // A preview config that the planner cannot use fails the build. Without one, the planner reads the live catalogue.
     const preview = loadEnv(mode, process.cwd(), "VITE_PLANNER_CONFIG").VITE_PLANNER_CONFIG;
-    if (mode === "planner" && preview) plannerConfig(JSON.parse(preview));
+    if ((mode === "planner" || mode === "trailview") && preview) plannerConfig(JSON.parse(preview));
     // Dev mode: `python -m builder.server --no-browser` on :8000 serves
     // the API; Vite proxies it (plain http-proxy streams SSE fine).
     // `vite --mode data` sends the page's `/api/cli` to `obc data ui` instead. It keeps the Host:

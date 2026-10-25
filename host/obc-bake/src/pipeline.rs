@@ -20,6 +20,7 @@ use obc_draw::merge::report_merge;
 use obc_draw::merge::{merge_classes, merge_fills_with, merge_line_classes, merge_line_trails_with, merge_lines_with};
 use obc_draw::quadtree::build_lod_with;
 use obc_draw::semantic::build_semantic_levels;
+use obc_draw::serialize::serialize_tree;
 use obc_elevation::{ElevationSource, NullElevation};
 use obc_map_core::config::Config;
 use obc_map_core::progress::{PackError, Phase, Progress};
@@ -214,7 +215,8 @@ fn run(
             // empty level still goes through build and serialize, so the serializer's contract is
             // unchanged.
             if progress.is_cancelled() {
-                return (Some(build_lod_with(Vec::new(), global_bbox, chunk_size, progress)), chunk_size, lod.max_mpp);
+                let empty = build_lod_with(Vec::new(), global_bbox, chunk_size, progress);
+                return (Some(serialize_tree(&empty, chunk_size)), chunk_size, lod.max_mpp);
             }
             let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
             let line_tol = if lod.line_simplify_m > 0.0 { lod.line_simplify_m / M_PER_DEG } else { 0.0 };
@@ -363,7 +365,8 @@ fn run(
             }
             // Always `Some`: a whole-extract pack writes every ladder level as a real, possibly
             // featureless, tree. `None` is the cell cutter's empty out-of-band region.
-            (Some(build_lod_with(level, global_bbox, chunk_size, progress)), chunk_size, lod.max_mpp)
+            let tree = build_lod_with(level, global_bbox, chunk_size, progress);
+            (Some(serialize_tree(&tree, chunk_size)), chunk_size, lod.max_mpp)
         },
     )
     .map_err(|e| format!("write {out_name}: {e}"))?;

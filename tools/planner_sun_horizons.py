@@ -1,6 +1,5 @@
 """Bake map-scale horizons. Point inspection keeps the native terrain calculation."""
 import io
-from itertools import islice
 import math
 import os
 from pathlib import Path
@@ -13,6 +12,7 @@ from pmtiles.reader import Reader, all_tiles
 from pmtiles.tile import zxy_to_tileid
 from pmtiles.writer import Writer
 
+from . import step_pool
 from .planner_map_archive import tile_window
 
 CURVE, UNKNOWN, TILE = 1 / (2 * 6371008.8), 32767, 512
@@ -115,14 +115,34 @@ def decode(data, samples, directions):
     return np.cumsum(delta, axis=2, dtype=np.uint8)
 
 
-def add_overview(source, output):
-    """A coarser level keeps wide map views within the same decoded cache."""
+def add_overview(source, output, executor):
+    """A coarser level keeps wide map views within the same decoded cache. The tiles of a zoom run on `executor`."""
     from .planner_sun import BOUND_STEP
     with source.open("rb") as stream, output.open("wb") as target:
         read = lambda offset, length: os.pread(stream.fileno(), length, offset)
         reader = Reader(read)
         metadata, header = reader.metadata(), reader.header()
         size, directions = metadata["horizon_samples"], metadata["horizon_directions"]
+
+        def overview(z, x, y, previous):
+            """The values and the bytes of tile z/x/y from its children: `previous` below zoom 11."""
+            children = np.full((size * 2, size * 2, directions), 255, np.uint8)
+            for dy in range(2):
+                for dx in range(2):
+                    coordinate = (x * 2 + dx, y * 2 + dy)
+                    child = previous.get(coordinate)
+                    if z == 11:
+                        data = reader.get(12, *coordinate)
+                        child = decode(data, size, directions) if data else None
+                    if child is not None:
+                        children[dy * size:(dy + 1) * size, dx * size:(dx + 1) * size] = child
+            values = reduce_grid(children)
+            data = reader.get(z, x, y) if z <= 10 else None
+            if z <= 10 and data is None:
+                raise ValueError("Overview requires every terrain bound tile in the coverage")
+            rgba = np.asarray(Image.open(io.BytesIO(data)).convert("RGBA"))[:TILE] if data else None
+            return values, encode(values, rgba)
+
         writer = Writer(target)
         try:
             for (z, x, y), data in all_tiles(read):
@@ -133,25 +153,11 @@ def add_overview(source, output):
             for z in range(11, 7, -1):
                 current = {}
                 west, north, east, south = tile_window(metadata["coverage"], z)
-                for y in range(north, south):
-                    for x in range(west, east):
-                        children = np.full((size * 2, size * 2, directions), 255, np.uint8)
-                        for dy in range(2):
-                            for dx in range(2):
-                                coordinate = (x * 2 + dx, y * 2 + dy)
-                                child = previous.get(coordinate)
-                                if z == 11:
-                                    data = reader.get(12, *coordinate)
-                                    child = decode(data, size, directions) if data else None
-                                if child is not None:
-                                    children[dy * size:(dy + 1) * size, dx * size:(dx + 1) * size] = child
-                        values = reduce_grid(children)
-                        current[x, y] = values
-                        data = reader.get(z, x, y) if z <= 10 else None
-                        if z <= 10 and data is None:
-                            raise ValueError("Overview requires every terrain bound tile in the coverage")
-                        rgba = np.asarray(Image.open(io.BytesIO(data)).convert("RGBA"))[:TILE] if data else None
-                        writer.write_tile(zxy_to_tileid(z, x, y), encode(values, rgba))
+                tiles = [(x, y) for y in range(north, south) for x in range(west, east)]
+                done = executor.map(lambda tile, z=z, previous=previous: overview(z, *tile, previous), tiles)
+                for (x, y), (values, data) in zip(tiles, done):
+                    current[x, y] = values
+                    writer.write_tile(zxy_to_tileid(z, x, y), data)
                 previous = current
             metadata.update(sun_format=3, horizon_min_zoom=8, bound_step=BOUND_STEP)
             writer.finalize(header, metadata)
@@ -167,47 +173,67 @@ def reduce_grid(children):
     return values
 
 
-def load_arrays(terrain, index, folder):
-    """File-backed arrays keep the offline bake's working memory reclaimable."""
+def load_arrays(terrain, index, rows, distance, executor):
+    """The heights that a ray of `distance` metres from the zoom 12 tile rows `rows` reaches, at every level, as
+    `horizon` reads them: level 0 from the Tiles `terrain` at zoom 12, level L from the Tiles `index` at zoom 12 - L.
+    A height outside the arrays is unknown, so the arrays reach every tile row that such a ray reaches."""
+    coverage = [terrain.header[key] / 1e7 for key in ("min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7")]
+    world = TILE << 12
+
+    def reach(y):
+        """Level 0 pixels of `distance` at the edge of tile row y: the edge farther from the equator holds the
+        smallest pixel of the band."""
+        lat = math.atan(math.sinh(math.pi * (1 - 2 * y / (1 << 12))))
+        return distance / (2 * math.pi * 6378137 * math.cos(lat) / world)
+
+    # A ray reads the bilinear corners one pixel past its end, and its position rounds down.
+    halo = math.ceil(max(reach(rows.start), reach(rows.stop))) + 2
     origins, count = np.zeros((13, 5), np.int64), 0
-    with terrain.open("rb") as stream:
-        header = Reader(lambda offset, length: os.pread(stream.fileno(), length, offset)).header()
-        coverage = [header[key] / 1e7 for key in ("min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7")]
     for level in range(13):
         if level == 1:
             continue
         west, north, east, south = tile_window(coverage, 12 - level)
-        width, rows = (east - west) * TILE, (south - north) * TILE
-        origins[level] = [west * TILE, north * TILE, width, rows, count]
-        count += width * rows
-    arrays = np.memmap(folder / "heights.bin", mode="w+", dtype=np.int16, shape=(count,))
-    arrays[:] = UNKNOWN
+        top = max(north, (rows.start * TILE - halo) // (TILE << level))
+        bottom = min(south, (rows.stop * TILE + halo) // (TILE << level) + 1)
+        width, height = (east - west) * TILE, (bottom - top) * TILE
+        origins[level] = [west * TILE, top * TILE, width, height, count]
+        count += width * height
+    arrays = np.full(count, UNKNOWN, np.int16)
     for level in range(13):
         if level == 1:
             continue
         source, zoom = (terrain, 12) if level == 0 else (index, 12 - level)
-        with source.open("rb") as stream:
-            reader = Reader(lambda offset, length: os.pread(stream.fileno(), length, offset))
-            west, north, east, south = tile_window(coverage, zoom)
-            width, rows, offset = origins[level, 2:]
-            values = arrays[offset:offset + width * rows].reshape(rows, width)
-            for y in range(north, south):
-                for x in range(west, east):
-                    data = reader.get(zoom, x, y)
-                    if data is None:
-                        continue
-                    rgba = np.asarray(Image.open(io.BytesIO(data)).convert("RGBA"))
-                    heights = rgba[:, :, 0].astype(np.int32) * 256 + rgba[:, :, 1] - 32768
-                    values[(y - north) * TILE:(y - north + 1) * TILE, (x - west) * TILE:(x - west + 1) * TILE] = np.where(rgba[:, :, 3] == 255, heights, UNKNOWN)
-            arrays.flush()
-        print(f"Loaded horizon level {level}", flush=True)
+        x0, y0, width, height, offset = (int(value) for value in origins[level])
+        values = arrays[offset:offset + width * height].reshape(height, width)
+
+        def load(tile):
+            x, y = tile
+            data = source.get(zoom, x, y)
+            if data is None:
+                return
+            rgba = np.asarray(Image.open(io.BytesIO(data)).convert("RGBA"))
+            heights = rgba[:, :, 0].astype(np.int32) * 256 + rgba[:, :, 1] - 32768
+            at = np.s_[y * TILE - y0:(y + 1) * TILE - y0, x * TILE - x0:(x + 1) * TILE - x0]
+            values[at] = np.where(rgba[:, :, 3] == 255, heights, UNKNOWN)
+
+        tiles = [(x, y) for y in range(y0 // TILE, (y0 + height) // TILE) for x in range(x0 // TILE, (x0 + width) // TILE)]
+        list(executor.map(load, tiles))
     return arrays, origins
 
 
-def add_horizons(terrain, index, output, bounds, samples=32, directions=72, workers=2):
+# Zoom 12 tile rows that trace together. A band also decodes the rows that its rays reach on each side, 5.4 rows at
+# 30 km and 55.4° N, so a wider band decodes fewer rows twice and holds more.
+BAND = 16
+
+
+def add_horizons(terrain, index, output, bounds, samples=32, directions=72, workers=None):
+    """Trace the horizons of the zoom 12 tiles of `bounds` from the Tiles `terrain` and the sun index `index`, in
+    bands of BAND tile rows on `workers` threads, by default one per core that the process may use: the trace releases
+    the interpreter lock."""
     from concurrent.futures import ThreadPoolExecutor
-    with tempfile.TemporaryDirectory(prefix=".horizon-", dir=output.parent) as directory:
-        arrays, origins = load_arrays(terrain, index, Path(directory))
+    from .planner_sun import Tiles
+    with tempfile.TemporaryDirectory(prefix=".horizon-", dir=output.parent) as directory, \
+            ThreadPoolExecutor(workers or step_pool.cores()) as executor:
         detail = Path(directory) / "detail.pmtiles"
         with index.open("rb") as stream, detail.open("wb") as target:
             reader = Reader(lambda offset, length: os.pread(stream.fileno(), length, offset))
@@ -217,26 +243,26 @@ def add_horizons(terrain, index, output, bounds, samples=32, directions=72, work
                 for (z, x, y), data in all_tiles(lambda offset, length: os.pread(stream.fileno(), length, offset)):
                     writer.write_tile(zxy_to_tileid(z, x, y), data)
                 west, north, east, south = tile_window(bounds, 12)
-                tiles = [(x, y) for y in range(north, south) for x in range(west, east)]
-                # Compile once before the bounded worker pool enters the same function.
-                trace_tile(arrays, origins, west, north, 1, directions, 1.)
-                def bake_tile(tile):
-                    x, y = tile
-                    return tile, encode(trace_tile(arrays, origins, x, y, samples, directions, float(metadata["distance_m"])))
-                payload = 0
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    iterator, count = iter(tiles), 0
-                    while batch := list(islice(iterator, workers * 2)):
-                        for (x, y), data in executor.map(bake_tile, batch):
-                            writer.write_tile(zxy_to_tileid(12, x, y), data)
-                            count, payload = count + 1, payload + len(data)
-                            if count % 16 == 0:
-                                print(f"Horizons {count}/{len(tiles)}: {payload / 1e6:.2f} MB", flush=True)
+                distance, total = float(metadata["distance_m"]), (south - north) * (east - west)
+                count, payload, levels = 0, 0, Tiles.archive(index)
+                for top in range(north, south, BAND):
+                    rows = range(top, min(top + BAND, south))
+                    arrays = None  # the last band goes before the next one loads
+                    arrays, origins = load_arrays(terrain, levels, rows, distance, executor)
+                    # Compile before the threads enter the same function.
+                    trace_tile(arrays, origins, west, top, 1, directions, 1.)
+                    tiles = [(x, y) for y in rows for x in range(west, east)]
+                    trace = lambda tile: encode(trace_tile(arrays, origins, *tile, samples, directions, distance))
+                    for (x, y), data in zip(tiles, executor.map(trace, tiles)):
+                        writer.write_tile(zxy_to_tileid(12, x, y), data)
+                        count, payload = count + 1, payload + len(data)
+                        if count % 16 == 0:
+                            print(f"Horizons {count}/{total}: {payload / 1e6:.2f} MB", flush=True)
                 metadata.update(sun_format=2, horizon_zoom=12, horizon_samples=samples,
                                 horizon_directions=directions, horizon_step=ANGLE_STEP)
                 header.update(max_zoom=12)
                 writer.finalize(header, metadata)
             finally:
                 writer.tile_f.close()
-        add_overview(detail, output)
+        add_overview(detail, output, executor)
     print(f"Sunlight archive: {output.stat().st_size / 1e6:.2f} MB", flush=True)

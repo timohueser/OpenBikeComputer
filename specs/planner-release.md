@@ -128,7 +128,8 @@ The tile API serves `/releases/ID/basemap.json`, vector tiles at
 `/releases/ID/overlays/Z/X/Y.mvt`, Terrarium tiles at
 `/releases/ID/terrain/Z/X/Y.webp`, and, for each data layer of the release,
 `/releases/ID/LAYER.json` and its tiles at `/releases/ID/LAYER/Z/X/Y`. It serves
-route catalog cells at `/releases/ID/routes/tiles/9-X-Y.json`. Each
+route catalog cells at `/releases/ID/routes/tiles/9-X-Y.json`, and TrailView's ruleset at
+`/releases/ID/trailview/rules.json`. Each
 TileJSON holds its archive metadata. Data layer tiles that are not MVT or WebP keep their
 gzip encoding. An absent tile returns 204. The raw archives
 remain downloadable from R2.
@@ -136,6 +137,40 @@ remain downloadable from R2.
 Routing, search and downloads APIs have the prefix `/planner-api/releases/ID/`. The final
 path component selects `routing`, `search` or `downloads`. `obc data serve` runs the
 services of each release that `release.json` of its target names.
+
+## Terrain tiles
+
+One terrain pyramid serves the planner and TrailView: format 2 of the layer `planner/terrain`. A
+tile is a 512 × 512 lossless WebP in the Terrarium encoding. A pixel is the height at its centre
+in metres, R × 256 + G + B / 256 − 32768, rounded to the nearest decimetre: B is the tenths ×
+25.6, rounded, so B is one of 0, 26, 51, 77, 102, 128, 154, 179, 205 and 230. A pixel with alpha 0
+has no known height.
+
+| Zoom | Tiles |
+| --- | --- |
+| 0–12 | Each tile of `terrain_bounds` that has a known height |
+| 13 | Only where a national terrain model holds the ground, in tiles whose centre is between 58.4° S and 58.4° N |
+
+The `planner/terrain/grid` step packs the tiles in two sets of archives, so the planner, the tile
+service and an offline area never load zoom 13:
+
+| Archive | Tiles |
+| --- | --- |
+| `maps/tiles/terrain/<z>-<x>-<y>.pmtiles`, `z` ≤ 11 | Tile `z/x/y`; at zoom 11 also its zoom 12 tiles |
+| `maps/tiles/terrain/13/11-<x>-<y>.pmtiles` | The zoom 13 tiles inside zoom 11 tile `x/y`. Only TrailView reads them |
+
+`maps/terrain.json` has the `maxzoom` of the first set, 12. Where zoom 13 packs exist, it also has
+`trailview_maxzoom: 13`. The step encodes each tile again with libwebp (`lossless` in
+`tools/planner_map_archive.py`). The pixels stay the same; the bytes differ from those of
+`terrain.mbtiles`. An opaque tile can lose its alpha chunk: a decoder then gives alpha 255.
+
+The planner reads zooms 0 to 12; TrailView reads zoom 13 too. The heights are the mean pool of the
+national terrain models (`terrain`) where they hold the ground, and Copernicus
+GLO-30 elsewhere. The two meet in a seam that `host/obc-dem/src/planner.rs` defines. The national
+weight is 0 within one coverage cell (about 114 m × 78 m at 47° N) of a cell where the national
+model misses a pixel, and rises to 1 over the next 1 km. GLO-30 takes the median offset of
+national − GLO-30 there, faded out over 1 km outside the coverage. The height is continuous, also
+at a concave edge such as a national border.
 
 ## Canonical grid storage
 
@@ -184,6 +219,7 @@ table of `data/planner-runtime.toml`.
 land cover attribution when the release has one, terrain attribution, device catalogue URL, map asset URLs, tile URLs, and routing,
 search and downloads API prefixes. `name` is the name of the recipe's region in `data/regions/`. `layers` maps
 the name of each data layer of the release to its TileJSON URL.
+`trailview_rules` is the URL of TrailView's ruleset when the release has it.
 `routes` is the route catalog cell URL template on the tile API origin,
 `/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`.
 

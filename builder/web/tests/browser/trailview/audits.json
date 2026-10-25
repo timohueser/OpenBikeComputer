@@ -1,0 +1,6 @@
+[
+    { "name": "walk-through-engelberg", "from": "?lat=46.820500&lon=8.403000&heading=160.0&pitch=-10.0&eye=1.6&date=2026-08-15&time=15:00&weather=sunny", "to": { "lat": 46.8170, "lon": 8.4050 }, "frames": 40 },
+    { "name": "climb-over-engelberg-to-30km", "from": "?lat=46.818000&lon=8.405000&heading=0.0&pitch=-89.0&alt=1100.0&date=2026-08-15&time=15:00&weather=sunny", "to": { "height": 30000 }, "frames": 40 },
+    { "name": "climb-over-truebsee-to-30km", "from": "?lat=46.791000&lon=8.390000&heading=0.0&pitch=-89.0&alt=1900.0&date=2026-08-15&time=15:00&weather=sunny", "to": { "height": 30000 }, "frames": 40 },
+    { "name": "pass-along-lake-brienz", "from": "?lat=46.690000&lon=7.900000&heading=60.0&pitch=-40.0&alt=1500.0&date=2026-08-15&time=15:00&weather=sunny", "to": { "lat": 46.76, "lon": 8.05 }, "frames": 40 }
+]

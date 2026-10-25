@@ -17,9 +17,14 @@ pub trait Product: Sync {
     /// Kebab-case. Each of its step names starts with `<name>/`.
     fn name(&self) -> &'static str;
 
-    /// The optional layers that the settings of a target can switch on.
+    /// The parts that the settings of a target can switch on.
     fn optional(&self) -> &'static [&'static str] {
         &[]
+    }
+
+    /// Whether `settings` switch it on, so that it bakes.
+    fn on(&self, _settings: &Settings) -> bool {
+        true
     }
 
     /// Its steps for `inputs`, with tool paths relative to `root`. A step list that reads a

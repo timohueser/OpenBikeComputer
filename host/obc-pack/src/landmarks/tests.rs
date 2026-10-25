@@ -29,7 +29,6 @@ fn retained_category_chain_is_verified_and_only_its_first_page_is_selected() {
             url: "https://commons.wikimedia.org/w/api.php".into(),
         });
     }
-    let sources = Sources::new(&root, sources).unwrap();
     let place = json!({"commons_categories":[{
         "title":"Category:Example",
         "complete":true,
@@ -38,11 +37,12 @@ fn retained_category_chain_is_verified_and_only_its_first_page_is_selected() {
             {"path":captures[1].0,"continuation":continuation}
         ]
     }]});
-    let members = category_members(&sources, &place, &["Category:Example".into()], 2).unwrap();
+    let sources = Sources::from(sources);
+    let members = category_members(&root, &sources, &place, &["Category:Example".into()], 2).unwrap();
     assert_eq!(members.into_iter().collect::<Vec<_>>(), ["A.jpg", "B.jpg"]);
     let bounded = json!({"commons_categories":[{"title":"Category:Example","complete":false,"limit":100,
         "pages":[{"path":captures[0].0,"continuation":null}]}]});
-    assert_eq!(category_members(&sources, &bounded, &["Category:Example".into()], 2).unwrap().len(), 2);
+    assert_eq!(category_members(&root, &sources, &bounded, &["Category:Example".into()], 2).unwrap().len(), 2);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -55,27 +55,27 @@ fn commons_category_rejects_missing_or_unconsumed_pages() {
     let path = "categories/category.json";
     fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
     fs::write(root.join(path), &bytes).unwrap();
-    let source = Source {
+    let sources = [Source {
         path: path.into(),
         sha256: hash(&bytes),
         bytes: bytes.len() as u64,
         url: "https://commons.wikimedia.org/w/api.php".into(),
-    };
-    let sources = Sources::new(&root, vec![source]).unwrap();
+    }];
     let listing = |pages| {
         json!({"commons_categories":[{
             "title":"Category:Example","complete":true,"pages":pages
         }]})
     };
     let unconsumed = listing(json!([{"path":path,"continuation":null}]));
-    assert!(category_members(&sources, &unconsumed, &["Category:Example".into()], 2)
+    let sources = Sources::from(Vec::from(sources));
+    assert!(category_members(&root, &sources, &unconsumed, &["Category:Example".into()], 2)
         .unwrap_err()
         .contains("unconsumed"));
     let missing = listing(json!([
         {"path":path,"continuation":null},
         {"path":"categories/missing.json","continuation":continuation}
     ]));
-    assert!(category_members(&sources, &missing, &["Category:Example".into()], 2)
+    assert!(category_members(&root, &sources, &missing, &["Category:Example".into()], 2)
         .unwrap_err()
         .contains("unregistered source"));
     let failed = json!({"commons_categories":[{
@@ -84,9 +84,9 @@ fn commons_category_rejects_missing_or_unconsumed_pages() {
             {"path":"categories/missing.json","continuation":continuation}
         ]
     }]});
-    assert!(category_members(&sources, &failed, &["Category:Example".into()], 2).unwrap().is_empty());
+    assert!(category_members(&root, &sources, &failed, &["Category:Example".into()], 2).unwrap().is_empty());
     let legacy = json!({"commons_categories":[{"title":"Category:Example","path":path}]});
-    assert!(category_members(&sources, &legacy, &["Category:Example".into()], 1)
+    assert!(category_members(&root, &sources, &legacy, &["Category:Example".into()], 1)
         .unwrap_err()
         .contains("schema 1 cannot prove complete commons category coverage"));
     fs::remove_dir_all(root).unwrap();
@@ -111,14 +111,14 @@ fn commons_category_rejects_a_page_after_the_terminal_response() {
             url: "https://commons.wikimedia.org/w/api.php".into(),
         });
     }
-    let sources = Sources::new(&root, sources).unwrap();
     let place = json!({"commons_categories":[{
         "title":"Category:Example","complete":true,"pages":[
             {"path":captures[0].0,"continuation":null},
             {"path":captures[1].0,"continuation":null}
         ]
     }]});
-    assert!(category_members(&sources, &place, &["Category:Example".into()], 2)
+    let sources = Sources::from(sources);
+    assert!(category_members(&root, &sources, &place, &["Category:Example".into()], 2)
         .unwrap_err()
         .contains("page follows a terminal response"));
     fs::remove_dir_all(root).unwrap();
@@ -156,7 +156,7 @@ fn photo_revision_and_required_creator_come_from_captured_metadata() {
         }]}}}});
         let raw = serde_json::to_vec(&metadata).unwrap();
         fs::write(root.join("metadata.json"), &raw).unwrap();
-        let sources = vec![
+        let sources = [
             Source {
                 path: "image.png".into(),
                 url: "https://upload.wikimedia.org/image.png".into(),
@@ -170,7 +170,8 @@ fn photo_revision_and_required_creator_come_from_captured_metadata() {
                 sha256: hash(&raw),
             },
         ];
-        let result = assets::photo(&Sources::new(&root, sources).unwrap(), &capture, &allowed, "Q1");
+        let sources = Sources::from(Vec::from(sources));
+        let result = assets::photo(&root, &sources, &capture, &allowed, "Q1");
         if let Some(error) = error {
             assert_eq!(result.unwrap_err(), error);
         } else {
@@ -201,18 +202,22 @@ fn photo_revision_and_required_creator_come_from_captured_metadata() {
         bytes: bytes.len() as u64,
         sha256: hash(&bytes),
     });
-    let mut sources = Sources::new(&root, sources).unwrap();
-    assert_eq!(assets::photo(&sources, &capture, &allowed, "Q1").unwrap_err(), "photo_thumbnail_revision_unverified");
+    let sources = Sources::from(sources);
+    assert_eq!(
+        assets::photo(&root, &sources, &capture, &allowed, "Q1").unwrap_err(),
+        "photo_thumbnail_revision_unverified"
+    );
     let proven = json!({"path":"image.png","metadata_path":"metadata.json",
         "revision_before_path":"before.json","revision_after_path":"after.json"});
-    assert!(assets::photo(&sources, &proven, &allowed, "Q1").is_ok());
+    assert!(assets::photo(&root, &sources, &proven, &allowed, "Q1").is_ok());
     metadata["query"]["pages"]["1"]["imageinfo"][0]["sha1"] = json!("1111111111111111111111111111111111111111");
     let changed = serde_json::to_vec(&metadata).unwrap();
     fs::write(root.join("after.json"), &changed).unwrap();
-    let after = sources.pins.get_mut("after.json").unwrap();
-    after.bytes = changed.len() as u64;
-    after.sha256 = hash(&changed);
-    assert_eq!(assets::photo(&sources, &proven, &allowed, "Q1").unwrap_err(), "photo_revision_mismatch");
+    let mut list = sources.list;
+    list[2].bytes = changed.len() as u64;
+    list[2].sha256 = hash(&changed);
+    let sources = Sources::from(list);
+    assert_eq!(assets::photo(&root, &sources, &proven, &allowed, "Q1").unwrap_err(), "photo_revision_mismatch");
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -10,8 +10,9 @@ use std::process::Command;
 
 use obc_data::engine::plan::{outputs, plan, Kept};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
-use obc_data::engine::{digest, Built, Input, Request, Run, Step};
+use obc_data::engine::{digest, Built, Function, Input, LayerFile, Request, Run, Step};
 use obc_data::fetch::http::Http;
+use obc_data::prepared::{Cost, Manifest, MANIFEST};
 use obc_data::product::{Inputs, Product, Unplanned};
 use obc_data::regions::{parse_region, Regions};
 use obc_data::release::Release;
@@ -33,6 +34,42 @@ impl Drop for Temp {
     }
 }
 
+/// A version of `wiki` whose one shard, the common one, holds no fact: the region has no Wikimedia
+/// subject. Its pin, with its manifest and its shard in the store.
+fn wiki(store: &Store) -> String {
+    let record = |name: &str, bytes: &[u8]| {
+        let (file, sha256) = (store.partial("file"), sha256_hex(bytes));
+        write_atomic(&file, bytes).unwrap();
+        store.insert(&file, &sha256).unwrap();
+        let (url, size) = (format!("https://example.org/{name}"), bytes.len() as u64);
+        FileRecord { name: name.into(), url, size, sha256, retrieved: String::new() }
+    };
+    // An empty tar is two blocks of zeros.
+    let common = record("common.tar.zst", &zstd::encode_all(&[0u8; 1024][..], 0).unwrap());
+    let manifest = Manifest {
+        source: "wiki".into(),
+        version: DAY.into(),
+        format: 1,
+        revision: 1,
+        inputs: Vec::new(),
+        files: vec![LayerFile { path: common.name.clone(), size: common.size, sha256: common.sha256.clone() }],
+        reused: Default::default(),
+        extends: Vec::new(),
+        scope: None,
+        languages: Vec::new(),
+        licence: None,
+        attribution: None,
+        machine: "test".into(),
+        time: format!("{DAY}T00:00:00Z"),
+        cost: Cost { wall_ms: 0, peak_rss_bytes: None },
+    };
+    let bytes = manifest.canonical();
+    let pinned = format!("{DAY}/{}", sha256_hex(&bytes));
+    let files = vec![record(MANIFEST, &bytes), common];
+    store.put_snapshot(&Snapshot { source: "wiki".into(), version: pinned.clone(), files }).unwrap();
+    pinned
+}
+
 /// Record `bytes` as the file `name` of `source@version`, as a fetch with `params` gives it.
 fn fetched(store: &Store, source: &str, version: &str, params: Vec<(String, String)>, name: &str, bytes: &[u8]) {
     let (file, sha256) = (store.partial("file"), sha256_hex(bytes));
@@ -44,6 +81,12 @@ fn fetched(store: &Store, source: &str, version: &str, params: Vec<(String, Stri
     if !params.is_empty() {
         store.put_requested(source, &Requested { version: version.into(), params, files: vec![name.into()] }).unwrap();
     }
+}
+
+/// The child process of a Rust step of the test runs it here.
+#[test]
+fn obc_data_step() {
+    obc_data::engine::child(&[obc_data_steps::FUNCTIONS, &[&LOCAL_FILES]].concat());
 }
 
 #[test]
@@ -101,8 +144,10 @@ time_zone = "Europe/Berlin"
     ];
     let version = |id: &str| if id == "nominatim-country-data" { nominatim.clone() } else { "1".into() };
     let serving = read.map(|id| ((id.to_string(), Vec::new()), version(id)));
-    let settings = Settings { region: AREA.into(), layers: vec!["sun".into()], ..Settings::default() };
-    let inputs = Inputs { settings, serving: BTreeMap::from(serving), ..Inputs::default() };
+    let layers = ["map", "routing", "search", "sun"].map(String::from).into();
+    let settings = Settings { region: AREA.into(), layers, ..Settings::default() };
+    let mut inputs = Inputs { settings, serving: BTreeMap::from(serving), ..Inputs::default() };
+    inputs.resolved.insert(("wiki".into(), Vec::new()), wiki(&store));
     // Reuse the real places archive for basemap tiles; small local files replace external assets and the model.
     let steps = |python: bool, inputs: &Inputs| {
         let planned = Planner.steps(&root, inputs, &regions, &store).unwrap();
@@ -114,11 +159,11 @@ time_zone = "Europe/Berlin"
             if step.name == "planner/basemap" {
                 step.inputs = vec![Input::step("planner/places")];
                 step.options = serde_json::json!({"kind": "planner/basemap"});
-                step.run = Run::Rust(local_files);
+                step.run = Run::Rust(&LOCAL_FILES);
             } else if ["planner/assets", "planner/model"].contains(&step.name.as_str()) {
                 step.inputs.clear();
                 step.options = serde_json::json!({"kind": step.name});
-                step.run = Run::Rust(local_files);
+                step.run = Run::Rust(&LOCAL_FILES);
             }
         }
         steps
@@ -381,6 +426,8 @@ for name, entry in catalog['files'].items():
         obc_data::engine::Client::None;
     assert!(Planner.verify(&root, None, &invalid, &store).unwrap_err().contains("client object"));
 }
+
+static LOCAL_FILES: Function = Function { name: "test/local-files", run: local_files };
 
 fn local_files(request: &Request) -> Result<(), String> {
     if request.options["kind"] == "planner/basemap" {

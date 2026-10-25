@@ -71,6 +71,21 @@ pub fn named<'a>(
     Ok(named)
 }
 
+/// The data layers of a release, as `DATA_LAYERS` of `tools/planner_runtime.py`, that `layers` of the
+/// catalogue lists where the release has their TileJSON; the snow day bands come with them.
+const DATA_LAYERS: [&str; 10] = [
+    "snow",
+    "climate",
+    "sun",
+    "trailview-features",
+    "trailview-canopy",
+    "trailview-ground",
+    "trailview-colour-q1",
+    "trailview-colour-q2",
+    "trailview-colour-q3",
+    "trailview-colour-q4",
+];
+
 /// Write `catalog.json`: the URLs of the planner release whose id is the digest of the named files.
 pub fn pointer(request: &Request) -> Result<(), String> {
     let named = named(request.layer_files.iter().map(|(step, files)| (step.as_str(), files.as_slice())))?;
@@ -81,12 +96,15 @@ pub fn pointer(request: &Request) -> Result<(), String> {
     let document: Value = serde_json::from_slice(&bytes).map_err(|e| format!("release.json: {e}"))?;
     let tiles = format!("{}/releases/{id}", origins.tiles_origin);
     let files = document["files"].as_object().ok_or("planner index has no files")?;
-    let layers: BTreeMap<_, _> = ["snow", "climate", "sun"]
+    let snow = (0..super::SNOW_BANDS).map(|band| format!("trailview-snow-{band:02}"));
+    let layers: BTreeMap<_, _> = DATA_LAYERS
         .into_iter()
+        .map(String::from)
+        .chain(snow)
         .filter(|kind| files.contains_key(&format!("maps/{kind}.json")))
-        .map(|kind| (kind, format!("{tiles}/{kind}.json")))
+        .map(|kind| (kind.clone(), format!("{tiles}/{kind}.json")))
         .collect();
-    let active = json!({
+    let mut active = json!({
         "device_catalog": format!("{}/cell-catalog/catalog.json", origins.objects_origin),
         "routing": format!("{}/planner-api/releases/{id}/routing", origins.api_origin),
         "search": format!("{}/planner-api/releases/{id}/search", origins.api_origin),
@@ -100,6 +118,9 @@ pub fn pointer(request: &Request) -> Result<(), String> {
         "attribution": document["attribution"], "landcover_attribution": document["landcover_attribution"],
         "terrain_attribution": document["terrain_attribution"], "layers": layers,
     });
+    if files.contains_key("trailview/rules.json") {
+        active["trailview_rules"] = json!(format!("{tiles}/trailview/rules.json"));
+    }
     let pointer = json!({"format": 1, "origins": origins, "active": active});
     let body = serde_json::to_vec(&pointer).map_err(|e| e.to_string())?;
     std::fs::write(request.output.join("catalog.json"), body).map_err(|e| e.to_string())

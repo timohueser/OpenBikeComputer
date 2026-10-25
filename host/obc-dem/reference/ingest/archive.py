@@ -12,15 +12,18 @@ import numpy as np
 import rasterio
 from rasterio.warp import transform_bounds
 
-from .lattice import (NODATA, Refuse, TILE_PX, WGS84, Window, check_world, covering_window,
+from .lattice import (MEAN_NODATA, NODATA, Refuse, TILE_PX, WGS84, Window, check_world, covering_window,
                       tile_id, tile_path, tile_window)
-from .pool import open_raster, pool_onto_lattice, read_source, to_int16
+from .pool import VOID, open_raster, pool_onto_lattice, read_source, to_decimetres, to_int16
 from .sources.base import READABLE, Source, digest_of, placed, unpack
 
 
 # Priority, finest and best-maintained national product first. Where two sources cover the
 # same pixel, the one earlier in this list keeps it. Keys with no adapter yet are listed so
 # the ranking does not move when an adapter lands.
+# The mean archive of a prepared version: the same layout under `mean/`, `int32` decimetres.
+MEAN = "mean"
+
 PRIORITY = (
     "dk", "nl", "it-tn",
     "de-nw", "de-he", "de-ni", "de-by", "de-sn", "de-th", "de-mv", "de-st", "de-bw",
@@ -57,20 +60,24 @@ def cut_tile(window: Window, data, ti: int, tj: int):
 
 
 def write_tile(path: Path, ti: int, tj: int, tile) -> None:
+    """An `int16` tile of the maximum, or an `int32` tile of the mean with the horizontal predictor."""
+
+    mean = tile.dtype == np.int32
     path.parent.mkdir(parents=True, exist_ok=True)
     profile = {
         "driver": "GTiff",
         "height": TILE_PX,
         "width": TILE_PX,
         "count": 1,
-        "dtype": "int16",
-        "nodata": NODATA,
+        "dtype": str(tile.dtype),
+        "nodata": MEAN_NODATA if mean else NODATA,
         "crs": WGS84,
         "transform": tile_window(ti, tj).transform,
         "compress": "deflate",
         "tiled": True,
         "blockxsize": 256,
         "blockysize": 256,
+        **({"predictor": 2} if mean else {}),
     }
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(tile, 1)
@@ -103,6 +110,21 @@ def merge_tiles(existing, incoming, held: set[str], key: str):
     return np.where(existing != NODATA, existing, incoming)
 
 
+def fold_tiles(existing, incoming, held: set[str], key: str, nodata: int):
+    """The tile of a version of `terrain`: the tile that `key` pooled, folded into the tile of the
+    version before, whose pixels come from the sources `held`.
+
+    `key` keeps the pixels where it has a height when it ranks better than every other source in
+    `held`, also over an older survey of its own; else it only fills the gaps. A pixel does not
+    record its source, so a tile that a better and a worse source share keeps the better one's
+    pixels where both have one, whichever came first.
+    """
+
+    if all(priority_rank(key) < priority_rank(other) for other in held - {key}):
+        return np.where(incoming != nodata, incoming, existing)
+    return np.where(existing != nodata, existing, incoming)
+
+
 def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[str]], keep=None):
     """Pool one raster onto the lattice and fold it into the archive's tiles.
 
@@ -114,7 +136,7 @@ def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[st
     values, src_transform, src_crs, bounds, voided = read_source(path, source.grid_crs())
     check_world(bounds, str(path))
     window = covering_window(bounds, pad=1)
-    lattice, dropped = pool_onto_lattice(values, src_transform, src_crs, window)
+    lattice, _, _, dropped = pool_onto_lattice(values, src_transform, src_crs, window)
     pooled = to_int16(lattice)
     touched = []
     for ti, tj in window.tiles():
@@ -141,6 +163,40 @@ def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[st
         contributors.add(source.key)
         touched.append(tile_id(ti, tj))
     return touched, voided, dropped
+
+
+def pool_tile(rasters: list[Path], source: Source, ti: int, tj: int):
+    """One tile from every raster that reaches it: the maximum as `int16` metres and the mean as
+    `int32` decimetres, or `None` where no centre lands in the tile.
+
+    A lattice pixel at the edge of two source rasters takes centres from both, and a mean of two
+    means is not the mean, so the tile is pooled whole, from all its rasters at once. The maximum
+    is the one that `ingest_rasters` of the same rasters writes.
+    """
+
+    tile = tile_window(ti, tj)
+    top = tile.row0 + TILE_PX
+    maximum = np.full((TILE_PX, TILE_PX), VOID, dtype="float32")
+    total = np.zeros((TILE_PX, TILE_PX), dtype="float64")
+    count = np.zeros((TILE_PX, TILE_PX), dtype="int64")
+    for path in rasters:
+        values, src_transform, src_crs, bounds, _ = read_source(path, source.grid_crs())
+        check_world(bounds, str(path))
+        window = covering_window(bounds, pad=1)
+        row0, row1 = max(window.row0, tile.row0), min(window.row0 + window.rows, top)
+        col0, col1 = max(window.col0, tile.col0), min(window.col0 + window.cols, tile.col0 + TILE_PX)
+        if row1 <= row0 or col1 <= col0:
+            continue
+        high, sums, counts, _ = pool_onto_lattice(values, src_transform, src_crs, window)
+        upper = window.row0 + window.rows
+        part = np.s_[upper - row1:upper - row0, col0 - window.col0:col1 - window.col0]
+        into = np.s_[top - row1:top - row0, col0 - tile.col0:col1 - tile.col0]
+        np.maximum(maximum[into], high[part], out=maximum[into])
+        total[into] += sums[part]
+        count[into] += counts[part]
+    if not count.any():
+        return None
+    return to_int16(maximum), to_decimetres(total, count)
 
 
 def source_step(path: Path) -> str:
@@ -291,7 +347,7 @@ def best_contributor(keys: set[str]) -> str:
 
 
 def tile_digest(path: Path) -> str:
-    """The sha256 of a tile's pixels: row-major, little-endian `int16`.
+    """The sha256 of a tile's pixels: row-major, little-endian, in the dtype of the tile.
 
     Not of the file. Two GDAL or zlib builds deflate the same pixels into different bytes,
     and the terrain bakery uses this digest as a skip key, so it has to mean "these heights"
@@ -300,10 +356,11 @@ def tile_digest(path: Path) -> str:
 
     with open_raster(path) as src:
         pixels = src.read(1)
-    return hashlib.sha256(np.ascontiguousarray(pixels.astype("<i2")).tobytes()).hexdigest()
+    little = pixels.astype(pixels.dtype.newbyteorder("<"))
+    return hashlib.sha256(np.ascontiguousarray(little).tobytes()).hexdigest()
 
 
-def rebuild_index(root: Path) -> dict:
+def rebuild_index(root: Path, pool: str = "max") -> dict:
     """`index.json` from the manifests. A tile not in the index is not in the archive."""
 
     manifests = load_manifests(root)
@@ -323,6 +380,7 @@ def rebuild_index(root: Path) -> dict:
         "schema": 1,
         "step_log2": 6,
         "tile_log2": 16,
+        "pool": pool,
         "sources": {
             key: source_facts(manifests, key)
             for key in sorted(manifests)
@@ -344,22 +402,25 @@ def read_index(root: Path) -> dict:
         raise Refuse(f"{path}: no index; run `ingest.py index --archive {root}`")
     return json.loads(path.read_text(encoding="utf-8"))
 
-def tile_problems(path: Path, ti: int, tj: int) -> list[str]:
-    """Everything one tile must be, including how the bytes are laid out.
+def tile_problems(path: Path, ti: int, tj: int, pool: str = "max") -> list[str]:
+    """Everything one tile of `pool` must be, including how the bytes are laid out.
 
     The layout is part of the contract because the reader streams tiles: a tile that is not
     deflated in 256 x 256 blocks, or is big-endian, reads correctly but not the way the
     baker was measured against.
     """
 
+    dtype, nodata, predictor = ("int32", MEAN_NODATA, "2") if pool == MEAN else ("int16", NODATA, None)
     problems = []
     with open_raster(path) as src:
         if (src.width, src.height) != (TILE_PX, TILE_PX):
             problems.append(f"{path}: {src.width}x{src.height}, not {TILE_PX}x{TILE_PX}")
-        if src.dtypes[0] != "int16":
-            problems.append(f"{path}: dtype {src.dtypes[0]}, not int16")
-        if src.nodata != NODATA:
-            problems.append(f"{path}: nodata {src.nodata}, not {NODATA}")
+        if src.dtypes[0] != dtype:
+            problems.append(f"{path}: dtype {src.dtypes[0]}, not {dtype}")
+        if src.nodata != nodata:
+            problems.append(f"{path}: nodata {src.nodata}, not {nodata}")
+        if src.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR") != predictor:
+            problems.append(f"{path}: predictor {src.tags(ns='IMAGE_STRUCTURE').get('PREDICTOR')}, not {predictor}")
         if src.crs != WGS84:
             problems.append(f"{path}: CRS {src.crs}, not EPSG:4326")
         if src.count != 1:

@@ -1,0 +1,8 @@
+{
+ "name": "Carpathian montane forests",
+ "ecoregion": 692,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "carpathians",
+ "about": "Long ridges of beech, fir and dark spruce over hay meadows and scattered villages, along the arc from the Moravian Beskids over the Tatras, the Bieszczady and the Ukrainian polonynas to Bucovina and the Southern Carpathians; above the trees, mountain pine and wide grassy polonynas grazed by sheep, and bare granite cirques with late snow in the Tatras, Făgăraș and Parâng. No split: one continental mountain haze, weather and grade fit the whole arc, and the Apuseni outlier has the same climate; the change from beech to spruce to mountain pine and grass is carried by the tree elevation bands and WorldCover's tree line, the high cirques by the barren rule and the snowline, the hay meadows and polonynas by Sentinel-2 colour, and the houses by culture by country, with house styles by subdivision for the log-house areas."
+}

@@ -1,15 +1,14 @@
-//! Running a step and measuring what it cost.
+//! Running a step in a child process and measuring what it cost.
 
-use std::cell::{Cell, RefCell};
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::Request;
+use super::{Function, Request, Run};
 
 pub struct Usage {
     pub wall_ms: u64,
@@ -17,72 +16,157 @@ pub struct Usage {
     pub peak_rss_bytes: Option<u64>,
 }
 
-thread_local! {
-    /// The CPU milliseconds and the largest peak of the programs that the Rust step of this thread
-    /// ran with [`run_child`].
-    static CHILDREN: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
-    /// Set when the run of the Rust step of this thread stops.
-    static STOP: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
-}
+/// The first argument of the child process that runs a Rust step: `<binary> obc_data_step
+/// <function>`. A test binary reads its arguments as test names, so it runs its test of this name.
+const CHILD: &str = "obc_data_step";
 
-/// Run a step in this process, on this thread. Its CPU time is the time of the whole process, so it
-/// is exact only while no other step runs. Its peak is the peak of the whole process so far, not
-/// the peak of the step: an upper bound, as the scheduler needs. The programs that the step runs
-/// with [`run_child`], such as Osmium, add their CPU time, and their peak when it is more. When
-/// `stop` is set, [`check_stop`] on this thread fails.
-pub fn in_process(stop: Arc<AtomicBool>, step: impl FnOnce() -> Result<(), String>) -> Result<Usage, String> {
-    let start = Instant::now();
-    CHILDREN.set((0, 0));
-    STOP.set(Some(stop));
-    let before = own_usage();
-    step()?;
-    let after = own_usage();
-    let (cpu, peak) = CHILDREN.get();
-    Ok(Usage {
-        wall_ms: start.elapsed().as_millis() as u64,
-        cpu_ms: before.zip(after).map(|(before, after)| after.0.saturating_sub(before.0) + cpu),
-        peak_rss_bytes: after.map(|after| after.1.max(peak)),
-    })
-}
-
-/// An error when the run of the Rust step of this thread stops. A long step calls it in its loops,
-/// so that a stop ends the step in seconds. It is one atomic load. Outside a step it never fails.
-pub fn check_stop() -> Result<(), String> {
-    match STOP.with_borrow(|stop| stop.as_ref().is_some_and(|stop| stop.load(Ordering::Relaxed))) {
-        true => Err("the run stopped".into()),
-        false => Ok(()),
+/// When the arguments of this process are `obc_data_step <function>`, run that function of
+/// `functions` with the request on standard input, and exit: with 0 when it succeeds, else with 1
+/// after its error on standard error. Else return. A binary that runs Rust steps calls it first
+/// with the functions of its steps: `obc data` in `main`, a test binary in its test
+/// `obc_data_step`.
+pub fn child(functions: &[&Function]) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let [first, name] = &args[..] else { return };
+    if first != CHILD {
+        return;
     }
+    let function = functions.iter().find(|function| function.name == name);
+    let result = function.ok_or_else(|| format!("this binary has no function `{name}`")).and_then(|function| {
+        let request = serde_json::from_reader(std::io::stdin().lock()).map_err(|e| format!("the request: {e}"))?;
+        let ran = panic::catch_unwind(AssertUnwindSafe(|| (function.run)(&request)));
+        ran.unwrap_or_else(|payload| Err(panicked(payload)))
+    });
+    if let Err(error) = &result {
+        // Not `eprintln!`, which a test binary captures.
+        let _ = writeln!(std::io::stderr(), "{error}");
+    }
+    std::process::exit(if result.is_ok() { 0 } else { 1 })
 }
 
-/// Run `command` for the Rust step of this thread, and wait for it: its CPU time and its peak
-/// count as those of the step.
-pub fn run_child(command: &mut Command) -> Result<ExitStatus, String> {
-    let (status, cpu, peak) = wait(command.spawn().map_err(|e| e.to_string())?)?;
-    let (all, largest) = CHILDREN.get();
-    CHILDREN.set((all + cpu.unwrap_or(0), largest.max(peak.unwrap_or(0))));
-    Ok(status)
+pub(crate) fn panicked(payload: Box<dyn std::any::Any + Send>) -> String {
+    let message = payload.downcast_ref::<&str>().map(|text| text.to_string());
+    let message = message.or_else(|| payload.downcast_ref::<String>().cloned());
+    format!("it panicked: {}", message.unwrap_or_default())
 }
 
-/// Copy the standard error of `child`, which a command pipes, to that of this process on a thread.
-/// When the pipe closes, the receiver gets the last line that is not blank.
-pub fn copy_errors(child: &mut Child) -> Receiver<String> {
-    let (send, receive) = mpsc::channel();
-    if let Some(errors) = child.stderr.take() {
-        std::thread::spawn(move || {
-            let mut last = String::new();
-            for line in BufReader::new(errors).split(b'\n') {
-                let Ok(line) = line else { break };
-                let mut log = std::io::stderr().lock();
-                let _ = log.write_all(&line).and_then(|()| log.write_all(b"\n"));
-                let text = String::from_utf8_lossy(&line);
-                if !text.trim().is_empty() {
-                    last = text.trim().to_string();
+/// Run the step `run` in a child process in `root`, in a process group of its own, with the request
+/// as JSON on standard input. Its standard output goes to standard error. When `stop` is set, its
+/// process group gets SIGTERM, and the step fails. The usage is that of the process and of the
+/// children that it waited for.
+pub fn run(root: &Path, run: &Run, request: &Request, stop: &AtomicBool) -> Result<Usage, String> {
+    let (mut command, name) = match run {
+        Run::Rust(function) => {
+            let mut command = Command::new(this_binary()?);
+            command.args([CHILD, function.name]).current_dir(root);
+            (command, function.name.to_string())
+        }
+        Run::Command(argv) => (command(root, argv, false)?, argv.join(" ")),
+        Run::Python(argv) => (command(root, argv, true)?, argv.join(" ")),
+    };
+    // Temporary files go beside the output, on the disk of the store: `/tmp` can be a tmpfs, whose
+    // files take memory that no receipt counts.
+    let temporary = request.output.with_file_name("tmp");
+    std::fs::create_dir_all(&temporary).map_err(|e| format!("{}: {e}", temporary.display()))?;
+    command.env("TMPDIR", &temporary);
+    command.stdin(Stdio::piped()).stdout(std::io::stderr()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        if let (Run::Rust(_), Some(program)) = (run, std::env::args_os().next()) {
+            // `ps` shows `obc-data obc_data_step <function>`, not `/proc/self/exe`.
+            command.arg0(program);
+        }
+        #[cfg(target_os = "linux")]
+        let engine = std::process::id();
+        // SAFETY: setpgid, prctl and getppid are async-signal-safe. A pre_exec also makes
+        // `Command` fork, not vfork: the peak of a forked child starts at the resident set of the
+        // engine now, not at its peak.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
                 }
-            }
-            let _ = send.send(last);
-        });
+                // The step ends with the engine, also when the kernel kills the engine.
+                #[cfg(target_os = "linux")]
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 || libc::getppid() as u32 != engine {
+                    // No allocation between fork and exec: another thread can hold the malloc lock.
+                    return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                }
+                Ok(())
+            });
+        }
     }
+    let start = Instant::now();
+    let mut child = command.spawn().map_err(|e| format!("cannot start `{name}`: {e}"))?;
+    let errors = copy_lines(child.stderr.take(), "");
+    let json = serde_json::to_vec(request).map_err(|e| e.to_string())?;
+    // A step that does not read its request closes the pipe; its exit status tells the rest.
+    let unwritten = match child.stdin.take().map(|mut stdin| stdin.write_all(&json)) {
+        Some(Err(e)) if e.kind() != ErrorKind::BrokenPipe => Some(e),
+        _ => None,
+    };
+    let (status, cpu_ms, peak_rss_bytes) = wait(child, stop)?;
+    ended(&name, status, errors)?;
+    if let Some(e) = unwritten {
+        return Err(format!("cannot write the request to `{name}`: {e}"));
+    }
+    Ok(Usage { wall_ms: start.elapsed().as_millis() as u64, cpu_ms, peak_rss_bytes })
+}
+
+/// The program of this process. On Linux, its image, also when a build replaced its file since.
+fn this_binary() -> Result<PathBuf, String> {
+    if cfg!(target_os = "linux") {
+        return Ok(PathBuf::from("/proc/self/exe"));
+    }
+    std::env::current_exe().map_err(|e| format!("the program of `obc data`: {e}"))
+}
+
+/// Copy `pipe`, an output of a child that a command pipes, to the standard error of this process on
+/// a thread, each line that is not blank after `label` and a space. A carriage return ends a line
+/// too, so a line that the child writes over shows at once. When the pipe closes, the receiver gets
+/// the last line that is not blank.
+pub fn copy_lines(pipe: Option<impl Read + Send + 'static>, label: &str) -> Receiver<String> {
+    let (send, receive) = mpsc::channel();
+    let Some(pipe) = pipe else { return receive };
+    let label = if label.is_empty() { String::new() } else { format!("{label} ") };
+    std::thread::spawn(move || {
+        let (mut pipe, mut last) = (BufReader::new(pipe), String::new());
+        loop {
+            let mut line = segment(&mut pipe);
+            if line.is_empty() {
+                break;
+            }
+            let text = String::from_utf8_lossy(&line).trim().to_string();
+            if !text.is_empty() {
+                line = [label.as_bytes(), &line].concat();
+                last = text;
+            }
+            if !line.ends_with(b"\n") && !line.ends_with(b"\r") {
+                line.push(b'\n');
+            }
+            let _ = std::io::stderr().write_all(&line);
+        }
+        let _ = send.send(last);
+    });
     receive
+}
+
+/// The bytes of `pipe` up to and with the next line feed or carriage return; none at the end.
+fn segment(pipe: &mut impl BufRead) -> Vec<u8> {
+    let mut line = Vec::new();
+    while !line.ends_with(b"\n") && !line.ends_with(b"\r") {
+        let buffer = match pipe.fill_buf() {
+            Ok([]) => break,
+            Ok(buffer) => buffer,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        let end = buffer.iter().position(|&byte| byte == b'\n' || byte == b'\r').map_or(buffer.len(), |at| at + 1);
+        line.extend_from_slice(&buffer[..end]);
+        pipe.consume(end);
+    }
+    line
 }
 
 /// Wait until the copy of `errors` ends, and give the error of the program `name` that ended
@@ -131,81 +215,80 @@ fn command(root: &Path, argv: &[String], python: bool) -> Result<Command, String
     Ok(command)
 }
 
-/// Run the [`command`] `argv` in `root` with the request as JSON on standard input. Its standard
-/// output goes to standard error. The usage is that of the process and the children it waited for.
-pub fn run(root: &Path, argv: &[String], request: &Request, python: bool) -> Result<Usage, String> {
-    let mut command = command(root, argv, python)?;
-    let program = &argv[0];
-    command.stdin(Stdio::piped()).stdout(std::io::stderr()).stderr(Stdio::piped());
-    let start = Instant::now();
-    let mut child = command.spawn().map_err(|e| format!("cannot start `{program}`: {e}"))?;
-    let errors = copy_errors(&mut child);
-    let json = serde_json::to_vec(request).map_err(|e| e.to_string())?;
-    // A step that does not read its request closes the pipe; its exit status tells the rest.
-    let unwritten = match child.stdin.take().map(|mut stdin| stdin.write_all(&json)) {
-        Some(Err(e)) if e.kind() != ErrorKind::BrokenPipe => Some(e),
-        _ => None,
-    };
-    let (status, cpu_ms, peak_rss_bytes) = wait(child)?;
-    ended(&argv.join(" "), status, errors)?;
-    if let Some(e) = unwritten {
-        return Err(format!("cannot write the request to `{program}`: {e}"));
-    }
-    Ok(Usage { wall_ms: start.elapsed().as_millis() as u64, cpu_ms, peak_rss_bytes })
+/// Wait for `child`, and give its exit status, CPU milliseconds and peak. When `stop` is set, the
+/// process group of the child gets SIGTERM, and the wait fails once the child ended.
+#[cfg(unix)]
+fn wait(child: Child, stop: &AtomicBool) -> Result<End, String> {
+    wait_pid(child.id(), stop)
 }
 
+/// The end of a child: its exit status, user plus system CPU milliseconds and peak resident bytes.
+pub(crate) type End = (ExitStatus, Option<u64>, Option<u64>);
+
+/// Wait for the child `pid` of this process: its [`End`]. Once `stop` is set, its process group
+/// gets SIGTERM, and the run stopped.
 #[cfg(unix)]
-fn wait(child: std::process::Child) -> Result<(ExitStatus, Option<u64>, Option<u64>), String> {
+pub(crate) fn wait_pid(pid: u32, stop: &AtomicBool) -> Result<End, String> {
+    let (mut stopped, mut pause) = (false, Duration::from_millis(1));
+    loop {
+        match try_wait_pid(pid)? {
+            Some(_) if stopped => return Err("the run stopped".into()),
+            Some(end) => return Ok(end),
+            None => {}
+        }
+        if !stopped && stop.load(Ordering::Relaxed) {
+            // SAFETY: kill sends a signal. The child is not reaped, so its group is still its own.
+            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
+            stopped = true;
+        }
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(Duration::from_millis(10));
+    }
+}
+
+/// [`wait_pid`] without the wait: `None` while the child runs.
+#[cfg(unix)]
+pub(crate) fn try_wait_pid(pid: u32) -> Result<Option<End>, String> {
     use std::os::unix::process::ExitStatusExt;
     let mut status = 0;
     // SAFETY: rusage is plain data, and wait4 fills it.
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-    loop {
-        // SAFETY: the pid is our child, which nothing else waits for.
-        if unsafe { libc::wait4(child.id() as libc::pid_t, &mut status, 0, &mut usage) } >= 0 {
-            break;
+    // SAFETY: the pid is our child, which nothing else waits for.
+    match unsafe { libc::wait4(pid as libc::pid_t, &mut status, libc::WNOHANG, &mut usage) } {
+        0 => Ok(None),
+        -1 => {
+            let error = std::io::Error::last_os_error();
+            match error.kind() {
+                ErrorKind::Interrupted => Ok(None),
+                _ => Err(format!("wait for the step: {error}")),
+            }
         }
-        let error = std::io::Error::last_os_error();
-        if error.kind() != ErrorKind::Interrupted {
-            return Err(format!("wait for the step: {error}"));
+        _ => {
+            let (cpu, peak) = measure(&usage);
+            Ok(Some((ExitStatus::from_raw(status), Some(cpu), Some(peak))))
         }
     }
-    let (cpu, peak) = measure(&usage);
-    Ok((ExitStatus::from_raw(status), Some(cpu), Some(peak)))
 }
 
 #[cfg(not(unix))]
-fn wait(mut child: std::process::Child) -> Result<(ExitStatus, Option<u64>, Option<u64>), String> {
+fn wait(mut child: Child, _: &AtomicBool) -> Result<End, String> {
     Ok((child.wait().map_err(|e| format!("wait for the step: {e}"))?, None, None))
 }
 
-/// CPU milliseconds and peak resident bytes of this process so far.
+/// The peak resident bytes of this process, or, when that is more, `at_once` times the peak of the
+/// largest child that it waited for: a bound for `at_once` children that run at the same time.
 #[cfg(unix)]
-fn own_usage() -> Option<(u64, u64)> {
-    // SAFETY: rusage is plain data, and getrusage fills it.
-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-    (unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } == 0).then(|| measure(&usage))
-}
-
-#[cfg(not(unix))]
-fn own_usage() -> Option<(u64, u64)> {
-    None
-}
-
-/// The peak resident bytes of this process, or of the largest child that it waited for, when that is
-/// more.
-#[cfg(unix)]
-pub fn peak_rss() -> Option<u64> {
+pub fn peak_rss(at_once: u64) -> Option<u64> {
     let peak = |who| {
         // SAFETY: rusage is plain data, and getrusage fills it.
         let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
         (unsafe { libc::getrusage(who, &mut usage) } == 0).then(|| measure(&usage).1)
     };
-    peak(libc::RUSAGE_SELF).max(peak(libc::RUSAGE_CHILDREN))
+    peak(libc::RUSAGE_SELF).max(peak(libc::RUSAGE_CHILDREN).map(|peak| peak * at_once))
 }
 
 #[cfg(not(unix))]
-pub fn peak_rss() -> Option<u64> {
+pub fn peak_rss(_: u64) -> Option<u64> {
     None
 }
 
@@ -226,25 +309,18 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_rust_step_has_the_peak_of_a_program_that_it_runs() {
-        let usage = in_process(Arc::default(), || {
-            run_child(Command::new("python3").args(["-c", "b'x' * (600 << 20)"])).map(drop)
-        })
-        .unwrap();
-        assert!(usage.peak_rss_bytes.unwrap() > 600 << 20, "{:?}", usage.peak_rss_bytes);
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn a_failed_program_names_the_last_line_that_it_wrote_to_standard_error() {
         let ended_by = |script: &str| {
             let mut child = Command::new("sh").args(["-c", script]).stderr(Stdio::piped()).spawn().unwrap();
-            let errors = copy_errors(&mut child);
+            let errors = copy_lines(child.stderr.take(), "");
             let status = child.wait().unwrap();
             ended("sh", status, errors).unwrap_err()
         };
         let failed = ended_by("echo working >&2; echo 'ValueError: boom' >&2; echo >&2; exit 3");
         assert_eq!(failed, "`sh` failed (exit status: 3): ValueError: boom");
+        // A carriage return ends a line, as a progress that writes over its line does.
+        let progress = ended_by("printf 'a.zip: 10%%\\ra.zip: 100%%\\r' >&2; exit 3");
+        assert_eq!(progress, "`sh` failed (exit status: 3): a.zip: 100%");
         let stopped = ended_by("echo 'a warning' >&2; kill -TERM $$");
         assert_eq!(stopped, "`sh` failed: signal: 15 (SIGTERM)");
     }

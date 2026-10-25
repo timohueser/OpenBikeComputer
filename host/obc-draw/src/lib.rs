@@ -12,4 +12,3 @@ pub mod merge;
 pub mod quadtree;
 pub mod semantic;
 pub mod serialize;
-pub mod step;

@@ -182,12 +182,9 @@ pub fn build_semantic_levels(
                 lod.max_mpp.expect("finite semantic rung")
             ),
         );
-        let eligible: Vec<(u8, Geom)> = features
-            .iter()
-            .filter(|feature| feature.min_lod <= index)
-            .map(|feature| (feature.style_id, feature.geom.clone()))
-            .collect();
-        let level = build_semantic_lod(&eligible, scheme, bbox, nominal_mpp, prior.as_ref(), progress)?;
+        let eligible =
+            features.iter().filter(|feature| feature.min_lod <= index).map(|feature| (feature.style_id, &feature.geom));
+        let level = build_semantic_lod(eligible, scheme, bbox, nominal_mpp, prior.as_ref(), progress)?;
         progress.log(format!(
             "  semantic grid: {} source polygon(s), {} cell(s), {} thematic + {} water point(s); smoothing: {} face(s), {} shared edge(s), {} retry(ies)",
             level.stats.source_polygons,
@@ -297,8 +294,8 @@ impl<T: Copy> IndexMut<usize> for Raster<T> {
 
 /// Build one faithful semantic rung.  `features` may contain lines and unrelated polygons; only
 /// classified polygons are sampled, and only the replacement thematic/water polygons are returned.
-pub fn build_semantic_lod(
-    features: &[(u8, Geom)],
+pub fn build_semantic_lod<'a>(
+    features: impl IntoIterator<Item = (u8, &'a Geom)>,
     scheme: &SemanticScheme,
     bbox: (i64, i64, i64, i64),
     mpp: f64,
@@ -309,7 +306,7 @@ pub fn build_semantic_lod(
     let grid = Grid::new(projection, bbox, mpp)?;
     let mut sources = Vec::new();
     for (style_id, geom) in features {
-        let Some(class) = scheme.class_of(*style_id) else { continue };
+        let Some(class) = scheme.class_of(style_id) else { continue };
         if class == SemanticClass::Base || !matches!(geom, Geom::Polygon { .. } | Geom::Multi(_)) || geom.is_empty() {
             continue;
         }
@@ -586,6 +583,7 @@ impl Sampling {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Window {
     target: [u16; CLASSES],
     counts: [u8; CLASSES],
@@ -627,7 +625,6 @@ fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&Semant
     }
 
     let mut layouts = Vec::new();
-    let mut windows = HashMap::new();
     let mut window_base = 0;
     for (oy, ox) in [(0, 0), (0, WINDOW_HALF), (WINDOW_HALF, 0), (WINDOW_HALF, WINDOW_HALF)] {
         let nx = grid.cols.saturating_sub(ox).div_ceil(WINDOW_CELLS);
@@ -636,6 +633,7 @@ fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&Semant
         window_base += nx * ny;
         layouts.push(WindowLayout { ox, oy, nx, ny, base });
     }
+    let mut windows = vec![None; window_base];
     for layout in &layouts {
         for by in 0..layout.ny {
             for bx in 0..layout.nx {
@@ -657,7 +655,7 @@ fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&Semant
                         window.counts[labels[i] as usize] += 1;
                     }
                 }
-                windows.insert(layout.base + by * layout.nx + bx, window);
+                windows[layout.base + by * layout.nx + bx] = Some(window);
             }
         }
     }
@@ -669,6 +667,7 @@ fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&Semant
                 let start = x0 + ((parity as isize - y as isize - x0 as isize) & 1) as usize;
                 for x in (start..x1).step_by(2) {
                     let i = grid.index(x, y);
+                    let support = support[i];
                     let old = labels[i] as usize;
                     let mut neighbours = [u8::MAX; 4];
                     let mut n_len = 0usize;
@@ -691,16 +690,15 @@ fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&Semant
                         candidates[n as usize] = true;
                     }
                     let mut strongest = [0usize, 1usize];
-                    if evidence(support[i], strongest[1], prior_class) > evidence(support[i], strongest[0], prior_class)
-                    {
+                    if evidence(support, strongest[1], prior_class) > evidence(support, strongest[0], prior_class) {
                         strongest.swap(0, 1);
                     }
                     for class in 2..CLASSES {
-                        let e = evidence(support[i], class, prior_class);
-                        if e > evidence(support[i], strongest[0], prior_class) {
+                        let e = evidence(support, class, prior_class);
+                        if e > evidence(support, strongest[0], prior_class) {
                             strongest[1] = strongest[0];
                             strongest[0] = class;
-                        } else if e > evidence(support[i], strongest[1], prior_class) {
+                        } else if e > evidence(support, strongest[1], prior_class) {
                             strongest[1] = class;
                         }
                     }
@@ -713,14 +711,14 @@ fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&Semant
                         if new == old || !is_candidate {
                             continue;
                         }
-                        let mut delta = DATA_WEIGHT
-                            * (evidence(support[i], old, prior_class) - evidence(support[i], new, prior_class));
+                        let mut delta =
+                            DATA_WEIGHT * (evidence(support, old, prior_class) - evidence(support, new, prior_class));
                         let before_edges = neighbours[..n_len].iter().filter(|&&n| n as usize != old).count();
                         let after_edges = neighbours[..n_len].iter().filter(|&&n| n as usize != new).count();
                         delta += BOUNDARY_WEIGHT * (after_edges as f64 - before_edges as f64);
                         for &wi in &memberships {
                             let Some(wi) = wi else { continue };
-                            let w = &windows[&wi];
+                            let w = windows[wi].as_ref().expect("active cell window");
                             // Targets are exact multiples of 1/64, and each window has at most
                             // 100 cells. The squared-error difference is exact in binary arithmetic.
                             let old_error = w.counts[old] as f64 - w.target[old] as f64 / 64.0;
@@ -738,7 +736,7 @@ fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&Semant
                     if best != old {
                         labels[i] = best as u8;
                         for wi in memberships.into_iter().flatten() {
-                            let window = windows.get_mut(&wi).expect("active cell window");
+                            let window = windows[wi].as_mut().expect("active cell window");
                             window.counts[old] -= 1;
                             window.counts[best] += 1;
                         }
@@ -770,7 +768,7 @@ fn evidence(support: Support, class: usize, prior: Option<u8>) -> f64 {
     }
 }
 
-fn memberships(x: usize, y: usize, layouts: &[WindowLayout], windows: &HashMap<usize, Window>) -> [Option<usize>; 4] {
+fn memberships(x: usize, y: usize, layouts: &[WindowLayout], windows: &[Option<Window>]) -> [Option<usize>; 4] {
     let mut out = [None; 4];
     for (slot, layout) in layouts.iter().enumerate() {
         if x < layout.ox || y < layout.oy {
@@ -780,7 +778,7 @@ fn memberships(x: usize, y: usize, layouts: &[WindowLayout], windows: &HashMap<u
         let by = (y - layout.oy) / WINDOW_CELLS;
         if bx < layout.nx && by < layout.ny {
             let index = layout.base + by * layout.nx + bx;
-            if windows.contains_key(&index) {
+            if windows[index].is_some() {
                 out[slot] = Some(index);
             }
         }
@@ -796,52 +794,122 @@ fn vectorize_classes(labels: &[u8], grid: &Grid, classes: usize) -> Result<Vec<(
     if labels.len() != grid.cols * grid.rows {
         return Err("semantic label grid has the wrong size".into());
     }
-    let boundary = |horizontal: bool, along, across| {
-        let (length, count) = if horizontal { (grid.cols, grid.rows) } else { (grid.rows, grid.cols) };
-        debug_assert!(along < length);
-        across == 0
-            || across == count
-            || if horizontal {
-                labels[grid.index(along, across - 1)] != labels[grid.index(along, across)]
-            } else {
-                labels[grid.index(across - 1, along)] != labels[grid.index(across, along)]
-            }
+    let (cols, rows) = (grid.cols, grid.rows);
+    // The label boundaries on the lattice of cell corners, leaving vertex (x, y) right, down, left
+    // and up. The frame of the grid is a boundary.
+    let horizontal = |x, y| y == 0 || y == rows || labels[grid.index(x, y - 1)] != labels[grid.index(x, y)];
+    let vertical = |x, y| x == 0 || x == cols || labels[grid.index(x - 1, y)] != labels[grid.index(x, y)];
+    let edges = |x, y| {
+        [
+            x < cols && horizontal(x, y),
+            y < rows && vertical(x, y),
+            x > 0 && horizontal(x - 1, y),
+            y > 0 && vertical(x, y - 1),
+        ]
     };
-    let point = |horizontal: bool, along, across| {
-        let (x, y) = if horizontal { (along, across) } else { (across, along) };
-        (grid.left + x as f64 * grid.cell_m, grid.top() - y as f64 * grid.cell_m)
+    let edge_id = |x: usize, y: usize, direction| match direction {
+        0 => y * cols + x,
+        1 => (rows + 1) * cols + y * (cols + 1) + x,
+        2 => y * cols + x - 1,
+        _ => (rows + 1) * cols + (y - 1) * (cols + 1) + x,
     };
+    let point = |x: usize, y: usize| (grid.left + x as f64 * grid.cell_m, grid.top() - y as f64 * grid.cell_m);
+    // One polyline per boundary chain between junctions, with a vertex at every corner. One GEOS
+    // line per straight run would cost a kilobyte of polygonizer graph per run.
+    let mut visited = vec![0u64; ((rows + 1) * cols + rows * (cols + 1)).div_ceil(64)];
     let mut lines = Vec::new();
-    // GEOS receives horizontal runs in row order, then vertical runs in column order.
-    for horizontal in [true, false] {
-        let (length, count) = if horizontal { (grid.cols, grid.rows) } else { (grid.rows, grid.cols) };
-        for across in 0..=count {
-            let mut along = 0;
-            while along < length {
-                if !boundary(horizontal, along, across) {
-                    along += 1;
+    let mut trace = |(x0, y0): (usize, usize), first: usize, visited: &mut [u64]| -> Result<(), String> {
+        let mut coords = vec![point(x0, y0)];
+        let (mut x, mut y, mut direction) = (x0, y0, first);
+        loop {
+            let id = edge_id(x, y, direction);
+            visited[id / 64] |= 1 << (id % 64);
+            (x, y) = match direction {
+                0 => (x + 1, y),
+                1 => (x, y + 1),
+                2 => (x - 1, y),
+                _ => (x, y - 1),
+            };
+            let out = edges(x, y);
+            let degree = out.iter().filter(|&&edge| edge).count();
+            if degree == 2 && out[direction] {
+                continue;
+            }
+            coords.push(point(x, y));
+            if degree != 2 || (x, y) == (x0, y0) {
+                break;
+            }
+            direction = (0..4).find(|&turn| out[turn] && turn != (direction + 2) % 4).expect("a corner turns");
+        }
+        lines.push(Geometry::create_line_string(ring_to_coordseq(&coords)).map_err(|e| e.to_string())?);
+        Ok(())
+    };
+    // Chains start at junctions; the boundaries left over are closed loops of corners.
+    for junctions in [true, false] {
+        for y in 0..=rows {
+            for x in 0..=cols {
+                // Most vertices lie inside one label.
+                if (1..rows).contains(&y) && (1..cols).contains(&x) {
+                    let (above, below) = (grid.index(x - 1, y - 1), grid.index(x - 1, y));
+                    if labels[above] == labels[above + 1] && labels[above..above + 2] == labels[below..below + 2] {
+                        continue;
+                    }
+                }
+                let out = edges(x, y);
+                let degree = out.iter().filter(|&&edge| edge).count();
+                if degree == 0 || (degree == 2) == junctions {
                     continue;
                 }
-                let start = along;
-                along += 1;
-                while along < length && boundary(horizontal, along, across) {
-                    if (across > 0 && boundary(!horizontal, across - 1, along))
-                        || (across < count && boundary(!horizontal, across, along))
-                    {
-                        break;
+                for direction in (0..4).filter(|&direction| out[direction]) {
+                    let id = edge_id(x, y, direction);
+                    if visited[id / 64] & (1 << (id % 64)) == 0 {
+                        trace((x, y), direction, &mut visited)?;
                     }
-                    along += 1;
                 }
-                let coords = [point(horizontal, start, across), point(horizontal, along, across)];
-                lines.push(Geometry::create_line_string(ring_to_coordseq(&coords)).map_err(|e| e.to_string())?);
             }
         }
     }
+    // Free each stage before the next one allocates.
+    drop(visited);
     let polygonized = Geometry::polygonize(&lines).map_err(|e| format!("semantic polygonize: {e}"))?;
+    drop(lines);
     let mut faces = Vec::new();
     collect_polygons(from_geos(&polygonized), &mut faces);
-    let mut out = Vec::with_capacity(faces.len());
-    for face in faces {
+    drop(polygonized);
+    // GEOS emits faces, holes and ring starts in the order of the first directed edge of each ring.
+    // Keep the order of one GEOS line per straight run: horizontal runs by row, then vertical runs
+    // by column, each forward before backward.
+    let run = |a: (f64, f64), b: (f64, f64)| {
+        let col = |x: f64| ((x - grid.left) / grid.cell_m).round() as usize;
+        let row = |y: f64| ((grid.top() - y) / grid.cell_m).round() as usize;
+        if a.1 == b.1 {
+            (false, row(a.1), col(a.0.min(b.0)), a.0 > b.0)
+        } else {
+            (true, col(a.0), row(a.1.max(b.1)), a.1 < b.1)
+        }
+    };
+    let first_run = |ring: &mut Vec<(f64, f64)>| {
+        let (start, key) = ring.windows(2).map(|pair| run(pair[0], pair[1])).enumerate().min_by_key(|&(_, key)| key)?;
+        ring.pop();
+        ring.rotate_left(start);
+        ring.push(ring[0]);
+        Some(key)
+    };
+    let mut keyed = faces
+        .into_iter()
+        .map(|mut face| {
+            let Geom::Polygon { exterior, interiors } = &mut face else {
+                return Err("semantic polygonize emitted a non-polygon".to_string());
+            };
+            let mut holes: Vec<_> = interiors.drain(..).map(|mut ring| (first_run(&mut ring), ring)).collect();
+            holes.sort_unstable_by_key(|(key, _)| *key);
+            interiors.extend(holes.into_iter().map(|(_, ring)| ring));
+            Ok((first_run(exterior), face))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    keyed.sort_unstable_by_key(|(key, _)| *key);
+    let mut out = Vec::with_capacity(keyed.len());
+    for (_, face) in keyed {
         let geos = try_polygon_to_geos(&face).ok_or("semantic polygonize emitted an invalid face")?;
         let point = geos.point_on_surface().map_err(|e| e.to_string())?;
         let (x, y) = (point.get_x().map_err(|e| e.to_string())?, point.get_y().map_err(|e| e.to_string())?);
@@ -1497,13 +1565,13 @@ mod tests {
                 },
             )
         };
-        let inputs =
-            vec![square("bare_rock", 0.0), square("scree", 0.01), square("glacier", 0.02), square("water", 0.03)];
+        let inputs = [square("bare_rock", 0.0), square("scree", 0.01), square("glacier", 0.02), square("water", 0.03)];
         let scheme = config.semantic_scheme();
         let mut prior = None;
         for mpp in [20.0, 80.0] {
+            let features = inputs.iter().map(|(style, geom)| (*style, geom));
             let level =
-                build_semantic_lod(&inputs, &scheme, (0, 0, 40_000, 10_000), mpp, prior.as_ref(), &Progress::silent())
+                build_semantic_lod(features, &scheme, (0, 0, 40_000, 10_000), mpp, prior.as_ref(), &Progress::silent())
                     .unwrap();
             for value in ["bare_rock", "glacier", "water"] {
                 assert!(

@@ -8,6 +8,7 @@ import sqlite3
 import tempfile
 import unittest
 
+import numpy as np
 from PIL import Image
 from pmtiles.reader import MmapSource, Reader, all_tiles
 from pmtiles.tile import Compression, TileType, zxy_to_tileid
@@ -69,32 +70,63 @@ class MapGrid(unittest.TestCase):
             self.assertEqual(json.loads(data), index["metadata"])
             self.assertEqual(index["metadata"]["bounds"], BOUNDS)
 
-    def test_terrain_mbtiles_conversion_keeps_uncompressed_webp_pixels(self):
+    def test_terrain_keeps_its_pixels_in_fewer_bytes_and_zoom_13_in_its_own_archives(self):
+        heights = (np.arange(64 * 64).reshape(64, 64) * 37 % 9973).astype(np.int64) + 32768 * 256
+        rgba = np.stack([heights >> 16, heights >> 8 & 255, heights & 255, np.full_like(heights, 255)], -1)
+        rgba[0, 0] = (128, 0, 0, 0)
+        image = io.BytesIO()
+        Image.fromarray(rgba.astype(np.uint8), "RGBA").save(image, format="WEBP", lossless=True, method=0, exact=True)
+        data = image.getvalue()
+        tiles = {(12, 2000, 1400): "11-1000-700", (13, 4001, 2801): "13/11-1000-700"}
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             archive = root / "terrain.mbtiles"
-            image = io.BytesIO()
-            Image.new("RGBA", (2, 2), (128, 4, 0, 255)).save(image, format="WEBP", lossless=True)
-            data = image.getvalue()
             with sqlite3.connect(archive) as db:
                 db.executescript("CREATE TABLE metadata(name TEXT, value TEXT);"
                                  "CREATE TABLE tiles(zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB);")
                 db.executemany("INSERT INTO metadata VALUES (?,?)", [("format", "webp"), ("name", "Terrain"),
-                    ("bounds", "-180,-85,180,85"), ("minzoom", "0"), ("maxzoom", "0")])
-                db.execute("INSERT INTO tiles VALUES (0,0,0,?)", (data,))
+                    ("bounds", "-180,-85,180,85"), ("minzoom", "0"), ("maxzoom", "13")])
+                db.executemany("INSERT INTO tiles VALUES (?,?,?,?)", [(z, x, (1 << z) - 1 - y, data) for z, x, y in tiles])
             request = self.request(root, archive, "terrain")
             grid.step(request)
             output, index = self.files(request)
-            entry = index["files"]["maps/tiles/terrain/0-0-0.pmtiles"]
-            path = output / "objects" / entry["transport"]["sha256"]
-            planner_verify.archive(path, "terrain")
+            self.assertEqual(set(index["files"]), {"maps/terrain.json", *(f"maps/tiles/terrain/{name}.pmtiles" for name in tiles.values())})
+            self.assertEqual((index["metadata"]["maxzoom"], index["metadata"]["trailview_maxzoom"]), (12, 13))
+            for tile, name in tiles.items():
+                path = output / "objects" / index["files"][f"maps/tiles/terrain/{name}.pmtiles"]["transport"]["sha256"]
+                planner_verify.archive(path, "terrain")
+                with path.open("rb") as stream:
+                    read = MmapSource(stream)
+                    (found, encoded), = all_tiles(read)
+                    self.assertEqual(Reader(read).header()["tile_compression"], Compression.NONE)
+                self.assertEqual(found, tile)
+                self.assertLess(len(encoded), len(data))
+                self.assertEqual(np.asarray(Image.open(io.BytesIO(encoded)).convert("RGBA")).tolist(), rgba.tolist())
             with self.assertRaisesRegex(ValueError, 'tile format'):
                 planner_verify.archive(path, "basemap")
-            with (output / "objects" / entry["transport"]["sha256"]).open("rb") as stream:
-                read = MmapSource(stream)
-                self.assertEqual(dict(all_tiles(read)), {(0, 0, 0): data})
-                self.assertEqual(Reader(read).header()["tile_compression"], Compression.NONE)
-                self.assertEqual(Reader(read).header()["tile_type"], TileType.WEBP)
+
+    def test_trailview_archives_verify_as_their_raster_tiles(self):
+        def tile(format, **options):
+            image = io.BytesIO()
+            Image.new("RGBA", (2, 2), (90, 120, 60, 200)).save(image, format=format, **options)
+            return image.getvalue()
+
+        webp, avif = tile("WEBP", lossless=True), tile("AVIF")
+        for kind, tile_type, data, ok in [("trailview-ground", TileType.WEBP, webp, True),
+                                          ("trailview-colour-q1", TileType.AVIF, avif, True),
+                                          ("trailview-colour-q1", TileType.WEBP, webp, True),
+                                          ("trailview-ground", TileType.AVIF, avif, False)]:
+            with self.subTest(kind=kind, tile_type=tile_type), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "archive.pmtiles"
+                with write(path) as writer:
+                    writer.write_tile(zxy_to_tileid(9, 0, 0), data)
+                    writer.finalize({"tile_type": tile_type, "tile_compression": Compression.NONE, "min_zoom": 9, "max_zoom": 9},
+                                    {"trailview_format": 1})
+                if ok:
+                    planner_verify.archive(path, kind)
+                else:
+                    with self.assertRaisesRegex(ValueError, "tile format"):
+                        planner_verify.archive(path, kind)
 
     def test_changed_binary_archives_check_the_decoded_consumer_layouts(self):
         for kind, zoom, size, metadata in [('snow', 8, 2 * 2 * 256 * 256, {'seasons': 2}),

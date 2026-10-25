@@ -33,10 +33,9 @@ sets the visible region. Terrain extends at least `distance_m` beyond it.
 | `bounds` | Visible west, south, east, north |
 | `coverage` | Terrain archive west, south, east, north |
 
-The step reads the portable terrain grid. It verifies each object before it reconstructs a temporary
-archive. Tile payloads and terrain coverage stay unchanged. The grid composer checks the exact
-`terrain_grid_sha256` before it combines sunlight and terrain. It does not use the reconstructed
-archive bytes as the original archive identity.
+The step reads the portable terrain grid. It verifies each object, and then reads the tiles from
+the grid archives. Tile payloads and terrain coverage stay unchanged. The grid composer checks the
+exact `terrain_grid_sha256` before it combines sunlight and terrain.
 
 A valid terrain grid with no tiles produces sunlight metadata and no tile archives.
 The metadata keeps format 3, terrain identity and coverage. Missing terrain or invalid metadata

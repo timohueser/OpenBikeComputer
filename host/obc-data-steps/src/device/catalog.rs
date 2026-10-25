@@ -171,7 +171,7 @@ pub fn step(
         outputs: ["catalog.json", "schema.json", "terrain.json", "LICENSE.txt", "regions", "objects"]
             .map(String::from)
             .into(),
-        run: Run::Rust(obc_pack::catalog::engine::build),
+        run: Run::Rust(&functions::DEVICE_CATALOG),
         client: Client::All,
     })
 }

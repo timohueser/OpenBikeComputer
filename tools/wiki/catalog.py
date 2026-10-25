@@ -98,6 +98,15 @@ def complete(db, name: str) -> str | None:
     return row[0] if row else None
 
 
+def finished(db, work: Path):
+    """`imports.json`: each finished import, with its input and revision. The rounds of the producer
+    start again when it changes."""
+    rows = db.execute("SELECT id, sha256, revision FROM imports WHERE complete=1 ORDER BY id").fetchall()
+    partial = work / "imports.json.partial"
+    partial.write_text(json.dumps(rows))
+    partial.replace(work / "imports.json")
+
+
 def scan(db, work: Path, name: str, digest: str, rows, record, done=lambda: None, source: Path | None = None):
     """Run import `name` over `rows` once. A finished import with the same input and revision is
     not repeated; an interrupted one, or one of an older revision, starts again; a changed input

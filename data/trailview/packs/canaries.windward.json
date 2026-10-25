@@ -1,0 +1,27 @@
+{
+ "name": "Canary Islands, windward",
+ "extends": "canaries.north",
+ "about": "The north pack, and what the windward sides of the other islands add: til, viñátigo and barbusano among the laurels, tree heath with the faya, chestnut groves on the mid slopes, wild olive and juniper in the thermophilous belt, bananas on the low terraces, tabaiba and cardón on the coastal cliffs; bracken in the clearings and chain fern under the laurels; goats, a few sheep, and brown cattle on the pastures of El Hierro and La Palma. The canary palm stands in for the banana.",
+ "trees": {
+  "faya": { "latin": "Morella faya" },
+  "codeso": { "latin": "Adenocarpus foliolosus" },
+  "tree-heath": { "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1600], "weight": 4 },
+  "til": { "model": "laurel", "latin": "Ocotea foetens", "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1300], "weight": 2 },
+  "vinhatico": { "model": "laurel", "latin": "Persea indica", "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1100], "weight": 1 },
+  "barbusano": { "model": "laurel", "latin": "Apollonias barbujana", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 800], "weight": 1 },
+  "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [600, 1200], "weight": 1 },
+  "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [100, 600], "weight": 1 },
+  "banana": { "model": "canary-palm", "latin": "Musa acuminata", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "phoenician-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [100, 700], "weight": 1 },
+  "tabaiba": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 2 },
+  "cardon": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 300], "weight": 1 }
+ },
+ "ground": {
+  "bracken": {},
+  "chain-fern": { "model": "fern", "latin": "Woodwardia radicans", "on": ["tree"], "height": [0.6, 1.5], "share": 0.2 }
+ },
+ "herds": {
+  "sheep": { "groups": 1, "size": [5, 20], "on": ["rough-grass", "wet-grassland", "grassland"] },
+  "cattle": { "model": "brown-cattle", "groups": 1, "size": [2, 8], "on": ["pasture", "grassland", "arable"] }
+ }
+}

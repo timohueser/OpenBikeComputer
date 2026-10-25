@@ -2,7 +2,7 @@
 """OpenBikeComputer documentation renderer.
 
 Markdown -> themed static HTML, with a left-sidebar layout and an on-page table of
-contents. Stdlib only (no pip dependencies), Python 3.9+ — so the site build never
+contents. Stdlib only (no pip dependencies), Python 3.11+ — so the site build never
 breaks on a missing package and a Trunk `pre_build` hook can run it anywhere.
 
 Author docs in `content/*.md`; the nav/order lives in `content/nav.json`; the shared
@@ -16,6 +16,8 @@ page. Output goes to `blog/` (a second Trunk copy-dir), with a timeline index an
 Atom feed at `blog/feed.xml`. Two extra fenced directives are available (blog or docs):
 ```` ```compare ```` (before/after image slider) and ```` ```model ```` (interactive
 GLB viewer + optional STEP download) — each takes `key: value` lines; see BLOG.md.
+A ```` ```sources ```` fence with `table: used_by`, `areas` or `licences` renders that
+table of `data/sources.toml`, so the data-sources page cannot drift from the registry.
 
 Supported markdown (a small, predictable CommonMark-ish subset — see README.md):
 headings (auto-slugged), paragraphs, `**bold**`, `*italic*`, `` `code` ``,
@@ -39,6 +41,7 @@ import os
 import re
 import shutil
 import sys
+import tomllib
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -48,6 +51,7 @@ TEMPLATE = ROOT / "templates" / "page.html"
 SITEHEAD_TEMPLATE = ROOT / "templates" / "_sitehead.html"   # shared topo + header
 ASSETS = ROOT / "assets"
 OUT = ROOT / "docs"                              # generated; Trunk copy-dirs this
+SOURCES = ROOT.parent / "data" / "sources.toml"
 
 # The docs pages have a slide-out sidebar on mobile; the toggle only ships there
 # (blog pages have no sidebar, so the partial gets an empty {{nav_toggle}}).
@@ -253,7 +257,11 @@ def consume_table(lines, i):
     while i < n and "|" in lines[i] and lines[i].strip():
         rows.append(split_row(lines[i]))
         i += 1
+    return table_html(header, rows, aligns), i
 
+
+def table_html(header, rows, aligns=()):
+    """Cells are inline markdown."""
     def cell(tag, text, idx):
         a = aligns[idx] if idx < len(aligns) else ""
         style = ' style="text-align:%s"' % a if a else ""
@@ -261,7 +269,59 @@ def consume_table(lines, i):
 
     head = "".join(cell("th", c, j) for j, c in enumerate(header))
     body = "".join("<tr>%s</tr>" % "".join(cell("td", c, j) for j, c in enumerate(r)) for r in rows)
-    return '<div class="table-wrap" role="region" aria-label="Table; scroll horizontally if needed" tabindex="0"><table><thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>' % (head, body), i
+    return '<div class="table-wrap" role="region" aria-label="Table; scroll horizontally if needed" tabindex="0"><table><thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>' % (head, body)
+
+
+def sources_table(buf):
+    """A ```sources fence: one table of data/sources.toml. A group shows its name on its first row."""
+    sources = tomllib.loads(SOURCES.read_text())["source"]
+    table = parse_kv(buf).get("table")
+    code = lambda text: "`%s`" % text
+
+    def areas(source):
+        """(sort key, name) of each area: the Geofabrik areas, else the box of the extent, else global."""
+        if source.get("areas"):
+            return [((0, area), code(area)) for area in source["areas"]]
+        if source.get("extent"):
+            return [((1, *source["extent"]), "Box " + ", ".join("%g" % v for v in source["extent"]))]
+        return [((2,), "Global")]
+
+    # The text of a `LicenseRef-` id is the `licence_url` of a row of that one licence.
+    texts = {s["licence"]: s["licence_url"] for s in sources if s.get("licence_url")}
+
+    def licence(source):
+        """Linked to `licence_url`; without it, each id of the expression links its own text."""
+        if "licence" not in source:
+            return "not recorded"
+        if source.get("licence_url"):
+            return "[%s](%s)" % (esc(source["licence"]), source["licence_url"])
+
+        def link(token):
+            if token in ("AND", "OR", "WITH"):
+                return token
+            url = texts.get(token) if token.startswith("LicenseRef-") else "https://spdx.org/licenses/%s.html" % token
+            return "[%s](%s)" % (token, url) if url else token
+        return " ".join(link(token) for token in source["licence"].split())
+
+    if table == "used_by":
+        header = ["Used by", "Source", "Use"]
+        readers = sorted({reader for source in sources for reader in source["used_by"]})
+        rows = [[code(reader), code(s["id"]), esc(s["use"])]
+                for reader in readers for s in sources if reader in s["used_by"]]
+    elif table == "areas":
+        header = ["Area", "Source", "Use"]
+        found = sorted((area, i) for i, s in enumerate(sources) for area in areas(s))
+        rows = [[name, code(sources[i]["id"]), esc(sources[i]["use"])] for (_, name), i in found]
+    elif table == "licences":
+        header = ["Source", "Licence", "Credit", "Redistribute"]
+        rows = [[code(s["id"]), licence(s), esc(s.get("attribution", "—")), "yes" if s["redistribute"] else "no"]
+                for s in sources]
+    else:
+        raise ValueError("a sources fence takes `table: used_by`, `areas` or `licences`, not %r" % table)
+    group = None
+    for row in rows:
+        group, row[0] = row[0], "" if row[0] == group else row[0]
+    return '<div class="sources-table">%s</div>' % table_html(header, rows)
 
 
 def parse_list(lines, i, indent):
@@ -362,6 +422,9 @@ def render_blocks(md, source=None):
             i += 1
             if lang in ("compare", "model"):
                 out.append(render_directive(lang, buf))
+                continue
+            if lang == "sources":
+                out.append(sources_table(buf))
                 continue
             cls = ' class="lang-%s"' % lang if lang else ""
             out.append('<pre class="code"><code%s>%s</code></pre>' % (cls, esc("\n".join(buf))))

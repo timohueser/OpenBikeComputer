@@ -22,6 +22,7 @@
 //! Sampling the mosaic is `f64` throughout and bilinear over the four surrounding source posts; see
 //! [`DemMosaic::height`] for why that is a point sample and not an area aggregate.
 
+use std::cell::Cell;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -141,6 +142,36 @@ impl DemTile {
     /// free of them: a tile that survives this is a regular geographic post grid whose every sample
     /// position is one multiply away.
     pub fn open(path: &Path) -> Result<DemTile, String> {
+        let (mut dec, tile) = Self::read_header(path)?;
+        let (rows, cols, name) = (tile.rows, tile.cols, || path.display().to_string());
+        // The samples, flipped once.
+        let image = dec.read_image().map_err(|e| format!("{}: decode failed ({e})", name()))?;
+        let north_up: Vec<f32> = match image {
+            DecodingResult::F32(v) => v,
+            DecodingResult::F64(v) => v.into_iter().map(|x| x as f32).collect(),
+            DecodingResult::I16(v) => v.into_iter().map(f32::from).collect(),
+            DecodingResult::U16(v) => v.into_iter().map(f32::from).collect(),
+            _ => return Err(format!("{}: unsupported sample type — a DEM must be float or 16-bit integer", name())),
+        };
+        if north_up.len() != rows * cols {
+            return Err(format!("{}: decoded {} samples for a {cols}×{rows} raster", name(), north_up.len()));
+        }
+        let mut data = vec![0f32; rows * cols];
+        for row in 0..rows {
+            let src = &north_up[(rows - 1 - row) * cols..(rows - row) * cols];
+            data[row * cols..(row + 1) * cols].copy_from_slice(src);
+        }
+        Ok(DemTile { data, ..tile })
+    }
+
+    /// The checks of [`DemTile::open`] that need no sample: a caller that decodes the tile later
+    /// finds a file that is not a DEM tile before it starts.
+    pub fn check(path: &Path) -> Result<(), String> {
+        Self::read_header(path).map(|_| ())
+    }
+
+    /// The decoder of the tile at `path`, and the tile without its samples.
+    fn read_header(path: &Path) -> Result<(Decoder<BufReader<File>>, DemTile), String> {
         let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut dec =
             Decoder::new(BufReader::new(file)).map_err(|e| format!("{}: not a readable TIFF ({e})", path.display()))?;
@@ -167,34 +198,17 @@ impl DemTile {
             .ok()
             .and_then(|s| s.trim().trim_end_matches('\0').parse::<f64>().ok());
 
-        // The samples, flipped once.
-        let image = dec.read_image().map_err(|e| format!("{}: decode failed ({e})", name()))?;
-        let north_up: Vec<f32> = match image {
-            DecodingResult::F32(v) => v,
-            DecodingResult::F64(v) => v.into_iter().map(|x| x as f32).collect(),
-            DecodingResult::I16(v) => v.into_iter().map(f32::from).collect(),
-            DecodingResult::U16(v) => v.into_iter().map(f32::from).collect(),
-            _ => return Err(format!("{}: unsupported sample type — a DEM must be float or 16-bit integer", name())),
-        };
-        if north_up.len() != rows * cols {
-            return Err(format!("{}: decoded {} samples for a {cols}×{rows} raster", name(), north_up.len()));
-        }
-        let mut data = vec![0f32; rows * cols];
-        for row in 0..rows {
-            let src = &north_up[(rows - 1 - row) * cols..(rows - row) * cols];
-            data[row * cols..(row + 1) * cols].copy_from_slice(src);
-        }
-
-        Ok(DemTile {
+        let tile = DemTile {
             south_lat_deg: north_lat_deg - step_lat_deg * (rows - 1) as f64,
             west_lon_deg,
             step_lat_deg,
             step_lon_deg,
             rows,
             cols,
-            data,
+            data: Vec::new(),
             nodata,
-        })
+        };
+        Ok((dec, tile))
     }
 
     /// Posts along each axis, `(rows, cols)`.
@@ -309,18 +323,22 @@ pub(crate) fn geo_keys<R: std::io::Read + std::io::Seek>(dec: &mut Decoder<R>) -
 #[derive(Debug, Default)]
 pub struct DemMosaic {
     tiles: Vec<DemTile>,
-    /// The tile that answered the previous query. A bake walks a cell sample by sample, so
-    /// essentially every query lands in the same tile as the one before it, and without this the
-    /// lookup is a linear scan of the mosaic per sample.
+}
+
+thread_local! {
+    /// The tile that answered this thread's previous query. A bake walks a cell sample by sample,
+    /// so essentially every query lands in the same tile as the one before it, and without this
+    /// the lookup is a linear scan of the mosaic per sample. One per thread, so threads that sample
+    /// different places of one mosaic keep their own.
     ///
     /// It cannot change an answer: tile coverage boxes are disjoint by construction, so at most one
     /// tile ever matches and checking a different one first only reorders the search.
-    last_hit: std::cell::Cell<usize>,
+    static LAST_HIT: Cell<usize> = const { Cell::new(0) };
     /// The same memo, for the corner resolver alone. `height` resolves an off-tile stencil corner
     /// through [`DemMosaic::nearest_post`], which is a different tile by definition; sharing one
     /// slot means every seam-adjacent sample overwrites the memo with the neighbour and the next
     /// sample overwrites it back, which is two linear scans per sample exactly along the seams.
-    last_corner_hit: std::cell::Cell<usize>,
+    static LAST_CORNER_HIT: Cell<usize> = const { Cell::new(0) };
 }
 
 impl DemMosaic {
@@ -355,8 +373,11 @@ impl DemMosaic {
     pub fn push(&mut self, tile: DemTile) {
         self.tiles.push(tile);
         self.tiles.sort_by_key(DemTile::order_key);
-        self.last_hit.set(0); // the sort invalidated both memo indices
-        self.last_corner_hit.set(0);
+    }
+
+    /// Keep only the tiles for which `keep` holds.
+    pub fn retain(&mut self, keep: impl FnMut(&DemTile) -> bool) {
+        self.tiles.retain(keep);
     }
 
     /// How many tiles the mosaic holds.
@@ -370,12 +391,12 @@ impl DemMosaic {
 
     /// The tile that answers for `(lat, lon)`, or `None` outside coverage.
     fn tile_for(&self, lat_deg: f64, lon_deg: f64) -> Option<&DemTile> {
-        self.tile_for_memo(lat_deg, lon_deg, &self.last_hit)
+        LAST_HIT.with(|memo| self.tile_for_memo(lat_deg, lon_deg, memo))
     }
 
     /// [`DemMosaic::tile_for`], against a caller-chosen memo slot. Which slot is used can only
     /// change how long the search takes, never its answer, because coverage boxes are disjoint.
-    fn tile_for_memo(&self, lat_deg: f64, lon_deg: f64, memo: &std::cell::Cell<usize>) -> Option<&DemTile> {
+    fn tile_for_memo(&self, lat_deg: f64, lon_deg: f64, memo: &Cell<usize>) -> Option<&DemTile> {
         if let Some(tile) = self.tiles.get(memo.get()) {
             if tile.owns(lat_deg, lon_deg) {
                 return Some(tile);
@@ -391,7 +412,7 @@ impl DemMosaic {
     /// is what lets two tiles with different post spacings meet without inventing a lattice that
     /// neither of them is on.
     fn nearest_post(&self, lat_deg: f64, lon_deg: f64) -> Option<f64> {
-        let tile = self.tile_for_memo(lat_deg, lon_deg, &self.last_corner_hit)?;
+        let tile = LAST_CORNER_HIT.with(|memo| self.tile_for_memo(lat_deg, lon_deg, memo))?;
         let row = ((lat_deg - tile.south_lat_deg) / tile.step_lat_deg).round();
         let col = ((lon_deg - tile.west_lon_deg) / tile.step_lon_deg).round();
         let row = (row as i64).clamp(0, tile.rows as i64 - 1) as usize;

@@ -1,0 +1,20 @@
+{
+ "name": "Log house",
+ "about": "Grey weathered or dark brown logs with painted window trims in white, blue or green, under a steep roof of grey sheet, painted tin or shingle.",
+ "pitch": [34, 46],
+ "eave": 0.6,
+ "verge": 0.5,
+ "hip": 0,
+ "timber": "all",
+ "shutters": true,
+ "chimneys": 1,
+ "palette": {
+  "render": ["#ece8dc", "#e9e2cc"],
+  "wood": ["#6f695f", "#7b7468", "#5b4433", "#4f3b2d", "#655a4c"],
+  "roof": ["#8c8d88", "#7b7d7a", "#4e6d57", "#7a3d31", "#5d554c"],
+  "door": ["#5a4030", "#3f6a9a", "#4c6a50"],
+  "shutter": ["#eeebe2", "#5a98cc", "#5e8f6a", "#3f6caa"],
+  "plinth": "#6e6a64",
+  "chimney": "#b5ada2"
+ }
+}

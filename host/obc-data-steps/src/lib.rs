@@ -2,7 +2,10 @@
 //! producers of prepared sources.
 
 pub mod device;
+pub mod forest_reference;
+mod functions;
 pub mod planner;
+mod prepared_tiles;
 mod readers;
 mod region_sources;
 pub mod terrain_reference;
@@ -16,8 +19,11 @@ use serde_json::Value;
 
 pub const PRODUCTS: &[&dyn Product] = &[&device::Device, &planner::Planner];
 
+pub use functions::FUNCTIONS;
+
 /// The producers of the prepared sources.
-pub const PREPARED: &[&dyn Prepared] = &[&terrain_reference::TERRAIN_REFERENCE, &wiki::WIKI];
+pub const PREPARED: &[&dyn Prepared] =
+    &[&terrain_reference::TERRAIN_REFERENCE, &forest_reference::FOREST_REFERENCE, &wiki::WIKI];
 
 /// A Python step of `layer`: `entry`, a `tools.*` module or a script, with the argument `--step`,
 /// under `uv run` with the packages of `group` of `pyproject.toml`. The hash seed is fixed, so the
@@ -61,6 +67,24 @@ pub(crate) fn python(
 
 #[cfg(test)]
 mod tests {
+    /// The child process of a Rust step of a test runs it here.
+    #[test]
+    fn obc_data_step() {
+        obc_data::engine::child(&[super::FUNCTIONS, &[&crate::device::tests::FAKE]].concat());
+    }
+
+    #[test]
+    fn each_function_has_a_name_of_its_own_and_is_listed() {
+        let names: std::collections::BTreeSet<&str> = super::FUNCTIONS.iter().map(|function| function.name).collect();
+        assert_eq!(names.len(), super::FUNCTIONS.len(), "two functions have one name");
+        let declared = include_str!("functions.rs").matches(": Function =").count();
+        assert_eq!(
+            declared + 1,
+            super::FUNCTIONS.len(),
+            "FUNCTIONS lists each static of functions.rs and `obc-data/pass`"
+        );
+    }
+
     #[test]
     fn the_products_fill_each_pointer_of_a_release_once() {
         let mut keys: Vec<&str> = super::PRODUCTS.iter().map(|product| product.pointer().key).collect();

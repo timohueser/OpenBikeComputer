@@ -6,18 +6,15 @@ pub mod http;
 pub mod osm;
 mod tools;
 pub mod upstream;
-pub mod wikimedia;
 
 pub use tools::basemap_jar;
 
-/// Where a fetch writes what it requested upstream, for the run journal.
-pub(crate) type Acquisition<'a> = &'a mut Option<serde_json::Value>;
-
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use self::http::{Expect, Http};
 use crate::date;
-use crate::sources::{FetchKind, Registry, Source, VersionScheme};
+use crate::sources::{FetchKind, Registry, Source, VersionScheme, WIKI_INPUTS};
 use crate::store::{FileRecord, Requested, Snapshot, Store};
 
 pub struct Request<'a> {
@@ -36,7 +33,7 @@ pub struct Request<'a> {
 /// holds the requested files, in the order of the request. A request with `params` is recorded,
 /// so a step input with the same params knows its files without the network.
 pub fn fetch(root: &Path, store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
-    fetch_recorded(root, store, http, request, &[], None)
+    fetch_recorded(root, store, http, request, &[])
 }
 
 /// [`fetch`], with the names of the files of a prepared version that a step reads: a fetch of a
@@ -47,10 +44,9 @@ pub(crate) fn fetch_recorded(
     http: &Http,
     request: &Request,
     names: &[String],
-    acquisition: Option<Acquisition<'_>>,
 ) -> Result<Snapshot, String> {
     let _using = store.using()?;
-    let snapshot = fetch_files(root, store, http, request, names, acquisition)?;
+    let snapshot = fetch_files(root, store, http, request, names)?;
     if !request.params.is_empty() {
         let files = snapshot.files.iter().map(|file| file.name.clone()).collect();
         let record = Requested { version: snapshot.version.clone(), params: request.params.clone(), files };
@@ -65,19 +61,22 @@ fn fetch_files(
     http: &Http,
     request: &Request,
     names: &[String],
-    acquisition: Option<Acquisition<'_>>,
 ) -> Result<Snapshot, String> {
     let source = request.source;
     match source.fetch.kind {
         FetchKind::Github if source.id == "protomaps-basemaps" => tools::basemap(root, store, http, request),
         FetchKind::Http | FetchKind::Glo30 | FetchKind::Github => files(store, http, request),
         FetchKind::Geofabrik => osm::extract(store, http, request),
-        FetchKind::Osm => osm::replication(store, http, request),
-        // Only the producer of `terrain-reference/<key>` reads a national model, through its adapter.
-        FetchKind::Dtm | FetchKind::ByHand if source.id.starts_with("dtm-") => {
-            Err(format!("source `{}` is read through `terrain-reference/{}`", source.id, &source.id["dtm-".len()..]))
+        // Only the producer of `terrain` reads a national model, through its adapter.
+        FetchKind::Dtm | FetchKind::ByHand if source.id.starts_with("dtm-") => Err(format!(
+            "source `{}` is read through `terrain`: obc data source prepare terrain --region REGION",
+            source.id
+        )),
+        // Only the producer of `wiki` reads the Wikimedia sources, on the machine that prepares.
+        FetchKind::Capture if WIKI_INPUTS.contains(&source.id.as_str()) => {
+            Err(format!("source `{}` is read through `wiki`", source.id))
         }
-        FetchKind::Capture => capture::run(root, store, request, acquisition),
+        FetchKind::Capture => capture::run(root, store, request),
         FetchKind::Dtm | FetchKind::ByHand => Err(format!(
             "source `{}`: a person downloads it from {}",
             source.id,
@@ -293,13 +292,13 @@ fn get(
     Ok(file)
 }
 
-/// The part of `url` that names its file within the source, unique in a record: for a program or
-/// `osm` fetcher the part after `fetch.url`; for a template, the URL from the segment of the first
+/// The part of `url` that names its file within the source, unique in a record: for a program
+/// fetcher the part after `fetch.url`; for a template, the URL from the segment of the first
 /// `{name}` that a `NAME=VALUE` fills; else the last segment.
 fn file_name(source: &Source, version: Option<&str>, url: &str) -> String {
     let template = source.fetch.url.as_deref().unwrap_or_default();
     let prefix = match source.fetch.kind {
-        FetchKind::Osm | FetchKind::Dtm | FetchKind::Capture | FetchKind::ByHand => Some(template.to_string()),
+        FetchKind::Dtm | FetchKind::Capture | FetchKind::ByHand => Some(template.to_string()),
         _ => template
             .match_indices('{')
             .map(|(at, _)| at)
@@ -346,20 +345,31 @@ pub(crate) fn merge(
         return Err(format!("{source}@{version}: the local snapshot has another source or version"));
     }
     let before = snapshot.files.len();
+    // A record can have tens of thousands of files: the files of the record by URL, and their URL by
+    // name. The first file of a URL or a name counts, as in a search of the list: an older build
+    // could record a name twice.
+    let (mut by_url, mut by_name) = (HashMap::new(), HashMap::new());
+    for (at, file) in snapshot.files.iter().enumerate() {
+        by_url.entry(file.url.clone()).or_insert(at);
+        by_name.entry(file.name.clone()).or_insert_with(|| file.url.clone());
+    }
     for file in files {
-        if let Some(old) = snapshot.file(&file.url).filter(|old| old.sha256 != file.sha256) {
+        let old = by_url.get(&file.url).map(|&at| &snapshot.files[at]);
+        if let Some(old) = old.filter(|old| old.sha256 != file.sha256) {
             return Err(format!(
                 "{source}@{version}: {} now has the SHA-256 {}, but the record has {}",
                 file.url, file.sha256, old.sha256
             ));
         }
-        if let Some(old) = snapshot.files.iter().find(|old| old.name == file.name && old.url != file.url) {
-            return Err(format!("{source}@{version}: the name {} is of {} and {}", file.name, old.url, file.url));
+        if let Some(url) = by_name.get(&file.name).filter(|url| **url != file.url) {
+            return Err(format!("{source}@{version}: the name {} is of {url} and {}", file.name, file.url));
         }
-        if let Some(old) = snapshot.file(&file.url).filter(|old| old.name != file.name || old.size != file.size) {
+        if let Some(old) = old.filter(|old| old.name != file.name || old.size != file.size) {
             return Err(format!("{source}@{version}: {} has another name or size than {}", file.url, old.name));
         }
-        if snapshot.file(&file.url).is_none() {
+        if old.is_none() {
+            by_url.insert(file.url.clone(), snapshot.files.len());
+            by_name.insert(file.name.clone(), file.url.clone());
             snapshot.files.push(file.clone());
         }
     }
@@ -521,25 +531,6 @@ pub(crate) mod tests {
 
     fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
         headers.iter().find(|(n, _)| n == name).map(|(_, value)| value.as_str())
-    }
-
-    #[test]
-    fn a_thumbnail_bracket_never_resumes_bytes_from_an_earlier_attempt() {
-        let scratch = Scratch::new("fresh-thumbnail");
-        let store = Store::at(&scratch.0);
-        let (url, log) = serve(|_, headers| {
-            assert!(header(headers, "range").is_none());
-            whole(b"current thumbnail")
-        });
-        let key = &sha256_hex(url.as_bytes())[..32];
-        std::fs::create_dir_all(store.partial("root").parent().unwrap()).unwrap();
-        std::fs::write(store.partial(&format!("{key}.part")), b"unproven old bytes").unwrap();
-        std::fs::write(store.partial(&format!("{key}.validator")), b"old validator").unwrap();
-        let http = quick();
-        let download = http.fresh_download(&store, &url).unwrap();
-        assert_eq!(std::fs::read(download.object).unwrap(), b"current thumbnail");
-        assert_eq!(log.lock().unwrap().len(), 1);
-        assert_eq!(http.metrics(), (1, 17));
     }
 
     pub(crate) fn quick() -> Http {
@@ -780,144 +771,6 @@ pub(crate) mod tests {
         assert_eq!(expand("https://h/p-{yymmdd}.pbf", Some("2026-09-28"), &[]).unwrap(), ["https://h/p-260928.pbf"]);
     }
 
-    /// A replication directory at the test server, with the daily diff of each `(sequence, day)`.
-    /// Its `state.txt` is the last of them.
-    fn replication(diffs: &'static [(u32, &'static str)]) -> (Source, Log) {
-        let state = |&(sequence, day): &(u32, &str)| {
-            whole(format!("sequenceNumber={sequence}\ntimestamp={day}T00\\:00\\:00Z\n").as_bytes())
-        };
-        let (url, log) = serve(move |_, headers| {
-            let path = header(headers, ":path").unwrap_or_default();
-            if path == "/replication/day/state.txt" {
-                return state(diffs.last().unwrap());
-            }
-            for diff in diffs {
-                let stem = format!("/replication/day/000/005/{}", diff.0 - 5000);
-                if path == format!("{stem}.state.txt") {
-                    return state(diff);
-                }
-                if path == format!("{stem}.osc.gz") {
-                    return whole(path.as_bytes());
-                }
-            }
-            not_found()
-        });
-        let mut source = located(FetchKind::Osm, &url.replace("data/file.bin", "replication/day/"));
-        source.fetch.from = Some("osm-planet".into());
-        (source, log)
-    }
-
-    fn changes(snapshot: &Snapshot) -> Vec<&str> {
-        snapshot.files.iter().map(|file| file.name.as_str()).filter(|name| name.ends_with(".osc.gz")).collect()
-    }
-
-    fn from(day: &str) -> Vec<(String, String)> {
-        vec![("from".into(), day.into())]
-    }
-
-    #[test]
-    fn replication_is_the_daily_diffs_after_the_base_up_to_the_version() {
-        let (diffs, log) = replication(&[
-            (5128, "2026-09-27"),
-            (5129, "2026-09-28"),
-            (5130, "2026-09-29"),
-            (5131, "2026-09-30"),
-            (5132, "2026-10-01"),
-        ]);
-        let scratch = Scratch::new("replication");
-        let store = Store::at(&scratch.0);
-        let wednesday =
-            Request { refresh: false, source: &diffs, version: Some("2026-09-30".into()), params: from("2026-09-28") };
-        let snapshot = fetch(&tooling_root(), &store, &quick(), &wednesday).unwrap();
-        assert_eq!(changes(&snapshot), ["000/005/130.osc.gz", "000/005/131.osc.gz"]);
-        assert_eq!(snapshot.files[0].name, "000/005/129.state.txt", "the state of the base day");
-        let asked = log.lock().unwrap().len();
-        assert_eq!(fetch(&tooling_root(), &store, &quick(), &wednesday).unwrap(), snapshot);
-        let later = Request { refresh: false, params: from("2026-09-29"), ..wednesday };
-        assert_eq!(fetch(&tooling_root(), &store, &quick(), &later).unwrap().files, snapshot.files[2..]);
-        assert_eq!(log.lock().unwrap().len(), asked, "a record that has the diffs needs no request");
-        // The newest version keeps the base and downloads the diff of the new day only.
-        let newest = Request { refresh: false, source: &diffs, version: None, params: from("2026-09-28") };
-        let refreshed = fetch(&tooling_root(), &store, &quick(), &newest).unwrap();
-        assert_eq!(refreshed.version, "2026-10-01");
-        assert_eq!(refreshed.files[..5], snapshot.files);
-        let log = log.lock().unwrap();
-        let downloads: Vec<_> =
-            log[asked..].iter().filter_map(|h| header(h, ":path")).filter(|p| p.ends_with(".osc.gz")).collect();
-        assert_eq!(downloads, ["/replication/day/000/005/132.osc.gz"]);
-    }
-
-    #[test]
-    fn replication_takes_any_day_that_has_a_diff() {
-        // 2026-10-01 has no diff.
-        let (diffs, log) = replication(&[
-            (5128, "2026-09-27"),
-            (5129, "2026-09-28"),
-            (5130, "2026-09-29"),
-            (5131, "2026-09-30"),
-            (5132, "2026-10-02"),
-        ]);
-        let scratch = Scratch::new("gaps");
-        let store = Store::at(&scratch.0);
-        let get = |version: &str, params: Vec<(String, String)>| {
-            fetch(
-                &tooling_root(),
-                &store,
-                &quick(),
-                &Request { refresh: false, source: &diffs, version: Some(version.into()), params },
-            )
-        };
-        assert!(get("2026-09-30", vec![]).unwrap_err().contains("a version of `osm-planet`"));
-        assert!(get("2026-09-30", from("2026-10-01")).unwrap_err().contains("after the version"));
-        assert!(log.lock().unwrap().is_empty());
-        let err = get("2026-10-01", from("2026-09-28")).unwrap_err();
-        assert!(err.contains("no daily diff of 2026-10-01"), "{err}");
-        assert_eq!(store.snapshot(&diffs.id, "2026-10-01").unwrap(), None, "a probe records nothing");
-        let err = get("2026-10-03", from("2026-10-03")).unwrap_err();
-        assert!(err.contains("the newest daily diff is of 2026-10-02"), "{err}");
-        let downloaded = |log: &Log| {
-            let log = log.lock().unwrap();
-            log.iter().filter_map(|h| header(h, ":path").map(str::to_string)).filter(|p| p.ends_with(".osc.gz")).count()
-        };
-        assert_eq!(downloaded(&log), 0);
-        let snapshot = get("2026-10-02", from("2026-09-28")).unwrap();
-        assert_eq!(changes(&snapshot), ["000/005/130.osc.gz", "000/005/131.osc.gz", "000/005/132.osc.gz"]);
-        // The stored states name the days, so other ranges need no request.
-        let asked = log.lock().unwrap().len();
-        assert_eq!(changes(&get("2026-09-30", from("2026-09-29")).unwrap()), ["000/005/131.osc.gz"]);
-        assert_eq!(get("2026-09-30", from("2026-09-30")).unwrap().files.len(), 1, "only the state of the base");
-        assert_eq!(log.lock().unwrap().len(), asked);
-    }
-
-    #[test]
-    fn a_day_with_two_diffs_is_no_base_and_no_version() {
-        let (diffs, _log) = replication(&[
-            (5127, "2026-09-26"),
-            (5128, "2026-09-27"),
-            (5129, "2026-09-28"),
-            (5130, "2026-09-28"),
-            (5131, "2026-09-29"),
-        ]);
-        let scratch = Scratch::new("twice");
-        let store = Store::at(&scratch.0);
-        let get = |version: &str, base: &str| {
-            fetch(
-                &tooling_root(),
-                &store,
-                &quick(),
-                &Request { refresh: false, source: &diffs, version: Some(version.into()), params: from(base) },
-            )
-        };
-        let twice = |result: Result<Snapshot, String>| result.unwrap_err().contains("two daily diffs of 2026-09-28");
-        assert!(twice(get("2026-09-29", "2026-09-28")));
-        assert!(twice(get("2026-09-28", "2026-09-27")));
-        assert_eq!(store.snapshot(&diffs.id, "2026-09-29").unwrap(), None);
-        // Between the base and the version, a day may have two diffs; the stored states then still
-        // refuse that day as a base.
-        assert_eq!(changes(&get("2026-09-29", "2026-09-27").unwrap()).len(), 3);
-        assert!(twice(get("2026-09-29", "2026-09-28")));
-    }
-
     #[test]
     fn a_file_is_named_by_the_part_of_its_url_within_the_source() {
         use FetchKind::*;
@@ -944,7 +797,6 @@ pub(crate) mod tests {
                 "https://h/europe/monaco-261003.osm.pbf",
                 "europe/monaco-261003.osm.pbf",
             ),
-            (Osm, "https://h/day/", Some("2026-10-03"), "https://h/day/000/005/130.osc.gz", "000/005/130.osc.gz"),
             (
                 Dtm,
                 "https://h/wcs",
@@ -966,6 +818,12 @@ pub(crate) mod tests {
         };
         record(&store, "land", "v1", &[file("https://h/1/a.tif", "aa")]).unwrap();
         let err = record(&store, "land", "v1", &[file("https://h/2/a.tif", "aa")]).unwrap_err();
+        assert!(err.contains("the name a.tif is of https://h/1/a.tif and https://h/2/a.tif"), "{err}");
+
+        // An older build could record a name twice: the first file of the name counts.
+        let files = vec![file("https://h/1/a.tif", "aa"), file("https://h/2/a.tif", "aa")];
+        store.put_snapshot(&Snapshot { source: "land".into(), version: "v2".into(), files }).unwrap();
+        let err = record(&store, "land", "v2", &[file("https://h/2/a.tif", "aa")]).unwrap_err();
         assert!(err.contains("the name a.tif is of https://h/1/a.tif and https://h/2/a.tif"), "{err}");
     }
 
@@ -1206,7 +1064,7 @@ pub(crate) mod tests {
         let mut era5 = located(FetchKind::Capture, "https://example.org/era5");
         era5.id = "era5-land".into();
         era5.credential =
-            Some(crate::sources::Credential { env: vec![], file: Some("~/.obc-test-no-such-key".into()) });
+            Some(crate::sources::Credential { file: Some("~/.obc-test-no-such-key".into()), ..Default::default() });
         let params = |pairs: &[(&str, &str)]| pairs.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
         let request = |params| Request { refresh: false, source: &era5, version: None, params };
         let err =
@@ -1223,36 +1081,6 @@ pub(crate) mod tests {
         let good = params(&[("first-year", "2015"), ("bbox", "7.6,47.9,8.0,48.1")]);
         let err = fetch(&tooling_root(), &store, &quick(), &request(good)).unwrap_err();
         assert!(err.contains("blocked: credential missing: ~/.obc-test-no-such-key"), "{err}");
-    }
-
-    /// A Wikimedia capture names its inputs by digest, so its params are the same on every
-    /// machine; only the `obc data` binary, which links the compiler, can select its places.
-    #[test]
-    fn regional_wikimedia_capture_never_acquires_missing_facts() {
-        let scratch = Scratch::new("wikimedia");
-        let store = Store::at(&scratch.0);
-        let mut wikidata = located(FetchKind::Capture, "https://example.org/wikidata");
-        wikidata.id = "wikidata".into();
-        let file = store.partial("poly");
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, "poly").unwrap();
-        let poly = format!("sha256:{}", sha256_hex(b"poly"));
-        store.insert(&file, &sha256_hex(b"poly")).unwrap();
-        let params = |collection: &str, osm: &str| {
-            let pairs =
-                [("collection", collection), ("area", "europe/test"), ("osm", osm), ("poly", &poly), ("code", "0")];
-            pairs.map(|(name, value)| (name.to_string(), value.to_string())).to_vec()
-        };
-        let fails = |params| {
-            fetch(
-                &tooling_root(),
-                &store,
-                &quick(),
-                &Request { refresh: false, source: &wikidata, version: None, params },
-            )
-            .unwrap_err()
-        };
-        assert!(fails(params("landmarks", "/tmp/a.pbf")).contains("regional Wikimedia capture is read-only"));
     }
 
     fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {

@@ -4,6 +4,7 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    obc_data::engine::child(obc_data_steps::FUNCTIONS);
     // A landmark capture can call this binary back to select with the rules of the compiler.
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(result) = obc_pack::landmarks::select::run(&args) {

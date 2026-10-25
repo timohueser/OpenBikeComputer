@@ -86,6 +86,24 @@ it("a live run locks the update and the rollback, and only a confirm posts --yes
     }
 });
 
+it("a run whose process died does not lock the target, and its card links to the run", async () => {
+    server();
+    const query = new CliQuery<Status>([]);
+    query.output = status(false);
+    query.output.targets.find(({ target }) => target === "prod")!.lock!.died = true;
+    const runs = new CliQuery<RunList>(["runs"]);
+    runs.output = { runs: [] };
+    const target = mount(Target, { target: document.body, props: { name: "prod", hash: "#/prod", status: query, runs } });
+    try {
+        expect(document.body.textContent).toContain("Run 2026-10-12-093112 ended without freeing the lock");
+        expect(document.querySelector('a[href="#/runs/2026-10-12-093112"]')?.textContent).toBe("Open the run");
+        expect(button("Roll back to 2c91…").disabled).toBe(false);
+        expect(document.body.textContent).not.toContain("Take over the lock");
+    } finally {
+        await unmount(target);
+    }
+});
+
 it("the coverage colours the leaves of the chosen tiled layer by their state", async () => {
     server();
     const { screen: target } = screen("#/prod", false);

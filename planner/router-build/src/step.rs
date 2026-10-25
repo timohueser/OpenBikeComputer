@@ -6,7 +6,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use obc_data::engine::Request;
-use obc_dem::planner::Terrain;
+use obc_dem::planner::{Recent, Terrain};
 use planner_router::{directory::Writer, model::Profile, package};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -59,7 +59,9 @@ pub fn build(args: Build, terrain: Option<Terrain>, output: &Path) -> Result<Opt
     let mut graph = crate::osm::import(&args.inputs, args.bounds)?;
     if let Some(mut terrain) = terrain {
         eprintln!("Sampling terrain");
-        crate::terrain::apply(&mut graph, |point| terrain.height(point.lat, point.lon))?;
+        terrain.load(i32::MIN..=i32::MAX)?;
+        let mut recent = Recent::default();
+        crate::terrain::apply(&mut graph, |point| terrain.height(point.lat, point.lon, &mut recent))?;
         identities.extend(terrain.identities.iter().cloned());
         graph.warnings.extend(terrain.attribution());
     }

@@ -23,8 +23,9 @@
     $effect(() => void resumed?.refresh());
 
     const lock = $derived(target?.lock ?? null);
-    // A live run holds the lock: an update or a rollback is refused until it ends.
-    const locked = $derived(lock && !lock.stale ? `run ${lock.run} on ${lock.machine}` : null);
+    // A live run holds the lock: an update or a rollback is refused until it ends. The next update
+    // takes over the lock of a run whose process died.
+    const locked = $derived(lock && !lock.stale && !lock.died ? `run ${lock.run} on ${lock.machine}` : null);
     const stale = $derived(target?.layers?.filter((layer) => layer.state === "stale") ?? []);
     // The page asks before it runs a command that changes an R2 target, so it sends `--yes`.
     const yes = $derived(target?.kind === "r2" ? ["--yes"] : []);
@@ -139,7 +140,16 @@
         </section>
     {/if}
 
-    {#if lock}
+    {#if lock?.died}
+        <section class="card lock" aria-labelledby="lock">
+            <h2 id="lock">Run {lock.run} ended without freeing the lock</h2>
+            <p>
+                Its process ended in phase {lock.phase}; the last heartbeat was {when(lock.heartbeat)}. The next update of {name} takes the
+                lock over and reuses what the run built.
+            </p>
+            <a href="#/runs/{lock.run}">Open the run</a>
+        </section>
+    {:else if lock}
         <section class="card lock" aria-labelledby="lock">
             <h2 id="lock">{lock.machine} is updating {name}</h2>
             <p>Run {lock.run} · phase {lock.phase}{lock.waiting ? `: ${lock.waiting}` : ""} · last heartbeat {clock(lock.heartbeat)}</p>

@@ -134,8 +134,13 @@ fn wikipedia(value: &str) -> Option<(&str, &str)> {
 
 /// Resolve only the captured response for the OSM tag. Display names and coordinates
 /// never participate in article identity.
-fn identity(sources: &Sources, summit: &Summit, resolution: &Resolution) -> Result<(String, Option<Value>), String> {
-    let raw = json_pinned(sources, resolution.path.as_deref().ok_or("link_resolution_missing")?)?;
+fn identity(
+    root: &Path,
+    sources: &Sources,
+    summit: &Summit,
+    resolution: &Resolution,
+) -> Result<(String, Option<Value>), String> {
+    let raw = json_pinned(root, sources, resolution.path.as_deref().ok_or("link_resolution_missing")?)?;
     if raw["kind"] == "link" {
         let tag = summit.tags.get(&resolution.kind).ok_or("invalid_explicit_link")?;
         if raw["key"] != format!("{}:{tag}", resolution.kind) || raw["status"] != "present" {
@@ -185,7 +190,7 @@ fn identity(sources: &Sources, summit: &Summit, resolution: &Resolution) -> Resu
                 let canonical_raw = if selected == language {
                     raw.clone()
                 } else {
-                    json_pinned(sources, resolution.canonical_path.as_deref().ok_or("canonical_page_missing")?)?
+                    json_pinned(root, sources, resolution.canonical_path.as_deref().ok_or("canonical_page_missing")?)?
                 };
                 let canonical_page = assets::resolved_page(&canonical_raw, title)?;
                 if let Some(id) = canonical_page["pageprops"]["wikibase_item"].as_str().filter(|id| is_qid(id)) {
@@ -223,9 +228,10 @@ pub fn compile(
     output: &Path,
     select_photos: bool,
 ) -> Result<PeakContent, String> {
-    let (snapshot, sources, mut input) = load_snapshot(snapshot_path)?;
+    let (snapshot, mut input) = load_snapshot(snapshot_path)?;
+    let root = snapshot_path.parent().ok_or("snapshot has no parent")?;
     let capture = snapshot.peaks.as_ref().ok_or("snapshot has no peak collection")?;
-    let summit_bytes = read_pinned(&sources, &capture.summits_path, 16 * 1024 * 1024)?;
+    let summit_bytes = read_pinned(root, &snapshot.sources, &capture.summits_path, 16 * 1024 * 1024)?;
     let source: SummitSource = serde_json::from_slice(&summit_bytes).map_err(|e| e.to_string())?;
     if source.schema != 1 || source.osm_sha256.len() != 64 {
         return Err("invalid summit source".into());
@@ -233,7 +239,7 @@ pub fn compile(
     let boundary_bytes = fs::read(boundary).map_err(|e| e.to_string())?;
     let polygon = boundary_geometry(&serde_json::from_slice(&boundary_bytes).map_err(|e| e.to_string())?)?;
     input.extend(boundary_bytes);
-    let locales = load_locales(&sources)?;
+    let locales = load_locales(root, &snapshot.sources)?;
     let mut policy = include_bytes!("peaks.rs").to_vec();
     for bytes in [
         include_bytes!("mod.rs").as_slice(),
@@ -264,17 +270,10 @@ pub fn compile(
     if fs::read_dir(output).map_err(|e| e.to_string())?.next().is_some() {
         return Err("peak output directory must be empty".into());
     }
-    let mut resolutions = BTreeMap::<_, Vec<_>>::new();
-    for resolution in &capture.resolutions {
-        resolutions.entry(resolution.node_id).or_default().push(resolution);
-    }
-    // Reversed, so the first place of an identity wins.
-    let places: BTreeMap<_, _> = snapshot.places.iter().rev().filter_map(|p| Some((p["qid"].as_str()?, p))).collect();
     let mut associations = BTreeMap::new();
     let mut entities = BTreeMap::new();
     let mut seen = BTreeSet::new();
     for summit in source.summits {
-        obc_data::engine::check_stop()?;
         if !seen.insert(summit.node_id) {
             return Err("duplicate source summit".into());
         }
@@ -302,13 +301,14 @@ pub fn compile(
             continue;
         }
         result.counts.candidates += 1;
+        let resolutions: Vec<_> = capture.resolutions.iter().filter(|r| r.node_id == summit.node_id).collect();
         let mut identities = BTreeMap::new();
-        for resolution in resolutions.get(&summit.node_id).into_iter().flatten() {
+        for resolution in resolutions {
             if resolution.status != "resolved" {
                 omit(resolution.status.clone());
                 continue;
             }
-            match identity(&sources, &summit, resolution) {
+            match identity(root, &snapshot.sources, &summit, resolution) {
                 Ok((id, entity)) => {
                     identities.insert(id, entity);
                 }
@@ -324,11 +324,11 @@ pub fn compile(
             entity
         } else {
             let path = format!("entities/{id}.json");
-            if !sources.pins.contains_key(&path) {
+            if snapshot.sources.get(&path).is_none() {
                 omit("entity_acquisition_failed".into());
                 continue;
             }
-            let raw = json_pinned(&sources, &path)?;
+            let raw = json_pinned(root, &snapshot.sources, &path)?;
             let entity = raw["entities"][&id].clone();
             if entity["id"] != id {
                 omit("entity_identity_mismatch".into());
@@ -348,8 +348,8 @@ pub fn compile(
         });
     }
     for (id, entity) in entities {
-        obc_data::engine::check_stop()?;
-        let place = places.get(id.as_str()).ok_or_else(|| format!("missing peak capture {id}"))?;
+        let place =
+            snapshot.places.iter().find(|p| p["qid"] == id).ok_or_else(|| format!("missing peak capture {id}"))?;
         // The summit's own OSM coordinate, not the article entity's: a photo taken at the summit
         // shows the view from the peak, which does not help a rider identify it.
         let summit = associations.get(&id).and_then(|linked| linked.first()).map(|a| (a.latitude, a.longitude));
@@ -357,7 +357,8 @@ pub fn compile(
         // the other. Both omissions are already stated when it has neither.
         if let Some(article) = prepare_article(
             &Inputs {
-                sources: &sources,
+                root,
+                sources: &snapshot.sources,
                 locales: &locales,
                 output,
                 select_photos,

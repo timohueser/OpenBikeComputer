@@ -1,0 +1,34 @@
+{
+ "name": "Irish coast",
+ "extends": "celtic",
+ "where": [
+  [-10.6, 51.4, -9.2, 52.3]
+ ],
+ "about": "The south-west peninsulas and the Reeks: washed Atlantic headlands, bright grass, moor and heather, grey slabs breaking through, a navy sea turning turquoise at the rocks.",
+ "pack": "celtic.irish-coast",
+ "cliffs": { "reach_m": 35, "raise_m": 30 },
+ "look": {
+  "bare_luma": [0.063, 0.101, 0.103, 0.068],
+  "ramps": { "grass": ["#857c55", "#6d6e48", "#5a7444"], "moss": ["#8a7a58", "#8a8a5a", "#7a8c56"] },
+  "moor": { "heather": "#6e4f63", "share": 0.3 },
+  "materials": {
+   "bare-rock": { "colour": "#7a7553" },
+   "scree": { "colour": "#7a7553" },
+   "heath": { "colour": "#5d5538", "satellite": 0 },
+   "bog": { "colour": "#6f5f3e", "satellite": 0 },
+   "rough-grass": { "colour": "#6c6a4a", "satellite": 0 },
+   "wet-grassland": { "colour": "#6c6a4a" },
+   "pasture": { "colour": "#5c7a43", "satellite": 0 }
+  },
+  "snap": 0.85,
+  "hazeKm": 15,
+  "weather": {
+   "sunny": { "cover": 0.42, "base": 1000, "dark": 0.35, "zenith": "#4f72aa", "horizon": "#d8e3ee", "grey": 0.3, "towers": 0 }
+  },
+  "outcrops": 0.5,
+  "lithology": { "sandstone": { "colour": "#8f8c83" }, "limestone": { "colour": "#8f8c83" } },
+  "bedding": { "strike": 55, "dip": 65 },
+  "windswept_m": 400,
+  "roadLine": "#cdae4a"
+ }
+}

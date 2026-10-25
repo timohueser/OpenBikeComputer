@@ -83,8 +83,9 @@ def compose(indexes, options):
         if kind == "overlays" and info["routing_package"] != files["routing/blocks.json"]["sha256"]:
             raise ValueError("Overlay tiles use another routing package")
         if kind in {"basemap", "places", "overlays", "terrain"}:
+            # An offline area takes these blocks; the terrain archives below `13/` are TrailView's only.
             for name in index["files"]:
-                if name.endswith(".pmtiles"):
+                if name.endswith(".pmtiles") and Path(name).parent.as_posix() == f"maps/tiles/{kind}":
                     tile = list(map(int, Path(name).stem.split("-")))
                     map_blocks.append({"kind": kind, "tile": tile, "bounds": geo.tile_bounds(*tile), "files": [name]})
     terrain = indexes["terrain"]

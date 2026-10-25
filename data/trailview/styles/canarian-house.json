@@ -1,0 +1,20 @@
+{
+ "name": "Canarian house",
+ "about": "White and ochre, with low tiled roofs and green shutters on dark basalt plinths.",
+ "pitch": [14, 22],
+ "eave": 0.3,
+ "verge": 0.2,
+ "hip": 0,
+ "timber": "none",
+ "shutters": true,
+ "chimneys": 0,
+ "palette": {
+  "render": ["#f4f1ea", "#f4f1ea", "#efe6d2", "#e9d6aa"],
+  "wood": ["#5e4030"],
+  "roof": ["#a85a3c", "#b5653e", "#9a5236"],
+  "door": ["#3b5a3a", "#5e4030"],
+  "shutter": ["#3f6a42", "#5e4030"],
+  "plinth": "#4f4a46",
+  "chimney": "#f2ead8"
+ }
+}

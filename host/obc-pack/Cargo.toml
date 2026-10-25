@@ -29,6 +29,9 @@ percent-encoding = "2"
 sha1 = "0.10.6"
 zlib-rs = { workspace = true }
 url = "2"
+# The `wiki` shards: tar under zstd.
+tar = { version = "0.4", default-features = false }
+zstd = "0.13"
 
 [dev-dependencies]
 obc-map-scene = { workspace = true }

@@ -191,6 +191,8 @@ export interface Holder {
     waiting?: string;
     /** Whether the heartbeat is old enough for `unlock`: the run likely ended without freeing the lock. */
     stale: boolean;
+    /** Whether the run ran on this machine and its process ended: the next update takes the lock over. */
+    died: boolean;
 }
 
 /** The runs of other machines, from the locks of the targets that they change. */
@@ -242,7 +244,19 @@ export interface RunView extends RunSummary {
     /** The releases that it switched its target to. */
     switched: string[];
     /** Each fetch that it started; `bytes` is `null` while it runs and when it failed. */
-    fetches: { source: string; version: string; params: [string, string][]; bytes: number | null; error: string | null }[];
+    fetches: {
+        source: string;
+        version: string;
+        params: [string, string][];
+        /** When it started and ended, in milliseconds after the start of the run. */
+        start_ms?: number | null;
+        end_ms?: number | null;
+        bytes: number | null;
+        wall_ms: number | null;
+        error: string | null;
+    }[];
+    /** Each step that it started or kept. */
+    steps: RunStep[];
     /** `kept` names the steps whose layers the store keeps for the next update. */
     error: { code: string; message: string; fix: string; kept: string[] } | null;
     /** The last lines of its log. */
@@ -251,6 +265,27 @@ export interface RunView extends RunSummary {
     log_path: string;
     /** The review that a run of `update --plan` wrote; `null` for another run and until the plan is done. */
     review: Review | null;
+}
+
+/** A step of a run. `layer` is empty until it finishes; `wall_ms` is `null` while it runs, when it
+ *  failed and when it is unchanged. A reused step has the wall time of the run that built it. */
+export interface RunStep {
+    step: string;
+    layer: string;
+    reused: boolean;
+    unchanged: boolean;
+    /** When it started and when it finished or failed, in milliseconds after the start of the run.
+     *  An unchanged step does not start. */
+    start_ms?: number | null;
+    end_ms?: number | null;
+    wall_ms: number | null;
+    /** User plus system CPU time; `null` as `wall_ms` is. */
+    cpu_ms?: number | null;
+    peak_rss_bytes: number | null;
+    bytes_out: number | null;
+    error: string | null;
+    /** Its wall time in the newest earlier run that built it. */
+    last_wall_ms?: number | null;
 }
 
 /** `colour` is the header background, behind white text. `os` is `linux` or `macos`. A size is
@@ -280,7 +315,30 @@ export interface Setup {
     /** `detail` is the version found, or the command that installs the tool. */
     tools: { name: string; needed_for: string; state: Readiness; detail: string }[];
     /** Only whether each credential is set; never its value. */
-    credentials: { name: string; needed_for: string; state: Readiness }[];
+    credentials: CredentialState[];
+}
+
+export interface CredentialState {
+    name: string;
+    needed_for: string;
+    state: Readiness;
+    /** The source that `obc data source credential SOURCE` sets it for; null for the R2 key. */
+    source: string | null;
+    /** The values that the command reads, in this order. */
+    fields: string[];
+    /** The `use` of each source that it serves. */
+    uses: string[];
+    register: string | null;
+    hint: string | null;
+}
+
+/** What `obc data source credential SOURCE --json` writes. It never holds a value. */
+export interface CredentialSet {
+    file: string;
+    names: string[];
+    sources: string[];
+    /** Names that the environment of the page sets: they win over the file. */
+    overridden: string[];
 }
 
 const UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];

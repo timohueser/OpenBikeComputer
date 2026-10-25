@@ -35,6 +35,13 @@ it("shows a run as it goes, and Stop posts exactly the args that it shows", asyn
     try {
         await vi.waitFor(() => expect(text()).toContain("Layers in this run"));
         expect(text()).toContain("3 of 6 · about 30 min left");
+        // Three steps ran at once at most; the two that run count until now.
+        const time = document.querySelector('[aria-labelledby="time"]')!;
+        expect(time.querySelector(".soft")?.textContent).toBe("36 min so far · 1 download, 6 min · 7 steps, 1 h 6 min · at most 3 at once");
+        expect([...time.querySelectorAll(".legend li")].map((item) => item.textContent)).toEqual(["Download", "Step", "Running now"]);
+        const rows = [...time.querySelectorAll(".row")].map((row) => [row.querySelector(".name")?.textContent, row.querySelector(".took")?.textContent]);
+        expect(rows[0]).toEqual(["Download geofabrik-extracts", "6 min"]);
+        expect(rows.at(-1)).toEqual(["Step device/coarse/0036-0032", "8 min so far"]);
         expect(text()).toContain("laptop · load 6.2 on 10 cores · RAM 12 GB free · store 412 GB free");
         expect(text()).toContain(`The last 4 lines of ${run.log_path}.`);
         expect(document.querySelector("h1")?.textContent).toBe("update local");

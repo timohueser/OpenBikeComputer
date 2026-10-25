@@ -13,9 +13,15 @@ the planner layers; `obc data` does not install them.
 A changed producer does not rebuild its layer. Raise the `revision` of the layer in the change
 that changes its output; a reader that needs new data raises its `format`.
 
+Each step runs in a process of its own. A Rust step shows as `obc-data obc_data_step FUNCTION`
+in `ps`. Add the function of a new Rust step to `host/obc-data-steps/src/functions.rs`: a
+function that is not there fails its step. A test binary that runs a Rust step needs a test
+`obc_data_step` that calls `obc_data::engine::child` with its functions. Without that test, the
+step fails because it did not write its output.
+
 `data/targets.toml` names the targets: `local` is a folder beside the store, and `prod` the
 public bucket. An update or a rollback of `prod` needs the `OBC_R2_*` variables and rclone. The
-settings of a target (region, optional layers, refresh policies) are in the release that it
+settings of a target (region, parts, refresh policies) are in the release that it
 serves, so they need no commit.
 
 | Configuration or credential | Purpose |
@@ -35,10 +41,12 @@ serves, so they need no commit.
 | `OBC_R2_ACCOUNT_ID` or `OBC_R2_ENDPOINT` | Cloudflare account or explicit endpoint |
 | `OBC_FIXTURE_R2_*` | Separate fixture bucket and credentials, with the same suffixes as production |
 | `UV_PYTHON` | Selected prepared Python interpreter |
+| `~/.config/openbikecomputer/credentials.env` | `env` credentials of sources; the environment wins |
 | `~/.cdsapirc` | CDS credential for a selected climate fetch |
 | `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |
 
-Keep secrets in the private host environment or ignored `tools/obc.local`, never tracked config.
+Set a source credential on the Machine screen, or pipe it to `obc data source credential ID`.
+Keep other secrets in the host environment or ignored `tools/obc.local`, never tracked config.
 
 ## Daily commands
 
@@ -50,8 +58,8 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data update local --dry-run` | Review the update: what bakes and why, the cost, and its id |
 | `obc data update local --region dach --plan` | Plan the update in a run: fetch what the plan reads, with progress, and bake nothing. `obc data runs RUN` gives the review |
 | `obc data update local --expect ID` | Start the update only when its review still has this id |
-| `obc data update local --add sun` | Switch an optional layer on; `--remove` switches it off |
-| `obc data update local --refresh wikidata=30` | Set a refresh policy for the target |
+| `obc data update local --add device --add map --add sun` | Switch parts on; `--remove` switches a part off. Parts: `device`, `map`, `routing`, `search`, `climate`, `snow`, `sun`, `trailview-*` |
+| `obc data update local --refresh geofabrik-extracts=30` | Set a refresh policy for the target |
 | `obc data update local --only LAYER` | Bake a layer again after a code change with the same version |
 | `obc data update prod --dry-run` | Review an update of `prod`; the owner approves its id |
 | `obc data update prod --expect ID` | Publish the approved review to riders; asks, or `--yes` without a terminal. It waits up to 24 h until the follower serves the release |
@@ -72,8 +80,9 @@ An update runs in a process of its own: Ctrl-C ends only the following of its lo
 `obc data runs RUN --stop` stops it. An update that stops keeps what it baked: run it again. The
 previous release stays as the rollback of the target. A target takes one update or rollback at a
 time: the run holds `lock.json` of the target, and another run refuses to start. A run that fails
-or stops frees the lock. A crash or an out-of-memory kill keeps it:
-`obc data unlock TARGET --from MACHINE` frees it after 10 minutes without a heartbeat.
+or stops frees the lock. A crash or an out-of-memory kill keeps it; the next run on the same
+machine takes it over. From another machine, `obc data unlock TARGET --from MACHINE` frees it
+after 10 minutes without a heartbeat.
 
 `cargo test -p obc-data --test r2_live -- --ignored` writes the bucket of the `OBC_R2_*` variables
 in a throwaway folder `test/<time>-<pid>/`; it skips without them. A plain test run leaves it out.

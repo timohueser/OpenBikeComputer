@@ -716,6 +716,21 @@ class BulkArchives(unittest.TestCase):
             served.unlink()
             self.assertEqual(source.fetch((0, 0, 1, 1), work), rasters)
 
+    def test_a_row_takes_only_the_members_it_names(self):
+        """Thuringia's zips hold each tile as a GeoTIFF and as an XYZ grid; the grid has no CRS."""
+
+        class Fake(ingest.sources.bulk.BulkSource):
+            members = ingest.sources.base.RASTER_SUFFIXES
+
+            def files(self, bbox):
+                return [("state.zip", f"file://{self.served}")]
+
+        with TemporaryDirectory() as directory:
+            source = Fake("xx", "Nowhere", "DGM 1 m", 1.0, "CC BY 4.0", "DHHN2016")
+            source.served = self.bundle(directory, {"tile.tif": b"II*\x00", "tile.xyz": b"1 2 3"})
+            rasters = source.fetch((0, 0, 1, 1), Path(directory) / "work")
+            self.assertEqual([path.name for path in rasters], ["tile.tif"])
+
     def test_an_archive_with_no_raster_says_so(self):
         with TemporaryDirectory() as directory:
             archive = self.bundle(directory, {"readme.txt": b"licence only"})

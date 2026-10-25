@@ -60,6 +60,7 @@ fn compare(
     assert_eq!(scales.len(), expected.len());
     let mut prior = None;
     for (&mpp, expected) in scales.iter().zip(expected) {
+        let features = features.iter().map(|(style, geom)| (*style, geom));
         let level = build_semantic_lod(features, scheme, bbox, mpp, prior.as_ref(), &Progress::silent()).unwrap();
         let grid = &level.labels.grid;
         let actual =

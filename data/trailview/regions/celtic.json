@@ -1,0 +1,50 @@
+{
+ "name": "Celtic broadleaf forests",
+ "ecoregion": 651,
+ "extends": "world",
+ "leaf": "broadleaved",
+ "pack": "celtic",
+ "about": "Ireland, Northern Ireland, the Isle of Man, Wales, Cornwall and Devon, the English Midlands and the North, and Scotland south and east of the Highlands: small green fields of pasture behind hawthorn hedges, banks and dry-stone walls; moor of heather, purple moor-grass, mat-grass, bracken and blanket bog on the Wicklow Mountains, the Mournes, Eryri, the Lake District, the Pennines, the Southern Uplands, the Manx hills and Dartmoor; sessile oak, ash and birch in the valleys, dark Sitka spruce plantations on the hills, limestone scars in the Burren and the Dales, and arable plains in the east. No split beyond the Irish coast: one wet Atlantic sky, haze and grade fit the whole region, and the drier east is a gradient, not a line on stable ground. Moor and pasture, hill and plain differ in colour and cover, which Sentinel-2 colour, the moor rule, the NDVI ramps, the tree bands and windswept_m carry, and the houses change by country, which the house style by place carries. The Irish coast subregion keeps the south-west peninsulas and the Reeks as they are.",
+ "look": {
+  "snap": 0.7,
+  "hazeKm": 20,
+  "ramps": {
+   "grass": {
+    "winter": ["#8f8660", "#83805a", "#767b4e"],
+    "spring": ["#8f8458", "#808046", "#728038"],
+    "summer": ["#8f8458", "#7e7f46", "#728038"],
+    "autumn": ["#968556", "#87804c", "#787d40"]
+   },
+   "shrub": ["#7d5e48", "#86703f", "#6f7c3e"]
+  },
+  "moor": { "heather": "#5a4a46", "share": 0.25 },
+  "materials": {
+   "bare-rock": { "colour": "#7a776c" },
+   "scree": { "colour": "#7a776c" },
+   "heath": { "colour": { "winter": "#6e644e", "spring": "#74744a", "summer": "#7c744c", "autumn": "#807048" }, "satellite": 0.45 },
+   "bog": { "colour": { "winter": "#7c6844", "spring": "#7a6842", "summer": "#7a6842", "autumn": "#806440" }, "satellite": 0.3 },
+   "bracken": { "colour": { "winter": "#6e5238", "spring": "#6f5a3c", "summer": "#6a6e3a", "autumn": "#8a5a30" } },
+   "rough-grass": { "colour": { "winter": "#8f7f58", "spring": "#84844e", "summer": "#928654", "autumn": "#967a48" }, "satellite": 0.3 },
+   "wet-grassland": { "colour": { "winter": "#77704f", "spring": "#6a704a", "summer": "#6c6c4a", "autumn": "#74694a" } },
+   "scrub": { "colour": "#55652f" },
+   "hedge": { "colour": "#3b5530" },
+   "sand": { "colour": "#d6cba8" },
+   "beach": { "colour": "#d6cba8" },
+   "salt-marsh": { "colour": "#7c8a60" },
+   "pasture": { "colour": { "winter": "#66764a", "spring": "#7a9048", "summer": "#788a46", "autumn": "#728846" }, "satellite": 0.3 },
+   "needleleaf-forest": { "colour": { "winter": "#2d3f2e", "spring": "#33532f", "summer": "#2d4c2c", "autumn": "#31472f" } }
+  },
+  "grade": { "shadow": [-0.002, 0.002, 0.005], "light": [0.006, 0.004, -0.004], "saturation": 1.0 },
+  "weather": {
+   "sunny": { "cover": 0.4, "base": 1100, "dark": 0.35, "zenith": "#4f72aa", "horizon": "#d8e3ee", "grey": 0.3, "towers": 0 }
+  },
+  "outcrops": 0.05,
+  "rock": "#8f8c83",
+  "cliff": "#78776f",
+  "sea": { "deep": "#2f4b66", "shallow": "#4d6b80" },
+  "swell": 250,
+  "windswept_m": 250,
+  "turf_deg": 57,
+  "lithology": { "sandstone": { "colour": "#a29c8e" }, "limestone": { "colour": "#b4b0a4" } }
+ }
+}

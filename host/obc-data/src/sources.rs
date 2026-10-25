@@ -26,7 +26,6 @@ pub enum Kind {
 #[serde(rename_all = "kebab-case")]
 pub enum FetchKind {
     Http,
-    Osm,
     Geofabrik,
     Glo30,
     Dtm,
@@ -46,9 +45,6 @@ pub struct Fetch {
     pub kind: FetchKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// Only for `osm`: the source whose version is the base day, `from=`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from: Option<String>,
 }
 
 /// How upstream names a version, and so what a version of the source looks like.
@@ -179,13 +175,19 @@ impl std::fmt::Display for Refresh {
 }
 
 /// What a fetch needs before upstream answers: environment variables, or a file.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Credential {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
+    /// Where a person gets the credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub register: Option<String>,
+    /// What to copy there, in one line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
 }
 
 impl Credential {
@@ -213,9 +215,16 @@ pub(crate) fn expand_home(path: &str) -> PathBuf {
 pub struct Source {
     pub id: String,
     pub kind: Kind,
-    /// The heading under which the operator page lists the source.
+    /// The heading under which the operator page lists a source that is not prepared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// What reads the source: the products `device` and `planner`, or the `search` and `trailview`
+    /// layers of `planner`. `tools/check_data_sources.py` checks the names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub used_by: Vec<String>,
+    /// What `used_by` reads the source for, in one line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#use: Option<String>,
     /// An SPDX id or `LicenseRef-…`. Unset blocks a data source or an asset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub licence: Option<String>,
@@ -252,31 +261,15 @@ pub struct Source {
     pub publish_text: Option<bool>,
 }
 
-/// The Wikimedia API captures, which a target does not copy.
-const NOT_COPIED: [&str; 3] = ["wikidata", "wikipedia", "commons"];
+/// The Wikimedia sources that only the producer of `wiki` reads, on the machine that prepares: a
+/// target keeps no copy of them.
+pub(crate) const WIKI_INPUTS: [&str; 3] = ["wikidata", "wikipedia", "commons"];
 
 impl Source {
     /// Whether a target keeps a copy of the files that its release reads: when the licence lets us
     /// give the bytes to others. A prepared version is on a target already.
     pub fn copied(&self) -> bool {
-        self.redistribute && self.fetch.kind != FetchKind::Prepared && !NOT_COPIED.contains(&self.id.as_str())
-    }
-
-    /// The prepared source `terrain-reference/<key>` of the national terrain model `dtm-<key>`, with
-    /// its licence, credit and box: the archive tiles that `obc data source prepare` makes of it.
-    fn terrain_reference(&self) -> Option<Source> {
-        let key = self.id.strip_prefix("dtm-").filter(|_| self.redistribute)?;
-        Some(Source {
-            id: format!("terrain-reference/{key}"),
-            fetch: Fetch { kind: FetchKind::Prepared, url: None, from: None },
-            hosts: Vec::new(),
-            version: VersionScheme::Date,
-            start: None,
-            // Not `manual`: a target reads a new version once a target lists it.
-            refresh: Refresh::Days(365),
-            credential: None,
-            ..self.clone()
-        })
+        self.redistribute && self.fetch.kind != FetchKind::Prepared && !WIKI_INPUTS.contains(&self.id.as_str())
     }
 
     /// Whether the source can have data in `[west, south, east, north]`: it has an `extent`, and
@@ -288,9 +281,8 @@ impl Source {
     fn validate(&self) -> Result<(), String> {
         let fail = |why: &str| Err(format!("source `{}`: {why}", self.id));
         let prepared = self.fetch.kind == FetchKind::Prepared;
-        // A prepared source of a family, such as `terrain-reference/ch`, has two parts.
-        if self.id.split('/').count() > 1 + usize::from(prepared) || !self.id.split('/').all(crate::is_kebab) {
-            return fail("the id is not lowercase kebab-case, or two such parts joined by `/` for a prepared source");
+        if !crate::is_kebab(&self.id) {
+            return fail("the id is not lowercase kebab-case");
         }
         if prepared && (!self.redistribute || self.version != VersionScheme::Date) {
             return fail("a prepared source has `redistribute = true` and `version = \"date\"`");
@@ -311,9 +303,6 @@ impl Source {
             (None, _) => return fail("`fetch.url` is missing"),
             (Some(url), _) if !url.starts_with("https://") => return fail("`fetch.url` is not https"),
             _ => {}
-        }
-        if (self.fetch.kind == FetchKind::Osm) != self.fetch.from.is_some() {
-            return fail("an `osm` fetch, and only an `osm` fetch, names the source of its base day in `fetch.from`");
         }
         let host = |h: &str| {
             !h.is_empty() && h.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || ".-".contains(c))
@@ -340,6 +329,12 @@ impl Source {
         if let Some(credential) = &self.credential {
             if credential.env.is_empty() == credential.file.is_none() {
                 return fail("a credential is `env` or `file`");
+            }
+            if crate::credentials::place(credential).is_none() {
+                return fail(&format!("`credential.file` is one of {}", crate::credentials::files()));
+            }
+            if credential.register.as_ref().is_some_and(|url| !url.starts_with("https://")) {
+                return fail("`credential.register` is not https");
             }
         }
         Ok(())
@@ -399,22 +394,15 @@ struct SourcesFile {
     source: Vec<Source>,
 }
 
-/// Parse and validate `data/sources.toml`, with the source `terrain-reference/<key>` of each
-/// `dtm-<key>` that we may give to others.
+/// Parse and validate `data/sources.toml`.
 pub fn parse_sources(text: &str) -> Result<Vec<Source>, String> {
-    let mut file: SourcesFile = toml::from_str(text).map_err(|e| format!("data/sources.toml: {e}"))?;
-    let derived: Vec<Source> = file.source.iter().filter_map(Source::terrain_reference).collect();
-    file.source.extend(derived);
+    let file: SourcesFile = toml::from_str(text).map_err(|e| format!("data/sources.toml: {e}"))?;
     let mut seen = BTreeSet::new();
     for source in &file.source {
         source.validate()?;
         if !seen.insert(source.id.as_str()) {
             return Err(format!("source `{}` is listed twice", source.id));
         }
-    }
-    let from = |source: &&Source| source.fetch.from.as_deref().is_some_and(|id| !seen.contains(id));
-    if let Some(source) = file.source.iter().find(from) {
-        return Err(format!("source `{}`: `fetch.from` names no source", source.id));
     }
     Ok(file.source)
 }
@@ -483,16 +471,12 @@ pub struct Status {
 
 /// The state of `source` at `today`, from `serving`, the version that the serving release reads,
 /// the newest upstream version, its policy and its licence. Credentials gate selected fetches. The
-/// serving version is stale when its policy is due and upstream has a newer version, or when it is
-/// before `base`, the serving version of the source that `fetch.from` names.
-pub fn status(source: &Source, serving: Option<&str>, base: Option<&str>, upstream: &Upstream, today: i64) -> Status {
+/// serving version is stale when its policy is due and upstream has a newer version.
+pub fn status(source: &Source, serving: Option<&str>, upstream: &Upstream, today: i64) -> Status {
     let age_days =
         serving.filter(|_| source.version == VersionScheme::Date).and_then(date::parse).map(|day| today - day);
     let (state, reason) = if source.kind != Kind::Tool && source.licence.is_none() {
         (State::Blocked, Some("no licence recorded".to_string()))
-    } else if let Some(base) = base.filter(|&base| serving.is_some_and(|serving| serving < base)) {
-        let from = source.fetch.from.as_deref().unwrap_or_default();
-        (State::Stale, Some(format!("before `{from}` {base} of the serving release")))
     } else {
         let prepared = source.fetch.kind == FetchKind::Prepared;
         match (source.refresh, age_days) {
@@ -542,13 +526,10 @@ mod tests {
     }
 
     #[test]
-    fn only_a_prepared_source_has_an_id_of_two_parts_and_it_gives_its_bytes_to_others() {
+    fn a_prepared_source_gives_its_bytes_to_others() {
         let url = "fetch = { kind = \"http\", url = \"https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf\" }";
-        let prepared = OSM
-            .replace("id = \"osm\"", "id = \"terrain-reference/ch\"")
-            .replace(url, "fetch = { kind = \"prepared\" }");
+        let prepared = OSM.replace("id = \"osm\"", "id = \"terrain\"").replace(url, "fetch = { kind = \"prepared\" }");
         assert!(!parse_sources(&prepared).unwrap()[0].copied(), "a version is on a target already");
-        assert!(parse_sources(&prepared.replace("/ch\"", "/ch/x\"")).unwrap_err().contains("kebab-case"));
         assert!(parse_sources(&OSM.replace("id = \"osm\"", "id = \"osm/x\"")).unwrap_err().contains("kebab-case"));
         let private = prepared.replace("redistribute = true", "redistribute = false");
         assert!(parse_sources(&private).unwrap_err().contains("`redistribute = true`"));
@@ -608,59 +589,32 @@ mod tests {
     fn a_live_version_is_stale_when_older_than_its_policy_and_upstream_is_newer() {
         let today = date::parse("2024-01-10").unwrap();
         let newer = Upstream::Newest("2024-01-09".into());
-        let fresh = status(&osm(), Some("2024-01-03"), None, &newer, today);
+        let fresh = status(&osm(), Some("2024-01-03"), &newer, today);
         assert_eq!((fresh.state, fresh.age_days), (State::Ok, Some(7)));
-        let old = status(&osm(), Some("2024-01-02"), None, &newer, today);
+        let old = status(&osm(), Some("2024-01-02"), &newer, today);
         assert_eq!((old.state, old.reason.as_deref()), (State::Stale, Some("8 d > 7 d, upstream 2024-01-09")));
-        let failed = status(&osm(), Some("2024-01-02"), None, &Upstream::Failed("offline".into()), today);
+        let failed = status(&osm(), Some("2024-01-02"), &Upstream::Failed("offline".into()), today);
         assert_eq!(
             (failed.state, failed.reason.as_deref()),
             (State::Blocked, Some("8 d > 7 d, upstream unknown: the check failed"))
         );
         let same = Upstream::Newest("2024-01-02".into());
-        assert_eq!(status(&osm(), Some("2024-01-02"), None, &same, today).state, State::Ok);
-        assert_eq!(status(&osm(), Some("2024-01-02"), None, &Upstream::Capture, today).state, State::Stale);
+        assert_eq!(status(&osm(), Some("2024-01-02"), &same, today).state, State::Ok);
+        assert_eq!(status(&osm(), Some("2024-01-02"), &Upstream::Capture, today).state, State::Stale);
         let manual = Source { refresh: Refresh::Manual, ..osm() };
-        assert_eq!(status(&manual, Some("2020-01-01"), None, &newer, today).state, State::Ok);
-        assert_eq!(status(&osm(), None, None, &newer, today).state, State::Ok);
-        let replication = Source { fetch: Fetch { from: Some("osm-planet".into()), ..osm().fetch }, ..osm() };
-        let behind = status(&replication, Some("2024-01-08"), Some("2024-01-09"), &same, today);
-        assert_eq!(
-            (behind.state, behind.reason.as_deref()),
-            (State::Stale, Some("before `osm-planet` 2024-01-09 of the serving release"))
-        );
-        assert_eq!(status(&replication, Some("2024-01-09"), Some("2024-01-09"), &same, today).state, State::Ok);
-    }
-
-    #[test]
-    fn an_osm_fetch_names_the_source_of_its_base() {
-        let diffs = |from: &str| {
-            let fetch = format!("fetch = {{ kind = \"osm\", url = \"https://h/day/\"{from} }}");
-            let diffs = OSM.replace("id = \"osm\"", "id = \"diffs\"");
-            format!(
-                "{OSM}{}",
-                diffs
-                    .lines()
-                    .map(|l| if l.trim().starts_with("fetch") { fetch.as_str() } else { l })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            )
-        };
-        assert!(parse_sources(&diffs(", from = \"osm\"")).is_ok());
-        assert!(parse_sources(&diffs("")).unwrap_err().contains("fetch.from"));
-        assert!(parse_sources(&diffs(", from = \"land\"")).unwrap_err().contains("names no source"));
-        assert!(parse_sources(&OSM.replace(".pbf\"", ".pbf\", from = \"osm\"")).unwrap_err().contains("fetch.from"));
+        assert_eq!(status(&manual, Some("2020-01-01"), &newer, today).state, State::Ok);
+        assert_eq!(status(&osm(), None, &newer, today).state, State::Ok);
     }
 
     #[test]
     fn a_missing_licence_blocks_but_credentials_only_gate_selected_fetches() {
         let today = date::parse("2024-01-10").unwrap();
         let unlicensed = Source { licence: None, ..osm() };
-        assert_eq!(status(&unlicensed, Some("2024-01-09"), None, &Upstream::CannotCheck, today).state, State::Blocked);
+        assert_eq!(status(&unlicensed, Some("2024-01-09"), &Upstream::CannotCheck, today).state, State::Blocked);
         let tool = Source { kind: Kind::Tool, ..unlicensed };
-        assert_eq!(status(&tool, None, None, &Upstream::CannotCheck, today).state, State::Ok);
-        let keyed = Source { credential: Some(Credential { env: vec!["KEY".into()], file: None }), ..osm() };
-        let blocked = status(&keyed, None, None, &Upstream::CannotCheck, today);
+        assert_eq!(status(&tool, None, &Upstream::CannotCheck, today).state, State::Ok);
+        let keyed = Source { credential: Some(Credential { env: vec!["KEY".into()], ..Default::default() }), ..osm() };
+        let blocked = status(&keyed, None, &Upstream::CannotCheck, today);
         assert_eq!((blocked.state, blocked.reason.as_deref()), (State::Ok, None));
     }
 
@@ -681,15 +635,5 @@ mod tests {
         let registry = Registry::load(&root).unwrap();
         assert!(registry.sources.iter().any(|s| s.id == "osm-planet"));
         assert_eq!(embedded("osm-planet"), registry.sources.iter().find(|s| s.id == "osm-planet").unwrap());
-    }
-
-    #[test]
-    fn each_national_model_has_a_prepared_source_with_its_licence_credit_and_box() {
-        let (model, prepared) = (embedded("dtm-dk"), embedded("terrain-reference/dk"));
-        let terms = |s: &'static Source| (&s.licence, &s.attribution, &s.obligations, s.extent, &s.areas);
-        assert_eq!(terms(prepared), terms(model));
-        assert_eq!((prepared.fetch.kind, &prepared.credential), (FetchKind::Prepared, &None), "{prepared:?}");
-        let count = |prefix: &str| all().iter().filter(|source| source.id.starts_with(prefix)).count();
-        assert_eq!(count("terrain-reference/"), count("dtm-"));
     }
 }

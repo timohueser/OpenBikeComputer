@@ -10,7 +10,9 @@
     "pretest:planner": "VITE_PLANNER_CONFIG=\"$(cat planner/config.json)\" npm run build:planner --prefix ../..",
     "test:planner": "playwright test --config playwright.planner.config.js",
     "pretest:data": "npm run build:data --prefix ../..",
-    "test:data": "playwright test --config playwright.data.config.js"
+    "test:data": "playwright test --config playwright.data.config.js",
+    "pretest:trailview": "VITE_PLANNER_CONFIG=\"$(cat trailview/fixture/config.json)\" npm run build:trailview --prefix ../..",
+    "test:trailview": "playwright test --config playwright.trailview.config.js"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0"

@@ -1,0 +1,20 @@
+{
+ "name": "Falu red house",
+ "about": "Plank walls in falu red with white window trims, on a granite plinth, under a dark or red tile roof; the white render is for churches and larger buildings.",
+ "pitch": [28, 38],
+ "eave": 0.45,
+ "verge": 0.35,
+ "hip": 0,
+ "timber": "all",
+ "shutters": true,
+ "chimneys": 1,
+ "palette": {
+  "render": ["#f2f0ea", "#ece9e1"],
+  "wood": ["#8c2c22", "#7e281f", "#963528", "#86302a"],
+  "roof": ["#3f4043", "#4a4a4d", "#9a4733", "#3a3a3c"],
+  "door": ["#f0ede5", "#4f6a58", "#3e5470", "#5c2019"],
+  "shutter": ["#f2efe7"],
+  "plinth": "#85827b",
+  "chimney": "#d8d3c8"
+ }
+}

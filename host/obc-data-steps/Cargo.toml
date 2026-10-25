@@ -16,8 +16,6 @@ external-fixtures = []
 
 [dependencies]
 obc-map-core = { workspace = true }
-obc-draw = { workspace = true }
-obc-network = { workspace = true }
 obc-osm = { workspace = true }
 # Real assembly and reader verification before publishing map picks.
 obcm-assemble = { workspace = true, features = ["cli"] }
@@ -36,21 +34,24 @@ planner-router-build = { path = "../../planner/router-build" }
 # The planner search dump step.
 obc-search-bake = { path = "../obc-search-bake" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# The road class table of the TrailView features ranks the classes in its key order.
+serde_json = { workspace = true, features = ["preserve_order"] }
 toml = "0.9"
 # The server of `obc data ui`.
 axum = "0.8"
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "process", "fs", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "process", "fs", "time", "io-util"] }
 
 [dev-dependencies]
 # A stand-in for the Nominatim archive in the planner build test.
 flate2 = "1"
 obc-elevation = { path = "../../firmware/obc-elevation" }
 obc-fixtures = { path = "../obc-fixtures" }
+# The empty `wiki` shard of the planner build test.
+zstd = "0.13"
 # Reads the search databases of the planner build test.
 rusqlite = { version = "0.38", features = ["bundled"] }
 # The land polygons of the map-cell fixture and the Nominatim stand-in: zips that the tests write.
-zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+zip = { workspace = true, features = ["deflate-flate2"] }
 
 [[test]]
 name = "terrain_fixture"

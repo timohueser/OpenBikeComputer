@@ -333,6 +333,10 @@ impl FlattenTree for Node {
     }
 }
 
+/// One encoded level, as [`serialize_tree`] returns it: the index bytes, the index node count, the
+/// chunk-data region, the chunk count and the features that exceeded the chunk size.
+pub type Region = (Vec<u8>, u32, Vec<u8>, u32, usize);
+
 /// Flatten one geometry quadtree via BFS and frame the chunks as the chunk-data region: a
 /// `chunk_count + 1` entry `uint32` offset table, filler, then the chunks, each ending in its one
 /// `0xFF` sentinel and padded to the next unit boundary.
@@ -342,7 +346,7 @@ impl FlattenTree for Node {
 /// keeps it resident as its bound). The table is written even for a chunkless LOD, where it is the
 /// single `0` entry, and the region ends on a unit boundary, so the next LOD's index starts on one
 /// without the caller aligning anything.
-pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
+pub fn serialize_tree(root: &Node, chunk_size: usize) -> Region {
     let (index_bytes, node_count, chunks, dropped) = flatten_tree(root, chunk_size);
     // The table is region-relative, so it is built from the chunks' spans rather than from a
     // cursor: a chunk's span is its content rounded up to a unit.

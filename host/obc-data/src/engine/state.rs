@@ -410,9 +410,6 @@ mod tests {
     #[test]
     fn a_tiled_layer_names_its_leaves_and_those_that_a_build_changes() {
         static TILED: crate::engine::Layer = crate::engine::Layer { shape: Shape::Tiled, ..TEST };
-        fn out(request: &crate::engine::Request) -> Result<(), String> {
-            std::fs::write(request.output.join("out.txt"), &request.step).map_err(|e| e.to_string())
-        }
         let tiled = |version: &str| -> Vec<Step> {
             let leaf = |name: &str, version: &str| Step {
                 layer: &TILED,
@@ -420,7 +417,7 @@ mod tests {
                     name,
                     vec![snapshot("head", version, &["head.txt"])],
                     "out.txt",
-                    crate::engine::Run::Rust(out),
+                    crate::engine::Run::Rust(&crate::engine::tests::NAMED),
                 )
             };
             vec![leaf("test/0001-0002", "1"), leaf("test/0001-0003", version)]

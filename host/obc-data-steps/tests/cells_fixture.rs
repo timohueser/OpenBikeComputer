@@ -1,10 +1,10 @@
 //! The map cells of `obc data update` over the captured GLO-30 tile of the Grimsel, a synthetic OSM
 //! extract (`tests/data/cells.osm`) and synthetic land polygons: each cell has the bytes that one
 //! cut of the whole leaf writes, as the planet bake cuts it, and opens in the reader. A copy stands
-//! in for the Osmium crop of `device/osm`. The bands are fine and network, which read the terrain:
-//! authored coarse and mid geometry uses the production serializer to avoid a whole-leaf
-//! semantic raster in debug. A compiled landmark and a compiled peak on the summit of the extract stand in for the
-//! compile of a capture, and give one artifact each.
+//! in for the Osmium crop of `device/osm`. The step cuts every band, and each cell has the bytes of
+//! [`GOLDEN`]; fine and network, which read the terrain, are also compared with a cut of the leaf.
+//! A compiled landmark and a compiled peak on the summit of the extract stand in for the compile of
+//! the `wiki` shards, and give one artifact each.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -13,9 +13,10 @@ use std::path::{Path, PathBuf};
 use obc_bake::cut::{cut, CutOptions};
 use obc_data::engine::plan::{outputs, plan, Kept};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
-use obc_data::engine::{view, Receipt, Request, Run, Step};
+use obc_data::engine::{view, Function, LayerFile, Receipt, Request, Run, Step};
 use obc_data::fetch::http::Http;
-use obc_data::product::{Inputs, Product, Unplanned, Wanted};
+use obc_data::prepared::{Manifest, MANIFEST};
+use obc_data::product::{Inputs, Product};
 use obc_data::regions::{parse_region, Area, Bbox, Regions};
 use obc_data::release::Release;
 use obc_data::settings::Settings;
@@ -28,6 +29,7 @@ use obc_map_core::config::Config;
 use obc_map_core::grid::{BandTable, CellId};
 use obc_map_core::progress::Progress;
 use obc_osm::LeafId;
+use obc_pack::step::WIKI;
 
 const STEM: &str = "Copernicus_DSM_COG_10_N46_00_E008_00_DEM";
 const VERSION: &str = "2022-05-09";
@@ -35,6 +37,14 @@ const AREA: &str = "europe/grimsel-east";
 /// The Grimsel east of the leaf edge at 8.388608°: one terrain cell, whose source box lies in the
 /// one captured tile.
 const REGION: &str = "name = \"Grimsel east\"\nkind = \"box\"\nbox = [8.39, 46.48261, 8.46007, 46.66]\n";
+/// The SHA-256 of the one cell of each band in the leaf, as the four band steps of commit
+/// `d0c0650c2` wrote them. Other bytes are other device data: change these only on purpose.
+const GOLDEN: [(&str, &str); 4] = [
+    ("cells/coarse/0300/0264.obcm", "102e30645708264eddfe7bdf14967b7f1622a846ef941732d5178065c55b84ea"),
+    ("cells/fine/1201/1056.obcm", "eb62f326018cb804d3ada8b187c020ab44216ab73a90f39d01eb0d43c1639de1"),
+    ("cells/mid/0600/0528.obcm", "eb0668a70925b83daca7c3561a46515f2b21d502eba10ac0d387a417a4b0b3f4"),
+    ("cells/network/1201/1056.obcm", "33bc91069aac63b08a78ccd3ac4ca2cb5c4c5afe5424a778e6735fb2fe861542"),
+];
 
 struct Temp(PathBuf);
 
@@ -65,44 +75,46 @@ fn fetched(store: &Store, source: &str, params: &[(&str, &str)], name: &str, pat
     }
 }
 
-/// Record the shared facts of `wanted` at [`VERSION`]: Wikidata has each entity and link as
-/// missing, and Wikipedia and Commons give no file.
-fn missing_facts(store: &Store, wanted: &Wanted) {
-    let query: serde_json::Value = serde_json::from_str(&wanted.params[0].1).unwrap();
-    let mut facts = Vec::new();
-    if wanted.source == "wikidata" {
-        for (kind, list) in [("entity", "entities"), ("link", "links")] {
-            for key in query[list].as_array().unwrap() {
-                facts.push(
-                    serde_json::to_vec(&serde_json::json!({"kind": kind, "key": key, "status": "missing"})).unwrap(),
-                );
-            }
-        }
-    }
-    let mut snapshot = store.snapshot(&wanted.source, VERSION).unwrap().unwrap_or_else(|| Snapshot {
-        source: wanted.source.clone(),
-        version: VERSION.into(),
-        files: Vec::new(),
-    });
-    let mut names = Vec::new();
-    for bytes in facts {
-        let sha256 = obc_data::store::sha256_hex(&bytes);
-        let (name, file) = (format!("#content/fact/{sha256}.json"), store.partial("fact"));
-        write_atomic(&file, &bytes).unwrap();
-        store.insert(&file, &sha256).unwrap();
-        let url = format!("https://example.org/{name}");
-        snapshot.files.push(FileRecord {
-            name: name.clone(),
-            url,
-            size: bytes.len() as u64,
-            sha256,
-            retrieved: String::new(),
-        });
-        names.push(name);
-    }
-    store.put_snapshot(&snapshot).unwrap();
-    let requested = Requested { version: VERSION.into(), params: wanted.params.clone(), files: names };
-    store.put_requested(&wanted.source, &requested).unwrap();
+/// A version of `wiki` whose one shard, the common one, only the stand-in compiles read: its pin,
+/// with its manifest and its shard in the store.
+fn wiki(store: &Store, dir: &Path) -> String {
+    let common = dir.join("common.tar.zst");
+    std::fs::write(&common, b"").unwrap();
+    let (sha256, size) = hash_file(&common).unwrap();
+    store.insert(&common, &sha256).unwrap();
+    let manifest = Manifest {
+        source: WIKI.into(),
+        version: "2026-10-01".into(),
+        format: 1,
+        revision: 1,
+        inputs: Vec::new(),
+        files: vec![LayerFile { path: "common.tar.zst".into(), size, sha256: sha256.clone() }],
+        reused: Default::default(),
+        extends: Vec::new(),
+        scope: None,
+        languages: Vec::new(),
+        licence: None,
+        attribution: None,
+        machine: "test".into(),
+        time: "2026-10-01T00:00:00Z".into(),
+        cost: obc_data::prepared::Cost { wall_ms: 0, peak_rss_bytes: None },
+    };
+    let bytes = manifest.canonical();
+    let manifest_sha256 = obc_data::store::sha256_hex(&bytes);
+    let file = store.partial("manifest");
+    write_atomic(&file, &bytes).unwrap();
+    store.insert(&file, &manifest_sha256).unwrap();
+    let record = |name: &str, size, sha256| FileRecord {
+        name: name.into(),
+        url: format!("https://example.org/{name}"),
+        size,
+        sha256,
+        retrieved: String::new(),
+    };
+    let pinned = format!("2026-10-01/{manifest_sha256}");
+    let files = vec![record(MANIFEST, bytes.len() as u64, manifest_sha256), record("common.tar.zst", size, sha256)];
+    store.put_snapshot(&Snapshot { source: WIKI.into(), version: pinned.clone(), files }).unwrap();
+    pinned
 }
 
 /// Record the polygon of each area of a national model as a speck at 0° 0°: the store has no
@@ -141,11 +153,23 @@ fn land_zip(path: &Path) {
     shp.extend((record.len() as i32 / 2).to_be_bytes());
     shp.extend(record);
     let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
-    let options: zip::write::FileOptions<'_, ()> = Default::default();
+    let options = zip::write::SimpleFileOptions::default();
     zip.start_file("land-polygons-split-3857/land_polygons.shp", options).unwrap();
     zip.write_all(&shp).unwrap();
     zip.finish().unwrap();
 }
+
+/// The child process of a Rust step of the test runs it here.
+#[test]
+fn obc_data_step() {
+    let fakes = [&COPY, &LANDMARK_CONTENT, &PEAK_CONTENT, &MALFORMED_NETWORK];
+    obc_data::engine::child(&[obc_data_steps::FUNCTIONS, &fakes].concat());
+}
+
+static COPY: Function = Function { name: "test/copy", run: copy };
+static LANDMARK_CONTENT: Function = Function { name: "test/landmark-content", run: landmark_content };
+static PEAK_CONTENT: Function = Function { name: "test/peak-content", run: peak_content };
+static MALFORMED_NETWORK: Function = Function { name: "test/malformed-network", run: malformed_network };
 
 /// The OSM of each leaf: the extract as it is.
 fn copy(request: &Request) -> Result<(), String> {
@@ -196,27 +220,19 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         ((TILE_LIST.into(), Vec::new()), VERSION.to_string()),
     ]);
     let settings = Settings { region: "grimsel-box".into(), ..Settings::default() };
-    let inputs = Inputs { settings, serving, ..Inputs::default() };
+    let mut inputs = Inputs { settings, serving, ..Inputs::default() };
+    inputs.resolved.insert((WIKI.into(), Vec::new()), wiki(&store, &temp.0));
     const BANDS: [&str; 2] = ["fine", "network"];
     without_models(&store, &temp.0);
-    // The shared Wikimedia facts, which only the stand-in compiles read: every identity is missing.
-    let list = || Device.steps_with_tool(&root, &inputs, &regions, &store, Ok(()));
-    for _ in 0..3 {
-        let Err(Unplanned::NeedsFetch(wanted)) = list() else { break };
-        wanted.iter().for_each(|wanted| missing_facts(&store, wanted));
-    }
-    let listed = list().unwrap();
+    let listed = Device.steps_with_tool(&root, &inputs, &regions, &store, Ok(())).unwrap();
     assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
     let mut steps = listed.steps;
 
     for step in &mut steps {
         match step.name.as_str() {
-            "device/osm" => step.run = Run::Rust(copy),
-            name if name.starts_with("device/landmark-content/") => step.run = Run::Rust(landmark_content),
-            name if name.starts_with("device/peak-content/") => step.run = Run::Rust(peak_content),
-            name if name.starts_with("device/coarse/") || name.starts_with("device/mid/") => {
-                step.run = Run::Rust(authored_geometry)
-            }
+            "device/osm" => step.run = Run::Rust(&COPY),
+            name if name.starts_with("device/landmark-content/") => step.run = Run::Rust(&LANDMARK_CONTENT),
+            name if name.starts_with("device/peak-content/") => step.run = Run::Rust(&PEAK_CONTENT),
             _ => {}
         }
     }
@@ -239,6 +255,9 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let objects = |layer: &str| -> BTreeMap<String, PathBuf> {
         layers[layer].files.iter().map(|file| (file.path.clone(), store.object(&file.sha256))).collect()
     };
+    let map_cells = layers["device/map/0037-0033"].files.iter().filter(|file| file.path.ends_with(".obcm"));
+    let map_cells: BTreeMap<&str, &str> = map_cells.map(|file| (file.path.as_str(), file.sha256.as_str())).collect();
+    assert_eq!(map_cells, BTreeMap::from(GOLDEN));
 
     let release = composed(&store, &steps);
     let named: BTreeMap<String, _> = Device.named(&release.outputs).unwrap().into_iter().collect();
@@ -277,10 +296,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         release
             .outputs
             .iter()
-            .filter(|output| output.step.starts_with("device/terrain/")
-                || ["coarse", "mid", "fine", "network"]
-                    .iter()
-                    .any(|band| output.step.starts_with(&format!("device/{band}/"))))
+            .filter(|output| output.step.starts_with("device/terrain/") || output.step.starts_with("device/map/"))
             .all(|output| output.client_files().count() == output.files.len()),
         "a target holds the metadata of each leaf, which the catalog reads"
     );
@@ -289,12 +305,11 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let leaf = CellId::new(23, 37, 33).unwrap();
     let terrain = temp.0.join("terrain");
     view(&objects("device/terrain/0037-0033"), &terrain).unwrap();
-    let options =
-        |band: &str| steps.iter().find(|step| step.name == format!("device/{band}/0037-0033")).unwrap().options.clone();
+    let map = &steps.iter().find(|step| step.name == "device/map/0037-0033").unwrap().options;
     let bands = BandTable::recommended();
     let mut select = Vec::new();
     for band in bands.bands.iter().filter(|band| BANDS.contains(&band.id.as_str())) {
-        let cells = options(&band.id)["cells"].as_array().unwrap().clone();
+        let cells = map["cells"][&band.id].as_array().unwrap();
         let cell = |cell: &serde_json::Value| {
             CellId::new(band.cell_log2, cell[0].as_i64().unwrap(), cell[1].as_i64().unwrap())
         };
@@ -317,16 +332,13 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
 
     let mut expected: BTreeMap<String, BTreeSet<String>> =
         BANDS.iter().map(|band| (band.to_string(), BTreeSet::new())).collect();
+    let layer = objects("device/map/0037-0033");
     for cell in &summary.cells {
-        let layer = objects(&format!("device/{}/0037-0033", cell.band));
-        let partial = options(&cell.band)["partial_cells"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|id| id.as_str() == Some(cell.id.to_string().as_str()));
+        let partial =
+            map["partial_cells"].as_array().unwrap().iter().any(|id| id.as_str() == Some(cell.id.to_string().as_str()));
         if cell.empty && !partial {
-            let empty: Vec<String> =
-                serde_json::from_slice(&std::fs::read(&layer["metadata/empty.json"]).unwrap()).unwrap();
+            let empty = &layer[&format!("cells/{}/empty.json", cell.band)];
+            let empty: Vec<String> = serde_json::from_slice(&std::fs::read(empty).unwrap()).unwrap();
             assert!(empty.contains(&cell.id.to_string()), "{} {}", cell.band, cell.id);
             continue;
         }
@@ -340,9 +352,10 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         expected.get_mut(&cell.band).unwrap().insert(cell.path.clone());
     }
     for (band, paths) in expected {
-        let layer = objects(&format!("device/{band}/0037-0033"));
-        let cells: BTreeSet<String> = layer.into_keys().filter(|path| path.ends_with(".obcm")).collect();
-        assert_eq!(cells, paths, "the layer of {band} has other cells");
+        let prefix = format!("cells/{band}/");
+        let cells: BTreeSet<String> =
+            layer.keys().filter(|path| path.starts_with(&prefix) && path.ends_with(".obcm")).cloned().collect();
+        assert_eq!(cells, paths, "the layer has other {band} cells");
     }
 
     // The summit's network cell owns the landmark, linked to the summit node, and the peak.
@@ -360,7 +373,11 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let peaks = artifact("device/peaks/0037-0033", "peaks");
     assert_eq!(u32::from_le_bytes(peaks[4..8].try_into().unwrap()), 1, "one association");
     // Reuse is selected from receipts. An unchanged selection reads no binary payload again.
-    let network = layers["device/network/0037-0033"].files.iter().find(|file| file.path.ends_with(".obcm")).unwrap();
+    let network = layers["device/map/0037-0033"]
+        .files
+        .iter()
+        .find(|file| file.path.starts_with("cells/network/") && file.path.ends_with(".obcm"))
+        .unwrap();
     let path = store.object(&network.sha256);
     let backup = temp.0.join("retained-network.obcm");
     std::fs::rename(&path, &backup).unwrap();
@@ -368,10 +385,11 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let refused = Device.verify(&root, None, &release, &store).unwrap_err();
     assert!(refused.contains("artifact"), "{refused}");
     std::fs::rename(backup, path).unwrap();
+    let built = objects("device/map/0037-0033");
     for step in &mut steps {
-        if step.name == "device/network/0037-0033" {
-            step.options["malformed_fixture"] = true.into();
-            step.run = Run::Rust(malformed_network);
+        if step.name == "device/map/0037-0033" {
+            step.options["malformed_fixture"] = serde_json::to_value(&built).unwrap();
+            step.run = Run::Rust(&MALFORMED_NETWORK);
         }
     }
     let changed = plan(&store, &steps).unwrap();
@@ -405,7 +423,6 @@ fn credit() -> serde_json::Value {
 }
 
 fn write_content(request: &Request, path: &str, content: serde_json::Value) -> Result<(), String> {
-    std::fs::create_dir_all(request.output.join("shared-content")).map_err(|e| e.to_string())?;
     let path = request.output.join(path);
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
     std::fs::write(path, serde_json::to_vec(&content).unwrap()).map_err(|e| e.to_string())
@@ -435,75 +452,18 @@ fn peak_content(request: &Request) -> Result<(), String> {
     write_content(request, "peaks/peaks.json", content)
 }
 
-/// Authored coarse/mid geometry, serialized with the same style/profile tables as the real cuts.
-fn authored_geometry(request: &Request) -> Result<(), String> {
-    use obc_bake::serialize::serialize_lods;
-    use obc_draw::serialize::Feature;
-    use obc_draw::serialize::Kind;
-    use obc_draw::serialize::LodLayer;
-    use obc_draw::serialize::Node;
-    let config = Config::parse(include_str!("../../../builder/presets/schema.json"))?;
-    let band = request.options["band"].as_str().ok_or("missing band")?;
-    let table = BandTable::recommended();
-    let band = table.bands.iter().find(|definition| definition.id == band).ok_or("missing band definition")?;
-    for pair in request.options["cells"].as_array().ok_or("missing cells")? {
-        let id = CellId::new(
-            band.cell_log2,
-            pair[0].as_i64().ok_or("invalid row")?,
-            pair[1].as_i64().ok_or("invalid column")?,
-        )?;
-        let square = id.square();
-        let feature = Feature {
-            style_id: config.styles()[0].id,
-            kind: Kind::Line,
-            rings: vec![vec![
-                ((square.0 + 100) as f64 / 1e6, (square.1 + 100) as f64 / 1e6),
-                ((square.2 - 100) as f64 / 1e6, (square.3 - 100) as f64 / 1e6),
-            ]],
-        };
-        let lods: Vec<_> = config
-            .lods
-            .iter()
-            .enumerate()
-            .map(|(level, lod)| LodLayer {
-                max_mpp: lod.max_mpp,
-                chunk_size: config.chunk_size,
-                root: Node::Leaf {
-                    bbox: square,
-                    features: if band.lods.contains(&level) { vec![feature.clone()] } else { Vec::new() },
-                },
-            })
-            .collect();
-        let (body, dropped) = serialize_lods(
-            &lods,
-            &config.styles(),
-            config.marker_color,
-            square,
-            &[],
-            &Default::default(),
-            &config.routing.profiles,
-            &mut obc_elevation::NullElevation,
-        );
-        assert_eq!(dropped, 0);
-        let path = request.output.join(format!("cells/{}/{:04}/{:04}.obcm", band.id, id.i, id.j));
-        write_atomic(&path, &body)?;
-    }
-    write_atomic(&request.output.join("metadata/empty.json"), b"[]")
-}
-
-/// A structurally invalid payload whose valid header lets metadata generation complete.
+/// The cells of the first build, with a structurally invalid network payload whose valid header
+/// lets metadata generation complete.
 fn malformed_network(request: &Request) -> Result<(), String> {
-    obc_network::step::cells(request)?;
-    let width = obc_map_core::grid::id_width(18);
-    let pair = &request.options["cells"][0];
-    let path = request.output.join(format!(
-        "cells/network/{:0width$}/{:0width$}.obcm",
-        pair[0].as_i64().ok_or("row")?,
-        pair[1].as_i64().ok_or("column")?
-    ));
+    let built = request.options["malformed_fixture"].as_object().ok_or("no built cells")?;
+    for (path, object) in built {
+        let bytes = std::fs::read(object.as_str().ok_or("no object path")?).map_err(|e| e.to_string())?;
+        write_atomic(&request.output.join(path), &bytes)?;
+    }
+    let network = built.keys().find(|path| path.starts_with("cells/network/") && path.ends_with(".obcm"));
     std::fs::OpenOptions::new()
         .write(true)
-        .open(path)
+        .open(request.output.join(network.ok_or("no network cell")?))
         .map_err(|e| e.to_string())?
         .set_len(obc_formats::obcm::HEADER_LEN as u64)
         .map_err(|e| e.to_string())

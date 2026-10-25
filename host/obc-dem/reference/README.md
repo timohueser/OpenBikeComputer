@@ -5,8 +5,7 @@ holds finer national DTM heights on the OBCT lattice, and the bakery lifts a cre
 `specs/OBCT_Spec.md` §9 for the lift rule.
 
 `ingest.py` fills the archive from a national DTM. It runs once per source release, never during
-a bake. The archive lives on R2 at `<bucket>/reference/v1/`, beside the catalog prefix; a bakery
-run mirrors the tiles it needs.
+a bake.
 
 ## Run it
 
@@ -30,9 +29,10 @@ account and download steps of a source behind a login, then runs the ingest. `ch
 tile against the contract below. `publish` and `mirror` are `rclone copy`; a publish only ever
 adds, and it merges its index with the one already on R2.
 
-`obc data source prepare terrain-reference/<key>` runs `ingest.py fetch <key> --tile <ti>-<tj>`
-per tile: the pooled tile and its pixel SHA-256, then `index-tiles`. `merge.py --step` is the step `device/reference/<leaf>`: those tiles of each
-model, best first, into an empty archive (`specs/obc-data.md`, `device`).
+`obc data source prepare terrain --region R` adds a region to the version before: per tile,
+`ingest.py fetch <keys> --tile <ti>-<tj> --base …` folds each model into the tile before, then
+`index-terrain` runs per pool. `merge.py --step` is `device/reference/<leaf>` and
+`planner/reference`: the tiles of the version, cut to the leaf.
 
 **A country-scale ingest is an owner-run job**, and it takes `--per-tile`: one archive tile at a
 time, the work wiped after each and the finished tile marked done in the source manifest, so disk
@@ -41,8 +41,7 @@ moves hundreds of gigabytes and takes days: run one source at a time, `check` be
 
 ## The tile contract
 
-The baker and the ingest tool both hold to this. `tile_problems` in `ingest/archive.py` is the
-contract as code, and `check` runs it.
+`tile_problems` in `ingest/archive.py` is the contract as code, and `check` runs it.
 
 - **Lattice**: OBCT `GRID_ORIGIN` (−2^28 µdeg on both axes), step `2^6` µdeg
   (`REFERENCE_STEP_LOG2 = 6`, about 7.1 m latitude and 4.9 m longitude at 47° N).
@@ -51,13 +50,15 @@ contract as code, and `check` runs it.
 - **Value**: `int16` little-endian orthometric metres, the **maximum** of every source pixel centre
   inside the lattice square. `−32768` is the only nodata. Single band, `PixelIsArea`, EPSG:4326,
   deflate, 256 × 256 internal tiles. The GeoTIFF stores rows north-up.
+- **Mean** (prepared versions only): the **mean** of the same centres in `int32` decimetres,
+  nodata `−2^31`, predictor 2, in `mean/`.
 - **Transform** must be exactly the lattice (`a = 2^6 / 1e6`, `e = −2^6 / 1e6`, origin on lattice
   lines) within 1e-9 degrees. The baker does no reprojection and no resampling.
 - **`index.json`** at the archive root names every tile. A tile the index does not name is not in
   the archive.
 
 ```json
-{ "schema": 1, "step_log2": 6, "tile_log2": 16,
+{ "schema": 1, "step_log2": 6, "tile_log2": 16, "pool": "max",
   "sources": { "ch": { "product": "swissALTI3D 2 m", "attribution": "© swisstopo",
                        "licence": "…", "vertical_datum": "LN02/LHN95", "fetched": "2026-09-21" } },
   "tiles": { "3410/2882": "ch" },
@@ -65,19 +66,18 @@ contract as code, and `check` runs it.
   "sha256": { "3410/2882": "9f86d0818…" } }
 ```
 
-`sha256` is over the tile's **pixels**, not the file, because two GDAL builds deflate the same
+`pool` is `max` or `mean`. `sha256` is over the tile's **pixels**, not the
+file, because two GDAL builds deflate the same
 heights into different bytes and the terrain bakery keys its skip decision on the digest.
 `contributors` lists every source holding a pixel in the tile, best priority first; `tiles` names
 the first of them. `index` rebuilds all of this from the manifests in `sources/<key>.json`.
 
 ## The code
 
-`ingest.py` is the entry point. The tool is the `ingest/` package beside it.
-
 | module | what is in it |
 | --- | --- |
 | `lattice.py` | Integer microdegrees: the grid, `Window`, tile ids, and the refusals for a box the lattice cannot hold. |
-| `pool.py` | One source raster in, lattice `int16` metres out: the void convention and the pooling rule. |
+| `pool.py` | One source raster in, the lattice maximum and mean out: voids and the pooling rule. |
 | `archive.py` | Tiles, `PRIORITY`, the per-pixel merge, the manifests, `index.json` and `tile_problems`. |
 | `publish.py` | The rclone remote and the `publish` and `mirror` plans. |
 | `sources/` | One module per country, one row per product. `base.py` is what an adapter is; `__init__.py` is the `SOURCES` registry. |
@@ -85,8 +85,8 @@ the first of them. `index` rebuilds all of this from the manifests in `sources/<
 | `cli.py` | The subcommands. |
 
 An adapter has one job: `fetch(bbox, workdir) -> list[Path]`, rasters in any CRS and dtype.
-The shared tail turns voids and heights outside −500 m to 9 000 m into absence, max-pools pixel
-centres onto the lattice as `int16` metres, and cuts the window into whole tiles.
+The shared tail turns voids and heights outside −500 m to 9 000 m into absence, pools pixel
+centres onto the lattice, and cuts the window into whole tiles.
 
 `PRIORITY` in `ingest/archive.py` orders the sources, finest and best-maintained first. The merge
 is per pixel, because coverage stops at borders: a better source keeps its own pixels and leaves

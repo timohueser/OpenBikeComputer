@@ -54,5 +54,4 @@ pub mod cut;
 pub mod ingest;
 pub mod pipeline;
 pub mod serialize;
-#[cfg(test)]
-mod step;
+pub mod step;

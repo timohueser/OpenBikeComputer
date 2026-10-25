@@ -91,7 +91,8 @@ pub(super) fn steps(
     }
     inputs.fetch_failures.clear();
     let mut listed = Listed { steps: Vec::new(), blocked: Vec::new(), notes: Vec::new() };
-    for product in products {
+    let on: Vec<&dyn Product> = products.iter().copied().filter(|product| product.on(&inputs.settings)).collect();
+    for product in &on {
         let blocked =
             |reason: String| BlockedLayer { step: product.name().into(), layer: product.name().into(), reason };
         let before = inputs.fetch_failures.len();
@@ -150,12 +151,6 @@ fn product_steps(
                 Ok(version) => version,
                 Err(error) if matches!(error.code, Code::FetchFailed | Code::Blocked) => {
                     inputs.fetch_failures.push((wanted.clone(), error.message.clone()));
-                    // These owners share a capture. A sibling must not restart a failed one.
-                    if error.code == Code::FetchFailed
-                        && matches!(wanted.source.as_str(), "wikidata" | "wikipedia" | "commons")
-                    {
-                        return Err(error);
-                    }
                     failure = Some(error);
                     continue;
                 }
@@ -232,7 +227,7 @@ fn add_steps(
 fn same(a: &Step, b: &Step) -> bool {
     use crate::engine::Run;
     let run = |step: &Step| match &step.run {
-        Run::Rust(_) => (0, None),
+        Run::Rust(function) => (0, Some(vec![function.name.to_string()])),
         Run::Command(argv) => (1, Some(argv.clone())),
         Run::Python(argv) => (2, Some(argv.clone())),
     };

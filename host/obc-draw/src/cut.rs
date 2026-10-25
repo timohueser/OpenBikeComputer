@@ -22,7 +22,6 @@ type MergeMemo<'a> = HashMap<MergeKey, LodFeatures<'a>>;
 
 /// One ladder level: shared merged features, a simplify memo, and a cell candidate index.
 pub struct LodSet<'a> {
-    pub lod: usize,
     feats: LodFeatures<'a>,
     /// A feature with one candidate cell already gets one simplify pass per LOD.
     simplified: Vec<Option<Box<OnceLock<Geom>>>>,
@@ -77,7 +76,7 @@ pub fn merge_key(ing: &Ingested, config: &Config, lod: usize, scheme: &SemanticS
 /// optional fill-dissolve and line-stitch passes, plus a semantic tier's prebuilt coverage — and
 /// index it by cell.
 ///
-/// The merge memo shares identical input sets until their last band. The `min_lod` filters select nested sets,
+/// The merge memo shares identical input sets until their last level. The `min_lod` filters select nested sets,
 /// so their count identifies the set for a given semantic filter and line merge mode. Each level
 /// memoizes simplification when a cell first uses a feature. Semantic coverage is already simplified
 /// globally, so `presimplified` exempts it from that pass.
@@ -165,18 +164,7 @@ pub fn prepare_lod<'a>(
     // The cull's reference scale is the next-finer tier's `max_mpp`; the finest tier is never culled
     // (a drop there would erase the feature at every zoom).
     let cull_mpp = (l.min_area_px > 0.0).then(|| config.lods.get(lod + 1).and_then(|n| n.max_mpp)).flatten();
-    LodSet {
-        lod,
-        feats,
-        simplified,
-        presimplified,
-        buckets,
-        tol,
-        line_tol,
-        cull_mpp,
-        min_area_px: l.min_area_px,
-        cell_log2,
-    }
+    LodSet { feats, simplified, presimplified, buckets, tol, line_tol, cull_mpp, min_area_px: l.min_area_px, cell_log2 }
 }
 
 /// Degree bounds → µdeg, widened outward so a candidate is never missed to a rounding step.

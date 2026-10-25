@@ -101,9 +101,18 @@ fn bytes(lock: &LockFile) -> Vec<u8> {
 impl Held {
     /// Take the lock of `target` for the run `run` at the time `now`.
     pub fn take(target: &Target, run: &str, now: u64) -> Result<Held, Refused> {
+        Held::take_over(target, run, now, None)
+    }
+
+    /// [`Held::take`], also while `ended` holds the lock: a run whose process ended, which cannot
+    /// free it any more.
+    pub fn take_over(target: &Target, run: &str, now: u64, ended: Option<&Holder>) -> Result<Held, Refused> {
+        let same =
+            |holder: &Holder| ended.is_some_and(|ended| (&ended.machine, &ended.run) == (&holder.machine, &holder.run));
         let condition = match read(target).map_err(Refused::Failed)? {
             None => Condition::Absent,
             Some((LockFile::Free, tag)) => Condition::Match(tag),
+            Some((LockFile::Held(holder), tag)) if same(&holder) => Condition::Match(tag),
             Some((LockFile::Held(holder), _)) => return Err(Refused::Held(Box::new(holder))),
         };
         let holder = Holder {

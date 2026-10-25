@@ -23,6 +23,9 @@ class BulkSource(Source):
 
     credential_style = "headers"
     skip_missing = False
+    # Which archive members are the heights. A row whose zips carry the same grid twice
+    # names the one format it takes.
+    members = READABLE
 
     def files(self, bbox) -> list[tuple[str, str]]:
         """The `(name, url)` of every file the box needs, biggest unit first."""
@@ -49,7 +52,7 @@ class BulkSource(Source):
                 continue
             print(f"  fetch [{i}/{len(wanted)}] {name}", flush=True)
             if path.suffix.lower() == ".zip":
-                inside = unpack(path, workdir / f"{path.stem}.d", READABLE, optional=self.skip_missing)
+                inside = unpack(path, workdir / f"{path.stem}.d", self.members, optional=self.skip_missing)
                 absent += not inside
                 rasters.extend(placed(raster, self, workdir) for raster in inside)
             elif path.suffix.lower() in READABLE:

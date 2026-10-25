@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""The `obc data` step `device/reference/<leaf>`: the national terrain models that reach one map
-leaf, merged into one reference archive.
+"""The `obc data` steps `device/reference/<leaf>` and `planner/reference`: the tiles of a version
+of `terrain` that reach a map leaf or the planner terrain, as one reference archive.
 
     uv run --locked --offline --group terrain-reference python host/obc-dem/reference/merge.py --step
 
-The request reads, per model, the tiles of the leaf in a version of `terrain-reference/<key>`.
-The options name each model with the day of its version and its credit, and the archive tiles
-that the terrain cells of the leaf read. The models go into an empty archive best first, by
-`PRIORITY`: the archive that `ingest.py ingest` of each model in that order writes, cut to those
-tiles. The layer is the archive below `reference/`.
+The request reads some tiles of a version of `terrain` and the `index.json` of their pool. The
+version holds the national models merged already, so the step cuts its tiles and its index to the
+option `tiles`. With the option `pool: "mean"`, it reads the mean tiles under `mean/`. The layer is
+the archive below `reference/`.
 """
 
+import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -18,35 +19,31 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[2]))
 
-from ingest.archive import ingest_rasters, priority_rank, rebuild_index  # noqa: E402
-from ingest.sources import SOURCES  # noqa: E402
-from ingest.sources.base import READABLE  # noqa: E402
+from ingest.archive import MEAN  # noqa: E402
+from ingest.lattice import tile_path  # noqa: E402
 from tools import step_request  # noqa: E402
-
-
-def key(source: str) -> str:
-    """The ingest key of a source of data/sources.toml: `terrain-reference/ch` is `ch`."""
-
-    return source.removeprefix("terrain-reference/")
 
 
 def merge(request) -> dict:
     options = request["options"]
-    output = Path(request["output"])
-    root = output / "reference"
+    root = Path(request["output"]) / "reference"
     root.mkdir()
-    views = output.with_name("view")
-    views.mkdir()
-    keep = set(options["tiles"])
-    for model in sorted(options["models"], key=lambda model: priority_rank(key(model["source"]))):
-        row = SOURCES[key(model["source"])]
-        view = step_request.view(step_request.files(request, model["source"]), views / key(model["source"]))
-        rasters = sorted(path for path in view.rglob("*") if path.suffix.lower() in READABLE)
-        # The day of the data is the version of its fetch, never the day of the build.
-        fetched = model["version"]
-        ingest_rasters(rasters, row, root, fetched, row.fill(model["credit"], fetched), keep)
-    index = rebuild_index(root)
-    return {"tiles": len(index["tiles"]), "sources": sorted(index["sources"])}
+    prefix = f"{MEAN}/" if options.get("pool") == MEAN else ""
+    files = step_request.files(request, options["source"])
+    index = json.loads(files[f"{prefix}index.json"].read_text(encoding="utf-8"))
+    keep = sorted(tile for tile in set(options["tiles"]) if tile in index["tiles"])
+    for tile in keep:
+        path = tile_path(root, *(int(part) for part in tile.split("/")))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(files[f"{prefix}16/{tile}.tif"], path)
+    contributors = {tile: index["contributors"][tile] for tile in keep}
+    used = sorted({key for held in contributors.values() for key in held})
+    cut = {**index, "sources": {key: index["sources"][key] for key in used},
+           "tiles": {tile: index["tiles"][tile] for tile in keep}, "contributors": contributors,
+           "sha256": {tile: index["sha256"][tile] for tile in keep}}
+    (root / "index.json").write_text(json.dumps(cut, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+                                     encoding="utf-8")
+    return {"tiles": len(keep), "sources": used}
 
 
 if __name__ == "__main__":

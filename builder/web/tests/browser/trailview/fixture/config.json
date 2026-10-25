@@ -1,0 +1,22 @@
+{
+  "name": "TrailView fixture",
+  "bounds": [
+    8.37,
+    46.765,
+    8.46,
+    46.83
+  ],
+  "basemap": "https://tiles.test/basemap.json",
+  "places": "https://tiles.test/places.json",
+  "overlays": "https://tiles.test/overlays.json",
+  "terrain": "https://tiles.test/terrain/{z}/{x}/{y}.webp",
+  "attribution": "No map data",
+  "terrain_attribution": "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved",
+  "glyphs": "https://tiles.test/fonts/{fontstack}/{range}.pbf",
+  "sprites": "https://tiles.test/sprites",
+  "routing": "https://api.test/routing",
+  "search": "https://api.test/search",
+  "layers": {
+    "trailview-features": "https://tiles.test/trailview-features.json"
+  }
+}

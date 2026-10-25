@@ -1,0 +1,27 @@
+{
+ "name": "Faroe Islands",
+ "extends": "base",
+ "about": "No native trees: planted Sitka spruce, lodgepole pine, sycamore and rowan only in the few plantations and village gardens; outfield grass of mat-grass, bent and fescue with heather, crowberry and bilberry heath; deergrass and bog cotton in the blanket bog; woolly fringe-moss and dwarf willow on the plateaus; marsh marigold in the wet hayfields and thrift on the cliff tops; Faroese sheep on every slope; black-tarred and painted wooden houses with turf or iron roofs.",
+ "trees": {
+  "sitka-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 250], "weight": 4 },
+  "lodgepole-pine": { "model": "scots-pine", "latin": "Pinus contorta", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 250], "weight": 2 },
+  "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 150], "weight": 3 },
+  "rowan": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 200], "weight": 1 }
+ },
+ "ground": {
+  "mat-grass": { "on": ["grass"], "height": [0.15, 0.35], "share": 0.3 },
+  "heather": {},
+  "crowberry": { "on": ["shrub", "moss", "bare", "grass"], "share": 0.3 },
+  "bilberry": {},
+  "moor-grass": {},
+  "bog-cotton": {},
+  "woolly-fringe-moss": { "model": "heather", "latin": "Racomitrium lanuginosum", "on": ["moss", "bare"], "height": [0.05, 0.15], "share": 0.4 },
+  "dwarf-willow": { "model": "heather", "latin": "Salix herbacea", "on": ["moss", "bare"], "height": [0.02, 0.06], "share": 0.1 },
+  "marsh-marigold": { "model": "alpine-flowers", "latin": "Caltha palustris", "on": ["grass", "wetland"], "height": [0.15, 0.3], "share": 0.04, "clumped": true },
+  "thrift": { "model": "alpine-flowers", "latin": "Armeria maritima", "on": ["grass", "bare"], "height": [0.05, 0.2], "share": 0.03, "clumped": true }
+ },
+ "herds": {
+  "faroese-sheep": { "model": "sheep", "latin": "Ovis aries (Faroese)", "groups": 8, "size": [2, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath", "bog"] }
+ },
+ "style": "wood-cabin"
+}

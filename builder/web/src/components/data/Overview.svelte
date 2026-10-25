@@ -20,8 +20,9 @@
     const readers = $derived([...new Set(layers.flatMap((layer) => layer.readers))]);
     const stale = $derived(layers.filter((layer) => layer.state === "stale"));
     const detail = $derived(layers.find((layer) => layer.layer === picked));
-    // The layers that the run that holds the lock bakes now.
-    const baking = $derived(new Map(target?.lock?.progress.filter((at) => at.done < at.total).map((at) => [at.layer, at]) ?? []));
+    // The layers that the run that holds the lock bakes now; a run whose process died bakes nothing.
+    const live = $derived(target?.lock && !target.lock.died ? target.lock : null);
+    const baking = $derived(new Map(live?.progress.filter((at) => at.done < at.total).map((at) => [at.layer, at]) ?? []));
     const outlined = $derived(new Set(detail ? sourcesOf(layers, detail.layer) : []));
     const only = $derived(detail && target ? ["update", target.target, "--only", detail.layer, "--dry-run"] : []);
 

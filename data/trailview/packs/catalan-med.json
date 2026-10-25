@@ -1,0 +1,48 @@
+{
+ "name": "Northeast Spain and Southern France Mediterranean forests",
+ "extends": "base",
+ "about": "Holm oak above all, Aleppo pine on the coastal hills and downy oak inland; cork oak, maritime pine, sweet chestnut, strawberry tree and tree heath on the siliceous massifs, stone pine on the coast, black and Scots pine and beech on the high ranges, hop hornbeam behind Nice; kermes oak and holm oak scrub, lentisk, Phoenician and prickly juniper, box and Spanish broom in the garrigue and maquis, with rosemary, rockrose, lavender, asphodel and diss grass; olives, carobs and cypresses by the farms, ash and white poplar along the rivers, reeds in the Ebro delta and the Camargue; sheep and goats, horses and cattle on the Camargue marshes; low tile-roofed village houses. The orchards are olive groves.",
+ "trees": {
+  "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1200], "weight": 5 },
+  "aleppo-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 800], "weight": 4 },
+  "downy-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [100, 1300], "weight": 3 },
+  "cork-oak": { "model": "holm-oak", "latin": "Quercus suber", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 1 },
+  "stone-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "maritime-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 900], "weight": 1 },
+  "black-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [500, 1600], "weight": 1 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [700, 1900], "weight": 1 },
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [900, 1800], "weight": 1 },
+  "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1000], "weight": 1 },
+  "hop-hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1200], "weight": 0.5 },
+  "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "carob": { "model": "holm-oak", "latin": "Ceratonia siliqua", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 0.5 },
+  "italian-cypress": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 600], "weight": 0.5 },
+  "narrow-leaved-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 0.5 },
+  "white-poplar": { "model": "silver-birch", "latin": "Populus alba", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 0.5 },
+  "kermes-oak-shrub": { "model": "holm-oak", "latin": "Quercus coccifera", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 4 },
+  "holm-oak-shrub": { "model": "holm-oak", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1200], "weight": 3 },
+  "lentisk": { "model": "holm-oak", "latin": "Pistacia lentiscus", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 2 },
+  "strawberry-tree": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 1 },
+  "tree-heath": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 1 },
+  "box": { "model": "garrigue", "latin": "Buxus sempervirens", "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1600], "weight": 2 },
+  "phoenician-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
+  "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1200], "weight": 1 },
+  "spanish-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 1 }
+ },
+ "ground": {
+  "garrigue": {},
+  "rockrose": { "model": "garrigue", "latin": "Cistus salviifolius", "height": [0.3, 0.8] },
+  "lavender": { "model": "heather-bloom", "latin": "Lavandula angustifolia", "on": ["shrub", "bare"], "height": [0.3, 0.6], "share": 0.04, "clumped": true },
+  "branched-asphodel": { "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true },
+  "diss-grass": { "model": "esparto", "latin": "Ampelodesmos mauritanicus", "on": ["shrub", "bare"], "height": [1.0, 2.0], "share": 0.06, "clumped": true },
+  "common-reed": { "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true }
+ },
+ "herds": {
+  "sheep": { "groups": 2, "size": [20, 80], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "goat": { "groups": 1, "size": [5, 20], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
+  "horse": { "groups": 1, "size": [3, 12], "on": ["pasture", "grassland", "arable", "salt-marsh"] },
+  "cattle": { "model": "brown-cattle", "groups": 1, "size": [5, 20], "on": ["pasture", "grassland", "arable", "salt-marsh"] }
+ },
+ "orchard": "olive",
+ "style": "village-house"
+}

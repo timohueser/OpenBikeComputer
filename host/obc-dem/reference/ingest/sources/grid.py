@@ -38,8 +38,9 @@ class GridTiles(BulkSource):
 
     skip_missing = True
 
-    def __init__(self, *args, base, name, epsg, tile_km, origin_km=(0, 0), **kw):
+    def __init__(self, *args, base, name, epsg, tile_km, origin_km=(0, 0), members=None, **kw):
         super().__init__(*args, **kw)
+        self.members = members or self.members
         self.base, self.name, self.epsg, self.tile_km = base, name, epsg, tile_km
         self.origin = (origin_km[0] * 1000, origin_km[1] * 1000)
 

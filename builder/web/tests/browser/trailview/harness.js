@@ -1,0 +1,141 @@
+import { existsSync, openSync, readFileSync, readSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { extname, join, normalize } from 'node:path';
+import { chromium } from 'playwright';
+import { PMTiles } from 'pmtiles';
+
+/** WebGPU on the CPU: SwiftShader draws the same picture as a GPU, slowly. Its times say nothing about a GPU. */
+export const SWIFTSHADER = ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader'];
+/** A Chromium other than the one Playwright installed, such as /opt/pw-browsers/chromium. */
+export const EXECUTABLE = process.env.OBC_CHROMIUM || undefined;
+/**
+ * The browser of a script: with `gpu`, the machine's GPU in a window, else SwiftShader headless. With
+ * OBC_BROWSER_WS set, it connects to that Playwright browser server instead, so GPU runs reuse one
+ * window; closing it then only disconnects.
+ */
+export function launch(gpu) {
+    if (process.env.OBC_BROWSER_WS) return chromium.connect(process.env.OBC_BROWSER_WS);
+    // Chromium on Linux gives no WebGPU adapter without Vulkan.
+    const linux = process.platform === 'linux' ? ['--enable-unsafe-webgpu', '--enable-features=Vulkan'] : [];
+    return chromium.launch({ executablePath: EXECUTABLE, headless: !gpu, args: gpu ? ['--enable-webgpu-developer-features', ...linux] : SWIFTSHADER });
+}
+export const DIST = new URL('../../../dist/trailview/', import.meta.url).pathname;
+const FIXTURE = new URL('./fixture/terrain/', import.meta.url).pathname;
+const FEATURES = new URL('./fixture/features/', import.meta.url).pathname;
+const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.txt': 'text/plain', '.svg': 'image/svg+xml' };
+
+/**
+ * Answers the planner hosts of `fixture/config.json` in the page: the terrain tiles from the fixture,
+ * or from `tiles`, a `planner-dem` MBTiles, and 204 for an absent tile like the tile service. With
+ * `ground`, a folder of the TrailView bakes, it serves their TileJSON and tiles as the tile service
+ * does, and `trailview/rules.json`; `colour` names the folder of the colour variant in it. The feature
+ * tiles come from the fixture, or from `features`, a folder of `z/x/y.bin`. Every other public host is
+ * refused.
+ */
+export async function routeFixture(page, tiles, ground, colour = 'webp-12', features = FEATURES) {
+    const read = tiles?.endsWith('.mbtiles') ? await mbtiles(tiles) : (z, x, y) => {
+        const path = join(tiles ?? FIXTURE, `${z}/${x}/${y}.webp`);
+        return existsSync(path) ? readFileSync(path) : undefined;
+    };
+    const layers = ground ? groundLayers(ground, colour) : {};
+    const cors = { 'access-control-allow-origin': '*' };
+    await page.route(url => url.hostname !== '127.0.0.1', async route => {
+        const url = new URL(route.request().url());
+        if (url.hostname !== 'tiles.test') return route.abort();
+        if (url.pathname === '/trailview-features.json') {
+            const tilejson = { tilejson: '3.0.0', tiles: ['https://tiles.test/trailview-features/{z}/{x}/{y}.bin'], minzoom: 8, maxzoom: 13, bounds: [-180, -85, 180, 85], features_format: 2, extent: 16384 };
+            return route.fulfill({ body: JSON.stringify(tilejson), contentType: 'application/json', headers: cors });
+        }
+        const feature = /^\/trailview-features\/(\d+\/\d+\/\d+\.bin)$/.exec(url.pathname);
+        if (feature) {
+            const path = join(features, feature[1]);
+            if (!existsSync(path)) return route.fulfill({ status: 204, headers: cors });
+            return route.fulfill({ body: readFileSync(path), contentType: 'application/octet-stream', headers: cors });
+        }
+        const tile = /^\/terrain\/(\d+)\/(\d+)\/(\d+)\.webp$/.exec(url.pathname);
+        if (tile) {
+            const body = read(...tile.slice(1).map(Number));
+            if (!body) return route.fulfill({ status: 204, headers: cors });
+            return route.fulfill({ body, contentType: 'image/webp', headers: cors });
+        }
+        if (ground && url.pathname === '/trailview/rules.json') return route.fulfill({ body: readFileSync(join(ground, 'rules.json')), contentType: 'application/json', headers: cors });
+        const [, name, z, x, y] = /^\/([a-z0-9-]+)(?:\.json|\/(\d+)\/(\d+)\/(\d+))$/.exec(url.pathname) ?? [];
+        const archive = layers[name];
+        if (!archive) return route.abort();
+        if (z === undefined) {
+            const [header, metadata] = await Promise.all([archive.getHeader(), archive.getMetadata()]);
+            const json = { ...metadata, minzoom: header.minZoom, maxzoom: header.maxZoom, bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat], tiles: [`https://tiles.test/${name}/{z}/{x}/{y}`] };
+            return route.fulfill({ body: JSON.stringify(json), contentType: 'application/json', headers: cors });
+        }
+        const found = await archive.getZxy(Number(z), Number(x), Number(y));
+        if (!found) return route.fulfill({ status: 204, headers: cors });
+        return route.fulfill({ body: Buffer.from(found.data), contentType: 'application/octet-stream', headers: cors });
+    });
+}
+
+/** The archives of the TrailView bakes in a folder, by their names in the catalogue's `layers`. */
+function groundLayers(dir, colour) {
+    const files = {
+        'trailview-ground': 'ground.pmtiles', 'trailview-canopy': 'trailview-canopy.pmtiles',
+        ...Object.fromEntries(['q1', 'q2', 'q3', 'q4'].map(name => [`trailview-colour-${name}`, `colour/${colour}/${name}.pmtiles`])),
+        ...Object.fromEntries(Array.from({ length: 46 }, (_, band) => String(band).padStart(2, '0')).map(band => [`trailview-snow-${band}`, `snow-days/${band}.pmtiles`])),
+    };
+    return Object.fromEntries(Object.entries(files).filter(([, file]) => existsSync(join(dir, file))).map(([name, file]) => [name, new PMTiles(new FileSource(join(dir, file)))]));
+}
+
+/** A PMTiles source over a local file. */
+class FileSource {
+    constructor(path) { this.path = path; this.fd = openSync(path, 'r'); }
+    getKey() { return this.path; }
+    async getBytes(offset, length) {
+        const data = Buffer.alloc(length);
+        const read = readSync(this.fd, data, 0, length, offset);
+        return { data: data.buffer.slice(data.byteOffset, data.byteOffset + read) };
+    }
+}
+
+/** The tiles of an MBTiles file, which numbers rows from the south. */
+async function mbtiles(file) {
+    const { DatabaseSync } = await import('node:sqlite');
+    const query = new DatabaseSync(file, { readOnly: true }).prepare('SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?');
+    return (z, x, y) => {
+        const row = query.get(z, x, 2 ** z - 1 - y);
+        return row && Buffer.from(row.tile_data);
+    };
+}
+
+/** The pixels of a screenshot of the page that show the red clear colour of `debug=cracks`. */
+export async function redPixels(page) {
+    const png = (await page.screenshot()).toString('base64');
+    return page.evaluate(async png => {
+        const image = await createImageBitmap(await (await fetch(`data:image/png;base64,${png}`)).blob());
+        const context = new OffscreenCanvas(image.width, image.height).getContext('2d');
+        context.drawImage(image, 0, 0);
+        const rgba = context.getImageData(0, 0, image.width, image.height).data;
+        let red = 0;
+        for (let i = 0; i < rgba.length; i += 4) if (rgba[i] === 255 && rgba[i + 1] === 0 && rgba[i + 2] === 0) red++;
+        return red;
+    }, png);
+}
+
+/** Serves the built page on a free loopback port; resolves to its origin and a close function. */
+export async function serve(root = DIST) {
+    const server = createServer((request, response) => {
+        const path = join(root, normalize(new URL(request.url, 'http://x').pathname));
+        if (!path.startsWith(root) || !existsSync(path) || !extname(path)) return response.writeHead(404).end();
+        response.writeHead(200, { 'content-type': TYPES[extname(path)] ?? 'application/octet-stream' }).end(readFileSync(path));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    return { origin: `http://127.0.0.1:${server.address().port}`, close: () => server.close() };
+}
+
+/**
+ * Collects page errors and console errors, where the engine reports WebGPU validation errors. A
+ * failed resource is left out: the site's icon is absent here, and the engine counts failed tiles.
+ */
+export function errorsOf(page) {
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('console', message => message.type() === 'error' && !message.text().startsWith('Failed to load resource') && errors.push(message.text()));
+    return errors;
+}

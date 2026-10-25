@@ -1,0 +1,9 @@
+{
+ "name": "Eastern Highlands",
+ "extends": "caledon.highlands",
+ "where": [
+  [[-4.22, 57.65], [-4.22, 57.47], [-4.45, 57.30], [-4.68, 57.14], [-4.25, 56.86], [-3.88, 56.76], [-3.73, 56.70], [-3.58, 56.56], [-3.58, 56.40], [-2.0, 56.40], [-2.0, 57.65]]
+ ],
+ "about": "The Grampians south-east of the Great Glen and east of Drumochter: the Monadhliath, the Cairngorms, the Mounth and the Angus glens, Atholl, and the straths of the Spey, the Dee and the Don. They lie in the rain shadow of the west: a drier, brighter sky, heather moor burned in strips for grouse over most of the open hill, pink-grey granite and gravel on the high plateaux, and farmed straths with birch, pine, broom and gorse. It keeps the terrain rules and the look of the Highlands and draws the region's pack.",
+ "pack": "caledon"
+}

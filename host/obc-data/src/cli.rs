@@ -139,6 +139,11 @@ pub fn main(products: &[&dyn Product], prepared: &[&dyn Prepared], ui: Option<Ui
         Err(e) => e.exit(),
     };
     let json = cli.json;
+    // Not for the page: each command that it runs loads the file, so a credential set on the page
+    // serves the next command.
+    if let (false, Some(home)) = (matches!(cli.command, Some(Command::Ui)), std::env::var_os("HOME")) {
+        crate::credentials::load(Path::new(&home));
+    }
     match run(cli, products, prepared, ui) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => error.report(json),
@@ -387,6 +392,9 @@ struct SourceRow {
     targets: BTreeMap<String, SourceTarget>,
     /// The versions in the local store, the one fetched last first.
     snapshots: Vec<Stored>,
+    /// For a source fetched with params: the newest record in the local store of each set of
+    /// params, sorted by params.
+    requests: Vec<StoredRequest>,
     credential_missing: bool,
     /// Whether `source refresh` moves the source.
     refreshable: bool,
@@ -404,10 +412,15 @@ struct PreparedOn {
 }
 
 /// The [`PreparedOn`] of source `id` on each of `targets`.
-fn prepared_on(targets: &BTreeMap<String, crate::target::Target>, id: &str) -> BTreeMap<String, PreparedOn> {
+fn prepared_on(
+    store: &Store,
+    targets: &BTreeMap<String, crate::target::Target>,
+    id: &str,
+) -> BTreeMap<String, PreparedOn> {
     let read = |target| -> Result<PreparedOn, String> {
         let versions = crate::prepared::versions(target, id)?;
-        let lock = crate::lock::holder(&crate::prepared::folder(target, id))?.map(overview::Lock::of);
+        let lock =
+            crate::lock::holder(&crate::prepared::folder(target, id))?.map(|holder| overview::Lock::of(store, holder));
         Ok(PreparedOn { versions, lock, error: None })
     };
     let on = |target| read(target).unwrap_or_else(|e| PreparedOn { versions: Vec::new(), lock: None, error: Some(e) });
@@ -430,6 +443,41 @@ struct Stored {
     bytes: u64,
 }
 
+/// A fetch of a source with params, as the local store records it.
+#[derive(Serialize, JsonSchema)]
+struct StoredRequest {
+    params: Vec<(String, String)>,
+    version: String,
+    /// The size of its files.
+    bytes: u64,
+    /// When its newest file was retrieved, `YYYY-MM-DDTHH:MM:SSZ`; `null` for a fetch without
+    /// files.
+    fetched: Option<String>,
+}
+
+/// The newest record of each set of params of `source` whose version is in `snapshots`.
+fn stored_requests(store: &Store, source: &str, snapshots: &[Snapshot]) -> Result<Vec<StoredRequest>, String> {
+    let mut newest = BTreeMap::<Vec<(String, String)>, StoredRequest>::new();
+    for record in store.requests_of(source)? {
+        let Some(snapshot) = snapshots.iter().find(|snapshot| snapshot.version == record.version) else {
+            continue;
+        };
+        let files: Vec<&FileRecord> = snapshot.files.iter().filter(|file| record.files.contains(&file.name)).collect();
+        let request = StoredRequest {
+            bytes: files.iter().map(|file| file.size).sum(),
+            fetched: files.iter().map(|file| file.retrieved.clone()).max(),
+            version: record.version,
+            params: record.params,
+        };
+        let key = crate::store::sorted(&request.params);
+        let newer = |kept: &StoredRequest| (&request.fetched, &request.version) > (&kept.fetched, &kept.version);
+        if newest.get(&key).is_none_or(newer) {
+            newest.insert(key, request);
+        }
+    }
+    Ok(newest.into_values().collect())
+}
+
 fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> {
     let (store, http) = (Store::open()?, Http::new());
     let mut sorted = registry(root)?.sources;
@@ -449,16 +497,20 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
     let mut rows = Vec::new();
     for source in sorted {
         let mut targets = BTreeMap::new();
-        for (name, release) in &served {
+        // A target without a release reads nothing yet, by the policies of `data/sources.toml`.
+        for name in all.keys() {
+            let release = served.iter().find(|(served, _)| served == name).map(|(_, release)| release);
+            let settings = release.map(|release| release.settings.clone()).unwrap_or_default();
             let mut policy = vec![source.clone()];
-            release.settings.policies(&mut policy).map_err(|e| Code::InvalidData.error(e))?;
-            let versions = release.versions();
+            settings.policies(&mut policy).map_err(|e| Code::InvalidData.error(e))?;
+            let versions = release.map(Release::versions).unwrap_or_default();
             let keys = versions.keys().filter(|(id, _)| *id == source.id).cloned().collect();
             let requests = freshness::requests(&store, &http, &policy[0], &keys, &versions, check_now);
             let state = requests.iter().map(|request| request.state).min().unwrap_or(State::Unused);
             targets.insert(name.clone(), SourceTarget { refresh: policy[0].refresh, state, requests });
         }
         let mut snapshots = store.snapshots(&source.id)?;
+        let requests = stored_requests(&store, &source.id, &snapshots)?;
         snapshots.sort_by_cached_key(|s| std::cmp::Reverse(s.files.iter().map(|f| f.retrieved.clone()).max()));
         let snapshots = snapshots
             .into_iter()
@@ -466,7 +518,7 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             .collect();
         let credential_missing = source.credential.as_ref().is_some_and(|credential| !credential.present());
         let prepared = match source.fetch.kind {
-            crate::sources::FetchKind::Prepared => prepared_on(&all, &source.id),
+            crate::sources::FetchKind::Prepared => prepared_on(&store, &all, &source.id),
             _ => BTreeMap::new(),
         };
         let refreshable = source_cli::moves(&source);
@@ -475,6 +527,7 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             source,
             targets,
             snapshots,
+            requests,
             credential_missing,
             refreshable,
             prepared,
@@ -483,7 +536,7 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
     if json {
         return print_json(&Sources { sources: rows });
     }
-    let names: Vec<&str> = served.iter().map(|(name, _)| name.as_str()).collect();
+    let names: Vec<&str> = all.keys().map(String::as_str).collect();
     let mut table = vec![[
         vec!["SOURCE".to_string(), "LICENCE".into(), "COPY".into()],
         names.iter().map(|n| n.to_uppercase()).collect(),
@@ -642,9 +695,60 @@ fn row_text(row: &[String], widths: &[usize]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::store::tests::Scratch;
+
+    /// The functions of the Rust steps of the tests of the commands.
+    pub(crate) const FUNCTIONS: [&crate::engine::Function; 5] = [
+        &update_cli::tests::WAIT_FOR_GATE,
+        &update_cli::tests::COPY_EARTH,
+        &update_cli::tests::SPLIT_LINES,
+        &update_cli::tests::COPY_LEAF,
+        &prepare_cli::tests::COPY,
+    ];
+
+    #[test]
+    fn a_source_lists_the_newest_fetch_of_each_area_with_its_version_size_and_day() {
+        let dir = Scratch::new("stored-requests");
+        let store = Store::at(&dir.0);
+        let fetch = |version: &str, area: &str, size, retrieved: &str| {
+            let name = format!("{area}.poly");
+            let file = FileRecord {
+                name: name.clone(),
+                url: format!("https://download.geofabrik.de/{name}"),
+                size,
+                sha256: "aa".into(),
+                retrieved: retrieved.into(),
+            };
+            let mut snapshot = store.snapshot("poly", version).unwrap().unwrap_or(Snapshot {
+                source: "poly".into(),
+                version: version.into(),
+                files: Vec::new(),
+            });
+            snapshot.files.push(file);
+            store.put_snapshot(&snapshot).unwrap();
+            let params = vec![("area".to_string(), area.to_string())];
+            store
+                .put_requested("poly", &crate::store::Requested { version: version.into(), params, files: vec![name] })
+                .unwrap();
+        };
+        fetch("2026-10-01", "europe/germany/hessen", 300, "2026-10-01T08:00:00Z");
+        fetch("2026-10-01", "europe/germany/bayern", 500, "2026-10-01T09:00:00Z");
+        fetch("2026-10-15", "europe/germany/bayern", 700, "2026-10-15T09:00:00Z");
+        let requests = stored_requests(&store, "poly", &store.snapshots("poly").unwrap()).unwrap();
+        let listed: Vec<_> = requests
+            .iter()
+            .map(|r| (r.params[0].1.as_str(), r.version.as_str(), r.bytes, r.fetched.as_deref().unwrap()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("europe/germany/bayern", "2026-10-15", 700, "2026-10-15T09:00:00Z"),
+                ("europe/germany/hessen", "2026-10-01", 300, "2026-10-01T08:00:00Z"),
+            ]
+        );
+    }
 
     #[test]
     fn a_prepared_source_names_its_versions_and_lock_on_each_target_or_why_they_cannot_be_read() {
@@ -656,13 +760,14 @@ mod tests {
         let lock = r#"{"state": "held", "machine": "bake", "run": "r1", "review": null, "phase": "build", "heartbeat": "2026-09-03T00:00:00Z"}"#;
         std::fs::write(folder.join("lock.json"), lock).unwrap();
         let targets = BTreeMap::from([("prod".to_string(), crate::target::Target::Dir(dir.0.clone()))]);
-        let on = prepared_on(&targets, "wiki");
+        let store = Store::at(dir.0.join("store"));
+        let on = prepared_on(&store, &targets, "wiki");
         let lock = on["prod"].lock.as_ref().unwrap();
         assert_eq!((on["prod"].versions[0].version.as_str(), lock.holder.machine.as_str()), ("2026-09-01", "bake"));
         assert!(lock.stale);
 
         std::fs::write(folder.join("versions.json"), "[").unwrap();
-        let on = prepared_on(&targets, "wiki");
+        let on = prepared_on(&store, &targets, "wiki");
         assert!(on["prod"].error.as_ref().unwrap().contains("versions.json"), "{:?}", on["prod"].error);
     }
 }

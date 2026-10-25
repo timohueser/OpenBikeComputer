@@ -125,22 +125,21 @@ jobs:
         with:
           version: &python-uv-version "0.8.17"
       - name: Install Python test reporter
-        run: uv sync --locked --group dev --group planner-snow --group planner-sun
+        run: uv sync --locked --group dev --group planner-snow --group planner-sun --group trailview-roads
       - name: Test plan drift
         run: uv run --locked --group dev python tools/test_plan.py check
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
           just-version: "1.57.0"
       - name: Prepare native area-union tool
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends osmium-tool
-          osmium --version
+        uses: ./.github/actions/apt-install
+        with:
+          packages: osmium-tool
       - name: Repository tool unit tests
         id: python-repository-tools
         run: |
           rm -rf .artifacts/python/repository-tools
-          uv run --locked --group dev --group planner-snow --group planner-sun python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
+          uv run --locked --group dev --group planner-snow --group planner-sun --group trailview-roads python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
       - name: Upload repository Python test results
         if: ${{ !cancelled() && (steps.python-repository-tools.outcome == 'success' || steps.python-repository-tools.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -1017,6 +1016,21 @@ jobs:
           npm run test:components -- --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-builder-junit.xml"
       - name: production builds (dev + web + desktop hosts)
         run: npm run build:all
+      # naga is the WGSL front end of Firefox; Chrome's Tint compiles the same files in the TrailView smoke.
+      - name: Cache the WGSL validator
+        id: naga
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'web.trailview-wgsl')
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/naga
+          key: naga-cli-30.0.1-${{ runner.os }}
+      - name: Install the WGSL validator
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'web.trailview-wgsl') && steps.naga.outputs.cache-hit != 'true'
+        working-directory: ${{ runner.temp }}
+        run: cargo install naga-cli --version 30.0.1 --locked
+      - name: TrailView WGSL validation
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'web.trailview-wgsl')
+        run: npm run check:wgsl
       - name: Upload builder test results
         if: ${{ !cancelled() && (steps.builder-vitest.outcome == 'success' || steps.builder-vitest.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -1074,6 +1088,9 @@ jobs:
         run: npm run test:planner --prefix builder/web/tests/browser
       - name: Operator page at phone width
         run: npm run test:data --prefix builder/web/tests/browser
+      - name: TrailView smoke on SwiftShader
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'web.trailview-smoke')
+        run: npm run test:trailview --prefix builder/web/tests/browser -- --grep-invert @gpu
       - name: Upload builder browser evidence
         if: ${{ !cancelled() && (steps.browser-journey.outcome == 'success' || steps.browser-journey.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -1154,10 +1171,9 @@ jobs:
       # why Tauri was chosen over Electron (#906) — but Linux wants WebKitGTK.
       - name: Install the Linux webview deps
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev \
-            libjavascriptcoregtk-4.1-dev libgtk-3-dev librsvg2-dev
+        uses: ./.github/actions/apt-install
+        with:
+          packages: libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev librsvg2-dev
       # The bundle the shell embeds, built once on Linux by `desktop-frontend` and
       # unpacked here. It is byte-identical on all three runners — a Vite build of the
       # same sources — so building it per-platform was three runs of `npm ci` and
@@ -1222,53 +1238,6 @@ jobs:
           cargo build --release --locked --target x86_64-apple-darwin
           file target/x86_64-apple-darwin/release/obc-desktop
 
-  # Launch the existing Linux release artifact with its embedded frontend.
-  desktop-launch:
-    needs: [selection, desktop]
-    if: contains(fromJSON(needs.selection.outputs.jobs), 'desktop-launch')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_sha || github.sha }}
-          persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: obc-desktop-linux-x86_64
-          path: builder/desktop/target/release
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          version: *python-uv-version
-      - name: Install Linux launch dependencies
-        run: |
-          sudo apt-get update
-          webkit_version=$(apt-cache policy libwebkit2gtk-4.1-0 | awk '/Candidate:/ {print $2}')
-          sudo apt-get install -y "libwebkit2gtk-4.1-0=$webkit_version" "webkit2gtk-driver=$webkit_version" xvfb imagemagick dbus-daemon
-          uv sync --locked --group desktop-e2e
-          cargo install tauri-driver --version 2.0.6 --locked
-          chmod +x builder/desktop/target/release/obc-desktop
-          dpkg-query -W libwebkit2gtk-4.1-0 webkit2gtk-driver xvfb
-      - name: Launch the release frontend and select a catalog region
-        id: launch
-        env:
-          OBC_DESKTOP_EVIDENCE: ${{ runner.temp }}/desktop-launch
-        run: xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python builder/desktop/e2e/launch.py
-      - name: Upload Linux launch evidence
-        if: ${{ !cancelled() && (steps.launch.outcome == 'success' || steps.launch.outcome == 'failure') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-launch-linux-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/desktop-launch
-          if-no-files-found: error
-          retention-days: 7
-
   planner-search:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'planner-search')
@@ -1330,7 +1299,7 @@ jobs:
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, desktop-frontend, desktop, desktop-launch, verification, planner-search]
+    needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, desktop-frontend, desktop, verification, planner-search]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

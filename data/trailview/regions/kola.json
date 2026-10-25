@@ -1,0 +1,8 @@
+{
+ "name": "Kola Peninsula tundra",
+ "ecoregion": 774,
+ "extends": "world",
+ "about": "Rounded granite hills under crowberry heath and pale reindeer lichen, with a lake in every hollow; low mountain birch and willow only in sheltered valleys, a bare rocky Barents coast with sandy bays, and the dark, flat-topped Lovozero massif with snow in its cirques; boulder and gravel tracks, grey wooden fishing villages and Soviet panel blocks in Russia, painted wooden houses in Varanger. No split: haze, weather and light change gradually from the Barents coast inland, and neither the Lovozero massif nor the coast strip needs its own look; WorldCover's tree pixels and the tree bands keep the birch in the valleys, windswept_m keeps the headlands bare, Sentinel-2 colour with the NDVI ramps tells lichen heath, crowberry heath and mire apart, the dark syenite of Lovozero and the grey granite and slate of the coast read as one grey rock, and culture goes by country. Snow lies in the Lovozero cirques into August: that is the snowline that falls with latitude, which fjell already asked for, not a split.",
+ "leaf": "broadleaved",
+ "pack": "kola"
+}

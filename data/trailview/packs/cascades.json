@@ -1,0 +1,11 @@
+{
+ "name": "Cascades",
+ "extends": "base",
+ "trees": {
+  "douglas-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1300], "weight": 4 },
+  "western-hemlock": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1800], "weight": 4 },
+  "western-red-cedar": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1100], "weight": 2 }
+ },
+ "ground": {"fern": {}, "huckleberry": {}},
+ "style": "wood-cabin"
+}

@@ -117,18 +117,21 @@ class BakeTest(unittest.TestCase):
         bounds = snow.geo.tile_bounds(11, 1079, 724)
         west, north = 9.6, 46.6
         grid = snow.Grid("EPSG:4326", Affine.translation(west, north) @ Affine.scale(0.001, -0.001), (300, 300))
-        chunks = []
-
-        def source(chunk):
-            chunks.append(chunk)
-            return np.full((2, 2, 300, 300), 60, np.uint8), grid
 
         with tempfile.TemporaryDirectory() as directory:
+            # A chunk bakes in a worker process, so each read leaves a line in a file.
+            reads = Path(directory) / "reads"
+
+            def source(chunk):
+                with reads.open("a") as file:
+                    file.write(f"{chunk}\n")
+                return np.full((2, 2, 300, 300), 60, np.uint8), grid
+
             output = Path(directory) / "snow.pmtiles"
             snow.bake([("copernicus-hr-wsi", source)], 2016, 2, bounds, output, "HR-WSI")
             with output.open("rb") as file:
                 stored = {z for (z, _, _), _ in all_tiles(MmapSource(file))}
-        self.assertEqual(len(chunks), 1)
+            self.assertEqual(len(reads.read_text().splitlines()), 1)
         self.assertEqual(max(stored), 12)
 
     def test_a_pixel_takes_hr_wsi_where_it_has_data_and_modis_elsewhere(self):

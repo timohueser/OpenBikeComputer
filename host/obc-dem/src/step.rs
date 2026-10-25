@@ -9,6 +9,7 @@ use obc_data::engine::Request;
 use serde_json::Value;
 
 use crate::bake::{published_cell, write_cell_file};
+use crate::fetch::TileId;
 use crate::geotiff::{DemMosaic, DemTile};
 use crate::reference::ReferenceArchive;
 
@@ -87,13 +88,23 @@ pub fn terrain(request: &Request) -> Result<(), String> {
 }
 
 /// The terrain of the planner maps. The option `bounds` is `[west, south, east, north]` in
-/// degrees, and `attribution` the credit of GLO-30. The layer is `terrain.mbtiles`: the bytes that
-/// `planner-dem` writes from the same GLO-30 tiles without a reference archive.
+/// degrees, and `attribution` the credit of GLO-30. The layer input, when the request has one, is
+/// the mean archive of the national models below `reference/`. The layer is `terrain.mbtiles`: the
+/// bytes that `planner-dem` writes from the same GLO-30 tiles and archive.
 #[cfg(feature = "terrarium")]
 pub fn planner_terrain(request: &Request) -> Result<(), String> {
     let bounds = bounds(&request.options)?;
     let credit = request.options["attribution"].as_str().ok_or("option `attribution` is not a string")?;
-    let mut terrain = crate::planner::Terrain::open(&glo30(request, bounds), credit, None, bounds)?;
+    let reference = match request.layers.values().collect::<Vec<_>>()[..] {
+        [] => None,
+        [files] => {
+            let view = request.output.with_file_name("view");
+            obc_data::engine::view(files, &view)?;
+            Some(view.join("reference"))
+        }
+        _ => return Err("the request reads more than one layer: the planner has one reference archive".into()),
+    };
+    let mut terrain = crate::planner::Terrain::open(&glo30(request, bounds), credit, reference.as_deref(), bounds)?;
     let text = bounds.map(|value| value.to_string()).join(",");
     crate::terrarium::write(&mut terrain, bounds, &text, &request.output.join("terrain.mbtiles"))
 }
@@ -107,10 +118,10 @@ pub fn bounds(options: &Value) -> Result<[f64; 4], String> {
 }
 
 /// The GLO-30 files of the request, in the order of [`crate::planner::tiles`] of `bounds`.
-pub fn glo30(request: &Request, bounds: [f64; 4]) -> Vec<PathBuf> {
+pub fn glo30(request: &Request, bounds: [f64; 4]) -> Vec<(TileId, PathBuf)> {
     let files = request.snapshots.get(GLO30).into_iter().flatten();
     let files: BTreeMap<&str, &PathBuf> =
         files.map(|(name, path)| (name.rsplit('/').next().unwrap_or(name), path)).collect();
-    let tiles = crate::planner::tiles(bounds);
-    tiles.iter().filter_map(|tile| files.get(tile.file_name().as_str()).map(|path| path.to_path_buf())).collect()
+    let tiles = crate::planner::tiles(bounds).into_iter();
+    tiles.filter_map(|tile| files.get(tile.file_name().as_str()).map(|path| (tile, path.to_path_buf()))).collect()
 }
