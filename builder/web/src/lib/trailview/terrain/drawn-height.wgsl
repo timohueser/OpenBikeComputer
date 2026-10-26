@@ -1,5 +1,5 @@
 // The texels of the drawn surface: the LOD map gives the page of each level, and the pages give the
-// heights and the normals; drawn-mesh.wgsl builds the mesh and drawnHeight(s) from them. Include it
+// heights, and the normals from them; drawn-mesh.wgsl builds the mesh and drawnHeight(s) from them. Include it
 // with `// #include drawn-height.wgsl`.
 //
 // LOD space s is metres east and north of the eye along the Mercator axes, at the scale of the eye's
@@ -33,10 +33,8 @@ struct Surface {
 // 8 × 8 tiles of a layer.
 @group(1) @binding(2) var heights: texture_2d_array<u32>;
 @group(1) @binding(3) var<storage, read> scales: array<vec2f>;
-// Per texel: x east and y north of the unit normal.
-@group(1) @binding(4) var normals: texture_2d_array<f32>;
 // For textureGather only: it reads the four texels of a 2 × 2 quad in one access, unfiltered.
-@group(1) @binding(5) var quad_sampler: sampler;
+@group(1) @binding(4) var quad_sampler: sampler;
 
 const MAP: i32 = 32;
 // Texels across a layer: 8 pages of 256.
@@ -218,21 +216,49 @@ fn weights(s: vec2f, a: vec2f, b: vec2f, c: vec2f) -> vec3f {
     return vec3f(1.0 - wb - wc, wb, wc);
 }
 
-// The normal of a texel, with z 1; z −1 where no page holds the texel or its height is unknown.
-fn texel_normal(level: u32, t: vec2i) -> vec3f {
-    let e = entry(level, t) & 0xffffu;
-    if (e == 0u) {
-        return vec3f(0.0, 0.0, -1.0);
+// The heights of the 4 × 4 texels from t − 1 to t + 2 but its corners, a row per y from north: four
+// gathers where they lie in one page, else 12 loads. NONE where no page holds a texel or its height is unknown.
+fn heights_about(level: u32, page: u32, t: vec2i) -> array<vec4f, 4> {
+    var rows: array<vec4f, 4>;
+    let local = t & vec2i(255);
+    if (all(local >= vec2i(1)) && all(local < vec2i(254))) {
+        let layer = page >> 6u;
+        let a = textureGather(0, heights, quad_sampler, quad_at(page, t - 1), layer);
+        let b = textureGather(0, heights, quad_sampler, quad_at(page, t + vec2i(1, -1)), layer);
+        let c = textureGather(0, heights, quad_sampler, quad_at(page, t + vec2i(-1, 1)), layer);
+        let d = textureGather(0, heights, quad_sampler, quad_at(page, t + 1), layer);
+        let scale = scales[page];
+        return array<vec4f, 4>(decode4(scale, vec4u(a.wz, b.wz)), decode4(scale, vec4u(a.xy, b.xy)), decode4(scale, vec4u(c.wz, d.wz)), decode4(scale, vec4u(c.xy, d.xy)));
     }
-    let page = e - 1u;
-    return marked(textureLoad(normals, in_layer(page, t), page >> 6u, 0).xy);
+    for (var j = 0; j < 4; j++) {
+        for (var i = 0; i < 4; i++) {
+            if ((i == 0 || i == 3) && (j == 0 || j == 3)) {
+                continue;
+            }
+            rows[j][i] = texel_height(level, t + vec2i(i - 1, j - 1), false);
+        }
+    }
+    return rows;
 }
 
-// A normal with z 1, or z −1 for the code of an unknown height.
-fn marked(n: vec2f) -> vec3f {
-    return vec3f(n, select(1.0, -1.0, n.x < -0.99 && n.y < -0.99));
+// Four raw texels of a page with its offset and scale, as `decode`.
+fn decode4(scale: vec2f, raw: vec4u) -> vec4f {
+    return select(scale.x + vec4f(raw) * scale.y, vec4f(NONE), raw == vec4u(UNKNOWN16));
 }
 
+// The x east and y north of the unit normal of a texel, from the heights east − west and north − south of it.
+fn slope_normal(east: f32, north: f32, metres: f32) -> vec2f {
+    return normalize(vec3f(-east, -north, 2.0 * metres)).xy;
+}
+
+// Known heights h, else the guesses.
+fn or_guess(h: vec2f, guess: vec2f) -> vec2f {
+    return select(h, guess, h < vec2f(-1e29));
+}
+
+// The bilinear normal of the finest level up to `top` that knows the 4 heights of the quad of a point,
+// as bilinear_rise: each texel's normal from its four neighbours. An unknown neighbour outside the quad
+// continues the quad's slope, so the difference across that texel is one-sided.
 fn level_normal(s: vec2f, top: u32) -> vec2f {
     for (var level = top; level >= COARSEST; level--) {
         let t = texel_of(s, level);
@@ -240,27 +266,26 @@ fn level_normal(s: vec2f, top: u32) -> vec2f {
         if (e == 0u) {
             continue;
         }
-        var a: vec3f;
-        var b: vec3f;
-        var c: vec3f;
-        var d: vec3f;
-        if (in_one_page(t.whole)) {
-            let page = e - 1u;
-            let x = textureGather(0, normals, quad_sampler, quad_at(page, t.whole), page >> 6u);
-            let y = textureGather(1, normals, quad_sampler, quad_at(page, t.whole), page >> 6u);
-            a = marked(vec2f(x.w, y.w));
-            b = marked(vec2f(x.z, y.z));
-            c = marked(vec2f(x.x, y.x));
-            d = marked(vec2f(x.y, y.y));
-        } else {
-            a = texel_normal(level, t.whole);
-            b = texel_normal(level, t.whole + vec2i(1, 0));
-            c = texel_normal(level, t.whole + vec2i(0, 1));
-            d = texel_normal(level, t.whole + vec2i(1, 1));
+        let h = heights_about(level, e - 1u, t.whole);
+        // a b / c d: row 1 is the quad's north row.
+        let q = vec4f(h[1].yz, h[2].yz);
+        if (!known(min(min(q.x, q.y), min(q.z, q.w)))) {
+            continue;
         }
-        if (min(min(a.z, b.z), min(c.z, d.z)) > 0.0) {
-            return mix(mix(a.xy, b.xy, t.part.x), mix(c.xy, d.xy, t.part.x), t.part.y);
-        }
+        // The neighbours of a c west and of b d east, of a b north and of c d south.
+        let west = or_guess(vec2f(h[1].x, h[2].x), 2.0 * q.xz - q.yw);
+        let east = or_guess(vec2f(h[1].w, h[2].w), 2.0 * q.yw - q.xz);
+        let north = or_guess(h[0].yz, 2.0 * q.xy - q.zw);
+        let south = or_guess(h[3].yz, 2.0 * q.zw - q.xy);
+        let metres = f32(1 << (22u - level)) * surface.unit;
+        // East − west and north − south of the quad's texels.
+        let dx = vec4f(q.y - west.x, east.x - q.x, q.w - west.y, east.y - q.z);
+        let dy = vec4f(north - q.zw, q.xy - south);
+        let a = slope_normal(dx.x, dy.x, metres);
+        let b = slope_normal(dx.y, dy.y, metres);
+        let c = slope_normal(dx.z, dy.z, metres);
+        let d = slope_normal(dx.w, dy.w, metres);
+        return mix(mix(a, b, t.part.x), mix(c, d, t.part.x), t.part.y);
     }
     return vec2f(0.0);
 }

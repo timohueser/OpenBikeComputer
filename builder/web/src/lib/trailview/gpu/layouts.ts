@@ -29,7 +29,7 @@ export function layouts({ device }: Gpu): Layouts {
     return {
         surface: layout([
             [all, { buffer: { type: 'uniform' } }], [all, { buffer: read }], [all, array('uint')],
-            [all, { buffer: read }], [all, array('float')], [all, { sampler: { type: 'non-filtering' } }],
+            [all, { buffer: read }], [all, { sampler: { type: 'non-filtering' } }],
         ]),
         features: layout([[all, { buffer: read }], [all, array('float')], [all, array('uint')]]),
         // The compute writes the cache: its bind group does not hold it for sampling. The producers of
@@ -40,6 +40,8 @@ export function layouts({ device }: Gpu): Layouts {
             // The object shadows; a small instance reads them in its vertices (instances/draw.wgsl).
             { binding: 8, visibility: visible, texture: { sampleType: 'depth', viewDimension: '2d-array' } }, { binding: 9, visibility: visible, sampler: { type: 'comparison' } },
             { binding: 10, visibility: visible, buffer: { type: 'uniform' } },
+            // The relief: the texel's own openness, and the coarse normal and openness.
+            { binding: 11, visibility: GPUShaderStage.FRAGMENT | compute, ...array('float') }, { binding: 12, visibility: GPUShaderStage.FRAGMENT | compute, ...array('float') },
         ] }),
         groundCompute: [
             device.createBindGroupLayout({ entries: [
@@ -48,6 +50,8 @@ export function layouts({ device }: Gpu): Layouts {
                 { binding: 2, visibility: compute, ...array('float') },
                 { binding: 3, visibility: compute, ...array('float') },
                 { binding: 4, visibility: compute, storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } },
+                { binding: 5, visibility: compute, buffer: { type: 'storage' } },
+                { binding: 6, visibility: compute, storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } },
             ] }),
             device.createBindGroupLayout({ entries: inputs }),
         ],

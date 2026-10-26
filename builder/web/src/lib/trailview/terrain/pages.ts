@@ -9,12 +9,10 @@ import { COARSEST, distances, FINEST, key, MAP, size, type Node } from './lod';
 const LOADS = 6;
 /** The level of the pages that fill the holes: one small tile of zoom 6 spans a view, so the view's own coarse tiles can come after the near field. */
 const FILL = 7;
-/** Pages that arrive or are synthesized per frame at most; each gets its normals in the same frame. */
+/** Pages that arrive or are synthesized per frame at most. */
 export const ARRIVALS = 16;
 /** Words of stamp data per frame at most: the nodes of the frame's stamps. */
 export const STAMP_WORDS = 2 ** 20;
-/** Pages whose normals are computed again per frame at most, after a neighbour arrived. */
-const REFRESHES = 8;
 /** Encoded tile bodies kept, so a new device gets the pages again without a request. */
 const BODIES = 64 * 2 ** 20;
 /** The modes of a stamp job, as in stamp.wgsl. */
@@ -66,15 +64,14 @@ export interface Stamp {
     mode: number;
 }
 
-/** The GPU work of one frame, in order: uploads and syntheses, the stamps, then the normals, then the LOD map. */
+/** The GPU work of one frame, in order: uploads and syntheses, the stamps, then the LOD map. */
 export interface Work {
     uploads: { page: Page; data: PageData }[];
     /** Each with the level of its stored ancestor; the synthesis of page k goes to `out` page k. */
     syntheses: { page: Page; stored: number }[];
     /** The stamps of the syntheses, then those of stored pages, whose heights go to `out` after the syntheses (`copies`). */
     stamps: Stamp[];
-    normals: Page[];
-    /** The pages of `normals` that draw new heights. */
+    /** The pages that draw new heights. */
     fresh: Page[];
     /** The LOD map: MAP × MAP entries per level from 0 to FINEST, when it changed. */
     map?: Uint32Array<ArrayBuffer>;
@@ -125,7 +122,6 @@ export class Pages {
     private arrivals: { node: Node; data: PageData }[] = [];
     /** Tiles whose decoded pages wait in `arrivals`, by name. */
     private readonly queued = new Map<string, number>();
-    private readonly refresh = new Set<Page>();
     /** The tiles that the frame's pages wait for, by name, with those pages: the frame starts the most needed of them. */
     private readonly wishes = new Map<string, { tile: Node; pages: Map<string, Node> }>();
     /** The pages that the frame draws or synthesizes from, by name: an arrival among them evicts none of them. */
@@ -145,7 +141,7 @@ export class Pages {
     }
 
     get idle(): boolean {
-        return this.missing === 0 && this.loads === 0 && this.arrivals.length === 0 && this.refresh.size === 0;
+        return this.missing === 0 && this.loads === 0 && this.arrivals.length === 0;
     }
 
     /**
@@ -188,7 +184,7 @@ export class Pages {
         this.shortage = 0;
         this.missing = this.nearMissing = this.eyeMissing = 0;
         this.wanted = { stored: 0, synth: 0 };
-        const work: Work = { uploads: [], syntheses: [], stamps: [], normals: [], fresh: [], origins: this.window(anchor) };
+        const work: Work = { uploads: [], syntheses: [], stamps: [], fresh: [], origins: this.window(anchor) };
         // A node that nothing draws yet also wants its page of level FILL, which is a hole until it comes.
         const fills = new Map<string, Node>();
         for (const node of wanted) {
@@ -223,21 +219,11 @@ export class Pages {
         fresh.push(...work.syntheses.map(({ page }) => page));
         for (const page of fresh) page.ready = true;
         for (const page of this.pages.values()) {
-            // The fresh pages of a frame take its normals jobs: at most ARRIVALS of them, and the refreshes.
-            if (fresh.length < ARRIVALS && page.kind === 'stored' && page.ready && page.drawn === undefined && page.used === this.frame && this.resolve(page, work)) fresh.push(page);
+            if (page.kind === 'stored' && page.ready && page.drawn === undefined && page.used === this.frame && this.resolve(page, work)) fresh.push(page);
         }
         // The masks of drawn pages wait for the copies, which a stored page needs to draw at all.
         this.lateMasks(holders, work);
-        for (const page of fresh) {
-            this.dirty = true;
-            work.normals.push(page);
-            this.refresh.delete(page);
-            for (const neighbour of this.neighbours(page.node)) if (neighbour.drawn !== undefined) this.refresh.add(neighbour);
-        }
-        for (const page of [...this.refresh].slice(0, REFRESHES)) {
-            this.refresh.delete(page);
-            if (page.drawn !== undefined && !work.normals.includes(page)) work.normals.push(page);
-        }
+        if (fresh.length) this.dirty = true;
         if (this.dirty) work.map = this.map();
         if (this.dirty || this.masksDirty) work.masks = this.masks();
         this.dirty = this.masksDirty = false;
@@ -250,7 +236,6 @@ export class Pages {
         this.maskFree = range(0, this.maskCapacity);
         this.arrivals = [];
         this.queued.clear();
-        this.refresh.clear();
         this.free.stored = range(0, this.capacity.stored);
         this.free.synth = range(this.capacity.stored, this.capacity.stored + this.capacity.synth);
         for (const tile of this.tiles.values()) if (tile.state === 'decoding') tile.state = 'done';
@@ -421,10 +406,6 @@ export class Pages {
         return out;
     }
 
-    private neighbours(node: Node): Page[] {
-        return this.around(node).flatMap(near => this.pages.get(key(near)) ?? []).filter(page => page.node !== node);
-    }
-
     /** A stored page that the frame needs: the frame loads its tile if it is among the most needed. */
     private load(node: Node): void {
         this.needs.add(key(node));
@@ -528,7 +509,6 @@ export class Pages {
         for (const page of this.pages.values()) if (page.kind === kind && page.used < this.frame && (!oldest || page.used < oldest.used)) oldest = page;
         if (!oldest) return undefined;
         this.pages.delete(key(oldest.node));
-        this.refresh.delete(oldest);
         if (oldest.ready) this.dirty = true;
         if (oldest.copy !== undefined) this.free.stored.push(oldest.copy);
         if (oldest.mask !== undefined) this.maskFree.push(oldest.mask);
