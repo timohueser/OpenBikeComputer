@@ -24,6 +24,7 @@ is the palette of the `world` region.
 | Path | Holds |
 | --- | --- |
 | `engine.ts` | The frame loop, the view, `waitForIdle()`, the recovery from a lost device |
+| `pacer.ts` | The frame rate, `FRAME_RATE`, and the display frames that draw. A frame that a caller awaits (`nextFrame()`, `waitForIdle()`) draws at the next display frame: flights and shots run at the display's rate |
 | `frame/` | The local metric frame, the walk and fly camera, the input |
 | `gpu/` | The device and its pools, the GPU time per pass, the WGSL `// #include` |
 | `stream/` | The stored terrain and its decode worker, the feature codec, the ground layers and the worker that builds their pages |
@@ -41,7 +42,7 @@ is the palette of the `world` region.
 | `rules/` | The regions of `rules.json`, resolved |
 | `labs.ts` | The variant registry |
 | `view.ts` | The view in the address |
-| `hud.ts` | The HUD |
+| `hud.ts` | The HUD. A read of `stats()` turns the GPU times on for a second: the HUD reads it while it shows |
 
 ## The address
 
