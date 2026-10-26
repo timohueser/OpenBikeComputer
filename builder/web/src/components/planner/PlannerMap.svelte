@@ -35,7 +35,7 @@
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
-        signedRoutes = null, signedHovered = null, planMuted = false, compare = null, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
+        signedRoutes = null, signedHovered = null, planMuted = false, compare = null, area = null, onPick = null, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         /** The Routes view: while it is open, a click on one of its routes selects that route. */
@@ -46,6 +46,10 @@
         /** A previewed route option and its letter. It draws in ink over the plan, which draws as a dotted line without day
          * colours; a letter marks each line where they part. */
         compare?: { line: Coordinate[]; letter: string } | null;
+        /** An area to outline, west, south, east, north; the map outside it dims. */
+        area?: [number, number, number, number] | null;
+        /** While set, a map click goes to it alone, with the click's viewport point: no place, line, overlay or route takes the click. */
+        onPick?: ((coordinate: Coordinate, point: [number, number]) => void) | null;
         /** After each map move and tile load. */
         onIdle?: () => void;
         onSignedRoute?: (id: number) => void;
@@ -137,6 +141,8 @@
     let signedLayer: SignedRoutesLayer | undefined;
     let signedHover: number | null = null;
     let overSigned = $state(false);
+    let areaBox = $state<{ left: number; top: number; width: number; height: number } | null>(null);
+    const picking = $derived(pickMode || !!onPick);
 
     export function centerOn(coordinate: Coordinate) {
         wholeRoute = false;
@@ -145,7 +151,7 @@
 
     function inspectOverlay(event: maplibregl.MapMouseEvent) {
         const selected = overlayLayer?.hit(event);
-        if (!selected || drawing || pickMode) return;
+        if (!selected || drawing || picking) return;
         event.preventDefault();
         cancelGesture();
         consumedPress = true;
@@ -189,6 +195,27 @@
         fittedInitialRoute = true;
         wholeRoute = false;
         fitBounds(region, 14, motionDuration(), true);
+    }
+
+    /** The coordinate under a viewport point, or null outside the map. */
+    export function coordinateAtScreen(x: number, y: number): Coordinate | null {
+        const box = container.getBoundingClientRect();
+        if (!map || x < box.left || x > box.right || y < box.top || y > box.bottom) return null;
+        const { lng, lat } = map.unproject([x - box.left, y - box.top]);
+        return [lng, lat];
+    }
+
+    /** The coordinate at the middle of the map and its viewport point. */
+    export function viewCenter(): { coordinate: Coordinate; point: [number, number] } | null {
+        if (!map) return null;
+        const box = container.getBoundingClientRect(), { lng, lat } = map.getCenter();
+        return { coordinate: [lng, lat], point: [box.left + box.width / 2, box.top + box.height / 2] };
+    }
+
+    function placeArea() {
+        if (!map || !area) { areaBox = null; return; }
+        const { x: left, y: top } = map.project([area[0], area[3]]), { x: right, y: bottom } = map.project([area[2], area[1]]);
+        areaBox = { left, top, width: right - left, height: bottom - top };
     }
 
     export function zoomBy(delta: number) {
@@ -379,7 +406,7 @@
         if (drawing) {
             sketch = [coordinate];
             sketchEnd = event.point;
-        } else if (!pickMode && (hover = lineHit(event.point))) {
+        } else if (!picking && (hover = lineHit(event.point))) {
             // Stops the map from panning: this press may drag a new point out of the line.
             event.preventDefault();
             press = { hit: hover, start: event.point, moved: false };
@@ -406,8 +433,8 @@
             overSigned = signed !== null;
             if (signed !== signedHover) onSignedHover?.(signedHover = signed);
             overPoi = onMap && !!placeAt(event.point);
-            hover = onMap && !overPoi && !dragging && !draggingPin && !drawing && !pickMode ? lineHit(event.point) : null;
-            overOverlay = overlayLayer?.hover(onMap && !overPoi && !hover && !dragging && !draggingPin && !drawing && !pickMode ? event : undefined) ?? false;
+            hover = onMap && !overPoi && !dragging && !draggingPin && !drawing && !picking ? lineHit(event.point) : null;
+            overOverlay = overlayLayer?.hover(onMap && !overPoi && !hover && !dragging && !draggingPin && !drawing && !picking ? event : undefined) ?? false;
         }
     }
 
@@ -491,6 +518,7 @@
             map.on("click", (event) => {
                 const target = event.originalEvent.target;
                 if (consumedPress || drawing || (target instanceof Node && popupContent?.contains(target))) return;
+                if (onPick) { onPick([event.lngLat.lng, event.lngLat.lat], [event.originalEvent.clientX, event.originalEvent.clientY]); return; }
                 const signed = signedRoutes ? signedLayer?.hit(event) : null;
                 if (signed !== null && signed !== undefined) { onSignedRoute?.(signed); return; }
                 const place = placeAt(event.point);
@@ -519,7 +547,7 @@
             map.on("movestart", (event) => { if (event.originalEvent) wholeRoute = false; overOverlay = false; overlayLayer?.hover(); });
             map.on("moveend", reportView);
             map.on("idle", () => onIdle?.());
-            map.on("move", () => fitCallout(false));
+            map.on("move", () => { fitCallout(false); placeArea(); });
         } catch (error) {
             failure = "The map could not start. This view needs a browser with WebGL enabled.";
             errorDetail = error instanceof Error ? error.message : String(error);
@@ -620,8 +648,9 @@
         if (map && ready) (map.getSource("planner-highlights") as GeoJSONSource | undefined)?.setData(data);
     });
     $effect(() => {
-        if (pickMode) hover = null;
+        if (picking) hover = null;
     });
+    $effect(() => { void area; untrack(placeArea); });
     $effect(() => {
         if (!map) return;
         if (hoverProgress === null || !coordinates.length) { hoverDot.remove(); return; }
@@ -646,7 +675,7 @@
         setSketch([]);
     });
     $effect(() => {
-        if (map) map.getCanvas().style.cursor = dragging || draggingPin ? "grabbing" : drawing || pickMode ? "crosshair" : hover || overPoi || overOverlay || overSigned ? "pointer" : "grab";
+        if (map) map.getCanvas().style.cursor = dragging || draggingPin ? "grabbing" : drawing || picking ? "crosshair" : hover || overPoi || overOverlay || overSigned ? "pointer" : "grab";
     });
 
     function markerIcon(path: string) {
@@ -786,6 +815,11 @@
     {#if overlayStatus && !failure && !overlaySelection}
         <div class="overlay-status" role="status">{overlayStatus}{#if overlayRetry}<button onclick={() => overlayLayer?.retry()}>Retry</button>{/if}</div>
     {/if}
+    {#if areaBox}
+        <div class="area-frame" aria-hidden="true">
+            <div class="area" style:left={`${areaBox.left}px`} style:top={`${areaBox.top}px`} style:width={`${areaBox.width}px`} style:height={`${areaBox.height}px`}></div>
+        </div>
+    {/if}
     {#if !ready && !failure}<div class="map-status" role="status">Loading map…</div>{/if}
     {#if failure}
         <div class="map-status" role="status">
@@ -808,6 +842,10 @@
     .compare-key path { stroke-width: 4; stroke-linecap: round; }
     .compare-key .option { stroke: var(--ink); }
     .compare-key .current { stroke: var(--route); stroke-width: 3; stroke-dasharray: 0 6; }
+    .area-frame { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+    /* The spread of the shadow dims the map outside the area; the frame clips it to the map. */
+    .area { position: absolute; outline: 2px solid var(--forest); box-shadow: 0 0 0 100vmax rgb(28 27 20 / 0.3); }
+    :global([data-theme="dark"]) .area { box-shadow: 0 0 0 100vmax rgb(0 0 0 / 0.4); }
     .map-status { position: absolute; bottom: 32px; left: 12px; right: 12px; padding: 10px 12px; background: var(--panel, white); color: var(--ink, #1c1b14); border: 1px solid var(--line-strong, #bcb9aa); font-size: 13px; }
     .map-status button { color: inherit; background: transparent; border: 0; text-decoration: underline; cursor: pointer; font: inherit; }
     :global(.planner-map-pin) { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 2px solid var(--panel, #fff); border-radius: 50%; background: #a4501e; color: #fff; font: 700 13px var(--sans, sans-serif); cursor: pointer; box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); }
