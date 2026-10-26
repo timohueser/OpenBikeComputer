@@ -207,8 +207,10 @@ zoom. Each other asset, TileJSON and device catalog has its pointer at
 `public/LOGICAL_PATH.json`. So the count of public keys grows with the area of a
 release by one index per block, not by one pointer per cell of each layer.
 The tile service resolves a pack through its pointer. A tile without a pack is
-absent. The tile service also reads format 2, which has a pointer at
-`public/LOGICAL_PATH.json` for each file, for a rollback release.
+absent. A block index holds at most 64 KiB, which the tile service reads. The
+tile service and TrailView also read format 2, which has a pointer at
+`public/LOGICAL_PATH.json` for each file, for a rollback release. An update of
+prod refuses while the tile service does not read the grid format of the release.
 No regional map archive is required beside the pool. Grid assets use the tile
 service origin.
 

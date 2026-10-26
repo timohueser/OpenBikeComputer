@@ -4558,7 +4558,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "services": {
-          "description": "For `prod`: why its follower or its tiles Worker cannot serve the release, each with its\nfix. The update does not refuse: its run would wait at router-ready.",
+          "description": "For `prod`: why its follower or its tiles Worker cannot serve the release, each with its\nfix. The update waits at router-ready for a follower, and refuses a tiles Worker that cannot\nread the grid of the release.",
           "items": {
             "type": "string"
           },
