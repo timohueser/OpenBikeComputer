@@ -30,6 +30,8 @@ import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'casters', 'shadow', 'far-casters', 'far-shadow', 'mips', 'resolve'];
 /** Metres to a view that is at another place. */
 const NEW_PLACE = 1000;
+/** A step of the footing this small no longer moves the view about the eye: `eyeReady` counts it as settled. */
+const SETTLED_M = 0.02;
 /** The longest that the other loads wait for the tiles under the eye: a tile that hangs must not hold the view back until its request times out. */
 const EYE_WAIT_MS = 1000;
 /** The clear colour of the crack test: any red pixel is a hole in the terrain. */
@@ -321,7 +323,8 @@ export class TrailView {
     }
 
     private eyeFinal(): boolean {
-        return this.drawing && this.terrain.eye && this.settled() && this.groundLook.eyeIdle;
+        // The last centimetres of a step down fade for half a second; nobody sees them.
+        return this.drawing && this.terrain.eye && this.settled(SETTLED_M) && this.groundLook.eyeIdle;
     }
 
     private near(): boolean {
@@ -433,9 +436,10 @@ export class TrailView {
     }
 
     /** Whether the eye stands on the last probe, with no step left to fade out. */
-    private settled(): boolean {
+    /** Whether the eye stands on the last probe, with at most `within` metres of a step still fading. */
+    private settled(within = 0): boolean {
         const probe = this.terrain.ground;
-        return !probe || Number.isNaN(probe.height) || (probe.frame === this.footing?.probe.frame && this.footing.step === 0);
+        return !probe || Number.isNaN(probe.height) || (probe.frame === this.footing?.probe.frame && Math.abs(this.footing.step) <= within);
     }
 
     /** The eye; a walking eye waits for a known ground. */
