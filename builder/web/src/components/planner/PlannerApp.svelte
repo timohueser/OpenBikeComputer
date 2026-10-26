@@ -22,7 +22,6 @@
     import LayerStrip from './LayerStrip.svelte';
     import TrailViewControl from './TrailViewControl.svelte';
     import TrailViewWindow from './TrailViewWindow.svelte';
-    import { inBounds } from '../../lib/planner/trailview';
     import { dataLayers } from '../../lib/planner/layers/registry';
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
@@ -613,12 +612,17 @@
         commit({ ...trip, ...change }, description);
     }
 
-    function clearSelection() {
+    /** Clears the selection and keeps the map mode: a search answer can arrive while the rider draws or picks. */
+    function deselect() {
         hoveredId = null;
         selectedId = null;
         pending = null;
         pendingSource = null;
         spot = null;
+    }
+
+    function clearSelection() {
+        deselect();
         mapMode = null;
     }
 
@@ -1107,43 +1111,26 @@
             if (!selectedId && !mapMode && focusedDay) showAllDays();
             clearSelection();
         }
-        if (event.key === 'Enter' && mapMode?.kind === 'look' && !(event.target as HTMLElement)?.closest('button, a')) {
-            event.preventDefault();
-            trailViewAtCentre();
-        }
     }
 
-    // TrailView opens at a point where the rider drops the binoculars or clicks the map, and grows from that point of the viewport.
+    // TrailView opens at a point where the rider drops the binoculars or picks on the map, and grows from that point of the viewport.
+    // The map keeps its view inside the release bounds, so every point on it is in the TrailView area.
     const hasTrailView = 'gpu' in navigator && !!config.trailview_rules;
     let trailView = $state<{ at: Coordinate; origin: [number, number] } | null>(null);
-    let trailViewDragging = $state(false);
     let trailViewControl = $state<TrailViewControl>();
-    let outsideNote = $state(false);
-    let outsideTimer: ReturnType<typeof setTimeout> | undefined;
 
-    /** Opens TrailView at a point in its area; a point outside the area shows a note. */
-    function openTrailView(at: Coordinate, origin: [number, number]): boolean {
-        if (!inBounds(config.bounds, at)) {
-            outsideNote = true;
-            clearTimeout(outsideTimer);
-            outsideTimer = setTimeout(() => outsideNote = false, 2500);
-            return false;
-        }
+    function openTrailView(at: Coordinate, origin: [number, number]) {
         if (mapMode?.kind === 'look') mapMode = null;
         trailView = { at, origin };
-        return true;
     }
 
-    function trailViewAtCentre() {
-        const centre = map?.viewCenter();
-        if (centre) openTrailView(centre.coordinate, centre.point);
-    }
-
-    /** The binoculars without a drag start a pick on the map; in a pick they open the view at the map's centre. */
+    /** The binoculars without a drag turn the pick on the map on and off. */
     function binoculars() {
-        if (mapMode?.kind === 'look') return trailViewAtCentre();
-        clearSelection();
-        mapMode = { kind: 'look' };
+        if (mapMode?.kind === 'look') mapMode = null;
+        else {
+            clearSelection();
+            mapMode = { kind: 'look' };
+        }
     }
 
 </script>
@@ -1180,7 +1167,7 @@
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
-            <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} /></div>
+            <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} /></div>
             {#if fromRoutes && hasEndpoints && finder.start && !routesOpen && !searching}
                 <button type="button" class="back-to-routes" onclick={() => openRoutes()}><Icon name="back" size={15} />Find another route</button>
             {/if}
@@ -1279,7 +1266,7 @@
                 <PlannerMap
                     bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={routesOpen ? [] : mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
                     {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} compare={comparison && { line: comparison.option.line.coordinates, letter: comparison.letter }} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
-                    area={trailViewDragging || mapMode?.kind === 'look' ? config.bounds : null} onPick={mapMode?.kind === 'look' ? openTrailView : null}
+                    onPick={mapMode?.kind === 'look' ? openTrailView : null}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => session.previewMove(id, coordinate)} onDayEndDrag={moveDayEnd}
@@ -1329,8 +1316,10 @@
                     </div>
                     <LayerMenu {theme} {dataLayers} bind:shownLayer={shownLayerId} walking={trip.bike === 'hiking'} bind:autoCenter bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
                     {#if hasTrailView}
-                        <TrailViewControl bind:this={trailViewControl} active={mapMode?.kind === 'look'} onActivate={binoculars} onDrag={dragging => trailViewDragging = dragging}
-                            onDrop={(x, y) => { const at = map?.coordinateAtScreen(x, y); return !!at && openTrailView(at, [x, y]); }} />
+                        <div class="control-group">
+                            <TrailViewControl bind:this={trailViewControl} active={mapMode?.kind === 'look'} onActivate={binoculars}
+                                onDrop={(x, y) => { const at = map?.coordinateAtScreen(x, y); if (at) openTrailView(at, [x, y]); return !!at; }} />
+                        </div>
                     {/if}
                 </div>
                 {#if dataLayer && (layerYear || dataLayer.time)}
@@ -1339,11 +1328,11 @@
                 {#if dropping}
                     <div class="drop-frame"><strong>Drop to open as a plan</strong><span>One file is a route. Several files are a trip.</span></div>
                 {/if}
-                {#if mapMode || outsideNote}
+                {#if mapMode}
                     <div class="mode-chip" role="status">
-                        {outsideNote ? 'TrailView covers the marked area only.' : mapMode?.kind === 'night' ? `Click the route or the map to end day ${dayLabels[night] ?? night} here · Esc`
-                            : mapMode?.kind === 'draw' ? 'Drawing the leg · Esc cancels' : 'Click the map to open TrailView · Esc'}
-                        {#if mapMode}<button type="button" onclick={() => mapMode = null}>Cancel</button>{/if}
+                        {mapMode.kind === 'night' ? `Click the route or the map to end day ${dayLabels[night] ?? night} here · Esc`
+                            : mapMode.kind === 'draw' ? 'Drawing the leg · Esc cancels' : 'Click the map to open TrailView · Enter opens the map centre · Esc'}
+                        <button type="button" onclick={() => mapMode = null}>Cancel</button>
                     </div>
                 {/if}
             </div>
@@ -1620,21 +1609,24 @@
         background: var(--panel);
         box-shadow: var(--planner-shadow);
     }
-    .control-group button {
+    /* Global, so that the button of a control component takes the same look; the global button rule gives the cursor. */
+    .control-group :global(button) {
         display: grid;
         place-items: center;
         width: 36px;
         height: 36px;
+        padding: 0;
+        border: 0;
+        background: none;
         color: var(--ink);
-        cursor: pointer;
     }
-    .control-group button:hover {
+    .control-group :global(button:hover) {
         color: var(--link);
     }
     .control-group button + button {
         border-top: 1px solid var(--line);
     }
-    .control-group .chosen {
+    .control-group :global(.chosen) {
         color: var(--link);
     }
     .mode-chip {

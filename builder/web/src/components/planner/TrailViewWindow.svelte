@@ -3,7 +3,8 @@
     import Icon from './PlannerIcon.svelte';
     import { config } from '../../lib/planner/map-data';
     import type { Coordinate } from '../../lib/planner/geo';
-    import { loadTrailView, viewAt } from '../../lib/planner/trailview';
+    import { FIRST_HEADING, loadTrailView } from '../../lib/planner/trailview';
+    import { defaultView } from '../../lib/trailview/view';
 
     let { at, origin, onClose }: {
         at: Coordinate;
@@ -32,7 +33,7 @@
         (async () => {
             const chunk = await loadTrailView();
             if (abort.signal.aborted) return;
-            const engine = await chunk.startTrailView(canvas, config, viewAt(at));
+            const engine = await chunk.startTrailView(canvas, config, { ...defaultView([at[0], at[1], at[0], at[1]]), heading: FIRST_HEADING });
             if (!engine) {
                 failure = 'TrailView needs WebGPU. Open the planner in a current version of Chrome, Edge or Safari.';
                 return;
