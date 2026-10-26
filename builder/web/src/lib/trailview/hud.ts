@@ -52,6 +52,8 @@ export function hud(element: HTMLElement, engine: TrailView, labs: Labs): void {
         if (event.key.toLowerCase() === 'h' && !event.ctrlKey && !event.metaKey) element.hidden = !element.hidden;
     });
     const update = () => {
+        // A HUD that H or a style hides reads no stats.
+        if (!element.checkVisibility()) return;
         const stats = engine.stats(), view = engine.view, passes = Object.entries(stats.gpu);
         debug.value = view.debug;
         if (document.activeElement !== date && resting === undefined) [date.valueAsNumber, dateLabel.textContent] = [dayOfYear(view.date), view.date];
