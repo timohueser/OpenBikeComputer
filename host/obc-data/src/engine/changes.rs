@@ -118,6 +118,7 @@ pub fn update(
                 true => Some(Build {
                     again: named.contains(name),
                     key: if waits { None } else { walked.key.clone() },
+                    built: if waits { None } else { walked.built.clone() },
                     ..build_of(walked, &costs)
                 }),
                 false => build(walked, &costs),

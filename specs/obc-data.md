@@ -593,7 +593,7 @@ fetch. An `id` names a group only in the plan that it comes from.
 | `cause` | `null`. For an update: `{"kind": "stale", "cause"}` with the [cause of the layer](#state-of-a-layer), `{"kind": "off"}` for a layer that no step makes now, or `{"kind": "named"}` for `--only` |
 | `layers`, `drops` | `[]`. For an update: the steps that the group changes, as `builds` gives them, and the steps of the serving release that the new release no longer has |
 | `fetches` | One per version and `params`: `source`, `version`, `params` (`[[NAME, VALUE], …]`), `files` and `bytes`. `files` are the names of the files that the store lacks. `[]` means that the store cannot name them, and the fetch gets every file that it gives |
-| `builds` | In dependency order: `step`, `recipe` (see [Keys](#keys)), `key` (`null` while the step waits for a fetch or another build), `estimate`, and `again`: whether the step builds also when the store has its key |
+| `builds` | In dependency order: `step`, `recipe` (see [Keys](#keys)), `key` (`null` while the step waits for a fetch or another build), `estimate`, `again`: whether the step builds also when the store has its key, and `built`: when the store has the layer of its key, the time of that build, else `null` |
 
 The estimate of a build is `wall_ms`, `bytes_out`, `client_bytes` (the size of the files that a
 client reads) and `peak_rss_bytes` of the newest receipt, by `built`, of the same step with the same
@@ -1317,12 +1317,13 @@ the store only, and it never writes to the target.
   end unchanged (see [Runs](#runs)), so the text gives the bakes and the leaves as upper bounds ("at
   most").
 - `sources`: each fetch that a baked step reads at another version than the serving release.
-- `kept`, `fetches`, `downloads` and `bakes`: the outputs that the release keeps by reference, and
-  what this machine fetches upstream, downloads from the target and bakes. A step whose output is
-  in the store already does not bake.
+- `kept`, `fetches`, `downloads`, `bakes` and `reused`: the outputs that the release keeps by
+  reference, what this machine fetches upstream and downloads from the target, the steps that it
+  builds, and the steps whose output the store has from an earlier build, each with `built`. A
+  reused step does not build; its client files go to the target.
 - `cost`: each bake has the estimate of the newest receipt in the store of the step with the same
   options, else of the `cost` of the step in the serving release with the same options, else of
-  the newest receipt of the step, else of that `cost`. `upload_bytes` is the size of the files of the bakes that a client reads, and of the copies
+  the newest receipt of the step, else of that `cost`. `upload_bytes` is the size of the files of the bakes and of the reused steps that a client reads, and of the copies
   under `sources/` that the serving release does not name, as the store records them. `unknown`
   lists each bake without an estimate, with a guess or without a peak, and each fetch whose size
   is not known, also of a new copy that the store lacks yet.
@@ -1816,7 +1817,8 @@ services|tiles` reads the values on standard input, as
 
 `obc data` gives the machine that runs it and, for each target, the release that it serves, the
 machine that made it and when, its rollback, for a `dir` target how [serve](#serve) gives it to
-each app, the run that holds its lock or why `lock.json` cannot be read, the region, the state of
+each app, the run that holds its lock or why `lock.json` cannot be read, the region and the parts
+that are on, the state of
 each layer against the steps of now, the blocked steps, the notes of the layers as in the
 [review](#review), the pointers that drift, an error that
 stopped the judgement, and the command to run next. While a run holds the lock of a `dir` target,
@@ -3862,6 +3864,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "Whether the step builds also when the store has the layer of its key.",
           "type": "boolean"
         },
+        "built": {
+          "description": "When the store has the layer of `key`: the time of its build, `YYYY-MM-DDTHH:MM:SSZ`. The\nupdate reuses that layer unless `again`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "estimate": {
           "anyOf": [
             {
@@ -3892,7 +3901,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "recipe",
         "key",
         "estimate",
-        "again"
+        "again",
+        "built"
       ],
       "type": "object"
     },
@@ -4485,7 +4495,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "bakes": {
-          "description": "The steps that this machine bakes. A step whose output is in the store already is not here.",
+          "description": "The steps that this machine builds. A step whose output is in the store already is not here.",
           "items": {
             "$ref": "#/$defs/PlanBuild"
           },
@@ -4546,6 +4556,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "reused": {
+          "description": "The steps whose output the store has from an earlier build: the update uses it and does not\nbuild it. Each has `built`.",
+          "items": {
+            "$ref": "#/$defs/PlanBuild"
+          },
+          "type": "array"
+        },
         "services": {
           "description": "For `prod`: why its follower or its tiles Worker cannot serve the release, each with its\nfix. The update does not refuse: its run would wait at router-ready.",
           "items": {
@@ -4577,6 +4594,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "kept",
         "fetches",
         "bakes",
+        "reused",
         "downloads",
         "cost",
         "machine",
@@ -4610,7 +4628,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "What the figures lack."
         },
         "upload_bytes": {
-          "description": "What goes to the target: the files of the bakes that a client reads, and the copies under\n`sources/` that the serving release does not name.",
+          "description": "What goes to the target: the files of the bakes and of the reused steps that a client reads,\nand the copies under `sources/` that the serving release does not name.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -5902,6 +5920,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "parts": {
+          "description": "The parts that the serving release has on, as `--add` names them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "region": {
           "description": "The region of the serving release.",
           "type": [
@@ -5952,6 +5977,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "lock",
         "lock_error",
         "region",
+        "parts",
         "area",
         "sources",
         "layers",

@@ -1607,6 +1607,35 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn a_review_reuses_the_steps_that_the_store_built_for_another_target_and_uploads_them() {
+        let fixture = fixture("update-reuse");
+        fixture.with_sources(&[]);
+        update(&fixture, &Target::Dir(fixture.scratch.0.join("local")), region).unwrap();
+        let other = Target::Dir(fixture.scratch.0.join("other"));
+        let (root, products): (_, [&dyn Product; 2]) = (fixture.root(), [&Pipeline, &Counter]);
+        let machine = MachineCheck::default();
+        let products = (&products[..], &[][..]);
+        let prepared = prepare(
+            &root,
+            &fixture.store,
+            &Http::new(),
+            ("other", &other),
+            products,
+            region,
+            &[],
+            Some(&machine),
+            None,
+        );
+        let review = prepared.unwrap().review;
+        let mut reused: Vec<&str> = review.reused.iter().map(|build| build.step.as_str()).collect();
+        reused.sort();
+        assert_eq!((review.bakes.len(), reused), (0, vec!["test/count", "test/join", "test/upper"]));
+        assert!(review.reused.iter().all(|build| build.built.is_some() && build.estimate.is_some()));
+        let client: u64 = review.reused.iter().filter_map(|build| build.estimate).map(|e| e.client_bytes).sum();
+        assert_eq!(review.cost.upload_bytes, client);
+    }
+
+    #[test]
     fn a_format_change_starts_only_with_its_acknowledgement() {
         let fixture = fixture("update-format");
         fixture.with_sources(&[]);

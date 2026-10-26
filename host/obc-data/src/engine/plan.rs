@@ -82,6 +82,9 @@ pub struct Build {
     pub estimate: Option<Estimate>,
     /// Whether the step builds also when the store has the layer of its key.
     pub again: bool,
+    /// When the store has the layer of `key`: the time of its build, `YYYY-MM-DDTHH:MM:SSZ`. The
+    /// update reuses that layer unless `again`.
+    pub built: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -114,6 +117,8 @@ pub(super) struct Walked<'a> {
     pub bytes_in: Option<u64>,
     /// The output of `key`: kept by reference, or else the store's layer with all of its objects.
     pub stored: Option<Output>,
+    /// The time of the build of the store's layer; `None` for a kept step.
+    pub built: Option<String>,
 }
 
 /// Each step in dependency order, with its key and its output. A kept step has the output of the
@@ -125,16 +130,17 @@ pub(super) fn walk<'a>(store: &Store, steps: &'a [Step], kept: &Kept) -> Result<
         if let Some(output) = kept.get(&step.name) {
             reused.insert(&step.name, output.clone());
             let (key, stored) = (Some(output.key.clone()), Some(output.clone()));
-            walked.push(Walked { step, fetches: Vec::new(), key, bytes_in: None, stored });
+            walked.push(Walked { step, fetches: Vec::new(), key, bytes_in: None, stored, built: None });
             continue;
         }
         let named = |e: String| format!("step `{}`: {e}", step.name);
         let fetches = missing(store, step)?;
-        let (mut key, mut bytes_in, mut stored) = (None, None, None);
+        let (mut key, mut bytes_in, mut stored, mut built) = (None, None, None, None);
         if fetches.is_empty() && step.reads().all(|name| reused.contains_key(name)) {
             let (receipt, _) = prepare(store, step, &reused).map_err(named)?;
             stored = reusable(store, &receipt.key)?.map(|mut stored| {
                 stored.inputs = receipt.inputs;
+                built = Some(stored.built.clone());
                 Output::new(&stored, step)
             });
             if let Some(stored) = &stored {
@@ -142,7 +148,7 @@ pub(super) fn walk<'a>(store: &Store, steps: &'a [Step], kept: &Kept) -> Result<
             }
             (key, bytes_in) = (Some(receipt.key), Some(receipt.bytes_in));
         }
-        walked.push(Walked { step, fetches, key, bytes_in, stored });
+        walked.push(Walked { step, fetches, key, bytes_in, stored, built });
     }
     Ok(walked)
 }
@@ -160,6 +166,7 @@ pub(super) fn build_of(walked: &Walked, costs: &Costs) -> Build {
         key: walked.key.clone(),
         estimate: estimate(costs, walked.step, walked.bytes_in),
         again: false,
+        built: walked.built.clone(),
     }
 }
 

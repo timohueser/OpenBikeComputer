@@ -148,7 +148,7 @@
         ],
         "bakes": [
             {
-                "step": "device/map/9-268-178",
+                "step": "device/map/0037-0032",
                 "recipe": "device-map",
                 "key": "a100000000000000000000000000000000000000000000000000000000000000",
                 "estimate": {
@@ -158,10 +158,21 @@
                     "peak_rss_bytes": 2147483648,
                     "guess": false
                 },
-                "again": false
+                "again": false,
+                "built": null
             },
             {
-                "step": "device/map/9-268-179",
+                "step": "device/catalog",
+                "recipe": "device-catalog",
+                "key": null,
+                "estimate": null,
+                "again": false,
+                "built": null
+            }
+        ],
+        "reused": [
+            {
+                "step": "device/map/0037-0033",
                 "recipe": "device-map",
                 "key": "a200000000000000000000000000000000000000000000000000000000000000",
                 "estimate": {
@@ -171,14 +182,8 @@
                     "peak_rss_bytes": 2013265920,
                     "guess": false
                 },
-                "again": false
-            },
-            {
-                "step": "device/catalog",
-                "recipe": "device-catalog",
-                "key": null,
-                "estimate": null,
-                "again": false
+                "again": false,
+                "built": "2026-10-09T14:02:11Z"
             }
         ],
         "downloads": {
@@ -186,7 +191,7 @@
             "bytes": 734003200
         },
         "cost": {
-            "wall_ms": 610000,
+            "wall_ms": 312000,
             "peak_rss_bytes": 2147483648,
             "store_bytes": 1258291200,
             "upload_bytes": 102760448,
