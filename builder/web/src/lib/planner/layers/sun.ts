@@ -60,10 +60,14 @@ export function solarPosition([lon, lat]: Coordinate, terms: ReturnType<typeof s
     return { altitude, bearing: Math.atan2(Math.sin(hour), Math.cos(hour) * Math.sin(phi) - Math.tan(dec) * Math.cos(phi)) + Math.PI };
 }
 
+// Making a formatter is slow, and daylight() resolves 288 instants.
+const formatters = new Map<string, Intl.DateTimeFormat>();
+
 /** Resolve a wall clock in the region's IANA zone, independent of the browser's zone. DST gaps are rejected. */
 export function instantAt(date: string, minute: number, timezone: string): number {
     const target = Date.parse(`${date}T00:00:00Z`) + minute * 60000;
-    const formatter = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+    let formatter = formatters.get(timezone);
+    if (!formatter) formatters.set(timezone, formatter = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }));
     const local = (ms: number) => {
         const parts = Object.fromEntries(formatter.formatToParts(ms).map(p => [p.type, p.value]));
         return Date.parse(`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:00Z`);

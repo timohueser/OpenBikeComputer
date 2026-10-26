@@ -26,7 +26,7 @@
     const lon = $derived(Math.round(view.lon * 100) / 100), lat = $derived(Math.round(view.lat * 100) / 100);
     const day = $derived(new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' }));
     const span = $derived(daylight([lon, lat], date, TIME_ZONE));
-    const sun = $derived(span ? `Sunrise ${clock(span[0])} · Sunset ${clock(span[1])}` : 'No sunrise');
+    const sun = $derived(!span ? 'No sunrise' : span[0] === 0 && span[1] === 1440 ? 'Sun all day' : `Sunrise ${clock(span[0])} · Sunset ${clock(span[1])}`);
     // The track is night before sunrise and after sunset, day between, with 30 minutes of twilight at each edge.
     const track = $derived.by(() => {
         if (!span) return 'var(--water)';
