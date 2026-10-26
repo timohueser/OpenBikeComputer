@@ -7,11 +7,12 @@ use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 
+use crate::geometry::{bounds, contains, key, Boxes};
 use crate::kinds::{kind_of, Entry};
 use crate::osm::{self, Selected, LANDUSE, LIFT_REACH_M};
 use crate::pmtiles::{self, Header};
 use crate::roads::{self, Classes, River};
-use crate::structures::{self, class_of, is_bridge, is_track, road_half};
+use crate::structures::{self, class_of, is_bridge, is_track, leading_number, road_half};
 use crate::tiles::{simplified, Geometry, Tiles, BUFFER_M, EXTENT, FORMAT, MAX_ZOOM, TOLERANCE};
 use crate::water::{self, Kind, Level};
 use crate::{lifts, rails, world, Part, Tags, Terrain};
@@ -29,8 +30,6 @@ const ROADS: [&str; 6] = ["main-road", "road", "path", "railway", "tunnel", "gal
 pub struct Options {
     pub kinds: Vec<Entry>,
     pub bounds: [f64; 4],
-    /// The bounds as the options give them, for the metadata.
-    pub bounds_json: Vec<Value>,
     pub attribution: String,
     pub classes: Classes,
     pub class_names: Vec<String>,
@@ -60,7 +59,7 @@ impl Placer {
         }
         if min_zoom < MAX_ZOOM && self.tiles.meets(min_zoom, &parts) {
             for point in parts.iter().flat_map(|p| &p.points) {
-                *self.shared.entry(bits(*point)).or_default() += 1;
+                *self.shared.entry(key(*point)).or_default() += 1;
             }
             self.low.push(Placed { kind: kind.to_string(), geometry, min_zoom, tags, parts });
         }
@@ -69,10 +68,6 @@ impl Placer {
     fn entry(&mut self, entry: &Entry, tags: Tags, parts: Vec<Part>) {
         self.place(&entry.kind, entry.geometry, entry.min_zoom, tags, parts);
     }
-}
-
-fn bits(point: [f64; 2]) -> [u64; 2] {
-    [point[0].to_bits(), point[1].to_bits()]
 }
 
 fn line(points: Vec<[f64; 2]>, z: Option<Vec<f64>>) -> Vec<Part> {
@@ -164,7 +159,7 @@ pub fn bake(
     metrics.insert("landuse".into(), landuse_counts.into());
     drop(landuse);
     if let Some(e) = lift_entry {
-        let (rigged, lift_metrics) = lifts::rigged(&lift_ways, &buildings, Some(terrain));
+        let (rigged, lift_metrics) = lifts::rigged(&lift_ways, &buildings, terrain);
         for (tags, points) in rigged {
             placer.entry(&kinds[e], tags, line(points, None));
         }
@@ -299,7 +294,7 @@ pub fn bake(
                     tags.remove("tunnel");
                     let mut ground = tags.clone();
                     ground.insert("tunnel".into(), "no".into());
-                    entry = kind_of(kinds, Geometry::Line, &ground).unwrap_or(entry);
+                    entry = kind_of(kinds, Geometry::Line, &ground).map_or(entry, |i| &kinds[i]);
                     *shallow.get_or_insert(0) += 1;
                 }
                 let mut all = tags.clone();
@@ -356,19 +351,7 @@ pub fn bake(
     out.insert("bytes".into(), size.into());
     out.insert("bytes_per_km2".into(), (size as f64 / area_km2(options.bounds)).round_ties_even().into());
     out.extend(metrics.into_iter().filter(|(_, v)| !v.as_object().is_some_and(Map::is_empty)));
-    Ok(sorted(Value::Object(out)))
-}
-
-/// A JSON value with the keys of each object sorted, as Python's `json.dumps(sort_keys=True)` writes it.
-fn sorted(value: Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let map: BTreeMap<String, Value> = map.into_iter().map(|(k, v)| (k, sorted(v))).collect();
-            Value::Object(map.into_iter().collect())
-        }
-        Value::Array(list) => Value::Array(list.into_iter().map(sorted).collect()),
-        other => other,
-    }
+    Ok(Value::Object(out))
 }
 
 fn track((_, tags, part): &(String, Tags, Part)) -> rails::Track<'_> {
@@ -384,39 +367,9 @@ fn solves_road(kind: &str, tags: &Tags) -> bool {
     ROADS.contains(&kind) && tags.get("highway").is_none_or(|h| h != "via_ferrata")
 }
 
-/// The leading number of a tag, as JavaScript's parseFloat reads it: "8 m" is 8. NaN without one.
-fn number(value: Option<&String>) -> f64 {
-    let Some(value) = value else { return f64::NAN };
-    let text = value.trim_start_matches(structures::is_space);
-    let bytes = text.as_bytes();
-    let mut end = usize::from(bytes.first().is_some_and(|b| *b == b'+' || *b == b'-'));
-    let digits = |from: usize| from + bytes[from..].iter().take_while(|b| b.is_ascii_digit()).count();
-    let whole = digits(end);
-    let (mut at, fraction) = (whole, whole > end);
-    if bytes.get(at) == Some(&b'.') {
-        let after = digits(at + 1);
-        if !fraction && after == at + 1 {
-            return f64::NAN;
-        }
-        at = after;
-    } else if !fraction {
-        return f64::NAN;
-    }
-    end = at;
-    if matches!(bytes.get(end), Some(b'e' | b'E')) {
-        let sign = usize::from(matches!(bytes.get(end + 1), Some(b'+' | b'-')));
-        let exponent = digits(end + 1 + sign);
-        if exponent > end + 1 + sign {
-            end = exponent;
-        }
-    }
-    text[..end].parse().unwrap_or(f64::NAN)
-}
-
 /// The half-width of a waterway in metres: its `width`, else that of its kind.
 fn half_width(tags: &Tags) -> f64 {
-    let width = number(tags.get("width"));
-    if width.is_finite() {
+    if let Some(width) = tags.get("width").and_then(|w| leading_number(w)) {
         return width / 2.0;
     }
     match tags.get("waterway").map(String::as_str) {
@@ -442,7 +395,13 @@ fn water_feature(kind: &str, tags: &Tags, parts: Vec<Part>) -> water::Feature {
     } else {
         Level::Natural
     };
-    water::Feature { kind, level, half: half_width(tags), ele: number(tags.get("ele")), parts }
+    water::Feature {
+        kind,
+        level,
+        half: half_width(tags),
+        ele: tags.get("ele").and_then(|e| leading_number(e)).unwrap_or(f64::NAN),
+        parts,
+    }
 }
 
 /// A way of the road solver, with the facts of its tags.
@@ -487,9 +446,8 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
 /// Per building, the `landuse` of the smallest of the `areas` that holds the middle of its outer ring,
 /// or None. A point lies in an area when it lies inside an odd number of its rings.
 fn landuse_of(buildings: &[&Vec<Part>], areas: &[(Tags, Vec<Part>)]) -> Vec<Option<String>> {
-    let boxes: Vec<[f64; 4]> =
-        areas.iter().map(|(_, parts)| water::bounds(parts.iter().map(|p| p.points.as_slice()))).collect();
-    let boxes = water::Boxes::new(&boxes);
+    let boxes: Vec<[f64; 4]> = areas.iter().map(|(_, parts)| bounds(parts.iter().flat_map(|p| &p.points))).collect();
+    let boxes = Boxes::new(&boxes);
     let twice = |r: &[[f64; 2]]| -> f64 {
         let n = r.len();
         let a: f64 = (0..n).map(|i| r[i][0] * r[(i + 1) % n][1]).sum();
@@ -508,7 +466,7 @@ fn landuse_of(buildings: &[&Vec<Part>], areas: &[(Tags, Vec<Part>)]) -> Vec<Opti
             let (x, y) = (sx / ring.len() as f64, sy / ring.len() as f64);
             let hits = boxes.overlapping([x, y, x, y]).into_iter().filter(|&k| {
                 let rings: Vec<&[[f64; 2]]> = areas[k].1.iter().map(|p| p.points.as_slice()).collect();
-                structures::contains(&rings, [x, y])
+                contains(&rings, [x, y])
             });
             let smallest = hits.fold(None, |best: Option<usize>, k| match best {
                 Some(b) if sizes[b] <= sizes[k] => Some(b),
@@ -522,39 +480,6 @@ fn landuse_of(buildings: &[&Vec<Part>], areas: &[(Tags, Vec<Part>)]) -> Vec<Opti
 /// The area of the region in km².
 fn area_km2([west, south, east, north]: [f64; 4]) -> f64 {
     EARTH_RADIUS_KM.powi(2) * (east - west).to_radians() * (north.to_radians().sin() - south.to_radians().sin())
-}
-
-/// A string as JSON with every character past ASCII escaped, as Python's `json.dumps` writes it.
-fn ascii_json(text: &str) -> String {
-    let mut out = String::from("\"");
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 || (c as u32) > 0x7e && c != '\u{7f}' => {
-                let mut units = [0u16; 2];
-                for unit in c.encode_utf16(&mut units) {
-                    out.push_str(&format!("\\u{unit:04x}"));
-                }
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-/// A number as Python's `json.dumps` writes it.
-fn python_number(value: &Value) -> String {
-    match value.as_i64() {
-        Some(integer) => integer.to_string(),
-        None => format!("{:?}", value.as_f64().unwrap_or(f64::NAN)),
-    }
 }
 
 /// Write the tiles to the archive at `output`; its bytes.
@@ -578,13 +503,9 @@ fn write(placer: &Placer, options: &Options, output: &Path) -> Result<u64, Strin
         center_zoom: MAX_ZOOM,
         center_e7: [e7((west + east) / 2.0), e7((south + north) / 2.0)],
     };
-    let bounds: Vec<String> = options.bounds_json.iter().map(python_number).collect();
-    let metadata = format!(
-        "{{\"features_format\": {FORMAT}, \"extent\": {EXTENT}, \"buffer_m\": {BUFFER_M:?}, \"attribution\": {}, \"bounds\": [{}]}}",
-        ascii_json(&options.attribution),
-        bounds.join(", ")
-    );
-    pmtiles::write(output, &tiles, &header, &metadata)
+    let metadata = json!({"features_format": FORMAT, "extent": EXTENT, "buffer_m": BUFFER_M,
+                          "attribution": options.attribution, "bounds": options.bounds});
+    pmtiles::write(output, &tiles, &header, &metadata.to_string())
 }
 
 /// Add the features that reach the low zooms to them, simplified at each zoom. The vertices that
@@ -595,33 +516,12 @@ fn low_zooms(placer: &mut Placer) {
         let anchors: Vec<Vec<usize>> = feature
             .parts
             .iter()
-            .map(|p| (0..p.points.len()).filter(|&i| placer.shared[&bits(p.points[i])] > 1).collect())
+            .map(|p| (0..p.points.len()).filter(|&i| placer.shared[&key(p.points[i])] > 1).collect())
             .collect();
         for zoom in feature.min_zoom..MAX_ZOOM {
             let tolerance = TOLERANCE / ((1u64 << zoom) as f64 * EXTENT as f64);
             let parts = simplified(feature.geometry, &feature.parts, &anchors, tolerance);
             placer.tiles.add(zoom, &feature.kind, feature.geometry, &feature.tags, &parts);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_tag_reads_its_leading_number_as_parse_float_does() {
-        let n = |s: &str| number(Some(&s.to_string()));
-        assert_eq!((n("8 m"), n(" -2.5e1x"), n(".5"), n("3.")), (8.0, -25.0, 0.5, 3.0));
-        assert!(n("m8").is_nan() && n(".").is_nan() && n("").is_nan());
-        assert_eq!(n("1e"), 1.0);
-    }
-
-    #[test]
-    fn the_metadata_escapes_as_python_does() {
-        assert_eq!(ascii_json("© OSM \"x\""), "\"\\u00a9 OSM \\\"x\\\"\"");
-        assert_eq!(python_number(&json!(7.6)), "7.6");
-        assert_eq!(python_number(&json!(8.0)), "8.0");
-        assert_eq!(python_number(&json!(8)), "8");
     }
 }

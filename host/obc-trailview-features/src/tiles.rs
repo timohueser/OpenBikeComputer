@@ -44,6 +44,7 @@ pub struct Quantized {
 }
 
 /// A feature of a tile, as `decode` gives it and `encode` takes it.
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Feature {
     pub kind: String,
@@ -135,6 +136,7 @@ impl Tile {
 }
 
 /// The bytes of a tile that holds `features`.
+#[cfg(test)]
 pub fn encode(features: &[Feature]) -> Vec<u8> {
     let mut tile = Tile::default();
     for feature in features {
@@ -144,6 +146,7 @@ pub fn encode(features: &[Feature]) -> Vec<u8> {
 }
 
 /// The features of a tile.
+#[cfg(test)]
 pub fn decode(data: &[u8]) -> Result<Vec<Feature>, String> {
     let next = |at: &mut usize| -> Result<u64, String> {
         let (mut value, mut shift) = (0u64, 0);
@@ -208,24 +211,6 @@ pub fn decode(data: &[u8]) -> Result<Vec<Feature>, String> {
         return Err("a feature tile has bytes after its last feature".into());
     }
     Ok(features)
-}
-
-/// Python's `a // b` of floats: the floor of the exact quotient, not of the rounded one.
-fn floor_divide(a: f64, b: f64) -> f64 {
-    let modulo = a % b;
-    let mut div = (a - modulo) / b;
-    if modulo != 0.0 && ((b < 0.0) != (modulo < 0.0)) {
-        div -= 1.0;
-    }
-    if div == 0.0 {
-        return 0.0f64.copysign(a / b);
-    }
-    let floor = div.floor();
-    if div - floor > 0.5 {
-        floor + 1.0
-    } else {
-        floor
-    }
 }
 
 /// The box (x0, y0, x1, y1) of the points of the parts, or None when they have none.
@@ -556,19 +541,14 @@ pub fn simplified(geometry: Geometry, parts: &[Part], anchors: &[Vec<usize>], to
         .collect()
 }
 
-/// Python's `math.hypot` of two values.
-fn hypot(x: f64, y: f64) -> f64 {
-    x.hypot(y)
-}
-
 /// The index between i and j of the point farthest from the chord i-j, and its distance.
 fn farthest(points: &[[f64; 2]], i: usize, j: usize) -> (Option<usize>, f64) {
     let ([ax, ay], [bx, by]) = (points[i], points[j]);
     let (dx, dy) = (bx - ax, by - ay);
-    let length = hypot(dx, dy);
+    let length = dx.hypot(dy);
     let (mut distance, mut index) = (-1.0, None);
     for (k, &[px, py]) in points.iter().enumerate().take(j).skip(i + 1) {
-        let d = if length != 0.0 { (dx * (ay - py) - dy * (ax - px)).abs() / length } else { hypot(px - ax, py - ay) };
+        let d = if length != 0.0 { (dx * (ay - py) - dy * (ax - px)).abs() / length } else { (px - ax).hypot(py - ay) };
         if d > distance {
             (distance, index) = (d, Some(k));
         }
@@ -641,7 +621,7 @@ fn crossings(sequences: &[(Vec<[f64; 2]>, Vec<usize>)]) -> BTreeSet<(usize, usiz
     let cell = if cell == 0.0 { 1.0 } else { cell };
     let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
     for (number, &(_, _, a, b)) in edges.iter().enumerate() {
-        let index = |v: f64| floor_divide(v, cell) as i64;
+        let index = |v: f64| (v / cell).floor() as i64;
         for column in index(a[0].min(b[0]))..=index(a[0].max(b[0])) {
             for row in index(a[1].min(b[1]))..=index(a[1].max(b[1])) {
                 grid.entry((column, row)).or_default().push(number);

@@ -11,12 +11,10 @@ pub fn step(request: &Request) -> Result<(), String> {
     let options = &request.options;
     let kinds = kinds::validate(&options["kinds"])?;
     let (class_names, classes) = kinds::classes(&options["roads"])?;
-    let bounds_json =
-        options["bounds"].as_array().filter(|b| b.len() == 4).ok_or("option `bounds` is not four numbers")?;
-    let bounds: Vec<f64> = bounds_json.iter().filter_map(|v| v.as_f64()).collect();
-    let bounds: [f64; 4] = bounds.try_into().map_err(|_| "option `bounds` is not four numbers")?;
+    let bounds: [f64; 4] =
+        serde_json::from_value(options["bounds"].clone()).map_err(|_| "option `bounds` is not four numbers")?;
     let attribution = options["attribution"].as_str().ok_or("option `attribution` is not a string")?.to_string();
-    let options = Options { kinds, bounds, bounds_json: bounds_json.clone(), attribution, classes, class_names };
+    let options = Options { kinds, bounds, attribution, classes, class_names };
     let layer = |name: &str| request.layers.get(name).ok_or(format!("the step has no input `{name}`"));
     let [pbf] = layer("planner/osm")?.values().collect::<Vec<_>>()[..] else {
         return Err("`planner/osm` is not one file".into());

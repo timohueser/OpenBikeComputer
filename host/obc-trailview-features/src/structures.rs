@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use crate::geometry::{arange, bounds, contains, interp, key, Boxes};
 use crate::{metres, Tags, Terrain};
 
 /// OSM bridge values of a way that lies on the ground.
@@ -88,11 +89,6 @@ pub fn bore(tags: &Tags) -> f64 {
     }
 }
 
-/// Whitespace as Python's `\s` reads it in a string.
-pub(crate) fn is_space(c: char) -> bool {
-    c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
-}
-
 /// The half-width of a way in metres: OSM's `width` where it has one, as halfWidth of bins.ts reads
 /// it.
 pub fn road_half(tags: &Tags) -> f64 {
@@ -113,26 +109,11 @@ pub fn road_half(tags: &Tags) -> f64 {
     }
 }
 
-/// The number at the start of a tag, as `\s*[+-]?(\d+\.?\d*|\.\d+)` matches it.
-fn leading_number(text: &str) -> Option<f64> {
-    let text = text.trim_start_matches(is_space);
-    let signed = text.strip_prefix(['+', '-']).map_or(0, |_| 1);
-    let digits = |s: &str| s.bytes().take_while(u8::is_ascii_digit).count();
-    let rest = &text[signed..];
-    let whole = digits(rest);
-    let length = if whole > 0 {
-        let point = usize::from(rest[whole..].starts_with('.'));
-        whole + point + if point == 1 { digits(&rest[whole + 1..]) } else { 0 }
-    } else if rest.starts_with('.') && digits(&rest[1..]) > 0 {
-        1 + digits(&rest[1..])
-    } else {
-        return None;
-    };
-    text[..signed + length].parse().ok()
-}
-
-fn key([x, y]: [f64; 2]) -> [u64; 2] {
-    [x.to_bits(), y.to_bits()]
+/// The number at the start of a tag, as JavaScript's parseFloat reads it in the engine: "8 m" is 8.
+pub(crate) fn leading_number(text: &str) -> Option<f64> {
+    let text = text.trim_start();
+    let span = text.find(|c: char| !matches!(c, '0'..='9' | '+' | '-' | '.' | 'e' | 'E')).unwrap_or(text.len());
+    (1..=span).rev().find_map(|end| text[..end].parse().ok())
 }
 
 /// The bridges: lists of (way, reversed) whose parts meet end to end, where exactly two bridge ends
@@ -180,52 +161,28 @@ fn chains(ways: &[&[[f64; 2]]]) -> Vec<Vec<(usize, bool)>> {
     out
 }
 
-/// Items with the bounding boxes (x0, y0, x1, y1) of their points.
+/// Items with the bounding boxes of their points.
 struct Boxed<T> {
-    boxes: Vec<[f64; 4]>,
+    boxes: Boxes,
     items: Vec<T>,
 }
 
 impl<T> Boxed<T> {
     fn new(items: Vec<T>, points: impl Fn(&T) -> Vec<[f64; 2]>) -> Self {
-        let boxes = items.iter().map(|item| bounds(&points(item))).collect();
-        Boxed { boxes, items }
+        let boxes: Vec<[f64; 4]> = items.iter().map(|item| bounds(&points(item))).collect();
+        Boxed { boxes: Boxes::new(&boxes), items }
     }
 
-    /// The items whose boxes meet the box from `lo` to `hi`.
+    /// The items whose boxes meet the box from `lo` to `hi`, in order.
     fn near(&self, lo: [f64; 2], hi: [f64; 2]) -> impl Iterator<Item = &T> {
-        self.boxes
-            .iter()
-            .zip(&self.items)
-            .filter(move |(b, _)| b[0] <= hi[0] && b[2] >= lo[0] && b[1] <= hi[1] && b[3] >= lo[1])
-            .map(|(_, item)| item)
+        self.boxes.overlapping([lo[0], lo[1], hi[0], hi[1]]).into_iter().map(|i| &self.items[i])
     }
-}
-
-fn bounds(points: &[[f64; 2]]) -> [f64; 4] {
-    points.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, &[x, y]| {
-        [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]
-    })
 }
 
 /// The lines of at least 2 points, boxed.
 fn lines<'a>(items: &[(f64, &'a [[f64; 2]])]) -> Boxed<(f64, &'a [[f64; 2]])> {
     let items: Vec<(f64, &[[f64; 2]])> = items.iter().copied().filter(|(_, p)| p.len() >= 2).collect();
     Boxed::new(items, |(_, points)| points.to_vec())
-}
-
-/// Whether a point lies inside the rings of at least 3 points, even-odd.
-pub(crate) fn contains(rings: &[&[[f64; 2]]], [x, y]: [f64; 2]) -> bool {
-    let mut inside = false;
-    for ring in rings.iter().filter(|r| r.len() >= 3) {
-        for i in 0..ring.len() {
-            let ([ax, ay], [bx, by]) = (ring[i], ring[(i + 1) % ring.len()]);
-            if (ay > y) != (by > y) && x < ax + (y - ay) * (bx - ax) / (by - ay) {
-                inside = !inside;
-            }
-        }
-    }
-    inside
 }
 
 /// The runs of the samples `xy` within a line's half-width or in an area: (first, last) sample
@@ -268,44 +225,6 @@ fn runs(xy: &[[f64; 2]], lines: &Boxed<(f64, &[[f64; 2]])>, areas: &Boxed<&[&[[f
         }
     }
     out
-}
-
-/// numpy's `interp(x, xp, fp)` for increasing `xp`.
-pub(crate) fn interp(x: f64, xp: &[f64], fp: &[f64]) -> f64 {
-    let n = xp.len();
-    if x.is_nan() {
-        return x;
-    }
-    if n == 1 || x < xp[0] {
-        return fp[0];
-    }
-    if x > xp[n - 1] {
-        return fp[n - 1];
-    }
-    let j = xp.partition_point(|&v| v <= x) - 1;
-    if j == n - 1 || xp[j] == x {
-        return fp[j];
-    }
-    let slope = (fp[j + 1] - fp[j]) / (xp[j + 1] - xp[j]);
-    let z = slope * (x - xp[j]) + fp[j];
-    if !z.is_nan() {
-        return z;
-    }
-    let z = slope * (x - xp[j + 1]) + fp[j + 1];
-    if z.is_nan() && fp[j] == fp[j + 1] {
-        fp[j]
-    } else {
-        z
-    }
-}
-
-/// numpy's `arange(0, stop, step)` of floats.
-fn arange(stop: f64, step: f64) -> Vec<f64> {
-    let len = (stop / step).ceil();
-    if len.is_nan() || len <= 0.0 {
-        return Vec::new();
-    }
-    (0..len as usize).map(|i| i as f64 * step).collect()
 }
 
 /// The metres along a line at each of its points.
@@ -355,7 +274,7 @@ pub fn bridges(
 ) -> (Vec<Option<Tags>>, Vec<Pier>, Metrics) {
     let (waterways, roads) = (lines(waterways), lines(roads));
     let areas = Boxed::new(areas.iter().map(Vec::as_slice).collect(), |rings| rings.concat());
-    let dry: Boxed<&[&[[f64; 2]]]> = Boxed { boxes: Vec::new(), items: Vec::new() };
+    let dry: Boxed<&[&[[f64; 2]]]> = Boxed::new(Vec::new(), |_| Vec::new());
     let (mut added, mut piers, mut metrics) = (vec![None; ways.len()], Vec::new(), Metrics::default());
     let points: Vec<&[[f64; 2]]> = ways.iter().map(|w| w.2).collect();
     for chain in chains(&points) {
@@ -374,7 +293,7 @@ pub fn bridges(
         let total = along[along.len() - 1];
         let path = chain.iter().all(|&(w, _)| ways[w].0 == "path");
         let (along_known, z_known) = known(&along, &z);
-        let samples = arange(total + STEP_M / 2.0, STEP_M);
+        let samples = arange(0.0, total + STEP_M / 2.0, STEP_M);
         let at = sampled(&xy, &along, &samples);
         let tagged = chain.iter().filter_map(|&(w, _)| tag(ways[w].1, "bridge:structure")).find(|s| CABLES.contains(s));
         let mut structure = tagged.map(str::to_string);
@@ -443,33 +362,6 @@ pub fn bridges(
     (added, piers, metrics)
 }
 
-/// numpy's pairwise sum of float32 values.
-fn sum32(a: &[f32]) -> f32 {
-    let n = a.len();
-    if n < 8 {
-        a.iter().fold(-0.0, |sum, v| sum + v)
-    } else if n <= 128 {
-        let mut r = [0.0f32; 8];
-        r.copy_from_slice(&a[..8]);
-        let mut i = 8;
-        while i < n - n % 8 {
-            for j in 0..8 {
-                r[j] += a[i + j];
-            }
-            i += 8;
-        }
-        let mut sum = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
-        for v in &a[i..] {
-            sum += v;
-        }
-        sum
-    } else {
-        let half = n / 2;
-        let half = half - half % 8;
-        sum32(&a[..half]) + sum32(&a[half..])
-    }
-}
-
 /// The side of a gallery that the hill rises on, "left" or "right" of its way, from the terrain
 /// BESIDE_M to each side of it.
 pub fn uphill(points: &[[f64; 2]], terrain: &dyn Terrain) -> &'static str {
@@ -488,13 +380,10 @@ pub fn uphill(points: &[[f64; 2]], terrain: &dyn Terrain) -> &'static str {
             behind.push([x - lx * reach, y - ly * reach]);
         }
     }
-    // The terrain is f32, and so is the mean of its differences, with an unknown one as 0: only its
-    // sign counts.
-    let rise: Vec<f32> =
-        terrain.heights(&ahead).iter().zip(terrain.heights(&behind)).map(|(&a, b)| a as f32 - b as f32).collect();
+    // Only the sign of the summed rise counts; an unknown one adds nothing.
+    let rise: Vec<f64> = terrain.heights(&ahead).iter().zip(terrain.heights(&behind)).map(|(a, b)| a - b).collect();
     let known = rise.iter().any(|d| !d.is_nan());
-    let rise: Vec<f32> = rise.into_iter().map(|d| if d.is_nan() { 0.0 } else { d }).collect();
-    if known && sum32(&rise) < 0.0 {
+    if known && rise.iter().filter(|d| !d.is_nan()).sum::<f64>() < 0.0 {
         "right"
     } else {
         "left"
@@ -510,7 +399,7 @@ fn cover(points: &[[f64; 2]], z: &[f64], terrain: &dyn Terrain) -> Option<(Vec<f
         return None;
     }
     let total = along[along.len() - 1];
-    let samples = arange(total + BORE_STEP_M / 2.0, BORE_STEP_M);
+    let samples = arange(0.0, total + BORE_STEP_M / 2.0, BORE_STEP_M);
     let ground = terrain.heights(&sampled(points, &along, &samples));
     let depth = samples.iter().zip(&ground).map(|(&s, &g)| g - interp(s, &along_known, &z_known)).collect();
     Some((depth, samples.iter().map(|&s| s.min(total - s)).collect()))
@@ -591,5 +480,8 @@ mod tests {
             (width(" 8 m"), width("3."), width(".5"), width("-3"), width("wide")),
             (4.0, 1.5, 0.4, 0.4, ROAD_HALF_M)
         );
+        let n = leading_number;
+        assert_eq!((n(" -2.5e1x"), n("1e"), n("1e+"), n("5-3")), (Some(-25.0), Some(1.0), Some(1.0), Some(5.0)));
+        assert_eq!((n("m8"), n("."), n(""), n("+-5"), n("inf")), (None, None, None, None, None));
     }
 }

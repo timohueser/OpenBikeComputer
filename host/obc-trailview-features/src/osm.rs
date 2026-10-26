@@ -170,8 +170,7 @@ fn object(entries: &[Entry], feature: &Value) -> Option<Object> {
         "MultiPolygon" => Geometry::Area,
         _ => return None,
     };
-    let found =
-        kind_of(entries, kind, &tags).map(|e| (Selected::Entry(entries.iter().position(|x| x == e).unwrap()), e));
+    let found = kind_of(entries, kind, &tags).map(|i| (Selected::Entry(i), &entries[i]));
     let (selected, keep): (Selected, Vec<String>) = match found {
         Some((_, entry)) if !entry.active => return None,
         Some((selected, entry)) => (selected, entry.keep.clone()),
@@ -190,7 +189,7 @@ fn object(entries: &[Entry], feature: &Value) -> Option<Object> {
             // `waterway=dam` does, it is an area.
             if line.first() == line.last() && tags.get("area").is_none_or(|a| a != "no") {
                 if let (Some(area), Selected::Entry(e)) = (kind_of(entries, Geometry::Area, &tags), selected) {
-                    if !selected_by(&entries[e], &tags).is_disjoint(&selected_by(area, &tags)) {
+                    if !selected_by(&entries[e], &tags).is_disjoint(&selected_by(&entries[area], &tags)) {
                         return None;
                     }
                 }

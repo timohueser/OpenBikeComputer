@@ -17,7 +17,7 @@ fn main() {
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |name: &str| -> Result<&str, String> {
-        let at = args.iter().position(|a| a == name).ok_or(format!("name {name}"))?;
+        let at = args.iter().position(|a| a == name).ok_or(format!("{name} is missing"))?;
         args.get(at + 1).map(String::as_str).ok_or(format!("{name} takes a value"))
     };
     let usage =
@@ -32,8 +32,7 @@ fn run() -> Result<(), String> {
     let (class_names, classes) = kinds::classes(&table(include_str!("../../../data/trailview/roads.json"))?)?;
     let options = Options {
         kinds: kinds::validate(&table(include_str!("../../../data/trailview/kinds.json"))?)?,
-        bounds: bounds.clone().try_into().map_err(|_| usage.to_string())?,
-        bounds_json: bounds.into_iter().map(serde_json::Value::from).collect(),
+        bounds: bounds.try_into().map_err(|_| usage.to_string())?,
         attribution: "© OpenStreetMap contributors".into(),
         classes,
         class_names,

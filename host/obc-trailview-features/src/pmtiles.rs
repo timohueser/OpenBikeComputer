@@ -1,5 +1,4 @@
-//! PMTiles v3 archives: the reader of the terrain grid and the writer of the feature tiles. The
-//! writer lays an archive out as the Python `pmtiles` writer does.
+//! PMTiles v3 archives: the reader of the terrain grid and the writer of the feature tiles.
 
 use std::collections::HashMap;
 use std::fs::File;

@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use crate::structures::contains;
+use crate::geometry::{bounds, contains, key, Boxes};
 use crate::{metres, Tags, Terrain};
 
 /// Per rig: the height of the cable over the ground at a pylon and at a station, the longest span,
@@ -64,15 +64,11 @@ fn pylons(tags: &Tags, points: &[[f64; 2]], terrain: &dyn Terrain) -> Vec<[f64; 
         let span = (bx - ax).hypot(by - ay) * metres((ay + by) / 2.0);
         let sag = 4.0 * rig.sag * span;
         let under: Vec<[f64; 2]> = t.iter().map(|&u| [ax + (bx - ax) * u, ay + (by - ay) * u]).collect();
-        // The terrain is f32, and so is the terrain plus the carrier's drop and clearance.
         let below: Vec<f64> = terrain
             .heights(&under)
             .iter()
             .zip(&t)
-            .map(|(&g, &u)| {
-                let cable = z[i] + (z[i + 1] - z[i]) * u - sag * u * (1.0 - u);
-                f64::from(g as f32 + rig.drop as f32 + rig.clear as f32) - cable
-            })
+            .map(|(&g, &u)| g + rig.drop + rig.clear - (z[i] + (z[i + 1] - z[i]) * u - sag * u * (1.0 - u)))
             .collect();
         let room: Vec<bool> =
             below.iter().zip(&t).map(|(b, &u)| b.is_finite() && span * u.min(1.0 - u) >= GAP_M).collect();
@@ -108,15 +104,11 @@ pub struct Metrics {
 /// A lift: its tags and points.
 pub type Lift = (Tags, Vec<[f64; 2]>);
 
-fn key([x, y]: [f64; 2]) -> [u64; 2] {
-    [x.to_bits(), y.to_bits()]
-}
-
 /// The lifts (tags, points) as the tiles keep them: each way split at its vertices where another lift
-/// ends, with the pylons that it lacks when there is a `terrain`, and the tag `stations` where an end
+/// ends, with the pylons that it lacks on the `terrain`, and the tag `stations` where an end
 /// has no station of its own: the end lies in one of the `buildings` (outer rings), or a lift before
 /// it in the list has its station there.
-pub fn rigged(ways: &[Lift], buildings: &[Vec<[f64; 2]>], terrain: Option<&dyn Terrain>) -> (Vec<Lift>, Metrics) {
+pub fn rigged(ways: &[Lift], buildings: &[Vec<[f64; 2]>], terrain: &dyn Terrain) -> (Vec<Lift>, Metrics) {
     let ends: HashSet<[u64; 2]> =
         ways.iter().flat_map(|(_, points)| [points[0], points[points.len() - 1]]).map(key).collect();
     let mut split = Vec::new();
@@ -140,14 +132,8 @@ pub fn rigged(ways: &[Lift], buildings: &[Vec<[f64; 2]>], terrain: Option<&dyn T
             metrics.shared_ends += usize::from(!is_housed && is_held);
             held.insert(key(p));
         }
-        let points = match terrain {
-            Some(terrain) => {
-                let rig = pylons(tags, points, terrain);
-                metrics.added_pylons += rig.len() - points.len();
-                rig
-            }
-            None => points.to_vec(),
-        };
+        let rig = pylons(tags, points, terrain);
+        metrics.added_pylons += rig.len() - points.len();
         let stations = match own {
             [true, false] => Some("start"),
             [false, true] => Some("end"),
@@ -158,28 +144,16 @@ pub fn rigged(ways: &[Lift], buildings: &[Vec<[f64; 2]>], terrain: Option<&dyn T
         if let Some(stations) = stations {
             tags.insert("stations".into(), stations.into());
         }
-        out.push((tags, points));
+        out.push((tags, rig));
     }
     (out, metrics)
 }
 
 /// The points that lie inside one of the rings.
 fn inside(points: impl Iterator<Item = [f64; 2]>, rings: &[Vec<[f64; 2]>]) -> HashSet<[u64; 2]> {
-    let boxes: Vec<[f64; 4]> = rings
-        .iter()
-        .map(|r| {
-            r.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, &[x, y]| {
-                [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]
-            })
-        })
-        .collect();
+    let boxes = Boxes::new(&rings.iter().map(bounds).collect::<Vec<_>>());
     points
-        .filter(|&[x, y]| {
-            (0..rings.len()).any(|k| {
-                let b = boxes[k];
-                b[0] <= x && x <= b[2] && b[1] <= y && y <= b[3] && contains(&[rings[k].as_slice()], [x, y])
-            })
-        })
+        .filter(|&[x, y]| boxes.overlapping([x, y, x, y]).into_iter().any(|k| contains(&[rings[k].as_slice()], [x, y])))
         .map(key)
         .collect()
 }
@@ -271,9 +245,9 @@ mod tests {
 
     #[test]
     fn a_way_through_the_end_of_another_lift_splits_there_and_one_station_stands() {
-        let (a, m, b, c) = (at(0.0, 0.0), at(300.0, 0.0), at(600.0, 0.0), at(300.0, 300.0));
+        let (a, m, b, c) = (at(0.0, 0.0), at(100.0, 0.0), at(200.0, 0.0), at(100.0, 100.0));
         let ways = [(lift("gondola"), vec![a, m, b]), (lift("chair_lift"), vec![m, c])];
-        let (out, metrics) = rigged(&ways, &[], None);
+        let (out, metrics) = rigged(&ways, &[], &|_: f64, _: f64| f64::NAN);
         assert_eq!(out.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>(), [vec![a, m], vec![m, b], vec![m, c]]);
         let stations: Vec<Option<&str>> = out.iter().map(|(t, _)| t.get("stations").map(String::as_str)).collect();
         assert_eq!(stations, [None, Some("end"), Some("end")]);
@@ -283,7 +257,8 @@ mod tests {
     #[test]
     fn an_end_in_a_building_has_no_station_of_its_own() {
         let hall = vec![at(-10.0, -10.0), at(10.0, -10.0), at(10.0, 10.0), at(-10.0, 10.0)];
-        let (out, _) = rigged(&[(lift("drag_lift"), vec![at(0.0, 0.0), at(100.0, 0.0)])], &[hall], None);
+        let (out, _) =
+            rigged(&[(lift("drag_lift"), vec![at(0.0, 0.0), at(100.0, 0.0)])], &[hall], &|_: f64, _: f64| f64::NAN);
         assert_eq!(out[0].0["stations"], "end");
     }
 }

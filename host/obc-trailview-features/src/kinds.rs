@@ -127,9 +127,9 @@ fn matches(selector: &Selector, tags: &Tags) -> bool {
     })
 }
 
-/// The first entry of `geometry` with a selector that matches `tags`, active or not.
-pub fn kind_of<'a>(entries: &'a [Entry], geometry: Geometry, tags: &Tags) -> Option<&'a Entry> {
-    entries.iter().find(|e| e.geometry == geometry && e.selectors.iter().any(|s| matches(s, tags)))
+/// The index of the first entry of `geometry` with a selector that matches `tags`, active or not.
+pub fn kind_of(entries: &[Entry], geometry: Geometry, tags: &Tags) -> Option<usize> {
+    entries.iter().position(|e| e.geometry == geometry && e.selectors.iter().any(|s| matches(s, tags)))
 }
 
 /// The tags through which a selector of `entry` matches.

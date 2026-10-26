@@ -8,17 +8,18 @@
 use std::collections::BTreeMap;
 
 pub mod bake;
+mod geometry;
 pub mod kinds;
-pub mod lifts;
-pub mod osm;
-pub mod pmtiles;
-pub mod rails;
-pub mod roads;
+mod lifts;
+mod osm;
+mod pmtiles;
+mod rails;
+mod roads;
 pub mod step;
-pub mod structures;
+mod structures;
 pub mod terrain;
-pub mod tiles;
-pub mod water;
+mod tiles;
+mod water;
 
 pub const EQUATOR_M: f64 = 40075016.686;
 

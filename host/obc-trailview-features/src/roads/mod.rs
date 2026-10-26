@@ -28,6 +28,7 @@ use fit::{fit, Block, Graph, Rows, Term};
 use network::{hypot, sub, Network};
 use rows::union;
 
+use crate::geometry::percentile;
 use crate::structures::{BORE_M, BORE_PATH_M, BORE_RAIL_M};
 use crate::{metres, Terrain};
 
@@ -595,7 +596,7 @@ pub fn solve(
         grade_excess_m: worst.map_or(0.0, |(e, _)| e.max(0.0)),
         grade_excess_at: worst.map_or([0.0, 0.0], |(_, s)| degrees(net.vertex_xy[net.segment_start[s]])),
         grade_excess_over_1cm: excess.iter().filter(|e| e.0 > 0.01).count(),
-        residual_p99_m: percentile(&mut residual, 99.0),
+        residual_p99_m: percentile(&mut residual, 99.0).unwrap_or(0.0),
         refinements_unconverged: unconverged,
     };
     solved.underpasses = (0..held_up.len())
@@ -619,17 +620,6 @@ fn held_at(rows: Rows, w: f64, c: Vec<f64>) -> (Rows, Vec<f64>, Vec<f64>) {
 /// Latitude and longitude of a world point.
 fn degrees([x, y]: [f64; 2]) -> [f64; 2] {
     [(std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees(), x * 360.0 - 180.0]
-}
-
-/// The q-th percentile with linear interpolation, 0 for no values.
-fn percentile(values: &mut [f64], q: f64) -> f64 {
-    if values.is_empty() {
-        return 0.0;
-    }
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let at = q / 100.0 * (values.len() - 1) as f64;
-    let (lo, hi) = (at.floor() as usize, at.ceil() as usize);
-    values[lo] + (values[hi] - values[lo]) * (at - lo as f64)
 }
 
 /// Per way, whether it is a culvert: a bridge shorter than CULVERT_M, with the deck no more than
