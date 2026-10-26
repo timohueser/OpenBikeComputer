@@ -43,6 +43,11 @@ impl Credentials {
 }
 
 /// The R2 account, bucket and credential that `<PREFIX>_*` names.
+/// The uploads and the checks that rclone runs at once, chosen by the owner: most keys are small
+/// objects, so requests and not bytes set the time.
+const TRANSFERS: &str = "32";
+const CHECKERS: &str = "64";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
     /// `https://<account id>.r2.cloudflarestorage.com`, or `<PREFIX>_ENDPOINT`.
@@ -264,7 +269,10 @@ impl Bucket {
         let list = scratch.0.join("keys.txt");
         std::fs::write(&list, keys).map_err(|e| format!("{}: {e}", list.display()))?;
         let mut args: Vec<String> =
-            ["copy", "--checksum", "--copy-links", "--no-traverse", "--files-from-raw"].map(String::from).into();
+            ["copy", "--checksum", "--copy-links", "--no-traverse", "--transfers", TRANSFERS, "--checkers", CHECKERS]
+                .map(String::from)
+                .into();
+        args.push("--files-from-raw".into());
         args.push(list.display().to_string());
         args.extend(headers(upload));
         args.extend([staged.display().to_string(), self.root.clone()]);
@@ -340,7 +348,8 @@ impl Bucket {
         let list = scratch.0.join("delete.txt");
         let keys: String = objects.iter().map(|object| format!("{}\n", object.key)).collect();
         std::fs::write(&list, keys).map_err(|e| format!("{}: {e}", list.display()))?;
-        let args = ["delete".into(), self.root.clone(), "--files-from-raw".into(), list.display().to_string()];
+        let args = ["delete", &self.root, "--checkers", CHECKERS, "--files-from-raw", &list.display().to_string()]
+            .map(String::from);
         if let Err(error) = self.checked(&args) {
             let keys: Vec<String> = objects.iter().map(|object| object.key.clone()).collect();
             let remain =
