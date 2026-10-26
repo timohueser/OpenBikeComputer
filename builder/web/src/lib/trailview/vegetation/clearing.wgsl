@@ -1,5 +1,5 @@
-// The clearing that moves with the eye: no crown of a tree or a shrub reaches into the view at arm's
-// length. A wide spruce steps back farther than a slim tree, and a crown high above the eye may stand
+// The clearing that moves with the eye: no crown of a tree or a shrub fills the view from close
+// by. A wide spruce steps back farther than a slim tree, and a crown high above the eye may stand
 // over it.
 // #include ../terrain/view.wgsl
 
