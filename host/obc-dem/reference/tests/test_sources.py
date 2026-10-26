@@ -743,12 +743,14 @@ class BulkArchives(unittest.TestCase):
 class Registry(unittest.TestCase):
     def test_a_fault_of_the_server_is_retried_whatever_status_it_rides_on(self):
         """`NoApplicableCode` is the server's own fault; the LGL WCS sends it as a 404 while
-        it is overloaded, and the IGN WMS sends a 408. A country run must outlive that rather
-        than refuse."""
+        it is overloaded, and the IGN WMS sends a 408 or `LayerNotDefined`. A country run must
+        outlive that rather than refuse."""
 
         for status, fault in ((404, b'<ows:ExceptionReport><ows:Exception exceptionCode='
                                     b'"NoApplicableCode"/></ows:ExceptionReport>'),
-                              (408, b"<h1>408 Request Time-out</h1>")):
+                              (408, b"<h1>408 Request Time-out</h1>"),
+                              (400, b'<ServiceException code="LayerNotDefined">Layer unknown'
+                                    b'</ServiceException>')):
             with self.subTest(status):
                 self.assert_retried(status, fault)
 
