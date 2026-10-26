@@ -65,17 +65,32 @@ export function extent({ west, south, east, north }: Bbox): string {
     return `${km((east - west) * Math.cos((((south + north) / 2) * Math.PI) / 180))} × ${km(north - south)} km`;
 }
 
-/** What a search finds: saved areas first, then Geofabrik areas, at most `limit`. */
+/** What a search finds, at most `limit`: an exact name first, then a name that starts with the
+ *  query, then one with a word that does, then the rest; saved areas before Geofabrik areas of the
+ *  same rank. */
 export function search(query: string, areas: Areas, limit = 12): { id: string; name: string; detail: string }[] {
     const words = query.trim().toLowerCase();
     if (!words) return [];
     // The last part of an id only: `central-america/belize` is not a hit for "central".
-    const hit = (id: string, name: string) => id.split("/").at(-1)!.toLowerCase().includes(words) || name.toLowerCase().includes(words);
+    const rank = (id: string, name: string) => {
+        const [text, last] = [name.toLowerCase(), id.split("/").at(-1)!.toLowerCase()];
+        if (text === words || last === words) return 0;
+        if (text.startsWith(words) || last.startsWith(words)) return 1;
+        if (` ${text}`.includes(` ${words}`) || `-${last}`.includes(`-${words}`)) return 2;
+        return text.includes(words) || last.includes(words) ? 3 : null;
+    };
     const parent = (id: string | null) => (id ? (areas.areas.find((area) => area.id === id)?.name ?? id) : null);
-    return [
-        ...areas.regions.filter((region) => hit(region.id, region.name)).map((region) => ({ id: region.id, name: region.name, detail: "Saved area" })),
+    const hits = [
+        ...areas.regions.map((region) => ({ id: region.id, name: region.name, detail: "Saved area" })),
         ...areas.areas
-            .filter((area) => !areas.regions.some((region) => region.id === area.id) && hit(area.id, area.name))
+            .filter((area) => !areas.regions.some((region) => region.id === area.id))
             .map((area) => ({ id: area.id, name: area.name, detail: parent(area.parent) ?? "Geofabrik" })),
-    ].slice(0, limit);
+    ].flatMap((hit) => {
+        const at = rank(hit.id, hit.name);
+        return at === null ? [] : [{ hit, at }];
+    });
+    return hits
+        .sort((a, b) => a.at - b.at)
+        .slice(0, limit)
+        .map(({ hit }) => hit);
 }

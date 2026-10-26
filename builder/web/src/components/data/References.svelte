@@ -73,7 +73,7 @@
             {/if}
         {/each}
         {#if state !== "preparing"}
-            <a class="act" href={prepareHash(row.id, "prod")}>{made.length ? add : "Prepare"}</a>
+            <a class="button" href={prepareHash(row.id, "prod")}>{made.length ? add : "Prepare"}</a>
         {/if}
     </div>
 {/snippet}
@@ -141,25 +141,6 @@
         margin: 0;
         padding-left: 20px;
         font-variant-numeric: tabular-nums;
-    }
-    .act {
-        display: inline-flex;
-        align-items: center;
-        min-height: 40px;
-        margin-top: 4px;
-        padding: 0 16px;
-        border: 1px solid var(--ink);
-        border-radius: 8px;
-        color: var(--ink);
-        font-weight: 600;
-        text-decoration: none;
-    }
-    .act:hover {
-        background: var(--parchment);
-    }
-    .act:focus-visible {
-        outline: 2px solid var(--running);
-        outline-offset: 2px;
     }
     summary {
         padding: 8px 0;
