@@ -437,15 +437,24 @@ pub(super) fn problems(urls: &[String; 2], http: &Http, steps: &[Step]) -> Vec<S
             }
         }
     }
-    if let Err(e) = ask(http, &urls[1]) {
-        problems.push(format!(
+    match ask(http, &urls[1]) {
+        Err(e) => problems.push(format!(
             "No tiles Worker of the layout of `obc data` answers ({e}): riders would get no tiles of the \
              release. {}",
             fix(What::Tiles)
-        ));
+        )),
+        Ok(worker) if !worker.grids.contains(&GRID) => problems.push(format!(
+            "The tiles Worker does not read grid format {GRID}, which the release has: riders would get no \
+             tiles of it. {}",
+            fix(What::Tiles)
+        )),
+        Ok(_) => {}
     }
     problems
 }
+
+/// The format of `public/grid.json` of a release: `GRID_FORMAT` of `tools/planner_runtime.py`.
+const GRID: u32 = 3;
 
 /// The URLs at which the follower and the tiles Worker say which commit they run.
 fn urls_of(origins: &crate::runtime::Origins) -> [String; 2] {
@@ -518,12 +527,14 @@ mod tests {
     use crate::engine::tests::{step, TEST};
     use crate::engine::Run;
 
-    /// A follower that reads `formats` and manifests of `manifest`, and a tiles Worker, on a port of
-    /// this machine.
-    fn services(runtime: &tokio::runtime::Runtime, formats: &[(&str, u32)], manifest: u32) -> String {
+    /// A follower that reads `formats` and manifests of `manifest`, and a tiles Worker that reads
+    /// `grids`, on a port of this machine.
+    fn services(runtime: &tokio::runtime::Runtime, formats: &[(&str, u32)], manifest: u32, grids: &[u32]) -> String {
+        let grids = grids.to_vec();
         let formats = formats.iter().map(|(layer, format)| (layer.to_string(), *format)).collect();
-        let version = Version { commit: Some("c".repeat(40)), formats, manifest };
-        let worker = axum::routing::get(|| async { axum::Json(serde_json::json!({"commit": null})) });
+        let version = Version { commit: Some("c".repeat(40)), formats, manifest, grids: Vec::new() };
+        let worker =
+            axum::routing::get(move || async move { axum::Json(serde_json::json!({"commit": null, "grids": grids})) });
         let router = crate::serve::http::router(Arc::new(RwLock::new(Default::default())), None, version);
         let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
         let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
@@ -537,18 +548,26 @@ mod tests {
         let steps = [step("test/a", Vec::new(), "a", Run::Command(Vec::new()))];
         let http = Http::new();
         let urls = |origin: &str| [format!("{origin}/planner-api/version"), format!("{origin}/version")];
-        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT);
+        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT, &[2, GRID]);
         assert_eq!(problems(&urls(&origin), &http, &steps), Vec::<String>::new());
 
+        // A Worker built before block indexes.
+        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT, &[]);
+        let found = problems(&urls(&origin), &http, &steps);
+        assert!(
+            matches!(&found[..], [one] if one.starts_with("The tiles Worker does not read grid format 3")),
+            "{found:?}"
+        );
+
         // A follower built before it said which manifests it reads.
-        let origin = services(&runtime, &[(TEST.name, TEST.format)], 0);
+        let origin = services(&runtime, &[(TEST.name, TEST.format)], 0, &[GRID]);
         let found = problems(&urls(&origin), &http, &steps);
         assert!(
             matches!(&found[..], [one] if one.starts_with("The follower reads release manifests of format 0")),
             "{found:?}"
         );
 
-        let origin = services(&runtime, &[(TEST.name, TEST.format + 1)], crate::release::FORMAT);
+        let origin = services(&runtime, &[(TEST.name, TEST.format + 1)], crate::release::FORMAT, &[GRID]);
         let found = problems(&urls(&origin), &http, &steps);
         assert!(
             matches!(&found[..], [one] if one.starts_with("The follower reads test format 2, and the release has format 1")),

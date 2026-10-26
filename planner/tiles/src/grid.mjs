@@ -1,7 +1,12 @@
 const metadata = new Map();
 export class MissingArchive extends Error {}
+/** The grid formats that the Worker reads: format 3 keeps the pointers of the packs of a grid cell in a
+ * block index of 16 × 16 cells (specs/planner-release.md). */
+export const GRIDS = [2, 3];
+const BLOCK_ZOOMS = 4;
+const CELL = /^((?:maps|routes)\/tiles(?:\/.+)?)\/([0-9]+)-([0-9]+)-([0-9]+)\.[a-z]+$/;
 
-async function readJSON(bucket, path) {
+async function readJSON(bucket, path, limit = 1024) {
   const cached = metadata.get(path);
   if (cached) {
     metadata.delete(path); metadata.set(path, cached);
@@ -9,7 +14,7 @@ async function readJSON(bucket, path) {
   }
   const object = await bucket.get(path);
   if (!object) throw new MissingArchive();
-  if (object.size > 1024) throw new Error('Invalid public object pointer');
+  if (object.size > limit) throw new Error('Invalid public object pointer');
   const value = await object.json();
   metadata.set(path, value);
   while (metadata.size > 64) metadata.delete(metadata.keys().next().value);
@@ -18,14 +23,25 @@ async function readJSON(bucket, path) {
 
 export async function gridConfig(bucket, prefix) {
   const grid = await readJSON(bucket, `${prefix}/public/grid.json`);
-  if (grid.format !== 2 || !Number.isInteger(grid.map_zoom) || grid.map_zoom < 9 || grid.map_zoom > 14) {
+  if (!GRIDS.includes(grid.format) || !Number.isInteger(grid.map_zoom) || grid.map_zoom < 9 || grid.map_zoom > 14) {
     throw new Error('Invalid map grid');
   }
   return grid;
 }
 
+async function readPointer(bucket, prefix, name) {
+  const cell = CELL.exec(name);
+  if (!cell || (await gridConfig(bucket, prefix)).format < 3) return readJSON(bucket, `${prefix}/public/${name}.json`);
+  const [z, x, y] = cell.slice(2, 5).map(Number);
+  const zoom = Math.max(z - BLOCK_ZOOMS, 0), shift = z - zoom;
+  const block = await readJSON(bucket, `${prefix}/public/${cell[1]}/${zoom}-${x >> shift}-${y >> shift}.json`, 64 * 1024);
+  const file = name.slice(cell[1].length + 1);
+  if (!Object.hasOwn(block, file)) throw new MissingArchive();
+  return block[file];
+}
+
 export async function objectPointer(bucket, prefix, name) {
-  const value = await readJSON(bucket, `${prefix}/public/${name}.json`);
+  const value = await readPointer(bucket, prefix, name);
   if (!/^[a-f0-9]{64}$/.test(value.sha256) || !['identity', 'gzip'].includes(value.encoding)
     || !Number.isSafeInteger(value.bytes) || value.bytes < 0
     || !Number.isSafeInteger(value.decoded_bytes) || value.decoded_bytes < 0) throw new Error('Invalid public object pointer');

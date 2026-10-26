@@ -18,20 +18,34 @@ export interface TerrainSource {
 
 /**
  * The stored tiles of a release. The tile service serves zooms 0 to 12. Zoom 13 is in a PMTiles pack
- * per zoom 11 tile (specs/planner-release.md), read with range requests through its public pointer
- * beside the manifest. A config without a manifest reads zoom 13 from the tile template too.
+ * per zoom 11 tile (specs/planner-release.md), read with range requests through its pointer in the
+ * block index beside the manifest. A config without a manifest reads zoom 13 from the tile template too.
  */
 export function releaseTiles(config: PlannerConfig): TerrainSource['fetch'] {
+    type Pointer = { sha256: string; encoding: string };
+    const blocks = new Map<string, Promise<Record<string, Pointer> | undefined>>();
     const packs = new Map<string, Promise<PMTiles | undefined>>();
+    const block = (manifest: string, name: string) => {
+        let entry = blocks.get(name);
+        if (!entry) {
+            // A plain fetch: an area without zoom 13 has no index, and that 404 is no reason to read the catalogue again.
+            entry = fetch(new URL(`public/maps/tiles/terrain/13/${name}.json`, manifest), { signal: requestSignal() }).then(async response => {
+                if (response.status === 404) return undefined;
+                if (!response.ok) throw new Error(`The index of terrain block ${name} answered ${response.status}.`);
+                return response.json();
+            });
+            blocks.set(name, entry);
+            entry.catch(() => blocks.delete(name));
+        }
+        return entry;
+    };
     const pack = (manifest: string, x: number, y: number) => {
         const name = `11-${x >> 2}-${y >> 2}`;
         let entry = packs.get(name);
         if (!entry) {
-            // A plain fetch: an area without zoom 13 has no pointer, and that 404 is no reason to read the catalogue again.
-            entry = fetch(new URL(`public/maps/tiles/terrain/13/${name}.pmtiles.json`, manifest), { signal: requestSignal() }).then(async response => {
-                if (response.status === 404) return undefined;
-                if (!response.ok) throw new Error(`The pointer of terrain pack ${name} answered ${response.status}.`);
-                const pointer = await response.json();
+            entry = block(manifest, `7-${x >> 6}-${y >> 6}`).then(index => {
+                const pointer = index && Object.hasOwn(index, `${name}.pmtiles`) ? index[`${name}.pmtiles`] : undefined;
+                if (!pointer) return undefined;
                 if (pointer.encoding !== 'identity') throw new Error(`Terrain pack ${name} is not stored for range requests.`);
                 return new PMTiles(new URL(`../../objects/${pointer.sha256}`, manifest).href);
             });
