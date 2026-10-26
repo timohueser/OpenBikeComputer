@@ -6,6 +6,21 @@ import type { View } from '../trailview/view';
 import type { PlannerConfig } from './config';
 import { firstView, type Near } from './trailview-first';
 
+let device: Promise<Gpu | undefined> | undefined;
+/**
+ * The page's one GPU device. The binoculars ask for it at a press, as a cold device takes over a second, and later
+ * opens use it again. A lost device is asked for again at the next press.
+ */
+export function requestGpu(): Promise<Gpu | undefined> {
+    return device ??= Gpu.request().then(gpu => {
+        void gpu?.device.lost.then(() => { device = undefined; });
+        return gpu;
+    }, (error: unknown) => {
+        device = undefined;
+        throw error;
+    });
+}
+
 /**
  * The engine on the canvas, or undefined when the browser has no WebGPU adapter. It starts at `view`
  * and moves to the first view of the drop, which loads while the engine compiles.
@@ -13,7 +28,7 @@ import { firstView, type Near } from './trailview-first';
 export async function startTrailView(canvas: HTMLCanvasElement, config: PlannerConfig, view: View, near: Near): Promise<TrailView | undefined> {
     // The first view cannot reject: a throw after the start would leave a running engine that no caller holds.
     const first = firstView(config, [view.lon, view.lat], near).catch((error: unknown) => void console.info('TrailView first view falls back to the drop:', error));
-    const gpu = await Gpu.request();
+    const gpu = await requestGpu();
     if (!gpu) return undefined;
     const engine = await TrailView.start(canvas, gpu, config, view, scaleOf(''));
     const moved = await first;

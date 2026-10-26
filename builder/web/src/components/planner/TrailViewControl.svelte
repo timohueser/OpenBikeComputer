@@ -31,7 +31,7 @@
         // A new press ends the swing back to the control.
         drag = null;
         // The engine loads while the rider drags.
-        loadTrailView().catch(() => {});
+        loadTrailView().then(chunk => chunk.requestGpu()).catch(() => {});
         press = { id: event.pointerId, x: event.clientX, y: event.clientY, slop: dragPx(event.pointerType) };
         button.setPointerCapture(event.pointerId);
     }
