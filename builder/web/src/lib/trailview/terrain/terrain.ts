@@ -9,7 +9,7 @@ import { wgsl } from '../gpu/wgsl';
 import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { featureTile, NEAR, profileTable } from './bins';
-import { cdlod, distances, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
+import { cdlod, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
 import { Water } from './water';
@@ -197,8 +197,9 @@ export class Terrain {
     private selection = 0;
     private frameNumber = 0;
     private probing = 0;
-    /** Whether each selected node within NEAR_M drew its own page in the last frame, with its road paint. */
+    /** Whether each selected node within NEAR_M, and within EYE_M, drew its own page in the last frame, with its road paint. */
     private nearDrawn = false;
+    private eyeDrawn = false;
     /**
      * The state that the last probe read, a count of the frames that changed the pages or the masks,
      * which move the snapped mesh, and the last of those frames.
@@ -237,6 +238,11 @@ export class Terrain {
      */
     get near(): boolean {
         return this.nearDrawn && !!this.ground && this.ground.frame >= this.changedAt;
+    }
+
+    /** `near` within EYE_M of the eye. */
+    get eye(): boolean {
+        return this.eyeDrawn && !!this.ground && this.ground.frame >= this.changedAt;
     }
 
     /** Whether each drawn node of `near` has the road paint of its mask where the mask pool reaches it. */
@@ -470,8 +476,9 @@ export class Terrain {
         const order = (a: Node, b: Node) => a.level - b.level || far(a) - far(b), keys = new Set(wanted.map(key));
         // The ground takes the selection alone: with its own reads it would want the ground of coarser and coarser pages.
         this.wantedNodes = wanted.sort(order);
-        const nearField = new Set(nodes.filter(node => distances({ anchor, above: 0 }, node)[0] <= NEAR_M).map(key));
-        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField);
+        const field = (metres: number) => new Set(nodes.filter(node => distances({ anchor, above: 0 }, node)[0] <= metres).map(key));
+        const nearField = field(NEAR_M), eyeField = field(EYE_M);
+        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField);
         // After the update, so that a page draws in the frame that it arrives in. The nodes of the levels
         // with masks come first: they draw with the road paint, those with a tunnel's portal first of all,
         // with its hole. Each pipeline draws near to far, so that a GPU that shades before the depth test
@@ -498,6 +505,7 @@ export class Terrain {
         }
         this.work = work;
         this.nearDrawn = this.pages.nearMissing === 0 && this.painted(nodes, nearField, anchor);
+        this.eyeDrawn = this.pages.eyeMissing === 0 && this.painted(nodes, eyeField, anchor);
         this.jobs = { near: 0, coarse: 0, masks: 0 };
         for (const { page, mode } of work.stamps) this.jobs[!(mode & MODE.HEIGHTS) ? 'masks' : page.node.level >= NEAR ? 'near' : 'coarse']++;
         this.anchor = anchor;

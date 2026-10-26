@@ -107,9 +107,11 @@ export class Pages {
     shortage = 0;
     /** Wanted pages that are not ready yet in the last frame. */
     missing = 0;
-    /** Of them, the pages of `near` in the last update. */
+    /** Of them, the pages of `near` and of `eye` in the last update. */
     nearMissing = 0;
+    eyeMissing = 0;
     private near = new Set<string>();
+    private eye = new Set<string>();
     /** Pages of each pool that the last frame wanted. */
     wanted: Record<Kind, number> = { stored: 0, synth: 0 };
     readonly pages = new Map<string, Page>();
@@ -175,12 +177,16 @@ export class Pages {
         return undefined;
     }
 
-    /** Takes the pages that a frame wants, coarse and near first, and returns its GPU work. `near` names the wanted pages that `nearMissing` counts. */
-    update(wanted: Node[], anchor: Anchor, near = new Set<string>()): Work {
+    /**
+     * Takes the pages that a frame wants, coarse and near first, and returns its GPU work. `near` and
+     * `eye` name the wanted pages that `nearMissing` and `eyeMissing` count.
+     */
+    update(wanted: Node[], anchor: Anchor, near = new Set<string>(), eye = new Set<string>()): Work {
         this.frame++;
         this.near = near;
+        this.eye = eye;
         this.shortage = 0;
-        this.missing = this.nearMissing = 0;
+        this.missing = this.nearMissing = this.eyeMissing = 0;
         this.wanted = { stored: 0, synth: 0 };
         const work: Work = { uploads: [], syntheses: [], stamps: [], normals: [], fresh: [], origins: this.window(anchor) };
         // A node that nothing draws yet also wants its page of level FILL, which is a hole until it comes.
@@ -300,6 +306,7 @@ export class Pages {
     private miss(node: Node): void {
         this.missing++;
         if (this.near.has(key(node))) this.nearMissing++;
+        if (this.eye.has(key(node))) this.eyeMissing++;
     }
 
     /**

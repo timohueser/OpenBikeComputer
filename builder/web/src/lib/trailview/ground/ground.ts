@@ -94,6 +94,11 @@ export class Ground {
         return this.pages.nearMissing === 0 && this.jobs.length === 0;
     }
 
+    /** `nearIdle` within EYE_M of the eye. */
+    get eyeIdle(): boolean {
+        return this.pages.eyeMissing === 0 && this.jobs.length === 0;
+    }
+
     /** Whether the next frame has work that no load in flight wakes. */
     get working(): boolean {
         return this.pages.working || this.jobs.length > 0;

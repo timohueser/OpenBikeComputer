@@ -271,6 +271,21 @@ export class TrailView {
         while (!this.destroyed && !this.near() && !this.idle()) await this.afterFrame();
     }
 
+    /**
+     * Resolves after the first drawn frame in which the view about the eye (EYE_M) is final: the eye
+     * stands on its final ground, and the terrain and the ground look within EYE_M draw at their wanted
+     * levels with their stamps. It waits for no houses, plants, shadows or far field. A view that never
+     * gets there resolves when it is idle.
+     */
+    async eyeReady(): Promise<void> {
+        await this.nextFrame();
+        while (!this.destroyed && !this.eyeFinal() && !this.idle()) await this.afterFrame();
+    }
+
+    private eyeFinal(): boolean {
+        return this.drawing && this.terrain.eye && this.settled() && this.groundLook.eyeIdle;
+    }
+
     private near(): boolean {
         return this.drawing && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.idle && this.forest.idle
             && this.plants.idle && this.orchards.idle && this.instances.idle && this.shadow.nearDrawn;
