@@ -30,6 +30,8 @@ import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'casters', 'shadow', 'far-casters', 'far-shadow', 'mips', 'resolve'];
 /** Metres to a view that is at another place. */
 const NEW_PLACE = 1000;
+/** The longest that the other loads wait for the tiles under the eye: a tile that hangs must not hold the view back until its request times out. */
+const EYE_WAIT_MS = 1000;
 /** The clear colour of the crack test: any red pixel is a hole in the terrain. */
 const RED = { r: 1, g: 0, b: 0, a: 1 };
 /** `Frame` in terrain.wgsl. */
@@ -147,15 +149,15 @@ export class TrailView {
 
     /**
      * Starts the terrain and feature tiles under the eye, reads the ruleset and opens the ground layers,
-     * compiles the pipelines, then starts the other tile loads once the tiles under the eye are in: on a
-     * slow link they would share it with some thirty requests. `scale` is the render scale.
+     * compiles the pipelines, then starts the other tile loads once the tiles under the eye are in, or
+     * after EYE_WAIT_MS: on a slow link the other loads would share it with them. `scale` is the render scale.
      */
     static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number): Promise<TrailView> {
         const tiles = eyeTiles(config, [view.lon, view.lat]);
         const ground = await GroundSource.open(config, view.date).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
         const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, scale);
         await engine.attach(gpu);
-        await tiles.arrived;
+        await Promise.race([tiles.arrived, new Promise(resolve => setTimeout(resolve, EYE_WAIT_MS))]);
         engine.request();
         return engine;
     }
@@ -224,19 +226,25 @@ export class TrailView {
     async waitForIdle(): Promise<void> {
         await this.nextFrame();
         // A tile or a probe that arrives draws the next frame.
-        while (!this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.trees.idle || !this.forest.idle || !this.plants.idle || !this.orchards.idle || !this.instances.idle || this.shadow.pending || !this.settled() || this.converging) await new Promise<void>(resolve => this.rendered.push(resolve));
+        while (!this.idle()) await new Promise<void>(resolve => this.rendered.push(resolve));
         await this.gpu.device.queue.onSubmittedWorkDone();
+    }
+
+    private idle(): boolean {
+        return this.terrain.idle && this.groundLook.idle && this.houses.idle && this.trees.idle && this.forest.idle && this.plants.idle && this.orchards.idle && this.instances.idle
+            && !this.shadow.pending && this.settled() && !this.converging;
     }
 
     /**
      * Resolves after the first drawn frame in which the near field (NEAR_M about the eye) is final: the
      * eye stands on the probe of the finest heights under it, the terrain within NEAR_M draws at its
      * wanted levels with its stamps, the ground pages, houses, trees and plants there are in, and the
-     * near shadow map holds them. It waits neither for the far field nor for the jittered frames.
+     * near shadow map holds them. It waits neither for the far field nor for the jittered frames. A view
+     * that never gets there, such as one whose tiles fail, resolves when it is idle.
      */
     async nearReady(): Promise<void> {
         await this.nextFrame();
-        while (!this.near()) await new Promise<void>(resolve => this.rendered.push(resolve));
+        while (!this.near() && !this.idle()) await new Promise<void>(resolve => this.rendered.push(resolve));
     }
 
     private near(): boolean {

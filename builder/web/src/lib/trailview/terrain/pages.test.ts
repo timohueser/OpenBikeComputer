@@ -59,14 +59,12 @@ describe('the page pools', () => {
         expect(map.filter(entry => entry >>> 16).length).toBe(ready.filter(page => page.kind === 'stored').length);
     });
 
-    it('fill the holes with the coarsest tiles first, then load the tile under the eye, then the nearer tiles first', async () => {
+    it('fill the holes from one coarse tile, then load the tile under the eye, then the nearer tiles first', async () => {
         const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
         await settle(pages, wanted);
-        const nodes = tiles.fetched.map(name => name.split('/').map(Number)).map(([level, x, y]) => ({ level, x, y }));
-        const coarsest = Math.min(...nodes.map(node => node.level)), holes = nodes.findIndex(node => node.level !== coarsest);
-        expect(holes).toBeGreaterThan(0);
-        const rest = nodes.slice(holes), metres = rest.map(node => distances({ anchor, above: 0 }, node)[0]);
-        expect(key(rest[0])).toBe(`13/${Math.floor((anchor.whole[0] + anchor.part[0]) / size(13))}/${Math.floor((anchor.whole[1] + anchor.part[1]) / size(13))}`);
+        const at = (z: number) => `${z}/${Math.floor((anchor.whole[0] + anchor.part[0]) / size(z))}/${Math.floor((anchor.whole[1] + anchor.part[1]) / size(z))}`;
+        expect(tiles.fetched.slice(0, 2)).toEqual([at(6), at(13)]);
+        const metres = tiles.fetched.map(name => name.split('/').map(Number)).filter(([z]) => z === 13).map(([level, x, y]) => distances({ anchor, above: 0 }, { level, x, y })[0]);
         expect(metres).toEqual([...metres].sort((a, b) => a - b));
     });
 
@@ -121,7 +119,8 @@ describe('the page pools', () => {
         const work = pages.update([at(15), far], anchor);
         expect(work.syntheses.map(({ page, stored }) => [key(page.node), stored])).toEqual([[key(at(15)), 13]]);
         expect(around.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
-        expect(pages.shortage).toBe(1);
+        // The arrival and the page that fills the hole at `far` find no slot.
+        expect(pages.shortage).toBe(2);
     });
 
     it('keep the inputs of a synthesis that arrive together in a pool that just holds them', async () => {

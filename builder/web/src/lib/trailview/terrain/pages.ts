@@ -7,6 +7,8 @@ import { COARSEST, distances, FINEST, key, MAP, size, type Node } from './lod';
 
 /** Tile requests in flight at most. */
 const LOADS = 6;
+/** The level of the pages that fill the holes: one small tile of zoom 6 spans a view, so the view's own coarse tiles can come after the near field. */
+const FILL = 7;
 /** Pages that arrive or are synthesized per frame at most; each gets its normals in the same frame. */
 export const ARRIVALS = 16;
 /** Words of stamp data per frame at most: the nodes of the frame's stamps. */
@@ -105,6 +107,9 @@ export class Pages {
     shortage = 0;
     /** Wanted pages that are not ready yet in the last frame. */
     missing = 0;
+    /** Of them, the pages of `near` in the last update. */
+    nearMissing = 0;
+    private near = new Set<string>();
     /** Pages of each pool that the last frame wanted. */
     wanted: Record<Kind, number> = { stored: 0, synth: 0 };
     readonly pages = new Map<string, Page>();
@@ -120,7 +125,7 @@ export class Pages {
     private readonly queued = new Map<string, number>();
     private readonly refresh = new Set<Page>();
     /** The tiles that the frame's pages wait for, by name, with those pages: the frame starts the most needed of them. */
-    private readonly wishes = new Map<string, { tile: Node; pages: Node[] }>();
+    private readonly wishes = new Map<string, { tile: Node; pages: Map<string, Node> }>();
     /** The pages that the frame draws or synthesizes from, by name: an arrival among them evicts none of them. */
     private readonly needs = new Set<string>();
     private frame = 0;
@@ -170,13 +175,22 @@ export class Pages {
         return undefined;
     }
 
-    /** Takes the pages that a frame wants, coarse and near first, and returns its GPU work. */
-    update(wanted: Node[], anchor: Anchor): Work {
+    /** Takes the pages that a frame wants, coarse and near first, and returns its GPU work. `near` names the wanted pages that `nearMissing` counts. */
+    update(wanted: Node[], anchor: Anchor, near = new Set<string>()): Work {
         this.frame++;
+        this.near = near;
         this.shortage = 0;
-        this.missing = 0;
+        this.missing = this.nearMissing = 0;
         this.wanted = { stored: 0, synth: 0 };
         const work: Work = { uploads: [], syntheses: [], stamps: [], normals: [], fresh: [], origins: this.window(anchor) };
+        // A node that nothing draws yet also wants its page of level FILL, which is a hole until it comes.
+        const fills = new Map<string, Node>();
+        for (const node of wanted) {
+            if (node.level <= FILL || this.pages.get(key(node))?.drawn !== undefined || this.covers(node)) continue;
+            const up = node.level - FILL, fill = { level: FILL, x: node.x >> up, y: node.y >> up };
+            fills.set(key(fill), fill);
+        }
+        wanted = [...fills.values(), ...wanted];
         // Every wanted page is used before the first allocation, so none leaves for a later one of this frame.
         for (const node of wanted) {
             const page = this.pages.get(key(node));
@@ -242,13 +256,13 @@ export class Pages {
         if (page) {
             page.used = this.frame;
             this.wanted[page.kind]++;
-            if (page.drawn === undefined) this.missing++;
+            if (page.drawn === undefined) this.miss(node);
             return;
         }
         const stored = this.stored(node);
         if (stored !== 'no') {
             this.wanted.stored++;
-            this.missing++;
+            this.miss(node);
             this.load(node);
             return;
         }
@@ -256,7 +270,7 @@ export class Pages {
         // No stored tile above the node knows a height: nothing draws there.
         if (!ancestor) return;
         this.wanted.synth++;
-        this.missing++;
+        this.miss(node);
         if (ancestor === 'wait') return;
         // The synthesis reads the ancestor and its neighbours: no allocation of this frame takes them.
         const inputs = this.around(ancestor).map(near => {
@@ -280,6 +294,12 @@ export class Pages {
             if (mode) work.stamps.push({ page: synth, out: work.syntheses.length, target: synth.slot, data: stamps.data, mode });
         }
         work.syntheses.push({ page: synth, stored: ancestor.level });
+    }
+
+    /** Counts a wanted page that does not draw yet. */
+    private miss(node: Node): void {
+        this.missing++;
+        if (this.near.has(key(node))) this.nearMissing++;
     }
 
     /**
@@ -403,9 +423,9 @@ export class Pages {
         this.needs.add(key(node));
         const tile: Node = { level: node.level - 1, x: node.x >> 1, y: node.y >> 1 }, name = key(tile), state = this.tiles.get(name)?.state;
         if ((state && state !== 'done') || this.queued.get(name)) return;
-        const wish = this.wishes.get(name);
-        if (wish) wish.pages.push(node);
-        else this.wishes.set(name, { tile, pages: [node] });
+        const wish = this.wishes.get(name) ?? { tile, pages: new Map<string, Node>() };
+        wish.pages.set(key(node), node);
+        this.wishes.set(name, wish);
     }
 
     /** Starts the wished tiles in the order of `priority`, of the most valuable page that each holds; the finer tile first at a tie. */
@@ -413,7 +433,7 @@ export class Pages {
         if (this.loads >= LOADS) return;
         const eye = { anchor, above: 0 };
         const order = [...this.wishes.values()].map(({ tile, pages }) => ({
-            tile, value: Math.max(...pages.map(page => priority(page.level, this.coming(page), distances(eye, page)[0]))),
+            tile, value: Math.max(...[...pages.values()].map(page => priority(page.level, this.coming(page), distances(eye, page)[0]))),
         })).sort((a, b) => b.value - a.value || b.tile.level - a.tile.level);
         for (const { tile } of order.slice(0, LOADS - this.loads)) this.fetch(tile.level, tile.x, tile.y);
     }
