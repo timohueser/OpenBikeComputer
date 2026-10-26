@@ -17,5 +17,6 @@ target/release/trailview-heights JOB OUT
 | `OBC_TRAILVIEW_HEIGHTS` | The step runs this program instead of the Cargo build. |
 | `OBC_DATA_MEMORY_BYTES` | The road jobs that run at once fit in this memory, as in the other Python steps. |
 
-The water networks run on all cores. The road jobs run on a core each, as many as fit in the memory
-that is left after the solvers read the job, by the size of the largest job.
+The water networks run on all cores. The road jobs run on a core each, the largest first, as many
+at once as fit in the memory that is left after the solvers read the job, each by the size of its
+area. With no memory left, one job runs at a time.

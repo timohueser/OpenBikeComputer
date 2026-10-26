@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use rstar::primitives::GeomWithData;
 use rstar::RTree;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, PoisonError};
 
 use super::fit::Graph;
 use super::network::{distinct, hypot, sub, unique};
@@ -17,9 +17,8 @@ use crate::{metres, Terrain};
 /// An area is a tile of AREA_ZOOM, about 27 km at 47° N. Its job holds the ways within HALO_M of it.
 pub const AREA_ZOOM: u32 = 10;
 pub const HALO_M: f64 = 500.0;
-/// A job holds about this many bytes per metre of the ways of its area, with those of its halo: its
-/// samples, its rows and the factorization of its system. Measured on the jobs of central-switzerland
-/// that run at once.
+/// A job holds about this many bytes per metre of the ways of its area: its samples, its rows and the
+/// factorization of its system, measured on the bake of central-switzerland.
 const JOB_BYTES_PER_M: f64 = 200.0;
 /// The ways that a deck or a bore crosses join a job from the points every FREE_STEP_M along it.
 const FREE_STEP_M: f64 = 50.0;
@@ -235,20 +234,17 @@ pub fn solve_by_area(
     let mut jobs: Vec<Area> = wanted.into_iter().filter(|area| region.areas.contains_key(area)).collect();
     jobs.sort_by(|p, q| region.areas[q].partial_cmp(&region.areas[p]).unwrap().then(p.cmp(q)));
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
-    let budget = Budget { state: Mutex::new((memory.saturating_sub(resident()), 0)), freed: Condvar::new() };
-    eprintln!(
-        "roads: {} areas on {cores} threads in {:.1} GB",
-        jobs.len(),
-        budget.state.lock().unwrap().0 as f64 / 1e9
-    );
+    let memory = memory.saturating_sub(resident());
+    let budget = Budget { state: Mutex::new((memory, 0)), freed: Condvar::new() };
+    eprintln!("roads: {} areas on {cores} threads in {:.1} GB", jobs.len(), memory as f64 / 1e9);
     let (next, done) = (AtomicUsize::new(0), Mutex::new(Vec::new()));
     std::thread::scope(|scope| {
         for _ in 0..cores.min(jobs.len()) {
             scope.spawn(|| {
                 while let Some(area) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    let taken = budget.take((JOB_BYTES_PER_M * region.areas[area]) as usize);
+                    let held = budget.take((JOB_BYTES_PER_M * region.areas[area]) as usize);
                     let job = solve_area(&every, terrain, rivers, &boxes, classes, &region, *area);
-                    budget.give(taken);
+                    drop(held);
                     done.lock().unwrap().push(job);
                 }
             });
@@ -347,24 +343,33 @@ struct Budget {
     freed: Condvar,
 }
 
-impl Budget {
-    /// Wait until `bytes` fit, or no job runs; then take them, or all that is left.
-    fn take(&self, bytes: usize) -> usize {
-        let mut state = self.state.lock().unwrap();
-        while state.1 > 0 && state.0 < bytes {
-            state = self.freed.wait(state).unwrap();
-        }
-        let taken = bytes.min(state.0);
-        state.0 -= taken;
-        state.1 += 1;
-        taken
-    }
+/// Bytes of a [`Budget`] that a job holds until it ends, also when it panics.
+struct Held<'a> {
+    budget: &'a Budget,
+    bytes: usize,
+}
 
-    fn give(&self, taken: usize) {
-        let mut state = self.state.lock().unwrap();
-        state.0 += taken;
+impl Budget {
+    /// Wait until `bytes` fit, or no job runs; then hold them, or all that is left. With nothing left,
+    /// one job runs at a time.
+    fn take(&self, bytes: usize) -> Held<'_> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        while state.1 > 0 && state.0 < bytes {
+            state = self.freed.wait(state).unwrap_or_else(PoisonError::into_inner);
+        }
+        let bytes = bytes.min(state.0);
+        state.0 -= bytes;
+        state.1 += 1;
+        Held { budget: self, bytes }
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        let mut state = self.budget.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.0 += self.bytes;
         state.1 -= 1;
-        self.freed.notify_all();
+        self.budget.freed.notify_all();
     }
 }
 
@@ -378,4 +383,54 @@ fn bounds(points: &[[f64; 2]]) -> [f64; 4] {
     points.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, p| {
         [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    use super::*;
+
+    fn budget(memory: usize) -> Budget {
+        Budget { state: Mutex::new((memory, 0)), freed: Condvar::new() }
+    }
+
+    #[test]
+    fn with_no_memory_left_one_job_runs_at_a_time() {
+        let budget = budget(0);
+        let first = budget.take(100);
+        let running = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let _second = budget.take(100);
+                running.store(true, Ordering::SeqCst);
+            });
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!running.load(Ordering::SeqCst), "a second job started beside the first");
+            drop(first);
+        });
+        assert!(running.load(Ordering::SeqCst));
+        assert_eq!(*budget.state.lock().unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn jobs_that_fit_run_together_and_a_panic_gives_its_bytes_back() {
+        let budget = budget(300);
+        let (a, b) = (budget.take(100), budget.take(200));
+        assert_eq!(*budget.state.lock().unwrap(), (0, 2));
+        drop((a, b));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    let _held = budget.take(300);
+                    panic!("a job fails");
+                });
+            });
+        }));
+        assert!(panicked.is_err());
+        // The bytes are back: a job of the whole budget starts at once.
+        drop(budget.take(300));
+        assert_eq!(*budget.state.lock().unwrap(), (300, 0));
+    }
 }

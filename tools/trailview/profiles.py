@@ -20,7 +20,7 @@ class Terrain:
     """The master terrain: Terrarium WebP tiles of 512 px, R × 256 + G + B / 256 − 32768 metres, unknown
     unless opaque, from `read(z, x, y)` up to zoom `top`. A point reads the deepest zoom that knows its
     four pixels. The workers of a step share one: as forked processes, or as threads where a fork is not safe. `origin`
-    names the file or the files of the terrain for the solvers of `heights.py`."""
+    names the file or the files of the terrain for the solvers of `solvers.py`."""
 
     def __init__(self, read, top, origin=None):
         self.read, self.top, self.origin = read, top, origin

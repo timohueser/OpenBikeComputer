@@ -608,6 +608,8 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
     classes = roads.CLASSES if classes is None else roads.validate(classes)
 
     binary, version = region_osm.probe()
+    # A solver that cannot be built fails the step before the long feature pass.
+    program = solvers.binary() if terrain else None
     tiles, low, shared, counts, held, metrics, river_areas = Tiles(bounds), [], {}, {}, [], {}, []
 
     def place(entry, tags, parts):
@@ -671,7 +673,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
         (x0, y1), (x1, y0) = world(west, south), world(east, north)
         levels, heights, culverts, underpasses, metrics["water"], road_metrics = solvers.solve(
             [(entry["kind"], tags, parts) for entry, tags, parts in waters], [(entry["kind"], tags, parts) for entry, tags, parts in ways],
-            beyond, (x0, y0, x1, y1), terrain, classes)
+            beyond, (x0, y0, x1, y1), terrain, program, classes)
         del beyond
         for (entry, tags, parts), z in zip(waters, levels):
             place(entry, tags, [(outer, points, z) for (outer, points, _), z in zip(parts, z)])
