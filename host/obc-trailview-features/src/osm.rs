@@ -31,6 +31,19 @@ pub fn probe() -> Result<(PathBuf, String), String> {
     Ok((binary, String::from_utf8_lossy(&out.stdout).trim().to_string()))
 }
 
+/// Osmium for a test, or None where the machine has none. CI has it, so there its absence fails.
+#[cfg(test)]
+pub(crate) fn test_osmium() -> Option<PathBuf> {
+    match probe() {
+        Ok((binary, _)) => Some(binary),
+        Err(error) if std::env::var_os("CI").is_some() => panic!("{error}"),
+        Err(_) => {
+            eprintln!("Osmium is unavailable: the test does not run");
+            None
+        }
+    }
+}
+
 fn run(binary: &Path, args: &[&dyn AsRef<std::ffi::OsStr>]) -> Result<(), String> {
     let out = Command::new(binary).args(args.iter().map(|a| a.as_ref())).output().map_err(|e| e.to_string())?;
     if !out.status.success() {
@@ -94,6 +107,9 @@ pub fn selected(entries: &[Entry], pbf: &Path, binary: &Path, tiles: &Tiles, wor
     args.extend(paths.iter().map(|p| p as &dyn AsRef<std::ffi::OsStr>));
     args.extend([&"-o" as &dyn AsRef<std::ffi::OsStr>, &out]);
     run(binary, &args)?;
+    for path in paths {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
     Ok(out)
 }
 
@@ -121,12 +137,18 @@ pub fn objects(entries: &[Entry], pbf: &Path, binary: &Path, mut each: impl FnMu
             .stdout(Stdio::piped())
             .spawn()
             .map_err(|e| e.to_string())?;
-        for line in BufReader::new(child.stdout.take().unwrap()).lines() {
+        let read = BufReader::new(child.stdout.take().unwrap()).lines().try_for_each(|line| {
             let line = line.map_err(|e| e.to_string())?;
             let feature: Value = serde_json::from_str(&line).map_err(|e| format!("the export of Osmium: {e}"))?;
             if let Some(found) = object(entries, &feature) {
                 each(found);
             }
+            Ok::<_, String>(())
+        });
+        if let Err(error) = read {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
         }
         if !child.wait().map_err(|e| e.to_string())?.success() {
             return Err("Prepared Osmium export failed".into());
@@ -205,10 +227,7 @@ mod tests {
 
     #[test]
     fn the_input_holds_what_the_region_can_place_and_nothing_past_it() {
-        let Ok((binary, _)) = probe() else {
-            eprintln!("Osmium is unavailable: the cut of the input does not run");
-            return;
-        };
+        let Some(binary) = test_osmium() else { return };
         let (column, row) = (4286, 2889);
         let (west, north) = location(column, row, 0.0, 0.0);
         let (east, south) = location(column, row, 2.0 * EXTENT as f64, EXTENT as f64);

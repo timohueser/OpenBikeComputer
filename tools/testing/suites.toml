@@ -31,6 +31,11 @@ name = "obc-formats"
 route = "required"
 triggers = ["specs/**"]
 
+# The bake embeds the kind table and the road classes, and its codec test reads the shared vectors.
+[[package]]
+name = "obc-trailview-features"
+triggers = ["data/trailview/kinds.json", "data/trailview/roads.json", "specs/vectors/trailview-features.*"]
+
 [[package]]
 name = "obc-link"
 triggers = ["specs/vectors/**"]
@@ -206,6 +211,8 @@ triggers = [
   "builder/web/package.json",
   "builder/web/package-lock.json",
   "tools/planner_mvt_verify.mjs",
+  # bins.test.ts reads the path widths of the bake.
+  "host/obc-trailview-features/src/structures.rs",
   "builder/web/vite.config.ts",
   "host/obc-map-core/schema/config.schema.json",
   "specs/vectors/**",

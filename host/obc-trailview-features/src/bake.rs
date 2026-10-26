@@ -147,6 +147,8 @@ pub fn bake(
         parts.iter_mut().for_each(|p| p.z = None);
         placer.entry(entry, tags, parts);
     })?;
+    // The cut of a large region takes GBs, and the solvers run long after it is read.
+    std::fs::remove_file(&cut).map_err(|e| e.to_string())?;
     eprintln!("osm: {:.1} s", started.elapsed().as_secs_f64());
     let values = landuse_of(&houses.iter().map(|(_, _, parts)| parts).collect::<Vec<_>>(), &landuse);
     for ((e, mut tags, parts), value) in houses.into_iter().zip(&values) {
@@ -485,17 +487,9 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
 /// Per building, the `landuse` of the smallest of the `areas` that holds the middle of its outer ring,
 /// or None. A point lies in an area when it lies inside an odd number of its rings.
 fn landuse_of(buildings: &[&Vec<Part>], areas: &[(Tags, Vec<Part>)]) -> Vec<Option<String>> {
-    let boxes: Vec<[f64; 4]> = areas
-        .iter()
-        .map(|(_, parts)| {
-            parts
-                .iter()
-                .flat_map(|p| &p.points)
-                .fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, p| {
-                    [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
-                })
-        })
-        .collect();
+    let boxes: Vec<[f64; 4]> =
+        areas.iter().map(|(_, parts)| water::bounds(parts.iter().map(|p| p.points.as_slice()))).collect();
+    let boxes = water::Boxes::new(&boxes);
     let twice = |r: &[[f64; 2]]| -> f64 {
         let n = r.len();
         let a: f64 = (0..n).map(|i| r[i][0] * r[(i + 1) % n][1]).sum();
@@ -512,12 +506,9 @@ fn landuse_of(buildings: &[&Vec<Part>], areas: &[(Tags, Vec<Part>)]) -> Vec<Opti
             let ring = &parts[0].points;
             let (sx, sy) = ring.iter().fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
             let (x, y) = (sx / ring.len() as f64, sy / ring.len() as f64);
-            let hits = (0..areas.len()).filter(|&k| {
-                let b = boxes[k];
-                b[0] <= x && x <= b[2] && b[1] <= y && y <= b[3] && {
-                    let rings: Vec<&[[f64; 2]]> = areas[k].1.iter().map(|p| p.points.as_slice()).collect();
-                    structures::contains(&rings, [x, y])
-                }
+            let hits = boxes.overlapping([x, y, x, y]).into_iter().filter(|&k| {
+                let rings: Vec<&[[f64; 2]]> = areas[k].1.iter().map(|p| p.points.as_slice()).collect();
+                structures::contains(&rings, [x, y])
             });
             let smallest = hits.fold(None, |best: Option<usize>, k| match best {
                 Some(b) if sizes[b] <= sizes[k] => Some(b),

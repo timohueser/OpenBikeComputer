@@ -375,8 +375,9 @@ impl Drop for Held<'_> {
 
 /// The bytes of memory that this process holds: `memory` counts what was free before it started.
 fn resident() -> usize {
-    let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
-    statm.split_whitespace().nth(1).and_then(|pages| pages.parse::<usize>().ok()).unwrap_or(0) * 4096
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"));
+    line.and_then(|l| l.split_whitespace().nth(1)?.parse::<usize>().ok()).unwrap_or(0) << 10
 }
 
 fn bounds(points: &[[f64; 2]]) -> [f64; 4] {

@@ -33,4 +33,4 @@ no memory free, one job runs at a time.
 ## Tests
 
 `obc test -p obc-trailview-features`. Without Osmium, the tests of the cut and of the bake of a small
-region return at once.
+region return at once, except in CI (`CI` set), where they fail.

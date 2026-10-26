@@ -205,10 +205,7 @@ mod tests {
 
     #[test]
     fn a_small_region_bakes_into_buffered_tiles_at_every_zoom() {
-        let Ok((binary, _)) = crate::osm::probe() else {
-            eprintln!("Osmium is unavailable: the bake of a small region does not run");
-            return;
-        };
+        let Some(binary) = crate::osm::test_osmium() else { return };
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
         std::fs::write(root.join("region.osm"), osm()).unwrap();

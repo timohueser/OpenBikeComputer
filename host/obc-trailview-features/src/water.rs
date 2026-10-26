@@ -890,7 +890,7 @@ impl Edges {
 }
 
 /// The box (x0, y0, x1, y1) of the points of lines.
-fn bounds<'a>(lines: impl IntoIterator<Item = &'a [[f64; 2]]>) -> [f64; 4] {
+pub(crate) fn bounds<'a>(lines: impl IntoIterator<Item = &'a [[f64; 2]]>) -> [f64; 4] {
     let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
     for &[x, y] in lines.into_iter().flatten() {
         b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
@@ -899,10 +899,10 @@ fn bounds<'a>(lines: impl IntoIterator<Item = &'a [[f64; 2]]>) -> [f64; 4] {
 }
 
 /// Boxes (x0, y0, x1, y1) to find the ones that meet a box, edges included.
-struct Boxes(RTree<GeomWithData<Rectangle<[f64; 2]>, usize>>);
+pub(crate) struct Boxes(RTree<GeomWithData<Rectangle<[f64; 2]>, usize>>);
 
 impl Boxes {
-    fn new(boxes: &[[f64; 4]]) -> Self {
+    pub(crate) fn new(boxes: &[[f64; 4]]) -> Self {
         let items = boxes
             .iter()
             .enumerate()
@@ -911,7 +911,7 @@ impl Boxes {
     }
 
     /// The numbers of the boxes that meet `b`, in order.
-    fn overlapping(&self, b: [f64; 4]) -> Vec<usize> {
+    pub(crate) fn overlapping(&self, b: [f64; 4]) -> Vec<usize> {
         let envelope = AABB::from_corners([b[0], b[1]], [b[2], b[3]]);
         let mut out: Vec<usize> = self.0.locate_in_envelope_intersecting(&envelope).map(|item| item.data).collect();
         out.sort_unstable();
