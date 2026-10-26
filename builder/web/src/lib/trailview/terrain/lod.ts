@@ -19,6 +19,8 @@ const MARGIN = 1e-3;
 export const RANGE = { least: 4.6, most: 8 } as const;
 /** The near field: metres about the eye where the level-17 nodes and the kinds' near meshes draw. `nearReady()` waits for it. */
 export const NEAR_M = 2000;
+/** The field about the eye that `eyeReady()` waits for: the view's position is final once it draws. */
+export const EYE_M = 500;
 /** The coarse cover lies this many levels above the drawn level: few pages, so a turn never finds a hole. */
 const COVER = 3;
 

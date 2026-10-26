@@ -52,9 +52,11 @@ export class Stamps implements StampSource {
     private next = 0;
     failed = 0;
 
-    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void) {
+    /** An abort of `stop` ends the worker. */
+    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal) {
         if (!tiles) return;
-        this.worker = new Worker(new URL('./stamp-worker.ts', import.meta.url), { type: 'module' });
+        const worker = this.worker = new Worker(new URL('./stamp-worker.ts', import.meta.url), { type: 'module' });
+        stop.addEventListener('abort', () => worker.terminate());
         this.worker.onmessage = ({ data }) => {
             const wait = this.waiting.get(data.id);
             this.waiting.delete(data.id);

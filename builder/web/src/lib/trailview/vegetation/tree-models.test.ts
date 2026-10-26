@@ -18,7 +18,7 @@ function trees(near = new Map<string, number>()) {
     jobs.length = 0;
     const specs: ModelSpec[] = [];
     const instances = { add: (spec: ModelSpec) => specs.push(spec) - 1, replace: (m: number, spec: ModelSpec) => (specs[m] = spec), day: 0 };
-    const models = new TreeModels(instances as unknown as Instances, () => {}, () => near);
+    const models = new TreeModels(instances as unknown as Instances, () => {}, () => near, new AbortController().signal);
     return { models, specs, beech: models.index('beech')! };
 }
 

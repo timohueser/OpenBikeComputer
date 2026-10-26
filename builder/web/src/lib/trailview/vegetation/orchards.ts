@@ -39,7 +39,9 @@ export class Orchards {
     /** Whether the last update changed what the orchards draw, other than by the camera. */
     newContent = false;
 
-    constructor(rules: { regions: Region[] }, trees: TreeModels, instances: Instances, private readonly features: FeatureTiles | undefined, private readonly wake: () => void) {
+    /** An abort of `stop` ends the worker. */
+    constructor(rules: { regions: Region[] }, trees: TreeModels, instances: Instances, private readonly features: FeatureTiles | undefined, private readonly wake: () => void, stop: AbortSignal) {
+        stop.addEventListener('abort', () => this.worker.terminate());
         this.pool = new Points(instances, CAPACITY);
         rules.regions.forEach((region, r) => {
             if (!region.orchard || !(region.orchard in TREES)) return;

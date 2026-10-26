@@ -56,7 +56,7 @@ export class GroundSource {
     private readonly waiting = new Map<number, { worker: Worker; resolve: (data: GroundResult) => void; reject: (error: Error) => void }>();
     private next = 0;
 
-    private constructor(readonly rules: Rules, sources: Partial<Record<Layer, Source>>, private readonly urls: Partial<Record<string, string>>, private readonly workers: Worker[]) {
+    private constructor(readonly rules: Rules, sources: Partial<Record<Layer, Source>>, private readonly urls: Partial<Record<string, string>>, private readonly workers: Worker[], private readonly stop: AbortSignal) {
         this.archives = Object.fromEntries(Object.entries(sources).map(([layer, source]) => [layer, { source, tiles: this.kept(source) }]));
         for (const worker of this.workers) {
             worker.onmessage = ({ data }) => {
@@ -79,17 +79,18 @@ export class GroundSource {
     /**
      * The ground of a config, with the snow of `date` open; undefined when it has no ruleset or no
      * ground archive. Only the rules and the ground fail it: another archive that does not open is
-     * left out.
+     * left out. An abort of `stop` ends its requests and its workers.
      */
-    static async open(config: PlannerConfig, date: string): Promise<GroundSource | undefined> {
+    static async open(config: PlannerConfig, date: string, stop = new AbortController().signal): Promise<GroundSource | undefined> {
         const urls = config.layers as Partial<Record<string, string>>;
         if (!config.trailview_rules || !urls[NAMES.ground]) return undefined;
         const band = snowBand(seasonDay(date).index);
         // The ruleset, the archives and the workers' scripts load side by side.
         const workers = Array.from({ length: WORKERS }, () => new Worker(new URL('./ground-worker.ts', import.meta.url), { type: 'module' }));
+        stop.addEventListener('abort', () => workers.forEach(worker => worker.terminate()));
         try {
             const [rules, entries, snow] = await Promise.all([
-                releaseFetch(config.trailview_rules, { signal: requestSignal() }).then(async response => {
+                releaseFetch(config.trailview_rules, { signal: AbortSignal.any([requestSignal(), stop]) }).then(async response => {
                     if (!response.ok) throw new Error(`The TrailView rules answered ${response.status}.`);
                     return rulesOf(await response.json());
                 }),
@@ -101,7 +102,7 @@ export class GroundSource {
                 })),
                 snowSource(urls, band).catch(leftOut(snowName(band))),
             ]);
-            const ground = new GroundSource(rules, Object.fromEntries(entries.filter(([, source]) => source)), urls, workers);
+            const ground = new GroundSource(rules, Object.fromEntries(entries.filter(([, source]) => source)), urls, workers, stop);
             // A worker that cannot decode the ground fails it once, not every tile.
             await Promise.all(workers.map(worker => ground.post(worker)));
             // A band that did not open opens again on the first load.
@@ -200,7 +201,7 @@ export class GroundSource {
     private kept(source: Source): Tiles<ArrayBuffer> {
         return decodedTiles(async (z, x, y, signal) => {
             try {
-                const body = await source.get(z, x, y, signal);
+                const body = await source.get(z, x, y, AbortSignal.any([signal, this.stop]));
                 this.requests++;
                 this.bytes += body?.byteLength ?? 0;
                 return body;

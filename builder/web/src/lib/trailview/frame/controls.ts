@@ -11,26 +11,29 @@ export interface Camera {
 
 const KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'shift']);
 
-/** W A S D or the arrows move, Q and E sink and rise in flight, Shift runs, F walks or flies, a drag looks, the wheel zooms. */
+/**
+ * W A S D or the arrows move, Q and E sink and rise in flight, Shift runs, F walks or flies, a drag looks, the wheel zooms.
+ * An abort of `signal` removes every listener, also those on the window.
+ */
 export class Controls {
     private readonly held = new Set<string>();
 
-    constructor(element: HTMLElement, camera: Camera) {
+    constructor(element: HTMLElement, camera: Camera, signal: AbortSignal) {
         let drag: { x: number; y: number } | undefined;
         element.addEventListener('pointerdown', event => {
             drag = { x: event.clientX, y: event.clientY };
             element.setPointerCapture(event.pointerId);
-        });
+        }, { signal });
         element.addEventListener('pointermove', event => {
             if (!drag) return;
             camera.moved(look(camera.pose(), event.clientX - drag.x, event.clientY - drag.y, VFOV / element.clientHeight));
             drag = { x: event.clientX, y: event.clientY };
-        });
-        element.addEventListener('pointerup', () => (drag = undefined));
+        }, { signal });
+        element.addEventListener('pointerup', () => (drag = undefined), { signal });
         element.addEventListener('wheel', event => {
             event.preventDefault();
             camera.moved(zoom(camera.pose(), event.deltaY, camera.ground()));
-        }, { passive: false });
+        }, { passive: false, signal });
         addEventListener('keydown', event => {
             if (event.ctrlKey || event.metaKey || event.altKey || (event.target as HTMLElement).closest?.('input, select, textarea')) return;
             const key = event.key.toLowerCase();
@@ -39,9 +42,9 @@ export class Controls {
             event.preventDefault();
             this.held.add(key);
             camera.moved(camera.pose());
-        });
-        addEventListener('keyup', event => this.held.delete(event.key.toLowerCase()));
-        addEventListener('blur', () => this.held.clear());
+        }, { signal });
+        addEventListener('keyup', event => this.held.delete(event.key.toLowerCase()), { signal });
+        addEventListener('blur', () => this.held.clear(), { signal });
     }
 
     /** The movement of the held keys, or undefined when none moves the eye. */

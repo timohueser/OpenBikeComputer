@@ -58,9 +58,9 @@ export class Forest implements Producer {
     /** Whether the last update changed what the forest draws, other than by the camera. */
     newContent = false;
 
-    constructor(config: PlannerConfig, rules: Rules, trees: TreeModels, private readonly instances: Instances, wake: () => void) {
+    constructor(config: PlannerConfig, rules: Rules, trees: TreeModels, private readonly instances: Instances, wake: () => void, stop: AbortSignal) {
         instances.produce(this);
-        this.canopy = new Canopy(config, wake);
+        this.canopy = new Canopy(config, wake, stop);
         this.most = windowSide(Math.max(Math.abs(config.bounds[1]), Math.abs(config.bounds[3])));
         this.orchard = rules.vocabulary.materials.findIndex(material => material.id === 'orchard') >>> 0;
         // tools/trailview/rules.py checks that a region has SPECIES tree species at most, each with its model.
