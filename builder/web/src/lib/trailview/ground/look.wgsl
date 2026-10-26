@@ -19,6 +19,9 @@
 @group(2) @binding(5) var cache: texture_2d_array<f32>;
 // A table of 256 × 256 hash values that repeats, for value noise in one fetch.
 @group(2) @binding(6) var noise_table: texture_2d<f32>;
+// Per page BEARINGS / 4 layers of HORIZON × HORIZON texels, ground.wgsl: the horizon's altitude in
+// BEARINGS bearings clockwise from north, 4 per layer, as a share of HORIZON_TOP.
+@group(2) @binding(7) var horizons: texture_2d_array<f32>;
 
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
@@ -33,6 +36,15 @@ const COVER_MOSS: u32 = 10u;
 
 // Pages per layer side of the ground textures.
 const GROUND_SIDE: i32 = 4;
+// Horizon texels a side of a page, each over HORIZON_SPAN × HORIZON_SPAN of its texels; the bearings
+// of a horizon texel, and the highest horizon in radians (75°).
+const HORIZON: i32 = 32;
+const HORIZON_SPAN: i32 = 8;
+const BEARINGS: u32 = 16u;
+const HORIZON_TOP: f32 = 1.309;
+// Radians of the sun's altitude across the soft edge of a shadow: the sun's disc, and the spread of a
+// horizon between its texels and its bearings.
+const PENUMBRA: f32 = 0.017;
 
 struct Ground {
     albedo: vec3f,
@@ -49,6 +61,8 @@ struct Ground {
     blades: f32,
     banded: f32,
     open: f32,
+    // The share of the sun that the horizons let through.
+    sun: f32,
     // The normal in render space and the openness two levels coarser, for cliffs.
     coarse: vec3f,
     coarse_open: f32,
@@ -275,6 +289,35 @@ fn albedo_held(held: Held) -> vec3f {
     return c * c;
 }
 
+// The share of the sun that the horizons of a held page let through, 1 where no page holds the point.
+fn sun_held(held: Held) -> f32 {
+    if (held.page < 0) {
+        return 1.0;
+    }
+    // Texel coordinates from the page's corner, in horizon texels.
+    let base = (held.t.whole + vec2i(held.t.part >= vec2f(0.5))) & vec2i(~255);
+    let q = clamp((vec2f(held.t.whole - base) + held.t.part + 0.5) / f32(HORIZON_SPAN), vec2f(0.5), vec2f(f32(HORIZON) - 0.5));
+    let uv = (vec2f(in_horizon(held.page, vec2i(0))) + q) / f32(HORIZON * GROUND_SIDE);
+    let way = look.sun.w * f32(BEARINGS);
+    let k = u32(way) % BEARINGS;
+    let next = (k + 1u) % BEARINGS;
+    let layer = i32(BEARINGS / 4u) * page_layer(held.page);
+    let a = textureSampleLevel(horizons, filtered, uv, layer + i32(k / 4u), 0.0)[k % 4u];
+    let b = textureSampleLevel(horizons, filtered, uv, layer + i32(next / 4u), 0.0)[next % 4u];
+    let horizon = mix(a, b, fract(way)) * HORIZON_TOP;
+    return smoothstep(-PENUMBRA, PENUMBRA, asin(clamp(look.sun.z, -1.0, 1.0)) - horizon);
+}
+
+// The share of the sun at a point, from the finest resident ground page.
+fn sun_at(s: vec2f) -> f32 {
+    return sun_held(held_at(s, u32(ceil(lod(s)))));
+}
+
+// Where horizon texel c of a page lies in its layers.
+fn in_horizon(page: i32, c: vec2i) -> vec2i {
+    return c + HORIZON * vec2i(page % GROUND_SIDE, (page / GROUND_SIDE) % GROUND_SIDE);
+}
+
 fn in_page(page: i32, c: vec2i) -> vec2i {
     return clamp(c, vec2i(0), vec2i(255)) + 256 * vec2i(page % GROUND_SIDE, (page / GROUND_SIDE) % GROUND_SIDE);
 }
@@ -345,6 +388,7 @@ fn ground_at(level: u32, s: vec2f, world: vec2f, footprint: f32) -> Ground {
         g.coarse = vec3f(0.0, 0.0, 1.0);
         g.coarse_open = 1.0;
         g.bare_from = 0.62;
+        g.sun = 1.0;
         return g;
     }
     // Texel coordinates from the page's corner: texel centres are whole numbers.
@@ -372,6 +416,7 @@ fn ground_at(level: u32, s: vec2f, world: vec2f, footprint: f32) -> Ground {
     let m = planes[3].xy * 2.0 - 1.0;
     g.coarse = render_normal(vec3f(m, sqrt(max(1.0 - dot(m, m), 1e-4))));
     g.coarse_open = 0.6 + 0.55 * planes[3].z;
+    g.sun = sun_held(held);
     let cell = textureLoad(cells, in_page(page, vec2i(floor(texel + 0.5))), page_layer(page), 0);
     g.region = cell.b;
     g.lithology = cell.g;
@@ -671,6 +716,6 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     let snow = g.snow * (1.0 - crowns) * smoothstep(0.4, 0.6, n.z);
     albedo = mix(albedo, rule(region, i32(COVER_SNOW) * 3).rgb, snow) * (1.0 - 0.3 * look.light.w * (1.0 - snow));
     // Rock shows its relief in the smooth light: the bands would light every face toward the sun alike.
-    let c = light_up(albedo, n, 1.0, open, mix(look.horizon.w, 0.5, walled));
+    let c = light_up(albedo, n, g.sun, open, mix(look.horizon.w, 0.5, walled));
     return atmosphere(c, relative, altitude);
 }

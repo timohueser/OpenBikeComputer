@@ -112,13 +112,14 @@ fn water_colour(in: WaterFragment) -> vec3f {
     let mirrored = reflect(dir, up);
     // The reflection is held to 90 %: the far bank that it would show is darker than the sky.
     let fresnel = 0.02 + 0.98 * pow(clamp(1.0 - dot(-dir, up), 0.0, 1.0), 5.0);
-    let lit = look.ambient.rgb + 0.8 * look.sun_colour.rgb * max(look.sun.z, 0.0);
+    let sun = sun_at(lod_of(in.relative.xy));
+    let lit = look.ambient.rgb + 0.8 * look.sun_colour.rgb * max(look.sun.z, 0.0) * sun;
     let body = BODY * lit;
     var c = mix(body * 0.55, sky(mirrored), min(0.96 * fresnel, 0.9));
     // The sun's path glints in sparks rather than a sheen.
     let glint = max(dot(mirrored, look.sun.xyz), 0.0);
     let sparks = smoothstep(0.8, 0.86, noise(q + 17.0)) * calm;
-    c += look.sun_colour.rgb * (4.0 * pow(glint, 400.0) + 2.5 * sparks * pow(glint, 80.0));
+    c += look.sun_colour.rgb * (4.0 * pow(glint, 400.0) + 2.5 * sparks * pow(glint, 80.0)) * sun;
     let foam = FOAM_MOST * smoothstep(FOAM_LOW, FOAM_HIGH, in.fall) * (0.6 + 0.4 * noise(world / 0.8));
     return mix(c, vec3f(0.85) * lit, foam);
 }

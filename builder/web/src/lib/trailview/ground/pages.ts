@@ -45,7 +45,7 @@ export interface Slot {
 /** The GPU work of a frame. */
 export interface GroundWork {
     uploads: { page: Slot; data: GroundPage }[];
-    /** Resident pages whose relief reads terrain that changed: their relief follows. */
+    /** Resident pages whose relief or horizons read terrain that changed: they follow. */
     refreshes: Slot[];
     /** The ground map, when it changed: MAP × MAP entries per level in the windows of the LOD map, the slot + 1 or 0. */
     map?: Uint32Array<ArrayBuffer>;
@@ -181,7 +181,8 @@ export class GroundPages {
         }
         const uploaded = new Set(work.uploads.map(upload => upload.page)), changed = new Set(refreshed.map(key));
         if (changed.size) for (const page of this.pages.values()) {
-            if (page.date >= 0 && !uploaded.has(page) && reliefReads(page.node, this.finest).some(node => changed.has(key(node)))) this.refresh.add(page);
+            if (page.date < 0 || uploaded.has(page)) continue;
+            if (reliefReads(page.node, this.finest).some(node => changed.has(key(node))) || refreshed.some(node => marches(page.node, node))) this.refresh.add(page);
         }
         for (const page of [...this.refresh].slice(0, REFRESHES)) {
             this.refresh.delete(page);
@@ -325,6 +326,16 @@ export class GroundPages {
 export function reliefReads(node: Node, finest: number): Node[] {
     const coarse = Math.max(node.level, COARSEST + 2) - (node.level === finest ? 1 : 2), shift = node.level - coarse;
     return [node, { level: coarse, x: node.x >> shift, y: node.y >> shift }];
+}
+
+/**
+ * Whether the horizons of a page read a coarser terrain node. The march of ground.wgsl reads a level
+ * whose texel is about as long as its step, so what it reads of a coarser level lies within a
+ * twelfth of a node of the page: in the node that holds the page or in one beside it.
+ */
+export function marches(page: Node, node: Node): boolean {
+    const shift = page.level - node.level;
+    return shift > 0 && Math.abs((page.x >> shift) - node.x) <= 1 && Math.abs((page.y >> shift) - node.y) <= 1;
 }
 
 const range = (n: number) => Array.from({ length: n }, (_, i) => n - 1 - i);

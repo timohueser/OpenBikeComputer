@@ -17,6 +17,11 @@ const JOBS = 16, JOB_BYTES = 32;
 const RAD = Math.PI / 180;
 /** Texels a side of the noise table, as in look.wgsl. */
 const NOISE = 256;
+/**
+ * Horizon texels a side of a page and its layers of 4 bearings each, as HORIZON and BEARINGS in
+ * look.wgsl, and the lanes a side of a workgroup of horizon_main in ground.wgsl.
+ */
+const HORIZON = PAGE / 8, HORIZON_LAYERS = 4, HORIZON_LANES = 8;
 
 /** Without a ruleset, the ground is the palette under the light and haze of the prototype's `world` region. */
 const NEUTRAL: Rules = {
@@ -39,6 +44,7 @@ interface Resources {
     gpu: Gpu;
     cells: GPUTexture;
     cache: GPUTexture;
+    horizons: GPUTexture;
     /** The colour and the snow of the pages that a frame's jobs make, one layer per job. */
     colour: GPUTexture;
     snow: GPUTexture;
@@ -49,12 +55,13 @@ interface Resources {
     group: GPUBindGroup;
     computeGroups: [GPUBindGroup, GPUBindGroup];
     compute: GPUComputePipeline;
+    horizon: GPUComputePipeline;
 }
 
 /**
  * The ground pages on the GPU: the textures of the pool of `GroundPages`, the ground map, the rules of
- * the date, and the compute that makes the ground parameters and the relief of a page. A new date
- * builds the pages again; they draw the old date until then.
+ * the date, and the compute that makes the ground parameters, the relief and the horizons of a page.
+ * A new date builds the pages again; they draw the old date until then.
  */
 export class Ground {
     readonly rules: Rules;
@@ -118,6 +125,7 @@ export class Ground {
         this.layout = {
             render: device.createBindGroupLayout({ entries: [
                 ...entries, { binding: 5, visibility: GPUShaderStage.FRAGMENT | compute, ...array('float') }, { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+                { binding: 7, visibility: stages, ...array('float') },
             ] }),
             compute: [
                 device.createBindGroupLayout({ entries: [
@@ -125,6 +133,7 @@ export class Ground {
                     { binding: 1, visibility: compute, storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } },
                     { binding: 2, visibility: compute, ...array('float') },
                     { binding: 3, visibility: compute, ...array('float') },
+                    { binding: 4, visibility: compute, storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } },
                 ] }),
                 device.createBindGroupLayout({ entries }),
             ],
@@ -147,6 +156,7 @@ export class Ground {
             gpu,
             cells: texture('ground', 'rgba8uint', side, layers, usage),
             cache: texture('ground', 'rgba8unorm', side, 4 * layers, GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING),
+            horizons: texture('ground', 'rgba8unorm', HORIZON * SIDE, HORIZON_LAYERS * layers, GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING),
             colour: texture('compute', 'rgba8unorm', PAGE, JOBS, usage), snow: texture('compute', 'rgba8unorm', PAGE, JOBS, usage),
             rules: gpu.texture('ground', { size: [SLOT.count, this.rules.regions.length], format: 'rgba32float', usage }, SLOT.count * this.rules.regions.length * 16),
             noise: gpu.texture('ground', { size: [NOISE, NOISE], format: 'r8unorm', usage }, NOISE * NOISE),
@@ -162,16 +172,17 @@ export class Ground {
             { binding: 3, resource: r.rules.createView() }, { binding: 4, resource: sampler },
         ];
         const module = device.createShaderModule({ label: 'ground', code: wgsl('ground/ground.wgsl') });
-        const compute = await device.createComputePipelineAsync({
-            label: 'ground', layout: device.createPipelineLayout({ bindGroupLayouts: [layout.compute[0], surface.layout, layout.compute[1]] }),
-            compute: { module, entryPoint: 'ground_main' },
-        });
+        const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.compute[0], surface.layout, layout.compute[1]] });
+        const [compute, horizon] = await Promise.all(['ground_main', 'horizon_main'].map(entryPoint => device.createComputePipelineAsync({ label: entryPoint, layout: pipelineLayout, compute: { module, entryPoint } })));
         this.resources = {
-            ...r, compute,
-            group: device.createBindGroup({ layout: layout.render, entries: [...inputs, { binding: 5, resource: view(r.cache) }, { binding: 6, resource: r.noise.createView() }] }),
+            ...r, compute, horizon,
+            group: device.createBindGroup({ layout: layout.render, entries: [
+                ...inputs, { binding: 5, resource: view(r.cache) }, { binding: 6, resource: r.noise.createView() }, { binding: 7, resource: view(r.horizons) },
+            ] }),
             computeGroups: [
                 device.createBindGroup({ layout: layout.compute[0], entries: [
                     { binding: 0, resource: { buffer: r.jobs } }, { binding: 1, resource: view(r.cache) }, { binding: 2, resource: view(r.colour) }, { binding: 3, resource: view(r.snow) },
+                    { binding: 4, resource: view(r.horizons) },
                 ] }),
                 device.createBindGroup({ layout: layout.compute[1], entries: inputs }),
             ],
@@ -210,8 +221,8 @@ export class Ground {
     }
 
     /**
-     * Encodes the ground parameters and the relief of the pages that arrived, and the relief of the
-     * pages whose heights changed, timed by `timing` when it runs.
+     * Encodes the ground parameters, the relief and the horizons of the pages that arrived, and the
+     * relief and the horizons of the pages whose heights changed, timed by `timing` when it runs.
      */
     encode(encoder: GPUCommandEncoder, timing?: () => GPUComputePassTimestampWrites | undefined): void {
         const r = this.resources, jobs = this.jobs.splice(0, JOBS);
@@ -230,6 +241,8 @@ export class Ground {
         pass.setBindGroup(1, this.surfaceGroup);
         pass.setBindGroup(2, r.computeGroups[1]);
         pass.dispatchWorkgroups(PAGE / 16, PAGE / 16, jobs.length);
+        pass.setPipeline(r.horizon);
+        pass.dispatchWorkgroups(HORIZON / HORIZON_LANES, HORIZON / HORIZON_LANES, HORIZON_LAYERS * jobs.length);
         pass.end();
     }
 

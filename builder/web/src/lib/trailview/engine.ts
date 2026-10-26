@@ -449,7 +449,7 @@ export class TrailView {
     private uniforms(eye: Eye, viewProj: Float32Array, pixels: number): ArrayBuffer {
         const data = new ArrayBuffer(FRAME_BYTES), floats = new Float32Array(data);
         floats.set(viewProj, 0);
-        floats.set(this.sun(), 16);
+        floats.set(this.sun().slice(0, 4), 16);
         floats.set([eye.z, CURVATURE], 20);
         new Uint32Array(data)[22] = DEBUG_VIEWS.indexOf(this.extras.debug);
         floats[23] = 2 * Math.tan(VFOV * RAD / 2) / pixels;
@@ -461,13 +461,13 @@ export class TrailView {
      * light and grade of the regions about the eye.
      */
     private look(eye: Eye, aspect: number, jitter: [number, number], scale: number, sample: number): ArrayBuffer {
-        const [x, y, z] = this.sun(), [lon, lat] = this.frame.lonLat(eye.east, eye.north), { rules } = this.groundLook;
+        const [x, y, z, , bearing] = this.sun(), [lon, lat] = this.frame.lonLat(eye.east, eye.north), { rules } = this.groundLook;
         const near = eyeLook(rules.regions, this.groundLook.regionsAt(lon, lat), this.extras.weather);
         const h = this.pose.heading * RAD, p = this.pose.pitch * RAD, ty = Math.tan(VFOV * RAD / 2), tx = ty * aspect;
         const forward = [Math.sin(h) * Math.cos(p), Math.cos(h) * Math.cos(p), Math.sin(p)], right = [Math.cos(h), -Math.sin(h), 0];
         const up = [right[1] * forward[2] - right[2] * forward[1], right[2] * forward[0] - right[0] * forward[2], right[0] * forward[1] - right[1] * forward[0]];
         return lookUniform({
-            sun: [x, y, z], light: weatherLight(lightAt(Math.asin(z) / RAD), near.weather), eye: near, altitude: eye.z, place: [eye.east, eye.north],
+            sun: [x, y, z, bearing], light: weatherLight(lightAt(Math.asin(z) / RAD), near.weather), eye: near, altitude: eye.z, place: [eye.east, eye.north],
             camera: { right: right.map(v => v * tx), up: up.map(v => v * ty), forward },
             codes: this.groundLook.codes,
             debug: DEBUG_VIEWS.indexOf(this.extras.debug), sample,
@@ -475,7 +475,7 @@ export class TrailView {
         });
     }
 
-    /** The direction to the sun in the frame, and the sunlight, at the view's place, date and time. */
+    /** The direction to the sun in the frame, the sunlight, and the sun's bearing in turns from true north, at the view's place, date and time. */
     private sun(): number[] {
         const { east, north } = this.pose, [lon, lat] = this.frame.lonLat(east, north);
         const [hours, minutes] = this.extras.time.split(':').map(Number), minute = 60 * hours + minutes;
@@ -489,7 +489,7 @@ export class TrailView {
         const { bearing, altitude } = solarPosition([lon, lat], solarTerms(instant));
         const b = bearing + this.convergence(east, north) * RAD;
         const light = WEATHERS[this.extras.weather].sun * Math.min(1, Math.max(0, (altitude + 0.05) / 0.15));
-        return [Math.sin(b) * Math.cos(altitude), Math.cos(b) * Math.cos(altitude), Math.sin(altitude), light];
+        return [Math.sin(b) * Math.cos(altitude), Math.cos(b) * Math.cos(altitude), Math.sin(altitude), light, bearing / (2 * Math.PI)];
     }
 }
 

@@ -3,6 +3,7 @@
 // stands them on `stand_height` (drawn-mesh.wgsl); instances.ts sorts what the producers stage into one
 // list per draw. Group 0 holds bindings 0 to 6; a
 // producer's own bindings start at 8. Include it with `// #include ../instances/emit.wgsl`.
+// #include ../ground/look.wgsl
 // #include ../terrain/drawn-mesh.wgsl
 // #include ../terrain/view.wgsl
 // #include ../vegetation/phenology.wgsl
@@ -35,9 +36,9 @@ struct Model {
 }
 
 // One instance of a draw: its base in render space and its height in metres; its turn and width as
-// the f16 pair (cos, sin) × width; the ground's albedo under it, its square root as unorm8 × 3, and its
-// phase in the high byte; its look (tint, lift, snow and appear bytes); the draw, which names its
-// model and tier.
+// the f16 pair (cos, sin) × width; the ground's albedo under it, its square root as unorm8 × 3, and in
+// the high byte its phase (2 bits) and the share of the sun at its base (6 bits); its look (tint, lift,
+// snow and appear bytes); the draw, which names its model and tier.
 struct Instance {
     at: vec4f,
     turn: u32,
@@ -257,5 +258,6 @@ fn emit_tree(species: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint:
         return;
     }
     let look = byte_of((tint - 0.75) * 2.0) | (byte_of(lift) << 8u) | (byte_of(snow) << 16u) | (byte_of(appear) << 24u);
-    stage(model * TIERS + tier, vec4f(at, height), pack2x16float(width * vec2f(cos(yaw), sin(yaw))), pack4x8unorm(vec4f(sqrt(ground), 0.0)) | (phase << 24u), look);
+    let sun = u32(round(sun_at(lod_of(base.xy)) * 63.0));
+    stage(model * TIERS + tier, vec4f(at, height), pack2x16float(width * vec2f(cos(yaw), sin(yaw))), pack4x8unorm(vec4f(sqrt(ground), 0.0)) | ((phase | (sun << 2u)) << 24u), look);
 }

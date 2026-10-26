@@ -82,13 +82,14 @@ describe('the ground pages', () => {
         expect(pages.idle).toBe(true);
     });
 
-    it('ask the terrain for the coarse node that the relief reads, and build the relief again when it changes', async () => {
+    it('ask the terrain for the coarse node that the relief reads, and build the relief and the horizons again when a coarser node beside them changes', async () => {
         const pages = new GroundPages(tiles(), 32, 14, [0.5], 0, () => {});
         pages.setDate('2026-08-15');
         const drawn = row(8580, 4);
         await settle(pages, drawn);
         expect(pages.reads).toEqual(expect.arrayContaining([{ level: 13, x: 4290, y: 2885 }, { level: 13, x: 4291, y: 2885 }]));
-        const work = pages.update(drawn, drawn, [{ level: 13, x: 4290, y: 2885 }], [], EYE);
-        expect(work.refreshes.map(slot => slot.node.x).sort()).toEqual([8580, 8581]);
+        // Pages 8580 and 8581 lie in node 4290, two nodes from it.
+        const work = pages.update(drawn, drawn, [{ level: 13, x: 4292, y: 2885 }], [], EYE);
+        expect(work.refreshes.map(slot => slot.node.x).sort()).toEqual([8582, 8583]);
     });
 });
