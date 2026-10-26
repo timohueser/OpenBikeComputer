@@ -47,6 +47,7 @@ NOT_SOURCES = {
     "docs.rs": "documentation link",
     "rclone.org": "install hint",
     "rustup.rs": "install hint",
+    "sh.rustup.rs": "install hint",
     "astral.sh": "install hint",
     "json-schema.org": "schema identifier",
     "www.w3.org": "XML namespace",
@@ -58,6 +59,9 @@ NOT_SOURCES = {
     "nodejs.org": "Node for the verification console",
     # A service a host app queries while it runs; no bake reads it.
     "nominatim.openstreetmap.org": "obc-usb-host geocoder",
+    # The deploy of the tiles Worker; no bake reads it.
+    "api.cloudflare.com": "token check of `obc data deploy tiles`",
+    "dash.cloudflare.com": "token creation link",
 }
 
 
