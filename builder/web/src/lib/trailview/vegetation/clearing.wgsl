@@ -5,7 +5,7 @@
 
 // Each crown keeps EYE_CLEAR_M plus up to EYE_CLEAR_SPREAD_M by its hash from the eye, so trees leave
 // one by one and a still view draws none in part.
-const EYE_CLEAR_M: f32 = 1.5;
+const EYE_CLEAR_M: f32 = 3.0;
 const EYE_CLEAR_SPREAD_M: f32 = 1.0;
 
 // Metres from the eye to a crown: an upright cylinder of `reach` metres about the stem at `s`, from
