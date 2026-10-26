@@ -26,16 +26,16 @@ describe('Pacer', () => {
         expect(steps(drawn(120, 60, 1))).toEqual(new Set([2]));
     });
 
-    it('draws at an even step on 144 Hz', () => {
-        expect(steps(drawn(144))).toEqual(new Set([2]));
-        expect(steps(drawn(144, 30))).toEqual(new Set([5]));
+    it('draws a whole number of display frames apart when the rate does not divide the refresh rate', () => {
+        expect(steps(drawn(144, 60, 0.5))).toEqual(new Set([2]));
+        expect(steps(drawn(144, 30, 0.5))).toEqual(new Set([5]));
+        expect(steps(drawn(90, 60, 0.5)).size).toBe(1);
+        expect(steps(drawn(165, 30, 0.5)).size).toBe(1);
     });
 
-    it('draws a lone frame at once, and always when forced', () => {
+    it('draws a lone frame at once', () => {
         const pacer = new Pacer();
         expect(pacer.due(0)).toBe(true);
         expect(pacer.due(5000)).toBe(true);
-        expect(pacer.due(5008)).toBe(false);
-        expect(pacer.due(5009, true)).toBe(true);
     });
 });

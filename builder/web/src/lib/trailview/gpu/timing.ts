@@ -12,8 +12,6 @@ export class PassTimes {
     readonly ms: Record<string, number> = {};
     /** What the caller told `resolve()` of the frame that `ms` holds: the readback ends frames after the submit. */
     tag?: Record<string, number>;
-    /** Whether this frame takes the times. */
-    on = false;
     private readonly set?: GPUQuerySet;
     private readonly resolved?: GPUBuffer;
     private readonly free: GPUBuffer[] = [];
@@ -33,14 +31,13 @@ export class PassTimes {
 
     writes(pass: string): GPURenderPassTimestampWrites | undefined {
         const index = this.passes.indexOf(pass);
-        if (!this.on || !this.set || !this.free.length || index < 0) return undefined;
+        if (!this.set || !this.free.length || index < 0) return undefined;
         this.written.add(pass);
         return { querySet: this.set, beginningOfPassWriteIndex: 2 * index, endOfPassWriteIndex: 2 * index + 1 };
     }
 
     /** Encodes the readback of this frame's passes, with a tag of the frame. Call the returned function after the submit. */
     resolve(encoder: GPUCommandEncoder, tag?: Record<string, number>): () => void {
-        if (!this.on) return () => {};
         const target = this.free.pop(), passes = [...this.written];
         this.written.clear();
         if (!this.set || !this.resolved || !target) return () => {};
