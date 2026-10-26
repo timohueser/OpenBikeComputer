@@ -3,7 +3,7 @@
 // crossed the link.
 //
 //   node builder/web/tests/browser/trailview/network.mjs [--view NAME|QUERY] [--mbit 25] [--rtt 40] [--runs 1]
-//     [--web DIR] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--port 8951] [--out FILE]
+//     [--web DIR] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--port 8961] [--out FILE]
 //
 // --view is a name of views.json or a query string. --web is the `builder/web` whose page loads
 // (default: this checkout's); the script builds it against the link. The data are the bake of box.sh;
@@ -27,7 +27,7 @@ const { values: a } = parseArgs({
         runs: { type: 'string', default: '1' }, web: { type: 'string', default: new URL('../../..', import.meta.url).pathname },
         tiles: { type: 'string', default: join(bake, 'terrain.mbtiles') }, ground: { type: 'string', default: join(bake, 'ground') },
         colour: { type: 'string', default: 'webp-12' }, features: { type: 'string', default: join(bake, 'features') },
-        port: { type: 'string', default: '8951' }, out: { type: 'string' },
+        port: { type: 'string', default: '8961' }, out: { type: 'string' },
     },
 });
 const views = (await import('./views.json', { with: { type: 'json' } })).default;
@@ -39,7 +39,7 @@ buildPage({ web: a.web, tiles: `https://127.0.0.1:${port + 1}`, bounds: BOX.spli
 /** The layer of a request and whether its tile is in the near field: not wholly behind the eye (each corner more than 100° off the heading). */
 function place({ origin, path }) {
     if (origin === 'page') return { layer: 'page' };
-    const m = /^\/(?:trailview-)?([a-z]+)[^/]*\/(\d+)\/(\d+)\/(\d+)$/.exec(path);
+    const m = /^\/(?:trailview-)?([a-z]+)[^/]*\/(\d+)\/(\d+)\/(\d+)(?:\.[a-z]+)?$/.exec(path);
     if (!m) return { layer: 'json' };
     const [z, x, y] = m.slice(2).map(Number), n = 2 ** z;
     const lon = i => i / n * 360 - 180, lat = j => Math.atan(Math.sinh(Math.PI * (1 - 2 * j / n))) * 180 / Math.PI;
