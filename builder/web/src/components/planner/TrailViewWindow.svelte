@@ -18,6 +18,10 @@
     let failure = $state('');
     let ground = $state(false);
     let credits = $state([config.terrain_attribution].filter(Boolean));
+    let creditsOpen = $state(false);
+    let creditsBox = $state<HTMLElement>();
+    // A look-around drag that ends over the margin clicks the dialog too: only a press on the backdrop closes it.
+    let pressedBackdrop = false;
 
     onMount(() => {
         dialog.showModal();
@@ -35,14 +39,15 @@
             if (abort.signal.aborted) return;
             const engine = await chunk.startTrailView(canvas, config, { ...defaultView([at[0], at[1], at[0], at[1]]), heading: FIRST_HEADING });
             if (!engine) {
-                failure = 'TrailView needs WebGPU. Open the planner in a current version of Chrome, Edge or Safari.';
+                failure = 'gpu' in navigator ? 'TrailView cannot use the graphics card of this device.'
+                    : 'TrailView needs WebGPU. Open the planner in a current version of Chrome, Edge or Safari.';
                 return;
             }
             stop = () => chunk.stopTrailView(engine);
             if (abort.signal.aborted) return stop();
             credits = [config.terrain_attribution, ...engine.attribution].filter(Boolean);
-            await chunk.groundDrawn(engine, abort.signal);
-            ground = true;
+            if (await chunk.groundDrawn(engine, abort.signal)) ground = true;
+            else if (!abort.signal.aborted) failure = 'TrailView could not load this place. Close the window and try again.';
         })().catch((error: unknown) => {
             console.error('TrailView:', error);
             failure = 'TrailView could not start. Close it and try again.';
@@ -57,14 +62,27 @@
 <!-- A click on the backdrop lands on the dialog itself; its content fills it. Esc closes a modal dialog by itself.
      Esc and the Ctrl and Cmd shortcuts stop at the window: the planner below reads them on `window`, the engine reads none of them. -->
 <dialog bind:this={dialog} class="window" aria-label="TrailView" onclose={onClose}
-    onclick={event => { if (event.target === dialog) dialog.close(); }}
+    onpointerdown={event => pressedBackdrop = event.target === dialog}
+    onclick={event => {
+        if (pressedBackdrop && event.target === dialog) dialog.close();
+        else if (creditsOpen && !creditsBox?.contains(event.target as Node)) creditsOpen = false;
+    }}
     onkeydown={event => { if (event.key === 'Escape' || event.ctrlKey || event.metaKey) event.stopPropagation(); }}>
     <!-- Focusable, so that after a click on the view the keys still pass through the dialog. -->
     <canvas bind:this={canvas} tabindex="-1"></canvas>
     <div class="cover" class:gone={ground && !failure} aria-hidden="true"></div>
     {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
     <button type="button" class="close" aria-label="Close TrailView" onclick={() => dialog.close()}><Icon name="close" /></button>
-    {#if credits.length}<small class="credits">{credits.join(' · ')}</small>{/if}
+    {#if credits.length}
+        <!-- Touch has no hover, so a tap toggles the credits. -->
+        <div class="credits" class:open={creditsOpen} bind:this={creditsBox}>
+            <small id="trailview-credits" role="tooltip">{credits.join(' · ')}</small>
+            <button type="button" aria-label="Credits" aria-describedby="trailview-credits"
+                onclick={event => { if ('pointerType' in event && event.pointerType === 'touch') creditsOpen = !creditsOpen; }}>
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M4 10a6 6 0 1 0 12 0 6 6 0 1 0-12 0m5-3a1 1 0 1 0 2 0 1 1 0 1 0-2 0m0 3a1 1 0 1 1 2 0v3a1 1 0 1 1-2 0" /></svg>
+            </button>
+        </div>
+    {/if}
 </dialog>
 
 <style>
@@ -97,7 +115,7 @@
     @keyframes fade {
         from { opacity: 0; }
     }
-    @media (max-width: 699px) {
+    @media (max-width: 760px) {
         .window {
             inset: 0;
             border-radius: 0;
@@ -134,8 +152,8 @@
     }
     .close {
         position: absolute;
-        top: 12px;
-        right: 12px;
+        top: max(12px, env(safe-area-inset-top));
+        right: max(12px, env(safe-area-inset-right));
         display: grid;
         place-items: center;
         width: 36px;
@@ -153,12 +171,44 @@
     }
     .credits {
         position: absolute;
-        right: 0;
-        bottom: 0;
-        max-width: 70%;
-        padding: 2px 6px;
+        right: max(10px, env(safe-area-inset-right));
+        bottom: max(10px, env(safe-area-inset-bottom));
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 4px;
+    }
+    .credits small {
+        display: none;
+        max-width: min(320px, 70vw);
+        padding: 3px 8px;
+        border-radius: 8px;
         background: var(--panel);
         color: var(--ink-soft);
         font: 11px var(--sans);
+    }
+    .credits button {
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        border-radius: 12px;
+        background: var(--panel);
+        color: var(--ink);
+    }
+    /* A tap leaves :hover and :focus on the button: only a real hover and keyboard focus show the credits. */
+    .credits:is(.open, :has(:focus-visible)) small {
+        display: block;
+    }
+    @media (hover: hover) {
+        .credits:hover small {
+            display: block;
+        }
+    }
+    .credits svg {
+        width: 24px;
+        height: 24px;
     }
 </style>
