@@ -74,7 +74,7 @@
     {:else if screen.id === "overview"}
         <Overview {status} />
     {:else if screen.id === "prod" || screen.id === "local"}
-        {#key screen.id}<TargetScreen name={screen.id} {hash} {status} {runs} />{/key}
+        {#key screen.id}<TargetScreen name={screen.id} {status} {runs} />{/key}
     {:else if screen.id === "downloads"}
         <Downloads {hash} {status} />
     {:else}

@@ -113,7 +113,7 @@ it("a download fetched per area, box or tile sums them up, and lists each the ol
     expect((await here("copernicus-glo-30", "4 tiles"))[0]).toBe("4 tiles: N47_E007, N47_E008, N48_E007, … · 2021 · 41 days old · 1.5 GB");
 });
 
-it("a policy edit opens the review with its flag, and Refresh starts a run", async () => {
+it("a policy edit opens the Bake screen with its flag, and Refresh starts a run", async () => {
     const policy = screen("#/downloads/geofabrik-extracts");
     try {
         await vi.waitFor(() => expect(button("Review This computer with it")).toBeDefined());
@@ -127,7 +127,7 @@ it("a policy edit opens the review with its flag, and Refresh starts a run", asy
         expect(button("Review This computer with it").disabled).toBe(true);
         type(" 14 ");
         button("Review This computer with it").click();
-        expect(location.hash).toBe(`#/local/review?refresh=${encodeURIComponent("geofabrik-extracts=14")}`);
+        expect(location.hash).toBe("#/bake?region=freiburg&on=device,map&refresh=geofabrik-extracts%3D14");
     } finally {
         await unmount(policy.shown);
     }

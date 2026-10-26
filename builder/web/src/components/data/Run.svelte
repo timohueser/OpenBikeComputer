@@ -4,6 +4,7 @@
     import { flagsOf, reviewArgs } from "../../lib/data/flags";
     import { leafSquare } from "../../lib/data/leaf";
     import { CliQuery } from "../../lib/data/query.svelte";
+    import { bakeHash, bakeOf, served } from "../../lib/data/screens";
     import { changes, clock, free, list, size, span, title, type RunView, type Status } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
     import DataMap from "./DataMap.svelte";
@@ -62,7 +63,11 @@
             },
         ),
     );
-    /** The review of the same update again: the settings flags of the run. */
+    /** The Bake screen with the settings flags of the run: its plan, or a new plan of the same update. */
+    const bake = $derived.by(() => {
+        const at = status?.targets.find((at) => at.target === target);
+        return view && target ? bakeOf(target, [...(at ? served(at) : []), ...flagsOf(view.args)]) : null;
+    });
     const resume = $derived(view?.args[0] === "update" && target ? reviewArgs(target, flagsOf(view.args)) : null);
 </script>
 
@@ -73,7 +78,7 @@
         <h1>{title(view.args)}</h1>
         <span class="soft">{facts}</span>
         <span class="grow"></span>
-        {#if target && view.args.includes("--plan")}<a class="primary" href="#/{target}/review?plan={encodeURIComponent(id)}">Open the plan</a>{/if}
+        {#if bake && view.args.includes("--plan")}<a class="primary" href={bakeHash({ ...bake, plan: id })}>Open the plan</a>{/if}
         {#if live && stopping === "no"}
             <button type="button" class="stop" onclick={() => (stopping = "ask")}>Stop…</button>
         {/if}
@@ -107,9 +112,9 @@
             {#if view.error.kept.length}
                 <p><b>Kept</b> · {list(view.error.kept)}. The next update reuses them.</p>
             {/if}
-            {#if resume}
+            {#if resume && bake}
                 <p class="title">
-                    <a class="primary" href="#/{target}/resume/{id}">Resume…</a>
+                    <a class="primary" href={bakeHash(bake)}>Resume…</a>
                     <a href="#/machine">Clean the store…</a>
                     <span>A new review of the same update: <code class="resume">{command(resume)}</code></span>
                 </p>

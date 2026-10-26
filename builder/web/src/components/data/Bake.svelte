@@ -1,10 +1,10 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import { boundsOf, extent, nameOf, parseBox, type Areas } from "../../lib/data/areas";
-    import { cardsOf, CONTENTS } from "../../lib/data/contents";
-    import { flagsOf } from "../../lib/data/flags";
+    import { CONTENTS } from "../../lib/data/contents";
+    import { flagsOf, type Flags } from "../../lib/data/flags";
     import { CliQuery } from "../../lib/data/query.svelte";
-    import { bakeAt, bakeHash, type BakeRoute } from "../../lib/data/screens";
+    import { bakeAt, bakeHash, bakeOf, served, type BakeRoute } from "../../lib/data/screens";
     import { list, type Status } from "../../lib/data/shapes";
     import type { SourceRow } from "../../lib/data/sources";
     import BakeArea from "./BakeArea.svelte";
@@ -61,13 +61,15 @@
     function chooseContents(on: string[]) {
         go({ on, plan: null, run: null });
     }
-    /** A bake opened by its run alone takes its area and contents from the arguments of the run. */
+    const extra = $derived<Flags>([
+        ...(route.only ? [["--only", route.only] as [string, string]] : []),
+        ...(route.refresh ? [["--refresh", route.refresh] as [string, string]] : []),
+    ]);
+    /** A bake opened by its run alone takes its settings from the arguments of the run. */
     function fromRun(args: string[]) {
         if (route.area) return;
-        const flags = flagsOf(args);
-        const area = flags.find(([flag]) => flag === "--region" || flag === "--box");
-        const on = cardsOf(flags.filter(([flag]) => flag === "--add").map(([, layer]) => layer));
-        history.replaceState(null, "", bakeHash({ ...route, area: area ? { flag: area[0] as "--region" | "--box", value: area[1] } : null, on }));
+        const flags = [...(target ? served(target) : []), ...flagsOf(args)];
+        history.replaceState(null, "", bakeHash({ ...bakeOf(route.to, flags), plan: route.plan, run: route.run }));
         dispatchEvent(new HashChangeEvent("hashchange"));
     }
     function reopen(at: "area" | "contents") {
@@ -98,6 +100,14 @@
     <p class="card running">A bake runs on {machine} now. <a href={bakeHash({ ...route, run: busy })}>Follow it</a></p>
 {/if}
 
+{#if extra.length && !route.run}
+    <p class="card">
+        {#if route.only}Bakes again only {route.only}, and what reads it.{/if}
+        {#if route.refresh}Sets the refresh {route.refresh}.{/if}
+        <button type="button" class="change" onclick={() => go({ only: null, refresh: null, plan: null })}>Clear</button>
+    </p>
+{/if}
+
 {#snippet header(at: (typeof STEPS)[number], n: number, name: string, summary: string, change: (() => void) | null)}
     {@const state = at === step ? "now" : STEPS.indexOf(at) < STEPS.indexOf(step) ? "done" : "next"}
     <header class="step-head" data-state={state}>
@@ -125,6 +135,7 @@
                 {bounds}
                 {countries}
                 on={route.on}
+                {extra}
                 sources={sources.output?.sources ?? null}
                 locked={busy}
                 change={chooseContents}
