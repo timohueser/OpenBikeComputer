@@ -5,6 +5,7 @@
     import type { SourceRow } from "../../lib/data/sources";
     import Action from "./Action.svelte";
     import Failure from "./Failure.svelte";
+    import ReviewNote from "./ReviewNote.svelte";
 
     // The plan run: its downloads while it plans, then what the bake downloads, makes and costs
     // against this machine. Start runs exactly the args of the review.
@@ -137,7 +138,8 @@
         </div>
     </dl>
 
-    {#each review.notes as note (note.text)}<p class="stale"><b>{note.layer}</b> · {note.text}</p>{/each}
+    {#each review.notes as note (note.text)}<ReviewNote {note} to={target.target} region={review.settings.region} tone="stale" />{/each}
+    {#each review.services as problem (problem)}<p class="missing">✗ {problem} <a href="#/{target.target}">Open the services of {target.target}</a></p>{/each}
     {#if review.machine.refusals.length}<p class="missing">{machine} cannot bake this: {review.machine.refusals.join("; ")}</p>{/if}
 
     {#if downloads.length}

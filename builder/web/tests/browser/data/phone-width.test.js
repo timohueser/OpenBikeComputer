@@ -11,6 +11,7 @@ const ANSWERS = {
   '["areas"]': fixture('areas'),
   '["sources"]': fixture('sources'),
   '["router","prod"]': fixture('router'),
+  '["deploy"]': fixture('deploy'),
   [JSON.stringify(['source', 'prepare', 'wiki', '--to', 'prod', '--region', 'europe/dach', '--languages', 'en,de', '--dry-run'])]: fixture('prepare-review'),
   [JSON.stringify(['runs', running.id])]: running,
   [JSON.stringify(['runs', failed.id])]: failed,
