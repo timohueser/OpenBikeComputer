@@ -36,11 +36,11 @@ export async function startTrailView(canvas: HTMLCanvasElement, config: PlannerC
     return engine;
 }
 
-/** The longest wait for the near field after the first frame: a slow network shows the view still refining. */
-const SETTLE_CAP_MS = 3_000;
+/** The longest wait for the view about the eye after the first frame: a slow network shows the view still refining. */
+const SETTLE_CAP_MS = 2_500;
 
 /**
- * Whether the engine shows a settled view: true once the near field is final (`nearReady()`), or
+ * Whether the engine shows a settled view: true once the view about the eye is final (`eyeReady()`), or
  * SETTLE_CAP_MS after the first frame with terrain. False when a load failed
  * and nothing is drawn after 5 s, when nothing is drawn after 30 s, or when `signal` aborts. The first
  * frames show coarse ground and an eye that still moves to it, so the window hides them.
@@ -53,7 +53,8 @@ export async function viewSettled(engine: TrailView, signal: AbortSignal): Promi
         await new Promise(resolve => setTimeout(resolve, 200));
     }
     const aborted = new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
-    await Promise.race([engine.nearReady(), new Promise(resolve => setTimeout(resolve, SETTLE_CAP_MS)), aborted]);
+    const eye = engine.eyeReady().catch((error: unknown) => console.warn('TrailView eyeReady failed:', error));
+    await Promise.race([eye, new Promise(resolve => setTimeout(resolve, SETTLE_CAP_MS)), aborted]);
     return !signal.aborted;
 }
 
