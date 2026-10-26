@@ -153,6 +153,8 @@ interface Resources {
     snap: GPUComputePipeline;
     /** The audit's pipelines, compiled on its first run: SwiftShader takes half a minute for them, and only tests audit. */
     audits: () => Promise<GPUComputePipeline[]>;
+    /** The probe of the share of the sun, compiled on its first check, which only tests run. */
+    sunProbe: () => Promise<GPUComputePipeline>;
     probeLayout: GPUBindGroupLayout;
     checkLayout: GPUBindGroupLayout;
     auditLayout: GPUBindGroupLayout;
@@ -249,9 +251,10 @@ export class Terrain {
         };
     }
 
-    /** The nodes that the last frame drew and wanted, the nodes whose normals it computed, and the LOD map windows. */
-    get selected(): { drawn: Node[]; wanted: Node[]; refreshed: Node[]; origins: [number, number][] } {
-        return { drawn: this.nodes, wanted: this.wantedNodes, refreshed: this.work?.normals.map(page => page.node) ?? [], origins: this.work?.origins ?? [] };
+    /** The nodes that the last frame drew and wanted, the nodes whose normals and whose heights it computed, and the LOD map windows. */
+    get selected(): { drawn: Node[]; wanted: Node[]; refreshed: Node[]; arrived: Node[]; origins: [number, number][] } {
+        const nodes = (pages?: Page[]) => pages?.map(page => page.node) ?? [];
+        return { drawn: this.nodes, wanted: this.wantedNodes, refreshed: nodes(this.work?.normals), arrived: nodes(this.work?.fresh), origins: this.work?.origins ?? [] };
     }
 
     /** Encodes the heights of the structures' anchors into a compute pass of the frame. */
@@ -300,7 +303,7 @@ export class Terrain {
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
         const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup' | 'mesh' | 'plainMesh' | 'holedMesh' | 'synthesize' | 'normalsOf' | 'quantize'
-            | 'probe' | 'check' | 'stamp' | 'snap' | 'audits' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout' | 'featureLayout'> = {
+            | 'probe' | 'check' | 'stamp' | 'snap' | 'audits' | 'sunProbe' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout' | 'featureLayout'> = {
             gpu, heights, normals,
             mask, snaps,
             masks: buffer('features', (1 + pages) * 4, storage),
@@ -376,7 +379,7 @@ export class Terrain {
             primitive: { topology: 'triangle-list', cullMode: paint ? 'none' : 'back' },
             depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
         });
-        let audits: Promise<GPUComputePipeline[]> | undefined;
+        let audits: Promise<GPUComputePipeline[]> | undefined, sunProbe: Promise<GPUComputePipeline> | undefined;
         const [mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap] = await Promise.all([
             terrainPipeline(true), terrainPipeline(false), terrainPipeline(true, true),
             compute('pages', 'synthesize', pipelineLayout(jobLayout, surfaceLayout)),
@@ -400,6 +403,10 @@ export class Terrain {
         this.resources = {
             ...r, mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, probeLayout,
             audits: () => (audits ??= Promise.all(['audit', 'apron'].map(entry => compute('audit', entry, pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout))))), checkLayout, auditLayout, surfaceLayout, emptyLayout, featureLayout,
+            sunProbe: () => (sunProbe ??= device.createComputePipelineAsync({
+                label: 'sun_probe', layout: pipelineLayout(probeLayout, surfaceLayout, groundLayout, featureLayout),
+                compute: { module: device.createShaderModule({ label: 'sun probe', code: wgsl('terrain/sun-probe.wgsl', swap) }), entryPoint: 'sun_probe' },
+            })),
             stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
             snapGroup: device.createBindGroup({
                 layout: snapLayout, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
@@ -567,17 +574,18 @@ export class Terrain {
 
     /**
      * drawnHeight at points, from the probe's compute shader and from a vertex shader as an object
-     * instance has it, with the state of the last frame.
+     * instance has it, and the share of the sun there under the ground group `ground`, with the state
+     * of the last frame.
      */
-    async check(points: [number, number][]): Promise<{ probe: number[]; instance: number[] }> {
+    async check(points: [number, number][], ground: GPUBindGroup): Promise<{ probe: number[]; instance: number[]; sun: number[] }> {
         const r = this.resources, anchor = this.anchor;
         if (!r || !anchor || points.length > CHECKS) throw new Error(`A check takes up to ${CHECKS} points after the first frame.`);
-        const { device } = r.gpu, n = points.length, row = 256;
+        const { device } = r.gpu, n = points.length, row = 256, sunProbe = await r.sunProbe();
         const at = new Float32Array(points.flatMap(([lon, lat]) => lodSpace(anchor, ...worldPixel([lon, lat], UNITS))));
         const input = device.createBuffer({ size: at.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-        const output = device.createBuffer({ size: 4 * n, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+        const [output, shares] = [0, 1].map(() => device.createBuffer({ size: 4 * n, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC }));
         const target = device.createTexture({ size: [n, 1], format: 'r32float', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
-        const read = [4 * n, row].map(size => device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }));
+        const read = [4 * n, row, 4 * n].map(size => device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }));
         device.queue.writeBuffer(input, 0, at);
         const encoder = device.createCommandEncoder();
         const compute = encoder.beginComputePass();
@@ -586,6 +594,10 @@ export class Terrain {
         compute.setBindGroup(1, r.surfaceGroup);
         compute.setBindGroup(2, r.emptyGroup);
         compute.setBindGroup(3, r.featureGroup);
+        compute.dispatchWorkgroups(1);
+        compute.setPipeline(sunProbe);
+        compute.setBindGroup(0, device.createBindGroup({ layout: r.probeLayout, entries: [{ binding: 0, resource: { buffer: input } }, { binding: 1, resource: { buffer: shares } }] }));
+        compute.setBindGroup(2, ground);
         compute.dispatchWorkgroups(1);
         compute.end();
         const render = encoder.beginRenderPass({ colorAttachments: [{ view: target.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }] });
@@ -598,13 +610,14 @@ export class Terrain {
         render.end();
         encoder.copyBufferToBuffer(output, 0, read[0], 0, 4 * n);
         encoder.copyTextureToBuffer({ texture: target }, { buffer: read[1], bytesPerRow: row }, [n, 1]);
+        encoder.copyBufferToBuffer(shares, 0, read[2], 0, 4 * n);
         device.queue.submit([encoder.finish()]);
-        const [probe, instance] = await Promise.all(read.map(async buffer => {
+        const [probe, instance, sun] = await Promise.all(read.map(async buffer => {
             await buffer.mapAsync(GPUMapMode.READ);
             return Array.from(new Float32Array(buffer.getMappedRange(), 0, n), h => (h > -1e29 ? h : NaN));
         }));
-        for (const resource of [input, output, target, ...read]) resource.destroy();
-        return { probe, instance };
+        for (const resource of [input, output, shares, target, ...read]) resource.destroy();
+        return { probe, instance, sun };
     }
 
     /**

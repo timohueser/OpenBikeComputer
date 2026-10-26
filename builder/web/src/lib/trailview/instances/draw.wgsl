@@ -57,6 +57,7 @@ struct MeshOut {
     // The haze over the instance: the light that reaches the eye is fog × lit + air.
     @location(3) fog: vec3f,
     @location(4) air: vec3f,
+    @location(5) @interpolate(flat) sun: f32,
 }
 
 // The haze between the eye and a point of render space, as the factor and the term that `atmosphere`
@@ -130,9 +131,14 @@ fn snowed(albedo: vec3f, up: f32, look: u32) -> vec3f {
     return mix(albedo, SNOW, f32((look >> 16u) & 255u) / 255.0 * smoothstep(0.1, 0.5, up));
 }
 
+// The share of the sun at an instance's base, from its ground (emit_tree).
+fn sun_of(ground: u32) -> f32 {
+    return f32(ground >> 26u) / 63.0;
+}
+
 // A crown's colour in the phase of its instance (emit_tree).
 fn toned(colour: vec3f, model: u32, ground: u32) -> vec3f {
-    let phase = ground >> 24u;
+    let phase = (ground >> 24u) & 3u;
     if (phase == PHASE_SUMMER) {
         return colour;
     }
@@ -182,6 +188,7 @@ fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     let colour = select(crown, summer, v.position.w > 0.0);
     out.albedo = snowed(tied(colour, tint, m.tie, i.ground) * crown_shade(model, m) * far_tone(m, length(p)), v.normal.z, i.look);
     out.look = i.look;
+    out.sun = sun_of(i.ground);
     return out;
 }
 
@@ -214,5 +221,5 @@ fn mesh_fragment_whole(in: MeshOut) -> @location(0) vec4f {
 
 fn mesh_lit(in: MeshOut) -> vec4f {
     let n = normalize(in.normal);
-    return vec4f(in.fog * light_up(in.albedo, n, 1.0, 1.0, look.horizon.w) + in.air, 1.0);
+    return vec4f(in.fog * light_up(in.albedo, n, in.sun, 1.0, look.horizon.w) + in.air, 1.0);
 }

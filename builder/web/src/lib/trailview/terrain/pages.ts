@@ -71,6 +71,8 @@ export interface Work {
     /** The stamps of the syntheses, then those of stored pages, whose heights go to `out` after the syntheses (`copies`). */
     stamps: Stamp[];
     normals: Page[];
+    /** The pages of `normals` that draw new heights. */
+    fresh: Page[];
     /** The LOD map: MAP × MAP entries per level from 0 to FINEST, when it changed. */
     map?: Uint32Array<ArrayBuffer>;
     /** Per layer, the mask layer + 1 (0 for none), when they changed. */
@@ -173,7 +175,7 @@ export class Pages {
         this.shortage = 0;
         this.missing = 0;
         this.wanted = { stored: 0, synth: 0 };
-        const work: Work = { uploads: [], syntheses: [], stamps: [], normals: [], origins: this.window(anchor) };
+        const work: Work = { uploads: [], syntheses: [], stamps: [], normals: [], fresh: [], origins: this.window(anchor) };
         // Every wanted page is used before the first allocation, so none leaves for a later one of this frame.
         for (const node of wanted) {
             const page = this.pages.get(key(node));
@@ -196,7 +198,8 @@ export class Pages {
             work.uploads.push({ page, data });
         }
         // A stored page draws once its stamps are on: as it is, or as a stamped copy.
-        const fresh = work.syntheses.map(({ page }) => page);
+        const fresh = work.fresh;
+        fresh.push(...work.syntheses.map(({ page }) => page));
         for (const page of fresh) page.ready = true;
         for (const page of this.pages.values()) {
             // The fresh pages of a frame take its normals jobs: at most ARRIVALS of them, and the refreshes.

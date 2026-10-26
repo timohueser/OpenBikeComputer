@@ -169,7 +169,7 @@ fn ground_plants(@builtin(global_invocation_id) id: vec3u) {
     let height = mix(heights.x, heights.y, plant_hash(cell, 4u)) / sqrt(sqrt(thin)) * size;
     let yaw = 6.2831853 * plant_hash(cell, 5u);
     let seed = mix_bits3(cell.x, cell.y, 11u) % SEEDS;
-    emit_tree(pick + seed, render_at(s, h), height, yaw, 1.0, 0.88 + 0.24 * plant_hash(cell, 6u), 1.0, 0.0, 0.0, pick_of(yaw, height), 0.0, ground_albedo(t), h);
+    emit_tree(pick + seed, s, h, height, yaw, 1.0, 0.88 + 0.24 * plant_hash(cell, 6u), 1.0, 0.0, 0.0, pick_of(yaw, height), 0.0, ground_albedo(t), h);
 }
 
 @compute @workgroup_size(8, 8)
@@ -243,5 +243,5 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
     }
     let yaw = 6.2831853 * plant_hash(cell, 5u);
     // The pick comes from the cell, not from the height, which shrinks near the reach: a tree's phase stays.
-    emit_tree(model, render_at(s, h), height, yaw, 1.0, 0.88 + 0.24 * plant_hash(cell, 6u), 1.0, 0.0, stood.y, plant_hash(cell, 10u), snow_at(s), ground_albedo(t), h);
+    emit_tree(model, s, h, height, yaw, 1.0, 0.88 + 0.24 * plant_hash(cell, 6u), 1.0, 0.0, stood.y, plant_hash(cell, 10u), snow_at(s), ground_albedo(t), h);
 }

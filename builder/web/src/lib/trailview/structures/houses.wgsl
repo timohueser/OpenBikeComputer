@@ -557,6 +557,8 @@ struct HouseOut {
     @location(4) @interpolate(flat) face: u32,
     // The metres along an outline's walls.
     @location(5) along: f32,
+    // The share of the sun that the horizons let through.
+    @location(6) sun: f32,
 }
 
 // Slot k of a drawn house.
@@ -575,6 +577,7 @@ fn house_vertex(v: u32, s: vec2f, local: vec3f, face: u32, along: f32) -> HouseO
     out.house = v;
     out.face = face;
     out.along = along;
+    out.sun = sun_at(s);
     return out;
 }
 
@@ -771,7 +774,7 @@ fn house_fragment(in: HouseOut) -> @location(0) vec4f {
             colour = FLAT_ROOF;
         }
     }
-    let lit = light_up(srgb(colour), n, 1.0, 1.0, look.horizon.w);
+    let lit = light_up(srgb(colour), n, in.sun, 1.0, look.horizon.w);
     // Lamplight after the haze, which would turn it blue at night: it fades with the distance instead.
     let lamps = LAMPLIGHT * glow * smoothstep(0.0, 0.4, look.ambient.w) * exp(-length(in.relative) / (LAMP_REACH * look.haze.x));
     return vec4f(atmosphere(lit, in.relative, in.altitude) + lamps, 1.0);
