@@ -26,9 +26,14 @@
     const lon = $derived(Math.round(view.lon * 100) / 100), lat = $derived(Math.round(view.lat * 100) / 100);
     const day = $derived(new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' }));
     const longDay = $derived(new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }));
-    const sun = $derived.by(() => {
-        const span = daylight([lon, lat], date, TIME_ZONE);
-        return span ? `Sunrise ${clock(span[0])} · Sunset ${clock(span[1])}` : 'No sunrise';
+    const span = $derived(daylight([lon, lat], date, TIME_ZONE));
+    const sun = $derived(span ? `Sunrise ${clock(span[0])} · Sunset ${clock(span[1])}` : 'No sunrise');
+    // The track is night before sunrise and after sunset, day between, with 30 minutes of twilight at each edge.
+    const track = $derived.by(() => {
+        if (!span) return 'var(--water)';
+        const at = (minute: number) => `${(minute / 1440 * 100).toFixed(2)}%`;
+        const [rise, set] = span;
+        return `linear-gradient(90deg, var(--water) ${at(rise - 15)}, var(--amber) ${at(rise + 15)}, var(--amber) ${at(set - 15)}, var(--water) ${at(set + 15)})`;
     });
 
     // The slider moves a draft; the view takes it at most every 100 ms, as the layer date bar does.
@@ -77,7 +82,7 @@
             </section>
             <section>
                 <label class="head" for="trailview-time"><span>Time</span><strong>{clock(draft)}</strong></label>
-                <input id="trailview-time" type="range" min="0" max="1435" step="5" bind:value={draft} aria-valuetext={clock(draft)}
+                <input id="trailview-time" type="range" min="0" max="1435" step="5" bind:value={draft} aria-valuetext={clock(draft)} style:--track={track}
                     oninput={() => { pending ??= setTimeout(commit, 100); }} onchange={commit} />
                 <div class="scale"><span>00:00</span><span>{sun}</span><span>24:00</span></div>
             </section>
@@ -175,8 +180,38 @@
         width: 100%;
         height: 24px;
         margin: 0;
-        accent-color: var(--rust);
+        background: none;
         cursor: pointer;
+        appearance: none;
+        -webkit-appearance: none;
+    }
+    input::-webkit-slider-runnable-track {
+        height: 6px;
+        border-radius: 3px;
+        background: var(--track);
+    }
+    input::-moz-range-track {
+        height: 6px;
+        border-radius: 3px;
+        background: var(--track);
+    }
+    input::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 18px;
+        height: 18px;
+        margin-top: -6px;
+        border: 3px solid var(--panel);
+        border-radius: 50%;
+        background: var(--rust);
+        box-shadow: 0 1px 3px rgba(28, 27, 20, .4);
+    }
+    input::-moz-range-thumb {
+        width: 12px;
+        height: 12px;
+        border: 3px solid var(--panel);
+        border-radius: 50%;
+        background: var(--rust);
+        box-shadow: 0 1px 3px rgba(28, 27, 20, .4);
     }
     :is(.today, input):focus-visible {
         outline: 2px solid var(--forest);
