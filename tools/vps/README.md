@@ -7,11 +7,15 @@ folder: `obc data update prod` publishes it.
 
 | File | Use |
 | --- | --- |
-| `deploy-services.sh` | Builds a commit on the VPS and restarts the follower |
+| `deploy-services.sh` | Builds a commit on the VPS and restarts the follower; `obc data deploy services` runs it |
 | `obc-data-serve.service` | The unit of the follower |
 | `obc-data-serve.caddy` | The Caddy route of `/planner-api/*` |
 
 ## Prepare the VPS once
+
+The prod screen of `obc data ui`, Services, checks each step below over SSH and shows the command of
+each missing one. The machine of the page needs an SSH key that logs in as root without a prompt:
+the screen shows the line of its public key to add on the VPS.
 
 Install `build-essential`, and Python and Node with the `major.minor` versions of
 [`data/planner-runtime.toml`](../../data/planner-runtime.toml). Then, as root, with this folder
@@ -37,12 +41,21 @@ caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy
 
 ## Deploy
 
+Deploy from the prod screen of `obc data ui`, Services, or with the same commands in a terminal:
+
+```sh
+obc data deploy                                  # the commit that runs, and what a deploy lacks
+obc data deploy services --dry-run               # the commit of this checkout, and the commands
+obc data deploy services --expect COMMIT         # deploy it in a run
+```
+
+`OBC_VPS_SSH` is an SSH host that logs in as root. The screen sets it, or
+`obc data deploy credential services` from standard input. The deploy runs:
+
 ```sh
 tools/vps/deploy-services.sh --dry-run HOST   # print the commands, run none
 tools/vps/deploy-services.sh HOST [COMMIT]     # COMMIT defaults to HEAD
 ```
-
-`HOST` is an SSH host that logs in as root.
 
 - Each commit builds from nothing in `/opt/obc-data/<commit>`. The first build also installs the
   toolchain of `rust-toolchain.toml`.
@@ -53,3 +66,4 @@ tools/vps/deploy-services.sh HOST [COMMIT]     # COMMIT defaults to HEAD
 - The follower keeps the objects of the releases that prod names, and nothing else, in
   `/var/lib/obc-data/store/follower/prod/`.
 - `journalctl -u obc-data-serve` shows why a release did not start.
+- `/planner-api/version` gives the commit of the build and the layer formats that its services read.

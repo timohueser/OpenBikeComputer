@@ -983,7 +983,8 @@ The pointer names routing, search and downloads under
 `<api_origin>/planner-api/releases/<id>/SERVICE`, and the release document at
 `<objects_origin>/releases/<id>/release.json`. Its `device_catalog` names
 `<objects_origin>/cell-catalog/catalog.json`. [`obc data serve`](#serve) runs the services for a
-`dir` target; `obc data` does not install them on a server.
+`dir` target. [`obc data deploy`](#deploy) puts the follower of `prod` on its server and the tile
+Worker on Cloudflare.
 
 Downloads jobs return a ready quote with an absolute pinned `source` URL. The client reads the
 bundle, release and objects through that source, so a stable entry switch cannot mix releases.
@@ -1333,6 +1334,11 @@ the store only, and it never writes to the target.
 - `args`: the arguments after `obc data` that start the update of this review.
 - `notes`: what a layer bakes without, such as a national terrain model without a version, with
   the command that gives it. A note does not stop the update.
+- `services`: for an R2 target at the root of its bucket whose steps include a `planner/` layer,
+  why its follower or its tile Worker cannot serve the release, each with its fix, as
+  [Deploy](#deploy) says: no follower answers `version`, the follower reads a layer of the
+  release in another format, or the Worker does not answer `version`. It does not stop the
+  update: the run would wait at `router-ready`.
 
 The id is the first 12 hex digits of the SHA-256 of the canonical JSON, as for the release id, of
 an object: the name of the target, the tag of `release.json` (`null` while the target serves
@@ -1694,6 +1700,7 @@ each origin.
 
 | Path | Answer |
 | --- | --- |
+| `/planner-api/version` | `{"commit", "formats"}`: the commit that the build of serve names in `OBC_DATA_COMMIT`, or `null`, and the format of each layer that its services read. Never cached |
 | `/planner-api/releases/<id>/ready` | `{"state": "ready"}` while the services of the planner release `<id>` answer. 503 with `{"state": "starting"}` while its objects download and its services start, or `{"state": "failed", "reason": "not ready: <why>"}` after they failed. 404 with `{"state": "unknown", "reason"}` while serve does not know `<id>` yet: a publisher that waits for `<id>` keeps waiting, as on 503. Never cached |
 | `/planner-api/releases/<id>/<service>/<path>` | `<path>` of the `routing`, `search` or `downloads` service of the planner release `<id>`. Search gets `/api/planner-search/<path>`. 404 when the services of `<id>` do not answer |
 | `/planner-offline/<path>` | `<path>` of the downloads service of the current release, for apps that name no planner release. 503 while it does not answer |
@@ -1754,6 +1761,42 @@ the routing service is the `planner-service` program beside the program of serve
 needs no tile handler. When the thread that follows the target ends without a stop, such as on a
 panic, serve ends with a `failed` error, so that a supervisor starts it again.
 
+### Deploy
+
+An update of `prod` publishes data. Two programs serve it, and `obc data deploy` puts the commit
+of the checkout that runs it in place: the follower, `obc data serve prod` as the systemd unit
+`obc-data-serve` on the VPS, and the tile Worker of `planner/tiles` on Cloudflare.
+
+| Part | Deploy | Answers `version` at | Credential |
+| --- | --- | --- | --- |
+| `services` | `tools/vps/deploy-services.sh "$OBC_VPS_SSH" COMMIT` | `<api_origin>/planner-api/version` | `OBC_VPS_SSH`: an SSH host that logs in as root |
+| `tiles` | `npm ci --prefix planner/tiles`, then `npm run deploy --prefix planner/tiles -- --var COMMIT:COMMIT` | `<tiles_origin>/version`, `{"commit"}` | `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` |
+
+The origins are the `[publication]` of `data/planner-runtime.toml`. Only 200 with `commit` is an
+answer of this code; `commit` is `null` for a build that names none.
+
+`obc data deploy` asks each part for its `version`, and checks what an action needs from this
+machine. Each check has a name, its problem, its fix in words, and the commands of the fix. Only
+reads check:
+
+| Action | Checks |
+| --- | --- |
+| Publish: an update of `prod` and `r2 legacy` | The `OBC_R2_*` variables; rclone on PATH |
+| `deploy services` | `OBC_VPS_SSH`; `ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new` logs in and runs a script that changes nothing; the one-time setup of `tools/vps/README.md` on the VPS: the user `obc-data`, `/opt/obc-data`, Rust and uv of that user, a C compiler, Python and Node of the `[target]` of `data/planner-runtime.toml`, and the enabled unit. The Caddy route is a check that the deploy does not wait for |
+| `deploy tiles` | The two variables; `GET https://api.cloudflare.com/client/v4/accounts/<id>/workers/scripts` with the token answers 200; `planner/tiles` has no change that the commit does not hold, because `wrangler deploy` reads the files of the checkout |
+
+A refused login gives the line of the first public key of `~/.ssh` (`id_ed25519.pub`,
+`id_ecdsa.pub`, `id_rsa.pub`) to add to `/root/.ssh/authorized_keys` on the VPS, or without a key
+the command that makes one. A missing piece of the setup gives its command.
+
+`deploy services|tiles --dry-run` checks the credential and, for `tiles`, the files, and writes
+the commit, what the deploy changes, its commands and the arguments that start it. A deploy starts
+only with `--expect COMMIT`, the commit of the checkout now, and asks first, or needs `--yes`
+without a terminal. It is a detached [run](#runs), and the output of each command goes to its log.
+One run at a time deploys each part. `deploy credential services|tiles` reads the values on
+standard input, as [Credentials of sources](#credentials-of-sources) says, into
+`credentials.env`.
+
 ### Overview
 
 `obc data` gives the machine that runs it and, for each target, the release that it serves, the
@@ -1789,6 +1832,9 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data runs RUN --follow [--json]` | The log of the run as it comes, until it ends; with `--json`, its status each time it changes. Ctrl-C ends only the following. The exit status is the one of the run |
 | `obc data runs RUN --stop [--json]` | Stops a run that runs, as [Runs](#runs) says. With `--json`, writes the run as `runs RUN` does |
 | `obc data serve [TARGET] [--detach] [--json]` | [Serves](#serve) a target until Ctrl-C. Writes its origin on the machine, and for a `dir` target its origin on the network and how each app opens it. With `--detach`, it serves in a detached [run](#runs) and writes `{run}`; `runs RUN --stop` stops it. That run does not hold the store for [Clean](#clean) |
+| `obc data deploy [--json]` | The commit of this checkout; for each part of [Deploy](#deploy), the commit that it runs or why it does not answer, and the checks of a deploy; and the checks of a publish to `prod`. Changes nothing |
+| `obc data deploy services\|tiles [--dry-run \| --expect COMMIT [--yes]] [--json]` | `--dry-run` writes what the deploy does. Else it deploys the commit in a detached run and writes its log until it ends; with `--json`, it writes `{run}` |
+| `obc data deploy credential services\|tiles [--json]` | Reads the values of the credential of the deploy on standard input and writes them to `credentials.env`. Writes the file and the names of the values |
 | `obc data setup [--json]` | What this machine can do: each job, each tool with its version or its install command (Java needs 21 or newer, Node 22 or newer), each credential (only whether it is set, and how to set it), and the store with its size and free space. It exits 0 also when a tool or a credential is missing |
 | `obc data ui` | Builds the page with `npm run build:data` in `builder/web`, then serves it as [The page](#the-page) says, until it is stopped |
 | `obc data open MACHINE` | Runs `ssh -N -L 8701:localhost:8700 HOST`, where HOST is the `ssh` of MACHINE in [`data/machines.toml`](#datamachinestoml) or else MACHINE, and opens `http://localhost:8701/` in the browser. It sends nothing to MACHINE |
@@ -1819,11 +1865,14 @@ addition:
   `--plan` or `--expect ID` (with `--accept-format-change` and `--yes`), `obc data rollback TARGET --expect ID`
   (with `--yes`), `obc data unlock TARGET --from MACHINE --yes`, `obc data source refresh ID`, and
   `obc data source prepare ID` with `--region`, `--box` and `--to` and then `--dry-run` or
-  `--expect ID` (with `--yes`), `obc data clean`, and `obc data clean --apply --yes`.
-- `POST /api/credential` with the body `{"source": ID, "values": [VALUE, …]}`: it runs
-  `obc data --json source credential ID` the same way, with each value on a line of its own on
-  standard input, and answers in the same form. A body that is not of this form, an ID that starts
-  with `-`, or a value with a line break gets HTTP 400 and the code `usage`. The page logs no body,
+  `--expect ID` (with `--yes`), `obc data clean`, `obc data clean --apply --yes`, `obc data deploy`,
+  `obc data deploy services|tiles --dry-run` and `--expect COMMIT --yes`, `obc data r2 legacy
+  TARGET`, and `obc data r2 legacy TARGET --delete --expect DIGEST --reason TEXT --yes`.
+- `POST /api/credential` with the body `{"args": ARGS, "values": [VALUE, …]}`, where ARGS is
+  `["source", "credential", ID]` or `["deploy", "credential", "services"|"tiles"]`: it runs
+  `obc data --json ARGS…` the same way, with each value on a line of its own on standard input,
+  and answers in the same form. A body that is not of this form, an ID that starts with `-`, or a
+  value with a line break gets HTTP 400 and the code `usage`. The page logs no body,
   and no answer holds a value.
 
 Each request has a `Host` of `127.0.0.1`, `localhost` or `[::1]` at any port; an `Origin`, when
