@@ -1,6 +1,6 @@
 import type { PlannerConfig } from '../planner/config';
 import { instantAt, solarPosition, solarTerms } from '../planner/layers/sun';
-import { eyeAltitude, follow, groundOf, move, VFOV, viewProjection, type Footing, type Pose } from './frame/camera';
+import { eyeAltitude, follow, groundOf, MIN_CLEARANCE, move, VFOV, viewProjection, type Footing, type Pose } from './frame/camera';
 import { Controls } from './frame/controls';
 import { CURVATURE, frameAt, type Frame } from './frame/frame';
 import { Gpu } from './gpu/device';
@@ -323,8 +323,18 @@ export class TrailView {
     }
 
     private eyeFinal(): boolean {
-        // The last centimetres of a step down fade for half a second; nobody sees them.
-        return this.drawing && this.terrain.eye && this.settled(SETTLED_M) && this.groundLook.eyeIdle;
+        return this.drawing && this.terrain.eye && this.footed() && this.groundLook.eyeIdle;
+    }
+
+    /**
+     * Whether the step of the footing no longer moves the camera. The last centimetres of a walking eye's
+     * step down fade for half a second; nobody sees them. A flying eye above its clearance does not stand on
+     * the footing, so its step moves nothing.
+     */
+    private footed(): boolean {
+        const step = Math.abs(this.footing?.step ?? 0), ground = this.ground(), z = eyeAltitude(this.pose, ground);
+        if (this.pose.mode === 'fly' && ground !== undefined && z !== undefined && z - ground - MIN_CLEARANCE > step) return true;
+        return this.settled(SETTLED_M);
     }
 
     private near(): boolean {
@@ -435,7 +445,6 @@ export class TrailView {
         return this.extras.debug === 'off' ? this.scale : 1;
     }
 
-    /** Whether the eye stands on the last probe, with no step left to fade out. */
     /** Whether the eye stands on the last probe, with at most `within` metres of a step still fading. */
     private settled(within = 0): boolean {
         const probe = this.terrain.ground;

@@ -99,6 +99,9 @@ export class GroundPages {
     /** Of them, the pages of the drawn nodes within NEAR_M, and within EYE_M, of the eye. */
     nearMissing = 0;
     eyeMissing = 0;
+    /** The keys of the drawn pages within NEAR_M and within EYE_M of the eye, as the last update found them. */
+    nearDrawn = new Set<string>();
+    eyeDrawn = new Set<string>();
     private dirty = true;
     private kept = new Set<string>();
     /** The terrain nodes that the relief of the kept pages reads, which the terrain keeps resident for it. */
@@ -169,7 +172,7 @@ export class GroundPages {
         this.shortage = order.size - kept.length;
         this.missing = this.nearMissing = this.eyeMissing = 0;
         const within = (metres: number) => new Set(drawn.map(this.ground).filter(node => distances({ anchor, above: 0 }, node)[0] <= metres).map(key));
-        const nearDrawn = within(NEAR_M), eyeDrawn = within(EYE_M);
+        const nearDrawn = this.nearDrawn = within(NEAR_M), eyeDrawn = this.eyeDrawn = within(EYE_M);
         // Every kept page is used before the first allocation, so none leaves for a later one of this frame.
         this.kept = new Set(kept.map(key));
         this.reads = [...new Map(kept.flatMap(node => reliefReads(node, this.finest)).map(node => [key(node), node])).values()];
