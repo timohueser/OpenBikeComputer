@@ -190,3 +190,68 @@ fn object(entries: &[Entry], feature: &Value) -> Option<Object> {
     let kept = keep.iter().filter_map(|k| Some((k.clone(), tags.get(k)?.clone()))).collect();
     Some((selected, kept, parts))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tiles::EXTENT;
+
+    /// Longitude and latitude of the point (u, v) in tile units of the zoom-13 tile (column, row).
+    fn location(column: u32, row: u32, u: f64, v: f64) -> (f64, f64) {
+        let n = (1u64 << MAX_ZOOM) as f64;
+        let (x, y) = ((column as f64 + u / EXTENT as f64) / n, (row as f64 + v / EXTENT as f64) / n);
+        (x * 360.0 - 180.0, (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees())
+    }
+
+    #[test]
+    fn the_input_holds_what_the_region_can_place_and_nothing_past_it() {
+        let Ok((binary, _)) = probe() else {
+            eprintln!("Osmium is unavailable: the cut of the input does not run");
+            return;
+        };
+        let (column, row) = (4286, 2889);
+        let (west, north) = location(column, row, 0.0, 0.0);
+        let (east, south) = location(column, row, 2.0 * EXTENT as f64, EXTENT as f64);
+        let (lon, lat) = location(column, row, 1000.0, 1000.0);
+        // Way 1 is a building near the region, and way 2 one past the near area, which only zoom 13
+        // places. Way 3 is a lake there, within one tile of zoom 8, which zoom 8 places; way 4 a lake past
+        // that. Way 5 near the region is of no kind.
+        let ways = [
+            (1, lon, ("building", "yes")),
+            (2, lon + 0.6, ("building", "yes")),
+            (3, lon + 0.6, ("natural", "water")),
+            (4, lon + 4.0, ("natural", "water")),
+            (5, lon + 0.002, ("amenity", "bench")),
+        ];
+        let (mut nodes, mut points, mut lines) = (0, String::new(), String::new());
+        for (way, x, (key, value)) in ways {
+            let mut refs = String::new();
+            for (dx, dy) in [(0.0, 0.0), (0.001, 0.0), (0.001, 0.001), (0.0, 0.001)] {
+                nodes += 1;
+                refs += &format!("<nd ref=\"{nodes}\"/>");
+                points +=
+                    &format!("<node id=\"{nodes}\" version=\"1\" lat=\"{:.7}\" lon=\"{:.7}\"/>", lat + dy, x + dx);
+            }
+            let first = nodes - 3;
+            lines += &format!(
+                "<way id=\"{}\" version=\"1\">{refs}<nd ref=\"{first}\"/><tag k=\"{key}\" v=\"{value}\"/></way>",
+                100 + way
+            );
+        }
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        std::fs::write(root.join("region.osm"), format!("<osm version=\"0.6\">{points}{lines}</osm>")).unwrap();
+        run(&binary, &[&"cat", &root.join("region.osm"), &"-o", &root.join("region.osm.pbf")]).unwrap();
+        let table = serde_json::from_str(include_str!("../../../data/trailview/kinds.json")).unwrap();
+        let entries = crate::kinds::validate(&table).unwrap();
+        let tiles = Tiles::new([west, south, east, north]);
+        let chosen = selected(&entries, &root.join("region.osm.pbf"), &binary, &tiles, root).unwrap();
+        let out = Command::new(&binary).args(["cat", "-f", "opl"]).arg(&chosen).output().unwrap();
+        let kept: Vec<u64> = String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .filter_map(|line| line.strip_prefix('w')?.split(' ').next()?.parse().ok())
+            .collect();
+        assert_eq!(kept, [101, 103]);
+    }
+}
