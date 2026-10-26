@@ -80,8 +80,10 @@ describe('the ground pages', () => {
         pages.setDate('2026-08-15');
         const drawn = row(8570, 20);
         await settle(pages, drawn);
-        const counts = [pages.update(drawn, drawn, drawn, [], EYE), ...[1, 2, 3].map(() => pages.update(drawn, drawn, [], [], EYE))].map(work => work.refreshes.length);
-        expect(counts).toEqual([8, 8, 4, 0]);
+        // The heights that arrived also march the horizons of the 20 pages, two a frame: 10 frames.
+        const counts = [pages.update(drawn, drawn, drawn, [], EYE), ...Array.from({ length: 9 }, () => pages.update(drawn, drawn, [], [], EYE))].map(work => work.refreshes.length);
+        expect(counts).toEqual([8, 8, 4, 0, 0, 0, 0, 0, 0, 0]);
+        expect(pages.idle).toBe(true);
     });
 
     it('ask the terrain for the coarse node that the relief reads, and build the relief again when it or a neighbour changes', async () => {

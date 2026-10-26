@@ -51,7 +51,7 @@ const PROBE_STEP = 1;
 const READBACKS = 3;
 const RAD = Math.PI / 180;
 /** Bytes of `Surface` and `Job` in the WGSL, and of a node instance. */
-const SURFACE_BYTES = 416, JOB_BYTES = 32, STAMP_JOB_BYTES = 32, NODE_BYTES = 16;
+const SURFACE_BYTES = 416, JOB_BYTES = 24, STAMP_JOB_BYTES = 32, NODE_BYTES = 16;
 /** A stamp job whose base is the synthesized page in `out`, as SYNTHESIZED in stamp.wgsl. */
 const SYNTHESIZED = 0xffffffff;
 /** Audit samples per run at most, words per sample, and words of results, as in audit.wgsl. */
@@ -856,7 +856,7 @@ const origin = (slot: number): [number, number, number] => [PAGE * (slot & 7), P
 /** Jobs as `Job` in the WGSL: the node's first texel, its level, the stored level, the layer and whether a stamp follows. */
 function jobs(list: { page: Page; stored: number; slot: number; stamped: boolean }[]): ArrayBuffer {
     const data = new ArrayBuffer(Math.max(1, list.length) * JOB_BYTES), ints = new Int32Array(data);
-    list.forEach(({ page: { node: { level, x, y } }, stored, slot, stamped }, k) => ints.set([x * PAGE, y * PAGE, level, stored, slot, stamped ? 1 : 0], 8 * k));
+    list.forEach(({ page: { node: { level, x, y } }, stored, slot, stamped }, k) => ints.set([x * PAGE, y * PAGE, level, stored, slot, stamped ? 1 : 0], (JOB_BYTES / 4) * k));
     return data;
 }
 

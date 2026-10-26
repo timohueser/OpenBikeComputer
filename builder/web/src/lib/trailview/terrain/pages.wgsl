@@ -10,7 +10,6 @@ struct Job {
     slot: u32,
     // 1 when the stamp pass takes the page next: it writes the extent of the stamped heights.
     stamped: u32,
-    unused: vec2u,
 }
 
 @group(0) @binding(0) var<storage, read> jobs: array<Job>;

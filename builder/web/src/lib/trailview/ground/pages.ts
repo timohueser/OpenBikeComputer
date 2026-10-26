@@ -345,7 +345,7 @@ export class GroundPages {
 
 /**
  * The terrain nodes whose drawn heights the relief of a ground page reads: its own, and the one of the
- * coarse level of `relief_of` in ground.wgsl that holds it. The relief reads past the edges of these two
+ * coarse level of `coarse_of` in ground.wgsl that holds it. The relief reads past the edges of these two
  * into their neighbours where they are resident, a coarser level where not: a page does not wait for
  * them, and builds its relief again when they arrive (`touches`).
  */
