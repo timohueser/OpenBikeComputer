@@ -37,17 +37,20 @@
     const layers = { cells: L.layerGroup(), outline: L.layerGroup(), preview: L.layerGroup(), area: L.layerGroup() };
     const tip = L.tooltip({ className: "map-tip", direction: "top", offset: [0, -10], permanent: true });
 
+    // The map shows one world, so a longitude past ±180 comes only from a drag past its edge.
     const boxOf = (bounds: L.LatLngBounds): Bbox => {
         const edge = (value: number) => +value.toFixed(4);
-        return { west: edge(bounds.getWest()), south: edge(bounds.getSouth()), east: edge(bounds.getEast()), north: edge(bounds.getNorth()) };
+        const lng = (value: number) => edge(Math.min(180, Math.max(-180, value)));
+        return { west: lng(bounds.getWest()), south: edge(bounds.getSouth()), east: lng(bounds.getEast()), north: edge(bounds.getNorth()) };
     };
     const latLngBounds = (box: Bbox) => L.latLngBounds(corners(box));
     const rect = (bounds: L.LatLngBoundsExpression, className: string) => L.rectangle(bounds, { className, interactive: false });
     const showTip = (bounds: L.LatLngBounds) => tip.setLatLng(bounds.getNorthEast()).setContent(extent(boxOf(bounds))).addTo(map!);
 
     onMount(() => {
-        map = L.map(element, { worldCopyJump: true, boxZoom: false, maxZoom: 18 }).setView([49, 9], 4);
-        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap contributors" }).addTo(map);
+        const world = L.latLngBounds([-90, -180], [90, 180]);
+        map = L.map(element, { maxBounds: world, maxBoundsViscosity: 1, boxZoom: false, maxZoom: 18 }).setView([49, 9], 4);
+        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { noWrap: true, maxZoom: 19, attribution: "© OpenStreetMap contributors" }).addTo(map);
         for (const layer of Object.values(layers)) layer.addTo(map);
         // The wheel scrolls the page until a click on the map, so a scroll past it does not zoom it.
         map.scrollWheelZoom.disable();

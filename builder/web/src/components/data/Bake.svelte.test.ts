@@ -58,9 +58,9 @@ it("walks area, contents, review and bake, each step from its URL", async () => 
     search.value = "central";
     search.dispatchEvent(new Event("input", { bubbles: true }));
     flushSync();
-    document.querySelector<HTMLElement>('[role="option"]')!.click();
+    search.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     flushSync();
-    expect(location.hash, "a pick waits for its button").toBe("");
+    expect(location.hash, "Enter picks the first match, and the pick waits for its button").toBe("");
     expect(text()).toContain("Central Switzerland · 103 × 88 km");
     button("Use this area").click();
     expect(location.hash).toBe("#/bake?region=central-switzerland");

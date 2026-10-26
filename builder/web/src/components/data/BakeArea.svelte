@@ -39,7 +39,7 @@
     const asBox = ({ west, south, east, north }: Bbox): Area => ({ flag: "--box", value: [west, south, east, north].join(",") });
     const typed = $derived.by(() => {
         const box = parseBox(query.replace(/\s/g, ""));
-        return box && box.west < box.east && box.south < box.north && box.south >= -90 && box.north <= 90 ? box : null;
+        return box && box.west < box.east && box.south < box.north && box.west >= -180 && box.east <= 180 && box.south >= -90 && box.north <= 90 ? box : null;
     });
     type Row = { area: Area; name: string; detail: string };
     const rows = $derived.by((): Row[] => {
@@ -80,10 +80,11 @@
         drawing = false;
     }
     function keys(event: KeyboardEvent) {
+        // Enter picks the row under the arrows, else the first match, and a second Enter chooses it.
+        const row = rows[active] ?? (query.trim() ? rows[0] : undefined);
         if (event.key === "ArrowDown") active = Math.min(active + 1, rows.length - 1);
         else if (event.key === "ArrowUp") active = Math.max(active - 1, 0);
-        // Enter picks the row under the arrows, and a second Enter chooses it.
-        else if (event.key === "Enter" && rows[active] && !same(rows[active].area, picked)) pick(rows[active].area);
+        else if (event.key === "Enter" && row && !same(row.area, picked)) pick(row.area);
         else if (event.key === "Enter" && picked) choose(picked);
         else return;
         event.preventDefault();
@@ -156,12 +157,12 @@
     </div>
 
     <div class="choice" aria-live="polite">
-        {#if picked && box}
+        {#if picked}
             <span class="swatch picked" aria-hidden="true"></span>
             <div class="what">
-                <b>{name} · {extent(box)}</b>
+                <b>{name}{box ? ` · ${extent(box)}` : ""}</b>
                 <span class="soft">
-                    {#if picked.flag === "--box"}West {box.west}, south {box.south}, east {box.east}, north {box.north}. Drag its corners to resize it, its middle to move it.{:else}Drag a corner on the map to make a box from it.{/if}
+                    {#if picked.flag === "--box" && box}West {box.west}, south {box.south}, east {box.east}, north {box.north}. Drag its corners to resize it, its middle to move it.{:else if box}Drag a corner on the map to make a box from it.{/if}
                     {#if serving && !same(picked, chosen)}Replaces {serving}.{/if}
                 </span>
             </div>
