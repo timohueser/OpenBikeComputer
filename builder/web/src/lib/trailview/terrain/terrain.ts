@@ -1,7 +1,7 @@
 import type { Bounds } from '../../planner/config';
 import { worldPixel } from '../../planner/layers/mercator';
 import { VFOV } from '../frame/camera';
-import { CURVATURE, EARTH_RADIUS, tileLonLat, type Frame } from '../frame/frame';
+import { CURVATURE, type Frame } from '../frame/frame';
 import { anchorAt, cubic, lodSpace, renderMap, UNITS, type Anchor } from '../frame/space';
 import type { Gpu } from '../gpu/device';
 import { CLIP_DISTANCES } from '../gpu/include';
@@ -19,10 +19,10 @@ import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
 /**
- * GPU memory for pages, heights and normals: the stored and the synthesized budgets for a laptop, in
- * MiB. The feature masks take their share of the synthesized budget.
+ * GPU memory for pages: the stored and the synthesized budgets for a laptop, in MiB. The feature masks
+ * take their share of the synthesized budget.
  */
-const BUDGET: Record<Kind, number> = { stored: 240 * 2 ** 20, synth: 70 * 2 ** 20 };
+const BUDGET: Record<Kind, number> = { stored: 120 * 2 ** 20, synth: 51 * 2 ** 20 };
 /**
  * Feature masks of the near pages, 4 bytes per texel: 32 MiB of the synthesized budget. The views of
  * the test box draw up to 106 near pages with features, and every one of them needs its mask: a
@@ -51,7 +51,7 @@ const PROBE_STEP = 1;
 const READBACKS = 3;
 const RAD = Math.PI / 180;
 /** Bytes of `Surface` and `Job` in the WGSL, and of a node instance. */
-const SURFACE_BYTES = 416, JOB_BYTES = 32, STAMP_JOB_BYTES = 32, NODE_BYTES = 16;
+const SURFACE_BYTES = 416, JOB_BYTES = 24, STAMP_JOB_BYTES = 32, NODE_BYTES = 16;
 /** A stamp job whose base is the synthesized page in `out`, as SYNTHESIZED in stamp.wgsl. */
 const SYNTHESIZED = 0xffffffff;
 /** Audit samples per run at most, words per sample, and words of results, as in audit.wgsl. */
@@ -111,7 +111,6 @@ export interface Audit {
 interface Resources extends Pipelines {
     gpu: Gpu;
     heights: GPUTexture;
-    normals: GPUTexture;
     mask: GPUTexture;
     masks: GPUBuffer;
     snaps: GPUTexture;
@@ -124,9 +123,7 @@ interface Resources extends Pipelines {
     nodes: GPUBuffer;
     holes: GPUBuffer;
     synthJobs: GPUBuffer;
-    normalJobs: GPUBuffer;
     synthOut: GPUBuffer;
-    normalOut: GPUBuffer;
     extent: GPUBuffer;
     codes: GPUBuffer;
     indices: GPUBuffer;
@@ -136,7 +133,6 @@ interface Resources extends Pipelines {
     surfaceGroup: GPUBindGroup;
     meshGroup: GPUBindGroup;
     synthGroup: GPUBindGroup;
-    normalGroup: GPUBindGroup;
     quantizeGroup: GPUBindGroup;
     probeGroup: GPUBindGroup;
     stampGroup: GPUBindGroup;
@@ -154,7 +150,7 @@ interface Resources extends Pipelines {
 export class Terrain {
     readonly pages: Pages;
     readonly stamps: Stamps;
-    /** Whether the last frame draws other content than the frame before it: new pages, masks, normals, nodes or water. */
+    /** Whether the last frame draws other content than the frame before it: new pages, masks, nodes or water. */
     newContent = false;
     /** The metres on the ground from the eye to the nearest page whose heights the last frame changed, 0 for new structures: casters stand on them. */
     reshaped = Infinity;
@@ -201,8 +197,8 @@ export class Terrain {
     constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
-        // 16-bit heights and rg8snorm normals.
-        const bytes = PAGE * PAGE * 4;
+        // 16-bit heights.
+        const bytes = PAGE * PAGE * 2;
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / bytes / LAYER_PAGES) * LAYER_PAGES, synth = Math.floor((BUDGET.synth - MASK_BYTES) / bytes);
         this.stamps = new Stamps(features, changed);
@@ -263,10 +259,9 @@ export class Terrain {
         };
     }
 
-    /** The nodes that the last frame drew and wanted, the nodes whose normals and whose heights it computed, and the LOD map windows. */
-    get selected(): { drawn: Node[]; wanted: Node[]; refreshed: Node[]; arrived: Node[]; origins: [number, number][] } {
-        const nodes = (pages?: Page[]) => pages?.map(page => page.node) ?? [];
-        return { drawn: this.nodes, wanted: this.wantedNodes, refreshed: nodes(this.work?.normals), arrived: nodes(this.work?.fresh), origins: this.work?.origins ?? [] };
+    /** The nodes that the last frame drew and wanted, the nodes whose drawn heights it changed, and the LOD map windows. */
+    get selected(): { drawn: Node[]; wanted: Node[]; arrived: Node[]; origins: [number, number][] } {
+        return { drawn: this.nodes, wanted: this.wantedNodes, arrived: this.work?.fresh.map(page => page.node) ?? [], origins: this.work?.origins ?? [] };
     }
 
     /** Encodes the heights of the structures' anchors into a compute pass of the frame. */
@@ -307,7 +302,6 @@ export class Terrain {
         const texels = PAGE * PAGE;
         const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
         const heights = gpu.texture('pages', { size: [side, side, layers], format: 'r16uint', usage }, layers * side * side * 2);
-        const normals = gpu.texture('pages', { size: [side, side, layers], format: 'rg8snorm', usage }, layers * side * side * 2);
         // The masks: written by the stamp pass, read by the shaders that draw.
         const mask = gpu.texture('features', {
             size: [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
@@ -317,8 +311,8 @@ export class Terrain {
         }, MASKS * SNAP_BYTES);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
-        const r: Omit<Resources, keyof Pipelines | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup'> = {
-            gpu, heights, normals,
+        const r: Omit<Resources, keyof Pipelines | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup'> = {
+            gpu, heights,
             mask, snaps,
             masks: buffer('features', (1 + pages) * 4, storage),
             stampJobs: buffer('compute', ARRIVALS * STAMP_JOB_BYTES, storage),
@@ -330,9 +324,7 @@ export class Terrain {
             nodes: buffer('terrain', MAX_NODES * NODE_BYTES, storage),
             holes: buffer('terrain', (1 + 3 * MAX_HOLES) * 16, storage),
             synthJobs: buffer('compute', ARRIVALS * JOB_BYTES, storage),
-            normalJobs: buffer('compute', 2 * ARRIVALS * JOB_BYTES, storage),
             synthOut: buffer('compute', ARRIVALS * texels * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
-            normalOut: buffer('compute', 2 * ARRIVALS * texels * 2, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
             extent: buffer('compute', ARRIVALS * 8, storage),
             codes: buffer('compute', ARRIVALS * texels * 2, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
             indices: buffer('terrain', GRID_INDICES.byteLength, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST),
@@ -358,10 +350,9 @@ export class Terrain {
             }),
             featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps)]),
             emptyGroup: group(L.empty, []),
-            surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, normals.createView({ dimension: '2d-array' }), device.createSampler()]),
+            surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, device.createSampler()]),
             meshGroup: group(L.mesh, [{ buffer: frameUniform }, { buffer: r.nodes }, { buffer: r.holes }]),
             synthGroup: group(L.job, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }]),
-            normalGroup: group(L.job, [{ buffer: r.normalJobs }, { buffer: r.normalOut }, { buffer: r.extent }]),
             quantizeGroup: group(L.quantize, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.codes }, { buffer: r.scales }]),
             probeGroup: group(L.probe, [{ buffer: r.points }, { buffer: r.probed }]),
         };
@@ -441,11 +432,11 @@ export class Terrain {
         this.seen = view.z === undefined ? undefined : { viewProj: view.viewProj, z: view.z, forward };
         const level = { anchor, above: 0 }, pages = [...work.uploads, ...work.syntheses, ...work.stamps.filter(({ mode }) => mode & MODE.HEIGHTS)];
         this.reshaped = structures ? 0 : Math.min(Infinity, ...pages.map(({ page }) => distances(level, page.node)[0]));
-        this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || structures || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length || work.normals.length);
+        this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || structures || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length);
     }
 
     /**
-     * Encodes this frame's compute: the heights of synthesized pages, the normals, and the probe under
+     * Encodes this frame's compute: the heights of synthesized pages, the stamps, and the probe under
      * the eye when the view or the pages changed. Call the returned function after the submit.
      */
     encode(encoder: GPUCommandEncoder, time: (pass: string) => GPUComputePassTimestampWrites | undefined = () => undefined): () => void {
@@ -483,16 +474,6 @@ export class Terrain {
             targets.forEach((slot, k) => encoder.copyBufferToTexture(
                 { buffer: r.codes, offset: k * texels * 2, bytesPerRow: PAGE * 2 },
                 { texture: r.heights, origin: origin(slot) }, [PAGE, PAGE, 1]));
-        }
-        if (work.normals.length) {
-            const pass = encoder.beginComputePass({ label: 'normals' });
-            pass.setPipeline(r.normalsOf);
-            pass.setBindGroup(0, r.normalGroup);
-            pass.setBindGroup(1, r.surfaceGroup);
-            pass.dispatchWorkgroups(PAGE / 16, PAGE / 8, work.normals.length);
-            pass.end();
-            work.normals.forEach((page, k) => encoder.copyBufferToTexture(
-                { buffer: r.normalOut, offset: k * texels * 2, bytesPerRow: PAGE * 2 }, { texture: r.normals, origin: origin(page.drawn!) }, [PAGE, PAGE, 1]));
         }
         const state = `${this.anchor?.whole}/${this.anchor?.part}/${this.above}/${this.quality}/${this.changes}`;
         const readback = state === this.probed ? undefined : r.readbacks.pop();
@@ -782,7 +763,6 @@ export class Terrain {
             ...work.syntheses.map(({ page, stored }) => ({ page, stored, slot: page.slot, stamped: heightsOf.has(page) })),
             ...copies(work).map(({ page, target }) => ({ page, stored: 0, slot: target, stamped: true })),
         ]));
-        device.queue.writeBuffer(r.normalJobs, 0, jobs(work.normals.map(page => ({ page, stored: 0, slot: page.drawn!, stamped: false }))));
         if (work.stamps.length) this.writeStamps(r, work.stamps);
         device.queue.writeBuffer(r.extent, 0, new Uint32Array(2 * ARRIVALS).map((_, i) => (i % 2 ? 0 : 0xffffffff)));
         const instances = new Int32Array(4 * this.nodes.length);
@@ -853,16 +833,15 @@ type Pipelines = Awaited<ReturnType<typeof terrainPipelines>>;
 /** What the terrain draws and computes with from its first frame. */
 export async function terrainPipelines(gpu: Gpu) {
     const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
-    const [mesh, plainMesh, synthesize, normalsOf, quantize, probe, stamp, snap] = await Promise.all([
+    const [mesh, plainMesh, synthesize, quantize, probe, stamp, snap] = await Promise.all([
         meshPipeline(gpu, true), meshPipeline(gpu, false),
         compute(gpu, 'pages', 'synthesize', [L.job, surface]),
-        compute(gpu, 'pages', 'normals_of', [L.job, surface]),
         compute(gpu, 'quantize', 'quantize', [L.quantize]),
         compute(gpu, 'probe', 'probe', [L.probe, surface, L.empty, features]),
         compute(gpu, 'stamp', 'stamp', [L.stamp, surface]),
         compute(gpu, 'stamp', 'snap', [L.snap]),
     ]);
-    return { mesh, plainMesh, synthesize, normalsOf, quantize, probe, stamp, snap };
+    return { mesh, plainMesh, synthesize, quantize, probe, stamp, snap };
 }
 
 /** The draw of the nodes with a tunnel's portal, with its hole. */
@@ -905,16 +884,10 @@ function holes(lists: Float64Array[], anchor: Anchor): Float32Array<ArrayBuffer>
 /** Where a page lies: one of 8 × 8 tiles of a layer, as `in_layer` in drawn-height.wgsl has it. */
 const origin = (slot: number): [number, number, number] => [PAGE * (slot & 7), PAGE * ((slot >> 3) & 7), slot >> 6];
 
-/** Jobs as `Job` in the WGSL: the node's first texel, its level, the stored level, metres per texel, the layer and whether a stamp follows. */
+/** Jobs as `Job` in the WGSL: the node's first texel, its level, the stored level, the layer and whether a stamp follows. */
 function jobs(list: { page: Page; stored: number; slot: number; stamped: boolean }[]): ArrayBuffer {
-    const data = new ArrayBuffer(Math.max(1, list.length) * JOB_BYTES), ints = new Int32Array(data), floats = new Float32Array(data);
-    list.forEach(({ page: { node: { level, x, y } }, stored, slot, stamped }, k) => {
-        const lat = tileLonLat(x + 0.5, y + 0.5, level)[1];
-        ints.set([x * PAGE, y * PAGE, level, stored], 8 * k);
-        floats[8 * k + 4] = 2 * Math.PI * EARTH_RADIUS * Math.cos(lat * RAD) / 2 ** (level + 8);
-        ints[8 * k + 5] = slot;
-        ints[8 * k + 6] = stamped ? 1 : 0;
-    });
+    const data = new ArrayBuffer(Math.max(1, list.length) * JOB_BYTES), ints = new Int32Array(data);
+    list.forEach(({ page: { node: { level, x, y } }, stored, slot, stamped }, k) => ints.set([x * PAGE, y * PAGE, level, stored, slot, stamped ? 1 : 0], (JOB_BYTES / 4) * k));
     return data;
 }
 

@@ -24,6 +24,9 @@ struct Job {
 // Per job, one layer: snow by the region's snow_share, snow data known, the satellite's snow mark.
 @group(0) @binding(3) var snow_in: texture_2d_array<f32>;
 @group(0) @binding(4) var horizons_out: texture_storage_2d_array<rgba8unorm, write>;
+// Per job, the openness of each texel as one byte, four per word, for a copy into `relief_open`.
+@group(0) @binding(5) var<storage, read_write> open_out: array<atomic<u32>>;
+@group(0) @binding(6) var coarse_out: texture_storage_2d_array<rgba8unorm, write>;
 
 // The march of a horizon: from two texels out to HORIZON_M, each step HORIZON_STEP times the last
 // and at least a texel, on the level whose texel is about as long as the step. The far terrain is
@@ -52,21 +55,25 @@ fn openness(centre: f32, around: vec4f, reach: f32) -> f32 {
     return (clamp(1.0 - 1.5 * (0.25 * dot(around, vec4f(1.0)) - centre) / reach, 0.6, 1.15) - 0.6) / 0.55;
 }
 
-// The relief of a texel: the normal and the openness two levels coarser, for cliffs, whose fine
-// slopes would streak down a face, and the texel's own openness three texels across.
-fn relief_of(job: Job, t: vec2i) -> vec4f {
-    let wide = 3;
-    let open = openness(height_at(job.level, t), vec4f(height_at(job.level, t + vec2i(wide, 0)), height_at(job.level, t - vec2i(wide, 0)),
-        height_at(job.level, t + vec2i(0, wide)), height_at(job.level, t - vec2i(0, wide))), f32(wide) * job.metres);
+// Texels across which the relief measures the openness.
+const WIDE: i32 = 3;
+
+// A texel's own openness.
+fn open_of(job: Job, t: vec2i) -> f32 {
+    return openness(height_at(job.level, t), vec4f(height_at(job.level, t + vec2i(WIDE, 0)), height_at(job.level, t - vec2i(WIDE, 0)),
+        height_at(job.level, t + vec2i(0, WIDE)), height_at(job.level, t - vec2i(0, WIDE))), f32(WIDE) * job.metres);
+}
+
+// The relief two levels coarser at whole units u, for cliffs, whose fine slopes would streak down a face:
+// xy the normal as 0.5 + 0.5 n, z the openness.
+fn coarse_of(job: Job, u: vec2i) -> vec3f {
     // The finest ground pages also draw the nodes finer than them, near the eye, whose LOD is higher.
     let coarse = max(job.level, COARSEST + 2u) - select(2u, 1u, job.level == look.codes.y);
-    let shift = 22u - job.level;
-    let u = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
     let n = level_normal(lod_space(vec2f(u - surface.anchor)), coarse);
-    let step = wide << (22u - coarse);
+    let step = WIDE << (22u - coarse);
     let coarse_open = openness(units_height(u, coarse), vec4f(units_height(u + vec2i(step, 0), coarse), units_height(u - vec2i(step, 0), coarse),
-        units_height(u + vec2i(0, step), coarse), units_height(u - vec2i(0, step), coarse)), f32(wide << (job.level - coarse)) * job.metres);
-    return vec4f(n * 0.5 + 0.5, coarse_open, open);
+        units_height(u + vec2i(0, step), coarse), units_height(u - vec2i(0, step), coarse)), f32(WIDE << (job.level - coarse)) * job.metres);
+    return vec3f(n * 0.5 + 0.5, coarse_open);
 }
 
 // The water meshes draw the water. So a texel that the ground layers call water, or where the satellite
@@ -106,7 +113,13 @@ fn ground_main(@builtin(global_invocation_id) id: vec3u) {
     let page = i32(job.slot);
     let at = in_page(page, c);
     let layer = page_layer(page);
-    textureStore(cache_out, at, 4 * layer + 3, clamp(relief_of(job, job.texel + c), vec4f(0.0), vec4f(1.0)));
+    let open = clamp(open_of(job, job.texel + c), 0.0, 1.0);
+    atomicOr(&open_out[id.z * 16384u + id.y * 64u + id.x / 4u], u32(round(open * 255.0)) << (8u * (id.x % 4u)));
+    // The first lanes also make the coarse relief, one texel each at the centre of its texels.
+    if (all(c < vec2i(COARSE_PAGE))) {
+        let coarse = coarse_of(job, (job.texel + COARSE_STEP * c + COARSE_STEP / 2) << vec2u(22u - job.level));
+        textureStore(coarse_out, in_coarse(page, c), layer, vec4f(clamp(coarse, vec3f(0.0), vec3f(1.0)), 0.0));
+    }
     if ((job.work & 2u) == 0u) {
         return;
     }
@@ -128,9 +141,9 @@ fn ground_main(@builtin(global_invocation_id) id: vec3u) {
     let dry = 1.0 - parts.water;
     // Woodland is crowns and the shade between them, darker than its leaves.
     let albedo = albedo_of(parts, region, cell.r, sat, barren) * mix(1.0, 0.68, parts.tree);
-    textureStore(cache_out, at, 4 * layer, vec4f(sqrt(albedo), (data.r + (1.0 - data.g) * data.b) * dry));
-    textureStore(cache_out, at, 4 * layer + 1, vec4f(parts.tree, parts.rough, parts.moor, green));
-    textureStore(cache_out, at, 4 * layer + 2, vec4f(mix(bare_from, min(bare_from, rule(region, slot_cliff() + 3).y), green), barren * dry,
+    textureStore(cache_out, at, CACHE_PLANES * layer, vec4f(sqrt(albedo), (data.r + (1.0 - data.g) * data.b) * dry));
+    textureStore(cache_out, at, CACHE_PLANES * layer + 1, vec4f(parts.tree, parts.rough, parts.moor, green));
+    textureStore(cache_out, at, CACHE_PLANES * layer + 2, vec4f(mix(bare_from, min(bare_from, rule(region, slot_cliff() + 3).y), green), barren * dry,
         parts.sward * (1.0 - barren * dry), parts.banded));
 }
 
