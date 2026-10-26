@@ -19,7 +19,7 @@ cd "$OBC_ROOT"
 # The terrain, features, ground, colour and snow cover BOX. The LiDAR layers, the zoom 13 terrain
 # (swissALTI3D) and the canopy, cover DETAIL only: it holds the flights and views of this folder.
 BOX=${TRAILVIEW_BOX:-7.60,46.46,8.95,47.25}
-DETAIL=${TRAILVIEW_DETAIL:-8.25,46.70,8.60,46.90}
+DETAIL=${TRAILVIEW_DETAIL:-8.25,46.70,8.60,47.06}
 WORK=${TRAILVIEW_DIR:-$HOME/.cache/obc/trailview-box}
 SRC=$WORK/sources
 OUT=$WORK/$BOX
@@ -151,8 +151,9 @@ done | xargs -r -P 2 -I{} "${PY[@]}" host/obc-dem/reference/ingest.py fetch ch -
 mkdir -p "$OUT/reference/mean"
 python3 -c 'import json, pathlib, sys; print(json.dumps({p.name.removesuffix(".mean.sha256").replace("-", "/"): p.read_text().strip()
   for p in pathlib.Path(sys.argv[1]).glob("*.mean.sha256")}))' "$OUT/reference" > "$OUT/reference/mean-digests.json"
-"${PY[@]}" host/obc-dem/reference/ingest.py index-tiles ch --pool mean --fetched "$(date -u +%F)" \
-  --digests "$OUT/reference/mean-digests.json" --out "$OUT/reference/mean/index.json"
+python3 -c 'import json, sys; print(json.dumps({t: ["ch"] for t in json.load(open(sys.argv[1]))}))' "$OUT/reference/mean-digests.json" > "$OUT/reference/mean-keys.json"
+"${PY[@]}" host/obc-dem/reference/ingest.py index-terrain --pool mean --fetched "$(date -u +%F)" --models ch \
+  --digests "$OUT/reference/mean-digests.json" --keys "$OUT/reference/mean-keys.json" --out "$OUT/reference/mean/index.json"
 
 # ---- bakes ------------------------------------------------------------------
 if [[ ! -s $OUT/terrain.mbtiles ]]; then
@@ -163,6 +164,8 @@ if [[ ! -s $OUT/terrain.mbtiles ]]; then
 fi
 
 if [[ ! -d $OUT/features ]]; then
+  # The step builds its solvers offline.
+  _run cargo fetch --locked
   _run "${PY[@]}" -m tools.planner_trailview_features --osm "$OUT/osm.pbf" --terrain "$OUT/terrain.mbtiles" \
     --bounds "$BOX" --output "$OUT/features.pmtiles"
   # The harness serves a folder of feature tiles `z/x/y.bin`.
@@ -198,6 +201,7 @@ if [[ ! -s $GROUND/lithology.pmtiles ]]; then
   mv "$OUT/step/lithology.pmtiles" "$GROUND/"
 fi
 # The region tiles follow the regions of the ruleset, so they bake each run too; they are small.
+rm -f "$GROUND/ground.pmtiles"
 step tools.trailview.ground "{\"layer\": \"region\", \"bounds\": $(bounds "$BOX"), \"attribution\": \"RESOLVE Ecoregions, Natural Earth\"}" "$RULES" '{}'
 mv "$OUT/step/region.pmtiles" "$GROUND/"
 if [[ ! -s $GROUND/colour/$VARIANT/q1.pmtiles ]]; then
@@ -207,12 +211,22 @@ if [[ ! -s $GROUND/colour/$VARIANT/q1.pmtiles ]]; then
 fi
 if [[ ! -s $GROUND/trailview-canopy.pmtiles ]]; then
   step tools.planner_trailview_canopy "{\"references\": [\"forest-reference/ch\"], \"bounds\": $(bounds "$DETAIL"), \"attribution\": \"FOEN/WSL, Copernicus Land Monitoring Service\"}" \
-    '{}' "{\"forest-reference/ch\": \"$OUT/forest\"}"
+    '{}' "{\"forest\": \"$OUT/forest\"}"
   mv "$OUT/step/trailview-canopy.pmtiles" "$GROUND/"
 fi
 if [[ ! -s $GROUND/snow.pmtiles ]]; then
   _run "${PY[@]}" -m tools.planner_snow trailview-box --bounds "$BOX" --source copernicus-hr-wsi --output "$OUT/snow.tmp.pmtiles"
   mv "$OUT/snow.tmp.pmtiles" "$GROUND/snow.pmtiles"
+fi
+# The page reads the joined ground and the snow day bands.
+if [[ ! -s $GROUND/ground.pmtiles ]]; then
+  step tools.trailview.ground "{\"layer\": \"ground\", \"bounds\": $(bounds "$BOX"), \"attribution\": \"ESA WorldCover, CORINE, Copernicus Sentinel data, OpenStreetMap, EGDI, IGME 5000\"}" \
+    "{\"planner/trailview-material\": {\"material.pmtiles\": \"$GROUND/material.pmtiles\"}, \"planner/trailview-lithology\": {\"lithology.pmtiles\": \"$GROUND/lithology.pmtiles\"}, \"planner/trailview-region\": {\"region.pmtiles\": \"$GROUND/region.pmtiles\"}}" '{}'
+  mv "$OUT/step/ground.pmtiles" "$GROUND/"
+fi
+if [[ ! -d $GROUND/snow-days ]]; then
+  _run "${PY[@]}" -m tools.trailview.snow --snow "$GROUND/snow.pmtiles" --output "$GROUND/snow-days.tmp"
+  mv "$GROUND/snow-days.tmp" "$GROUND/snow-days"
 fi
 
 # ---- page -------------------------------------------------------------------
@@ -220,8 +234,8 @@ python3 - "$HERE/fixture/config.json" "$BOX" > "$OUT/config.json" <<'EOF'
 import json, sys
 config = json.load(open(sys.argv[1]))
 host = "https://tiles.test"
-names = ["trailview-features", "trailview-material", "trailview-lithology", "trailview-region", "trailview-canopy", "snow",
-         *(f"trailview-colour-{name}" for name in ("q1", "q2", "q3", "q4", "ndvimax"))]
+names = ["trailview-features", "trailview-ground", "trailview-canopy", *(f"trailview-colour-q{q}" for q in range(1, 5)),
+         *(f"trailview-snow-{band:02}" for band in range(46))]
 config.update(name="TrailView box", bounds=[float(v) for v in sys.argv[2].split(",")],
               layers={name: f"{host}/{name}.json" for name in names}, trailview_rules=f"{host}/trailview/rules.json")
 print(json.dumps(config, indent=2))
