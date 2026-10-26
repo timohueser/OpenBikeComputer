@@ -3,7 +3,7 @@ import { anchorAt, UNITS } from '../frame/space';
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
 import { COVER_ORDER } from '../ground/rules';
-import { Instances, type ModelSpec, type Producer, type Surfaces } from '../instances/instances';
+import { EYE, Instances, VIEWS, type ModelSpec, type Producer, type Surfaces } from '../instances/instances';
 import { f16 } from '../instances/points';
 import { TREES } from '../models/library';
 import { PLANTS } from '../models/plant-library';
@@ -24,7 +24,7 @@ const TIE = 0.85, OWN_TIE = 0.35;
 const MOOR = ['heath', 'bog'], NONE = 0xffff;
 const HABITAT = { moor: 1 << 12, lush: 1 << 13 }, CLUMPED = 1 << 14, MOOR_REGION = 1;
 
-interface Resources { gpu: Gpu; ground: GPUComputePipeline; shrubs: GPUComputePipeline; group: GPUBindGroup; params: GPUBuffer }
+interface Resources { gpu: Gpu; ground: GPUComputePipeline; shrubs: GPUComputePipeline; groups: GPUBindGroup[]; params: GPUBuffer }
 
 /** A plant model of the instances: a shape of a ground plant or a plant that stands as a shrub; in its season or evergreen. */
 interface Model { model: string; seed: number; evergreen: boolean; shrub: boolean; tie: number }
@@ -109,7 +109,7 @@ export class Plants implements Producer {
         return this.building === 0;
     }
 
-    async attach(gpu: Gpu, frame: GPUBuffer, { surface, features, ground }: Surfaces): Promise<void> {
+    async attach(gpu: Gpu, { surface, features, ground }: Surfaces): Promise<void> {
         this.resources = undefined;
         const { device } = gpu, C = GPUShaderStage.COMPUTE;
         const data = gpu.buffer('vegetation', this.data.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
@@ -123,7 +123,7 @@ export class Plants implements Producer {
         const [groundPlants, shrubs] = await Promise.all(['ground_plants', 'shrubs'].map(entryPoint => device.createComputePipelineAsync({ label: entryPoint, layout: pipelineLayout, compute: { module, entryPoint } })));
         this.resources = {
             gpu, ground: groundPlants, shrubs, params,
-            group: device.createBindGroup({ layout, entries: [...this.instances.emitResources(frame), { binding: 8, resource: { buffer: data } }, { binding: 9, resource: { buffer: params } }] }),
+            groups: VIEWS.map(view => device.createBindGroup({ layout, entries: [...this.instances.emitResources(view), { binding: 8, resource: { buffer: data } }, { binding: 9, resource: { buffer: params } }] })),
         };
         this.surface = surface.group;
         this.features = features.group;
@@ -152,10 +152,10 @@ export class Plants implements Producer {
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
     }
 
-    encode(pass: GPUComputePassEncoder, ground: GPUBindGroup): void {
+    encode(pass: GPUComputePassEncoder, ground: GPUBindGroup, view: number): void {
         const r = this.resources;
         if (!r || !this.surface || !this.features) return;
-        pass.setBindGroup(0, r.group);
+        pass.setBindGroup(0, r.groups[view]);
         pass.setBindGroup(1, this.surface);
         pass.setBindGroup(2, ground);
         pass.setBindGroup(3, this.features);
@@ -164,7 +164,8 @@ export class Plants implements Producer {
             pass.setPipeline(pipeline);
             pass.dispatchWorkgroups(Math.ceil(side / 8), Math.ceil(side / 8));
         };
-        run(r.ground, this.sides[0]);
+        // The ground plants cast no shadow.
+        if (view === EYE) run(r.ground, this.sides[0]);
         run(r.shrubs, this.sides[1]);
     }
 }

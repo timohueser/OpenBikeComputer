@@ -113,7 +113,7 @@ fn water_colour(in: WaterFragment) -> vec3f {
     let mirrored = reflect(dir, up);
     // The reflection is held to 90 %: the far bank that it would show is darker than the sky.
     let fresnel = 0.02 + 0.98 * pow(clamp(1.0 - dot(-dir, up), 0.0, 1.0), 5.0);
-    let sun = sun_at(in.lod);
+    let sun = sun_share(sun_at(in.lod), in.relative, vec3f(0.0, 0.0, 1.0), LIFT_GROUND);
     let lit = look.ambient.rgb + 0.8 * look.sun_colour.rgb * max(look.sun.z, 0.0) * sun;
     let body = BODY * lit;
     var c = mix(body * 0.55, sky(mirrored), min(0.96 * fresnel, 0.9));

@@ -2,7 +2,7 @@ import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
-import { Instances, type Producer, type Surfaces } from '../instances/instances';
+import { Instances, VIEWS, type Producer, type Surfaces } from '../instances/instances';
 import { animal, BREEDS } from '../models/animals';
 import { geometry, type Model } from '../models/flat';
 import { rock } from '../models/rocks';
@@ -15,7 +15,7 @@ const HERD_CELL = 2 ** 14, ROCK_CELL = 2 ** 7;
 /** Words of `Herd` and bytes of `Dressing` in dressing.wgsl. */
 const HERD_WORDS = 8, DRESSING_BYTES = 48;
 
-interface Resources { gpu: Gpu; herds: GPUComputePipeline; rocks: GPUComputePipeline; group: GPUBindGroup; params: GPUBuffer }
+interface Resources { gpu: Gpu; herds: GPUComputePipeline; rocks: GPUComputePipeline; groups: GPUBindGroup[]; params: GPUBuffer }
 
 /**
  * The dressing of the ground (dressing.wgsl): the herds of the regions' packs on the materials that
@@ -54,7 +54,7 @@ export class Dressing implements Producer {
         });
     }
 
-    async attach(gpu: Gpu, frame: GPUBuffer, { surface, features, ground }: Surfaces): Promise<void> {
+    async attach(gpu: Gpu, { surface, features, ground }: Surfaces): Promise<void> {
         this.resources = undefined;
         const { device } = gpu, C = GPUShaderStage.COMPUTE;
         const herds = gpu.buffer('dressing', this.table.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
@@ -68,7 +68,7 @@ export class Dressing implements Producer {
         const [herdsOf, rocksOf] = await Promise.all(['herds_of', 'rocks_of'].map(entryPoint => device.createComputePipelineAsync({ label: entryPoint, layout: pipelineLayout, compute: { module, entryPoint } })));
         this.resources = {
             gpu, herds: herdsOf, rocks: rocksOf, params,
-            group: device.createBindGroup({ layout, entries: [...this.instances.emitResources(frame), { binding: 8, resource: { buffer: params } }, { binding: 9, resource: { buffer: herds } }] }),
+            groups: VIEWS.map(view => device.createBindGroup({ layout, entries: [...this.instances.emitResources(view), { binding: 8, resource: { buffer: params } }, { binding: 9, resource: { buffer: herds } }] })),
         };
         this.surface = surface.group;
         this.features = features.group;
@@ -93,10 +93,10 @@ export class Dressing implements Producer {
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
     }
 
-    encode(pass: GPUComputePassEncoder, ground: GPUBindGroup): void {
+    encode(pass: GPUComputePassEncoder, ground: GPUBindGroup, view: number): void {
         const r = this.resources;
         if (!r || !this.surface || !this.features || !this.herdSide) return;
-        pass.setBindGroup(0, r.group);
+        pass.setBindGroup(0, r.groups[view]);
         pass.setBindGroup(1, this.surface);
         pass.setBindGroup(2, ground);
         pass.setBindGroup(3, this.features);
