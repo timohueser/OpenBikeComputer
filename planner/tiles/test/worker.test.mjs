@@ -24,6 +24,14 @@ test('invalid requests perform no bucket access', async () => {
   }
   assert.equal((await worker.fetch(new Request('https://tiles.example', { method: 'POST' }), env, {})).status, 405);
 });
+test('the version names the deployed commit and is never cached', async () => {
+  const env = { COMMIT: 'c'.repeat(40), BUCKET: { get() { assert.fail('Unexpected bucket access'); } } };
+  const response = await worker.fetch(new Request('https://tiles.example/version'), env, {}, null);
+  assert.deepEqual(await response.json(), { commit: env.COMMIT });
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  const pasted = await worker.fetch(new Request('https://tiles.example/version'), { BUCKET: env.BUCKET }, {}, null);
+  assert.deepEqual(await pasted.json(), { commit: null });
+});
 
 // One tile in a synthetic PMTiles v3 archive tests the reader and R2 range seam.
 function archive(tileType = 1, meta = { attribution: 'Test data' }, tileCompression = 2) {

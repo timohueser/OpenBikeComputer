@@ -55,6 +55,11 @@ export async function fetch(request, env, ctx, cache = globalThis.caches?.defaul
     if (request.method === 'OPTIONS') return new Response(null, { headers });
     if (!['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET, HEAD, OPTIONS' } });
     const url = new URL(request.url), route = tileRoute(url.pathname);
+    // `obc data deploy` asks which commit runs; `wrangler deploy --var COMMIT:SHA` sets it.
+    if (url.pathname === '/version' && !url.search) {
+      return new Response(JSON.stringify({ commit: env.COMMIT ?? null }),
+        { headers: { ...headers, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+    }
     let asset;
     try { asset = assetRoute(decodeURIComponent(url.pathname)); } catch { asset = null; }
     if ((!route && !asset) || url.search) return notFound();
