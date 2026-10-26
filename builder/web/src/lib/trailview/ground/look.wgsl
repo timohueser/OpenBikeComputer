@@ -686,14 +686,14 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         }
         let plain = n;
         n = normalize(n + across * gully_tilt * walled);
-        // A facet's light rises and falls as far as it turns toward the sun, and in shade toward the
-        // sun's side of the sky and up; a gully sees less of the sky. Close by, the crags differ less,
+        // A facet's light rises and falls as far as it turns toward the sun that reaches it, and in shade
+        // toward the sun's side of the sky and up; a gully sees less of the sky. Close by, the crags differ less,
         // so a near wall reads as one rough surface.
         let calm = 1.0 - smoothstep(1.0, 3.0, surface_size);
         tilt *= 1.0 - 0.35 * calm;
         let turned = across * tilt.x + up * tilt.y;
         let reach = smoothstep(-0.2, 0.1, dot(plain, look.sun.xyz));
-        face *= 1.0 + 0.9 * dot(turned, look.sun.xyz) * reach * walled;
+        face *= 1.0 + 0.9 * dot(turned, look.sun.xyz) * reach * g.sun * walled;
         open *= mix(1.0, (1.0 + 0.6 * tilt.x * dot(across.xy, normalize(look.sun.xy + 1e-6)) + 0.3 * tilt.y) * mix(0.75, 1.25, gully), walled);
         let contrast = 1.0 - 0.5 * calm;
         let bulge = mix(1.0, mix(0.81, 1.05, smoothstep(0.0, 0.2, crags.z)), big * contrast);
