@@ -1085,7 +1085,9 @@ of a kept layer reads it from the store of the machine.
 ### Release manifest
 
 `releases/<id>.json` is compact JSON with the keys of each object in byte order. The id is the
-SHA-256 of these bytes.
+SHA-256 of these bytes. The manifest has format 1. A change of its shape raises the format. A
+follower reads only its own format and says which at `/planner-api/version`, and the review of an
+update of prod names a follower that cannot read the release.
 
 | Key | Meaning |
 | --- | --- |
@@ -1693,7 +1695,7 @@ each origin.
 
 | Path | Answer |
 | --- | --- |
-| `/planner-api/version` | `{"commit", "formats"}`: the commit that the build of serve names in `OBC_DATA_COMMIT`, or `null`, and the format of each layer that its services read. Never cached |
+| `/planner-api/version` | `{"commit", "formats", "manifest"}`: the commit that the build of serve names in `OBC_DATA_COMMIT`, or `null`, the format of each layer that its services read, and the format of the release manifest that it reads. Never cached |
 | `/planner-api/releases/<id>/ready` | `{"state": "ready"}` while the services of the planner release `<id>` answer. 503 with `{"state": "starting"}` while its objects download and its services start, or `{"state": "failed", "reason": "not ready: <why>"}` after they failed. 404 with `{"state": "unknown", "reason"}` while serve does not know `<id>` yet: a publisher that waits for `<id>` keeps waiting, as on 503. Never cached |
 | `/planner-api/releases/<id>/<service>/<path>` | `<path>` of the `routing`, `search` or `downloads` service of the planner release `<id>`. Search gets `/api/planner-search/<path>`. 404 when the services of `<id>` do not answer |
 | `/planner-offline/<path>` | `<path>` of the downloads service of the current release, for apps that name no planner release. 503 while it does not answer |
