@@ -40,7 +40,7 @@ export async function startTrailView(canvas: HTMLCanvasElement, config: PlannerC
 }
 
 /** The longest wait for the view about the eye after the first frame: a slow network shows the view still refining. */
-const SETTLE_CAP_MS = 2_500;
+const SETTLE_CAP_MS = 1_500;
 
 /**
  * Whether the engine shows a settled view: true once the view about the eye is final (`eyeReady()`), or
