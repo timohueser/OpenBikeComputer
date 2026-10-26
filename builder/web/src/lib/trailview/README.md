@@ -75,6 +75,7 @@ node trailview/shoot.mjs [--views FILE] [--out DIR] [--tiles FILE] [--ground DIR
 node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--cracks N] [--audit N]
 node trailview/skyline.mjs [--tiles FILE] [--lab LAB] [--gpu]
 trailview/box.sh [view | flight ARGS]       # bake the Engelberg box without obc data; open it; time it
+node trailview/network.mjs [--view V] [--mbit 25] [--rtt 40] [--web DIR]  # a cold view of the bake on a shaped link
 npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
 ```
 
