@@ -1,7 +1,8 @@
 import { PMTiles } from 'pmtiles';
 import type { PlannerConfig } from '../../planner/config';
 import { decodedTiles, fetchTile, openSource, requestSignal, type Source } from '../../planner/layers/archive';
-import { FORMAT } from './features';
+import { worldPixel } from '../../planner/layers/mercator';
+import { DEEPEST, FORMAT } from './features';
 import type { PageData } from './heights';
 
 /** The deepest stored zoom: the planner's zooms 0 to 12, and zoom 13 where a national model holds the ground. */
@@ -44,6 +45,32 @@ export function releaseTiles(config: PlannerConfig): TerrainSource['fetch'] {
         if (z === TILE_ZOOM && config.manifest) return (await (await pack(config.manifest, x, y))?.getZxy(z, x, y, requestSignal()))?.data;
         return fetchTile(config.terrain, z, x, y, requestSignal());
     };
+}
+
+/** The stored terrain and the feature tiles of a release. */
+export interface EyeTiles {
+    terrain: TerrainSource['fetch'];
+    features: ReturnType<typeof featureTiles>;
+}
+
+/**
+ * The tiles of a release, with the deepest terrain tile and the feature tile under the eye started at
+ * once: they load while the engine opens the ground and compiles its pipelines. The first fetch of the
+ * terrain tile takes its body.
+ */
+export function eyeTiles(config: PlannerConfig, lonLat: [number, number]): EyeTiles {
+    const fetch = releaseTiles(config), features = featureTiles(config), at = (z: number) => worldPixel(lonLat, 2 ** z).map(Math.floor);
+    const [ex, ey] = at(TILE_ZOOM), [fx, fy] = at(DEEPEST);
+    let early: Promise<ArrayBuffer | undefined> | undefined = fetch(TILE_ZOOM, ex, ey);
+    // A view that never asks for a tile leaves its failure unseen; the features keep their body.
+    early.catch(() => {});
+    features?.(DEEPEST, fx, fy).catch(() => {});
+    const terrain: TerrainSource['fetch'] = (z, x, y) => {
+        const body = z === TILE_ZOOM && x === ex && y === ey ? early : undefined;
+        if (body) early = undefined;
+        return body ?? fetch(z, x, y);
+    };
+    return { terrain, features };
 }
 
 /** The pages of tile bodies, decoded in workers. */

@@ -53,11 +53,10 @@ export class GroundSource {
     /** The snow day archive of one band, opened on first use: a date in another band opens its own. */
     private snow?: { band: number; archive: Promise<Archive | undefined> };
     private snowCredit = '';
-    private readonly workers = Array.from({ length: WORKERS }, () => new Worker(new URL('./ground-worker.ts', import.meta.url), { type: 'module' }));
     private readonly waiting = new Map<number, { worker: Worker; resolve: (data: GroundResult) => void; reject: (error: Error) => void }>();
     private next = 0;
 
-    private constructor(readonly rules: Rules, sources: Partial<Record<Layer, Source>>, private readonly urls: Partial<Record<string, string>>) {
+    private constructor(readonly rules: Rules, sources: Partial<Record<Layer, Source>>, private readonly urls: Partial<Record<string, string>>, private readonly workers: Worker[]) {
         this.archives = Object.fromEntries(Object.entries(sources).map(([layer, source]) => [layer, { source, tiles: this.kept(source) }]));
         for (const worker of this.workers) {
             worker.onmessage = ({ data }) => {
@@ -85,28 +84,33 @@ export class GroundSource {
     static async open(config: PlannerConfig, date: string): Promise<GroundSource | undefined> {
         const urls = config.layers as Partial<Record<string, string>>;
         if (!config.trailview_rules || !urls[NAMES.ground]) return undefined;
-        const response = await releaseFetch(config.trailview_rules, { signal: requestSignal() });
-        if (!response.ok) throw new Error(`The TrailView rules answered ${response.status}.`);
-        const rules = rulesOf(await response.json());
         const band = snowBand(seasonDay(date).index);
-        const [entries, snow] = await Promise.all([
-            Promise.all(Object.entries(NAMES).map(async ([layer, name]) => {
-                const url = urls[name];
-                if (!url) return [layer, undefined] as const;
-                const source = opened(url, layer === 'ground' ? 'ground' : 'colour');
-                return [layer, await (layer === 'ground' ? source : source.catch(leftOut(name)))] as const;
-            })),
-            snowSource(urls, band).catch(leftOut(snowName(band))),
-        ]);
-        const ground = new GroundSource(rules, Object.fromEntries(entries.filter(([, source]) => source)), urls);
-        // A worker that cannot decode the ground fails it once, not every tile.
-        await Promise.all(ground.workers.map(worker => ground.post(worker))).catch(error => {
-            for (const worker of ground.workers) worker.terminate();
+        // The ruleset, the archives and the workers' scripts load side by side.
+        const workers = Array.from({ length: WORKERS }, () => new Worker(new URL('./ground-worker.ts', import.meta.url), { type: 'module' }));
+        try {
+            const [rules, entries, snow] = await Promise.all([
+                releaseFetch(config.trailview_rules, { signal: requestSignal() }).then(async response => {
+                    if (!response.ok) throw new Error(`The TrailView rules answered ${response.status}.`);
+                    return rulesOf(await response.json());
+                }),
+                Promise.all(Object.entries(NAMES).map(async ([layer, name]) => {
+                    const url = urls[name];
+                    if (!url) return [layer, undefined] as const;
+                    const source = opened(url, layer === 'ground' ? 'ground' : 'colour');
+                    return [layer, await (layer === 'ground' ? source : source.catch(leftOut(name)))] as const;
+                })),
+                snowSource(urls, band).catch(leftOut(snowName(band))),
+            ]);
+            const ground = new GroundSource(rules, Object.fromEntries(entries.filter(([, source]) => source)), urls, workers);
+            // A worker that cannot decode the ground fails it once, not every tile.
+            await Promise.all(workers.map(worker => ground.post(worker)));
+            // A band that did not open opens again on the first load.
+            if (snow) ground.snow = { band, archive: Promise.resolve(ground.snowArchive(snow)) };
+            return ground;
+        } catch (error) {
+            for (const worker of workers) worker.terminate();
             throw error;
-        });
-        // A band that did not open opens again on the first load.
-        if (snow) ground.snow = { band, archive: Promise.resolve(ground.snowArchive(snow)) };
-        return ground;
+        }
     }
 
     /** The finest level with ground pages: one finer than the ground's last zoom. */
