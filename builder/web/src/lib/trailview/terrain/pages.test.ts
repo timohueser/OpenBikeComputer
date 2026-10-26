@@ -3,7 +3,7 @@ import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import { pageData, PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
-import { cdlod, key, MAP, RANGE, select, size, type Node } from './lod';
+import { cdlod, distances, key, MAP, RANGE, select, size, type Node } from './lod';
 import { ARRIVALS, MODE, Pages, type StampSource, type Work } from './pages';
 
 const BOX = [8.37, 46.765, 8.46, 46.83] as const;
@@ -59,13 +59,15 @@ describe('the page pools', () => {
         expect(map.filter(entry => entry >>> 16).length).toBe(ready.filter(page => page.kind === 'stored').length);
     });
 
-    it('load the tile under the eye before the coarser tiles away from it', async () => {
+    it('fill the holes with the coarsest tiles first, then load the tile under the eye, then the nearer tiles first', async () => {
         const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
         await settle(pages, wanted);
-        const at = (z: number) => `${z}/${Math.floor((anchor.whole[0] + anchor.part[0]) / size(z))}/${Math.floor((anchor.whole[1] + anchor.part[1]) / size(z))}`;
-        const away = tiles.fetched.findIndex(name => name.startsWith('12/') && name !== at(12));
-        expect(away).toBeGreaterThan(-1);
-        expect(tiles.fetched.indexOf(at(13))).toBeLessThan(away);
+        const nodes = tiles.fetched.map(name => name.split('/').map(Number)).map(([level, x, y]) => ({ level, x, y }));
+        const coarsest = Math.min(...nodes.map(node => node.level)), holes = nodes.findIndex(node => node.level !== coarsest);
+        expect(holes).toBeGreaterThan(0);
+        const rest = nodes.slice(holes), metres = rest.map(node => distances({ anchor, above: 0 }, node)[0]);
+        expect(key(rest[0])).toBe(`13/${Math.floor((anchor.whole[0] + anchor.part[0]) / size(13))}/${Math.floor((anchor.whole[1] + anchor.part[1]) / size(13))}`);
+        expect(metres).toEqual([...metres].sort((a, b) => a - b));
     });
 
     it('get every page again for a new device, without a request', async () => {
@@ -138,8 +140,8 @@ describe('the stamps', () => {
     wanted.sort((a, b) => a.level - b.level);
     /** Every node has a feature near it; its stamps are known one frame after a page asks for them. */
     const stamps = (): StampSource => {
-        const asked = new Set<string>();
-        return { get: node => (asked.has(key(node)) ? { data: new Uint32Array(8), heights: true } : void asked.add(key(node))) };
+        const asked = new Set<string>(), known = (node: Node) => (asked.has(key(node)) ? { data: new Uint32Array(8), heights: true } : undefined);
+        return { get: node => known(node) ?? void asked.add(key(node)), known };
     };
 
     it('draw a stored page as a stamped copy, keep its raw layer for the syntheses, and stamp a synthesized page as it is made', async () => {
@@ -162,7 +164,8 @@ describe('the stamps', () => {
     it('queue no more stamp jobs in a frame than its buffers hold, of every kind', async () => {
         // The synthesized pages draw before their features are known, the stored pages wait for theirs; then every node has some.
         let known = false;
-        const late: StampSource = { get: node => (known ? { data: new Uint32Array(8), heights: true } : node.level > 13 ? { data: null, heights: false } : undefined) };
+        const get = (node: Node) => (known ? { data: new Uint32Array(8), heights: true } : node.level > 13 ? { data: null, heights: false } : undefined);
+        const late: StampSource = { get, known: get };
         const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, late, 128);
         await settle(pages, wanted, 100);
         known = true;

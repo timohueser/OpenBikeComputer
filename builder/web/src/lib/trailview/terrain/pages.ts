@@ -44,12 +44,13 @@ export interface Page {
     mask?: number;
 }
 
-/** What stamps a node: the binned features, while they are known. */
+/** What stamps a node: the binned features, while they are known. `get` asks for them, `known` does not. */
 export interface StampSource {
     get(node: Node): NodeStamps | undefined;
+    known(node: Node): NodeStamps | undefined;
 }
 
-const NO_STAMPS: StampSource = { get: () => ({ data: null, heights: false }) };
+const NO_STAMPS: StampSource = { get: () => ({ data: null, heights: false }), known: () => ({ data: null, heights: false }) };
 
 /**
  * A stamp job: its page's heights are in `out` (the synthesized base, or none for a stored page,
@@ -118,8 +119,8 @@ export class Pages {
     /** Tiles whose decoded pages wait in `arrivals`, by name. */
     private readonly queued = new Map<string, number>();
     private readonly refresh = new Set<Page>();
-    /** The tiles that the frame's pages wait for, by name: the frame starts the most needed of them. */
-    private readonly wishes = new Map<string, Node>();
+    /** The tiles that the frame's pages wait for, by name, with those pages: the frame starts the most needed of them. */
+    private readonly wishes = new Map<string, { tile: Node; pages: Node[] }>();
     /** The pages that the frame draws or synthesizes from, by name: an arrival among them evicts none of them. */
     private readonly needs = new Set<string>();
     private frame = 0;
@@ -282,11 +283,13 @@ export class Pages {
     }
 
     /**
-     * The near pages with features that hold the masks in this frame, nearest first, by name: as many
-     * as the pool holds. The first page beyond them sets the reach of the paint.
+     * The near pages with known features that hold the masks in this frame, nearest first, by name: as
+     * many as the pool holds. The first page beyond them sets the reach of the paint. It asks for no
+     * features: a page asks for its own when it can draw or be made, so the page under the eye does not
+     * wait behind the near pages.
      */
     private holders(wanted: Node[], anchor: Anchor): Map<string, Node> {
-        const near = wanted.filter(node => node.level >= NEAR && this.stamps.get(node)?.data)
+        const near = wanted.filter(node => node.level >= NEAR && this.stamps.known(node)?.data)
             .map(node => ({ node, distance: distances({ anchor, above: 0 }, node)[0] })).sort((a, b) => a.distance - b.distance);
         const reach = near.length > this.maskCapacity ? near[this.maskCapacity].distance : NO_LIMIT;
         if (reach !== this.maskReach) this.masksDirty = true;
@@ -400,22 +403,35 @@ export class Pages {
         this.needs.add(key(node));
         const tile: Node = { level: node.level - 1, x: node.x >> 1, y: node.y >> 1 }, name = key(tile), state = this.tiles.get(name)?.state;
         if ((state && state !== 'done') || this.queued.get(name)) return;
-        this.wishes.set(name, tile);
+        const wish = this.wishes.get(name);
+        if (wish) wish.pages.push(node);
+        else this.wishes.set(name, { tile, pages: [node] });
+    }
+
+    /** Starts the wished tiles in the order of `priority`, of the most valuable page that each holds; the finer tile first at a tie. */
+    private start(anchor: Anchor): void {
+        if (this.loads >= LOADS) return;
+        const eye = { anchor, above: 0 };
+        const order = [...this.wishes.values()].map(({ tile, pages }) => ({
+            tile, value: Math.max(...pages.map(page => priority(page.level, this.coming(page), distances(eye, page)[0]))),
+        })).sort((a, b) => b.value - a.value || b.tile.level - a.tile.level);
+        for (const { tile } of order.slice(0, LOADS - this.loads)) this.fetch(tile.level, tile.x, tile.y);
     }
 
     /**
-     * Starts the wished tiles nearest first in tile sizes, coarse first among the tiles under the eye,
-     * so the level-1 pages under the eye load first.
-     * The screen error of the coarser page that draws in a tile's place grows with the tile's size over
-     * its distance, so the fine tile under the eye goes before the coarser tiles away from it, and the
-     * coarse cover tiles take turns with the near field. Level by level, the near field would wait for
-     * every coarser tile of the view.
+     * The level of the page that draws first in a node's place: the finest above it that exists or
+     * whose tile is on its way, else the coarsest whose tile the frame wishes, which goes first as a
+     * hole. Undefined where nothing comes: a hole.
      */
-    private start(anchor: Anchor): void {
-        if (this.loads >= LOADS) return;
-        const view = (tile: Node) => distances({ anchor, above: 0 }, tile)[0] / (size(tile.level) * anchor.unit);
-        const order = [...this.wishes.values()].map(tile => ({ tile, view: view(tile) })).sort((a, b) => a.view - b.view || a.tile.level - b.tile.level);
-        for (const { tile } of order.slice(0, LOADS - this.loads)) this.fetch(tile.level, tile.x, tile.y);
+    private coming(node: Node): number | undefined {
+        let wished: number | undefined;
+        for (let { level, x, y } = node; level > COARSEST;) {
+            level--; x >>= 1; y >>= 1;
+            const tile = `${level - 1}/${x >> 1}/${y >> 1}`, state = this.tiles.get(tile)?.state;
+            if (this.pages.has(`${level}/${x}/${y}`) || state === 'loading' || state === 'decoding' || this.queued.get(tile)) return level;
+            if (this.wishes.has(tile)) wished = level;
+        }
+        return wished;
     }
 
     /** Requests a stored tile, or decodes its kept body again. */
@@ -526,5 +542,23 @@ export class Pages {
 
 /** A reach that no view meets: no shader takes an infinity. */
 export const NO_LIMIT = 1e9;
+
+/** The bands of `priority` above the error over distance, which is at most size(COARSEST) over a metre. */
+const NEAR_FIELD = 2 ** 30, HOLE = 2 ** 40;
+
+/**
+ * The value of a stored page of `level` at `distance` metres from the eye, where the page of level
+ * `coming` draws or is on its way: the one rule of the load order.
+ * - A hole (nothing comes) goes first, the coarsest first: one coarse tile fills much of the view,
+ *   and then every finer page has a page above it to draw from.
+ * - Then the pages of the deepest stored level, which the near field draws and synthesizes from.
+ * - In a band, the value is the screen error that the page takes away: the size of the page in its
+ *   place minus its own, over the distance. So the page under the eye comes first of the near field,
+ *   and the coarse cover far away comes last.
+ */
+function priority(level: number, coming: number | undefined, distance: number): number {
+    if (coming === undefined) return HOLE - level;
+    return (level > TILE_ZOOM ? NEAR_FIELD : 0) + (size(coming) - size(level)) / Math.max(distance, 1);
+}
 
 const range = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => to - 1 - i);
