@@ -14,8 +14,7 @@ use crate::target::{Listed, Target};
 pub const GRACE: u64 = 600;
 
 /// The folders where a collection deletes each key that no kept release names. Elsewhere it deletes
-/// only what a release that it drops names, such as a copy under `sources/`, and the temporary files
-/// of a stopped write.
+/// only the temporary files of a stopped write and the prepared versions that it drops.
 const COLLECTED: [&str; 2] = ["objects/", "releases/"];
 
 /// What a collection did.
@@ -104,7 +103,7 @@ fn pass(
         }
         let release = Release::read(target, id).map_err(|e| format!("the files of a release are not known: {e}"))?;
         if expired {
-            dropped.push((manifest, release));
+            dropped.push(manifest);
         } else {
             collected.deferred.push(id.into());
             kept.push(release);
@@ -112,12 +111,10 @@ fn pass(
     }
     let keep: BTreeSet<String> = kept.iter().flat_map(Release::files).map(|file| file.key).collect();
     // The files first and the manifests last: a collection that stops resumes from the manifests.
-    let of_dropped: BTreeSet<String> =
-        dropped.iter().flat_map(|(_, release)| release.files()).map(|file| file.key).collect();
     let files = listed.values().filter(|listed| {
         manifest_id(&listed.key).is_none()
             && !keep.contains(&listed.key)
-            && (collectable(&listed.key) || temporary(&listed.key) || of_dropped.contains(&listed.key))
+            && (collectable(&listed.key) || temporary(&listed.key))
     });
     let obsolete = crate::prepared::obsolete(&listed, &kept, &crate::prepared::reused(target, &listed)?);
     let mut unlisted: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -133,7 +130,7 @@ fn pass(
         crate::prepared::unlist(target, id, &versions)?;
     }
     let prepared = obsolete.iter().flat_map(|version| version.keys.iter().copied());
-    for (at, listed) in files.chain(prepared).chain(dropped.iter().map(|(manifest, _)| *manifest)).enumerate() {
+    for (at, listed) in files.chain(prepared).chain(dropped).enumerate() {
         if at % BATCH == 0 {
             holds()?;
         }

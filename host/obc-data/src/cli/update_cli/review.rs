@@ -44,8 +44,7 @@ pub struct Review {
     /// The steps whose output the store has from an earlier build: the update uses it and does not
     /// build it. Each has `built`.
     pub reused: Vec<Build>,
-    /// What this machine downloads from the target: copies of source files, and files of kept steps
-    /// that a step that bakes reads.
+    /// What this machine downloads from the target: files of kept steps that a step that bakes reads.
     pub downloads: Downloads,
     pub cost: ReviewCost,
     pub machine: MachineCheck,
@@ -124,8 +123,7 @@ pub struct ReviewCost {
     pub peak_rss_bytes: Option<u64>,
     /// What the fetches, the downloads and the bakes write into the store.
     pub store_bytes: u64,
-    /// What goes to the target: the files of the bakes and of the reused steps that a client reads,
-    /// and the copies under `sources/` that the serving release does not name.
+    /// What goes to the target: the files of the bakes and of the reused steps that a client reads.
     pub upload_bytes: u64,
     /// What the figures lack.
     pub unknown: Unknown,
@@ -204,9 +202,6 @@ pub struct Parts<'a> {
     /// The steps that bake only because the target does not hold files of them.
     pub unheld: &'a BTreeSet<String>,
     pub downloads: Downloads,
-    /// The size of the copies under `sources/` that the update adds, and the fetches of copies
-    /// that the store lacks yet.
-    pub copies: (u64, BTreeSet<String>),
     pub machine: &'a MachineCheck,
 }
 
@@ -225,7 +220,6 @@ pub fn review(parts: Parts) -> Review {
         layers,
         unheld,
         downloads,
-        copies,
         machine,
     } = parts;
     let outputs = serving.iter().flat_map(|release| &release.outputs);
@@ -357,17 +351,12 @@ pub fn review(parts: Parts) -> Review {
         .cloned()
         .partition(|build| build.built.is_some() && !build.again);
     let fetches = plan.fetches();
-    let (upload_bytes, unknown_copies) = copies;
-    let mut cost = ReviewCost { upload_bytes, ..ReviewCost::default() };
+    let mut cost = ReviewCost::default();
     for fetch in &fetches {
         match fetch.bytes {
             Some(bytes) => cost.store_bytes += bytes,
             None => cost.unknown.size.push(format!("{}@{}", fetch.source, fetch.version)),
         }
-    }
-    // The size of a copy is known only after its fetch.
-    for fetch in unknown_copies.into_iter().filter(|fetch| !cost.unknown.size.contains(fetch)).collect::<Vec<_>>() {
-        cost.unknown.size.push(fetch);
     }
     cost.store_bytes += downloads.bytes;
     cost.upload_bytes +=

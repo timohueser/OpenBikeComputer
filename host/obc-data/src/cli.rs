@@ -76,7 +76,7 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// Every source with licence, target copy, and the policy, versions and state for each target.
+    /// Every source with licence, and the policy, versions and state for each target.
     Sources {
         /// Check upstream now, not from a check of the last hour.
         #[arg(long)]
@@ -394,8 +394,6 @@ struct Sources {
 struct SourceRow {
     #[serde(flatten)]
     source: Source,
-    /// Whether a target keeps a copy of the files of the source that its release reads.
-    copy: bool,
     /// By target: its policy, and the state of each request that its serving release reads.
     targets: BTreeMap<String, SourceTarget>,
     /// The versions in the local store, the one fetched last first.
@@ -530,26 +528,14 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             _ => BTreeMap::new(),
         };
         let refreshable = source_cli::moves(&source);
-        rows.push(SourceRow {
-            copy: source.copied(),
-            source,
-            targets,
-            snapshots,
-            requests,
-            credential_missing,
-            refreshable,
-            prepared,
-        });
+        rows.push(SourceRow { source, targets, snapshots, requests, credential_missing, refreshable, prepared });
     }
     if json {
         return print_json(&Sources { sources: rows });
     }
     let names: Vec<&str> = all.keys().map(String::as_str).collect();
-    let mut table = vec![[
-        vec!["SOURCE".to_string(), "LICENCE".into(), "COPY".into()],
-        names.iter().map(|n| n.to_uppercase()).collect(),
-    ]
-    .concat()];
+    let mut table =
+        vec![[vec!["SOURCE".to_string(), "LICENCE".into()], names.iter().map(|n| n.to_uppercase()).collect()].concat()];
     let mut tools = false;
     for row in &rows {
         let s = &row.source;
@@ -559,11 +545,7 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             table.push(vec!["tools".into()]);
         }
         let none = if s.kind == Kind::Tool { "—" } else { "not recorded" };
-        let mut cells = vec![
-            s.id.clone(),
-            s.licence.clone().unwrap_or_else(|| none.into()),
-            if row.copy { "yes" } else { "no" }.into(),
-        ];
+        let mut cells = vec![s.id.clone(), s.licence.clone().unwrap_or_else(|| none.into())];
         for name in &names {
             let target = &row.targets[*name];
             let versions: Vec<String> =

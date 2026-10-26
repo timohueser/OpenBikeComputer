@@ -221,7 +221,7 @@ export function ended(status: Status | null, target: string, run: string): boole
     return !!now && now.lock_error === null && now.lock?.run !== run;
 }
 
-export const PHASES = ["prepare", "download", "build", "verify", "upload", "router-ready", "switch", "collect"] as const;
+export const PHASES = ["prepare", "build", "verify", "upload", "router-ready", "switch", "collect"] as const;
 export type Phase = (typeof PHASES)[number];
 
 /** `starting` is a run that no process took yet. `failed` is also a run whose process ended before

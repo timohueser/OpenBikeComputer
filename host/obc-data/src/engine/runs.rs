@@ -121,7 +121,6 @@ pub enum Event {
 #[serde(rename_all = "kebab-case")]
 pub enum Phase {
     Prepare,
-    Download,
     Build,
     Verify,
     Upload,
