@@ -173,7 +173,7 @@ function spec({ shrub, tie }: Model, mesh: BuiltMesh): ModelSpec {
 }
 
 /** The ground plants and the shrubs about the eye. */
-export function plantPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
+function plantPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
     const { device } = gpu, C = GPUShaderStage.COMPUTE, { surface, ground, features } = gpu.once(layouts);
     const group = device.createBindGroupLayout({ entries: [
         ...Instances.emitEntries(), { binding: 8, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 9, visibility: C, buffer: { type: 'uniform' } },

@@ -82,7 +82,7 @@ export class Points implements Producer {
 }
 
 /** Stands the points of a pool on the drawn surface. */
-export function pointPipeline(gpu: Gpu): Promise<GPUComputePipeline> {
+function pointPipeline(gpu: Gpu): Promise<GPUComputePipeline> {
     const { device } = gpu, C = GPUShaderStage.COMPUTE, { surface, ground, features } = gpu.once(layouts);
     const group = device.createBindGroupLayout({ entries: [
         ...Instances.emitEntries(), { binding: 8, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 9, visibility: C, buffer: { type: 'uniform' } },

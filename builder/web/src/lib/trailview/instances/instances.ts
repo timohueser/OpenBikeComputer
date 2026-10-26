@@ -641,7 +641,7 @@ export class Instances {
 
 /** Attaches a producer; one that fails logs why and draws nothing, and the rest go on. */
 /** The depth pyramid, the sort, the draws of the meshes and the impostors, the bake of the impostors and their mips, and their layouts. */
-export async function instancePipelines(gpu: Gpu) {
+async function instancePipelines(gpu: Gpu) {
     const { device } = gpu, C = GPUShaderStage.COMPUTE, V = GPUShaderStage.VERTEX, F = GPUShaderStage.FRAGMENT, { ground } = gpu.once(layouts);
     const module = (label: string, path: string) => device.createShaderModule({ label, code: wgsl(path) });
     const entry = (binding: number, visibility: number, type: GPUBufferBindingType, dynamic = false): GPUBindGroupLayoutEntry =>

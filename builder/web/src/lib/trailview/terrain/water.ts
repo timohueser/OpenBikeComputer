@@ -56,6 +56,7 @@ export class Water {
     constructor(private readonly stamps: Stamps) {}
 
     async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer): Promise<void> {
+        this.resources = undefined;
         const { device } = gpu, { pipelines, layout } = await gpu.once(waterPipelines);
         // A node index and a level per instance, at most one instance per node.
         const instances = gpu.buffer('water', nodes.size / 2, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
@@ -151,7 +152,7 @@ export class Water {
 }
 
 /** The draws of the kinds, and their group 0. */
-export async function waterPipelines(gpu: Gpu): Promise<{ pipelines: Record<Kind, GPURenderPipeline>; layout: GPUBindGroupLayout }> {
+async function waterPipelines(gpu: Gpu): Promise<{ pipelines: Record<Kind, GPURenderPipeline>; layout: GPUBindGroupLayout }> {
     const { device } = gpu, V = GPUShaderStage.VERTEX, { surface, ground, features } = gpu.once(layouts);
     const layout = device.createBindGroupLayout({ entries: [
         { binding: 0, visibility: V | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },

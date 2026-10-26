@@ -241,7 +241,7 @@ export class Shadow {
 }
 
 /** The pipeline that draws a mip level of a map from the level below. */
-export function mipPipeline({ device }: Gpu): Promise<GPURenderPipeline> {
+function mipPipeline({ device }: Gpu): Promise<GPURenderPipeline> {
     const module = device.createShaderModule({ label: 'shadow mips', code: wgsl('light/shadow-mips.wgsl') });
     const layout = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } }] });
     return device.createRenderPipelineAsync({

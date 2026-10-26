@@ -105,7 +105,7 @@ export class Dressing implements Producer {
 }
 
 /** The herds and the rocks about the eye. */
-export function dressingPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
+function dressingPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
     const { device } = gpu, C = GPUShaderStage.COMPUTE, { surface, ground, features } = gpu.once(layouts);
     const group = device.createBindGroupLayout({ entries: [
         ...Instances.emitEntries(), { binding: 8, visibility: C, buffer: { type: 'uniform' } }, { binding: 9, visibility: C, buffer: { type: 'read-only-storage' } },

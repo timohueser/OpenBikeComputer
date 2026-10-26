@@ -116,6 +116,7 @@ export class Structures {
 
     /** `frames` are the frame uniforms of the eye's view and of the sun's (light/shadow.ts). */
     async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[]): Promise<void> {
+        this.resources = undefined;
         const { device } = gpu, { layout, empty, computeLayout, pipelines: [pipeline, anchoredPipeline, heightsPipeline, structureCaster, anchoredCaster] } = await gpu.once(structurePipelines);
         const anchors = gpu.buffer('kinds', ANCHORS * ANCHOR_WORDS * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const heights = gpu.buffer('kinds', ANCHORS * 8, GPUBufferUsage.STORAGE);
@@ -265,7 +266,7 @@ export class Structures {
 }
 
 /** The draws of the structures and the anchored meshes, the heights of the anchors, the casters, and their layouts. */
-export async function structurePipelines(gpu: Gpu) {
+async function structurePipelines(gpu: Gpu) {
     const { device } = gpu, VF = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, C = GPUShaderStage.COMPUTE, { surface, ground, features } = gpu.once(layouts);
     // The heights are written in the compute's group and read in the draw's.
     const layout = device.createBindGroupLayout({ entries: [

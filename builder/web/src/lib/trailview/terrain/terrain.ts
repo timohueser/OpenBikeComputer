@@ -766,7 +766,6 @@ export class Terrain {
     }
 }
 
-/** The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. */
 /** The terrain's own bind group layouts; groups 1 to 3 are those of gpu/layouts.ts. */
 function terrainLayouts({ device }: Gpu) {
     const layout = (entries: [GPUShaderStageFlags, Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'>][]) =>
@@ -836,7 +835,7 @@ export async function terrainPipelines(gpu: Gpu) {
 }
 
 /** The draw of the nodes with a tunnel's portal, with its hole. */
-export const holedPipeline = (gpu: Gpu) => meshPipeline(gpu, true, true);
+const holedPipeline = (gpu: Gpu) => meshPipeline(gpu, true, true);
 
 /** The check's draw and the probe of the share of the sun: only tests check. */
 function checkPipelines(gpu: Gpu): Promise<[GPURenderPipeline, GPUComputePipeline]> {
@@ -858,6 +857,7 @@ function auditPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
     return Promise.all(['audit', 'apron'].map(entry => compute(gpu, 'audit', entry, [L.audit, surface, L.empty, features])));
 }
 
+/** The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. */
 function holes(lists: Float64Array[], anchor: Anchor): Float32Array<ArrayBuffer> {
     const out = new Float32Array(4 * (1 + 3 * MAX_HOLES)), seen = new Set<string>();
     let n = 0;

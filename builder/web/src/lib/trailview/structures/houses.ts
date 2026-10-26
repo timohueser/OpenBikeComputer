@@ -489,7 +489,7 @@ export class Houses {
 }
 
 /** The fit and the refit of the houses to the drawn surface, the draws of the templates and the outlines, their casters, and their layouts. */
-export async function housePipelines(gpu: Gpu) {
+async function housePipelines(gpu: Gpu) {
     const { device } = gpu, C = GPUShaderStage.COMPUTE, VF = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { surface, features, ground, groundCompute } = gpu.once(layouts);
     const entry = (binding: number, visibility: number, type: GPUBufferBindingType, hasDynamicOffset = false): GPUBindGroupLayoutEntry => ({ binding, visibility, buffer: { type, hasDynamicOffset } });
     const computeLayout = device.createBindGroupLayout({ entries: [

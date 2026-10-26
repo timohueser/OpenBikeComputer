@@ -246,7 +246,7 @@ export function bluePoints(n: number, candidates = 24): Float32Array<ArrayBuffer
 }
 
 /** The cells of the trees about the eye, and the trees in them. */
-export function forestPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
+function forestPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
     const { device } = gpu, C = GPUShaderStage.COMPUTE, { surface, ground, features } = gpu.once(layouts);
     const shared: GPUBindGroupLayoutEntry[] = [
         ...Instances.emitEntries(), { binding: 8, visibility: C, texture: { sampleType: 'uint', viewDimension: '2d-array' } },
