@@ -416,8 +416,8 @@ pub fn bridges(
         let (rate, least, most): (f64, f64, f64) = if path { (1.0 / 40.0, 0.3, 1.0) } else { (1.0 / 30.0, 0.5, 2.5) };
         let stops: Vec<f64> = [0.0].into_iter().chain(stations.iter().copied()).chain([total]).collect();
         let longest = stops.windows(2).map(|s| s[1] - s[0]).fold(f64::NEG_INFINITY, f64::max);
-        // Python rounds half to even on the exact value, as the formatting does.
-        let depth = if structure.is_some() { least } else { most.min(least.max(longest * rate)) };
+        // To the decimetre, half to even after the product with 10.
+        let depth = if structure.is_some() { least } else { (most.min(least.max(longest * rate)) * 10.0).round_ties_even() / 10.0 };
         for &(w, _) in &chain {
             let mut tags = Tags::from([("deck".to_string(), format!("{depth:.1}"))]);
             if let Some(structure) = &structure {

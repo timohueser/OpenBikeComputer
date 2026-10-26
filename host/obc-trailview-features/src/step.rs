@@ -27,7 +27,9 @@ pub fn step(request: &Request) -> Result<(), String> {
     let osm = work.path().join("input.osm.pbf");
     std::os::unix::fs::symlink(pbf, &osm).map_err(|e| format!("{}: {e}", osm.display()))?;
     let output = request.output.join("trailview-features.pmtiles");
-    let metrics = bake(&options, &osm, &terrain, &output, work.path(), free_memory(request.memory_bytes))?;
+    // The process of a step gets the memory that `obc data` reserves for it in its environment.
+    let reserved = request.memory_bytes.or_else(|| std::env::var("OBC_DATA_MEMORY_BYTES").ok()?.parse().ok());
+    let metrics = bake(&options, &osm, &terrain, &output, work.path(), free_memory(reserved))?;
     std::fs::write(&request.metrics, metrics.to_string()).map_err(|e| e.to_string())
 }
 

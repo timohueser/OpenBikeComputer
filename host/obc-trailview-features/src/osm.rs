@@ -109,38 +109,30 @@ pub enum Selected {
 /// its first point, and each outer ring precedes its holes.
 pub type Object = (Selected, Tags, Vec<Part>);
 
-/// The objects of an active kind, the points and the lines first and then the areas, each in the order
-/// of the file. Osmium writes a point or a line as it reads it but buffers the areas, so one export
-/// of both would put an area among the lines where its buffer ran full.
-pub fn objects(entries: &[Entry], pbf: &Path, binary: &Path) -> Result<Vec<Object>, String> {
-    let export = |types: &str| -> Result<std::process::Child, String> {
-        Command::new(binary)
+/// Each object of an active kind to `each`, the points and the lines first and then the areas, each in
+/// the order of the file. Osmium writes a point or a line as it reads it but buffers the areas, so one
+/// export of both would put an area among the lines where its buffer ran full.
+pub fn objects(entries: &[Entry], pbf: &Path, binary: &Path, mut each: impl FnMut(Object)) -> Result<(), String> {
+    for types in ["point,linestring", "polygon"] {
+        let mut child = Command::new(binary)
             .arg("export")
             .arg(pbf)
             .args(["-f", "geojsonseq", "--geometry-types", types, "-x", "print_record_separator=false", "-o", "-"])
             .stdout(Stdio::piped())
             .spawn()
-            .map_err(|e| e.to_string())
-    };
-    let read = |mut child: std::process::Child| -> Result<Vec<Object>, String> {
-        let mut out = Vec::new();
+            .map_err(|e| e.to_string())?;
         for line in BufReader::new(child.stdout.take().unwrap()).lines() {
             let line = line.map_err(|e| e.to_string())?;
             let feature: Value = serde_json::from_str(&line).map_err(|e| format!("the export of Osmium: {e}"))?;
-            out.extend(object(entries, &feature));
+            if let Some(found) = object(entries, &feature) {
+                each(found);
+            }
         }
         if !child.wait().map_err(|e| e.to_string())?.success() {
             return Err("Prepared Osmium export failed".into());
         }
-        Ok(out)
-    };
-    let (lines, areas) = (export("point,linestring")?, export("polygon")?);
-    std::thread::scope(|scope| {
-        let areas = scope.spawn(|| read(areas));
-        let mut out = read(lines)?;
-        out.extend(areas.join().map_err(|_| "the read of the areas panicked")??);
-        Ok(out)
-    })
+    }
+    Ok(())
 }
 
 fn object(entries: &[Entry], feature: &Value) -> Option<Object> {

@@ -71,6 +71,11 @@ impl Placer {
     }
 }
 
+fn rss() -> String {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    status.lines().filter(|l| l.starts_with("VmRSS") || l.starts_with("VmHWM")).collect::<Vec<_>>().join(" ")
+}
+
 fn bits(point: [f64; 2]) -> [u64; 2] {
     [point[0].to_bits(), point[1].to_bits()]
 }
@@ -96,46 +101,44 @@ pub fn bake(
     let mut metrics = Map::new();
     let started = Instant::now();
     let cut = osm::selected(kinds, pbf, &binary, &placer.tiles, work)?;
-    let objects = osm::objects(kinds, &cut, &binary)?;
-    eprintln!("osm: {} objects in {:.1} s", objects.len(), started.elapsed().as_secs_f64());
     // The lifts wait for the buildings and the other lifts: a station shares their places. The buildings
     // of the region wait for the landuse areas that hold them; the features of the solvers for all of
     // their kind.
     let (mut lift_ways, mut lift_entry, mut buildings, mut houses, mut landuse) = (Vec::new(), None, Vec::new(), Vec::new(), Vec::new());
     let (mut waters, mut ways, mut stations, mut beyond, mut river_areas) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    for (selected, tags, mut parts) in objects {
+    osm::objects(kinds, &cut, &binary, |(selected, tags, mut parts)| {
         let Selected::Entry(e) = selected else {
             if placer.tiles.meets(MAX_ZOOM, &parts) {
                 landuse.push((tags, parts));
             }
-            continue;
+            return;
         };
         let entry = &kinds[e];
         let kind = entry.kind.as_str();
         if lifts::solves(kind, &tags) {
             lift_entry = Some(e);
             lift_ways.extend(parts.into_iter().map(|part| (tags.clone(), part.points)));
-            continue;
+            return;
         }
         if kind == "building" {
             buildings.extend(parts.iter().filter(|p| p.outer).map(|p| p.points.clone()));
             if placer.tiles.meets(MAX_ZOOM, &parts) {
                 houses.push((e, tags, parts));
             }
-            continue;
+            return;
         }
         if placer.tiles.meets(MAX_ZOOM, &parts) {
             if solves_water(kind, &tags) {
                 waters.push((e, tags, parts));
-                continue;
+                return;
             }
             if solves_road(kind, &tags) {
                 ways.push((e, tags, parts));
-                continue;
+                return;
             }
             if rails::solves(kind) {
                 stations.push((e, tags, parts));
-                continue;
+                return;
             }
         }
         if kind == "river-area" {
@@ -146,7 +149,8 @@ pub fn bake(
         }
         parts.iter_mut().for_each(|p| p.z = None);
         placer.entry(entry, tags, parts);
-    }
+    })?;
+    eprintln!("osm: {:.1} s {}", started.elapsed().as_secs_f64(), rss());
     let values = landuse_of(&houses.iter().map(|(_, _, parts)| parts).collect::<Vec<_>>(), &landuse);
     for ((e, mut tags, parts), value) in houses.into_iter().zip(&values) {
         if let Some(value) = value {
@@ -170,7 +174,7 @@ pub fn bake(
         );
     }
     drop(buildings);
-    eprintln!("placed: {:.1} s", started.elapsed().as_secs_f64());
+    eprintln!("placed: {:.1} s {}", started.elapsed().as_secs_f64(), rss());
 
     // The heights of a junction need every road that meets there, a river level its whole network, a
     // ford the water it crosses, and a platform its tracks.
@@ -190,7 +194,7 @@ pub fn bake(
         for ((_, _, parts), (feature, z)) in waters.iter_mut().zip(features.into_iter().zip(levels)) {
             *parts = feature.parts.into_iter().zip(z).map(|(p, z)| Part { z, ..p }).collect();
         }
-        eprintln!("water: {:.1} s", started.elapsed().as_secs_f64());
+        eprintln!("water: {:.1} s {}", started.elapsed().as_secs_f64(), rss());
         let is_river = |e: usize| RIVERS.contains(&kinds[e].kind.as_str());
         let rivers: Vec<River> = waters
             .iter()
@@ -216,7 +220,7 @@ pub fn bake(
             memory,
         );
         drop((road_features, rivers, beyond));
-        eprintln!("roads: {:.1} s", started.elapsed().as_secs_f64());
+        eprintln!("roads: {:.1} s {}", started.elapsed().as_secs_f64(), rss());
         let mut road_metrics = road_metrics(&solved.metrics);
         road_metrics.insert("cut_features".into(), cut.len().into());
         let culverts: Vec<usize> = solved.culverts.iter().map(|&i| kept[i]).collect();
@@ -337,7 +341,7 @@ pub fn bake(
     }
     low_zooms(&mut placer);
     let size = write(&placer, options, output)?;
-    eprintln!("tiles: {:.1} s", started.elapsed().as_secs_f64());
+    eprintln!("tiles: {:.1} s {}", started.elapsed().as_secs_f64(), rss());
     let mut out = Map::new();
     out.insert("osmium".into(), version.lines().next().unwrap_or_default().into());
     out.insert("kinds".into(), json!(placer.counts));
