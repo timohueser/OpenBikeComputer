@@ -117,9 +117,9 @@ Three rules keep it there, and each one is a test:
 
 `credential_style` on the adapter and the row's credential shape are checked at the row.
 
-Every request goes through `with_retry` in `sources/base.py`: a dropped connection, a 429 and a
-5xx, and an OWS `NoApplicableCode` on any status, are retried for up to twelve minutes; every
-other 4xx is refused at once with its body. A 404 is absence
+Every request goes through `with_retry` in `sources/base.py`: a dropped connection, a 408, a 429
+and a 5xx, and an OWS `NoApplicableCode` or `LayerNotDefined` on any status, are retried for up to
+twelve minutes; every other 4xx is refused at once with its body. A 404 is absence
 only where the registry says a name is arithmetic, such as a grid square outside its state. A WCS
 2.0.1 request is clipped to the envelope `DescribeCoverage` states; a subset outside it is refused.
 
