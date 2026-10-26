@@ -1085,9 +1085,10 @@ of a kept layer reads it from the store of the machine.
 ### Release manifest
 
 `releases/<id>.json` is compact JSON with the keys of each object in byte order. The id is the
-SHA-256 of these bytes. The manifest has format 1. A change of its shape raises the format. A
-follower reads only its own format and says which at `/planner-api/version`, and the review of an
-update of prod names a follower that cannot read the release.
+SHA-256 of these bytes. The manifest has format 1. A change that a follower of the format before
+cannot read raises the format. A follower reads its own format and the one before, so a deploy of
+the services keeps the serving release. It says its format at `/planner-api/version`, and the review
+of an update of prod names a follower that cannot read the release.
 
 | Key | Meaning |
 | --- | --- |
