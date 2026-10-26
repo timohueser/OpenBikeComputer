@@ -40,9 +40,11 @@ fn an_r2_target_writes_on_its_conditions_and_serves_a_key_with_a_hash() {
     let key = "sources/test/1/a#b.txt";
     let _throwaway = Throwaway(target.clone(), vec!["release.json".into(), key.into(), lock::LOCK.into()]);
 
-    let first = target.put("release.json", b"one", &Condition::Absent).unwrap().unwrap();
+    // R2 compresses a JSON body of this size for a client that accepts it, with a weak ETag.
+    let one = format!("{{\"serving\": \"{}\"}}", "1".repeat(200));
+    let first = target.put("release.json", one.as_bytes(), &Condition::Absent).unwrap().unwrap();
     assert_eq!(target.put("release.json", b"two", &Condition::Absent).unwrap(), None, "the key holds bytes");
-    assert_eq!(target.get_tagged("release.json").unwrap(), Some((b"one".to_vec(), first.clone())));
+    assert_eq!(target.get_tagged("release.json").unwrap(), Some((one.into_bytes(), first.clone())));
     let second = target.put("release.json", b"two", &Condition::Match(first.clone())).unwrap().unwrap();
     assert_eq!(target.put("release.json", b"three", &Condition::Match(first)).unwrap(), None, "an old tag");
     assert!(target.put("release.json", b"four", &Condition::Match(second)).unwrap().is_some());
