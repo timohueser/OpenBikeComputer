@@ -284,7 +284,8 @@ export class Terrain {
     }
 
     /** Compiles the pipelines for a device and the formats of the frame, with the ground in group 2. A new device gets every page again, from the kept tile bodies. */
-    async attach(gpu: Gpu, frameUniform: GPUBuffer, format: GPUTextureFormat, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout): Promise<void> {
+    /** `sunFrame` is the frame uniform of the sun's view, whose casters draw into the shadow map. */
+    async attach(gpu: Gpu, frameUniform: GPUBuffer, sunFrame: GPUBuffer, format: GPUTextureFormat, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout): Promise<void> {
         this.resources = undefined;
         this.pages.lost();
         const { device } = gpu, pages = this.pages.capacity.stored + this.pages.capacity.synth;
@@ -399,7 +400,7 @@ export class Terrain {
         // No mask yet, and a reach of the paint that no view meets.
         device.queue.writeBuffer(r.masks, 0, new Float32Array(1 + pages).fill(NO_LIMIT, 0, 1));
         await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, featureLayout, format, depthFormat);
-        await this.structures.attach(gpu, frameUniform, surfaceLayout, groundLayout, featureLayout, format, depthFormat);
+        await this.structures.attach(gpu, [frameUniform, sunFrame], surfaceLayout, groundLayout, featureLayout, format, depthFormat);
         this.resources = {
             ...r, mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, probeLayout,
             audits: () => (audits ??= Promise.all(['audit', 'apron'].map(entry => compute('audit', entry, pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout))))), checkLayout, auditLayout, surfaceLayout, emptyLayout, featureLayout,
@@ -550,6 +551,12 @@ export class Terrain {
             this.probing--;
             this.changed();
         });
+    }
+
+    /** Draws the structures into the shadow map (light/shadow.ts) as casters. */
+    cast(pass: GPURenderPassEncoder): void {
+        const r = this.resources;
+        if (r) this.structures.cast(pass, r.surfaceGroup, r.featureGroup);
     }
 
     draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {

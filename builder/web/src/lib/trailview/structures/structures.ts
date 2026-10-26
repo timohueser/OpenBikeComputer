@@ -1,5 +1,6 @@
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
+import { CASTER_DEPTH, CASTER_PRIMITIVE } from '../light/shadow';
 import { metresPerUnit } from '../terrain/bins';
 import { key, type Node } from '../terrain/lod';
 import type { Stamps } from '../terrain/stamps';
@@ -71,6 +72,9 @@ interface Resources {
     device: GPUDevice;
     pipeline: GPURenderPipeline;
     anchoredPipeline: GPURenderPipeline;
+    /** The pipelines of the structure and the anchored meshes as casters of the shadow map, with the group of the sun's frame. */
+    casters: [GPURenderPipeline, GPURenderPipeline];
+    sunGroup: GPUBindGroup;
     heightsPipeline: GPUComputePipeline;
     group: GPUBindGroup;
     computeGroup: GPUBindGroup;
@@ -108,7 +112,8 @@ export class Structures {
         return (this.resources?.structures.dropped ?? 0) + (this.resources?.anchored.dropped ?? 0) + this.unanchored;
     }
 
-    async attach(gpu: Gpu, frame: GPUBuffer, surfaceLayout: GPUBindGroupLayout, groundLayout: GPUBindGroupLayout, featureLayout: GPUBindGroupLayout, format: GPUTextureFormat, depthFormat: GPUTextureFormat): Promise<void> {
+    /** `frames` are the frame uniforms of the eye's view and of the sun's (light/shadow.ts). */
+    async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[], surfaceLayout: GPUBindGroupLayout, groundLayout: GPUBindGroupLayout, featureLayout: GPUBindGroupLayout, format: GPUTextureFormat, depthFormat: GPUTextureFormat): Promise<void> {
         const { device } = gpu, VF = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, C = GPUShaderStage.COMPUTE;
         // The heights are written in the compute's group and read in the draw's.
         const layout = device.createBindGroupLayout({ entries: [
@@ -130,32 +135,41 @@ export class Structures {
             primitive: { topology: 'triangle-list', cullMode },
             depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
         });
-        const [pipeline, anchoredPipeline, heightsPipeline] = await Promise.all([
-            render('structure_vertex', [{
-                arrayStride: STRUCTURE_VERTEX * 4, attributes: [
-                    { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'float32' },
-                    { shaderLocation: 2, offset: 12, format: 'unorm8x4' }, { shaderLocation: 3, offset: 16, format: 'snorm16x2' },
-                    { shaderLocation: 4, offset: 20, format: 'float32' },
-                ],
-            }], 'back'),
+        const structureVertices: GPUVertexBufferLayout[] = [{
+            arrayStride: STRUCTURE_VERTEX * 4, attributes: [
+                { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'float32' },
+                { shaderLocation: 2, offset: 12, format: 'unorm8x4' }, { shaderLocation: 3, offset: 16, format: 'snorm16x2' },
+                { shaderLocation: 4, offset: 20, format: 'float32' },
+            ],
+        }];
+        const anchoredVertices: GPUVertexBufferLayout[] = [{
+            arrayStride: ANCHORED_VERTEX * 4, attributes: [
+                { shaderLocation: 0, offset: 0, format: 'sint16x4' }, { shaderLocation: 1, offset: 8, format: 'uint32' }, { shaderLocation: 2, offset: 12, format: 'unorm8x4' },
+            ],
+        }];
+        // The vertices read no group 2, which holds the shadow map that the casters draw.
+        const casterLayout = device.createPipelineLayout({ bindGroupLayouts: [layout, surfaceLayout, empty, featureLayout] });
+        const caster = (entryPoint: string, buffers: GPUVertexBufferLayout[]) => device.createRenderPipelineAsync({
+            label: `${entryPoint} caster`, layout: casterLayout, vertex: { module, entryPoint, buffers }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH,
+        });
+        const [pipeline, anchoredPipeline, heightsPipeline, structureCaster, anchoredCaster] = await Promise.all([
+            render('structure_vertex', structureVertices, 'back'),
             // Models need no winding: both faces draw.
-            render('anchored_vertex', [{
-                arrayStride: ANCHORED_VERTEX * 4, attributes: [
-                    { shaderLocation: 0, offset: 0, format: 'sint16x4' }, { shaderLocation: 1, offset: 8, format: 'uint32' }, { shaderLocation: 2, offset: 12, format: 'unorm8x4' },
-                ],
-            }], 'none'),
+            render('anchored_vertex', anchoredVertices, 'none'),
             device.createComputePipelineAsync({
                 label: 'anchor heights', layout: device.createPipelineLayout({ bindGroupLayouts: [computeLayout, surfaceLayout, empty, featureLayout] }),
                 compute: { module, entryPoint: 'anchor_heights' },
             }),
+            caster('structure_vertex', structureVertices), caster('anchored_vertex', anchoredVertices),
         ]);
         const pool = (label: string, vertexBytes: number, indexBytes: number, stride: number) =>
             new Pool(device, gpu.buffer(label, vertexBytes, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), gpu.buffer(label, indexBytes, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST), stride);
         this.drawn = [];
         this.fresh = true;
+        const frameGroup = (frame: GPUBuffer) => device.createBindGroup({ layout, entries: [[0, frame], [1, anchors], [4, heights]].map(([binding, buffer]) => ({ binding: binding as number, resource: { buffer: buffer as GPUBuffer } })) });
         this.resources = {
-            device, pipeline, anchoredPipeline, heightsPipeline, anchors, count,
-            group: device.createBindGroup({ layout, entries: [[0, frame], [1, anchors], [4, heights]].map(([binding, buffer]) => ({ binding: binding as number, resource: { buffer: buffer as GPUBuffer } })) }),
+            device, pipeline, anchoredPipeline, casters: [structureCaster, anchoredCaster], heightsPipeline, anchors, count,
+            group: frameGroup(frame), sunGroup: frameGroup(sunFrame),
             emptyGroup: device.createBindGroup({ layout: empty, entries: [] }),
             computeGroup: device.createBindGroup({ layout: computeLayout, entries: [frame, anchors, heights, count].map((buffer, binding) => ({ binding, resource: { buffer } })) }),
             structures: pool('structures', VERTEX_BYTES, INDEX_BYTES, STRUCTURE_VERTEX),
@@ -253,19 +267,27 @@ export class Structures {
 
     draw(pass: GPURenderPassEncoder, surfaceGroup: GPUBindGroup, ground: GPUBindGroup, features: GPUBindGroup): void {
         const r = this.resources;
-        if (!r || (!this.draws.length && !this.hung.length)) return;
-        pass.setBindGroup(0, r.group);
-        pass.setBindGroup(1, surfaceGroup);
-        pass.setBindGroup(2, ground);
-        pass.setBindGroup(3, features);
-        pass.setPipeline(r.pipeline);
+        if (r) this.drawWith(pass, [r.group, surfaceGroup, ground, features], r.pipeline, r.anchoredPipeline);
+    }
+
+    /** Draws the meshes into the shadow map (light/shadow.ts) as casters. */
+    cast(pass: GPURenderPassEncoder, surfaceGroup: GPUBindGroup, features: GPUBindGroup): void {
+        const r = this.resources;
+        if (r) this.drawWith(pass, [r.sunGroup, surfaceGroup, r.emptyGroup, features], ...r.casters);
+    }
+
+    private drawWith(pass: GPURenderPassEncoder, groups: GPUBindGroup[], structures: GPURenderPipeline, anchored: GPURenderPipeline): void {
+        const r = this.resources!;
+        if (!this.draws.length && !this.hung.length) return;
+        groups.forEach((group, k) => pass.setBindGroup(k, group));
+        pass.setPipeline(structures);
         pass.setVertexBuffer(0, r.structures.vertices);
         pass.setIndexBuffer(r.structures.indices, 'uint32');
         for (const mesh of this.draws) {
             const at = r.structures.at(mesh);
             if (at) pass.drawIndexed(mesh.indices.length, 1, at.first, at.base);
         }
-        pass.setPipeline(r.anchoredPipeline);
+        pass.setPipeline(anchored);
         pass.setVertexBuffer(0, r.anchored.vertices);
         pass.setIndexBuffer(r.anchored.indices, 'uint32');
         // The first instance names the first anchor of the mesh's node.

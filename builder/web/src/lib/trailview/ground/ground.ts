@@ -126,6 +126,7 @@ export class Ground {
             render: device.createBindGroupLayout({ entries: [
                 ...entries, { binding: 5, visibility: GPUShaderStage.FRAGMENT | compute, ...array('float') }, { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
                 { binding: 7, visibility: stages, ...array('float') },
+                { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } }, { binding: 9, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
             ] }),
             compute: [
                 device.createBindGroupLayout({ entries: [
@@ -142,7 +143,8 @@ export class Ground {
     }
 
     /** The pools and the compute for a device, after `layouts`. A new device builds every page again. */
-    async attach(gpu: Gpu, look: GPUBuffer, surface: { layout: GPUBindGroupLayout; group: GPUBindGroup }): Promise<void> {
+    /** `shadow` holds bindings 8 and 9 of the render group: the object shadows (shadow.ts). */
+    async attach(gpu: Gpu, look: GPUBuffer, surface: { layout: GPUBindGroupLayout; group: GPUBindGroup }, shadow: GPUBindGroupEntry[]): Promise<void> {
         const { device } = gpu, layout = this.layout!, layers = POOL / LAYER_PAGES, side = PAGE * SIDE;
         this.resources = undefined;
         this.lost();
@@ -177,7 +179,7 @@ export class Ground {
         this.resources = {
             ...r, compute, horizon,
             group: device.createBindGroup({ layout: layout.render, entries: [
-                ...inputs, { binding: 5, resource: view(r.cache) }, { binding: 6, resource: r.noise.createView() }, { binding: 7, resource: view(r.horizons) },
+                ...inputs, { binding: 5, resource: view(r.cache) }, { binding: 6, resource: r.noise.createView() }, { binding: 7, resource: view(r.horizons) }, ...shadow,
             ] }),
             computeGroups: [
                 device.createBindGroup({ layout: layout.compute[0], entries: [

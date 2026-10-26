@@ -65,7 +65,13 @@ struct Params {
     detail: f32,
     // The day of the year, 0 for 1 January: the phase of each tree (phenology.wgsl).
     day: f32,
+    // The view, as VIEWS of instances.ts: 0 the eye's, SUN_VIEW the sun's, whose casters stage in their last tier.
+    view: u32,
+    unused: u32,
+    unused2: vec2u,
 }
+
+const SUN_VIEW: u32 = 1u;
 
 // Where a tier of an instance `height` metres tall ends: a model's last tier ends where the model does,
 // at any resolution and height.
@@ -238,12 +244,19 @@ fn emit_tree(species: u32, s: vec2f, z: f32, height: f32, yaw: f32, width: f32, 
     var m = models[model];
     let d = length(base);
     var tier = 0u;
-    while (tier < TIERS && m.until[tier] > 0.0 && d > tier_end(m, tier, height) * (1.0 - m.fade * pick)) {
-        tier++;
-    }
-    // An instance drawn on a share of its pixels draws with the dither.
-    if (appear < 1.0) {
-        tier = max(tier, WHOLE_TIERS);
+    if (params.view == SUN_VIEW) {
+        // The sun's draw of an impostor tier draws the coarsest mesh.
+        while (tier + 1u < TIERS && m.until[tier + 1u] > 0.0) {
+            tier++;
+        }
+    } else {
+        while (tier < TIERS && m.until[tier] > 0.0 && d > tier_end(m, tier, height) * (1.0 - m.fade * pick)) {
+            tier++;
+        }
+        // An instance drawn on a share of its pixels draws with the dither.
+        if (appear < 1.0) {
+            tier = max(tier, WHOLE_TIERS);
+        }
     }
     if (tier == TIERS || m.until[tier] <= 0.0) {
         return;

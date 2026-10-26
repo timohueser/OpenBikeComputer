@@ -3,7 +3,7 @@
 // The rules run once per texel when a page arrives (ground.wgsl); a pixel reads their result
 // filtered. What the prototype measured from its fixed spot, this measures from the eye.
 // #include ../terrain/drawn-height.wgsl
-// #include ../light/shade.wgsl
+// #include ../light/shadow.wgsl
 // #include roads.wgsl
 
 // Per ground node MAP × MAP entries per level about the eye, in the windows of the LOD map: the page + 1, or 0.
@@ -716,6 +716,6 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     let snow = g.snow * (1.0 - crowns) * smoothstep(0.4, 0.6, n.z);
     albedo = mix(albedo, rule(region, i32(COVER_SNOW) * 3).rgb, snow) * (1.0 - 0.3 * look.light.w * (1.0 - snow));
     // Rock shows its relief in the smooth light: the bands would light every face toward the sun alike.
-    let c = light_up(albedo, n, g.sun, open, mix(look.horizon.w, 0.5, walled));
+    let c = light_up(albedo, n, sun_share(g.sun, relative, n, LIFT_GROUND), open, mix(look.horizon.w, 0.5, walled));
     return atmosphere(c, relative, altitude);
 }

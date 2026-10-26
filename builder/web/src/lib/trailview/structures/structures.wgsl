@@ -199,7 +199,7 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     if ((flags & CABLE_EDGE) != 0u && hash(in.clip.xy + look.screen.xy * 4096.0) > in.road.x) {
         discard;
     }
-    var lit = light_up(albedo, n, sun_at(lod_space(in.u)), 1.0, look.horizon.w);
+    var lit = light_up(albedo, n, sun_share(sun_at(lod_space(in.u)), in.relative, n, LIFT_SOLID), 1.0, look.horizon.w);
     if ((flags & INSIDE_FACE) != 0u) {
         lit = albedo * TUNNEL_LIGHT;
     }

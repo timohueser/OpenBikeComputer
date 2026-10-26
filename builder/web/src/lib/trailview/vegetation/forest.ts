@@ -4,7 +4,7 @@ import { anchorAt, UNITS } from '../frame/space';
 import { size, type Node } from '../terrain/lod';
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
-import { Instances, type Producer, type Surfaces } from '../instances/instances';
+import { Instances, VIEWS, type Producer, type Surfaces } from '../instances/instances';
 import type { Rules } from '../rules/regions';
 import { AROUND, Canopy, CANOPY_ZOOM } from './canopy';
 import { TREE_REACH_M, type TreeModels } from './tree-models';
@@ -31,9 +31,9 @@ interface Resources {
     gpu: Gpu;
     findCells: GPUComputePipeline;
     trees: GPUComputePipeline;
-    /** Group 0 of `find_cells`, which writes the cells, and of `trees`, which reads them and dispatches by their count. */
-    groups: [GPUBindGroup, GPUBindGroup];
-    cells: GPUBuffer;
+    /** Per view the group 0 of `find_cells`, which writes its cells, and of `trees`, which reads them and dispatches by their count. */
+    groups: [GPUBindGroup, GPUBindGroup][];
+    cells: GPUBuffer[];
     params: GPUBuffer;
     surface: GPUBindGroup;
     features: GPUBindGroup;
@@ -79,13 +79,13 @@ export class Forest implements Producer {
         return { requests, bytes, failed };
     }
 
-    async attach(gpu: Gpu, frame: GPUBuffer, { surface, features, ground }: Surfaces): Promise<void> {
+    async attach(gpu: Gpu, { surface, features, ground }: Surfaces): Promise<void> {
         this.resources = undefined;
         this.canopy.lost();
         const { device } = gpu, C = GPUShaderStage.COMPUTE;
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const data = gpu.buffer('vegetation', SPECIES_AT + Math.max(16, this.species.byteLength), storage);
-        const cells = gpu.buffer('vegetation', 32 + 16 * listParts(this.most).at(-1)!, storage | GPUBufferUsage.INDIRECT);
+        const cells = VIEWS.map(() => gpu.buffer('vegetation', 32 + 16 * listParts(this.most).at(-1)!, storage | GPUBufferUsage.INDIRECT));
         const params = gpu.buffer('vegetation', FOREST_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         const texture = this.canopy.attach(gpu, data);
         device.queue.writeBuffer(data, POINTS_AT, bluePoints(POINTS));
@@ -102,16 +102,18 @@ export class Forest implements Producer {
         const [findCells, trees] = await Promise.all(['find_cells', 'trees'].map((entryPoint, k) => device.createComputePipelineAsync({
             label: entryPoint, layout: device.createPipelineLayout({ bindGroupLayouts: [layouts[k], surface.layout, ground, features.layout] }), compute: { module, entryPoint },
         })));
-        const entries = [
-            ...this.instances.emitResources(frame), { binding: 8, resource: texture.createView({ dimension: '2d-array' }) },
-            { binding: 9, resource: { buffer: data } }, { binding: 11, resource: { buffer: params } },
-        ];
         this.resources = {
             gpu, findCells, trees, cells, params, surface: surface.group, features: features.group,
-            groups: [
-                device.createBindGroup({ layout: layouts[0], entries: [...entries, { binding: 10, resource: { buffer: cells } }] }),
-                device.createBindGroup({ layout: layouts[1], entries: [...entries, { binding: 12, resource: { buffer: cells } }] }),
-            ],
+            groups: VIEWS.map(view => {
+                const entries = [
+                    ...this.instances.emitResources(view), { binding: 8, resource: texture.createView({ dimension: '2d-array' }) },
+                    { binding: 9, resource: { buffer: data } }, { binding: 11, resource: { buffer: params } },
+                ];
+                return [
+                    device.createBindGroup({ layout: layouts[0], entries: [...entries, { binding: 10, resource: { buffer: cells[view] } }] }),
+                    device.createBindGroup({ layout: layouts[1], entries: [...entries, { binding: 12, resource: { buffer: cells[view] } }] }),
+                ];
+            }),
         };
     }
 
@@ -149,22 +151,22 @@ export class Forest implements Producer {
         floats.set(STEMS_HA.map(n => n / 1e4), 8);
         new Uint32Array(params).set(listParts(this.most), 16);
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
-        r.gpu.device.queue.writeBuffer(r.cells, 0, new Uint32Array([0, 1, 1, 0, 0, 0, 0, 0]));
+        for (const cells of r.cells) r.gpu.device.queue.writeBuffer(cells, 0, new Uint32Array([0, 1, 1, 0, 0, 0, 0, 0]));
     }
 
     /** Encodes the placement into a compute pass, with the ground pages in group 2. */
-    encode(pass: GPUComputePassEncoder, ground: GPUBindGroup): void {
+    encode(pass: GPUComputePassEncoder, ground: GPUBindGroup, view: number): void {
         const r = this.resources;
         if (!r) return;
-        pass.setBindGroup(0, r.groups[0]);
+        pass.setBindGroup(0, r.groups[view][0]);
         pass.setBindGroup(1, r.surface);
         pass.setBindGroup(2, ground);
         pass.setBindGroup(3, r.features);
         pass.setPipeline(r.findCells);
         pass.dispatchWorkgroups(Math.ceil(this.side / 8), Math.ceil(this.side / 8));
         pass.setPipeline(r.trees);
-        pass.setBindGroup(0, r.groups[1]);
-        pass.dispatchWorkgroupsIndirect(r.cells, 0);
+        pass.setBindGroup(0, r.groups[view][1]);
+        pass.dispatchWorkgroupsIndirect(r.cells[view], 0);
     }
 }
 

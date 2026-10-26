@@ -1,15 +1,19 @@
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
+import { CASTER_DEPTH, CASTER_PRIMITIVE } from '../light/shadow';
 
 /** Draws per model: up to three mesh tiers and the impostor tier, as TIERS in emit.wgsl. */
 const TIERS = 4;
 /** Models at most, as the uniform arrays of emit.wgsl, draw.wgsl and impostor.wgsl and the draws of sort.wgsl. */
 const MODELS = 256;
 const DRAWS = MODELS * TIERS;
-/** Instances that a frame stages at most; past them it drops instances and lowers the detail. */
-const CAPACITY = 2 ** 17;
-/** Bytes of `Instance`, `Model`, `Tally` and `Mesh` in the WGSL, and of a vertex. */
-const INSTANCE_BYTES = 32, MODEL_BYTES = 80, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, VERTEX_BYTES = 16;
+/**
+ * Instances that a frame stages at most; past them it drops instances and lowers the detail. The sun's
+ * view stages the casters of the shadow map (light/shadow.ts) only.
+ */
+const CAPACITY = 2 ** 17, SUN_CAPACITY = 2 ** 15;
+/** Bytes of `Instance`, `Model`, `Tally`, `Mesh` and `Params` in the WGSL, and of a vertex. */
+const INSTANCE_BYTES = 32, MODEL_BYTES = 80, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, PARAMS_BYTES = 32, VERTEX_BYTES = 16;
 /** The phases of a tree's year, as PHASES of phenology.wgsl, and the bytes of a colour matrix (`mat3x3f`). */
 const PHASES = 4, TONE_BYTES = 48;
 /** Lanes of the sort, as LANES in sort.wgsl. */
@@ -74,19 +78,41 @@ export interface ModelSpec {
 /** The last frame, for occlusion culling: its depth, its render pixels, its view projection and the eye's move since then. */
 export interface LastFrame { depth: GPUTexture; pixels: [number, number]; viewProj: Float32Array; moved: [number, number, number] }
 
+/**
+ * The views that the producers run for: the eye's, which draws, and the sun's, whose casters draw into
+ * the shadow map. The sun's view culls by its frustum alone and stages each instance in its last tier,
+ * which draws the coarsest mesh.
+ */
+export const EYE = 0, SUN = 1, VIEWS = [EYE, SUN];
+
 /** A bind group and its layout. */
 export interface Bound { layout: GPUBindGroupLayout; group: GPUBindGroup }
 
 /** What a producer binds besides group 0: the terrain's surface (group 1), the layout of the ground pages (group 2) and the feature mask (group 3). */
 export interface Surfaces { surface: Bound; features: Bound; ground: GPUBindGroupLayout }
 
-/** A compute pass that emits instances (emit.wgsl), with the ground pages in group 2. The core attaches it on each device. */
+/**
+ * A compute pass that emits instances (emit.wgsl) for a view, with the ground pages in group 2. The
+ * core attaches it on each device.
+ */
 export interface Producer {
-    attach(gpu: Gpu, frame: GPUBuffer, surfaces: Surfaces): Promise<void>;
-    encode(pass: GPUComputePassEncoder, ground: GPUBindGroup): void;
+    attach(gpu: Gpu, surfaces: Surfaces): Promise<void>;
+    encode(pass: GPUComputePassEncoder, ground: GPUBindGroup, view: number): void;
 }
 
 export interface InstanceStats { staged: number; dropped: number; lod: number; perTier: number[]; impostors: number }
+
+/** What a view stages, sorts and draws from: its frame (Frame of terrain.wgsl), its cull and its draw lists. */
+interface ViewBuffers {
+    frame: GPUBuffer;
+    params: GPUBuffer;
+    occlusion: GPUBuffer;
+    staged: GPUBuffer;
+    tally: GPUBuffer;
+    args: GPUBuffer;
+    sortGroup: GPUBindGroup;
+    renderGroup: GPUBindGroup;
+}
 
 interface Resources {
     gpu: Gpu;
@@ -94,12 +120,9 @@ interface Resources {
     phases: GPUBuffer;
     tones: GPUBuffer;
     meshes: GPUBuffer;
-    staged: GPUBuffer;
-    tally: GPUBuffer;
-    params: GPUBuffer;
-    args: GPUBuffer;
-    bases: GPUBuffer;
-    lists: GPUBuffer;
+    /** The meshes of the sun's draws: an impostor draw draws the model's coarsest mesh. */
+    coarse: GPUBuffer;
+    views: ViewBuffers[];
     drawOf: GPUBuffer;
     vertices: GPUBuffer;
     indices: GPUBuffer;
@@ -115,18 +138,16 @@ interface Resources {
     scatter: GPUComputePipeline;
     mesh: GPURenderPipeline;
     whole: GPURenderPipeline;
+    caster: GPURenderPipeline;
     impostor: GPURenderPipeline;
     bake: GPURenderPipeline;
     mips: GPUComputePipeline;
     /** Per mip level above the first, the group that reads the level below it. */
     mipGroups: GPUBindGroup[];
-    sortGroup: GPUBindGroup;
-    renderGroup: GPUBindGroup;
     emptyGroup: GPUBindGroup;
     atlasGroup: GPUBindGroup;
     bakeGroup: GPUBindGroup;
     pyramid: GPUTexture;
-    occlusion: GPUBuffer;
     viewport: GPUBuffer;
     hizFirst: GPUComputePipeline;
     hizDown: GPUComputePipeline;
@@ -170,7 +191,7 @@ export class Instances {
     /** The impostor outlines of each mesh and radius (`outline`). */
     private readonly outlined = new WeakMap<Mesh, { radius: number; outlines: Float32Array<ArrayBuffer> }>();
     /** What `attach` took, for a producer that comes later. */
-    private attached?: [Gpu, GPUBuffer, Surfaces];
+    private attached?: [Gpu, Surfaces];
     /** Whether the last frame baked an impostor: what the frames draw changed. */
     newContent = false;
     /** The day of the year (0 is 1 January), which sets the phase of each tree. */
@@ -196,11 +217,11 @@ export class Instances {
         ];
     }
 
-    /** The resources of entries 0 to 7 of a producer's group 0, after `attach`. */
-    emitResources(frame: GPUBuffer): GPUBindGroupEntry[] {
-        const r = this.resources!;
+    /** The resources of entries 0 to 7 of a producer's group 0 for a view, after `attach`. */
+    emitResources(view: number): GPUBindGroupEntry[] {
+        const r = this.resources!, v = r.views[view];
         return [
-            ...[frame, r.models, r.staged, r.tally, r.params, r.occlusion].map((buffer, binding) => ({ binding, resource: { buffer } })),
+            ...[v.frame, r.models, v.staged, v.tally, v.params, v.occlusion].map((buffer, binding) => ({ binding, resource: { buffer } })),
             { binding: 6, resource: r.pyramid.createView() }, { binding: 7, resource: { buffer: r.phases } },
         ];
     }
@@ -228,8 +249,8 @@ export class Instances {
         this.uploaded = false;
     }
 
-    /** Takes the pools on a device, then attaches the producers. */
-    async attach(gpu: Gpu, frame: GPUBuffer, format: GPUTextureFormat, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout, surfaces: Surfaces): Promise<void> {
+    /** Takes the pools on a device, then attaches the producers. `frames` are the views' frame uniforms. */
+    async attach(gpu: Gpu, frames: GPUBuffer[], format: GPUTextureFormat, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout, surfaces: Surfaces): Promise<void> {
         this.resources = undefined;
         this.attached = undefined;
         this.uploaded = false;
@@ -246,12 +267,7 @@ export class Instances {
             phases: gpu.buffer('instances', MODELS * 16, uniform),
             tones: gpu.buffer('instances', MODELS * PHASES * TONE_BYTES, storage),
             meshes: gpu.buffer('instances', DRAWS * MESH_BYTES, storage),
-            staged: gpu.buffer('instances', CAPACITY * INSTANCE_BYTES, GPUBufferUsage.STORAGE),
-            tally: gpu.buffer('instances', TALLY_BYTES, storage | GPUBufferUsage.COPY_SRC),
-            params: gpu.buffer('instances', 16, uniform),
-            args: gpu.buffer('instances', DRAWS * 20, GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT),
-            bases: gpu.buffer('instances', 2 * DRAWS * 4, GPUBufferUsage.STORAGE),
-            lists: gpu.buffer('instances', CAPACITY * INSTANCE_BYTES, GPUBufferUsage.STORAGE),
+            coarse: gpu.buffer('instances', DRAWS * MESH_BYTES, storage),
             drawOf: gpu.buffer('instances', DRAWS * STRIDE, uniform),
             vertices: gpu.buffer('instances', VERTEX_POOL, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST),
             indices: gpu.buffer('instances', INDEX_POOL, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST),
@@ -321,12 +337,16 @@ export class Instances {
             // Leaves and twigs are single faces, seen from both sides.
             primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil,
         });
-        const [countDraws, placeDraws, scatter, mesh, whole, impostor, bake, mips] = await Promise.all([
+        const [countDraws, placeDraws, scatter, mesh, whole, caster, impostor, bake, mips] = await Promise.all([
             device.createComputePipelineAsync({ label: 'instances count', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'count_draws' } }),
             device.createComputePipelineAsync({ label: 'instances place', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'place_draws' } }),
             device.createComputePipelineAsync({ label: 'instances scatter', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'scatter' } }),
             meshPipeline('mesh_fragment'),
             meshPipeline('mesh_fragment_whole'),
+            device.createRenderPipelineAsync({
+                label: 'instances caster', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout] }),
+                vertex: { module: drawModule, entryPoint: 'caster_vertex', buffers: [vertexLayout] }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH,
+            }),
             device.createRenderPipelineAsync({
                 label: 'impostors', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, atlasLayout, groundLayout] }),
                 vertex: { module: impostorModule, entryPoint: 'impostor_vertex', buffers: [vertexLayout] },
@@ -348,32 +368,50 @@ export class Instances {
             })),
         });
         const layers = (texture: GPUTexture, level?: number) => texture.createView({ dimension: '2d-array', ...(level === undefined ? {} : { baseMipLevel: level, mipLevelCount: 1 }) });
+        const views = frames.map((frame, view): ViewBuffers => {
+            const capacity = view === SUN ? SUN_CAPACITY : CAPACITY;
+            const v = {
+                frame, params: gpu.buffer('instances', PARAMS_BYTES, uniform), occlusion: gpu.buffer('instances', OCCLUSION_BYTES, uniform),
+                staged: gpu.buffer('instances', capacity * INSTANCE_BYTES, GPUBufferUsage.STORAGE), tally: gpu.buffer('instances', TALLY_BYTES, storage | GPUBufferUsage.COPY_SRC),
+                args: gpu.buffer('instances', DRAWS * 20, GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT),
+                bases: gpu.buffer('instances', 2 * DRAWS * 4, GPUBufferUsage.STORAGE), lists: gpu.buffer('instances', capacity * INSTANCE_BYTES, GPUBufferUsage.STORAGE),
+            };
+            return {
+                ...v, sortGroup: group(sortLayout, [v.tally, view === SUN ? b.coarse : b.meshes, v.args, v.bases, v.staged, v.lists]),
+                renderGroup: group(renderLayout, [frame, v.lists, v.bases, b.models, [b.drawOf, 16], b.tones]),
+            };
+        });
         this.resources = {
-            gpu, ...b, countDraws, placeDraws, scatter, mesh, whole, impostor, bake, mips, pyramid, hizFirst, hizDown, firstLayout, downGroups,
-            occlusion: gpu.buffer('instances', OCCLUSION_BYTES, uniform), viewport: gpu.buffer('instances', 16, uniform),
-            sortGroup: group(sortLayout, [b.tally, b.meshes, b.args, b.bases, b.staged, b.lists]),
-            renderGroup: group(renderLayout, [frame, b.lists, b.bases, b.models, [b.drawOf, 16], b.tones]),
+            gpu, ...b, views, countDraws, placeDraws, scatter, mesh, whole, caster, impostor, bake, mips, pyramid, hizFirst, hizDown, firstLayout, downGroups,
+            viewport: gpu.buffer('instances', 16, uniform),
             emptyGroup: group(emptyLayout, []),
             atlasGroup: group(atlasLayout, [layers(b.albedo), layers(b.normal), device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' }), b.slots, b.outlines]),
             bakeGroup: group(bakeLayout, [[b.bakes, 16]]),
             mipGroups: Array.from({ length: ATLAS_LEVELS - 1 }, (_, k) => group(mipLayout, [layers(b.albedo, k), layers(b.normal, k), layers(b.albedo, k + 1), layers(b.normal, k + 1)])),
         };
-        this.attached = [gpu, frame, surfaces];
-        await Promise.all(this.producers.map(producer => attachProducer(producer, gpu, frame, surfaces)));
+        this.attached = [gpu, surfaces];
+        await Promise.all(this.producers.map(producer => attachProducer(producer, gpu, surfaces)));
     }
 
-    /** Starts a frame: the models when they changed, the detail for the render's height in pixels, and an empty tally. */
-    begin(pixels: number): void {
+    /**
+     * Starts a run of a view, with an empty tally. The eye's view starts the frame: the models when they
+     * changed, and the detail for the render's height in pixels.
+     */
+    begin(view: number, pixels = 0): void {
         const r = this.resources;
         if (!r) return;
-        this.frame++;
-        if (!this.uploaded) this.upload(r);
-        this.lod = this.detail * pixels / REFERENCE_PIXELS;
-        const params = new ArrayBuffer(16);
+        if (view === EYE) {
+            this.frame++;
+            if (!this.uploaded) this.upload(r);
+            this.lod = this.detail * pixels / REFERENCE_PIXELS;
+        }
+        const params = new ArrayBuffer(PARAMS_BYTES), v = r.views[view];
         new Float32Array(params).set([this.lod, 0, this.detail, this.day]);
-        new Uint32Array(params)[1] = CAPACITY;
-        r.gpu.device.queue.writeBuffer(r.params, 0, params);
-        r.gpu.device.queue.writeBuffer(r.tally, 0, new Uint32Array(TALLY_BYTES / 4));
+        const words = new Uint32Array(params);
+        words[1] = view === SUN ? SUN_CAPACITY : CAPACITY;
+        words[4] = view;
+        r.gpu.device.queue.writeBuffer(v.params, 0, params);
+        r.gpu.device.queue.writeBuffer(v.tally, 0, new Uint32Array(TALLY_BYTES / 4));
     }
 
     /**
@@ -383,12 +421,12 @@ export class Instances {
     occlude(encoder: GPUCommandEncoder, last: LastFrame | undefined): void {
         const r = this.resources;
         if (!r) return;
-        const data = new ArrayBuffer(OCCLUSION_BYTES), f = new Float32Array(data);
-        if (!last) return r.gpu.device.queue.writeBuffer(r.occlusion, 0, data);
+        const data = new ArrayBuffer(OCCLUSION_BYTES), f = new Float32Array(data), { occlusion } = r.views[EYE];
+        if (!last) return r.gpu.device.queue.writeBuffer(occlusion, 0, data);
         const block = Math.max(4, Math.ceil(Math.max(...last.pixels) / PYRAMID));
         f.set(last.viewProj);
         f.set([...last.moved, 1, ...last.pixels, block], 16);
-        r.gpu.device.queue.writeBuffer(r.occlusion, 0, data);
+        r.gpu.device.queue.writeBuffer(occlusion, 0, data);
         r.gpu.device.queue.writeBuffer(r.viewport, 0, new Uint32Array([...last.pixels, block, 0]));
         if (r.first?.depth !== last.depth) r.first = {
             depth: last.depth, group: r.gpu.device.createBindGroup({ layout: r.firstLayout, entries: [
@@ -428,7 +466,7 @@ export class Instances {
                 depthStencilAttachment: { view: r.depth.createView(), depthClearValue: 0, depthLoadOp: 'clear', depthStoreOp: 'discard' },
             });
             pass.setPipeline(r.bake);
-            pass.setBindGroup(0, r.renderGroup, [0]);
+            pass.setBindGroup(0, r.views[EYE].renderGroup, [0]);
             pass.setBindGroup(1, r.bakeGroup, [slot * STRIDE]);
             pass.setVertexBuffer(0, r.vertices);
             pass.setIndexBuffer(r.indices, 'uint32');
@@ -462,13 +500,13 @@ export class Instances {
         if (changed) r.gpu.device.queue.writeBuffer(r.meshes, 0, this.meshTable);
     }
 
-    /** Runs the producers, then sorts what they staged into the draw lists. */
-    run(pass: GPUComputePassEncoder, ground: GPUBindGroup): void {
+    /** Runs the producers for a view, then sorts what they staged into its draw lists. */
+    run(pass: GPUComputePassEncoder, ground: GPUBindGroup, view: number): void {
         const r = this.resources;
         if (!r) return;
-        for (const producer of this.producers) producer.encode(pass, ground);
+        for (const producer of this.producers) producer.encode(pass, ground, view);
         // A fixed number of lanes, each looping over the staged instances: the CPU does not know their count.
-        pass.setBindGroup(0, r.sortGroup);
+        pass.setBindGroup(0, r.views[view].sortGroup);
         pass.setPipeline(r.countDraws);
         pass.dispatchWorkgroups(SORT_LANES / 64);
         pass.setPipeline(r.placeDraws);
@@ -481,7 +519,7 @@ export class Instances {
     read(encoder: GPUCommandEncoder): () => void {
         const r = this.resources, readback = r?.readbacks.pop();
         if (!r || !readback) return () => {};
-        encoder.copyBufferToBuffer(r.tally, 0, readback, 0, TALLY_BYTES);
+        encoder.copyBufferToBuffer(r.views[EYE].tally, 0, readback, 0, TALLY_BYTES);
         const frame = this.frame;
         return () => readback.mapAsync(GPUMapMode.READ).then(() => {
             const tally = new Uint32Array(readback.getMappedRange());
@@ -505,9 +543,10 @@ export class Instances {
         pass.setBindGroup(2, ground);
         pass.setVertexBuffer(0, r.vertices);
         pass.setIndexBuffer(r.indices, 'uint32');
+        const { renderGroup, args } = r.views[EYE];
         const indirect = (d: number) => {
-            pass.setBindGroup(0, r.renderGroup, [d * STRIDE]);
-            pass.drawIndexedIndirect(r.args, d * 20);
+            pass.setBindGroup(0, renderGroup, [d * STRIDE]);
+            pass.drawIndexedIndirect(args, d * 20);
         };
         // Nearer tiers first, so that they fill the depth before the farther ones shade. An impostor draw
         // without its layer draws the coarsest mesh (`aim`).
@@ -520,6 +559,22 @@ export class Instances {
         pass.setPipeline(r.impostor);
         pass.setBindGroup(1, r.atlasGroup);
         for (const [m] of this.atlas) indirect(m * TIERS + this.specs[m].tiers.length);
+    }
+
+    /** Draws the casters of the sun's view into the shadow map: each model's last tier. */
+    cast(pass: GPURenderPassEncoder): void {
+        const r = this.resources;
+        if (!r || !this.uploaded) return;
+        const { renderGroup, args } = r.views[SUN];
+        pass.setPipeline(r.caster);
+        pass.setVertexBuffer(0, r.vertices);
+        pass.setIndexBuffer(r.indices, 'uint32');
+        this.specs.forEach((spec, m) => {
+            if (!spec.tiers.length) return;
+            const d = m * TIERS + spec.tiers.length - (spec.impostor ? 0 : 1);
+            pass.setBindGroup(0, renderGroup, [d * STRIDE]);
+            pass.drawIndexedIndirect(args, d * 20);
+        });
     }
 
     /** Gives a model a layer of the atlas, the layer that the frames drew least lately when none is free, and bakes it. */
@@ -614,6 +669,12 @@ export class Instances {
         r.gpu.device.queue.writeBuffer(r.tones, 0, tones);
         this.meshTable = meshes;
         r.gpu.device.queue.writeBuffer(r.meshes, 0, meshes);
+        const coarse = meshes.slice();
+        this.specs.forEach((spec, m) => {
+            const coarsest = this.placed[m].at(-1);
+            if (spec.impostor && coarsest) coarse.set([coarsest[1], coarsest[0], coarsest[2], 0], (m * TIERS + spec.tiers.length) * 4);
+        });
+        r.gpu.device.queue.writeBuffer(r.coarse, 0, coarse);
         this.uploaded = true;
     }
 }
