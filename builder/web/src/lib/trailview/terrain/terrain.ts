@@ -224,9 +224,10 @@ export class Terrain {
         return this.pages.idle && this.calm > 0 && this.probing === 0;
     }
 
-    /** True while the terrain needs frames that no tile load or probe will ask for. */
+    /** True while the terrain needs frames that no tile load, feature tile or probe will ask for. */
     get working(): boolean {
-        return (!this.pages.idle && this.pages.loads === 0) || this.calm === 0;
+        // A frame that changed nothing while feature tiles are on their way waits for them.
+        return (!this.pages.idle && this.pages.loads === 0 && (this.newContent || !this.stamps.loading)) || this.calm === 0;
     }
 
     /** A new view: a probe from before it never sets the ground. */

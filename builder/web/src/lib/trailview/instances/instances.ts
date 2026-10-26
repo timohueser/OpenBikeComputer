@@ -216,6 +216,11 @@ export class Instances {
         return this.unbaked.size === 0;
     }
 
+    /** Whether the eye's lists need a run while the camera and the content rest: a bake waits, the models changed, or the detail for a render `pixels` high. */
+    due(pixels: number): boolean {
+        return this.unbaked.size > 0 || !this.uploaded || this.lod !== this.detail * pixels / REFERENCE_PIXELS;
+    }
+
     /** Layout entries 0 to 7 of a producer's group 0, for its compute stage. */
     static emitEntries(): GPUBindGroupLayoutEntry[] {
         const C = GPUShaderStage.COMPUTE;

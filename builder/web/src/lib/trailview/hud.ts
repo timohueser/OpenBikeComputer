@@ -48,9 +48,6 @@ export function hud(element: HTMLElement, engine: TrailView, labs: Labs): void {
         return select;
     });
     element.replaceChildren(text, date.parentElement!, time.parentElement!, debug, ...variants);
-    addEventListener('keydown', event => {
-        if (event.key.toLowerCase() === 'h' && !event.ctrlKey && !event.metaKey) element.hidden = !element.hidden;
-    });
     const update = () => {
         const stats = engine.stats(), view = engine.view, passes = Object.entries(stats.gpu);
         debug.value = view.debug;
@@ -71,8 +68,18 @@ export function hud(element: HTMLElement, engine: TrailView, labs: Labs): void {
             'W A S D move · drag to look · F walk or fly · wheel altitude · Ctrl+C / Ctrl+V view · H HUD',
         ].join('\n');
     };
-    update();
-    setInterval(update, REFRESH_MS);
+    // A hidden HUD reads no stats: the engine then takes no GPU times.
+    let poll: ReturnType<typeof setInterval> | undefined;
+    const show = () => {
+        clearInterval(poll);
+        poll = element.hidden ? undefined : (update(), setInterval(update, REFRESH_MS));
+    };
+    addEventListener('keydown', event => {
+        if (event.key.toLowerCase() !== 'h' || event.ctrlKey || event.metaKey) return;
+        element.hidden = !element.hidden;
+        show();
+    });
+    show();
 }
 
 /** A labelled range input, and the label's value text. */

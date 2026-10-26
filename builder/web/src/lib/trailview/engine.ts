@@ -24,6 +24,7 @@ import { Orchards } from './vegetation/orchards';
 import { Plants } from './vegetation/plants';
 import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
+import { Pacer } from './pacer';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
 const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'casters', 'shadow', 'far-casters', 'far-shadow', 'mips', 'resolve'];
@@ -39,6 +40,8 @@ const RAD = Math.PI / 180;
 const STEP_M = 1, HEADROOM_M = 2;
 /** A flying eye under the terrain is in a tunnel when a floor lies at most this far below it. */
 const BORE_M = 6;
+/** A read of `stats()` turns the GPU times on for this long. */
+const MEASURE_MS = 1000;
 
 export interface Stats {
     adapter: string;
@@ -78,6 +81,8 @@ export class TrailView {
     /** Called with the view after it changes. */
     onView?: (view: View) => void;
     recoveries = 0;
+    /** Picks the display frames that draw: `pacer.rate` is the frame rate. */
+    readonly pacer = new Pacer();
     private readonly context: GPUCanvasContext;
     private readonly frame: Frame;
     private readonly terrain: Terrain;
@@ -116,6 +121,10 @@ export class TrailView {
     private rendered: (() => void)[] = [];
     /** The last frame that drew, for occlusion culling: its depth, pixels and view projection, and its eye. */
     private lastFrame?: Omit<LastFrame, 'moved'> & { eye: number[] };
+    /** Whether the last frame that placed the instances moved or changed: the next one places them again, culled by a depth of the same view. */
+    private unrest = true;
+    /** Until when the frames take GPU times. */
+    private measured = 0;
 
     private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, private readonly scale: number) {
         this.context = canvas.getContext('webgpu')!;
@@ -175,7 +184,9 @@ export class TrailView {
         this.request();
     }
 
+    /** The GPU times are taken while a caller reads them: a read turns them on for MEASURE_MS. */
     stats(): Stats {
+        this.measured = performance.now() + MEASURE_MS;
         const { gpu, times } = this.gpuState, { pages } = this.terrain, terrain = this.terrain.stats, ground = this.groundLook.stats, forest = this.forest.requests;
         return {
             adapter: gpu.adapter, gpu: { ...times.ms }, timed: times.tag, cpu: this.cpu, pools: new Map(gpu.pools),
@@ -325,6 +336,8 @@ export class TrailView {
     private render(now: number): void {
         this.pending = false;
         if (!this.ready) return;
+        // A frame that a caller awaits draws at once: flights and shots step at the display's rate.
+        if (!this.pacer.due(now, this.rendered.length > 0)) return this.request();
         const start = performance.now();
         const steer = this.controls.steer(), dt = this.last ? Math.min(0.1, (now - this.last) / 1000) : 0;
         if (steer) this.pose = move(this.pose, steer, dt, this.ground());
@@ -338,6 +351,7 @@ export class TrailView {
         this.last = steer || !settled ? now : 0;
         const eye = this.eye(), place = this.place();
         const { gpu, uniform, times, targets } = this.gpuState;
+        times.on = start < this.measured;
         if (this.fit()) {
             this.temporal.reset();
             this.lastFrame = undefined;
@@ -382,7 +396,10 @@ export class TrailView {
         const counted = this.houses.encode(encoder, this.groundLook.computeGroup, moved, changed, () => times.writes('houses'));
         const last = eye && this.lastFrame
             ? { ...this.lastFrame, moved: [eye.east - this.lastFrame.eye[0], eye.north - this.lastFrame.eye[1], eye.z - this.lastFrame.eye[2]] as [number, number, number] } : undefined;
-        const placed = this.vegetation(encoder, eye && group && step ? targets.viewport(this.scale)[1] : 0, last, () => times.writes('vegetation'));
+        // The instances keep their lists while the camera and the content rest, once a frame culled them by a depth of the same view.
+        const pixels = targets.viewport(this.scale)[1], placing = !!(eye && group && step) && (moved || changed || this.unrest || this.instances.due(pixels));
+        if (placing) this.unrest = moved || changed;
+        const placed = this.vegetation(encoder, placing ? pixels : 0, last, () => times.writes('vegetation'));
         const cast = cascade >= 0 && step && eye && group ? this.cast(encoder, group, eye, cascade) : () => {};
         if (!eye || !group) {
             // Until the eye has ground nothing draws: the horizon of the weather fills the canvas.
