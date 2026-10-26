@@ -16,6 +16,8 @@ from . import roads, structures, water
 from .. import step_pool
 
 ROOT = Path(__file__).resolve().parents[2]
+# The format of the job and of the heights, FORMAT of `job.rs`.
+FORMAT = 1
 WATER_KINDS = {**{kind: 0 for kind in water.RIVERS}, **{kind: 1 for kind in water.LAKES}, **{kind: 2 for kind in water.MARKS}}
 
 
@@ -54,24 +56,29 @@ def lake_level(tags):
 
 
 def binary():
-    """The solver program: OBC_TRAILVIEW_HEIGHTS, else the release build of the workspace."""
+    """The solver program: OBC_TRAILVIEW_HEIGHTS, else the release build of the workspace, offline as the step runs."""
     if program := os.environ.get("OBC_TRAILVIEW_HEIGHTS"):
         return program
-    command = ["cargo", "build", "--release", "--locked", "--quiet", "--message-format=json", "-p", "obc-trailview-features",
-               "--bin", "trailview-heights", "--manifest-path", str(ROOT / "Cargo.toml")]
-    messages = subprocess.run(command, check=True, stdout=subprocess.PIPE, text=True).stdout.splitlines()
-    return next(m["executable"] for m in map(json.loads, messages) if m.get("reason") == "compiler-artifact" and m.get("executable"))
+    command = ["cargo", "build", "--release", "--locked", "--offline", "--quiet", "--message-format=json", "-p",
+               "obc-trailview-features", "--bin", "trailview-heights", "--manifest-path", str(ROOT / "Cargo.toml")]
+    built = subprocess.run(command, stdout=subprocess.PIPE, text=True)
+    if built.returncode:
+        raise ValueError(f"cargo cannot build trailview-heights offline: run `cargo fetch --locked --manifest-path {ROOT / 'Cargo.toml'}` "
+                         "to fetch its crates, or set OBC_TRAILVIEW_HEIGHTS to the program")
+    return next(m["executable"] for m in map(json.loads, built.stdout.splitlines()) if m.get("reason") == "compiler-artifact" and m.get("executable"))
 
 
-def solve(waters, ways, beyond, inside, terrain, classes=roads.CLASSES):
+def solve(waters, ways, beyond, inside, terrain, program, classes=roads.CLASSES):
     """The heights of the features (kind, tags, parts): per feature of `waters` the levels of its parts, and per
     feature of `ways` its parts with their heights, or the parts as they are where the input cuts its chain of
     bridges or tunnels. `beyond` is the `Past` of the region, `inside` the box x0, y0, x1, y1 past which the input
     cuts a chain. A waterway that OSM draws uphill turns round in place. Also the
-    culverts and the tunnels under a road of `ways`, and the metrics of the water and of the roads."""
+    culverts and the tunnels under a road of `ways`, and the metrics of the water and of the roads. `program` is the
+    solver, from `binary`."""
     names = list(classes)
     header = json.dumps({
-        "terrain": terrain.origin, "path": names.index("path"), "inside": list(inside), "memory": step_pool.free_memory(),
+        "terrain": terrain.origin, "path": names.index("path"), "inside": list(inside), "format": FORMAT,
+        "memory": step_pool.free_memory(step_pool.resident()) or 0,
         "classes": [{"grade": row["grade"], "smooth_m": row["smooth_m"], "rail": name in roads.RAILS} for name, row in classes.items()],
     }).encode()
     job = bytearray(struct.pack("<Q", len(header)) + header)
@@ -89,10 +96,12 @@ def solve(waters, ways, beyond, inside, terrain, classes=roads.CLASSES):
         path, out = Path(work) / "job", Path(work) / "heights"
         path.write_bytes(job)
         del job
-        subprocess.run([binary(), path, out], check=True)
+        subprocess.run([program, path, out], check=True)
         data = memoryview(out.read_bytes())
     length = struct.unpack_from("<Q", data)[0]
     found = json.loads(bytes(data[8:8 + length]))
+    if found.get("format") != FORMAT:
+        raise ValueError(f"{program} writes heights of format {found.get('format')}, this step reads format {FORMAT}: rebuild it")
     at = 8 + length
     unknown = lambda z: [None if math.isnan(v) else v for v in z.tolist()]
     levels = []
@@ -119,6 +128,8 @@ def solve(waters, ways, beyond, inside, terrain, classes=roads.CLASSES):
             at += 24 * count
             out.append((outer, list(map(tuple, vertices[:, :2].tolist())), unknown(vertices[:, 2])))
         solved.append(out)
+    if at != len(data):
+        raise ValueError(f"{program} wrote heights past the features of the job")
     metrics = found["roads"]
     metrics["grade_excess_m"] = round(metrics["grade_excess_m"], 4)
     metrics["grade_excess_at"] = [round(value, 5) for value in metrics["grade_excess_at"]]

@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use crate::Terrain;
 
 const TILE: usize = 512;
-/// Decoded tiles of 1 MB that the threads share: a road job with its halo reads about 10 × 10
-/// tiles of zoom 13, so this holds the jobs of every thread at once.
+/// Decoded tiles of 1 MB that the threads share. A tile that leaves the cache costs one more decode
+/// when a job reads it again: the road solver reads its samples in the order of the tiles.
 const CACHED: usize = 256;
 
 type Key = (u8, u32, u32);

@@ -30,6 +30,9 @@ use crate::terrain::Tiles;
 use crate::water::{self, Kind, Level};
 use crate::Part;
 
+/// The format of the job and of the heights: `tools/trailview/solvers.py` writes and reads the same.
+pub const FORMAT: u64 = 1;
+
 pub struct Job {
     pub header: Value,
     pub water: Vec<water::Feature>,
@@ -93,6 +96,12 @@ impl Job {
         let header = r.bytes.get(8..8 + length).ok_or("the job file ends early")?;
         let header: Value = serde_json::from_slice(header).map_err(|e| format!("the header of the job: {e}"))?;
         r.at += length;
+        if header["format"].as_u64() != Some(FORMAT) {
+            return Err(format!(
+                "the job is of format {}, this program reads format {FORMAT}: rebuild it",
+                header["format"]
+            ));
+        }
         let water = (0..r.u64()?)
             .map(|_| {
                 let kind = [Kind::River, Kind::Lake, Kind::Mark][r.u8()? as usize];
@@ -107,6 +116,9 @@ impl Job {
         let (count, past) = (r.u64()?, r.u64()?);
         let roads = (0..count).map(|_| r.road()).collect::<Result<_, _>>()?;
         let beyond = (0..past).map(|_| r.road()).collect::<Result<_, _>>()?;
+        if r.at != bytes.len() {
+            return Err("the job file has bytes past its last feature".into());
+        }
         Ok(Job { header, water, roads, beyond })
     }
 
@@ -160,14 +172,12 @@ impl Job {
         let kept: Vec<usize> = (0..self.roads.len()).filter(|f| !cut.contains(f)).collect();
         let features: Vec<&roads::Feature> = kept.iter().map(|&f| &self.roads[f]).collect();
         let context: Vec<&roads::Feature> = context.iter().map(|&f| &self.beyond[f]).collect();
-        let memory = self.header["memory"].as_u64().unwrap_or(u64::MAX) as usize;
+        // A missing or negative figure leaves no memory: the jobs then run one at a time.
+        let memory = self.header["memory"].as_u64().unwrap_or(0) as usize;
         let solved = roads::solve_by_area(&features, &context, &terrain, &rivers, &classes, memory);
         eprintln!("roads: {:.1} s", started.elapsed().as_secs_f64());
-        let mut heights: roads::Heights = self.roads.iter().map(|f| vec![None; f.parts.len()]).collect();
-        for (&f, parts) in kept.iter().zip(solved.heights) {
-            heights[f] = parts;
-        }
-        let m = &solved.metrics;
+        let m = solved.metrics.clone();
+        let (heights, culverts, underpasses) = uncut(&self.roads, &kept, solved);
         let header = json!({
             "water": {"lakes": water_metrics.lakes, "lakes_spilling": water_metrics.lakes_spilling,
                       "river_parts": water_metrics.river_parts, "turned": water_metrics.turned},
@@ -178,8 +188,9 @@ impl Job {
                       "grade_excess_at": m.grade_excess_at, "grade_excess_over_1cm": m.grade_excess_over_1cm,
                       "residual_p99_m": m.residual_p99_m, "refinements_unconverged": m.refinements_unconverged,
                       "cut_features": cut.len()},
-            "culverts": solved.culverts.iter().map(|&i| kept[i]).collect::<Vec<_>>(),
-            "underpasses": solved.underpasses.iter().map(|&i| kept[i]).collect::<Vec<_>>(),
+            "culverts": culverts,
+            "underpasses": underpasses,
+            "format": FORMAT,
         });
         let mut bytes = Vec::new();
         let header = header.to_string();
@@ -203,5 +214,42 @@ impl Job {
         }
         let mut file = std::fs::File::create(out).map_err(|e| format!("{}: {e}", out.display()))?;
         file.write_all(&bytes).map_err(|e| format!("{}: {e}", out.display()))
+    }
+}
+
+/// The heights of the solve of the features `kept` as heights of all `features`, None for the parts of
+/// a feature that the input cuts; and the culverts and the underpasses as numbers of `features`.
+fn uncut(
+    features: &[roads::Feature],
+    kept: &[usize],
+    solved: roads::Solved,
+) -> (roads::Heights, Vec<usize>, Vec<usize>) {
+    let mut heights: roads::Heights = features.iter().map(|f| vec![None; f.parts.len()]).collect();
+    for (&f, parts) in kept.iter().zip(solved.heights) {
+        heights[f] = parts;
+    }
+    let number = |set: &std::collections::BTreeSet<usize>| set.iter().map(|&i| kept[i]).collect();
+    (heights, number(&solved.culverts), number(&solved.underpasses))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_features_that_the_input_cuts_keep_no_heights_and_the_others_their_numbers() {
+        let way = |x: f64| roads::Feature { parts: vec![vec![[x, 0.0], [x, 1.0]]], ..Default::default() };
+        let features = [way(0.0), way(1.0), way(2.0), way(3.0)];
+        let kept = [0, 2, 3];
+        let part = |x: f64| Some((vec![[x, 0.0], [x, 1.0]], vec![x, x]));
+        let solved = roads::Solved {
+            heights: vec![vec![part(0.0)], vec![part(2.0)], vec![part(3.0)]],
+            culverts: [1].into(),
+            underpasses: [2].into(),
+            ..Default::default()
+        };
+        let (heights, culverts, underpasses) = uncut(&features, &kept, solved);
+        assert_eq!(heights, vec![vec![part(0.0)], vec![None], vec![part(2.0)], vec![part(3.0)]]);
+        assert_eq!((culverts, underpasses), (vec![2], vec![3]));
     }
 }

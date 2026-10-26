@@ -1,8 +1,7 @@
 //! The water levels: each lake at one level, and the rivers and streams as networks whose levels
 //! never rise downstream. `specs/trailview-features.md` says what the levels promise.
 //!
-//! The terrain is f32, and the statistics of a lake run in f32 as numpy runs them on it, so that the
-//! levels are those of the solver before this one to the bit.
+//! The terrain is f32, and the statistics of a lake run in f32 on it, as numpy runs them.
 
 use std::collections::HashMap;
 
