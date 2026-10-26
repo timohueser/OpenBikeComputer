@@ -4,7 +4,7 @@ import { EARTH_RADIUS, tileLonLat } from '../frame/frame';
 import { anchorAt, UNITS } from '../frame/space';
 import type { GroundDate, GroundPage } from '../stream/ground-pages';
 import { PAGE } from '../stream/heights';
-import { COARSEST, key, MAP, size, type Node } from '../terrain/lod';
+import { COARSEST, distances, key, MAP, NEAR_M, size, type Node } from '../terrain/lod';
 import { dayOfYear, mosaicsAt } from './rules';
 
 /**
@@ -95,6 +95,8 @@ export class GroundPages {
     private readonly marching = new Set<Slot>();
     /** Wanted pages without the content of the date. */
     private missing = 0;
+    /** Of them, the pages of the drawn nodes within NEAR_M of the eye. */
+    nearMissing = 0;
     private dirty = true;
     private kept = new Set<string>();
     /** The terrain nodes that the relief of the kept pages reads, which the terrain keeps resident for it. */
@@ -164,7 +166,8 @@ export class GroundPages {
         const kept = [...order.values()].slice(0, this.capacity);
         this.wanted = order.size;
         this.shortage = order.size - kept.length;
-        this.missing = 0;
+        this.missing = this.nearMissing = 0;
+        const nearDrawn = new Set(drawn.map(this.ground).filter(node => distances({ anchor, above: 0 }, node)[0] <= NEAR_M).map(key));
         // Every kept page is used before the first allocation, so none leaves for a later one of this frame.
         this.kept = new Set(kept.map(key));
         this.reads = [...new Map(kept.flatMap(node => reliefReads(node, this.finest)).map(node => [key(node), node])).values()];
@@ -175,6 +178,7 @@ export class GroundPages {
             if (this.waits(node)) continue;
             if (page?.date !== this.date || page.partial) {
                 this.missing++;
+                if (nearDrawn.has(key(node))) this.nearMissing++;
                 this.load(node);
             }
         }

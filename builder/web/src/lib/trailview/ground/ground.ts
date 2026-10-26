@@ -89,6 +89,11 @@ export class Ground {
         return this.pages.idle && this.jobs.length === 0;
     }
 
+    /** Whether every ground page within NEAR_M of the eye has arrived and been built. */
+    get nearIdle(): boolean {
+        return this.pages.nearMissing === 0 && this.jobs.length === 0;
+    }
+
     /** Whether the next frame has work that no load in flight wakes. */
     get working(): boolean {
         return this.pages.working || this.jobs.length > 0;
