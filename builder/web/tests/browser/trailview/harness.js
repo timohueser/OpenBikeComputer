@@ -39,53 +39,54 @@ const FLAT_RULES = {
 };
 
 /**
- * Answers the planner hosts of `fixture/config.json` in the page: the terrain tiles from the fixture,
- * or from `tiles`, a `planner-dem` MBTiles, and 204 for an absent tile like the tile service. With
- * `ground`, a folder of the TrailView bakes, it serves their TileJSON and tiles as the tile service
- * does, and `trailview/rules.json`; `colour` names the folder of the colour variant in it. The feature
- * tiles come from the fixture, or from `features`, a folder of `z/x/y.bin`. `ground` may be FLAT. Every
- * other public host is refused.
+ * The tile service of the planner hosts at `origin`: a function from a path to its answer
+ * `{ status, type, body }`, or undefined for a path that the service does not know. The terrain tiles
+ * come from the fixture, or from `tiles`, a `planner-dem` MBTiles, and 204 answers an absent tile as
+ * the tile service does. With `ground`, a folder of the TrailView bakes, it answers their TileJSON and
+ * tiles, and `trailview/rules.json`; `colour` names the folder of the colour variant in it. The feature
+ * tiles come from the fixture, or from `features`, a folder of `z/x/y.bin`. `ground` may be FLAT.
  */
-export async function routeFixture(page, tiles, ground, colour = 'webp-12', features = FEATURES) {
+export async function tileService(origin, tiles, ground, colour = 'webp-12', features = FEATURES) {
     const read = tiles?.endsWith('.mbtiles') ? await mbtiles(tiles) : (z, x, y) => {
         const path = join(tiles ?? FIXTURE, `${z}/${x}/${y}.webp`);
         return existsSync(path) ? readFileSync(path) : undefined;
     };
     const layers = ground === FLAT ? { 'trailview-ground': FLAT_ARCHIVE } : ground ? groundLayers(ground, colour) : {};
-    const cors = { 'access-control-allow-origin': '*' };
-    await page.route(url => url.hostname !== '127.0.0.1', async route => {
-        const url = new URL(route.request().url());
-        if (url.hostname !== 'tiles.test') return route.abort();
-        if (url.pathname === '/trailview-features.json') {
-            const tilejson = { tilejson: '3.0.0', tiles: ['https://tiles.test/trailview-features/{z}/{x}/{y}.bin'], minzoom: 8, maxzoom: 13, bounds: [-180, -85, 180, 85], features_format: 2, extent: 16384 };
-            return route.fulfill({ body: JSON.stringify(tilejson), contentType: 'application/json', headers: cors });
+    const none = { status: 204, body: Buffer.alloc(0) };
+    const found = (body, type) => (body ? { status: 200, type, body } : none);
+    const json = value => found(Buffer.from(JSON.stringify(value)), 'application/json');
+    return async path => {
+        if (path === '/trailview-features.json') {
+            return json({ tilejson: '3.0.0', tiles: [`${origin}/trailview-features/{z}/{x}/{y}.bin`], minzoom: 8, maxzoom: 13, bounds: [-180, -85, 180, 85], features_format: 2, extent: 16384 });
         }
-        const feature = /^\/trailview-features\/(\d+\/\d+\/\d+\.bin)$/.exec(url.pathname);
+        const feature = /^\/trailview-features\/(\d+\/\d+\/\d+\.bin)$/.exec(path);
         if (feature) {
-            const path = join(features, feature[1]);
-            if (!existsSync(path)) return route.fulfill({ status: 204, headers: cors });
-            return route.fulfill({ body: readFileSync(path), contentType: 'application/octet-stream', headers: cors });
+            const file = join(features, feature[1]);
+            return found(existsSync(file) && readFileSync(file), 'application/octet-stream');
         }
-        const tile = /^\/terrain\/(\d+)\/(\d+)\/(\d+)\.webp$/.exec(url.pathname);
-        if (tile) {
-            const body = read(...tile.slice(1).map(Number));
-            if (!body) return route.fulfill({ status: 204, headers: cors });
-            return route.fulfill({ body, contentType: 'image/webp', headers: cors });
-        }
-        if (ground && url.pathname === '/trailview/rules.json') {
-            return route.fulfill({ body: ground === FLAT ? JSON.stringify(FLAT_RULES) : readFileSync(join(ground, 'rules.json')), contentType: 'application/json', headers: cors });
-        }
-        const [, name, z, x, y] = /^\/([a-z0-9-]+)(?:\.json|\/(\d+)\/(\d+)\/(\d+))$/.exec(url.pathname) ?? [];
+        const tile = /^\/terrain\/(\d+)\/(\d+)\/(\d+)\.webp$/.exec(path);
+        if (tile) return found(read(...tile.slice(1).map(Number)), 'image/webp');
+        if (ground && path === '/trailview/rules.json') return ground === FLAT ? json(FLAT_RULES) : found(readFileSync(join(ground, 'rules.json')), 'application/json');
+        const [, name, z, x, y] = /^\/([a-z0-9-]+)(?:\.json|\/(\d+)\/(\d+)\/(\d+))$/.exec(path) ?? [];
         const archive = layers[name];
-        if (!archive) return route.abort();
+        if (!archive) return undefined;
         if (z === undefined) {
             const [header, metadata] = await Promise.all([archive.getHeader(), archive.getMetadata()]);
-            const json = { ...metadata, minzoom: header.minZoom, maxzoom: header.maxZoom, bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat], tiles: [`https://tiles.test/${name}/{z}/{x}/{y}`] };
-            return route.fulfill({ body: JSON.stringify(json), contentType: 'application/json', headers: cors });
+            return json({ ...metadata, minzoom: header.minZoom, maxzoom: header.maxZoom, bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat], tiles: [`${origin}/${name}/{z}/{x}/{y}`] });
         }
-        const found = await archive.getZxy(Number(z), Number(x), Number(y));
-        if (!found) return route.fulfill({ status: 204, headers: cors });
-        return route.fulfill({ body: Buffer.from(found.data), contentType: 'application/octet-stream', headers: cors });
+        const data = (await archive.getZxy(Number(z), Number(x), Number(y)))?.data;
+        return found(data && Buffer.from(data), 'application/octet-stream');
+    };
+}
+
+/** Answers the planner hosts of `fixture/config.json` in the page with tileService; every other public host is refused. */
+export async function routeFixture(page, tiles, ground, colour, features) {
+    const answer = await tileService('https://tiles.test', tiles, ground, colour, features);
+    await page.route(url => url.hostname !== '127.0.0.1', async route => {
+        const url = new URL(route.request().url());
+        const found = url.hostname === 'tiles.test' && await answer(url.pathname);
+        if (!found) return route.abort();
+        return route.fulfill({ status: found.status, body: found.body, contentType: found.type, headers: { 'access-control-allow-origin': '*' } });
     });
 }
 

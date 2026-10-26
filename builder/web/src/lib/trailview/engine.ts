@@ -15,7 +15,7 @@ import { DEPTH, MAX_SCALE, Targets } from './resolve/targets';
 import { jitter, STILL_FRAMES, Temporal, type Step } from './resolve/temporal';
 import { EYE, Instances, SUN, type InstanceStats, type LastFrame } from './instances/instances';
 import { GroundSource } from './stream/ground';
-import { featureTiles, pageDecoder, releaseTiles } from './stream/terrain';
+import { eyeTiles, pageDecoder, type EyeTiles } from './stream/terrain';
 import { Terrain, type Audit, type TerrainStats } from './terrain/terrain';
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
@@ -24,11 +24,14 @@ import { Orchards } from './vegetation/orchards';
 import { Plants } from './vegetation/plants';
 import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
+import { Pacer } from './pacer';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
 const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'casters', 'shadow', 'far-casters', 'far-shadow', 'mips', 'resolve'];
 /** Metres to a view that is at another place. */
 const NEW_PLACE = 1000;
+/** The longest that the other loads wait for the tiles under the eye: a tile that hangs must not hold the view back until its request times out. */
+const EYE_WAIT_MS = 1000;
 /** The clear colour of the crack test: any red pixel is a hole in the terrain. */
 const RED = { r: 1, g: 0, b: 0, a: 1 };
 /** `Frame` in terrain.wgsl. */
@@ -78,6 +81,8 @@ export class TrailView {
     /** Called with the view after it changes. */
     onView?: (view: View) => void;
     recoveries = 0;
+    /** Picks the display frames that draw: `pacer.rate` is the frame rate. */
+    readonly pacer = new Pacer();
     private readonly context: GPUCanvasContext;
     private readonly frame: Frame;
     private readonly terrain: Terrain;
@@ -116,14 +121,16 @@ export class TrailView {
     private rendered: (() => void)[] = [];
     /** The last frame that drew, for occlusion culling: its depth, pixels and view projection, and its eye. */
     private lastFrame?: Omit<LastFrame, 'moved'> & { eye: number[] };
+    /** Whether the last frame that placed the instances moved or changed: the next one places them again, culled by a depth of the same view. */
+    private unrest = true;
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, private readonly scale: number) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly scale: number) {
         this.context = canvas.getContext('webgpu')!;
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
-        const features = featureTiles(config);
-        this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, features, config.bounds, () => this.request());
+        const { features } = tiles;
+        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder() }, features, config.bounds, () => this.request());
         this.groundLook = new Ground(ground, () => this.request());
         this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request());
         this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear());
@@ -140,11 +147,17 @@ export class TrailView {
         new ResizeObserver(() => this.request()).observe(canvas);
     }
 
-    /** Reads the ruleset and opens the ground layers, compiles the pipelines, then starts the tile loads. `scale` is the render scale. */
+    /**
+     * Starts the terrain and feature tiles under the eye, reads the ruleset and opens the ground layers,
+     * compiles the pipelines, then starts the other tile loads once the tiles under the eye are in, or
+     * after EYE_WAIT_MS: on a slow link the other loads would share it with them. `scale` is the render scale.
+     */
     static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number): Promise<TrailView> {
+        const tiles = eyeTiles(config, [view.lon, view.lat]);
         const ground = await GroundSource.open(config, view.date).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
-        const engine = new TrailView(canvas, config, view, ground ?? undefined, scale);
+        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, scale);
         await engine.attach(gpu);
+        await Promise.race([tiles.arrived, new Promise(resolve => setTimeout(resolve, EYE_WAIT_MS))]);
         engine.request();
         return engine;
     }
@@ -213,8 +226,30 @@ export class TrailView {
     async waitForIdle(): Promise<void> {
         await this.nextFrame();
         // A tile or a probe that arrives draws the next frame.
-        while (!this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.trees.idle || !this.forest.idle || !this.plants.idle || !this.orchards.idle || !this.instances.idle || this.shadow.pending || !this.settled() || this.converging) await new Promise<void>(resolve => this.rendered.push(resolve));
+        while (!this.idle()) await new Promise<void>(resolve => this.rendered.push(resolve));
         await this.gpu.device.queue.onSubmittedWorkDone();
+    }
+
+    private idle(): boolean {
+        return this.terrain.idle && this.groundLook.idle && this.houses.idle && this.trees.idle && this.forest.idle && this.plants.idle && this.orchards.idle && this.instances.idle
+            && !this.shadow.pending && this.settled() && !this.converging;
+    }
+
+    /**
+     * Resolves after the first drawn frame in which the near field (NEAR_M about the eye) is final: the
+     * eye stands on the probe of the finest heights under it, the terrain within NEAR_M draws at its
+     * wanted levels with its stamps, the ground pages, houses, trees and plants there are in, and the
+     * near shadow map holds them. It waits neither for the far field nor for the jittered frames. A view
+     * that never gets there, such as one whose tiles fail, resolves when it is idle.
+     */
+    async nearReady(): Promise<void> {
+        await this.nextFrame();
+        while (!this.near() && !this.idle()) await new Promise<void>(resolve => this.rendered.push(resolve));
+    }
+
+    private near(): boolean {
+        return this.drawing && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.idle && this.forest.idle
+            && this.plants.idle && this.orchards.idle && this.instances.idle && this.shadow.nearDrawn;
     }
 
     private async attach(gpu: Gpu): Promise<void> {
@@ -325,6 +360,7 @@ export class TrailView {
     private render(now: number): void {
         this.pending = false;
         if (!this.ready) return;
+        if (!this.pacer.due(now)) return this.request();
         const start = performance.now();
         const steer = this.controls.steer(), dt = this.last ? Math.min(0.1, (now - this.last) / 1000) : 0;
         if (steer) this.pose = move(this.pose, steer, dt, this.ground());
@@ -360,7 +396,7 @@ export class TrailView {
         this.drawing = !!(eye && group);
         let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false, cascade = -1;
         if (eye && group) {
-            const camera = [...viewProj, eye.east, eye.north, eye.z, scale], extras = JSON.stringify(this.extras);
+            const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify(this.extras);
             moved = camera.some((value, i) => value !== this.camera[i]);
             changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || extras !== this.drawnExtras;
             this.camera = camera;
@@ -382,7 +418,10 @@ export class TrailView {
         const counted = this.houses.encode(encoder, this.groundLook.computeGroup, moved, changed, () => times.writes('houses'));
         const last = eye && this.lastFrame
             ? { ...this.lastFrame, moved: [eye.east - this.lastFrame.eye[0], eye.north - this.lastFrame.eye[1], eye.z - this.lastFrame.eye[2]] as [number, number, number] } : undefined;
-        const placed = this.vegetation(encoder, eye && group && step ? targets.viewport(this.scale)[1] : 0, last, () => times.writes('vegetation'));
+        // The instances keep their lists while the camera and the content rest, once a frame culled them by a depth of the same view.
+        const pixels = targets.viewport(this.scale)[1], placing = !!(eye && group && step) && (moved || changed || this.unrest || this.instances.due(pixels));
+        if (placing) this.unrest = moved || changed || !last;
+        const placed = this.vegetation(encoder, placing ? pixels : 0, last, () => times.writes('vegetation'));
         const cast = cascade >= 0 && step && eye && group ? this.cast(encoder, group, eye, cascade) : () => {};
         if (!eye || !group) {
             // Until the eye has ground nothing draws: the horizon of the weather fills the canvas.
