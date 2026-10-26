@@ -11,7 +11,7 @@ struct Job {
     slot: u32,
     // Metres per texel at the node's latitude.
     metres: f32,
-    // 1: the relief, 2: the ground parameters too.
+    // Bits: 1 the relief, 2 the ground parameters, 4 the horizons.
     work: u32,
     unused: vec2u,
 }
@@ -25,9 +25,9 @@ struct Job {
 @group(0) @binding(3) var snow_in: texture_2d_array<f32>;
 @group(0) @binding(4) var horizons_out: texture_storage_2d_array<rgba8unorm, write>;
 
-// The march of a horizon: from two texels out to HORIZON_M, each step HORIZON_STEP times the last, on
-// the level whose texel is about as long as the step. The far terrain is the coarse cover of the pages,
-// which lies in every direction about the eye.
+// The march of a horizon: from two texels out to HORIZON_M, each step HORIZON_STEP times the last
+// and at least a texel, on the level whose texel is about as long as the step. The far terrain is
+// the coarse cover of the pages, which lies in every direction about the eye.
 const HORIZON_M: f32 = 50000.0;
 const HORIZON_STEP: f32 = 1.1;
 // CURVATURE of frame.ts: the Earth's drop with refraction, which the drawn terrain takes too.
@@ -99,6 +99,9 @@ fn dry_texel(page: i32, layer: i32, job: u32, c: vec2i) -> vec2i {
 @compute @workgroup_size(16, 16)
 fn ground_main(@builtin(global_invocation_id) id: vec3u) {
     let job = jobs[id.z];
+    if ((job.work & 1u) == 0u) {
+        return;
+    }
     let c = vec2i(id.xy);
     let page = i32(job.slot);
     let at = in_page(page, c);
@@ -137,6 +140,9 @@ fn ground_main(@builtin(global_invocation_id) id: vec3u) {
 fn horizon_main(@builtin(global_invocation_id) id: vec3u) {
     let layers = BEARINGS / 4u;
     let job = jobs[id.z / layers];
+    if ((job.work & 4u) == 0u) {
+        return;
+    }
     let layer = id.z % layers;
     let shift = 22u - job.level;
     let u = (job.texel + HORIZON_SPAN * vec2i(id.xy) + HORIZON_SPAN / 2) << vec2u(shift);
@@ -148,7 +154,7 @@ fn horizon_main(@builtin(global_invocation_id) id: vec3u) {
         // Units run south.
         let way = vec2f(sin(bearing), -cos(bearing)) / unit;
         var rise = 0.0;
-        for (var d = 2.0 * job.metres; d < HORIZON_M; d *= HORIZON_STEP) {
+        for (var d = 2.0 * job.metres; d < HORIZON_M; d += max((HORIZON_STEP - 1.0) * d, job.metres)) {
             let coarser = u32(max(log2(d * (HORIZON_STEP - 1.0) / job.metres), 0.0));
             let h = units_height(u + vec2i(round(way * d)), job.level - min(coarser, job.level - COARSEST));
             if (known(h)) {

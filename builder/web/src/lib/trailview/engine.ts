@@ -344,8 +344,8 @@ export class TrailView {
         // The shipping render scale selects the nodes, also for a debug view: it shows the LOD that ships.
         this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1] }, this.groundLook.reads);
         this.kindPoints.update(this.terrain.kindPoints);
-        const { drawn, wanted, refreshed, origins } = this.terrain.selected;
-        this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date, lonLat, this.forest.regionPages(lonLat));
+        const { drawn, wanted, refreshed, arrived, origins } = this.terrain.selected;
+        this.groundLook.update(drawn, wanted, refreshed, arrived, origins, this.extras.date, lonLat, this.forest.regionPages(lonLat));
         this.houses.update(lonLat, eye && { viewProj, eye: [eye.east, eye.north, eye.z] });
         this.trees.update(this.extras.date);
         this.forest.update(lonLat);

@@ -251,9 +251,10 @@ export class Terrain {
         };
     }
 
-    /** The nodes that the last frame drew and wanted, the nodes whose normals it computed, and the LOD map windows. */
-    get selected(): { drawn: Node[]; wanted: Node[]; refreshed: Node[]; origins: [number, number][] } {
-        return { drawn: this.nodes, wanted: this.wantedNodes, refreshed: this.work?.normals.map(page => page.node) ?? [], origins: this.work?.origins ?? [] };
+    /** The nodes that the last frame drew and wanted, the nodes whose normals and whose heights it computed, and the LOD map windows. */
+    get selected(): { drawn: Node[]; wanted: Node[]; refreshed: Node[]; arrived: Node[]; origins: [number, number][] } {
+        const nodes = (pages?: Page[]) => pages?.map(page => page.node) ?? [];
+        return { drawn: this.nodes, wanted: this.wantedNodes, refreshed: nodes(this.work?.normals), arrived: nodes(this.work?.fresh), origins: this.work?.origins ?? [] };
     }
 
     /** Encodes the heights of the structures' anchors into a compute pass of the frame. */
