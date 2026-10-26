@@ -105,6 +105,12 @@ export class Shadow {
         return this.resources!.frame;
     }
 
+    /** Whether the near map holds the casters of the last frame, or the sun casts no near shadow. */
+    get nearDrawn(): boolean {
+        const near = this.states[0];
+        return !near.active || (!!near.centre && !near.waiting);
+    }
+
     /** Whether a map waits for a draw: the frames must go on. */
     get pending(): boolean {
         return this.states.some(state => state.active && (state.waiting || !state.centre));

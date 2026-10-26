@@ -9,7 +9,7 @@ import { wgsl } from '../gpu/wgsl';
 import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { featureTile, NEAR, profileTable } from './bins';
-import { cdlod, distances, FINEST, GRID, key, MAP, RANGE, select, size, type Node, type Rule } from './lod';
+import { cdlod, distances, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
 import { Water } from './water';
@@ -197,6 +197,8 @@ export class Terrain {
     private selection = 0;
     private frameNumber = 0;
     private probing = 0;
+    /** The frame since which no page of the near field is missing. */
+    private nearSince?: number;
     /** The state that the last probe read, and a count of the frames that changed the pages or the masks, which move the snapped mesh. */
     private probed = '';
     private changes = 0;
@@ -222,6 +224,27 @@ export class Terrain {
 
     get idle(): boolean {
         return this.pages.idle && this.calm > 0 && this.probing === 0;
+    }
+
+    /**
+     * Whether the near field draws its final heights: every wanted page within NEAR_M draws at its level
+     * with its stamps and masks, and the probe under the eye read them.
+     */
+    get near(): boolean {
+        return this.nearSince !== undefined && !!this.ground && this.ground.frame >= this.nearSince;
+    }
+
+    /**
+     * Whether each selected node within NEAR_M draws its own page, stamped, and with the road paint of
+     * its mask where the mask pool reaches it: what the near field draws once every load is in.
+     */
+    private nearDrawn(nodes: Node[], anchor: Anchor): boolean {
+        return nodes.every(node => {
+            const distance = distances({ anchor, above: 0 }, node)[0];
+            if (distance > NEAR_M) return true;
+            const page = this.pages.pages.get(key(node)), painted = node.level < NEAR || distance >= this.pages.maskReach || !this.stamps.known(node)?.data || page?.mask !== undefined;
+            return page?.drawn !== undefined && painted;
+        });
     }
 
     /** True while the terrain needs frames that no tile load or probe will ask for. */
@@ -468,6 +491,7 @@ export class Terrain {
         }
         if (work.map || work.masks || work.uploads.length || work.syntheses.length) this.changes++;
         this.work = work;
+        this.nearSince = this.nearDrawn(nodes, anchor) ? (this.nearSince ?? this.frameNumber) : undefined;
         this.jobs = { near: 0, coarse: 0, masks: 0 };
         for (const { page, mode } of work.stamps) this.jobs[!(mode & MODE.HEIGHTS) ? 'masks' : page.node.level >= NEAR ? 'near' : 'coarse']++;
         this.anchor = anchor;

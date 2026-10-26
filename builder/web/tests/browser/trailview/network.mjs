@@ -1,5 +1,6 @@
 // Loads a view of the box bake cold over a shaped link (link.mjs) on this machine's GPU, headless,
-// and prints when the first frame, the near field and the idle view came, and what crossed the link.
+// and prints when the first frame, nearReady(), the near field and the idle view came, and what
+// crossed the link.
 //
 //   node builder/web/tests/browser/trailview/network.mjs [--view NAME|QUERY] [--mbit 25] [--rtt 40] [--runs 1]
 //     [--web DIR] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--port 8951] [--out FILE]
@@ -67,8 +68,9 @@ async function run() {
         await page.goto(`${link.page}/trailview.html${query}`);
         await page.waitForFunction(() => window.trailView, null, { timeout: 120_000 });
         const marks = await page.evaluate(async () => {
-            await window.trailView.waitForIdle();
-            return { start: performance.timeOrigin, first: window.firstFrame, idle: performance.now() };
+            const tv = window.trailView, near = tv.nearReady?.().then(() => performance.now());
+            await tv.waitForIdle();
+            return { start: performance.timeOrigin, first: window.firstFrame, near: await near, idle: performance.now() };
         });
         const log = link.log.map(e => ({ ...e, ...place(e), t0: e.t0 - marks.start, te: e.te - marks.start }));
         return { marks, log, errors };
@@ -96,7 +98,7 @@ function summary({ marks, log, errors }) {
     for (const { layer, z } of log) finest[layer] = Math.max(finest[layer] ?? 0, z ?? 0);
     const near = log.filter(e => e.near && e.z === finest[e.layer] && e.status === 200);
     return {
-        'first frame s': +(marks.first / 1000).toFixed(2), 'near field s': +(Math.max(...near.map(e => e.te)) / 1000).toFixed(2),
+        'first frame s': +(marks.first / 1000).toFixed(2), 'nearReady s': marks.near && +(marks.near / 1000).toFixed(2), 'near field s': +(Math.max(...near.map(e => e.te)) / 1000).toFixed(2),
         'idle s': +(marks.idle / 1000).toFixed(2), MB: MB(log.reduce((sum, e) => sum + e.bytes, 0)), requests: log.length,
         'near MB': MB(near.reduce((sum, e) => sum + e.bytes, 0)), 'burst per 10 s': burst, layers, errors,
     };

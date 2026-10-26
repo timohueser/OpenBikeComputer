@@ -5,6 +5,7 @@ import { CURVATURE, type Frame } from '../frame/frame';
 import { MESHES, TEMPLATES } from '../models/house';
 import type { HouseStyle, Rules } from '../rules/regions';
 import { DEEPEST } from '../stream/features';
+import { NEAR_M } from '../terrain/lod';
 import type { FeatureTiles } from '../terrain/stamps';
 import { OUTLINE_WORDS, RECORD_WORDS, type TileHouses } from './house-records';
 
@@ -147,6 +148,8 @@ export class Houses {
     /** Frames that moved, and whether one moved since the last refit. */
     private frames = 0;
     private stale = false;
+    /** Whether a house tile within NEAR_M of the eye is not on the GPU yet. */
+    private nearPending = false;
     /** The fits buffer that holds the fits of the houses on the GPU. */
     private set = 0;
     /** Moves of the fits for the next encode, when the records moved: from the old buffer to the new, in houses; a move from -1 clears. */
@@ -169,6 +172,11 @@ export class Houses {
 
     get idle(): boolean {
         return this.pending.size === 0 && !this.working;
+    }
+
+    /** Whether the house tiles within NEAR_M of the eye are on the GPU and fitted. */
+    get nearIdle(): boolean {
+        return !this.nearPending && !this.working;
     }
 
     /** True while the houses need a frame to fit their ground. */
@@ -279,6 +287,8 @@ export class Houses {
                 this.changed();
             });
         }
+        const tileMetres = EARTH_M * Math.cos(lat) / n;
+        this.nearPending = wanted.some(({ name, d }) => d * tileMetres <= NEAR_M && !this.tiles.has(name));
         // The set of tiles decides a re-upload, their distance which of them fit.
         const known = wanted.filter(({ name }) => this.tiles.get(name)).map(({ name }) => name), drawn = [...known].sort().join(' ');
         if (drawn === this.drawn) return;

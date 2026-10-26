@@ -223,6 +223,22 @@ export class TrailView {
         await this.gpu.device.queue.onSubmittedWorkDone();
     }
 
+    /**
+     * Resolves after the first drawn frame in which the near field (NEAR_M about the eye) is final: the
+     * eye stands on the probe of the finest heights under it, the terrain within NEAR_M draws at its
+     * wanted levels with its stamps, the ground pages, houses, trees and plants there are in, and the
+     * near shadow map holds them. It waits neither for the far field nor for the jittered frames.
+     */
+    async nearReady(): Promise<void> {
+        await this.nextFrame();
+        while (!this.near()) await new Promise<void>(resolve => this.rendered.push(resolve));
+    }
+
+    private near(): boolean {
+        return this.drawing && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.idle && this.forest.idle
+            && this.plants.idle && this.orchards.idle && this.instances.idle && this.shadow.nearDrawn;
+    }
+
     private async attach(gpu: Gpu): Promise<void> {
         this.context.configure({ device: gpu.device, format: gpu.format, alphaMode: 'opaque' });
         const uniform = gpu.buffer('uniforms', FRAME_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
