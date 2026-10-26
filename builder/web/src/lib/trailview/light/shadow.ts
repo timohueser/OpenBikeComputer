@@ -10,7 +10,7 @@ const SIDE = 2048, LEVELS = Math.log2(SIDE) + 1;
  * the sun's altitude, the reach of their shadows on the level. `above`: the eye's height above the
  * ground where the cascade has faded out. `move`: the metres that the ground under the eye moves before
  * the map draws again; a quarter of `hold` up or down draws it too. `frames`: the least frames between
- * two draws for new casters. `least`: the least height in metres of an instance that casts into it;
+ * two draws for new casters while the eye moves; a still view draws them at once. `least`: the least height in metres of an instance that casts into it;
  * `proxies`: whether its trees cast as proxies (`proxy` of instances.ts).
  *
  * - near: 0.2 m texels across the sun, as the prototype's. `hold` 50 m keeps its texels along the sun
@@ -127,16 +127,16 @@ export class Shadow {
 
     /**
      * The cascade whose map this frame draws, or -1: for the ground under the eye (east, north, height),
-     * the eye's height above it, the direction to the sun and what changed. Of the cascades that are due,
-     * the one that waited longest draws. A cascade that the eye's height fades out draws none, nor any
-     * at night.
+     * the eye's height above it, the direction to the sun, what changed and whether the eye moved. Of
+     * the cascades that are due, the one that waited longest draws. A cascade that the eye's height fades
+     * out draws none, nor any under a sun that casts no object shadows.
      */
-    due(ground: number[], above: number, sun: number[], casting: Casting): number {
+    due(ground: number[], above: number, sun: number[], casting: Casting, moving: boolean): number {
         let best = -1;
         CASCADES.forEach((c, k) => {
             const state = this.states[k], fade = 1 - smoothstep(c.above / 2, c.above, above);
             state.frames++;
-            state.active = fade > 0 && sun[2] > 0;
+            state.active = fade > 0 && sun[2] > LOW_SUN;
             if (!state.active) {
                 state.centre = undefined;
                 state.waiting = false;
@@ -147,7 +147,7 @@ export class Shadow {
             state.waiting ||= casting.casters || casting.reshaped < Math.SQRT2 * c.half;
             const { centre: o, sun: s } = state;
             const due = !o || !s || Math.hypot(ground[0] - o[0], ground[1] - o[1]) > c.move || Math.abs(ground[2] - o[2]) > c.hold / 4
-                || 1 - (sun[0] * s[0] + sun[1] * s[1] + sun[2] * s[2]) > SUN_TURN || (state.waiting && state.frames >= c.frames);
+                || 1 - (sun[0] * s[0] + sun[1] * s[1] + sun[2] * s[2]) > SUN_TURN || (state.waiting && (!moving || state.frames >= c.frames));
             if (due && (best < 0 || state.frames > this.states[best].frames)) best = k;
         });
         if (best < 0) return -1;

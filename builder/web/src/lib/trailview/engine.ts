@@ -206,13 +206,14 @@ export class TrailView {
     }
 
     /**
-     * Resolves after a frame in which no tile loads, every wanted page is drawn, the eye stands on the
-     * probed ground and the still view has all its jittered frames, once the GPU has finished it.
+     * Resolves after a frame in which no tile loads, every wanted page and shadow map is drawn, the eye
+     * stands on the probed ground and the still view has all its jittered frames, once the GPU has
+     * finished it.
      */
     async waitForIdle(): Promise<void> {
         await this.nextFrame();
         // A tile or a probe that arrives draws the next frame.
-        while (!this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.trees.idle || !this.forest.idle || !this.plants.idle || !this.orchards.idle || !this.instances.idle || !this.settled() || this.converging) await new Promise<void>(resolve => this.rendered.push(resolve));
+        while (!this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.trees.idle || !this.forest.idle || !this.plants.idle || !this.orchards.idle || !this.instances.idle || this.shadow.pending || !this.settled() || this.converging) await new Promise<void>(resolve => this.rendered.push(resolve));
         await this.gpu.device.queue.onSubmittedWorkDone();
     }
 
@@ -365,7 +366,7 @@ export class TrailView {
             this.camera = camera;
             this.drawnExtras = extras;
             const sun = this.sun(), casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent;
-            cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, sun, { casters, reshaped: this.terrain.reshaped });
+            cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, sun, { casters, reshaped: this.terrain.reshaped }, moved);
             this.shadow.write(gpu, [eye.east, eye.north, eye.z], sun);
             // A new map changes the frame as new content does.
             step = this.temporal.next(moved, changed || cascade >= 0, debug ? 1 : STILL_FRAMES);

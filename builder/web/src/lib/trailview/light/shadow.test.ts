@@ -23,12 +23,12 @@ describe('the object shadow maps', () => {
             expect(a[2]).toBeLessThan(b[2]);
             return a.slice(0, 2).map(v => (v * 1024) % 1);
         };
-        expect(shadow.due([1000, 2000, 500], 1.6, sun, NOTHING)).toBe(0);
-        expect(shadow.due([1000, 2000, 500], 1.6, sun, NOTHING)).toBe(1);
+        expect(shadow.due([1000, 2000, 500], 1.6, sun, NOTHING, false)).toBe(0);
+        expect(shadow.due([1000, 2000, 500], 1.6, sun, NOTHING, false)).toBe(1);
         const first = texel([1000, 2000, 501.6]);
         texel([1030, 1980, 520]);
         // Drawn again about another centre, the crown keeps its place in its texel.
-        expect(shadow.due([1060, 2000, 503], 1.6, sun, NOTHING)).toBe(0);
+        expect(shadow.due([1060, 2000, 503], 1.6, sun, NOTHING, false)).toBe(0);
         texel([1060, 2000, 504.6]).forEach((v, i) => {
             const d = Math.abs(v - first[i]) % 1;
             expect(Math.min(d, 1 - d)).toBeLessThan(1e-3);
@@ -37,8 +37,8 @@ describe('the object shadow maps', () => {
 
     it('holds a receiver 100 m away and 100 m above or below the eye at a sun of 10°, on its caster\'s texel', () => {
         const shadow = new Shadow(), low = sunAt(10), eye = [0, 0, 1.6];
-        expect(shadow.due([0, 0, 0], 1.6, low, NOTHING)).toBe(0);
-        expect(shadow.due([0, 0, 0], 1.6, low, NOTHING)).toBe(1);
+        expect(shadow.due([0, 0, 0], 1.6, low, NOTHING, false)).toBe(0);
+        expect(shadow.due([0, 0, 0], 1.6, low, NOTHING, false)).toBe(1);
         for (const [x, z] of [[100, 100], [-100, 100], [100, -100], [-100, -100]]) {
             const m = shadow.matrix(1, eye), receiver = [x, 0, z].map((v, i) => v - eye[i]);
             const [a, b] = [project(m, receiver), project(m, receiver.map((v, i) => v + (15 / low[2]) * low[i]))];
@@ -50,20 +50,26 @@ describe('the object shadow maps', () => {
     });
 
     it('draws a map again when the eye leaves its centre or its height, the sun turns, or new casters waited long enough', () => {
-        const shadow = new Shadow();
-        expect(shadow.due([0, 0, 0], 1.6, sun, NOTHING)).toBe(0);
-        expect(shadow.due([0, 0, 0], 1.6, sun, NOTHING)).toBe(1);
-        expect(shadow.due([40, 0, 0], 1.6, sun, { casters: true, reshaped: Infinity })).toBe(-1);
-        expect(shadow.due([60, 0, 0], 1.6, sun, NOTHING)).toBe(0);
-        expect(shadow.due([60, 0, 20], 1.6, sun, NOTHING)).toBe(0);
+        const shadow = new Shadow(), turned = [sun[1], sun[0], sun[2]], casters = { casters: true, reshaped: Infinity };
+        expect(shadow.due([0, 0, 0], 1.6, sun, NOTHING, false)).toBe(0);
+        expect(shadow.due([0, 0, 0], 1.6, sun, NOTHING, false)).toBe(1);
+        expect(shadow.due([40, 0, 0], 1.6, sun, casters, true)).toBe(-1);
+        expect(shadow.due([60, 0, 0], 1.6, sun, NOTHING, true)).toBe(0);
+        expect(shadow.due([60, 0, 20], 1.6, sun, NOTHING, true)).toBe(0);
         // Both are due: the one that waited longer draws first.
-        expect(shadow.due([60, 0, 20], 1.6, [sun[1], sun[0], sun[2]], NOTHING)).toBe(1);
-        expect(shadow.due([60, 0, 20], 1.6, [sun[1], sun[0], sun[2]], NOTHING)).toBe(0);
-        expect(shadow.due([60, 0, 20], 1.6, [sun[1], sun[0], sun[2]], { casters: true, reshaped: Infinity })).toBe(-1);
-        for (let frame = 0; frame < 28; frame++) expect(shadow.due([60, 0, 20], 1.6, [sun[1], sun[0], sun[2]], NOTHING)).toBe(-1);
-        expect(shadow.due([60, 0, 20], 1.6, [sun[1], sun[0], sun[2]], NOTHING)).toBe(0);
-        // High above the ground only the far map draws; at night none.
-        expect(shadow.due([60, 0, 20], 500, sun, NOTHING)).toBe(1);
-        expect(shadow.due([60, 0, 20], 1.6, [sun[0], sun[1], -0.1], NOTHING)).toBe(-1);
+        expect(shadow.due([60, 0, 20], 1.6, turned, NOTHING, false)).toBe(1);
+        expect(shadow.due([60, 0, 20], 1.6, turned, NOTHING, false)).toBe(0);
+        // While the eye moves, new casters wait for the cascade's frames; in a still view they draw at once.
+        expect(shadow.due([60, 0, 20], 1.6, turned, casters, true)).toBe(-1);
+        for (let frame = 0; frame < 28; frame++) expect(shadow.due([60, 0, 20], 1.6, turned, NOTHING, true)).toBe(-1);
+        expect(shadow.due([60, 0, 20], 1.6, turned, NOTHING, true)).toBe(0);
+        expect(shadow.due([60, 0, 20], 1.6, turned, casters, false)).toBe(1);
+        expect(shadow.due([60, 0, 20], 1.6, turned, NOTHING, false)).toBe(0);
+        expect(shadow.pending).toBe(false);
+        // High above the ground only the far map draws; under a sun of 2.9° or less none, and none waits.
+        expect(shadow.due([60, 0, 20], 500, sun, NOTHING, false)).toBe(1);
+        expect(shadow.due([60, 0, 20], 1.6, sunAt(2.5), casters, false)).toBe(-1);
+        expect(shadow.pending).toBe(false);
+        expect(shadow.due([60, 0, 20], 1.6, sunAt(4), NOTHING, false)).toBe(0);
     });
 });
