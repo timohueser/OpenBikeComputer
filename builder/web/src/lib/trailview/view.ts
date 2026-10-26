@@ -29,9 +29,10 @@ export interface View {
     debug: DebugView;
 }
 
-/** A walk at the centre of the bounds, at noon today. */
+/** A walk at the centre of the bounds, at noon of today in the Alps. */
 export function defaultView([west, south, east, north]: [number, number, number, number], now = new Date()): View {
-    const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    // en-CA formats a date as YYYY-MM-DD.
+    const date = new Intl.DateTimeFormat('en-CA', { timeZone: TIME_ZONE }).format(now);
     return { lat: (south + north) / 2, lon: (west + east) / 2, heading: 0, pitch: 0, mode: 'walk', height: WALK_EYE, date, time: '12:00', weather: 'sunny', debug: 'off' };
 }
 
