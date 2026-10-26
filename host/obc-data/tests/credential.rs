@@ -49,7 +49,12 @@ fn a_credential_from_standard_input_is_set_and_never_shown() {
     let state = |dir: &Path| {
         let setup = data(dir, &["--json", "setup"], "");
         let setup: serde_json::Value = serde_json::from_slice(&setup.stdout).unwrap();
-        let keyed = setup["credentials"].as_array().unwrap().iter().find(|c| c["source"] == "keyed").unwrap();
+        let keyed = setup["credentials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["set"] == serde_json::json!(["source", "credential", "keyed"]))
+            .unwrap();
         (keyed["state"].as_str().unwrap().to_string(), keyed["fields"].clone())
     };
     assert_eq!(state(dir.path()), ("optional".into(), serde_json::json!(["OBC_TEST_TOKEN"])));
