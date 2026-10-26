@@ -11,7 +11,7 @@ import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import { featureTile, NEAR, profileTable } from './bins';
-import { cdlod, distances, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
+import { cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
 import { OPAQUE, Water } from './water';
@@ -182,10 +182,11 @@ export class Terrain {
     /** Whether each selected node within NEAR_M drew its own page in the last frame, with its road paint. */
     private nearDrawn = false;
     /**
-     * The state that the last probe read, a count of the frames that changed the pages or the masks,
-     * which move the snapped mesh, and the last of those frames.
+     * The state that the last probe read, what the probe reads of the pages (`probeKey`), a count of
+     * the frames that changed it and the last of those frames.
      */
     private probed = '';
+    private probeReads = '';
     private changes = 0;
     private changedAt = 0;
     private above = 0;
@@ -214,7 +215,8 @@ export class Terrain {
 
     /**
      * Whether the near field draws its final heights: each selected node within NEAR_M draws its own
-     * page with its stamps and masks, and the probe under the eye ran after the last change of the pages.
+     * page with its stamps and masks, and the probe under the eye ran after the last change of what it
+     * reads.
      */
     get near(): boolean {
         return this.nearDrawn && !!this.ground && this.ground.frame >= this.changedAt;
@@ -391,8 +393,11 @@ export class Terrain {
         const order = (a: Node, b: Node) => a.level - b.level || far(a) - far(b), keys = new Set(wanted.map(key));
         // The ground takes the selection alone: with its own reads it would want the ground of coarser and coarser pages.
         this.wantedNodes = wanted.sort(order);
-        const nearField = new Set(nodes.filter(node => distances({ anchor, above: 0 }, node)[0] <= NEAR_M).map(key));
-        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField);
+        const field = (metres: number) => nodes.filter(node => distances({ anchor, above: 0 }, node)[0] <= metres);
+        const nearField = new Set(field(NEAR_M).map(key));
+        // The eye field: its nodes and the parents that they morph toward.
+        const eyeField = new Set(field(EYE_M).flatMap(({ level, x, y }) => [key({ level, x, y }), key({ level: level - 1, x: x >> 1, y: y >> 1 })]).filter(name => keys.has(name)));
+        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField);
         // After the update, so that a page draws in the frame that it arrives in. The nodes that draw the
         // detail of the look come first, those with a tunnel's portal first of all, with its hole. A node
         // coarser than NEAR draws without the detail only when its distance keeps it from splitting: a
@@ -415,7 +420,9 @@ export class Terrain {
             this.quality--;
             this.calm = 0;
         }
-        if (work.map || work.masks || work.uploads.length || work.syntheses.length) {
+        const probeReads = this.probeKey(rule, anchor);
+        if (probeReads !== this.probeReads) {
+            this.probeReads = probeReads;
             this.changes++;
             this.changedAt = this.frameNumber;
         }
@@ -713,6 +720,30 @@ export class Terrain {
         const { jobs, data } = stampJobs(stamps);
         r.gpu.device.queue.writeBuffer(r.stampJobs, 0, jobs);
         if (data.length) r.gpu.device.queue.writeBuffer(r.stampData, 0, data);
+    }
+
+    /**
+     * What the probe reads, as a key: the reach of the paint, which fades the snaps, and the layers and
+     * masks about the eye from the level that draws there down to the first coarser level whose pages
+     * there all draw and know every height, which hides the levels below it. The mesh about a point
+     * reads vertices up to 8 cells of the morph's coarser level away. The pages that stream in farther
+     * away leave the key, so they do not hold `near` back.
+     */
+    private probeKey(rule: Rule, anchor: Anchor): string {
+        const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1], at = (level: number, u: number) => Math.floor(u / size(level));
+        let top = COARSEST;
+        while (rule.split({ level: top, x: at(top, ex), y: at(top, ey) })) top++;
+        const reach = PROBE_STEP / anchor.unit + 16 * size(top) / GRID, out: (string | number)[] = [Math.min(this.pages.maskReach, 2 * reach * anchor.unit)];
+        for (let level = top; level >= COARSEST; level--) {
+            let hides = level < top;
+            for (let y = at(level, ey - reach); y <= at(level, ey + reach); y++) for (let x = at(level, ex - reach); x <= at(level, ex + reach); x++) {
+                const page = this.pages.pages.get(`${level}/${x}/${y}`);
+                out.push(`${level}/${x}/${y}/${page?.drawn}/${page?.mask}`);
+                hides &&= page?.drawn !== undefined && page.complete;
+            }
+            if (hides) break;
+        }
+        return out.join();
     }
 
     /** Writes the frame's buffers; true when the drawn nodes differ from the last frame's. */

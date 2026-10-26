@@ -4,7 +4,7 @@ import { EARTH_RADIUS, tileLonLat } from '../frame/frame';
 import { anchorAt, UNITS } from '../frame/space';
 import type { GroundDate, GroundPage } from '../stream/ground-pages';
 import { PAGE } from '../stream/heights';
-import { COARSEST, distances, key, MAP, NEAR_M, size, type Node } from '../terrain/lod';
+import { COARSEST, distances, EYE_M, key, MAP, NEAR_M, size, type Node } from '../terrain/lod';
 import { dayOfYear, mosaicsAt } from './rules';
 
 /**
@@ -64,12 +64,13 @@ export interface GroundWork {
 /**
  * The ground pages without the GPU: per node of the levels with ground tiles, the ground on the
  * date in a pool of `capacity` slots. The coarse levels, then the pages that the instances read,
- * then the cover of the drawn nodes, then the drawn nodes and their morph parents nearest first,
- * then the rest of the selection take the slots, so a full pool leaves out the farthest and least
- * needed pages, and their cover draws in their place. A page takes its slot when its content
- * arrives, so the page it replaces draws until then. A node finer than the ground draws the ground
- * of its ancestor. A tile that has no ground stays out for the page's life; a tile that fails to
- * load, or loads without a layer, loads again after a wait that grows with each failure.
+ * then the drawn nodes and their morph parents within EYE_M, then the cover of the drawn nodes, then
+ * the other drawn nodes and morph parents nearest first, then the rest of the selection take the slots,
+ * so a full pool leaves out the farthest and least needed pages, and their cover draws in their
+ * place. A page takes its slot when its content arrives, so the page it replaces draws until then. A
+ * node finer than the ground draws the ground of its ancestor. A tile that has no ground stays out
+ * for the page's life; a tile that fails to load, or loads without a layer, loads again after a wait
+ * that grows with each failure.
  */
 export class GroundPages {
     wanted = 0;
@@ -159,7 +160,8 @@ export class GroundPages {
             return { level: node.level - shift, x: node.x >> shift, y: node.y >> shift };
         }).sort((a, b) => far(a) - far(b));
         const order = new Map<string, Node>();
-        for (const node of [...wanted.filter(n => n.level <= COARSE).map(this.ground), ...read, ...cover, ...near, ...wanted.map(this.ground)]) {
+        const eyeField = near.filter(node => distances({ anchor, above: 0 }, node)[0] <= EYE_M);
+        for (const node of [...wanted.filter(n => n.level <= COARSE).map(this.ground), ...read, ...eyeField, ...cover, ...near, ...wanted.map(this.ground)]) {
             if (!order.has(key(node)) && !this.absent.has(key(node))) order.set(key(node), node);
         }
         const kept = [...order.values()].slice(0, this.capacity);
