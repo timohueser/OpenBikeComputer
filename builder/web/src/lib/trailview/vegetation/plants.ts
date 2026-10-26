@@ -55,7 +55,9 @@ export class Plants implements Producer {
     /** Whether the last update changed what the plants draw, other than by the camera. */
     newContent = false;
 
-    constructor(rules: Rules, trees: TreeModels, private readonly instances: Instances, private readonly wake: () => void) {
+    /** An abort of `stop` ends the worker. */
+    constructor(rules: Rules, trees: TreeModels, private readonly instances: Instances, private readonly wake: () => void, stop: AbortSignal) {
+        stop.addEventListener('abort', () => this.worker.terminate());
         instances.produce(this);
         const { materials } = rules.vocabulary;
         const data = new Uint32Array(64 + rules.regions.length * REGION_WORDS * 4).fill(NONE), floats = new Float32Array(data.buffer);

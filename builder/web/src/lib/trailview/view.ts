@@ -29,10 +29,12 @@ export interface View {
     debug: DebugView;
 }
 
-/** A walk at the centre of the bounds, at noon today. */
+/** The date of today in the Alps, YYYY-MM-DD: en-CA formats a date so. */
+export const today = (now = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: TIME_ZONE }).format(now);
+
+/** A walk at the centre of the bounds, at noon of today in the Alps. */
 export function defaultView([west, south, east, north]: [number, number, number, number], now = new Date()): View {
-    const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    return { lat: (south + north) / 2, lon: (west + east) / 2, heading: 0, pitch: 0, mode: 'walk', height: WALK_EYE, date, time: '12:00', weather: 'sunny', debug: 'off' };
+    return { lat: (south + north) / 2, lon: (west + east) / 2, heading: 0, pitch: 0, mode: 'walk', height: WALK_EYE, date: today(now), time: '12:00', weather: 'sunny', debug: 'off' };
 }
 
 const number = (text: string | null, min: number, max: number) => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { coordinateAt, instantAt, nativePoint, patchBlocks, solarPosition, solarTerms, visibility, horizonVisibility, mapVisibility, SUN, SHADE, NIGHT, UNKNOWN, OUTSIDE, type Surface } from './sun';
+import { coordinateAt, daylight, instantAt, nativePoint, patchBlocks, solarPosition, solarTerms, visibility, horizonVisibility, mapVisibility, SUN, SHADE, NIGHT, UNKNOWN, OUTSIDE, type Surface } from './sun';
 
 const RAD = Math.PI / 180;
 describe('sun position and region clock', () => {
@@ -18,6 +18,12 @@ describe('sun position and region clock', () => {
         expect(new Date(instantAt('2026-06-21', 540, 'Europe/Berlin')).toISOString()).toBe('2026-06-21T07:00:00.000Z');
         expect(new Date(instantAt('2026-12-21', 540, 'Europe/Berlin')).toISOString()).toBe('2026-12-21T08:00:00.000Z');
         expect(() => instantAt('2026-03-29', 150, 'Europe/Berlin')).toThrow('does not exist');
+    });
+    it('spans the daylight in five-minute bins of the region clock', () => {
+        const clock = (span: [number, number] | null) => span?.map(minute => `${Math.floor(minute / 60)}:${String(minute % 60).padStart(2, '0')}`);
+        expect(clock(daylight([8.54, 47.37], '2026-06-21', 'Europe/Zurich'))).toEqual(['5:30', '21:25']);
+        expect(clock(daylight([8.54, 47.37], '2026-12-21', 'Europe/Zurich'))).toEqual(['8:10', '16:40']);
+        expect(daylight([18.96, 69.65], '2026-12-21', 'Europe/Oslo')).toBeNull();
     });
 });
 

@@ -135,6 +135,8 @@ interface Resources extends Pipelines {
     synthGroup: GPUBindGroup;
     quantizeGroup: GPUBindGroup;
     probeGroup: GPUBindGroup;
+    /** The frame uniform as storage, for `clampEye`. */
+    eyeGroup: GPUBindGroup;
     stampGroup: GPUBindGroup;
     snapGroup: GPUBindGroup;
     featureGroup: GPUBindGroup;
@@ -177,8 +179,9 @@ export class Terrain {
     private selection = 0;
     private frameNumber = 0;
     private probing = 0;
-    /** Whether each selected node within NEAR_M drew its own page in the last frame, with its road paint. */
+    /** Whether each selected node within NEAR_M, and within EYE_M, drew its own page in the last frame, with its road paint. */
     private nearDrawn = false;
+    private eyeDrawn = false;
     /**
      * The state that the last probe read, what the probe reads of the pages (`probeKey`), a count of
      * the frames that changed it and the last of those frames.
@@ -194,14 +197,15 @@ export class Terrain {
     private floor = 0;
     private instances = new Int32Array(0);
 
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void) {
+    /** An abort of `stop` ends the stamp worker. */
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // 16-bit heights.
         const bytes = PAGE * PAGE * 2;
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / bytes / LAYER_PAGES) * LAYER_PAGES, synth = Math.floor((BUDGET.synth - MASK_BYTES) / bytes);
-        this.stamps = new Stamps(features, changed);
+        this.stamps = new Stamps(features, changed, stop);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
         this.pages = new Pages(source, { stored: pages - synth, synth }, this.bounds, changed, this.stamps, MASKS);
@@ -218,6 +222,11 @@ export class Terrain {
      */
     get near(): boolean {
         return this.nearDrawn && !!this.ground && this.ground.frame >= this.changedAt;
+    }
+
+    /** `near` within EYE_M of the eye. */
+    get eye(): boolean {
+        return this.eyeDrawn && !!this.ground && this.ground.frame >= this.changedAt;
     }
 
     /** Whether each drawn node of `near` has the road paint of its mask where the mask pool reaches it. */
@@ -311,7 +320,7 @@ export class Terrain {
         }, MASKS * SNAP_BYTES);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
-        const r: Omit<Resources, keyof Pipelines | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup'> = {
+        const r: Omit<Resources, keyof Pipelines | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'quantizeGroup' | 'probeGroup' | 'eyeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup'> = {
             gpu, heights,
             mask, snaps,
             masks: buffer('features', (1 + pages) * 4, storage),
@@ -355,6 +364,7 @@ export class Terrain {
             synthGroup: group(L.job, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }]),
             quantizeGroup: group(L.quantize, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.codes }, { buffer: r.scales }]),
             probeGroup: group(L.probe, [{ buffer: r.points }, { buffer: r.probed }]),
+            eyeGroup: device.createBindGroup({ layout: L.eye, entries: [{ binding: 2, resource: { buffer: frameUniform } }] }),
         };
     }
 
@@ -424,6 +434,7 @@ export class Terrain {
         }
         this.work = work;
         this.nearDrawn = this.pages.nearMissing === 0 && this.painted(nodes, nearField, anchor);
+        this.eyeDrawn = this.pages.eyeMissing === 0 && this.painted(nodes, eyeField, anchor);
         this.jobs = { near: 0, coarse: 0, masks: 0 };
         for (const { page, mode } of work.stamps) this.jobs[!(mode & MODE.HEIGHTS) ? 'masks' : page.node.level >= NEAR ? 'near' : 'coarse']++;
         this.anchor = anchor;
@@ -501,6 +512,23 @@ export class Terrain {
             this.probing--;
             this.changed();
         });
+    }
+
+    /**
+     * Lifts the camera of the frame uniform above the drawn surface under the eye, after `encode` and
+     * before every pass that reads the view projection (clamp_eye of probe.wgsl).
+     */
+    clampEye(encoder: GPUCommandEncoder): void {
+        const r = this.resources;
+        if (!r) return;
+        const pass = encoder.beginComputePass({ label: 'eye' });
+        pass.setPipeline(r.clampEye);
+        pass.setBindGroup(0, r.eyeGroup);
+        pass.setBindGroup(1, r.surfaceGroup);
+        pass.setBindGroup(2, r.emptyGroup);
+        pass.setBindGroup(3, r.featureGroup);
+        pass.dispatchWorkgroups(1);
+        pass.end();
     }
 
     /** Draws the structures into the shadow map (light/shadow.ts) as casters. */
@@ -787,6 +815,7 @@ function terrainLayouts({ device }: Gpu) {
         job: layout([[C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
         quantize: layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
         probe: layout([[C, { buffer: read }], [C, { buffer: write }]]),
+        eye: device.createBindGroupLayout({ entries: [{ binding: 2, visibility: C, buffer: write }] }),
         check: layout([[GPUShaderStage.VERTEX, { buffer: read }]]),
         stamp: layout([
             [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }],
@@ -833,15 +862,16 @@ type Pipelines = Awaited<ReturnType<typeof terrainPipelines>>;
 /** What the terrain draws and computes with from its first frame. */
 export async function terrainPipelines(gpu: Gpu) {
     const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
-    const [mesh, plainMesh, synthesize, quantize, probe, stamp, snap] = await Promise.all([
+    const [mesh, plainMesh, synthesize, quantize, probe, clampEye, stamp, snap] = await Promise.all([
         meshPipeline(gpu, true), meshPipeline(gpu, false),
         compute(gpu, 'pages', 'synthesize', [L.job, surface]),
         compute(gpu, 'quantize', 'quantize', [L.quantize]),
         compute(gpu, 'probe', 'probe', [L.probe, surface, L.empty, features]),
+        compute(gpu, 'probe', 'clamp_eye', [L.eye, surface, L.empty, features]),
         compute(gpu, 'stamp', 'stamp', [L.stamp, surface]),
         compute(gpu, 'stamp', 'snap', [L.snap]),
     ]);
-    return { mesh, plainMesh, synthesize, quantize, probe, stamp, snap };
+    return { mesh, plainMesh, synthesize, quantize, probe, clampEye, stamp, snap };
 }
 
 /** The draw of the nodes with a tunnel's portal, with its hole. */

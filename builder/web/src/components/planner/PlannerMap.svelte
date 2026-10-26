@@ -4,7 +4,7 @@
     import { releaseProtocol, releaseUrl } from '../../lib/planner/release';
     const terrain = terrainSource(config.terrain);
     // MapLibre loads the release objects of the style through `releaseProtocol`.
-    const styleConfig = { ...config, basemap: releaseUrl(config.basemap), glyphs: releaseUrl(config.glyphs), sprites: releaseUrl(config.sprites) };
+    export const styleConfig = { ...config, basemap: releaseUrl(config.basemap), glyphs: releaseUrl(config.glyphs), sprites: releaseUrl(config.sprites) };
 </script>
 
 <script lang="ts">
@@ -35,7 +35,7 @@
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
-        signedRoutes = null, signedHovered = null, planMuted = false, compare = null, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
+        signedRoutes = null, signedHovered = null, planMuted = false, compare = null, onPick = null, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         /** The Routes view: while it is open, a click on one of its routes selects that route. */
@@ -46,6 +46,11 @@
         /** A previewed route option and its letter. It draws in ink over the plan, which draws as a dotted line without day
          * colours; a letter marks each line where they part. */
         compare?: { line: Coordinate[]; letter: string } | null;
+        /**
+         * While set, a click on the map or a pin goes to it alone, with the coordinate and its viewport point: no place,
+         * line, overlay or route takes the click. Enter on the focused map gives it the map's centre.
+         */
+        onPick?: ((coordinate: Coordinate, point: [number, number]) => void) | null;
         /** After each map move and tile load. */
         onIdle?: () => void;
         onSignedRoute?: (id: number) => void;
@@ -137,6 +142,7 @@
     let signedLayer: SignedRoutesLayer | undefined;
     let signedHover: number | null = null;
     let overSigned = $state(false);
+    const picking = $derived(pickMode || !!onPick);
 
     export function centerOn(coordinate: Coordinate) {
         wholeRoute = false;
@@ -145,7 +151,7 @@
 
     function inspectOverlay(event: maplibregl.MapMouseEvent) {
         const selected = overlayLayer?.hit(event);
-        if (!selected || drawing || pickMode) return;
+        if (!selected || drawing || picking) return;
         event.preventDefault();
         cancelGesture();
         consumedPress = true;
@@ -189,6 +195,19 @@
         fittedInitialRoute = true;
         wholeRoute = false;
         fitBounds(region, 14, motionDuration(), true);
+    }
+
+    /** The coordinate under a viewport point, or null outside the map. */
+    export function coordinateAtScreen(x: number, y: number): Coordinate | null {
+        const box = container.getBoundingClientRect();
+        if (!map || x < box.left || x > box.right || y < box.top || y > box.bottom) return null;
+        const { lng, lat } = map.unproject([x - box.left, y - box.top]);
+        return [lng, lat];
+    }
+
+    /** Metres on the ground per CSS pixel at a latitude: the world is 512 px wide at zoom 0. */
+    export function metresPerPixel(latitude: number): number {
+        return map ? 40_075_016.686 * Math.cos(latitude * Math.PI / 180) / (512 * 2 ** map.getZoom()) : 0;
     }
 
     export function zoomBy(delta: number) {
@@ -379,7 +398,7 @@
         if (drawing) {
             sketch = [coordinate];
             sketchEnd = event.point;
-        } else if (!pickMode && (hover = lineHit(event.point))) {
+        } else if (!picking && (hover = lineHit(event.point))) {
             // Stops the map from panning: this press may drag a new point out of the line.
             event.preventDefault();
             press = { hit: hover, start: event.point, moved: false };
@@ -406,8 +425,8 @@
             overSigned = signed !== null;
             if (signed !== signedHover) onSignedHover?.(signedHover = signed);
             overPoi = onMap && !!placeAt(event.point);
-            hover = onMap && !overPoi && !dragging && !draggingPin && !drawing && !pickMode ? lineHit(event.point) : null;
-            overOverlay = overlayLayer?.hover(onMap && !overPoi && !hover && !dragging && !draggingPin && !drawing && !pickMode ? event : undefined) ?? false;
+            hover = onMap && !overPoi && !dragging && !draggingPin && !drawing && !picking ? lineHit(event.point) : null;
+            overOverlay = overlayLayer?.hover(onMap && !overPoi && !hover && !dragging && !draggingPin && !drawing && !picking ? event : undefined) ?? false;
         }
     }
 
@@ -491,6 +510,7 @@
             map.on("click", (event) => {
                 const target = event.originalEvent.target;
                 if (consumedPress || drawing || (target instanceof Node && popupContent?.contains(target))) return;
+                if (onPick) { onPick([event.lngLat.lng, event.lngLat.lat], [event.originalEvent.clientX, event.originalEvent.clientY]); return; }
                 const signed = signedRoutes ? signedLayer?.hit(event) : null;
                 if (signed !== null && signed !== undefined) { onSignedRoute?.(signed); return; }
                 const place = placeAt(event.point);
@@ -501,6 +521,12 @@
                 else if (overlay?.kind === 'access') overlaySelection = overlay;
                 else if (hit) onLegClick?.(hit.legEndId, hit.coordinate);
                 else onEmptyClick?.([event.lngLat.lng, event.lngLat.lat]);
+            });
+            // MapLibre makes its canvas focusable, and the arrow keys pan it.
+            map.getCanvas().addEventListener("keydown", (event) => {
+                if (event.key !== "Enter" || !onPick || !map) return;
+                const box = container.getBoundingClientRect(), { lng, lat } = map.getCenter();
+                onPick([lng, lat], [box.left + box.width / 2, box.top + box.height / 2]);
             });
             map.on('contextmenu', inspectOverlay);
             map.on('touchstart', () => consumedPress = false);
@@ -620,7 +646,7 @@
         if (map && ready) (map.getSource("planner-highlights") as GeoJSONSource | undefined)?.setData(data);
     });
     $effect(() => {
-        if (pickMode) hover = null;
+        if (picking) hover = null;
     });
     $effect(() => {
         if (!map) return;
@@ -646,7 +672,7 @@
         setSketch([]);
     });
     $effect(() => {
-        if (map) map.getCanvas().style.cursor = dragging || draggingPin ? "grabbing" : drawing || pickMode ? "crosshair" : hover || overPoi || overOverlay || overSigned ? "pointer" : "grab";
+        if (map) map.getCanvas().style.cursor = dragging || draggingPin ? "grabbing" : drawing || picking ? "crosshair" : hover || overPoi || overOverlay || overSigned ? "pointer" : "grab";
     });
 
     function markerIcon(path: string) {
@@ -711,7 +737,12 @@
             } else {
                 button.textContent = point.markerLabel ?? (point.kind === "night" ? String(nightNumber) : "");
             }
-            button.addEventListener("click", (event) => { event.stopPropagation(); onPointSelect?.(point.id); });
+            button.addEventListener("click", (event) => {
+                event.stopPropagation();
+                if (!onPick) return onPointSelect?.(point.id);
+                const box = button.getBoundingClientRect();
+                onPick(point.coordinate, [box.left + box.width / 2, box.top + box.height / 2]);
+            });
             button.addEventListener('mouseenter', () => onPointHover?.(point.id));
             button.addEventListener('mouseleave', () => onPointHover?.(null));
             button.addEventListener('focus', () => onPointHover?.(point.id));

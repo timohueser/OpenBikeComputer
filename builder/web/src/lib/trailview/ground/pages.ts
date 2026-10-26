@@ -6,6 +6,7 @@ import type { GroundDate, GroundPage } from '../stream/ground-pages';
 import { PAGE } from '../stream/heights';
 import { COARSEST, distances, EYE_M, key, MAP, NEAR_M, size, type Node } from '../terrain/lod';
 import { dayOfYear, mosaicsAt } from './rules';
+import { stopped } from '../stream/terrain';
 
 /**
  * Pages taken in per frame at most, ground tiles in flight, pages whose openness follows new heights
@@ -96,8 +97,12 @@ export class GroundPages {
     private readonly marching = new Set<Slot>();
     /** Wanted pages without the content of the date. */
     private missing = 0;
-    /** Of them, the pages of the drawn nodes within NEAR_M of the eye. */
+    /** Of them, the pages of the drawn nodes within NEAR_M, and within EYE_M, of the eye. */
     nearMissing = 0;
+    eyeMissing = 0;
+    /** The keys of the drawn pages within NEAR_M and within EYE_M of the eye, as the last update found them. */
+    nearDrawn = new Set<string>();
+    eyeDrawn = new Set<string>();
     private dirty = true;
     private kept = new Set<string>();
     /** The terrain nodes that the relief of the kept pages reads, which the terrain keeps resident for it. */
@@ -167,8 +172,9 @@ export class GroundPages {
         const kept = [...order.values()].slice(0, this.capacity);
         this.wanted = order.size;
         this.shortage = order.size - kept.length;
-        this.missing = this.nearMissing = 0;
-        const nearDrawn = new Set(drawn.map(this.ground).filter(node => distances({ anchor, above: 0 }, node)[0] <= NEAR_M).map(key));
+        this.missing = this.nearMissing = this.eyeMissing = 0;
+        const within = (metres: number) => new Set(drawn.map(this.ground).filter(node => distances({ anchor, above: 0 }, node)[0] <= metres).map(key));
+        const nearDrawn = this.nearDrawn = within(NEAR_M), eyeDrawn = this.eyeDrawn = within(EYE_M);
         // Every kept page is used before the first allocation, so none leaves for a later one of this frame.
         this.kept = new Set(kept.map(key));
         this.reads = [...new Map(kept.flatMap(node => reliefReads(node, this.finest)).map(node => [key(node), node])).values()];
@@ -180,6 +186,7 @@ export class GroundPages {
             if (page?.date !== this.date || page.partial) {
                 this.missing++;
                 if (nearDrawn.has(key(node))) this.nearMissing++;
+                if (eyeDrawn.has(key(node))) this.eyeMissing++;
                 this.load(node);
             }
         }
@@ -288,7 +295,7 @@ export class GroundPages {
             if (!complete) this.failed(`${z}/${x}/${y}`);
             else this.failures.delete(`${z}/${x}/${y}`);
         }).catch(error => {
-            console.warn(`Ground tile ${z}/${x}/${y}: ${error instanceof Error ? error.message : error}`);
+            if (!stopped(error)) console.warn(`Ground tile ${z}/${x}/${y}: ${error instanceof Error ? error.message : error}`);
             this.failed(`${z}/${x}/${y}`);
         }).finally(() => {
             this.loads--;

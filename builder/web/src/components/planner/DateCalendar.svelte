@@ -34,6 +34,8 @@
 
     function key(event: KeyboardEvent) {
         if (event.key === 'Escape') {
+            // A dialog around the calendar closes on an Escape whose default runs.
+            event.preventDefault();
             event.stopPropagation();
             onClose();
             return;
@@ -51,7 +53,7 @@
     onMount(() => root.querySelector<HTMLElement>(`[data-day="${focused}"]`)?.focus());
 </script>
 
-<div class="calendar" role="dialog" tabindex="-1" aria-label="Choose the layer date" bind:this={root} onkeydown={key}>
+<div class="calendar" role="dialog" tabindex="-1" aria-label="Choose a day" bind:this={root} onkeydown={key}>
     <div class="head">
         <button type="button" aria-label="Previous month" onclick={() => move(addMonths(focused, -1), false)}><Icon path="m15 5-7 7 7 7" size={16} /></button>
         <h3 aria-live="polite">{title}</h3>
