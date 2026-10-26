@@ -216,8 +216,8 @@ fn weights(s: vec2f, a: vec2f, b: vec2f, c: vec2f) -> vec3f {
     return vec3f(1.0 - wb - wc, wb, wc);
 }
 
-// The heights of the 4 × 4 texels from t − 1 to t + 2, a row per y from north: four gathers where they
-// lie in one page. NONE where no page holds a texel or its height is unknown.
+// The heights of the 4 × 4 texels from t − 1 to t + 2 but its corners, a row per y from north: four
+// gathers where they lie in one page, else 12 loads. NONE where no page holds a texel or its height is unknown.
 fn heights_about(level: u32, page: u32, t: vec2i) -> array<vec4f, 4> {
     var rows: array<vec4f, 4>;
     let local = t & vec2i(255);
@@ -232,6 +232,9 @@ fn heights_about(level: u32, page: u32, t: vec2i) -> array<vec4f, 4> {
     }
     for (var j = 0; j < 4; j++) {
         for (var i = 0; i < 4; i++) {
+            if ((i == 0 || i == 3) && (j == 0 || j == 3)) {
+                continue;
+            }
             rows[j][i] = texel_height(level, t + vec2i(i - 1, j - 1), false);
         }
     }
@@ -248,8 +251,14 @@ fn slope_normal(east: f32, north: f32, metres: f32) -> vec2f {
     return normalize(vec3f(-east, -north, 2.0 * metres)).xy;
 }
 
-// The bilinear normal of the finest level up to `top` that knows the 12 heights about the quad of a
-// point: each texel's normal from its four neighbours.
+// Known heights h, else the guesses.
+fn or_guess(h: vec2f, guess: vec2f) -> vec2f {
+    return select(h, guess, h < vec2f(-1e29));
+}
+
+// The bilinear normal of the finest level up to `top` that knows the 4 heights of the quad of a point,
+// as bilinear_rise: each texel's normal from its four neighbours. An unknown neighbour outside the quad
+// continues the quad's slope, so the difference across that texel is one-sided.
 fn level_normal(s: vec2f, top: u32) -> vec2f {
     for (var level = top; level >= COARSEST; level--) {
         let t = texel_of(s, level);
@@ -258,19 +267,24 @@ fn level_normal(s: vec2f, top: u32) -> vec2f {
             continue;
         }
         let h = heights_about(level, e - 1u, t.whole);
-        // The corners of the 4 × 4 are not read.
-        let least = min(min(vec4f(h[0].yz, h[3].yz), h[1]), h[2]);
-        if (!known(min(min(least.x, least.y), min(least.z, least.w)))) {
+        // a b / c d: row 1 is the quad's north row.
+        let q = vec4f(h[1].yz, h[2].yz);
+        if (!known(min(min(q.x, q.y), min(q.z, q.w)))) {
             continue;
         }
+        // The neighbours of a c west and of b d east, of a b north and of c d south.
+        let west = or_guess(vec2f(h[1].x, h[2].x), 2.0 * q.xz - q.yw);
+        let east = or_guess(vec2f(h[1].w, h[2].w), 2.0 * q.yw - q.xz);
+        let north = or_guess(h[0].yz, 2.0 * q.xy - q.zw);
+        let south = or_guess(h[3].yz, 2.0 * q.zw - q.xy);
         let metres = f32(1 << (22u - level)) * surface.unit;
-        // East − west and north − south of the quad's texels: row 1 is the quad's north row.
-        let east = vec4f(h[1].zw - h[1].xy, h[2].zw - h[2].xy);
-        let north = vec4f(h[0].yz - h[2].yz, h[1].yz - h[3].yz);
-        let a = slope_normal(east.x, north.x, metres);
-        let b = slope_normal(east.y, north.y, metres);
-        let c = slope_normal(east.z, north.z, metres);
-        let d = slope_normal(east.w, north.w, metres);
+        // East − west and north − south of the quad's texels.
+        let dx = vec4f(q.y - west.x, east.x - q.x, q.w - west.y, east.y - q.z);
+        let dy = vec4f(north - q.zw, q.xy - south);
+        let a = slope_normal(dx.x, dy.x, metres);
+        let b = slope_normal(dx.y, dy.y, metres);
+        let c = slope_normal(dx.z, dy.z, metres);
+        let d = slope_normal(dx.w, dy.w, metres);
         return mix(mix(a, b, t.part.x), mix(c, d, t.part.x), t.part.y);
     }
     return vec2f(0.0);

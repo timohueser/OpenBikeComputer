@@ -70,7 +70,7 @@ struct Ground {
     open: f32,
     // The share of the sun that the horizons let through.
     sun: f32,
-    // The normal in render space and the openness two levels coarser, for cliffs.
+    // The normal in render space and the openness two levels coarser, for cliffs; set only for a sloped pixel.
     coarse: vec3f,
     coarse_open: f32,
     region: u32,
@@ -359,8 +359,7 @@ fn texel_at(level: u32, home: i32, base: vec2i, local: vec2i) -> vec3i {
 }
 
 // The planes of the cache at point p of a level, in texels from the corner `base` of page `home`
-// (texel centres are whole numbers), and the relief as a fourth: xy the coarse normal, z its openness
-// and w the texel's own openness. Bilinear across the page borders: the sampler inside the page, four
+// (texel centres are whole numbers), and in the w of a fourth the texel's own openness. Bilinear across the page borders: the sampler inside the page, four
 // loads where the footprint crosses a border.
 fn cache_read(level: u32, home: i32, base: vec2i, p: vec2f) -> array<vec4f, 4> {
     var out: array<vec4f, 4>;
@@ -383,11 +382,10 @@ fn cache_read(level: u32, home: i32, base: vec2i, p: vec2f) -> array<vec4f, 4> {
             out[3].w += w * textureLoad(relief_open, at.xy, at.z, 0).r;
         }
     }
-    out[3] = vec4f(coarse_read(level, home, base, p), out[3].w);
     return out;
 }
 
-// The coarse relief at p, as cache_read.
+// The coarse relief at p, as cache_read: xy the coarse normal, z its openness.
 fn coarse_read(level: u32, home: i32, base: vec2i, p: vec2f) -> vec3f {
     let step = f32(COARSE_STEP);
     let q = (p - 0.5 * (step - 1.0)) / step;
@@ -408,10 +406,10 @@ fn coarse_read(level: u32, home: i32, base: vec2i, p: vec2f) -> vec3f {
 }
 
 // The ground under a point of a node of `level`, from the page of its level or the next coarser one
-// that is resident. `world` is the point in the frame, for the brush of the texel edges. The
-// satellite decides snow only where the data has none, and a snow edge is crisper than the texels'
+// that is resident. `world` is the point in the frame, for the brush of the texel edges; `sloped` reads
+// the coarse relief too. The satellite decides snow only where the data has none, and a snow edge is crisper than the texels'
 // blend across it.
-fn ground_at(level: u32, s: vec2f, world: vec2f, footprint: f32) -> Ground {
+fn ground_at(level: u32, s: vec2f, world: vec2f, footprint: f32, sloped: bool) -> Ground {
     let held = held_at(s, level);
     let k = held.level;
     let t = held.t;
@@ -449,9 +447,12 @@ fn ground_at(level: u32, s: vec2f, world: vec2f, footprint: f32) -> Ground {
     g.blades = planes[2].b;
     g.banded = planes[2].a;
     g.open = 0.6 + 0.55 * planes[3].a;
-    let m = planes[3].xy * 2.0 - 1.0;
-    g.coarse = render_normal(vec3f(m, sqrt(max(1.0 - dot(m, m), 1e-4))));
-    g.coarse_open = 0.6 + 0.55 * planes[3].z;
+    if (sloped) {
+        let r = coarse_read(k, page, base, p);
+        let m = r.xy * 2.0 - 1.0;
+        g.coarse = render_normal(vec3f(m, sqrt(max(1.0 - dot(m, m), 1e-4))));
+        g.coarse_open = 0.6 + 0.55 * r.z;
+    }
     g.sun = sun_held(held);
     let cell = textureLoad(cells, in_page(page, vec2i(floor(texel + 0.5))), page_layer(page), 0);
     g.region = cell.b;
@@ -568,7 +569,11 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     var facet = normalize(cross(dpdx(relative), dpdy(relative)));
     facet *= sign(facet.z);
     var n = render_normal(drawn_normal(s));
-    let g = ground_at(level, s, world, footprint);
+    // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
+    // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
+    let skirt = smoothstep(0.25, 0.5, n.z - facet.z);
+    let sloped = n.z < 0.95 || skirt > 0.0;
+    let g = ground_at(level, s, world, footprint, sloped);
     var open = g.open;
     let region = g.region;
     // The road paint first, so that only the Road stays live through the rest.
@@ -580,16 +585,13 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     let east = smoothstep(-0.1, 0.1, (abs(n.y) - abs(n.x)) / (abs(n.x) + abs(n.y) + 1e-6));
     // outcrops, cos turf_deg, snow_share, speckle size
     let speckle_size = rule(region, slot_cliff() + 3).w;
-    // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
-    // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
-    let skirt = smoothstep(0.25, 0.5, n.z - facet.z);
     // A cliff spans few texels across and many metres up, so its fine slopes would streak down the
     // face; it takes its normal from coarser levels instead.
     let cliff = 1.0 - smoothstep(0.4, 0.7, n.z);
     // How steep the land is a few texels across: a road cutting or a bank is steep only at the finest
     // level, and stays vegetated.
     var broad = 0.0;
-    if (n.z < 0.95 || skirt > 0.0) {
+    if (sloped) {
         broad = max(1.0 - smoothstep(0.85, 0.95, g.coarse.z), skirt);
         // A slope that a road shaped is a cut or a fill: it stays as the satellite sees it, rock only
         // where that is bare.
