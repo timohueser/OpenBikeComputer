@@ -1,8 +1,8 @@
 """What every adapter is: the manifest facts, and a way to obtain rasters for a box.
 
 Every request in the registry goes through `with_retry`, so one rule covers all of them: a
-dropped connection, a 429 and a 5xx are retried; every other 4xx is the server's final
-answer and is refused at once, with its body, because that body is the only thing that
+dropped connection, a 408, a 429, a 5xx and an OWS code of `SERVER_FAULTS` are retried; every
+other 4xx is the server's final answer and is refused at once, with its body, because that body is the only thing that
 says what happened.
 
 Two rules hold a credential. A refusal quotes what came off the wire, and a URL with a
