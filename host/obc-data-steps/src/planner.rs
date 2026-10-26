@@ -51,7 +51,7 @@ pub static PLANNER_SNOW: Layer = whole("planner/snow", 1, &[&WEB_PLANNER]);
 pub static PLANNER_SUN: Layer = whole("planner/sun", 3, &[&WEB_PLANNER]);
 /// Its format is `features_format` of `specs/trailview-features.md`.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 5, ..whole("planner/trailview-features", 2, &[&WEB_PLANNER]) };
+    Layer { revision: 6, ..whole("planner/trailview-features", 2, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
     whole("planner/trailview-rules", 1, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_GROUND]);
@@ -485,14 +485,15 @@ impl Planner {
             let roads: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/roads.json"))
                 .map_err(|e| Unplanned::Failed(format!("data/trailview/roads.json: {e}")))?;
             // The heights of roads, rivers and lakes come from the master terrain, by the class rules of the roads.
-            steps.push(python(
-                &PLANNER_TRAILVIEW_FEATURES,
-                "planner/trailview-features",
-                vec![Input::step("planner/osm"), Input::step("planner/terrain/grid")],
-                json!({"bounds": bounds, "kinds": kinds, "roads": roads, "attribution": attribution("osm-planet")}),
-                ("tools.planner_trailview_features", Some("trailview")),
-                &["trailview-features.pmtiles"],
-            ));
+            steps.push(Step {
+                layer: &PLANNER_TRAILVIEW_FEATURES,
+                name: "planner/trailview-features".into(),
+                inputs: vec![Input::step("planner/osm"), Input::step("planner/terrain/grid")],
+                options: json!({"bounds": bounds, "kinds": kinds, "roads": roads, "attribution": attribution("osm-planet")}),
+                outputs: vec!["trailview-features.pmtiles".into()],
+                run: Run::Rust(&functions::TRAILVIEW_FEATURES),
+                client: Client::All,
+            });
         }
         steps.extend(trailview(root, inputs, store, &on, bounds, &config.trailview, &mut wanted)?);
         if on("trailview-canopy") {

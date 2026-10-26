@@ -33,6 +33,7 @@ planner-router = { path = "../../planner/router" }
 planner-router-build = { path = "../../planner/router-build" }
 # The planner search dump step.
 obc-search-bake = { path = "../obc-search-bake" }
+obc-trailview-features = { path = "../obc-trailview-features" }
 serde = { version = "1", features = ["derive"] }
 # The road class table of the TrailView features ranks the classes in its key order.
 serde_json = { workspace = true, features = ["preserve_order"] }

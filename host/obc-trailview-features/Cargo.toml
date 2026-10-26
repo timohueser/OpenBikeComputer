@@ -22,3 +22,5 @@ rusqlite = { workspace = true, features = ["bundled"] }
 serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip"] }
 # The request of the step and its function.
 obc-data = { workspace = true }
+# The cut of the OSM of a bake.
+tempfile = { workspace = true }
