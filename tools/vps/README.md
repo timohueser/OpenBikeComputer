@@ -13,31 +13,15 @@ folder: `obc data update prod` publishes it.
 
 ## Prepare the VPS once
 
-The prod screen of `obc data ui`, Services, checks each step below over SSH and shows the command of
-each missing one. The machine of the page needs an SSH key that logs in as root without a prompt:
-the screen shows the line of its public key to add on the VPS.
+`obc data deploy`, and Services on the prod screen of `obc data ui`, check the one-time setup over
+SSH and print each missing step with its command: the user `obc-data`, `/opt/obc-data`, Rust and
+uv of that user, `build-essential`, Python and Node of
+[`data/planner-runtime.toml`](../../data/planner-runtime.toml), the unit, and after the first
+deploy the Caddy route. The site block imports `/etc/caddy/planner/*.caddy`.
 
-Install `build-essential`, and Python and Node with the `major.minor` versions of
-[`data/planner-runtime.toml`](../../data/planner-runtime.toml). Then, as root, with this folder
-copied to the VPS:
-
-```sh
-useradd --system --create-home --home-dir /var/lib/obc-data --shell /usr/sbin/nologin obc-data
-install -d -o obc-data -g obc-data /opt/obc-data
-runuser -u obc-data -- sh -c 'curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path'
-runuser -u obc-data -- sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
-cp obc-data-serve.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable obc-data-serve
-```
-
-Deploy once, then add the route. The legacy import `/etc/caddy/planner/*.caddy` is in the site
-block:
-
-```sh
-cp obc-data-serve.caddy /etc/caddy/planner/
-caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy
-```
+The machine of the page logs in as root with an SSH key, without a prompt. The screen shows the
+line of its public key to add on the VPS, and the fingerprint of the host key to compare with the
+console of the hosting provider before it trusts the key.
 
 ## Deploy
 
