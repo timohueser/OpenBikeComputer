@@ -76,6 +76,18 @@ export function instantAt(date: string, minute: number, timezone: string): numbe
 
 export const clock = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
 
+/** The wall-clock span of the five-minute bins whose middle has the sun's upper limb above the horizon, in minutes; null in a polar night. */
+export function daylight(coordinate: Coordinate, date: string, timezone: string): [number, number] | null {
+    let first = -1, last = -1;
+    for (let minute = 0; minute < 1440; minute += 5) {
+        let instant: number;
+        try { instant = instantAt(date, minute + 2, timezone); }
+        catch { continue; }
+        if (solarPosition(coordinate, solarTerms(instant)).altitude > -.833 * RAD) { if (first < 0) first = minute; last = minute + 5; }
+    }
+    return first < 0 ? null : [first, last];
+}
+
 /** Coordinates of the native pixel centres; bounds use this grid, not lower-zoom height samples. */
 export function nativePoint(coordinate: Coordinate): [number, number] {
     const [x, y] = worldPixel(coordinate, TILE * 2 ** DEM_ZOOM);

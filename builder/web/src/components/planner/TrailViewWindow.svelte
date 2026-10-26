@@ -1,10 +1,14 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import Icon from './PlannerIcon.svelte';
+    import TrailViewConditions from './TrailViewConditions.svelte';
+    import TrailViewMiniMap from './TrailViewMiniMap.svelte';
     import { config } from '../../lib/planner/map-data';
     import type { Coordinate } from '../../lib/planner/geo';
     import { FIRST_HEADING, loadTrailView } from '../../lib/planner/trailview';
-    import { defaultView } from '../../lib/trailview/view';
+    import type { TrailView } from '../../lib/trailview/engine';
+    import { VFOV } from '../../lib/trailview/frame/camera';
+    import { defaultView, type View } from '../../lib/trailview/view';
 
     let { at, near, origin, onClose }: {
         at: Coordinate;
@@ -18,11 +22,18 @@
     let canvas: HTMLCanvasElement;
     let failure = $state('');
     let ground = $state(false);
-    let credits = $state([config.terrain_attribution].filter(Boolean));
+    // The mini-map draws the basemap: its credits are the OSM data, its land cover and Protomaps.
+    const creditsWith = (layers: string[]) => [...new Set([config.attribution, config.landcover_attribution ?? '', 'Protomaps', config.terrain_attribution, ...layers].filter(Boolean))];
+    let credits = $state(creditsWith([]));
     let creditsOpen = $state(false);
     let creditsBox = $state<HTMLElement>();
     // A look-around drag that ends over the margin clicks the dialog too: only a press on the backdrop closes it.
     let pressedBackdrop = false;
+    let engine: TrailView | undefined;
+    let view = $state<View>();
+    let width = $state(0), height = $state(0);
+    // The horizontal angle of the view, from the engine's vertical one and the window's shape.
+    const fov = $derived(height ? 2 * Math.atan(Math.tan(VFOV * Math.PI / 360) * width / height) * 180 / Math.PI : VFOV);
 
     onMount(() => {
         dialog.showModal();
@@ -38,16 +49,22 @@
         (async () => {
             const chunk = await loadTrailView();
             if (abort.signal.aborted) return;
-            const engine = await chunk.startTrailView(canvas, config, { ...defaultView([at[0], at[1], at[0], at[1]]), heading: FIRST_HEADING }, near);
-            if (!engine) {
+            const started = await chunk.startTrailView(canvas, config, { ...defaultView([at[0], at[1], at[0], at[1]]), heading: FIRST_HEADING }, near);
+            if (!started) {
                 failure = 'gpu' in navigator ? 'TrailView cannot use the graphics card of this device.'
                     : 'TrailView needs WebGPU. Open the planner in a current version of Chrome, Edge or Safari.';
                 return;
             }
-            stop = () => chunk.stopTrailView(engine);
+            stop = () => {
+                engine = view = undefined;
+                chunk.stopTrailView(started);
+            };
             if (abort.signal.aborted) return stop();
-            credits = [config.terrain_attribution, ...engine.attribution].filter(Boolean);
-            if (await chunk.groundDrawn(engine, abort.signal)) ground = true;
+            engine = started;
+            view = started.view;
+            started.onView = (next) => view = next;
+            credits = creditsWith(started.attribution);
+            if (await chunk.groundDrawn(started, abort.signal)) ground = true;
             else if (!abort.signal.aborted) failure = 'TrailView could not load this place. Close the window and try again.';
         })().catch((error: unknown) => {
             console.error('TrailView:', error);
@@ -58,11 +75,18 @@
             stop?.();
         };
     });
+
+    /** A new date rebuilds every ground page: the card sets it once per pick. */
+    function change(conditions: Partial<View>) {
+        if (!engine) return;
+        engine.view = { ...engine.view, ...conditions };
+        view = engine.view;
+    }
 </script>
 
 <!-- A click on the backdrop lands on the dialog itself; its content fills it. Esc closes a modal dialog by itself.
      Esc and the Ctrl and Cmd shortcuts stop at the window: the planner below reads them on `window`, the engine reads none of them. -->
-<dialog bind:this={dialog} class="window" aria-label="TrailView" onclose={onClose}
+<dialog bind:this={dialog} bind:clientWidth={width} bind:clientHeight={height} class="window" aria-label="TrailView" onclose={onClose}
     onpointerdown={event => pressedBackdrop = event.target === dialog}
     onclick={event => {
         if (pressedBackdrop && event.target === dialog) dialog.close();
@@ -72,7 +96,11 @@
     <!-- Focusable, so that after a click on the view the keys still pass through the dialog. -->
     <canvas bind:this={canvas} tabindex="-1"></canvas>
     <div class="cover" class:gone={ground && !failure} aria-hidden="true"></div>
-    {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
+    {#if failure}<p class="failure" role="alert">{failure}</p>
+    {:else if view}
+        <TrailViewMiniMap lat={view.lat} lon={view.lon} heading={view.heading} {fov} />
+        <TrailViewConditions {view} onChange={change} />
+    {/if}
     <button type="button" class="close" aria-label="Close TrailView" onclick={() => dialog.close()}><Icon name="close" /></button>
     {#if credits.length}
         <!-- Touch has no hover, so a tap toggles the credits. -->

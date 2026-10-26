@@ -1,6 +1,6 @@
 import type { Coordinate } from '../map-types';
 import { SunSurface } from './sun-source';
-import { coordinateAt, instantAt, solarPosition, solarTerms, visibility, mapVisibility, UNKNOWN, type SunDay } from './sun';
+import { coordinateAt, daylight, instantAt, solarPosition, solarTerms, visibility, mapVisibility, UNKNOWN, type SunDay } from './sun';
 
 export type SunRequest = { id: number; url: string; dem: string } & (
     { kind: 'tile'; z: number; x: number; y: number; size: number; date: string; minute: number }
@@ -34,18 +34,14 @@ async function execute(request: SunRequest, signal: AbortSignal) {
         if (cached) { surface.stats.cacheHits++; return cached; }
         // Five-minute wall-clock bins; a missing spring DST bin stays unknown.
         const states = new Uint8Array(288).fill(UNKNOWN);
-        let first = -1, last = -1;
         for (let i = 0; i < states.length; i++) {
             let instant: number;
             try { instant = instantAt(request.date, i * 5 + 2, surface.meta.timezone); }
             catch { continue; }
-            const terms = solarTerms(instant);
-            const sun = solarPosition(request.coordinate, terms);
-            if (sun.altitude > -.833 * Math.PI / 180) { if (first < 0) first = i * 5; last = (i + 1) * 5; }
-            states[i] = await at(request.coordinate, terms, true);
+            states[i] = await at(request.coordinate, solarTerms(instant), true);
             if (i % 24 === 0) await checkpoint();
         }
-        const day: SunDay = { states, daylight: first < 0 ? null : [first, last], timezone: surface.meta.timezone };
+        const day: SunDay = { states, daylight: daylight(request.coordinate, request.date, surface.meta.timezone), timezone: surface.meta.timezone };
         days.set(key, day);
         while (days.size > 64) days.delete(days.keys().next().value!);
         return day;
