@@ -78,8 +78,10 @@ vertex  = zigzag dx, zigzag dy, then varint z_code when has_z is 1
 
 `kind`, `key` and `value` are indices from 0 into the strings of the tile. The tags of a feature
 are sorted by key. `geometry` is 0 for a point, 1 for a line and 2 for an area. The features of a tile
-come in the order of the OSM file: first the points and the lines, then the areas. So the bytes of
-a tile do not depend on how much of the file lies outside the region.
+come in a fixed order: first the kinds that no solver sets, in the order of the OSM file, the points
+and the lines before the areas; then the buildings, the lifts, the rivers and lakes, the roads, paths
+and tracks, the bridge piers, the catenary masts and the platforms. So the bytes of a tile do not
+depend on how much of the file lies outside the region.
 
 ### Coordinates
 
