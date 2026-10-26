@@ -57,7 +57,7 @@ export async function viewSettled(engine: TrailView, signal: AbortSignal): Promi
     return !signal.aborted;
 }
 
-/** The engine frees its GPU memory and its workers in destroy(). */
+/** Ends the engine and frees its GPU memory and its workers; the page's device stays for the next open. */
 export function stopTrailView(engine: TrailView): void {
-    (engine as { destroy?: () => void }).destroy?.();
+    engine.destroy();
 }
