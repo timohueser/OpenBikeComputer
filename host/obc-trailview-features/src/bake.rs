@@ -71,11 +71,6 @@ impl Placer {
     }
 }
 
-fn rss() -> String {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    status.lines().filter(|l| l.starts_with("VmRSS") || l.starts_with("VmHWM")).collect::<Vec<_>>().join(" ")
-}
-
 fn bits(point: [f64; 2]) -> [u64; 2] {
     [point[0].to_bits(), point[1].to_bits()]
 }
@@ -150,7 +145,7 @@ pub fn bake(
         parts.iter_mut().for_each(|p| p.z = None);
         placer.entry(entry, tags, parts);
     })?;
-    eprintln!("osm: {:.1} s {}", started.elapsed().as_secs_f64(), rss());
+    eprintln!("osm: {:.1} s", started.elapsed().as_secs_f64());
     let values = landuse_of(&houses.iter().map(|(_, _, parts)| parts).collect::<Vec<_>>(), &landuse);
     for ((e, mut tags, parts), value) in houses.into_iter().zip(&values) {
         if let Some(value) = value {
@@ -174,7 +169,7 @@ pub fn bake(
         );
     }
     drop(buildings);
-    eprintln!("placed: {:.1} s {}", started.elapsed().as_secs_f64(), rss());
+    eprintln!("placed: {:.1} s", started.elapsed().as_secs_f64());
 
     // The heights of a junction need every road that meets there, a river level its whole network, a
     // ford the water it crosses, and a platform its tracks.
@@ -194,7 +189,7 @@ pub fn bake(
         for ((_, _, parts), (feature, z)) in waters.iter_mut().zip(features.into_iter().zip(levels)) {
             *parts = feature.parts.into_iter().zip(z).map(|(p, z)| Part { z, ..p }).collect();
         }
-        eprintln!("water: {:.1} s {}", started.elapsed().as_secs_f64(), rss());
+        eprintln!("water: {:.1} s", started.elapsed().as_secs_f64());
         let is_river = |e: usize| RIVERS.contains(&kinds[e].kind.as_str());
         let rivers: Vec<River> = waters
             .iter()
@@ -220,7 +215,7 @@ pub fn bake(
             memory,
         );
         drop((road_features, rivers, beyond));
-        eprintln!("roads: {:.1} s {}", started.elapsed().as_secs_f64(), rss());
+        eprintln!("roads: {:.1} s", started.elapsed().as_secs_f64());
         let mut road_metrics = road_metrics(&solved.metrics);
         road_metrics.insert("cut_features".into(), cut.len().into());
         let culverts: Vec<usize> = solved.culverts.iter().map(|&i| kept[i]).collect();
@@ -341,7 +336,7 @@ pub fn bake(
     }
     low_zooms(&mut placer);
     let size = write(&placer, options, output)?;
-    eprintln!("tiles: {:.1} s {}", started.elapsed().as_secs_f64(), rss());
+    eprintln!("tiles: {:.1} s", started.elapsed().as_secs_f64());
     let mut out = Map::new();
     out.insert("osmium".into(), version.lines().next().unwrap_or_default().into());
     out.insert("kinds".into(), json!(placer.counts));

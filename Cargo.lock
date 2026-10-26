@@ -3769,6 +3769,7 @@ dependencies = [
  "obc-osm",
  "obc-pack",
  "obc-search-bake",
+ "obc-trailview-features",
  "obcm-assemble",
  "planner-router",
  "planner-router-build",
@@ -4227,6 +4228,7 @@ dependencies = [
  "rstar",
  "rusqlite",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

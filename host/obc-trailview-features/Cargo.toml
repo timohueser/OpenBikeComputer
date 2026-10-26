@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 license = "GPL-3.0-only"
-description = "The height solvers of the TrailView feature tiles: roads by area, water by network"
+description = "The TrailView feature tiles of a region: the step planner/trailview-features of obc data"
 
 [[bin]]
-name = "trailview-heights"
+name = "trailview-features"
 path = "src/main.rs"
 
 [dependencies]
@@ -17,6 +17,7 @@ flate2 = { workspace = true }
 image = { workspace = true, features = ["webp"] }
 rayon = "1"
 rstar = "0.12"
+# The terrain of a direct bake.
 rusqlite = { workspace = true, features = ["bundled"] }
 # The options of the step keep the order of their keys, and coordinates parse exactly.
 serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip"] }

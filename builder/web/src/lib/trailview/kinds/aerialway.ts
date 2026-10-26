@@ -6,7 +6,7 @@ import { metresBetween } from '../structures/anchored';
 import { rgb } from '../structures/mesh';
 import type { Kind } from './kind';
 
-/** As RIGS of tools/trailview/lifts.py: the cable's height over the ground at a pylon, and its sag as a share of the span; and the spacing of the carriers, 0 for a cable car's two cabins. */
+/** As RIGS of host/obc-trailview-features/src/lifts.rs: the cable's height over the ground at a pylon, and its sag as a share of the span; and the spacing of the carriers, 0 for a cable car's two cabins. */
 const RIGS: Record<Rig, { pylon: number; sag: number; spacing: number }> = {
     cable_car: { pylon: 30, sag: 0.04, spacing: 0 },
     gondola: { pylon: 14, sag: 0.02, spacing: 70 },

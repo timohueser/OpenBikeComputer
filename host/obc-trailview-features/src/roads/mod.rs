@@ -28,6 +28,7 @@ use fit::{fit, Block, Graph, Rows, Term};
 use network::{hypot, sub, Network};
 use rows::union;
 
+use crate::structures::{BORE_M, BORE_PATH_M, BORE_RAIL_M};
 use crate::{metres, Terrain};
 
 const SAMPLE_M: f64 = 2.0;
@@ -53,12 +54,8 @@ pub const CLEAR_PATH_M: f64 = 2.5;
 pub const CLEAR_RAIL_M: f64 = 6.0;
 pub const DECK_M: f64 = 1.0;
 pub const DECK_PATH_M: f64 = 0.4;
-/// A road or a path over a tunnel lies at least this far over its bore, BORE_M for a road, as
-/// `tools/trailview/structures.py` builds it.
+/// A road or a path over a tunnel lies at least this far over its bore.
 pub const COVER_M: f64 = 1.0;
-pub const BORE_M: f64 = 5.0;
-const BORE_PATH_M: f64 = 2.6;
-const BORE_RAIL_M: f64 = 6.5;
 /// A track within PARALLEL_M beside another, and within PARALLEL_COS of its direction, lies at its
 /// height, unless the terrain under the two differs by more than PARALLEL_RISE_M within
 /// PARALLEL_FREE_M along it: a ramp or a flyover, whose climb the smoothing of a track spreads that far.

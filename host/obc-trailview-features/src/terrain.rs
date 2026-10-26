@@ -1,9 +1,9 @@
 //! The master terrain: Terrarium WebP tiles of 512 px, R × 256 + G + B / 256 − 32768 metres,
-//! unknown unless opaque. A point reads the deepest zoom that knows its four pixels. The heights
-//! are those of `tools/trailview/profiles.py` to the bit: the same f32 arithmetic in the same order.
+//! unknown unless opaque. A point reads the deepest zoom that knows its four pixels: f32 bilinear
+//! heights from the grid of `planner/terrain`, or from a `planner-dem` MBTiles for a direct bake.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::pmtiles::Archive;
@@ -19,11 +19,15 @@ type Key = (u8, u32, u32);
 type Heights = Option<Arc<Vec<f32>>>;
 
 pub struct Tiles {
-    /// The archives of the grid by name (`{z}-{x}-{y}`, or `13/{z}-{x}-{y}` for zoom 13), opened on use.
-    files: HashMap<String, PathBuf>,
-    open: Mutex<HashMap<String, Arc<Archive>>>,
+    source: Source,
     top: u8,
     cache: Mutex<Cache>,
+}
+
+enum Source {
+    /// The archives of the grid by name (`{z}-{x}-{y}`, or `13/{z}-{x}-{y}` for zoom 13), opened on use.
+    Grid { files: HashMap<String, PathBuf>, open: Mutex<HashMap<String, Arc<Archive>>> },
+    Mbtiles(Mutex<rusqlite::Connection>),
 }
 
 #[derive(Default)]
@@ -56,26 +60,42 @@ impl Tiles {
             archives.insert(part.to_string(), file.clone());
         }
         let top = if archives.keys().any(|part| part.starts_with("13/")) { 13 } else { 12 };
-        Ok(Self { files: archives, open: Mutex::default(), top, cache: Mutex::default() })
+        Ok(Self { source: Source::Grid { files: archives, open: Mutex::default() }, top, cache: Mutex::default() })
     }
 
-    /// TEMPORARY until job.rs goes: there is no MBTiles terrain.
-    pub fn mbtiles(path: &std::path::Path) -> Result<Self, String> {
-        Err(format!("{}: the terrain is a grid", path.display()))
+    /// The terrain of a `planner-dem` MBTiles file.
+    pub fn mbtiles(path: &Path) -> Result<Self, String> {
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
+        let db = rusqlite::Connection::open_with_flags(path, flags).map_err(|e| format!("{}: {e}", path.display()))?;
+        let top: u8 = db
+            .query_row("SELECT max(zoom_level) FROM tiles", [], |row| row.get(0))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Self { source: Source::Mbtiles(Mutex::new(db)), top, cache: Mutex::default() })
     }
 
-    /// The encoded tile, None where the grid has none.
+    /// The encoded tile, None where the source has none.
     fn read(&self, (z, x, y): Key) -> Result<Option<Vec<u8>>, String> {
+        let (files, open) = match &self.source {
+            Source::Grid { files, open } => (files, open),
+            Source::Mbtiles(db) => {
+                let query = "SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?";
+                return match db.lock().unwrap().query_row(query, (z, x, (1u32 << z) - 1 - y), |row| row.get(0)) {
+                    Ok(data) => Ok(Some(data)),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                    Err(e) => Err(e.to_string()),
+                };
+            }
+        };
         let level = z.min(11);
         let shift = z - level;
         let part = format!("{level}-{}-{}", x >> shift, y >> shift);
         let part = if z == 13 { format!("13/{part}") } else { part };
         let archive = {
-            let mut open = self.open.lock().unwrap();
+            let mut open = open.lock().unwrap();
             match open.get(&part) {
                 Some(archive) => archive.clone(),
                 None => {
-                    let Some(path) = self.files.get(&part) else { return Ok(None) };
+                    let Some(path) = files.get(&part) else { return Ok(None) };
                     let archive = Archive::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
                     if archive.tile_compression != 1 {
                         return Err(format!(

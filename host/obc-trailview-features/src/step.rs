@@ -36,7 +36,7 @@ pub fn step(request: &Request) -> Result<(), String> {
 /// The bytes of memory that the step may take: what is free past a quarter of the machine's memory, as
 /// other work shares the machine and its memory grows while the step runs, and no more than `obc
 /// data` reserves for it. None free and nothing known are both 0: the road jobs then run one at a time.
-fn free_memory(reserved: Option<u64>) -> usize {
+pub fn free_memory(reserved: Option<u64>) -> usize {
     let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
     let field = |key: &str| -> Option<u64> {
         let line = meminfo.lines().find(|l| l.starts_with(key))?;

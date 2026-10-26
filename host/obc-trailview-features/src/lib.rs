@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 
 pub mod bake;
-pub mod job;
 pub mod kinds;
 pub mod lifts;
 pub mod osm;

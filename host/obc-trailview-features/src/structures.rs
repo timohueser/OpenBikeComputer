@@ -47,8 +47,8 @@ const GALLERY_STEP_M: f64 = 5.0;
 /// The bore of a tunnel for a road, for a path and for a railway with room for its contact wire, and
 /// the samples along it.
 pub const BORE_M: f64 = 5.0;
-const BORE_PATH_M: f64 = 2.6;
-const BORE_RAIL_M: f64 = 6.5;
+pub(crate) const BORE_PATH_M: f64 = 2.6;
+pub(crate) const BORE_RAIL_M: f64 = 6.5;
 const BORE_STEP_M: f64 = 2.0;
 /// Farther than PORTAL_M from its ends, a tunnel that rises FLOAT_M over the terrain lies where the
 /// solver could not put it under the hill: a network of shafts and caverns, or a bore that the
