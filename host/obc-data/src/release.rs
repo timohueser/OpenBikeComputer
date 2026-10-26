@@ -412,20 +412,23 @@ pub(crate) mod tests {
 
     #[test]
     fn the_format_pins_the_shape_of_the_manifest() {
-        // The shape without the doc comments, which schemars writes as descriptions.
-        fn shape(value: &mut Value) {
+        // The shape without the doc comments, which schemars writes as descriptions, with sorted keys:
+        // serde_json keeps the order of insertion when a crate of the build turns on `preserve_order`.
+        fn shape(value: &Value) -> String {
             match value {
                 Value::Object(map) => {
-                    map.remove("description");
-                    map.values_mut().for_each(shape);
+                    let mut keys: Vec<&String> = map.keys().filter(|k| *k != "description").collect();
+                    keys.sort();
+                    let fields: Vec<String> =
+                        keys.iter().map(|k| format!("{}:{}", Value::from(k.as_str()), shape(&map[*k]))).collect();
+                    format!("{{{}}}", fields.join(","))
                 }
-                Value::Array(list) => list.iter_mut().for_each(shape),
-                _ => {}
+                Value::Array(list) => format!("[{}]", list.iter().map(shape).collect::<Vec<_>>().join(",")),
+                other => other.to_string(),
             }
         }
-        let mut schemas = serde_json::json!([schemars::schema_for!(Release), schemars::schema_for!(Serving)]);
-        shape(&mut schemas);
-        let digest = sha256_hex(schemas.to_string().as_bytes());
+        let schemas = serde_json::json!([schemars::schema_for!(Release), schemars::schema_for!(Serving)]);
+        let digest = sha256_hex(shape(&schemas).as_bytes());
         assert_eq!(
             (FORMAT, &digest[..16]),
             (1, "0ea0517eebcfe767"),
