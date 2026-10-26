@@ -1,6 +1,7 @@
 // The first view at a drop of the binoculars. The eye steps onto a road or path that looks "on" the
 // drop, and out of a house. It looks along the route, along the road, or to the farthest view.
 import { WALK_EYE } from '../trailview/frame/camera';
+import { CURVATURE } from '../trailview/frame/frame';
 import { decodeFeatures, EXTENT, type Feature } from '../trailview/stream/features';
 import { featureTiles } from '../trailview/stream/terrain';
 import type { PlannerConfig } from './config';
@@ -142,7 +143,8 @@ export function sight(height: (point: Xy) => number, eye: Xy, heading: number): 
     const top = height(eye) + WALK_EYE, east = Math.sin(heading * RAD), north = Math.cos(heading * RAD);
     let distance = 0, horizon = -Infinity;
     for (let d = STEP_M; d <= REACH_M && Number.isFinite(top); d += STEP_M) {
-        const slope = (height([eye[0] + d * east, eye[1] + d * north]) - top) / d;
+        // Far ground drops below the eye with the curvature of the Earth, as the engine draws it.
+        const slope = (height([eye[0] + d * east, eye[1] + d * north]) - CURVATURE * d * d - top) / d;
         if (!(slope >= horizon)) continue;
         horizon = slope;
         distance = d;
