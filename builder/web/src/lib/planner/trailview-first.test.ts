@@ -48,16 +48,32 @@ describe('routeView', () => {
 
 describe('farthest', () => {
     const headings = Array.from({ length: 36 }, (_, i) => i * 10);
+    // A valley closed to the east and west. The eye stands 1.5 km up its south flank, which rises on to a summit; the
+    // ridge across it, 3 km north, lies below the eye and falls to a plain.
+    const flank = ([east, north]: Xy) => 1000 + 0.05 * Math.abs(east) + (north < 0
+        ? 2000 * (Math.min(-north, 4500) / 4500) ** 1.6
+        : 200 * Math.min(north, 3000) / 3000 - 0.5 * Math.min(Math.max(north - 3000, 0), 1000));
 
-    it('looks out of a valley that opens to the east', () => {
-        // Walls rise 300 m to the north and south, and a ridge closes the valley 500 m to the west.
-        const valley = ([east, north]: Xy) => Math.min(Math.abs(north), 300) + (east < 0 ? Math.min(-east, 500) : 0);
+    it('looks across the valley from its flank, not up to the summit', () => {
+        expect(farthest(flank, [0, -1500], [180, 0])).toBe(0);
+        expect(farthest(flank, [0, -1500], headings)).toBe(0);
+    });
+
+    it('looks down a straight valley along its axis', () => {
+        const valley = ([east, north]: Xy) => 1000 - 0.01 * east + 0.3 * Math.abs(north);
         expect(farthest(valley, [0, 0], headings)).toBe(90);
     });
 
-    it('breaks a tie of distance toward the lowest horizon', () => {
-        // A slope that rises to the north shows its ground to the full reach in every direction.
-        expect(farthest(([, north]) => north / 10, [0, 0], headings)).toBe(180);
+    it('looks from a summit over the lowest horizon', () => {
+        // Every direction is open to the full reach; the ground falls most steeply to the east.
+        const summit = ([east, north]: Xy) => 2000 - 0.1 * Math.hypot(east, north) - 0.2 * Math.max(east, 0);
+        expect(farthest(summit, [0, 0], headings)).toBe(90);
+    });
+
+    it('turns from a slope that rises behind a bump near the eye', () => {
+        // A 5 m bank 50 m to both sides blocks both views at once; the ground beyond it rises to the north only.
+        const road = ([, north]: Xy) => (Math.abs(north) > 25 && Math.abs(north) < 75 ? 5 : 0) + Math.max(0.1 * north, 0);
+        expect(farthest(road, [0, 0], [0, 180])).toBe(180);
     });
 
     it('keeps the first heading without terrain', () => {

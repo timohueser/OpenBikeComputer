@@ -135,25 +135,29 @@ function closest(p: Xy, a: Xy, b: Xy): Xy {
 /** Degrees clockwise from north of a step east and north. */
 const bearing = ([east, north]: Xy) => (Math.atan2(east, north) / RAD + 360) % 360;
 
-/** What a direction sees: how far the farthest visible ground lies, and the steepest angle of its horizon. */
-export interface Sight { heading: number; distance: number; horizon: number }
+/** What a direction sees: how far the level line of sight runs, and the steepest angle of the ground along the reach. */
+interface Sight { heading: number; distance: number; horizon: number }
 
-/** The ground that the eye sees along `heading`: a sample is visible when no nearer sample rises above its line of sight. */
-export function sight(height: (point: Xy) => number, eye: Xy, heading: number): Sight {
+/**
+ * The level view along `heading`: it ends before the first sample that rises above the eye, or runs to the full
+ * reach. A slope that rises to a summit stays in view, so the level view, not the visible ground, finds the open side.
+ * An unknown height never blocks. The horizon spans the whole reach, so that it also orders two views that a bump
+ * near the eye blocks alike.
+ */
+function sight(height: (point: Xy) => number, eye: Xy, heading: number): Sight {
     const top = height(eye) + WALK_EYE, east = Math.sin(heading * RAD), north = Math.cos(heading * RAD);
-    let distance = 0, horizon = -Infinity;
-    for (let d = STEP_M; d <= REACH_M && Number.isFinite(top); d += STEP_M) {
+    let distance: number | undefined, horizon = -Infinity;
+    for (let d = STEP_M; d <= REACH_M; d += STEP_M) {
         // Far ground drops below the eye with the curvature of the Earth, as the engine draws it.
-        const slope = (height([eye[0] + d * east, eye[1] + d * north]) - CURVATURE * d * d - top) / d;
-        if (!(slope >= horizon)) continue;
-        horizon = slope;
-        distance = d;
+        const rise = height([eye[0] + d * east, eye[1] + d * north]) - CURVATURE * d * d - top;
+        if (rise > 0) distance ??= d - STEP_M;
+        if (rise / d > horizon) horizon = rise / d;
     }
-    return { heading, distance, horizon };
+    return { heading, distance: distance ?? REACH_M, horizon };
 }
 
-/** Whether `a` is the better first view: the longer view, then the lower horizon. */
-export const better = (a: Sight, b: Sight) => a.distance !== b.distance ? a.distance > b.distance : a.horizon < b.horizon;
+/** Whether `a` is the better first view: the longer level view, then the lower horizon. */
+const better = (a: Sight, b: Sight) => a.distance !== b.distance ? a.distance > b.distance : a.horizon < b.horizon;
 
 /** The heading of the best sight of `headings`; the first heading when the eye has no height. */
 export function farthest(height: (point: Xy) => number, eye: Xy, headings: number[]): number {
