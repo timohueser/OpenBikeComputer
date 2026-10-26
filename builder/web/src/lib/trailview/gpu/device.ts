@@ -6,6 +6,8 @@ export class Gpu {
     readonly pools = new Map<string, number>();
     /** The buffers and textures made through this Gpu and not destroyed, with their pool and bytes. */
     private live = new Map<GPUBuffer | GPUTexture, [string, number]>();
+    /** A scope inherits this map, so the pipelines compiled on the device are shared by every engine on it. */
+    private readonly made = new Map<(gpu: Gpu) => unknown, unknown>();
 
     private constructor(private readonly gpuAdapter: GPUAdapter, readonly device: GPUDevice, readonly format: GPUTextureFormat) {}
 
@@ -21,6 +23,15 @@ export class Gpu {
         const device = await adapter.requestDevice({ requiredFeatures: OPTIONAL_FEATURES.filter(feature => adapter.features.has(feature)) });
         device.addEventListener('uncapturederror', event => console.error(`WebGPU: ${event.error.message}`));
         return new Gpu(adapter, device, navigator.gpu.getPreferredCanvasFormat());
+    }
+
+    /**
+     * What `make` makes from the device alone, made once per device: the layouts and the pipelines,
+     * which `TrailView.prepare()` can compile before an engine takes them.
+     */
+    once<T>(make: (gpu: Gpu) => T): T {
+        if (!this.made.has(make)) this.made.set(make, make(this));
+        return this.made.get(make) as T;
     }
 
     buffer(pool: string, size: number, usage: GPUBufferUsageFlags): GPUBuffer {

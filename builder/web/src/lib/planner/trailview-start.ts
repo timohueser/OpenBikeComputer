@@ -8,12 +8,15 @@ import { firstView, type Near } from './trailview-first';
 
 let device: Promise<Gpu | undefined> | undefined;
 /**
- * The page's one GPU device. The binoculars ask for it at a press, as a cold device takes over a second, and later
- * opens use it again. A lost device is asked for again at the next press.
+ * The page's one GPU device. The binoculars ask for it at a press, as a cold device takes over a second and its
+ * pipelines more, and later opens use it again. A lost device is asked for again at the next press.
  */
 export function requestGpu(): Promise<Gpu | undefined> {
     return device ??= Gpu.request().then(gpu => {
-        void gpu?.device.lost.then(() => { device = undefined; });
+        if (!gpu) return gpu;
+        void gpu.device.lost.then(() => { device = undefined; });
+        // The first frame's pipelines compile while the rider drags; `start` takes them.
+        TrailView.prepare(gpu).catch(() => {});
         return gpu;
     }, (error: unknown) => {
         device = undefined;

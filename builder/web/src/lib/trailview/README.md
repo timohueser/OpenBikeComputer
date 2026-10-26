@@ -23,10 +23,10 @@ is the palette of the `world` region.
 
 | Path | Holds |
 | --- | --- |
-| `engine.ts` | The frame loop, the view, `waitForIdle()`, the recovery from a lost device |
+| `engine.ts` | The frame loop, the view, `prepare()`, `waitForIdle()`, the recovery from a lost device |
 | `pacer.ts` | The frame rate, `FRAME_RATE`, and the display frames that draw. Headless Chromium runs at 60 Hz, so flights and shots draw each display frame |
 | `frame/` | The local metric frame, the walk and fly camera, the input |
-| `gpu/` | The device and its pools, the GPU time per pass, the WGSL `// #include` |
+| `gpu/` | The device, its pools and shared layouts, the GPU time per pass, the WGSL `// #include` |
 | `stream/` | The stored terrain and its decode worker, the feature codec, the ground layers and the worker that builds their pages |
 | `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh (`drawn-mesh.wgsl`), the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
 | `structures/` | The bridges (`bridges.ts`), tunnels and their portals (`tunnels.ts`), galleries (`galleries.ts`) and the masts, contact wires and platforms of the tracks (`rails.ts`) as flat faces in vertex colours: one mesh per node from its feature tile, made in the stamp worker (`node.ts`, `mesh.ts`), the anchored meshes of the kinds, whose vertices hang from anchors on the drawn surface (`anchored.ts`); their pools, the heights of the anchors and the draw (`structures.ts`, `structures.wgsl`) |
@@ -117,7 +117,7 @@ Copernicus GLO-30 square N46 E008, its feature tiles and its config. To make it 
 ```sh
 cargo run --release --locked -p obc-dem --features terrarium --bin planner-dem -- \
   --dem DIR --bounds 8.37,46.765,8.46,46.83 --output terrain.mbtiles
-uv run --locked --group trailview python -m tools.planner_trailview_features --osm OSM.pbf \
+cargo run --release --locked -p obc-trailview-features -- --osm OSM.pbf \
   --terrain terrain.mbtiles --bounds 8.37,46.765,8.46,46.83 --output features.pmtiles
 uv run --locked --group planner-maps python builder/web/tests/browser/trailview/make-fixture.py terrain.mbtiles features.pmtiles
 ```

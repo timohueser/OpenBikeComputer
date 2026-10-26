@@ -5,18 +5,18 @@ import { Controls } from './frame/controls';
 import { CURVATURE, frameAt, type Frame } from './frame/frame';
 import { Gpu } from './gpu/device';
 import { PassTimes } from './gpu/timing';
-import { Ground, type GroundStats } from './ground/ground';
+import { Ground, groundPipelines, type GroundStats } from './ground/ground';
 import { eyeLook, lightAt, weatherLight, WEATHERS } from './light/light';
 import { LOOK_BYTES, lookUniform } from './light/look';
 import { Shadow } from './light/shadow';
-import { Sky } from './light/sky';
-import { Resolve } from './resolve/resolve';
-import { DEPTH, MAX_SCALE, Targets } from './resolve/targets';
+import { Sky, skyPipeline } from './light/sky';
+import { Resolve, resolvePipeline } from './resolve/resolve';
+import { MAX_SCALE, Targets } from './resolve/targets';
 import { jitter, STILL_FRAMES, Temporal, type Step } from './resolve/temporal';
 import { EYE, Instances, SUN, type InstanceStats, type LastFrame } from './instances/instances';
 import { GroundSource } from './stream/ground';
 import { eyeTiles, pageDecoder, type EyeTiles } from './stream/terrain';
-import { Terrain, type Audit, type TerrainStats } from './terrain/terrain';
+import { Terrain, terrainPipelines, type Audit, type TerrainStats } from './terrain/terrain';
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
 import { TreeModels } from './vegetation/tree-models';
@@ -68,6 +68,14 @@ export interface Stats {
     instances: InstanceStats;
 }
 
+/**
+ * The pipelines of the first frame: the terrain and its compute, the ground pages, the sky and the
+ * resolve. The other passes compile theirs at their attach, after the first frame.
+ */
+const FIRST: ((gpu: Gpu) => Promise<unknown>)[] = [terrainPipelines, groundPipelines, skyPipeline, resolvePipeline];
+/** The longest that the other passes wait for the first frame: a view whose eye has no ground draws none. */
+const REST_WAIT_MS = 2000;
+
 /** Where the eye stands: a height, and whether it lies in a tunnel. */
 interface Feet { z: number; tunnel: boolean }
 
@@ -109,6 +117,14 @@ export class TrailView {
     /** Where the eye stood in the last frame: the height, and whether it was in a tunnel. */
     private feet?: Feet;
     private ready = false;
+    /** No frame draws before `start` lets it: a frame asks for every tile, and the tiles under the eye come first. */
+    private held = true;
+    /** The attach of the other passes, which starts at the first drawn frame (`firstDrawn`); it rejects when one fails. */
+    private rest: Promise<unknown> = Promise.resolve();
+    private firstDrawn?: () => void;
+    /** Whether every pass is attached; `completed` until a frame draws them all. */
+    private complete = false;
+    private completed = false;
     private pending = false;
     private moved = false;
     private last = 0;
@@ -153,9 +169,19 @@ export class TrailView {
     }
 
     /**
+     * Compiles the pipelines of the first frame on a device, without a view and without pools: on a cold
+     * shader cache that takes seconds. Call it as soon as a view is likely, such as when a drag toward one
+     * starts; `start` on the same device takes what it compiled, also while it still compiles.
+     */
+    static prepare(gpu: Gpu): Promise<void> {
+        return Promise.all(FIRST.map(make => gpu.once(make))).then(() => {});
+    }
+
+    /**
      * Starts the terrain and feature tiles under the eye, reads the ruleset and opens the ground layers,
-     * compiles the pipelines, then starts the other tile loads once the tiles under the eye are in, or
-     * after EYE_WAIT_MS: on a slow link the other loads would share it with them. `scale` is the render scale.
+     * attaches what the first frame draws, then starts the other tile loads once the tiles under the eye
+     * are in, or after EYE_WAIT_MS: on a slow link the other loads would share it with them. The other
+     * passes draw once they attach after the first frame. `scale` is the render scale.
      */
     static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number): Promise<TrailView> {
         const stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], stop.signal);
@@ -163,6 +189,7 @@ export class TrailView {
         const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale);
         await engine.attach(gpu);
         await Promise.race([tiles.arrived, new Promise(resolve => setTimeout(resolve, EYE_WAIT_MS))]);
+        engine.held = false;
         engine.request();
         return engine;
     }
@@ -245,9 +272,10 @@ export class TrailView {
     /**
      * Resolves after a frame in which no tile loads, every wanted page and shadow map is drawn, the eye
      * stands on the probed ground and the still view has all its jittered frames, once the GPU has
-     * finished it.
+     * finished it. Rejects when a pass fails to attach, as `nearReady` does.
      */
     async waitForIdle(): Promise<void> {
+        await this.rest;
         await this.nextFrame();
         // A tile or a probe that arrives draws the next frame.
         while (!this.destroyed && !this.idle()) await this.afterFrame();
@@ -255,7 +283,7 @@ export class TrailView {
     }
 
     private idle(): boolean {
-        return this.terrain.idle && this.groundLook.idle && this.houses.idle && this.trees.idle && this.forest.idle && this.plants.idle && this.orchards.idle && this.instances.idle
+        return this.complete && this.terrain.idle && this.groundLook.idle && this.houses.idle && this.trees.idle && this.forest.idle && this.plants.idle && this.orchards.idle && this.instances.idle
             && !this.shadow.pending && this.settled() && !this.converging;
     }
 
@@ -267,6 +295,7 @@ export class TrailView {
      * that never gets there, such as one whose tiles fail, resolves when it is idle.
      */
     async nearReady(): Promise<void> {
+        await this.rest;
         await this.nextFrame();
         while (!this.destroyed && !this.near() && !this.idle()) await this.afterFrame();
     }
@@ -287,28 +316,46 @@ export class TrailView {
     }
 
     private near(): boolean {
-        return this.drawing && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.idle && this.forest.idle
+        return this.drawing && this.complete && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.idle && this.forest.idle
             && this.plants.idle && this.orchards.idle && this.instances.idle && this.shadow.nearDrawn;
     }
 
-    /** Takes a device: the engine's buffers and textures are made in a scope of it, which `destroy()` releases. */
+    /**
+     * Resolves when the first frame can draw. The other passes attach at the first drawn frame, or after
+     * REST_WAIT_MS: their compiles would share the compiler and the CPU with the first frame. The engine's
+     * buffers and textures are made in a scope of the device, which `destroy()` releases.
+     */
     private async attach(base: Gpu): Promise<void> {
         const gpu = base.scope();
+        // The passes' attaches report a failed compile.
+        TrailView.prepare(gpu).catch(() => {});
+        this.complete = false;
         this.context.configure({ device: gpu.device, format: gpu.format, alphaMode: 'opaque' });
         const uniform = gpu.buffer('uniforms', FRAME_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         const look = gpu.buffer('uniforms', LOOK_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         const targets = new Targets(gpu);
         this.gpuState = { gpu, uniform, look, times: new PassTimes(gpu, PASSES, { resolve: 'terrain' }), targets };
         this.temporal.reset();
-        await this.shadow.attach(gpu);
-        const layouts = this.groundLook.layouts(gpu.device), frames = [uniform, this.shadow.frame];
-        await this.terrain.attach(gpu, uniform, this.shadow.frame, targets.format, DEPTH, layouts.render);
-        // The rest needs only the terrain's surface: their pipelines compile side by side.
-        await Promise.all([
-            this.groundLook.attach(gpu, look, this.terrain.surface!, this.shadow.entries()), this.sky.attach(gpu, layouts.render, targets.format, DEPTH), this.resolve.attach(gpu, layouts.render),
-            this.houses.attach(gpu, frames, this.terrain.surface!, this.terrain.features!, { render: layouts.render, compute: layouts.compute[1] }, targets.format, DEPTH),
-            this.instances.attach(gpu, frames, targets.format, DEPTH, layouts.render, { surface: this.terrain.surface!, features: this.terrain.features!, ground: layouts.render }),
-        ]);
+        // The maps at once: the ground's group binds them.
+        const shadow = this.shadow.attach(gpu), frames = [uniform, this.shadow.frame];
+        await this.terrain.attach(gpu, uniform);
+        const surface = this.terrain.surface!, features = this.terrain.features!;
+        await Promise.all([this.groundLook.attach(gpu, look, surface, this.shadow.entries()), this.sky.attach(gpu), this.resolve.attach(gpu)]);
+        const drawn = new Promise<void>(resolve => {
+            this.firstDrawn = resolve;
+            setTimeout(resolve, REST_WAIT_MS);
+        });
+        // A device lost before the first frame leaves the other passes to the next attach.
+        this.rest = drawn.then(async () => {
+            if (this.destroyed || this.gpuState.gpu !== gpu) return;
+            await Promise.all([shadow, this.terrain.attachParts(frames), this.houses.attach(gpu, frames, surface, features), this.instances.attach(gpu, frames, { surface, features })]);
+            // A destroy during these attaches released the scope before they made their buffers.
+            if (this.destroyed) return gpu.release();
+            if (this.gpuState.gpu !== gpu) return;
+            this.complete = this.completed = true;
+            this.request();
+        });
+        this.rest.catch(error => console.error('TrailView: a pass failed to attach:', error));
         // A lost device is created again and gets every pool again, without a reload of the page.
         gpu.device.lost.then(async info => {
             if (this.destroyed || info.reason === 'destroyed') return;
@@ -319,6 +366,8 @@ export class TrailView {
             if (!next) return console.error('WebGPU has no adapter after a lost device.');
             await this.attach(next);
             if (this.destroyed) return this.gpuState.gpu.release();
+            // The other passes attach before the next frame: until they do, they hold the lost device's resources.
+            this.firstDrawn?.();
             this.recoveries++;
             this.request();
         });
@@ -407,7 +456,7 @@ export class TrailView {
 
     private render(now: number): void {
         this.pending = false;
-        if (!this.ready) return;
+        if (!this.ready || this.held) return;
         if (!this.pacer.due(now)) return this.request();
         const start = performance.now();
         const steer = this.controls.steer(), dt = this.last ? Math.min(0.1, (now - this.last) / 1000) : 0;
@@ -446,11 +495,12 @@ export class TrailView {
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify(this.extras);
             moved = camera.some((value, i) => value !== this.camera[i]);
-            changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || extras !== this.drawnExtras;
+            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || extras !== this.drawnExtras;
             this.camera = camera;
             this.drawnExtras = extras;
+            this.completed = false;
             const sun = this.sun(), casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent;
-            cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, sun, { casters, reshaped: this.terrain.reshaped }, moved);
+            if (this.complete) cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, sun, { casters, reshaped: this.terrain.reshaped }, moved);
             this.shadow.write(gpu, [eye.east, eye.north, eye.z], sun);
             // A new map changes the frame as new content does.
             step = this.temporal.next(moved, changed || cascade >= 0, debug ? 1 : STILL_FRAMES);
@@ -500,6 +550,7 @@ export class TrailView {
         }
         const read = times.resolve(encoder, { ...this.terrain.stats.jobs, frame: start });
         gpu.device.queue.submit([encoder.finish()]);
+        if (step) this.firstDrawn?.();
         read();
         probed();
         counted();

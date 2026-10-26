@@ -1,6 +1,8 @@
 import type { Gpu } from '../gpu/device';
 import { CLIP_DISTANCES } from '../gpu/include';
+import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
+import { DEPTH, sceneFormat } from '../resolve/targets';
 import { COARSEST, key, type Node } from './lod';
 import type { Stamps } from './stamps';
 import { WATER_VERTEX, type WaterMesh } from './water-mesh';
@@ -53,32 +55,11 @@ export class Water {
 
     constructor(private readonly stamps: Stamps) {}
 
-    async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer, surfaceLayout: GPUBindGroupLayout, groundLayout: GPUBindGroupLayout, featureLayout: GPUBindGroupLayout, format: GPUTextureFormat, depthFormat: GPUTextureFormat): Promise<void> {
-        const { device } = gpu, V = GPUShaderStage.VERTEX;
-        const layout = device.createBindGroupLayout({ entries: [
-            { binding: 0, visibility: V | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
-            { binding: 2, visibility: V, buffer: { type: 'read-only-storage' } },
-            { binding: 3, visibility: V, buffer: { type: 'read-only-storage' } },
-        ] });
+    async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer): Promise<void> {
+        this.resources = undefined;
+        const { device } = gpu, { pipelines, layout } = await gpu.once(waterPipelines);
         // A node index and a level per instance, at most one instance per node.
         const instances = gpu.buffer('water', nodes.size / 2, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
-        const module = device.createShaderModule({ label: 'water', code: wgsl('terrain/water.wgsl', device.features.has('clip-distances') ? CLIP_DISTANCES : {}) });
-        const blend: GPUBlendComponent = { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' };
-        const pipeline = (kind: Kind) => device.createRenderPipelineAsync({
-            label: kind, layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surfaceLayout, groundLayout, featureLayout] }),
-            vertex: {
-                module, entryPoint: 'water_vertex', buffers: [{
-                    arrayStride: WATER_VERTEX * 4, attributes: [
-                        { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'float32' },
-                        { shaderLocation: 2, offset: 12, format: 'float32x2' }, { shaderLocation: 3, offset: 20, format: 'float32' },
-                    ],
-                }],
-            },
-            fragment: { module, entryPoint: 'water_fragment', targets: [{ format, ...(kind === 'ribbons' ? { blend: { color: blend, alpha: blend } } : {}) }] },
-            primitive: { topology: 'triangle-list' },
-            depthStencil: { format: depthFormat, depthWriteEnabled: kind !== 'ribbons', depthCompare: kind === 'ribbons' ? 'greater-equal' : 'greater', depthBiasSlopeScale: kind === 'lakes' ? 0 : DRAPE_BIAS },
-        });
-        const pipelines = Object.fromEntries(await Promise.all(KINDS.map(async kind => [kind, await pipeline(kind)]))) as Record<Kind, GPURenderPipeline>;
         this.placed.clear();
         this.vertexEnd = this.indexEnd = 0;
         this.resources = {
@@ -168,4 +149,31 @@ export class Water {
             }
         }
     }
+}
+
+/** The draws of the kinds, and their group 0. */
+async function waterPipelines(gpu: Gpu): Promise<{ pipelines: Record<Kind, GPURenderPipeline>; layout: GPUBindGroupLayout }> {
+    const { device } = gpu, V = GPUShaderStage.VERTEX, { surface, ground, features } = gpu.once(layouts);
+    const layout = device.createBindGroupLayout({ entries: [
+        { binding: 0, visibility: V | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 2, visibility: V, buffer: { type: 'read-only-storage' } },
+        { binding: 3, visibility: V, buffer: { type: 'read-only-storage' } },
+    ] });
+    const module = device.createShaderModule({ label: 'water', code: wgsl('terrain/water.wgsl', device.features.has('clip-distances') ? CLIP_DISTANCES : {}) });
+    const blend: GPUBlendComponent = { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' };
+    const pipeline = (kind: Kind) => device.createRenderPipelineAsync({
+        label: kind, layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surface, ground, features] }),
+        vertex: {
+            module, entryPoint: 'water_vertex', buffers: [{
+                arrayStride: WATER_VERTEX * 4, attributes: [
+                    { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'float32' },
+                    { shaderLocation: 2, offset: 12, format: 'float32x2' }, { shaderLocation: 3, offset: 20, format: 'float32' },
+                ],
+            }],
+        },
+        fragment: { module, entryPoint: 'water_fragment', targets: [{ format: sceneFormat(gpu), ...(kind === 'ribbons' ? { blend: { color: blend, alpha: blend } } : {}) }] },
+        primitive: { topology: 'triangle-list' },
+        depthStencil: { format: DEPTH, depthWriteEnabled: kind !== 'ribbons', depthCompare: kind === 'ribbons' ? 'greater-equal' : 'greater', depthBiasSlopeScale: kind === 'lakes' ? 0 : DRAPE_BIAS },
+    });
+    return { pipelines: Object.fromEntries(await Promise.all(KINDS.map(async kind => [kind, await pipeline(kind)]))) as Record<Kind, GPURenderPipeline>, layout };
 }

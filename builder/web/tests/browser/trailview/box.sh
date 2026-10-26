@@ -164,10 +164,8 @@ if [[ ! -s $OUT/terrain.mbtiles ]]; then
 fi
 
 if [[ ! -d $OUT/features ]]; then
-  # The step builds its solvers offline.
-  _run cargo fetch --locked
-  _run "${PY[@]}" -m tools.planner_trailview_features --osm "$OUT/osm.pbf" --terrain "$OUT/terrain.mbtiles" \
-    --bounds "$BOX" --output "$OUT/features.pmtiles"
+  _run nice -n 10 cargo run --release --locked -p obc-trailview-features -- --osm "$OUT/osm.pbf" \
+    --terrain "$OUT/terrain.mbtiles" --bounds "$BOX" --output "$OUT/features.pmtiles"
   # The harness serves a folder of feature tiles `z/x/y.bin`.
   "${PY[@]}" - "$OUT/features.pmtiles" "$OUT/features.tmp" <<'EOF'
 import sys

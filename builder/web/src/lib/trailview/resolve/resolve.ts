@@ -1,6 +1,7 @@
 import { NEAR } from '../frame/camera';
 import { CURVATURE } from '../frame/frame';
 import type { Gpu } from '../gpu/device';
+import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { HISTORY, HISTORY_DEPTH, type Targets } from './targets';
 
@@ -42,25 +43,9 @@ export class Resolve {
     private version = -1;
     private last?: Frame;
 
-    /** Compiles the pass, with the look of shade.wgsl in group 2. */
-    async attach(gpu: Gpu, look: GPUBindGroupLayout): Promise<void> {
-        const { device } = gpu, F = GPUShaderStage.FRAGMENT;
-        const layout = device.createBindGroupLayout({ entries: [
-            { binding: 0, visibility: F, buffer: { type: 'uniform' } },
-            { binding: 1, visibility: F, texture: { sampleType: 'unfilterable-float' } },
-            { binding: 2, visibility: F, texture: { sampleType: 'depth' } },
-            { binding: 3, visibility: F, texture: { sampleType: 'float' } },
-            { binding: 4, visibility: F, sampler: { type: 'filtering' } },
-            { binding: 5, visibility: F, sampler: { type: 'non-filtering' } },
-            { binding: 6, visibility: F, texture: { sampleType: 'float' } },
-        ] });
-        const empty = device.createBindGroupLayout({ entries: [] });
-        const module = device.createShaderModule({ label: 'resolve', code: wgsl('resolve/resolve.wgsl') });
-        const pipeline = await device.createRenderPipelineAsync({
-            label: 'resolve', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, empty, look] }),
-            vertex: { module, entryPoint: 'resolve_vertex' },
-            fragment: { module, entryPoint: 'resolve_fragment', targets: [{ format: gpu.format }, { format: HISTORY }, { format: HISTORY_DEPTH }] },
-        });
+    async attach(gpu: Gpu): Promise<void> {
+        const { device } = gpu, pipeline = await gpu.once(resolvePipeline), layout = pipeline.getBindGroupLayout(0);
+        const empty = pipeline.getBindGroupLayout(1);
         this.resources = {
             gpu, pipeline, layout, empty: device.createBindGroup({ layout: empty, entries: [] }),
             uniform: gpu.buffer('uniforms', UNIFORM_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
@@ -101,4 +86,25 @@ export class Resolve {
         pass.end();
         this.last = frame;
     }
+}
+
+/** The pass, with the look of shade.wgsl in group 2. */
+export function resolvePipeline(gpu: Gpu): Promise<GPURenderPipeline> {
+    const { device } = gpu, F = GPUShaderStage.FRAGMENT;
+    const layout = device.createBindGroupLayout({ entries: [
+        { binding: 0, visibility: F, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: F, texture: { sampleType: 'unfilterable-float' } },
+        { binding: 2, visibility: F, texture: { sampleType: 'depth' } },
+        { binding: 3, visibility: F, texture: { sampleType: 'float' } },
+        { binding: 4, visibility: F, sampler: { type: 'filtering' } },
+        { binding: 5, visibility: F, sampler: { type: 'non-filtering' } },
+        { binding: 6, visibility: F, texture: { sampleType: 'float' } },
+    ] });
+    const empty = device.createBindGroupLayout({ entries: [] });
+    const module = device.createShaderModule({ label: 'resolve', code: wgsl('resolve/resolve.wgsl') });
+    return device.createRenderPipelineAsync({
+        label: 'resolve', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, empty, gpu.once(layouts).ground] }),
+        vertex: { module, entryPoint: 'resolve_vertex' },
+        fragment: { module, entryPoint: 'resolve_fragment', targets: [{ format: gpu.format }, { format: HISTORY }, { format: HISTORY_DEPTH }] },
+    });
 }

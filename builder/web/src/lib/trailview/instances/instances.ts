@@ -1,6 +1,8 @@
 import type { Gpu } from '../gpu/device';
+import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { CASTER_DEPTH, CASTER_PRIMITIVE } from '../light/shadow';
+import { DEPTH, sceneFormat } from '../resolve/targets';
 
 /** Draws per model: up to three mesh tiers and the impostor tier, as TIERS in emit.wgsl. */
 const TIERS = 4;
@@ -86,11 +88,8 @@ export interface LastFrame { depth: GPUTexture; pixels: [number, number]; viewPr
  */
 export const EYE = 0, SUN = 1, VIEWS = [EYE, SUN];
 
-/** A bind group and its layout. */
-export interface Bound { layout: GPUBindGroupLayout; group: GPUBindGroup }
-
-/** What a producer binds besides group 0: the terrain's surface (group 1), the layout of the ground pages (group 2) and the feature mask (group 3). */
-export interface Surfaces { surface: Bound; features: Bound; ground: GPUBindGroupLayout }
+/** What a producer binds besides group 0 and the ground pages (group 2): the terrain's surface (group 1) and the feature mask (group 3). */
+export interface Surfaces { surface: GPUBindGroup; features: GPUBindGroup }
 
 /**
  * A compute pass that emits instances (emit.wgsl) for a view, with the ground pages in group 2. The
@@ -269,13 +268,13 @@ export class Instances {
     }
 
     /** Takes the pools on a device, then attaches the producers. `frames` are the views' frame uniforms. */
-    async attach(gpu: Gpu, frames: GPUBuffer[], format: GPUTextureFormat, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout, surfaces: Surfaces): Promise<void> {
+    async attach(gpu: Gpu, frames: GPUBuffer[], surfaces: Surfaces): Promise<void> {
         this.resources = undefined;
         this.attached = undefined;
         this.uploaded = false;
         this.atlas.clear();
         this.unbaked.clear();
-        const { device } = gpu, C = GPUShaderStage.COMPUTE, V = GPUShaderStage.VERTEX, F = GPUShaderStage.FRAGMENT;
+        const { device } = gpu, p = await gpu.once(instancePipelines);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, uniform = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
         const atlas = () => gpu.texture('instances', {
             size: [ATLAS, ATLAS, SLOTS], mipLevelCount: ATLAS_LEVELS, format: 'rgba8unorm',
@@ -301,86 +300,13 @@ export class Instances {
         const drawOf = new Uint32Array(DRAWS * STRIDE / 4);
         for (let d = 0; d < DRAWS; d++) drawOf[d * STRIDE / 4] = d;
         device.queue.writeBuffer(b.drawOf, 0, drawOf);
-        const module = (label: string, path: string) => device.createShaderModule({ label, code: wgsl(path) });
-        const entry = (binding: number, visibility: number, type: GPUBufferBindingType, dynamic = false): GPUBindGroupLayoutEntry =>
-            ({ binding, visibility, buffer: { type, hasDynamicOffset: dynamic, minBindingSize: dynamic ? 16 : undefined } });
-        const sortLayout = device.createBindGroupLayout({ entries: [
-            entry(0, C, 'storage'), entry(1, C, 'read-only-storage'), entry(2, C, 'storage'), entry(3, C, 'storage'), entry(4, C, 'read-only-storage'), entry(5, C, 'storage'),
-        ] });
-        const renderLayout = device.createBindGroupLayout({ entries: [
-            entry(0, V | F, 'uniform'), entry(1, V, 'read-only-storage'), entry(2, V, 'read-only-storage'), entry(3, V, 'uniform'), entry(4, V, 'uniform', true),
-            entry(5, V | F, 'read-only-storage'),
-        ] });
-        const atlasLayout = device.createBindGroupLayout({ entries: [
-            { binding: 0, visibility: F, texture: { viewDimension: '2d-array' } }, { binding: 1, visibility: F, texture: { viewDimension: '2d-array' } },
-            { binding: 2, visibility: F, sampler: {} }, entry(3, V, 'uniform'), entry(4, V, 'read-only-storage'),
-        ] });
-        const bakeLayout = device.createBindGroupLayout({ entries: [entry(0, V | C, 'uniform', true)] });
-        const mipLayout = device.createBindGroupLayout({ entries: [
-            ...[0, 1].map(binding => ({ binding, visibility: C, texture: { viewDimension: '2d-array' as const } })),
-            ...[2, 3].map(binding => ({ binding, visibility: C, storageTexture: { format: 'rgba8unorm' as const, viewDimension: '2d-array' as const } })),
-        ] });
-        const firstLayout = device.createBindGroupLayout({ entries: [
-            { binding: 0, visibility: C, texture: { sampleType: 'depth' } }, { binding: 1, visibility: C, storageTexture: { format: 'r32float' } }, entry(4, C, 'uniform'),
-        ] });
-        const downLayout = device.createBindGroupLayout({ entries: [
-            { binding: 2, visibility: C, texture: { sampleType: 'unfilterable-float' } }, { binding: 3, visibility: C, storageTexture: { format: 'r32float' } },
-        ] });
-        const hizModule = module('depth pyramid', 'instances/hiz.wgsl');
-        const [hizFirst, hizDown] = await Promise.all([
-            device.createComputePipelineAsync({ label: 'pyramid first', layout: device.createPipelineLayout({ bindGroupLayouts: [firstLayout] }), compute: { module: hizModule, entryPoint: 'first' } }),
-            device.createComputePipelineAsync({ label: 'pyramid down', layout: device.createPipelineLayout({ bindGroupLayouts: [downLayout] }), compute: { module: hizModule, entryPoint: 'down' } }),
-        ]);
         const pyramid = gpu.texture('instances', {
             size: [PYRAMID, PYRAMID], mipLevelCount: PYRAMID_LEVELS, format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
         }, PYRAMID * PYRAMID * 4 * 4 / 3);
         const level = (k: number) => pyramid.createView({ baseMipLevel: k, mipLevelCount: 1 });
         const downGroups = Array.from({ length: PYRAMID_LEVELS - 1 }, (_, k) => device.createBindGroup({
-            layout: downLayout, entries: [{ binding: 2, resource: level(k) }, { binding: 3, resource: level(k + 1) }],
+            layout: p.downLayout, entries: [{ binding: 2, resource: level(k) }, { binding: 3, resource: level(k + 1) }],
         }));
-        const emptyLayout = device.createBindGroupLayout({ entries: [] });
-        const sortModule = module('instances sort', 'instances/sort.wgsl'), drawModule = module('instances draw', 'instances/draw.wgsl');
-        const impostorModule = module('impostor', 'instances/impostor.wgsl'), bakeModule = module('impostor bake', 'instances/impostor-bake.wgsl');
-        const mipModule = module('impostor mips', 'instances/impostor-mips.wgsl');
-        const vertexLayout: GPUVertexBufferLayout = {
-            arrayStride: VERTEX_BYTES, attributes: [
-                { shaderLocation: 0, offset: 0, format: 'snorm16x4' }, { shaderLocation: 1, offset: 8, format: 'snorm8x4' }, { shaderLocation: 2, offset: 12, format: 'unorm8x4' },
-            ],
-        };
-        const depthStencil: GPUDepthStencilState = { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' };
-        const sortPipeline = device.createPipelineLayout({ bindGroupLayouts: [sortLayout] });
-        const meshPipeline = (fragment: string) => device.createRenderPipelineAsync({
-            label: 'instances mesh', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, emptyLayout, groundLayout] }),
-            vertex: { module: drawModule, entryPoint: 'mesh_vertex', buffers: [vertexLayout] },
-            fragment: { module: drawModule, entryPoint: fragment, targets: [{ format }] },
-            // Leaves and twigs are single faces, seen from both sides.
-            primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil,
-        });
-        const [countDraws, placeDraws, scatter, mesh, whole, caster, impostor, bake, mips] = await Promise.all([
-            device.createComputePipelineAsync({ label: 'instances count', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'count_draws' } }),
-            device.createComputePipelineAsync({ label: 'instances place', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'place_draws' } }),
-            device.createComputePipelineAsync({ label: 'instances scatter', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'scatter' } }),
-            meshPipeline('mesh_fragment'),
-            meshPipeline('mesh_fragment_whole'),
-            device.createRenderPipelineAsync({
-                label: 'instances caster', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout] }),
-                vertex: { module: drawModule, entryPoint: 'caster_vertex', buffers: [vertexLayout] }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH,
-            }),
-            device.createRenderPipelineAsync({
-                label: 'impostors', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, atlasLayout, groundLayout] }),
-                vertex: { module: impostorModule, entryPoint: 'impostor_vertex', buffers: [vertexLayout] },
-                fragment: { module: impostorModule, entryPoint: 'impostor_fragment', targets: [{ format }] },
-                primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil,
-            }),
-            device.createRenderPipelineAsync({
-                label: 'impostor bake', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, bakeLayout] }),
-                vertex: { module: bakeModule, entryPoint: 'bake_vertex', buffers: [vertexLayout] },
-                fragment: { module: bakeModule, entryPoint: 'bake_fragment', targets: [{ format: 'rgba8unorm' }, { format: 'rgba8unorm' }] },
-                primitive: { topology: 'triangle-list', cullMode: 'none' },
-                depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
-            }),
-            device.createComputePipelineAsync({ label: 'impostor mips', layout: device.createPipelineLayout({ bindGroupLayouts: [mipLayout, bakeLayout] }), compute: { module: mipModule, entryPoint: 'down' } }),
-        ]);
         const group = (layout: GPUBindGroupLayout, resources: (GPUBuffer | [GPUBuffer, number] | GPUTextureView | GPUSampler)[]) => device.createBindGroup({
             layout, entries: resources.map((resource, binding) => ({
                 binding, resource: resource instanceof GPUBuffer ? { buffer: resource } : Array.isArray(resource) ? { buffer: resource[0], size: resource[1] } : resource,
@@ -396,17 +322,17 @@ export class Instances {
                 bases: gpu.buffer('instances', 2 * DRAWS * 4, GPUBufferUsage.STORAGE), lists: gpu.buffer('instances', capacity * INSTANCE_BYTES, GPUBufferUsage.STORAGE),
             };
             return {
-                ...v, sortGroup: group(sortLayout, [v.tally, view === SUN ? b.coarse : b.meshes, v.args, v.bases, v.staged, v.lists]),
-                renderGroup: group(renderLayout, [frame, v.lists, v.bases, b.models, [b.drawOf, 16], b.tones]),
+                ...v, sortGroup: group(p.sortLayout, [v.tally, view === SUN ? b.coarse : b.meshes, v.args, v.bases, v.staged, v.lists]),
+                renderGroup: group(p.renderLayout, [frame, v.lists, v.bases, b.models, [b.drawOf, 16], b.tones]),
             };
         });
         this.resources = {
-            gpu, ...b, views, countDraws, placeDraws, scatter, mesh, whole, caster, impostor, bake, mips, pyramid, hizFirst, hizDown, firstLayout, downGroups,
+            gpu, ...b, ...p.pipelines, views, pyramid, firstLayout: p.firstLayout, downGroups,
             viewport: gpu.buffer('instances', 16, uniform),
-            emptyGroup: group(emptyLayout, []),
-            atlasGroup: group(atlasLayout, [layers(b.albedo), layers(b.normal), device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' }), b.slots, b.outlines]),
-            bakeGroup: group(bakeLayout, [[b.bakes, 16]]),
-            mipGroups: Array.from({ length: ATLAS_LEVELS - 1 }, (_, k) => group(mipLayout, [layers(b.albedo, k), layers(b.normal, k), layers(b.albedo, k + 1), layers(b.normal, k + 1)])),
+            emptyGroup: group(p.emptyLayout, []),
+            atlasGroup: group(p.atlasLayout, [layers(b.albedo), layers(b.normal), device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' }), b.slots, b.outlines]),
+            bakeGroup: group(p.bakeLayout, [[b.bakes, 16]]),
+            mipGroups: Array.from({ length: ATLAS_LEVELS - 1 }, (_, k) => group(p.mipLayout, [layers(b.albedo, k), layers(b.normal, k), layers(b.albedo, k + 1), layers(b.normal, k + 1)])),
         };
         this.attached = [gpu, surfaces];
         await Promise.all(this.producers.map(producer => attachProducer(producer, gpu, surfaces)));
@@ -714,6 +640,88 @@ export class Instances {
 }
 
 /** Attaches a producer; one that fails logs why and draws nothing, and the rest go on. */
+/** The depth pyramid, the sort, the draws of the meshes and the impostors, the bake of the impostors and their mips, and their layouts. */
+async function instancePipelines(gpu: Gpu) {
+    const { device } = gpu, C = GPUShaderStage.COMPUTE, V = GPUShaderStage.VERTEX, F = GPUShaderStage.FRAGMENT, { ground } = gpu.once(layouts);
+    const module = (label: string, path: string) => device.createShaderModule({ label, code: wgsl(path) });
+    const entry = (binding: number, visibility: number, type: GPUBufferBindingType, dynamic = false): GPUBindGroupLayoutEntry =>
+        ({ binding, visibility, buffer: { type, hasDynamicOffset: dynamic, minBindingSize: dynamic ? 16 : undefined } });
+    const sortLayout = device.createBindGroupLayout({ entries: [
+        entry(0, C, 'storage'), entry(1, C, 'read-only-storage'), entry(2, C, 'storage'), entry(3, C, 'storage'), entry(4, C, 'read-only-storage'), entry(5, C, 'storage'),
+    ] });
+    const renderLayout = device.createBindGroupLayout({ entries: [
+        entry(0, V | F, 'uniform'), entry(1, V, 'read-only-storage'), entry(2, V, 'read-only-storage'), entry(3, V, 'uniform'), entry(4, V, 'uniform', true),
+        entry(5, V | F, 'read-only-storage'),
+    ] });
+    const atlasLayout = device.createBindGroupLayout({ entries: [
+        { binding: 0, visibility: F, texture: { viewDimension: '2d-array' } }, { binding: 1, visibility: F, texture: { viewDimension: '2d-array' } },
+        { binding: 2, visibility: F, sampler: {} }, entry(3, V, 'uniform'), entry(4, V, 'read-only-storage'),
+    ] });
+    const bakeLayout = device.createBindGroupLayout({ entries: [entry(0, V | C, 'uniform', true)] });
+    const mipLayout = device.createBindGroupLayout({ entries: [
+        ...[0, 1].map(binding => ({ binding, visibility: C, texture: { viewDimension: '2d-array' as const } })),
+        ...[2, 3].map(binding => ({ binding, visibility: C, storageTexture: { format: 'rgba8unorm' as const, viewDimension: '2d-array' as const } })),
+    ] });
+    const firstLayout = device.createBindGroupLayout({ entries: [
+        { binding: 0, visibility: C, texture: { sampleType: 'depth' } }, { binding: 1, visibility: C, storageTexture: { format: 'r32float' } }, entry(4, C, 'uniform'),
+    ] });
+    const downLayout = device.createBindGroupLayout({ entries: [
+        { binding: 2, visibility: C, texture: { sampleType: 'unfilterable-float' } }, { binding: 3, visibility: C, storageTexture: { format: 'r32float' } },
+    ] });
+    const hizModule = module('depth pyramid', 'instances/hiz.wgsl');
+    const hiz = Promise.all([
+        device.createComputePipelineAsync({ label: 'pyramid first', layout: device.createPipelineLayout({ bindGroupLayouts: [firstLayout] }), compute: { module: hizModule, entryPoint: 'first' } }),
+        device.createComputePipelineAsync({ label: 'pyramid down', layout: device.createPipelineLayout({ bindGroupLayouts: [downLayout] }), compute: { module: hizModule, entryPoint: 'down' } }),
+    ]);
+    const emptyLayout = device.createBindGroupLayout({ entries: [] });
+    const sortModule = module('instances sort', 'instances/sort.wgsl'), drawModule = module('instances draw', 'instances/draw.wgsl');
+    const impostorModule = module('impostor', 'instances/impostor.wgsl'), bakeModule = module('impostor bake', 'instances/impostor-bake.wgsl');
+    const mipModule = module('impostor mips', 'instances/impostor-mips.wgsl');
+    const vertexLayout: GPUVertexBufferLayout = {
+        arrayStride: VERTEX_BYTES, attributes: [
+            { shaderLocation: 0, offset: 0, format: 'snorm16x4' }, { shaderLocation: 1, offset: 8, format: 'snorm8x4' }, { shaderLocation: 2, offset: 12, format: 'unorm8x4' },
+        ],
+    };
+    const depthStencil: GPUDepthStencilState = { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' };
+    const sortPipeline = device.createPipelineLayout({ bindGroupLayouts: [sortLayout] });
+    const meshPipeline = (fragment: string) => device.createRenderPipelineAsync({
+        label: 'instances mesh', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, emptyLayout, ground] }),
+        vertex: { module: drawModule, entryPoint: 'mesh_vertex', buffers: [vertexLayout] },
+        fragment: { module: drawModule, entryPoint: fragment, targets: [{ format: sceneFormat(gpu) }] },
+        // Leaves and twigs are single faces, seen from both sides.
+        primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil,
+    });
+    const [[hizFirst, hizDown], [countDraws, placeDraws, scatter, mesh, whole, caster, impostor, bake, mips]] = await Promise.all([hiz, Promise.all([
+        device.createComputePipelineAsync({ label: 'instances count', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'count_draws' } }),
+        device.createComputePipelineAsync({ label: 'instances place', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'place_draws' } }),
+        device.createComputePipelineAsync({ label: 'instances scatter', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'scatter' } }),
+        meshPipeline('mesh_fragment'),
+        meshPipeline('mesh_fragment_whole'),
+        device.createRenderPipelineAsync({
+            label: 'instances caster', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout] }),
+            vertex: { module: drawModule, entryPoint: 'caster_vertex', buffers: [vertexLayout] }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH,
+        }),
+        device.createRenderPipelineAsync({
+            label: 'impostors', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, atlasLayout, ground] }),
+            vertex: { module: impostorModule, entryPoint: 'impostor_vertex', buffers: [vertexLayout] },
+            fragment: { module: impostorModule, entryPoint: 'impostor_fragment', targets: [{ format: sceneFormat(gpu) }] },
+            primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil,
+        }),
+        device.createRenderPipelineAsync({
+            label: 'impostor bake', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, bakeLayout] }),
+            vertex: { module: bakeModule, entryPoint: 'bake_vertex', buffers: [vertexLayout] },
+            fragment: { module: bakeModule, entryPoint: 'bake_fragment', targets: [{ format: 'rgba8unorm' }, { format: 'rgba8unorm' }] },
+            primitive: { topology: 'triangle-list', cullMode: 'none' },
+            depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
+        }),
+        device.createComputePipelineAsync({ label: 'impostor mips', layout: device.createPipelineLayout({ bindGroupLayouts: [mipLayout, bakeLayout] }), compute: { module: mipModule, entryPoint: 'down' } }),
+    ])]);
+    return {
+        sortLayout, renderLayout, atlasLayout, bakeLayout, mipLayout, firstLayout, downLayout, emptyLayout,
+        pipelines: { hizFirst, hizDown, countDraws, placeDraws, scatter, mesh, whole, caster, impostor, bake, mips },
+    };
+}
+
 function attachProducer(producer: Producer, ...args: Parameters<Producer['attach']>): Promise<void> {
     return producer.attach(...args).catch(error => console.error('A producer of instances failed to attach:', error));
 }

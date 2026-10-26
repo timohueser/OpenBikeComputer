@@ -1,6 +1,7 @@
 import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import type { Gpu } from '../gpu/device';
+import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { COVER_ORDER } from '../ground/rules';
 import { EYE, Instances, VIEWS, type ModelSpec, type Producer, type Surfaces } from '../instances/instances';
@@ -111,24 +112,19 @@ export class Plants implements Producer {
         return this.building === 0;
     }
 
-    async attach(gpu: Gpu, { surface, features, ground }: Surfaces): Promise<void> {
+    async attach(gpu: Gpu, { surface, features }: Surfaces): Promise<void> {
         this.resources = undefined;
-        const { device } = gpu, C = GPUShaderStage.COMPUTE;
+        const { device } = gpu;
         const data = gpu.buffer('vegetation', this.data.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const params = gpu.buffer('vegetation', 64, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         device.queue.writeBuffer(data, 0, this.data);
-        const layout = device.createBindGroupLayout({ entries: [
-            ...Instances.emitEntries(), { binding: 8, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 9, visibility: C, buffer: { type: 'uniform' } },
-        ] });
-        const module = device.createShaderModule({ label: 'plants', code: wgsl('vegetation/plants.wgsl') });
-        const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout, surface.layout, ground, features.layout] });
-        const [groundPlants, shrubs] = await Promise.all(['ground_plants', 'shrubs'].map(entryPoint => device.createComputePipelineAsync({ label: entryPoint, layout: pipelineLayout, compute: { module, entryPoint } })));
+        const [groundPlants, shrubs] = await gpu.once(plantPipelines);
         this.resources = {
             gpu, ground: groundPlants, shrubs, params,
-            groups: VIEWS.map(view => device.createBindGroup({ layout, entries: [...this.instances.emitResources(view), { binding: 8, resource: { buffer: data } }, { binding: 9, resource: { buffer: params } }] })),
+            groups: VIEWS.map(view => device.createBindGroup({ layout: groundPlants.getBindGroupLayout(0), entries: [...this.instances.emitResources(view), { binding: 8, resource: { buffer: data } }, { binding: 9, resource: { buffer: params } }] })),
         };
-        this.surface = surface.group;
-        this.features = features.group;
+        this.surface = surface;
+        this.features = features;
     }
 
     /** The models of the date's season, and the windows of the grids about the eye at (lon, lat), `above` metres over the ground. */
@@ -176,4 +172,15 @@ export class Plants implements Producer {
 function spec({ shrub, tie }: Model, mesh: BuiltMesh): ModelSpec {
     if (shrub) return { tiers: [{ mesh, until: SHRUB_MESH_M }], impostor: { from: 0, until: SHRUB_M }, tie };
     return { tiers: [{ mesh, until: GROUND_M }], tie };
+}
+
+/** The ground plants and the shrubs about the eye. */
+function plantPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
+    const { device } = gpu, C = GPUShaderStage.COMPUTE, { surface, ground, features } = gpu.once(layouts);
+    const group = device.createBindGroupLayout({ entries: [
+        ...Instances.emitEntries(), { binding: 8, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 9, visibility: C, buffer: { type: 'uniform' } },
+    ] });
+    const module = device.createShaderModule({ label: 'plants', code: wgsl('vegetation/plants.wgsl') });
+    const layout = device.createPipelineLayout({ bindGroupLayouts: [group, surface, ground, features] });
+    return Promise.all(['ground_plants', 'shrubs'].map(entryPoint => device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module, entryPoint } })));
 }

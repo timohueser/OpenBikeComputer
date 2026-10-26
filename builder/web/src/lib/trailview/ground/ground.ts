@@ -1,4 +1,5 @@
 import type { Gpu } from '../gpu/device';
+import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { LOOK_CODES } from '../light/look';
 import type { Region, Rules } from '../rules/regions';
@@ -68,7 +69,6 @@ export class Ground {
     readonly finest: number;
     /** `codes` of the look: the material code of heath, the finest level, and the sizes of the vocabulary. */
     readonly codes: [number, number, number, number];
-    private layout?: { render: GPUBindGroupLayout; compute: GPUBindGroupLayout[] };
     private resources?: Resources;
     private surfaceGroup?: GPUBindGroup;
     private readonly pages: GroundPages;
@@ -118,46 +118,12 @@ export class Ground {
         return this.source?.attribution ?? [];
     }
 
-    /** The bind group layouts: group 2 of the terrain and the sky, and groups 0 and 2 of the ground compute. */
-    layouts(device: GPUDevice): { render: GPUBindGroupLayout; compute: GPUBindGroupLayout[] } {
-        // The instances' vertices read the look for the haze.
-        const stages = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, compute = GPUShaderStage.COMPUTE, visible = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
-        const array = (sampleType: GPUTextureSampleType): Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'> => ({ texture: { sampleType, viewDimension: '2d-array' } });
-        const entries: GPUBindGroupLayoutEntry[] = [
-            { binding: 0, visibility: stages, buffer: { type: 'uniform' } },
-            { binding: 1, visibility: stages, buffer: { type: 'read-only-storage' } },
-            { binding: 2, visibility: stages, ...array('uint') },
-            { binding: 3, visibility: stages, texture: { sampleType: 'unfilterable-float' } },
-            { binding: 4, visibility: stages, sampler: {} },
-        ];
-        // The compute writes the cache: its bind group does not hold it for sampling. The producers of
-        // instances read the snow in it.
-        this.layout = {
-            render: device.createBindGroupLayout({ entries: [
-                ...entries, { binding: 5, visibility: GPUShaderStage.FRAGMENT | compute, ...array('float') }, { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
-                { binding: 7, visibility: stages, ...array('float') },
-                // The object shadows; a small instance reads them in its vertices (instances/draw.wgsl).
-                { binding: 8, visibility: visible, texture: { sampleType: 'depth', viewDimension: '2d-array' } }, { binding: 9, visibility: visible, sampler: { type: 'comparison' } },
-                { binding: 10, visibility: visible, buffer: { type: 'uniform' } },
-            ] }),
-            compute: [
-                device.createBindGroupLayout({ entries: [
-                    { binding: 0, visibility: compute, buffer: { type: 'read-only-storage' } },
-                    { binding: 1, visibility: compute, storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } },
-                    { binding: 2, visibility: compute, ...array('float') },
-                    { binding: 3, visibility: compute, ...array('float') },
-                    { binding: 4, visibility: compute, storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } },
-                ] }),
-                device.createBindGroupLayout({ entries }),
-            ],
-        };
-        return this.layout;
-    }
-
-    /** The pools and the compute for a device, after `layouts`. A new device builds every page again. */
-    /** `shadow` holds bindings 8 to 10 of the render group: the object shadows (shadow.ts). */
-    async attach(gpu: Gpu, look: GPUBuffer, surface: { layout: GPUBindGroupLayout; group: GPUBindGroup }, shadow: GPUBindGroupEntry[]): Promise<void> {
-        const { device } = gpu, layout = this.layout!, layers = POOL / LAYER_PAGES, side = PAGE * SIDE;
+    /**
+     * The pools and the compute for a device. A new device builds every page again. `surface` is the
+     * terrain's group 1; `shadow` holds bindings 8 to 10 of the render group: the object shadows (shadow.ts).
+     */
+    async attach(gpu: Gpu, look: GPUBuffer, surface: GPUBindGroup, shadow: GPUBindGroupEntry[]): Promise<void> {
+        const { device } = gpu, layout = gpu.once(layouts), layers = POOL / LAYER_PAGES, side = PAGE * SIDE;
         this.resources = undefined;
         this.lost();
         // The compute reads the codes, and a page can arrive before the first frame with an eye writes the look.
@@ -185,26 +151,24 @@ export class Ground {
             { binding: 0, resource: { buffer: look } }, { binding: 1, resource: { buffer: r.map } }, { binding: 2, resource: view(r.cells) },
             { binding: 3, resource: r.rules.createView() }, { binding: 4, resource: sampler },
         ];
-        const module = device.createShaderModule({ label: 'ground', code: wgsl('ground/ground.wgsl') });
-        const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.compute[0], surface.layout, layout.compute[1]] });
-        const [compute, horizon] = await Promise.all(['ground_main', 'horizon_main'].map(entryPoint => device.createComputePipelineAsync({ label: entryPoint, layout: pipelineLayout, compute: { module, entryPoint } })));
+        const [compute, horizon] = await gpu.once(groundPipelines);
         this.resources = {
             ...r, compute, horizon,
-            group: device.createBindGroup({ layout: layout.render, entries: [
+            group: device.createBindGroup({ layout: layout.ground, entries: [
                 ...inputs, { binding: 5, resource: view(r.cache) }, { binding: 6, resource: r.noise.createView() }, { binding: 7, resource: view(r.horizons) }, ...shadow,
             ] }),
             computeGroups: [
-                device.createBindGroup({ layout: layout.compute[0], entries: [
+                device.createBindGroup({ layout: layout.groundCompute[0], entries: [
                     { binding: 0, resource: { buffer: r.jobs } }, { binding: 1, resource: view(r.cache) }, { binding: 2, resource: view(r.colour) }, { binding: 3, resource: view(r.snow) },
                     { binding: 4, resource: view(r.horizons) },
                 ] }),
-                device.createBindGroup({ layout: layout.compute[1], entries: inputs }),
+                device.createBindGroup({ layout: layout.groundCompute[1], entries: inputs }),
             ],
         };
-        this.surfaceGroup = surface.group;
+        this.surfaceGroup = surface;
     }
 
-    /** Group 2 of a compute pass that reads the ground pages, with the layout `layouts().compute[1]`. */
+    /** Group 2 of a compute pass that reads the ground pages, with the layout `groundCompute[1]` of gpu/layouts.ts. */
     get computeGroup(): GPUBindGroup | undefined {
         return this.resources?.computeGroups[1];
     }
@@ -281,6 +245,14 @@ export class Ground {
         write(r.colour, [0, 0, job], data.colour);
         write(r.snow, [0, 0, job], data.snow);
     }
+}
+
+/** The compute of a page's ground parameters and relief, and that of its horizons. */
+export function groundPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
+    const { device } = gpu, { surface, groundCompute } = gpu.once(layouts);
+    const module = device.createShaderModule({ label: 'ground', code: wgsl('ground/ground.wgsl') });
+    const layout = device.createPipelineLayout({ bindGroupLayouts: [groundCompute[0], surface, groundCompute[1]] });
+    return Promise.all(['ground_main', 'horizon_main'].map(entryPoint => device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module, entryPoint } })));
 }
 
 /** Where a ground page lies: one of SIDE × SIDE tiles of a layer, as `in_page` in look.wgsl. */

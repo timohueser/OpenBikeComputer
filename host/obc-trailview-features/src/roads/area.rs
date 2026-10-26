@@ -12,6 +12,7 @@ use super::fit::Graph;
 use super::network::{distinct, hypot, sub, unique};
 use super::rows::{root, union};
 use super::{solve, Classes, Feature, Metrics, River, Solved};
+use crate::geometry::{bounds, Boxes};
 use crate::{metres, Terrain};
 
 /// An area is a tile of AREA_ZOOM, about 27 km at 47° N. Its job holds the ways within HALO_M of it.
@@ -226,7 +227,7 @@ pub fn solve_by_area(
     let count = features.len();
     let every: Vec<&Feature> = features.iter().chain(context).copied().collect();
     let region = Region::new(&every);
-    let boxes: Vec<[f64; 4]> = rivers.iter().map(|r| bounds(&r.points)).collect();
+    let boxes = Boxes::new(&rivers.iter().map(|r| bounds(&r.points)).collect::<Vec<_>>());
     let wanted: BTreeSet<Area> = (0..region.vertex.len())
         .filter(|&o| region.feature[o] < count)
         .map(|o| area_of(region.point[region.vertex[o]]))
@@ -288,7 +289,7 @@ fn solve_area(
     features: &[&Feature],
     terrain: &dyn Terrain,
     rivers: &[River],
-    boxes: &[[f64; 4]],
+    boxes: &Boxes,
     classes: &Classes,
     region: &Region,
     area: Area,
@@ -297,11 +298,7 @@ fn solve_area(
     let owned = |xy: [f64; 2]| area_of(xy) == area;
     let points: Vec<[f64; 2]> =
         chosen.iter().flat_map(|&f| &features[f].parts).flat_map(|points| distinct(points)).collect();
-    let [x0, y0, x1, y1] = bounds(&points);
-    let near: Vec<&River> = (0..rivers.len())
-        .filter(|&i| boxes[i][0] <= x1 && boxes[i][2] >= x0 && boxes[i][1] <= y1 && boxes[i][3] >= y0)
-        .map(|i| &rivers[i])
-        .collect();
+    let near: Vec<&River> = boxes.overlapping(bounds(&points)).into_iter().map(|i| &rivers[i]).collect();
     let subset: Vec<&Feature> = chosen.iter().map(|&f| features[f]).collect();
     let solved = solve(&subset, terrain, &near, classes, Some(&owned));
     let mut found = Vec::new();
@@ -375,14 +372,9 @@ impl Drop for Held<'_> {
 
 /// The bytes of memory that this process holds: `memory` counts what was free before it started.
 fn resident() -> usize {
-    let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
-    statm.split_whitespace().nth(1).and_then(|pages| pages.parse::<usize>().ok()).unwrap_or(0) * 4096
-}
-
-fn bounds(points: &[[f64; 2]]) -> [f64; 4] {
-    points.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, p| {
-        [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
-    })
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"));
+    line.and_then(|l| l.split_whitespace().nth(1)?.parse::<usize>().ok()).unwrap_or(0) << 10
 }
 
 #[cfg(test)]

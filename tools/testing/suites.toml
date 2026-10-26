@@ -31,6 +31,11 @@ name = "obc-formats"
 route = "required"
 triggers = ["specs/**"]
 
+# The bake embeds the kind table and the road classes, and its codec test reads the shared vectors.
+[[package]]
+name = "obc-trailview-features"
+triggers = ["data/trailview/kinds.json", "data/trailview/roads.json", "specs/vectors/trailview-features.*"]
+
 [[package]]
 name = "obc-link"
 triggers = ["specs/vectors/**"]
@@ -206,6 +211,8 @@ triggers = [
   "builder/web/package.json",
   "builder/web/package-lock.json",
   "tools/planner_mvt_verify.mjs",
+  # bins.test.ts reads the path widths of the bake.
+  "host/obc-trailview-features/src/structures.rs",
   "builder/web/vite.config.ts",
   "host/obc-map-core/schema/config.schema.json",
   "specs/vectors/**",
@@ -329,7 +336,7 @@ triggers = ["builder/web/tests/browser/trailview/**"]
 [[suite]]
 id = "python.repository-tools"
 route = "required"
-command = "rm -rf .artifacts/python/repository-tools && uv run --locked --group dev --group planner-snow --group planner-sun --group trailview-roads python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
+command = "rm -rf .artifacts/python/repository-tools && uv run --locked --group dev --group planner-snow --group planner-sun python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
 jobs = ["guards", "selection"]
 triggers = [
   "planner/search/place-kinds.json",
@@ -342,11 +349,7 @@ triggers = [
   # The planner tools read their credits and region boxes from them.
   "data/sources.toml",
   "data/regions/**",
-  # test_planner_trailview_features.py validates the kind table, reads the shared vectors and bakes a
-  # region with the solvers of the crate, by its class table.
-  "data/trailview/kinds.json",
-  "data/trailview/roads.json",
-  "host/obc-trailview-features/**",
+  # planner_verify.py decodes the feature tiles.
   "specs/vectors/trailview-features.*",
   # The footers that test_data_registry.py compares with the registry.
   "docs/templates/*.html",
