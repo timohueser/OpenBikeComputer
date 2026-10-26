@@ -99,7 +99,7 @@ impl Job {
                 let level = [Level::Natural, Level::Pond, Level::Reservoir][r.u8()? as usize];
                 let (half, ele) = (r.f64()?, r.f64()?);
                 let parts = (0..r.u32()?)
-                    .map(|_| Ok(Part { outer: r.u8()? != 0, points: r.points()? }))
+                    .map(|_| Ok(Part { outer: r.u8()? != 0, points: r.points()?, z: None }))
                     .collect::<Result<_, String>>()?;
                 Ok(water::Feature { kind, level, half, ele, parts })
             })

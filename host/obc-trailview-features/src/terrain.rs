@@ -3,12 +3,10 @@
 //! are those of `tools/trailview/profiles.py` to the bit: the same f32 arithmetic in the same order.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::File;
-use std::io::Read;
-use std::os::unix::fs::FileExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use crate::pmtiles::Archive;
 use crate::Terrain;
 
 const TILE: usize = 512;
@@ -21,18 +19,11 @@ type Key = (u8, u32, u32);
 type Heights = Option<Arc<Vec<f32>>>;
 
 pub struct Tiles {
-    source: Source,
+    /// The archives of the grid by name (`{z}-{x}-{y}`, or `13/{z}-{x}-{y}` for zoom 13), opened on use.
+    files: HashMap<String, PathBuf>,
+    open: Mutex<HashMap<String, Arc<Archive>>>,
     top: u8,
     cache: Mutex<Cache>,
-}
-
-enum Source {
-    /// The archives of the grid by name (`{z}-{x}-{y}`, or `13/{z}-{x}-{y}` for zoom 13), opened on use.
-    Grid {
-        files: HashMap<String, PathBuf>,
-        open: Mutex<HashMap<String, Arc<Archive>>>,
-    },
-    Mbtiles(Mutex<rusqlite::Connection>),
 }
 
 #[derive(Default)]
@@ -65,57 +56,41 @@ impl Tiles {
             archives.insert(part.to_string(), file.clone());
         }
         let top = if archives.keys().any(|part| part.starts_with("13/")) { 13 } else { 12 };
-        Ok(Self::new(Source::Grid { files: archives, open: Mutex::default() }, top))
+        Ok(Self { files: archives, open: Mutex::default(), top, cache: Mutex::default() })
     }
 
-    /// The terrain of a `planner-dem` MBTiles file.
-    pub fn mbtiles(path: &Path) -> Result<Self, String> {
-        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
-        let db = rusqlite::Connection::open_with_flags(path, flags).map_err(|e| format!("{}: {e}", path.display()))?;
-        let top: u8 = db
-            .query_row("SELECT max(zoom_level) FROM tiles", [], |row| row.get(0))
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(Self::new(Source::Mbtiles(Mutex::new(db)), top))
+    /// TEMPORARY until job.rs goes: there is no MBTiles terrain.
+    pub fn mbtiles(path: &std::path::Path) -> Result<Self, String> {
+        Err(format!("{}: the terrain is a grid", path.display()))
     }
 
-    fn new(source: Source, top: u8) -> Self {
-        Self { source, top, cache: Mutex::default() }
-    }
-
-    /// The encoded tile, None where the source has none.
+    /// The encoded tile, None where the grid has none.
     fn read(&self, (z, x, y): Key) -> Result<Option<Vec<u8>>, String> {
-        match &self.source {
-            Source::Grid { files, open } => {
-                let level = z.min(11);
-                let shift = z - level;
-                let part = format!("{level}-{}-{}", x >> shift, y >> shift);
-                let part = if z == 13 { format!("13/{part}") } else { part };
-                let archive = {
-                    let mut open = open.lock().unwrap();
-                    match open.get(&part) {
-                        Some(archive) => archive.clone(),
-                        None => {
-                            let Some(path) = files.get(&part) else { return Ok(None) };
-                            let archive =
-                                Arc::new(Archive::open(path).map_err(|e| format!("{}: {e}", path.display()))?);
-                            open.insert(part, archive.clone());
-                            archive
-                        }
+        let level = z.min(11);
+        let shift = z - level;
+        let part = format!("{level}-{}-{}", x >> shift, y >> shift);
+        let part = if z == 13 { format!("13/{part}") } else { part };
+        let archive = {
+            let mut open = self.open.lock().unwrap();
+            match open.get(&part) {
+                Some(archive) => archive.clone(),
+                None => {
+                    let Some(path) = self.files.get(&part) else { return Ok(None) };
+                    let archive = Archive::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+                    if archive.tile_compression != 1 {
+                        return Err(format!(
+                            "{}: tile compression {}, not none",
+                            path.display(),
+                            archive.tile_compression
+                        ));
                     }
-                };
-                archive.get(z, x, y)
-            }
-            Source::Mbtiles(db) => {
-                let query = "SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?";
-                let row = (1u32 << z) - 1 - y;
-                let db = db.lock().unwrap();
-                match db.query_row(query, (z, x, row), |row| row.get(0)) {
-                    Ok(data) => Ok(Some(data)),
-                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                    Err(e) => Err(e.to_string()),
+                    let archive = Arc::new(archive);
+                    open.insert(part, archive.clone());
+                    archive
                 }
             }
-        }
+        };
+        archive.get(z, x, y)
     }
 
     /// The heights of a tile, decoded outside the lock of the cache.
@@ -223,137 +198,10 @@ fn decode(data: &[u8]) -> Result<Vec<f32>, String> {
         .collect())
 }
 
-/// A PMTiles v3 archive whose tiles are uncompressed.
-struct Archive {
-    file: File,
-    gzip: bool,
-    leaves: u64,
-    data: u64,
-    root: Vec<Entry>,
-}
-
-struct Entry {
-    tile_id: u64,
-    offset: u64,
-    length: u64,
-    run_length: u64,
-}
-
-impl Archive {
-    fn open(path: &Path) -> Result<Self, String> {
-        let file = File::open(path).map_err(|e| e.to_string())?;
-        let mut header = [0u8; 127];
-        file.read_exact_at(&mut header, 0).map_err(|e| e.to_string())?;
-        if &header[..7] != b"PMTiles" || header[7] != 3 {
-            return Err("not a PMTiles v3 archive".into());
-        }
-        let word = |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
-        let gzip = match header[97] {
-            1 => false,
-            2 => true,
-            other => return Err(format!("directory compression {other}")),
-        };
-        if header[98] != 1 {
-            return Err(format!("tile compression {}, not none", header[98]));
-        }
-        let mut archive = Self { file, gzip, leaves: word(40), data: word(56), root: Vec::new() };
-        archive.root = archive.directory(word(8), word(16))?;
-        Ok(archive)
-    }
-
-    fn bytes(&self, offset: u64, length: u64) -> Result<Vec<u8>, String> {
-        let mut out = vec![0; length as usize];
-        self.file.read_exact_at(&mut out, offset).map_err(|e| e.to_string())?;
-        Ok(out)
-    }
-
-    fn directory(&self, offset: u64, length: u64) -> Result<Vec<Entry>, String> {
-        let mut raw = self.bytes(offset, length)?;
-        if self.gzip {
-            let mut out = Vec::new();
-            flate2::read::GzDecoder::new(&raw[..]).read_to_end(&mut out).map_err(|e| e.to_string())?;
-            raw = out;
-        }
-        let mut at = 0;
-        let mut varint = || -> Result<u64, String> {
-            let mut value = 0u64;
-            for shift in (0..64).step_by(7) {
-                let byte = *raw.get(at).ok_or("a directory ends inside a varint")?;
-                at += 1;
-                value |= u64::from(byte & 0x7f) << shift;
-                if byte & 0x80 == 0 {
-                    return Ok(value);
-                }
-            }
-            Err("a varint is too long".into())
-        };
-        let count = varint()? as usize;
-        let mut entries: Vec<Entry> = Vec::with_capacity(count);
-        let mut last = 0;
-        for _ in 0..count {
-            last += varint()?;
-            entries.push(Entry { tile_id: last, offset: 0, length: 0, run_length: 0 });
-        }
-        for entry in &mut entries {
-            entry.run_length = varint()?;
-        }
-        for entry in &mut entries {
-            entry.length = varint()?;
-        }
-        for i in 0..count {
-            let value = varint()?;
-            entries[i].offset =
-                if i > 0 && value == 0 { entries[i - 1].offset + entries[i - 1].length } else { value - 1 };
-        }
-        Ok(entries)
-    }
-
-    fn get(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>, String> {
-        let id = tile_id(z, x, y);
-        let mut leaf;
-        let mut entries = &self.root[..];
-        for _ in 0..4 {
-            let Some(entry) = find(entries, id) else { return Ok(None) };
-            let (offset, length) = (entry.offset, entry.length);
-            if entry.run_length > 0 {
-                return self.bytes(self.data + offset, length).map(Some);
-            }
-            leaf = self.directory(self.leaves + offset, length)?;
-            entries = &leaf;
-        }
-        Ok(None)
-    }
-}
-
-/// The entry that holds tile `id`: a run of tiles, or the leaf directory that it lies in.
-fn find(entries: &[Entry], id: u64) -> Option<&Entry> {
-    let at = entries.partition_point(|entry| entry.tile_id <= id);
-    let entry = entries.get(at.checked_sub(1)?)?;
-    (entry.tile_id == id || entry.run_length == 0 || id - entry.tile_id < entry.run_length).then_some(entry)
-}
-
-/// The PMTiles id of a tile: the tiles of lower zooms, then its place on the Hilbert curve.
-fn tile_id(z: u8, x: u32, y: u32) -> u64 {
-    let (mut x, mut y) = (u64::from(x), u64::from(y));
-    let mut id = ((1u64 << (2 * z)) - 1) / 3;
-    for a in (0..z).rev() {
-        let s = 1u64 << a;
-        let (rx, ry) = (s & x, s & y);
-        id += ((3 * rx) ^ ry) << a;
-        if ry == 0 {
-            if rx != 0 {
-                x = (s - 1).wrapping_sub(x);
-                y = (s - 1).wrapping_sub(y);
-            }
-            std::mem::swap(&mut x, &mut y);
-        }
-    }
-    id
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pmtiles::{self, tile_id, Header};
     use std::io::Write;
 
     /// A tile of heights h(i, j) metres at pixel (i, j), transparent where h is None.
@@ -409,14 +257,6 @@ mod tests {
     }
 
     #[test]
-    fn tile_ids_follow_the_hilbert_curve_of_pmtiles() {
-        let tiles =
-            [(0, 0, 0), (1, 0, 0), (1, 0, 1), (1, 1, 1), (1, 1, 0), (2, 3, 0), (13, 4260, 2880), (12, 2131, 1439)];
-        let ids = tiles.map(|(z, x, y)| tile_id(z, x, y));
-        assert_eq!(ids, [0, 1, 2, 3, 4, 20, 79377413, 19843151]);
-    }
-
-    #[test]
     fn a_grid_tile_of_zoom_12_reads_from_its_zoom_11_archive_through_a_leaf_directory() {
         let dir = scratch("grid");
         let (z, x, y) = (12u8, 2131u32, 1439u32);
@@ -455,20 +295,26 @@ mod tests {
 
     #[test]
     fn a_point_reads_the_deepest_zoom_that_knows_its_four_pixels() {
-        let dir = scratch("mbtiles");
-        let path = dir.join("terrain.mbtiles");
-        let db = rusqlite::Connection::open(&path).unwrap();
-        db.execute(
-            "CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB)",
-            [],
-        )
-        .unwrap();
-        let insert = "INSERT INTO tiles VALUES (?, ?, ?, ?)";
-        db.execute(insert, (0, 0, 0, webp(|_, _| Some(100.0)))).unwrap();
+        let dir = scratch("fallback");
+        let header = |zoom| Header {
+            tile_type: 4,
+            tile_compression: 1,
+            bounds_e7: [0; 4],
+            center_zoom: zoom,
+            center_e7: [0; 2],
+        };
         // Zoom 1 knows only its tile (0, 0), in the north-west, and not its pixel (200, 300).
-        db.execute(insert, (1, 0, 1, webp(|i, j| ((i, j) != (200, 300)).then_some(10.0 + i as f64 / 2.0)))).unwrap();
-        drop(db);
-        let terrain = Tiles::mbtiles(&path).unwrap();
+        let low = webp(|i, j| ((i, j) != (200, 300)).then_some(10.0 + i as f64 / 2.0));
+        pmtiles::write(&dir.join("zero"), &[(tile_id(0, 0, 0), webp(|_, _| Some(100.0)))], &header(0), "{}").unwrap();
+        pmtiles::write(&dir.join("one"), &[(tile_id(1, 0, 0), low)], &header(1), "{}").unwrap();
+        let index = r#"{"files": {"maps/tiles/terrain/0-0-0.pmtiles": {"sha256": "zero"}, "maps/tiles/terrain/1-0-0.pmtiles": {"sha256": "one"}}}"#;
+        std::fs::write(dir.join("index.json"), index).unwrap();
+        let files = BTreeMap::from([
+            ("index.json".into(), dir.join("index.json")),
+            ("objects/zero".into(), dir.join("zero")),
+            ("objects/one".into(), dir.join("one")),
+        ]);
+        let terrain = Tiles::grid(&files).unwrap();
         let n = 2.0 * TILE as f64;
         let at = |i: f64, j: f64| [(i + 0.5) / n, (j + 0.5) / n];
         let heights = terrain.heights(&[

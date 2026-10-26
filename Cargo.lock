@@ -4222,6 +4222,7 @@ dependencies = [
  "faer",
  "flate2",
  "image",
+ "obc-data",
  "rayon",
  "rstar",
  "rusqlite",
