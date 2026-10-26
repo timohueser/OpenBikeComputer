@@ -3,9 +3,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use rayon::prelude::*;
 use rstar::primitives::GeomWithData;
 use rstar::RTree;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
 
 use super::fit::Graph;
 use super::network::{distinct, hypot, sub, unique};
@@ -214,7 +215,7 @@ pub fn context(
 /// `solve` by area: a job solves the features within HALO_M of its area, and each OSM vertex of the
 /// area takes its height from there, with the vertices that follow it to the next one. The features
 /// of `context` join the jobs, but only the areas of `features` have one. The jobs run on a thread
-/// per core, at most one per share of `memory` that the largest job takes, the largest first.
+/// per core, the largest first, as many at once as `memory` holds.
 pub fn solve_by_area(
     features: &[&Feature],
     context: &[&Feature],
@@ -233,17 +234,25 @@ pub fn solve_by_area(
         .collect();
     let mut jobs: Vec<Area> = wanted.into_iter().filter(|area| region.areas.contains_key(area)).collect();
     jobs.sort_by(|p, q| region.areas[q].partial_cmp(&region.areas[p]).unwrap().then(p.cmp(q)));
-    let largest = jobs.first().map_or(0.0, |area| region.areas[area]);
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
-    let threads = (memory.saturating_sub(resident()) as f64 / (JOB_BYTES_PER_M * largest)) as usize;
-    let threads = threads.clamp(1, cores);
-    eprintln!("roads: {} areas on {threads} threads, the largest with {:.0} km of ways", jobs.len(), largest / 1000.0);
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
-    let done: Vec<Job> = pool.install(|| {
-        jobs.iter()
-            .par_bridge()
-            .map(|&area| solve_area(&every, terrain, rivers, &boxes, classes, &region, area))
-            .collect()
+    let budget = Budget { state: Mutex::new((memory.saturating_sub(resident()), 0)), freed: Condvar::new() };
+    eprintln!(
+        "roads: {} areas on {cores} threads in {:.1} GB",
+        jobs.len(),
+        budget.state.lock().unwrap().0 as f64 / 1e9
+    );
+    let (next, done) = (AtomicUsize::new(0), Mutex::new(Vec::new()));
+    std::thread::scope(|scope| {
+        for _ in 0..cores.min(jobs.len()) {
+            scope.spawn(|| {
+                while let Some(area) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let taken = budget.take((JOB_BYTES_PER_M * region.areas[area]) as usize);
+                    let job = solve_area(&every, terrain, rivers, &boxes, classes, &region, *area);
+                    budget.give(taken);
+                    done.lock().unwrap().push(job);
+                }
+            });
+        }
     });
     let mut solved = Solved {
         heights: features.iter().map(|f| vec![None; f.parts.len()]).collect(),
@@ -251,7 +260,7 @@ pub fn solve_by_area(
         ..Default::default()
     };
     let mut pieces: BTreeMap<(usize, usize), Vec<Run>> = BTreeMap::new();
-    for job in done {
+    for job in done.into_inner().unwrap() {
         for (way, runs) in job.found {
             pieces.entry(way).or_default().extend(runs);
         }
@@ -329,6 +338,33 @@ fn solve_area(
         culverts: solved.culverts.iter().map(|&i| chosen[i]).collect(),
         underpasses: solved.underpasses.iter().map(|&i| chosen[i]).collect(),
         metrics: solved.metrics,
+    }
+}
+
+/// The memory that the running jobs may still take, and how many run.
+struct Budget {
+    state: Mutex<(usize, usize)>,
+    freed: Condvar,
+}
+
+impl Budget {
+    /// Wait until `bytes` fit, or no job runs; then take them, or all that is left.
+    fn take(&self, bytes: usize) -> usize {
+        let mut state = self.state.lock().unwrap();
+        while state.1 > 0 && state.0 < bytes {
+            state = self.freed.wait(state).unwrap();
+        }
+        let taken = bytes.min(state.0);
+        state.0 -= taken;
+        state.1 += 1;
+        taken
+    }
+
+    fn give(&self, taken: usize) {
+        let mut state = self.state.lock().unwrap();
+        state.0 += taken;
+        state.1 -= 1;
+        self.freed.notify_all();
     }
 }
 
