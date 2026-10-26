@@ -23,8 +23,11 @@ pub const NEXT: &str = "planner/next.json";
 /// publisher served read them too, so nothing deletes them.
 pub const POINTERS: [&str; 2] = ["cell-catalog/catalog.json", "planner/catalog.json"];
 
-/// The format of [`Release`] and [`Serving`]. A change of their shape raises it: a follower reads only
-/// the format that it was built with, and says which at `/planner-api/version`.
+/// The format of [`Release`] and [`Serving`], which a follower says at `/planner-api/version`. A change
+/// that a follower of the format before cannot read raises it; so does a stricter [`Release::check`]
+/// or a new word of a refresh, which the shape of the manifest does not show. A follower reads its
+/// own format and the one before, so a deploy of the services keeps the release that prod serves:
+/// `tests/manifests/` holds a manifest of each.
 pub const FORMAT: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
@@ -423,7 +426,14 @@ pub(crate) mod tests {
                         keys.iter().map(|k| format!("{}:{}", Value::from(k.as_str()), shape(&map[*k]))).collect();
                     format!("{{{}}}", fields.join(","))
                 }
-                Value::Array(list) => format!("[{}]", list.iter().map(shape).collect::<Vec<_>>().join(",")),
+                Value::Array(list) => {
+                    // `required` follows the order of the fields, which the bytes of a manifest do not.
+                    let mut items: Vec<String> = list.iter().map(shape).collect();
+                    if list.iter().all(Value::is_string) {
+                        items.sort();
+                    }
+                    format!("[{}]", items.join(","))
+                }
                 other => other.to_string(),
             }
         }
@@ -431,10 +441,24 @@ pub(crate) mod tests {
         let digest = sha256_hex(shape(&schemas).as_bytes());
         assert_eq!(
             (FORMAT, &digest[..16]),
-            (1, "0ea0517eebcfe767"),
-            "The manifest changed its shape: raise FORMAT, so that the review asks for a new follower first. Then pin \
-             the new digest here."
+            (1, "6ae2d6267cfe8d2a"),
+            "The manifest changed its shape. When a follower of this FORMAT cannot read a manifest of the new code, \
+             raise FORMAT and add a manifest of it to tests/manifests/. Then pin the new digest here."
         );
+    }
+
+    #[test]
+    fn the_follower_reads_the_manifests_of_its_format_and_the_one_before() {
+        let manifests: [(u32, &[u8]); 1] = [(1, include_bytes!("../tests/manifests/format-1.json"))];
+        let formats: Vec<u32> = manifests.iter().map(|(format, _)| *format).collect();
+        assert_eq!(
+            formats,
+            (FORMAT.saturating_sub(1).max(1)..=FORMAT).collect::<Vec<_>>(),
+            "a manifest of each format"
+        );
+        for (format, bytes) in manifests {
+            Release::parse(&sha256_hex(bytes), bytes).unwrap_or_else(|e| panic!("format {format}: {e}"));
+        }
     }
 
     /// A release of one output with the file `bytes`, which read `source@version`.
