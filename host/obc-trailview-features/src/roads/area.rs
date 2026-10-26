@@ -17,7 +17,8 @@ use crate::{metres, Terrain};
 pub const AREA_ZOOM: u32 = 10;
 pub const HALO_M: f64 = 500.0;
 /// A job holds about this many bytes per metre of the ways of its area, with those of its halo: its
-/// samples, its rows and the factorization of its system.
+/// samples, its rows and the factorization of its system. Measured on the largest job of
+/// central-switzerland.
 const JOB_BYTES_PER_M: f64 = 150.0;
 /// The ways that a deck or a bore crosses join a job from the points every FREE_STEP_M along it.
 const FREE_STEP_M: f64 = 50.0;

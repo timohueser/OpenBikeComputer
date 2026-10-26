@@ -342,10 +342,11 @@ triggers = [
   # The planner tools read their credits and region boxes from them.
   "data/sources.toml",
   "data/regions/**",
-  # test_planner_trailview_features.py validates the kind table, reads the shared vectors and runs the
-  # road solver of its class table.
+  # test_planner_trailview_features.py validates the kind table, reads the shared vectors and bakes a
+  # region with the solvers of the crate, by its class table.
   "data/trailview/kinds.json",
   "data/trailview/roads.json",
+  "host/obc-trailview-features/**",
   "specs/vectors/trailview-features.*",
   # The footers that test_data_registry.py compares with the registry.
   "docs/templates/*.html",
