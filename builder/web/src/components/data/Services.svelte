@@ -32,12 +32,12 @@
         <h3>{title}</h3>
         <p class={running.reason ? "missing" : ""}>
             {#if running.reason}
-                ✗ Not deployed: {running.reason}
+                ✗ {running.reason}
             {:else}
                 ✓ Serves {serves}{running.commit ? ` · commit ${short(running.commit)}${running.commit === checkout ? " (this checkout)" : ""}` : ""}
             {/if}
         </p>
-        <Checks checks={running.checks} />
+        <Checks checks={running.checks} onchanged={() => void deployed.refresh()} />
         <Credential credential={running.credential} set={running.credential.set ?? []} onsaved={() => void deployed.refresh()} />
         {#if run}
             <p>Run <a href="#/runs/{run.id}">{run.id}</a> deploys it now.</p>

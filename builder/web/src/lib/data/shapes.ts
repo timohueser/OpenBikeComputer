@@ -418,6 +418,8 @@ export interface Check {
     /** What to do about the problem, and where the commands run. */
     fix: string | null;
     commands: string[];
+    /** The arguments of the command that applies the fix, which the page runs after a confirm. */
+    action: string[] | null;
     /** Whether the action waits for it. */
     blocks: boolean;
 }

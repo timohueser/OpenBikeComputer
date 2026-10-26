@@ -42,7 +42,7 @@ it("shows what each deploy lacks with its fix, and deploys only after the dry ru
     const runs = new CliQuery<RunList>(["runs"]);
     const screen = mount(Services, { target: document.body, props: { deployed: query, runs } });
     try {
-        expect(text()).toContain("✗ Not deployed: GET https://releases.openbikecomputer.com/planner-api/version: HTTP 404");
+        expect(text()).toContain("✗ https://releases.openbikecomputer.com/planner-api/version does not answer (HTTP 404): built before /version, or not running");
         expect(text()).toContain("✓ Serves the map tiles of each release · commit 35d0 (this checkout)");
         expect(text()).toContain("the tiles Worker needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID");
         expect(document.querySelector("input[name=CLOUDFLARE_API_TOKEN]")).not.toBeNull();
@@ -76,17 +76,41 @@ it("a refused login gives the line to add on the VPS, with a copy button", async
     }
 });
 
+it("an unknown host key shows its fingerprint, and trusts exactly it after a confirm", async () => {
+    const deployed = example as Deployed;
+    const action = ["deploy", "trust", "--expect", "SHA256:example"];
+    const login = { ...deployed.services.checks[1], problem: "this machine does not know the host key of the VPS, SHA256:example", commands: [], action };
+    const unknown = { ...deployed, services: { ...deployed.services, checks: [deployed.services.checks[0], login] } };
+    const fetch = serverAnswers({ '["deploy"]': unknown, [JSON.stringify([...action, "--yes"])]: { fingerprint: "SHA256:example", file: "/home/owner/.ssh/known_hosts" } });
+    const query = new CliQuery<Deployed>(["deploy"]);
+    await query.refresh();
+    const screen = mount(Services, { target: document.body, props: { deployed: query, runs: new CliQuery<RunList>(["runs"]) } });
+    try {
+        expect(text()).toContain("does not know the host key of the VPS, SHA256:example");
+        button("Trust this host key…")!.click();
+        await vi.waitFor(() => expect(button("Yes, trust this host key")).toBeDefined());
+        button("Yes, trust this host key")!.click();
+        await vi.waitFor(() => expect(posted(fetch).at(-1)).toEqual(["deploy"]));
+        expect(posted(fetch).slice(1)).toEqual([[...action, "--yes"], ["deploy"]]);
+    } finally {
+        await unmount(screen);
+    }
+});
+
 it("Old data counts the legacy keys and deletes exactly the list that it showed", async () => {
-    const fetch = serverAnswers({ '["r2","legacy","prod"]': listed, [JSON.stringify(["r2", "legacy", "prod", "--delete", "--expect", listed.digest, "--reason", "Legacy publish path: the target serves releases of obc data", "--yes"])]: { bucket: "obc-maps", objects: [] } });
+    const fetch = serverAnswers({ '["r2","legacy","prod"]': listed, [JSON.stringify(["r2", "legacy", "prod", "--delete", "--expect", listed.digest, "--reason", "Legacy publish path: the target serves releases of obc data", "--yes"])]: { run: "2026-10-26-101500" }, '["runs"]': { runs: [] } });
     const publish = (example as Deployed).publish;
-    const screen = mount(OldData, { target: document.body, props: { name: "prod", serving: true, publish } });
+    const runs = new CliQuery<RunList>(["runs"]);
+    const screen = mount(OldData, { target: document.body, props: { name: "prod", serving: true, publish, error: null, runs } });
     try {
         await vi.waitFor(() => expect(text()).toContain("3 keys, 1.0 GB of the legacy publish path"));
         button("Delete old data…")!.click();
         await vi.waitFor(() => expect(text()).toContain("This cannot be undone."));
         button("Delete now")!.click();
-        await vi.waitFor(() => expect(posted(fetch)).toHaveLength(3));
+        await vi.waitFor(() => expect(text()).toContain("Run 2026-10-26-101500 deletes them."));
         expect(posted(fetch)[1]).toEqual(["r2", "legacy", "prod", "--delete", "--expect", listed.digest, "--reason", "Legacy publish path: the target serves releases of obc data", "--yes"]);
+        // One delete at a time: the button is gone while its run counts.
+        expect(button("Delete old data…")).toBeUndefined();
     } finally {
         await unmount(screen);
     }

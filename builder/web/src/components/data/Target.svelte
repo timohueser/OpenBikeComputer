@@ -36,8 +36,10 @@
     const releases = $derived(r2 ? `${target?.release?.serving.id}|${target?.release?.rollback?.id}` : null);
     const router = $derived(releases ? new CliQuery<Router>(["router", name]) : null);
     $effect(() => void router?.refresh());
-    // What publishing and the deploys of an R2 target need on this machine, and what its services run.
-    const deployed = $derived(r2 ? new CliQuery<Deployed>(["deploy"]) : null);
+    // The root of an R2 bucket, prod: the target that the follower and the tiles Worker serve, as the
+    // review of `update` judges it. What publishing and the deploys need, and what its services run.
+    const root = $derived(r2 && !!target && new URL(target.at).pathname === "/");
+    const deployed = $derived(root ? new CliQuery<Deployed>(["deploy"]) : null);
     $effect(() => void deployed?.refresh());
     const unpublishable = $derived(deployed?.output ? blocking(deployed.output.publish) : null);
     // Why the follower does not serve `id`; `null` when it does, `undefined` while the page asks.
@@ -301,7 +303,7 @@
             {#if target.serve}<Serve {name} serve={target.serve} {runs} />{/if}
             {#if deployed}
                 <Services {deployed} {runs} />
-                <OldData {name} serving={!!target.release} publish={deployed.output?.publish ?? null} />
+                <OldData {name} serving={!!target.release} publish={deployed.output?.publish ?? null} error={deployed.error} {runs} />
             {/if}
         </div>
     </div>
