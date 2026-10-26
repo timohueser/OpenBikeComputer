@@ -17,27 +17,48 @@ export interface TerrainSource {
     decode(body: ArrayBuffer): Promise<(PageData | null)[]>;
 }
 
-/**
- * The stored tiles of a release. The tile service serves zooms 0 to 12. Zoom 13 is in a PMTiles pack
- * per zoom 11 tile (specs/planner-release.md), read with range requests through its public pointer
- * beside the manifest. A config without a manifest reads zoom 13 from the tile template too. An abort
- * of `stop` ends every request.
- */
 /** Whether a load ended because its engine stopped: `destroy()` aborts without a reason, a timeout aborts with one. */
 export const stopped = (error: unknown) => error instanceof DOMException && error.name === 'AbortError';
 
+/**
+ * The stored tiles of a release. The tile service serves zooms 0 to 12. Zoom 13 is in a PMTiles pack
+ * per zoom 11 tile (specs/planner-release.md), read with range requests through its pointer beside the
+ * manifest: in the block index of grid format 3, else a file of its own. A config without a manifest
+ * reads zoom 13 from the tile template too. An abort of `stop` ends every request.
+ */
 export function releaseTiles(config: PlannerConfig, stop = new AbortController().signal): TerrainSource['fetch'] {
     const signal = () => AbortSignal.any([requestSignal(), stop]);
+    type Pointer = { sha256: string; encoding: string };
+    const files = new Map<string, Promise<unknown>>();
+    // A public file of the release, undefined where it is absent: a plain fetch, as an area without zoom
+    // 13 has no pointer, and that 404 is no reason to read the catalogue again.
+    const file = (manifest: string, path: string): Promise<unknown> => {
+        let entry = files.get(path);
+        if (!entry) {
+            entry = fetch(new URL(`public/${path}`, manifest), { signal: signal() }).then(async response => {
+                if (response.status === 404) return undefined;
+                if (!response.ok) throw new Error(`The public file ${path} answered ${response.status}.`);
+                return response.json();
+            });
+            files.set(path, entry);
+            entry.catch(() => files.delete(path));
+        }
+        return entry;
+    };
     const packs = new Map<string, Promise<PMTiles | undefined>>();
     const pack = (manifest: string, x: number, y: number) => {
-        const name = `11-${x >> 2}-${y >> 2}`;
+        const name = `11-${x >> 2}-${y >> 2}.pmtiles`;
         let entry = packs.get(name);
         if (!entry) {
-            // A plain fetch: an area without zoom 13 has no pointer, and that 404 is no reason to read the catalogue again.
-            entry = fetch(new URL(`public/maps/tiles/terrain/13/${name}.pmtiles.json`, manifest), { signal: signal() }).then(async response => {
-                if (response.status === 404) return undefined;
-                if (!response.ok) throw new Error(`The pointer of terrain pack ${name} answered ${response.status}.`);
-                const pointer = await response.json();
+            entry = file(manifest, 'grid.json').then(async grid => {
+                let pointer: Pointer | undefined;
+                if (((grid as { format?: number } | undefined)?.format ?? 0) >= 3) {
+                    const index = (await file(manifest, `maps/tiles/terrain/13/7-${x >> 6}-${y >> 6}.json`)) as Record<string, Pointer> | undefined;
+                    pointer = index && Object.hasOwn(index, name) ? index[name] : undefined;
+                } else {
+                    pointer = (await file(manifest, `maps/tiles/terrain/13/${name}.json`)) as Pointer | undefined;
+                }
+                if (!pointer) return undefined;
                 if (pointer.encoding !== 'identity') throw new Error(`Terrain pack ${name} is not stored for range requests.`);
                 return new PMTiles(new URL(`../../objects/${pointer.sha256}`, manifest).href);
             });

@@ -23,7 +23,14 @@ pub const NEXT: &str = "planner/next.json";
 /// publisher served read them too, so nothing deletes them.
 pub const POINTERS: [&str; 2] = ["cell-catalog/catalog.json", "planner/catalog.json"];
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+/// The format of [`Release`] and [`Serving`], which a follower says at `/planner-api/version`. A change
+/// that a follower of the format before cannot read raises it; so does a stricter [`Release::check`]
+/// or a new word of a refresh, which the shape of the manifest does not show. A follower reads its
+/// own format and the one before, so a deploy of the services keeps the release that prod serves:
+/// `tests/manifests/` holds a manifest of each.
+pub const FORMAT: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Release {
     pub settings: Settings,
@@ -43,7 +50,7 @@ pub struct Release {
 }
 
 /// A key of a target and its bytes.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct File {
     pub key: String,
@@ -53,7 +60,7 @@ pub struct File {
 
 /// The files of one fetch that outputs of a release read. A manifest of an older publisher has more
 /// fields, such as `copy`: a reader ignores them.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct Fetched {
     pub source: String,
     pub version: String,
@@ -63,7 +70,7 @@ pub struct Fetched {
     pub files: Vec<FetchedFile>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FetchedFile {
     pub name: String,
@@ -84,7 +91,7 @@ impl FetchedFile {
 }
 
 /// The files of one step: its receipt, what it read of each source, and what a client reads.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Output {
     pub layer: String,
@@ -105,7 +112,7 @@ pub struct Output {
     pub cost: Cost,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SnapshotRead {
     pub version: String,
@@ -113,7 +120,7 @@ pub struct SnapshotRead {
     pub params: Vec<(String, String)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Cost {
     pub wall_ms: u64,
@@ -405,6 +412,54 @@ pub fn drift(target: &Target, release: &Release) -> Result<Vec<String>, String> 
 pub(crate) mod tests {
     use super::*;
     use crate::engine::tests::{fixture, pipeline, Fixture};
+
+    #[test]
+    fn the_format_pins_the_shape_of_the_manifest() {
+        // The shape without the doc comments, which schemars writes as descriptions, with sorted keys:
+        // serde_json keeps the order of insertion when a crate of the build turns on `preserve_order`.
+        fn shape(value: &Value) -> String {
+            match value {
+                Value::Object(map) => {
+                    let mut keys: Vec<&String> = map.keys().filter(|k| *k != "description").collect();
+                    keys.sort();
+                    let fields: Vec<String> =
+                        keys.iter().map(|k| format!("{}:{}", Value::from(k.as_str()), shape(&map[*k]))).collect();
+                    format!("{{{}}}", fields.join(","))
+                }
+                Value::Array(list) => {
+                    // `required` follows the order of the fields, which the bytes of a manifest do not.
+                    let mut items: Vec<String> = list.iter().map(shape).collect();
+                    if list.iter().all(Value::is_string) {
+                        items.sort();
+                    }
+                    format!("[{}]", items.join(","))
+                }
+                other => other.to_string(),
+            }
+        }
+        let schemas = serde_json::json!([schemars::schema_for!(Release), schemars::schema_for!(Serving)]);
+        let digest = sha256_hex(shape(&schemas).as_bytes());
+        assert_eq!(
+            (FORMAT, &digest[..16]),
+            (1, "6ae2d6267cfe8d2a"),
+            "The manifest changed its shape. When a follower of this FORMAT cannot read a manifest of the new code, \
+             raise FORMAT and add a manifest of it to tests/manifests/. Then pin the new digest here."
+        );
+    }
+
+    #[test]
+    fn the_follower_reads_the_manifests_of_its_format_and_the_one_before() {
+        let manifests: [(u32, &[u8]); 1] = [(1, include_bytes!("../tests/manifests/format-1.json"))];
+        let formats: Vec<u32> = manifests.iter().map(|(format, _)| *format).collect();
+        assert_eq!(
+            formats,
+            (FORMAT.saturating_sub(1).max(1)..=FORMAT).collect::<Vec<_>>(),
+            "a manifest of each format"
+        );
+        for (format, bytes) in manifests {
+            Release::parse(&sha256_hex(bytes), bytes).unwrap_or_else(|e| panic!("format {format}: {e}"));
+        }
+    }
 
     /// A release of one output with the file `bytes`, which read `source@version`.
     pub(crate) fn reading(bytes: &[u8], source: &str, version: &str) -> Release {
