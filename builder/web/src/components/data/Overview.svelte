@@ -2,6 +2,7 @@
     import { command } from "../../lib/data/cli";
     import { bands, followers, sourcesOf } from "../../lib/data/graph";
     import type { CliQuery } from "../../lib/data/query.svelte";
+    import { bakeHash, bakeOf, served } from "../../lib/data/screens";
     import { age, causes, failure, LAYER_MARK, layerText, list, short, version, when, type Status } from "../../lib/data/shapes";
     import Failure from "./Failure.svelte";
 
@@ -67,7 +68,7 @@
         {/each}
     </div>
     <span class="grow"></span>
-    {#if target}<a class="primary" href="#/{target.target}/review">Plan update of {target.target}</a>{/if}
+    {#if target}<a class="primary" href={bakeHash(bakeOf(target.target, served(target)))}>Bake {target.target}…</a>{/if}
 </div>
 
 {#if target}
@@ -158,7 +159,7 @@
             <p><b>Bakes again after it</b> · {list(followers(layers, detail.layer))}</p>
             <p><b>Used by</b> · {list(detail.readers)}</p>
             <div class="title">
-                <a class="primary" href="#/{target.target}/review?only={encodeURIComponent(detail.layer)}">Update only this layer…</a>
+                <a class="primary" href={bakeHash({ ...bakeOf(target.target, served(target)), only: detail.layer })}>Update only this layer…</a>
                 <code>{command(only)}</code>
             </div>
         </section>

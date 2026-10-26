@@ -4,7 +4,6 @@ import { afterEach, expect, it, vi } from "vitest";
 import areas from "../../../test-support/data/areas.json";
 import deployed from "../../../test-support/data/deploy.json";
 import legacy from "../../../test-support/data/legacy.json";
-import review from "../../../test-support/data/review.json";
 import router from "../../../test-support/data/router.json";
 import example from "../../../test-support/data/status.json";
 import { CliQuery } from "../../lib/data/query.svelte";
@@ -27,11 +26,11 @@ function status(stale: boolean): Status {
 function server(answer: () => Router = () => router) {
     const fetch = vi.fn(async (_url: string, init: { body: string }) => {
         const args: string[] = JSON.parse(init.body).args;
-        const output = { areas, router: answer(), deploy: deployed, r2: legacy }[args[0]] ?? (args.includes("--dry-run") ? review : {});
+        const output = { areas, router: answer(), deploy: deployed, r2: legacy }[args[0]] ?? {};
         return new Response(JSON.stringify({ exit: 0, output }));
     });
     vi.stubGlobal("fetch", fetch);
-    // The area picker, the coverage, the releases, the services and the old data read on their own.
+    // The coverage, the releases, the services and the old data read on their own.
     const reads = ["areas", "router", "deploy", "r2"];
     return () => fetch.mock.calls.map(([, init]) => JSON.parse(init.body).args as string[]).filter((args) => !reads.includes(args[0]));
 }
@@ -42,20 +41,20 @@ function screen(hash: string, stale: boolean, list: RunList = { runs: [] }) {
     const runs = new CliQuery<RunList>(["runs"]);
     runs.output = list;
     const name = hash.split("/")[1];
-    return { query, screen: mount(Target, { target: document.body, props: { name, hash, status: query, runs } }) };
+    return { query, screen: mount(Target, { target: document.body, props: { name, status: query, runs } }) };
 }
 
 const button = (label: string) => [...document.querySelectorAll("button")].find((button) => button.textContent === label)!;
 
-it("the update screen and two status polls run no command until the person plans", async () => {
+it("the update opens the Bake screen with the area and the parts of the target, and the ticks as --only", async () => {
     const posted = server();
-    const { query, screen: target } = screen("#/local/review", false);
+    const { screen: target } = screen("#/local", false);
+    const bake = () => document.querySelector<HTMLAnchorElement>('[aria-labelledby="update"] a.primary')!.getAttribute("href");
     try {
-        await vi.waitFor(() => expect(document.body.textContent).toContain("Plan update on"));
-        query.output = status(false);
-        query.output = status(false);
+        expect(bake()).toBe("#/bake?region=freiburg&on=device,map");
+        document.querySelector<HTMLInputElement>('input[value="device/map"]')!.click();
         flushSync();
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(bake()).toBe("#/bake?region=freiburg&on=device,map&only=device/map");
         expect(posted()).toEqual([]);
     } finally {
         await unmount(target);
@@ -65,7 +64,7 @@ it("the update screen and two status polls run no command until the person plans
 it("a live run locks the update and the rollback, and only a confirm posts --yes", async () => {
     const posted = server();
     const live = screen("#/prod", false);
-    expect(document.body.textContent).toContain("Plan update: locked");
+    expect(document.body.textContent).toContain("Bake prod: locked");
     expect(button("Roll back to 2c91…").disabled).toBe(true);
     expect(document.querySelector('a[href="#/runs/2026-10-12-093112"]')?.textContent).toBe("Watch the run");
     await unmount(live.screen);
@@ -118,17 +117,6 @@ it("the coverage colours the leaves of the chosen tiled layer by their state", a
         select.dispatchEvent(new Event("change", { bubbles: true }));
         await vi.waitFor(() => expect([strokes("var(--stale)"), strokes("var(--ready)")]).toEqual([4, 2]));
         expect(document.body.textContent).toContain("● stale 4");
-    } finally {
-        await unmount(target);
-    }
-});
-
-it("a link from a source sets the refresh flag of the plan", async () => {
-    server();
-    const { screen: target } = screen(`#/local/review?refresh=${encodeURIComponent("geofabrik-extracts=14")}`, false);
-    const shown = () => [...document.querySelectorAll("code")].map((code) => code.textContent);
-    try {
-        await vi.waitFor(() => expect(shown()).toContain("obc data update local --refresh geofabrik-extracts=14 --plan"));
     } finally {
         await unmount(target);
     }

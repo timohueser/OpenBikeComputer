@@ -66,7 +66,7 @@ it("shows a run as it goes, and Stop posts exactly the args that it shows", asyn
     }
 });
 
-it("shows why a run failed, its fix, what the store kept, and the review that resumes it", async () => {
+it("shows why a run failed, its fix, what the store kept, and the bake that resumes it", async () => {
     const run = failed as RunView;
     serverAnswers({ [JSON.stringify(["runs", run.id])]: run });
     const screen = mount(Run, { target: document.body, props: { id: run.id, status: status as Status } });
@@ -79,7 +79,7 @@ it("shows why a run failed, its fix, what the store kept, and the review that re
         expect(error.textContent).toContain("✗ planner/search failed: the store disk is full");
         expect(error.textContent).toContain("Fix · Free space with obc data clean --apply, or move the store");
         expect(error.textContent).toContain("Kept · device/landmarks, device/map, and planner/search/pois. The next update reuses them.");
-        expect(error.querySelector("a")?.getAttribute("href")).toBe(`#/local/resume/${run.id}`);
+        expect(error.querySelector("a")?.getAttribute("href")).toBe("#/bake?region=freiburg&on=device,map,sun");
         expect(error.querySelector(".resume")?.textContent).toBe("obc data update local --add sun --dry-run");
         expect(text()).toContain("local did not change · the local lock is free");
         expect(text()).toContain("stopped at 2 of 3");

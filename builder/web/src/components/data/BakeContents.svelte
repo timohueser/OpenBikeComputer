@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { Bbox } from "../../lib/data/areas";
     import { CONTENTS, layerFlags, needs, shows, TERRAIN, toggled, unshown } from "../../lib/data/contents";
-    import { planArgs } from "../../lib/data/flags";
+    import { planArgs, type Flags } from "../../lib/data/flags";
     import type { BakeRoute } from "../../lib/data/screens";
     import type { Started } from "../../lib/data/shapes";
     import { prepareHash } from "../../lib/data/screens";
@@ -17,6 +17,7 @@
         bounds,
         countries,
         on,
+        extra,
         sources,
         locked,
         change,
@@ -27,6 +28,8 @@
         bounds: Bbox | null;
         countries: string[];
         on: string[];
+        /** Settings flags from a link of another screen, such as `--only`. */
+        extra: Flags;
         /** `null` until `obc data sources` answers. */
         sources: SourceRow[] | null;
         locked: string | null;
@@ -40,7 +43,7 @@
     const terrain = $derived(needs(TERRAIN, bounds, sources ?? [], countries));
     const readers = $derived(CONTENTS.filter((content) => content.terrain && on.includes(content.id)).map((content) => content.title));
     const blocked = $derived(cards.filter(({ content, needs }) => on.includes(content.id) && !needs.ready));
-    const args = $derived(planArgs(to, [[area.flag, area.value], ...layerFlags(on)]));
+    const args = $derived(planArgs(to, [[area.flag, area.value], ...layerFlags(on), ...extra]));
     const toggle = (id: string, checked: boolean) => change(toggled(on, id, checked));
     // A reference goes to R2, where every bake can read it.
     const prepare = (source: string) => prepareHash(source, "prod", area);

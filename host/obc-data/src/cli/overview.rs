@@ -69,6 +69,8 @@ pub struct TargetState {
     pub lock_error: Option<String>,
     /// The region of the serving release.
     pub region: Option<String>,
+    /// The parts that the serving release has on, as `--add` names them.
+    pub parts: Vec<String>,
     /// The area of the serving release, as boxes that a map draws; `null` while it serves nothing.
     pub area: Option<AreaBoxes>,
     /// Each source version that the serving release read.
@@ -301,6 +303,7 @@ fn state(
         lock: None,
         lock_error: None,
         region: None,
+        parts: Vec::new(),
         area: None,
         sources: Vec::new(),
         layers: None,
@@ -328,6 +331,7 @@ fn state(
         let serving: Serving = serde_json::from_slice(&bytes).map_err(|e| format!("{SERVING}: {e}"))?;
         let release = super::update_cli::read(name, target, &serving.serving.id)?;
         (state.release, state.region) = (Some(serving), Some(release.settings.region.clone()));
+        state.parts = release.settings.layers.clone();
         state.made = Some(Made { machine: release.machine.clone(), time: release.time.clone() });
         let mut versions: BTreeMap<(&str, &str), Option<&str>> = BTreeMap::new();
         for fetched in &release.sources {
