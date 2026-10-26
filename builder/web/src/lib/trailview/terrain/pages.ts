@@ -175,8 +175,12 @@ export class Pages {
         return undefined;
     }
 
-    /** Takes the pages that a frame wants, coarse and near first, and returns its GPU work. `near` names the wanted pages that `nearMissing` counts. */
-    update(wanted: Node[], anchor: Anchor, near = new Set<string>()): Work {
+    /**
+     * Takes the pages that a frame wants, coarse and near first, and returns its GPU work. `near` names
+     * the wanted pages that `nearMissing` counts; `eye` names those of the eye field, which ask for their
+     * features and synthesize first.
+     */
+    update(wanted: Node[], anchor: Anchor, near = new Set<string>(), eye = new Set<string>()): Work {
         this.frame++;
         this.near = near;
         this.shortage = 0;
@@ -190,7 +194,7 @@ export class Pages {
             const up = node.level - FILL, fill = { level: FILL, x: node.x >> up, y: node.y >> up };
             fills.set(key(fill), fill);
         }
-        wanted = [...fills.values(), ...wanted];
+        wanted = [...fills.values(), ...wanted.filter(node => eye.has(key(node))), ...wanted.filter(node => !eye.has(key(node)))];
         // Every wanted page is used before the first allocation, so none leaves for a later one of this frame.
         for (const node of wanted) {
             const page = this.pages.get(key(node));
@@ -272,20 +276,17 @@ export class Pages {
         this.wanted.synth++;
         this.miss(node);
         if (ancestor === 'wait') return;
+        // The features load while the inputs do.
+        const stamps = this.stamps.get(node);
         // The synthesis reads the ancestor and its neighbours: no allocation of this frame takes them.
         const inputs = this.around(ancestor).map(near => {
             const page = this.pages.get(key(near));
             if (page) page.used = this.frame;
             return { near, page };
         });
-        const ready = inputs.every(({ near, page }) => {
-            if (page?.ready || this.stored(near) === 'no') return true;
-            if (!page) this.load(near);
-            return false;
-        });
-        if (!ready) return;
-        const stamps = this.stamps.get(node);
-        if (!stamps || this.busy(work, stamps.data?.length)) return;
+        const missing = inputs.filter(({ near, page }) => !page?.ready && this.stored(near) !== 'no');
+        for (const { near, page } of missing) if (!page) this.load(near);
+        if (missing.length || !stamps || this.busy(work, stamps.data?.length)) return;
         const synth = this.allocate(node, 'synth', this.range(ancestor)!, true);
         if (!synth) return;
         synth.drawn = synth.slot;
@@ -305,8 +306,8 @@ export class Pages {
     /**
      * The near pages with known features that hold the masks in this frame, nearest first, by name: as
      * many as the pool holds. The first page beyond them sets the reach of the paint. It asks for no
-     * features: a page asks for its own when it can draw or be made, so the page under the eye does not
-     * wait behind the near pages.
+     * features: a page asks for its own once its stored ancestor is in, the eye field first, so the
+     * page under the eye does not wait behind the near pages.
      */
     private holders(wanted: Node[], anchor: Anchor): Map<string, Node> {
         const near = wanted.filter(node => node.level >= NEAR && this.stamps.known(node)?.data)

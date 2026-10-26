@@ -3,7 +3,7 @@ import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import { pageData, PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
-import { cdlod, distances, key, MAP, RANGE, select, size, type Node } from './lod';
+import { cdlod, distances, EYE_M, key, MAP, RANGE, select, size, type Node } from './lod';
 import { ARRIVALS, MODE, Pages, type StampSource, type Work } from './pages';
 
 const BOX = [8.37, 46.765, 8.46, 46.83] as const;
@@ -12,14 +12,14 @@ const BOUNDS: [number, number, number, number] = [west, north, east, south];
 const anchor = anchorAt(8.415, 46.7975);
 const flat = () => pageData(new Float32Array(PAGE * PAGE).fill(1000), 1000, 1000, true);
 
-/** Tiles of zooms 0 to 12; zoom 13 is absent. */
-function source(): TerrainSource & { fetched: string[]; decoded: number } {
+/** Tiles of zooms 0 to `deepest`; the next zoom is absent. */
+function source(deepest = 12): TerrainSource & { fetched: string[]; decoded: number } {
     const fetched: string[] = [];
     const tiles = {
         fetched, decoded: 0,
         fetch: async (z: number, x: number, y: number) => {
             fetched.push(`${z}/${x}/${y}`);
-            return z <= 12 ? new ArrayBuffer(8) : undefined;
+            return z <= deepest ? new ArrayBuffer(8) : undefined;
         },
         decode: async () => {
             tiles.decoded++;
@@ -30,18 +30,21 @@ function source(): TerrainSource & { fetched: string[]; decoded: number } {
 }
 
 /** Frames of the walk view until the pages are idle; the work of each frame. */
-async function settle(pages: Pages, wanted: Node[], frames = 300): Promise<Work[]> {
+async function settle(pages: Pages, wanted: Node[], frames = 300, eye = new Set<string>()): Promise<Work[]> {
     const works: Work[] = [];
     for (let i = 0; i < frames && (i === 0 || !pages.idle); i++) {
-        works.push(pages.update(wanted, anchor));
+        works.push(pages.update(wanted, anchor, new Set(), eye));
         await new Promise(resolve => setTimeout(resolve));
     }
     return works;
 }
 
 describe('the page pools', () => {
-    const { wanted } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, () => true);
+    const { nodes, wanted } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, () => true);
     wanted.sort((a, b) => a.level - b.level);
+    // As the terrain gives it: the nodes within EYE_M and the parents that they morph toward.
+    const keys = new Set(wanted.map(key)), eye = new Set(nodes.filter(node => distances({ anchor, above: 0 }, node)[0] <= EYE_M)
+        .flatMap(({ level, x, y }) => [key({ level, x, y }), key({ level: level - 1, x: x >> 1, y: y >> 1 })]).filter(name => keys.has(name)));
 
     it('synthesize the levels below the stored tiles from the deepest stored page, decode each tile once, and map every ready page', async () => {
         const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
@@ -59,13 +62,42 @@ describe('the page pools', () => {
         expect(map.filter(entry => entry >>> 16).length).toBe(ready.filter(page => page.kind === 'stored').length);
     });
 
-    it('fill the holes from one coarse tile, then load the tile under the eye, then the nearer tiles first', async () => {
-        const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
-        await settle(pages, wanted);
+    it('fill the holes from one coarse tile, then load the tile under the eye, then the nearer tiles first; the eye field asks for its features and synthesizes first', async () => {
+        const tiles = source(), asked: string[] = [], known = new Set<string>();
+        // Every node's features are known one frame after it asks for them.
+        const features: StampSource = {
+            get: node => (known.has(key(node)) ? { data: null, heights: false } : void (asked.includes(key(node)) ? known.add(key(node)) : asked.push(key(node)))),
+            known: node => (known.has(key(node)) ? { data: null, heights: false } : undefined),
+        };
+        const pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {}, features);
+        const works = await settle(pages, wanted, 300, eye);
         const at = (z: number) => `${z}/${Math.floor((anchor.whole[0] + anchor.part[0]) / size(z))}/${Math.floor((anchor.whole[1] + anchor.part[1]) / size(z))}`;
         expect(tiles.fetched.slice(0, 2)).toEqual([at(6), at(13)]);
         const metres = tiles.fetched.map(name => name.split('/').map(Number)).filter(([z]) => z === 13).map(([level, x, y]) => distances({ anchor, above: 0 }, { level, x, y })[0]);
         expect(metres).toEqual([...metres].sort((a, b) => a - b));
+        // Of the synthesized pages (below the stored level 13), the eye field asks first.
+        const synthesized = asked.filter(name => Number(name.split('/')[0]) > 13), field = synthesized.filter(name => eye.has(name));
+        expect(field.length).toBeGreaterThan(0);
+        expect(synthesized.slice(0, field.length)).toEqual(field);
+        for (const work of works) {
+            const made = work.syntheses.map(({ page }) => eye.has(key(page.node)));
+            expect(made).toEqual([...made].sort((a, b) => Number(b) - Number(a)));
+        }
+    });
+
+    it('load every missing input of a synthesis in the same frame', async () => {
+        const at = (level: number) => ({ level, x: Math.floor((anchor.whole[0] + anchor.part[0]) / size(level)), y: Math.floor((anchor.whole[1] + anchor.part[1]) / size(level)) });
+        const tiles = source(13), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
+        for (let i = 0; i < 50 && !pages.pages.get(key(at(14)))?.ready; i++) {
+            pages.update([at(16)], anchor);
+            await new Promise(resolve => setTimeout(resolve));
+        }
+        // The level-14 ancestor and its neighbours lie in the zoom-13 tiles about the eye's.
+        const { x, y } = at(14), inputs = new Set([-1, 0, 1].flatMap(dy => [-1, 0, 1].map(dx => `13/${(x + dx) >> 1}/${(y + dy) >> 1}`)));
+        inputs.delete(key(at(13)));
+        const before = tiles.fetched.length;
+        pages.update([at(16)], anchor);
+        expect(new Set(tiles.fetched.slice(before))).toEqual(inputs);
     });
 
     it('get every page again for a new device, without a request', async () => {
