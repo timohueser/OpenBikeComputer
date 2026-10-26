@@ -110,11 +110,11 @@ class BlendTest(unittest.TestCase):
 
 
 class BakeTest(unittest.TestCase):
-    def test_the_bake_reads_one_zoom_10_chunk_and_stores_to_the_max_zoom(self):
+    def test_the_bake_reads_one_chunk_per_zoom_10_tile_and_stores_to_the_max_zoom(self):
         from pmtiles.reader import MmapSource, all_tiles
 
-        # One zoom-11 tile, so no tile has pixels outside the bounds.
-        bounds = snow.geo.tile_bounds(11, 1079, 724)
+        # Two zoom-11 tiles on each side of the seam between the zoom-10 tiles 539 and 540.
+        bounds = [*snow.geo.tile_bounds(11, 1079, 724)[:2], *snow.geo.tile_bounds(11, 1080, 724)[2:]]
         west, north = 9.6, 46.6
         grid = snow.Grid("EPSG:4326", Affine.translation(west, north) @ Affine.scale(0.001, -0.001), (300, 300))
 
@@ -131,7 +131,7 @@ class BakeTest(unittest.TestCase):
             snow.bake([("copernicus-hr-wsi", source)], 2016, 2, bounds, output, "HR-WSI")
             with output.open("rb") as file:
                 stored = {z for (z, _, _), _ in all_tiles(MmapSource(file))}
-            self.assertEqual(len(reads.read_text().splitlines()), 1)
+            self.assertEqual(len(reads.read_text().splitlines()), 2)
         self.assertEqual(max(stored), 12)
 
     def test_a_pixel_takes_hr_wsi_where_it_has_data_and_modis_elsewhere(self):

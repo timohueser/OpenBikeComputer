@@ -10,7 +10,7 @@ copy. It ends in June 2025. The bake reads only the region window of each daily 
 raw files. Seasons after June 2025 are not supported yet.
 
 `--source copernicus-hr-wsi` reads the HR-WSI Snow Phenology S2 yearly rasters (20 m) instead. It
-reads the window of one zoom-9 tile at a time from each file on the Copernicus Data Space S3 endpoint
+reads the window of one zoom-10 tile at a time from each file on the Copernicus Data Space S3 endpoint
 `https://eodata.dataspace.copernicus.eu`, with `CDSE_S3_ACCESS_KEY` and `CDSE_S3_SECRET_KEY` in
 `~/.config/openbikecomputer/cdse-s3.env`.
 """
@@ -268,7 +268,7 @@ def keep(tiles, z, x, y, body):
     from pmtiles.tile import zxy_to_tileid
 
     if (body != NO_DATA).any():
-        # Level 9 takes 6 times the time of level 6 for 1 % smaller tiles.
+        # Level 9 takes much more time than level 6 for tiles that are barely smaller.
         tiles[zxy_to_tileid(z, x, y)] = gzip.compress(body.tobytes(), compresslevel=6, mtime=0)
 
 
@@ -353,7 +353,7 @@ def bake(sources, first_season, seasons, bounds, output, credit, workers=None):
         x1, y1 = geo.mercator(east, south, baking.chunk)
         _baking = baking
         try:
-            pool = step_pool.pool(workers or step_pool.worker_count(WORKER_MEMORY))
+            pool = step_pool.pool(workers, WORKER_MEMORY)
             try:
                 # `as_completed` lets go of each chunk once it gave it, so its tiles do not stay in memory.
                 for done in as_completed([pool.submit(chunk_tiles, x, y, part)
@@ -657,7 +657,7 @@ def step():
         days.setdefault(dt.date(int(year), 1, 1) + dt.timedelta(int(day) - 1), []).append((platform, path))
     canopy = [path for _, path in sorted(step_request.files(request, "hansen-gfc").items())]
     # rasterio holds the GIL for much of a file open, so the reads need processes.
-    with step_pool.pool(step_pool.worker_count(WORKER_MEMORY)) as pool:
+    with step_pool.pool(memory=WORKER_MEMORY) as pool:
         modis = modis_planes([days], bounds, first, last, canopy, pool)
     sources = [("nasa-modis", lambda chunk: modis)]
     if "hr-wsi" in request["snapshots"]:
