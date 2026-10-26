@@ -56,7 +56,9 @@ test('the terrain shadows agree with visibility() of the planner outside the pen
     // A grid over the fixture, 400 m inside its bounds.
     const points = [];
     for (let j = 0; j < 16; j++) for (let i = 0; i < 16; i++) points.push([8.376 + 0.078 * i / 15, 46.769 + 0.057 * j / 15]);
-    const counts = { checked: 0, agree: 0, shade: 0, penumbra: 0 };
+    // Outside the penumbra of the sun's altitude alone (angle), and of that or a shadow edge (edge): the
+    // points, those in shade, those that the shader lights in shade (lit) and shades in the sun (shaded).
+    const counts = { edge: { checked: 0, shade: 0, lit: 0, shaded: 0 }, angle: { checked: 0, shade: 0, lit: 0, shaded: 0 } };
     for (const time of TIMES) {
         await page.evaluate(async time => {
             const tv = window.trailView;
@@ -69,18 +71,24 @@ test('the terrain shadows agree with visibility() of the planner outside the pen
         const sun = solarPosition(EYE, solarTerms(instantAt(DATE, 60 * hours + minutes, 'Europe/Zurich')));
         const state = ([lon, lat], altitude) => visibility(surface, [lon, lat], { ...sun, altitude }, 10_000, undefined, false);
         points.forEach(([lon, lat], i) => {
-            // In the penumbra: the sun within PENUMBRA of the horizon, or a shadow edge within SPREAD_M.
+            // The penumbra: the sun within PENUMBRA of the horizon, and for edge also a shadow edge within SPREAD_M.
             const step = [SPREAD_M / (METRES_PER_DEGREE * Math.cos(lat * Math.PI / 180)), SPREAD_M / METRES_PER_DEGREE];
             const states = [state([lon, lat], sun.altitude - PENUMBRA), state([lon, lat], sun.altitude + PENUMBRA),
                 ...[[1, 0], [-1, 0], [0, 1], [0, -1]].map(([x, y]) => state([lon + x * step[0], lat + y * step[1]], sun.altitude))];
-            if (states.some(value => value !== states[0])) return void counts.penumbra++;
-            expect([SUN, SHADE]).toContain(states[0]);
-            counts.checked++;
-            if (states[0] === SHADE) counts.shade++;
-            if ((shares[i] > 0.5) === (states[0] === SUN)) counts.agree++;
+            const tally = count => {
+                expect([SUN, SHADE]).toContain(states[0]);
+                count.checked++;
+                if (states[0] === SHADE) count.shade++;
+                if (shares[i] > 0.5 && states[0] === SHADE) count.lit++;
+                if (shares[i] <= 0.5 && states[0] === SUN) count.shaded++;
+            };
+            if (states[0] === states[1]) tally(counts.angle);
+            if (states.every(value => value === states[0])) tally(counts.edge);
         });
     }
-    expect(counts.shade, JSON.stringify(counts)).toBeGreaterThan(0.05 * counts.checked);
-    expect(counts.agree, JSON.stringify(counts)).toBeGreaterThanOrEqual(0.98 * counts.checked);
+    console.log(JSON.stringify(counts));
+    const { edge } = counts;
+    expect(edge.shade, JSON.stringify(counts)).toBeGreaterThan(0.05 * edge.checked);
+    expect(edge.lit + edge.shaded, JSON.stringify(counts)).toBeLessThanOrEqual(0.02 * edge.checked);
     expect(errors).toEqual([]);
 });
