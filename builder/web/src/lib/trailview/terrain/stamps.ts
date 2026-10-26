@@ -63,6 +63,11 @@ export class Stamps implements StampSource {
         };
     }
 
+    /** Whether features are on their way: each wakes the engine when it arrives. */
+    get loading(): boolean {
+        return this.pending.size > 0;
+    }
+
     /** The node's stamps and water, undefined while they are on their way. */
     get(node: Node): NodeFeatures | undefined {
         const tile = featureTile(node);

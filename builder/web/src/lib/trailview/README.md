@@ -24,6 +24,7 @@ is the palette of the `world` region.
 | Path | Holds |
 | --- | --- |
 | `engine.ts` | The frame loop, the view, `waitForIdle()`, the recovery from a lost device |
+| `pacer.ts` | The frame rate, `FRAME_RATE`, and the display frames that draw. Headless Chromium runs at 60 Hz, so flights and shots draw each display frame |
 | `frame/` | The local metric frame, the walk and fly camera, the input |
 | `gpu/` | The device and its pools, the GPU time per pass, the WGSL `// #include` |
 | `stream/` | The stored terrain and its decode worker, the feature codec, the ground layers and the worker that builds their pages |

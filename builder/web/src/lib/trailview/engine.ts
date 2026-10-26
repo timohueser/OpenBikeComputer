@@ -24,6 +24,7 @@ import { Orchards } from './vegetation/orchards';
 import { Plants } from './vegetation/plants';
 import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
+import { Pacer } from './pacer';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
 const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'casters', 'shadow', 'far-casters', 'far-shadow', 'mips', 'resolve'];
@@ -78,6 +79,8 @@ export class TrailView {
     /** Called with the view after it changes. */
     onView?: (view: View) => void;
     recoveries = 0;
+    /** Picks the display frames that draw: `pacer.rate` is the frame rate. */
+    readonly pacer = new Pacer();
     private readonly context: GPUCanvasContext;
     private readonly frame: Frame;
     private readonly terrain: Terrain;
@@ -116,6 +119,8 @@ export class TrailView {
     private rendered: (() => void)[] = [];
     /** The last frame that drew, for occlusion culling: its depth, pixels and view projection, and its eye. */
     private lastFrame?: Omit<LastFrame, 'moved'> & { eye: number[] };
+    /** Whether the last frame that placed the instances moved or changed: the next one places them again, culled by a depth of the same view. */
+    private unrest = true;
 
     private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly scale: number) {
         this.context = canvas.getContext('webgpu')!;
@@ -347,6 +352,7 @@ export class TrailView {
     private render(now: number): void {
         this.pending = false;
         if (!this.ready) return;
+        if (!this.pacer.due(now)) return this.request();
         const start = performance.now();
         const steer = this.controls.steer(), dt = this.last ? Math.min(0.1, (now - this.last) / 1000) : 0;
         if (steer) this.pose = move(this.pose, steer, dt, this.ground());
@@ -382,7 +388,7 @@ export class TrailView {
         this.drawing = !!(eye && group);
         let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false, cascade = -1;
         if (eye && group) {
-            const camera = [...viewProj, eye.east, eye.north, eye.z, scale], extras = JSON.stringify(this.extras);
+            const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify(this.extras);
             moved = camera.some((value, i) => value !== this.camera[i]);
             changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || extras !== this.drawnExtras;
             this.camera = camera;
@@ -404,7 +410,10 @@ export class TrailView {
         const counted = this.houses.encode(encoder, this.groundLook.computeGroup, moved, changed, () => times.writes('houses'));
         const last = eye && this.lastFrame
             ? { ...this.lastFrame, moved: [eye.east - this.lastFrame.eye[0], eye.north - this.lastFrame.eye[1], eye.z - this.lastFrame.eye[2]] as [number, number, number] } : undefined;
-        const placed = this.vegetation(encoder, eye && group && step ? targets.viewport(this.scale)[1] : 0, last, () => times.writes('vegetation'));
+        // The instances keep their lists while the camera and the content rest, once a frame culled them by a depth of the same view.
+        const pixels = targets.viewport(this.scale)[1], placing = !!(eye && group && step) && (moved || changed || this.unrest || this.instances.due(pixels));
+        if (placing) this.unrest = moved || changed || !last;
+        const placed = this.vegetation(encoder, placing ? pixels : 0, last, () => times.writes('vegetation'));
         const cast = cascade >= 0 && step && eye && group ? this.cast(encoder, group, eye, cascade) : () => {};
         if (!eye || !group) {
             // Until the eye has ground nothing draws: the horizon of the weather fills the canvas.

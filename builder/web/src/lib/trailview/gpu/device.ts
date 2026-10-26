@@ -13,9 +13,9 @@ export class Gpu {
         return [vendor, architecture, description].filter(Boolean).join(' ');
     }
 
-    /** Undefined when the browser has no WebGPU or no adapter. */
+    /** Undefined when the browser has no WebGPU or no adapter. With no power preference the browser and the system pick the GPU. */
     static async request(): Promise<Gpu | undefined> {
-        const adapter = await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' });
+        const adapter = await navigator.gpu?.requestAdapter();
         if (!adapter) return undefined;
         const device = await adapter.requestDevice({ requiredFeatures: OPTIONAL_FEATURES.filter(feature => adapter.features.has(feature)) });
         device.addEventListener('uncapturederror', event => console.error(`WebGPU: ${event.error.message}`));
