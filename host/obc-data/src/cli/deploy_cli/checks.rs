@@ -101,17 +101,22 @@ pub fn credential(what: What) -> Check {
     Check::passed(name)
 }
 
-/// Whether `planner/tiles` holds only what the commit holds: `wrangler deploy` reads the files of
-/// the checkout.
-pub fn clean(root: &Path) -> Check {
-    let name = "planner/tiles committed";
-    match git(root, &["status", "--porcelain", "--", "planner/tiles"]) {
+/// Whether the files that a deploy of `what` reads from the checkout, not from the commit, hold
+/// only what the commit holds: `planner/tiles` for `wrangler deploy`, and the script and the
+/// runtime file of the follower.
+pub fn clean(root: &Path, what: What) -> Check {
+    let paths: &[&str] = match what {
+        What::Services => &["tools/vps", "data/planner-runtime.toml"],
+        What::Tiles => &["planner/tiles"],
+    };
+    let name = "files committed";
+    match git(root, &[&["status", "--porcelain", "--"], paths].concat()) {
         Ok(changes) if changes.is_empty() => Check::passed(name),
         Ok(_) => Check::failed(
             name,
-            "planner/tiles has changes that the commit does not hold",
+            format!("{} has changes that the commit does not hold", paths.join(" or ")),
             "Commit or remove them in this checkout.",
-            vec!["git status -- planner/tiles".into()],
+            vec![format!("git status -- {}", paths.join(" "))],
         ),
         Err(e) => Check::failed(name, e.message, e.fix, Vec::new()),
     }
@@ -121,7 +126,11 @@ pub fn clean(root: &Path) -> Check {
 /// place, and an older commit of develop serves to go back.
 pub fn merged(root: &Path, commit: &str) -> Check {
     let name = "commit on origin/develop";
-    let fetch = limited(Command::new("git").args(["fetch", "--quiet", "origin", "develop"]).current_dir(root));
+    let mut fetch = Command::new("git");
+    fetch.args(["fetch", "--quiet", "origin", "develop"]).current_dir(root);
+    // Never a prompt on the terminal: a check without an answer fails.
+    fetch.env("GIT_TERMINAL_PROMPT", "0").env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    let fetch = limited(&mut fetch);
     if let Err(e) = fetch.and_then(|output| succeeded("git fetch", output)) {
         return Check::failed(name, e, "Check the network and the remote `origin`, then check again.", Vec::new());
     }
@@ -256,12 +265,15 @@ fn refused(name: &str, host: &str, stderr: &str, home: Option<&Path>) -> Check {
             "the host key of the VPS is not the one that this machine knows",
             "The VPS was set up again, or another machine answers. Compare the fingerprint in the console of \
              the hosting provider. Only when it is the VPS, remove the old key, then check again.",
-            vec![format!("ssh-keygen -R {}", endpoint(host).map_or(host.to_string(), |(name, _)| name))],
+            vec![match endpoint(host) {
+                Ok(at) => format!("ssh-keygen -R '{}' -f '{}'", at.name, at.file.display()),
+                Err(_) => format!("ssh-keygen -R '{host}'"),
+            }],
         );
     }
     if stderr.contains("Host key verification failed") {
         return match host_key(host) {
-            Ok((_, fingerprint)) => Check {
+            Ok(HostKey { fingerprint, .. }) => Check {
                 action: Some(["deploy", "trust", "--expect", &fingerprint].map(String::from).to_vec()),
                 ..Check::failed(
                     name,
@@ -305,13 +317,35 @@ fn refused(name: &str, host: &str, stderr: &str, home: Option<&Path>) -> Check {
     }
 }
 
-/// The ED25519 host key of the SSH host `host` as a line of `known_hosts`, and its fingerprint.
-pub fn host_key(host: &str) -> Result<(String, String), String> {
-    let (name, port) = endpoint(host)?;
-    let scan = limited(Command::new("ssh-keyscan").args(["-T", "5", "-t", "ed25519", "-p", &port, "--", &name]))?;
+/// The ED25519 host key of the VPS, as `ssh` looks it up.
+pub struct HostKey {
+    /// Its line of `known_hosts`, under [`Endpoint::name`].
+    pub line: String,
+    pub fingerprint: String,
+    pub at: Endpoint,
+}
+
+/// Where `ssh` reaches an SSH host, and where it looks its host key up.
+pub struct Endpoint {
+    host: String,
+    port: String,
+    /// The name of the host key: `HostKeyAlias`, else the host, with a port other than 22.
+    pub name: String,
+    /// The first `UserKnownHostsFile`, which `ssh` reads.
+    pub file: PathBuf,
+}
+
+/// The ED25519 host key of the SSH host `host`, and its fingerprint.
+pub fn host_key(host: &str) -> Result<HostKey, String> {
+    let at = endpoint(host)?;
+    let scan = ["-T", "5", "-t", "ed25519", "-p", &at.port, "--", &at.host];
+    let scan = limited(Command::new("ssh-keyscan").args(scan))?;
     let text = String::from_utf8_lossy(&scan.stdout);
     let line = text.lines().find(|line| !line.starts_with('#') && !line.trim().is_empty());
-    let line = line.ok_or_else(|| format!("{name} gives no ED25519 host key"))?.to_string();
+    let line = line.ok_or_else(|| format!("{} gives no ED25519 host key", at.host))?;
+    let key: Vec<&str> = line.split_whitespace().skip(1).collect();
+    let line = format!("{} {}", at.name, key.join(" "));
+    let name = &at.host;
     let mut keygen = Command::new("ssh-keygen");
     keygen.args(["-l", "-f", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut keygen = keygen.spawn().map_err(|e| format!("ssh-keygen: {e}"))?;
@@ -321,16 +355,34 @@ pub fn host_key(host: &str) -> Result<(String, String), String> {
     let listed = String::from_utf8_lossy(&listed.stdout);
     let fingerprint = listed.split_whitespace().nth(1).filter(|field| field.starts_with("SHA256:"));
     let fingerprint = fingerprint.ok_or_else(|| format!("ssh-keygen cannot read the host key of {name}"))?;
-    Ok((line, fingerprint.to_string()))
+    let fingerprint = fingerprint.to_string();
+    Ok(HostKey { line, fingerprint, at })
 }
 
-/// The host name and the port that `ssh` reaches for `host`, an alias of `~/.ssh/config` too.
-fn endpoint(host: &str) -> Result<(String, String), String> {
+/// Whether the known hosts of `at` hold a key of its name: a key that changed goes only with
+/// `ssh-keygen -R`, never beside the old one.
+pub fn known(at: &Endpoint) -> bool {
+    let mut find = Command::new("ssh-keygen");
+    find.arg("-F").arg(&at.name).arg("-f").arg(&at.file);
+    limited(&mut find).is_ok_and(|output| output.status.success())
+}
+
+/// Where `ssh` reaches `host`, an alias of `~/.ssh/config` too, from `ssh -G`, which reads only the
+/// configuration.
+fn endpoint(host: &str) -> Result<Endpoint, String> {
     let config = limited(Command::new("ssh").args(["-G", "--", host]))?;
-    let config = String::from_utf8_lossy(&config.stdout);
+    endpoint_in(host, &String::from_utf8_lossy(&config.stdout))
+}
+
+fn endpoint_in(host: &str, config: &str) -> Result<Endpoint, String> {
     let value = |key: &str| config.lines().find_map(|line| line.strip_prefix(key)).map(str::to_string);
     let name = value("hostname ").ok_or_else(|| format!("ssh names no host for {host}"))?;
-    Ok((name, value("port ").unwrap_or_else(|| "22".into())))
+    let port = value("port ").unwrap_or_else(|| "22".into());
+    let alias = value("hostkeyalias ").filter(|alias| alias != "none");
+    let key = alias.unwrap_or_else(|| if port == "22" { name.clone() } else { format!("[{name}]:{port}") });
+    let files = value("userknownhostsfile ").unwrap_or_default();
+    let file = files.split_whitespace().next().unwrap_or("~/.ssh/known_hosts");
+    Ok(Endpoint { host: name, port, name: key, file: crate::sources::expand_home(file) })
 }
 
 /// The output of `command`, which ends within [`LIMIT`] or is killed.
@@ -401,6 +453,25 @@ mod tests {
         assert!(
             check.commands.is_empty() && check.action.is_none() && check.fix.unwrap().starts_with("Check the host")
         );
+    }
+
+    #[test]
+    fn a_host_key_goes_under_the_name_and_into_the_file_that_ssh_reads() {
+        let home = Scratch::new("deploy-known-hosts");
+        let file = home.0.join("known");
+        let config =
+            format!("user root\nhostname 203.0.113.7\nport 22\nuserknownhostsfile {} /etc/x\n", file.display());
+        let at = endpoint_in("vps", &config).unwrap();
+        assert_eq!((at.name.as_str(), at.file.as_path()), ("203.0.113.7", file.as_path()));
+        let at = endpoint_in("vps", &config.replace("port 22", "port 2222\nhostkeyalias none")).unwrap();
+        assert_eq!(at.name, "[203.0.113.7]:2222");
+        let at = endpoint_in("vps", &format!("{config}hostkeyalias vps-key\n")).unwrap();
+        assert_eq!(at.name, "vps-key");
+
+        assert!(!known(&at));
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+        std::fs::write(&file, format!("vps-key {key}\n")).unwrap();
+        assert!(known(&at), "a second key of the host only goes with ssh-keygen -R");
     }
 
     #[test]

@@ -1778,13 +1778,14 @@ answer of this code; `commit` is `null` for a build that names none.
 `obc data deploy` asks each part for its `version`, and checks what an action needs from this
 machine. Each check has a name, its problem, its fix in words, the commands of the fix, and the
 command of the page that applies it, if one does. The checks read and change nothing, except the
-fetch of `origin/develop`. Each check that reaches another machine ends within 15 seconds, and
-they run at once:
+fetch of `origin/develop`, which never prompts. Each command that reaches another machine ends
+within 15 seconds, and the checks run at once. The check of the follower runs up to three such
+commands in a row: the login, the configuration of `ssh` and the host key.
 
 | Action | Checks |
 | --- | --- |
 | Publish: an update of `prod` and `r2 legacy` | The `OBC_R2_*` variables; rclone on PATH |
-| `deploy services` | `OBC_VPS_SSH`, which does not start with `-`; this machine logs in as root without a prompt, with a host key that it knows; the one-time setup on the VPS: the user `obc-data`, `/opt/obc-data`, Rust and uv of that user, a C compiler, Python and Node of the `[target]` of `data/planner-runtime.toml`, and the enabled unit. The Caddy route of the API is a check that the deploy does not wait for |
+| `deploy services` | `OBC_VPS_SSH`, which does not start with `-`; this machine logs in as root without a prompt, with a host key that it knows; the one-time setup on the VPS: the user `obc-data`, `/opt/obc-data`, Rust and uv of that user, a C compiler, Python and Node of the `[target]` of `data/planner-runtime.toml`, and the enabled unit. The Caddy route of the API is a check that the deploy does not wait for. `tools/vps/` and `data/planner-runtime.toml` have no change that the commit does not hold, because the deploy runs the script of the checkout |
 | `deploy tiles` | The two variables; the token may list the Workers of the account; `planner/tiles` has no change that the commit does not hold, because `wrangler deploy` reads the files of the checkout |
 | Both | The commit of the checkout is on `origin/develop` after a fetch. An older commit of develop serves to go back |
 
@@ -1796,11 +1797,13 @@ the ED25519 host key of the VPS to compare with the console of the hosting provi
 `deploy trust --expect FINGERPRINT`. A host key that changed gives the command that removes the
 old one. A missing piece of the setup gives its command.
 
-`deploy trust --expect FINGERPRINT` reads the ED25519 host key of the VPS again, refuses another
-fingerprint, asks, or needs `--yes` without a terminal, and appends the key to
-`~/.ssh/known_hosts`. It is the one change of a check.
+`deploy trust --expect FINGERPRINT` reads the ED25519 host key of the VPS again and refuses
+another fingerprint. It refuses when the known hosts already hold a key of the host: a key that
+changed goes only with `ssh-keygen -R`. Then it asks, or needs `--yes` without a terminal, and
+appends the key under the name and to the file that `ssh` reads for the host: its
+`HostKeyAlias` and its first `UserKnownHostsFile`. It is the one change of a check.
 
-`deploy services|tiles --dry-run` checks the credential, the commit and, for `tiles`, the files,
+`deploy services|tiles --dry-run` checks the credential, the commit and the files,
 and writes the commit, what the deploy changes, its commands and the arguments that start it. A
 deploy starts only with `--expect COMMIT`, the commit of the checkout now, and asks first, or needs
 `--yes` without a terminal. It is a detached [run](#runs), and the output of each command goes to

@@ -190,11 +190,7 @@ pub fn command(root: &Path, command: Option<DeployCommand>, json: bool) -> Resul
 /// What a deploy of `what` does now, or why this machine cannot do it.
 fn plan(root: &Path, what: What) -> Result<DeployPlan, Error> {
     let commit = git(root, &["rev-parse", "--verify", "HEAD^{commit}"])?;
-    let mut checks = vec![checks::credential(what)];
-    if what == What::Tiles {
-        checks.push(checks::clean(root));
-    }
-    checks.push(checks::merged(root, &commit));
+    let checks = [checks::credential(what), checks::clean(root, what), checks::merged(root, &commit)];
     if let Some(check) = checks::blocking(&checks) {
         return Err(Code::Blocked
             .error(check.problem.clone().unwrap_or_default())
@@ -278,8 +274,8 @@ fn print_plan(plan: &DeployPlan, json: bool) -> Result<(), Error> {
 }
 
 /// Ask the follower and the tiles Worker which commit they run, and check what a deploy of each
-/// needs. The checks that reach another machine run at once, so the answer takes at most about
-/// the limit of one.
+/// needs. Each remote command ends within 15 s, and the checks run at once: the check of the
+/// follower runs up to three of them in a row (the login, `ssh -G` and `ssh-keyscan`).
 fn status(root: &Path, json: bool) -> Result<(), Error> {
     let checkout = git(root, &["rev-parse", "--verify", "HEAD^{commit}"])?;
     let runtime = crate::runtime::load(root).map_err(|e| Code::InvalidData.error(e))?;
@@ -304,10 +300,10 @@ fn status(root: &Path, json: bool) -> Result<(), Error> {
         ([follows, works], services.join().expect("a check does not panic"), joined)
     });
     let mut services = services;
-    services.push(merged.clone());
+    services.extend([checks::clean(root, What::Services), merged.clone()]);
     let mut tiles = vec![checks::credential(What::Tiles)];
     tiles.extend(token);
-    tiles.extend([checks::clean(root), merged]);
+    tiles.extend([checks::clean(root, What::Tiles), merged]);
     let running = |what: What, url: String, answer: Result<Version, String>, checks: Vec<Check>| Running {
         commit: answer.as_ref().ok().and_then(|version| version.commit.clone()),
         reason: answer.err(),
@@ -366,17 +362,24 @@ fn trust(expect: &str, yes: bool, json: bool) -> Result<(), Error> {
         return Err(Code::Blocked.error(problem).fix(credential.fix.unwrap_or_default()));
     }
     let host = std::env::var(VPS).unwrap_or_default();
-    let (line, fingerprint) = checks::host_key(&host).map_err(|e| Code::Failed.error(e))?;
+    let checks::HostKey { line, fingerprint, at } = checks::host_key(&host).map_err(|e| Code::Failed.error(e))?;
     if fingerprint != expect {
         return Err(Code::Usage
             .error(format!("the host key of {host} is {fingerprint}, not {expect}; nothing changed"))
             .fix("Compare the fingerprint again, then trust the one that the page shows now."));
     }
+    if checks::known(&at) {
+        return Err(Code::Usage
+            .error(format!("{} holds a host key of {} already; nothing changed", at.file.display(), at.name))
+            .fix(format!(
+                "When the VPS has another key now, compare it, then remove the old one: `ssh-keygen -R '{}' -f '{}'`.",
+                at.name,
+                at.file.display()
+            )));
+    }
     confirm(&format!("Trust the host key {fingerprint} of {host}?"), yes)?;
-    let home = std::env::var_os("HOME").ok_or_else(|| Code::Failed.error("HOME is not set"))?;
-    let file = PathBuf::from(home).join(".ssh/known_hosts");
-    append(&file, &line).map_err(|e| Code::Failed.error(format!("{}: {e}", file.display())))?;
-    let trusted = Trusted { fingerprint, file };
+    append(&at.file, &line).map_err(|e| Code::Failed.error(format!("{}: {e}", at.file.display())))?;
+    let trusted = Trusted { fingerprint, file: at.file };
     if json {
         return print_json(&trusted);
     }
@@ -427,7 +430,7 @@ pub(super) fn problems(urls: &[String; 2], http: &Http, steps: &[Step]) -> Vec<S
     }
     if let Err(e) = ask(http, &urls[1]) {
         problems.push(format!(
-            "The tiles Worker does not read the layout of `obc data` ({e}): riders would get no tiles of the \
+            "No tiles Worker of the layout of `obc data` answers ({e}): riders would get no tiles of the \
              release. {}",
             fix(What::Tiles)
         ));
@@ -536,6 +539,6 @@ mod tests {
 
         // The site answers the paths that no follower or Worker answers.
         let found = problems(&[format!("{origin}/planner-api/x"), format!("{origin}/x")], &http, &steps);
-        assert!(found[0].starts_with("No follower answers") && found[1].starts_with("The tiles Worker"), "{found:?}");
+        assert!(found[0].starts_with("No follower answers") && found[1].starts_with("No tiles Worker"), "{found:?}");
     }
 }

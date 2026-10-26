@@ -43,7 +43,7 @@
                 "action": null,
                 "blocks": true
             },
-            { "name": "planner/tiles committed", "problem": null, "fix": null, "commands": [], "action": null, "blocks": true }
+            { "name": "files committed", "problem": null, "fix": null, "commands": [], "action": null, "blocks": true }
         ],
         "credential": {
             "name": "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID",
