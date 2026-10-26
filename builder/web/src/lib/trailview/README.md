@@ -123,8 +123,8 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 ## What bites
 
 - SwiftShader times are not GPU times. Measure on a GPU.
-- macOS lowers the GPU clock while a frame leaves time to spare, so a pass measures longer than its
-  work. `flight.mjs --gpu` keeps the clock high with a compute load before each frame.
+- macOS lowers the GPU clock when a frame has time to spare, so a pass measures long;
+  `flight.mjs --gpu` keeps the clock high.
 - A browser test that draws for minutes on SwiftShader takes `{ tag: '@gpu' }`: pull requests skip
   it, `test-weekly.yml` runs it each Monday.
 - Headless Chromium on Linux with no GPU shows a WebGPU canvas only with
@@ -147,5 +147,6 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
   coarser (`short` in the HUD).
 - A new date builds every ground page again (the rules, the Sentinel-2 quarters and the snow are
   part of a page) and loads most tile bodies again: a view's bodies exceed the 96 MiB cache.
+- Mountain shadows need the `trailview-ground` layer.
 - The ground noise is in frame metres about the first view: far from it, float32 coarsens its
   finest grains, and a view that starts elsewhere draws other grains, so compare shots of one first view.
