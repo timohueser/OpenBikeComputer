@@ -22,6 +22,14 @@ DATA_LAYERS = {
 # The format of the offline catalog and of `search/<region>.grid.json`: the format of `planner/index`,
 # the layer that writes them.
 INDEX_FORMAT = 3
+# The format of `public/grid.json`, `GRID` of host/obc-data/src/cli/deploy_cli.rs: format 3 keeps the
+# pointers of the packs of a grid in a block index of 2^BLOCK_ZOOMS × 2^BLOCK_ZOOMS cells.
+GRID_FORMAT = 3
+BLOCK_ZOOMS = 4
+# The most bytes of a block index: the limit of `readJSON` of planner/tiles/src/grid.mjs. A full block of
+# zoom 11 takes about 42 KB, the block of zooms 0 to 4 about 55 KB.
+INDEX_BYTES = 64 * 1024
+CELL = re.compile(r"((?:maps|routes)/tiles(?:/.+)?)/([0-9]+)-([0-9]+)-([0-9]+)\.[a-z]+")
 
 
 def encoded(value):
@@ -68,14 +76,27 @@ def storage_files(document):
 
 
 def public_metadata(document):
-    """Small immutable pointers let tile requests avoid a world-sized catalogue."""
+    """Small immutable pointers let tile requests avoid a world-sized catalogue. The packs of a grid cell
+    share a block index, so a release does not hold a key for each cell of each layer."""
     if not document.get("grid"):
         return {}
-    result = {"public/grid.json": encoded({"format": 2, "map_zoom": document["grid"]["map_zoom"]})}
+    result = {"public/grid.json": encoded({"format": GRID_FORMAT, "map_zoom": document["grid"]["map_zoom"]})}
+    blocks = {}
     for name, item in document["files"].items():
-        if name.startswith(("maps/tiles/", "maps/assets/", "routes/tiles/")) or name in {"maps/basemap.json", "maps/places.json", "maps/overlays.json", "maps/terrain.json", "device/catalog.json", "trailview/rules.json",
-                                                                         *(f"maps/{layer}.json" for layer in DATA_LAYERS)}:
-            result["public/" + name + ".json"] = encoded({**item["transport"], "decoded_bytes": item["bytes"]})
+        pointer = {**item["transport"], "decoded_bytes": item["bytes"]}
+        cell = CELL.fullmatch(name)
+        if cell:
+            folder, z, x, y = cell[1], *map(int, cell.group(2, 3, 4))
+            zoom = max(z - BLOCK_ZOOMS, 0)
+            block = f"public/{folder}/{zoom}-{x >> (z - zoom)}-{y >> (z - zoom)}.json"
+            blocks.setdefault(block, {})[name[len(folder) + 1:]] = pointer
+        elif name.startswith(("maps/tiles/", "maps/assets/", "routes/tiles/")) or name in {"maps/basemap.json", "maps/places.json", "maps/overlays.json", "maps/terrain.json", "device/catalog.json", "trailview/rules.json",
+                                                                                                *(f"maps/{layer}.json" for layer in DATA_LAYERS)}:
+            result["public/" + name + ".json"] = encoded(pointer)
+    for block, pointers in blocks.items():
+        result[block] = encoded(pointers)
+        if len(result[block]) > INDEX_BYTES:
+            raise ValueError(f"{block} exceeds the {INDEX_BYTES} bytes that the tiles Worker reads")
     return result
 
 

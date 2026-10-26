@@ -402,7 +402,8 @@ fn append(file: &Path, line: &str) -> std::io::Result<()> {
 }
 
 /// Why the follower or the tiles Worker at `urls` cannot serve a release of `steps`, each with its
-/// fix. An update does not refuse: its run would wait at router-ready.
+/// fix. An update refuses only a Worker that cannot read the grid ([`refusal`]); for a follower its
+/// run would wait at router-ready.
 pub(super) fn problems(urls: &[String; 2], http: &Http, steps: &[Step]) -> Vec<String> {
     let fix = |what: What| {
         format!("Deploy {} first: Services on the screen of prod, or `obc data deploy {}`.", what.label(), what.name())
@@ -437,14 +438,35 @@ pub(super) fn problems(urls: &[String; 2], http: &Http, steps: &[Step]) -> Vec<S
             }
         }
     }
-    if let Err(e) = ask(http, &urls[1]) {
-        problems.push(format!(
+    match ask(http, &urls[1]) {
+        Err(e) => problems.push(format!(
             "No tiles Worker of the layout of `obc data` answers ({e}): riders would get no tiles of the \
              release. {}",
             fix(What::Tiles)
-        ));
+        )),
+        Ok(worker) => problems.extend(unreadable_grid(&worker).map(|e| format!("{e}. {}", fix(What::Tiles)))),
     }
     problems
+}
+
+/// The format of `public/grid.json` of a release: `GRID_FORMAT` of `tools/planner_runtime.py`.
+const GRID: u32 = 3;
+
+/// Why the tiles Worker that answered `worker` cannot serve the grid of a release.
+fn unreadable_grid(worker: &Version) -> Option<String> {
+    (!worker.grids.contains(&GRID)).then(|| {
+        format!(
+            "The tiles Worker does not read grid format {GRID}, which the release has: riders would get no tiles of it"
+        )
+    })
+}
+
+/// Why an update of prod with the origins of `root` refuses: the tiles Worker answers that it cannot
+/// read the grid of the release. A switch to it would leave riders without tiles, and nothing waits
+/// for the Worker as the follower waits at router-ready.
+pub(super) fn refusal(root: &Path, http: &Http) -> Option<String> {
+    let runtime = crate::runtime::load(root).ok()?;
+    unreadable_grid(&ask(http, &urls_of(&runtime.publication)[1]).ok()?)
 }
 
 /// The URLs at which the follower and the tiles Worker say which commit they run.
@@ -518,12 +540,14 @@ mod tests {
     use crate::engine::tests::{step, TEST};
     use crate::engine::Run;
 
-    /// A follower that reads `formats` and manifests of `manifest`, and a tiles Worker, on a port of
-    /// this machine.
-    fn services(runtime: &tokio::runtime::Runtime, formats: &[(&str, u32)], manifest: u32) -> String {
+    /// A follower that reads `formats` and manifests of `manifest`, and a tiles Worker that reads
+    /// `grids`, on a port of this machine.
+    fn services(runtime: &tokio::runtime::Runtime, formats: &[(&str, u32)], manifest: u32, grids: &[u32]) -> String {
+        let grids = grids.to_vec();
         let formats = formats.iter().map(|(layer, format)| (layer.to_string(), *format)).collect();
-        let version = Version { commit: Some("c".repeat(40)), formats, manifest };
-        let worker = axum::routing::get(|| async { axum::Json(serde_json::json!({"commit": null})) });
+        let version = Version { commit: Some("c".repeat(40)), formats, manifest, grids: Vec::new() };
+        let worker =
+            axum::routing::get(move || async move { axum::Json(serde_json::json!({"commit": null, "grids": grids})) });
         let router = crate::serve::http::router(Arc::new(RwLock::new(Default::default())), None, version);
         let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
         let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
@@ -537,18 +561,26 @@ mod tests {
         let steps = [step("test/a", Vec::new(), "a", Run::Command(Vec::new()))];
         let http = Http::new();
         let urls = |origin: &str| [format!("{origin}/planner-api/version"), format!("{origin}/version")];
-        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT);
+        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT, &[2, GRID]);
         assert_eq!(problems(&urls(&origin), &http, &steps), Vec::<String>::new());
 
+        // A Worker built before block indexes.
+        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT, &[]);
+        let found = problems(&urls(&origin), &http, &steps);
+        assert!(
+            matches!(&found[..], [one] if one.starts_with("The tiles Worker does not read grid format 3")),
+            "{found:?}"
+        );
+
         // A follower built before it said which manifests it reads.
-        let origin = services(&runtime, &[(TEST.name, TEST.format)], 0);
+        let origin = services(&runtime, &[(TEST.name, TEST.format)], 0, &[GRID]);
         let found = problems(&urls(&origin), &http, &steps);
         assert!(
             matches!(&found[..], [one] if one.starts_with("The follower reads release manifests of format 0")),
             "{found:?}"
         );
 
-        let origin = services(&runtime, &[(TEST.name, TEST.format + 1)], crate::release::FORMAT);
+        let origin = services(&runtime, &[(TEST.name, TEST.format + 1)], crate::release::FORMAT, &[GRID]);
         let found = problems(&urls(&origin), &http, &steps);
         assert!(
             matches!(&found[..], [one] if one.starts_with("The follower reads test format 2, and the release has format 1")),

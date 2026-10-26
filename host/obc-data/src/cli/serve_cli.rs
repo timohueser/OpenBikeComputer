@@ -119,6 +119,7 @@ fn serve(root: &Path, store: &Store, name: &str, target: &Target, json: bool) ->
         commit: http::COMMIT.map(String::from),
         formats: programs.formats(),
         manifest: crate::release::FORMAT,
+        grids: Vec::new(),
     };
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     let address = if dir.is_some() { "0.0.0.0" } else { "127.0.0.1" };
