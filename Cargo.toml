@@ -39,6 +39,7 @@ members = [
     "host/obc-dem",
     "host/obc-mkimage",
     "host/obc-vectors",
+    "host/obc-trailview-features",
     "host/obc-tree-walk",
     "host/obcm-assemble",
     "host/obcm-testkit",

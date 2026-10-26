@@ -1,43 +1,28 @@
-"""The tracks: the two tracks of a double line lie at one height but a track on a ramp beside another does not, a road
-bridge clears the contact wire of the track under it and a road tunnel with an old `railway` tag stays a road, a mast
-stands outside a double track, none beside a middle track and none near another, and a platform stands over its rail."""
+"""The tracks: a road tunnel with an old `railway` tag stays a road, a mast stands outside a double track, none beside a
+middle track and none near another, and a platform stands over its rail. The road solver's tests of the tracks are in
+`host/obc-trailview-features`."""
 
+import math
 import unittest
 
-import numpy as np
-
 from tools.trailview import rails, roads, structures
-from tools.trailview.tests.test_roads import UNIT, Terrain, X0, Y0, at, line, profile, road
+from tools.trailview.profiles import metres
+
+# A point at Engelberg in world units, and world units per metre there.
+X0, Y0 = (8.40 + 180) / 360, (1 - math.asinh(math.tan(math.radians(46.82))) / math.pi) / 2
+UNIT = 1 / float(metres(Y0))
 
 
-def track(points, **tags):
-    return ("railway", {"railway": "rail", "electrified": "contact_line", **tags}, [(False, points, None)])
+def at(east, north):
+    return (X0 + east * UNIT, Y0 - north * UNIT)
+
+
+def line(*points):
+    return [at(*point) for point in points]
 
 
 class RailTest(unittest.TestCase):
-    def test_the_tracks_of_a_double_line_on_noisy_ground_lie_at_one_height(self):
-        noisy = Terrain(lambda e, n: 500 + 0.02 * e + 0.2 * np.sin(e / 7) * np.sign(n))
-        ways = [track(line((0, 2), (400, 2), step=10)), track(line((0, -2), (400, -2), step=10))]
-        out, _, _, _ = roads.solve(ways, noisy)
-        north, south = profile(out[0][0]), profile(out[1][0])
-        self.assertLess(np.max(np.abs(np.interp(south[0], *north) - south[1])), 0.01)
-
-    def test_a_track_on_a_ramp_beside_a_level_track_keeps_its_own_height(self):
-        # The embankment north of the level track rises 8 m.
-        ramp = Terrain(lambda e, n: 500 + np.where(n > 2, 8 * np.clip((e - 50) / 300, 0, 1), 0))
-        ways = [track(line((0, 4), (400, 4), step=10)), track(line((0, 0), (400, 0), step=10))]
-        out, _, _, _ = roads.solve(ways, ramp)
-        self.assertGreater(np.interp(380, *profile(out[0][0])), 507.5)
-
-    def test_a_road_bridge_clears_the_track_under_it(self):
-        flat = Terrain(lambda e, n: np.full(np.shape(e), 500.0))
-        ways = [track(line((-300, 0), (300, 0), step=10)), road("road", "tertiary", line((0, -150), (0, -30))),
-                road("road", "tertiary", line((0, -30), (0, 30)), bridge="yes"), road("road", "tertiary", line((0, 30), (0, 150)))]
-        out, _, _, metrics = roads.solve(ways, flat)
-        self.assertEqual(metrics["clearances_low_cm"], 0)
-        along, z = profile(out[2][0])
-        rail = np.interp(300, *profile(out[0][0]))
-        self.assertGreaterEqual(np.interp(30, along, z) - rail, roads.CLEAR_RAIL_M + roads.DECK_M - 0.01)
+    def test_a_road_tunnel_with_an_old_railway_tag_stays_a_road(self):
         tunnel = {"highway": "tertiary", "tunnel": "yes", "railway": "abandoned"}
         self.assertEqual((roads.class_of(tunnel), structures.bore(tunnel)), ("tertiary", structures.BORE_M))
 

@@ -3,8 +3,8 @@
 
 The `obc data` step `planner/trailview-features` reads the OSM of `planner/osm`, the master terrain of
 the grid of `planner/terrain` and the kind table `data/trailview/kinds.json` from its options. Osmium selects the
-objects and assembles the areas; `trailview/roads.py` sets the heights of roads, `trailview/water.py`
-the levels of rivers and lakes, `trailview/lifts.py` adds the pylons of lifts."""
+objects and assembles the areas; `trailview/solvers.py` sets the heights of roads and the levels of rivers and
+lakes, `trailview/lifts.py` adds the pylons of lifts."""
 
 import argparse
 from functools import lru_cache
@@ -602,12 +602,14 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
     import numpy as np
-    # The road solver and the rails need scipy, which the readers of the tiles do not have.
-    from .trailview import rails, roads
+    # The rails need scipy, which the readers of the tiles do not have.
+    from .trailview import rails, roads, solvers
 
     classes = roads.CLASSES if classes is None else roads.validate(classes)
 
     binary, version = region_osm.probe()
+    # A solver that cannot be built fails the step before the long feature pass.
+    program = solvers.binary() if terrain else None
     tiles, low, shared, counts, held, metrics, river_areas = Tiles(bounds), [], {}, {}, [], {}, []
 
     def place(entry, tags, parts):
@@ -623,7 +625,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
     osm = selected(kinds, pbf, binary, tiles, Path(work.name))
     # The lifts wait for the buildings and the other lifts: a station shares their places.
     # The buildings of the region wait for the landuse areas that hold them.
-    ways, buildings, lift_entry, houses, landuse, beyond = [], [], None, [], [], []
+    ways, buildings, lift_entry, houses, landuse, beyond = [], [], None, [], [], solvers.Past(classes)
     for entry, tags, parts in objects(kinds, osm, binary):
         if lifts.solves(entry["kind"], tags):
             lift_entry = entry
@@ -647,7 +649,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
             if entry["kind"] == "river-area":
                 river_areas.append([points for _, points, _ in parts])
             if terrain and roads.solves(entry["kind"], tags):
-                beyond.append(roads.compact(entry["kind"], tags, parts))
+                beyond.add(entry["kind"], tags, parts)
     work.cleanup()
     values = landuse_of([parts for _, _, parts in houses], landuse)
     for (entry, tags, parts), value in zip(houses, values):
@@ -665,27 +667,18 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
     if held:
         waters = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is water]
         ways = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is roads]
-        levels, metrics["water"] = water.solve_by_network([(entry["kind"], tags, parts) for entry, tags, parts in waters], terrain)
-        rivers = [(points, z) for (entry, _, parts), heights in zip(waters, levels) if entry["kind"] in water.RIVERS
-                  for (_, points, _), z in zip(parts, heights) if z]
-        for (entry, tags, parts), heights in zip(waters, levels):
-            place(entry, tags, [(outer, points, z) for (outer, points, _), z in zip(parts, heights)])
+        # A bridge or a tunnel runs between the ends of its chain, also where they lie past the region. A chain that
+        # the input cuts has no ends to run between.
+        west, south, east, north = reach(tiles, MAX_ZOOM, LIFT_REACH_M)
+        (x0, y1), (x1, y0) = world(west, south), world(east, north)
+        levels, heights, culverts, underpasses, metrics["water"], road_metrics = solvers.solve(
+            [(entry["kind"], tags, parts) for entry, tags, parts in waters], [(entry["kind"], tags, parts) for entry, tags, parts in ways],
+            beyond, (x0, y0, x1, y1), terrain, program, classes)
+        del beyond
+        for (entry, tags, parts), z in zip(waters, levels):
+            place(entry, tags, [(outer, points, z) for (outer, points, _), z in zip(parts, z)])
         if ways:
-            # A bridge or a tunnel runs between the ends of its chain, also where they lie past the region. A chain
-            # that the input cuts has no ends to run between.
-            west, south, east, north = reach(tiles, MAX_ZOOM, LIFT_REACH_M)
-            (x0, y1), (x1, y0) = world(west, south), world(east, north)
-            context, cut = roads.context([(entry["kind"], tags, parts) for entry, tags, parts in ways], beyond,
-                                         lambda xy: (xy[:, 0] > x0) & (xy[:, 0] < x1) & (xy[:, 1] > y0) & (xy[:, 1] < y1))
-            del beyond
-            kept = [n for n in range(len(ways)) if n not in cut]
-            solved, culverts, underpasses, metrics["roads"] = roads.solve_by_area([(ways[n][0]["kind"], *ways[n][1:]) for n in kept], terrain, rivers, classes,
-                                                                                 context=context)
-            heights = [parts for _, _, parts in ways]
-            for n, parts in zip(kept, solved):
-                heights[n] = parts
-            culverts, underpasses = {kept[n] for n in culverts}, {kept[n] for n in underpasses}
-            metrics["roads"]["cut_features"] = len(cut)
+            metrics["roads"] = road_metrics
             # A culvert is a road: the stamps build it over the ground.
             ways = [(entry, {k: v for k, v in tags.items() if k != "bridge"} if n in culverts else tags, parts) for n, ((entry, tags, _), parts) in enumerate(zip(ways, heights))]
             decks = [(n, entry["kind"], tags, parts[0]) for n, (entry, tags, parts) in enumerate(ways) if structures.is_bridge(entry["kind"], tags) and parts[0][2]]

@@ -1,11 +1,33 @@
 """The pylons of lifts on synthetic terrain."""
 
+import math
 import unittest
 
 import numpy as np
 
 from tools.trailview import lifts
-from tools.trailview.tests.test_water import SCALE, X0, Terrain, at
+from tools.trailview.profiles import metres
+
+# A point at Engelberg in world coordinates, and the metres of a world unit there.
+X0, Y0 = (8.4 + 180) / 360, 0.5 - math.log(math.tan(math.pi / 4 + math.radians(46.8) / 2)) / (2 * math.pi)
+SCALE = float(metres(Y0))
+
+
+def at(east, south):
+    """The world point `east` and `south` metres from the origin."""
+    return (X0 + east / SCALE, Y0 + south / SCALE)
+
+
+class Terrain:
+    """Heights from a function of metres east and south of the origin."""
+
+    top = 13
+
+    def __init__(self, height):
+        self.height = height
+
+    def heights(self, x, y):
+        return self.height((np.asarray(x) - X0) * SCALE, (np.asarray(y) - Y0) * SCALE).astype(np.float32)
 
 
 def east(point):

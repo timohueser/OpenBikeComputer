@@ -1,0 +1,21 @@
+[package]
+name = "obc-trailview-features"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+description = "The height solvers of the TrailView feature tiles: roads by area, water by network"
+
+[[bin]]
+name = "trailview-heights"
+path = "src/main.rs"
+
+[dependencies]
+# The sparse Cholesky factorization of the road solver's normal equations.
+faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
+flate2 = { workspace = true }
+image = { workspace = true, features = ["webp"] }
+rayon = "1"
+rstar = "0.12"
+rusqlite = { workspace = true, features = ["bundled"] }
+serde_json = { workspace = true }

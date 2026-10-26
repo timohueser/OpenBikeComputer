@@ -161,7 +161,8 @@ ground that meets one of its ends there. In the order of the OSM data that the r
 way past the region comes after each way of the region. The bake reads OSM to 20 km and one zoom-13
 tile past the region. A network with an end past that which meets no way has no heights: the input cuts
 it, so it has no ends to run between. A bridge is a culvert, and a
-tunnel passes under a road, by the solve of the area of its first vertex.
+tunnel passes under a road, by the solve of the area of its first vertex. A solve of an area does not depend on the
+other solves, so the heights do not depend on how many solves run at once.
 
 The tiles keep the vertices of OSM and the vertex at the end of each approach of a side road, and add
 a vertex between two of them where the solved height leaves the straight line between them by more

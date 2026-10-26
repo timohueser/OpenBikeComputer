@@ -9,20 +9,36 @@ def cores():
     return len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
 
 
-def worker_count(memory=1 << 30):
-    """One worker for each core that this process can use, and one at most for each `memory` bytes of free memory
-    past a quarter of the machine's memory: other work shares the machine, and its memory grows while the step runs.
-    The default is a GB: a snow worker holds the planes of one chunk, about 0.6 GB for nine seasons of HR-WSI at 48° N
-    (measured with two seasons)."""
+def free_memory(held=0):
+    """The bytes of memory that this step may take, 0 or more: what is free past a quarter of the machine's memory, as
+    other work shares the machine and its memory grows while the step runs, and no more than `obc data` reserves for
+    the step less the `held` bytes of this process."""
     try:
         with open("/proc/meminfo") as meminfo:
             sizes = {line.split(":")[0]: int(line.split()[1]) << 10 for line in meminfo}
         free = sizes["MemAvailable"] - sizes["MemTotal"] // 4
     except (OSError, KeyError):
-        return cores()
-    # The memory that the other steps of the run leave free: `obc data` reserves only the largest process of a step.
-    free = min(free, int(os.environ.get("OBC_DATA_MEMORY_BYTES", free)))
-    return max(1, min(cores(), free // memory))
+        return None
+    # `obc data` reserves only the largest process of a step.
+    reserved = int(os.environ.get("OBC_DATA_MEMORY_BYTES", free + held))
+    return max(0, min(free, reserved - held))
+
+
+def resident():
+    """The bytes of memory that this process holds, 0 where the system does not tell."""
+    try:
+        with open("/proc/self/statm") as statm:
+            return int(statm.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    except OSError:
+        return 0
+
+
+def worker_count(memory=1 << 30):
+    """One worker for each core that this process can use, and one at most for each `memory` bytes of `free_memory`.
+    The default is a GB: a snow worker holds the planes of one chunk, about 0.6 GB for nine seasons of HR-WSI at 48° N
+    (measured with two seasons)."""
+    free = free_memory()
+    return cores() if free is None else max(1, min(cores(), free // memory))
 
 
 def end_with(parent):
@@ -47,25 +63,3 @@ def pool(workers=None):
                                    initializer=end_with, initargs=(os.getpid(),))
     return ThreadPoolExecutor(workers or 4)
 
-
-_shared = None
-
-
-def _call(function, item):
-    return function(_shared, item)
-
-
-def forked(function, shared, items, workers=None):
-    """function(shared, item) for each of `items` in a `pool` of `workers`, as each one ends. The workers fork
-    once `shared` is set, so they read it without a copy."""
-    from concurrent.futures import as_completed
-
-    global _shared
-    _shared = shared
-    executor = pool(workers)
-    try:
-        for done in as_completed([executor.submit(_call, function, item) for item in items]):
-            yield done.result()
-    finally:
-        executor.shutdown(cancel_futures=True)
-        _shared = None

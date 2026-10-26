@@ -297,7 +297,7 @@ function abutments(lines: Line[]): void {
 export const cores = (lines: Line[]) => lines.filter(({ kind }) => kind === ROAD || kind === RAIL || kind === BRIDGE || kind === TUNNEL);
 
 /**
- * As APPROACH_M of tools/trailview/roads.py: the solver puts the first metres of a side road on the
+ * As APPROACH_M of host/obc-trailview-features/src/roads/mod.rs: the solver puts the first metres of a side road on the
  * through road's surface. Its cross-slope holds that far, or to the through road's edge, and fades out over WARP_M.
  */
 const APPROACH_M = 4;

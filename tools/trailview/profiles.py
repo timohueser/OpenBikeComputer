@@ -1,5 +1,5 @@
-"""The master terrain for the solvers of the TrailView feature tiles: `roads.py` sets the heights of roads,
-`water.py` the levels of rivers and lakes."""
+"""The master terrain of the TrailView feature tiles, for the lifts, the bridges and the tracks. The solvers of
+`solvers.py` read it themselves."""
 
 from collections import OrderedDict
 import io
@@ -19,10 +19,11 @@ CACHED = 256
 class Terrain:
     """The master terrain: Terrarium WebP tiles of 512 px, R × 256 + G + B / 256 − 32768 metres, unknown
     unless opaque, from `read(z, x, y)` up to zoom `top`. A point reads the deepest zoom that knows its
-    four pixels. The workers of a step share one: as forked processes, or as threads where a fork is not safe."""
+    four pixels. The workers of a step share one: as forked processes, or as threads where a fork is not safe. `origin`
+    names the file or the files of the terrain for the solvers of `solvers.py`."""
 
-    def __init__(self, read, top):
-        self.read, self.top = read, top
+    def __init__(self, read, top, origin=None):
+        self.read, self.top, self.origin = read, top, origin
         self.cache, self.lock = OrderedDict(), threading.Lock()
 
     @classmethod
@@ -38,7 +39,7 @@ class Terrain:
 
         query = "SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?"
         read = lambda z, x, y: (row := db().execute(query, (z, x, (1 << z) - 1 - y)).fetchone()) and row[0]
-        return cls(read, db().execute("SELECT max(zoom_level) FROM tiles").fetchone()[0])
+        return cls(read, db().execute("SELECT max(zoom_level) FROM tiles").fetchone()[0], {"mbtiles": str(path)})
 
     @classmethod
     def grid(cls, files):
@@ -62,7 +63,8 @@ class Terrain:
                 readers[part] = Reader(lambda offset, length: os.pread(stream.fileno(), length, offset))
             return readers[part].get(z, x, y)
 
-        return cls(read, 13 if any(part.startswith("13/") for part in archives) else 12)
+        top = 13 if any(part.startswith("13/") for part in archives) else 12
+        return cls(read, top, {"grid": {name: str(path) for name, path in files.items()}})
 
     def tile(self, z, x, y):
         key = (z, x, y)
