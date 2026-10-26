@@ -4,11 +4,19 @@ import { Gpu } from '../trailview/gpu/device';
 import { scaleOf } from '../trailview/resolve/targets';
 import type { View } from '../trailview/view';
 import type { PlannerConfig } from './config';
+import { firstView, type Near } from './trailview-first';
 
-/** The engine on the canvas, or undefined when the browser has no WebGPU adapter. */
-export async function startTrailView(canvas: HTMLCanvasElement, config: PlannerConfig, view: View): Promise<TrailView | undefined> {
+/**
+ * The engine on the canvas, or undefined when the browser has no WebGPU adapter. It starts at `view`
+ * and moves to the first view of the drop, which loads while the engine compiles.
+ */
+export async function startTrailView(canvas: HTMLCanvasElement, config: PlannerConfig, view: View, near: Near): Promise<TrailView | undefined> {
+    const first = firstView(config, [view.lon, view.lat], near);
     const gpu = await Gpu.request();
-    return gpu && TrailView.start(canvas, gpu, config, view, scaleOf(''));
+    if (!gpu) return undefined;
+    const engine = await TrailView.start(canvas, gpu, config, view, scaleOf(''));
+    engine.view = { ...engine.view, ...(await first) };
+    return engine;
 }
 
 /**

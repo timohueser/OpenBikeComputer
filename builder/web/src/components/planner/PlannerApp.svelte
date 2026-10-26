@@ -22,6 +22,7 @@
     import LayerStrip from './LayerStrip.svelte';
     import TrailViewControl from './TrailViewControl.svelte';
     import TrailViewWindow from './TrailViewWindow.svelte';
+    import type { Near } from '../../lib/planner/trailview-first';
     import { dataLayers } from '../../lib/planner/layers/registry';
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
@@ -1116,12 +1117,12 @@
     // TrailView opens at a point where the rider drops the binoculars or picks on the map, and grows from that point of the viewport.
     // The map keeps its view inside the release bounds, so every point on it is in the TrailView area.
     const hasTrailView = 'gpu' in navigator && !!config.trailview_rules;
-    let trailView = $state<{ at: Coordinate; origin: [number, number] } | null>(null);
+    let trailView = $state.raw<{ at: Coordinate; origin: [number, number]; near: Near } | null>(null);
     let trailViewControl = $state<TrailViewControl>();
 
     function openTrailView(at: Coordinate, origin: [number, number]) {
         if (mapMode?.kind === 'look') mapMode = null;
-        trailView = { at, origin };
+        trailView = { at, origin, near: { metresPerPx: map?.metresPerPixel(at[1]) ?? 0, route: showRoute ? coordinates : [] } };
     }
 
     /** The binoculars without a drag turn the pick on the map on and off. */
@@ -1372,7 +1373,7 @@
         </section>
     </main>
     {#if trailView}
-        <TrailViewWindow at={trailView.at} origin={trailView.origin} onClose={() => { trailView = null; trailViewControl?.focus(); }} />
+        <TrailViewWindow at={trailView.at} near={trailView.near} origin={trailView.origin} onClose={() => { trailView = null; trailViewControl?.focus(); }} />
     {/if}
 </div>
 

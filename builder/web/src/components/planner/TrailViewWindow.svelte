@@ -6,8 +6,9 @@
     import { FIRST_HEADING, loadTrailView } from '../../lib/planner/trailview';
     import { defaultView } from '../../lib/trailview/view';
 
-    let { at, origin, onClose }: {
+    let { at, near, origin, onClose }: {
         at: Coordinate;
+        near: import('../../lib/planner/trailview-first').Near;
         /** The viewport point that the window grows from. */
         origin: [number, number];
         onClose: () => void;
@@ -37,7 +38,7 @@
         (async () => {
             const chunk = await loadTrailView();
             if (abort.signal.aborted) return;
-            const engine = await chunk.startTrailView(canvas, config, { ...defaultView([at[0], at[1], at[0], at[1]]), heading: FIRST_HEADING });
+            const engine = await chunk.startTrailView(canvas, config, { ...defaultView([at[0], at[1], at[0], at[1]]), heading: FIRST_HEADING }, near);
             if (!engine) {
                 failure = 'gpu' in navigator ? 'TrailView cannot use the graphics card of this device.'
                     : 'TrailView needs WebGPU. Open the planner in a current version of Chrome, Edge or Safari.';

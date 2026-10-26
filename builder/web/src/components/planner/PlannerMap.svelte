@@ -205,6 +205,11 @@
         return [lng, lat];
     }
 
+    /** Metres on the ground per CSS pixel at a latitude: the world is 512 px wide at zoom 0. */
+    export function metresPerPixel(latitude: number): number {
+        return map ? 40_075_016.686 * Math.cos(latitude * Math.PI / 180) / (512 * 2 ** map.getZoom()) : 0;
+    }
+
     export function zoomBy(delta: number) {
         if (!map) return;
         wholeRoute = false;
