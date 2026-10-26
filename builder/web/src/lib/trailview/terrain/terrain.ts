@@ -528,8 +528,8 @@ export class Terrain {
     }
 
     /**
-     * Lifts the eye of the frame uniform above the drawn surface under it, after `encode` and before
-     * every pass that reads the eye (clamp_eye of probe.wgsl).
+     * Lifts the camera of the frame uniform above the drawn surface under the eye, after `encode` and
+     * before every pass that reads the view projection (clamp_eye of probe.wgsl).
      */
     clampEye(encoder: GPUCommandEncoder): void {
         const r = this.resources;
