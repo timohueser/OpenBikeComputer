@@ -139,6 +139,8 @@ interface Resources extends Pipelines {
     normalGroup: GPUBindGroup;
     quantizeGroup: GPUBindGroup;
     probeGroup: GPUBindGroup;
+    /** The frame uniform as storage, for `clampEye`. */
+    eyeGroup: GPUBindGroup;
     stampGroup: GPUBindGroup;
     snapGroup: GPUBindGroup;
     featureGroup: GPUBindGroup;
@@ -322,7 +324,7 @@ export class Terrain {
         }, MASKS * SNAP_BYTES);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
-        const r: Omit<Resources, keyof Pipelines | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup'> = {
+        const r: Omit<Resources, keyof Pipelines | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'eyeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup'> = {
             gpu, heights, normals,
             mask, snaps,
             masks: buffer('features', (1 + pages) * 4, storage),
@@ -369,6 +371,7 @@ export class Terrain {
             normalGroup: group(L.job, [{ buffer: r.normalJobs }, { buffer: r.normalOut }, { buffer: r.extent }]),
             quantizeGroup: group(L.quantize, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.codes }, { buffer: r.scales }]),
             probeGroup: group(L.probe, [{ buffer: r.points }, { buffer: r.probed }]),
+            eyeGroup: device.createBindGroup({ layout: L.eye, entries: [{ binding: 2, resource: { buffer: frameUniform } }] }),
         };
     }
 
@@ -522,6 +525,23 @@ export class Terrain {
             this.probing--;
             this.changed();
         });
+    }
+
+    /**
+     * Lifts the eye of the frame uniform above the drawn surface under it, after `encode` and before
+     * every pass that reads the eye (clamp_eye of probe.wgsl).
+     */
+    clampEye(encoder: GPUCommandEncoder): void {
+        const r = this.resources;
+        if (!r) return;
+        const pass = encoder.beginComputePass({ label: 'eye' });
+        pass.setPipeline(r.clampEye);
+        pass.setBindGroup(0, r.eyeGroup);
+        pass.setBindGroup(1, r.surfaceGroup);
+        pass.setBindGroup(2, r.emptyGroup);
+        pass.setBindGroup(3, r.featureGroup);
+        pass.dispatchWorkgroups(1);
+        pass.end();
     }
 
     /** Draws the structures into the shadow map (light/shadow.ts) as casters. */
@@ -785,6 +805,7 @@ function terrainLayouts({ device }: Gpu) {
         job: layout([[C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
         quantize: layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
         probe: layout([[C, { buffer: read }], [C, { buffer: write }]]),
+        eye: device.createBindGroupLayout({ entries: [{ binding: 2, visibility: C, buffer: write }] }),
         check: layout([[GPUShaderStage.VERTEX, { buffer: read }]]),
         stamp: layout([
             [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }],
@@ -831,16 +852,17 @@ type Pipelines = Awaited<ReturnType<typeof terrainPipelines>>;
 /** What the terrain draws and computes with from its first frame. */
 export async function terrainPipelines(gpu: Gpu) {
     const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
-    const [mesh, plainMesh, synthesize, normalsOf, quantize, probe, stamp, snap] = await Promise.all([
+    const [mesh, plainMesh, synthesize, normalsOf, quantize, probe, clampEye, stamp, snap] = await Promise.all([
         meshPipeline(gpu, true), meshPipeline(gpu, false),
         compute(gpu, 'pages', 'synthesize', [L.job, surface]),
         compute(gpu, 'pages', 'normals_of', [L.job, surface]),
         compute(gpu, 'quantize', 'quantize', [L.quantize]),
         compute(gpu, 'probe', 'probe', [L.probe, surface, L.empty, features]),
+        compute(gpu, 'probe', 'clamp_eye', [L.eye, surface, L.empty, features]),
         compute(gpu, 'stamp', 'stamp', [L.stamp, surface]),
         compute(gpu, 'stamp', 'snap', [L.snap]),
     ]);
-    return { mesh, plainMesh, synthesize, normalsOf, quantize, probe, stamp, snap };
+    return { mesh, plainMesh, synthesize, normalsOf, quantize, probe, clampEye, stamp, snap };
 }
 
 /** The draw of the nodes with a tunnel's portal, with its hole. */

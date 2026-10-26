@@ -12,6 +12,29 @@ fn probe(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
+// Frame of terrain.wgsl up to the eye's height, which `clamp_eye` lifts.
+struct EyeFrame {
+    view_proj: mat4x4f,
+    sun: vec4f,
+    eye: f32,
+}
+
+@group(0) @binding(2) var<storage, read_write> eye_frame: EyeFrame;
+
+// The least height of the drawn eye above the drawn surface under it.
+const EYE_CLEARANCE_M: f32 = 0.5;
+
+// Lifts this frame's eye to EYE_CLEARANCE_M above the drawn surface at the eye, the origin of LOD space.
+// The CPU eye stands on a probe one to three frames late, and a page, stamp or mask that lands in the
+// meantime changes the drawn surface at once.
+@compute @workgroup_size(1)
+fn clamp_eye() {
+    let ground = drawn_height(vec2f(0.0));
+    if (known(ground)) {
+        eye_frame.eye = max(eye_frame.eye, ground + EYE_CLEARANCE_M);
+    }
+}
+
 struct Check {
     @builtin(position) clip: vec4f,
     @location(0) @interpolate(flat) height: f32,

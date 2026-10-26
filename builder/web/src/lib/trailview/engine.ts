@@ -77,7 +77,7 @@ const FIRST: ((gpu: Gpu) => Promise<unknown>)[] = [terrainPipelines, groundPipel
 const REST_WAIT_MS = 2000;
 
 /** Where the eye stands: a height, and whether it lies in a tunnel. */
-interface Feet { z: number; tunnel: boolean }
+interface Feet { z: number; tunnel: boolean; floor: boolean }
 
 /** Where the selection looks from: `above` is the eye's height above the ground, or the pose's height over an unknown ground. */
 interface Place { east: number; north: number; above: number }
@@ -331,7 +331,7 @@ export class TrailView {
         TrailView.prepare(gpu).catch(() => {});
         this.complete = false;
         this.context.configure({ device: gpu.device, format: gpu.format, alphaMode: 'opaque' });
-        const uniform = gpu.buffer('uniforms', FRAME_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+        const uniform = gpu.buffer('uniforms', FRAME_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const look = gpu.buffer('uniforms', LOOK_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         const targets = new Targets(gpu);
         this.gpuState = { gpu, uniform, look, times: new PassTimes(gpu, PASSES, { resolve: 'terrain' }), targets };
@@ -403,7 +403,7 @@ export class TrailView {
             ? this.pose.height < terrain ? this.terrain.floorAt(at, this.pose.height - BORE_M, this.pose.height) : undefined
             : this.terrain.floorAt(at, feet - STEP_M, feet + STEP_M) ?? (this.feet?.tunnel ? feet : undefined);
         const z = floor ?? terrain;
-        return { z, tunnel: z < terrain - HEADROOM_M };
+        return { z, tunnel: z < terrain - HEADROOM_M, floor: floor !== undefined };
     }
 
     /** Whether a still view that can draw needs more jittered frames. */
@@ -512,6 +512,8 @@ export class TrailView {
         } else this.temporal.reset();
         const encoder = gpu.device.createCommandEncoder();
         const probed = this.terrain.encode(encoder, pass => times.writes(pass));
+        // On a floor the eye stands on a structure, not on the probe: a tunnel's floor lies under the terrain.
+        if (this.drawing && !this.feet?.floor) this.terrain.clampEye(encoder);
         this.groundLook.encode(encoder, () => times.writes('ground'));
         const counted = this.houses.encode(encoder, this.groundLook.computeGroup, moved, changed, () => times.writes('houses'));
         const last = eye && this.lastFrame
