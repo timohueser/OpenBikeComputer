@@ -76,7 +76,7 @@
         };
     });
 
-    /** A new date rebuilds every ground page: the card sets it once per pick. */
+    /** A new date rebuilds every ground page: the card sets one at most every 300 ms. */
     function change(conditions: Partial<View>) {
         if (!engine) return;
         engine.view = { ...engine.view, ...conditions };

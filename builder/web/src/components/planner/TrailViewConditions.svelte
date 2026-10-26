@@ -25,7 +25,6 @@
     // A walk moves the sun times by seconds: they follow the eye to the hundredth of a degree.
     const lon = $derived(Math.round(view.lon * 100) / 100), lat = $derived(Math.round(view.lat * 100) / 100);
     const day = $derived(new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' }));
-    const longDay = $derived(new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }));
     const span = $derived(daylight([lon, lat], date, TIME_ZONE));
     const sun = $derived(span ? `Sunrise ${clock(span[0])} · Sunset ${clock(span[1])}` : 'No sunrise');
     // The track is night before sunrise and after sunset, day between, with 30 minutes of twilight at each edge.
@@ -36,16 +35,31 @@
         return `linear-gradient(90deg, var(--water) ${at(rise - 15)}, var(--amber) ${at(rise + 15)}, var(--amber) ${at(set - 15)}, var(--water) ${at(set + 15)})`;
     });
 
-    // The slider moves a draft; the view takes it at most every 100 ms, as the layer date bar does.
+    /** Passes on the last value at most once per `ms`; flush() passes a waiting value on at once. */
+    function throttle<T>(ms: number, send: (value: T) => void) {
+        let timer: ReturnType<typeof setTimeout> | undefined, last: T;
+        const flush = () => {
+            if (timer === undefined) return;
+            clearTimeout(timer);
+            timer = undefined;
+            send(last);
+        };
+        onDestroy(() => clearTimeout(timer));
+        return { set: (value: T) => { last = value; timer ??= setTimeout(flush, ms); }, flush };
+    }
+
+    // The slider and the day stepper move drafts. The view takes the time at most every 100 ms, as the layer date
+    // bar does, and the day at most every 300 ms: a new date rebuilds every ground page.
     const minutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3));
     let draft = $state(720);
-    let pending: ReturnType<typeof setTimeout> | undefined;
-    onDestroy(() => clearTimeout(pending));
     $effect(() => { draft = minutes(time); });
-    function commit() {
-        clearTimeout(pending);
-        pending = undefined;
-        onChange({ time: clock(draft) });
+    let draftDay = $derived(date);
+    const longDay = $derived(new Date(draftDay).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }));
+    const sendTime = throttle(100, (time: string) => onChange({ time }));
+    const sendDay = throttle(300, (date: string) => onChange({ date }));
+    function pick(day: string) {
+        draftDay = day;
+        sendDay.set(day);
     }
 
     async function show() {
@@ -77,13 +91,13 @@
         <div class="card" id="trailview-conditions" role="group" aria-label="Day, time and weather" bind:this={card}>
             <section aria-label="Day">
                 <h3>Day</h3>
-                <DateStepper {date} text={longDay} label={`Day: ${longDay}. Choose a day`} below onDate={(date) => onChange({ date })} />
-                <button type="button" class="today" disabled={date === today()} onclick={() => onChange({ date: today() })}>Today</button>
+                <DateStepper date={draftDay} text={longDay} label={`Day: ${longDay}. Choose a day`} below onDate={pick} />
+                <button type="button" class="today" disabled={draftDay === today()} onclick={() => pick(today())}>Today</button>
             </section>
             <section>
                 <label class="head" for="trailview-time"><span>Time</span><strong>{clock(draft)}</strong></label>
                 <input id="trailview-time" type="range" min="0" max="1435" step="5" bind:value={draft} aria-valuetext={clock(draft)} style:--track={track}
-                    oninput={() => { pending ??= setTimeout(commit, 100); }} onchange={commit} />
+                    oninput={() => sendTime.set(clock(draft))} onchange={sendTime.flush} />
                 <div class="scale"><span>00:00</span><span>{sun}</span><span>24:00</span></div>
             </section>
             <section aria-label="Weather">
