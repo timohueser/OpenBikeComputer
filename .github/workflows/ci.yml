@@ -135,6 +135,9 @@ jobs:
         uses: ./.github/actions/apt-install
         with:
           packages: osmium-tool
+      # The bake test of planner/trailview-features builds its Rust solver offline.
+      - name: Fetch the locked Rust crates
+        run: cargo fetch --locked
       - name: Repository tool unit tests
         id: python-repository-tools
         run: |
