@@ -165,8 +165,9 @@ def with_retry(attempt, what: str, absent=()):
             body = raw[:400].decode("utf-8", "replace").replace("\n", " ").strip()
             # An OWS `NoApplicableCode` is the server's own fault whatever status it rides
             # on; the LGL WCS sends it as a 404 while it is overloaded. So it is retried
-            # like a 5xx, and only a 4xx that names the request's fault is final.
-            if error.code != 429 and error.code < 500 and b"NoApplicableCode" not in raw:
+            # like a 5xx, and only a 4xx that names the request's fault is final. A 408 and a
+            # 429 name the server's load: the IGN WMS sends a 408 while it is busy.
+            if error.code not in (408, 429) and error.code < 500 and b"NoApplicableCode" not in raw:
                 raise Refuse(redact(f"{what}: HTTP {error.code} — {body}")) from error
             if delay is None:
                 raise Refuse(redact(f"{what}: HTTP {error.code} after {len(RETRY_DELAYS)} "
