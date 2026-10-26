@@ -415,6 +415,15 @@ pub(super) fn problems(urls: &[String; 2], http: &Http, steps: &[Step]) -> Vec<S
             fix(What::Services)
         )),
         Ok(version) => {
+            if version.manifest != crate::release::FORMAT {
+                problems.push(format!(
+                    "The follower reads release manifests of format {}, and this checkout writes format {}: it \
+                     cannot start the planner release. {}",
+                    version.manifest,
+                    crate::release::FORMAT,
+                    fix(What::Services)
+                ));
+            }
             for (layer, reads) in &version.formats {
                 let step = steps.iter().find(|step| step.layer.name == layer && step.layer.format != *reads);
                 problems.extend(step.map(|step| {
@@ -509,10 +518,11 @@ mod tests {
     use crate::engine::tests::{step, TEST};
     use crate::engine::Run;
 
-    /// A follower that reads `formats`, and a tiles Worker, on a port of this machine.
-    fn services(runtime: &tokio::runtime::Runtime, formats: &[(&str, u32)]) -> String {
+    /// A follower that reads `formats` and manifests of `manifest`, and a tiles Worker, on a port of
+    /// this machine.
+    fn services(runtime: &tokio::runtime::Runtime, formats: &[(&str, u32)], manifest: u32) -> String {
         let formats = formats.iter().map(|(layer, format)| (layer.to_string(), *format)).collect();
-        let version = Version { commit: Some("c".repeat(40)), formats };
+        let version = Version { commit: Some("c".repeat(40)), formats, manifest };
         let worker = axum::routing::get(|| async { axum::Json(serde_json::json!({"commit": null})) });
         let router = crate::serve::http::router(Arc::new(RwLock::new(Default::default())), None, version);
         let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
@@ -527,10 +537,18 @@ mod tests {
         let steps = [step("test/a", Vec::new(), "a", Run::Command(Vec::new()))];
         let http = Http::new();
         let urls = |origin: &str| [format!("{origin}/planner-api/version"), format!("{origin}/version")];
-        let origin = services(&runtime, &[(TEST.name, TEST.format)]);
+        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT);
         assert_eq!(problems(&urls(&origin), &http, &steps), Vec::<String>::new());
 
-        let origin = services(&runtime, &[(TEST.name, TEST.format + 1)]);
+        // A follower built before it said which manifests it reads.
+        let origin = services(&runtime, &[(TEST.name, TEST.format)], 0);
+        let found = problems(&urls(&origin), &http, &steps);
+        assert!(
+            matches!(&found[..], [one] if one.starts_with("The follower reads release manifests of format 0")),
+            "{found:?}"
+        );
+
+        let origin = services(&runtime, &[(TEST.name, TEST.format + 1)], crate::release::FORMAT);
         let found = problems(&urls(&origin), &http, &steps);
         assert!(
             matches!(&found[..], [one] if one.starts_with("The follower reads test format 2, and the release has format 1")),

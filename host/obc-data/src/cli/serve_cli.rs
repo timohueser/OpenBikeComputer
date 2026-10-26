@@ -115,7 +115,11 @@ fn serve(root: &Path, store: &Store, name: &str, target: &Target, json: bool) ->
         Target::R2(_) => None,
     };
     let programs = programs(root, dir.is_some())?;
-    let version = http::Version { commit: http::COMMIT.map(String::from), formats: programs.formats() };
+    let version = http::Version {
+        commit: http::COMMIT.map(String::from),
+        formats: programs.formats(),
+        manifest: crate::release::FORMAT,
+    };
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     let address = if dir.is_some() { "0.0.0.0" } else { "127.0.0.1" };
     let listener = runtime.block_on(tokio::net::TcpListener::bind((address, PORT))).map_err(|e| {

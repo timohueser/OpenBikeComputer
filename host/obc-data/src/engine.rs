@@ -77,7 +77,7 @@ pub struct Step {
 }
 
 /// The published outputs of a layer: none, all, or selected declared paths (including directories).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Client {
     None,
