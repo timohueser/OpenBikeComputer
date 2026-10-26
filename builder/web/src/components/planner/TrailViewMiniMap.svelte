@@ -14,17 +14,26 @@
     const half = $derived(Math.min(fov, 170) / 2 * Math.PI / 180);
     const cone = $derived(`M0 0L${-R * Math.sin(half)} ${-R * Math.cos(half)}A${R} ${R} 0 0 1 ${R * Math.sin(half)} ${-R * Math.cos(half)}Z`);
 
+    const theme = $derived(appearance.dark ? 'dark' : 'light');
+    let shown: typeof theme;
+
     // The planner map registers the `release` and `pmtiles` protocols of the style, and it stays under the window.
     onMount(() => {
         const created = new maplibregl.Map({
-            container, style: basemapStyle(appearance.dark ? 'dark' : 'light', styleConfig), center: [lon, lat], zoom: 13,
+            container, style: basemapStyle(shown = theme, styleConfig), center: [lon, lat], zoom: 13,
             interactive: false, attributionControl: false, renderWorldCopies: false, fadeDuration: 0,
         });
         map = created;
         return () => created.remove();
     });
     $effect(() => {
-        map?.jumpTo({ center: [lon, lat] });
+        if (map && theme !== shown) map.setStyle(basemapStyle(shown = theme, styleConfig));
+    });
+    // A walk moves the eye at each frame: the map moves, and paints again, only when the eye moves a pixel on it.
+    $effect(() => {
+        if (!map) return;
+        const eye = map.project([lon, lat]), centre = map.project(map.getCenter());
+        if (Math.hypot(eye.x - centre.x, eye.y - centre.y) >= 1) map.jumpTo({ center: [lon, lat] });
     });
 </script>
 
