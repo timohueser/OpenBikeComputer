@@ -36,6 +36,8 @@ const FEATURE_ZOOM = 13;
 const ROADS = new Set(['main-road', 'road', 'path']);
 const TERRAIN_ZOOM = 10;
 const REACH_M = 20_000, STEP_M = 50;
+/** A rise this small does not end a view: the zoom 10 terrain (about 50 m per pixel) is a few metres off near the eye. */
+const RISE_M = 5;
 /** A load that is not done by then is left out: the engine does not wait for the first view. */
 const DEADLINE_MS = 1500;
 /** The Web Mercator sphere. */
@@ -158,7 +160,7 @@ function sight(height: (point: Xy) => number, eye: Xy, heading: number): Sight {
     for (let d = STEP_M; d <= REACH_M; d += STEP_M) {
         // Far ground drops below the eye with the curvature of the Earth, as the engine draws it.
         const rise = height([eye[0] + d * east, eye[1] + d * north]) - CURVATURE * d * d - top;
-        if (rise > 0) distance ??= d - STEP_M;
+        if (rise > RISE_M) distance ??= d - STEP_M;
         if (rise / d > horizon) horizon = rise / d;
     }
     return { heading, distance: distance ?? REACH_M, horizon };
