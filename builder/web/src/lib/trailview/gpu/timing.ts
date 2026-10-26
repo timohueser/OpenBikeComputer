@@ -29,6 +29,11 @@ export class PassTimes {
         for (let i = 0; i < READBACKS; i++) this.free.push(gpu.buffer('timing', bytes, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST));
     }
 
+    /** The query set is made on the device, not through the Gpu, so a scope's release misses it. */
+    destroy(): void {
+        this.set?.destroy();
+    }
+
     writes(pass: string): GPURenderPassTimestampWrites | undefined {
         const index = this.passes.indexOf(pass);
         if (!this.set || !this.free.length || index < 0) return undefined;

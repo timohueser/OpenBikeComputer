@@ -23,6 +23,9 @@ export interface TerrainSource {
  * beside the manifest. A config without a manifest reads zoom 13 from the tile template too. An abort
  * of `stop` ends every request.
  */
+/** Whether a load ended because its engine stopped: `destroy()` aborts without a reason, a timeout aborts with one. */
+export const stopped = (error: unknown) => error instanceof DOMException && error.name === 'AbortError';
+
 export function releaseTiles(config: PlannerConfig, stop = new AbortController().signal): TerrainSource['fetch'] {
     const signal = () => AbortSignal.any([requestSignal(), stop]);
     const packs = new Map<string, Promise<PMTiles | undefined>>();

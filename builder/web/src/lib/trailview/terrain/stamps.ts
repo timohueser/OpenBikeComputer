@@ -4,6 +4,7 @@ import type { StampSource } from './pages';
 import type { Request } from './stamp-worker';
 import type { NodeMeshes } from '../structures/node';
 import type { WaterMesh } from './water-mesh';
+import { stopped } from '../stream/terrain';
 
 /** The bytes of the binned nodes and their water meshes kept; an entry costs ENTRY_BYTES more. */
 const NODE_BYTES = 64 * 2 ** 20, ENTRY_BYTES = 64;
@@ -81,7 +82,7 @@ export class Stamps implements StampSource {
             this.pending.add(name);
             this.ask<NodeFeatures>(tile, node, 'stamps').then(stamps => this.keep(name, stamps), error => {
                 // A tile that fails stamps nothing, as an absent one.
-                console.warn(`Feature tile ${key(tile)}: ${error instanceof Error ? error.message : error}`);
+                if (!stopped(error)) console.warn(`Feature tile ${key(tile)}: ${error instanceof Error ? error.message : error}`);
                 this.failed++;
                 this.keep(name, NOTHING);
             }).finally(() => {

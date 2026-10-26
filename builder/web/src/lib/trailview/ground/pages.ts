@@ -6,6 +6,7 @@ import type { GroundDate, GroundPage } from '../stream/ground-pages';
 import { PAGE } from '../stream/heights';
 import { COARSEST, distances, EYE_M, key, MAP, NEAR_M, size, type Node } from '../terrain/lod';
 import { dayOfYear, mosaicsAt } from './rules';
+import { stopped } from '../stream/terrain';
 
 /**
  * Pages taken in per frame at most, ground tiles in flight, pages whose openness follows new heights
@@ -290,7 +291,7 @@ export class GroundPages {
             if (!complete) this.failed(`${z}/${x}/${y}`);
             else this.failures.delete(`${z}/${x}/${y}`);
         }).catch(error => {
-            console.warn(`Ground tile ${z}/${x}/${y}: ${error instanceof Error ? error.message : error}`);
+            if (!stopped(error)) console.warn(`Ground tile ${z}/${x}/${y}: ${error instanceof Error ? error.message : error}`);
             this.failed(`${z}/${x}/${y}`);
         }).finally(() => {
             this.loads--;

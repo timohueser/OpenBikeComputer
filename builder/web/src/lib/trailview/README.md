@@ -23,7 +23,7 @@ is the palette of the `world` region.
 
 | Path | Holds |
 | --- | --- |
-| `engine.ts` | The frame loop, the view, `prepare()`, `waitForIdle()`, the recovery from a lost device |
+| `engine.ts` | The frame loop, the view, `prepare()`, `waitForIdle()`, `nearReady()`, `eyeReady()`, `destroy()`, the recovery from a lost device |
 | `pacer.ts` | The frame rate, `FRAME_RATE`, and the display frames that draw. Headless Chromium runs at 60 Hz, so flights and shots draw each display frame |
 | `frame/` | The local metric frame, the walk and fly camera, the input |
 | `gpu/` | The device, its pools and shared layouts, the GPU time per pass, the WGSL `// #include` |

@@ -12,7 +12,7 @@ fn probe(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
-// Frame of terrain.wgsl up to the eye's height, which `clamp_eye` lifts.
+// Frame of terrain.wgsl up to the eye's height, which `clamp_eye` lifts: a change to Frame's start changes it too.
 struct EyeFrame {
     view_proj: mat4x4f,
     sun: vec4f,

@@ -57,7 +57,7 @@
             }
             stop = () => {
                 engine = view = undefined;
-                chunk.stopTrailView(started);
+                started.destroy();
             };
             if (abort.signal.aborted) return stop();
             engine = started;

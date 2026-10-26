@@ -2,6 +2,7 @@ import type { PlannerConfig } from '../../planner/config';
 import { openSource, requestSignal, type Source } from '../../planner/layers/archive';
 import { imagePixels } from '../../planner/layers/terrain';
 import type { Gpu } from '../gpu/device';
+import { stopped } from '../stream/terrain';
 
 /** The canopy layer's zoom and cells a side (specs/trailview-tiles.md#canopy). */
 export const CANOPY_ZOOM = 12, CELLS = 256;
@@ -119,7 +120,7 @@ export class Canopy {
             // A tile that fails stays out, as an absent one.
             this.failed++;
             this.absent.add(key);
-            console.warn(`Canopy tile ${key}: ${error instanceof Error ? error.message : error}`);
+            if (!stopped(error)) console.warn(`Canopy tile ${key}: ${error instanceof Error ? error.message : error}`);
         }).finally(() => {
             this.loading.delete(key);
             this.wake();

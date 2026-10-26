@@ -56,11 +56,6 @@ export async function viewSettled(engine: TrailView, signal: AbortSignal): Promi
         await new Promise(resolve => setTimeout(resolve, 200));
     }
     const aborted = new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
-    await Promise.race([engine.eyeReady().catch((error: unknown) => void console.warn('TrailView draws without a pass:', error)), new Promise(resolve => setTimeout(resolve, SETTLE_CAP_MS)), aborted]);
+    await Promise.race([engine.eyeReady(), new Promise(resolve => setTimeout(resolve, SETTLE_CAP_MS)), aborted]);
     return !signal.aborted;
-}
-
-/** Ends the engine and frees its GPU memory and its workers; the page's device stays for the next open. */
-export function stopTrailView(engine: TrailView): void {
-    engine.destroy();
 }

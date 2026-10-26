@@ -187,7 +187,11 @@ export class TrailView {
         const stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], stop.signal);
         const ground = await GroundSource.open(config, view.date, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
         const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale);
-        await engine.attach(gpu);
+        // No caller holds an engine whose start fails, so it ends itself: its workers and listeners run already.
+        await engine.attach(gpu).catch(error => {
+            engine.destroy();
+            throw error;
+        });
         await Promise.race([tiles.arrived, new Promise(resolve => setTimeout(resolve, EYE_WAIT_MS))]);
         engine.held = false;
         engine.request();
@@ -255,7 +259,9 @@ export class TrailView {
         this.stop.abort();
         for (const resolve of this.rendered.splice(0)) resolve();
         this.context.unconfigure();
-        this.gpuState.gpu.release();
+        // A start that fails in its first attach may have no GPU state yet.
+        this.gpuState?.times.destroy();
+        this.gpuState?.gpu.release();
     }
 
     /** Resolves after the next frame is drawn, or at once after `destroy()`. */
@@ -303,12 +309,15 @@ export class TrailView {
     /**
      * Resolves after the first drawn frame in which the view about the eye (EYE_M) is final: the eye
      * stands on its final ground, and the terrain and the ground look within EYE_M draw at their wanted
-     * levels with their stamps. It waits for no houses, plants, shadows or far field. A view that never
-     * gets there resolves when it is idle.
+     * levels with their stamps. It waits for no houses, plants, shadows, water, structures or far field.
+     * A view that never gets there resolves when it is idle, or when a late pass fails to attach.
      */
     async eyeReady(): Promise<void> {
+        // A failed late pass keeps the view from ever being idle: the wait then ends with it.
+        let failed = false;
+        this.rest.catch(() => { failed = true; });
         await this.nextFrame();
-        while (!this.destroyed && !this.eyeFinal() && !this.idle()) await this.afterFrame();
+        while (!this.destroyed && !failed && !this.eyeFinal() && !this.idle()) await this.afterFrame();
     }
 
     private eyeFinal(): boolean {
@@ -348,10 +357,13 @@ export class TrailView {
         // A device lost before the first frame leaves the other passes to the next attach.
         this.rest = drawn.then(async () => {
             if (this.destroyed || this.gpuState.gpu !== gpu) return;
-            await Promise.all([shadow, this.terrain.attachParts(frames), this.houses.attach(gpu, frames, surface, features), this.instances.attach(gpu, frames, { surface, features })]);
-            // A destroy during these attaches released the scope before they made their buffers.
-            if (this.destroyed) return gpu.release();
-            if (this.gpuState.gpu !== gpu) return;
+            // A destroy during these attaches released the scope before they made their buffers, also when one fails.
+            try {
+                await Promise.all([shadow, this.terrain.attachParts(frames), this.houses.attach(gpu, frames, surface, features), this.instances.attach(gpu, frames, { surface, features })]);
+            } finally {
+                if (this.destroyed) gpu.release();
+            }
+            if (this.destroyed || this.gpuState.gpu !== gpu) return;
             this.complete = this.completed = true;
             this.request();
         });
@@ -364,14 +376,18 @@ export class TrailView {
             const next = await Gpu.request();
             if (this.destroyed) return;
             if (!next) return console.error('WebGPU has no adapter after a lost device.');
-            await this.attach(next);
-            if (this.destroyed) return this.gpuState.gpu.release();
+            try {
+                await this.attach(next);
+            } finally {
+                if (this.destroyed) this.gpuState.gpu.release();
+            }
+            if (this.destroyed) return;
             // The other passes attach before the next frame: until they do, they hold the lost device's resources.
             this.firstDrawn?.();
             this.recoveries++;
             this.request();
         });
-        this.ready = true;
+        this.ready = !this.destroyed;
     }
 
     /**

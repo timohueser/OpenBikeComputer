@@ -1,7 +1,7 @@
 import { EARTH_RADIUS } from '../frame/frame';
 import type { Anchor } from '../frame/space';
 import { PAGE, type PageData } from '../stream/heights';
-import { TILE_ZOOM, type TerrainSource } from '../stream/terrain';
+import { TILE_ZOOM, type TerrainSource, stopped } from '../stream/terrain';
 import { NEAR, type NodeStamps } from './bins';
 import { COARSEST, distances, FINEST, key, MAP, size, type Node } from './lod';
 
@@ -484,7 +484,7 @@ export class Pages {
             this.queued.set(name, quadrants.filter(Boolean).length);
         })().catch(error => {
             // A tile that fails stays out for this page, as an absent one.
-            console.warn(`Terrain tile ${name}: ${error instanceof Error ? error.message : error}`);
+            if (!stopped(error)) console.warn(`Terrain tile ${name}: ${error instanceof Error ? error.message : error}`);
             this.failed++;
             this.tiles.set(name, { state: 'absent' });
         }).finally(() => {
