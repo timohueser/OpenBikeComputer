@@ -1,0 +1,198 @@
+<script lang="ts">
+    import { onDestroy, tick } from 'svelte';
+    import Icon from './PlannerIcon.svelte';
+    import DateStepper from './DateStepper.svelte';
+    import Segmented from './Segmented.svelte';
+    import { clock, daylight } from '../../lib/planner/layers/sun';
+    import { TIME_ZONE, today, type View, type Weather } from '../../lib/trailview/view';
+
+    type Conditions = Pick<View, 'date' | 'time' | 'weather'>;
+    /** A chip with the day, the time and the weather of the view; a click opens a card that changes them. */
+    let { view, onChange }: { view: View; onChange: (change: Partial<Conditions>) => void } = $props();
+
+    const WEATHER: { value: Weather; label: string; icon: string }[] = [
+        { value: 'sunny', label: 'Sunny', icon: 'sun' },
+        { value: 'cloudy', label: 'Cloudy', icon: 'weather' },
+        { value: 'rainy', label: 'Rainy', icon: 'rain' },
+    ];
+
+    let open = $state(false);
+    let root: HTMLElement;
+    let chip: HTMLButtonElement;
+    let card = $state<HTMLElement>();
+    // The view changes at each frame of a walk; these values change only when they differ.
+    const date = $derived(view.date), time = $derived(view.time);
+    // A walk moves the sun times by seconds: they follow the eye to the hundredth of a degree.
+    const lon = $derived(Math.round(view.lon * 100) / 100), lat = $derived(Math.round(view.lat * 100) / 100);
+    const day = $derived(new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' }));
+    const longDay = $derived(new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }));
+    const sun = $derived.by(() => {
+        const span = daylight([lon, lat], date, TIME_ZONE);
+        return span ? `Sunrise ${clock(span[0])} · Sunset ${clock(span[1])}` : 'No sunrise';
+    });
+
+    // The slider moves a draft; the view takes it at most every 100 ms, as the layer date bar does.
+    const minutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3));
+    let draft = $state(720);
+    let pending: ReturnType<typeof setTimeout> | undefined;
+    onDestroy(() => clearTimeout(pending));
+    $effect(() => { draft = minutes(time); });
+    function commit() {
+        clearTimeout(pending);
+        pending = undefined;
+        onChange({ time: clock(draft) });
+    }
+
+    async function show() {
+        open = true;
+        await tick();
+        card?.querySelector<HTMLElement>('button')?.focus();
+    }
+    function hide() {
+        open = false;
+        chip.focus();
+    }
+</script>
+
+<svelte:window onpointerdown={(event) => { if (open && !root.contains(event.target as Node)) open = false; }} />
+
+<!-- Keys in the card stop here: the engine reads the arrow keys on `window`. An Escape whose default runs closes the window. -->
+<div class="conditions" bind:this={root} role="presentation" onkeydown={(event) => {
+    if (open && event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        hide();
+    } else if (card?.contains(event.target as Node)) event.stopPropagation();
+}}>
+    <button type="button" class="chip" bind:this={chip} aria-expanded={open} aria-controls="trailview-conditions"
+        aria-label={`${day}, ${time}, ${view.weather}. Change the day, the time and the weather`} onclick={() => open ? hide() : show()}>
+        <Icon name={WEATHER.find(weather => weather.value === view.weather)?.icon} />{day} · {time}<Icon name={open ? 'up' : 'down'} size={14} />
+    </button>
+    {#if open}
+        <div class="card" id="trailview-conditions" role="group" aria-label="Day, time and weather" bind:this={card}>
+            <section aria-label="Day">
+                <h3>Day</h3>
+                <DateStepper {date} text={longDay} label={`Day: ${longDay}. Choose a day`} below onDate={(date) => onChange({ date })} />
+                <button type="button" class="today" disabled={date === today()} onclick={() => onChange({ date: today() })}>Today</button>
+            </section>
+            <section>
+                <label class="head" for="trailview-time"><span>Time</span><strong>{clock(draft)}</strong></label>
+                <input id="trailview-time" type="range" min="0" max="1435" step="5" bind:value={draft} aria-valuetext={clock(draft)}
+                    oninput={() => { pending ??= setTimeout(commit, 100); }} onchange={commit} />
+                <div class="scale"><span>00:00</span><span>{sun}</span><span>24:00</span></div>
+            </section>
+            <section aria-label="Weather">
+                <h3>Weather</h3>
+                <Segmented label="Weather" options={WEATHER} value={view.weather} onChange={(weather) => onChange({ weather })} />
+            </section>
+        </div>
+    {/if}
+</div>
+
+<style>
+    .chip {
+        position: absolute;
+        top: max(12px, env(safe-area-inset-top));
+        left: max(12px, env(safe-area-inset-left));
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 38px;
+        padding: 0 12px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--ink);
+        font: 700 14px var(--sans);
+        font-variant-numeric: tabular-nums;
+        box-shadow: var(--planner-shadow);
+        cursor: pointer;
+    }
+    .chip :global(svg:last-child) {
+        color: var(--ink-soft);
+    }
+    .chip:hover,
+    .chip[aria-expanded="true"] {
+        background: var(--parchment-2);
+    }
+    .chip:focus-visible {
+        outline: 2px solid var(--forest);
+        outline-offset: 2px;
+    }
+    .card {
+        position: absolute;
+        top: calc(max(12px, env(safe-area-inset-top)) + 46px);
+        left: max(12px, env(safe-area-inset-left));
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        width: 340px;
+        padding: 16px;
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--ink);
+        font: 14px var(--sans);
+        box-shadow: var(--planner-shadow);
+    }
+    section {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+    h3,
+    .head span,
+    .scale {
+        margin: 0;
+        color: var(--ink-soft);
+        font: 12px var(--sans);
+    }
+    .today {
+        align-self: flex-start;
+        padding: 4px 10px;
+        border: 1px solid var(--line-strong);
+        border-radius: 14px;
+        background: var(--panel);
+        color: var(--ink);
+        font: 12px var(--sans);
+        cursor: pointer;
+    }
+    .today:hover:not(:disabled) {
+        background: var(--parchment-2);
+    }
+    .today:disabled {
+        color: var(--ink-faint);
+        cursor: default;
+    }
+    .head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+    }
+    .head strong {
+        font-variant-numeric: tabular-nums;
+    }
+    input {
+        width: 100%;
+        height: 24px;
+        margin: 0;
+        accent-color: var(--rust);
+        cursor: pointer;
+    }
+    :is(.today, input):focus-visible {
+        outline: 2px solid var(--forest);
+        outline-offset: 2px;
+    }
+    .scale {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+    }
+    @media (max-width: 760px) {
+        .card {
+            right: max(12px, env(safe-area-inset-right));
+            width: auto;
+        }
+    }
+</style>

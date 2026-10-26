@@ -4,7 +4,7 @@
     import { releaseProtocol, releaseUrl } from '../../lib/planner/release';
     const terrain = terrainSource(config.terrain);
     // MapLibre loads the release objects of the style through `releaseProtocol`.
-    const styleConfig = { ...config, basemap: releaseUrl(config.basemap), glyphs: releaseUrl(config.glyphs), sprites: releaseUrl(config.sprites) };
+    export const styleConfig = { ...config, basemap: releaseUrl(config.basemap), glyphs: releaseUrl(config.glyphs), sprites: releaseUrl(config.sprites) };
 </script>
 
 <script lang="ts">
