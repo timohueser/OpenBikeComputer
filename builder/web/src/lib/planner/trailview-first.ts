@@ -193,16 +193,22 @@ async function dropFeatures(config: PlannerConfig, at: Coordinate): Promise<Feat
     return decodeFeatures(bytes);
 }
 
-/** The roads and paths on the surface, and the houses near the drop, in metres from `at`. */
+/** The roads and paths on the surface, without bridges and tunnels, and the houses near the drop, in metres from `at`. */
 export function localGeometry(features: Feature[], at: Coordinate): { lines: Xy[][]; houses: House[] } {
     const [x, y] = worldPixel(at, 2 ** FEATURE_ZOOM), tx = Math.floor(x), ty = Math.floor(y);
     const scale = metresPerUnit(at[1], FEATURE_WORLD), u = (x - tx) * EXTENT, v = (y - ty) * EXTENT;
     const local = (xy: Int32Array): Xy[] => Array.from({ length: xy.length / 2 }, (_, i) => [(xy[2 * i] - u) * scale, (v - xy[2 * i + 1]) * scale]);
-    // A house farther than this cannot hold the eye, which moves at most MAX_SNAP_M.
-    const near = (ring: Xy[]) => ring.some(([east, north]) => Math.hypot(east, north) < 200);
+    // A house whose box lies farther than this from the drop neither holds the eye, which moves at most MAX_SNAP_M,
+    // nor shares the wall that the eye leaves a house by, short of a hall 300 m across.
+    const near = (ring: Xy[]) => {
+        const east = ring.map(p => p[0]), north = ring.map(p => p[1]);
+        return Math.hypot(Math.max(Math.min(...east), -Math.max(...east), 0), Math.max(Math.min(...north), -Math.max(...north), 0)) < 200;
+    };
+    // An eye on a bridge deck would stand on the ground below it.
+    const surface = ({ tags }: Feature) => !(Number(tags.layer) < 0) && (tags.bridge ?? 'no') === 'no';
     const lines: Xy[][] = [], houses: House[] = [];
     for (const feature of features) {
-        if (feature.geometry === 'line' && ROADS.has(feature.kind) && !(Number(feature.tags.layer) < 0)) lines.push(...feature.parts.map(part => local(part.xy)));
+        if (feature.geometry === 'line' && ROADS.has(feature.kind) && surface(feature)) lines.push(...feature.parts.map(part => local(part.xy)));
         if (feature.geometry === 'area' && feature.kind === 'building') {
             const rings = feature.parts.map(part => local(part.xy));
             if (rings.some(near)) houses.push(rings);

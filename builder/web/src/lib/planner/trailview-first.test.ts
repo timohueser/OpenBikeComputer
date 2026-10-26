@@ -81,15 +81,18 @@ describe('farthest', () => {
     });
 });
 
-it('places tile units in metres from the drop and leaves out lines below the surface', () => {
+it('places tile units in metres from the drop, leaves out lines below the surface and on bridges, and keeps a hall around the drop', () => {
     const at: Coordinate = [8.366, 46.958];
     const [x, y] = worldPixel(at, 2 ** 13), u = (x - Math.floor(x)) * EXTENT, v = (y - Math.floor(y)) * EXTENT;
     // About 0.2 m per tile unit: 100 units east is about 20 m.
-    const line = (layer: string): Feature => ({ kind: 'path', tags: { layer }, geometry: 'line', parts: [{ outer: false, xy: new Int32Array([u, v, u + 100, v]), z: null }] });
-    const { lines } = localGeometry([line('0'), line('-1')], at);
+    const line = (tags: Record<string, string>): Feature => ({ kind: 'path', tags, geometry: 'line', parts: [{ outer: false, xy: new Int32Array([u, v, u + 100, v]), z: null }] });
+    // About 400 m across, with the drop in its middle.
+    const hall: Feature = { kind: 'building', tags: {}, geometry: 'area', parts: [{ outer: true, xy: new Int32Array([u - 1000, v - 1000, u + 1000, v - 1000, u + 1000, v + 1000, u - 1000, v + 1000]), z: null }] };
+    const { lines, houses } = localGeometry([line({ layer: '0' }), line({ layer: '-1' }), line({ bridge: 'yes' }), hall], at);
     expect(lines).toHaveLength(1);
     expect(lines[0][0][0]).toBeCloseTo(0, 0);
     expect(lines[0][1][0]).toBeGreaterThan(15);
     expect(lines[0][1][0]).toBeLessThan(25);
     expect(lines[0][1][1]).toBeCloseTo(0, 0);
+    expect(houses).toHaveLength(1);
 });
