@@ -11,11 +11,13 @@ import { firstView, type Near } from './trailview-first';
  * and moves to the first view of the drop, which loads while the engine compiles.
  */
 export async function startTrailView(canvas: HTMLCanvasElement, config: PlannerConfig, view: View, near: Near): Promise<TrailView | undefined> {
-    const first = firstView(config, [view.lon, view.lat], near);
+    // The first view cannot reject: a throw after the start would leave a running engine that no caller holds.
+    const first = firstView(config, [view.lon, view.lat], near).catch((error: unknown) => void console.info('TrailView first view falls back to the drop:', error));
     const gpu = await Gpu.request();
     if (!gpu) return undefined;
     const engine = await TrailView.start(canvas, gpu, config, view, scaleOf(''));
-    engine.view = { ...engine.view, ...(await first) };
+    const moved = await first;
+    if (moved) engine.view = { ...engine.view, ...moved };
     return engine;
 }
 

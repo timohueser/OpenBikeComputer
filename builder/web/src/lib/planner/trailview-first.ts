@@ -47,12 +47,20 @@ export async function firstView(config: PlannerConfig, at: Coordinate, near: Nea
     const radius = Math.min(ON_LINE_PX * near.metresPerPx, MAX_SNAP_M);
     const route = routeView(near.route, at, radius);
     if (route) return route;
-    const deadline = new Promise<undefined>(resolve => setTimeout(resolve, DEADLINE_MS));
-    const settled = <T>(load: Promise<T>) => Promise.race([load.catch(error => void console.warn('TrailView first view:', error)), deadline]);
-    const [features, height] = await Promise.all([settled(dropFeatures(config, at)), settled(terrainNear(config, at))]);
+    const deadline = new Promise<void>(resolve => setTimeout(resolve, DEADLINE_MS));
+    const [features, height] = await Promise.all([settled('roads and houses', dropFeatures(config, at), deadline), settled('terrain', terrainNear(config, at), deadline)]);
     const { eye, along } = features ? place(features, at, radius) : { eye: [0, 0] as Xy, along: undefined };
     const headings = along === undefined ? Array.from({ length: 36 }, (_, i) => i * 10) : [along, (along + 180) % 360];
     return { ...coordinateOf(at, eye), heading: height ? farthest(height, eye, headings) : along ?? 0 };
+}
+
+/** The value of `load`, or undefined when it fails or `deadline` comes first. It says so: a report of a view to the north can then tell a fallback from the rule. */
+async function settled<T>(what: string, load: Promise<T>, deadline: Promise<void>): Promise<T | undefined> {
+    const late: unique symbol = Symbol();
+    const value = await Promise.race([load.catch((error: unknown) => void console.info(`TrailView first view falls back without the ${what}: the load failed.`, error)), deadline.then((): typeof late => late)]);
+    if (value !== late) return value;
+    console.info(`TrailView first view falls back without the ${what}: the load took more than ${DEADLINE_MS} ms.`);
+    return undefined;
 }
 
 /** On the route: the eye on it, looking in the riding direction. */
