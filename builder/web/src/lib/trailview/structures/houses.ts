@@ -1,5 +1,6 @@
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
+import { CASTER_DEPTH, CASTER_PRIMITIVE } from '../light/shadow';
 import { CURVATURE, type Frame } from '../frame/frame';
 import { MESHES, TEMPLATES } from '../models/house';
 import type { HouseStyle, Rules } from '../rules/regions';
@@ -15,8 +16,11 @@ const RADIUS_M = 8000, KEPT = 400, REQUESTS = 6;
 const ZOOM = 14, EARTH_M = 40075016.686;
 /** Words of `Kept`, bytes of `Drawn` and words of `Style` in houses.wgsl; the bytes of `Params` and where its styles start; the stride of the dynamic offset of `DrawOf`. */
 const FIT_WORDS = 4, DRAWN_BYTES = 160, STYLE_WORDS = 32, STYLES_AT = 48 + 64 * 16 + 256 * 16, STYLES = 32, PARAMS_BYTES = STYLES_AT + STYLES * STYLE_WORDS * 4, DRAW_STRIDE = 256;
-/** Houses drawn in a frame at most; past ROOM of them, the narrowest on screen go first. */
-const DRAWN = 2 ** 14, ROOM = [0.7, 0.9];
+/**
+ * Houses drawn in a frame at most; past ROOM of them, the narrowest on screen go first. The sun's view
+ * holds the casters of a shadow map (light/shadow.ts): up to 2 100 on the kit's flights (measured).
+ */
+const DRAWN = 2 ** 14, SUN_DRAWN = 2 ** 12, ROOM = [0.7, 0.9];
 /** Tiles that one fit pass reaches at most, as `ranges` in houses.wgsl. */
 const RANGES = 256;
 /**
@@ -51,7 +55,17 @@ export const PAD = { burial: 0.5, steep: [2, 3], plinth: 0.3, margin: 1.0, full:
 export interface HouseCamera { viewProj: Float32Array; eye: [number, number, number] }
 
 /** Houses on the GPU, their tiles, and the houses that a recent frame drew in full and simple. */
-export interface HouseStats { houses: number; tiles: number; full: number; simple: number }
+/** `casters`: the most houses that a draw of the shadow maps fitted, and those that all draws dropped. */
+export interface HouseStats { houses: number; tiles: number; full: number; simple: number; casters: { staged: number; dropped: number } }
+
+/** What a view culls into and draws from. */
+interface ViewBuffers {
+    /** Per fits buffer: the groups of the compute; the group of the draws. */
+    computeGroups: GPUBindGroup[];
+    renderGroup: GPUBindGroup;
+    draws: GPUBuffer;
+    params: GPUBuffer;
+}
 
 interface Resources {
     device: GPUDevice;
@@ -59,14 +73,15 @@ interface Resources {
     refit: GPUComputePipeline;
     templates: GPURenderPipeline;
     outlines: GPURenderPipeline;
-    /** Per fits buffer: the groups of the compute; the group of the draws. */
-    computeGroups: GPUBindGroup[];
-    renderGroup: GPUBindGroup;
+    casters: [GPURenderPipeline, GPURenderPipeline];
+    /** The eye's view, and the sun's. */
+    eye: ViewBuffers;
+    sun: ViewBuffers;
     houses: GPUBuffer;
     fits: GPUBuffer[];
-    draws: GPUBuffer;
     readbacks: GPUBuffer[];
-    params: GPUBuffer;
+    /** The counts of the sun's view, unless a read holds it. */
+    sunReadback?: GPUBuffer;
     outlineVertices: GPUBuffer;
     surface: GPUBindGroup;
     features: GPUBindGroup;
@@ -128,6 +143,7 @@ export class Houses {
     /** Whether the records moved since the last encode: their fits move with them there. */
     private moved = false;
     private drawnCounts = { full: 0, simple: 0 };
+    private casterCounts = { staged: 0, dropped: 0 };
     /** Frames that moved, and whether one moved since the last refit. */
     private frames = 0;
     private stale = false;
@@ -161,10 +177,11 @@ export class Houses {
     }
 
     get stats(): HouseStats {
-        return { houses: this.count, tiles: this.ranges.length, ...this.drawnCounts };
+        return { houses: this.count, tiles: this.ranges.length, ...this.drawnCounts, casters: this.casterCounts };
     }
 
-    async attach(gpu: Gpu, frame: GPUBuffer, surface: { layout: GPUBindGroupLayout; group: GPUBindGroup }, features: { layout: GPUBindGroupLayout; group: GPUBindGroup },
+    /** `frames` are the frame uniforms of the eye's view and of the sun's. */
+    async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[], surface: { layout: GPUBindGroupLayout; group: GPUBindGroup }, features: { layout: GPUBindGroupLayout; group: GPUBindGroup },
         ground: { render: GPUBindGroupLayout; compute: GPUBindGroupLayout }, format: GPUTextureFormat, depthFormat: GPUTextureFormat): Promise<void> {
         this.resources = undefined;
         this.drawn = '';
@@ -182,16 +199,9 @@ export class Houses {
         const b = {
             houses: gpu.buffer('houses', HOUSES * RECORD_WORDS * 4, storage),
             fits: [0, 1].map(() => gpu.buffer('houses', HOUSES * FIT_WORDS * 4, storage | GPUBufferUsage.COPY_SRC)),
-            drawn: gpu.buffer('houses', DRAWN * DRAWN_BYTES, GPUBufferUsage.STORAGE),
-            draws: gpu.buffer('houses', (LISTS + DRAWS * DRAWN + HOUSES) * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC),
-            drawOf: gpu.buffer('houses', DRAWS * DRAW_STRIDE, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
-            params: gpu.buffer('houses', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
             templates: upload('houses', words),
             outlineVertices: gpu.buffer('houses', OUTLINE_BYTES, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST),
         };
-        const drawOf = new Uint32Array(DRAWS * DRAW_STRIDE / 4);
-        for (let d = 0; d < DRAWS; d++) drawOf.set([d * DRAWN, DRAWN], d * DRAW_STRIDE / 4);
-        device.queue.writeBuffer(b.drawOf, 0, drawOf);
         const entry = (binding: number, visibility: number, type: GPUBufferBindingType, hasDynamicOffset = false): GPUBindGroupLayoutEntry => ({ binding, visibility, buffer: { type, hasDynamicOffset } });
         const computeLayout = device.createBindGroupLayout({ entries: [
             entry(0, C, 'uniform'), entry(1, C, 'read-only-storage'), entry(2, C, 'storage'), entry(5, C, 'storage'), entry(11, C, 'uniform'), entry(12, C, 'storage'),
@@ -210,20 +220,37 @@ export class Houses {
         });
         const fitLayout = device.createPipelineLayout({ bindGroupLayouts: [computeLayout, surface.layout, ground.compute, features.layout] });
         const compute = (entryPoint: string) => device.createComputePipelineAsync({ label: 'houses', layout: fitLayout, compute: { module, entryPoint } });
-        const [fit, refit, templates, outlines] = await Promise.all([
-            compute('fit'), compute('refit'),
-            render('template_vertex', []),
-            render('outline_vertex', [{ arrayStride: OUTLINE_WORDS * 4, attributes: [
-                { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'uint32' }, { shaderLocation: 2, offset: 12, format: 'float32' },
-            ] }]),
+        const outlineBuffers: GPUVertexBufferLayout[] = [{ arrayStride: OUTLINE_WORDS * 4, attributes: [
+            { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'uint32' }, { shaderLocation: 2, offset: 12, format: 'float32' },
+        ] }];
+        const caster = (entryPoint: string, buffers: GPUVertexBufferLayout[]) => device.createRenderPipelineAsync({
+            label: 'house casters', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, surface.layout] }),
+            vertex: { module, entryPoint, buffers }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH,
+        });
+        const [fit, refit, templates, outlines, templateCaster, outlineCaster] = await Promise.all([
+            compute('fit'), compute('refit'), render('template_vertex', []), render('outline_vertex', outlineBuffers),
+            caster('template_caster', []), caster('outline_caster', outlineBuffers),
         ]);
         const bind = (layout: GPUBindGroupLayout, list: [number, GPUBuffer, number?][]) => device.createBindGroup({ layout, entries: list.map(([binding, buffer, size]) => ({ binding, resource: { buffer, size } })) });
+        const view = (frame: GPUBuffer, capacity: number): ViewBuffers => {
+            const drawn = gpu.buffer('houses', capacity * DRAWN_BYTES, GPUBufferUsage.STORAGE);
+            const draws = gpu.buffer('houses', (LISTS + DRAWS * capacity + HOUSES) * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
+            const params = gpu.buffer('houses', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+            const drawOf = gpu.buffer('houses', DRAWS * DRAW_STRIDE, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+            const at = new Uint32Array(DRAWS * DRAW_STRIDE / 4);
+            for (let d = 0; d < DRAWS; d++) at.set([d * capacity, capacity], d * DRAW_STRIDE / 4);
+            device.queue.writeBuffer(drawOf, 0, at);
+            return {
+                draws, params,
+                computeGroups: [0, 1].map(k => bind(computeLayout, [[0, frame], [1, b.houses], [2, b.fits[k]], [5, draws], [11, params], [12, drawn]])),
+                renderGroup: bind(renderLayout, [[0, frame], [6, draws], [7, drawOf, 8], [8, b.templates], [13, drawn]]),
+            };
+        };
         this.resources = {
-            device, fit, refit, templates, outlines, houses: b.houses, fits: b.fits, draws: b.draws, params: b.params,
-            readbacks: [0, 1].map(() => gpu.buffer('houses', LISTS * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST)), outlineVertices: b.outlineVertices,
+            device, fit, refit, templates, outlines, casters: [templateCaster, outlineCaster], houses: b.houses, fits: b.fits, eye: view(frame, DRAWN), sun: view(sunFrame, SUN_DRAWN),
+            readbacks: [0, 1].map(() => gpu.buffer('houses', LISTS * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST)), sunReadback: gpu.buffer('houses', LISTS * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST),
+            outlineVertices: b.outlineVertices,
             surface: surface.group, features: features.group,
-            computeGroups: [0, 1].map(k => bind(computeLayout, [[0, frame], [1, b.houses], [2, b.fits[k]], [5, b.draws], [11, b.params], [12, b.drawn]])),
-            renderGroup: bind(renderLayout, [[0, frame], [6, b.draws], [7, b.drawOf, 8], [8, b.templates], [13, b.drawn]]),
         };
     }
 
@@ -311,30 +338,7 @@ export class Houses {
         const refitting = !moving || ++this.frames % TURNS === 0;
         this.stale = !refitting;
         if (!r || !ground || !this.count) return () => {};
-        const args = new Uint32Array(LISTS);
-        let first = 0;
-        TEMPLATES.forEach((name, t) => {
-            const { full, simple } = MESHES[name];
-            args.set([full, 0, first, 0, simple, 0, first, 0], 8 * t);
-            first += full;
-        });
-        r.device.queue.writeBuffer(r.draws, 0, args);
-        const shown = this.ranges.filter(range => this.inView(range)).slice(0, RANGES);
-        const params = new ArrayBuffer(PARAMS_BYTES);
-        new Uint32Array(params).set([this.count, DRAWN]);
-        new Float32Array(params).set([PAD.burial, PAD.plinth, PAD.margin, PAD.full, this.least, ...PAD.steep], 2);
-        new Uint32Array(params)[10] = shown.length;
-        new Uint32Array(params, 48).set(this.regions.subarray(0, 256));
-        // Each tile's first workgroup of `fit` and of `refit`, so that they run no workgroup without houses.
-        const ranges = new Uint32Array(params, 48 + 64 * 16, 4 * RANGES);
-        let fits = 0, refits = 0;
-        shown.forEach(({ start, count }, k) => {
-            ranges.set([start, count, fits, refits], 4 * k);
-            fits += Math.ceil(count / FIT_GROUP);
-            refits += Math.ceil(count / PER_GROUP);
-        });
-        new Uint32Array(params, STYLES_AT).set(this.styles);
-        r.device.queue.writeBuffer(r.params, 0, params);
+        const [fits, refits] = this.prepare(r, r.eye, this.camera, DRAWN, PAD.full, this.least);
         if (this.moved) {
             const from = r.fits[this.set], to = r.fits[this.set ^ 1], bytes = FIT_WORDS * 4;
             for (const move of this.moves) {
@@ -342,25 +346,16 @@ export class Houses {
                 else encoder.copyBufferToBuffer(from, move.from * bytes, to, move.to * bytes, move.count * bytes);
             }
             this.set ^= 1;
-            r.device.queue.writeBuffer(r.draws, (LISTS + DRAWS * DRAWN) * 4, NO_DRAWS, 0, this.count);
+            r.device.queue.writeBuffer(r.eye.draws, (LISTS + DRAWS * DRAWN) * 4, NO_DRAWS, 0, this.count);
         }
         this.moved = false;
         const pass = encoder.beginComputePass({ label: 'houses', timestampWrites: timing() });
-        pass.setBindGroup(0, r.computeGroups[this.set]);
-        pass.setBindGroup(1, r.surface);
-        pass.setBindGroup(2, ground);
-        pass.setBindGroup(3, r.features);
-        if (refitting && refits) {
-            pass.setPipeline(r.refit);
-            pass.dispatchWorkgroups(refits);
-        }
-        pass.setPipeline(r.fit);
-        if (fits) pass.dispatchWorkgroups(fits);
+        this.cull(pass, r, r.eye, ground, refitting ? refits : 0, fits);
         pass.end();
         // The counts of the draws, for the HUD and the room in the pool.
         const readback = r.readbacks.pop();
         if (!readback) return () => {};
-        encoder.copyBufferToBuffer(r.draws, 0, readback, 0, LISTS * 4);
+        encoder.copyBufferToBuffer(r.eye.draws, 0, readback, 0, LISTS * 4);
         return () => readback.mapAsync(GPUMapMode.READ).then(() => {
             const counts = new Uint32Array(readback.getMappedRange());
             const sum = (lod: number) => TEMPLATES.reduce((n, _, t) => n + counts[4 * (2 * t + lod) + 1], 0);
@@ -373,36 +368,121 @@ export class Houses {
         }, () => {});
     }
 
+    /**
+     * Encodes into a compute pass the cull of the houses for the sun's view (`camera`) of the shadow map
+     * (light/shadow.ts), all in the simple template. A house that no frame fitted yet fits first.
+     */
+    encodeCasters(pass: GPUComputePassEncoder, ground: GPUBindGroup, camera: HouseCamera): void {
+        const r = this.resources;
+        if (!r || !this.count) return;
+        const [fits, refits] = this.prepare(r, r.sun, camera, SUN_DRAWN, 1e30, 0);
+        r.device.queue.writeBuffer(r.sun.draws, (LISTS + DRAWS * SUN_DRAWN) * 4, NO_DRAWS, 0, this.count);
+        this.cull(pass, r, r.sun, ground, refits, fits);
+    }
+
+    /** Reads the counts of the sun's view after its cull, for the stats. Call the returned function after the submit. */
+    readCasters(encoder: GPUCommandEncoder): () => void {
+        const r = this.resources, readback = r?.sunReadback;
+        if (!r || !readback || !this.count) return () => {};
+        r.sunReadback = undefined;
+        encoder.copyBufferToBuffer(r.sun.draws, 0, readback, 0, LISTS * 4);
+        return () => readback.mapAsync(GPUMapMode.READ).then(() => {
+            const fitted = new Uint32Array(readback.getMappedRange())[LISTS - 4];
+            this.casterCounts = { staged: Math.max(this.casterCounts.staged, fitted), dropped: this.casterCounts.dropped + Math.max(0, fitted - SUN_DRAWN) };
+            readback.unmap();
+            r.sunReadback = readback;
+        }, () => {});
+    }
+
     draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {
         const r = this.resources;
         if (!r || !this.count) return;
-        pass.setPipeline(r.templates);
         pass.setBindGroup(1, r.surface);
         pass.setBindGroup(2, ground);
+        this.drawView(pass, r.eye, r.templates, r.outlines);
+    }
+
+    /** Draws the casters of the sun's view into the shadow map. */
+    cast(pass: GPURenderPassEncoder): void {
+        const r = this.resources;
+        if (!r || !this.count) return;
+        pass.setBindGroup(1, r.surface);
+        this.drawView(pass, r.sun, ...r.casters);
+    }
+
+    private drawView(pass: GPURenderPassEncoder, view: ViewBuffers, templates: GPURenderPipeline, outlines: GPURenderPipeline): void {
+        pass.setPipeline(templates);
         for (let d = 0; d < DRAWS; d++) {
-            pass.setBindGroup(0, r.renderGroup, [d * DRAW_STRIDE]);
-            pass.drawIndirect(r.draws, d * 16);
+            pass.setBindGroup(0, view.renderGroup, [d * DRAW_STRIDE]);
+            pass.drawIndirect(view.draws, d * 16);
         }
         if (!this.outlineVertices) return;
-        pass.setPipeline(r.outlines);
-        pass.setBindGroup(0, r.renderGroup, [0]);
-        pass.setVertexBuffer(0, r.outlineVertices);
+        pass.setPipeline(outlines);
+        pass.setBindGroup(0, view.renderGroup, [0]);
+        pass.setVertexBuffer(0, this.resources!.outlineVertices);
         pass.draw(this.outlineVertices);
     }
 
-    /** Whether a box over a tile meets the frustum of the camera, as `visible` in houses.wgsl tests a house. */
-    private inView({ x, y }: { x: number; y: number }): boolean {
-        if (!this.camera) return true;
-        const { viewProj: m, eye } = this.camera, n = 2 ** ZOOM;
+    /**
+     * Writes a view's draws and its params for the tiles in view of `camera`, with `capacity` houses per
+     * draw that are drawn in full from `full` pixels wide and not under `least`. Returns the workgroups of
+     * `fit` and of `refit`.
+     */
+    private prepare(r: Resources, view: ViewBuffers, camera: HouseCamera | undefined, capacity: number, full: number, least: number): [number, number] {
+        const args = new Uint32Array(LISTS);
+        let first = 0;
+        TEMPLATES.forEach((name, t) => {
+            const { full, simple } = MESHES[name];
+            args.set([full, 0, first, 0, simple, 0, first, 0], 8 * t);
+            first += full;
+        });
+        r.device.queue.writeBuffer(view.draws, 0, args);
+        const shown = this.ranges.filter(range => this.inView(range, camera)).slice(0, RANGES);
+        const params = new ArrayBuffer(PARAMS_BYTES);
+        new Uint32Array(params).set([this.count, capacity]);
+        new Float32Array(params).set([PAD.burial, PAD.plinth, PAD.margin, full, least, ...PAD.steep], 2);
+        new Uint32Array(params)[10] = shown.length;
+        new Uint32Array(params, 48).set(this.regions.subarray(0, 256));
+        // Each tile's first workgroup of `fit` and of `refit`, so that they run no workgroup without houses.
+        const ranges = new Uint32Array(params, 48 + 64 * 16, 4 * RANGES);
+        let fits = 0, refits = 0;
+        shown.forEach(({ start, count }, k) => {
+            ranges.set([start, count, fits, refits], 4 * k);
+            fits += Math.ceil(count / FIT_GROUP);
+            refits += Math.ceil(count / PER_GROUP);
+        });
+        new Uint32Array(params, STYLES_AT).set(this.styles);
+        r.device.queue.writeBuffer(view.params, 0, params);
+        return [fits, refits];
+    }
+
+    /** Encodes a view's refit and fit into a compute pass. */
+    private cull(pass: GPUComputePassEncoder, r: Resources, view: ViewBuffers, ground: GPUBindGroup, refits: number, fits: number): void {
+        pass.setBindGroup(0, view.computeGroups[this.set]);
+        pass.setBindGroup(1, r.surface);
+        pass.setBindGroup(2, ground);
+        pass.setBindGroup(3, r.features);
+        if (refits) {
+            pass.setPipeline(r.refit);
+            pass.dispatchWorkgroups(refits);
+        }
+        pass.setPipeline(r.fit);
+        if (fits) pass.dispatchWorkgroups(fits);
+    }
+
+    /** Whether a box over a tile meets the frustum of a camera, as `visible` in houses.wgsl tests a house. */
+    private inView({ x, y }: { x: number; y: number }, camera: HouseCamera | undefined): boolean {
+        if (!camera) return true;
+        const { viewProj: m, eye } = camera, n = 2 ** ZOOM;
         const lonLat = (tx: number, ty: number): [number, number] => [tx / n * 360 - 180, Math.atan(Math.sinh(Math.PI * (1 - 2 * ty / n))) * 180 / Math.PI];
         const corners: number[][] = [];
         for (const [tx, ty] of [[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1]]) {
             const [east, north] = this.frame.local(...lonLat(tx, ty)), dx = east - eye[0], dy = north - eye[1], drop = CURVATURE * (dx * dx + dy * dy);
             corners.push([dx, dy, LOWEST_M - eye[2] - drop], [dx, dy, HIGHEST_M - eye[2] - drop]);
         }
-        // The left, right, bottom and top planes, as rows w ± x and w ± y of the matrix.
-        return [[0, 1], [0, -1], [1, 1], [1, -1]].every(([row, sign]) => {
-            const a = m[3] + sign * m[row], b = m[7] + sign * m[4 + row], c = m[11] + sign * m[8 + row], d = m[15] + sign * m[12 + row];
+        // The left, right, bottom, top, near and far planes, as rows w ± x, w ± y, z and w − z of the matrix.
+        return [[0, 1, 1], [0, -1, 1], [1, 1, 1], [1, -1, 1], [2, 1, 0], [2, -1, 1]].every(([row, sign, w]) => {
+            const a = w * m[3] + sign * m[row], b = w * m[7] + sign * m[4 + row], c = w * m[11] + sign * m[8 + row], d = w * m[15] + sign * m[12 + row];
             return corners.some(([px, py, pz]) => a * px + b * py + c * pz + d >= -GROW_M * Math.hypot(a, b, c));
         });
     }

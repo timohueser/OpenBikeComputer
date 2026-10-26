@@ -581,8 +581,32 @@ fn house_vertex(v: u32, s: vec2f, local: vec3f, face: u32, along: f32) -> HouseO
     return out;
 }
 
+// A vertex of a drawn house: the house, its point in LOD space, its metres about the footprint's middle
+// and above F, and its face.
+struct Placed {
+    v: u32,
+    s: vec2f,
+    local: vec3f,
+    face: u32,
+}
+
+fn clip_of(p: Placed) -> vec4f {
+    return frame.view_proj * vec4f(render_at(p.s, drawn[p.v].floor + p.local.z), 1.0);
+}
+
 @vertex
 fn template_vertex(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> HouseOut {
+    let p = template_at(vertex, instance);
+    return house_vertex(p.v, p.s, p.local, p.face, 0.0);
+}
+
+// A vertex of a caster in the shadow map (light/shadow.ts), whose frame holds the sun's view.
+@vertex
+fn template_caster(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> @builtin(position) vec4f {
+    return clip_of(template_at(vertex, instance));
+}
+
+fn template_at(vertex: u32, instance: u32) -> Placed {
     let v = lists[LISTS + draw_of.base + instance];
     let word = template_words[vertex];
     let w = word.x;
@@ -598,8 +622,7 @@ fn template_vertex(@builtin(vertex_index) vertex: u32, @builtin(instance_index) 
     }
     local.z += f32(bitcast<i32>(word.y << 16u) >> 16u) * 0.01;
     let t = drawn[v].turn;
-    let s = drawn[v].centre + vec2f(t.x * local.x - t.y * local.y, t.y * local.x + t.x * local.y);
-    return house_vertex(v, s, local, (w >> 15u) & 255u, 0.0);
+    return Placed(v, drawn[v].centre + vec2f(t.x * local.x - t.y * local.y, t.y * local.x + t.x * local.y), local, (w >> 15u) & 255u);
 }
 
 struct OutlineIn {
@@ -609,16 +632,36 @@ struct OutlineIn {
     @location(2) along: f32,
 }
 
+// Past the clip volume: a vertex of an outline whose house does not draw.
+const UNDRAWN: vec4f = vec4f(2.0, 2.0, 2.0, 1.0);
+
 @vertex
 fn outline_vertex(o: OutlineIn) -> HouseOut {
-    let v = lists[LISTS + DRAWS * draw_of.capacity + (o.bits & 0x3fffffffu)];
-    if (v == NO_DRAW) {
+    let p = outline_at(o);
+    if (p.v == NO_DRAW) {
         var out: HouseOut;
-        out.clip = vec4f(2.0, 2.0, 2.0, 1.0);
+        out.clip = UNDRAWN;
         return out;
     }
+    return house_vertex(p.v, p.s, p.local, p.face, o.along);
+}
+
+@vertex
+fn outline_caster(o: OutlineIn) -> @builtin(position) vec4f {
+    let p = outline_at(o);
+    if (p.v == NO_DRAW) {
+        return UNDRAWN;
+    }
+    return clip_of(p);
+}
+
+fn outline_at(o: OutlineIn) -> Placed {
+    let v = lists[LISTS + DRAWS * draw_of.capacity + (o.bits & 0x3fffffffu)];
+    if (v == NO_DRAW) {
+        return Placed(v, vec2f(0.0), vec3f(0.0), 0u);
+    }
     let local = vec3f(0.0, 0.0, select(slot(v, Z_SLOTS), drawn[v].wall, (o.bits >> 31u) == 1u));
-    return house_vertex(v, lod_space(vec2f(o.at - surface.anchor)), local, select(M_WALL, M_FLAT, ((o.bits >> 30u) & 1u) == 1u) | (4u << 4u), o.along);
+    return Placed(v, lod_space(vec2f(o.at - surface.anchor)), local, select(M_WALL, M_FLAT, ((o.bits >> 30u) & 1u) == 1u) | (4u << 4u));
 }
 
 fn srgb(c: vec3f) -> vec3f {
@@ -774,7 +817,7 @@ fn house_fragment(in: HouseOut) -> @location(0) vec4f {
             colour = FLAT_ROOF;
         }
     }
-    let lit = light_up(srgb(colour), n, in.sun, 1.0, look.horizon.w);
+    let lit = light_up(srgb(colour), n, sun_share(in.sun, in.relative, n, LIFT_SOLID), 1.0, look.horizon.w);
     // Lamplight after the haze, which would turn it blue at night: it fades with the distance instead.
     let lamps = LAMPLIGHT * glow * smoothstep(0.0, 0.4, look.ambient.w) * exp(-length(in.relative) / (LAMP_REACH * look.haze.x));
     return vec4f(atmosphere(lit, in.relative, in.altitude) + lamps, 1.0);

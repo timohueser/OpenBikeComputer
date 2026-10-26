@@ -261,17 +261,10 @@ pub struct Source {
     pub publish_text: Option<bool>,
 }
 
-/// The Wikimedia sources that only the producer of `wiki` reads, on the machine that prepares: a
-/// target keeps no copy of them.
+/// The Wikimedia sources that only the producer of `wiki` reads, on the machine that prepares.
 pub(crate) const WIKI_INPUTS: [&str; 3] = ["wikidata", "wikipedia", "commons"];
 
 impl Source {
-    /// Whether a target keeps a copy of the files that its release reads: when the licence lets us
-    /// give the bytes to others. A prepared version is on a target already.
-    pub fn copied(&self) -> bool {
-        self.redistribute && self.fetch.kind != FetchKind::Prepared && !WIKI_INPUTS.contains(&self.id.as_str())
-    }
-
     /// Whether the source can have data in `[west, south, east, north]`: it has an `extent`, and
     /// the two boxes overlap. Boxes that only touch do not: their overlap has no area.
     pub fn meets(&self, [west, south, east, north]: [f64; 4]) -> bool {
@@ -529,7 +522,7 @@ mod tests {
     fn a_prepared_source_gives_its_bytes_to_others() {
         let url = "fetch = { kind = \"http\", url = \"https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf\" }";
         let prepared = OSM.replace("id = \"osm\"", "id = \"terrain\"").replace(url, "fetch = { kind = \"prepared\" }");
-        assert!(!parse_sources(&prepared).unwrap()[0].copied(), "a version is on a target already");
+        parse_sources(&prepared).unwrap();
         assert!(parse_sources(&OSM.replace("id = \"osm\"", "id = \"osm/x\"")).unwrap_err().contains("kebab-case"));
         let private = prepared.replace("redistribute = true", "redistribute = false");
         assert!(parse_sources(&private).unwrap_err().contains("`redistribute = true`"));

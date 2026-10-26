@@ -1,7 +1,7 @@
 // Draws the instances of one draw: its model's mesh of that tier, once per instance of its list, in the
 // vertex colours under the light and the haze of the ground.
 // #include ../terrain/view.wgsl
-// #include ../light/shade.wgsl
+// #include ../light/shadow.wgsl
 // #include ../vegetation/phenology.wgsl
 
 struct Instance {
@@ -58,6 +58,9 @@ struct MeshOut {
     @location(3) fog: vec3f,
     @location(4) air: vec3f,
     @location(5) @interpolate(flat) sun: f32,
+    @location(6) relative: vec3f,
+    // 1 where `sun` holds the objects' shadow too (mesh_vertex), 0 for a tree, which reads it per pixel.
+    @location(7) @interpolate(flat) shaded: u32,
 }
 
 // The haze between the eye and a point of render space, as the factor and the term that `atmosphere`
@@ -165,17 +168,30 @@ fn lifted(z: f32, top: f32, m: Model, lift: f32) -> f32 {
     return lift + (z - m.crown) * raise;
 }
 
+// A vertex of an instance in render space.
+fn placed(v: MeshIn, i: Instance, m: Model) -> vec3f {
+    let turn = unpack2x16float(i.turn);
+    let model = v.position.xyz * m.extent;
+    let local = vec3f(model.xy, lifted(model.z, v.position.w, m, f32((i.look >> 8u) & 255u) / 255.0));
+    return i.at.xyz + i.at.w * vec3f(turn.x * local.x - turn.y * local.y, turn.y * local.x + turn.x * local.y, local.z);
+}
+
+// A vertex of a caster in the shadow map (light/shadow.ts), whose frame holds the sun's view.
+@vertex
+fn caster_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> @builtin(position) vec4f {
+    return frame.view_proj * vec4f(placed(v, lists[bases[draw.x] + instance], models[draw.x / TIERS]), 1.0);
+}
+
 @vertex
 fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     let i = lists[bases[draw.x] + instance];
     let m = models[draw.x / TIERS];
-    let turn = unpack2x16float(i.turn);
     let model = v.position.xyz * m.extent;
-    let local = vec3f(model.xy, lifted(model.z, v.position.w, m, f32((i.look >> 8u) & 255u) / 255.0));
-    let p = i.at.xyz + i.at.w * vec3f(turn.x * local.x - turn.y * local.y, turn.y * local.x + turn.x * local.y, local.z);
-    let t = normalize(turn);
+    let p = placed(v, i, m);
+    let t = normalize(unpack2x16float(i.turn));
     var out: MeshOut;
     out.clip = frame.view_proj * vec4f(p, 1.0);
+    out.relative = p;
     let haze = haze_at(p);
     out.fog = haze.fog;
     out.air = haze.air;
@@ -189,6 +205,12 @@ fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     out.albedo = snowed(tied(colour, tint, m.tie, i.ground) * crown_shade(model, m) * far_tone(m, length(p)), v.normal.z, i.look);
     out.look = i.look;
     out.sun = sun_of(i.ground);
+    // A plant, a rock or an animal is small: one read of the objects' shadow at its middle, lifted out
+    // of its own caster, shades it whole, for less than a read per pixel of its many small faces.
+    if (m.crown < 0.0) {
+        out.sun = sun_share(out.sun, i.at.xyz + vec3f(0.0, 0.0, 0.5 * i.at.w), vec3f(0.0, 0.0, 1.0), i.at.w);
+        out.shaded = 1u;
+    }
     return out;
 }
 
@@ -221,5 +243,9 @@ fn mesh_fragment_whole(in: MeshOut) -> @location(0) vec4f {
 
 fn mesh_lit(in: MeshOut) -> vec4f {
     let n = normalize(in.normal);
-    return vec4f(in.fog * light_up(in.albedo, n, in.sun, 1.0, look.horizon.w) + in.air, 1.0);
+    var sun = in.sun;
+    if (in.shaded == 0u) {
+        sun = crown_sun_share(sun, in.relative, n);
+    }
+    return vec4f(in.fog * light_up(in.albedo, n, sun, 1.0, look.horizon.w) + in.air, 1.0);
 }

@@ -1,6 +1,6 @@
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
-import { Instances, type Producer, type Surfaces } from './instances';
+import { Instances, VIEWS, type Producer, type Surfaces } from './instances';
 
 /** Words of a point, as `Point` in points.wgsl. */
 export const POINT_WORDS = 4;
@@ -30,7 +30,7 @@ export function f16(value: number): number {
     return Math.min(0x7bff, (exponent << 10) + ((bits >> 13) & 0x3ff) + ((bits >> 12) & 1));
 }
 
-interface Resources { device: GPUDevice; pipeline: GPUComputePipeline; group: GPUBindGroup; points: GPUBuffer; pool: GPUBuffer; surface: GPUBindGroup; features: GPUBindGroup }
+interface Resources { device: GPUDevice; pipeline: GPUComputePipeline; groups: GPUBindGroup[]; points: GPUBuffer; pool: GPUBuffer; surface: GPUBindGroup; features: GPUBindGroup }
 
 /**
  * A pool of stored point instances, such as the rocks or the herds of a kind: a producer that stands
@@ -46,7 +46,7 @@ export class Points implements Producer {
         instances.produce(this);
     }
 
-    async attach(gpu: Gpu, frame: GPUBuffer, { surface, features, ground }: Surfaces): Promise<void> {
+    async attach(gpu: Gpu, { surface, features, ground }: Surfaces): Promise<void> {
         this.resources = undefined;
         const { device } = gpu, C = GPUShaderStage.COMPUTE;
         const points = gpu.buffer('instances', Math.max(16, this.capacity * POINT_WORDS * 4), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
@@ -60,7 +60,7 @@ export class Points implements Producer {
         });
         this.resources = {
             device, pipeline, points, pool, surface: surface.group, features: features.group,
-            group: device.createBindGroup({ layout, entries: [...this.instances.emitResources(frame), { binding: 8, resource: { buffer: points } }, { binding: 9, resource: { buffer: pool } }] }),
+            groups: VIEWS.map(view => device.createBindGroup({ layout, entries: [...this.instances.emitResources(view), { binding: 8, resource: { buffer: points } }, { binding: 9, resource: { buffer: pool } }] })),
         };
         if (this.pending) this.write(this.pending);
     }
@@ -75,11 +75,11 @@ export class Points implements Producer {
         r.device.queue.writeBuffer(r.pool, 0, new Uint32Array([this.count, 0, 0, 0]));
     }
 
-    encode(pass: GPUComputePassEncoder, ground: GPUBindGroup): void {
+    encode(pass: GPUComputePassEncoder, ground: GPUBindGroup, view: number): void {
         const r = this.resources;
         if (!r || !this.count) return;
         pass.setPipeline(r.pipeline);
-        pass.setBindGroup(0, r.group);
+        pass.setBindGroup(0, r.groups[view]);
         pass.setBindGroup(1, r.surface);
         pass.setBindGroup(2, ground);
         pass.setBindGroup(3, r.features);

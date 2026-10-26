@@ -1,28 +1,23 @@
 <script lang="ts">
     import { command } from "../../lib/data/cli";
-    import { flagsOf, reviewArgs, type Flags } from "../../lib/data/flags";
+    import { reviewArgs } from "../../lib/data/flags";
     import { CliQuery } from "../../lib/data/query.svelte";
-    import { targetAt } from "../../lib/data/screens";
-    import { blocking, causes, clock, failure, LAYER_MARK, layerText, short, version, when, type Deployed, type Router, type RunList, type RunView, type Status } from "../../lib/data/shapes";
+    import { bakeHash, bakeOf, served } from "../../lib/data/screens";
+    import { blocking, causes, clock, failure, LAYER_MARK, layerText, short, version, when, type Deployed, type Router, type RunList, type Status } from "../../lib/data/shapes";
     import { corners } from "../../lib/data/areas";
     import { leafSquare } from "../../lib/data/leaf";
     import Action from "./Action.svelte";
     import DataMap from "./DataMap.svelte";
     import Failure from "./Failure.svelte";
     import OldData from "./OldData.svelte";
-    import Review from "./Review.svelte";
     import Serve from "./Serve.svelte";
     import Services from "./Services.svelte";
 
-    // A target: what it serves, its lock, its layers and its releases; or the review of its update.
-    let { name, hash, status, runs }: { name: string; hash: string; status: CliQuery<Status>; runs: CliQuery<RunList> } = $props();
+    // A target: what it serves, its lock, its layers and its releases. Its update is a bake on the
+    // Bake screen, which opens with the area and the parts that the target serves.
+    let { name, status, runs }: { name: string; status: CliQuery<Status>; runs: CliQuery<RunList> } = $props();
 
     const target = $derived(status.output?.targets.find((at) => at.target === name) ?? null);
-    const machine = $derived(status.output?.machine.name ?? "this machine");
-    const route = $derived(targetAt(hash));
-    // The review that resumes a run starts from the settings flags of that run.
-    const resumed = $derived(route.resume ? new CliQuery<RunView>(["runs", route.resume]) : null);
-    $effect(() => void resumed?.refresh());
 
     const lock = $derived(target?.lock ?? null);
     // A live run holds the lock: an update or a rollback is refused until it ends. The next update
@@ -50,11 +45,7 @@
     const osm = $derived(target?.sources.find(({ source }) => source === "geofabrik-extracts" || source === "osm-planet")?.version);
     // A ticked layer bakes again, also when it is up to date: `--only`.
     let ticked = $state<string[]>([]);
-    // The flags that a link to the review sets: `--only` from ticks, `--refresh` from a source.
-    const only = $derived([
-        ...(route.only ? [["--only", route.only]] : []),
-        ...(route.refresh ? [["--refresh", route.refresh]] : []),
-    ] as Flags);
+    const bake = $derived(target ? bakeOf(name, served(target)) : null);
 
     // The coverage: the leaves of one tiled layer, coloured by state, inside the boxes of the area.
     const tiled = $derived(target?.layers?.filter((layer) => layer.leaves.length) ?? []);
@@ -106,26 +97,6 @@
 
 {#if !target}
     <p class="soft">{status.output ? `data/targets.toml has no target ${name}.` : `Reading ${name}…`}</p>
-{:else if route.review}
-    <a href="#/{name}">Back to {name}</a>
-    {#if resumed?.error}<Failure error={resumed.error} />{/if}
-    {#if !route.resume}
-        {#key `${route.only}|${route.refresh}|${route.plan}`}
-            <Review {name} kind={target.kind} flags={only} plan={route.plan} {machine} {locked} layers={target.layers ?? []} area={target.area} router={router?.output ?? null} />
-        {/key}
-    {:else if resumed?.output}
-        <p class="soft">These settings resume run <a href="#/runs/{route.resume}">{route.resume}</a>. Plan them to continue.</p>
-        <Review
-            {name}
-            kind={target.kind}
-            flags={flagsOf(resumed.output.args)}
-            {machine}
-            {locked}
-            layers={target.layers ?? []}
-            area={target.area}
-            router={router?.output ?? null}
-        />
-    {/if}
 {:else}
     {@const error = failure(target)}
     {#if error}<Failure {error} />{/if}
@@ -188,7 +159,7 @@
                 <h2 id="coverage">Coverage</h2>
                 <span class="soft">{target.area?.name ?? "no area"}</span>
                 <span class="grow"></span>
-                {#if !locked}<a href="#/{name}/review">Change area…</a>{/if}
+                {#if !locked && bake}<a href={bakeHash({ ...bake, area: null })}>Change area…</a>{/if}
             </div>
             {#if coloured}
                 <div class="title">
@@ -235,11 +206,12 @@
                 {#if target.drift.length}<p class="missing">These keys differ from the serving release: {target.drift.join(", ")}</p>{/if}
                 {#if unpublishable}
                     <p class="missing">Publishing needs {unpublishable.name}: {unpublishable.fix}</p>
-                    <span class="primary locked" aria-disabled="true">Plan update</span>
+                    <span class="primary locked" aria-disabled="true">Bake {name}</span>
                 {:else if locked}
-                    <span class="primary locked" aria-disabled="true">Plan update: locked</span>
-                {:else}
-                    <a class="primary" href="#/{name}/review{ticked.length ? `?only=${encodeURIComponent(ticked.join(','))}` : ''}">Plan update</a>
+                    <span class="primary locked" aria-disabled="true">Bake {name}: locked</span>
+                {:else if bake}
+                    <a class="primary" href={bakeHash({ ...bake, only: ticked.join(",") || null })}>Bake {name}…</a>
+                    <p class="soft">The Bake screen opens with the area and the parts of {name}.</p>
                     {#if ticked.length}<code>{command(reviewArgs(name, [["--only", ticked.join(",")]]))}</code>{/if}
                 {/if}
             </section>

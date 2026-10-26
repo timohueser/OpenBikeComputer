@@ -30,7 +30,7 @@ One `[[source]]` table per source.
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `start` | string | no | The version that a step list reads while no serving release reads the source. It has the form of `version` |
 | `refresh` | integer or string | no, `"manual"` | The policy, which the settings of a target can replace: `1` through `65535` whole days, or `"manual"` |
-| `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others. A target then copies the files of the source that its release reads, see [Target layout](#target-layout). `wikidata`, `wikipedia` and `commons`, which only the producer of `wiki` reads, have no copy |
+| `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory. `register`: the `https://` page where a person gets it, and `hint`: what to copy there, in one line. See [Credentials of sources](#credentials-of-sources) |
 | `publish_text` | boolean | no, `true` | Only for a `prepared` source of article text: `false` keeps the text out of its versions |
 | `extent` | array of 4 numbers | no | The box outside which the source has no data: west, south, east and north in degrees, west < east, south < north. A box meets it when the two overlap; boxes that only touch do not meet |
@@ -593,7 +593,7 @@ fetch. An `id` names a group only in the plan that it comes from.
 | `cause` | `null`. For an update: `{"kind": "stale", "cause"}` with the [cause of the layer](#state-of-a-layer), `{"kind": "off"}` for a layer that no step makes now, or `{"kind": "named"}` for `--only` |
 | `layers`, `drops` | `[]`. For an update: the steps that the group changes, as `builds` gives them, and the steps of the serving release that the new release no longer has |
 | `fetches` | One per version and `params`: `source`, `version`, `params` (`[[NAME, VALUE], …]`), `files` and `bytes`. `files` are the names of the files that the store lacks. `[]` means that the store cannot name them, and the fetch gets every file that it gives |
-| `builds` | In dependency order: `step`, `recipe` (see [Keys](#keys)), `key` (`null` while the step waits for a fetch or another build), `estimate`, and `again`: whether the step builds also when the store has its key |
+| `builds` | In dependency order: `step`, `recipe` (see [Keys](#keys)), `key` (`null` while the step waits for a fetch or another build), `estimate`, `again`: whether the step builds also when the store has its key, and `built`: when the store has the layer of its key, the time of that build, else `null` |
 
 The estimate of a build is `wall_ms`, `bytes_out`, `client_bytes` (the size of the files that a
 client reads) and `peak_rss_bytes` of the newest receipt, by `built`, of the same step with the same
@@ -1075,7 +1075,6 @@ A key is a path with `/` between its parts. No part is empty, `.` or `..`.
 | `releases/<id>.json` | The [manifest](#release-manifest) of a release. Immutable |
 | `releases/<folder>/<path>` | A file that a client finds by name. `<folder>` is the [digest](#keys) of the files of the folder, listed by `<path>`. So other files make another folder. Immutable |
 | `objects/<sha256>` | A client file of an output. Immutable |
-| `sources/<source>/<version>/<name>` | A copy of a file of a source version that an output of a release read, when the source has `redistribute = true`. Immutable |
 | `sources/<id>/…` | The lock, the list of versions and the versions of a [prepared source](#prepared-sources) |
 | `cell-catalog/catalog.json`, `planner/catalog.json` | The pointers: a copy of the object that the serving release names for the key |
 
@@ -1094,7 +1093,7 @@ SHA-256 of these bytes.
 | `outputs` | One output per step, sorted by `step` |
 | `pointers` | `[{key, size, sha256}]`, sorted by `key`: both pointer keys, each with the client file of an output that a client reads there |
 | `named` | `[{key, size, sha256}]`, sorted by `key`: the files under `releases/<folder>/`. Each is a client file of an output |
-| `sources` | `[{source, version, params, files, copy, licence, attribution}]`, sorted by `source`, `params` and `version`: each fetch that an output read, with the sorted `NAME=VALUE`s, the files that the outputs read (`[{name, url, size, sha256, retrieved}]`, sorted by `name`; `url` is where upstream gives the file, and `retrieved` when a machine retrieved it first), whether the target copies them under `sources/`, and for a copy the `licence` and `attribution` of `data/sources.toml`. Two fetches that name one copy name it with one SHA-256 |
+| `sources` | `[{source, version, params, files}]`, sorted by `source`, `params` and `version`: each fetch that an output read, with the sorted `NAME=VALUE`s and the files that the outputs read (`[{name, url, size, sha256, retrieved}]`, sorted by `name`; `url` is where upstream gives the file, and `retrieved` when a machine retrieved it first). A reader ignores other fields of an entry, such as `copy` in the manifest of an older publisher. The target holds no copy of these files |
 | `machine` | The machine that made the release |
 | `time` | When the machine made it, `YYYY-MM-DDTHH:MM:SSZ` |
 
@@ -1241,9 +1240,8 @@ arguments of the person, before the run. One run does each phase in this order, 
 4. Verify. The new release has the output of each step, the pointer and the named files of each
    product. When it serves as the serving release, with the same settings, outputs, pointers,
    named files and source files, the update changes nothing but a pointer that drifts. A source
-   file is the same when its name, size and SHA-256 are. Whether the target copies a source, and
-   its credit, change no file of the release. Else each product checks it, and a failed check
-   changes nothing.
+   file is the same when its name, size and SHA-256 are. Else each product checks it, and a
+   failed check changes nothing.
 5. Upload and switch, as [Publish and switch](#publish-and-switch) says. On an R2 target, the
    phase `router-ready` comes between them, as [Router ready](#router-ready) says.
 6. Collect, as [Collection](#collection) says, when it switched to another release.
@@ -1277,15 +1275,12 @@ after it lost the lock: then the file belongs to the run that took it.
 An update needs no file of the serving release in the store of the machine. It takes only what
 its bakes and the checks of the products read:
 
-- A fetch that the serving release lists with `copy` comes from the copies on the target, in the
-  phase `download`: the files that the store lacks, with their snapshot record and the time when a
-  machine retrieved them first. Another fetch comes from upstream.
+- A fetch comes from the store, else from upstream. The target holds no copy of a fetch.
 - A step that bakes and reads a file of a fetch that the serving release lists must find the same
   SHA-256 in the record of the store: before the review, and again after the fetches of the
   update, before any bake. Else nothing changes (`verify_failed`).
 - A fetch that the serving release read, of a source whose upstream gives only its newest version (a
-  capture) and that the target does not copy, refuses the
-  update (`blocked`) before the fetch, also while the update lists the steps, when the store lacks
+  capture), refuses the update (`blocked`) before the fetch, also while the update lists the steps, when the store lacks
   it and a capture cannot give it: this machine cannot get that version again. A capture gives the
   version of today, and a version of a manual source that the store started (see [Fetch](#fetch)).
   The fix names the machine that made the serving release. A refresh that moves the source to a new
@@ -1317,15 +1312,15 @@ the store only, and it never writes to the target.
   end unchanged (see [Runs](#runs)), so the text gives the bakes and the leaves as upper bounds ("at
   most").
 - `sources`: each fetch that a baked step reads at another version than the serving release.
-- `kept`, `fetches`, `downloads` and `bakes`: the outputs that the release keeps by reference, and
-  what this machine fetches upstream, downloads from the target and bakes. A step whose output is
-  in the store already does not bake.
+- `kept`, `fetches`, `downloads`, `bakes` and `reused`: the outputs that the release keeps by
+  reference, what this machine fetches upstream and downloads from the target, the steps that it
+  builds, and the steps whose output the store has from an earlier build, each with `built`. A
+  reused step does not build; its client files go to the target.
 - `cost`: each bake has the estimate of the newest receipt in the store of the step with the same
   options, else of the `cost` of the step in the serving release with the same options, else of
-  the newest receipt of the step, else of that `cost`. `upload_bytes` is the size of the files of the bakes that a client reads, and of the copies
-  under `sources/` that the serving release does not name, as the store records them. `unknown`
-  lists each bake without an estimate, with a guess or without a peak, and each fetch whose size
-  is not known, also of a new copy that the store lacks yet.
+  the newest receipt of the step, else of that `cost`. `upload_bytes` is the size of the files of the bakes and of the reused steps that a client reads.
+  `unknown` lists each bake without an estimate, with a guess or without a peak, and each fetch
+  whose size is not known.
 - `machine`: the memory of the machine and the free bytes of the disk of the store after the
   listing. A bake whose estimated peak, also a guess, is more than the memory, or fetches,
   downloads and bakes that leave less than 4 GiB free on the disk, refuse the update.
@@ -1372,12 +1367,10 @@ another release, it collects the target. The grace of a collection is 10 minutes
 `collection.rs`): longer than a client needs to fetch the files that a pointer it just read names.
 
 - When a pointer does not hold the bytes of the serving release, it deletes nothing.
-- It deletes the keys under `objects/` and `releases/` that no kept release names, the keys under
-  `sources/` that a release that it drops names, and the temporary files of a write that stopped:
-  a hidden `.part` or `.tmp` file in the root, or beside a pointer with the name of the pointer.
-  The pointers, `release.json` and the keys of older publishers stay.
-- A publish that stops can leave copies under `sources/` that no manifest names. They stay, and a
-  later publish of the same version uses them again.
+- It deletes the keys under `objects/` and `releases/` that no kept release names, and the
+  temporary files of a write that stopped: a hidden `.part` or `.tmp` file in the root, or beside a
+  pointer with the name of the pointer. The pointers, `release.json` and the keys of older
+  publishers stay. Under `sources/`, it deletes only the versions of a prepared source.
 - It deletes the versions of a prepared source that [Prepared sources](#prepared-sources) names.
 - A release that `release.json` does not name stopped serving at or before the time when the
   release that served before the switch began to serve. The first collection the grace or more
@@ -1402,7 +1395,7 @@ version as it reads any other source.
 
 A prepared source is a row of `data/sources.toml` with `fetch.kind = "prepared"`. The `obc data`
 binary links a producer for each name: the producer of `<name>` makes the source `<name>`. Only a source whose licence lets us give its bytes to others is
-prepared. Its raw inputs get no copy on a target.
+prepared.
 
 A prepared source has these keys in the folder `sources/<id>/` of a target:
 
@@ -1516,7 +1509,7 @@ it. `obc data unlock TARGET --source ID --from MACHINE` frees a lock that a stop
 Two targets can have other files under one version name, such as a region on `local` and all of
 the source on `prod`. So the manifest is the identity of a version: a step reads
 `<version>/<manifest sha256>`, and the record in the store, the `sources` entry of a release
-(`copy` is `false`) and the fetch name it. Text output shows it as `<version> (<first 12 hex digits
+and the fetch name it. Text output shows it as `<version> (<first 12 hex digits
 of the SHA-256>)`; with `--json`, a command gives the whole version.
 
 `prod` is the reference: a target other than `prod` reads the versions that `prod` lists, and its
@@ -1816,7 +1809,8 @@ services|tiles` reads the values on standard input, as
 
 `obc data` gives the machine that runs it and, for each target, the release that it serves, the
 machine that made it and when, its rollback, for a `dir` target how [serve](#serve) gives it to
-each app, the run that holds its lock or why `lock.json` cannot be read, the region, the state of
+each app, the run that holds its lock or why `lock.json` cannot be read, the region and the parts
+that are on, the state of
 each layer against the steps of now, the blocked steps, the notes of the layers as in the
 [review](#review), the pointers that drift, an error that
 stopped the judgement, and the command to run next. While a run holds the lock of a `dir` target,
@@ -1835,7 +1829,7 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data rollback TARGET [--yes] [--json]` | The [rollback](#rollback) of a target. Writes the release that the target serves and its rollback |
 | `obc data router TARGET [--json]` | For an R2 target, asks the follower once, as [Router ready](#router-ready) says, for the planner release of the serving release and of the rollback. Writes each answer, and the release that `planner/next.json` names. Changes nothing. Refuses a `dir` target |
 | `obc data unlock TARGET --from MACHINE [--source ID] [--yes] [--json]` | Frees the [lock](#lock) of a target, or with `--source` the lock of a [prepared source](#prepared-sources) on it, that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
-| `obc data sources [--check-now] [--json]` | Every source with licence and whether a target copies it, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
+| `obc data sources [--check-now] [--json]` | Every source with licence, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data source refresh ID [--json]` | Fetches upstream's newest version of a `digest` source without `start` or params, and writes `refreshed/<source>.json` of the store with the versions that the targets serve: the next update of a target that serves one of them, or none, reads it, as [Versions](#versions) says. Refuses another source. The fetch is a detached [run](#runs): a terminal follows it, and `--json` writes `{run}` and ends |
 | `obc data source prepare ID [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--to TARGET] [--dry-run \| --expect ID] [--yes] [--json]` | [Prepares](#prepared-sources) a version of a prepared source for a target, `prod` by default. `--dry-run` writes the review. Else it starts a detached run and writes its log until it ends; with `--json`, it writes the run and the review id |
 | `obc data source credential ID [--json]` | Reads the values of the credential of a source on standard input and writes them, as [Credentials of sources](#credentials-of-sources) says. Writes the file and the names of the values |
@@ -1905,8 +1899,8 @@ bytes. The reference archive ingest reaches `reference/v1/` with rclone and the 
 `obc data r2` is plumbing for scripts: those commands call it, and a person deletes a key with
 `obc data r2 delete`. It does not change the state of a release. Once the bucket has the
 `release.json` of `obc data`, `obc bake publish --target r2` refuses to run, and `obc data r2 put`
-and `delete` refuse `release.json`, `lock.json`, `planner/next.json`, a pointer key, and a key
-under `objects/`, `releases/` or `sources/`. `obc bake clean-r2` refuses to run when the pointer
+and `delete` refuse `release.json`, `lock.json`, `planner/next.json`, a pointer key, a key
+under `objects/` or `releases/`, and a key under `sources/<id>/` of a prepared source. `obc bake clean-r2` refuses to run when the pointer
 of its prefix has `release`, or is not JSON. `obc data` never writes under `reference/v1/`.
 
 ### Credentials
@@ -3818,7 +3812,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Phase": {
       "enum": [
         "prepare",
-        "download",
         "build",
         "verify",
         "upload",
@@ -3862,6 +3855,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "Whether the step builds also when the store has the layer of its key.",
           "type": "boolean"
         },
+        "built": {
+          "description": "When the store has the layer of `key`: the time of its build, `YYYY-MM-DDTHH:MM:SSZ`. The\nupdate reuses that layer unless `again`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "estimate": {
           "anyOf": [
             {
@@ -3892,7 +3892,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "recipe",
         "key",
         "estimate",
-        "again"
+        "again",
+        "built"
       ],
       "type": "object"
     },
@@ -4485,7 +4486,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "bakes": {
-          "description": "The steps that this machine bakes. A step whose output is in the store already is not here.",
+          "description": "The steps that this machine builds. A step whose output is in the store already is not here.",
           "items": {
             "$ref": "#/$defs/PlanBuild"
           },
@@ -4503,7 +4504,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "downloads": {
           "$ref": "#/$defs/Downloads",
-          "description": "What this machine downloads from the target: copies of source files, and files of kept steps\nthat a step that bakes reads."
+          "description": "What this machine downloads from the target: files of kept steps that a step that bakes reads."
         },
         "fetches": {
           "description": "What this machine fetches into its store.",
@@ -4546,6 +4547,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "reused": {
+          "description": "The steps whose output the store has from an earlier build: the update uses it and does not\nbuild it. Each has `built`.",
+          "items": {
+            "$ref": "#/$defs/PlanBuild"
+          },
+          "type": "array"
+        },
         "services": {
           "description": "For `prod`: why its follower or its tiles Worker cannot serve the release, each with its\nfix. The update does not refuse: its run would wait at router-ready.",
           "items": {
@@ -4577,6 +4585,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "kept",
         "fetches",
         "bakes",
+        "reused",
         "downloads",
         "cost",
         "machine",
@@ -4610,7 +4619,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "What the figures lack."
         },
         "upload_bytes": {
-          "description": "What goes to the target: the files of the bakes that a client reads, and the copies under\n`sources/` that the serving release does not name.",
+          "description": "What goes to the target: the files of the bakes and of the reused steps that a client reads.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -5204,10 +5213,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
-        "copy": {
-          "description": "Whether a target keeps a copy of the files of the source that its release reads.",
-          "type": "boolean"
-        },
         "credential": {
           "anyOf": [
             {
@@ -5354,7 +5359,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "version",
         "refresh",
         "redistribute",
-        "copy",
         "targets",
         "snapshots",
         "requests",
@@ -5902,6 +5906,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "parts": {
+          "description": "The parts that the serving release has on, as `--add` names them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "region": {
           "description": "The region of the serving release.",
           "type": [
@@ -5952,6 +5963,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "lock",
         "lock_error",
         "region",
+        "parts",
         "area",
         "sources",
         "layers",

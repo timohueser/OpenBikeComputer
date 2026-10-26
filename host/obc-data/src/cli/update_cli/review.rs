@@ -39,10 +39,12 @@ pub struct Review {
     pub kept: usize,
     /// What this machine fetches into its store.
     pub fetches: Vec<Fetch>,
-    /// The steps that this machine bakes. A step whose output is in the store already is not here.
+    /// The steps that this machine builds. A step whose output is in the store already is not here.
     pub bakes: Vec<Build>,
-    /// What this machine downloads from the target: copies of source files, and files of kept steps
-    /// that a step that bakes reads.
+    /// The steps whose output the store has from an earlier build: the update uses it and does not
+    /// build it. Each has `built`.
+    pub reused: Vec<Build>,
+    /// What this machine downloads from the target: files of kept steps that a step that bakes reads.
     pub downloads: Downloads,
     pub cost: ReviewCost,
     pub machine: MachineCheck,
@@ -121,8 +123,7 @@ pub struct ReviewCost {
     pub peak_rss_bytes: Option<u64>,
     /// What the fetches, the downloads and the bakes write into the store.
     pub store_bytes: u64,
-    /// What goes to the target: the files of the bakes that a client reads, and the copies under
-    /// `sources/` that the serving release does not name.
+    /// What goes to the target: the files of the bakes and of the reused steps that a client reads.
     pub upload_bytes: u64,
     /// What the figures lack.
     pub unknown: Unknown,
@@ -201,9 +202,6 @@ pub struct Parts<'a> {
     /// The steps that bake only because the target does not hold files of them.
     pub unheld: &'a BTreeSet<String>,
     pub downloads: Downloads,
-    /// The size of the copies under `sources/` that the update adds, and the fetches of copies
-    /// that the store lacks yet.
-    pub copies: (u64, BTreeSet<String>),
     pub machine: &'a MachineCheck,
 }
 
@@ -222,7 +220,6 @@ pub fn review(parts: Parts) -> Review {
         layers,
         unheld,
         downloads,
-        copies,
         machine,
     } = parts;
     let outputs = serving.iter().flat_map(|release| &release.outputs);
@@ -346,22 +343,24 @@ pub fn review(parts: Parts) -> Review {
     let canonical = serde_json::to_vec(&crate::engine::sorted(decisions)).expect("the decisions are JSON");
     let id = sha256_hex(&canonical)[..12].to_string();
 
+    // A group lists each step that it changes; a step whose layer the store has is not in its builds.
     let mut seen = BTreeSet::new();
-    let bakes: Vec<Build> = plan.builds().filter(|build| seen.insert(&build.step)).cloned().collect();
+    let changed = plan.groups.iter().flat_map(|group| group.builds.iter().chain(&group.layers));
+    let (reused, bakes): (Vec<Build>, Vec<Build>) = changed
+        .filter(|build| seen.insert(&build.step))
+        .cloned()
+        .partition(|build| build.built.is_some() && !build.again);
     let fetches = plan.fetches();
-    let (upload_bytes, unknown_copies) = copies;
-    let mut cost = ReviewCost { upload_bytes, ..ReviewCost::default() };
+    let mut cost = ReviewCost::default();
     for fetch in &fetches {
         match fetch.bytes {
             Some(bytes) => cost.store_bytes += bytes,
             None => cost.unknown.size.push(format!("{}@{}", fetch.source, fetch.version)),
         }
     }
-    // The size of a copy is known only after its fetch.
-    for fetch in unknown_copies.into_iter().filter(|fetch| !cost.unknown.size.contains(fetch)).collect::<Vec<_>>() {
-        cost.unknown.size.push(fetch);
-    }
     cost.store_bytes += downloads.bytes;
+    cost.upload_bytes +=
+        reused.iter().filter_map(|build| build.estimate).map(|estimate| estimate.client_bytes).sum::<u64>();
     for build in &bakes {
         let Some(estimate) = build.estimate else {
             cost.unknown.estimate.push(build.step.clone());
@@ -405,6 +404,7 @@ pub fn review(parts: Parts) -> Review {
         kept: kept.len(),
         fetches,
         bakes,
+        reused,
         downloads,
         cost,
         machine,
@@ -500,11 +500,28 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
     }
     let short = |id: &str| id[..12].to_string();
     println!("review {} of {}", review.id, review.target);
-    let mut rows = Vec::new();
+    let cost = &review.cost;
+    let fetched: u64 = review.fetches.iter().filter_map(|fetch| fetch.bytes).sum();
+    // A planned step can end unchanged and not build, so the counts are upper bounds.
+    let summary = format!(
+        "build at most {} steps (about {} min), reuse {} from earlier bakes, download {}, {} to {}",
+        review.bakes.len(),
+        cost.wall_ms.div_ceil(60_000),
+        review.reused.len(),
+        size(fetched + review.downloads.bytes),
+        size(cost.upload_bytes),
+        review.target
+    );
+    let mut rows = vec![vec!["  summary".into(), summary]];
     for layer in &review.layers {
-        let verb = if layer.steps.is_empty() { "drop" } else { "bake" };
-        let mut text = layer.text.clone();
-        // A planned step can end unchanged and not bake, so the counts are upper bounds.
+        let reused: Vec<&Build> = review.reused.iter().filter(|build| layer.steps.contains(&build.step)).collect();
+        let newest = reused.iter().filter_map(|build| build.built.as_deref()).max().map(|built| &built[..10]);
+        let (verb, mut text) = match newest {
+            _ if layer.steps.is_empty() => ("drop", layer.text.clone()),
+            Some(date) if reused.len() == layer.steps.len() => ("reuse", format!("built {date}; {}", layer.text)),
+            Some(date) => ("build", format!("{}; reuses {} steps built {date}", layer.text, reused.len())),
+            None => ("build", layer.text.clone()),
+        };
         if !layer.leaves.is_empty() {
             text += &format!("; at most {} leaves", layer.leaves.len());
         }
@@ -532,24 +549,20 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
         rows.push(vec!["  services".into(), problem.clone()]);
     }
     rows.push(vec!["  keep".into(), format!("{} outputs by reference", review.kept)]);
-    let cost = &review.cost;
     let mut text = format!(
-        "{} fetches, {} downloads, at most {} bakes: about {} min, {} into the store, {} to the target",
+        "{} fetches, {} downloads, {} into the store",
         review.fetches.len(),
         review.downloads.files,
-        review.bakes.len(),
-        cost.wall_ms.div_ceil(60_000),
-        size(cost.store_bytes),
-        size(cost.upload_bytes)
+        size(cost.store_bytes)
     );
     if let Some(peak) = cost.peak_rss_bytes {
         text += &format!(", peak {} memory", size(peak));
     }
     let Unknown { estimate, peak, guess, size: sizes } = &cost.unknown;
     let unknown: Vec<String> = [
-        (estimate.len(), "bakes without an estimate"),
-        (guess.len(), "bakes guessed from other options"),
-        (peak.len(), "bakes without a RAM estimate"),
+        (estimate.len(), "builds without an estimate"),
+        (guess.len(), "builds guessed from other options"),
+        (peak.len(), "builds without a RAM estimate"),
         (sizes.len(), "fetches of unknown size"),
     ]
     .into_iter()

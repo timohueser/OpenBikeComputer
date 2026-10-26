@@ -147,11 +147,13 @@ fn once_the_bucket_has_a_release_only_an_update_writes_its_keys() {
     let status = |args: &[&str]| obc_data_r2(&temp, args).status.code();
     assert_eq!(status(&["put", file, "planner/catalog.json"]), Some(0), "without a release, a pointer is free");
     assert_eq!(status(&["put", file, "release.json"]), Some(0));
-    for key in ["planner/catalog.json", "objects/a", "releases/b.json", "lock.json"] {
+    for key in ["planner/catalog.json", "objects/a", "releases/b.json", "lock.json", "sources/terrain/versions.json"] {
         assert_eq!(status(&["put", file, key]), Some(1), "{key}");
     }
     assert_eq!(status(&["delete", "planner/catalog.json", "--reason", "x", "--yes"]), Some(1));
     assert!(temp.bucket().join("planner/catalog.json").exists(), "a refused delete deletes nothing");
     assert_eq!(status(&["put", file, "uploads/other"]), Some(0), "another key stays free");
+    assert_eq!(status(&["put", file, "sources/era5-land/2025/a.nc"]), Some(0), "no update writes an input");
+    assert_eq!(status(&["delete", "--prefix", "sources/era5-land", "--reason", "x", "--yes"]), Some(0));
     assert!(obc_data::r2::refuse_older_publish(&Bucket::local(&temp.bucket())).is_err());
 }

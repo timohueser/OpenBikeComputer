@@ -76,6 +76,8 @@ it("walks area, contents, review and bake, each step from its URL", async () => 
 
     const review = screen(`#/bake?region=central-switzerland&plan=${planned.id}`);
     await vi.waitFor(() => expect(text()).toContain("Peak memory"));
+    expect(text()).toContain("Builds 2 steps (at least 5 min) · reuses 1 from earlier bakes · downloads 1.1 GB");
+    expect(text()).toContain("map · build 1 · reuse 1 (built 2026-10-09) · format 19 → 20");
     expect(button("Bake on laptop").disabled, "a format change waits for its checkbox").toBe(true);
     document.querySelector<HTMLInputElement>(".gate input")!.click();
     flushSync();

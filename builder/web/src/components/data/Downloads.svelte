@@ -3,7 +3,7 @@
     import { nameOf, type Areas } from "../../lib/data/areas";
     import { command } from "../../lib/data/cli";
     import { CliQuery } from "../../lib/data/query.svelte";
-    import { sourceAt } from "../../lib/data/screens";
+    import { bakeHash, bakeOf, served, sourceAt } from "../../lib/data/screens";
     import { list, size, type Status } from "../../lib/data/shapes";
     import { daysOld, GROUPS, hostsOf, isReference, PARTS, policy, requestAge, requestLabel, requestsLine, type SourceRow } from "../../lib/data/sources";
     import Action from "./Action.svelte";
@@ -108,7 +108,8 @@
                     class="title"
                     onsubmit={(event) => {
                         event.preventDefault();
-                        location.hash = `#/${name}/review?refresh=${encodeURIComponent(`${row.id}=${policyOf(days[name])}`)}`;
+                        const at = status.output?.targets.find((at) => at.target === name);
+                        location.hash = bakeHash({ ...bakeOf(name, at ? served(at) : []), refresh: `${row.id}=${policyOf(days[name])}` });
                     }}
                 >
                     <label>Every {policy(target.refresh)} · new <input bind:value={days[name]} placeholder="30 or manual" /></label>

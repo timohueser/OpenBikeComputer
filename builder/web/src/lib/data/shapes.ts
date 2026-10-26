@@ -25,6 +25,8 @@ export interface Target {
     lock: Holder | null;
     lock_error: string | null;
     region: string | null;
+    /** The parts that the serving release has on, as `--add` names them. */
+    parts: string[];
     /** The area of the serving release as boxes: a box region, and the bounds of Geofabrik areas. */
     area: { name: string; boxes: Bbox[]; missing: string | null } | null;
     /** Each source version that the serving release read; `retrieved` is when a machine first
@@ -153,7 +155,9 @@ export interface Review {
     /** The outputs that the release keeps by reference. */
     kept: number;
     fetches: { source: string; version: string; params: [string, string][]; bytes: number | null }[];
-    bakes: { step: string }[];
+    /** The steps that build, and those whose output the store has from an earlier build, `built`. */
+    bakes: Build[];
+    reused: Build[];
     downloads: { files: number; bytes: number };
     cost: {
         wall_ms: number;
@@ -168,6 +172,13 @@ export interface Review {
     args: string[];
     /** The names that `--add` and `--remove` take; `settings.layers` holds those that are on. */
     optional: string[];
+}
+
+/** A step of a review; `built` is `YYYY-MM-DDTHH:MM:SSZ`. */
+export interface Build {
+    step: string;
+    estimate: { wall_ms: number; client_bytes: number } | null;
+    built: string | null;
 }
 
 /** What `update --json` writes: the run that it started. */
@@ -210,7 +221,7 @@ export function ended(status: Status | null, target: string, run: string): boole
     return !!now && now.lock_error === null && now.lock?.run !== run;
 }
 
-export const PHASES = ["prepare", "download", "build", "verify", "upload", "router-ready", "switch", "collect"] as const;
+export const PHASES = ["prepare", "build", "verify", "upload", "router-ready", "switch", "collect"] as const;
 export type Phase = (typeof PHASES)[number];
 
 /** `starting` is a run that no process took yet. `failed` is also a run whose process ended before

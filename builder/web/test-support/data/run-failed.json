@@ -7,7 +7,6 @@
     "wall_ms": 4214000,
     "phases": [
         {"phase": "prepare", "state": "ok", "started": "2026-10-12T09:30:55Z"},
-        {"phase": "download", "state": "ok", "started": "2026-10-12T09:31:02Z"},
         {"phase": "build", "state": "failed", "started": "2026-10-12T09:37:40Z"}
     ],
     "layers": [

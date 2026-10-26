@@ -172,6 +172,8 @@ export class Terrain {
     readonly stamps: Stamps;
     /** Whether the last frame draws other content than the frame before it: new pages, masks, normals, nodes or water. */
     newContent = false;
+    /** The metres on the ground from the eye to the nearest page whose heights the last frame changed, 0 for new structures: casters stand on them. */
+    reshaped = Infinity;
     private readonly water: Water;
     private readonly structures: Structures;
     /**
@@ -284,7 +286,8 @@ export class Terrain {
     }
 
     /** Compiles the pipelines for a device and the formats of the frame, with the ground in group 2. A new device gets every page again, from the kept tile bodies. */
-    async attach(gpu: Gpu, frameUniform: GPUBuffer, format: GPUTextureFormat, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout): Promise<void> {
+    /** `sunFrame` is the frame uniform of the sun's view, whose casters draw into the shadow map. */
+    async attach(gpu: Gpu, frameUniform: GPUBuffer, sunFrame: GPUBuffer, format: GPUTextureFormat, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout): Promise<void> {
         this.resources = undefined;
         this.pages.lost();
         const { device } = gpu, pages = this.pages.capacity.stored + this.pages.capacity.synth;
@@ -399,7 +402,7 @@ export class Terrain {
         // No mask yet, and a reach of the paint that no view meets.
         device.queue.writeBuffer(r.masks, 0, new Float32Array(1 + pages).fill(NO_LIMIT, 0, 1));
         await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, featureLayout, format, depthFormat);
-        await this.structures.attach(gpu, frameUniform, surfaceLayout, groundLayout, featureLayout, format, depthFormat);
+        await this.structures.attach(gpu, [frameUniform, sunFrame], surfaceLayout, groundLayout, featureLayout, format, depthFormat);
         this.resources = {
             ...r, mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, probeLayout,
             audits: () => (audits ??= Promise.all(['audit', 'apron'].map(entry => compute('audit', entry, pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout))))), checkLayout, auditLayout, surfaceLayout, emptyLayout, featureLayout,
@@ -454,7 +457,7 @@ export class Terrain {
         this.holed = group.filter(g => g === 0).length;
         const drawing = this.nodes.map(node => this.pages.drawing(node)!);
         const water = this.water.update(drawing);
-        const structures = this.structures.update(this.nodes);
+        const structures = this.structures.update(this.nodes, { x: ex, y: ey, unit: anchor.unit });
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
@@ -471,6 +474,8 @@ export class Terrain {
         this.above = view.above;
         this.lonLat = view.lonLat;
         this.seen = view.z === undefined ? undefined : { viewProj: view.viewProj, z: view.z, forward };
+        const level = { anchor, above: 0 }, pages = [...work.uploads, ...work.syntheses, ...work.stamps.filter(({ mode }) => mode & MODE.HEIGHTS)];
+        this.reshaped = structures ? 0 : Math.min(Infinity, ...pages.map(({ page }) => distances(level, page.node)[0]));
         this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || structures || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length || work.normals.length);
     }
 
@@ -550,6 +555,12 @@ export class Terrain {
             this.probing--;
             this.changed();
         });
+    }
+
+    /** Draws the structures into the shadow map (light/shadow.ts) as casters. */
+    cast(pass: GPURenderPassEncoder): void {
+        const r = this.resources;
+        if (r) this.structures.cast(pass, r.surfaceGroup, r.featureGroup);
     }
 
     draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {

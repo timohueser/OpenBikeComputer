@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::engine::{digest, sorted, Client, Input, InputRecord, LayerFile, Receipt, Step};
 use crate::settings::Settings;
-use crate::store::{hash_file, sha256_hex, FileRecord, Requested, Store};
+use crate::store::{hash_file, sha256_hex, Store};
 use crate::target::{Condition, Tag, Target};
 
 /// The key that names the release that a target serves, and its rollback.
@@ -51,9 +51,9 @@ pub struct File {
     pub sha256: String,
 }
 
-/// The files of one fetch that outputs of a release read.
+/// The files of one fetch that outputs of a release read. A manifest of an older publisher has more
+/// fields, such as `copy`: a reader ignores them.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Fetched {
     pub source: String,
     pub version: String,
@@ -61,14 +61,6 @@ pub struct Fetched {
     pub params: Vec<(String, String)>,
     /// Sorted by name.
     pub files: Vec<FetchedFile>,
-    /// Whether the target holds a copy of each file at `sources/<source>/<version>/<name>`: when
-    /// the licence lets us give the bytes to others.
-    pub copy: bool,
-    /// The licence and the credit of the source in `data/sources.toml`, for a copy.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub licence: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attribution: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -88,47 +80,6 @@ impl FetchedFile {
     /// count.
     pub fn same(&self, other: &FetchedFile) -> bool {
         (&self.name, self.size, &self.sha256) == (&other.name, other.size, &other.sha256)
-    }
-}
-
-impl Fetched {
-    /// The key of the copy of `file` on a target.
-    pub fn key(&self, file: &FetchedFile) -> String {
-        copy_key(&self.source, &self.version, &file.name)
-    }
-
-    /// The files that `names` names, or all of them when it names none.
-    pub fn named<'a>(&'a self, names: &'a [String]) -> impl Iterator<Item = &'a FetchedFile> {
-        self.files.iter().filter(move |file| names.is_empty() || names.contains(&file.name))
-    }
-
-    /// Give `store` the files of the fetch that `names` names, or all of them when it names none,
-    /// from their copies on `target`, with their records. A record keeps the time when a machine
-    /// retrieved the file first, so an old version never becomes the newest of its source.
-    pub fn restore(&self, target: &Target, store: &Store, names: &[String]) -> Result<(), String> {
-        for file in self.named(names).filter(|file| !store.object(&file.sha256).is_file()) {
-            let downloaded = target.download(&self.key(file), &file.sha256, store)?;
-            downloaded.ok_or_else(|| format!("the target has no {}", self.key(file)))?;
-        }
-        let records: Vec<FileRecord> = self
-            .named(names)
-            .map(|file| FileRecord {
-                name: file.name.clone(),
-                url: file.url.clone(),
-                size: file.size,
-                sha256: file.sha256.clone(),
-                retrieved: file.retrieved.clone(),
-            })
-            .collect();
-        crate::fetch::record(store, &self.source, &self.version, &records)?;
-        if !self.params.is_empty() {
-            let files = self.files.iter().map(|file| file.name.clone()).collect();
-            store.put_requested(
-                &self.source,
-                &Requested { version: self.version.clone(), params: self.params.clone(), files },
-            )?;
-        }
-        Ok(())
     }
 }
 
@@ -238,22 +189,15 @@ impl Release {
         self.outputs.iter().flat_map(Output::client_files).map(|file| (file.sha256.as_str(), file.size)).collect()
     }
 
-    /// The keys of the release but its manifest: the objects of the client files, the named files,
-    /// then the copies of the source files.
+    /// The keys of the release but its manifest: the objects of the client files, then the named
+    /// files.
     pub fn files(&self) -> Vec<File> {
         let objects = self.objects().into_iter().map(|(sha256, size)| File {
             key: format!("objects/{sha256}"),
             size,
             sha256: sha256.into(),
         });
-        let mut copies = BTreeMap::new();
-        for fetched in self.sources.iter().filter(|fetched| fetched.copy) {
-            for file in &fetched.files {
-                let key = fetched.key(file);
-                copies.insert(key.clone(), File { key, size: file.size, sha256: file.sha256.clone() });
-            }
-        }
-        objects.chain(self.named.iter().cloned()).chain(copies.into_values()).collect()
+        objects.chain(self.named.iter().cloned()).collect()
     }
 
     pub fn check(&self) -> Result<(), String> {
@@ -303,16 +247,6 @@ impl Release {
         for file in self.files() {
             crate::r2::check_key(&file.key)?;
         }
-        // Two fetches of one version can name one file: its copy has one SHA-256.
-        let mut copies = BTreeMap::new();
-        for fetched in self.sources.iter().filter(|fetched| fetched.copy) {
-            for file in &fetched.files {
-                let key = fetched.key(file);
-                if copies.insert(key.clone(), &file.sha256).is_some_and(|other| other != &file.sha256) {
-                    return Err(format!("{key} is the copy of two files"));
-                }
-            }
-        }
         Ok(())
     }
 
@@ -331,8 +265,7 @@ impl Release {
     /// serves, whoever made it, when, and what its builds cost.
     pub fn serves_as(&self, other: &Release) -> bool {
         let same = |a: &Output, b: &Output| Output { cost: a.cost, ..b.clone() } == *a;
-        // Whether the target copies a source, its credit, and where and when a machine retrieved a
-        // file change no file of the release.
+        // Where and when a machine retrieved a file changes no file of the release.
         let read = |a: &Fetched, b: &Fetched| {
             (&a.source, &a.version, &a.params) == (&b.source, &b.version, &b.params)
                 && a.files.len() == b.files.len()
@@ -366,11 +299,6 @@ impl Release {
 
 pub fn manifest_key(id: &str) -> String {
     format!("releases/{id}.json")
-}
-
-/// The key of the copy of the file `name` of `source` at `version`.
-pub fn copy_key(source: &str, version: &str, name: &str) -> String {
-    format!("sources/{source}/{version}/{name}")
 }
 
 pub(crate) fn is_sha256(text: &str) -> bool {
@@ -627,31 +555,39 @@ pub(crate) mod tests {
         let other = |r: &mut Release| (r.named[1].sha256, r.named[1].size) = (upper.sha256.clone(), upper.size);
         assert!(refused(&other).contains("not the digest"), "a named file changes the folder");
         assert!(refused(&|r| drop(r.named.pop())).contains("not the digest"));
-        let fetch = |params: &str, sha256: &str| Fetched {
-            source: "land".into(),
-            version: "1".into(),
-            params: vec![("area".into(), params.into())],
-            files: vec![FetchedFile {
-                name: "land.zip".into(),
-                url: String::new(),
-                size: 1,
-                sha256: sha256.into(),
-                retrieved: String::new(),
-            }],
-            copy: true,
-            licence: None,
-            attribution: None,
-        };
-        let copies = |r: &mut Release| r.sources = vec![fetch("a", &"a".repeat(64)), fetch("b", &"b".repeat(64))];
-        assert!(refused(&copies).contains("copy of two files"));
-
         let mut rebuilt = Release { machine: "desktop".into(), ..valid.clone() };
         rebuilt.outputs[0].cost.wall_ms += 1;
         assert!(rebuilt.serves_as(&valid), "a rebuild of the same bytes serves as the release");
-        rebuilt.sources = vec![Fetched { copy: false, ..fetch("a", &"a".repeat(64)) }];
-        let copied = Release { sources: vec![fetch("a", &"a".repeat(64))], ..valid.clone() };
-        assert!(rebuilt.serves_as(&copied), "a copy alone changes no file of the release");
+        rebuilt.sources = vec![land("2026-10-12T00:00:00Z")];
+        let read = Release { sources: vec![land("2026-10-01T00:00:00Z")], ..valid.clone() };
+        assert!(rebuilt.serves_as(&read), "when a machine retrieved a file changes no file of the release");
         rebuilt.outputs[0].key = "other".into();
         assert!(!rebuilt.serves_as(&valid));
+    }
+
+    /// A fetch of the file `land.zip`, retrieved at `retrieved`.
+    fn land(retrieved: &str) -> Fetched {
+        let file = FetchedFile {
+            name: "land.zip".into(),
+            url: String::new(),
+            size: 1,
+            sha256: "a".repeat(64),
+            retrieved: retrieved.into(),
+        };
+        Fetched { source: "land".into(), version: "1".into(), params: Vec::new(), files: vec![file] }
+    }
+
+    #[test]
+    fn a_manifest_that_lists_copies_of_its_sources_reads_and_names_no_copy() {
+        let fixture = fixture("release-copies");
+        let release = Release { sources: vec![land("2026-10-01T00:00:00Z")], ..release(&fixture) };
+        let mut older = serde_json::to_value(&release).unwrap();
+        let fetched = older["sources"][0].as_object_mut().unwrap();
+        fetched.insert("copy".into(), true.into());
+        fetched.insert("licence".into(), "ODbL-1.0".into());
+        let bytes = serde_json::to_vec(&older).unwrap();
+        let read = Release::parse(&sha256_hex(&bytes), &bytes).unwrap();
+        assert_eq!(read, release);
+        assert!(read.files().iter().all(|file| !file.key.starts_with("sources/")));
     }
 }
