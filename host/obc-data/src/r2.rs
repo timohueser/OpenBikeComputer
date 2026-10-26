@@ -42,12 +42,12 @@ impl Credentials {
     }
 }
 
-/// The R2 account, bucket and credential that `<PREFIX>_*` names.
 /// The uploads and the checks that rclone runs at once, chosen by the owner: most keys are small
 /// objects, so requests and not bytes set the time.
 const TRANSFERS: &str = "32";
 const CHECKERS: &str = "64";
 
+/// The R2 account, bucket and credential that `<PREFIX>_*` names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
     /// `https://<account id>.r2.cloudflarestorage.com`, or `<PREFIX>_ENDPOINT`.
