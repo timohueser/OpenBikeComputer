@@ -106,7 +106,7 @@ fn herds_of(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index
                 }
                 // Most of a group wears the breed's first coat.
                 let coat = select(1u + mix_bits(a + 7u) % max(herd.coats - 1u, 1u), 0u, unit_float(mix_bits(a + 8u)) < 0.6 || herd.coats == 1u);
-                emit(herd.model + coat, render_at(s, ground), herd.height * (0.85 + 0.3 * unit_float(mix_bits(a + 9u))),
+                emit(herd.model + coat, s, ground, herd.height * (0.85 + 0.3 * unit_float(mix_bits(a + 9u))),
                     6.2831853 * unit_float(mix_bits(a + 10u)), 1.0, 0.92 + 0.16 * unit_float(mix_bits(a + 11u)), 1.0);
             }
         }
@@ -157,5 +157,5 @@ fn rocks_of(@builtin(global_invocation_id) id: vec3u) {
     }
     let shape = select(SLABS + mix_bits(h + 4u) % SLABS, mix_bits(h + 5u) % SLABS, unit_float(mix_bits(h + 6u)) < 0.7);
     let tall = ROCK_HEIGHT_M.x + pow(unit_float(mix_bits(h + 7u)), 2.0) * (ROCK_HEIGHT_M.y - ROCK_HEIGHT_M.x);
-    emit(dressing.rock_model + shape, render_at(s, ground), tall, 6.2831853 * unit_float(mix_bits(h + 8u)), 1.0, 0.85 + 0.3 * unit_float(mix_bits(h + 9u)), 1.0);
+    emit(dressing.rock_model + shape, s, ground, tall, 6.2831853 * unit_float(mix_bits(h + 8u)), 1.0, 0.85 + 0.3 * unit_float(mix_bits(h + 9u)), 1.0);
 }

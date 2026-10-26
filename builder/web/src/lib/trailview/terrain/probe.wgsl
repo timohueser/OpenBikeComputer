@@ -1,8 +1,6 @@
 // The probe: drawnHeight at points of LOD space, read back to the CPU, such as the ground under the
-// eye. `check_vertex` evaluates the same points in a vertex shader, as an object instance does, and
-// `sun_probe` the share of the sun there.
+// eye. `check_vertex` evaluates the same points in a vertex shader, as an object instance does.
 // #include drawn-mesh.wgsl
-// #include ../ground/look.wgsl
 
 @group(0) @binding(0) var<storage, read> points: array<vec2f>;
 @group(0) @binding(1) var<storage, read_write> probed: array<f32>;
@@ -11,13 +9,6 @@
 fn probe(@builtin(global_invocation_id) id: vec3u) {
     if (id.x < arrayLength(&points)) {
         probed[id.x] = drawn_height(points[id.x]);
-    }
-}
-
-@compute @workgroup_size(64)
-fn sun_probe(@builtin(global_invocation_id) id: vec3u) {
-    if (id.x < arrayLength(&points)) {
-        probed[id.x] = sun_at(points[id.x]);
     }
 }
 

@@ -81,18 +81,6 @@ fn to_render(s: vec2f) -> vec2f {
     return vec2f(cubic(0u, s), cubic(10u, s));
 }
 
-// The point of LOD space at a point of render space: the inverse of the cubic's linear part at the
-// eye, then one Newton step for its higher terms.
-fn lod_of(p: vec2f) -> vec2f {
-    let a = coefficient(1u);
-    let b = coefficient(2u);
-    let c = coefficient(11u);
-    let d = coefficient(12u);
-    let back = mat2x2f(d, -c, -b, a) * (1.0 / (a * d - b * c));
-    let s = back * p;
-    return s + back * (p - to_render(s));
-}
-
 // A position at a level: whole texels, and the part of a texel past the centre of the whole one.
 struct Texel {
     whole: vec2i,

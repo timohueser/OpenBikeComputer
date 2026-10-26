@@ -403,7 +403,10 @@ export class Terrain {
         this.resources = {
             ...r, mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, probeLayout,
             audits: () => (audits ??= Promise.all(['audit', 'apron'].map(entry => compute('audit', entry, pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout))))), checkLayout, auditLayout, surfaceLayout, emptyLayout, featureLayout,
-            sunProbe: () => (sunProbe ??= compute('probe', 'sun_probe', pipelineLayout(probeLayout, surfaceLayout, groundLayout, featureLayout))),
+            sunProbe: () => (sunProbe ??= device.createComputePipelineAsync({
+                label: 'sun_probe', layout: pipelineLayout(probeLayout, surfaceLayout, groundLayout, featureLayout),
+                compute: { module: device.createShaderModule({ label: 'sun probe', code: wgsl('terrain/sun-probe.wgsl', swap) }), entryPoint: 'sun_probe' },
+            })),
             stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
             snapGroup: device.createBindGroup({
                 layout: snapLayout, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],

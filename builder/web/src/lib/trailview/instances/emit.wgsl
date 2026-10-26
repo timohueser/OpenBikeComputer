@@ -181,11 +181,11 @@ fn byte_of(share: f32) -> u32 {
     return u32(round(clamp(share, 0.0, 1.0) * 255.0));
 }
 
-// Emits an instance of `model` standing at `base` (render space), `height` metres tall, turned by
-// `yaw` and `width` times as wide as its model, its colour times `tint` (0.75 to 1.25), and drawn on
+// Emits an instance of `model` standing at point `s` of LOD space on ground `z` metres above sea level,
+// `height` metres tall, turned by `yaw` and `width` times as wide as its model, its colour times `tint` (0.75 to 1.25), and drawn on
 // the share `appear` of its pixels. Its yaw and height pick where in a tier's fade it switches tiers.
-fn emit(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32) {
-    emit_tree(model, base, height, yaw, width, tint, appear, 0.0, 0.0, pick_of(yaw, height), 0.0, vec3f(0.0), 0.0);
+fn emit(model: u32, s: vec2f, z: f32, height: f32, yaw: f32, width: f32, tint: f32, appear: f32) {
+    emit_tree(model, s, z, height, yaw, width, tint, appear, 0.0, 0.0, pick_of(yaw, height), 0.0, vec3f(0.0), 0.0);
 }
 
 // A share 0 to 1 that is stable per instance, from its yaw and height.
@@ -223,10 +223,11 @@ fn sink_at(m: Model, k: u32) -> f32 {
 // ends there: a still view draws each instance whole, in one tier. A `species` with phases draws the model
 // of the tree's phase on the date, by its pick and its `elevation` in metres, which a producer keeps
 // the same at every distance (BAND_LEVEL).
-fn emit_tree(species: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32, lift: f32, slope: f32, pick: f32, snow: f32, ground: vec3f, elevation: f32) {
+fn emit_tree(species: u32, s: vec2f, z: f32, height: f32, yaw: f32, width: f32, tint: f32, appear: f32, lift: f32, slope: f32, pick: f32, snow: f32, ground: vec3f, elevation: f32) {
     if (appear <= 0.0) {
         return;
     }
+    let base = render_at(s, z);
     var model = species;
     var phase = PHASE_SUMMER;
     let year = phases[species];
@@ -258,6 +259,6 @@ fn emit_tree(species: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint:
         return;
     }
     let look = byte_of((tint - 0.75) * 2.0) | (byte_of(lift) << 8u) | (byte_of(snow) << 16u) | (byte_of(appear) << 24u);
-    let sun = u32(round(sun_at(lod_of(base.xy)) * 63.0));
+    let sun = u32(round(sun_at(s) * 63.0));
     stage(model * TIERS + tier, vec4f(at, height), pack2x16float(width * vec2f(cos(yaw), sin(yaw))), pack4x8unorm(vec4f(sqrt(ground), 0.0)) | ((phase | (sun << 2u)) << 24u), look);
 }
