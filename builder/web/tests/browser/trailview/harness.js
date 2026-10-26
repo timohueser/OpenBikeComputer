@@ -23,21 +23,35 @@ export const DIST = new URL('../../../dist/trailview/', import.meta.url).pathnam
 const FIXTURE = new URL('./fixture/terrain/', import.meta.url).pathname;
 const FEATURES = new URL('./fixture/features/', import.meta.url).pathname;
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.txt': 'text/plain', '.svg': 'image/svg+xml' };
+/** `ground` of routeFixture: one ground everywhere, so the fixture has ground pages: the first material, lithology and region of FLAT_RULES. */
+export const FLAT = 'flat';
+/** A 512 px lossless WebP ground tile of zero bytes (cwebp -lossless -exact). */
+const FLAT_TILE = Buffer.from('UklGRiwAAABXRUJQVlA4TB8AAAAv/8F/EAcQEREQCCT7e89QRP8z/vOf//znP//5z/8BAA==', 'base64');
+/** The `world` region of the engine's ground without a ruleset (ground.ts), as a rules.json. */
+const FLAT_RULES = {
+    format: 1, materials: { materials: [{ id: 'none', cover: 'grass' }], lithologies: [{ id: 'unknown', hardness: 0.5 }] },
+    regions: [{
+        id: 'world', leaf: 'mixed', look: {
+            snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35, ramps: {}, outcrops: 0, snow_share: 0.5, turf_deg: 42,
+            rock: '#8c877d', sea: { deep: '#2c5874', shallow: '#4f8088' }, grade: { shadow: [-0.004, 0, 0.012], light: [0.01, 0.004, -0.008], saturation: 1.08 },
+        },
+    }],
+};
 
 /**
  * Answers the planner hosts of `fixture/config.json` in the page: the terrain tiles from the fixture,
  * or from `tiles`, a `planner-dem` MBTiles, and 204 for an absent tile like the tile service. With
  * `ground`, a folder of the TrailView bakes, it serves their TileJSON and tiles as the tile service
  * does, and `trailview/rules.json`; `colour` names the folder of the colour variant in it. The feature
- * tiles come from the fixture, or from `features`, a folder of `z/x/y.bin`. Every other public host is
- * refused.
+ * tiles come from the fixture, or from `features`, a folder of `z/x/y.bin`. `ground` may be FLAT. Every
+ * other public host is refused.
  */
 export async function routeFixture(page, tiles, ground, colour = 'webp-12', features = FEATURES) {
     const read = tiles?.endsWith('.mbtiles') ? await mbtiles(tiles) : (z, x, y) => {
         const path = join(tiles ?? FIXTURE, `${z}/${x}/${y}.webp`);
         return existsSync(path) ? readFileSync(path) : undefined;
     };
-    const layers = ground ? groundLayers(ground, colour) : {};
+    const layers = ground === FLAT ? { 'trailview-ground': FLAT_ARCHIVE } : ground ? groundLayers(ground, colour) : {};
     const cors = { 'access-control-allow-origin': '*' };
     await page.route(url => url.hostname !== '127.0.0.1', async route => {
         const url = new URL(route.request().url());
@@ -58,7 +72,9 @@ export async function routeFixture(page, tiles, ground, colour = 'webp-12', feat
             if (!body) return route.fulfill({ status: 204, headers: cors });
             return route.fulfill({ body, contentType: 'image/webp', headers: cors });
         }
-        if (ground && url.pathname === '/trailview/rules.json') return route.fulfill({ body: readFileSync(join(ground, 'rules.json')), contentType: 'application/json', headers: cors });
+        if (ground && url.pathname === '/trailview/rules.json') {
+            return route.fulfill({ body: ground === FLAT ? JSON.stringify(FLAT_RULES) : readFileSync(join(ground, 'rules.json')), contentType: 'application/json', headers: cors });
+        }
         const [, name, z, x, y] = /^\/([a-z0-9-]+)(?:\.json|\/(\d+)\/(\d+)\/(\d+))$/.exec(url.pathname) ?? [];
         const archive = layers[name];
         if (!archive) return route.abort();
@@ -72,6 +88,13 @@ export async function routeFixture(page, tiles, ground, colour = 'webp-12', feat
         return route.fulfill({ body: Buffer.from(found.data), contentType: 'application/octet-stream', headers: cors });
     });
 }
+
+/** The ground archive of FLAT: every tile of zooms 0 to 13 is FLAT_TILE. */
+const FLAT_ARCHIVE = {
+    getHeader: async () => ({ minZoom: 0, maxZoom: 13, minLon: -180, minLat: -85, maxLon: 180, maxLat: 85 }),
+    getMetadata: async () => ({ trailview_format: 3 }),
+    getZxy: async () => ({ data: FLAT_TILE }),
+};
 
 /** The archives of the TrailView bakes in a folder, by their names in the catalogue's `layers`. */
 function groundLayers(dir, colour) {

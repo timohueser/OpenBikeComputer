@@ -187,9 +187,9 @@ export class TrailView {
         return this.groundLook.attribution;
     }
 
-    /** drawnHeight at points from the probe and from an instance shader, with the state of the last frame. */
-    check(points: [number, number][]): Promise<{ probe: number[]; instance: number[] }> {
-        return this.terrain.check(points);
+    /** drawnHeight at points from the probe and from an instance shader, and the share of the sun there, with the state of the last frame. */
+    check(points: [number, number][]): Promise<{ probe: number[]; instance: number[]; sun: number[] }> {
+        return this.terrain.check(points, this.groundLook.group!);
     }
 
     /** The invariant audit of the drawn terrain, with the state of the last frame: call it after `waitForIdle()`. */
