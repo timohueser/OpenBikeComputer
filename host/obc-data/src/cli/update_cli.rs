@@ -527,6 +527,13 @@ pub(super) fn prepare(
         machine: &machine,
     });
     review.notes = listed.notes;
+    // The follower and the tiles Worker serve the root of the bucket of prod, and only a planner.
+    let planner = listed.steps.iter().any(|step| step.layer.name.starts_with("planner/"));
+    if let (Target::R2(remote), true) = (target, planner) {
+        if remote.prefix.is_empty() {
+            review.services = super::deploy_cli::problems(&super::deploy_cli::urls(root)?, http, &listed.steps);
+        }
+    }
     Ok(Prepared { review, base, serving, settings, sources, steps: listed.steps, update, copies })
 }
 

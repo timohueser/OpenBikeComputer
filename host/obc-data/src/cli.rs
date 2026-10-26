@@ -2,6 +2,7 @@
 //! fetch sources into the store, and show runs. Without a command, it shows every target.
 
 mod api;
+mod deploy_cli;
 mod freshness;
 mod listing;
 mod open_cli;
@@ -113,6 +114,12 @@ enum Command {
         #[arg(long, requires = "apply")]
         yes: bool,
     },
+    /// The follower and the tiles Worker of prod: which commit each runs; with an action, deploy the
+    /// commit of this checkout.
+    Deploy {
+        #[command(subcommand)]
+        command: Option<deploy_cli::DeployCommand>,
+    },
     /// Plumbing for scripts: list, read, upload and delete objects in an R2 bucket.
     R2(r2_cli::R2),
     /// What this machine can do: its tools and credentials (only whether each is set), and the
@@ -185,6 +192,7 @@ fn run(cli: Cli, products: &[&dyn Product], prepared: &[&dyn Prepared], ui: Opti
         Command::Serve(args) => serve_cli::command(&root()?, args, json),
         Command::Runs(runs) => runs_cli::run(runs, json),
         Command::Clean { apply, yes } => clean_command(&root()?, apply, yes, json),
+        Command::Deploy { command } => deploy_cli::command(&root()?, command, json),
         Command::R2(r2) => r2_cli::run(r2, json),
         Command::Setup => setup_cli::setup(&root()?, json),
         Command::Ui => match ui {

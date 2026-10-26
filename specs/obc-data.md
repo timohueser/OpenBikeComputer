@@ -1950,7 +1950,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `router` | `Router` |
 | `unlock` | `Unlocked` |
 | `sources` | `Sources` |
-| `source refresh`, `serve --detach` | `Detached` |
+| `source refresh`, `serve --detach`, `deploy WHAT --expect` | `Detached` |
 | `source prepare` | `Started` |
 | `source prepare --dry-run` | `PrepareReview` |
 | `fetch` | `Fetched` |
@@ -1958,7 +1958,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `clean`, `clean --apply` | `CleanPlan` |
 | `serve`, when it listens | `Listening` |
 | `setup` | `Setup` |
-| `source credential` | `CredentialSet` |
+| `source credential`, `deploy credential` | `CredentialSet` |
+| `deploy` | `Deployed` |
+| `deploy WHAT --dry-run` | `DeployPlan` |
 | `runs` | `RunList` |
 | `runs RUN`, `runs RUN --stop` | `View` |
 | `runs RUN --follow`, one per line | `Status` |
@@ -2213,6 +2215,47 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
+    "Check": {
+      "description": "One thing that an action needs.",
+      "properties": {
+        "blocks": {
+          "description": "Whether the action waits for it.",
+          "type": "boolean"
+        },
+        "commands": {
+          "description": "The commands of the fix, one per line.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "fix": {
+          "description": "What to do about the problem, and where the commands run.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "problem": {
+          "description": "Why it fails; `null` when it passes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "problem",
+        "fix",
+        "commands",
+        "blocks"
+      ],
+      "type": "object"
+    },
     "CleanPlan": {
       "description": "What `clean` removes from the store, or removed.",
       "properties": {
@@ -2361,7 +2404,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "sources": {
-          "description": "The sources that the credential serves.",
+          "description": "The sources that the credential serves; none for a credential of `deploy`.",
           "items": {
             "type": "string"
           },
@@ -2406,10 +2449,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
-        "source": {
-          "description": "The first source that needs it: `obc data source credential SOURCE` sets it for each\nsource that needs it. `null` for the R2 key, which the page does not set.",
+        "set": {
+          "description": "The arguments after `obc data` of the command that sets it from standard input, such as\n`source credential SOURCE` for each source that needs it. `null` for the R2 key, which the\npage does not set.",
+          "items": {
+            "type": "string"
+          },
           "type": [
-            "string",
+            "array",
             "null"
           ]
         },
@@ -2428,11 +2474,78 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "name",
         "needed_for",
         "state",
-        "source",
+        "set",
         "fields",
         "uses",
         "register",
         "hint"
+      ],
+      "type": "object"
+    },
+    "DeployPlan": {
+      "description": "What `deploy WHAT --dry-run` writes.",
+      "properties": {
+        "args": {
+          "description": "The arguments after `obc data` that start it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "commands": {
+          "description": "The commands that it runs in the repository root, in this order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "commit": {
+          "description": "The commit of this checkout that it deploys.",
+          "type": "string"
+        },
+        "text": {
+          "description": "What the deploy changes.",
+          "type": "string"
+        },
+        "what": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "what",
+        "commit",
+        "text",
+        "commands",
+        "args"
+      ],
+      "type": "object"
+    },
+    "Deployed": {
+      "description": "What `deploy` writes.",
+      "properties": {
+        "checkout": {
+          "description": "The commit of this checkout: what a deploy puts in place.",
+          "type": "string"
+        },
+        "publish": {
+          "description": "What `update prod` and the delete of its old data need on this machine.",
+          "items": {
+            "$ref": "#/$defs/Check"
+          },
+          "type": "array"
+        },
+        "services": {
+          "$ref": "#/$defs/Running"
+        },
+        "tiles": {
+          "$ref": "#/$defs/Running"
+        }
+      },
+      "required": [
+        "checkout",
+        "publish",
+        "services",
+        "tiles"
       ],
       "type": "object"
     },
@@ -4353,6 +4466,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "services": {
+          "description": "For `prod`: why its follower or its tiles Worker cannot serve the release, each with its fix.\nThe update does not refuse: its run would wait at router-ready.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "settings": {
           "$ref": "#/$defs/Settings"
         },
@@ -4383,7 +4503,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "after",
         "args",
         "optional",
-        "notes"
+        "notes",
+        "services"
       ],
       "type": "object"
     },
@@ -4784,6 +4905,48 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "error",
         "users",
         "last_wall_ms"
+      ],
+      "type": "object"
+    },
+    "Running": {
+      "description": "What a deployment says that it runs.",
+      "properties": {
+        "checks": {
+          "description": "What a deploy from this machine needs, each checked now.",
+          "items": {
+            "$ref": "#/$defs/Check"
+          },
+          "type": "array"
+        },
+        "commit": {
+          "description": "The commit that it runs; `null` when it does not answer, or when its build named none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential": {
+          "$ref": "#/$defs/CredentialState",
+          "description": "The credential that a deploy needs, which the page sets."
+        },
+        "reason": {
+          "description": "Why it cannot serve a release of `obc data`; `null` when it answers.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "The URL that answers with its commit.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "commit",
+        "reason",
+        "checks",
+        "credential"
       ],
       "type": "object"
     },

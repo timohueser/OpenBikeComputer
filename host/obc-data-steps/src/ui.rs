@@ -1,7 +1,7 @@
 //! `obc data ui`: the page of this machine on http://127.0.0.1:8700/. It serves the page that
 //! `npm run build:data` builds into `builder/web/dist/data/`, and two routes: `POST /api/cli` runs
 //! this binary as `obc data --json ARGS`, and `POST /api/credential` runs `obc data --json source
-//! credential SOURCE` with the values on its standard input. So the page can do only what the CLI
+//! credential SOURCE` or `deploy credential WHAT` with the values on its standard input. So the page can do only what the CLI
 //! can, and a value never goes to argv or to a log.
 
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ struct Ask {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Login {
-    source: String,
+    args: Vec<String>,
     values: Vec<String>,
 }
 
@@ -165,16 +165,26 @@ async fn cli(State(page): State<Arc<Page>>, Json(ask): Json<Ask>) -> Response {
 /// The body is read here, not by `Json`, whose refusal can quote a value.
 async fn credential(State(page): State<Arc<Page>>, body: Bytes) -> Response {
     let login = serde_json::from_slice::<Login>(&body).ok().filter(|login| {
-        !login.source.starts_with('-') && login.values.iter().all(|value| !value.contains(['\n', '\r']))
+        let args: Vec<&str> = login.args.iter().map(String::as_str).collect();
+        let sets = match args[..] {
+            ["source", "credential", source] => !source.starts_with('-'),
+            ["deploy", "credential", what] => DEPLOYS.contains(&what),
+            _ => false,
+        };
+        sets && login.values.iter().all(|value| !value.contains(['\n', '\r']))
     });
-    let Some(Login { source, values }) = login else {
-        let error = Code::Usage.error("the body is {\"source\": ID, \"values\": [one line, …]}");
+    let Some(Login { args, values }) = login else {
+        let error = Code::Usage.error(
+            "the body is {\"args\": [\"source\", \"credential\", ID] or [\"deploy\", \"credential\", WHAT], \"values\": [one line, …]}",
+        );
         return (StatusCode::BAD_REQUEST, Json(Answer::failed(2, error))).into_response();
     };
-    let args = ["source", "credential", &source].map(String::from).to_vec();
     let input = values.iter().map(|value| format!("{value}\n")).collect();
     Json(answer(page.exe.clone(), page.root.clone(), args, Some(input)).await).into_response()
 }
+
+/// What `obc data deploy` deploys.
+const DEPLOYS: [&str; 2] = ["services", "tiles"];
 
 /// Why the page does not run `obc data ARGS`: it runs only the commands that its screens use, and
 /// each is named here.
@@ -182,7 +192,14 @@ fn refused(args: &[String]) -> Option<Error> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let name = |word: &str| !word.starts_with('-');
     let allowed = match words[..] {
-        [] | ["setup"] | ["runs"] | ["areas"] | ["sources"] | ["clean"] => true,
+        [] | ["setup"] | ["runs"] | ["areas"] | ["sources"] | ["clean"] | ["deploy"] => true,
+        // The page shows the dry run and asks first.
+        ["deploy", what, "--dry-run"] => DEPLOYS.contains(&what),
+        ["deploy", what, "--expect", commit, "--yes"] => DEPLOYS.contains(&what) && name(commit),
+        ["r2", "legacy", target] => name(target),
+        ["r2", "legacy", target, "--delete", "--expect", digest, "--reason", reason, "--yes"] => {
+            name(target) && name(digest) && name(reason)
+        }
         // The page shows the plan and asks first.
         ["clean", "--apply", "--yes"] => true,
         ["source", "refresh", source] => name(source),
@@ -444,6 +461,12 @@ mod tests {
             &["router", "--json"],
             &["clean", "--apply"],
             &["clean", "--yes"],
+            &["deploy", "services"],
+            &["deploy", "vps", "--dry-run"],
+            &["deploy", "tiles", "--expect", "4c1e"],
+            &["deploy", "credential", "tiles"],
+            &["r2", "legacy", "prod", "--delete", "--expect", "4c1e", "--reason", "old"],
+            &["r2", "legacy", "prod", "--prefix", "reference/v1"],
             &["--help"],
         ] {
             assert!(refused(&words(args)).is_some(), "{args:?}");
@@ -475,6 +498,11 @@ mod tests {
             &["update", "prod", "--expect", "4c1e", "--yes"],
             &["update", "prod", "--region", "dach", "--expect", "4c1e", "--accept-format-change", "--yes"],
             &["unlock", "prod", "--from", "bake", "--yes"],
+            &["deploy"],
+            &["deploy", "tiles", "--dry-run"],
+            &["deploy", "services", "--expect", "4c1e", "--yes"],
+            &["r2", "legacy", "prod"],
+            &["r2", "legacy", "prod", "--delete", "--expect", "4c1e", "--reason", "Legacy publish path", "--yes"],
         ] {
             assert!(refused(&words(args)).is_none(), "{args:?}");
         }
@@ -506,15 +534,20 @@ mod tests {
             let body = runtime.block_on(axum::body::to_bytes(response.into_body(), usize::MAX)).unwrap();
             (status, serde_json::from_slice::<Value>(&body).unwrap())
         };
-        let (status, answer) = post(r#"{"source": "dtm-se", "values": ["fake-user", "fake-password"]}"#);
+        let (status, answer) =
+            post(r#"{"args": ["source", "credential", "dtm-se"], "values": ["fake-user", "fake-password"]}"#);
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             answer["output"],
             json!({ "args": "--json source credential dtm-se", "in": "fake-user fake-password" })
         );
+        let (_, answer) = post(r#"{"args": ["deploy", "credential", "tiles"], "values": ["fake-token", "fake-id"]}"#);
+        assert_eq!(answer["output"]["args"], "--json deploy credential tiles");
         for body in [
-            r#"{"source": "--help", "values": []}"#,
-            r#"{"source": "dtm-se", "values": ["fake\nsecond-line"]}"#,
+            r#"{"args": ["source", "credential", "--help"], "values": []}"#,
+            r#"{"args": ["deploy", "credential", "vps"], "values": []}"#,
+            r#"{"args": ["update", "prod"], "values": []}"#,
+            r#"{"args": ["source", "credential", "dtm-se"], "values": ["fake\nsecond-line"]}"#,
             r#"{"values": "fake-secret"}"#,
         ] {
             let (status, answer) = post(body);

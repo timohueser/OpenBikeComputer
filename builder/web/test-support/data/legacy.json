@@ -1,0 +1,11 @@
+{
+    "target": "prod",
+    "folders": {
+        "cell-catalog": [
+            { "key": "cell-catalog/catalog.json", "bytes": 48213 },
+            { "key": "cell-catalog/cells/9-268-176.obcm", "bytes": 52428800 }
+        ],
+        "planner": [{ "key": "planner/releases/540e2ed8d29764cc4506b6ad58d33e8cfff6f4b210671a50cf0d198a46605e44/basemap.pmtiles", "bytes": 1073741824 }]
+    },
+    "digest": "9f2c1a4be07d55c3a1f0e6b8d2c4a7e9b1f3d5c7e9a1b3d5f7091a2b3c4d5e6f"
+}
