@@ -60,8 +60,12 @@ SINUSOIDAL = "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +R=6371007.181 +units=m +no_defs
 MODIS_TILE_M, MODIS_PIXELS = 1111950.5197665233, 2400
 MODIS_X0, MODIS_Y0 = -20015109.355798, 10007554.677899
 MODIS_SNOW_NDSI = 10
-# The bake reads the source one tile of this zoom at a time, so memory stays small for a large region.
-CHUNK_ZOOM = 9
+# The bake reads the source one tile of this zoom at a time, so memory stays small for a large region, and the
+# chunks of a small region still fill the cores.
+CHUNK_ZOOM = 10
+# A worker of a chunk took at most 259 MB for nine seasons of HR-WSI at 47° N (central Switzerland), and a reader of
+# MODIS days less; WORKER_MEMORY is twice that.
+WORKER_MEMORY = 512 << 20
 
 Grid = namedtuple("Grid", "crs transform shape")
 
@@ -264,7 +268,8 @@ def keep(tiles, z, x, y, body):
     from pmtiles.tile import zxy_to_tileid
 
     if (body != NO_DATA).any():
-        tiles[zxy_to_tileid(z, x, y)] = gzip.compress(body.tobytes(), mtime=0)
+        # Level 9 takes 6 times the time of level 6 for 1 % smaller tiles.
+        tiles[zxy_to_tileid(z, x, y)] = gzip.compress(body.tobytes(), compresslevel=6, mtime=0)
 
 
 def below(baking, z, x, y, read, tiles):
@@ -303,9 +308,9 @@ def bake(sources, first_season, seasons, bounds, output, credit, workers=None):
 
     `sources` is [(name, planes)], the finest first: `planes(bounds)` gives the season planes and their grid around
     the bounds of one chunk tile. In each season, a pixel takes the first source that has data there. The finest
-    source sets the max zoom, the smoothing and the metadata. The chunks bake in a `step_pool.pool` of `workers`.
-    Their tiles wait in a file beside the output, and the archive takes them in tile order, so its bytes do not
-    depend on which chunk ends first.
+    source sets the max zoom, the smoothing and the metadata. The chunks bake in a `step_pool.pool` of `workers`, by
+    default as many as WORKER_MEMORY lets. Their tiles wait in a file beside the output, and the archive takes them in
+    tile order, so its bytes do not depend on which chunk ends first.
     """
     from concurrent.futures import as_completed
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
@@ -348,7 +353,7 @@ def bake(sources, first_season, seasons, bounds, output, credit, workers=None):
         x1, y1 = geo.mercator(east, south, baking.chunk)
         _baking = baking
         try:
-            pool = step_pool.pool(workers)
+            pool = step_pool.pool(workers or step_pool.worker_count(WORKER_MEMORY))
             try:
                 # `as_completed` lets go of each chunk once it gave it, so its tiles do not stay in memory.
                 for done in as_completed([pool.submit(chunk_tiles, x, y, part)
@@ -473,7 +478,7 @@ def modis_seasons(bounds, first_season, last_season):
         yield season, modis_items(bounds, dt.date(season, 9, 1), dt.date(season + 1, 8, 31))
 
 
-def bounded_map(pool, function, items, ahead):
+def bounded_map(pool, function, items, ahead=64):
     """`pool.map(function, items)` with at most `ahead` items submitted and not yet read: the readers of MODIS days
     outrun `SnowSeasons.observe`, and each day read holds its planes until it is observed."""
     pending = deque()
@@ -485,22 +490,21 @@ def bounded_map(pool, function, items, ahead):
         yield pending.popleft().result()
 
 
-def modis_planes(groups, bounds, first_season, last_season, canopy, workers=24):
+def modis_planes(groups, bounds, first_season, last_season, canopy, pool):
     """Season planes on the MODIS grid around the bounds, from daily files fed as groups {date: [(platform, path)]}
-    whose days increase from group to group. A pixel whose mean tree canopy cover in the Hansen GFC rasters
-    `canopy` is more than DENSE_CANOPY_PERCENT is no data."""
+    whose days increase from group to group. `pool` reads the days. A pixel whose mean tree canopy cover in the
+    Hansen GFC rasters `canopy` is more than DENSE_CANOPY_PERCENT is no data."""
     grid = modis_grid(bounds)
     state = SnowSeasons(first_season, last_season - first_season + 1, grid.shape)
     first, end, start = dt.date(first_season, 9, 1), 0, time.monotonic()
-    with ThreadPoolExecutor(workers) as pool:
-        for items in groups:
-            days = sorted(items)
-            read = lambda day: modis_day(items[day], grid)
-            for day, (clear, snow) in zip(days, bounded_map(pool, read, days, 2 * workers)):
-                end = (day - first).days + 1
-                state.observe(end - 1, clear, snow)
-            print(f"MODIS: {len(days)} days to {days[-1] if days else '-'}, {time.monotonic() - start:.0f} s",
-                  file=sys.stderr, flush=True)
+    read = functools.partial(modis_day, grid=grid)
+    for items in groups:
+        days = sorted(items)
+        for day, (clear, snow) in zip(days, bounded_map(pool, read, [items[day] for day in days])):
+            end = (day - first).days + 1
+            state.observe(end - 1, clear, snow)
+        print(f"MODIS: {len(days)} days to {days[-1] if days else '-'}, {time.monotonic() - start:.0f} s",
+              file=sys.stderr, flush=True)
     planes = state.planes(end)
     planes[:, :, canopy_cover(grid, canopy) > DENSE_CANOPY_PERCENT] = NO_DATA
     return planes, grid
@@ -652,7 +656,9 @@ def step():
         platform, year, day = re.fullmatch(r"(MOD|MYD)10A1\.A(\d{4})(\d{3})\..*\.tif", name).groups()
         days.setdefault(dt.date(int(year), 1, 1) + dt.timedelta(int(day) - 1), []).append((platform, path))
     canopy = [path for _, path in sorted(step_request.files(request, "hansen-gfc").items())]
-    modis = modis_planes([days], bounds, first, last, canopy)
+    # rasterio holds the GIL for much of a file open, so the reads need processes.
+    with step_pool.pool(step_pool.worker_count(WORKER_MEMORY)) as pool:
+        modis = modis_planes([days], bounds, first, last, canopy, pool)
     sources = [("nasa-modis", lambda chunk: modis)]
     if "hr-wsi" in request["snapshots"]:
         files = {}
@@ -696,7 +702,9 @@ def main():
         seasons = range(args.first_season, args.last_season + 1)
         canopy = [CANOPY.format(planner_sources.VERSIONS["hansen-gfc"], name) for name in canopy_tiles(bounds)]
         groups = (items for _, items in modis_seasons(bounds, args.first_season, args.last_season))
-        modis = modis_planes(groups, bounds, args.first_season, args.last_season, canopy)
+        # The reads wait on the network.
+        with ThreadPoolExecutor(24) as pool:
+            modis = modis_planes(groups, bounds, args.first_season, args.last_season, canopy, pool)
         source = lambda chunk: modis
         credit = f"{data_registry.attribution('modis-snow')}; tree canopy: {data_registry.attribution('hansen-gfc')}"
     # CDSE S3 allows 4 connections per user.

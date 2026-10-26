@@ -110,7 +110,7 @@ class BlendTest(unittest.TestCase):
 
 
 class BakeTest(unittest.TestCase):
-    def test_the_bake_reads_one_zoom_9_chunk_and_stores_to_the_max_zoom(self):
+    def test_the_bake_reads_one_zoom_10_chunk_and_stores_to_the_max_zoom(self):
         from pmtiles.reader import MmapSource, all_tiles
 
         # One zoom-11 tile, so no tile has pixels outside the bounds.
@@ -182,7 +182,8 @@ class ModisTest(unittest.TestCase):
             cover[-4:] = 100
             canopy = raster(directory / "canopy.tif", cover, grid.transform @ Affine.scale(0.25))
             days = {dt.date(2016, 12, 1): [("MOD", snowy)], dt.date(2017, 8, 31): [("MOD", cloud), ("MYD", bare)]}
-            planes, planes_grid = snow.modis_planes([days], bounds, 2016, 2016, [canopy])
+            with snow.step_pool.pool(2) as pool:
+                planes, planes_grid = snow.modis_planes([days], bounds, 2016, 2016, [canopy], pool)
         self.assertEqual(planes_grid, grid)
         # Snow from day 0 to day 227, the last day nearer to the snow day 91 than to the bare day 364.
         self.assertEqual(planes[0, :, 0, 1].tolist(), [0, 227 // 2])

@@ -25,7 +25,7 @@ def free_memory():
 
 def worker_count(memory=1 << 30):
     """One worker for each core that this process can use, and one at most for each `memory` bytes of `free_memory`.
-    The default is a GB: a snow worker holds the planes of one chunk, about 0.6 GB for nine seasons of HR-WSI at 48° N
+    The default is a GB: the snow planes of a zoom 9 tile take about 0.6 GB for nine seasons of HR-WSI at 48° N
     (measured with two seasons)."""
     free = free_memory()
     return cores() if free is None else max(1, min(cores(), free // memory))
