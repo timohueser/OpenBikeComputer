@@ -24,6 +24,8 @@ const DRAPE_BIAS = 2;
  */
 const KINDS = ['lakes', 'areas', 'ribbons'] as const;
 type Kind = (typeof KINDS)[number];
+/** The kinds that draw before the terrain. */
+export const OPAQUE: readonly Kind[] = ['lakes', 'areas'];
 
 /** A mesh, the level of the node that it belongs to, and the drawn nodes that draw it. */
 interface Draw { mesh: WaterMesh; level: number; nodes: number[] }
@@ -126,8 +128,7 @@ export class Water {
         return true;
     }
 
-    /** Draws the opaque kinds, or the ribbons when `blended`. */
-    draw(pass: GPURenderPassEncoder, surfaceGroup: GPUBindGroup, ground: GPUBindGroup, features: GPUBindGroup, blended: boolean): void {
+    draw(pass: GPURenderPassEncoder, surfaceGroup: GPUBindGroup, ground: GPUBindGroup, features: GPUBindGroup, kinds: readonly Kind[]): void {
         const r = this.resources;
         if (!r || !this.draws.length) return;
         pass.setBindGroup(0, r.group);
@@ -136,7 +137,7 @@ export class Water {
         pass.setBindGroup(3, features);
         pass.setVertexBuffer(0, r.vertices);
         pass.setIndexBuffer(r.indices, 'uint32');
-        for (const kind of KINDS.filter(kind => (kind === 'ribbons') === blended)) {
+        for (const kind of kinds) {
             pass.setPipeline(r.pipelines[kind]);
             let instance = 0;
             for (const { mesh, nodes } of this.draws) {

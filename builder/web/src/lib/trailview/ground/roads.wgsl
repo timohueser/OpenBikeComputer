@@ -126,7 +126,7 @@ fn masonry(stone: vec3f, along: f32, altitude: f32, w: f32) -> vec3f {
 // faint as its share of it. The paint fades out before the reach of the mask pool and in the outer
 // half of the morph band of the coarsest level with masks.
 fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) -> Road {
-    if (!NEAR) {
+    if (!DETAIL) {
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0);
     }
     let level = lod(s);

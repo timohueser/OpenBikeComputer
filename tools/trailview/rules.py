@@ -123,6 +123,13 @@ def area(v, p):
     return wrong(p, f"{said(v)} is not a box [west, south, east, north] or a ring of 3 or more [lon, lat]")
 
 
+def speckle_size(v, p):
+    """A bush's size in metres. The far nodes draw without the bushes' dots (DETAIL of ground/look.wgsl):
+    up to 3 m and 64° N, the dots fade out before them."""
+    return [] if is_number(v) and 0 <= v <= 3 else wrong(
+        p, f"{said(v)} is not a number from 0 to 3: the dots of larger bushes stop where the far nodes start")
+
+
 def tables(materials):
     """The key tables of the region, pack and style files, which name the materials of `materials`."""
     ramp = listed(colour, 3)
@@ -137,8 +144,7 @@ def tables(materials):
         "softness": number(0, 1), "gradient": number(0, 1),
         "ramps": each(RAMP_COVERS, lambda v, p: ramp(v, p) if isinstance(v, list) else each(SEASONS, ramp)(v, p)),
         "moor": obj({"heather": colour, "share": number(0, 1)}),
-        # A bush's dots fade out before the far nodes, which draw without them (NEAR of ground/look.wgsl).
-        "speckle": obj({"colour": colour, "share": number(0, 1), "size_m": number(0, 3)}),
+        "speckle": obj({"colour": colour, "share": number(0, 1), "size_m": speckle_size}),
         "materials": each(materials["materials"], obj({"colour": paint, "satellite": number(0, 1), "stones": number(0, 1)})),
         "lithology": each(materials["lithologies"][1:], obj({"colour": colour, "banded": one_of(True)})),
         "bare_luma": lambda v, p: listed(number(0, 1), 4)(v, p) if isinstance(v, list) else number(0, 1)(v, p),
