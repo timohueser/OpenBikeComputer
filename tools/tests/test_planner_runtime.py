@@ -28,6 +28,14 @@ class PublicMetadata(unittest.TestCase):
             "public/maps/assets/fonts/Noto Sans Regular/0-255.pbf.json": pointer(7),
         })
 
+    def test_a_block_index_that_the_tiles_worker_cannot_read_is_an_error(self):
+        # 256 cells of one block, each with a long name.
+        files = {f"maps/tiles/basemap/4-{x}-{y}.{'p' * 200}": {"bytes": 1, "sha256": "a" * 64,
+                 "transport": {"bytes": 999_999_999, "sha256": "a" * 64, "encoding": "identity"}}
+                 for x in range(16) for y in range(16)}
+        with self.assertRaisesRegex(ValueError, "exceeds"):
+            runtime.public_metadata({"grid": {"format": 2, "zoom": 9, "map_zoom": 11}, "files": files})
+
 
 if __name__ == "__main__":
     unittest.main()

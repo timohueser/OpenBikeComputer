@@ -57,7 +57,7 @@ pub struct Version {
     #[serde(default)]
     pub manifest: u32,
     /// The formats of `public/grid.json` that the tiles Worker reads; none from the follower.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub grids: Vec<u32>,
 }
 

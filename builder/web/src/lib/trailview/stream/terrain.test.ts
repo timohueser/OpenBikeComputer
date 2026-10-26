@@ -20,6 +20,7 @@ describe('the stored terrain of a release', () => {
         vi.stubGlobal('fetch', async (url: URL | string) => {
             fetched.push(String(url));
             if (String(url).endsWith('.webp')) return new Response(new Uint8Array([1, 2, 3]));
+            if (String(url).endsWith('/grid.json')) return new Response('{"format":3,"map_zoom":11}');
             return String(url).endsWith('/7-66-45.json') ? new Response('{}') : new Response(null, { status: 404 });
         });
         const tiles = releaseTiles(config);
@@ -29,8 +30,18 @@ describe('the stored terrain of a release', () => {
         expect(await tiles(13, 4287, 2889)).toBeUndefined();
         expect(await tiles(13, 4224, 2880)).toBeUndefined();
         expect(await tiles(13, 4160, 2880)).toBeUndefined();
-        expect(fetched).toEqual([`${RELEASE}/terrain/12/2143/1444.webp`, `${RELEASE}/public/maps/tiles/terrain/13/7-66-45.json`,
-            `${RELEASE}/public/maps/tiles/terrain/13/7-65-45.json`]);
+        expect(fetched).toEqual([`${RELEASE}/terrain/12/2143/1444.webp`, `${RELEASE}/public/grid.json`,
+            `${RELEASE}/public/maps/tiles/terrain/13/7-66-45.json`, `${RELEASE}/public/maps/tiles/terrain/13/7-65-45.json`]);
+    });
+
+    it('reads the pointer of a pack of a release of grid format 2, such as a rollback', async () => {
+        const fetched: string[] = [];
+        vi.stubGlobal('fetch', async (url: URL | string) => {
+            fetched.push(String(url));
+            return String(url).endsWith('/grid.json') ? new Response('{"format":2,"map_zoom":11}') : new Response(null, { status: 404 });
+        });
+        expect(await releaseTiles(config)(13, 4287, 2889)).toBeUndefined();
+        expect(fetched).toEqual([`${RELEASE}/public/grid.json`, `${RELEASE}/public/maps/tiles/terrain/13/11-1071-722.pmtiles.json`]);
     });
 });
 

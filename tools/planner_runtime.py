@@ -26,6 +26,9 @@ INDEX_FORMAT = 3
 # pointers of the packs of a grid in a block index of 2^BLOCK_ZOOMS × 2^BLOCK_ZOOMS cells.
 GRID_FORMAT = 3
 BLOCK_ZOOMS = 4
+# The most bytes of a block index: the limit of `readJSON` of planner/tiles/src/grid.mjs. A full block of
+# zoom 11 takes about 42 KB, the block of zooms 0 to 4 about 55 KB.
+INDEX_BYTES = 64 * 1024
 CELL = re.compile(r"((?:maps|routes)/tiles(?:/.+)?)/([0-9]+)-([0-9]+)-([0-9]+)\.[a-z]+")
 
 
@@ -90,7 +93,10 @@ def public_metadata(document):
         elif name.startswith(("maps/tiles/", "maps/assets/", "routes/tiles/")) or name in {"maps/basemap.json", "maps/places.json", "maps/overlays.json", "maps/terrain.json", "device/catalog.json", "trailview/rules.json",
                                                                                                 *(f"maps/{layer}.json" for layer in DATA_LAYERS)}:
             result["public/" + name + ".json"] = encoded(pointer)
-    result.update((block, encoded(pointers)) for block, pointers in blocks.items())
+    for block, pointers in blocks.items():
+        result[block] = encoded(pointers)
+        if len(result[block]) > INDEX_BYTES:
+            raise ValueError(f"{block} exceeds the {INDEX_BYTES} bytes that the tiles Worker reads")
     return result
 
 

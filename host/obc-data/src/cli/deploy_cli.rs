@@ -402,7 +402,8 @@ fn append(file: &Path, line: &str) -> std::io::Result<()> {
 }
 
 /// Why the follower or the tiles Worker at `urls` cannot serve a release of `steps`, each with its
-/// fix. An update does not refuse: its run would wait at router-ready.
+/// fix. An update refuses only a Worker that cannot read the grid ([`refusal`]); for a follower its
+/// run would wait at router-ready.
 pub(super) fn problems(urls: &[String; 2], http: &Http, steps: &[Step]) -> Vec<String> {
     let fix = |what: What| {
         format!("Deploy {} first: Services on the screen of prod, or `obc data deploy {}`.", what.label(), what.name())
@@ -443,18 +444,30 @@ pub(super) fn problems(urls: &[String; 2], http: &Http, steps: &[Step]) -> Vec<S
              release. {}",
             fix(What::Tiles)
         )),
-        Ok(worker) if !worker.grids.contains(&GRID) => problems.push(format!(
-            "The tiles Worker does not read grid format {GRID}, which the release has: riders would get no \
-             tiles of it. {}",
-            fix(What::Tiles)
-        )),
-        Ok(_) => {}
+        Ok(worker) => problems.extend(unreadable_grid(&worker).map(|e| format!("{e}. {}", fix(What::Tiles)))),
     }
     problems
 }
 
 /// The format of `public/grid.json` of a release: `GRID_FORMAT` of `tools/planner_runtime.py`.
 const GRID: u32 = 3;
+
+/// Why the tiles Worker that answered `worker` cannot serve the grid of a release.
+fn unreadable_grid(worker: &Version) -> Option<String> {
+    (!worker.grids.contains(&GRID)).then(|| {
+        format!(
+            "The tiles Worker does not read grid format {GRID}, which the release has: riders would get no tiles of it"
+        )
+    })
+}
+
+/// Why an update of prod with the origins of `root` refuses: the tiles Worker answers that it cannot
+/// read the grid of the release. A switch to it would leave riders without tiles, and nothing waits
+/// for the Worker as the follower waits at router-ready.
+pub(super) fn refusal(root: &Path, http: &Http) -> Option<String> {
+    let runtime = crate::runtime::load(root).ok()?;
+    unreadable_grid(&ask(http, &urls_of(&runtime.publication)[1]).ok()?)
+}
 
 /// The URLs at which the follower and the tiles Worker say which commit they run.
 fn urls_of(origins: &crate::runtime::Origins) -> [String; 2] {
