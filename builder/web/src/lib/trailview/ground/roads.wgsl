@@ -5,10 +5,6 @@
 // #include ../terrain/features.wgsl
 // #include look.wgsl
 
-// The terrain draws the nodes of the levels with masks with the paint, the others without it: the
-// compiler drops the paint there, and with it the registers that it takes from every pixel.
-override PAINT: bool = true;
-
 struct Road {
     colour: vec3f,
     // The share of the pixel that the road covers.
@@ -130,7 +126,7 @@ fn masonry(stone: vec3f, along: f32, altitude: f32, w: f32) -> vec3f {
 // faint as its share of it. The paint fades out before the reach of the mask pool and in the outer
 // half of the morph band of the coarsest level with masks.
 fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) -> Road {
-    if (!PAINT) {
+    if (!NEAR) {
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0);
     }
     let level = lod(s);

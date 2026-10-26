@@ -1,6 +1,5 @@
 // #include water-cut.wgsl
-// The water: the meshes of water-mesh.ts, drawn after the terrain and hidden where the terrain stands
-// above them. Each drawn node draws the mesh of the node whose page it draws and keeps the part over
+// The water: the meshes of water-mesh.ts, hidden where the terrain stands above them. Each drawn node draws the mesh of the node whose page it draws and keeps the part over
 // its own square. A lake lies at its level, a river area on the mesh without its snap (plain_height). A
 // river or a stream is a ribbon on it at its width, at least RIBBON_PIXELS wide, and fades
 // with its share of that width. The shading is the prototype's: a still body, dark from above and a

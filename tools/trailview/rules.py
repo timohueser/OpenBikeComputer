@@ -137,7 +137,8 @@ def tables(materials):
         "softness": number(0, 1), "gradient": number(0, 1),
         "ramps": each(RAMP_COVERS, lambda v, p: ramp(v, p) if isinstance(v, list) else each(SEASONS, ramp)(v, p)),
         "moor": obj({"heather": colour, "share": number(0, 1)}),
-        "speckle": obj({"colour": colour, "share": number(0, 1), "size_m": number(0, 50)}),
+        # A bush's dots fade out before the far nodes, which draw without them (NEAR of ground/look.wgsl).
+        "speckle": obj({"colour": colour, "share": number(0, 1), "size_m": number(0, 3)}),
         "materials": each(materials["materials"], obj({"colour": paint, "satellite": number(0, 1), "stones": number(0, 1)})),
         "lithology": each(materials["lithologies"][1:], obj({"colour": colour, "banded": one_of(True)})),
         "bare_luma": lambda v, p: listed(number(0, 1), 4)(v, p) if isinstance(v, list) else number(0, 1)(v, p),

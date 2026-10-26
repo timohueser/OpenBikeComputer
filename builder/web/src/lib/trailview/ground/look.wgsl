@@ -26,6 +26,13 @@
 @group(2) @binding(11) var relief_open: texture_2d_array<f32>;
 @group(2) @binding(12) var relief_coarse: texture_2d_array<f32>;
 
+// The near nodes (levels with masks, NEAR of bins.ts) draw the whole look. The others draw without the
+// road paint, the blades and the bushes' dots: the compiler drops them, and with them the registers
+// that they take from every pixel. Such a node lies at least RANGE.least near nodes from the eye
+// (lod.ts), where an output pixel spans 0.36 m or more, even at 71° N on a canvas 2880 pixels tall:
+// past the fade of the blades (0.18 m) and of the dots (0.1 × size_m, which rules.py holds to 3 m).
+override NEAR: bool = true;
+
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
 const COVER_GRASS: u32 = 2u;
@@ -617,7 +624,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     // stands upright on the screen. Only near the eye, on ground it looks along: a bank that faces it
     // would stretch them tall.
     let r = length(relative.xy);
-    if (r < 45.0) {
+    if (NEAR && r < 45.0) {
         let blades = (1.0 - smoothstep(0.4, 0.8, lateral / BLADE_WIDTH)) * (1.0 - smoothstep(0.25, 0.6, footprint / BLADE_LENGTH))
             * (1.0 - smoothstep(25.0, 45.0, r)) * (1.0 - smoothstep(0.45, 0.75, dot(n, normalize(-relative)))) * g.blades;
         if (blades > 0.0) {
@@ -639,11 +646,11 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     if (speckle.a > 0.0) {
         // Slopes facing north stay moister and carry more scrub than slopes facing the sun.
         let cover = speckle.a * g.rough * (0.6 + 0.8 * noise(world / 90.0)) * (1.0 + clamp(3.0 * n.y, -0.3, 0.6)) * smoothstep(40.0, 70.0, length(relative.xy));
-        let near = 1.0 - smoothstep(0.03 * speckle_size, 0.1 * speckle_size, surface_size);
+        let dotted = 1.0 - smoothstep(0.03 * speckle_size, 0.1 * speckle_size, surface_size);
         var dots = cover;
-        if (near > 0.0) {
+        if (NEAR && dotted > 0.0) {
             let bush = voronoi(world, speckle_size);
-            dots = mix(cover, step(bush.x, min(cover * 1.6, 1.0)) * smoothstep(0.18, 0.3, bush.y), near);
+            dots = mix(cover, step(bush.x, min(cover * 1.6, 1.0)) * smoothstep(0.18, 0.3, bush.y), dotted);
         }
         albedo = mix(albedo, speckle.rgb, 0.85 * dots);
     }
@@ -654,7 +661,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         albedo = mix(albedo, heather.rgb, g.moor * smoothstep(1.0 - heather.a, 1.1 - heather.a, patches));
     }
     albedo = mix(albedo, road.colour, road.cover * (1.0 - road.share));
-    if (masoned > 0.0) {
+    if (NEAR && masoned > 0.0) {
         let stone = rule(region, slot_lithologies() + i32(g.lithology)).rgb;
         // A coordinate along the wall itself would turn with its normal: far from the frame's origin, a
         // slight turn is a large step.

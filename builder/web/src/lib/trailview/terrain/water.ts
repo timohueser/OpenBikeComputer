@@ -17,10 +17,10 @@ const VERTEX_BYTES = 4 * 2 ** 20, INDEX_BYTES = 2 * 2 ** 20;
 const DRAPE_BIAS = 2;
 
 /**
- * The kinds of water in the order that they draw. A lake is opaque and writes its depth, so the GPU skips
- * the terrain under it and the water under a lake stays hidden; a river area is opaque too. Water on the
- * drawn surface takes a depth bias with its slope, so that the terrain's triangles between its vertices
- * stay under it; the ribbons blend last.
+ * The kinds of water in the order that they draw. Lakes and river areas are opaque: they draw before the
+ * terrain, so the terrain under them fails the depth test, and the water under a lake stays hidden.
+ * Water on the drawn surface takes a depth bias with its slope, so that the terrain's triangles between
+ * its vertices stay under it; the ribbons blend after the terrain.
  */
 const KINDS = ['lakes', 'areas', 'ribbons'] as const;
 type Kind = (typeof KINDS)[number];
@@ -126,7 +126,8 @@ export class Water {
         return true;
     }
 
-    draw(pass: GPURenderPassEncoder, surfaceGroup: GPUBindGroup, ground: GPUBindGroup, features: GPUBindGroup): void {
+    /** Draws the opaque kinds, or the ribbons when `blended`. */
+    draw(pass: GPURenderPassEncoder, surfaceGroup: GPUBindGroup, ground: GPUBindGroup, features: GPUBindGroup, blended: boolean): void {
         const r = this.resources;
         if (!r || !this.draws.length) return;
         pass.setBindGroup(0, r.group);
@@ -135,7 +136,7 @@ export class Water {
         pass.setBindGroup(3, features);
         pass.setVertexBuffer(0, r.vertices);
         pass.setIndexBuffer(r.indices, 'uint32');
-        for (const kind of KINDS) {
+        for (const kind of KINDS.filter(kind => (kind === 'ribbons') === blended)) {
             pass.setPipeline(r.pipelines[kind]);
             let instance = 0;
             for (const { mesh, nodes } of this.draws) {

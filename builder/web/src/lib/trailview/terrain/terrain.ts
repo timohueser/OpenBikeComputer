@@ -506,8 +506,10 @@ export class Terrain {
         const r = this.resources;
         if (!r || !this.nodes.length) return;
         const painted = this.nodes.filter(node => node.level >= NEAR).length, holed = this.holed;
-        // Before the terrain: the terrain that they hide fails the depth test.
+        // Before the terrain: the terrain that they hide fails the depth test, also on a GPU that shades
+        // before the depth test. The ribbons blend over the terrain.
         this.structures.draw(pass, r.surfaceGroup, ground, r.featureGroup);
+        this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup, false);
         pass.setBindGroup(0, r.meshGroup);
         pass.setBindGroup(1, r.surfaceGroup);
         pass.setBindGroup(2, ground);
@@ -517,9 +519,9 @@ export class Terrain {
         if (holed) pass.drawIndexed(GRID_INDICES.length, holed);
         pass.setPipeline(r.mesh);
         if (painted > holed) pass.drawIndexed(GRID_INDICES.length, painted - holed, 0, 0, holed);
-        pass.setPipeline(r.plainMesh);
+        pass.setPipeline(r.farMesh);
         if (painted < this.nodes.length) pass.drawIndexed(GRID_INDICES.length, this.nodes.length - painted, 0, 0, painted);
-        this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup);
+        this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup, true);
     }
 
     /**
@@ -781,18 +783,18 @@ function compute(gpu: Gpu, file: string, entryPoint: string, groups: GPUBindGrou
     return gpu.device.createComputePipelineAsync({ label: entryPoint, layout: gpu.device.createPipelineLayout({ bindGroupLayouts: groups }), compute: { module: shader(gpu, file), entryPoint } });
 }
 
-/** The draw of the nodes: with the road paint (the near nodes), without, or with the holes of the tunnels' portals. */
-function meshPipeline(gpu: Gpu, paint: boolean, holes = false): Promise<GPURenderPipeline> {
+/** The draw of the nodes: the near nodes with the whole look (NEAR of look.wgsl), the far ones without, or with the holes of the tunnels' portals. */
+function meshPipeline(gpu: Gpu, near: boolean, holes = false): Promise<GPURenderPipeline> {
     const { device } = gpu, L = gpu.once(terrainLayouts), shared = gpu.once(layouts), module = shader(gpu, 'terrain');
     return device.createRenderPipelineAsync({
-        label: holes ? 'terrain with holes' : paint ? 'terrain' : 'terrain without paint',
+        label: holes ? 'terrain with holes' : near ? 'terrain' : 'far terrain',
         layout: device.createPipelineLayout({ bindGroupLayouts: [L.mesh, shared.surface, shared.ground, shared.features] }),
         vertex: { module, entryPoint: 'vertex_main', constants: { HOLES: holes ? 1 : 0 } },
-        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { PAINT: paint ? 1 : 0 } },
-        // The plain nodes cull back faces: no snap moves their vertices, so no triangle turns over, and a
-        // ray from an eye above them meets a front face first. The painted (near) nodes draw both faces:
+        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { NEAR: near ? 1 : 0 } },
+        // The far nodes cull back faces: no snap moves their vertices, so no triangle turns over, and a
+        // ray from an eye above them meets a front face first. The near nodes draw both faces:
         // the eye can be under the near mesh for some frames, and its underside then hides what is behind.
-        primitive: { topology: 'triangle-list', cullMode: paint ? 'none' : 'back' },
+        primitive: { topology: 'triangle-list', cullMode: near ? 'none' : 'back' },
         depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
     });
 }
@@ -802,7 +804,7 @@ type Pipelines = Awaited<ReturnType<typeof terrainPipelines>>;
 /** What the terrain draws and computes with from its first frame. */
 export async function terrainPipelines(gpu: Gpu) {
     const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
-    const [mesh, plainMesh, synthesize, quantize, probe, stamp, snap] = await Promise.all([
+    const [mesh, farMesh, synthesize, quantize, probe, stamp, snap] = await Promise.all([
         meshPipeline(gpu, true), meshPipeline(gpu, false),
         compute(gpu, 'pages', 'synthesize', [L.job, surface]),
         compute(gpu, 'quantize', 'quantize', [L.quantize]),
@@ -810,7 +812,7 @@ export async function terrainPipelines(gpu: Gpu) {
         compute(gpu, 'stamp', 'stamp', [L.stamp, surface]),
         compute(gpu, 'stamp', 'snap', [L.snap]),
     ]);
-    return { mesh, plainMesh, synthesize, quantize, probe, stamp, snap };
+    return { mesh, farMesh, synthesize, quantize, probe, stamp, snap };
 }
 
 /** The draw of the nodes with a tunnel's portal, with its hole. */
