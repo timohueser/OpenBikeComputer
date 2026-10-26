@@ -1,10 +1,11 @@
 //! What publishing to prod and each deploy need, checked now from this machine, each with the fix
-//! that a person applies. The checks only read: an SSH login that runs [`PROBE`], and a GET of the
-//! Cloudflare API.
+//! that a person applies. A check only reads: an SSH login that runs [`PROBE`], the host key of the
+//! VPS, a GET of the Cloudflare API, and a fetch of `origin/develop`.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -14,8 +15,11 @@ use super::{git, What, VPS};
 use crate::fetch::http::Http;
 use crate::r2::{Bucket, Credentials};
 
+/// The longest that a check that reaches another machine takes.
+const LIMIT: Duration = Duration::from_secs(15);
+
 /// One thing that an action needs.
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Check {
     pub name: String,
     /// Why it fails; `null` when it passes.
@@ -24,17 +28,20 @@ pub struct Check {
     pub fix: Option<String>,
     /// The commands of the fix, one per line.
     pub commands: Vec<String>,
+    /// The arguments after `obc data` of the command that applies the fix, which the page runs
+    /// after a confirm; `null` when a person applies it.
+    pub action: Option<Vec<String>>,
     /// Whether the action waits for it.
     pub blocks: bool,
 }
 
 impl Check {
     fn passed(name: &str) -> Self {
-        Check { name: name.into(), problem: None, fix: None, commands: Vec::new(), blocks: true }
+        Check { name: name.into(), problem: None, fix: None, commands: Vec::new(), action: None, blocks: true }
     }
 
     fn failed(name: &str, problem: impl Into<String>, fix: impl Into<String>, commands: Vec<String>) -> Self {
-        Check { name: name.into(), problem: Some(problem.into()), fix: Some(fix.into()), commands, blocks: true }
+        Check { problem: Some(problem.into()), fix: Some(fix.into()), commands, ..Check::passed(name) }
     }
 
     pub fn ok(&self) -> bool {
@@ -54,8 +61,8 @@ pub fn publish() -> Vec<Check> {
         Err(e) => Check::failed(
             "R2 key",
             e,
-            "Put the OBC_R2_* variables of the bucket in tools/obc.local of this checkout, then start `obc data ui` \
-             again.",
+            "Put the OBC_R2_* variables of the bucket in tools/obc.local of this checkout, then start \
+             `obc data ui` again.",
             Vec::new(),
         ),
     }];
@@ -76,19 +83,26 @@ pub fn publish() -> Vec<Check> {
 pub fn credential(what: What) -> Check {
     let credential = what.credential();
     let name = "credential";
-    match credential.present() {
-        true => Check::passed(name),
-        false => Check::failed(
+    if !credential.present() {
+        return Check::failed(
             name,
             format!("{} needs {}, which this machine does not have", what.label(), credential.describe()),
-            format!("Set it here, or with `obc data deploy credential {}`.", what.name()),
+            format!(
+                "Set it under Services on the prod screen of `obc data ui`, or with `obc data deploy credential {}`.",
+                what.name()
+            ),
             Vec::new(),
-        ),
+        );
     }
+    // `ssh` would read a host that starts with `-` as an option.
+    if what == What::Services && std::env::var(VPS).is_ok_and(|host| host.starts_with('-')) {
+        return Check::failed(name, format!("{VPS} starts with `-`"), "Set the SSH host of the VPS again.", Vec::new());
+    }
+    Check::passed(name)
 }
 
-/// Whether `planner/tiles` holds only what the commit holds: `wrangler deploy` reads the files of the
-/// checkout.
+/// Whether `planner/tiles` holds only what the commit holds: `wrangler deploy` reads the files of
+/// the checkout.
 pub fn clean(root: &Path) -> Check {
     let name = "planner/tiles committed";
     match git(root, &["status", "--porcelain", "--", "planner/tiles"]) {
@@ -103,20 +117,36 @@ pub fn clean(root: &Path) -> Check {
     }
 }
 
-/// What a deploy of the tiles Worker needs: the credential, a token that may edit the Workers of the
-/// account, and a committed `planner/tiles`.
-pub fn tiles(root: &Path) -> Vec<Check> {
-    let credential = credential(What::Tiles);
-    if !credential.ok() {
-        return vec![credential, clean(root)];
+/// Whether `commit` is on `origin/develop`, after a fetch: a deploy puts only reviewed code in
+/// place, and an older commit of develop serves to go back.
+pub fn merged(root: &Path, commit: &str) -> Check {
+    let name = "commit on origin/develop";
+    let fetch = limited(Command::new("git").args(["fetch", "--quiet", "origin", "develop"]).current_dir(root));
+    if let Err(e) = fetch.and_then(|output| succeeded("git fetch", output)) {
+        return Check::failed(name, e, "Check the network and the remote `origin`, then check again.", Vec::new());
     }
+    let mut ancestor = Command::new("git");
+    ancestor.args(["merge-base", "--is-ancestor", commit, "origin/develop"]).current_dir(root);
+    match ancestor.status() {
+        Ok(status) if status.success() => Check::passed(name),
+        _ => Check::failed(
+            name,
+            format!("commit {} of this checkout is not on origin/develop", &commit[..commit.len().min(12)]),
+            "Check out a commit of develop in this checkout, then start `obc data ui` again. A pull request \
+             deploys after it merges.",
+            vec!["git switch --detach origin/develop".into()],
+        ),
+    }
+}
+
+/// Whether the Cloudflare token of this machine may list the Workers of its account.
+pub fn token() -> Check {
     let [token, account] =
         ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"].map(|name| std::env::var(name).unwrap_or_default());
     let api = "https://api.cloudflare.com";
     let url = format!("{api}/client/v4/accounts/{account}/workers/scripts");
-    let answer = Http::new().with_bearer(api, token).answer(&url, "application/json");
     let name = "Cloudflare token";
-    let token = match answer {
+    match Http::new().with_bearer(api, token).answer(&url, "application/json") {
         Ok((200, _)) => Check::passed(name),
         Ok((status, body)) => {
             let body: Value = serde_json::from_slice(&body).unwrap_or_default();
@@ -124,19 +154,18 @@ pub fn tiles(root: &Path) -> Vec<Check> {
             Check::failed(
                 name,
                 format!("Cloudflare refuses to list the Workers of account {account}: HTTP {status}, {said}"),
-                "Create a token with the template \"Edit Cloudflare Workers\": the account of the ID, and the zone \
-                 openbikecomputer.com. The ID is under Account details in the Workers & Pages overview. Then \
-                 replace the credential here.",
+                "Create a token with the template \"Edit Cloudflare Workers\": the account of the ID, and the \
+                 zone openbikecomputer.com. The ID is under Account details in the Workers & Pages overview. \
+                 Then replace the credential here.",
                 Vec::new(),
             )
         }
         Err(e) => Check::failed(name, e, "Check the network of this machine, then check again.", Vec::new()),
-    };
-    vec![credential, token, clean(root)]
+    }
 }
 
-/// The script that the VPS runs for [`services`]: one line for each piece of its one-time setup that
-/// it has. It changes nothing.
+/// The script that the VPS runs for [`services`]: one line for each piece of its one-time setup
+/// that it has. It changes nothing.
 const PROBE: &str = r#"id -u obc-data >/dev/null 2>&1 && echo user
 [ -d /opt/obc-data ] && echo opt
 [ -x /var/lib/obc-data/.cargo/bin/cargo ] && echo rust
@@ -148,36 +177,36 @@ systemctl is-enabled obc-data-serve >/dev/null 2>&1 && echo unit
 [ -f /etc/caddy/planner/obc-data-serve.caddy ] && echo caddy
 true"#;
 
+/// The options of every SSH check: no prompt, no host key that this machine does not know, and an
+/// end within [`LIMIT`].
+const SSH: [&str; 10] = [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=yes",
+    "-o",
+    "ConnectTimeout=8",
+    "-o",
+    "ServerAliveInterval=5",
+    "-o",
+    "ServerAliveCountMax=2",
+];
+
 /// What a deploy of the follower needs: the SSH host, a login of this machine as root without a
-/// prompt, and the one-time setup of `tools/vps/README.md` on the VPS. `python` and `node` are the
-/// `major.minor` versions of `data/planner-runtime.toml`.
+/// prompt, and the one-time setup of `tools/vps/README.md` on the VPS, each missing piece with its
+/// command. `python` and `node` are the `major.minor` of `data/planner-runtime.toml`.
 pub fn services(home: Option<&Path>, (python, node): (&str, &str)) -> Vec<Check> {
     let credential = credential(What::Services);
     if !credential.ok() {
         return vec![credential];
     }
     let host = std::env::var(VPS).unwrap_or_default();
-    if host.starts_with('-') {
-        return vec![Check::failed(
-            "credential",
-            format!("{VPS} starts with `-`"),
-            "Set the SSH host again.",
-            Vec::new(),
-        )];
-    }
-    // `accept-new` keeps the key of a VPS that this machine never saw, so the deploy can log in.
-    let options = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new"];
-    let probe = Command::new("ssh").args(options).arg("--").arg(&host).arg(PROBE).stdin(Stdio::null()).output();
+    let probe = limited(Command::new("ssh").args(SSH).arg("--").arg(&host).arg(PROBE));
     let login = "login as root";
     let output = match probe {
         Ok(output) if output.status.success() => output,
         Ok(output) => return vec![credential, refused(login, &host, &String::from_utf8_lossy(&output.stderr), home)],
-        Err(e) => {
-            return vec![
-                credential,
-                Check::failed(login, format!("ssh: {e}"), "Install OpenSSH on this machine.", Vec::new()),
-            ]
-        }
+        Err(e) => return vec![credential, Check::failed(login, e, "Check the host and the network.", Vec::new())],
     };
     let said = String::from_utf8_lossy(&output.stdout);
     let has: BTreeSet<&str> = said.lines().map(str::trim).collect();
@@ -190,44 +219,27 @@ pub fn services(home: Option<&Path>, (python, node): (&str, &str)) -> Vec<Check>
             false => Check::failed(name, "the VPS lacks it", fix, commands),
         });
     };
-    let on_this = "Run on this machine, in the root of this checkout:";
-    need(
-        "user obc-data",
-        "user",
-        on_this,
-        vec![ssh("useradd --system --create-home --home-dir /var/lib/obc-data --shell /usr/sbin/nologin obc-data")],
-    );
-    need("/opt/obc-data", "opt", on_this, vec![ssh("install -d -o obc-data -g obc-data /opt/obc-data")]);
-    need(
-        "Rust of obc-data",
-        "rust",
-        on_this,
-        vec![as_user("curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path")],
-    );
-    need("uv of obc-data", "uv", on_this, vec![as_user("curl -LsSf https://astral.sh/uv/install.sh | sh")]);
-    need("C compiler", "cc", on_this, vec![ssh("apt-get install -y build-essential")]);
-    let install =
-        |what: &str| format!("Install {what} on the VPS, so that `python3` and `node` give it, then check again.");
+    let here = "Run on this machine, in the root of this checkout:";
+    let useradd = "useradd --system --create-home --home-dir /var/lib/obc-data --shell /usr/sbin/nologin obc-data";
+    need("user obc-data", "user", here, vec![ssh(useradd)]);
+    need("/opt/obc-data", "opt", here, vec![ssh("install -d -o obc-data -g obc-data /opt/obc-data")]);
+    let rustup = "curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path";
+    need("Rust of obc-data", "rust", here, vec![as_user(rustup)]);
+    need("uv of obc-data", "uv", here, vec![as_user("curl -LsSf https://astral.sh/uv/install.sh | sh")]);
+    need("C compiler", "cc", here, vec![ssh("apt-get install -y build-essential")]);
+    let install = |what: &str| format!("Install {what} on the VPS, so that `python3` and `node` give it.");
     need(&format!("Python {python}"), &format!("python={python}"), &install(&format!("Python {python}")), Vec::new());
     need(&format!("Node {node}"), &format!("node={node}"), &install(&format!("Node {node}")), Vec::new());
-    need(
-        "unit obc-data-serve",
-        "unit",
-        on_this,
-        vec![
-            format!("scp tools/vps/obc-data-serve.service {host}:/etc/systemd/system/"),
-            ssh("systemctl daemon-reload && systemctl enable obc-data-serve"),
-        ],
-    );
-    need(
-        "Caddy route of /planner-api/",
-        "caddy",
-        &format!("After the first deploy. {on_this}"),
-        vec![
-            format!("scp tools/vps/obc-data-serve.caddy {host}:/etc/caddy/planner/"),
-            ssh("caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy"),
-        ],
-    );
+    let unit = vec![
+        format!("scp tools/vps/obc-data-serve.service {host}:/etc/systemd/system/"),
+        ssh("systemctl daemon-reload && systemctl enable obc-data-serve"),
+    ];
+    need("unit obc-data-serve", "unit", here, unit);
+    let caddy = vec![
+        format!("scp tools/vps/obc-data-serve.caddy {host}:/etc/caddy/planner/"),
+        ssh("caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy"),
+    ];
+    need("Caddy route of /planner-api/", "caddy", &format!("After the first deploy. {here}"), caddy);
     // The follower runs without the route; only riders cannot reach it.
     if let Some(caddy) = checks.last_mut() {
         caddy.blocks = false;
@@ -238,21 +250,48 @@ pub fn services(home: Option<&Path>, (python, node): (&str, &str)) -> Vec<Check>
 /// The check of a login that `ssh` refused with `stderr`, and how to give this machine access.
 fn refused(name: &str, host: &str, stderr: &str, home: Option<&Path>) -> Check {
     let said = stderr.lines().map(str::trim).rfind(|line| !line.is_empty()).unwrap_or("no reason").to_string();
+    if stderr.contains("IDENTIFICATION HAS CHANGED") {
+        return Check::failed(
+            name,
+            "the host key of the VPS is not the one that this machine knows",
+            "The VPS was set up again, or another machine answers. Compare the fingerprint in the console of \
+             the hosting provider. Only when it is the VPS, remove the old key, then check again.",
+            vec![format!("ssh-keygen -R {}", endpoint(host).map_or(host.to_string(), |(name, _)| name))],
+        );
+    }
+    if stderr.contains("Host key verification failed") {
+        return match host_key(host) {
+            Ok((_, fingerprint)) => Check {
+                action: Some(["deploy", "trust", "--expect", &fingerprint].map(String::from).to_vec()),
+                ..Check::failed(
+                    name,
+                    format!("this machine does not know the host key of the VPS, {fingerprint}"),
+                    "Compare it with the ED25519 fingerprint of the VPS in the console of the hosting provider, \
+                     or of `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` there. Trust it only when they \
+                     are the same.",
+                    Vec::new(),
+                )
+            },
+            Err(e) => Check::failed(name, e, "Check the host and the network.", Vec::new()),
+        };
+    }
     if !said.contains("Permission denied") {
         return Check::failed(
             name,
             said,
-            format!("Check the host and the network. `ssh {host}` in a terminal shows more."),
+            format!("Check the host and the network. `ssh {host}` shows more."),
             Vec::new(),
         );
     }
+    let cases = "The VPS refuses each key that this machine offers. The host must log in as root, such as \
+                 root@HOST. A key with a passphrase needs an agent that holds it: `ssh-add`.";
     match public_key(home) {
         Some((file, key)) => Check::failed(
             name,
             said,
             format!(
-                "The VPS does not know the key of this machine, {}. Add it to the keys of root: run this on the VPS \
-                 as root, for example in the console of the hosting provider. Then check again.",
+                "{cases} Or the VPS does not know the key of this machine, {}: add it to the keys of root, \
+                 as root on the VPS, such as in the console of the hosting provider.",
                 file.display()
             ),
             vec![format!("mkdir -p /root/.ssh && echo '{key}' >> /root/.ssh/authorized_keys")],
@@ -260,11 +299,72 @@ fn refused(name: &str, host: &str, stderr: &str, home: Option<&Path>) -> Check {
         None => Check::failed(
             name,
             said,
-            "This machine has no SSH key. Make one on this machine, then check again: the page then shows the line \
-             to add on the VPS.",
+            format!("{cases} This machine has no SSH key: make one, then check again for the line to add."),
             vec!["ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519".into()],
         ),
     }
+}
+
+/// The ED25519 host key of the SSH host `host` as a line of `known_hosts`, and its fingerprint.
+pub fn host_key(host: &str) -> Result<(String, String), String> {
+    let (name, port) = endpoint(host)?;
+    let scan = limited(Command::new("ssh-keyscan").args(["-T", "5", "-t", "ed25519", "-p", &port, "--", &name]))?;
+    let text = String::from_utf8_lossy(&scan.stdout);
+    let line = text.lines().find(|line| !line.starts_with('#') && !line.trim().is_empty());
+    let line = line.ok_or_else(|| format!("{name} gives no ED25519 host key"))?.to_string();
+    let mut keygen = Command::new("ssh-keygen");
+    keygen.args(["-l", "-f", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped());
+    let mut keygen = keygen.spawn().map_err(|e| format!("ssh-keygen: {e}"))?;
+    let written = std::io::Write::write_all(&mut keygen.stdin.take().expect("piped"), format!("{line}\n").as_bytes());
+    written.map_err(|e| format!("ssh-keygen: {e}"))?;
+    let listed = keygen.wait_with_output().map_err(|e| format!("ssh-keygen: {e}"))?;
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    let fingerprint = listed.split_whitespace().nth(1).filter(|field| field.starts_with("SHA256:"));
+    let fingerprint = fingerprint.ok_or_else(|| format!("ssh-keygen cannot read the host key of {name}"))?;
+    Ok((line, fingerprint.to_string()))
+}
+
+/// The host name and the port that `ssh` reaches for `host`, an alias of `~/.ssh/config` too.
+fn endpoint(host: &str) -> Result<(String, String), String> {
+    let config = limited(Command::new("ssh").args(["-G", "--", host]))?;
+    let config = String::from_utf8_lossy(&config.stdout);
+    let value = |key: &str| config.lines().find_map(|line| line.strip_prefix(key)).map(str::to_string);
+    let name = value("hostname ").ok_or_else(|| format!("ssh names no host for {host}"))?;
+    Ok((name, value("port ").unwrap_or_else(|| "22".into())))
+}
+
+/// The output of `command`, which ends within [`LIMIT`] or is killed.
+fn limited(command: &mut Command) -> Result<Output, String> {
+    limited_to(command, LIMIT)
+}
+
+fn limited_to(command: &mut Command, limit: Duration) -> Result<Output, String> {
+    let program = command.get_program().to_string_lossy().to_string();
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{program}: {e}"))?;
+    let deadline = Instant::now() + limit;
+    while child.try_wait().map_err(|e| e.to_string())?.is_none() {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("{program} gave no answer within {} s", limit.as_secs()));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    child.wait_with_output().map_err(|e| format!("{program}: {e}"))
+}
+
+/// `output` when it succeeded, else its last line of standard error.
+fn succeeded(what: &str, output: Output) -> Result<Output, String> {
+    if output.status.success() {
+        return Ok(output);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!("{what}: {}", stderr.lines().map(str::trim).rfind(|line| !line.is_empty()).unwrap_or("failed")))
 }
 
 /// The first public key of `~/.ssh` that `ssh` offers, and its line.
@@ -289,16 +389,25 @@ mod tests {
         let check = refused("login", "root@vps.test", denied, Some(&home.0));
         assert_eq!(check.problem.as_deref(), Some("root@vps.test: Permission denied (publickey)."));
         assert_eq!(check.commands, ["ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519"]);
+        assert!(check.fix.unwrap().contains("passphrase"));
 
         std::fs::create_dir_all(home.0.join(".ssh")).unwrap();
         std::fs::write(home.0.join(".ssh/id_ed25519.pub"), "ssh-ed25519 AAAAfake me@bake\n").unwrap();
         let check = refused("login", "root@vps.test", denied, Some(&home.0));
-        assert_eq!(
-            check.commands,
-            ["mkdir -p /root/.ssh && echo 'ssh-ed25519 AAAAfake me@bake' >> /root/.ssh/authorized_keys"]
-        );
+        let line = "mkdir -p /root/.ssh && echo 'ssh-ed25519 AAAAfake me@bake' >> /root/.ssh/authorized_keys";
+        assert_eq!(check.commands, [line]);
 
         let check = refused("login", "root@vps.test", "ssh: Could not resolve hostname vps.test\n", Some(&home.0));
-        assert!(check.commands.is_empty() && check.fix.unwrap().starts_with("Check the host"));
+        assert!(
+            check.commands.is_empty() && check.action.is_none() && check.fix.unwrap().starts_with("Check the host")
+        );
+    }
+
+    #[test]
+    fn a_command_that_does_not_end_is_killed_at_the_limit() {
+        let started = Instant::now();
+        let ended = limited_to(Command::new("sh").args(["-c", "sleep 60"]), Duration::from_secs(1));
+        assert_eq!(ended.unwrap_err(), "sh gave no answer within 1 s");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

@@ -1,16 +1,17 @@
 //! `obc data deploy`: the code that serves `prod` beside its data. The follower, `obc data serve
 //! prod` on the VPS, runs the planner services, and the tiles Worker on Cloudflare serves the map
 //! tiles; `obc data update prod` publishes only data. Without an action, `deploy` asks each which
-//! commit it runs. `deploy services` and `deploy tiles` deploy the commit of this checkout in a run.
+//! commit it runs. `deploy services` and `deploy tiles` deploy the commit of this checkout in a
+//! run.
 
 mod checks;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use clap::{Args, Subcommand, ValueEnum};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 
 use super::api::{confirm, Detached};
@@ -33,6 +34,16 @@ pub enum DeployCommand {
     /// Set what a deploy needs from standard input, one value per line in the order of `fields` in
     /// `obc data setup`. Never from an argument, which every process can read.
     Credential { what: What },
+    /// Add the host key of the VPS to `~/.ssh/known_hosts`, when its fingerprint is `--expect`.
+    /// Asks first.
+    Trust {
+        /// The fingerprint that a person compared, such as `SHA256:…`.
+        #[arg(long)]
+        expect: String,
+        /// Do not ask. Required without a terminal.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Args)]
@@ -117,6 +128,14 @@ pub struct Running {
     pub credential: CredentialState,
 }
 
+/// What `deploy trust` wrote.
+#[derive(Serialize, JsonSchema)]
+pub struct Trusted {
+    pub fingerprint: String,
+    /// The file that holds the host key now.
+    pub file: PathBuf,
+}
+
 /// What `deploy WHAT --dry-run` writes.
 #[derive(Serialize, JsonSchema)]
 pub struct DeployPlan {
@@ -141,6 +160,7 @@ pub fn command(root: &Path, command: Option<DeployCommand>, json: bool) -> Resul
             let set = super::setup_cli::write(place, true, Vec::new())?;
             return super::setup_cli::print_set(&set, json);
         }
+        Some(DeployCommand::Trust { expect, yes }) => return trust(&expect, yes, json),
     };
     let store = Store::open()?;
     let expect = args.expect.clone().unwrap_or_default();
@@ -174,6 +194,7 @@ fn plan(root: &Path, what: What) -> Result<DeployPlan, Error> {
     if what == What::Tiles {
         checks.push(checks::clean(root));
     }
+    checks.push(checks::merged(root, &commit));
     if let Some(check) = checks::blocking(&checks) {
         return Err(Code::Blocked
             .error(check.problem.clone().unwrap_or_default())
@@ -219,7 +240,13 @@ fn deploy(root: &Path, store: &Store, what: What, expect: &str, run: &mut runs::
             return Err(super::api::stopped());
         }
         eprintln!("$ {command}");
-        let status = Command::new("sh").args(["-c", command]).current_dir(root).stdin(Stdio::null()).status();
+        // Only what the commands need: no R2 key and no credential of a source.
+        let base = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "SSH_AUTH_SOCK"];
+        let names = base.iter().map(|name| name.to_string()).chain(what.credential().env);
+        let env = names.filter_map(|name| std::env::var_os(&name).map(|value| (name, value)));
+        let mut process = Command::new("sh");
+        process.args(["-c", command]).current_dir(root).stdin(Stdio::null()).env_clear().envs(env);
+        let status = process.status();
         let status = status.map_err(|e| format!("{command}: {e}"))?;
         if !status.success() {
             return Err(Code::Failed
@@ -251,29 +278,48 @@ fn print_plan(plan: &DeployPlan, json: bool) -> Result<(), Error> {
 }
 
 /// Ask the follower and the tiles Worker which commit they run, and check what a deploy of each
-/// needs.
+/// needs. The checks that reach another machine run at once, so the answer takes at most about
+/// the limit of one.
 fn status(root: &Path, json: bool) -> Result<(), Error> {
     let checkout = git(root, &["rev-parse", "--verify", "HEAD^{commit}"])?;
-    let http = Http::new();
-    let runtime = runtime(root)?;
-    let running = |what: What, url: String, checks: Vec<Check>| {
-        let answer = ask(&http, &url);
-        Running {
-            commit: answer.as_ref().ok().and_then(|version| version.commit.clone()),
-            reason: answer.err(),
-            checks,
-            credential: credential(what),
-            url,
-        }
+    let runtime = crate::runtime::load(root).map_err(|e| Code::InvalidData.error(e))?;
+    let [follower, worker] = urls_of(&runtime.publication);
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let versions = (runtime.target.python.as_str(), runtime.target.node.as_str());
+    let ([follows, works], services, (token, merged, publish)) = std::thread::scope(|scope| {
+        let ask = |url: &str| {
+            let url = url.to_string();
+            scope.spawn(move || ask(&Http::new(), &url))
+        };
+        let answers = [ask(&follower), ask(&worker)];
+        let services = scope.spawn(|| checks::services(home.as_deref(), versions));
+        let token = scope.spawn(|| checks::credential(What::Tiles).ok().then(checks::token));
+        let merged = scope.spawn(|| checks::merged(root, &checkout));
+        let publish = checks::publish();
+        let join = |answer: std::thread::ScopedJoinHandle<'_, Result<Version, String>>| {
+            answer.join().unwrap_or_else(|_| Err("the check panicked".into()))
+        };
+        let [follows, works] = answers.map(join);
+        let joined = (token.join().ok().flatten(), merged.join().expect("a check does not panic"), publish);
+        ([follows, works], services.join().expect("a check does not panic"), joined)
+    });
+    let mut services = services;
+    services.push(merged.clone());
+    let mut tiles = vec![checks::credential(What::Tiles)];
+    tiles.extend(token);
+    tiles.extend([checks::clean(root), merged]);
+    let running = |what: What, url: String, answer: Result<Version, String>, checks: Vec<Check>| Running {
+        commit: answer.as_ref().ok().and_then(|version| version.commit.clone()),
+        reason: answer.err(),
+        checks,
+        credential: credential(what),
+        url,
     };
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let services = checks::services(home.as_deref(), (&runtime.target.python, &runtime.target.node));
-    let [follower, worker] = runtime.urls();
     let deployed = Deployed {
         checkout,
-        publish: checks::publish(),
-        services: running(What::Services, follower, services),
-        tiles: running(What::Tiles, worker, checks::tiles(root)),
+        publish,
+        services: running(What::Services, follower, follows, services),
+        tiles: running(What::Tiles, worker, works, tiles),
     };
     if json {
         return print_json(&deployed);
@@ -287,8 +333,16 @@ fn status(root: &Path, json: bool) -> Result<(), Error> {
         vec![format!("  {name}"), state]
     };
     let failed = |checks: &[Check]| -> Vec<Vec<String>> {
-        let failed = checks.iter().filter(|check| !check.ok());
-        failed.map(|check| vec![format!("    ✗ {}", check.name), check.problem.clone().unwrap_or_default()]).collect()
+        let mut rows = Vec::new();
+        for check in checks.iter().filter(|check| !check.ok()) {
+            rows.push(vec![format!("    ✗ {}", check.name), check.problem.clone().unwrap_or_default()]);
+            rows.push(vec![String::new(), check.fix.clone().unwrap_or_default()]);
+            rows.extend(check.commands.iter().map(|command| vec![String::new(), format!("  {command}")]));
+            if let Some(action) = &check.action {
+                rows.push(vec![String::new(), format!("  obc data {}", action.join(" "))]);
+            }
+        }
+        rows
     };
     let mut rows = vec![vec![format!("this checkout {}", short(&deployed.checkout))]];
     rows.push(vec![
@@ -301,13 +355,47 @@ fn status(root: &Path, json: bool) -> Result<(), Error> {
         rows.extend(failed(&running.checks));
     }
     print_table(&rows);
-    if [&deployed.publish, &deployed.services.checks, &deployed.tiles.checks]
-        .iter()
-        .any(|checks| !failed(checks).is_empty())
-    {
-        println!("`obc data --json deploy` gives the fix of each check.");
-    }
     Ok(())
+}
+
+/// Add the host key of the VPS to `~/.ssh/known_hosts` when its fingerprint is `expect`, the one
+/// that a person compared.
+fn trust(expect: &str, yes: bool, json: bool) -> Result<(), Error> {
+    let credential = checks::credential(What::Services);
+    if let Some(problem) = credential.problem {
+        return Err(Code::Blocked.error(problem).fix(credential.fix.unwrap_or_default()));
+    }
+    let host = std::env::var(VPS).unwrap_or_default();
+    let (line, fingerprint) = checks::host_key(&host).map_err(|e| Code::Failed.error(e))?;
+    if fingerprint != expect {
+        return Err(Code::Usage
+            .error(format!("the host key of {host} is {fingerprint}, not {expect}; nothing changed"))
+            .fix("Compare the fingerprint again, then trust the one that the page shows now."));
+    }
+    confirm(&format!("Trust the host key {fingerprint} of {host}?"), yes)?;
+    let home = std::env::var_os("HOME").ok_or_else(|| Code::Failed.error("HOME is not set"))?;
+    let file = PathBuf::from(home).join(".ssh/known_hosts");
+    append(&file, &line).map_err(|e| Code::Failed.error(format!("{}: {e}", file.display())))?;
+    let trusted = Trusted { fingerprint, file };
+    if json {
+        return print_json(&trusted);
+    }
+    println!("{} holds the host key {} of {host}.", trusted.file.display(), trusted.fingerprint);
+    Ok(())
+}
+
+/// Append `line` to `file`, which is private to its user, as `ssh` wants it.
+fn append(file: &Path, line: &str) -> std::io::Result<()> {
+    let mut dir = std::fs::DirBuilder::new();
+    dir.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+    dir.create(file.parent().expect("a file in ~/.ssh"))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(file)?, format!("{line}\n").as_bytes())
 }
 
 /// Why the follower or the tiles Worker at `urls` cannot serve a release of `steps`, each with its
@@ -347,48 +435,21 @@ pub(super) fn problems(urls: &[String; 2], http: &Http, steps: &[Step]) -> Vec<S
     problems
 }
 
-/// What the follower runs on and where it and the tiles Worker answer: `data/planner-runtime.toml`.
-#[derive(Deserialize)]
-struct Runtime {
-    target: Versions,
-    publication: Origins,
+/// The URLs at which the follower and the tiles Worker say which commit they run.
+fn urls_of(origins: &crate::runtime::Origins) -> [String; 2] {
+    [
+        format!("{}/planner-api/version", origins.api_origin.trim_end_matches('/')),
+        format!("{}/version", origins.tiles_origin.trim_end_matches('/')),
+    ]
 }
 
-/// The `major.minor` versions of Python and Node on the VPS.
-#[derive(Deserialize)]
-struct Versions {
-    python: String,
-    node: String,
-}
-
-/// The origins that a planner release names.
-#[derive(Deserialize)]
-struct Origins {
-    api_origin: String,
-    tiles_origin: String,
-}
-
-impl Runtime {
-    /// The URLs at which the follower and the tiles Worker say which commit they run.
-    fn urls(&self) -> [String; 2] {
-        let Origins { api_origin, tiles_origin } = &self.publication;
-        [
-            format!("{}/planner-api/version", api_origin.trim_end_matches('/')),
-            format!("{}/version", tiles_origin.trim_end_matches('/')),
-        ]
+/// The review of an update of prod: [`problems`] with the origins of `data/planner-runtime.toml`
+/// of `root`. A file that cannot be read is a warning too.
+pub(super) fn review(root: &Path, http: &Http, steps: &[Step]) -> Vec<String> {
+    match crate::runtime::load(root) {
+        Ok(runtime) => problems(&urls_of(&runtime.publication), http, steps),
+        Err(e) => vec![format!("{e}: the follower and the tiles Worker cannot be checked")],
     }
-}
-
-fn runtime(root: &Path) -> Result<Runtime, Error> {
-    let path = root.join("data/planner-runtime.toml");
-    let text =
-        std::fs::read_to_string(&path).map_err(|e| Code::InvalidData.error(format!("{}: {e}", path.display())))?;
-    toml::from_str(&text).map_err(|e| Code::InvalidData.error(format!("{}: {e}", path.display())))
-}
-
-/// [`Runtime::urls`] of `root`.
-pub(super) fn urls(root: &Path) -> Result<[String; 2], Error> {
-    Ok(runtime(root)?.urls())
 }
 
 /// What the code at `url` says that it runs. Only the answer of the code of this repository serves:
@@ -398,7 +459,7 @@ fn ask(http: &Http, url: &str) -> Result<Version, String> {
     let answer: Value = serde_json::from_slice(&body).unwrap_or_default();
     match answer.get("commit") {
         Some(_) if status == 200 => serde_json::from_value(answer).map_err(|e| format!("GET {url}: {e}")),
-        _ => Err(format!("GET {url}: HTTP {status} is no answer of this code")),
+        _ => Err(format!("{url} does not answer (HTTP {status}): built before /version, or not running")),
     }
 }
 

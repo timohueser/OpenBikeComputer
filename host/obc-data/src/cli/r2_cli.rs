@@ -145,9 +145,9 @@ pub fn run(r2: R2, json: bool) -> Result<(), Error> {
         if r2.fixtures {
             return Err(Code::Usage.error("`legacy` reads the bucket of its target, never the fixture bucket"));
         }
-        let root = super::root()?;
-        let target = crate::target::find(&root, &args.target, &Store::open()?).map_err(|e| Code::Usage.error(e))?;
-        return legacy(&target, args, json);
+        let (root, store) = (super::root()?, Store::open()?);
+        let target = crate::target::find(&root, &args.target, &store).map_err(|e| Code::Usage.error(e))?;
+        return legacy(&store, &target, args, json);
     }
     let failed = |e| Code::R2Failed.error(e);
     let bucket = Bucket::from_env(if r2.fixtures { Credentials::Fixtures } else { Credentials::Main })
@@ -243,8 +243,13 @@ fn delete(
     Ok(())
 }
 
-fn legacy(target: &Target, args: LegacyArgs, json: bool) -> Result<(), Error> {
-    let listed = unused((&args.target, target), args.prefix.as_deref())?;
+/// List the legacy keys of `target`; with `--delete`, ask, then delete them in a detached run, so
+/// a long delete goes on without its terminal or page.
+fn legacy(store: &Store, target: &Target, args: LegacyArgs, json: bool) -> Result<(), Error> {
+    if let Some(done) = super::api::detached(store, |_| remove(store, target, &args), |()| Ok(())) {
+        return done;
+    }
+    let listed = listed(target, &args)?;
     if !args.delete {
         if json {
             return print_json(&listed);
@@ -252,22 +257,66 @@ fn legacy(target: &Target, args: LegacyArgs, json: bool) -> Result<(), Error> {
         print!("{}", summary(&listed));
         return Ok(());
     }
-    let what = format!("r2 legacy {}", args.target);
-    super::update_cli::expect(&what, &listed.digest, Some(args.expect.as_deref().unwrap_or_default()))
-        .map_err(|e| e.fix("List the keys again: run the same command without `--delete`."))?;
+    // With `--json`, standard output holds only the JSON.
+    let text = summary(&listed);
+    if json {
+        eprint!("{text}");
+    } else {
+        print!("{text}");
+    }
+    let keys = listed.folders.values().flatten().count();
+    confirm(&format!("Delete {keys} legacy key(s) from `{}`?", args.target), args.yes)?;
+    if store.is_locked(&deleting(&args.target))? {
+        return Err(busy(&args.target));
+    }
+    let mut run = vec!["r2".into(), "legacy".into(), args.target.clone()];
+    run.extend(args.prefix.iter().flat_map(|prefix| ["--prefix".into(), prefix.clone()]));
+    run.extend(["--delete", "--expect", &listed.digest, "--reason"].map(String::from));
+    run.extend([args.reason.clone().unwrap_or_default(), "--yes".into()]);
+    let run = crate::engine::runs::detach(store, &run)?;
+    if json {
+        return print_json(&super::api::Detached { run });
+    }
+    eprintln!("obc data: run {run}");
+    super::runs_cli::follow(store, &run, false)
+}
+
+/// The legacy keys of `target`, and with `--delete` the refusal of another list than `--expect`.
+fn listed(target: &Target, args: &LegacyArgs) -> Result<Legacy, Error> {
+    let listed = unused((&args.target, target), args.prefix.as_deref())?;
+    if args.delete {
+        let what = format!("r2 legacy {}", args.target);
+        super::update_cli::expect(&what, &listed.digest, Some(args.expect.as_deref().unwrap_or_default()))
+            .map_err(|e| e.fix("List the keys again: run the same command without `--delete`."))?;
+    }
+    Ok(listed)
+}
+
+/// The lock of the run that deletes the legacy keys of `target`: one at a time.
+fn deleting(target: &str) -> String {
+    format!("r2-legacy-{target}")
+}
+
+fn busy(target: &str) -> Error {
+    Code::Blocked
+        .error(format!("another run deletes the legacy keys of `{target}`"))
+        .fix("Wait for it to end: `obc data runs` shows it.")
+}
+
+/// In the run: list the keys again, and delete them while their digest is `--expect`.
+fn remove(store: &Store, target: &Target, args: &LegacyArgs) -> Result<(), Error> {
+    let _deleting = store.try_lock(&deleting(&args.target))?.ok_or_else(|| busy(&args.target))?;
+    let listed = listed(target, args)?;
     let bucket = match target {
         Target::Dir(dir) => Bucket::local(dir),
         Target::R2(remote) => remote.writer()?.bucket()?,
     };
     let keys: Vec<String> = listed.folders.values().flatten().map(|k| k.key.clone()).collect();
     if keys.is_empty() {
-        if json {
-            return print_json(&Objects { bucket: bucket.describe(), objects: &[] });
-        }
         println!("no legacy key is left; nothing was deleted");
         return Ok(());
     }
-    delete(&bucket, (keys, None, true), Some(summary(&listed)), &args.reason.unwrap_or_default(), args.yes, json)
+    delete(&bucket, (keys, None, true), Some(summary(&listed)), args.reason.as_deref().unwrap_or_default(), true, false)
 }
 
 /// The keys under `cell-catalog/` and `planner/`, or under `prefix`, that `obc data` does not
@@ -398,17 +447,21 @@ mod tests {
             reason: Some("test".into()),
             yes: true,
         };
+        let store = Store::open_at(scratch.0.join("store")).unwrap();
         let before = target.list().unwrap();
-        let refused = legacy(&target, args(&"0".repeat(64)), true).unwrap_err();
+        let refused = remove(&store, &target, &args(&"0".repeat(64))).unwrap_err();
         assert!(refused.code == Code::Usage && target.list().unwrap() == before);
+        let held = store.try_lock(&deleting("local")).unwrap().unwrap();
+        assert_eq!(remove(&store, &target, &args(&"0".repeat(64))).unwrap_err().code, Code::Blocked, "one at a time");
+        drop(held);
         let next = (vec![release::NEXT.to_string()], None, true);
         let refused = delete(&Bucket::local(&scratch.0.join("local")), next, None, "test", true, true).unwrap_err();
         assert!(refused.message.starts_with("the bucket has `release.json`"), "{}", refused.message);
         let digest = unused(("local", &target), Some("planner")).unwrap().digest;
-        legacy(&target, args(&digest), true).unwrap();
+        remove(&store, &target, &args(&digest)).unwrap();
         let after = target.list().unwrap().into_iter().map(|listed| listed.key).collect::<Vec<_>>();
         let gone: Vec<_> = before.into_iter().map(|listed| listed.key).filter(|key| !after.contains(key)).collect();
         assert_eq!(gone, [OLD[1]]);
-        legacy(&target, args(&sha256_hex(b"")), true).unwrap();
+        remove(&store, &target, &args(&sha256_hex(b""))).unwrap();
     }
 }

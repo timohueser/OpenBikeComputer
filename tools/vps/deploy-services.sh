@@ -43,11 +43,11 @@ keep=\$(readlink /opt/obc-data/previous || echo $base)
 find /opt/obc-data -mindepth 1 -maxdepth 1 -type d ! -path $base ! -path \"\$keep\" -exec rm -rf {} +"
 
 if (( dry )); then
-  printf 'git archive --format=tar %s | ssh %s "%s"\n' "$commit" "$host" "$extract"
-  printf 'ssh %s runuser -u obc-data -- bash -s <<'"'"'BUILD'"'"'\n%s\nBUILD\n' "$host" "$build"
-  printf 'ssh %s bash -s <<'"'"'SWITCH'"'"'\n%s\nSWITCH\n' "$host" "$switch"
+  printf 'git archive --format=tar %s | ssh -- %s "%s"\n' "$commit" "$host" "$extract"
+  printf 'ssh -- %s runuser -u obc-data -- bash -s <<'"'"'BUILD'"'"'\n%s\nBUILD\n' "$host" "$build"
+  printf 'ssh -- %s bash -s <<'"'"'SWITCH'"'"'\n%s\nSWITCH\n' "$host" "$switch"
   exit 0
 fi
-git archive --format=tar "$commit" | ssh "$host" "$extract"
-ssh "$host" runuser -u obc-data -- bash -s <<< "$build"
-ssh "$host" bash -s <<< "$switch"
+git archive --format=tar "$commit" | ssh -- "$host" "$extract"
+ssh -- "$host" runuser -u obc-data -- bash -s <<< "$build"
+ssh -- "$host" bash -s <<< "$switch"

@@ -43,8 +43,9 @@ pub enum Planner {
 
 pub type Shared = Arc<RwLock<View>>;
 
-/// What `/planner-api/version` answers: the commit of the program, which `tools/vps/deploy-services.sh`
-/// builds with `OBC_DATA_COMMIT`, and the format of each layer that its services read.
+/// What `/planner-api/version` answers: the commit of the program, which
+/// `tools/vps/deploy-services.sh` builds with `OBC_DATA_COMMIT`, and the format of each layer that
+/// its services read.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Version {
     pub commit: Option<String>,
@@ -58,9 +59,9 @@ pub const COMMIT: Option<&str> = option_env!("OBC_DATA_COMMIT");
 
 /// Whether each planner release is ready at `/planner-api/releases/<id>/ready`, its API at
 /// `/planner-api/releases/<id>/<service>/`, the downloads of the current release at
-/// `/planner-offline/`, and `version` at `/planner-api/version`. With `files`, a dir target and the port of its tile server on this machine:
-/// also the pointers of the current release and the files of the target, and a path that names no
-/// file goes to the tile server. Any origin may read it.
+/// `/planner-offline/`, and `version` at `/planner-api/version`. With `files`, a dir target and the
+/// port of its tile server on this machine: also the pointers of the current release and the files
+/// of the target, and a path that names no file goes to the tile server. Any origin may read it.
 pub fn router(shared: Shared, files: Option<(&Path, u16)>, version: Version) -> Router {
     let version = Json(version);
     let mut router = Router::new()

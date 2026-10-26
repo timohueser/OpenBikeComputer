@@ -1,20 +1,21 @@
 {
     "checkout": "35d0b9f175ac9c15a72892152341fd83823ff59b",
     "publish": [
-        { "name": "R2 key", "problem": null, "fix": null, "commands": [], "blocks": true },
-        { "name": "rclone", "problem": null, "fix": null, "commands": [], "blocks": true }
+        { "name": "R2 key", "problem": null, "fix": null, "commands": [], "action": null, "blocks": true },
+        { "name": "rclone", "problem": null, "fix": null, "commands": [], "action": null, "blocks": true }
     ],
     "services": {
         "url": "https://releases.openbikecomputer.com/planner-api/version",
         "commit": null,
-        "reason": "GET https://releases.openbikecomputer.com/planner-api/version: HTTP 404 is no answer of this code",
+        "reason": "https://releases.openbikecomputer.com/planner-api/version does not answer (HTTP 404): built before /version, or not running",
         "checks": [
-            { "name": "credential", "problem": null, "fix": null, "commands": [], "blocks": true },
+            { "name": "credential", "problem": null, "fix": null, "commands": [], "action": null, "blocks": true },
             {
                 "name": "login as root",
                 "problem": "root@vps.example: Permission denied (publickey).",
-                "fix": "The VPS does not know the key of this machine, /home/owner/.ssh/id_ed25519.pub. Add it to the keys of root: run this on the VPS as root, for example in the console of the hosting provider. Then check again.",
+                "fix": "The VPS refuses each key that this machine offers. The host must log in as root, such as root@HOST. A key with a passphrase needs an agent that holds it: `ssh-add`. Or the VPS does not know the key of this machine, /home/owner/.ssh/id_ed25519.pub: add it to the keys of root, as root on the VPS, such as in the console of the hosting provider.",
                 "commands": ["mkdir -p /root/.ssh && echo 'ssh-ed25519 AAAAexample owner@bake' >> /root/.ssh/authorized_keys"],
+                "action": null,
                 "blocks": true
             }
         ],
@@ -37,11 +38,12 @@
             {
                 "name": "credential",
                 "problem": "the tiles Worker needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, which this machine does not have",
-                "fix": "Set it here, or with `obc data deploy credential tiles`.",
+                "fix": "Set it under Services on the prod screen of `obc data ui`, or with `obc data deploy credential tiles`.",
                 "commands": [],
+                "action": null,
                 "blocks": true
             },
-            { "name": "planner/tiles committed", "problem": null, "fix": null, "commands": [], "blocks": true }
+            { "name": "planner/tiles committed", "problem": null, "fix": null, "commands": [], "action": null, "blocks": true }
         ],
         "credential": {
             "name": "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID",

@@ -170,6 +170,7 @@ pub fn command(
     prepared.review.args = args.args(&prepared.review);
     prepared.review.optional = optional(products);
     if args.dry_run {
+        prepared.review.services = services(root, &http, target, &prepared.steps);
         return review::print(&prepared.review, json);
     }
     review::check(&prepared.review, asked.expect.as_deref(), asked.accept_format_change)?;
@@ -205,10 +206,21 @@ fn plan(
     let mut prepared = prepare(root, store, http, target, code, edit, &args.only, None, Some(run))?;
     prepared.review.args = args.args(&prepared.review);
     prepared.review.optional = optional(code.0);
+    prepared.review.services = services(root, http, target, &prepared.steps);
     let file = store.run(run.id()).join(runs::REVIEW);
     let bytes = serde_json::to_vec(&prepared.review).expect("a review serializes");
     crate::store::write_atomic(&file, &bytes).map_err(|e| Code::Failed.error(e))?;
     Ok(prepared.review)
+}
+
+/// For the review of an update of prod, the root of an R2 bucket whose steps make a planner: why
+/// its follower or its tiles Worker cannot serve the release. The update itself does not ask.
+fn services(root: &Path, http: &Http, (_, target): (&str, &Target), steps: &[Step]) -> Vec<String> {
+    let planner = steps.iter().any(|step| step.layer.name.starts_with("planner/"));
+    match target {
+        Target::R2(remote) if remote.prefix.is_empty() && planner => super::deploy_cli::review(root, http, steps),
+        _ => Vec::new(),
+    }
 }
 
 /// What `obc data update --json` writes: the run that it started.
@@ -527,13 +539,6 @@ pub(super) fn prepare(
         machine: &machine,
     });
     review.notes = listed.notes;
-    // The follower and the tiles Worker serve the root of the bucket of prod, and only a planner.
-    let planner = listed.steps.iter().any(|step| step.layer.name.starts_with("planner/"));
-    if let (Target::R2(remote), true) = (target, planner) {
-        if remote.prefix.is_empty() {
-            review.services = super::deploy_cli::problems(&super::deploy_cli::urls(root)?, http, &listed.steps);
-        }
-    }
     Ok(Prepared { review, base, serving, settings, sources, steps: listed.steps, update, copies })
 }
 

@@ -114,8 +114,8 @@ enum Command {
         #[arg(long, requires = "apply")]
         yes: bool,
     },
-    /// The follower and the tiles Worker of prod: which commit each runs; with an action, deploy the
-    /// commit of this checkout.
+    /// The follower and the tiles Worker of prod: which commit each runs; with an action, deploy
+    /// the commit of this checkout.
     Deploy {
         #[command(subcommand)]
         command: Option<deploy_cli::DeployCommand>,

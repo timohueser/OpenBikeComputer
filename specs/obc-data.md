@@ -1776,26 +1776,38 @@ The origins are the `[publication]` of `data/planner-runtime.toml`. Only 200 wit
 answer of this code; `commit` is `null` for a build that names none.
 
 `obc data deploy` asks each part for its `version`, and checks what an action needs from this
-machine. Each check has a name, its problem, its fix in words, and the commands of the fix. Only
-reads check:
+machine. Each check has a name, its problem, its fix in words, the commands of the fix, and the
+command of the page that applies it, if one does. The checks read and change nothing, except the
+fetch of `origin/develop`. Each check that reaches another machine ends within 15 seconds, and
+they run at once:
 
 | Action | Checks |
 | --- | --- |
 | Publish: an update of `prod` and `r2 legacy` | The `OBC_R2_*` variables; rclone on PATH |
-| `deploy services` | `OBC_VPS_SSH`; `ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new` logs in and runs a script that changes nothing; the one-time setup of `tools/vps/README.md` on the VPS: the user `obc-data`, `/opt/obc-data`, Rust and uv of that user, a C compiler, Python and Node of the `[target]` of `data/planner-runtime.toml`, and the enabled unit. The Caddy route is a check that the deploy does not wait for |
-| `deploy tiles` | The two variables; `GET https://api.cloudflare.com/client/v4/accounts/<id>/workers/scripts` with the token answers 200; `planner/tiles` has no change that the commit does not hold, because `wrangler deploy` reads the files of the checkout |
+| `deploy services` | `OBC_VPS_SSH`, which does not start with `-`; this machine logs in as root without a prompt, with a host key that it knows; the one-time setup on the VPS: the user `obc-data`, `/opt/obc-data`, Rust and uv of that user, a C compiler, Python and Node of the `[target]` of `data/planner-runtime.toml`, and the enabled unit. The Caddy route of the API is a check that the deploy does not wait for |
+| `deploy tiles` | The two variables; the token may list the Workers of the account; `planner/tiles` has no change that the commit does not hold, because `wrangler deploy` reads the files of the checkout |
+| Both | The commit of the checkout is on `origin/develop` after a fetch. An older commit of develop serves to go back |
 
-A refused login gives the line of the first public key of `~/.ssh` (`id_ed25519.pub`,
-`id_ecdsa.pub`, `id_rsa.pub`) to add to `/root/.ssh/authorized_keys` on the VPS, or without a key
-the command that makes one. A missing piece of the setup gives its command.
+A refused login names its causes: the VPS does not know the key of this machine, the host does
+not log in as root, or the key has a passphrase and no agent holds it. It gives the line of the
+first public key of `~/.ssh` to add to `/root/.ssh/authorized_keys` on the VPS, or without a key
+the command that makes one. A host key that this machine does not know gives the fingerprint of
+the ED25519 host key of the VPS to compare with the console of the hosting provider, and
+`deploy trust --expect FINGERPRINT`. A host key that changed gives the command that removes the
+old one. A missing piece of the setup gives its command.
 
-`deploy services|tiles --dry-run` checks the credential and, for `tiles`, the files, and writes
-the commit, what the deploy changes, its commands and the arguments that start it. A deploy starts
-only with `--expect COMMIT`, the commit of the checkout now, and asks first, or needs `--yes`
-without a terminal. It is a detached [run](#runs), and the output of each command goes to its log.
-One run at a time deploys each part. `deploy credential services|tiles` reads the values on
-standard input, as [Credentials of sources](#credentials-of-sources) says, into
-`credentials.env`.
+`deploy trust --expect FINGERPRINT` reads the ED25519 host key of the VPS again, refuses another
+fingerprint, asks, or needs `--yes` without a terminal, and appends the key to
+`~/.ssh/known_hosts`. It is the one change of a check.
+
+`deploy services|tiles --dry-run` checks the credential, the commit and, for `tiles`, the files,
+and writes the commit, what the deploy changes, its commands and the arguments that start it. A
+deploy starts only with `--expect COMMIT`, the commit of the checkout now, and asks first, or needs
+`--yes` without a terminal. It is a detached [run](#runs), and the output of each command goes to
+its log. One run at a time deploys each part. The commands get only `PATH`, `HOME`, the user, the
+locale, `TMPDIR`, the SSH agent and the credential of their part. `deploy credential
+services|tiles` reads the values on standard input, as
+[Credentials of sources](#credentials-of-sources) says, into `credentials.env`.
 
 ### Overview
 
@@ -1835,6 +1847,7 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data deploy [--json]` | The commit of this checkout; for each part of [Deploy](#deploy), the commit that it runs or why it does not answer, and the checks of a deploy; and the checks of a publish to `prod`. Changes nothing |
 | `obc data deploy services\|tiles [--dry-run \| --expect COMMIT [--yes]] [--json]` | `--dry-run` writes what the deploy does. Else it deploys the commit in a detached run and writes its log until it ends; with `--json`, it writes `{run}` |
 | `obc data deploy credential services\|tiles [--json]` | Reads the values of the credential of the deploy on standard input and writes them to `credentials.env`. Writes the file and the names of the values |
+| `obc data deploy trust --expect FINGERPRINT [--yes] [--json]` | Adds the host key of the VPS to `~/.ssh/known_hosts`, as [Deploy](#deploy) says. Writes the fingerprint and the file |
 | `obc data setup [--json]` | What this machine can do: each job, each tool with its version or its install command (Java needs 21 or newer, Node 22 or newer), each credential (only whether it is set, and how to set it), and the store with its size and free space. It exits 0 also when a tool or a credential is missing |
 | `obc data ui` | Builds the page with `npm run build:data` in `builder/web`, then serves it as [The page](#the-page) says, until it is stopped |
 | `obc data open MACHINE` | Runs `ssh -N -L 8701:localhost:8700 HOST`, where HOST is the `ssh` of MACHINE in [`data/machines.toml`](#datamachinestoml) or else MACHINE, and opens `http://localhost:8701/` in the browser. It sends nothing to MACHINE |
@@ -1866,7 +1879,8 @@ addition:
   (with `--yes`), `obc data unlock TARGET --from MACHINE --yes`, `obc data source refresh ID`, and
   `obc data source prepare ID` with `--region`, `--box` and `--to` and then `--dry-run` or
   `--expect ID` (with `--yes`), `obc data clean`, `obc data clean --apply --yes`, `obc data deploy`,
-  `obc data deploy services|tiles --dry-run` and `--expect COMMIT --yes`, `obc data r2 legacy
+  `obc data deploy services|tiles --dry-run` and `--expect COMMIT --yes`, `obc data deploy trust
+  --expect FINGERPRINT --yes`, `obc data r2 legacy
   TARGET`, and `obc data r2 legacy TARGET --delete --expect DIGEST --reason TEXT --yes`.
 - `POST /api/credential` with the body `{"args": ARGS, "values": [VALUE, …]}`, where ARGS is
   `["source", "credential", ID]` or `["deploy", "credential", "services"|"tiles"]`: it runs
@@ -1937,8 +1951,10 @@ Rules:
   `reference/v1` while `reference/v1/index.json` is missing or does not parse, and while the
   `index.json` of the newest version of `terrain` on the target lacks a key of its `sources`. The digest is the
   SHA-256 of one line `<bytes>  <key>\n` per key, sorted by key. With `--delete`, it lists again,
-  refuses when the digest is not `--expect`, and deletes as `delete --legacy` with the counts, the
-  bytes and the digest as its plan. With no key, it deletes nothing and exits 0.
+  refuses when the digest is not `--expect`, asks, and then deletes in a detached [run](#runs): as
+  `delete --legacy`, with the counts, the bytes and the digest as its plan. The run lists again
+  and refuses another digest too. One run at a time deletes the keys of a target. With no key, the
+  run deletes nothing. With `--json`, it writes `{run}`; else it follows the log of the run.
 - `delete` cannot be undone. It prints the plan: the bucket, and each object with its size and
   upload time. With `--json`, the plan goes to standard error, and the output is the objects
   that it deleted. Then it asks as [Errors](#errors) says.
@@ -1999,7 +2015,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `router` | `Router` |
 | `unlock` | `Unlocked` |
 | `sources` | `Sources` |
-| `source refresh`, `serve --detach`, `deploy WHAT --expect` | `Detached` |
+| `source refresh`, `serve --detach`, `deploy WHAT --expect`, `r2 legacy --delete` | `Detached` |
 | `source prepare` | `Started` |
 | `source prepare --dry-run` | `PrepareReview` |
 | `fetch` | `Fetched` |
@@ -2010,10 +2026,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `source credential`, `deploy credential` | `CredentialSet` |
 | `deploy` | `Deployed` |
 | `deploy WHAT --dry-run` | `DeployPlan` |
+| `deploy trust` | `Trusted` |
 | `runs` | `RunList` |
 | `runs RUN`, `runs RUN --stop` | `View` |
 | `runs RUN --follow`, one per line | `Status` |
-| `r2 list`, `stat`, `delete`, `legacy --delete` | `Objects` |
+| `r2 list`, `stat`, `delete` | `Objects` |
 | `r2 get` | `Downloaded` |
 | `r2 put` | `Uploaded` |
 | `r2 legacy` | `Legacy` |
@@ -2267,6 +2284,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Check": {
       "description": "One thing that an action needs.",
       "properties": {
+        "action": {
+          "description": "The arguments after `obc data` of the command that applies the fix, which the page runs\nafter a confirm; `null` when a person applies it.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "blocks": {
           "description": "Whether the action waits for it.",
           "type": "boolean"
@@ -2301,6 +2328,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "problem",
         "fix",
         "commands",
+        "action",
         "blocks"
       ],
       "type": "object"
@@ -4516,7 +4544,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "services": {
-          "description": "For `prod`: why its follower or its tiles Worker cannot serve the release, each with its fix.\nThe update does not refuse: its run would wait at router-ready.",
+          "description": "For `prod`: why its follower or its tiles Worker cannot serve the release, each with its\nfix. The update does not refuse: its run would wait at router-ready.",
           "items": {
             "type": "string"
           },
@@ -5955,6 +5983,23 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "needed_for",
         "state",
         "detail"
+      ],
+      "type": "object"
+    },
+    "Trusted": {
+      "description": "What `deploy trust` wrote.",
+      "properties": {
+        "file": {
+          "description": "The file that holds the host key now.",
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "file"
       ],
       "type": "object"
     },

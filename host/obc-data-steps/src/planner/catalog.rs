@@ -8,43 +8,18 @@ use std::process::Command;
 use obc_data::engine::{LayerFile, Request};
 use obc_data::release::Release;
 use obc_data::store::{hash_file, Store};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 const INDEX: &str = "planner/index";
 /// The step that writes the pointer.
 pub const STEP: &str = "planner/catalog";
 
-#[derive(Deserialize)]
-struct Config {
-    publication: Origins,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct Origins {
-    pub site_origin: String,
-    pub api_origin: String,
-    pub objects_origin: String,
-    /// The tile Worker, which reads `releases/<id>/public/` and `objects/` of the bucket.
-    pub tiles_origin: String,
-}
+pub(super) use obc_data::runtime::Origins;
 
 /// The origins of `data/planner-runtime.toml` that the pointer names.
 pub(super) fn publication(root: &Path) -> Result<Origins, String> {
-    let path = root.join("data/planner-runtime.toml");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let config: Config = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    let publication = &config.publication;
-    for origin in
-        [&publication.site_origin, &publication.api_origin, &publication.objects_origin, &publication.tiles_origin]
-    {
-        let host = origin.strip_prefix("https://").ok_or("publication needs HTTPS origins")?;
-        if host.is_empty() || !host.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".-:".contains(&byte)) {
-            return Err(format!("publication origin `{origin}` has a path, credentials or unsafe characters"));
-        }
-    }
-    Ok(config.publication)
+    Ok(obc_data::runtime::load(root)?.publication)
 }
 
 /// The files that a planner client finds by name, from the files of each step: the release

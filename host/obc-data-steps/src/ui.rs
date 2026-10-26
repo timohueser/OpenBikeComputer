@@ -1,8 +1,8 @@
 //! `obc data ui`: the page of this machine on http://127.0.0.1:8700/. It serves the page that
 //! `npm run build:data` builds into `builder/web/dist/data/`, and two routes: `POST /api/cli` runs
 //! this binary as `obc data --json ARGS`, and `POST /api/credential` runs `obc data --json source
-//! credential SOURCE` or `deploy credential WHAT` with the values on its standard input. So the page can do only what the CLI
-//! can, and a value never goes to argv or to a log.
+//! credential SOURCE` or `deploy credential WHAT` with the values on its standard input. So the
+//! page can do only what the CLI can, and a value never goes to argv or to a log.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -195,6 +195,8 @@ fn refused(args: &[String]) -> Option<Error> {
         [] | ["setup"] | ["runs"] | ["areas"] | ["sources"] | ["clean"] | ["deploy"] => true,
         // The page shows the dry run and asks first.
         ["deploy", what, "--dry-run"] => DEPLOYS.contains(&what),
+        // The page shows the fingerprint and asks first; the command refuses another one.
+        ["deploy", "trust", "--expect", fingerprint, "--yes"] => name(fingerprint),
         ["deploy", what, "--expect", commit, "--yes"] => DEPLOYS.contains(&what) && name(commit),
         ["r2", "legacy", target] => name(target),
         ["r2", "legacy", target, "--delete", "--expect", digest, "--reason", reason, "--yes"] => {
@@ -465,6 +467,7 @@ mod tests {
             &["deploy", "vps", "--dry-run"],
             &["deploy", "tiles", "--expect", "4c1e"],
             &["deploy", "credential", "tiles"],
+            &["deploy", "trust", "--expect", "SHA256:abc"],
             &["r2", "legacy", "prod", "--delete", "--expect", "4c1e", "--reason", "old"],
             &["r2", "legacy", "prod", "--prefix", "reference/v1"],
             &["--help"],
@@ -501,6 +504,7 @@ mod tests {
             &["deploy"],
             &["deploy", "tiles", "--dry-run"],
             &["deploy", "services", "--expect", "4c1e", "--yes"],
+            &["deploy", "trust", "--expect", "SHA256:abc", "--yes"],
             &["r2", "legacy", "prod"],
             &["r2", "legacy", "prod", "--delete", "--expect", "4c1e", "--reason", "Legacy publish path", "--yes"],
         ] {

@@ -54,8 +54,8 @@ pub struct Review {
     pub optional: Vec<String>,
     /// What layers bake without, such as a prepared source that no target lists yet.
     pub notes: Vec<Note>,
-    /// For `prod`: why its follower or its tiles Worker cannot serve the release, each with its fix.
-    /// The update does not refuse: its run would wait at router-ready.
+    /// For `prod`: why its follower or its tiles Worker cannot serve the release, each with its
+    /// fix. The update does not refuse: its run would wait at router-ready.
     pub services: Vec<String>,
 }
 
