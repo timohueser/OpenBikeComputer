@@ -20,12 +20,14 @@ fn run() -> Result<(), String> {
         let at = args.iter().position(|a| a == name).ok_or(format!("name {name}"))?;
         args.get(at + 1).map(String::as_str).ok_or(format!("{name} takes a value"))
     };
-    let usage = "usage: trailview-features --osm OSM.pbf --terrain TERRAIN.mbtiles --bounds W,S,E,N --output OUT.pmtiles";
+    let usage =
+        "usage: trailview-features --osm OSM.pbf --terrain TERRAIN.mbtiles --bounds W,S,E,N --output OUT.pmtiles";
     let (osm, terrain, bounds, output) = match (arg("--osm"), arg("--terrain"), arg("--bounds"), arg("--output")) {
         (Ok(o), Ok(t), Ok(b), Ok(out)) => (o, t, b, PathBuf::from(out)),
         _ => return Err(usage.into()),
     };
-    let bounds: Vec<f64> = bounds.split(',').map(|v| v.parse().map_err(|_| usage.to_string())).collect::<Result<_, _>>()?;
+    let bounds: Vec<f64> =
+        bounds.split(',').map(|v| v.parse().map_err(|_| usage.to_string())).collect::<Result<_, _>>()?;
     let table = |text: &str| serde_json::from_str::<serde_json::Value>(text).map_err(|e| e.to_string());
     let (class_names, classes) = kinds::classes(&table(include_str!("../../../data/trailview/roads.json"))?)?;
     let options = Options {

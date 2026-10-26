@@ -54,7 +54,10 @@ pub fn validate(table: &Value) -> Result<Vec<Entry>, String> {
             });
             check(kebab, "the name is kebab-case")?;
             check(names.insert(name.to_string()), "the name is unique")?;
-            check(object.is_some_and(|o| o.keys().all(|k| FIELDS.contains(&k.as_str()))), "the fields are the known ones")?;
+            check(
+                object.is_some_and(|o| o.keys().all(|k| FIELDS.contains(&k.as_str()))),
+                "the fields are the known ones",
+            )?;
             let geometry = match entry["geometry"].as_str() {
                 Some("point") => Geometry::Point,
                 Some("line") => Geometry::Line,
@@ -64,9 +67,11 @@ pub fn validate(table: &Value) -> Result<Vec<Entry>, String> {
             check(entry["height"].as_str().is_some_and(|h| HEIGHTS.contains(&h)), "the height is a known one")?;
             let min_zoom = match entry.get("min_zoom") {
                 None => MAX_ZOOM,
-                Some(z) => z.as_u64().filter(|z| (MIN_ZOOM as u64..=MAX_ZOOM as u64).contains(z)).ok_or(format!(
-                    "Kind {name:?}: min_zoom is {MIN_ZOOM} to {MAX_ZOOM}"
-                ))? as u8,
+                Some(z) => z
+                    .as_u64()
+                    .filter(|z| (MIN_ZOOM as u64..=MAX_ZOOM as u64).contains(z))
+                    .ok_or(format!("Kind {name:?}: min_zoom is {MIN_ZOOM} to {MAX_ZOOM}"))?
+                    as u8,
             };
             let active = match entry.get("active") {
                 None => true,
@@ -85,13 +90,19 @@ pub fn validate(table: &Value) -> Result<Vec<Entry>, String> {
                             let values = match values {
                                 Value::String(any) if any == "*" => Some(Values::Any),
                                 Value::Array(list) if !list.is_empty() && list.iter().all(word) => {
-                                    let list: Vec<String> = list.iter().map(|v| v.as_str().unwrap().to_string()).collect();
-                                    (list.iter().collect::<BTreeSet<_>>().len() == list.len()).then_some(Values::List(list))
+                                    let list: Vec<String> =
+                                        list.iter().map(|v| v.as_str().unwrap().to_string()).collect();
+                                    (list.iter().collect::<BTreeSet<_>>().len() == list.len())
+                                        .then_some(Values::List(list))
                                 }
                                 _ => None,
                             };
                             let values = values.filter(|_| !key.is_empty());
-                            Ok((key.clone(), values.ok_or(format!("Kind {name:?}: {key:?} takes \"*\" or a list of unique values"))?))
+                            Ok((
+                                key.clone(),
+                                values
+                                    .ok_or(format!("Kind {name:?}: {key:?} takes \"*\" or a list of unique values"))?,
+                            ))
                         })
                         .collect::<Result<Selector, String>>()
                 })
@@ -136,7 +147,9 @@ pub fn classes(table: &Value) -> Result<(Vec<String>, Classes), String> {
     let number = |v: &Value| v.as_f64().is_some_and(|n| n >= 0.0);
     let mut out = Vec::new();
     for (name, row) in rows {
-        let fields = row.as_object().is_some_and(|r| r.len() == CLASS_FIELDS.len() && CLASS_FIELDS.iter().all(|f| r.contains_key(*f)));
+        let fields = row
+            .as_object()
+            .is_some_and(|r| r.len() == CLASS_FIELDS.len() && CLASS_FIELDS.iter().all(|f| r.contains_key(*f)));
         let grade = &row["grade"];
         let ok = fields
             && CLASS_FIELDS.iter().filter(|f| **f != "grade").all(|f| number(&row[*f]))

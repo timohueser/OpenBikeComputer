@@ -99,8 +99,10 @@ pub fn bake(
     // The lifts wait for the buildings and the other lifts: a station shares their places. The buildings
     // of the region wait for the landuse areas that hold them; the features of the solvers for all of
     // their kind.
-    let (mut lift_ways, mut lift_entry, mut buildings, mut houses, mut landuse) = (Vec::new(), None, Vec::new(), Vec::new(), Vec::new());
-    let (mut waters, mut ways, mut stations, mut beyond, mut river_areas) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut lift_ways, mut lift_entry, mut buildings, mut houses, mut landuse) =
+        (Vec::new(), None, Vec::new(), Vec::new(), Vec::new());
+    let (mut waters, mut ways, mut stations, mut beyond, mut river_areas) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     osm::objects(kinds, &cut, &binary, |(selected, tags, mut parts)| {
         let Selected::Entry(e) = selected else {
             if placer.tiles.meets(MAX_ZOOM, &parts) {
@@ -153,8 +155,10 @@ pub fn bake(
         }
         placer.entry(&kinds[e], tags, parts);
     }
-    let landuse_counts: Map<String, Value> =
-        LANDUSE.iter().map(|l| (l.to_string(), values.iter().filter(|v| v.as_deref() == Some(l)).count().into())).collect();
+    let landuse_counts: Map<String, Value> = LANDUSE
+        .iter()
+        .map(|l| (l.to_string(), values.iter().filter(|v| v.as_deref() == Some(l)).count().into()))
+        .collect();
     metrics.insert("landuse".into(), landuse_counts.into());
     drop(landuse);
     if let Some(e) = lift_entry {
@@ -174,8 +178,10 @@ pub fn bake(
     // The heights of a junction need every road that meets there, a river level its whole network, a
     // ford the water it crosses, and a platform its tracks.
     if !(waters.is_empty() && ways.is_empty() && stations.is_empty()) {
-        let mut features: Vec<water::Feature> =
-            waters.iter_mut().map(|(e, tags, parts)| water_feature(&kinds[*e].kind, tags, std::mem::take(parts))).collect();
+        let mut features: Vec<water::Feature> = waters
+            .iter_mut()
+            .map(|(e, tags, parts)| water_feature(&kinds[*e].kind, tags, std::mem::take(parts)))
+            .collect();
         let pool = rayon::ThreadPoolBuilder::new().build().map_err(|e| e.to_string())?;
         let (levels, _, water_metrics) = pool.install(|| water::solve_by_network(&mut features, terrain));
         // The threads of the roads take over the memory of these.
@@ -236,8 +242,9 @@ pub fn bake(
             for &n in &culverts {
                 ways[n].1.remove("bridge");
             }
-            let decks: Vec<usize> =
-                (0..ways.len()).filter(|&n| is_bridge(&kinds[ways[n].0].kind, &ways[n].1) && ways[n].2[0].z.is_some()).collect();
+            let decks: Vec<usize> = (0..ways.len())
+                .filter(|&n| is_bridge(&kinds[ways[n].0].kind, &ways[n].1) && ways[n].2[0].z.is_some())
+                .collect();
             let waterways: Vec<(f64, &[[f64; 2]])> = waters
                 .iter()
                 .filter(|(e, _, _)| is_river(*e))
@@ -296,7 +303,9 @@ pub fn bake(
                 let mut all = tags.clone();
                 all.extend(extra.get(&n).cloned().unwrap_or_default());
                 if is_track(&tags) {
-                    tracks.extend(parts.iter().filter(|p| p.z.is_some()).map(|p| (entry.kind.clone(), tags.clone(), p.clone())));
+                    tracks.extend(
+                        parts.iter().filter(|p| p.z.is_some()).map(|p| (entry.kind.clone(), tags.clone(), p.clone())),
+                    );
                 }
                 placer.entry(entry, all, parts);
             }
@@ -326,7 +335,8 @@ pub fn bake(
         for (point, z, tags) in rails::masts(&wired, &outside) {
             placer.place("catenary-mast", Geometry::Point, MAX_ZOOM, tags, line(vec![point], Some(vec![z])));
         }
-        let platforms = rails::platforms(&stations.iter().map(|(_, _, parts)| parts.clone()).collect::<Vec<_>>(), &outside);
+        let platforms =
+            rails::platforms(&stations.iter().map(|(_, _, parts)| parts.clone()).collect::<Vec<_>>(), &outside);
         let unknown = platforms.iter().filter(|p| p.is_none()).count();
         for ((e, tags, parts), solved) in stations.into_iter().zip(platforms) {
             placer.entry(&kinds[e], tags, solved.unwrap_or(parts));
@@ -423,7 +433,9 @@ fn water_feature(kind: &str, tags: &Tags, parts: Vec<Part>) -> water::Feature {
     };
     let level = if tags.get("water").is_some_and(|w| w == "pond") {
         Level::Pond
-    } else if tags.get("water").is_some_and(|w| w == "reservoir") || tags.get("landuse").is_some_and(|l| l == "reservoir") {
+    } else if tags.get("water").is_some_and(|w| w == "reservoir")
+        || tags.get("landuse").is_some_and(|l| l == "reservoir")
+    {
         Level::Reservoir
     } else {
         Level::Natural
@@ -476,9 +488,12 @@ fn landuse_of(buildings: &[&Vec<Part>], areas: &[(Tags, Vec<Part>)]) -> Vec<Opti
     let boxes: Vec<[f64; 4]> = areas
         .iter()
         .map(|(_, parts)| {
-            parts.iter().flat_map(|p| &p.points).fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, p| {
-                [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
-            })
+            parts
+                .iter()
+                .flat_map(|p| &p.points)
+                .fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, p| {
+                    [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+                })
         })
         .collect();
     let twice = |r: &[[f64; 2]]| -> f64 {
@@ -553,8 +568,12 @@ fn python_number(value: &Value) -> String {
 
 /// Write the tiles to the archive at `output`; its bytes.
 fn write(placer: &Placer, options: &Options, output: &Path) -> Result<u64, String> {
-    let mut tiles: Vec<(u64, Vec<u8>)> =
-        placer.tiles.tiles.iter().map(|(&(z, x, y), tile)| (pmtiles::tile_id(z, x, y), pmtiles::gzip(&tile.bytes()))).collect();
+    let mut tiles: Vec<(u64, Vec<u8>)> = placer
+        .tiles
+        .tiles
+        .iter()
+        .map(|(&(z, x, y), tile)| (pmtiles::tile_id(z, x, y), pmtiles::gzip(&tile.bytes())))
+        .collect();
     if tiles.is_empty() {
         return Err("The region has no TrailView features".into());
     }

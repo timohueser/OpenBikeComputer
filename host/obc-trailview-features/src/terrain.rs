@@ -26,7 +26,10 @@ pub struct Tiles {
 
 enum Source {
     /// The archives of the grid by name (`{z}-{x}-{y}`, or `13/{z}-{x}-{y}` for zoom 13), opened on use.
-    Grid { files: HashMap<String, PathBuf>, open: Mutex<HashMap<String, Arc<Archive>>> },
+    Grid {
+        files: HashMap<String, PathBuf>,
+        open: Mutex<HashMap<String, Arc<Archive>>>,
+    },
     Mbtiles(Mutex<rusqlite::Connection>),
 }
 
