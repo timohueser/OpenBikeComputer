@@ -22,7 +22,6 @@ export interface SourceRow {
     hosts?: string[];
     version: string;
     refresh: number | "manual";
-    copy: boolean;
     credential?: { env?: string[]; file?: string | null };
     credential_missing: boolean;
     /** Whether `source refresh` moves the source. */
