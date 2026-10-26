@@ -245,7 +245,11 @@ export class Pages {
         if (page) {
             page.used = this.frame;
             this.wanted[page.kind]++;
-            if (page.drawn === undefined) this.miss(node);
+            if (page.drawn === undefined) {
+                this.miss(node);
+                // A ready stored page asks for its features in the frame's order: `resolve` puts them on.
+                this.stamps.get(node);
+            }
             return;
         }
         const stored = this.stored(node);

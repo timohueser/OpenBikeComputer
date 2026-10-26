@@ -92,6 +92,30 @@ describe('the page pools', () => {
         }
     });
 
+    it('let a ready stored page ask for its features before the synthesized pages behind it in the frame', async () => {
+        // A worker with 8 requests in flight: the features of a node are known 3 frames after it asks.
+        let frame = 0;
+        const tiles = source(), asked = new Map<string, number>();
+        const known = (node: Node) => (frame >= (asked.get(key(node)) ?? Infinity) + 3 ? { data: null, heights: false } : undefined);
+        const features: StampSource = {
+            get: node => {
+                if (!asked.has(key(node)) && [...asked.values()].filter(at => frame < at + 3).length < 8) asked.set(key(node), frame);
+                return known(node);
+            },
+            known,
+        };
+        const pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {}, features);
+        let stored = 0, synthesized = 0;
+        for (; frame < 400 && !(frame && pages.idle); frame++) {
+            const work = pages.update(wanted, anchor, new Set(), eye);
+            if (work.fresh.some(page => page.kind === 'stored')) stored = frame;
+            if (work.syntheses.length) synthesized = frame;
+            await new Promise(resolve => setTimeout(resolve));
+        }
+        expect(pages.idle).toBe(true);
+        expect(stored).toBeLessThan(synthesized);
+    });
+
     it('load every missing input of a synthesis in the same frame', async () => {
         const at = (level: number) => ({ level, x: Math.floor((anchor.whole[0] + anchor.part[0]) / size(level)), y: Math.floor((anchor.whole[1] + anchor.part[1]) / size(level)) });
         const tiles = source(13), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
