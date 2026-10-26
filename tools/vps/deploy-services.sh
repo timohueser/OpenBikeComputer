@@ -22,6 +22,8 @@ base="/opt/obc-data/$commit"
 extract="runuser -u obc-data -- sh -c 'mkdir -p $base && tar -x -C $base'"
 build="set -euo pipefail
 export PATH=\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH
+# The follower answers it at /planner-api/version.
+export OBC_DATA_COMMIT=$commit
 cd $base
 test \"\$(rustc -vV | sed -n 's/^host: //p')\" = $triple || { echo 'The VPS is not $triple.' >&2; exit 1; }
 test \"\$(python3 -c 'import sys; print(*sys.version_info[:2], sep=\".\")')\" = $python || { echo 'The VPS needs Python $python.' >&2; exit 1; }
@@ -41,11 +43,11 @@ keep=\$(readlink /opt/obc-data/previous || echo $base)
 find /opt/obc-data -mindepth 1 -maxdepth 1 -type d ! -path $base ! -path \"\$keep\" -exec rm -rf {} +"
 
 if (( dry )); then
-  printf 'git archive --format=tar %s | ssh %s "%s"\n' "$commit" "$host" "$extract"
-  printf 'ssh %s runuser -u obc-data -- bash -s <<'"'"'BUILD'"'"'\n%s\nBUILD\n' "$host" "$build"
-  printf 'ssh %s bash -s <<'"'"'SWITCH'"'"'\n%s\nSWITCH\n' "$host" "$switch"
+  printf 'git archive --format=tar %s | ssh -- %s "%s"\n' "$commit" "$host" "$extract"
+  printf 'ssh -- %s runuser -u obc-data -- bash -s <<'"'"'BUILD'"'"'\n%s\nBUILD\n' "$host" "$build"
+  printf 'ssh -- %s bash -s <<'"'"'SWITCH'"'"'\n%s\nSWITCH\n' "$host" "$switch"
   exit 0
 fi
-git archive --format=tar "$commit" | ssh "$host" "$extract"
-ssh "$host" runuser -u obc-data -- bash -s <<< "$build"
-ssh "$host" bash -s <<< "$switch"
+git archive --format=tar "$commit" | ssh -- "$host" "$extract"
+ssh -- "$host" runuser -u obc-data -- bash -s <<< "$build"
+ssh -- "$host" bash -s <<< "$switch"

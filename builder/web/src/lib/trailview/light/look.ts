@@ -5,7 +5,7 @@ import type { EyeLook, Light } from './light';
 export const LOOK_BYTES = 288, LOOK_CODES = 240;
 
 export interface LookInput {
-    /** Toward the sun in render space. */
+    /** Toward the sun in render space, and its bearing in turns clockwise from true north. */
     sun: number[];
     light: Light;
     eye: EyeLook;
@@ -28,7 +28,7 @@ export interface LookInput {
 export function lookUniform(input: LookInput): ArrayBuffer {
     const data = new ArrayBuffer(LOOK_BYTES), floats = new Float32Array(data), words = new Uint32Array(data);
     const { light, eye } = input;
-    floats.set([...input.sun, 0], 0);
+    floats.set(input.sun, 0);
     floats.set([...light.sunColour, light.glow], 4);
     floats.set([...light.ambient, light.night], 8);
     floats.set([...light.zenith, eye.softness], 12);

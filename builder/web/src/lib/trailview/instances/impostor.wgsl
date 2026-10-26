@@ -120,5 +120,5 @@ fn impostor_fragment(in: ImpostorOut) -> @location(0) vec4f {
     // The phase's colour matrix fits the crown only: the trunk's share keeps its bark.
     let colour = albedo.rgb / albedo.a;
     let phased = mix(satellite(toned(colour, in.model, in.ground), colour, in.ground, in.satellite), colour, normal.a);
-    return vec4f(in.fog * light_up(snowed(tied(phased, in.tint, in.tie, in.ground), n.z, in.look), n, 1.0, 1.0, look.horizon.w) + in.air, 1.0);
+    return vec4f(in.fog * light_up(snowed(tied(phased, in.tint, in.tie, in.ground), n.z, in.look), n, sun_of(in.ground), 1.0, look.horizon.w) + in.air, 1.0);
 }

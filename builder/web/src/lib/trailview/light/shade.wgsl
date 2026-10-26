@@ -4,7 +4,7 @@
 // it with `// #include ../light/shade.wgsl`.
 
 struct Look {
-    // xyz: toward the sun, in render space.
+    // xyz: toward the sun, in render space. w: its bearing in turns clockwise from north, as LOD space has it.
     sun: vec4f,
     // rgb: the sunlight. w: the warm glow about a low sun.
     sun_colour: vec4f,

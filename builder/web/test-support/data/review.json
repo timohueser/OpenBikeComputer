@@ -56,5 +56,6 @@
     "after": {"rollback": "0d9e444444444444444444444444444444444444444444444444444444444444", "collects": null},
     "args": ["update", "local", "--expect", "4c1e0d2a91b7", "--accept-format-change"],
     "optional": ["climate", "snow", "sun"],
-    "notes": [{"layer": "device/terrain", "text": "terrain has no tile of dtm-de here: device/terrain uses GLO-30 there. Fix: add this region to terrain: obc data source prepare terrain --region REGION"}]
+    "notes": [{"layer": "device/terrain", "text": "terrain has no tile of dtm-de here: device/terrain uses GLO-30 there. Fix: add this region to terrain: obc data source prepare terrain --region REGION"}],
+    "services": []
 }

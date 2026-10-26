@@ -296,7 +296,8 @@ mod tests {
 
     use super::*;
     use crate::cli::{
-        overview, prepare_cli, r2_cli, rollback_cli, router_cli, runs_cli, serve_cli, setup_cli, unlock_cli, update_cli,
+        deploy_cli, overview, prepare_cli, r2_cli, rollback_cli, router_cli, runs_cli, serve_cli, setup_cli,
+        unlock_cli, update_cli,
     };
     use crate::engine::runs::{Status, View};
 
@@ -313,7 +314,10 @@ mod tests {
             schema("`router`", generator.subschema_for::<router_cli::Router>()),
             schema("`unlock`", generator.subschema_for::<unlock_cli::Unlocked>()),
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
-            schema("`source refresh`, `serve --detach`", generator.subschema_for::<Detached>()),
+            schema(
+                "`source refresh`, `serve --detach`, `deploy WHAT --expect`, `r2 legacy --delete`",
+                generator.subschema_for::<Detached>(),
+            ),
             schema("`source prepare`", generator.subschema_for::<update_cli::Started>()),
             schema("`source prepare --dry-run`", generator.subschema_for::<prepare_cli::PrepareReview>()),
             schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),
@@ -321,11 +325,14 @@ mod tests {
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
             schema("`serve`, when it listens", generator.subschema_for::<serve_cli::Listening>()),
             schema("`setup`", generator.subschema_for::<setup_cli::Setup>()),
-            schema("`source credential`", generator.subschema_for::<setup_cli::CredentialSet>()),
+            schema("`source credential`, `deploy credential`", generator.subschema_for::<setup_cli::CredentialSet>()),
+            schema("`deploy`", generator.subschema_for::<deploy_cli::Deployed>()),
+            schema("`deploy WHAT --dry-run`", generator.subschema_for::<deploy_cli::DeployPlan>()),
+            schema("`deploy trust`", generator.subschema_for::<deploy_cli::Trusted>()),
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),
             schema("`runs RUN`, `runs RUN --stop`", generator.subschema_for::<View>()),
             schema("`runs RUN --follow`, one per line", generator.subschema_for::<Status>()),
-            schema("`r2 list`, `stat`, `delete`, `legacy --delete`", generator.subschema_for::<r2_cli::Objects>()),
+            schema("`r2 list`, `stat`, `delete`", generator.subschema_for::<r2_cli::Objects>()),
             schema("`r2 get`", generator.subschema_for::<r2_cli::Downloaded>()),
             schema("`r2 put`", generator.subschema_for::<r2_cli::Uploaded>()),
             schema("`r2 legacy`", generator.subschema_for::<r2_cli::Legacy>()),
@@ -425,9 +432,12 @@ mod tests {
     /// The operator page's tests read these examples in place of `obc data --json`.
     #[test]
     fn each_example_of_the_page_has_the_schema_of_its_command() {
-        const EXAMPLES: [(&str, &str); 12] = [
+        const EXAMPLES: [(&str, &str); 15] = [
             ("areas.json", "Areas"),
             ("clean.json", "CleanPlan"),
+            ("deploy-plan.json", "DeployPlan"),
+            ("deploy.json", "Deployed"),
+            ("legacy.json", "Legacy"),
             ("prepare-review.json", "PrepareReview"),
             ("review.json", "Review"),
             ("router.json", "Router"),

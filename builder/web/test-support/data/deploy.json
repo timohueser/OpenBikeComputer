@@ -1,0 +1,59 @@
+{
+    "checkout": "35d0b9f175ac9c15a72892152341fd83823ff59b",
+    "publish": [
+        { "name": "R2 key", "problem": null, "fix": null, "commands": [], "action": null, "blocks": true },
+        { "name": "rclone", "problem": null, "fix": null, "commands": [], "action": null, "blocks": true }
+    ],
+    "services": {
+        "url": "https://releases.openbikecomputer.com/planner-api/version",
+        "commit": null,
+        "reason": "https://releases.openbikecomputer.com/planner-api/version does not answer (HTTP 404): built before /version, or not running",
+        "checks": [
+            { "name": "credential", "problem": null, "fix": null, "commands": [], "action": null, "blocks": true },
+            {
+                "name": "login as root",
+                "problem": "root@vps.example: Permission denied (publickey).",
+                "fix": "The VPS refuses each key that this machine offers. The host must log in as root, such as root@HOST. A key with a passphrase needs an agent that holds it: `ssh-add`. Or the VPS does not know the key of this machine, /home/owner/.ssh/id_ed25519.pub: add it to the keys of root, as root on the VPS, such as in the console of the hosting provider.",
+                "commands": ["mkdir -p /root/.ssh && echo 'ssh-ed25519 AAAAexample owner@bake' >> /root/.ssh/authorized_keys"],
+                "action": null,
+                "blocks": true
+            }
+        ],
+        "credential": {
+            "name": "OBC_VPS_SSH",
+            "needed_for": "deploy the follower on the VPS of prod",
+            "state": "ready",
+            "set": ["deploy", "credential", "services"],
+            "fields": ["OBC_VPS_SSH"],
+            "uses": [],
+            "register": null,
+            "hint": "The SSH host or alias of the VPS. It logs in as root with the SSH key of this machine, without a prompt."
+        }
+    },
+    "tiles": {
+        "url": "https://tiles.openbikecomputer.com/version",
+        "commit": "35d0b9f175ac9c15a72892152341fd83823ff59b",
+        "reason": null,
+        "checks": [
+            {
+                "name": "credential",
+                "problem": "the tiles Worker needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, which this machine does not have",
+                "fix": "Set it under Services on the prod screen of `obc data ui`, or with `obc data deploy credential tiles`.",
+                "commands": [],
+                "action": null,
+                "blocks": true
+            },
+            { "name": "files committed", "problem": null, "fix": null, "commands": [], "action": null, "blocks": true }
+        ],
+        "credential": {
+            "name": "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID",
+            "needed_for": "deploy the tiles Worker of prod",
+            "state": "optional",
+            "set": ["deploy", "credential", "tiles"],
+            "fields": ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+            "uses": [],
+            "register": "https://dash.cloudflare.com/profile/api-tokens",
+            "hint": "Create a token with the template \"Edit Cloudflare Workers\". Copy it, and the ID of the account."
+        }
+    }
+}

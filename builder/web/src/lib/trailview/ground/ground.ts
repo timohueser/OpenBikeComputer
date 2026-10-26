@@ -1,4 +1,3 @@
-import { EARTH_RADIUS, tileLonLat } from '../frame/frame';
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
 import { LOOK_CODES } from '../light/look';
@@ -7,16 +6,22 @@ import type { GroundSource } from '../stream/ground';
 import type { GroundPage } from '../stream/ground-pages';
 import { PAGE } from '../stream/heights';
 import { COARSEST, MAP, type Node } from '../terrain/lod';
-import { GroundPages, type Slot } from './pages';
+import { GroundPages, texelMetres, type Slot } from './pages';
 import { packRulesOn, slots } from './rules';
 
 /** Ground pages: whole layers of SIDE × SIDE pages, as GROUND_SIDE in look.wgsl. */
 const SIDE = 4, LAYER_PAGES = SIDE * SIDE, POOL = 192;
 /** Compute jobs per frame at most: the pages that arrive and the pages whose heights changed, as `GroundPages` takes them. */
 const JOBS = 16, JOB_BYTES = 32;
-const RAD = Math.PI / 180;
+/** The work bits of a job, as `work` of Job in ground.wgsl. */
+const RELIEF = 1, PARAMETERS = 2, HORIZONS = 4;
 /** Texels a side of the noise table, as in look.wgsl. */
 const NOISE = 256;
+/**
+ * Horizon texels a side of a page and its layers of 4 bearings each, as HORIZON and BEARINGS in
+ * look.wgsl, and the lanes a side of a workgroup of horizon_main in ground.wgsl.
+ */
+const HORIZON = PAGE / 8, HORIZON_LAYERS = 4, HORIZON_LANES = 8;
 
 /** Without a ruleset, the ground is the palette under the light and haze of the prototype's `world` region. */
 const NEUTRAL: Rules = {
@@ -39,6 +44,7 @@ interface Resources {
     gpu: Gpu;
     cells: GPUTexture;
     cache: GPUTexture;
+    horizons: GPUTexture;
     /** The colour and the snow of the pages that a frame's jobs make, one layer per job. */
     colour: GPUTexture;
     snow: GPUTexture;
@@ -49,12 +55,13 @@ interface Resources {
     group: GPUBindGroup;
     computeGroups: [GPUBindGroup, GPUBindGroup];
     compute: GPUComputePipeline;
+    horizon: GPUComputePipeline;
 }
 
 /**
  * The ground pages on the GPU: the textures of the pool of `GroundPages`, the ground map, the rules of
- * the date, and the compute that makes the ground parameters and the relief of a page. A new date
- * builds the pages again; they draw the old date until then.
+ * the date, and the compute that makes the ground parameters, the relief and the horizons of a page.
+ * A new date builds the pages again; they draw the old date until then.
  */
 export class Ground {
     readonly rules: Rules;
@@ -65,7 +72,7 @@ export class Ground {
     private resources?: Resources;
     private surfaceGroup?: GPUBindGroup;
     private readonly pages: GroundPages;
-    private jobs: { page: Slot; data?: GroundPage }[] = [];
+    private jobs: { page: Slot; data?: GroundPage; work: number }[] = [];
     /** Whether the last frame draws another ground than the frame before it: new pages, a new map or a new date. */
     newContent = false;
 
@@ -118,6 +125,7 @@ export class Ground {
         this.layout = {
             render: device.createBindGroupLayout({ entries: [
                 ...entries, { binding: 5, visibility: GPUShaderStage.FRAGMENT | compute, ...array('float') }, { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+                { binding: 7, visibility: stages, ...array('float') },
             ] }),
             compute: [
                 device.createBindGroupLayout({ entries: [
@@ -125,6 +133,7 @@ export class Ground {
                     { binding: 1, visibility: compute, storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } },
                     { binding: 2, visibility: compute, ...array('float') },
                     { binding: 3, visibility: compute, ...array('float') },
+                    { binding: 4, visibility: compute, storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } },
                 ] }),
                 device.createBindGroupLayout({ entries }),
             ],
@@ -147,6 +156,7 @@ export class Ground {
             gpu,
             cells: texture('ground', 'rgba8uint', side, layers, usage),
             cache: texture('ground', 'rgba8unorm', side, 4 * layers, GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING),
+            horizons: texture('ground', 'rgba8unorm', HORIZON * SIDE, HORIZON_LAYERS * layers, GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING),
             colour: texture('compute', 'rgba8unorm', PAGE, JOBS, usage), snow: texture('compute', 'rgba8unorm', PAGE, JOBS, usage),
             rules: gpu.texture('ground', { size: [SLOT.count, this.rules.regions.length], format: 'rgba32float', usage }, SLOT.count * this.rules.regions.length * 16),
             noise: gpu.texture('ground', { size: [NOISE, NOISE], format: 'r8unorm', usage }, NOISE * NOISE),
@@ -162,16 +172,17 @@ export class Ground {
             { binding: 3, resource: r.rules.createView() }, { binding: 4, resource: sampler },
         ];
         const module = device.createShaderModule({ label: 'ground', code: wgsl('ground/ground.wgsl') });
-        const compute = await device.createComputePipelineAsync({
-            label: 'ground', layout: device.createPipelineLayout({ bindGroupLayouts: [layout.compute[0], surface.layout, layout.compute[1]] }),
-            compute: { module, entryPoint: 'ground_main' },
-        });
+        const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.compute[0], surface.layout, layout.compute[1]] });
+        const [compute, horizon] = await Promise.all(['ground_main', 'horizon_main'].map(entryPoint => device.createComputePipelineAsync({ label: entryPoint, layout: pipelineLayout, compute: { module, entryPoint } })));
         this.resources = {
-            ...r, compute,
-            group: device.createBindGroup({ layout: layout.render, entries: [...inputs, { binding: 5, resource: view(r.cache) }, { binding: 6, resource: r.noise.createView() }] }),
+            ...r, compute, horizon,
+            group: device.createBindGroup({ layout: layout.render, entries: [
+                ...inputs, { binding: 5, resource: view(r.cache) }, { binding: 6, resource: r.noise.createView() }, { binding: 7, resource: view(r.horizons) },
+            ] }),
             computeGroups: [
                 device.createBindGroup({ layout: layout.compute[0], entries: [
                     { binding: 0, resource: { buffer: r.jobs } }, { binding: 1, resource: view(r.cache) }, { binding: 2, resource: view(r.colour) }, { binding: 3, resource: view(r.snow) },
+                    { binding: 4, resource: view(r.horizons) },
                 ] }),
                 device.createBindGroup({ layout: layout.compute[1], entries: inputs }),
             ],
@@ -191,10 +202,11 @@ export class Ground {
 
     /**
      * Takes the pages that the drawn nodes and the selection want about the eye (lon, lat), and the pages
-     * that the instances `read`, on the date of the view. `refreshed` are the terrain nodes whose heights
-     * changed, so the relief that reads them follows.
+     * that the instances `read`, on the date of the view. `refreshed` are the terrain nodes whose normals
+     * changed, so the relief that reads them follows, and `arrived` those whose heights changed, so the
+     * horizons that read them follow.
      */
-    update(drawn: Node[], wanted: Node[], refreshed: Node[], origins: [number, number][], date: string, eye: [number, number], read: Node[]): void {
+    update(drawn: Node[], wanted: Node[], refreshed: Node[], arrived: Node[], origins: [number, number][], date: string, eye: [number, number], read: Node[]): void {
         const r = this.resources;
         if (!r) return;
         const day = this.pages.setDate(date);
@@ -202,25 +214,26 @@ export class Ground {
             const SLOT = slots(this.rules.vocabulary), rows = this.rules.regions.length;
             r.gpu.device.queue.writeTexture({ texture: r.rules }, packRulesOn(this.rules.regions, this.rules.vocabulary, this.pages.day), { bytesPerRow: SLOT.count * 16 }, [SLOT.count, rows]);
         }
-        const work = this.pages.update(drawn, wanted, refreshed, origins, eye, read);
-        for (const { page, data } of work.uploads) this.jobs.push({ page, data });
-        for (const page of work.refreshes) this.jobs.push({ page });
+        const work = this.pages.update(drawn, wanted, refreshed, arrived, origins, eye, read);
+        for (const { page, data, horizons } of work.uploads) this.jobs.push({ page, data, work: RELIEF | PARAMETERS | (horizons ? HORIZONS : 0) });
+        for (const page of work.refreshes) this.jobs.push({ page, work: RELIEF });
+        for (const page of work.horizons) this.jobs.push({ page, work: HORIZONS });
         if (work.map) r.gpu.device.queue.writeBuffer(r.map, 0, work.map);
         this.newContent = day || !!work.map || this.jobs.length > 0;
     }
 
     /**
-     * Encodes the ground parameters and the relief of the pages that arrived, and the relief of the
-     * pages whose heights changed, timed by `timing` when it runs.
+     * Encodes the ground parameters, the relief and the horizons of the pages that arrived, and the
+     * relief or the horizons of the pages whose terrain changed, timed by `timing` when it runs.
      */
     encode(encoder: GPUCommandEncoder, timing?: () => GPUComputePassTimestampWrites | undefined): void {
         const r = this.resources, jobs = this.jobs.splice(0, JOBS);
         if (!r || !jobs.length || !this.surfaceGroup) return;
         const data = new ArrayBuffer(jobs.length * JOB_BYTES), ints = new Int32Array(data), floats = new Float32Array(data);
-        jobs.forEach(({ page: { node: { level, x, y }, slot }, data }, k) => {
-            ints.set([x * PAGE, y * PAGE, level, slot], 8 * k);
-            floats[8 * k + 4] = 2 * Math.PI * EARTH_RADIUS * Math.cos(tileLonLat(x + 0.5, y + 0.5, level)[1] * RAD) / 2 ** (level + 8);
-            ints[8 * k + 5] = data ? 3 : 1;
+        jobs.forEach(({ page: { node, slot }, data, work }, k) => {
+            ints.set([node.x * PAGE, node.y * PAGE, node.level, slot], 8 * k);
+            floats[8 * k + 4] = texelMetres(node);
+            ints[8 * k + 5] = work;
             if (data) this.upload(r, slot, k, data);
         });
         r.gpu.device.queue.writeBuffer(r.jobs, 0, data);
@@ -230,6 +243,8 @@ export class Ground {
         pass.setBindGroup(1, this.surfaceGroup);
         pass.setBindGroup(2, r.computeGroups[1]);
         pass.dispatchWorkgroups(PAGE / 16, PAGE / 16, jobs.length);
+        pass.setPipeline(r.horizon);
+        pass.dispatchWorkgroups(HORIZON / HORIZON_LANES, HORIZON / HORIZON_LANES, HORIZON_LAYERS * jobs.length);
         pass.end();
     }
 

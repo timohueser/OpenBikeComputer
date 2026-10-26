@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { GroundPage } from '../stream/ground-pages';
 import { PAGE } from '../stream/heights';
 import type { Node } from '../terrain/lod';
-import { GroundPages, type GroundTiles } from './pages';
+import { GroundPages, type GroundTiles, type GroundWork } from './pages';
 
 const page = (): GroundPage => ({ cells: new Uint8Array(4 * PAGE * PAGE), colour: new Uint8Array(4 * PAGE * PAGE), snow: new Uint8Array(4 * PAGE * PAGE) });
 /** The eye at the north-west corner of level-14 node (8580, 5770), near Engelberg. */
@@ -27,11 +27,14 @@ function tiles(failing?: string, absent?: string): GroundTiles & { asked: string
 }
 
 /** Frames of one view until the pages are idle. */
-async function settle(pages: GroundPages, drawn: Node[], wanted = drawn, read: Node[] = [], frames = 50): Promise<void> {
+/** Frames until the pages are idle; the uploads of these frames. */
+async function settle(pages: GroundPages, drawn: Node[], wanted = drawn, read: Node[] = [], frames = 50): Promise<GroundWork['uploads']> {
+    const uploads: GroundWork['uploads'] = [];
     for (let i = 0; i < frames && (i === 0 || !pages.idle); i++) {
-        pages.update(drawn, wanted, [], [], EYE, read);
+        uploads.push(...pages.update(drawn, wanted, [], [], [], EYE, read).uploads);
         await new Promise(resolve => setTimeout(resolve));
     }
+    return uploads;
 }
 
 const resident = (pages: GroundPages) => [...pages.pages.values()].filter(slot => slot.date >= 0).map(slot => slot.node.x).sort((a, b) => a - b);
@@ -77,18 +80,32 @@ describe('the ground pages', () => {
         pages.setDate('2026-08-15');
         const drawn = row(8570, 20);
         await settle(pages, drawn);
-        const counts = [pages.update(drawn, drawn, drawn, [], EYE), pages.update(drawn, drawn, [], [], EYE), pages.update(drawn, drawn, [], [], EYE)].map(work => work.refreshes.length);
+        const counts = [pages.update(drawn, drawn, drawn, [], [], EYE), pages.update(drawn, drawn, [], [], [], EYE), pages.update(drawn, drawn, [], [], [], EYE)].map(work => work.refreshes.length);
         expect(counts).toEqual([8, 8, 4]);
         expect(pages.idle).toBe(true);
     });
 
-    it('ask the terrain for the coarse node that the relief reads, and build the relief again when it changes', async () => {
+    it('ask the terrain for the coarse node that the relief reads, and build the relief again when its normals change', async () => {
         const pages = new GroundPages(tiles(), 32, 14, [0.5], 0, () => {});
         pages.setDate('2026-08-15');
         const drawn = row(8580, 4);
         await settle(pages, drawn);
         expect(pages.reads).toEqual(expect.arrayContaining([{ level: 13, x: 4290, y: 2885 }, { level: 13, x: 4291, y: 2885 }]));
-        const work = pages.update(drawn, drawn, [{ level: 13, x: 4290, y: 2885 }], [], EYE);
+        // Normals alone, as for the neighbours of a page that arrived, leave the horizons.
+        const work = pages.update(drawn, drawn, [{ level: 13, x: 4290, y: 2885 }], [], [], EYE);
         expect(work.refreshes.map(slot => slot.node.x).sort()).toEqual([8580, 8581]);
+        expect(work.horizons).toEqual([]);
+    });
+
+    it('march the horizons again where heights arrive within the reach of the march, and keep them over a new date', async () => {
+        const pages = new GroundPages(tiles(), 32, 14, [0.5], 0, () => {});
+        pages.setDate('2026-08-15');
+        const drawn = row(8580, 4);
+        expect((await settle(pages, drawn)).map(upload => upload.horizons)).toEqual([true, true, true, true]);
+        // The march of page 8583 reads 21 texels into page 8584 and 42 into node 4292 of level 13; that of page 8582 reads neither.
+        const arrived = [{ level: 14, x: 8584, y: 5770 }, { level: 13, x: 4292, y: 2885 }];
+        expect(pages.update(drawn, drawn, arrived, arrived, [], EYE).horizons.map(slot => slot.node.x)).toEqual([8583]);
+        pages.setDate('2026-08-16');
+        expect((await settle(pages, drawn)).map(upload => upload.horizons)).toEqual([false, false, false, false]);
     });
 });

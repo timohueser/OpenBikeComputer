@@ -54,6 +54,9 @@ pub struct Review {
     pub optional: Vec<String>,
     /// What layers bake without, such as a prepared source that no target lists yet.
     pub notes: Vec<Note>,
+    /// For `prod`: why its follower or its tiles Worker cannot serve the release, each with its
+    /// fix. The update does not refuse: its run would wait at router-ready.
+    pub services: Vec<String>,
 }
 
 /// A layer that the update changes.
@@ -409,6 +412,7 @@ pub fn review(parts: Parts) -> Review {
         args: Vec::new(),
         optional: Vec::new(),
         notes: Vec::new(),
+        services: Vec::new(),
     }
 }
 
@@ -523,6 +527,9 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
     }
     for note in &review.notes {
         rows.push(vec!["  note".into(), note.layer.clone(), note.text.clone()]);
+    }
+    for problem in &review.services {
+        rows.push(vec!["  services".into(), problem.clone()]);
     }
     rows.push(vec!["  keep".into(), format!("{} outputs by reference", review.kept)]);
     let cost = &review.cost;

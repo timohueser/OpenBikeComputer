@@ -1,6 +1,6 @@
 // Per ground page compute: when a page arrives, the ground parameters of each texel through its
-// region's rules; when it arrives and when its heights change, the relief of each texel. look.wgsl
-// reads both filtered, so a pixel never runs the rules.
+// region's rules; when it arrives and when its heights change, the relief of each texel and the
+// horizons. look.wgsl reads them filtered, so a pixel never runs the rules nor marches.
 // #include look.wgsl
 
 struct Job {
@@ -11,7 +11,7 @@ struct Job {
     slot: u32,
     // Metres per texel at the node's latitude.
     metres: f32,
-    // 1: the relief, 2: the ground parameters too.
+    // Bits: 1 the relief, 2 the ground parameters, 4 the horizons.
     work: u32,
     unused: vec2u,
 }
@@ -23,6 +23,15 @@ struct Job {
 @group(0) @binding(2) var colour_in: texture_2d_array<f32>;
 // Per job, one layer: snow by the region's snow_share, snow data known, the satellite's snow mark.
 @group(0) @binding(3) var snow_in: texture_2d_array<f32>;
+@group(0) @binding(4) var horizons_out: texture_storage_2d_array<rgba8unorm, write>;
+
+// The march of a horizon: from two texels out to HORIZON_M, each step HORIZON_STEP times the last
+// and at least a texel, on the level whose texel is about as long as the step. The far terrain is
+// the coarse cover of the pages, which lies in every direction about the eye.
+const HORIZON_M: f32 = 50000.0;
+const HORIZON_STEP: f32 = 1.1;
+// CURVATURE of frame.ts: the Earth's drop with refraction, which the drawn terrain takes too.
+const CURVATURE: f32 = 6.8278e-8;
 
 // The height of a texel, or of the coarser levels at its centre where the level does not know it.
 fn height_at(level: u32, t: vec2i) -> f32 {
@@ -90,6 +99,9 @@ fn dry_texel(page: i32, layer: i32, job: u32, c: vec2i) -> vec2i {
 @compute @workgroup_size(16, 16)
 fn ground_main(@builtin(global_invocation_id) id: vec3u) {
     let job = jobs[id.z];
+    if ((job.work & 1u) == 0u) {
+        return;
+    }
     let c = vec2i(id.xy);
     let page = i32(job.slot);
     let at = in_page(page, c);
@@ -120,4 +132,37 @@ fn ground_main(@builtin(global_invocation_id) id: vec3u) {
     textureStore(cache_out, at, 4 * layer + 1, vec4f(parts.tree, parts.rough, parts.moor, green));
     textureStore(cache_out, at, 4 * layer + 2, vec4f(mix(bare_from, min(bare_from, rule(region, slot_cliff() + 3).y), green), barren * dry,
         parts.sward * (1.0 - barren * dry), parts.banded));
+}
+
+// The horizons of a page: per horizon texel, from the centre of its texels, the highest altitude of the
+// drawn terrain in each bearing. Lane z is a job and a layer of 4 bearings.
+@compute @workgroup_size(8, 8)
+fn horizon_main(@builtin(global_invocation_id) id: vec3u) {
+    let layers = BEARINGS / 4u;
+    let job = jobs[id.z / layers];
+    if ((job.work & 4u) == 0u) {
+        return;
+    }
+    let layer = id.z % layers;
+    let shift = 22u - job.level;
+    let u = (job.texel + HORIZON_SPAN * vec2i(id.xy) + HORIZON_SPAN / 2) << vec2u(shift);
+    let h0 = units_height(u, job.level);
+    let unit = job.metres / f32(1 << shift);
+    var out = vec4f(0.0);
+    for (var k = 0u; k < 4u && known(h0); k++) {
+        let bearing = f32(4u * layer + k) / f32(BEARINGS) * 6.2831853;
+        // Units run south.
+        let way = vec2f(sin(bearing), -cos(bearing)) / unit;
+        var rise = 0.0;
+        for (var d = 2.0 * job.metres; d < HORIZON_M; d += max((HORIZON_STEP - 1.0) * d, job.metres)) {
+            let coarser = u32(max(log2(d * (HORIZON_STEP - 1.0) / job.metres), 0.0));
+            let h = units_height(u + vec2i(round(way * d)), job.level - min(coarser, job.level - COARSEST));
+            if (known(h)) {
+                rise = max(rise, (h - h0 - CURVATURE * d * d) / d);
+            }
+        }
+        out[k] = atan(rise) / HORIZON_TOP;
+    }
+    let page = i32(job.slot);
+    textureStore(horizons_out, in_horizon(page, vec2i(id.xy)), i32(layers) * page_layer(page) + i32(layer), out);
 }

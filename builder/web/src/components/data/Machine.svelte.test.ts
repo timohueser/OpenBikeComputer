@@ -90,7 +90,7 @@ it("a missing credential posts its value to the credential route, and the page n
         row.querySelector<HTMLButtonElement>("button[type=submit]")!.click();
         await vi.waitFor(() => expect(row.textContent).toContain("Saved OBC_REFERENCE_DK_TOKEN in"));
         const posted = fetch.mock.calls.filter(([url]) => url === "/api/credential").map(([, init]) => JSON.parse(init.body));
-        expect(posted).toEqual([{ source: "dtm-dk", values: [value] }]);
+        expect(posted).toEqual([{ args: ["source", "credential", "dtm-dk"], values: [value] }]);
         await vi.waitFor(() => expect(fetch.mock.calls.filter(([url]) => url === "/api/cli")).toHaveLength(2));
         expect(document.body.innerHTML).not.toContain(value);
         expect([...document.querySelectorAll("input")].map((input) => input.value)).not.toContain(value);

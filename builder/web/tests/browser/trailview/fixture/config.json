@@ -17,6 +17,8 @@
   "routing": "https://api.test/routing",
   "search": "https://api.test/search",
   "layers": {
-    "trailview-features": "https://tiles.test/trailview-features.json"
-  }
+    "trailview-features": "https://tiles.test/trailview-features.json",
+    "trailview-ground": "https://tiles.test/trailview-ground.json"
+  },
+  "trailview_rules": "https://tiles.test/trailview/rules.json"
 }

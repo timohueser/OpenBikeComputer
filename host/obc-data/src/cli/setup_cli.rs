@@ -72,9 +72,10 @@ pub struct CredentialState {
     pub name: String,
     pub needed_for: String,
     pub state: Readiness,
-    /// The first source that needs it: `obc data source credential SOURCE` sets it for each
-    /// source that needs it. `null` for the R2 key, which the page does not set.
-    pub source: Option<String>,
+    /// The arguments after `obc data` of the command that sets it from standard input, such as
+    /// `source credential SOURCE` for each source that needs it. `null` for the R2 key, which the
+    /// page does not set.
+    pub set: Option<Vec<String>>,
     /// The values that the command reads, one per line, in this order.
     pub fields: Vec<String>,
     /// The `use` of each source that it serves.
@@ -93,7 +94,7 @@ pub struct CredentialSet {
     pub file: PathBuf,
     /// The names of the values that it wrote.
     pub names: Vec<String>,
-    /// The sources that the credential serves.
+    /// The sources that the credential serves; none for a credential of `deploy`.
     pub sources: Vec<String>,
     /// The names that the environment of the command sets, for example from `tools/obc.local`:
     /// the environment wins over the file, so the new value serves only once they are removed
@@ -203,7 +204,7 @@ pub fn setup(root: &Path, json: bool) -> Result<(), Error> {
         name: "R2 key (OBC_R2_*)".into(),
         needed_for: "publish to prod".into(),
         state: if r2 { Readiness::Ready } else { Readiness::Missing },
-        source: None,
+        set: None,
         fields: Vec::new(),
         uses: Vec::new(),
         register: None,
@@ -222,7 +223,7 @@ pub fn setup(root: &Path, json: bool) -> Result<(), Error> {
         name: credential.describe(),
         needed_for: format!("fetch {}", sources.iter().map(|source| source.id.as_str()).collect::<Vec<_>>().join(", ")),
         state: if credential.present() { Readiness::Ready } else { Readiness::Optional },
-        source: Some(sources[0].id.clone()),
+        set: Some(["source", "credential", &sources[0].id].map(String::from).to_vec()),
         fields: credentials::place(credential).map(|place| place.names).unwrap_or_default(),
         uses: sources.iter().filter_map(|source| source.r#use.clone()).collect(),
         register: credential.register.clone(),
@@ -272,6 +273,7 @@ pub fn setup(root: &Path, json: bool) -> Result<(), Error> {
             ),
         },
     };
+    credentials.extend(super::deploy_cli::credentials());
     let jobs =
         vec![bake("Bake device layers here", &DEVICE), bake("Bake planner layers here", &PLANNER), publish, fetch];
     let setup = Setup { store, jobs, tools, credentials };
@@ -321,6 +323,15 @@ pub fn credential(root: &Path, id: &str, json: bool) -> Result<(), Error> {
         .as_ref()
         .ok_or_else(|| Code::Usage.error(format!("source `{id}` needs no credential")))?;
     let place = credentials::place(credential).ok_or_else(|| Code::InvalidData.error("no writer knows the file"))?;
+    let shares = |source: &&Source| source.credential.as_ref().is_some_and(|c| c.describe() == credential.describe());
+    let sources = registry.sources.iter().filter(shares).map(|s| s.id.clone()).collect();
+    let set = write(place, credential.file.is_none(), sources)?;
+    print_set(&set, json)
+}
+
+/// Read the values of `place` on standard input, one line each, and write them; `env` for the
+/// credentials file, whose names the environment can also set.
+pub(super) fn write(place: credentials::Place, env: bool, sources: Vec<String>) -> Result<CredentialSet, Error> {
     let home = std::env::var_os("HOME").ok_or_else(|| Code::Failed.error("HOME is not set"))?;
     let home = Path::new(&home);
     let terminal = std::io::stdin().is_terminal();
@@ -335,22 +346,18 @@ pub fn credential(root: &Path, id: &str, json: bool) -> Result<(), Error> {
     }
     let before = credentials::env_file(home);
     let file = credentials::write(home, &place, &values).map_err(|e| Code::Usage.error(e))?;
-    let overridden = match credential.file {
-        Some(_) => Vec::new(),
-        None => place
-            .names
-            .iter()
-            .filter(|name| std::env::var(name).is_ok_and(|now| !now.is_empty() && before.get(*name) != Some(&now)))
-            .cloned()
-            .collect(),
-    };
-    let shares = |source: &&Source| source.credential.as_ref().is_some_and(|c| c.describe() == credential.describe());
-    let sources = registry.sources.iter().filter(shares);
-    let set = CredentialSet { file, names: place.names, sources: sources.map(|s| s.id.clone()).collect(), overridden };
+    let changed =
+        |name: &&String| std::env::var(name).is_ok_and(|now| !now.is_empty() && before.get(*name) != Some(&now));
+    let overridden = if env { place.names.iter().filter(changed).cloned().collect() } else { Vec::new() };
+    Ok(CredentialSet { file, names: place.names, sources, overridden })
+}
+
+pub(super) fn print_set(set: &CredentialSet, json: bool) -> Result<(), Error> {
     if json {
-        return print_json(&set);
+        return print_json(set);
     }
-    println!("Wrote {} to {} for {}.", list(&set.names), set.file.display(), list(&set.sources));
+    let serves = if set.sources.is_empty() { String::new() } else { format!(" for {}", list(&set.sources)) };
+    println!("Wrote {} to {}{serves}.", list(&set.names), set.file.display());
     if !set.overridden.is_empty() {
         eprintln!("The environment sets {}, and it wins: remove it from tools/obc.local.", list(&set.overridden));
     }

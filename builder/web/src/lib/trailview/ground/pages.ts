@@ -1,13 +1,20 @@
 import { worldPixel } from '../../planner/layers/mercator';
 import { seasonDay } from '../../planner/layers/snow';
+import { EARTH_RADIUS, tileLonLat } from '../frame/frame';
 import { anchorAt, UNITS } from '../frame/space';
 import type { GroundDate, GroundPage } from '../stream/ground-pages';
 import { PAGE } from '../stream/heights';
 import { COARSEST, key, MAP, size, type Node } from '../terrain/lod';
 import { dayOfYear, mosaicsAt } from './rules';
 
-/** Pages taken in per frame at most, ground tiles in flight, and pages whose openness follows new heights per frame. */
-const ARRIVALS = 8, LOADS = 4, REFRESHES = 8;
+/**
+ * Pages taken in per frame at most, ground tiles in flight, pages whose openness follows new heights
+ * per frame, and pages whose horizons alone follow them: old horizons draw until then, so a small
+ * budget holds down the cost of a frame.
+ */
+const ARRIVALS = 8, LOADS = 4, REFRESHES = 8, MARCHES = 2;
+/** HORIZON_M of ground.wgsl: how far a horizon's march reaches. */
+const HORIZON_M = 50_000;
 /** Levels that every view keeps: the ground under every other page while its own loads. */
 const COARSE = 8;
 /** The cover of a drawn page lies this many levels above it, never coarser than the coloured levels: what a short pool draws in its place. */
@@ -44,9 +51,12 @@ export interface Slot {
 
 /** The GPU work of a frame. */
 export interface GroundWork {
-    uploads: { page: Slot; data: GroundPage }[];
+    /** With `horizons` where the slot does not hold the horizons of the page's node yet. */
+    uploads: { page: Slot; data: GroundPage; horizons: boolean }[];
     /** Resident pages whose relief reads terrain that changed: their relief follows. */
     refreshes: Slot[];
+    /** Resident pages whose horizons read heights that arrived: their horizons follow. */
+    horizons: Slot[];
     /** The ground map, when it changed: MAP × MAP entries per level in the windows of the LOD map, the slot + 1 or 0. */
     map?: Uint32Array<ArrayBuffer>;
 }
@@ -81,6 +91,8 @@ export class GroundPages {
     private readonly loading = new Map<string, number>();
     private arrivals: { node: Node; page: GroundPage; date: number; partial: boolean }[] = [];
     private readonly refresh = new Set<Slot>();
+    /** Resident pages whose horizons wait for a march. */
+    private readonly marching = new Set<Slot>();
     /** Wanted pages without the content of the date. */
     private missing = 0;
     private dirty = true;
@@ -97,7 +109,7 @@ export class GroundPages {
     }
 
     get idle(): boolean {
-        return this.missing === 0 && this.loads === 0 && this.arrivals.length === 0 && this.refresh.size === 0;
+        return this.missing === 0 && this.loads === 0 && this.arrivals.length === 0 && this.refresh.size === 0 && this.marching.size === 0;
     }
 
     /** Whether the next frame has work that no load in flight wakes. */
@@ -125,11 +137,12 @@ export class GroundPages {
 
     /**
      * Takes the pages that the drawn nodes and the selection want, about the eye (lon, lat), and the
-     * pages that the instances `read`. `refreshed` are the terrain nodes whose heights changed.
+     * pages that the instances `read`. `refreshed` are the terrain nodes whose normals changed, and
+     * `arrived` those of them whose heights changed.
      */
-    update(drawn: Node[], wanted: Node[], refreshed: Node[], origins: [number, number][], eye: [number, number], read: Node[] = []): GroundWork {
+    update(drawn: Node[], wanted: Node[], refreshed: Node[], arrived: Node[], origins: [number, number][], eye: [number, number], read: Node[] = []): GroundWork {
         this.frame++;
-        const work: GroundWork = { uploads: [], refreshes: [] };
+        const work: GroundWork = { uploads: [], refreshes: [], horizons: [] };
         if (!this.source) return work;
         const anchor = anchorAt(...eye), ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1];
         // A resident page counts as nearer, so a page at the edge of a full pool does not leave and come back as the eye moves.
@@ -171,22 +184,25 @@ export class GroundPages {
             if (date !== this.date || !this.kept.has(key(node))) continue;
             const page = this.pages.get(key(node)) ?? this.allocate(node);
             if (!page) continue;
+            // The horizons follow the heights, not the date: a slot that held the node's page keeps them.
+            const horizons = page.date < 0;
+            if (horizons) this.marching.delete(page);
             page.date = date;
             page.partial = partial;
             page.regions ??= new Uint8Array(PAGE * PAGE);
             for (let i = 0; i < PAGE * PAGE; i++) page.regions[i] = data.cells[4 * i + 2];
             this.refresh.delete(page);
-            work.uploads.push({ page, data });
+            work.uploads.push({ page, data, horizons });
             this.dirty = true;
         }
-        const uploaded = new Set(work.uploads.map(upload => upload.page)), changed = new Set(refreshed.map(key));
+        const uploaded = new Map(work.uploads.map(upload => [upload.page, upload.horizons])), changed = new Set(refreshed.map(key));
         if (changed.size) for (const page of this.pages.values()) {
-            if (page.date >= 0 && !uploaded.has(page) && reliefReads(page.node, this.finest).some(node => changed.has(key(node)))) this.refresh.add(page);
+            if (page.date < 0) continue;
+            if (!uploaded.has(page) && reliefReads(page.node, this.finest).some(node => changed.has(key(node)))) this.refresh.add(page);
+            if (!uploaded.get(page) && arrived.some(node => marches(page.node, node))) this.marching.add(page);
         }
-        for (const page of [...this.refresh].slice(0, REFRESHES)) {
-            this.refresh.delete(page);
-            if (this.pages.get(key(page.node)) === page) work.refreshes.push(page);
-        }
+        work.refreshes = this.take(this.refresh, REFRESHES);
+        work.horizons = this.take(this.marching, MARCHES);
         if (origins.some((origin, level) => origin[0] !== this.origins[level]?.[0] || origin[1] !== this.origins[level]?.[1])) this.dirty = true;
         this.origins = origins;
         if (this.dirty) work.map = this.map();
@@ -201,6 +217,7 @@ export class GroundPages {
         this.arrivals = [];
         this.loading.clear();
         this.refresh.clear();
+        this.marching.clear();
         this.dateKey = '';
         this.dirty = true;
     }
@@ -226,6 +243,13 @@ export class GroundPages {
         if (!total) return new Map([[this.world, 1]]);
         for (const [region, w] of out) out.set(region, w / total);
         return out;
+    }
+
+    /** The first `n` pages of a set that are still resident; they leave it. */
+    private take(set: Set<Slot>, n: number): Slot[] {
+        const pages = [...set].slice(0, n);
+        for (const page of pages) set.delete(page);
+        return pages.filter(page => this.pages.get(key(page.node)) === page);
     }
 
     private readonly ground = (node: Node): Node => {
@@ -326,6 +350,21 @@ export function reliefReads(node: Node, finest: number): Node[] {
     const coarse = Math.max(node.level, COARSEST + 2) - (node.level === finest ? 1 : 2), shift = node.level - coarse;
     return [node, { level: coarse, x: node.x >> shift, y: node.y >> shift }];
 }
+
+/**
+ * Whether the horizons of a page read the heights of a terrain node. The march of ground.wgsl reads
+ * level `page.level - c` only within 20 × 2^c page texels and HORIZON_M of the page, bilinear across
+ * a texel of that level, and where a level does not know a height it reads a coarser one there.
+ */
+export function marches(page: Node, node: Node): boolean {
+    const c = page.level - node.level, texel = 2 ** c, side = PAGE * texel;
+    const reach = Math.min(20 * texel, HORIZON_M / texelMetres(page)) + texel;
+    const meets = (p: number, n: number) => n * side < (p + 1) * PAGE + reach && (n + 1) * side > p * PAGE - reach;
+    return c >= 0 && meets(page.x, node.x) && meets(page.y, node.y);
+}
+
+/** Metres per texel of a node's page at its latitude. */
+export const texelMetres = ({ level, x, y }: Node): number => 2 * Math.PI * EARTH_RADIUS * Math.cos(tileLonLat(x + 0.5, y + 0.5, level)[1] * Math.PI / 180) / 2 ** (level + 8);
 
 const range = (n: number) => Array.from({ length: n }, (_, i) => n - 1 - i);
 
