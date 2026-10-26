@@ -1,53 +1,36 @@
-// The page and the tile service on two HTTP/2 origins behind one shaped link, and the log of what
-// crossed it, for network.mjs. Tiles go out as planner/tiles/src/worker.mjs sends them: stored bytes,
-// gzip feature tiles with Content-Encoding gzip, Cache-Control immutable. Text goes out as brotli.
+// The page and the tile service (harness.js) on two HTTP/2 origins behind one shaped link, and the log
+// of what crossed it, for network.mjs. Tiles go out as planner/tiles/src/worker.mjs sends them: stored
+// bytes, gzip feature tiles with Content-Encoding gzip, Cache-Control immutable. Text goes out as brotli.
 //
 // The link: a response waits one round trip (three on the first stream of a connection: TCP and
 // TLS 1.3), then its body shares the bandwidth with the other bodies, round robin in 8 kB chunks.
+// It leaves out: the release's terrain tile of the deepest zoom, which is a pointer JSON and then reads
+// of a PMTiles archive, not one response; TCP slow start; and that the streams which open during the
+// handshake of a connection wait for it too, as the first one does.
 import { execFileSync } from 'node:child_process';
 import { createHash, createPublicKey } from 'node:crypto';
-import { existsSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { createSecureServer } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { brotliCompressSync, constants } from 'node:zlib';
-import { PMTiles } from 'pmtiles';
+import { tileService } from './harness.js';
 
 const CHUNK = 8192;
 const TEXT = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.svg': 'image/svg+xml', '.txt': 'text/plain' };
 const IMMUTABLE = { 'cache-control': 'public, max-age=31536000, immutable' };
 const now = () => performance.timeOrigin + performance.now();
 
-class FileSource {
-    constructor(path) { this.path = path; this.fd = openSync(path, 'r'); }
-    getKey() { return this.path; }
-    async getBytes(offset, length) {
-        const data = Buffer.alloc(length), read = readSync(this.fd, data, 0, length, offset);
-        return { data: data.buffer.slice(data.byteOffset, data.byteOffset + read) };
-    }
-}
-
-/** The archives of a ground folder (the layout of `--ground` in README.md) by their names in the config's `layers`. */
-export function groundArchives(ground, colour) {
-    const files = {
-        'trailview-ground': 'ground.pmtiles', 'trailview-canopy': 'trailview-canopy.pmtiles',
-        ...Object.fromEntries([1, 2, 3, 4].map(q => [`trailview-colour-q${q}`, `colour/${colour}/q${q}.pmtiles`])),
-        ...Object.fromEntries(Array.from({ length: 46 }, (_, b) => [`trailview-snow-${String(b).padStart(2, '0')}`, `snow-days/${String(b).padStart(2, '0')}.pmtiles`])),
-    };
-    return Object.fromEntries(Object.entries(files).filter(([, f]) => existsSync(join(ground, f))).map(([name, f]) => [name, new PMTiles(new FileSource(join(ground, f)))]));
-}
-
 /**
  * Builds the TrailView page of a checkout's `builder/web` into `out` against the tile origin `tiles`,
- * with the layers of groundArchives in a box of `bounds`.
+ * with the layers of a ground folder in a box of `bounds`.
  */
 export function buildPage({ web, tiles, bounds, out }) {
     const config = JSON.parse(readFileSync(new URL('./fixture/config.json', import.meta.url), 'utf8'));
     const names = ['trailview-features', 'trailview-ground', 'trailview-canopy', ...[1, 2, 3, 4].map(q => `trailview-colour-q${q}`),
         ...Array.from({ length: 46 }, (_, b) => `trailview-snow-${String(b).padStart(2, '0')}`)];
     Object.assign(config, {
-        name: 'TrailView link', bounds, terrain: `${tiles}/terrain/{z}/{x}/{y}`, trailview_rules: `${tiles}/trailview/rules.json`,
+        name: 'TrailView link', bounds, terrain: `${tiles}/terrain/{z}/{x}/{y}.webp`, trailview_rules: `${tiles}/trailview/rules.json`,
         layers: Object.fromEntries(names.map(name => [name, `${tiles}/${name}.json`])),
     });
     execFileSync('npx', ['vite', 'build', '--mode', 'trailview', '--outDir', out, '--emptyOutDir', '--logLevel', 'error'],
@@ -73,12 +56,11 @@ function certificate() {
  * `dist` is the built page, `terrain` an MBTiles, `ground` a ground folder, `features` a folder
  * `z/x/y.bin`. Returns the origins, the Chromium flag for the certificate, the log and close().
  */
-export async function startLink({ dist, terrain, ground, colour = 'webp-12', features, mbit, rtt, port = 8951 }) {
+export async function startLink({ dist, terrain, ground, colour = 'webp-12', features, mbit, rtt, port = 8961 }) {
     const rate = mbit * 1e6 / 8 / 1000; // bytes per ms
     const tiles = `https://127.0.0.1:${port + 1}`;
     const log = [];
-    const tileRow = new DatabaseSync(terrain, { readOnly: true }).prepare('SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?');
-    const layers = groundArchives(ground, colour);
+    const answer = await tileService(tiles, terrain, ground, colour, features);
     const packed = new Map();
     const text = (key, body, type, accept) => {
         if (!/\bbr\b/.test(accept)) return { status: 200, headers: { 'content-type': type }, body };
@@ -150,35 +132,15 @@ export async function startLink({ dist, terrain, ground, colour = 'webp-12', fea
         return answer;
     }
 
-    const none = { status: 204, headers: IMMUTABLE, body: Buffer.alloc(0) };
-    const json = (path, value, accept) => { const answer = text(path, Buffer.from(JSON.stringify(value)), 'application/json', accept); return { ...answer, headers: { ...IMMUTABLE, ...answer.headers } }; };
     async function tile(path, accept) {
-        let m;
-        if ((m = /^\/terrain\/(\d+)\/(\d+)\/(\d+)$/.exec(path))) {
-            const [z, x, y] = m.slice(1).map(Number), row = tileRow.get(z, x, 2 ** z - 1 - y);
-            return row ? { status: 200, headers: { ...IMMUTABLE, 'content-type': 'image/webp' }, body: Buffer.from(row.tile_data) } : none;
+        const found = await answer(path);
+        if (!found) return { status: 404, headers: {}, body: Buffer.alloc(0) };
+        if (found.type === 'application/json') {
+            const packed = text(path, found.body, found.type, accept);
+            return { ...packed, headers: { ...IMMUTABLE, ...packed.headers } };
         }
-        if (path === '/trailview/rules.json') return json(path, JSON.parse(readFileSync(join(ground, 'rules.json'), 'utf8')), accept);
-        if (path === '/trailview-features.json') {
-            return json(path, { tilejson: '3.0.0', tiles: [`${tiles}/trailview-features/{z}/{x}/{y}`], minzoom: 8, maxzoom: 13, bounds: [-180, -85, 180, 85], features_format: 2, extent: 16384 }, accept);
-        }
-        if ((m = /^\/trailview-features\/(\d+)\/(\d+)\/(\d+)$/.exec(path))) {
-            const file = join(features, `${m[1]}/${m[2]}/${m[3]}.bin`);
-            if (!existsSync(file)) return none;
-            const body = readFileSync(file), gzip = body[0] === 0x1f && body[1] === 0x8b;
-            return { status: 200, headers: { ...IMMUTABLE, 'content-type': 'application/octet-stream', ...(gzip ? { 'content-encoding': 'gzip' } : {}) }, body };
-        }
-        const [, name, z, x, y] = /^\/([a-z0-9-]+)(?:\.json|\/(\d+)\/(\d+)\/(\d+))$/.exec(path) ?? [];
-        const archive = layers[name];
-        if (!archive) return { status: 404, headers: {}, body: Buffer.alloc(0) };
-        const header = await archive.getHeader();
-        if (z === undefined) {
-            const metadata = await archive.getMetadata();
-            return json(path, { ...metadata, minzoom: header.minZoom, maxzoom: header.maxZoom, bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat], tiles: [`${tiles}/${name}/{z}/{x}/{y}`] }, accept);
-        }
-        const found = await archive.getZxy(Number(z), Number(x), Number(y));
-        if (!found) return none;
-        return { status: 200, headers: { ...IMMUTABLE, 'content-type': header.tileType === 4 ? 'image/webp' : 'application/octet-stream' }, body: Buffer.from(found.data) };
+        const gzip = found.body[0] === 0x1f && found.body[1] === 0x8b;
+        return { status: found.status, headers: { ...IMMUTABLE, ...(found.type && { 'content-type': found.type }), ...(gzip && { 'content-encoding': 'gzip' }) }, body: found.body };
     }
 
     // Packed before the first request: the brotli of the bundle takes most of a second.

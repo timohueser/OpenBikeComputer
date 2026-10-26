@@ -181,11 +181,15 @@ export class Terrain {
     private selection = 0;
     private frameNumber = 0;
     private probing = 0;
-    /** The frame since which no page of the near field is missing. */
-    private nearSince?: number;
-    /** The state that the last probe read, and a count of the frames that changed the pages or the masks, which move the snapped mesh. */
+    /** Whether each selected node within NEAR_M drew its own page in the last frame, with its road paint. */
+    private nearDrawn = false;
+    /**
+     * The state that the last probe read, a count of the frames that changed the pages or the masks,
+     * which move the snapped mesh, and the last of those frames.
+     */
     private probed = '';
     private changes = 0;
+    private changedAt = 0;
     private above = 0;
     private lonLat: [number, number] = [0, 0];
     /** The camera of the last frame, for the audit: only what the frame shows counts. */
@@ -211,29 +215,26 @@ export class Terrain {
     }
 
     /**
-     * Whether the near field draws its final heights: every wanted page within NEAR_M draws at its level
-     * with its stamps and masks, and the probe under the eye read them.
+     * Whether the near field draws its final heights: each selected node within NEAR_M draws its own
+     * page with its stamps and masks, and the probe under the eye ran after the last change of the pages.
      */
     get near(): boolean {
-        return this.nearSince !== undefined && !!this.ground && this.ground.frame >= this.nearSince;
+        return this.nearDrawn && !!this.ground && this.ground.frame >= this.changedAt;
     }
 
-    /**
-     * Whether each selected node within NEAR_M draws its own page, stamped, and with the road paint of
-     * its mask where the mask pool reaches it: what the near field draws once every load is in.
-     */
-    private nearDrawn(nodes: Node[], anchor: Anchor): boolean {
+    /** Whether each drawn node of `near` has the road paint of its mask where the mask pool reaches it. */
+    private painted(nodes: Node[], near: Set<string>, anchor: Anchor): boolean {
         return nodes.every(node => {
-            const distance = distances({ anchor, above: 0 }, node)[0];
-            if (distance > NEAR_M) return true;
-            const page = this.pages.pages.get(key(node)), painted = node.level < NEAR || distance >= this.pages.maskReach || !this.stamps.known(node)?.data || page?.mask !== undefined;
-            return page?.drawn !== undefined && painted;
+            const page = this.pages.pages.get(key(node));
+            return !near.has(key(node)) || page?.drawn === undefined || node.level < NEAR || page.mask !== undefined || !this.stamps.known(node)?.data
+                || distances({ anchor, above: 0 }, node)[0] >= this.pages.maskReach;
         });
     }
 
-    /** True while the terrain needs frames that no tile load or probe will ask for. */
+    /** True while the terrain needs frames that no tile load, feature tile or probe will ask for. */
     get working(): boolean {
-        return (!this.pages.idle && this.pages.loads === 0) || this.calm === 0;
+        // A frame that changed nothing while feature tiles are on their way waits for them.
+        return (!this.pages.idle && this.pages.loads === 0 && (this.newContent || !this.stamps.loading)) || this.calm === 0;
     }
 
     /** A new view: a probe from before it never sets the ground. */
@@ -397,7 +398,8 @@ export class Terrain {
         const order = (a: Node, b: Node) => a.level - b.level || far(a) - far(b), keys = new Set(wanted.map(key));
         // The ground takes the selection alone: with its own reads it would want the ground of coarser and coarser pages.
         this.wantedNodes = wanted.sort(order);
-        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor);
+        const nearField = new Set(nodes.filter(node => distances({ anchor, above: 0 }, node)[0] <= NEAR_M).map(key));
+        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField);
         // After the update, so that a page draws in the frame that it arrives in. The nodes of the levels
         // with masks come first: they draw with the road paint, those with a tunnel's portal first of all,
         // with its hole. Each pipeline draws near to far, so that a GPU that shades before the depth test
@@ -418,9 +420,12 @@ export class Terrain {
             this.quality--;
             this.calm = 0;
         }
-        if (work.map || work.masks || work.uploads.length || work.syntheses.length) this.changes++;
+        if (work.map || work.masks || work.uploads.length || work.syntheses.length) {
+            this.changes++;
+            this.changedAt = this.frameNumber;
+        }
         this.work = work;
-        this.nearSince = this.nearDrawn(nodes, anchor) ? (this.nearSince ?? this.frameNumber) : undefined;
+        this.nearDrawn = this.pages.nearMissing === 0 && this.painted(nodes, nearField, anchor);
         this.jobs = { near: 0, coarse: 0, masks: 0 };
         for (const { page, mode } of work.stamps) this.jobs[!(mode & MODE.HEIGHTS) ? 'masks' : page.node.level >= NEAR ? 'near' : 'coarse']++;
         this.anchor = anchor;
