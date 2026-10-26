@@ -21,19 +21,25 @@ export async function startTrailView(canvas: HTMLCanvasElement, config: PlannerC
     return engine;
 }
 
+/** The longest wait for a settled view after the first frame: a slow network shows the view still refining. */
+const SETTLE_CAP_MS = 5_000;
+
 /**
- * Whether the engine draws terrain: false when a load failed and nothing is drawn after 5 s, when nothing is
- * drawn after 30 s, or when `signal` aborts. It polls: the engine draws by itself as the tiles arrive.
+ * Whether the engine shows a settled view: true once the eye stands on its final ground and the tiles
+ * of the view are drawn, or SETTLE_CAP_MS after the first frame with terrain. False when a load failed
+ * and nothing is drawn after 5 s, when nothing is drawn after 30 s, or when `signal` aborts. The first
+ * frames show coarse ground and an eye that still moves to it, so the window hides them.
  */
-export async function groundDrawn(engine: TrailView, signal: AbortSignal): Promise<boolean> {
+export async function viewSettled(engine: TrailView, signal: AbortSignal): Promise<boolean> {
     const start = performance.now();
-    while (!signal.aborted) {
-        const { drawn, failed } = engine.stats(), waited = performance.now() - start;
-        if (drawn) return true;
-        if (waited > 30_000 || (failed && waited > 5_000)) return false;
+    while (!engine.stats().drawn) {
+        const waited = performance.now() - start;
+        if (signal.aborted || waited > 30_000 || (engine.stats().failed && waited > 5_000)) return false;
         await new Promise(resolve => setTimeout(resolve, 200));
     }
-    return false;
+    const aborted = new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+    await Promise.race([engine.waitForIdle(), new Promise(resolve => setTimeout(resolve, SETTLE_CAP_MS)), aborted]);
+    return !signal.aborted;
 }
 
 /** The engine frees its GPU memory and its workers in destroy(). */

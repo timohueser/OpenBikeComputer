@@ -64,7 +64,7 @@
             view = started.view;
             started.onView = (next) => view = next;
             credits = creditsWith(started.attribution);
-            if (await chunk.groundDrawn(started, abort.signal)) ground = true;
+            if (await chunk.viewSettled(started, abort.signal)) ground = true;
             else if (!abort.signal.aborted) failure = 'TrailView could not load this place. Close the window and try again.';
         })().catch((error: unknown) => {
             console.error('TrailView:', error);
@@ -95,7 +95,9 @@
     onkeydown={event => { if (event.key === 'Escape' || event.ctrlKey || event.metaKey) event.stopPropagation(); }}>
     <!-- Focusable, so that after a click on the view the keys still pass through the dialog. -->
     <canvas bind:this={canvas} tabindex="-1"></canvas>
-    <div class="cover" class:gone={ground && !failure} aria-hidden="true"></div>
+    <div class="cover" class:gone={ground && !failure}>
+        {#if !failure}<p class="loading" role="status"><span class="spinner" aria-hidden="true"></span>Loading the view</p>{/if}
+    </div>
     {#if failure}<p class="failure" role="alert">{failure}</p>
     {:else if view}
         <TrailViewMiniMap lat={view.lat} lon={view.lon} heading={view.heading} {fov} />
@@ -158,15 +160,40 @@
         touch-action: none;
         cursor: grab;
     }
+    /* The cover takes the pointer while it shows: a look around under it would turn the view the rider has not seen. */
     .cover {
         position: absolute;
         inset: 0;
+        display: grid;
+        place-items: center;
         background: var(--haze);
-        transition: opacity 900ms ease-out;
-        pointer-events: none;
+        transition: opacity 400ms ease-out;
     }
     .cover.gone {
         opacity: 0;
+        pointer-events: none;
+    }
+    .loading {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0;
+        color: #1c1b14;
+        font: 600 14px var(--sans);
+    }
+    .spinner {
+        width: 18px;
+        height: 18px;
+        border: 2.5px solid rgba(28, 27, 20, .25);
+        border-top-color: #1c1b14;
+        border-radius: 50%;
+        animation: spin 900ms linear infinite;
+    }
+    @keyframes spin {
+        to { transform: rotate(1turn); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .spinner { animation-duration: 3s; }
     }
     .failure {
         position: absolute;
