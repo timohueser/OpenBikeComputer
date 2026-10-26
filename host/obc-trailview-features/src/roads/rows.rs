@@ -250,9 +250,7 @@ pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain)
     let at: Vec<[f64; 2]> = found.iter().map(|&(v, _, _)| net.vertex_xy[v]).collect();
     let feet: Vec<[f64; 2]> = found.iter().map(|&(_, k, t)| [pa[k][0] + t * d[k][0], pa[k][1] + t * d[k][1]]).collect();
     let (here, there) = (terrain.heights(&at), terrain.heights(&feet));
-    // The terrain is f32: the difference of two of its heights too.
-    let mut level: Vec<bool> =
-        here.iter().zip(&there).map(|(&h, &f)| ((h as f32) - (f as f32)).abs() <= PARALLEL_RISE_M).collect();
+    let mut level: Vec<bool> = here.iter().zip(&there).map(|(&h, &f)| (h - f).abs() <= PARALLEL_RISE_M).collect();
     // Metres along its way at each vertex, and the pins of each way that lie too near a parting.
     let mut steps = vec![0.0; net.vertex_xy.len()];
     for (s, &v) in net.segment_start.iter().enumerate() {

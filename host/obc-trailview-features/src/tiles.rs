@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use crate::geometry::bounds;
 use crate::{world, Part, Tags, EQUATOR_M};
 
 pub const FORMAT: u32 = 2;
@@ -215,9 +216,7 @@ pub fn decode(data: &[u8]) -> Result<Vec<Feature>, String> {
 
 /// The box (x0, y0, x1, y1) of the points of the parts, or None when they have none.
 fn extent(parts: &[Part]) -> Option<[f64; 4]> {
-    let mut points = parts.iter().flat_map(|part| part.points.iter());
-    let &[x, y] = points.next()?;
-    Some(points.fold([x, y, x, y], |b, &[x, y]| [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]))
+    Some(bounds(parts.iter().flat_map(|part| &part.points))).filter(|b| b[0] <= b[2])
 }
 
 /// What a tile keeps of a feature besides its parts.

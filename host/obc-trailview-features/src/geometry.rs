@@ -3,6 +3,8 @@
 use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{RTree, AABB};
 
+use crate::Part;
+
 /// A point as a map key: equal only where the coordinates are equal to the bit.
 pub fn key([x, y]: [f64; 2]) -> [u64; 2] {
     [x.to_bits(), y.to_bits()]
@@ -52,14 +54,23 @@ pub fn contains(rings: &[&[[f64; 2]]], [x, y]: [f64; 2]) -> bool {
     inside
 }
 
+/// The area of the rings of the parts, in squared world units: the outer rings less the holes.
+pub fn area(parts: &[Part]) -> f64 {
+    let ring = |r: &[[f64; 2]]| -> f64 {
+        let n = r.len();
+        (0..n).map(|i| r[i][0] * r[(i + 1) % n][1] - r[(i + 1) % n][0] * r[i][1]).sum::<f64>().abs() / 2.0
+    };
+    parts.iter().map(|p| if p.outer { ring(&p.points) } else { -ring(&p.points) }).sum()
+}
+
 /// The value at x of the line through the points (xp, fp), xp non-decreasing; the end values past
-/// the ends.
+/// the ends, and the last value where x repeats.
 pub fn interp(x: f64, xp: &[f64], fp: &[f64]) -> f64 {
     let n = xp.len();
     if x.is_nan() {
         return x;
     }
-    if x <= xp[0] {
+    if x < xp[0] {
         return fp[0];
     }
     if x >= xp[n - 1] {
@@ -99,6 +110,7 @@ mod tests {
         let (xp, fp) = ([0.0, 10.0, 10.0, 20.0], [0.0, 5.0, 7.0, 9.0]);
         let at = |x| interp(x, &xp, &fp);
         assert_eq!((at(-1.0), at(5.0), at(10.0), at(15.0), at(25.0)), (0.0, 2.5, 7.0, 8.0, 9.0));
+        assert_eq!(interp(0.0, &[0.0, 0.0, 10.0], &[1.0, 2.0, 3.0]), 2.0);
         assert_eq!(arange(1.0, 2.0, 0.5), [1.0, 1.5]);
         assert_eq!(percentile(&mut [4.0, 1.0, 3.0, 2.0], 50.0), Some(2.5));
         assert_eq!(percentile(&mut [], 50.0), None);

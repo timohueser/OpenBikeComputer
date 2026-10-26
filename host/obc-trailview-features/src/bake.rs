@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 
-use crate::geometry::{bounds, contains, key, Boxes};
+use crate::geometry::{area, bounds, contains, key, Boxes};
 use crate::kinds::{kind_of, Entry};
 use crate::osm::{self, Selected, LANDUSE, LIFT_REACH_M};
 use crate::pmtiles::{self, Header};
@@ -448,16 +448,7 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
 fn landuse_of(buildings: &[&Vec<Part>], areas: &[(Tags, Vec<Part>)]) -> Vec<Option<String>> {
     let boxes: Vec<[f64; 4]> = areas.iter().map(|(_, parts)| bounds(parts.iter().flat_map(|p| &p.points))).collect();
     let boxes = Boxes::new(&boxes);
-    let twice = |r: &[[f64; 2]]| -> f64 {
-        let n = r.len();
-        let a: f64 = (0..n).map(|i| r[i][0] * r[(i + 1) % n][1]).sum();
-        let b: f64 = (0..n).map(|i| r[i][1] * r[(i + 1) % n][0]).sum();
-        (a - b).abs()
-    };
-    let sizes: Vec<f64> = areas
-        .iter()
-        .map(|(_, parts)| parts.iter().map(|p| twice(&p.points) * if p.outer { 1.0 } else { -1.0 }).sum())
-        .collect();
+    let sizes: Vec<f64> = areas.iter().map(|(_, parts)| area(parts)).collect();
     buildings
         .iter()
         .map(|parts| {

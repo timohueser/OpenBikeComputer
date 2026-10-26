@@ -62,7 +62,7 @@ pub const COVER_M: f64 = 1.0;
 /// PARALLEL_FREE_M along it: a ramp or a flyover, whose climb the smoothing of a track spreads that far.
 const PARALLEL_M: f64 = 6.0;
 const PARALLEL_COS: f64 = 0.9;
-const PARALLEL_RISE_M: f32 = 0.5;
+const PARALLEL_RISE_M: f64 = 0.5;
 const PARALLEL_FREE_M: f64 = 100.0;
 /// Weights against one metre of terrain samples: the terrain under a bridge or tunnel that meets no
 /// road, a row that pins a junction approach, a ford or a slope limit, and per metre of a bridge or

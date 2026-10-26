@@ -110,10 +110,17 @@ pub fn road_half(tags: &Tags) -> f64 {
 }
 
 /// The number at the start of a tag, as JavaScript's parseFloat reads it in the engine: "8 m" is 8.
+/// The engine leaves out a number that is not finite.
 pub(crate) fn leading_number(text: &str) -> Option<f64> {
-    let text = text.trim_start();
+    let text = trim_space(text);
     let span = text.find(|c: char| !matches!(c, '0'..='9' | '+' | '-' | '.' | 'e' | 'E')).unwrap_or(text.len());
-    (1..=span).rev().find_map(|end| text[..end].parse().ok())
+    (1..=span).rev().find_map(|end| text[..end].parse::<f64>().ok()).filter(|v| v.is_finite())
+}
+
+/// The text without the white space that JavaScript trims before a number: Rust's white space, less
+/// U+0085, and U+FEFF.
+pub(crate) fn trim_space(text: &str) -> &str {
+    text.trim_start_matches(|c: char| c.is_whitespace() && c != '\u{85}' || c == '\u{feff}')
 }
 
 /// The bridges: lists of (way, reversed) whose parts meet end to end, where exactly two bridge ends
@@ -483,5 +490,6 @@ mod tests {
         let n = leading_number;
         assert_eq!((n(" -2.5e1x"), n("1e"), n("1e+"), n("5-3")), (Some(-25.0), Some(1.0), Some(1.0), Some(5.0)));
         assert_eq!((n("m8"), n("."), n(""), n("+-5"), n("inf")), (None, None, None, None, None));
+        assert_eq!((n("1e309"), n("\u{feff}2"), n("\u{85}2")), (None, Some(2.0), None));
     }
 }

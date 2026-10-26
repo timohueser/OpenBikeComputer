@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 use rstar::{RTree, AABB};
 
-use crate::geometry::{arange, bounds, interp, key, percentile, Boxes};
+use crate::geometry::{arange, area, bounds, interp, key, percentile, Boxes};
 use crate::{metres, Part, Terrain};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -645,13 +645,7 @@ fn lake_level(lake: &Feature, terrain: &dyn Terrain) -> f64 {
 fn interior(parts: &[Part], top: u32) -> Vec<[f64; 2]> {
     let rings: Vec<&[[f64; 2]]> = parts.iter().map(|p| p.points.as_slice()).collect();
     let [x0, y0, x1, y1] = bounds(rings.iter().copied().flatten());
-    let mut area = 0.0;
-    for part in parts {
-        let r = &part.points;
-        let terms: Vec<f64> =
-            (0..r.len()).map(|i| r[i][0] * r[(i + 1) % r.len()][1] - r[(i + 1) % r.len()][0] * r[i][1]).collect();
-        area += if part.outer { 1.0 } else { -1.0 } * terms.iter().sum::<f64>().abs() / 2.0;
-    }
+    let area = area(parts);
     let pixel = 1.0 / ((1u64 << top) as f64 * TILE);
     let fill = (area.max(0.0) / LAKE_POINTS).sqrt();
     let step = if fill > pixel { fill } else { pixel };

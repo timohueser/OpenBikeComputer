@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use rstar::primitives::GeomWithData;
 use rstar::RTree;
 
+use crate::structures::trim_space;
 use crate::{metres, Part, Tags};
 
 /// The most metres between two masts of a track, and how far beside the track's middle a mast
@@ -38,7 +39,7 @@ pub fn solves(kind: &str) -> bool {
 /// as `trackSurface` of bins.ts reads it, else by its class.
 fn narrow(tags: &Tags) -> bool {
     let gauge = tags.get("gauge").map_or("", String::as_str).split(';').next().unwrap_or("");
-    let digits = gauge.trim_start();
+    let digits = trim_space(gauge);
     let digits = &digits[..digits.bytes().take_while(u8::is_ascii_digit).count()];
     if digits.is_empty() {
         return matches!(tags.get("railway").map(String::as_str), Some("narrow_gauge" | "funicular"));
