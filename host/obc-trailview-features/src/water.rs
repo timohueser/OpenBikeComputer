@@ -1,14 +1,12 @@
 //! The water levels: each lake at one level, and the rivers and streams as networks whose levels
 //! never rise downstream. `specs/trailview-features.md` says what the levels promise.
-//!
-//! The terrain is f32, and the statistics of a lake run in f32 on it, as numpy runs them.
 
 use std::collections::HashMap;
 
 use rayon::prelude::*;
-use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{RTree, AABB};
 
+use crate::geometry::{arange, area, bounds, interp, key, percentile, Boxes};
 use crate::{metres, Part, Terrain};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,11 +76,11 @@ const PIN: f64 = 1000.0;
 const FALL_M: f64 = 3.0;
 /// Lakes: the median of the interior holds where FLAT_SHARE of it lies within FLAT_M of it; else a
 /// shore quantile, INSET_M inside. An `ele` tag within ELE_M of the level wins.
-const FLAT_M: f32 = 0.3;
+const FLAT_M: f64 = 0.3;
 const FLAT_SHARE: f64 = 0.8;
 const INSET_M: f64 = 2.0;
 const SHORE_QUANTILE: f64 = 15.0;
-const ELE_M: f32 = 1.5;
+const ELE_M: f64 = 1.5;
 /// A lake spills where its shore, away from its rivers, lies this far below its level.
 const SPILL_M: f64 = 0.5;
 const RIVER_NEAR_M: f64 = 30.0;
@@ -92,10 +90,6 @@ const LAKE_POINTS: f64 = 250_000.0;
 const TILE: f64 = 512.0;
 
 type Key = [u64; 2];
-
-fn key(point: [f64; 2]) -> Key {
-    [point[0].to_bits(), point[1].to_bits()]
-}
 
 /// The levels of `features`, each network apart on the threads of the current rayon pool. A river
 /// part that OSM draws uphill turns round in place; `turned` lists them as (feature, part).
@@ -148,7 +142,7 @@ pub fn groups(features: &[Feature]) -> Vec<Vec<usize>> {
                 parent[a] = b;
             }
             if !part.points.is_empty() {
-                boxes.push(bounds([part.points.as_slice()]));
+                boxes.push(bounds(&part.points));
                 owners.push(index);
             }
         }
@@ -158,7 +152,7 @@ pub fn groups(features: &[Feature]) -> Vec<Vec<usize>> {
         if feature.parts.iter().all(|p| p.points.is_empty()) {
             continue;
         }
-        let b = bounds(feature.parts.iter().map(|p| p.points.as_slice()));
+        let b = bounds(feature.parts.iter().flat_map(|p| &p.points));
         let margin = 4.0 * RIVER_NEAR_M / metres(b[1]);
         for i in boxes.overlapping([b[0] - margin, b[1] - margin, b[2] + margin, b[3] + margin]) {
             let (a, b) = (root(&mut parent, owners[i]), root(&mut parent, index));
@@ -217,7 +211,7 @@ fn solve_group(features: &[Feature], group: &[usize], marks: &Marks, terrain: &d
             let feature = &features[index];
             let rings: Vec<&[[f64; 2]]> = feature.parts.iter().map(|p| p.points.as_slice()).collect();
             let level = lake_level(feature, terrain);
-            (index, Lake { bounds: bounds(rings.iter().copied()), rings, level })
+            (index, Lake { bounds: bounds(rings.iter().copied().flatten()), rings, level })
         })
         .collect();
     let parts: Vec<(usize, usize)> = group
@@ -338,7 +332,7 @@ impl Way {
             }
         }
         let weight = low.iter().map(|h| if h.is_finite() { 1.0 } else { 0.0 }).collect();
-        let bounds = bounds([xy.as_slice()]);
+        let bounds = bounds(&xy);
         Self { points, xy, along, vertices, bounds, low, weight, feature: 0, part: 0 }
     }
 
@@ -559,7 +553,7 @@ fn reach_levels(way: &Way, a: usize, b: usize, cap: f64, marks: &Marks) -> Vec<f
     let mut splits = Vec::new();
     if marks.0.size() > 0 {
         let xy = &way.xy[a..=b];
-        let [x0, y0, x1, y1] = bounds([xy]);
+        let [x0, y0, x1, y1] = bounds(xy);
         let envelope = AABB::from_corners([x0 - 1e-5, y0 - 1e-5], [x1 + 1e-5, y1 + 1e-5]);
         let near: Vec<[f64; 2]> = marks.0.locate_in_envelope(&envelope).copied().collect();
         for (i, p) in xy.iter().enumerate().skip(1) {
@@ -597,7 +591,7 @@ fn falling(y: &[f64], w: &[f64]) -> Vec<f64> {
 fn smoothed(z: &[f64], splits: &[usize]) -> Vec<f64> {
     let k = (SMOOTH_M / STEP_M).floor() as usize;
     let mut kernel: Vec<f64> = (0..2 * k + 1).map(|i| 1.0 - (i as f64 - k as f64).abs() / (k + 1) as f64).collect();
-    let total = numpy_sum(&kernel);
+    let total: f64 = kernel.iter().sum();
     kernel.iter_mut().for_each(|v| *v /= total);
     let mut bounds = vec![0];
     bounds.extend_from_slice(splits);
@@ -617,71 +611,16 @@ fn smoothed(z: &[f64], splits: &[usize]) -> Vec<f64> {
     out
 }
 
-/// numpy's pairwise sum of a contiguous float64 array.
-fn numpy_sum(a: &[f64]) -> f64 {
-    let n = a.len();
-    if n < 8 {
-        a.iter().fold(-0.0, |sum, v| sum + v)
-    } else if n <= 128 {
-        let mut r = [0.0; 8];
-        r.copy_from_slice(&a[..8]);
-        let mut i = 8;
-        while i < n - n % 8 {
-            for j in 0..8 {
-                r[j] += a[i + j];
-            }
-            i += 8;
-        }
-        let mut sum = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
-        for v in &a[i..] {
-            sum += v;
-        }
-        sum
-    } else {
-        let half = n / 2;
-        let half = half - half % 8;
-        numpy_sum(&a[..half]) + numpy_sum(&a[half..])
-    }
-}
-
-/// numpy's `interp` at x, xp non-decreasing.
-fn interp(x: f64, xp: &[f64], fp: &[f64]) -> f64 {
-    let n = xp.len();
-    if x.is_nan() {
-        return x;
-    }
-    if n == 1 || x < xp[0] {
-        return fp[0];
-    }
-    if x > xp[n - 1] {
-        return fp[n - 1];
-    }
-    let j = xp.partition_point(|&v| v <= x) - 1;
-    if j == n - 1 || xp[j] == x {
-        return fp[j];
-    }
-    let slope = (fp[j + 1] - fp[j]) / (xp[j + 1] - xp[j]);
-    let z = slope * (x - xp[j]) + fp[j];
-    if !z.is_nan() {
-        return z;
-    }
-    let z = slope * (x - xp[j + 1]) + fp[j + 1];
-    if z.is_nan() && fp[j] == fp[j + 1] {
-        fp[j]
-    } else {
-        z
-    }
-}
-
 /// The level of a lake: the median of its interior where it is flat; else the SHORE_QUANTILE of its
 /// shore, INSET_M inside. A pond takes its lowest shore, a reservoir its shore at the outline, the
 /// full level. An `ele` tag within ELE_M wins. NaN where the terrain knows none of it.
 fn lake_level(lake: &Feature, terrain: &dyn Terrain) -> f64 {
     let rings: Vec<&[[f64; 2]]> = lake.parts.iter().map(|p| p.points.as_slice()).collect();
-    let finite = |h: Vec<f64>| -> Vec<f32> { h.into_iter().filter(|v| v.is_finite()).map(|v| v as f32).collect() };
-    let shore = finite(terrain.heights(&ring_points(&rings, STEP_M, INSET_M)));
+    let finite = |h: Vec<f64>| -> Vec<f64> { h.into_iter().filter(|v| v.is_finite()).collect() };
+    let median = |mut h: Vec<f64>| percentile(&mut h, 50.0).unwrap_or(f64::NAN);
+    let mut shore = finite(terrain.heights(&ring_points(&rings, STEP_M, INSET_M)));
     let level = match lake.level {
-        Level::Pond => shore.iter().copied().reduce(f32::min).unwrap_or(f32::NAN),
+        Level::Pond => shore.iter().copied().reduce(f64::min).unwrap_or(f64::NAN),
         Level::Reservoir => median(finite(terrain.heights(&ring_points(&rings, STEP_M, 0.0)))),
         Level::Natural => {
             let h = finite(terrain.heights(&interior(&lake.parts, terrain.top())));
@@ -689,50 +628,15 @@ fn lake_level(lake: &Feature, terrain: &dyn Terrain) -> f64 {
             let flat = h.iter().filter(|&&v| (v - middle).abs() <= FLAT_M).count();
             if !h.is_empty() && flat as f64 / h.len() as f64 >= FLAT_SHARE {
                 middle
-            } else if !shore.is_empty() {
-                percentile(shore, SHORE_QUANTILE)
             } else {
-                middle
+                percentile(&mut shore, SHORE_QUANTILE).unwrap_or(middle)
             }
         }
     };
-    if (lake.ele as f32 - level).abs() <= ELE_M {
+    if (lake.ele - level).abs() <= ELE_M {
         lake.ele
     } else {
-        level as f64
-    }
-}
-
-/// numpy's median of f32 values, NaN of none.
-fn median(mut v: Vec<f32>) -> f32 {
-    if v.is_empty() {
-        return f32::NAN;
-    }
-    v.sort_by(f32::total_cmp);
-    let n = v.len();
-    if n % 2 == 1 {
-        v[n / 2]
-    } else {
-        (v[n / 2 - 1] + v[n / 2]) / 2.0
-    }
-}
-
-/// numpy's linear percentile q of f32 values, not empty.
-fn percentile(mut v: Vec<f32>, q: f64) -> f32 {
-    v.sort_by(f32::total_cmp);
-    let n = v.len();
-    let virtual_index = (n - 1) as f64 * (q / 100.0);
-    if virtual_index >= (n - 1) as f64 {
-        return v[n - 1];
-    }
-    let previous = virtual_index.floor();
-    let gamma = virtual_index - previous;
-    let (a, b) = (v[previous as usize], v[previous as usize + 1]);
-    let d = b - a;
-    if gamma >= 0.5 {
-        b - d * (1.0 - gamma) as f32
-    } else {
-        a + d * gamma as f32
+        level
     }
 }
 
@@ -740,14 +644,8 @@ fn percentile(mut v: Vec<f32>, q: f64) -> f32 {
 /// LAKE_POINTS points at most, row by row.
 fn interior(parts: &[Part], top: u32) -> Vec<[f64; 2]> {
     let rings: Vec<&[[f64; 2]]> = parts.iter().map(|p| p.points.as_slice()).collect();
-    let [x0, y0, x1, y1] = bounds(rings.iter().copied());
-    let mut area = 0.0;
-    for part in parts {
-        let r = &part.points;
-        let terms: Vec<f64> =
-            (0..r.len()).map(|i| r[i][0] * r[(i + 1) % r.len()][1] - r[(i + 1) % r.len()][0] * r[i][1]).collect();
-        area += if part.outer { 1.0 } else { -1.0 } * numpy_sum(&terms).abs() / 2.0;
-    }
+    let [x0, y0, x1, y1] = bounds(rings.iter().copied().flatten());
+    let area = area(parts);
     let pixel = 1.0 / ((1u64 << top) as f64 * TILE);
     let fill = (area.max(0.0) / LAKE_POINTS).sqrt();
     let step = if fill > pixel { fill } else { pixel };
@@ -770,22 +668,6 @@ fn interior(parts: &[Part], top: u32) -> Vec<[f64; 2]> {
     out
 }
 
-/// numpy's `arange(start, stop, step)` of floats.
-fn arange(start: f64, stop: f64, step: f64) -> Vec<f64> {
-    let len = ((stop - start) / step).ceil();
-    if len.is_nan() || len <= 0.0 {
-        return Vec::new();
-    }
-    let mut out = vec![start];
-    if len > 1.0 {
-        let next = start + step;
-        let delta = next - start;
-        out.push(next);
-        out.extend((2..len as usize).map(|i| start + i as f64 * delta));
-    }
-    out
-}
-
 /// Whether a lake's shore lies below its level by more than SPILL_M, INSET_M outside it and away
 /// from its rivers.
 fn spills(level: f64, rings: &[&[[f64; 2]]], terrain: &dyn Terrain, rivers: &[&Way]) -> bool {
@@ -793,7 +675,7 @@ fn spills(level: f64, rings: &[&[[f64; 2]]], terrain: &dyn Terrain, rivers: &[&W
     if outside.is_empty() {
         return false;
     }
-    let below = (level - SPILL_M) as f32;
+    let below = level - SPILL_M;
     let watched: Vec<[f64; 2]> = rivers
         .iter()
         .flat_map(|way| {
@@ -801,9 +683,11 @@ fn spills(level: f64, rings: &[&[[f64; 2]]], terrain: &dyn Terrain, rivers: &[&W
             way.points.iter().step_by(step).chain(way.points.last()).copied()
         })
         .collect();
-    terrain.heights(&outside).iter().zip(&outside).any(|(&h, p)| {
-        (h as f32) < below && watched.iter().all(|&[x, y]| (p[0] - x).hypot(p[1] - y) * metres(y) > RIVER_NEAR_M)
-    })
+    terrain
+        .heights(&outside)
+        .iter()
+        .zip(&outside)
+        .any(|(&h, p)| h < below && watched.iter().all(|&[x, y]| (p[0] - x).hypot(p[1] - y) * metres(y) > RIVER_NEAR_M))
 }
 
 /// Points every step_m along the rings, moved offset_m inside the area (negative: outside).
@@ -889,36 +773,6 @@ impl Edges {
     }
 }
 
-/// The box (x0, y0, x1, y1) of the points of lines.
-fn bounds<'a>(lines: impl IntoIterator<Item = &'a [[f64; 2]]>) -> [f64; 4] {
-    let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-    for &[x, y] in lines.into_iter().flatten() {
-        b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
-    }
-    b
-}
-
-/// Boxes (x0, y0, x1, y1) to find the ones that meet a box, edges included.
-struct Boxes(RTree<GeomWithData<Rectangle<[f64; 2]>, usize>>);
-
-impl Boxes {
-    fn new(boxes: &[[f64; 4]]) -> Self {
-        let items = boxes
-            .iter()
-            .enumerate()
-            .map(|(i, b)| GeomWithData::new(Rectangle::from_corners([b[0], b[1]], [b[2], b[3]]), i));
-        Self(RTree::bulk_load(items.collect()))
-    }
-
-    /// The numbers of the boxes that meet `b`, in order.
-    fn overlapping(&self, b: [f64; 4]) -> Vec<usize> {
-        let envelope = AABB::from_corners([b[0], b[1]], [b[2], b[3]]);
-        let mut out: Vec<usize> = self.0.locate_in_envelope_intersecting(&envelope).map(|item| item.data).collect();
-        out.sort_unstable();
-        out
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -949,7 +803,7 @@ mod tests {
             level: Level::Natural,
             half: 1.0,
             ele: f64::NAN,
-            parts: vec![Part { outer: kind == Kind::Lake, points }],
+            parts: vec![Part { outer: kind == Kind::Lake, points, z: None }],
         }
     }
 
@@ -1098,7 +952,7 @@ mod tests {
         // The island's ring is closed: its last vertex repeats the first.
         let island = vec![at(40.0, 40.0), at(360.0, 40.0), at(360.0, 360.0), at(40.0, 360.0), at(40.0, 40.0)];
         let ground = terrain(|e, s| if e > 40.0 && e < 360.0 && s > 40.0 && s < 360.0 { 760.0 } else { 700.0 });
-        let parts = [Part { outer: true, points: square() }, Part { outer: false, points: island }];
+        let parts = [Part { outer: true, points: square(), z: None }, Part { outer: false, points: island, z: None }];
         let h = ground.heights(&interior(&parts, ground.top()));
         assert!(!h.is_empty());
         assert!(h.iter().all(|&v| v == 700.0));

@@ -9,6 +9,7 @@ use rstar::{RTree, AABB};
 
 use super::network::{dot, hypot, sub, Network};
 use super::*;
+use crate::geometry::key;
 use crate::{metres, Terrain};
 
 /// Rows of up to four variables: Σ coefficient × z_variable, against a value.
@@ -249,9 +250,7 @@ pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain)
     let at: Vec<[f64; 2]> = found.iter().map(|&(v, _, _)| net.vertex_xy[v]).collect();
     let feet: Vec<[f64; 2]> = found.iter().map(|&(_, k, t)| [pa[k][0] + t * d[k][0], pa[k][1] + t * d[k][1]]).collect();
     let (here, there) = (terrain.heights(&at), terrain.heights(&feet));
-    // The terrain is f32: the difference of two of its heights too.
-    let mut level: Vec<bool> =
-        here.iter().zip(&there).map(|(&h, &f)| ((h as f32) - (f as f32)).abs() <= PARALLEL_RISE_M).collect();
+    let mut level: Vec<bool> = here.iter().zip(&there).map(|(&h, &f)| (h - f).abs() <= PARALLEL_RISE_M).collect();
     // Metres along its way at each vertex, and the pins of each way that lie too near a parting.
     let mut steps = vec![0.0; net.vertex_xy.len()];
     for (s, &v) in net.segment_start.iter().enumerate() {
@@ -295,7 +294,7 @@ pub(crate) fn fords(net: &Network, rivers: &[&River]) -> Pins<3> {
     for river in rivers {
         for (point, &level) in river.points.iter().zip(&river.levels) {
             if level.is_finite() {
-                levels.entry(bits(*point)).or_insert(level);
+                levels.entry(key(*point)).or_insert(level);
             }
         }
         for k in 1..river.points.len() {
@@ -307,7 +306,7 @@ pub(crate) fn fords(net: &Network, rivers: &[&River]) -> Pins<3> {
     }
     for o in 0..net.osm_xy.len() {
         if !net.free[net.osm_way[o]] {
-            if let Some(level) = levels.get(&bits(net.osm_xy[o])) {
+            if let Some(level) = levels.get(&key(net.osm_xy[o])) {
                 pins.push([net.osm_var[o]; 3], [1.0, 0.0, 0.0], level - FORD_M);
             }
         }
@@ -330,10 +329,6 @@ pub(crate) fn fords(net: &Network, rivers: &[&River]) -> Pins<3> {
         }
     }
     pins
-}
-
-fn bits(point: [f64; 2]) -> [u64; 2] {
-    [point[0].to_bits(), point[1].to_bits()]
 }
 
 /// The rows of the decks over what they cross, and per row its bridge: where a bridge segment
@@ -658,28 +653,10 @@ impl Grid {
 
 /// The cells of the grid that the box of segment p-q meets.
 fn cells(p: [f64; 2], q: [f64; 2]) -> Vec<(i64, i64)> {
-    let cell = |x: f64| floor_divide(x, GRID_UNITS) as i64;
+    let cell = |x: f64| (x / GRID_UNITS).floor() as i64;
     let (x0, x1) = (cell(p[0].min(q[0])), cell(p[0].max(q[0])));
     let (y0, y1) = (cell(p[1].min(q[1])), cell(p[1].max(q[1])));
     (x0..=x1).flat_map(|cx| (y0..=y1).map(move |cy| (cx, cy))).collect()
-}
-
-/// Python's `a // b` of floats: the floor of the exact quotient, not of the rounded one.
-fn floor_divide(a: f64, b: f64) -> f64 {
-    let modulo = a % b;
-    let mut div = (a - modulo) / b;
-    if modulo != 0.0 && ((b < 0.0) != (modulo < 0.0)) {
-        div -= 1.0;
-    }
-    if div == 0.0 {
-        return 0.0f64.copysign(a / b);
-    }
-    let floor = div.floor();
-    if div - floor > 0.5 {
-        floor + 1.0
-    } else {
-        floor
-    }
 }
 
 /// The parameters (along p-q, along e from r) where the lines through p-q and along e from r meet.

@@ -1,6 +1,7 @@
 //! The road solver on synthetic terrain.
 
 use super::*;
+use crate::geometry::interp;
 use crate::metres;
 
 const RAILS: [&str; 5] = ["rail", "light_rail", "narrow_gauge", "rack", "funicular"];
@@ -81,12 +82,6 @@ impl Place {
         }
         (along, z.clone())
     }
-}
-
-fn interp(x: f64, xp: &[f64], fp: &[f64]) -> f64 {
-    let k = xp.partition_point(|&v| v < x).clamp(1, xp.len() - 1);
-    let t = (x - xp[k - 1]) / (xp[k] - xp[k - 1]);
-    (fp[k - 1] + t * (fp[k] - fp[k - 1])).clamp(fp[k - 1].min(fp[k]), fp[k - 1].max(fp[k]))
 }
 
 /// A way of a class with `half` of a road without a width; `edit` sets its other facts.

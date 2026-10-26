@@ -28,6 +28,8 @@ use fit::{fit, Block, Graph, Rows, Term};
 use network::{hypot, sub, Network};
 use rows::union;
 
+use crate::geometry::percentile;
+use crate::structures::{BORE_M, BORE_PATH_M, BORE_RAIL_M};
 use crate::{metres, Terrain};
 
 const SAMPLE_M: f64 = 2.0;
@@ -53,18 +55,14 @@ pub const CLEAR_PATH_M: f64 = 2.5;
 pub const CLEAR_RAIL_M: f64 = 6.0;
 pub const DECK_M: f64 = 1.0;
 pub const DECK_PATH_M: f64 = 0.4;
-/// A road or a path over a tunnel lies at least this far over its bore, BORE_M for a road, as
-/// `tools/trailview/structures.py` builds it.
+/// A road or a path over a tunnel lies at least this far over its bore.
 pub const COVER_M: f64 = 1.0;
-pub const BORE_M: f64 = 5.0;
-const BORE_PATH_M: f64 = 2.6;
-const BORE_RAIL_M: f64 = 6.5;
 /// A track within PARALLEL_M beside another, and within PARALLEL_COS of its direction, lies at its
 /// height, unless the terrain under the two differs by more than PARALLEL_RISE_M within
 /// PARALLEL_FREE_M along it: a ramp or a flyover, whose climb the smoothing of a track spreads that far.
 const PARALLEL_M: f64 = 6.0;
 const PARALLEL_COS: f64 = 0.9;
-const PARALLEL_RISE_M: f32 = 0.5;
+const PARALLEL_RISE_M: f64 = 0.5;
 const PARALLEL_FREE_M: f64 = 100.0;
 /// Weights against one metre of terrain samples: the terrain under a bridge or tunnel that meets no
 /// road, a row that pins a junction approach, a ford or a slope limit, and per metre of a bridge or
@@ -598,7 +596,7 @@ pub fn solve(
         grade_excess_m: worst.map_or(0.0, |(e, _)| e.max(0.0)),
         grade_excess_at: worst.map_or([0.0, 0.0], |(_, s)| degrees(net.vertex_xy[net.segment_start[s]])),
         grade_excess_over_1cm: excess.iter().filter(|e| e.0 > 0.01).count(),
-        residual_p99_m: percentile(&mut residual, 99.0),
+        residual_p99_m: percentile(&mut residual, 99.0).unwrap_or(0.0),
         refinements_unconverged: unconverged,
     };
     solved.underpasses = (0..held_up.len())
@@ -622,17 +620,6 @@ fn held_at(rows: Rows, w: f64, c: Vec<f64>) -> (Rows, Vec<f64>, Vec<f64>) {
 /// Latitude and longitude of a world point.
 fn degrees([x, y]: [f64; 2]) -> [f64; 2] {
     [(std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees(), x * 360.0 - 180.0]
-}
-
-/// The q-th percentile with linear interpolation, 0 for no values.
-fn percentile(values: &mut [f64], q: f64) -> f64 {
-    if values.is_empty() {
-        return 0.0;
-    }
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let at = q / 100.0 * (values.len() - 1) as f64;
-    let (lo, hi) = (at.floor() as usize, at.ceil() as usize);
-    values[lo] + (values[hi] - values[lo]) * (at - lo as f64)
 }
 
 /// Per way, whether it is a culvert: a bridge shorter than CULVERT_M, with the deck no more than

@@ -117,7 +117,7 @@ Copernicus GLO-30 square N46 E008, its feature tiles and its config. To make it 
 ```sh
 cargo run --release --locked -p obc-dem --features terrarium --bin planner-dem -- \
   --dem DIR --bounds 8.37,46.765,8.46,46.83 --output terrain.mbtiles
-uv run --locked --group trailview python -m tools.planner_trailview_features --osm OSM.pbf \
+cargo run --release --locked -p obc-trailview-features -- --osm OSM.pbf \
   --terrain terrain.mbtiles --bounds 8.37,46.765,8.46,46.83 --output features.pmtiles
 uv run --locked --group planner-maps python builder/web/tests/browser/trailview/make-fixture.py terrain.mbtiles features.pmtiles
 ```

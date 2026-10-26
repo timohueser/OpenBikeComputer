@@ -9,10 +9,10 @@ def cores():
     return len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
 
 
-def free_memory(held=0):
+def free_memory():
     """The bytes of memory that this step may take, 0 or more: what is free past a quarter of the machine's memory, as
     other work shares the machine and its memory grows while the step runs, and no more than `obc data` reserves for
-    the step less the `held` bytes of this process."""
+    the step."""
     try:
         with open("/proc/meminfo") as meminfo:
             sizes = {line.split(":")[0]: int(line.split()[1]) << 10 for line in meminfo}
@@ -20,17 +20,7 @@ def free_memory(held=0):
     except (OSError, KeyError):
         return None
     # `obc data` reserves only the largest process of a step.
-    reserved = int(os.environ.get("OBC_DATA_MEMORY_BYTES", free + held))
-    return max(0, min(free, reserved - held))
-
-
-def resident():
-    """The bytes of memory that this process holds, 0 where the system does not tell."""
-    try:
-        with open("/proc/self/statm") as statm:
-            return int(statm.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
-    except OSError:
-        return 0
+    return max(0, min(free, int(os.environ.get("OBC_DATA_MEMORY_BYTES", free))))
 
 
 def worker_count(memory=1 << 30):

@@ -10,9 +10,59 @@ import struct
 import subprocess
 
 from . import planner_grid_index as index, planner_offline as offline, planner_runtime as runtime
-from . import planner_trailview_features as trailview_features
 from .planner_grid_search import search_metadata
 from .planner_map_archive import pixels
+
+
+GEOMETRIES = ('point', 'line', 'area')
+
+
+def features(data):
+    """The features of a TrailView feature tile (specs/trailview-features.md): `kind`, `tags`, `geometry` and
+    `parts`. A part has `outer`, `xy` and, when the feature has heights, `z` in metres with None where a height is
+    not solved."""
+    position = 0
+
+    def read():
+        nonlocal position
+        value = shift = 0
+        while True:
+            byte = data[position]
+            position += 1
+            value |= (byte & 0x7F) << shift
+            shift += 7
+            if byte < 0x80:
+                return value
+
+    signed = lambda value: value >> 1 ^ -(value & 1)
+    strings = []
+    for _ in range(read()):
+        length = read()
+        strings.append(bytes(data[position:position + length]).decode())
+        position += length
+    decoded = []
+    for _ in range(read()):
+        kind, tags = strings[read()], {}
+        for _ in range(read()):
+            key = strings[read()]
+            tags[key] = strings[read()]
+        header = read()
+        solved, x, y, height, parts = header & 4, 0, 0, 0, []
+        for _ in range(header >> 3):
+            count = read()
+            part = {'outer': bool(count & 1), 'xy': [], **({'z': []} if solved else {})}
+            for _ in range(count >> 1):
+                x, y = x + signed(read()), y + signed(read())
+                part['xy'].append([x, y])
+                if solved:
+                    code = read()
+                    height += signed(code - 1) if code else 0
+                    part['z'].append(height / 100 if code else None)
+            parts.append(part)
+        decoded.append({'kind': kind, 'tags': tags, 'geometry': GEOMETRIES[header & 3], 'parts': parts})
+    if position != len(data):
+        raise ValueError('A feature tile has bytes after its last feature')
+    return decoded
 
 
 @contextmanager
@@ -71,7 +121,7 @@ def archive(path, kind, vector=None):
             elif expected == TileType.MVT:
                 vector(data)
             elif kind == 'trailview-features':
-                trailview_features.decode(data)
+                features(data)
             elif kind == 'snow':
                 seasons = metadata.get('seasons')
                 if type(seasons) is not int or seasons <= 0 or len(data) != 2 * seasons * 256 * 256:
