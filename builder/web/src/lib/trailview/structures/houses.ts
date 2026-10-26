@@ -18,7 +18,7 @@ const ZOOM = 14, EARTH_M = 40075016.686;
 const FIT_WORDS = 4, DRAWN_BYTES = 160, STYLE_WORDS = 32, STYLES_AT = 48 + 64 * 16 + 256 * 16, STYLES = 32, PARAMS_BYTES = STYLES_AT + STYLES * STYLE_WORDS * 4, DRAW_STRIDE = 256;
 /**
  * Houses drawn in a frame at most; past ROOM of them, the narrowest on screen go first. The sun's view
- * holds the casters of the shadow map (light/shadow.ts).
+ * holds the casters of a shadow map (light/shadow.ts): up to 2 100 on the kit's flights (measured).
  */
 const DRAWN = 2 ** 14, SUN_DRAWN = 2 ** 12, ROOM = [0.7, 0.9];
 /** Tiles that one fit pass reaches at most, as `ranges` in houses.wgsl. */
@@ -55,7 +55,8 @@ export const PAD = { burial: 0.5, steep: [2, 3], plinth: 0.3, margin: 1.0, full:
 export interface HouseCamera { viewProj: Float32Array; eye: [number, number, number] }
 
 /** Houses on the GPU, their tiles, and the houses that a recent frame drew in full and simple. */
-export interface HouseStats { houses: number; tiles: number; full: number; simple: number }
+/** `casters`: the most houses that a draw of the shadow maps fitted, and those that all draws dropped. */
+export interface HouseStats { houses: number; tiles: number; full: number; simple: number; casters: { staged: number; dropped: number } }
 
 /** What a view culls into and draws from. */
 interface ViewBuffers {
@@ -79,6 +80,8 @@ interface Resources {
     houses: GPUBuffer;
     fits: GPUBuffer[];
     readbacks: GPUBuffer[];
+    /** The counts of the sun's view, unless a read holds it. */
+    sunReadback?: GPUBuffer;
     outlineVertices: GPUBuffer;
     surface: GPUBindGroup;
     features: GPUBindGroup;
@@ -140,6 +143,7 @@ export class Houses {
     /** Whether the records moved since the last encode: their fits move with them there. */
     private moved = false;
     private drawnCounts = { full: 0, simple: 0 };
+    private casterCounts = { staged: 0, dropped: 0 };
     /** Frames that moved, and whether one moved since the last refit. */
     private frames = 0;
     private stale = false;
@@ -173,7 +177,7 @@ export class Houses {
     }
 
     get stats(): HouseStats {
-        return { houses: this.count, tiles: this.ranges.length, ...this.drawnCounts };
+        return { houses: this.count, tiles: this.ranges.length, ...this.drawnCounts, casters: this.casterCounts };
     }
 
     /** `frames` are the frame uniforms of the eye's view and of the sun's. */
@@ -244,7 +248,8 @@ export class Houses {
         };
         this.resources = {
             device, fit, refit, templates, outlines, casters: [templateCaster, outlineCaster], houses: b.houses, fits: b.fits, eye: view(frame, DRAWN), sun: view(sunFrame, SUN_DRAWN),
-            readbacks: [0, 1].map(() => gpu.buffer('houses', LISTS * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST)), outlineVertices: b.outlineVertices,
+            readbacks: [0, 1].map(() => gpu.buffer('houses', LISTS * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST)), sunReadback: gpu.buffer('houses', LISTS * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST),
+            outlineVertices: b.outlineVertices,
             surface: surface.group, features: features.group,
         };
     }
@@ -369,10 +374,24 @@ export class Houses {
      */
     encodeCasters(pass: GPUComputePassEncoder, ground: GPUBindGroup, camera: HouseCamera): void {
         const r = this.resources;
-        if (!r || !this.count || this.moved) return;
+        if (!r || !this.count) return;
         const [fits, refits] = this.prepare(r, r.sun, camera, SUN_DRAWN, 1e30, 0);
         r.device.queue.writeBuffer(r.sun.draws, (LISTS + DRAWS * SUN_DRAWN) * 4, NO_DRAWS, 0, this.count);
         this.cull(pass, r, r.sun, ground, refits, fits);
+    }
+
+    /** Reads the counts of the sun's view after its cull, for the stats. Call the returned function after the submit. */
+    readCasters(encoder: GPUCommandEncoder): () => void {
+        const r = this.resources, readback = r?.sunReadback;
+        if (!r || !readback || !this.count) return () => {};
+        r.sunReadback = undefined;
+        encoder.copyBufferToBuffer(r.sun.draws, 0, readback, 0, LISTS * 4);
+        return () => readback.mapAsync(GPUMapMode.READ).then(() => {
+            const fitted = new Uint32Array(readback.getMappedRange())[LISTS - 4];
+            this.casterCounts = { staged: Math.max(this.casterCounts.staged, fitted), dropped: this.casterCounts.dropped + Math.max(0, fitted - SUN_DRAWN) };
+            readback.unmap();
+            r.sunReadback = readback;
+        }, () => {});
     }
 
     draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {
@@ -461,9 +480,9 @@ export class Houses {
             const [east, north] = this.frame.local(...lonLat(tx, ty)), dx = east - eye[0], dy = north - eye[1], drop = CURVATURE * (dx * dx + dy * dy);
             corners.push([dx, dy, LOWEST_M - eye[2] - drop], [dx, dy, HIGHEST_M - eye[2] - drop]);
         }
-        // The left, right, bottom and top planes, as rows w ± x and w ± y of the matrix.
-        return [[0, 1], [0, -1], [1, 1], [1, -1]].every(([row, sign]) => {
-            const a = m[3] + sign * m[row], b = m[7] + sign * m[4 + row], c = m[11] + sign * m[8 + row], d = m[15] + sign * m[12 + row];
+        // The left, right, bottom, top, near and far planes, as rows w ± x, w ± y, z and w − z of the matrix.
+        return [[0, 1, 1], [0, -1, 1], [1, 1, 1], [1, -1, 1], [2, 1, 0], [2, -1, 1]].every(([row, sign, w]) => {
+            const a = w * m[3] + sign * m[row], b = w * m[7] + sign * m[4 + row], c = w * m[11] + sign * m[8 + row], d = w * m[15] + sign * m[12 + row];
             return corners.some(([px, py, pz]) => a * px + b * py + c * pz + d >= -GROW_M * Math.hypot(a, b, c));
         });
     }

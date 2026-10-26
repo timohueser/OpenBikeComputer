@@ -1,8 +1,8 @@
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
-import { CASTER_DEPTH, CASTER_PRIMITIVE } from '../light/shadow';
+import { CASTER_DEPTH, CASTER_PRIMITIVE, NEAR_CASTERS_M } from '../light/shadow';
 import { metresPerUnit } from '../terrain/bins';
-import { key, type Node } from '../terrain/lod';
+import { key, size, type Node } from '../terrain/lod';
 import type { Stamps } from '../terrain/stamps';
 import { ANCHOR_WORDS, ANCHORED_VERTEX } from './anchored';
 import { STRUCTURE_VERTEX } from './mesh';
@@ -160,7 +160,7 @@ export class Structures {
                 label: 'anchor heights', layout: device.createPipelineLayout({ bindGroupLayouts: [computeLayout, surfaceLayout, empty, featureLayout] }),
                 compute: { module, entryPoint: 'anchor_heights' },
             }),
-            caster('structure_vertex', structureVertices), caster('anchored_vertex', anchoredVertices),
+            caster('structure_vertex', structureVertices), caster('anchored_caster', anchoredVertices),
         ]);
         const pool = (label: string, vertexBytes: number, indexBytes: number, stride: number) =>
             new Pool(device, gpu.buffer(label, vertexBytes, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), gpu.buffer(label, indexBytes, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST), stride);
@@ -177,13 +177,21 @@ export class Structures {
         };
     }
 
-    /** The meshes of a frame from its drawn nodes, which ask for them. True when they differ from the last frame's. */
-    update(drawn: Node[]): boolean {
+    /**
+     * The meshes of a frame from its drawn nodes, which ask for them, and from the nodes whose structures
+     * cast into the near shadow map about the eye (world units, and metres per unit). True when they
+     * differ from the last frame's.
+     */
+    update(drawn: Node[], eye: { x: number; y: number; unit: number }): boolean {
         const owners = new Map<string, { node: Node; near: boolean }>();
         for (const { level, x, y } of drawn) {
             if (level < OWNER) continue;
             const node = { level: OWNER, x: x >> (level - OWNER), y: y >> (level - OWNER) }, name = key(node);
             owners.set(name, { node, near: owners.get(name)?.near || level >= NEAR_LEVEL });
+        }
+        const side = size(OWNER), reach = NEAR_CASTERS_M / eye.unit;
+        for (let y = Math.floor((eye.y - reach) / side); y <= Math.floor((eye.y + reach) / side); y++) {
+            for (let x = Math.floor((eye.x - reach) / side); x <= Math.floor((eye.x + reach) / side); x++) owners.set(key({ level: OWNER, x, y }), { node: { level: OWNER, x, y }, near: true });
         }
         const now: { meshes: NodeMeshes; near: boolean }[] = [];
         for (const { node, near } of owners.values()) {

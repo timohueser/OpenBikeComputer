@@ -36,8 +36,6 @@ struct Look {
     modes: vec4u,
     // xy: this frame's jitter in clip space. z: render pixels per output pixel, the render scale. w: unused.
     screen: vec4f,
-    // Render space to the object shadow map (shadow.wgsl).
-    sun_view: mat4x4f,
 }
 
 @group(2) @binding(0) var<uniform> look: Look;

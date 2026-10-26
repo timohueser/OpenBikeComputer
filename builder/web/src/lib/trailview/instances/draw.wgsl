@@ -59,6 +59,8 @@ struct MeshOut {
     @location(4) air: vec3f,
     @location(5) @interpolate(flat) sun: f32,
     @location(6) relative: vec3f,
+    // 1 where `sun` holds the objects' shadow too (mesh_vertex), 0 for a tree, which reads it per pixel.
+    @location(7) @interpolate(flat) shaded: u32,
 }
 
 // The haze between the eye and a point of render space, as the factor and the term that `atmosphere`
@@ -203,6 +205,12 @@ fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     out.albedo = snowed(tied(colour, tint, m.tie, i.ground) * crown_shade(model, m) * far_tone(m, length(p)), v.normal.z, i.look);
     out.look = i.look;
     out.sun = sun_of(i.ground);
+    // A plant, a rock or an animal is small: one read of the objects' shadow at its middle, lifted out
+    // of its own caster, shades it whole, for less than a read per pixel of its many small faces.
+    if (m.crown < 0.0) {
+        out.sun = sun_share(out.sun, i.at.xyz + vec3f(0.0, 0.0, 0.5 * i.at.w), vec3f(0.0, 0.0, 1.0), i.at.w);
+        out.shaded = 1u;
+    }
     return out;
 }
 
@@ -235,5 +243,9 @@ fn mesh_fragment_whole(in: MeshOut) -> @location(0) vec4f {
 
 fn mesh_lit(in: MeshOut) -> vec4f {
     let n = normalize(in.normal);
-    return vec4f(in.fog * light_up(in.albedo, n, sun_share(in.sun, in.relative, n, LIFT_CROWN), 1.0, look.horizon.w) + in.air, 1.0);
+    var sun = in.sun;
+    if (in.shaded == 0u) {
+        sun = crown_sun_share(sun, in.relative, n);
+    }
+    return vec4f(in.fog * light_up(in.albedo, n, sun, 1.0, look.horizon.w) + in.air, 1.0);
 }

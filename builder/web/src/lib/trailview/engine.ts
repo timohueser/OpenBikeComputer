@@ -26,7 +26,7 @@ import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
-const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'casters', 'shadow', 'resolve'];
+const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'casters', 'shadow', 'far-casters', 'far-shadow', 'mips', 'resolve'];
 /** Metres to a view that is at another place. */
 const NEW_PLACE = 1000;
 /** The clear colour of the crack test: any red pixel is a hole in the terrain. */
@@ -223,7 +223,7 @@ export class TrailView {
         const targets = new Targets(gpu);
         this.gpuState = { gpu, uniform, look, times: new PassTimes(gpu, PASSES, { resolve: 'terrain' }), targets };
         this.temporal.reset();
-        this.shadow.attach(gpu);
+        await this.shadow.attach(gpu);
         const layouts = this.groundLook.layouts(gpu.device), frames = [uniform, this.shadow.frame];
         await this.terrain.attach(gpu, uniform, this.shadow.frame, targets.format, DEPTH, layouts.render);
         // The rest needs only the terrain's surface: their pipelines compile side by side.
@@ -357,18 +357,21 @@ export class TrailView {
         this.dressing.update(lonLat);
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
-        let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false, casting = false;
+        let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false, cascade = -1;
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, scale], extras = JSON.stringify(this.extras);
             moved = camera.some((value, i) => value !== this.camera[i]);
             changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || extras !== this.drawnExtras;
             this.camera = camera;
             this.drawnExtras = extras;
-            step = this.temporal.next(moved, changed, debug ? 1 : STILL_FRAMES);
+            const sun = this.sun(), casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent;
+            cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, sun, { casters, reshaped: this.terrain.reshaped });
+            this.shadow.write(gpu, [eye.east, eye.north, eye.z], sun);
+            // A new map changes the frame as new content does.
+            step = this.temporal.next(moved, changed || cascade >= 0, debug ? 1 : STILL_FRAMES);
             if (step && !debug) offset = jitter(step.sample);
             // The jitter in clip space: render pixels are y down.
             ndc = [2 * offset[0] / width, -2 * offset[1] / height];
-            casting = !!step && this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, this.sun(), changed, moved);
             gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, jittered(viewProj, ndc), 2 * Math.tan(VFOV * RAD / 2) / targets.height));
             gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, aspect, ndc, scale, step?.sample ?? 0));
         } else this.temporal.reset();
@@ -379,7 +382,7 @@ export class TrailView {
         const last = eye && this.lastFrame
             ? { ...this.lastFrame, moved: [eye.east - this.lastFrame.eye[0], eye.north - this.lastFrame.eye[1], eye.z - this.lastFrame.eye[2]] as [number, number, number] } : undefined;
         const placed = this.vegetation(encoder, eye && group && step ? targets.viewport(this.scale)[1] : 0, last, () => times.writes('vegetation'));
-        if (casting && eye && group) this.cast(encoder, group, eye);
+        const cast = cascade >= 0 && step && eye && group ? this.cast(encoder, group, eye, cascade) : () => {};
         if (!eye || !group) {
             // Until the eye has ground nothing draws: the horizon of the weather fills the canvas.
             encoder.beginRenderPass({
@@ -413,11 +416,12 @@ export class TrailView {
         probed();
         counted();
         placed();
+        cast();
         this.cpu = performance.now() - start;
         this.drawn = eye ? this.terrain.drawn : 0;
         // Frames go on while the eye moves or settles on the ground, while the terrain or the ground has
         // work that no load waits for, and until a still view has all its jittered frames.
-        if (steer || !settled || this.terrain.working || this.groundLook.working || this.houses.working || this.converging) this.request();
+        if (steer || !settled || this.terrain.working || this.groundLook.working || this.houses.working || this.shadow.pending || this.converging) this.request();
         if (steer || this.moved) this.onView?.(this.view);
         this.moved = false;
         for (const resolve of this.rendered.splice(0)) resolve();
@@ -441,22 +445,28 @@ export class TrailView {
         return this.instances.read(encoder);
     }
 
-    /** Draws the shadow map: the producers and the houses cull for the sun's view, then the casters draw. */
-    private cast(encoder: GPUCommandEncoder, group: GPUBindGroup, eye: Eye): void {
-        const { gpu, times } = this.gpuState, computeGroup = this.groundLook.computeGroup;
-        const at: [number, number, number] = [eye.east, eye.north, eye.z], viewProj = this.shadow.matrix(at);
+    /**
+     * Draws a cascade's shadow map: the producers and the houses cull for the sun's view, then the
+     * casters draw. Call the returned function after the submit.
+     */
+    private cast(encoder: GPUCommandEncoder, group: GPUBindGroup, eye: Eye, cascade: number): () => void {
+        const { gpu, times } = this.gpuState, computeGroup = this.groundLook.computeGroup, label = PASSES[PASSES.indexOf('casters') + 2 * cascade];
+        const at: [number, number, number] = [eye.east, eye.north, eye.z], viewProj = this.shadow.matrix(cascade, at);
         // The sun's view culls nothing by its size on screen.
         gpu.device.queue.writeBuffer(this.shadow.frame, 0, this.uniforms(eye, viewProj, 1e-6));
-        this.instances.begin(SUN);
-        const pass = encoder.beginComputePass({ label: 'casters', timestampWrites: times.writes('casters') });
+        this.instances.begin(SUN, 0, this.shadow.run(cascade));
+        const pass = encoder.beginComputePass({ label, timestampWrites: times.writes(label) });
         this.instances.run(pass, group, SUN);
         if (computeGroup) this.houses.encodeCasters(pass, computeGroup, { viewProj, eye: at });
         pass.end();
-        const casters = this.shadow.pass(encoder, times.writes('shadow'));
+        const shadowLabel = PASSES[PASSES.indexOf('casters') + 2 * cascade + 1];
+        const casters = this.shadow.pass(encoder, cascade, times.writes(shadowLabel));
         this.instances.cast(casters);
         this.houses.cast(casters);
         this.terrain.cast(casters);
         casters.end();
+        this.shadow.encodeMips(encoder, cascade, times.writes('mips'));
+        return this.houses.readCasters(encoder);
     }
 
     /** Fits the canvas and the targets to the element; true when the targets are new. */
@@ -495,7 +505,7 @@ export class TrailView {
             camera: { right: right.map(v => v * tx), up: up.map(v => v * ty), forward },
             codes: this.groundLook.codes,
             debug: DEBUG_VIEWS.indexOf(this.extras.debug), sample,
-            jitter, scale, sunView: this.shadow.matrix([eye.east, eye.north, eye.z]),
+            jitter, scale,
         });
     }
 

@@ -9,9 +9,10 @@ const MODELS = 256;
 const DRAWS = MODELS * TIERS;
 /**
  * Instances that a frame stages at most; past them it drops instances and lowers the detail. The sun's
- * view stages the casters of the shadow map (light/shadow.ts) only.
+ * view stages the casters of a shadow map (light/shadow.ts) only: the far map's draws staged up to
+ * 70 500 on the kit's flights (M1 Pro, measured), the near map's up to 3 100.
  */
-const CAPACITY = 2 ** 17, SUN_CAPACITY = 2 ** 15;
+const CAPACITY = 2 ** 17, SUN_CAPACITY = 2 ** 17;
 /** Bytes of `Instance`, `Model`, `Tally`, `Mesh` and `Params` in the WGSL, and of a vertex. */
 const INSTANCE_BYTES = 32, MODEL_BYTES = 80, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, PARAMS_BYTES = 32, VERTEX_BYTES = 16;
 /** The phases of a tree's year, as PHASES of phenology.wgsl, and the bytes of a colour matrix (`mat3x3f`). */
@@ -100,7 +101,11 @@ export interface Producer {
     encode(pass: GPUComputePassEncoder, ground: GPUBindGroup, view: number): void;
 }
 
-export interface InstanceStats { staged: number; dropped: number; lod: number; perTier: number[]; impostors: number }
+/** `casters`: per cascade of the shadow maps the most instances that a draw staged, and those that all draws dropped. */
+export interface InstanceStats { staged: number; dropped: number; lod: number; perTier: number[]; impostors: number; casters: { staged: number; dropped: number }[] }
+
+/** A run of the sun's view: the cascade of the shadow map, its least caster's height in metres, and whether its trees cast as proxies (`proxy`). */
+export interface SunRun { cascade: number; least: number; proxies: boolean }
 
 /** What a view stages, sorts and draws from: its frame (Frame of terrain.wgsl), its cull and its draw lists. */
 interface ViewBuffers {
@@ -175,6 +180,11 @@ export class Instances {
     private placed: Placed[] = [];
     /** The meshes of the draws, as `Mesh` of sort.wgsl, and where the impostor quad lies. */
     private meshTable = new Int32Array(0);
+    /** The meshes of the sun's draws: each model's coarsest mesh, and its proxy where it has one. */
+    private casterTables = [new Int32Array(0), new Int32Array(0)];
+    /** The cascade of the sun's last run, and per cascade the sun's tally last read (staged, dropped). */
+    private cascade = 0;
+    private readonly sunTally: number[][] = [];
     private quad: [number, number, number] = [0, 0, 0];
     private uploaded = false;
     /** The tier distances' factor of the detail: below 1 while the staged instances fill the pool. */
@@ -182,7 +192,7 @@ export class Instances {
     /** The factor of the tier distances in the last frame. */
     private lod = 1;
     private frame = 0;
-    private stats_: InstanceStats = { staged: 0, dropped: 0, lod: 1, perTier: [0, 0, 0, 0], impostors: 0 };
+    private stats_: InstanceStats = { staged: 0, dropped: 0, lod: 1, perTier: [0, 0, 0, 0], impostors: 0, casters: [] };
     /** Per model with an atlas layer: the layer and the frame that last drew the impostor tier. */
     private readonly atlas = new Map<number, { slot: number; used: number }>();
     /** Models whose layer needs a bake. */
@@ -277,7 +287,7 @@ export class Instances {
             albedo: atlas(),
             normal: atlas(),
             depth: gpu.texture('instances', { size: [ATLAS, ATLAS], format: 'depth32float', usage: GPUTextureUsage.RENDER_ATTACHMENT }, ATLAS * ATLAS * 4),
-            readbacks: [0, 1].map(() => gpu.buffer('instances', TALLY_BYTES, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST)),
+            readbacks: [0, 1].map(() => gpu.buffer('instances', TALLY_BYTES + 16, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST)),
         };
         const drawOf = new Uint32Array(DRAWS * STRIDE / 4);
         for (let d = 0; d < DRAWS; d++) drawOf[d * STRIDE / 4] = d;
@@ -397,16 +407,19 @@ export class Instances {
      * Starts a run of a view, with an empty tally. The eye's view starts the frame: the models when they
      * changed, and the detail for the render's height in pixels.
      */
-    begin(view: number, pixels = 0): void {
+    begin(view: number, pixels = 0, sun: SunRun = { cascade: 0, least: 0, proxies: false }): void {
         const r = this.resources;
         if (!r) return;
         if (view === EYE) {
             this.frame++;
             if (!this.uploaded) this.upload(r);
             this.lod = this.detail * pixels / REFERENCE_PIXELS;
+        } else {
+            this.cascade = sun.cascade;
+            r.gpu.device.queue.writeBuffer(r.coarse, 0, this.casterTables[sun.proxies ? 1 : 0]);
         }
         const params = new ArrayBuffer(PARAMS_BYTES), v = r.views[view];
-        new Float32Array(params).set([this.lod, 0, this.detail, this.day]);
+        new Float32Array(params).set([this.lod, 0, this.detail, this.day, 0, sun.least]);
         const words = new Uint32Array(params);
         words[1] = view === SUN ? SUN_CAPACITY : CAPACITY;
         words[4] = view;
@@ -520,11 +533,20 @@ export class Instances {
         const r = this.resources, readback = r?.readbacks.pop();
         if (!r || !readback) return () => {};
         encoder.copyBufferToBuffer(r.views[EYE].tally, 0, readback, 0, TALLY_BYTES);
-        const frame = this.frame;
+        // The sun's tally holds its last run until the next.
+        encoder.copyBufferToBuffer(r.views[SUN].tally, 0, readback, TALLY_BYTES, 16);
+        const frame = this.frame, cascade = this.cascade;
         return () => readback.mapAsync(GPUMapMode.READ).then(() => {
             const tally = new Uint32Array(readback.getMappedRange());
             const perTier = [0, 1, 2, 3].map(t => this.specs.reduce((sum, _, m) => sum + tally[4 + m * TIERS + t], 0));
-            this.stats_ = { staged: tally[0], dropped: tally[1], lod: this.lod, perTier, impostors: this.atlas.size };
+            const casters = this.stats_.casters.slice(), sun = tally.subarray(TALLY_BYTES / 4), last = this.sunTally[cascade];
+            // A new run of the cascade: its tally differs from the last one read.
+            if (sun[0] !== last?.[0] || sun[1] !== last?.[1]) {
+                const was = casters[cascade] ?? { staged: 0, dropped: 0 };
+                casters[cascade] = { staged: Math.max(was.staged, sun[0]), dropped: was.dropped + sun[1] };
+                this.sunTally[cascade] = [sun[0], sun[1]];
+            }
+            this.stats_ = { staged: tally[0], dropped: tally[1], lod: this.lod, perTier, impostors: this.atlas.size, casters };
             // A full pool draws its tiers nearer, until it has room again.
             const used = tally[0] / CAPACITY;
             this.detail = used > ROOM[1] ? this.detail * 0.9 : used < ROOM[0] ? Math.min(1, this.detail / 0.97) : this.detail;
@@ -669,12 +691,15 @@ export class Instances {
         r.gpu.device.queue.writeBuffer(r.tones, 0, tones);
         this.meshTable = meshes;
         r.gpu.device.queue.writeBuffer(r.meshes, 0, meshes);
-        const coarse = meshes.slice();
+        const coarse = meshes.slice(), proxies = meshes.slice();
         this.specs.forEach((spec, m) => {
             const coarsest = this.placed[m].at(-1);
-            if (spec.impostor && coarsest) coarse.set([coarsest[1], coarsest[0], coarsest[2], 0], (m * TIERS + spec.tiers.length) * 4);
+            if (!coarsest) return;
+            if (spec.impostor) coarse.set([coarsest[1], coarsest[0], coarsest[2], 0], (m * TIERS + spec.tiers.length) * 4);
+            const hull = proxy(spec.tiers.at(-1)!.mesh), at = hull && fits([hull]) ? put(hull, f[m * 20 + 4]) : coarsest;
+            for (let t = 0; t < TIERS; t++) proxies.set([at[1], at[0], at[2], 0], (m * TIERS + t) * 4);
         });
-        r.gpu.device.queue.writeBuffer(r.coarse, 0, coarse);
+        this.casterTables = [coarse, proxies];
         this.uploaded = true;
     }
 }
@@ -682,6 +707,33 @@ export class Instances {
 /** Attaches a producer; one that fails logs why and draws nothing, and the rest go on. */
 function attachProducer(producer: Producer, ...args: Parameters<Producer['attach']>): Promise<void> {
     return producer.attach(...args).catch(error => console.error('A producer of instances failed to attach:', error));
+}
+
+/**
+ * The proxy of a crown in the far shadow map: a diamond of 8 faces about its crown's vertices, from its
+ * lowest to its highest point and widest where its widest vertex lies. A mesh whose faces cover less
+ * than half of the diamond's outline seen from above, such as a bare crown's branches, has none.
+ */
+export function proxy(mesh: Mesh): Mesh | undefined {
+    const p = mesh.position, from = mesh.trunk ?? 0, count = p.length / 3;
+    if (count <= from) return undefined;
+    let [low, high, middle, widest] = [Infinity, -Infinity, 0, 0];
+    const side = [0, 0, 0, 0];
+    for (let k = from; k < count; k++) {
+        const [x, y, z] = [p[3 * k], p[3 * k + 1], p[3 * k + 2]];
+        [low, high] = [Math.min(low, z), Math.max(high, z)];
+        side[0] = Math.max(side[0], x), side[1] = Math.max(side[1], y), side[2] = Math.max(side[2], -x), side[3] = Math.max(side[3], -y);
+        if (Math.hypot(x, y) > widest) [widest, middle] = [Math.hypot(x, y), z];
+    }
+    let cover = 0;
+    for (let i = 0; i < mesh.index.length; i += 3) {
+        const [a, b, c] = [mesh.index[i], mesh.index[i + 1], mesh.index[i + 2]].map(v => 3 * v);
+        if (Math.min(a, b, c) < 3 * from) continue;
+        cover += Math.abs((p[b] - p[a]) * (p[c + 1] - p[a + 1]) - (p[c] - p[a]) * (p[b + 1] - p[a + 1])) / 2;
+    }
+    if (cover < (side[0] + side[2]) * (side[1] + side[3]) / 4) return undefined;
+    const position = [0, 0, high, 0, 0, low, side[0], 0, middle, 0, side[1], middle, -side[2], 0, middle, 0, -side[3], middle];
+    return { position, normal: new Array(18).fill(0), color: new Array(18).fill(1), index: [0, 2, 3, 0, 3, 4, 0, 4, 5, 0, 5, 2, 1, 3, 2, 1, 4, 3, 1, 5, 4, 1, 2, 5] };
 }
 
 /** The largest absolute value. */

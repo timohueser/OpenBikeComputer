@@ -141,6 +141,20 @@ struct AnchoredIn {
 
 @vertex
 fn anchored_vertex(v: AnchoredIn, @builtin(instance_index) first: u32) -> StructureOut {
+    return anchored(v, first);
+}
+
+// A vertex of an anchored mesh in a shadow map (light/shadow.ts), whose frame holds the sun's view. A
+// cable casts none: its ribbon is narrower than a texel.
+@vertex
+fn anchored_caster(v: AnchoredIn, @builtin(instance_index) first: u32) -> @builtin(position) vec4f {
+    if ((u32(round(v.colour.a * 255.0)) & CABLE_EDGE) != 0u) {
+        return vec4f(0.0, 0.0, 2.0, 1.0);
+    }
+    return anchored(v, first).clip;
+}
+
+fn anchored(v: AnchoredIn, first: u32) -> StructureOut {
     let i = first + (v.hung & 0xffffu);
     let t = f32(v.hung >> 16u) / 65535.0;
     let an = anchors[i];

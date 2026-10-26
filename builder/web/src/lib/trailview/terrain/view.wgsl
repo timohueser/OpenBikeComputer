@@ -24,11 +24,12 @@ fn render_at(s: vec2f, z: f32) -> vec3f {
     return p;
 }
 
-// Whether a sphere of render space meets the view's left, right, bottom and top planes.
+// Whether a sphere of render space meets the view's left, right, bottom, top, near and far planes. The
+// eye's far plane lies at infinity; the sun's planes bound the heights of a shadow map's casters.
 fn visible(p: vec3f, radius: f32) -> bool {
     let row = transpose(frame.view_proj);
-    for (var i = 0u; i < 4u; i++) {
-        let plane = row[3] + select(1.0, -1.0, (i & 1u) == 1u) * row[i >> 1u];
+    for (var i = 0u; i < 6u; i++) {
+        let plane = select(row[3], vec4f(0.0), i == 4u) + select(1.0, -1.0, (i & 1u) == 1u) * row[i >> 1u];
         if (dot(plane.xyz, p) + plane.w < -radius * length(plane.xyz)) {
             return false;
         }

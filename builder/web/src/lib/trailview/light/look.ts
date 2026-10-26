@@ -2,7 +2,7 @@ import { linear, VARIEGATED } from '../ground/rules';
 import type { EyeLook, Light } from './light';
 
 /** Bytes of `Look` in shade.wgsl, and the offset of its `codes`. */
-export const LOOK_BYTES = 352, LOOK_CODES = 240;
+export const LOOK_BYTES = 288, LOOK_CODES = 240;
 
 export interface LookInput {
     /** Toward the sun in render space, and its bearing in turns clockwise from true north. */
@@ -22,8 +22,6 @@ export interface LookInput {
     /** This frame's jitter in clip space, and the render scale. */
     jitter: [number, number];
     scale: number;
-    /** The object shadow map's projection from render space (`matrix` of shadow.ts). */
-    sunView: Float32Array;
 }
 
 /** `Look` of shade.wgsl. */
@@ -44,6 +42,5 @@ export function lookUniform(input: LookInput): ArrayBuffer {
     words.set(input.codes, LOOK_CODES / 4);
     words.set([input.debug, input.sample, 0, 0], 64);
     floats.set([...input.jitter, input.scale, 0], 68);
-    floats.set(input.sunView, 72);
     return data;
 }

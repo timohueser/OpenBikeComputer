@@ -67,8 +67,9 @@ struct Params {
     day: f32,
     // The view, as VIEWS of instances.ts: 0 the eye's, SUN_VIEW the sun's, whose casters stage in their last tier.
     view: u32,
-    unused: u32,
-    unused2: vec2u,
+    // The sun's view: the least height in metres of an instance that casts (SunRun of instances.ts).
+    least: f32,
+    unused: vec2u,
 }
 
 const SUN_VIEW: u32 = 1u;
@@ -245,6 +246,9 @@ fn emit_tree(species: u32, s: vec2f, z: f32, height: f32, yaw: f32, width: f32, 
     let d = length(base);
     var tier = 0u;
     if (params.view == SUN_VIEW) {
+        if (height < params.least) {
+            return;
+        }
         // The sun's draw of an impostor tier draws the coarsest mesh.
         while (tier + 1u < TIERS && m.until[tier + 1u] > 0.0) {
             tier++;

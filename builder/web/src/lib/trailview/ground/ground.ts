@@ -111,7 +111,7 @@ export class Ground {
     /** The bind group layouts: group 2 of the terrain and the sky, and groups 0 and 2 of the ground compute. */
     layouts(device: GPUDevice): { render: GPUBindGroupLayout; compute: GPUBindGroupLayout[] } {
         // The instances' vertices read the look for the haze.
-        const stages = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, compute = GPUShaderStage.COMPUTE;
+        const stages = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, compute = GPUShaderStage.COMPUTE, visible = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
         const array = (sampleType: GPUTextureSampleType): Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'> => ({ texture: { sampleType, viewDimension: '2d-array' } });
         const entries: GPUBindGroupLayoutEntry[] = [
             { binding: 0, visibility: stages, buffer: { type: 'uniform' } },
@@ -126,7 +126,9 @@ export class Ground {
             render: device.createBindGroupLayout({ entries: [
                 ...entries, { binding: 5, visibility: GPUShaderStage.FRAGMENT | compute, ...array('float') }, { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
                 { binding: 7, visibility: stages, ...array('float') },
-                { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } }, { binding: 9, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
+                // The object shadows; a small instance reads them in its vertices (instances/draw.wgsl).
+                { binding: 8, visibility: visible, texture: { sampleType: 'depth', viewDimension: '2d-array' } }, { binding: 9, visibility: visible, sampler: { type: 'comparison' } },
+                { binding: 10, visibility: visible, buffer: { type: 'uniform' } },
             ] }),
             compute: [
                 device.createBindGroupLayout({ entries: [
@@ -143,7 +145,7 @@ export class Ground {
     }
 
     /** The pools and the compute for a device, after `layouts`. A new device builds every page again. */
-    /** `shadow` holds bindings 8 and 9 of the render group: the object shadows (shadow.ts). */
+    /** `shadow` holds bindings 8 to 10 of the render group: the object shadows (shadow.ts). */
     async attach(gpu: Gpu, look: GPUBuffer, surface: { layout: GPUBindGroupLayout; group: GPUBindGroup }, shadow: GPUBindGroupEntry[]): Promise<void> {
         const { device } = gpu, layout = this.layout!, layers = POOL / LAYER_PAGES, side = PAGE * SIDE;
         this.resources = undefined;
