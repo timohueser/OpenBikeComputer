@@ -18,7 +18,7 @@ class DeployServicesTests(unittest.TestCase):
                                  cwd=ROOT, env=env, capture_output=True, text=True, check=True)
         commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True,
                                 check=True).stdout.strip()
-        self.assertIn(f"git archive --format=tar {commit} | ssh vps.test", run.stdout)
+        self.assertIn(f"git archive --format=tar {commit} | ssh -- vps.test", run.stdout)
         self.assertIn(f"cd /opt/obc-data/{commit}\n", run.stdout)
         self.assertIn("cargo build --release --locked -p planner-service\n", run.stdout)
         self.assertIn(f"ln -sfn /opt/obc-data/{commit} /opt/obc-data/current.next", run.stdout)
