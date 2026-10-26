@@ -51,6 +51,8 @@ export function releaseTiles(config: PlannerConfig): TerrainSource['fetch'] {
 export interface EyeTiles {
     terrain: TerrainSource['fetch'];
     features: ReturnType<typeof featureTiles>;
+    /** Settles when both tiles under the eye have arrived or failed. */
+    arrived: Promise<unknown>;
 }
 
 /**
@@ -62,15 +64,14 @@ export function eyeTiles(config: PlannerConfig, lonLat: [number, number]): EyeTi
     const fetch = releaseTiles(config), features = featureTiles(config), at = (z: number) => worldPixel(lonLat, 2 ** z).map(Math.floor);
     const [ex, ey] = at(TILE_ZOOM), [fx, fy] = at(DEEPEST);
     let early: Promise<ArrayBuffer | undefined> | undefined = fetch(TILE_ZOOM, ex, ey);
-    // A view that never asks for a tile leaves its failure unseen; the features keep their body.
-    early.catch(() => {});
-    features?.(DEEPEST, fx, fy).catch(() => {});
+    // The features keep their body; a view that never asks for the terrain tile leaves its failure unseen.
+    const arrived = Promise.allSettled([early, features?.(DEEPEST, fx, fy)]);
     const terrain: TerrainSource['fetch'] = (z, x, y) => {
         const body = z === TILE_ZOOM && x === ex && y === ey ? early : undefined;
         if (body) early = undefined;
         return body ?? fetch(z, x, y);
     };
-    return { terrain, features };
+    return { terrain, features, arrived };
 }
 
 /** The pages of tile bodies, decoded in workers. */

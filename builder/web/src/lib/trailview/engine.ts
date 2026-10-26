@@ -142,13 +142,15 @@ export class TrailView {
 
     /**
      * Starts the terrain and feature tiles under the eye, reads the ruleset and opens the ground layers,
-     * compiles the pipelines, then starts the other tile loads. `scale` is the render scale.
+     * compiles the pipelines, then starts the other tile loads once the tiles under the eye are in: on a
+     * slow link they would share it with some thirty requests. `scale` is the render scale.
      */
     static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number): Promise<TrailView> {
         const tiles = eyeTiles(config, [view.lon, view.lat]);
         const ground = await GroundSource.open(config, view.date).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
         const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, scale);
         await engine.attach(gpu);
+        await tiles.arrived;
         engine.request();
         return engine;
     }
