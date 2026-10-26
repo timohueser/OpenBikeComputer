@@ -197,11 +197,18 @@ install tools, download data or build runtimes.
 The planner release binds service source and locked dependencies in its final index.
 The VPS builds services from a commit.
 
-`public/grid.json` contains `format: 2` and `map_zoom`. Each map pack, asset,
-TileJSON, route catalog cell, and device catalog has a small pointer at
-`public/LOGICAL_PATH.json`.
-A pointer repeats the transport entry and adds `decoded_bytes`. The tile
-service resolves a pack through this pointer. A tile without a pack is absent.
+`public/grid.json` contains `format: 3` and `map_zoom`. A pointer repeats the
+transport entry of a file and adds `decoded_bytes`. A file of a grid cell, at
+`DIR/Z-X-Y.EXT` under `maps/tiles/` or `routes/tiles/`, has its pointer in the
+block index `public/DIR/B-BX-BY.json`: a JSON object that maps `Z-X-Y.EXT` to
+the pointer. `B` is the larger of `Z - 4` and 0, and `BX` and `BY` are `X` and
+`Y` shifted right by `Z - B` bits, so an index holds at most 16 × 16 cells of a
+zoom. Each other asset, TileJSON and device catalog has its pointer at
+`public/LOGICAL_PATH.json`. So the count of public keys grows with the area of a
+release by one index per block, not by one pointer per cell of each layer.
+The tile service resolves a pack through its pointer. A tile without a pack is
+absent. The tile service also reads format 2, which has a pointer at
+`public/LOGICAL_PATH.json` for each file, for a rollback release.
 No regional map archive is required beside the pool. Grid assets use the tile
 service origin.
 
