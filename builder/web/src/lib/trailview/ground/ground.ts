@@ -23,6 +23,8 @@ const NOISE = 256;
  * look.wgsl, and the lanes a side of a workgroup of horizon_main in ground.wgsl.
  */
 const HORIZON = PAGE / 8, HORIZON_LAYERS = 4, HORIZON_LANES = 8;
+/** Layers of the cache per layer of pages, and texels a side of a coarse relief texel, as CACHE_PLANES and COARSE_STEP in look.wgsl. */
+const CACHE_PLANES = 3, COARSE_STEP = 2;
 
 /** Without a ruleset, the ground is the palette under the light and haze of the prototype's `world` region. */
 const NEUTRAL: Rules = {
@@ -45,6 +47,11 @@ interface Resources {
     gpu: Gpu;
     cells: GPUTexture;
     cache: GPUTexture;
+    /** The relief: each texel's own openness, and the coarse normal and openness, a texel per COARSE_STEP × COARSE_STEP. */
+    openness: GPUTexture;
+    coarse: GPUTexture;
+    /** The openness of a frame's jobs, a byte per texel, before its copy into `openness`. */
+    open: GPUBuffer;
     horizons: GPUTexture;
     /** The colour and the snow of the pages that a frame's jobs make, one layer per job. */
     colour: GPUTexture;
@@ -130,7 +137,11 @@ export class Ground {
         const r = {
             gpu,
             cells: texture('ground', 'rgba8uint', side, layers, usage),
-            cache: texture('ground', 'rgba8unorm', side, 4 * layers, GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING),
+            cache: texture('ground', 'rgba8unorm', side, CACHE_PLANES * layers, GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING),
+            // r8unorm is no storage format in core WebGPU: the compute writes a buffer, and a copy the texture.
+            openness: gpu.texture('ground', { size: [side, side, layers], format: 'r8unorm', usage }, side * side * layers),
+            coarse: texture('ground', 'rgba8unorm', side / COARSE_STEP, layers, GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING),
+            open: gpu.buffer('compute', JOBS * PAGE * PAGE, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST),
             horizons: texture('ground', 'rgba8unorm', HORIZON * SIDE, HORIZON_LAYERS * layers, GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING),
             colour: texture('compute', 'rgba8unorm', PAGE, JOBS, usage), snow: texture('compute', 'rgba8unorm', PAGE, JOBS, usage),
             rules: gpu.texture('ground', { size: [SLOT.count, this.rules.regions.length], format: 'rgba32float', usage }, SLOT.count * this.rules.regions.length * 16),
@@ -151,11 +162,12 @@ export class Ground {
             ...r, compute, horizon,
             group: device.createBindGroup({ layout: layout.ground, entries: [
                 ...inputs, { binding: 5, resource: view(r.cache) }, { binding: 6, resource: r.noise.createView() }, { binding: 7, resource: view(r.horizons) }, ...shadow,
+                { binding: 11, resource: view(r.openness) }, { binding: 12, resource: view(r.coarse) },
             ] }),
             computeGroups: [
                 device.createBindGroup({ layout: layout.groundCompute[0], entries: [
                     { binding: 0, resource: { buffer: r.jobs } }, { binding: 1, resource: view(r.cache) }, { binding: 2, resource: view(r.colour) }, { binding: 3, resource: view(r.snow) },
-                    { binding: 4, resource: view(r.horizons) },
+                    { binding: 4, resource: view(r.horizons) }, { binding: 5, resource: { buffer: r.open } }, { binding: 6, resource: view(r.coarse) },
                 ] }),
                 device.createBindGroup({ layout: layout.groundCompute[1], entries: inputs }),
             ],
@@ -175,11 +187,10 @@ export class Ground {
 
     /**
      * Takes the pages that the drawn nodes and the selection want about the eye (lon, lat), and the pages
-     * that the instances `read`, on the date of the view. `refreshed` are the terrain nodes whose normals
-     * changed, so the relief that reads them follows, and `arrived` those whose heights changed, so the
-     * horizons that read them follow.
+     * that the instances `read`, on the date of the view. `arrived` are the terrain nodes whose drawn
+     * heights changed, so the relief and the horizons that read them follow.
      */
-    update(drawn: Node[], wanted: Node[], refreshed: Node[], arrived: Node[], origins: [number, number][], date: string, eye: [number, number], read: Node[]): void {
+    update(drawn: Node[], wanted: Node[], arrived: Node[], origins: [number, number][], date: string, eye: [number, number], read: Node[]): void {
         const r = this.resources;
         if (!r) return;
         const day = this.pages.setDate(date);
@@ -187,7 +198,7 @@ export class Ground {
             const SLOT = slots(this.rules.vocabulary), rows = this.rules.regions.length;
             r.gpu.device.queue.writeTexture({ texture: r.rules }, packRulesOn(this.rules.regions, this.rules.vocabulary, this.pages.day), { bytesPerRow: SLOT.count * 16 }, [SLOT.count, rows]);
         }
-        const work = this.pages.update(drawn, wanted, refreshed, arrived, origins, eye, read);
+        const work = this.pages.update(drawn, wanted, arrived, origins, eye, read);
         for (const { page, data, horizons } of work.uploads) this.jobs.push({ page, data, work: RELIEF | PARAMETERS | (horizons ? HORIZONS : 0) });
         for (const page of work.refreshes) this.jobs.push({ page, work: RELIEF });
         for (const page of work.horizons) this.jobs.push({ page, work: HORIZONS });
@@ -210,6 +221,7 @@ export class Ground {
             if (data) this.upload(r, slot, k, data);
         });
         r.gpu.device.queue.writeBuffer(r.jobs, 0, data);
+        encoder.clearBuffer(r.open, 0, jobs.length * PAGE * PAGE);
         const pass = encoder.beginComputePass({ label: 'ground', timestampWrites: timing?.() });
         pass.setPipeline(r.compute);
         pass.setBindGroup(0, r.computeGroups[0]);
@@ -219,6 +231,9 @@ export class Ground {
         pass.setPipeline(r.horizon);
         pass.dispatchWorkgroups(HORIZON / HORIZON_LANES, HORIZON / HORIZON_LANES, HORIZON_LAYERS * jobs.length);
         pass.end();
+        jobs.forEach(({ page, work }, k) => {
+            if (work & RELIEF) encoder.copyBufferToTexture({ buffer: r.open, offset: k * PAGE * PAGE, bytesPerRow: PAGE }, { texture: r.openness, origin: origin(page.slot) }, [PAGE, PAGE, 1]);
+        });
     }
 
     /** A lost device keeps the tile bodies; every page comes again. */

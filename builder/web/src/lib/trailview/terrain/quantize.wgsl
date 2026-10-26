@@ -4,10 +4,9 @@ struct Job {
     texel: vec2i,
     level: u32,
     stored: u32,
-    metres: f32,
     slot: u32,
     stamped: u32,
-    unused: u32,
+    unused: vec2u,
 }
 
 @group(0) @binding(0) var<storage, read> jobs: array<Job>;

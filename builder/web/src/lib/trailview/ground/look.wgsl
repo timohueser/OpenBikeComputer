@@ -13,15 +13,18 @@
 // Per region a row of slots: ground/rules.ts.
 @group(2) @binding(3) var rules: texture_2d<f32>;
 @group(2) @binding(4) var filtered: sampler;
-// Per page four layers, ground.wgsl: the albedo (square root) and the snow before its edge; tree,
-// rough, moor and green; bare_from, barren, blades and banded; the relief (the normal two levels
-// coarser, xy as 0.5 + 0.5 n, its openness, and the texel's own openness).
+// Per page CACHE_PLANES layers, ground.wgsl: the albedo (square root) and the snow before its edge;
+// tree, rough, moor and green; bare_from, barren, blades and banded.
 @group(2) @binding(5) var cache: texture_2d_array<f32>;
 // A table of 256 × 256 hash values that repeats, for value noise in one fetch.
 @group(2) @binding(6) var noise_table: texture_2d<f32>;
 // Per page BEARINGS / 4 layers of HORIZON × HORIZON texels, ground.wgsl: the horizon's altitude in
 // BEARINGS bearings clockwise from north, 4 per layer, as a share of HORIZON_TOP.
 @group(2) @binding(7) var horizons: texture_2d_array<f32>;
+// The relief, ground.wgsl: per texel its own openness; per COARSE_STEP × COARSE_STEP texels one texel,
+// the normal two levels coarser (xy as 0.5 + 0.5 n) and its openness.
+@group(2) @binding(11) var relief_open: texture_2d_array<f32>;
+@group(2) @binding(12) var relief_coarse: texture_2d_array<f32>;
 
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
@@ -36,6 +39,10 @@ const COVER_MOSS: u32 = 10u;
 
 // Pages per layer side of the ground textures.
 const GROUND_SIDE: i32 = 4;
+const CACHE_PLANES: i32 = 3;
+// Texels a side of a texel of `relief_coarse`, and those texels a side of a page.
+const COARSE_STEP: i32 = 2;
+const COARSE_PAGE: i32 = 256 / COARSE_STEP;
 // Horizon texels a side of a page, each over HORIZON_SPAN × HORIZON_SPAN of its texels; the bearings
 // of a horizon texel, and the highest horizon in radians (75°).
 const HORIZON: i32 = 32;
@@ -276,7 +283,7 @@ fn snow_held(held: Held) -> f32 {
         return 0.0;
     }
     let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
-    return smoothstep(0.25, 0.75, textureLoad(cache, in_page(held.page, whole & vec2i(255)), page_layer(held.page) * 4, 0).a);
+    return smoothstep(0.25, 0.75, textureLoad(cache, in_page(held.page, whole & vec2i(255)), page_layer(held.page) * CACHE_PLANES, 0).a);
 }
 
 // The ground's albedo in a held page, from the satellite on the date; 0 where no page is resident.
@@ -285,7 +292,7 @@ fn albedo_held(held: Held) -> vec3f {
         return vec3f(0.0);
     }
     let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
-    let c = textureLoad(cache, in_page(held.page, whole & vec2i(255)), page_layer(held.page) * 4, 0).rgb;
+    let c = textureLoad(cache, in_page(held.page, whole & vec2i(255)), page_layer(held.page) * CACHE_PLANES, 0).rgb;
     return c * c;
 }
 
@@ -322,13 +329,18 @@ fn in_page(page: i32, c: vec2i) -> vec2i {
     return clamp(c, vec2i(0), vec2i(255)) + 256 * vec2i(page % GROUND_SIDE, (page / GROUND_SIDE) % GROUND_SIDE);
 }
 
+// Where texel c of a page lies in the layers of `relief_coarse`.
+fn in_coarse(page: i32, c: vec2i) -> vec2i {
+    return c + COARSE_PAGE * vec2i(page % GROUND_SIDE, (page / GROUND_SIDE) % GROUND_SIDE);
+}
+
 fn page_layer(page: i32) -> i32 {
     return page / (GROUND_SIDE * GROUND_SIDE);
 }
 
-// A filtered read at a point `local` texels from the page's corner, kept inside the page.
-fn page_uv(page: i32, local: vec2f) -> vec2f {
-    return (vec2f(256 * vec2i(page % GROUND_SIDE, (page / GROUND_SIDE) % GROUND_SIDE)) + clamp(local, vec2f(0.5), vec2f(255.5))) / f32(256 * GROUND_SIDE);
+// A filtered read at a point `local` texels from the page's corner, kept inside the page of `side` texels.
+fn page_uv(page: i32, local: vec2f, side: f32) -> vec2f {
+    return (side * vec2f(vec2i(page % GROUND_SIDE, (page / GROUND_SIDE) % GROUND_SIDE)) + clamp(local, vec2f(0.5), vec2f(side - 0.5))) / (side * f32(GROUND_SIDE));
 }
 
 // Texel `local` of a level, counted from the corner `base` of page `home`: in its own page when that
@@ -346,27 +358,51 @@ fn texel_at(level: u32, home: i32, base: vec2i, local: vec2i) -> vec3i {
     return vec3i(in_page(page, at), page_layer(page));
 }
 
-// The four planes of the cache at point p of a level, in texels from the corner `base` of page `home`
-// (texel centres are whole numbers), bilinear across the page borders: the sampler inside the page,
-// four loads where the footprint crosses a border.
+// The planes of the cache at point p of a level, in texels from the corner `base` of page `home`
+// (texel centres are whole numbers), and the relief as a fourth: xy the coarse normal, z its openness
+// and w the texel's own openness. Bilinear across the page borders: the sampler inside the page, four
+// loads where the footprint crosses a border.
 fn cache_read(level: u32, home: i32, base: vec2i, p: vec2f) -> array<vec4f, 4> {
     var out: array<vec4f, 4>;
     let c = vec2i(floor(p));
     if (all(c >= vec2i(0)) && all(c < vec2i(255))) {
-        let uv = page_uv(home, p + 0.5);
-        for (var plane = 0; plane < 4; plane++) {
-            out[plane] = textureSampleLevel(cache, filtered, uv, page_layer(home) * 4 + plane, 0.0);
+        let uv = page_uv(home, p + 0.5, 256.0);
+        for (var plane = 0; plane < CACHE_PLANES; plane++) {
+            out[plane] = textureSampleLevel(cache, filtered, uv, page_layer(home) * CACHE_PLANES + plane, 0.0);
         }
-        return out;
+        out[3].w = textureSampleLevel(relief_open, filtered, uv, page_layer(home), 0.0).r;
+    } else {
+        let f = p - floor(p);
+        for (var j = 0; j < 4; j++) {
+            let o = vec2i(j & 1, j >> 1);
+            let at = texel_at(level, home, base, c + o);
+            let w = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
+            for (var plane = 0; plane < CACHE_PLANES; plane++) {
+                out[plane] += w * textureLoad(cache, at.xy, at.z * CACHE_PLANES + plane, 0);
+            }
+            out[3].w += w * textureLoad(relief_open, at.xy, at.z, 0).r;
+        }
     }
-    let f = p - floor(p);
+    out[3] = vec4f(coarse_read(level, home, base, p), out[3].w);
+    return out;
+}
+
+// The coarse relief at p, as cache_read.
+fn coarse_read(level: u32, home: i32, base: vec2i, p: vec2f) -> vec3f {
+    let step = f32(COARSE_STEP);
+    let q = (p - 0.5 * (step - 1.0)) / step;
+    let c = vec2i(floor(q));
+    if (all(c >= vec2i(0)) && all(c < vec2i(COARSE_PAGE - 1))) {
+        return textureSampleLevel(relief_coarse, filtered, page_uv(home, q + 0.5, f32(COARSE_PAGE)), page_layer(home), 0.0).rgb;
+    }
+    let f = q - floor(q);
+    var out = vec3f(0.0);
     for (var j = 0; j < 4; j++) {
         let o = vec2i(j & 1, j >> 1);
-        let at = texel_at(level, home, base, c + o);
+        // texel_at places page texels: the first of those of coarse texel c + o.
+        let at = texel_at(level, home, base, COARSE_STEP * (c + o));
         let w = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
-        for (var plane = 0; plane < 4; plane++) {
-            out[plane] += w * textureLoad(cache, at.xy, at.z * 4 + plane, 0);
-        }
+        out += w * textureLoad(relief_coarse, at.xy / COARSE_STEP, at.z, 0).rgb;
     }
     return out;
 }
