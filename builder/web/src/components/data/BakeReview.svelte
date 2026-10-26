@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import { CliQuery } from "../../lib/data/query.svelte";
-    import { list, size, span, type Review, type RunView, type Started, type Target } from "../../lib/data/shapes";
+    import { count, list, size, span, type Review, type RunView, type Started, type Target } from "../../lib/data/shapes";
     import type { SourceRow } from "../../lib/data/sources";
     import Action from "./Action.svelte";
     import Failure from "./Failure.svelte";
@@ -63,7 +63,19 @@
         }
         return [...rows.values()];
     });
-    const downloadBytes = $derived(downloads.reduce((total, row) => total + (row.bytes ?? 0), 0));
+    const downloadBytes = $derived(downloads.reduce((total, row) => total + (row.bytes ?? 0), 0) + (review?.downloads.bytes ?? 0));
+    const reused = $derived(new Map((review?.reused ?? []).map((build) => [build.step, build])));
+    /** Whether the steps of `layer` build, or reuse the output of an earlier bake, with its date and
+     *  for R2 its upload. */
+    function how(layer: Review["layers"][number]): string {
+        if (!layer.steps.length) return "drop";
+        const old = layer.steps.flatMap((step) => reused.get(step) ?? []);
+        if (!old.length) return "build";
+        const built = old.map((build) => build.built ?? "").sort().at(-1)!.slice(0, 10);
+        const upload = old.reduce((total, build) => total + (build.estimate?.client_bytes ?? 0), 0);
+        const reuse = `(built ${built}${target.kind === "r2" ? `, ${size(upload)} to upload` : ""})`;
+        return old.length === layer.steps.length ? `reuse ${reuse}` : `build ${layer.steps.length - old.length} · reuse ${old.length} ${reuse}`;
+    }
     const PRODUCTS: Record<string, string> = { device: "Bike computer", planner: "Planner" };
     const makes = $derived(
         Object.entries(PRODUCTS).map(([product, name]) => ({
@@ -103,15 +115,17 @@
 {/if}
 
 {#if review}
+    <p class="lead">
+        <b>{review.bakes.length ? `Builds ${count(review.bakes.length, "step")}` : "Builds nothing"}</b>{#if review.bakes.length}{" "}({unknown ===
+                review.bakes.length
+                    ? "time unknown"
+                    : `${unknown ? "at least " : "about "}${span(review.cost.wall_ms)}`}){/if}
+        · reuses {review.reused.length} from earlier bakes · downloads {downloads.length || review.downloads.files ? size(downloadBytes) : "nothing new"}{#if target.kind === "r2"}
+            · uploads {size(review.cost.upload_bytes)}{/if}
+        {#if unknown}<span class="soft">· {unknown} of {review.bakes.length} steps never ran here</span>{/if}
+        {#if review.cost.unknown.guess.length}<span class="soft">· {review.cost.unknown.guess.length} guessed from other options</span>{/if}
+    </p>
     <dl class="cost">
-        <div>
-            <dt>Time</dt>
-            <dd>
-                {unknown === review.bakes.length && unknown ? "unknown" : `${unknown ? "at least " : "about "}${span(review.cost.wall_ms)}`}
-                {#if unknown}<span class="soft">· {unknown} of {review.bakes.length} steps never ran here</span>{/if}
-                {#if review.cost.unknown.guess.length}<span class="soft">· {review.cost.unknown.guess.length} guessed from other options</span>{/if}
-            </dd>
-        </div>
         <div>
             <dt>Peak memory</dt>
             <dd>
@@ -131,10 +145,6 @@
                     <meter min="0" max="1" low="0.5" high="0.8" optimum="0" value={share(review.cost.store_bytes, free)}></meter>
                 {/if}
             </dd>
-        </div>
-        <div>
-            <dt>Download</dt>
-            <dd>{downloads.length ? size(downloadBytes) : "nothing new"}{#if target.kind === "r2"}<span class="soft"> · upload {size(review.cost.upload_bytes)}</span>{/if}</dd>
         </div>
     </dl>
 
@@ -171,8 +181,8 @@
                         <ul>
                             {#each product.layers as layer (layer.layer)}
                                 <li>
-                                    {layer.layer.split("/").slice(1).join("/")}<span class="soft"
-                                        > · {layer.text}{layer.leaves.length ? ` · ${layer.leaves.length} tiles` : ""}</span
+                                    {layer.layer.split("/").slice(1).join("/")} · <b>{how(layer)}</b>{" · "}<span class="soft"
+                                        >{layer.text}{layer.leaves.length ? ` · ${layer.leaves.length} tiles` : ""}</span
                                     >
                                 </li>
                             {/each}
@@ -228,6 +238,10 @@
         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
         gap: 12px 24px;
         margin: 0;
+    }
+    .lead {
+        margin: 0;
+        font-size: 17px;
     }
     .cost dt {
         color: var(--ink-soft);
