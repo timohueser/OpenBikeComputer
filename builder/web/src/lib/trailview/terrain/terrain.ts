@@ -5,9 +5,11 @@ import { CURVATURE, EARTH_RADIUS, tileLonLat, type Frame } from '../frame/frame'
 import { anchorAt, cubic, lodSpace, renderMap, UNITS, type Anchor } from '../frame/space';
 import type { Gpu } from '../gpu/device';
 import { CLIP_DISTANCES } from '../gpu/include';
+import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
+import { DEPTH, sceneFormat } from '../resolve/targets';
 import { featureTile, NEAR, profileTable } from './bins';
 import { cdlod, distances, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
@@ -106,7 +108,7 @@ export interface Audit {
     found: { kind: number; level: number; s: [number, number]; drawn: number; expected: number; detail: number }[];
 }
 
-interface Resources {
+interface Resources extends Pipelines {
     gpu: Gpu;
     heights: GPUTexture;
     normals: GPUTexture;
@@ -141,26 +143,8 @@ interface Resources {
     snapGroup: GPUBindGroup;
     featureGroup: GPUBindGroup;
     emptyGroup: GPUBindGroup;
-    mesh: GPURenderPipeline;
-    plainMesh: GPURenderPipeline;
-    holedMesh: GPURenderPipeline;
-    synthesize: GPUComputePipeline;
-    normalsOf: GPUComputePipeline;
-    quantize: GPUComputePipeline;
-    probe: GPUComputePipeline;
-    check: GPURenderPipeline;
-    stamp: GPUComputePipeline;
-    snap: GPUComputePipeline;
-    /** The audit's pipelines, compiled on its first run: SwiftShader takes half a minute for them, and only tests audit. */
-    audits: () => Promise<GPUComputePipeline[]>;
-    /** The probe of the share of the sun, compiled on its first check, which only tests run. */
-    sunProbe: () => Promise<GPUComputePipeline>;
-    probeLayout: GPUBindGroupLayout;
-    checkLayout: GPUBindGroupLayout;
-    auditLayout: GPUBindGroupLayout;
-    surfaceLayout: GPUBindGroupLayout;
-    emptyLayout: GPUBindGroupLayout;
-    featureLayout: GPUBindGroupLayout;
+    /** The draw of the nodes with a tunnel's portal, after `attachParts`: until then they draw without their hole. */
+    holedMesh?: GPURenderPipeline;
 }
 
 /**
@@ -300,18 +284,20 @@ export class Terrain {
     }
 
     /** The drawn surface's pages for other passes: group 1 of the terrain. drawn_height reads the feature mask of group 3 too. */
-    get surface(): { layout: GPUBindGroupLayout; group: GPUBindGroup } | undefined {
-        return this.resources && { layout: this.resources.surfaceLayout, group: this.resources.surfaceGroup };
+    get surface(): GPUBindGroup | undefined {
+        return this.resources?.surfaceGroup;
     }
 
     /** The feature mask for other passes: group 3 of the terrain, which drawn_height reads. */
-    get features(): { layout: GPUBindGroupLayout; group: GPUBindGroup } | undefined {
-        return this.resources && { layout: this.resources.featureLayout, group: this.resources.featureGroup };
+    get features(): GPUBindGroup | undefined {
+        return this.resources?.featureGroup;
     }
 
-    /** Compiles the pipelines for a device and the formats of the frame, with the ground in group 2. A new device gets every page again, from the kept tile bodies. */
-    /** `sunFrame` is the frame uniform of the sun's view, whose casters draw into the shadow map. */
-    async attach(gpu: Gpu, frameUniform: GPUBuffer, sunFrame: GPUBuffer, format: GPUTextureFormat, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout): Promise<void> {
+    /**
+     * Takes the pools and the pipelines of the first frame on a device. A new device gets every page
+     * again, from the kept tile bodies.
+     */
+    async attach(gpu: Gpu, frameUniform: GPUBuffer): Promise<void> {
         this.resources = undefined;
         this.pages.lost();
         const { device } = gpu, pages = this.pages.capacity.stored + this.pages.capacity.synth;
@@ -329,8 +315,7 @@ export class Terrain {
         }, MASKS * SNAP_BYTES);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
-        const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup' | 'mesh' | 'plainMesh' | 'holedMesh' | 'synthesize' | 'normalsOf' | 'quantize'
-            | 'probe' | 'check' | 'stamp' | 'snap' | 'audits' | 'sunProbe' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout' | 'featureLayout'> = {
+        const r: Omit<Resources, keyof Pipelines | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup'> = {
             gpu, heights, normals,
             mask, snaps,
             masks: buffer('features', (1 + pages) * 4, storage),
@@ -358,95 +343,39 @@ export class Terrain {
         device.queue.writeBuffer(r.profiles, 0, PROFILE_TABLE);
         device.queue.writeBuffer(r.scales, 0, new Float32Array(2 * pages).fill(1));
 
-        const all = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE;
-        const layout = (entries: [GPUShaderStageFlags, Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'>][]) =>
-            device.createBindGroupLayout({ entries: entries.map(([visibility, entry], binding) => ({ binding, visibility, ...entry })) });
-        const read: GPUBufferBindingLayout = { type: 'read-only-storage' }, write: GPUBufferBindingLayout = { type: 'storage' };
-        const surfaceLayout = layout([
-            [all, { buffer: { type: 'uniform' } }], [all, { buffer: read }], [all, { texture: { sampleType: 'uint', viewDimension: '2d-array' } }],
-            [all, { buffer: read }], [all, { texture: { sampleType: 'float', viewDimension: '2d-array' } }], [all, { sampler: { type: 'non-filtering' } }],
-        ]);
-        const meshLayout = layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.VERTEX, { buffer: read }], [GPUShaderStage.VERTEX, { buffer: read }]]);
-        const jobLayout = layout([[GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: write }], [GPUShaderStage.COMPUTE, { buffer: write }]]);
-        const quantizeLayout = layout([[GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: write }], [GPUShaderStage.COMPUTE, { buffer: write }]]);
-        const probeLayout = layout([[GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: write }]]);
-        const checkLayout = layout([[GPUShaderStage.VERTEX, { buffer: read }]]);
-        const C = GPUShaderStage.COMPUTE;
-        const stampLayout = layout([
-            [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }],
-            [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }],
-        ]);
-        const snapLayout = device.createBindGroupLayout({
-            entries: [
-                { binding: 0, visibility: C, buffer: read }, { binding: 6, visibility: C, texture: { sampleType: 'float', viewDimension: '2d-array' } },
-                { binding: 7, visibility: C, storageTexture: { format: 'r32uint', viewDimension: '2d-array' } },
-            ],
-        });
-        const featureLayout = layout([
-            [all, { buffer: read }], [all, { texture: { sampleType: 'float', viewDimension: '2d-array' } }],
-            [all, { texture: { sampleType: 'uint', viewDimension: '2d-array' } }],
-        ]);
-        // The audit, the probe and the check read the feature mask in group 3, where the terrain draw has it after the ground.
-        const emptyLayout = layout([]);
-        const auditLayout = layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }], [C, { buffer: read }]]);
+        const L = gpu.once(terrainLayouts), { surface: surfaceLayout, features: featureLayout } = gpu.once(layouts), pipelines = await gpu.once(terrainPipelines);
         const group = (layout: GPUBindGroupLayout, resources: GPUBindingResource[]) => device.createBindGroup({ layout, entries: resources.map((resource, binding) => ({ binding, resource })) });
-        const pipelineLayout = (...groups: GPUBindGroupLayout[]) => device.createPipelineLayout({ bindGroupLayouts: groups });
-
-        const swap = device.features.has('clip-distances') ? CLIP_DISTANCES : {};
-        const modules = Object.fromEntries(['terrain', 'pages', 'probe', 'quantize', 'stamp', 'audit'].map(name => [name, device.createShaderModule({ label: name, code: wgsl(`terrain/${name}.wgsl`, swap) })]));
-        const compute = (module: string, entryPoint: string, layout: GPUPipelineLayout) =>
-            device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module: modules[module], entryPoint } });
-        const terrainPipeline = (paint: boolean, holes = false) => device.createRenderPipelineAsync({
-            label: holes ? 'terrain with holes' : paint ? 'terrain' : 'terrain without paint', layout: pipelineLayout(meshLayout, surfaceLayout, groundLayout, featureLayout),
-            vertex: { module: modules.terrain, entryPoint: 'vertex_main', constants: { HOLES: holes ? 1 : 0 } },
-            fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format }], constants: { PAINT: paint ? 1 : 0 } },
-            // The plain nodes cull back faces: no snap moves their vertices, so no triangle turns over, and a
-            // ray from an eye above them meets a front face first. The painted (near) nodes draw both faces:
-            // the eye can be under the near mesh for some frames, and its underside then hides what is behind.
-            primitive: { topology: 'triangle-list', cullMode: paint ? 'none' : 'back' },
-            depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
-        });
-        let audits: Promise<GPUComputePipeline[]> | undefined, sunProbe: Promise<GPUComputePipeline> | undefined;
-        const [mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap] = await Promise.all([
-            terrainPipeline(true), terrainPipeline(false), terrainPipeline(true, true),
-            compute('pages', 'synthesize', pipelineLayout(jobLayout, surfaceLayout)),
-            compute('pages', 'normals_of', pipelineLayout(jobLayout, surfaceLayout)),
-            compute('quantize', 'quantize', pipelineLayout(quantizeLayout)),
-            compute('probe', 'probe', pipelineLayout(probeLayout, surfaceLayout, emptyLayout, featureLayout)),
-            device.createRenderPipelineAsync({
-                label: 'check', layout: pipelineLayout(checkLayout, surfaceLayout, emptyLayout, featureLayout),
-                vertex: { module: modules.probe, entryPoint: 'check_vertex' },
-                fragment: { module: modules.probe, entryPoint: 'check_fragment', targets: [{ format: 'r32float' }] },
-                primitive: { topology: 'point-list' },
-            }),
-            compute('stamp', 'stamp', pipelineLayout(stampLayout, surfaceLayout)),
-            compute('stamp', 'snap', pipelineLayout(snapLayout)),
-        ]);
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
         // No mask yet, and a reach of the paint that no view meets.
         device.queue.writeBuffer(r.masks, 0, new Float32Array(1 + pages).fill(NO_LIMIT, 0, 1));
-        await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, featureLayout, format, depthFormat);
-        await this.structures.attach(gpu, [frameUniform, sunFrame], surfaceLayout, groundLayout, featureLayout, format, depthFormat);
         this.resources = {
-            ...r, mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, probeLayout,
-            audits: () => (audits ??= Promise.all(['audit', 'apron'].map(entry => compute('audit', entry, pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout))))), checkLayout, auditLayout, surfaceLayout, emptyLayout, featureLayout,
-            sunProbe: () => (sunProbe ??= device.createComputePipelineAsync({
-                label: 'sun_probe', layout: pipelineLayout(probeLayout, surfaceLayout, groundLayout, featureLayout),
-                compute: { module: device.createShaderModule({ label: 'sun probe', code: wgsl('terrain/sun-probe.wgsl', swap) }), entryPoint: 'sun_probe' },
-            })),
-            stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
+            ...r, ...pipelines,
+            stampGroup: group(L.stamp, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
             snapGroup: device.createBindGroup({
-                layout: snapLayout, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
+                layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
             }),
             featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps)]),
-            emptyGroup: group(emptyLayout, []),
+            emptyGroup: group(L.empty, []),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, normals.createView({ dimension: '2d-array' }), device.createSampler()]),
-            meshGroup: group(meshLayout, [{ buffer: frameUniform }, { buffer: r.nodes }, { buffer: r.holes }]),
-            synthGroup: group(jobLayout, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }]),
-            normalGroup: group(jobLayout, [{ buffer: r.normalJobs }, { buffer: r.normalOut }, { buffer: r.extent }]),
-            quantizeGroup: group(quantizeLayout, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.codes }, { buffer: r.scales }]),
-            probeGroup: group(probeLayout, [{ buffer: r.points }, { buffer: r.probed }]),
+            meshGroup: group(L.mesh, [{ buffer: frameUniform }, { buffer: r.nodes }, { buffer: r.holes }]),
+            synthGroup: group(L.job, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }]),
+            normalGroup: group(L.job, [{ buffer: r.normalJobs }, { buffer: r.normalOut }, { buffer: r.extent }]),
+            quantizeGroup: group(L.quantize, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.codes }, { buffer: r.scales }]),
+            probeGroup: group(L.probe, [{ buffer: r.points }, { buffer: r.probed }]),
         };
+    }
+
+    /**
+     * Takes the water, the structures and the holes of the tunnels' portals on the device of `attach`:
+     * they draw once compiled. `frames` are the frame uniforms of the eye's view and of the sun's, whose
+     * casters draw into the shadow map.
+     */
+    async attachParts(frames: GPUBuffer[]): Promise<void> {
+        const r = this.resources!;
+        await Promise.all([
+            this.water.attach(r.gpu, frames[0], r.nodes), this.structures.attach(r.gpu, frames),
+            r.gpu.once(holedPipeline).then(pipeline => void (r.holedMesh = pipeline)),
+        ]);
     }
 
     /**
@@ -603,7 +532,7 @@ export class Terrain {
         pass.setBindGroup(2, ground);
         pass.setBindGroup(3, r.featureGroup);
         pass.setIndexBuffer(r.indices, 'uint16');
-        pass.setPipeline(r.holedMesh);
+        pass.setPipeline(r.holedMesh ?? r.mesh);
         if (holed) pass.drawIndexed(GRID_INDICES.length, holed);
         pass.setPipeline(r.mesh);
         if (painted > holed) pass.drawIndexed(GRID_INDICES.length, painted - holed, 0, 0, holed);
@@ -620,7 +549,7 @@ export class Terrain {
     async check(points: [number, number][], ground: GPUBindGroup): Promise<{ probe: number[]; instance: number[]; sun: number[] }> {
         const r = this.resources, anchor = this.anchor;
         if (!r || !anchor || points.length > CHECKS) throw new Error(`A check takes up to ${CHECKS} points after the first frame.`);
-        const { device } = r.gpu, n = points.length, row = 256, sunProbe = await r.sunProbe();
+        const { device } = r.gpu, n = points.length, row = 256, L = r.gpu.once(terrainLayouts), [check, sunProbe] = await r.gpu.once(checkPipelines);
         const at = new Float32Array(points.flatMap(([lon, lat]) => lodSpace(anchor, ...worldPixel([lon, lat], UNITS))));
         const input = device.createBuffer({ size: at.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
         const [output, shares] = [0, 1].map(() => device.createBuffer({ size: 4 * n, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC }));
@@ -630,19 +559,19 @@ export class Terrain {
         const encoder = device.createCommandEncoder();
         const compute = encoder.beginComputePass();
         compute.setPipeline(r.probe);
-        compute.setBindGroup(0, device.createBindGroup({ layout: r.probeLayout, entries: [{ binding: 0, resource: { buffer: input } }, { binding: 1, resource: { buffer: output } }] }));
+        compute.setBindGroup(0, device.createBindGroup({ layout: L.probe, entries: [{ binding: 0, resource: { buffer: input } }, { binding: 1, resource: { buffer: output } }] }));
         compute.setBindGroup(1, r.surfaceGroup);
         compute.setBindGroup(2, r.emptyGroup);
         compute.setBindGroup(3, r.featureGroup);
         compute.dispatchWorkgroups(1);
         compute.setPipeline(sunProbe);
-        compute.setBindGroup(0, device.createBindGroup({ layout: r.probeLayout, entries: [{ binding: 0, resource: { buffer: input } }, { binding: 1, resource: { buffer: shares } }] }));
+        compute.setBindGroup(0, device.createBindGroup({ layout: L.probe, entries: [{ binding: 0, resource: { buffer: input } }, { binding: 1, resource: { buffer: shares } }] }));
         compute.setBindGroup(2, ground);
         compute.dispatchWorkgroups(1);
         compute.end();
         const render = encoder.beginRenderPass({ colorAttachments: [{ view: target.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }] });
-        render.setPipeline(r.check);
-        render.setBindGroup(0, device.createBindGroup({ layout: r.checkLayout, entries: [{ binding: 0, resource: { buffer: input } }] }));
+        render.setPipeline(check);
+        render.setBindGroup(0, device.createBindGroup({ layout: L.check, entries: [{ binding: 0, resource: { buffer: input } }] }));
         render.setBindGroup(1, r.surfaceGroup);
         render.setBindGroup(2, r.emptyGroup);
         render.setBindGroup(3, r.featureGroup);
@@ -724,9 +653,9 @@ export class Terrain {
         const buffers = [storage(samples.subarray(0, Math.max(1, n) * SAMPLE_WORDS)), storage(packed), storage(new Uint32Array(COUNTS)), storage(new Uint32Array(FOUND * 8)),
             storage(new Uint32Array(pairs.length ? pairs : [0, 0, 0, 0, 0, 0, 0, 0]))];
         const read = [COUNTS * 4, FOUND * 32].map(size => device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }));
-        const [audit, apron] = await r.audits();
+        const [audit, apron] = await r.gpu.once(auditPipelines);
         const encoder = device.createCommandEncoder(), pass = encoder.beginComputePass();
-        pass.setBindGroup(0, device.createBindGroup({ layout: r.auditLayout, entries: [...buffers.slice(0, 4), r.profiles, buffers[4]].map((buffer, binding) => ({ binding, resource: { buffer } })) }));
+        pass.setBindGroup(0, device.createBindGroup({ layout: r.gpu.once(terrainLayouts).audit, entries: [...buffers.slice(0, 4), r.profiles, buffers[4]].map((buffer, binding) => ({ binding, resource: { buffer } })) }));
         pass.setBindGroup(1, r.surfaceGroup);
         pass.setBindGroup(2, r.emptyGroup);
         pass.setBindGroup(3, r.featureGroup);
@@ -835,6 +764,97 @@ export class Terrain {
         this.structures.write();
         return changed;
     }
+}
+
+/** The terrain's own bind group layouts; groups 1 to 3 are those of gpu/layouts.ts. */
+function terrainLayouts({ device }: Gpu) {
+    const layout = (entries: [GPUShaderStageFlags, Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'>][]) =>
+        device.createBindGroupLayout({ entries: entries.map(([visibility, entry], binding) => ({ binding, visibility, ...entry })) });
+    const read: GPUBufferBindingLayout = { type: 'read-only-storage' }, write: GPUBufferBindingLayout = { type: 'storage' }, C = GPUShaderStage.COMPUTE;
+    return {
+        mesh: layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.VERTEX, { buffer: read }], [GPUShaderStage.VERTEX, { buffer: read }]]),
+        job: layout([[C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
+        quantize: layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
+        probe: layout([[C, { buffer: read }], [C, { buffer: write }]]),
+        check: layout([[GPUShaderStage.VERTEX, { buffer: read }]]),
+        stamp: layout([
+            [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }],
+            [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }],
+        ]),
+        snap: device.createBindGroupLayout({
+            entries: [
+                { binding: 0, visibility: C, buffer: read }, { binding: 6, visibility: C, texture: { sampleType: 'float', viewDimension: '2d-array' } },
+                { binding: 7, visibility: C, storageTexture: { format: 'r32uint', viewDimension: '2d-array' } },
+            ],
+        }),
+        // The audit, the probe and the check read the feature mask in group 3, where the terrain draw has it after the ground.
+        empty: layout([]),
+        audit: layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }], [C, { buffer: read }]]),
+    };
+}
+
+/** A terrain shader, with the includes of `clip-distances` on a device that has it. */
+const shader = ({ device }: Gpu, file: string) => device.createShaderModule({ label: file, code: wgsl(`terrain/${file}.wgsl`, device.features.has('clip-distances') ? CLIP_DISTANCES : {}) });
+
+/** A compute pipeline of a terrain shader, whose groups take the layouts `groups`. */
+function compute(gpu: Gpu, file: string, entryPoint: string, groups: GPUBindGroupLayout[]): Promise<GPUComputePipeline> {
+    return gpu.device.createComputePipelineAsync({ label: entryPoint, layout: gpu.device.createPipelineLayout({ bindGroupLayouts: groups }), compute: { module: shader(gpu, file), entryPoint } });
+}
+
+/** The draw of the nodes: with the road paint (the near nodes), without, or with the holes of the tunnels' portals. */
+function meshPipeline(gpu: Gpu, paint: boolean, holes = false): Promise<GPURenderPipeline> {
+    const { device } = gpu, L = gpu.once(terrainLayouts), shared = gpu.once(layouts), module = shader(gpu, 'terrain');
+    return device.createRenderPipelineAsync({
+        label: holes ? 'terrain with holes' : paint ? 'terrain' : 'terrain without paint',
+        layout: device.createPipelineLayout({ bindGroupLayouts: [L.mesh, shared.surface, shared.ground, shared.features] }),
+        vertex: { module, entryPoint: 'vertex_main', constants: { HOLES: holes ? 1 : 0 } },
+        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { PAINT: paint ? 1 : 0 } },
+        // The plain nodes cull back faces: no snap moves their vertices, so no triangle turns over, and a
+        // ray from an eye above them meets a front face first. The painted (near) nodes draw both faces:
+        // the eye can be under the near mesh for some frames, and its underside then hides what is behind.
+        primitive: { topology: 'triangle-list', cullMode: paint ? 'none' : 'back' },
+        depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
+    });
+}
+
+type Pipelines = Awaited<ReturnType<typeof terrainPipelines>>;
+
+/** What the terrain draws and computes with from its first frame. */
+export async function terrainPipelines(gpu: Gpu) {
+    const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
+    const [mesh, plainMesh, synthesize, normalsOf, quantize, probe, stamp, snap] = await Promise.all([
+        meshPipeline(gpu, true), meshPipeline(gpu, false),
+        compute(gpu, 'pages', 'synthesize', [L.job, surface]),
+        compute(gpu, 'pages', 'normals_of', [L.job, surface]),
+        compute(gpu, 'quantize', 'quantize', [L.quantize]),
+        compute(gpu, 'probe', 'probe', [L.probe, surface, L.empty, features]),
+        compute(gpu, 'stamp', 'stamp', [L.stamp, surface]),
+        compute(gpu, 'stamp', 'snap', [L.snap]),
+    ]);
+    return { mesh, plainMesh, synthesize, normalsOf, quantize, probe, stamp, snap };
+}
+
+/** The draw of the nodes with a tunnel's portal, with its hole. */
+const holedPipeline = (gpu: Gpu) => meshPipeline(gpu, true, true);
+
+/** The check's draw and the probe of the share of the sun: only tests check. */
+function checkPipelines(gpu: Gpu): Promise<[GPURenderPipeline, GPUComputePipeline]> {
+    const { device } = gpu, L = gpu.once(terrainLayouts), { surface, features, ground } = gpu.once(layouts), module = shader(gpu, 'probe');
+    return Promise.all([
+        device.createRenderPipelineAsync({
+            label: 'check', layout: device.createPipelineLayout({ bindGroupLayouts: [L.check, surface, L.empty, features] }),
+            vertex: { module, entryPoint: 'check_vertex' },
+            fragment: { module, entryPoint: 'check_fragment', targets: [{ format: 'r32float' }] },
+            primitive: { topology: 'point-list' },
+        }),
+        compute(gpu, 'sun-probe', 'sun_probe', [L.probe, surface, ground, features]),
+    ]);
+}
+
+/** The audit's pipelines: SwiftShader takes half a minute for them, and only tests audit. */
+function auditPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
+    const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
+    return Promise.all(['audit', 'apron'].map(entry => compute(gpu, 'audit', entry, [L.audit, surface, L.empty, features])));
 }
 
 /** The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. */

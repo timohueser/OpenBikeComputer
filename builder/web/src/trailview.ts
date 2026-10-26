@@ -25,6 +25,8 @@ async function main(): Promise<void> {
     config.catch(() => {});
     const gpu = await Gpu.request();
     if (!gpu) return notice('TrailView needs WebGPU. Open this page in a current version of Chrome, Edge or Safari.');
+    // `start` reports a failed compile.
+    TrailView.prepare(gpu).catch(() => {});
     const release = await config;
     pageRelease(release.id);
     const view = parseView(location.search, defaultView(release.bounds));

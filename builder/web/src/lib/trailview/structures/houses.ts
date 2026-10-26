@@ -1,4 +1,5 @@
 import type { Gpu } from '../gpu/device';
+import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { CASTER_DEPTH, CASTER_PRIMITIVE } from '../light/shadow';
 import { CURVATURE, type Frame } from '../frame/frame';
@@ -6,6 +7,7 @@ import { MESHES, TEMPLATES } from '../models/house';
 import type { HouseStyle, Rules } from '../rules/regions';
 import { DEEPEST } from '../stream/features';
 import { NEAR_M } from '../terrain/lod';
+import { DEPTH, sceneFormat } from '../resolve/targets';
 import type { FeatureTiles } from '../terrain/stamps';
 import { OUTLINE_WORDS, RECORD_WORDS, type TileHouses } from './house-records';
 
@@ -188,12 +190,11 @@ export class Houses {
         return { houses: this.count, tiles: this.ranges.length, ...this.drawnCounts, casters: this.casterCounts };
     }
 
-    /** `frames` are the frame uniforms of the eye's view and of the sun's. */
-    async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[], surface: { layout: GPUBindGroupLayout; group: GPUBindGroup }, features: { layout: GPUBindGroupLayout; group: GPUBindGroup },
-        ground: { render: GPUBindGroupLayout; compute: GPUBindGroupLayout }, format: GPUTextureFormat, depthFormat: GPUTextureFormat): Promise<void> {
+    /** `frames` are the frame uniforms of the eye's view and of the sun's; `surface` and `features` are groups 1 and 3 of the terrain. */
+    async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[], surface: GPUBindGroup, features: GPUBindGroup): Promise<void> {
         this.resources = undefined;
         this.drawn = '';
-        const { device } = gpu, C = GPUShaderStage.COMPUTE, VF = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
+        const { device } = gpu, { computeLayout, renderLayout, pipelines: [fit, refit, templates, outlines, templateCaster, outlineCaster] } = await gpu.once(housePipelines);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const { styles, regions } = styleWords(this.rules);
         this.regions = regions;
@@ -210,35 +211,6 @@ export class Houses {
             templates: upload('houses', words),
             outlineVertices: gpu.buffer('houses', OUTLINE_BYTES, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST),
         };
-        const entry = (binding: number, visibility: number, type: GPUBufferBindingType, hasDynamicOffset = false): GPUBindGroupLayoutEntry => ({ binding, visibility, buffer: { type, hasDynamicOffset } });
-        const computeLayout = device.createBindGroupLayout({ entries: [
-            entry(0, C, 'uniform'), entry(1, C, 'read-only-storage'), entry(2, C, 'storage'), entry(5, C, 'storage'), entry(11, C, 'uniform'), entry(12, C, 'storage'),
-        ] });
-        const renderLayout = device.createBindGroupLayout({ entries: [
-            entry(0, VF, 'uniform'), entry(6, VF, 'read-only-storage'),
-            { binding: 7, visibility: VF, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 8 } }, entry(8, VF, 'read-only-storage'), entry(13, VF, 'read-only-storage'),
-        ] });
-        const module = device.createShaderModule({ label: 'houses', code: wgsl('structures/houses.wgsl') });
-        const renderPipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [renderLayout, surface.layout, ground.render] });
-        const render = (entryPoint: string, buffers: GPUVertexBufferLayout[]) => device.createRenderPipelineAsync({
-            label: 'houses', layout: renderPipelineLayout, vertex: { module, entryPoint, buffers },
-            fragment: { module, entryPoint: 'house_fragment', targets: [{ format }] },
-            primitive: { topology: 'triangle-list', cullMode: 'back' },
-            depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
-        });
-        const fitLayout = device.createPipelineLayout({ bindGroupLayouts: [computeLayout, surface.layout, ground.compute, features.layout] });
-        const compute = (entryPoint: string) => device.createComputePipelineAsync({ label: 'houses', layout: fitLayout, compute: { module, entryPoint } });
-        const outlineBuffers: GPUVertexBufferLayout[] = [{ arrayStride: OUTLINE_WORDS * 4, attributes: [
-            { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'uint32' }, { shaderLocation: 2, offset: 12, format: 'float32' },
-        ] }];
-        const caster = (entryPoint: string, buffers: GPUVertexBufferLayout[]) => device.createRenderPipelineAsync({
-            label: 'house casters', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, surface.layout] }),
-            vertex: { module, entryPoint, buffers }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH,
-        });
-        const [fit, refit, templates, outlines, templateCaster, outlineCaster] = await Promise.all([
-            compute('fit'), compute('refit'), render('template_vertex', []), render('outline_vertex', outlineBuffers),
-            caster('template_caster', []), caster('outline_caster', outlineBuffers),
-        ]);
         const bind = (layout: GPUBindGroupLayout, list: [number, GPUBuffer, number?][]) => device.createBindGroup({ layout, entries: list.map(([binding, buffer, size]) => ({ binding, resource: { buffer, size } })) });
         const view = (frame: GPUBuffer, capacity: number): ViewBuffers => {
             const drawn = gpu.buffer('houses', capacity * DRAWN_BYTES, GPUBufferUsage.STORAGE);
@@ -258,7 +230,7 @@ export class Houses {
             device, fit, refit, templates, outlines, casters: [templateCaster, outlineCaster], houses: b.houses, fits: b.fits, eye: view(frame, DRAWN), sun: view(sunFrame, SUN_DRAWN),
             readbacks: [0, 1].map(() => gpu.buffer('houses', LISTS * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST)), sunReadback: gpu.buffer('houses', LISTS * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST),
             outlineVertices: b.outlineVertices,
-            surface: surface.group, features: features.group,
+            surface, features,
         };
     }
 
@@ -514,4 +486,39 @@ export class Houses {
             if (!this.drawnTiles.has(old)) this.tiles.delete(old);
         }
     }
+}
+
+/** The fit and the refit of the houses to the drawn surface, the draws of the templates and the outlines, their casters, and their layouts. */
+async function housePipelines(gpu: Gpu) {
+    const { device } = gpu, C = GPUShaderStage.COMPUTE, VF = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { surface, features, ground, groundCompute } = gpu.once(layouts);
+    const entry = (binding: number, visibility: number, type: GPUBufferBindingType, hasDynamicOffset = false): GPUBindGroupLayoutEntry => ({ binding, visibility, buffer: { type, hasDynamicOffset } });
+    const computeLayout = device.createBindGroupLayout({ entries: [
+        entry(0, C, 'uniform'), entry(1, C, 'read-only-storage'), entry(2, C, 'storage'), entry(5, C, 'storage'), entry(11, C, 'uniform'), entry(12, C, 'storage'),
+    ] });
+    const renderLayout = device.createBindGroupLayout({ entries: [
+        entry(0, VF, 'uniform'), entry(6, VF, 'read-only-storage'),
+        { binding: 7, visibility: VF, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 8 } }, entry(8, VF, 'read-only-storage'), entry(13, VF, 'read-only-storage'),
+    ] });
+    const module = device.createShaderModule({ label: 'houses', code: wgsl('structures/houses.wgsl') });
+    const renderPipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [renderLayout, surface, ground] });
+    const render = (entryPoint: string, buffers: GPUVertexBufferLayout[]) => device.createRenderPipelineAsync({
+        label: 'houses', layout: renderPipelineLayout, vertex: { module, entryPoint, buffers },
+        fragment: { module, entryPoint: 'house_fragment', targets: [{ format: sceneFormat(gpu) }] },
+        primitive: { topology: 'triangle-list', cullMode: 'back' },
+        depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
+    });
+    const fitLayout = device.createPipelineLayout({ bindGroupLayouts: [computeLayout, surface, groundCompute[1], features] });
+    const compute = (entryPoint: string) => device.createComputePipelineAsync({ label: 'houses', layout: fitLayout, compute: { module, entryPoint } });
+    const outlineBuffers: GPUVertexBufferLayout[] = [{ arrayStride: OUTLINE_WORDS * 4, attributes: [
+        { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'uint32' }, { shaderLocation: 2, offset: 12, format: 'float32' },
+    ] }];
+    const caster = (entryPoint: string, buffers: GPUVertexBufferLayout[]) => device.createRenderPipelineAsync({
+        label: 'house casters', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, surface] }),
+        vertex: { module, entryPoint, buffers }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH,
+    });
+    const pipelines = await Promise.all([
+        compute('fit'), compute('refit'), render('template_vertex', []), render('outline_vertex', outlineBuffers),
+        caster('template_caster', []), caster('outline_caster', outlineBuffers),
+    ]);
+    return { computeLayout, renderLayout, pipelines };
 }

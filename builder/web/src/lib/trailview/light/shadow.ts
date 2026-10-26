@@ -59,6 +59,12 @@ interface State { centre?: number[]; sun?: number[]; waiting: boolean; frames: n
 /** What changed for the casters this frame: instances or houses anywhere, and the nearest new terrain or structures in metres. */
 export interface Casting { casters: boolean; reshaped: number }
 
+interface Maps {
+    texture: GPUTexture; frame: GPUBuffer; uniform: GPUBuffer; compare: GPUSampler;
+    /** The pipeline of the mip levels, and per cascade and level above the first the group that reads the level below. */
+    mips?: { pipeline: GPURenderPipeline; groups: GPUBindGroup[][] };
+}
+
 /**
  * The object shadows: per cascade one depth map of the casters seen from the sun, which every surface
  * reads (shadow.wgsl). Its projection shears along the sun onto the level of its centre and turns its
@@ -67,36 +73,32 @@ export interface Casting { casters: boolean; reshaped: number }
  * turns or new casters arrive, and one map at most draws in a frame.
  */
 export class Shadow {
-    private resources?: {
-        texture: GPUTexture; frame: GPUBuffer; uniform: GPUBuffer; compare: GPUSampler;
-        /** The pipeline of the mip levels, and per cascade and level above the first the group that reads the level below. */
-        mips: GPURenderPipeline; mipGroups: GPUBindGroup[][];
-    };
+    private resources?: Maps;
     private readonly states: State[] = CASCADES.map(() => ({ waiting: false, frames: 0, active: false }));
     /** Per cascade the share that the receivers take from it by the eye's height, 0 without a map. */
     private readonly weights = CASCADES.map(() => 0);
 
+    /** Takes the maps on a device at once, and resolves when their mip pipeline is compiled: no map draws before. */
     async attach(gpu: Gpu): Promise<void> {
         for (const state of this.states) state.centre = undefined;
-        this.resources = undefined;
-        const { device } = gpu, module = device.createShaderModule({ label: 'shadow mips', code: wgsl('light/shadow-mips.wgsl') });
-        const layout = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } }] });
-        const mips = await device.createRenderPipelineAsync({
-            label: 'shadow mips', layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }), vertex: { module, entryPoint: 'mip_vertex' },
-            fragment: { module, entryPoint: 'mip_fragment', targets: [] }, depthStencil: { format: SHADOW_FORMAT, depthWriteEnabled: true, depthCompare: 'always' },
-        });
+        const { device } = gpu;
         const texture = gpu.texture('shadow', {
             size: [SIDE, SIDE, CASCADES.length], format: SHADOW_FORMAT, mipLevelCount: LEVELS, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
         }, Math.round(SIDE * SIDE * 2 * CASCADES.length * 4 / 3));
-        this.resources = {
-            texture, mips,
-            mipGroups: CASCADES.map((_, c) => Array.from({ length: LEVELS - 1 }, (_, k) => device.createBindGroup({
-                layout, entries: [{ binding: 0, resource: this.level(texture, c, k) }],
-            }))),
+        const r: Maps = {
+            texture,
             // The casters' frame: Frame of terrain.wgsl with the sun's view projection.
             frame: gpu.buffer('shadow', 96, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
             uniform: gpu.buffer('shadow', SHADOWS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
-            compare: gpu.device.createSampler({ compare: 'less-equal', magFilter: 'linear', minFilter: 'linear' }),
+            compare: device.createSampler({ compare: 'less-equal', magFilter: 'linear', minFilter: 'linear' }),
+        };
+        this.resources = r;
+        const pipeline = await gpu.once(mipPipeline);
+        r.mips = {
+            pipeline,
+            groups: CASCADES.map((_, c) => Array.from({ length: LEVELS - 1 }, (_, k) => device.createBindGroup({
+                layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: this.level(texture, c, k) }],
+            }))),
         };
     }
 
@@ -204,15 +206,15 @@ export class Shadow {
 
     /** Encodes a cascade's mip levels after its casters drew; the timestamps span all of them. */
     encodeMips(encoder: GPUCommandEncoder, cascade: number, timing?: GPURenderPassTimestampWrites): void {
-        const r = this.resources!, last = r.mipGroups[cascade].length - 1;
-        r.mipGroups[cascade].forEach((group, k) => {
+        const { pipeline, groups } = this.resources!.mips!, last = groups[cascade].length - 1;
+        groups[cascade].forEach((group, k) => {
             const timestampWrites = timing && (k === 0 || k === last)
                 ? { querySet: timing.querySet, beginningOfPassWriteIndex: k === 0 ? timing.beginningOfPassWriteIndex : undefined, endOfPassWriteIndex: k === last ? timing.endOfPassWriteIndex : undefined } : undefined;
             const pass = encoder.beginRenderPass({
                 label: 'shadow mips', colorAttachments: [], timestampWrites,
-                depthStencilAttachment: { view: this.level(r.texture, cascade, k + 1), depthLoadOp: 'clear', depthClearValue: 1, depthStoreOp: 'store' },
+                depthStencilAttachment: { view: this.level(this.resources!.texture, cascade, k + 1), depthLoadOp: 'clear', depthClearValue: 1, depthStoreOp: 'store' },
             });
-            pass.setPipeline(r.mips);
+            pass.setPipeline(pipeline);
             pass.setBindGroup(0, group);
             pass.draw(3);
             pass.end();
@@ -236,6 +238,16 @@ export class Shadow {
         const snap = (value: number, side: number) => Math.round(value / (2 * side / SIDE)) * (2 * side / SIDE);
         return { a, b, k, along, across: half, u: snap(a * cx + b * cy - k * cz, along), v: snap(-b * cx + a * cy, half), top, depth: top - (cz - hold) };
     }
+}
+
+/** The pipeline that draws a mip level of a map from the level below. */
+function mipPipeline({ device }: Gpu): Promise<GPURenderPipeline> {
+    const module = device.createShaderModule({ label: 'shadow mips', code: wgsl('light/shadow-mips.wgsl') });
+    const layout = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } }] });
+    return device.createRenderPipelineAsync({
+        label: 'shadow mips', layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }), vertex: { module, entryPoint: 'mip_vertex' },
+        fragment: { module, entryPoint: 'mip_fragment', targets: [] }, depthStencil: { format: SHADOW_FORMAT, depthWriteEnabled: true, depthCompare: 'always' },
+    });
 }
 
 function smoothstep(edge0: number, edge1: number, x: number): number {

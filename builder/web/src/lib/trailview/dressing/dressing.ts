@@ -1,6 +1,7 @@
 import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import type { Gpu } from '../gpu/device';
+import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { Instances, VIEWS, type Producer, type Surfaces } from '../instances/instances';
 import { animal, BREEDS } from '../models/animals';
@@ -54,24 +55,19 @@ export class Dressing implements Producer {
         });
     }
 
-    async attach(gpu: Gpu, { surface, features, ground }: Surfaces): Promise<void> {
+    async attach(gpu: Gpu, { surface, features }: Surfaces): Promise<void> {
         this.resources = undefined;
-        const { device } = gpu, C = GPUShaderStage.COMPUTE;
+        const { device } = gpu;
         const herds = gpu.buffer('dressing', this.table.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const params = gpu.buffer('dressing', DRESSING_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         device.queue.writeBuffer(herds, 0, this.table);
-        const layout = device.createBindGroupLayout({ entries: [
-            ...Instances.emitEntries(), { binding: 8, visibility: C, buffer: { type: 'uniform' } }, { binding: 9, visibility: C, buffer: { type: 'read-only-storage' } },
-        ] });
-        const module = device.createShaderModule({ label: 'dressing', code: wgsl('dressing/dressing.wgsl') });
-        const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout, surface.layout, ground, features.layout] });
-        const [herdsOf, rocksOf] = await Promise.all(['herds_of', 'rocks_of'].map(entryPoint => device.createComputePipelineAsync({ label: entryPoint, layout: pipelineLayout, compute: { module, entryPoint } })));
+        const [herdsOf, rocksOf] = await gpu.once(dressingPipelines);
         this.resources = {
             gpu, herds: herdsOf, rocks: rocksOf, params,
-            groups: VIEWS.map(view => device.createBindGroup({ layout, entries: [...this.instances.emitResources(view), { binding: 8, resource: { buffer: params } }, { binding: 9, resource: { buffer: herds } }] })),
+            groups: VIEWS.map(view => device.createBindGroup({ layout: herdsOf.getBindGroupLayout(0), entries: [...this.instances.emitResources(view), { binding: 8, resource: { buffer: params } }, { binding: 9, resource: { buffer: herds } }] })),
         };
-        this.surface = surface.group;
-        this.features = features.group;
+        this.surface = surface;
+        this.features = features;
     }
 
     private surface?: GPUBindGroup;
@@ -106,4 +102,15 @@ export class Dressing implements Producer {
         pass.setPipeline(r.rocks);
         pass.dispatchWorkgroups(Math.ceil(this.rockSide / 8), Math.ceil(this.rockSide / 8));
     }
+}
+
+/** The herds and the rocks about the eye. */
+function dressingPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
+    const { device } = gpu, C = GPUShaderStage.COMPUTE, { surface, ground, features } = gpu.once(layouts);
+    const group = device.createBindGroupLayout({ entries: [
+        ...Instances.emitEntries(), { binding: 8, visibility: C, buffer: { type: 'uniform' } }, { binding: 9, visibility: C, buffer: { type: 'read-only-storage' } },
+    ] });
+    const module = device.createShaderModule({ label: 'dressing', code: wgsl('dressing/dressing.wgsl') });
+    const layout = device.createPipelineLayout({ bindGroupLayouts: [group, surface, ground, features] });
+    return Promise.all(['herds_of', 'rocks_of'].map(entryPoint => device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module, entryPoint } })));
 }
