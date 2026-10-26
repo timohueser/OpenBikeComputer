@@ -1,6 +1,8 @@
 import type { Gpu } from '../gpu/device';
 
 export const DEPTH: GPUTextureFormat = 'depth32float';
+/** The frame's colour on a device. */
+export const sceneFormat = ({ device }: Gpu): GPUTextureFormat => (device.features.has('rg11b10ufloat-renderable') ? 'rg11b10ufloat' : 'rgba16float');
 /** The history's colour: 10 bits per channel, encoded in resolve.wgsl so a dusk sky shows no bands. */
 export const HISTORY: GPUTextureFormat = 'rgb10a2unorm';
 /** The history's depth: the nearest depth about each pixel of the last frame. */
@@ -36,7 +38,7 @@ export class Targets {
     parity = 0;
 
     constructor(private readonly gpu: Gpu) {
-        this.format = gpu.device.features.has('rg11b10ufloat-renderable') ? 'rg11b10ufloat' : 'rgba16float';
+        this.format = sceneFormat(gpu);
     }
 
     /** The render size of the frame at a scale. */

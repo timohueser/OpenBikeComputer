@@ -3,6 +3,7 @@ import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import { size, type Node } from '../terrain/lod';
 import type { Gpu } from '../gpu/device';
+import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { Instances, VIEWS, type Producer, type Surfaces } from '../instances/instances';
 import type { Rules } from '../rules/regions';
@@ -79,10 +80,10 @@ export class Forest implements Producer {
         return { requests, bytes, failed };
     }
 
-    async attach(gpu: Gpu, { surface, features, ground }: Surfaces): Promise<void> {
+    async attach(gpu: Gpu, { surface, features }: Surfaces): Promise<void> {
         this.resources = undefined;
         this.canopy.lost();
-        const { device } = gpu, C = GPUShaderStage.COMPUTE;
+        const { device } = gpu;
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const data = gpu.buffer('vegetation', SPECIES_AT + Math.max(16, this.species.byteLength), storage);
         const cells = VIEWS.map(() => gpu.buffer('vegetation', 32 + 16 * listParts(this.most).at(-1)!, storage | GPUBufferUsage.INDIRECT));
@@ -90,28 +91,17 @@ export class Forest implements Producer {
         const texture = this.canopy.attach(gpu, data);
         device.queue.writeBuffer(data, POINTS_AT, bluePoints(POINTS));
         device.queue.writeBuffer(data, SPECIES_AT, this.species);
-        const shared: GPUBindGroupLayoutEntry[] = [
-            ...Instances.emitEntries(), { binding: 8, visibility: C, texture: { sampleType: 'uint', viewDimension: '2d-array' } },
-            { binding: 9, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 11, visibility: C, buffer: { type: 'uniform' } },
-        ];
-        const layouts = [
-            device.createBindGroupLayout({ entries: [...shared, { binding: 10, visibility: C, buffer: { type: 'storage' } }] }),
-            device.createBindGroupLayout({ entries: [...shared, { binding: 12, visibility: C, buffer: { type: 'read-only-storage' } }] }),
-        ];
-        const module = device.createShaderModule({ label: 'forest', code: wgsl('vegetation/forest.wgsl') });
-        const [findCells, trees] = await Promise.all(['find_cells', 'trees'].map((entryPoint, k) => device.createComputePipelineAsync({
-            label: entryPoint, layout: device.createPipelineLayout({ bindGroupLayouts: [layouts[k], surface.layout, ground, features.layout] }), compute: { module, entryPoint },
-        })));
+        const [findCells, trees] = await gpu.once(forestPipelines);
         this.resources = {
-            gpu, findCells, trees, cells, params, surface: surface.group, features: features.group,
+            gpu, findCells, trees, cells, params, surface, features,
             groups: VIEWS.map(view => {
                 const entries = [
                     ...this.instances.emitResources(view), { binding: 8, resource: texture.createView({ dimension: '2d-array' }) },
                     { binding: 9, resource: { buffer: data } }, { binding: 11, resource: { buffer: params } },
                 ];
                 return [
-                    device.createBindGroup({ layout: layouts[0], entries: [...entries, { binding: 10, resource: { buffer: cells[view] } }] }),
-                    device.createBindGroup({ layout: layouts[1], entries: [...entries, { binding: 12, resource: { buffer: cells[view] } }] }),
+                    device.createBindGroup({ layout: findCells.getBindGroupLayout(0), entries: [...entries, { binding: 10, resource: { buffer: cells[view] } }] }),
+                    device.createBindGroup({ layout: trees.getBindGroupLayout(0), entries: [...entries, { binding: 12, resource: { buffer: cells[view] } }] }),
                 ];
             }),
         };
@@ -253,4 +243,21 @@ export function bluePoints(n: number, candidates = 24): Float32Array<ArrayBuffer
         }
     }
     return out;
+}
+
+/** The cells of the trees about the eye, and the trees in them. */
+export function forestPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
+    const { device } = gpu, C = GPUShaderStage.COMPUTE, { surface, ground, features } = gpu.once(layouts);
+    const shared: GPUBindGroupLayoutEntry[] = [
+        ...Instances.emitEntries(), { binding: 8, visibility: C, texture: { sampleType: 'uint', viewDimension: '2d-array' } },
+        { binding: 9, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 11, visibility: C, buffer: { type: 'uniform' } },
+    ];
+    const groups = [
+        device.createBindGroupLayout({ entries: [...shared, { binding: 10, visibility: C, buffer: { type: 'storage' } }] }),
+        device.createBindGroupLayout({ entries: [...shared, { binding: 12, visibility: C, buffer: { type: 'read-only-storage' } }] }),
+    ];
+    const module = device.createShaderModule({ label: 'forest', code: wgsl('vegetation/forest.wgsl') });
+    return Promise.all(['find_cells', 'trees'].map((entryPoint, k) => device.createComputePipelineAsync({
+        label: entryPoint, layout: device.createPipelineLayout({ bindGroupLayouts: [groups[k], surface, ground, features] }), compute: { module, entryPoint },
+    })));
 }

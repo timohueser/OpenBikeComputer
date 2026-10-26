@@ -1,4 +1,5 @@
 import type { Gpu } from '../gpu/device';
+import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { Instances, VIEWS, type Producer, type Surfaces } from './instances';
 
@@ -46,21 +47,14 @@ export class Points implements Producer {
         instances.produce(this);
     }
 
-    async attach(gpu: Gpu, { surface, features, ground }: Surfaces): Promise<void> {
+    async attach(gpu: Gpu, { surface, features }: Surfaces): Promise<void> {
         this.resources = undefined;
-        const { device } = gpu, C = GPUShaderStage.COMPUTE;
+        const { device } = gpu, pipeline = await gpu.once(pointPipeline);
         const points = gpu.buffer('instances', Math.max(16, this.capacity * POINT_WORDS * 4), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const pool = gpu.buffer('instances', 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-        const layout = device.createBindGroupLayout({ entries: [
-            ...Instances.emitEntries(), { binding: 8, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 9, visibility: C, buffer: { type: 'uniform' } },
-        ] });
-        const pipeline = await device.createComputePipelineAsync({
-            label: 'points', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surface.layout, ground, features.layout] }),
-            compute: { module: device.createShaderModule({ label: 'points', code: wgsl('instances/points.wgsl') }), entryPoint: 'stand' },
-        });
         this.resources = {
-            device, pipeline, points, pool, surface: surface.group, features: features.group,
-            groups: VIEWS.map(view => device.createBindGroup({ layout, entries: [...this.instances.emitResources(view), { binding: 8, resource: { buffer: points } }, { binding: 9, resource: { buffer: pool } }] })),
+            device, pipeline, points, pool, surface, features,
+            groups: VIEWS.map(view => device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [...this.instances.emitResources(view), { binding: 8, resource: { buffer: points } }, { binding: 9, resource: { buffer: pool } }] })),
         };
         if (this.pending) this.write(this.pending);
     }
@@ -85,4 +79,16 @@ export class Points implements Producer {
         pass.setBindGroup(3, r.features);
         pass.dispatchWorkgroups(Math.ceil(this.count / 64));
     }
+}
+
+/** Stands the points of a pool on the drawn surface. */
+export function pointPipeline(gpu: Gpu): Promise<GPUComputePipeline> {
+    const { device } = gpu, C = GPUShaderStage.COMPUTE, { surface, ground, features } = gpu.once(layouts);
+    const group = device.createBindGroupLayout({ entries: [
+        ...Instances.emitEntries(), { binding: 8, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 9, visibility: C, buffer: { type: 'uniform' } },
+    ] });
+    return device.createComputePipelineAsync({
+        label: 'points', layout: device.createPipelineLayout({ bindGroupLayouts: [group, surface, ground, features] }),
+        compute: { module: device.createShaderModule({ label: 'points', code: wgsl('instances/points.wgsl') }), entryPoint: 'stand' },
+    });
 }

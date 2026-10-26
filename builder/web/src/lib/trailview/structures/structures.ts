@@ -1,6 +1,8 @@
 import type { Gpu } from '../gpu/device';
+import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { CASTER_DEPTH, CASTER_PRIMITIVE, NEAR_CASTERS_M } from '../light/shadow';
+import { DEPTH, sceneFormat } from '../resolve/targets';
 import { metresPerUnit } from '../terrain/bins';
 import { key, size, type Node } from '../terrain/lod';
 import type { Stamps } from '../terrain/stamps';
@@ -113,55 +115,11 @@ export class Structures {
     }
 
     /** `frames` are the frame uniforms of the eye's view and of the sun's (light/shadow.ts). */
-    async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[], surfaceLayout: GPUBindGroupLayout, groundLayout: GPUBindGroupLayout, featureLayout: GPUBindGroupLayout, format: GPUTextureFormat, depthFormat: GPUTextureFormat): Promise<void> {
-        const { device } = gpu, VF = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, C = GPUShaderStage.COMPUTE;
-        // The heights are written in the compute's group and read in the draw's.
-        const layout = device.createBindGroupLayout({ entries: [
-            { binding: 0, visibility: VF, buffer: { type: 'uniform' } }, { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
-            { binding: 4, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
-        ] });
-        const empty = device.createBindGroupLayout({ entries: [] }), computeLayout = device.createBindGroupLayout({ entries: [
-            { binding: 0, visibility: C, buffer: { type: 'uniform' } }, { binding: 1, visibility: C, buffer: { type: 'read-only-storage' } },
-            { binding: 2, visibility: C, buffer: { type: 'storage' } }, { binding: 3, visibility: C, buffer: { type: 'uniform' } },
-        ] });
+    async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[]): Promise<void> {
+        const { device } = gpu, { layout, empty, computeLayout, pipelines: [pipeline, anchoredPipeline, heightsPipeline, structureCaster, anchoredCaster] } = await gpu.once(structurePipelines);
         const anchors = gpu.buffer('kinds', ANCHORS * ANCHOR_WORDS * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const heights = gpu.buffer('kinds', ANCHORS * 8, GPUBufferUsage.STORAGE);
         const count = gpu.buffer('kinds', 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-        const module = device.createShaderModule({ label: 'structures', code: wgsl('structures/structures.wgsl') });
-        const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout, surfaceLayout, groundLayout, featureLayout] });
-        const render = (entryPoint: string, buffers: GPUVertexBufferLayout[], cullMode: GPUCullMode) => device.createRenderPipelineAsync({
-            label: entryPoint, layout: pipelineLayout, vertex: { module, entryPoint, buffers },
-            fragment: { module, entryPoint: 'structure_fragment', targets: [{ format }] },
-            primitive: { topology: 'triangle-list', cullMode },
-            depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
-        });
-        const structureVertices: GPUVertexBufferLayout[] = [{
-            arrayStride: STRUCTURE_VERTEX * 4, attributes: [
-                { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'float32' },
-                { shaderLocation: 2, offset: 12, format: 'unorm8x4' }, { shaderLocation: 3, offset: 16, format: 'snorm16x2' },
-                { shaderLocation: 4, offset: 20, format: 'float32' },
-            ],
-        }];
-        const anchoredVertices: GPUVertexBufferLayout[] = [{
-            arrayStride: ANCHORED_VERTEX * 4, attributes: [
-                { shaderLocation: 0, offset: 0, format: 'sint16x4' }, { shaderLocation: 1, offset: 8, format: 'uint32' }, { shaderLocation: 2, offset: 12, format: 'unorm8x4' },
-            ],
-        }];
-        // The vertices read no group 2, which holds the shadow map that the casters draw.
-        const casterLayout = device.createPipelineLayout({ bindGroupLayouts: [layout, surfaceLayout, empty, featureLayout] });
-        const caster = (entryPoint: string, buffers: GPUVertexBufferLayout[]) => device.createRenderPipelineAsync({
-            label: `${entryPoint} caster`, layout: casterLayout, vertex: { module, entryPoint, buffers }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH,
-        });
-        const [pipeline, anchoredPipeline, heightsPipeline, structureCaster, anchoredCaster] = await Promise.all([
-            render('structure_vertex', structureVertices, 'back'),
-            // Models need no winding: both faces draw.
-            render('anchored_vertex', anchoredVertices, 'none'),
-            device.createComputePipelineAsync({
-                label: 'anchor heights', layout: device.createPipelineLayout({ bindGroupLayouts: [computeLayout, surfaceLayout, empty, featureLayout] }),
-                compute: { module, entryPoint: 'anchor_heights' },
-            }),
-            caster('structure_vertex', structureVertices), caster('anchored_caster', anchoredVertices),
-        ]);
         const pool = (label: string, vertexBytes: number, indexBytes: number, stride: number) =>
             new Pool(device, gpu.buffer(label, vertexBytes, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), gpu.buffer(label, indexBytes, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST), stride);
         this.drawn = [];
@@ -304,4 +262,54 @@ export class Structures {
             if (at) pass.drawIndexed(mesh.indices.length, 1, at.first, at.base, anchor);
         }
     }
+}
+
+/** The draws of the structures and the anchored meshes, the heights of the anchors, the casters, and their layouts. */
+export async function structurePipelines(gpu: Gpu) {
+    const { device } = gpu, VF = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, C = GPUShaderStage.COMPUTE, { surface, ground, features } = gpu.once(layouts);
+    // The heights are written in the compute's group and read in the draw's.
+    const layout = device.createBindGroupLayout({ entries: [
+        { binding: 0, visibility: VF, buffer: { type: 'uniform' } }, { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 4, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+    ] });
+    const empty = device.createBindGroupLayout({ entries: [] }), computeLayout = device.createBindGroupLayout({ entries: [
+        { binding: 0, visibility: C, buffer: { type: 'uniform' } }, { binding: 1, visibility: C, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: C, buffer: { type: 'storage' } }, { binding: 3, visibility: C, buffer: { type: 'uniform' } },
+    ] });
+    const module = device.createShaderModule({ label: 'structures', code: wgsl('structures/structures.wgsl') });
+    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout, surface, ground, features] });
+    const render = (entryPoint: string, buffers: GPUVertexBufferLayout[], cullMode: GPUCullMode) => device.createRenderPipelineAsync({
+        label: entryPoint, layout: pipelineLayout, vertex: { module, entryPoint, buffers },
+        fragment: { module, entryPoint: 'structure_fragment', targets: [{ format: sceneFormat(gpu) }] },
+        primitive: { topology: 'triangle-list', cullMode },
+        depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
+    });
+    const structureVertices: GPUVertexBufferLayout[] = [{
+        arrayStride: STRUCTURE_VERTEX * 4, attributes: [
+            { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'float32' },
+            { shaderLocation: 2, offset: 12, format: 'unorm8x4' }, { shaderLocation: 3, offset: 16, format: 'snorm16x2' },
+            { shaderLocation: 4, offset: 20, format: 'float32' },
+        ],
+    }];
+    const anchoredVertices: GPUVertexBufferLayout[] = [{
+        arrayStride: ANCHORED_VERTEX * 4, attributes: [
+            { shaderLocation: 0, offset: 0, format: 'sint16x4' }, { shaderLocation: 1, offset: 8, format: 'uint32' }, { shaderLocation: 2, offset: 12, format: 'unorm8x4' },
+        ],
+    }];
+    // The vertices read no group 2, which holds the shadow map that the casters draw.
+    const casterLayout = device.createPipelineLayout({ bindGroupLayouts: [layout, surface, empty, features] });
+    const caster = (entryPoint: string, buffers: GPUVertexBufferLayout[]) => device.createRenderPipelineAsync({
+        label: `${entryPoint} caster`, layout: casterLayout, vertex: { module, entryPoint, buffers }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH,
+    });
+    const pipelines = await Promise.all([
+        render('structure_vertex', structureVertices, 'back'),
+        // Models need no winding: both faces draw.
+        render('anchored_vertex', anchoredVertices, 'none'),
+        device.createComputePipelineAsync({
+            label: 'anchor heights', layout: device.createPipelineLayout({ bindGroupLayouts: [computeLayout, surface, empty, features] }),
+            compute: { module, entryPoint: 'anchor_heights' },
+        }),
+        caster('structure_vertex', structureVertices), caster('anchored_caster', anchoredVertices),
+    ]);
+    return { layout, empty, computeLayout, pipelines };
 }
