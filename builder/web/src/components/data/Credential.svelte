@@ -5,7 +5,7 @@
 
     // A value lives only in its input until Save sends it, and the form is reset after; no state
     // of the page holds it.
-    let { credential, source, onsaved }: { credential: CredentialState; source: string; onsaved: () => void } = $props();
+    let { credential, set, onsaved }: { credential: CredentialState; set: string[]; onsaved: () => void } = $props();
 
     let replacing = $state(false);
     const open = $derived(credential.state !== "ready" || replacing);
@@ -20,7 +20,7 @@
         const values = credential.fields.map((field) => (form.elements.namedItem(field) as HTMLInputElement).value.trim());
         saving = true;
         error = null;
-        const result = await setCredential<CredentialSet>(source, values);
+        const result = await setCredential<CredentialSet>(set, values);
         saving = false;
         if (!result.ok) {
             error = result.error;
@@ -60,7 +60,7 @@
                 {#if replacing}<button type="button" onclick={() => (replacing = false)}>Cancel</button>{/if}
                 <details class="terminal">
                     <summary>In a terminal</summary>
-                    <code>{command(["source", "credential", source])}</code> reads each value on a line of its own.
+                    <code>{command(set)}</code> reads each value on a line of its own.
                 </details>
             </div>
             {#if error}<Failure {error} />{/if}

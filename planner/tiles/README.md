@@ -24,14 +24,16 @@ limit failures before a public launch. Upgrade if the fixed limit is too low.
 Workers Free has a fixed `10` ms limit. The configuration does not request
 a paid CPU allowance.
 
-With a Cloudflare deployment credential, run:
-
-```sh
-npm run deploy --prefix planner/tiles
-```
+Deploy from the prod screen of `obc data ui`, Services, or with `obc data deploy tiles --dry-run`
+and the command that it shows. It runs `npm run deploy --prefix planner/tiles -- --var COMMIT:SHA`
+with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. Create the token with the template
+"Edit Cloudflare Workers", for the account and the zone `openbikecomputer.com`. The screen sets both
+values, or `obc data deploy credential tiles` from standard input. `wrangler deploy` reads the files
+of the checkout, so the deploy refuses changes in `planner/tiles` that the commit does not hold.
 
 | Path | Result |
 | --- | --- |
+| `/version` | `{"commit"}`: the `COMMIT` of the deploy, or `null`. Never cached |
 | `/releases/ID/basemap.json` | Vector TileJSON from the release's `maps/basemap.json` |
 | `/releases/ID/basemap/Z/X/Y.mvt` | Vector tile |
 | `/releases/ID/places.json` | Rider places TileJSON |

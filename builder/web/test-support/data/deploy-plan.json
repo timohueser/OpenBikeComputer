@@ -1,0 +1,7 @@
+{
+    "what": "services",
+    "commit": "35d0b9f175ac9c15a72892152341fd83823ff59b",
+    "text": "Builds commit 35d0b9f175ac on the VPS in /opt/obc-data/35d0b9f175ac9c15a72892152341fd83823ff59b, points /opt/obc-data/current at it, and restarts the follower. /opt/obc-data/previous keeps the build before.",
+    "commands": ["tools/vps/deploy-services.sh \"$OBC_VPS_SSH\" 35d0b9f175ac9c15a72892152341fd83823ff59b"],
+    "args": ["deploy", "services", "--expect", "35d0b9f175ac9c15a72892152341fd83823ff59b"]
+}

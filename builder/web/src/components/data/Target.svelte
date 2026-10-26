@@ -3,14 +3,16 @@
     import { flagsOf, reviewArgs, type Flags } from "../../lib/data/flags";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { targetAt } from "../../lib/data/screens";
-    import { causes, clock, failure, LAYER_MARK, layerText, short, version, when, type Router, type RunList, type RunView, type Status } from "../../lib/data/shapes";
+    import { blocking, causes, clock, failure, LAYER_MARK, layerText, short, version, when, type Deployed, type Router, type RunList, type RunView, type Status } from "../../lib/data/shapes";
     import { corners } from "../../lib/data/areas";
     import { leafSquare } from "../../lib/data/leaf";
     import Action from "./Action.svelte";
     import DataMap from "./DataMap.svelte";
     import Failure from "./Failure.svelte";
+    import OldData from "./OldData.svelte";
     import Review from "./Review.svelte";
     import Serve from "./Serve.svelte";
+    import Services from "./Services.svelte";
 
     // A target: what it serves, its lock, its layers and its releases; or the review of its update.
     let { name, hash, status, runs }: { name: string; hash: string; status: CliQuery<Status>; runs: CliQuery<RunList> } = $props();
@@ -34,6 +36,12 @@
     const releases = $derived(r2 ? `${target?.release?.serving.id}|${target?.release?.rollback?.id}` : null);
     const router = $derived(releases ? new CliQuery<Router>(["router", name]) : null);
     $effect(() => void router?.refresh());
+    // The root of an R2 bucket, prod: the target that the follower and the tiles Worker serve, as the
+    // review of `update` judges it. What publishing and the deploys need, and what its services run.
+    const root = $derived(r2 && !!target && new URL(target.at).pathname === "/");
+    const deployed = $derived(root ? new CliQuery<Deployed>(["deploy"]) : null);
+    $effect(() => void deployed?.refresh());
+    const unpublishable = $derived(deployed?.output ? blocking(deployed.output.publish) : null);
     // Why the follower does not serve `id`; `null` when it does, `undefined` while the page asks.
     const notServed = (id: string) => {
         const answer = router?.output && [router.output.serving, router.output.rollback].find((answer) => answer?.release === id);
@@ -225,7 +233,10 @@
                     <p>Each layer is up to date.</p>
                 {/if}
                 {#if target.drift.length}<p class="missing">These keys differ from the serving release: {target.drift.join(", ")}</p>{/if}
-                {#if locked}
+                {#if unpublishable}
+                    <p class="missing">Publishing needs {unpublishable.name}: {unpublishable.fix}</p>
+                    <span class="primary locked" aria-disabled="true">Plan update</span>
+                {:else if locked}
                     <span class="primary locked" aria-disabled="true">Plan update: locked</span>
                 {:else}
                     <a class="primary" href="#/{name}/review{ticked.length ? `?only=${encodeURIComponent(ticked.join(','))}` : ''}">Plan update</a>
@@ -290,6 +301,10 @@
                 </section>
             {/if}
             {#if target.serve}<Serve {name} serve={target.serve} {runs} />{/if}
+            {#if deployed}
+                <Services {deployed} {runs} />
+                <OldData {name} serving={!!target.release} publish={deployed.output?.publish ?? null} error={deployed.error} {runs} />
+            {/if}
         </div>
     </div>
 {/if}

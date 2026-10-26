@@ -8,6 +8,7 @@
     import Action from "./Action.svelte";
     import AreaPicker from "./AreaPicker.svelte";
     import Failure from "./Failure.svelte";
+    import ReviewNote from "./ReviewNote.svelte";
 
     // The update of target `name` in three steps: settings, a plan run, and the bake of that plan.
     // The plan is a run of `update --plan`: it fetches what the plan reads, with progress, and its
@@ -288,7 +289,7 @@
         {:else}
             <p><b>Bake</b> · nothing: each layer is as its steps make it now</p>
         {/if}
-        {#each review.notes as note (note.text)}<p class="missing"><b>{note.layer}</b> · {note.text}</p>{/each}
+        {#each review.notes as note (note.text)}<ReviewNote {note} to={name} region={review.settings.region} tone="missing" />{/each}
         <p><b>Keep</b> · {review.kept} outputs of the serving release</p>
         {#if review.downloads.files}
             <p><b>Download</b> · {review.downloads.files} files, {size(review.downloads.bytes)} from {name}</p>
@@ -321,6 +322,9 @@
                 <b>Router</b> · {router ? (reason ? `✗ ${reason}` : "serves the release of now") : "asking…"}. The run waits at Router ready, at
                 most 24 hours, until the router serves the new release; {name} does not change before.
             </p>
+            {#each review.services as problem (problem)}
+                <p class="missing">✗ {problem} <a href="#/{name}">Open the services of {name}</a></p>
+            {/each}
             <p><b>Publishes plan {review.id} to {name}, which serves riders.</b></p>
         {/if}
         <Action

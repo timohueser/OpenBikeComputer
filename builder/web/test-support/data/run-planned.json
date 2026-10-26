@@ -225,6 +225,7 @@
                 "layer": "device/terrain",
                 "text": "terrain has no tile of dtm-de here: device/terrain uses GLO-30 there. Fix: add this region to terrain: obc data source prepare terrain --region REGION"
             }
-        ]
+        ],
+        "services": []
     }
 }

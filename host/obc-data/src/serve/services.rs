@@ -70,6 +70,11 @@ impl Programs {
         Ok(Self { root, routing, reads: all })
     }
 
+    /// The format of each layer that the services read.
+    pub fn formats(&self) -> BTreeMap<String, u32> {
+        self.reads.iter().map(|(_, layer, format)| (layer.clone(), *format)).collect()
+    }
+
     /// Programs that read these formats, for a test that starts no service.
     #[cfg(test)]
     pub(crate) fn reading(reads: Vec<(&'static str, String, u32)>) -> Self {

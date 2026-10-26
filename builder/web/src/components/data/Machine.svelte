@@ -68,7 +68,7 @@
             {#each report.credentials as credential (credential.name)}
                 <div class="row line">
                     {@render head(credential.state, credential.name)}<span class="wide soft">{credential.needed_for}</span>
-                    {#if credential.source}<Credential {credential} source={credential.source} onsaved={() => void setup.refresh()} />{/if}
+                    {#if credential.set}<Credential {credential} set={credential.set} onsaved={() => void setup.refresh()} />{/if}
                 </div>
             {/each}
         </section>

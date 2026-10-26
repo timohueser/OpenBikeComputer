@@ -1,5 +1,5 @@
 // The page acts only through `POST /api/cli {"args": [...]}`, and sets a credential through
-// `POST /api/credential {"source", "values"}`. The server runs `obc data --json ARGS` and answers
+// `POST /api/credential {"args", "values"}`. The server runs `obc data --json ARGS` and answers
 // every request, a refusal too, with `{exit, output}`: `output` is the JSON that the
 // command wrote, and a failed command writes `{"error": {code, message, fix, run?}}`.
 
@@ -36,10 +36,11 @@ export function runCli<T>(args: readonly string[]): Promise<CliResult<T>> {
     return post("/api/cli", { args }, args);
 }
 
-/** Sets the credential of `source`. The server gives `values` to `obc data source credential SOURCE`
- *  on its standard input, so no value is in argv, and the answer never holds one. */
-export function setCredential<T>(source: string, values: readonly string[]): Promise<CliResult<T>> {
-    return post("/api/credential", { source, values }, ["source", "credential", source]);
+/** Sets a credential with `args`, `source credential SOURCE` or `deploy credential WHAT`. The
+ *  server gives `values` to that command on its standard input, so no value is in argv, and the
+ *  answer never holds one. */
+export function setCredential<T>(args: readonly string[], values: readonly string[]): Promise<CliResult<T>> {
+    return post("/api/credential", { args, values }, args);
 }
 
 async function post<T>(route: string, body: object, args: readonly string[]): Promise<CliResult<T>> {

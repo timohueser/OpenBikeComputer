@@ -781,7 +781,10 @@ pub(crate) mod tests {
             let programs = services::Programs::reading(vec![("routing", "test".into(), 1)]);
             case.install = Some((case.scratch.0.join("store"), Arc::new(programs)));
             let view = http::Shared::default();
-            let api = format!("http://127.0.0.1:{}", listen(&runtime, http::router(view.clone(), None)));
+            let api = format!(
+                "http://127.0.0.1:{}",
+                listen(&runtime, http::router(view.clone(), None, http::Version::default()))
+            );
             Self { case, gets, view, api, runtime }
         }
 

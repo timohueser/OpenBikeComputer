@@ -17,6 +17,7 @@ pub mod r2;
 pub mod ready;
 pub mod regions;
 pub mod release;
+pub mod runtime;
 pub mod serve;
 pub mod settings;
 pub mod sources;

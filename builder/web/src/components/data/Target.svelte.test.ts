@@ -2,6 +2,8 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, expect, it, vi } from "vitest";
 import areas from "../../../test-support/data/areas.json";
+import deployed from "../../../test-support/data/deploy.json";
+import legacy from "../../../test-support/data/legacy.json";
 import review from "../../../test-support/data/review.json";
 import router from "../../../test-support/data/router.json";
 import example from "../../../test-support/data/status.json";
@@ -25,12 +27,13 @@ function status(stale: boolean): Status {
 function server(answer: () => Router = () => router) {
     const fetch = vi.fn(async (_url: string, init: { body: string }) => {
         const args: string[] = JSON.parse(init.body).args;
-        const output = { areas, router: answer() }[args[0]] ?? (args.includes("--dry-run") ? review : {});
+        const output = { areas, router: answer(), deploy: deployed, r2: legacy }[args[0]] ?? (args.includes("--dry-run") ? review : {});
         return new Response(JSON.stringify({ exit: 0, output }));
     });
     vi.stubGlobal("fetch", fetch);
-    // The area picker, the coverage and the releases read `areas` and `router` on their own.
-    return () => fetch.mock.calls.map(([, init]) => JSON.parse(init.body).args as string[]).filter((args) => !["areas", "router"].includes(args[0]));
+    // The area picker, the coverage, the releases, the services and the old data read on their own.
+    const reads = ["areas", "router", "deploy", "r2"];
+    return () => fetch.mock.calls.map(([, init]) => JSON.parse(init.body).args as string[]).filter((args) => !reads.includes(args[0]));
 }
 
 function screen(hash: string, stale: boolean, list: RunList = { runs: [] }) {

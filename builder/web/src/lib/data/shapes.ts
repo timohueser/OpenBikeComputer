@@ -147,6 +147,8 @@ export interface Review {
         format: { from: number; to: number; readers: { reader: string; effect: string }[] } | null;
     }[];
     notes: Note[];
+    /** For prod: why its follower or its tiles Worker cannot serve the release, with the fix. */
+    services: string[];
     sources: { source: string; from: string | null; to: string }[];
     /** The outputs that the release keeps by reference. */
     kept: number;
@@ -322,8 +324,9 @@ export interface CredentialState {
     name: string;
     needed_for: string;
     state: Readiness;
-    /** The source that `obc data source credential SOURCE` sets it for; null for the R2 key. */
-    source: string | null;
+    /** The arguments of the command that sets it from standard input, such as
+     *  `source credential SOURCE`; null for the R2 key, which the page does not set. */
+    set: string[] | null;
     /** The values that the command reads, in this order. */
     fields: string[];
     /** The `use` of each source that it serves. */
@@ -405,6 +408,69 @@ export function title(args: readonly string[]): string {
 /** The target that a run changes: `update` and `rollback` name it first. */
 export function changes(args: readonly string[]): string | null {
     return ["update", "rollback"].includes(args[0]) && args[1] ? args[1] : null;
+}
+
+/** One thing that a prod action needs, checked now, with its fix. */
+export interface Check {
+    name: string;
+    /** Why it fails; null when it passes. */
+    problem: string | null;
+    /** What to do about the problem, and where the commands run. */
+    fix: string | null;
+    commands: string[];
+    /** The arguments of the command that applies the fix, which the page runs after a confirm. */
+    action: string[] | null;
+    /** Whether the action waits for it. */
+    blocks: boolean;
+}
+
+/** What the follower or the tiles Worker runs, and what a deploy of it needs. */
+export interface Running {
+    url: string;
+    commit: string | null;
+    /** Why it cannot serve a release of `obc data`; null when it answers. */
+    reason: string | null;
+    checks: Check[];
+    credential: CredentialState;
+}
+
+/** What `obc data deploy --json` writes. */
+export interface Deployed {
+    /** The commit of this checkout: what a deploy puts in place. */
+    checkout: string;
+    /** What `update prod` and the delete of its old data need. */
+    publish: Check[];
+    services: Running;
+    tiles: Running;
+}
+
+/** The first check that fails and that the action waits for. */
+export function blocking(checks: Check[]): Check | null {
+    return checks.find((check) => check.problem !== null && check.blocks) ?? null;
+}
+
+/** What `obc data deploy WHAT --dry-run --json` writes. */
+export interface DeployPlan {
+    what: "services" | "tiles";
+    commit: string;
+    text: string;
+    commands: string[];
+    /** The arguments that start it; the page adds `--yes`. */
+    args: string[];
+}
+
+/** What `obc data r2 legacy TARGET --json` writes: the keys of the legacy pipelines that the target
+ *  does not use, and the digest that a delete expects. */
+export interface Legacy {
+    target: string;
+    folders: Record<string, { key: string; bytes: number }[]>;
+    digest: string;
+}
+
+/** The prepared source and its region that a note names with `obc data source prepare ID --region R`. */
+export function prepareOf(text: string): { id: string; region: string | null } | null {
+    const found = /obc data source prepare ([\w-]+)(?: --region (\S+))?/.exec(text);
+    return found ? { id: found[1], region: found[2] === "REGION" ? null : (found[2] ?? null) } : null;
 }
 
 /** What `obc data clean --json` writes: the plan, or with `--apply` what it removed. */
