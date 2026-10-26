@@ -13,3 +13,8 @@ describe('the view in the address', () => {
         expect(parseView(formatView(fly), fallback)).toEqual(fly);
     });
 });
+
+it('a first view takes the day in the Alps, not in the browser', () => {
+    // 23:30 UTC on 26 October is 00:30 on 27 October in Zurich.
+    expect(defaultView([8.37, 46.765, 8.46, 46.83], new Date('2026-10-26T23:30:00Z')).date).toBe('2026-10-27');
+});

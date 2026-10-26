@@ -1,7 +1,7 @@
 import { EARTH_RADIUS } from '../frame/frame';
 import type { Anchor } from '../frame/space';
 import { PAGE, type PageData } from '../stream/heights';
-import { TILE_ZOOM, type TerrainSource } from '../stream/terrain';
+import { TILE_ZOOM, type TerrainSource, stopped } from '../stream/terrain';
 import { NEAR, type NodeStamps } from './bins';
 import { COARSEST, distances, FINEST, key, MAP, size, type Node } from './lod';
 
@@ -104,9 +104,11 @@ export class Pages {
     shortage = 0;
     /** Wanted pages that are not ready yet in the last frame. */
     missing = 0;
-    /** Of them, the pages of `near` in the last update. */
+    /** Of them, the pages of `near` and of `eye` in the last update. */
     nearMissing = 0;
+    eyeMissing = 0;
     private near = new Set<string>();
+    private eye = new Set<string>();
     /** Pages of each pool that the last frame wanted. */
     wanted: Record<Kind, number> = { stored: 0, synth: 0 };
     readonly pages = new Map<string, Page>();
@@ -172,15 +174,16 @@ export class Pages {
     }
 
     /**
-     * Takes the pages that a frame wants, coarse and near first, and returns its GPU work. `near` names
-     * the wanted pages that `nearMissing` counts; `eye` names those of the eye field, which ask for their
-     * features and synthesize first.
+     * Takes the pages that a frame wants, coarse and near first, and returns its GPU work. `near` and
+     * `eye` name the wanted pages that `nearMissing` and `eyeMissing` count; those of the eye field ask
+     * for their features and synthesize first.
      */
     update(wanted: Node[], anchor: Anchor, near = new Set<string>(), eye = new Set<string>()): Work {
         this.frame++;
         this.near = near;
+        this.eye = eye;
         this.shortage = 0;
-        this.missing = this.nearMissing = 0;
+        this.missing = this.nearMissing = this.eyeMissing = 0;
         this.wanted = { stored: 0, synth: 0 };
         const work: Work = { uploads: [], syntheses: [], stamps: [], fresh: [], origins: this.window(anchor) };
         // A node that nothing draws yet also wants its page of level FILL, which is a hole until it comes.
@@ -290,6 +293,7 @@ export class Pages {
     private miss(node: Node): void {
         this.missing++;
         if (this.near.has(key(node))) this.nearMissing++;
+        if (this.eye.has(key(node))) this.eyeMissing++;
     }
 
     /**
@@ -463,7 +467,7 @@ export class Pages {
             this.queued.set(name, quadrants.filter(Boolean).length);
         })().catch(error => {
             // A tile that fails stays out for this page, as an absent one.
-            console.warn(`Terrain tile ${name}: ${error instanceof Error ? error.message : error}`);
+            if (!stopped(error)) console.warn(`Terrain tile ${name}: ${error instanceof Error ? error.message : error}`);
             this.failed++;
             this.tiles.set(name, { state: 'absent' });
         }).finally(() => {

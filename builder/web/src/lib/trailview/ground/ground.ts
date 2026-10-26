@@ -6,7 +6,7 @@ import type { Region, Rules } from '../rules/regions';
 import type { GroundSource } from '../stream/ground';
 import type { GroundPage } from '../stream/ground-pages';
 import { PAGE } from '../stream/heights';
-import { COARSEST, MAP, type Node } from '../terrain/lod';
+import { COARSEST, key, MAP, type Node } from '../terrain/lod';
 import { GroundPages, texelMetres, type Slot } from './pages';
 import { packRulesOn, slots } from './rules';
 
@@ -98,7 +98,17 @@ export class Ground {
 
     /** Whether every ground page within NEAR_M of the eye has arrived and been built. */
     get nearIdle(): boolean {
-        return this.pages.nearMissing === 0 && this.jobs.length === 0;
+        return this.idleWithin(this.pages.nearMissing, this.pages.nearDrawn);
+    }
+
+    /** `nearIdle` within EYE_M of the eye. */
+    get eyeIdle(): boolean {
+        return this.idleWithin(this.pages.eyeMissing, this.pages.eyeDrawn);
+    }
+
+    /** A job of a far page, such as a relief refresh after a terrain page arrives elsewhere, does not count. */
+    private idleWithin(missing: number, drawn: Set<string>): boolean {
+        return missing === 0 && !this.jobs.some(job => drawn.has(key(job.page.node)));
     }
 
     /** Whether the next frame has work that no load in flight wakes. */

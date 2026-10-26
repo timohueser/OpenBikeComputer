@@ -48,8 +48,9 @@ export class TreeModels {
     /** Whether models or the date changed in the last update. */
     newContent = false;
 
-    /** `near` gives the models about the eye, each with its share of the trees there. */
-    constructor(private readonly instances: Instances, private readonly wake: () => void, private readonly near: () => Map<string, number>) {
+    /** `near` gives the models about the eye, each with its share of the trees there. An abort of `stop` ends the workers. */
+    constructor(private readonly instances: Instances, private readonly wake: () => void, private readonly near: () => Map<string, number>, stop: AbortSignal) {
+        stop.addEventListener('abort', () => this.workers.forEach(worker => worker.terminate()));
         for (const worker of this.workers) worker.onmessage = ({ data }: MessageEvent<ModelAnswer>) => this.land(worker, data);
     }
 

@@ -20,6 +20,7 @@
         grip: 'M9 5v.1M15 5v.1M9 12v.1M15 12v.1M9 19v.1M15 19v.1',
         layers: 'm12 3 10 6-10 6L2 9l10-6Zm-10 10 10 6 10-6M2 17l10 6 10-6',
         eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Zm10-3a3 3 0 1 0 0 6 3 3 0 0 0 0-6',
+        binoculars: 'M9 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm12 0a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM3 16V8a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v8m6 0V8a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v8M9 11h6M5 6V4h2v2m10 0V4h2v2',
         flag: 'M5 22V3m0 1c5-4 9 4 15 0v10c-6 4-10-4-15 0',
         pencil: 'm4 16 12-12 4 4L8 20l-5 1 1-5Zm10-10 4 4',
         pause: 'M8 5v14M16 5v14',
@@ -45,6 +46,7 @@
         wind: 'M3 8h10a3 3 0 1 0-3-3M3 12h15a3 3 0 1 1-3 3M3 16h7',
         snow: 'M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7M9.5 3.5 12 6l2.5-2.5M9.5 20.5 12 18l2.5 2.5M18.1 5.6 17.2 9l3.4.9M20.6 14.1 17.2 15l.9 3.4M3.4 14.1 6.8 15l-.9 3.4M5.9 5.6 6.8 9l-3.4.9',
         weather: 'M7 19h10a4 4 0 0 0 .7-7.9A5.5 5.5 0 0 0 7.2 10 4.5 4.5 0 0 0 7 19Z',
+        rain: 'M7 15h10a4 4 0 0 0 .7-7.9A5.5 5.5 0 0 0 7.2 6 4.5 4.5 0 0 0 7 15Zm2 3-1 3m5-3-1 3m5-3-1 3',
     };
 </script>
 <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{#if bike}

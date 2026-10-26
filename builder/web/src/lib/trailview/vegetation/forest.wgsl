@@ -13,6 +13,7 @@
 // on the drawn surface.
 // #include ../ground/look.wgsl
 // #include ../instances/emit.wgsl
+// #include clearing.wgsl
 
 struct Forest {
     // The window of base cells: its first cell, in base cells of the world, and its cells a side.
@@ -88,10 +89,9 @@ const WINDOW: i32 = 8;
 const SINK_M: f32 = 0.3;
 // A tree keeps this share of its crown's radius from a road's edge.
 const CLEAR: f32 = 0.8;
-// The eye stands in a clearing, so it is never inside a crown: each tree keeps EYE_CLEAR_M plus up to
-// CLEAR_SPREAD_M by its hash from it, so trees leave one by one and a still view draws none in part.
-const EYE_CLEAR_M: f32 = 4.0;
-const CLEAR_SPREAD_M: f32 = 3.0;
+// A trunk is a pillar in the view: each keeps EYE_TRUNK_M from the eye, plus the clearing's spread
+// (clearing.wgsl), also under a crown high above the eye.
+const EYE_TRUNK_M: f32 = 3.0;
 // A far tree fades out over this share of its own distance, drawn on a share of its pixels.
 const FADE: f32 = 0.1;
 // A tree takes its species by the region of a ground page of REGION_LEVEL, the region layer's own zoom
@@ -278,7 +278,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     let full = density(code) * f32(CELL * CELL) * surface.unit * surface.unit;
     let rank = f32(r) + unit_float(mix_bits(h + 23u));
     let appear = select(0.0, clamp((1.0 - rank * max(d, 1.0) / (full * forest.thin)) / FADE, 0.0, 1.0), rank < full * forest.density);
-    if (appear <= 0.0 || d < EYE_CLEAR_M + CLEAR_SPREAD_M * unit_float(mix_bits(h + 37u))) {
+    if (appear <= 0.0) {
         return;
     }
     let height = max(3.0, canopy_height(code) * (0.7 + 0.35 * unit_float(mix_bits(h + 13u))));
@@ -327,6 +327,12 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     let closed = smoothstep(0.5, 0.9, cover_of(code));
     let width = min(2.0, inverseSqrt(min(1.0, forest.thin * (1.0 - 0.5 * FADE) / (max(d, 1.0) * forest.density)))) * mix(1.0, min(1.0, NARROW / models[model].spread), closed);
     let lift = (LIFT + LIFT_SPREAD * unit_float(mix_bits(h + 29u))) * closed;
+    let m = models[model];
+    let low = stood.x + height * select(m.crown, lift, m.trunk != 0.0 && lift > m.crown);
+    let spread = EYE_CLEAR_SPREAD_M * unit_float(mix_bits(h + 37u));
+    if (d < EYE_TRUNK_M + spread || crown_distance(s, low, stood.x + height, m.spread * height * width) < EYE_CLEAR_M + spread) {
+        return;
+    }
     let yaw = 6.2831853 * unit_float(mix_bits(h + 17u));
     // The snow and the satellite's colour (draw.wgsl) of the finest resident page of the drawn level: the
     // page found above where none finer than it is resident.

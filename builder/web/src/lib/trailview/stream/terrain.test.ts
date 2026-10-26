@@ -43,6 +43,13 @@ describe('the stored terrain of a release', () => {
         expect(await releaseTiles(config)(13, 4287, 2889)).toBeUndefined();
         expect(fetched).toEqual([`${RELEASE}/public/grid.json`, `${RELEASE}/public/maps/tiles/terrain/13/11-1071-722.pmtiles.json`]);
     });
+
+    it('ends a request when its stop aborts', async () => {
+        vi.stubGlobal('fetch', (_: string, { signal }: RequestInit) => new Promise((_, reject) => signal!.addEventListener('abort', () => reject(signal!.reason))));
+        const stop = new AbortController(), tile = releaseTiles(config, stop.signal)(12, 2143, 1444);
+        stop.abort();
+        await expect(tile).rejects.toThrow('aborted');
+    });
 });
 
 describe('the feature tiles of a release', () => {

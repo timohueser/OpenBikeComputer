@@ -23,7 +23,7 @@ is the palette of the `world` region.
 
 | Path | Holds |
 | --- | --- |
-| `engine.ts` | The frame loop, the view, `prepare()`, `waitForIdle()`, the recovery from a lost device |
+| `engine.ts` | The frame loop, the view, `prepare()`, `waitForIdle()`, `nearReady()`, `eyeReady()`, `destroy()`, the recovery from a lost device |
 | `pacer.ts` | The frame rate, `FRAME_RATE`, and the display frames that draw. Headless Chromium runs at 60 Hz, so flights and shots draw each display frame |
 | `frame/` | The local metric frame, the walk and fly camera, the input |
 | `gpu/` | The device, its pools and shared layouts, the GPU time per pass, the WGSL `// #include` |
@@ -35,7 +35,7 @@ is the palette of the `world` region.
 | `structures/` | The houses: a worker makes a record per building of each zoom 14 quarter of the zoom 13 feature tiles (`house-records.ts`); `houses.wgsl` fits each to the drawn surface with a basement, culls it, picks its level of detail and draws it from a template, and lights its windows at night |
 | `models/` | The house templates: the prototype's buildings as faces whose coordinates name slots that `houses.wgsl` fills per house; the prototype's trees and plants without three.js (`shape.ts`, `trees.ts`, `trees/`, `plant-shape.ts`, `plants/`); the models of flat faces of the kinds and the dressing (`flat.ts`, lifts, landmarks, rocks, animals, crosses) |
 | `instances/` | Instances on the drawn surface: producers emit them (`emit.wgsl`), one indirect draw per model and tier (`sort.wgsl`, `draw.wgsl`), a tree's phase models and crown colours, impostors, culling by the last frame's depth (`hiz.wgsl`), point pools of kinds (`points.ts`) |
-| `vegetation/` | Each tree's phase on the date (`phenology.ts`); the tree models of the phases, shared by the forest, the shrubs and the orchards (`tree-models.ts`); the canopy tiles about the eye (`canopy.ts`) and the forest placed from them each frame (`forest.wgsl`); the ground plants and shrubs about the eye (`plants.wgsl`); the orchards' rows from the feature tiles (`orchards.ts`) |
+| `vegetation/` | Each tree's phase on the date (`phenology.ts`); the tree models of the phases, shared by the forest, the shrubs and the orchards (`tree-models.ts`); the canopy tiles about the eye (`canopy.ts`) and the forest placed from them each frame (`forest.wgsl`); the ground plants and shrubs about the eye (`plants.wgsl`); the clearing that moves with the eye (`clearing.wgsl`); the orchards' rows from the feature tiles (`orchards.ts`) |
 | `dressing/` | The herds of the packs on the materials that they graze, and rocks on open and rocky ground, placed each frame (`dressing.wgsl`) |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky, the object shadow maps near and far from the eye (`shadow.ts`) |
 | `resolve/` | The render targets, the jitter, TAA and `finish()` |

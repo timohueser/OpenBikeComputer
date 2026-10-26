@@ -2,6 +2,7 @@ import type { PlannerConfig } from '../../planner/config';
 import { openSource, requestSignal, type Source } from '../../planner/layers/archive';
 import { imagePixels } from '../../planner/layers/terrain';
 import type { Gpu } from '../gpu/device';
+import { stopped } from '../stream/terrain';
 
 /** The canopy layer's zoom and cells a side (specs/trailview-tiles.md#canopy). */
 export const CANOPY_ZOOM = 12, CELLS = 256;
@@ -37,7 +38,8 @@ export class Canopy {
     private frame = 0;
     private origin: [number, number] = [0, 0];
 
-    constructor(config: PlannerConfig, private readonly wake: () => void) {
+    /** An abort of `stop` ends the tile requests. */
+    constructor(config: PlannerConfig, private readonly wake: () => void, private readonly stop: AbortSignal) {
         const url = (config.layers as Partial<Record<string, string>>)['trailview-canopy'];
         if (url) openSource(url).then(source => {
             this.source = source;
@@ -105,7 +107,7 @@ export class Canopy {
         const key = `${x}/${y}`, source = this.source;
         if (!source || this.loading.has(key) || this.absent.has(key) || this.loading.size >= LOADS || this.arrived.some(a => a.x === x && a.y === y)) return;
         this.loading.add(key);
-        source.get(CANOPY_ZOOM, x, y, requestSignal()).then(async body => {
+        source.get(CANOPY_ZOOM, x, y, AbortSignal.any([requestSignal(), this.stop])).then(async body => {
             this.requests++;
             if (!body) return void this.absent.add(key);
             this.bytes += body.byteLength;
@@ -118,7 +120,7 @@ export class Canopy {
             // A tile that fails stays out, as an absent one.
             this.failed++;
             this.absent.add(key);
-            console.warn(`Canopy tile ${key}: ${error instanceof Error ? error.message : error}`);
+            if (!stopped(error)) console.warn(`Canopy tile ${key}: ${error instanceof Error ? error.message : error}`);
         }).finally(() => {
             this.loading.delete(key);
             this.wake();

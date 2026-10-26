@@ -4,7 +4,9 @@ const OPTIONAL_FEATURES: GPUFeatureName[] = ['timestamp-query', 'clip-distances'
 /** The device, and the bytes that each pool holds. A lost device needs a new `Gpu`. */
 export class Gpu {
     readonly pools = new Map<string, number>();
-    private readonly sizes = new WeakMap<GPUBuffer | GPUTexture, number>();
+    /** The buffers and textures made through this Gpu and not destroyed, with their pool and bytes. */
+    private live = new Map<GPUBuffer | GPUTexture, [string, number]>();
+    /** A scope inherits this map, so the pipelines compiled on the device are shared by every engine on it. */
     private readonly made = new Map<(gpu: Gpu) => unknown, unknown>();
 
     private constructor(private readonly gpuAdapter: GPUAdapter, readonly device: GPUDevice, readonly format: GPUTextureFormat) {}
@@ -41,12 +43,28 @@ export class Gpu {
     }
 
     destroy(pool: string, resource: GPUBuffer | GPUTexture): void {
-        this.pools.set(pool, (this.pools.get(pool) ?? 0) - (this.sizes.get(resource) ?? 0));
+        this.pools.set(pool, (this.pools.get(pool) ?? 0) - (this.live.get(resource)?.[1] ?? 0));
+        this.live.delete(resource);
         resource.destroy();
     }
 
+    /**
+     * A Gpu on the same device whose `release()` destroys only the buffers and textures made through it.
+     * It inherits from this one, so it shares the device, the pools and all else.
+     */
+    scope(): Gpu {
+        const scope = Object.create(this) as Gpu;
+        scope.live = new Map();
+        return scope;
+    }
+
+    /** Destroys every buffer and texture made through this Gpu. The device stays. */
+    release(): void {
+        for (const [resource, [pool]] of this.live) this.destroy(pool, resource);
+    }
+
     private held<T extends GPUBuffer | GPUTexture>(pool: string, resource: T, bytes: number): T {
-        this.sizes.set(resource, bytes);
+        this.live.set(resource, [pool, bytes]);
         this.pools.set(pool, (this.pools.get(pool) ?? 0) + bytes);
         return resource;
     }

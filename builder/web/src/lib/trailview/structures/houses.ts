@@ -10,6 +10,7 @@ import { NEAR_M } from '../terrain/lod';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import type { FeatureTiles } from '../terrain/stamps';
 import { OUTLINE_WORDS, RECORD_WORDS, type TileHouses } from './house-records';
+import { stopped } from '../stream/terrain';
 
 /** Houses on the GPU at most, and the bytes of outline vertices. */
 const HOUSES = 2 ** 16, OUTLINE_BYTES = 2 * 2 ** 20;
@@ -161,9 +162,11 @@ export class Houses {
     /** Whether the last update put other houses on the GPU. */
     newContent = false;
 
-    constructor(private readonly frame: Frame, private readonly features: FeatureTiles | undefined, private readonly rules: Rules, private readonly changed: () => void) {
+    /** An abort of `stop` ends the worker. */
+    constructor(private readonly frame: Frame, private readonly features: FeatureTiles | undefined, private readonly rules: Rules, private readonly changed: () => void, stop: AbortSignal) {
         if (!features) return;
-        this.worker = new Worker(new URL('./house-worker.ts', import.meta.url), { type: 'module' });
+        const worker = this.worker = new Worker(new URL('./house-worker.ts', import.meta.url), { type: 'module' });
+        stop.addEventListener('abort', () => worker.terminate());
         this.worker.onmessage = ({ data }) => {
             const resolve = this.waiting.get(data.id);
             this.waiting.delete(data.id);
@@ -252,7 +255,7 @@ export class Houses {
             if (this.tiles.has(name) || this.pending.has(name) || this.pending.size >= REQUESTS) continue;
             this.pending.add(name);
             this.load(x, y).then(result => this.keep(name, result), error => {
-                console.warn(`House tile ${name}: ${error instanceof Error ? error.message : error}`);
+                if (!stopped(error)) console.warn(`House tile ${name}: ${error instanceof Error ? error.message : error}`);
                 this.keep(name, null);
             }).finally(() => {
                 this.pending.delete(name);

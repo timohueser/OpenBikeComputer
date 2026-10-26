@@ -8,6 +8,7 @@
 // #include ../terrain/drawn-mesh.wgsl
 // #include ../ground/look.wgsl
 // #include ../instances/emit.wgsl
+// #include clearing.wgsl
 
 struct Plants {
     // Per grid the first world cell of its window and its cells a side (0: no dispatch): the ground
@@ -43,12 +44,10 @@ const SHRUB_EDGE_M: f32 = 60.0;
 const FULL_M: f32 = 20.0;
 // A plant grows from nothing over this share of its keep (grown).
 const GROW: f32 = 0.15;
-// The eye stands clear of each ground plant by CLEAR_M plus up to CLEAR_SPREAD_M by its hash, and of
-// each shrub by SHRUB_CLEAR_M plus up to SHRUB_CLEAR_SPREAD_M, as the forest's trees.
+// The eye stands clear of each ground plant by CLEAR_M plus up to CLEAR_SPREAD_M by its hash; shrubs
+// keep their crowns clear of it as the forest's trees (clearing.wgsl).
 const CLEAR_M: f32 = 0.8;
 const CLEAR_SPREAD_M: f32 = 1.0;
-const SHRUB_CLEAR_M: f32 = 2.0;
-const SHRUB_CLEAR_SPREAD_M: f32 = 3.0;
 // The share of the shrub land's grid points that take a shrub.
 const SHRUB_SHARE: f32 = 0.5;
 // The shapes of a ground plant, as PLANT_SEEDS of the prototype.
@@ -181,7 +180,7 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
     let u = grid_point(cell, SHRUB_UNITS);
     let s = lod_space(vec2f(u - surface.anchor));
     let d = reach_of(s);
-    if (d > SHRUB_M || d < SHRUB_CLEAR_M + SHRUB_CLEAR_SPREAD_M * plant_hash(cell, 8u) || !roughly_visible(s, length(s))) {
+    if (d > SHRUB_M || !roughly_visible(s, length(s))) {
         return;
     }
     let t = finest_texel(s);
@@ -238,7 +237,9 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
     }
     let heights = unpack2x16float(pick.w);
     let height = mix(heights.x, heights.y, plant_hash(cell, 4u)) * size;
-    if (kept_off(s, models[model].spread * height)) {
+    let m = models[model];
+    let low = h + height * max(m.crown, 0.0);
+    if (kept_off(s, m.spread * height) || crown_distance(s, low, h + height, m.spread * height) < EYE_CLEAR_M + EYE_CLEAR_SPREAD_M * plant_hash(cell, 8u)) {
         return;
     }
     let yaw = 6.2831853 * plant_hash(cell, 5u);

@@ -37,14 +37,16 @@ export function groundOf({ probe, step }: Footing, east: number, north: number):
 
 /**
  * The footing on the last probe, which comes one to three frames late. The eye moves on the probe's
- * plane, so a slope gives no lag. Where a new probe disagrees with the one before, at a finer page or
- * a bend of the ground, the step between them fades out; a step larger than JUMP is a new place.
+ * plane, so a slope gives no lag. Where a new probe finds the ground lower than the one before, at a
+ * finer page or a bend of the ground, the step between them fades out; a higher ground takes effect at
+ * once, and a step larger than JUMP is a new place.
  */
 export function follow(footing: Footing | undefined, probe: Probe, east: number, north: number, dt: number): Footing {
     if (!footing) return { probe, step: 0 };
     let step = footing.step * Math.exp(-dt / FOLLOW_S);
     if (probe.frame !== footing.probe.frame) step += groundOf({ probe: footing.probe, step: 0 }, east, north) - groundOf({ probe, step: 0 }, east, north);
-    return { probe, step: Math.abs(step) > JUMP || Math.abs(step) < 1e-3 ? 0 : step };
+    // A higher ground lifts the eye at once: a fade up would hold it under the drawn surface.
+    return { probe, step: step < 1e-3 || step > JUMP ? 0 : step };
 }
 
 /** One step of free movement. A flying eye moves faster the higher it is above the ground. */
