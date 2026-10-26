@@ -115,6 +115,7 @@ fn serve(root: &Path, store: &Store, name: &str, target: &Target, json: bool) ->
         Target::R2(_) => None,
     };
     let programs = programs(root, dir.is_some())?;
+    let version = http::Version { commit: http::COMMIT.map(String::from), formats: programs.formats() };
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     let address = if dir.is_some() { "0.0.0.0" } else { "127.0.0.1" };
     let listener = runtime.block_on(tokio::net::TcpListener::bind((address, PORT))).map_err(|e| {
@@ -160,7 +161,7 @@ fn serve(root: &Path, store: &Store, name: &str, target: &Target, json: bool) ->
         let follower = std::thread::Builder::new().spawn(move || follow(&target, loader, &shared, &stop));
         follower.map_err(|e| format!("cannot start the follower: {e}"))?
     };
-    let router = http::router(shared, files);
+    let router = http::router(shared, files, version);
     let ended = runtime.block_on(async {
         let signalled = Arc::new(tokio::sync::Notify::new());
         let shutdown = {

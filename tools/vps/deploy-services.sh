@@ -22,6 +22,8 @@ base="/opt/obc-data/$commit"
 extract="runuser -u obc-data -- sh -c 'mkdir -p $base && tar -x -C $base'"
 build="set -euo pipefail
 export PATH=\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH
+# The follower answers it at /planner-api/version.
+export OBC_DATA_COMMIT=$commit
 cd $base
 test \"\$(rustc -vV | sed -n 's/^host: //p')\" = $triple || { echo 'The VPS is not $triple.' >&2; exit 1; }
 test \"\$(python3 -c 'import sys; print(*sys.version_info[:2], sep=\".\")')\" = $python || { echo 'The VPS needs Python $python.' >&2; exit 1; }

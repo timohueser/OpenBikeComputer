@@ -14,6 +14,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use axum::{Json, Router};
 use hyper_util::rt::TokioIo;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
@@ -42,13 +43,28 @@ pub enum Planner {
 
 pub type Shared = Arc<RwLock<View>>;
 
+/// What `/planner-api/version` answers: the commit of the program, which `tools/vps/deploy-services.sh`
+/// builds with `OBC_DATA_COMMIT`, and the format of each layer that its services read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Version {
+    pub commit: Option<String>,
+    /// None for the tiles Worker, which answers in the same form.
+    #[serde(default)]
+    pub formats: BTreeMap<String, u32>,
+}
+
+/// The commit that this program was built from, when its build named one.
+pub const COMMIT: Option<&str> = option_env!("OBC_DATA_COMMIT");
+
 /// Whether each planner release is ready at `/planner-api/releases/<id>/ready`, its API at
-/// `/planner-api/releases/<id>/<service>/`, and the downloads of the current release at
-/// `/planner-offline/`. With `files`, a dir target and the port of its tile server on this machine:
+/// `/planner-api/releases/<id>/<service>/`, the downloads of the current release at
+/// `/planner-offline/`, and `version` at `/planner-api/version`. With `files`, a dir target and the port of its tile server on this machine:
 /// also the pointers of the current release and the files of the target, and a path that names no
 /// file goes to the tile server. Any origin may read it.
-pub fn router(shared: Shared, files: Option<(&Path, u16)>) -> Router {
+pub fn router(shared: Shared, files: Option<(&Path, u16)>, version: Version) -> Router {
+    let version = Json(version);
     let mut router = Router::new()
+        .route("/planner-api/version", get(|| async move { ([(header::CACHE_CONTROL, "no-store")], version) }))
         .route("/planner-api/releases/{id}/ready", get(ready))
         .route("/planner-api/releases/{id}/{service}/{*path}", any(api))
         .route("/planner-offline/{*path}", any(offline));
@@ -237,7 +253,8 @@ mod tests {
             formats: BTreeMap::new(),
         };
         let view = View { current: Some(current), planners: [(planner.clone(), Planner::Ready([upstream; 3]))].into() };
-        let port = listen(&runtime, router(Arc::new(RwLock::new(view)), Some((&scratch.0, upstream))));
+        let version = Version { commit: Some("c".repeat(40)), formats: [("planner/routing".into(), 9)].into() };
+        let port = listen(&runtime, router(Arc::new(RwLock::new(view)), Some((&scratch.0, upstream)), version.clone()));
         let origin = format!("http://127.0.0.1:{port}");
         let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).http_status_as_error(false).build().into();
         let text = |mut response: axum::http::Response<ureq::Body>| response.body_mut().read_to_string().unwrap();
@@ -253,6 +270,8 @@ mod tests {
         let phone: Value = serde_json::from_slice(&phone).unwrap();
         assert_eq!(phone["active"]["basemap"], format!("http://phone.test:8710/releases/{planner}/basemap.json"));
 
+        let answered = text(agent.get(format!("{origin}/planner-api/version")).call().unwrap());
+        assert_eq!(serde_json::from_str::<Version>(&answered).unwrap(), version);
         let api = format!("{origin}/planner-api/releases/{planner}");
         let routed = agent.post(format!("{api}/routing/v1/route?x=1")).header("Origin", "http://localhost:5173");
         let routed = routed.send("{}").unwrap();
