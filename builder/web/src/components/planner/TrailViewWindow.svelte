@@ -8,7 +8,7 @@
     import { FIRST_HEADING, loadTrailView } from '../../lib/planner/trailview';
     import type { TrailView } from '../../lib/trailview/engine';
     import { VFOV } from '../../lib/trailview/frame/camera';
-    import { defaultView, type View } from '../../lib/trailview/view';
+    import { defaultView, formatView, type View } from '../../lib/trailview/view';
 
     let { at, near, origin, onClose }: {
         at: Coordinate;
@@ -92,7 +92,13 @@
         if (pressedBackdrop && event.target === dialog) dialog.close();
         else if (creditsOpen && !creditsBox?.contains(event.target as Node)) creditsOpen = false;
     }}
-    onkeydown={event => { if (event.key === 'Escape' || event.ctrlKey || event.metaKey) event.stopPropagation(); }}>
+    onkeydown={event => { if (event.key === 'Escape' || event.ctrlKey || event.metaKey) event.stopPropagation(); }}
+    oncopy={event => {
+        // Ctrl+C copies the view as the TrailView page's query string, which that page takes with Ctrl+V.
+        if (!engine || getSelection()?.toString()) return;
+        event.clipboardData?.setData('text/plain', formatView(engine.view));
+        event.preventDefault();
+    }}>
     <!-- Focusable, so that after a click on the view the keys still pass through the dialog. -->
     <canvas bind:this={canvas} tabindex="-1"></canvas>
     <div class="cover" class:gone={ground && !failure}>
