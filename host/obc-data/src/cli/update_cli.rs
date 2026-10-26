@@ -216,11 +216,18 @@ fn plan(
 /// For the review of an update of prod, the root of an R2 bucket whose steps make a planner: why
 /// its follower or its tiles Worker cannot serve the release. The update itself does not ask.
 fn services(root: &Path, http: &Http, (_, target): (&str, &Target), steps: &[Step]) -> Vec<String> {
-    let planner = steps.iter().any(|step| step.layer.name.starts_with("planner/"));
-    match target {
-        Target::R2(remote) if remote.prefix.is_empty() && planner => super::deploy_cli::review(root, http, steps),
-        _ => Vec::new(),
+    if prod(target, steps) {
+        super::deploy_cli::review(root, http, steps)
+    } else {
+        Vec::new()
     }
+}
+
+/// Whether `target` is the root of an R2 bucket and `steps` make a planner: prod, which the follower
+/// and the tiles Worker serve.
+fn prod(target: &Target, steps: &[Step]) -> bool {
+    matches!(target, Target::R2(remote) if remote.prefix.is_empty())
+        && steps.iter().any(|step| step.layer.name.starts_with("planner/"))
 }
 
 /// What `obc data update --json` writes: the run that it started.
@@ -289,6 +296,12 @@ pub(super) fn update(
             return Err(lost(&format!("target `{}`", target.0)));
         }
         review::check(&prepared.review, asked.expect.as_deref(), asked.accept_format_change)?;
+        if let Some(refusal) = prod(target.1, &prepared.steps).then(|| super::deploy_cli::refusal(root, http)).flatten()
+        {
+            return Err(Code::Blocked
+                .error(format!("{refusal}; nothing changed"))
+                .fix("Deploy the tiles Worker first: Services on the screen of prod, or `obc data deploy tiles`."));
+        }
         apply(root, store, http, target, code.0, prepared, (run, held))
     })
 }

@@ -52,6 +52,13 @@ pub struct Version {
     /// None for the tiles Worker, which answers in the same form.
     #[serde(default)]
     pub formats: BTreeMap<String, u32>,
+    /// The [`crate::release::FORMAT`] that it reads; 0 from the tiles Worker and from a follower built
+    /// before it said.
+    #[serde(default)]
+    pub manifest: u32,
+    /// The formats of `public/grid.json` that the tiles Worker reads; none from the follower.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grids: Vec<u32>,
 }
 
 /// The commit that this program was built from, when its build named one.
@@ -254,7 +261,12 @@ mod tests {
             formats: BTreeMap::new(),
         };
         let view = View { current: Some(current), planners: [(planner.clone(), Planner::Ready([upstream; 3]))].into() };
-        let version = Version { commit: Some("c".repeat(40)), formats: [("planner/routing".into(), 9)].into() };
+        let version = Version {
+            commit: Some("c".repeat(40)),
+            formats: [("planner/routing".into(), 9)].into(),
+            manifest: 1,
+            grids: Vec::new(),
+        };
         let port = listen(&runtime, router(Arc::new(RwLock::new(view)), Some((&scratch.0, upstream)), version.clone()));
         let origin = format!("http://127.0.0.1:{port}");
         let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).http_status_as_error(false).build().into();

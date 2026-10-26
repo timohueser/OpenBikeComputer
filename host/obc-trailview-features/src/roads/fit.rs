@@ -295,8 +295,7 @@ fn dot(x: &[f64], y: &[f64]) -> f64 {
     x.iter().zip(y).map(|(a, b)| a * b).sum()
 }
 
-/// GMRES as SciPy's `gmres(A, b, rtol=0, atol=atol, restart=restart, maxiter=1)`: one cycle of at most
-/// `restart` steps from 0; and whether the residual ends within `atol`.
+/// GMRES: one cycle of at most `restart` steps from 0; and whether the residual ends within `atol`.
 fn gmres(apply: &dyn Fn(&[f64]) -> Vec<f64>, b: &[f64], atol: f64, restart: usize) -> (Vec<f64>, bool) {
     let n = b.len();
     let bnorm = norm(b);

@@ -21,7 +21,7 @@ sha2 = "0.10"
 geo = { version = "0.31", default-features = false }
 rstar = "0.12"
 rayon = "1"
-zstd = "0.13"
+zstd = "0.14"
 unicode-normalization = { workspace = true }
 flate2 = { workspace = true }
 regex = "1"

@@ -78,8 +78,10 @@ vertex  = zigzag dx, zigzag dy, then varint z_code when has_z is 1
 
 `kind`, `key` and `value` are indices from 0 into the strings of the tile. The tags of a feature
 are sorted by key. `geometry` is 0 for a point, 1 for a line and 2 for an area. The features of a tile
-come in the order of the OSM file: first the points and the lines, then the areas. So the bytes of
-a tile do not depend on how much of the file lies outside the region.
+come in a fixed order: first the kinds that no solver sets, in the order of the OSM file, the points
+and the lines before the areas; then the buildings, the lifts, the rivers and lakes, the roads, paths
+and tracks, the bridge piers, the catenary masts and the platforms. So the bytes of a tile do not
+depend on how much of the file lies outside the region.
 
 ### Coordinates
 
@@ -213,7 +215,7 @@ and often no pylon between them. A way splits at each vertex where another `aeri
 mid-station. Where a span is longer than its rig allows, or where a carrier would come nearer the
 terrain than its clearance, the bake adds a pylon: in the middle of a long span, else at the point of
 the span at least 25 m from both of its ends where the carrier comes nearest. The rigs are those of
-`tools/trailview/lifts.py`. A station at an end that lies inside a mapped building is that building;
+`host/obc-trailview-features/src/lifts.rs`. A station at an end that lies inside a mapped building is that building;
 of the ways that end at one point, only the first in the OSM data has the station there. The tag
 `stations` names the ends that have a station of their own.
 
@@ -250,7 +252,8 @@ height of the feature, which starts at 0. A height is in metres in the vertical 
 
 The shared vectors [`vectors/trailview-features.json`](vectors/trailview-features.json) and
 [`vectors/trailview-features.bin`](vectors/trailview-features.bin) are one tile in its decoded
-form and its bytes. The Python encoder and the TypeScript decoder of the engine read both.
+form and its bytes. The Rust encoder of the bake, the Python decoder of `tools/planner_verify.py` and
+the TypeScript decoder of the engine read both.
 
 ## Kind table
 
@@ -267,7 +270,7 @@ and a selector that matches its tags. An object that no entry takes is not in th
 | `min_zoom` | 8 to 13, 13 when absent: the lowest zoom that holds the kind |
 | `active` | `false`: the entry takes its objects and the bake drops them. `true` when absent |
 
-The bake validates the table before it reads OSM, and `tools/tests/test_planner_trailview_features.py`
+The bake validates the table before it reads OSM, and a test of `host/obc-trailview-features`
 validates the committed table. The table is part of the options of the step, so a change to it
 bakes the layer again.
 

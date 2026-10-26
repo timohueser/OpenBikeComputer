@@ -27,10 +27,10 @@ test('invalid requests perform no bucket access', async () => {
 test('the version names the deployed commit and is never cached', async () => {
   const env = { COMMIT: 'c'.repeat(40), BUCKET: { get() { assert.fail('Unexpected bucket access'); } } };
   const response = await worker.fetch(new Request('https://tiles.example/version'), env, {}, null);
-  assert.deepEqual(await response.json(), { commit: env.COMMIT });
+  assert.deepEqual(await response.json(), { commit: env.COMMIT, grids: [2, 3] });
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
   const pasted = await worker.fetch(new Request('https://tiles.example/version'), { BUCKET: env.BUCKET }, {}, null);
-  assert.deepEqual(await pasted.json(), { commit: null });
+  assert.deepEqual(await pasted.json(), { commit: null, grids: [2, 3] });
 });
 
 // One tile in a synthetic PMTiles v3 archive tests the reader and R2 range seam.
@@ -63,12 +63,15 @@ function bucket(objects, reads = { count: 0 }) {
       arrayBuffer: async () => slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength) };
   } };
 }
-function grid(prefix, packs) {
-  return [[`${prefix}/public/grid.json`, JSON.stringify({ format: 2, map_zoom: 11 })],
+// Format 3 keeps the pointer of each pack in the block index of its cell; format 2 has a pointer per pack.
+function grid(prefix, packs, format = 3) {
+  return [[`${prefix}/public/grid.json`, JSON.stringify({ format, map_zoom: 11 })],
     ...Object.entries(packs).flatMap(([name, bytes]) => {
       const digest = createHash('sha256').update(bytes).digest('hex');
-      return [[`${prefix}/public/maps/${name}.json.json`, pointer('9'.repeat(64), Buffer.from('{}'))],
-        [`${prefix}/public/maps/tiles/${name}/0-0-0.pmtiles.json`, pointer(digest, bytes)], [`objects/${digest}`, bytes]];
+      const pack = format === 3
+        ? [`${prefix}/public/maps/tiles/${name}/0-0-0.json`, JSON.stringify({ '0-0-0.pmtiles': JSON.parse(pointer(digest, bytes)) })]
+        : [`${prefix}/public/maps/tiles/${name}/0-0-0.pmtiles.json`, pointer(digest, bytes)];
+      return [[`${prefix}/public/maps/${name}.json.json`, pointer('9'.repeat(64), Buffer.from('{}'))], pack, [`objects/${digest}`, bytes]];
     })];
 }
 
@@ -126,7 +129,7 @@ test('grid archives share download objects and assets stream from their pointers
   const objects = new Map([...grid(prefix, { basemap: archive(), places: archive() }),
     [`${prefix}/public/maps/assets/fonts/Noto Sans Regular/0-255.pbf.json`, pointer('f'.repeat(64), packed, 'gzip', glyphs.length)],
     [`objects/${'f'.repeat(64)}`, packed],
-    [`${prefix}/public/routes/tiles/9-268-178.json.json`, pointer('b'.repeat(64), packedRoutes, 'gzip', routes.length)],
+    [`${prefix}/public/routes/tiles/5-16-11.json`, JSON.stringify({ '9-268-178.json': JSON.parse(pointer('b'.repeat(64), packedRoutes, 'gzip', routes.length)) })],
     [`objects/${'b'.repeat(64)}`, packedRoutes],
     [`${prefix}/public/device/catalog.json.json`, pointer('e'.repeat(64), asset)],
     [`${prefix}/public/trailview/rules.json.json`, pointer('b'.repeat(64), packedRoutes, 'gzip', routes.length)],
@@ -157,11 +160,12 @@ test('grid archives share download objects and assets stream from their pointers
   await Promise.all(pending); delete globalThis.caches;
 });
 
-// `obc data update` keeps the serving and the rollback release: their files name the same objects.
+// `obc data update` keeps the serving and the rollback release: their files name the same objects. The
+// rollback can have the grid format before block indexes.
 test('the serving and the rollback release answer from one object pool', async () => {
   const [serving, rollback] = ['2', '3'].map(c => c.repeat(64));
   const tilejson = Buffer.from('{"tilejson":"3.0.0"}'), hash = createHash('sha256').update(tilejson).digest('hex');
-  const objects = new Map([...[serving, rollback].flatMap(id => [...grid(`releases/${id}`, { basemap: archive() }),
+  const objects = new Map([...[serving, rollback].flatMap(id => [...grid(`releases/${id}`, { basemap: archive() }, id === rollback ? 2 : 3),
     [`releases/${id}/public/maps/basemap.json.json`, pointer(hash, tilejson)]]), [`objects/${hash}`, tilejson]]);
   assert.equal([...objects.keys()].filter(key => key.startsWith('objects/')).length, 2);
   const env = { BUCKET: bucket(objects) };

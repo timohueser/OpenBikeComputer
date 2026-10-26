@@ -131,6 +131,13 @@ class MapGrid(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "tile (format|size)"):
                         planner_verify.archive(path, kind)
 
+    def test_trailview_feature_tiles_decode_as_the_shared_vectors(self):
+        vectors = Path(__file__).resolve().parents[2] / "specs/vectors"
+        decoded = json.loads((vectors / "trailview-features.json").read_text())
+        self.assertEqual(planner_verify.features((vectors / "trailview-features.bin").read_bytes()), decoded)
+        with self.assertRaisesRegex(ValueError, "bytes after"):
+            planner_verify.features((vectors / "trailview-features.bin").read_bytes() + b"\x00")
+
     def test_changed_binary_archives_check_the_decoded_consumer_layouts(self):
         for kind, zoom, size, metadata in [('snow', 8, 2 * 2 * 256 * 256, {'seasons': 2}),
                                          ('climate', 8, 183552, {'years': 10}),

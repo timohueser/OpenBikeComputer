@@ -31,7 +31,7 @@ zlib-rs = { workspace = true }
 url = "2"
 # The `wiki` shards: tar under zstd.
 tar = { version = "0.4", default-features = false }
-zstd = "0.13"
+zstd = "0.14"
 
 [dev-dependencies]
 obc-map-scene = { workspace = true }

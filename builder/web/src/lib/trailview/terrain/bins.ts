@@ -44,15 +44,15 @@ export const RAIL_CODE = Object.keys(SURFACES).indexOf('rail') + 1;
 type Surface = keyof typeof SURFACES;
 const PAVED: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3.25, tertiary: 3, unclassified: 2.5, residential: 2.5, service: 2, living_street: 2 };
 const MAIN = ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link'];
-/** The path classes and the widest half-width of each without a `width` tag, whatever its surface: a paved footway is not a road. As PATH_HALF_M of tools/trailview/structures.py. */
+/** The path classes and the widest half-width of each without a `width` tag, whatever its surface: a paved footway is not a road. As PATH_HALF_M of host/obc-trailview-features/src/structures.rs. */
 const PATH_HALF: Record<string, number> = { path: 1, footway: 1, cycleway: 1.5, bridleway: 1, steps: 1, pedestrian: 3, via_ferrata: 0.6 };
-/** OSM bridge values of a way that lies on the ground, as GROUND of tools/trailview/structures.py. */
+/** OSM bridge values of a way that lies on the ground, as GROUND of host/obc-trailview-features/src/structures.rs. */
 const GROUND = ['no', 'boardwalk', 'low_water_crossing'];
-/** The deck depth of a bridge without the `deck` tag of the bake, and the height of a tunnel's bore for a road, a path and a track, as `bore` of tools/trailview/structures.py. */
+/** The deck depth of a bridge without the `deck` tag of the bake, and the height of a tunnel's bore for a road, a path and a track, as `bore` of host/obc-trailview-features/src/structures.rs. */
 const DECK_M = 0.6, BORE_M = 5, BORE_PATH_M = 2.6, BORE_RAIL_M = 6.5;
 /** The top of a gallery's roof at its hill, over a road, a path and a track. */
 export const ROOF_M = 6.2, ROOF_PATH_M = 4, ROOF_RAIL_M = 7.5;
-/** A gauge narrower than this many mm is narrow, as NARROW_MM of tools/trailview/rails.py. */
+/** A gauge narrower than this many mm is narrow, as NARROW_MM of host/obc-trailview-features/src/rails.rs. */
 const NARROW_MM = 1200;
 /** Sleepers lie about this far apart: a whole number of them between two OSM vertices of a track. */
 export const SLEEPER_M = 0.6;
@@ -77,10 +77,10 @@ export const PROFILES: Record<string, Profile> = {
     river: RIVER_BANKS,
 };
 const CLASSES = Object.keys(PROFILES);
-/** Whether a way is a track, as `is_track` of tools/trailview/structures.py: a `railway` of these and no `highway`. */
+/** Whether a way is a track, as `is_track` of host/obc-trailview-features/src/structures.rs: a `railway` of these and no `highway`. */
 const TRACKS = ['rail', 'narrow_gauge', 'light_rail', 'funicular'];
 const isTrack = (tags: Record<string, string>) => TRACKS.includes(tags.railway) && !tags.highway;
-/** The class of a way, as `class_of` of tools/trailview/roads.py: `rack` for a rack railway, else the `railway` of a track or its `highway`. */
+/** The class of a way, as `class_of` of host/obc-trailview-features/src/structures.rs: `rack` for a rack railway, else the `railway` of a track or its `highway`. */
 const classOf = (tags: Record<string, string>) => (isTrack(tags) ? (tags.rack && tags.rack !== 'no' ? 'rack' : tags.railway) : tags.highway ?? '');
 /** The row of a line's class; a class that the table lacks takes the row of its kind. */
 const profileOf = (kind: string, name = '') => CLASSES.indexOf(kind === 'river' ? 'river' : Object.hasOwn(PROFILES, name) ? name : kind === 'path' ? 'path' : 'road');

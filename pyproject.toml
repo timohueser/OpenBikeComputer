@@ -17,10 +17,8 @@ planner-snow = [{ include-group = "planner-maps" }, "rasterio==1.5.2", "numpy==2
 planner-sun = [{ include-group = "planner-maps" }, "numpy==2.5.3", "numba==0.68.0"]
 # The national terrain models: their fetch, and the merge of the device-map reference layers.
 terrain-reference = ["rasterio==1.5.2", "pyproj==3.8.0", "numpy==2.5.3"]
-# The tracks of the TrailView feature tiles: their masts and platforms.
-trailview-roads = ["numpy==2.5.3", "scipy==1.18.1"]
 # TrailView: the ruleset, ground and colour tiles. rasterio and pyogrio each bring their own GDAL; osmium reads the OSM areas.
-trailview = [{ include-group = "planner-maps" }, { include-group = "trailview-roads" }, "rasterio==1.5.2", "pyproj==3.8.0", "numpy==2.5.3", "shapely==2.1.2", "pyogrio==0.13.0", "osmium==4.3.2"]
+trailview = [{ include-group = "planner-maps" }, "rasterio==1.5.2", "pyproj==3.8.0", "numpy==2.5.3", "shapely==2.1.2", "pyogrio==0.13.0", "osmium==4.3.2"]
 # The search databases, and the country policy that PyYAML reads from the Nominatim archive.
 planner-search = ["orjson==3.12.0", "pyyaml==6.0.2", "shapely==2.1.2", "zstandard==0.25.0"]
 

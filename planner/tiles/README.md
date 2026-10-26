@@ -52,7 +52,8 @@ Tiles keep stored gzip bytes when the client accepts gzip. Other clients receive
 decoded bytes. The edge cache stores these responses separately.
 
 `ID` is the SHA-256 of `release.json`. Packs come from the canonical object pool
-through its small public pointers. The
+through the pointers in their block indexes. `/version` names the grid formats that the
+Worker reads. The
 [release contract](../../specs/planner-release.md#canonical-grid-storage)
 defines those paths. Queries and unknown paths
 return 404. An absent tile returns 204. A tile without a pack is absent.
