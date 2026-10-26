@@ -40,11 +40,9 @@ async function settle(pages: Pages, wanted: Node[], frames = 300, eye = new Set<
 }
 
 describe('the page pools', () => {
-    const { nodes, wanted } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, () => true);
+    const { wanted } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, () => true);
     wanted.sort((a, b) => a.level - b.level);
-    // As the terrain gives it: the nodes within EYE_M and the parents that they morph toward.
-    const keys = new Set(wanted.map(key)), eye = new Set(nodes.filter(node => distances({ anchor, above: 0 }, node)[0] <= EYE_M)
-        .flatMap(({ level, x, y }) => [key({ level, x, y }), key({ level: level - 1, x: x >> 1, y: y >> 1 })]).filter(name => keys.has(name)));
+    const eye = new Set(wanted.filter(node => distances({ anchor, above: 0 }, node)[0] <= EYE_M).map(key));
 
     it('synthesize the levels below the stored tiles from the deepest stored page, decode each tile once, and map every ready page', async () => {
         const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
@@ -62,19 +60,28 @@ describe('the page pools', () => {
         expect(map.filter(entry => entry >>> 16).length).toBe(ready.filter(page => page.kind === 'stored').length);
     });
 
-    it('fill the holes from one coarse tile, then load the tile under the eye, then the nearer tiles first; the eye field asks for its features and synthesizes first', async () => {
-        const tiles = source(), asked: string[] = [], known = new Set<string>();
-        // Every node's features are known one frame after it asks for them.
-        const features: StampSource = {
-            get: node => (known.has(key(node)) ? { data: null, heights: false } : void (asked.includes(key(node)) ? known.add(key(node)) : asked.push(key(node)))),
-            known: node => (known.has(key(node)) ? { data: null, heights: false } : undefined),
-        };
-        const pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {}, features);
-        const works = await settle(pages, wanted, 300, eye);
+    it('fill the holes from one coarse tile, then load the tile under the eye, then the nearer tiles first', async () => {
+        const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
+        await settle(pages, wanted, 300, eye);
         const at = (z: number) => `${z}/${Math.floor((anchor.whole[0] + anchor.part[0]) / size(z))}/${Math.floor((anchor.whole[1] + anchor.part[1]) / size(z))}`;
         expect(tiles.fetched.slice(0, 2)).toEqual([at(6), at(13)]);
         const metres = tiles.fetched.map(name => name.split('/').map(Number)).filter(([z]) => z === 13).map(([level, x, y]) => distances({ anchor, above: 0 }, { level, x, y })[0]);
         expect(metres).toEqual([...metres].sort((a, b) => a - b));
+    });
+
+    it('let the eye field ask for its features and synthesize first', async () => {
+        const tiles = source(), asked: string[] = [], known = new Set<string>();
+        // Every node's features are known in the frame after it asks for them.
+        const features: StampSource = {
+            get: node => {
+                if (known.has(key(node))) return { data: null, heights: false };
+                if (asked.includes(key(node))) known.add(key(node));
+                else asked.push(key(node));
+            },
+            known: node => (known.has(key(node)) ? { data: null, heights: false } : undefined),
+        };
+        const pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {}, features);
+        const works = await settle(pages, wanted, 300, eye);
         // Of the synthesized pages (below the stored level 13), the eye field asks first.
         const synthesized = asked.filter(name => Number(name.split('/')[0]) > 13), field = synthesized.filter(name => eye.has(name));
         expect(field.length).toBeGreaterThan(0);

@@ -184,7 +184,7 @@ export class Terrain {
      * the frames that changed it and the last of those frames.
      */
     private probed = '';
-    private reads = '';
+    private probeReads = '';
     private changes = 0;
     private changedAt = 0;
     private above = 0;
@@ -417,8 +417,8 @@ export class Terrain {
             this.calm = 0;
         }
         const probeReads = this.probeKey(rule, anchor);
-        if (probeReads !== this.reads) {
-            this.reads = probeReads;
+        if (probeReads !== this.probeReads) {
+            this.probeReads = probeReads;
             this.changes++;
             this.changedAt = this.frameNumber;
         }
