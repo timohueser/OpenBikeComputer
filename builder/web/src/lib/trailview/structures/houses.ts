@@ -159,9 +159,11 @@ export class Houses {
     /** Whether the last update put other houses on the GPU. */
     newContent = false;
 
-    constructor(private readonly frame: Frame, private readonly features: FeatureTiles | undefined, private readonly rules: Rules, private readonly changed: () => void) {
+    /** An abort of `stop` ends the worker. */
+    constructor(private readonly frame: Frame, private readonly features: FeatureTiles | undefined, private readonly rules: Rules, private readonly changed: () => void, stop: AbortSignal) {
         if (!features) return;
-        this.worker = new Worker(new URL('./house-worker.ts', import.meta.url), { type: 'module' });
+        const worker = this.worker = new Worker(new URL('./house-worker.ts', import.meta.url), { type: 'module' });
+        stop.addEventListener('abort', () => worker.terminate());
         this.worker.onmessage = ({ data }) => {
             const resolve = this.waiting.get(data.id);
             this.waiting.delete(data.id);

@@ -76,7 +76,7 @@ interface Place { east: number; north: number; above: number }
 /** The eye in the frame, at height z above sea level. */
 interface Eye extends Place { z: number }
 
-/** The engine: a frame loop that draws a view on demand, and recovers from a lost device. */
+/** The engine: a frame loop that draws a view on demand, and recovers from a lost device until `destroy()`. */
 export class TrailView {
     /** Called with the view after it changes. */
     onView?: (view: View) => void;
@@ -100,6 +100,7 @@ export class TrailView {
     private readonly resolve = new Resolve();
     private readonly temporal = new Temporal();
     private readonly controls: Controls;
+    private destroyed = false;
     private pose: Pose;
     private extras: Pick<View, 'date' | 'time' | 'weather' | 'debug'>;
     private gpuState!: { gpu: Gpu; uniform: GPUBuffer; look: GPUBuffer; times: PassTimes; targets: Targets };
@@ -124,27 +125,31 @@ export class TrailView {
     /** Whether the last frame that placed the instances moved or changed: the next one places them again, culled by a depth of the same view. */
     private unrest = true;
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly scale: number) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number) {
+        // `destroy()` aborts it: it ends the tile requests, the workers and the listeners.
+        const { signal } = stop;
         this.context = canvas.getContext('webgpu')!;
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
         const { features } = tiles;
-        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder() }, features, config.bounds, () => this.request());
+        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal);
         this.groundLook = new Ground(ground, () => this.request());
-        this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request());
-        this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear());
-        this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request());
-        this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request());
-        this.orchards = new Orchards(this.groundLook.rules, this.trees, this.instances, features, () => this.request());
+        this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal);
+        this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), signal);
+        this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request(), signal);
+        this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request(), signal);
+        this.orchards = new Orchards(this.groundLook.rules, this.trees, this.instances, features, () => this.request(), signal);
         this.kindPoints = new KindPoints(this.instances);
         this.dressing = new Dressing(this.groundLook.rules, this.instances);
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },
             ground: () => this.ground(),
-        });
-        new ResizeObserver(() => this.request()).observe(canvas);
+        }, signal);
+        const resize = new ResizeObserver(() => this.request());
+        resize.observe(canvas);
+        signal.addEventListener('abort', () => resize.disconnect());
     }
 
     /**
@@ -153,9 +158,9 @@ export class TrailView {
      * after EYE_WAIT_MS: on a slow link the other loads would share it with them. `scale` is the render scale.
      */
     static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number): Promise<TrailView> {
-        const tiles = eyeTiles(config, [view.lon, view.lat]);
-        const ground = await GroundSource.open(config, view.date).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
-        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, scale);
+        const stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], stop.signal);
+        const ground = await GroundSource.open(config, view.date, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
+        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale);
         await engine.attach(gpu);
         await Promise.race([tiles.arrived, new Promise(resolve => setTimeout(resolve, EYE_WAIT_MS))]);
         engine.request();
@@ -212,10 +217,29 @@ export class TrailView {
         return this.terrain.audit();
     }
 
-    /** Resolves after the next frame is drawn. */
+    /**
+     * Ends the engine: no frame draws, no tile loads, no worker runs, and the buffers and textures that
+     * it made are destroyed. The device stays for the next engine. The waits for a frame resolve.
+     */
+    destroy(): void {
+        if (this.destroyed) return;
+        this.destroyed = true;
+        this.ready = false;
+        this.stop.abort();
+        for (const resolve of this.rendered.splice(0)) resolve();
+        this.context.unconfigure();
+        this.gpuState.gpu.release();
+    }
+
+    /** Resolves after the next frame is drawn, or at once after `destroy()`. */
     nextFrame(): Promise<void> {
         this.request();
-        return new Promise(resolve => this.rendered.push(resolve));
+        return this.afterFrame();
+    }
+
+    /** Resolves after the next frame that draws; a destroyed engine draws none. */
+    private afterFrame(): Promise<void> {
+        return this.destroyed ? Promise.resolve() : new Promise(resolve => this.rendered.push(resolve));
     }
 
     /**
@@ -226,8 +250,8 @@ export class TrailView {
     async waitForIdle(): Promise<void> {
         await this.nextFrame();
         // A tile or a probe that arrives draws the next frame.
-        while (!this.idle()) await new Promise<void>(resolve => this.rendered.push(resolve));
-        await this.gpu.device.queue.onSubmittedWorkDone();
+        while (!this.destroyed && !this.idle()) await this.afterFrame();
+        if (!this.destroyed) await this.gpu.device.queue.onSubmittedWorkDone();
     }
 
     private idle(): boolean {
@@ -244,7 +268,7 @@ export class TrailView {
      */
     async nearReady(): Promise<void> {
         await this.nextFrame();
-        while (!this.near() && !this.idle()) await new Promise<void>(resolve => this.rendered.push(resolve));
+        while (!this.destroyed && !this.near() && !this.idle()) await this.afterFrame();
     }
 
     private near(): boolean {
@@ -252,7 +276,9 @@ export class TrailView {
             && this.plants.idle && this.orchards.idle && this.instances.idle && this.shadow.nearDrawn;
     }
 
-    private async attach(gpu: Gpu): Promise<void> {
+    /** Takes a device: the engine's buffers and textures are made in a scope of it, which `destroy()` releases. */
+    private async attach(base: Gpu): Promise<void> {
+        const gpu = base.scope();
         this.context.configure({ device: gpu.device, format: gpu.format, alphaMode: 'opaque' });
         const uniform = gpu.buffer('uniforms', FRAME_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         const look = gpu.buffer('uniforms', LOOK_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
@@ -270,19 +296,26 @@ export class TrailView {
         ]);
         // A lost device is created again and gets every pool again, without a reload of the page.
         gpu.device.lost.then(async info => {
+            if (this.destroyed || info.reason === 'destroyed') return;
             console.warn(`The WebGPU device was lost (${info.reason}): ${info.message}`);
             this.ready = false;
             const next = await Gpu.request();
+            if (this.destroyed) return;
             if (!next) return console.error('WebGPU has no adapter after a lost device.');
             await this.attach(next);
+            if (this.destroyed) return this.gpuState.gpu.release();
             this.recoveries++;
             this.request();
         });
         this.ready = true;
     }
 
+    /**
+     * Asks for a frame. Every arrival (a terrain or ground page, stamps, houses, canopy, models, plants,
+     * orchards) wakes the engine only here and goes to the GPU only in a frame: after `destroy()` none does.
+     */
     private request(): void {
-        if (this.pending) return;
+        if (this.pending || this.destroyed) return;
         this.pending = true;
         requestAnimationFrame(now => this.render(now));
     }

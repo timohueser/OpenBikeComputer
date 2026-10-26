@@ -37,7 +37,8 @@ export class Canopy {
     private frame = 0;
     private origin: [number, number] = [0, 0];
 
-    constructor(config: PlannerConfig, private readonly wake: () => void) {
+    /** An abort of `stop` ends the tile requests. */
+    constructor(config: PlannerConfig, private readonly wake: () => void, private readonly stop: AbortSignal) {
         const url = (config.layers as Partial<Record<string, string>>)['trailview-canopy'];
         if (url) openSource(url).then(source => {
             this.source = source;
@@ -105,7 +106,7 @@ export class Canopy {
         const key = `${x}/${y}`, source = this.source;
         if (!source || this.loading.has(key) || this.absent.has(key) || this.loading.size >= LOADS || this.arrived.some(a => a.x === x && a.y === y)) return;
         this.loading.add(key);
-        source.get(CANOPY_ZOOM, x, y, requestSignal()).then(async body => {
+        source.get(CANOPY_ZOOM, x, y, AbortSignal.any([requestSignal(), this.stop])).then(async body => {
             this.requests++;
             if (!body) return void this.absent.add(key);
             this.bytes += body.byteLength;
