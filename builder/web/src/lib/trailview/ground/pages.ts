@@ -139,10 +139,9 @@ export class GroundPages {
 
     /**
      * Takes the pages that the drawn nodes and the selection want, about the eye (lon, lat), and the
-     * pages that the instances `read`. `refreshed` are the terrain nodes whose normals changed, and
-     * `arrived` those of them whose heights changed.
+     * pages that the instances `read`. `arrived` are the terrain nodes whose drawn heights changed.
      */
-    update(drawn: Node[], wanted: Node[], refreshed: Node[], arrived: Node[], origins: [number, number][], eye: [number, number], read: Node[] = []): GroundWork {
+    update(drawn: Node[], wanted: Node[], arrived: Node[], origins: [number, number][], eye: [number, number], read: Node[] = []): GroundWork {
         this.frame++;
         const work: GroundWork = { uploads: [], refreshes: [], horizons: [] };
         if (!this.source) return work;
@@ -199,10 +198,10 @@ export class GroundPages {
             work.uploads.push({ page, data, horizons });
             this.dirty = true;
         }
-        const uploaded = new Map(work.uploads.map(upload => [upload.page, upload.horizons])), changed = new Set(refreshed.map(key));
-        if (changed.size) for (const page of this.pages.values()) {
+        const uploaded = new Map(work.uploads.map(upload => [upload.page, upload.horizons]));
+        if (arrived.length) for (const page of this.pages.values()) {
             if (page.date < 0) continue;
-            if (!uploaded.has(page) && reliefReads(page.node, this.finest).some(node => changed.has(key(node)))) this.refresh.add(page);
+            if (!uploaded.has(page) && reliefReads(page.node, this.finest).some(read => arrived.some(node => touches(node, read)))) this.refresh.add(page);
             if (!uploaded.get(page) && arrived.some(node => marches(page.node, node))) this.marching.add(page);
         }
         work.refreshes = this.take(this.refresh, REFRESHES);
@@ -346,14 +345,17 @@ export class GroundPages {
 
 /**
  * The terrain nodes whose drawn heights the relief of a ground page reads: its own, and the one of the
- * coarse level of `relief_of` in ground.wgsl that holds it. Its openness, three texels across, reads past
- * the edges of these two into their neighbours where they are resident, a coarser level where not; a
- * page does not wait for them, nor refresh when they arrive.
+ * coarse level of `coarse_of` in ground.wgsl that holds it. The relief reads past the edges of these two
+ * into their neighbours where they are resident, a coarser level where not: a page does not wait for
+ * them, and builds its relief again when they arrive (`touches`).
  */
 export function reliefReads(node: Node, finest: number): Node[] {
     const coarse = Math.max(node.level, COARSEST + 2) - (node.level === finest ? 1 : 2), shift = node.level - coarse;
     return [node, { level: coarse, x: node.x >> shift, y: node.y >> shift }];
 }
+
+/** Whether a node is `read` or one of its eight neighbours. */
+const touches = (node: Node, read: Node) => node.level === read.level && Math.abs(node.x - read.x) <= 1 && Math.abs(node.y - read.y) <= 1;
 
 /**
  * Whether the horizons of a page read the heights of a terrain node. The march of ground.wgsl reads

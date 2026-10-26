@@ -78,7 +78,7 @@ fn grown(keep: f32, h: f32) -> f32 {
 
 // The albedo of the ground at a texel of finest_texel.
 fn ground_albedo(t: vec3i) -> vec3f {
-    let c = textureLoad(cache, t.xy, t.z * 4, 0).rgb;
+    let c = textureLoad(cache, t.xy, t.z * CACHE_PLANES, 0).rgb;
     return c * c;
 }
 
