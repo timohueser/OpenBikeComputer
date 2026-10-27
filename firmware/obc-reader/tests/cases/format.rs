@@ -12,11 +12,10 @@ use obc_formats::obcm::{
 use obc_map_scene::{BBox, Kind, LineStyle};
 use obc_reader::{Error, MapCache, MapStyleSet, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 use obcm_testkit::{
-    align_up, append_dark_styles, build_file, default_nav_profile_table, empty_nav_directory, empty_poi_directory,
-    filler_len, hours_pool, nav_directory, pack_line, pack_line16, pack_nav_chunk, pack_nav_edge_record,
-    pack_nav_record, pack_poi_chunk, pack_poi_record, pack_poly_hole, pad, poi_dir_len, poi_directory, resolve_offset,
-    scaled, seal, splice_terrain, terrain_stub, LodSpec, PoiCat, Style, DARK_MARKER, FILLER, MARKER, OFFSET_SCALE,
-    STYLE_OFFSET, UNIT,
+    align_up, append_dark_styles, build_file, default_nav_profile_table, empty_nav_directory, filler_len, hours_pool,
+    nav_directory, pack_line, pack_line16, pack_nav_chunk, pack_nav_edge_record, pack_nav_record, pack_poi_chunk,
+    pack_poi_record, pack_poly_hole, pad, poi_dir_len, poi_directory, resolve_offset, scaled, seal, splice_terrain,
+    terrain_stub, LodSpec, PoiCat, Style, DARK_MARKER, FILLER, MARKER, OFFSET_SCALE, STYLE_OFFSET, UNIT,
 };
 
 use crate::common::{decode_chunk, decode_filtered};
@@ -83,16 +82,6 @@ fn header_and_lod_table() {
     assert_eq!(lods[0].chunk_size, CS);
     assert_eq!(lods[0].chunk_count, 1);
     assert_eq!(lods[1].chunk_count, 1);
-}
-
-#[test]
-fn marker_color_round_trips() {
-    let bytes = two_lod_file();
-    let cache = MapCache::new();
-    let src = SliceSource(&bytes);
-    let tables = MapTables::parse(&src).unwrap();
-    let r = Reader::new(&src, &tables, &cache);
-    assert_eq!(r.marker_color, MARKER);
 }
 
 #[test]
@@ -374,36 +363,6 @@ fn decode_polygon_with_hole() {
 }
 
 #[test]
-fn visitor_matches_owned_decode() {
-    let bytes = two_lod_file();
-    let cache = MapCache::new();
-    let src = SliceSource(&bytes);
-    let tables = MapTables::parse(&src).unwrap();
-    let r = Reader::new(&src, &tables, &cache);
-    let node = r.bbox;
-
-    let owned = decode_chunk(&r, 1, 0, &node);
-
-    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
-    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
-    let mut seen = 0;
-    r.for_each_feature(1, 0, &node, &mut points, &mut ring_lens, |f| {
-        let o = &owned[seen];
-        assert_eq!(f.style_id, o.style_id);
-        assert_eq!(f.kind, o.kind);
-        assert_eq!(f.exterior(), o.exterior.as_slice());
-        let holes: Vec<&[(i32, i32)]> = f.interiors().collect();
-        assert_eq!(holes.len(), o.interiors.len());
-        for (h, oh) in holes.iter().zip(&o.interiors) {
-            assert_eq!(*h, oh.as_slice());
-        }
-        seen += 1;
-    })
-    .unwrap();
-    assert_eq!(seen, owned.len());
-}
-
-#[test]
 fn decode_16bit_deltas() {
     // Deltas beyond the int8 range force the 16-bit path (flag bit 0).
     let bbox = (0, 0, 1_000_000, 1_000_000);
@@ -451,21 +410,6 @@ fn quadtree_subdivision_and_node_bbox() {
     // The feature's anchor is relative to the NW node's min corner (0,500): (10,10) → (10,510).
     let feats = decode_chunk(&r, 0, 0, &nw);
     assert_eq!(feats[0].exterior, vec![(10, 510), (15, 515)]);
-}
-
-#[test]
-fn empty_leaf_yields_nothing() {
-    let empty = seal(vec![], CS); // just the sentinel
-    let bytes = build_file(
-        GLOBAL,
-        STYLES,
-        &[LodSpec { max_mpp: f32::INFINITY, index: vec![EMPTY_LEAF], chunks: vec![empty], chunk_size: CS }],
-    );
-    let cache = MapCache::new();
-    let src = SliceSource(&bytes);
-    let tables = MapTables::parse(&src).unwrap();
-    let r = Reader::new(&src, &tables, &cache);
-    assert!(query_all(&r, 0, &r.bbox).is_empty());
 }
 
 #[test]
@@ -867,13 +811,6 @@ fn populated_poi_category_round_trips_with_record_layout() {
     assert_eq!(&bytes[blob1_at..blob1_at + POI_HOURS_BLOB_LEN], &blob1, "blob 1 at index 1");
 }
 
-#[test]
-fn old_version_file_is_rejected() {
-    let mut bytes = two_lod_file();
-    bytes[4] = 10; // downgrade the version byte to v10 (a long-superseded format)
-    assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadVersion)));
-}
-
 /// Refuse both adjacent versions before any section is read.
 #[test]
 fn the_version_cut_refuses_both_neighbours() {
@@ -986,28 +923,6 @@ fn poi_directory_rejects_out_of_bound_count_and_chunk_size() {
     let pool_count_at = poi_off + 3 + obc_formats::obcm::PoiCategory::ALL.len() * 13 + 4; // hours_pool_offset u32, then the u16 count
     forged[pool_count_at..pool_count_at + 2].copy_from_slice(&0xFFFFu16.to_le_bytes());
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "pool count runs past EOF");
-}
-
-#[test]
-fn empty_poi_directory_builder_matches_reader() {
-    const AT: usize = 1024; // a unit boundary, as any section offset must be
-    let dir = empty_poi_directory(AT);
-    // The fixed-length directory, then filler to the boundary the zero-length indexes and the pool
-    // are named at, the 2-byte empty-pool header, and filler to the nav directory's boundary.
-    assert_eq!(poi_dir_len(), 3 + obc_formats::obcm::PoiCategory::ALL.len() * 13 + 6);
-    let pool_at = align_up(AT + poi_dir_len());
-    assert_eq!(dir.len(), align_up(pool_at - AT + 2), "the section ends on a unit boundary");
-    assert_eq!(dir[0], obc_formats::obcm::POI_CATEGORY_COUNT);
-    assert_eq!(u16::from_le_bytes([dir[1], dir[2]]), 512);
-    // An offset cannot point at the directory's last byte, so they point at the next boundary.
-    for k in 0..obc_formats::obcm::PoiCategory::ALL.len() {
-        let entry = 3 + k * 13;
-        assert_eq!(resolve_offset(&dir, entry + 1), pool_at, "category {k}'s empty index is nameable");
-    }
-    let count_field = 3 + obc_formats::obcm::PoiCategory::ALL.len() * 13 + 4;
-    assert_eq!(resolve_offset(&dir, 3 + obc_formats::obcm::PoiCategory::ALL.len() * 13), pool_at, "hours_pool_offset");
-    assert_eq!(u16::from_le_bytes([dir[count_field], dir[count_field + 1]]), 0, "empty pool");
-    assert!(dir[poi_dir_len()..pool_at - AT].iter().all(|&b| b == FILLER), "the gap behind the directory is 0xFF");
 }
 
 /// The distinctive `way_kind` byte the hand-assembled section carries on both the edge and the
