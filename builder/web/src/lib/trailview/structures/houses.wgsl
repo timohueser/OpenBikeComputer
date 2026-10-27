@@ -63,7 +63,7 @@ struct Drawn {
     wall: f32,
     storey: f32,
     storeys: f32,
-    // The kind (4 bits), the form (3) at bit 4, the timber (2) at bit 7, shutters at bit 9, the front wall (2) at bit 10, the seed at bit 16.
+    // The kind (4 bits), the form (4) at bit 4, the timber (2) at bit 8, shutters at bit 10, the front wall (2) at bit 11, the seed at bit 16.
     bits: u32,
     // The windows' size as a share of the kind's.
     windows: f32,
@@ -149,7 +149,7 @@ struct DrawOf {
 
 const NO_DRAW: u32 = 0xffffffffu;
 // The draws: two per template.
-const DRAWS: u32 = 16u;
+const DRAWS: u32 = 18u;
 // Lanes per house, and houses per workgroup of `refit`, as in houses.ts.
 const LANES: u32 = 9u;
 const PER_GROUP: u32 = 7u;
@@ -168,6 +168,7 @@ const T_DOMES: u32 = 4u;
 const T_TERRACE: u32 = 5u;
 const T_CONES: u32 = 6u;
 const T_GRANARY: u32 = 7u;
+const T_DORMERS: u32 = 8u;
 // The kinds, as house-records.ts.
 const COTTAGE: u32 = 0u;
 const HOUSE: u32 = 1u;
@@ -248,7 +249,9 @@ const DORMER_HALF_M: f32 = 0.65;
 const DORMER_EVERY_M: f32 = 4.0;
 // The length of wall that holds one cone, and a parapet's thickness and height.
 const CONE_M: f32 = 4.5;
-const PARAPET_M: vec2f = vec2f(0.25, 0.9);
+const PARAPET_M: vec2f = vec2f(0.25, 0.6);
+// A greenhouse's roof rises at most this much: the shallow spans of a sea of plastic.
+const GREENHOUSE_RISE_M: f32 = 1.0;
 const BEAM_M: f32 = 0.2;
 const BALCONY_M: f32 = 0.9;
 // A roof rises at most this much above the eaves.
@@ -342,7 +345,7 @@ fn shape_of(h: House, index: u32) -> Shape {
     // takes any kind but a church, a greenhouse and a granary, and a cone none of blocks and halls.
     let flat = ((h.bits >> 7u) & 1u) == 1u;
     let cones = (flags & CONE_ROOF) != 0u && s.kind != BLOCK && s.kind != INDUSTRIAL;
-    let own = select(select(select(T_GABLE, T_FLAT, flat), T_CONES, cones), T_TERRACE, (flags & FLAT_ROOF_STYLE) != 0u);
+    let own = select(select(select(select(T_GABLE, T_DORMERS, s.dormers), T_FLAT, flat), T_CONES, cones), T_TERRACE, (flags & FLAT_ROOF_STYLE) != 0u);
     let tower = select(select(T_SPIRE, T_ONION, (flags & ONION_DOME) != 0u), T_DOMES, s.wooden);
     s.form = select(select(select(own, T_GABLE, greenhouse), T_GRANARY, s.kind == GRANARY), tower, church);
     return s;
@@ -360,7 +363,7 @@ fn slots_of(s: Shape, index: u32, bottom: f32) -> Slots {
     let verge = select(params.styles[index].verge, 0.1, greenhouse);
     var o: Slots;
     // A wide hall's roof keeps a low pitch, and a style of 0° a near-flat one.
-    let t = max(min(tan(radians(s.pitch)), ROOF_M / s.half.y), 0.05);
+    let t = max(min(tan(radians(s.pitch)), select(ROOF_M, GREENHOUSE_RISE_M, greenhouse) / s.half.y), 0.05);
     let w = s.half;
     o.z[0] = bottom;
     o.z[1] = s.wall;
@@ -380,7 +383,8 @@ fn slots_of(s: Shape, index: u32, bottom: f32) -> Slots {
         return o;
     }
     if (s.form == T_CONES) {
-        // Up to three columns of cones along the house and two rows across, each over a bay.
+        // Up to three columns of cones along the house and two rows across, each over a bay: an even
+        // count leaves the middle column or row out.
         let n = clamp(round(2.0 * w / CONE_M), vec2f(1.0), vec2f(3.0, 2.0));
         let r = 0.96 * min(w.x / n.x, w.y / n.y);
         let middle = vec2f(select(0.0, r, n.x != 2.0), select(0.0, r, n.y == 1.0));
@@ -404,14 +408,23 @@ fn slots_of(s: Shape, index: u32, bottom: f32) -> Slots {
     let ridge_x = max(0.0, end - s.hip * y);
     let top_z = min(ridge, hip_z + verge * t);
     if (s.form == T_GRANARY) {
-        // The store stands on two rows of three pillars, 35 cm square, 30 cm in from its walls.
+        // The store stands on a row of pillars about every 2 m under each long wall, 35 cm square and
+        // 30 cm in from its walls: a middle one where they are odd, and up to three pairs about it.
         let r = RAISED_M;
-        o.x = array<f32, 16>(0.0, w.x, end, ridge_x, 0.175, w.x - 0.475, w.x - 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let n = clamp(round(w.x) + 1.0, 2.0, 7.0);
+        let step = (2.0 * w.x - 0.6) / (n - 1.0);
+        var pairs = array<f32, 3>(0.0, 0.0, 0.0);
+        for (var k = 0; k < 3; k++) {
+            pairs[k] = select(0.0, w.x - 0.3 - f32(k) * step, f32(k) < floor(0.5 * n));
+        }
+        let half = vec3f(select(0.0, 0.175, pairs[0] > 0.0), select(0.0, 0.175, pairs[1] > 0.0), select(0.0, 0.175, pairs[2] > 0.0));
+        o.x = array<f32, 16>(0.0, w.x, end, ridge_x, select(0.0, 0.175, n % 2.0 == 1.0), pairs[0] - half.x, pairs[0] + half.x, pairs[1] - half.y, pairs[1] + half.y,
+            pairs[2] - half.z, pairs[2] + half.z, 0.0, 0.0, 0.0, 0.0, 0.0);
         o.y = array<f32, 16>(0.0, w.y, y, s.hip * y, (ridge - top_z) / t, w.y - 0.475, w.y - 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         o.z = array<f32, 16>(bottom, r, r + s.wall, r + eave, r + ridge, r + hip_z, r + top_z, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         return o;
     }
-    if (s.form == T_GABLE) {
+    if (s.form == T_GABLE || s.form == T_DORMERS) {
         let chimney = min(w.x - 0.6, max(0.0, ridge_x - 0.5));
         let c1 = select(0.0, 1.0, s.chimneys >= 1u);
         let c2 = select(0.0, 1.0, s.chimneys == 2u);
@@ -619,7 +632,7 @@ fn fit(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) loc
     let mids = abs(0.5 * (below + below.yzwx));
     let nearest = min(min(mids.x, mids.y), min(mids.z, mids.w));
     let front = select(select(select(3u, 2u, mids.z == nearest), 1u, mids.y == nearest), 0u, mids.x == nearest);
-    d.bits = s.kind | (s.form << 4u) | (s.timber << 7u) | (u32(s.shutters) << 9u) | (front << 10u) | (h.bits & 0xffff0000u);
+    d.bits = s.kind | (s.form << 4u) | (s.timber << 8u) | (u32(s.shutters) << 10u) | (front << 11u) | (h.bits & 0xffff0000u);
     let seed = h.bits >> 16u;
     let wood = pick(out.style, 1u, seed);
     let shutter = select(pick(out.style, 4u, seed), wood, s.timber == 3u);
@@ -774,7 +787,7 @@ fn colour_of(d: Drawn, k: u32) -> vec3f {
 // window. Windows and doors are cells of a grid, as in the prototype. Alpha: how much the cell shines at night.
 fn facade(d: Drawn, wall: u32, first: u32, u: f32, len: f32, z: f32, front: bool, ground: f32, w: f32) -> vec4f {
     let kind = d.bits & 15u;
-    let timber = (d.bits >> 7u) & 3u;
+    let timber = (d.bits >> 8u) & 3u;
     // Smaller windows stand farther apart, their sills higher and their lintels lower.
     var k = kind_table(kind);
     k.window *= vec2f(d.windows, 1.0 / d.windows);
@@ -820,7 +833,7 @@ fn facade(d: Drawn, wall: u32, first: u32, u: f32, len: f32, z: f32, front: bool
         // A window opens where its sill stands clear of the ground: a buried storey shows its wall.
         let sill = (storey + k.opening.x) * d.storey;
         let open = z > sill && z < (storey + k.opening.y) * d.storey && sill > ground + 0.1;
-        let shutter_half = ww + select(0.0, 0.9 * ww, ((d.bits >> 9u) & 1u) == 1u);
+        let shutter_half = ww + select(0.0, 0.9 * ww, ((d.bits >> 10u) & 1u) == 1u);
         if (front && abs(u - 0.5 * len) < 0.5 * k.door && z < k.opening.y * d.storey) {
             colour = colour_of(d, C_DOOR);
         } else if (open && off < ww) {
@@ -856,7 +869,7 @@ fn house_fragment(in: HouseOut) -> @location(0) vec4f {
     var n = normalize(cross(dpdx(in.relative), dpdy(in.relative)));
     n *= -sign(dot(n, in.relative));
     let w = max(length(dpdx(in.relative)), length(dpdy(in.relative)));
-    let timber = (d.bits >> 7u) & 3u;
+    let timber = (d.bits >> 8u) & 3u;
     let x = in.local.x;
     let y = in.local.y;
     var colour = colour_of(d, C_RENDER);
@@ -883,7 +896,7 @@ fn house_fragment(in: HouseOut) -> @location(0) vec4f {
                 first = u32(floor(in.along / spacing));
                 u = in.along - f32(first) * spacing;
             }
-            let painted = facade(d, wall, first, u, len, in.local.z, wall == ((d.bits >> 10u) & 3u), ground, w);
+            let painted = facade(d, wall, first, u, len, in.local.z, wall == ((d.bits >> 11u) & 3u), ground, w);
             colour = painted.rgb;
             glow = painted.a;
         }

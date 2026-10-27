@@ -4,7 +4,7 @@
 // house does not have, such as a second chimney, has slots that give its faces no area.
 
 /** The templates, as `T_*` in houses.wgsl. */
-export const TEMPLATES = ['gable', 'flat', 'spire', 'onion', 'domes', 'terrace', 'cones', 'granary'] as const;
+export const TEMPLATES = ['gable', 'flat', 'spire', 'onion', 'domes', 'terrace', 'cones', 'granary', 'dormers'] as const;
 export type Template = (typeof TEMPLATES)[number];
 
 /** Rings bottom up, as radius and height in shares of the ring's unit: an onion dome, its lantern and its spike. */
@@ -13,6 +13,13 @@ const ONION = [[0.55, 0], [0.8, 0.35], [0.8, 0.7], [0.55, 1.05], [0.22, 1.35], [
 const CUPOLA = [[1, 0], [1, 1.6], [1.25, 1.6], [1.25, 1.85], ...ONION.map(([r, h]) => [r, h + 1.85])];
 /** A trullo's cone of a bay: a drum, the stone cone at about 62°, and a pinnacle. */
 const CONE = [[1, 0], [1, 0.2], [0, 2.1], [0.09, 2.21], [0, 2.37]];
+/**
+ * The simple level's rings, in four sides: points of the full rings, so that each lies inside its
+ * full ring, which the full level draws over it.
+ */
+const SIMPLE_ONION = [[0.55, 0], [0.8, 0.5], [0.55, 1.05], [0.22, 1.35], [0.1, 1.6], [0, 2.9]];
+const SIMPLE_CUPOLA = [[1, 0], [1, 1.6], ...SIMPLE_ONION.map(([r, h]) => [r, h + 1.85])];
+const SIMPLE_CONE = [[1, 0], [0, 2.1]];
 
 /** Faces, as `M_*` in houses.wgsl: the fragment shader paints each by its material. */
 export const WALL = 0, GABLE = 1, ROOF = 2, EDGE = 3, SOFFIT = 4, CHIMNEY = 5, CAP = 6, BALCONY = 7, TOWER = 8, FLAT = 9, RENDER = 10, GLASS = 11;
@@ -53,11 +60,12 @@ class Builder {
         under.forEach((c, i) => this.poly([c, under[(i + 1) % under.length], over[(i + 1) % under.length], over[i]], EDGE));
     }
 
-    /** A surface of revolution in eight sides about `at`: each step of `profile` a band of `materials[step]`. */
-    rings(at: Corner, profile: number[][], materials: number[]): void {
-        for (let k = 0; k + 1 < profile.length; k++) for (let i = 0; i < 8; i++) {
+    /** A surface of revolution in eight sides, or four, about `at`: each step of `profile` a band of `materials[step]`. */
+    rings(at: Corner, profile: number[][], materials: number[], sides: 4 | 8 = 8): void {
+        const step = 8 / sides;
+        for (let k = 0; k + 1 < profile.length; k++) for (let i = 0; i < 8; i += step) {
             const c = (ring: number, turn: number): Corner => ({ ...at, ring: profile[ring] as [number, number], turn: turn % 8 });
-            this.poly([c(k, i), c(k, i + 1), c(k + 1, i + 1), c(k + 1, i)], materials[k]);
+            this.poly([c(k, i), c(k, i + step), c(k + 1, i + step), c(k + 1, i)], materials[k]);
         }
     }
 
@@ -165,7 +173,7 @@ function dormer(b: Builder, x: number, sx: number, y: number, z: number): void {
     }
 }
 
-function gable(): Mesh {
+function gable(dormers: boolean): Mesh {
     const b = new Builder(), { X, Y, Z: GZ } = G;
     pitched(b, { X, Y, Z: { FOOT: Z.BOTTOM, WALL: Z.WALL, EAVE: GZ.EAVE, RIDGE: GZ.RIDGE, HIP: GZ.HIP, TOP: GZ.TOP } });
     const chimney: [Bound, Bound] = [[Y.CHIMNEY, -1], [Y.CHIMNEY, 1]], balcony: [Bound, Bound] = [[Y.BALCONY, -1], [Y.HALF, -1]];
@@ -174,8 +182,10 @@ function gable(): Mesh {
     box(b, [[X.C2B, -1], [X.C2A, -1]], chimney, [GZ.RIDGE, GZ.C2], CHIMNEY, CAP, undefined, -100);
     box(b, [[X.B1, -1], [X.B1, 1]], balcony, [GZ.B1A, GZ.B1B], BALCONY, BALCONY, SOFFIT);
     box(b, [[X.B2, -1], [X.B2, 1]], balcony, [GZ.B2A, GZ.B2B], BALCONY, BALCONY, SOFFIT);
-    dormer(b, 0, 1, Y.MIDDLE, GZ.MIDDLE);
-    for (const sx of [1, -1]) dormer(b, X.DORMERS, sx, Y.OUTER, GZ.OUTER);
+    if (dormers) {
+        dormer(b, 0, 1, Y.MIDDLE, GZ.MIDDLE);
+        for (const sx of [1, -1]) dormer(b, X.DORMERS, sx, Y.OUTER, GZ.OUTER);
+    }
     return b.mesh();
 }
 
@@ -207,25 +217,31 @@ function terrace(): Mesh {
 }
 
 /**
- * Slots of the cones template: x L/2, the outer columns of cones, and the cones' radius in the middle
- * column and row, in an outer column and the middle row, in the middle column and an outer row, and in
- * both outer; y W/2 and the outer rows. A column or row that a house has not has cones of radius 0.
+ * Slots of the cones template, which holds three columns and three rows of cones: a middle one and an
+ * outer pair of each. x: L/2, the outer columns, and the cones' radius in the middle column and row, in
+ * an outer column and the middle row, in the middle column and an outer row, and in both outer; y W/2
+ * and the outer rows. A column or row that a house has not has cones of radius 0.
  */
 function cones(): Mesh {
     const b = new Builder();
     walls(b, 1, 1, Z.BOTTOM, Z.WALL);
     b.poly(rectangle(1, 1, Z.WALL), RENDER);
-    for (const [x, sxs] of [[0, [1]], [2, [1, -1]]] as const) for (const [y, sys] of [[0, [1]], [2, [1, -1]]] as const)
-        for (const sx of sxs) for (const sy of sys) b.rings({ x, y, z: Z.WALL, sx, sy, unit: 3 + (x ? 1 : 0) + (y ? 2 : 0) }, CONE, [RENDER, ROOF, RENDER, RENDER]);
+    const each = (cone: (at: Corner) => void) => {
+        for (const [x, sxs] of [[0, [1]], [2, [1, -1]]] as const) for (const [y, sys] of [[0, [1]], [2, [1, -1]]] as const)
+            for (const sx of sxs) for (const sy of sys) cone({ x, y, z: Z.WALL, sx, sy, unit: 3 + (x ? 1 : 0) + (y ? 2 : 0) });
+    };
+    each(at => b.rings(at, SIMPLE_CONE, [ROOF], 4));
     b.mark();
+    each(at => b.rings(at, CONE, [RENDER, ROOF, RENDER, RENDER]));
     return b.mesh();
 }
 
 /**
- * Slots of the granary template: a store on two rows of three pillars. x L/2, the roof's end, the ridge's
- * end, the middle pillar's half side, an end pillar's inner and outer side; y W/2, the eaves, the hip's
- * foot, the gable's top, a pillar's inner and outer side; z the pillars' foot, the store's floor, its
- * eaves, the roof's eaves, the ridge, the hip and the gable's top.
+ * Slots of the granary template: a store on a row of up to seven pillars under each long wall. x L/2,
+ * the roof's end, the ridge's end, the middle pillar's half side, then the inner and the outer side of
+ * each of three pairs of pillars about the middle; y W/2, the eaves, the hip's foot, the gable's top, a
+ * pillar's inner and outer side; z the pillars' foot, the store's floor, its eaves, the roof's eaves, the
+ * ridge, the hip and the gable's top. A pillar that a granary has not has no width.
  */
 function granary(): Mesh {
     const b = new Builder();
@@ -234,8 +250,10 @@ function granary(): Mesh {
         for (const sy of [1, -1]) {
             const y: [Bound, Bound] = sy > 0 ? [[5, 1], [6, 1]] : [[6, -1], [5, -1]];
             box(b, [[4, -1], [4, 1]], y, [Z.BOTTOM, 1], CAP, CAP);
-            box(b, [[5, 1], [6, 1]], y, [Z.BOTTOM, 1], CAP, CAP);
-            box(b, [[6, -1], [5, -1]], y, [Z.BOTTOM, 1], CAP, CAP);
+            for (const x of [5, 7, 9]) {
+                box(b, [[x, 1], [x + 1, 1]], y, [Z.BOTTOM, 1], CAP, CAP);
+                box(b, [[x + 1, -1], [x, -1]], y, [Z.BOTTOM, 1], CAP, CAP);
+            }
         }
     });
     return b.mesh();
@@ -263,9 +281,10 @@ function church(top: 'spire' | 'onion' | 'domes'): Mesh {
         if (top !== 'spire') {
             // A cornice caps the tower, and the dome rises from it.
             b.slab([[X.SPIRE_W, -1], [X.SPIRE_E, -1], [X.SPIRE_E, 1], [X.SPIRE_W, 1]].map(([x, sy]) => ({ x, y: Y.SPIRE, z: CZ.TOP, sy })), tops);
-            if (!tops) return;
-            b.rings({ x: X.TOWER, y: Y.ZERO, z: CZ.TOP, dz: 30, unit: X.UNIT }, ONION, ONION.map(() => ROOF));
-            if (top === 'domes') X.CUPOLA.forEach((x, k) => b.rings({ x, y: Y.ZERO, z: CZ.CUPOLA, unit: X.CUPOLA_UNIT[k] }, CUPOLA, CUPOLA.map((_, i) => (i === 0 ? GABLE : ROOF))));
+            // The simple level draws the domes in four sides, the full level over them in eight.
+            const [onion, cupola, sides] = tops ? [SIMPLE_ONION, SIMPLE_CUPOLA, 4 as const] : [ONION, CUPOLA, 8 as const];
+            b.rings({ x: X.TOWER, y: Y.ZERO, z: CZ.TOP, dz: 30, unit: X.UNIT }, onion, onion.map(() => ROOF), sides);
+            if (top === 'domes') X.CUPOLA.forEach((x, k) => b.rings({ x, y: Y.ZERO, z: CZ.CUPOLA, unit: X.CUPOLA_UNIT[k] }, cupola, cupola.map((_, i) => (i === 0 ? GABLE : ROOF)), sides));
             return;
         }
         const ring: Corner[] = [[X.SPIRE_W, -1], [X.SPIRE_E, -1], [X.SPIRE_E, 1], [X.SPIRE_W, 1]].map(([x, sy]) => ({ x, y: Y.SPIRE, z: CZ.SPIRE, sy }));
@@ -293,5 +312,5 @@ function church(top: 'spire' | 'onion' | 'domes'): Mesh {
 
 /** Every template, in the order of TEMPLATES. */
 export const MESHES: Record<Template, Mesh> = {
-    gable: gable(), flat: flat(), spire: church('spire'), onion: church('onion'), domes: church('domes'), terrace: terrace(), cones: cones(), granary: granary(),
+    gable: gable(false), flat: flat(), spire: church('spire'), onion: church('onion'), domes: church('domes'), terrace: terrace(), cones: cones(), granary: granary(), dormers: gable(true),
 };
