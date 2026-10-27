@@ -73,12 +73,16 @@ export function guidepost(): Model {
     return m;
 }
 
+/** The middle of the bottom of streetLamp's glass, where its light comes from, in metres from its foot. */
+export const LANTERN: Vec = [0, -1.05, 5.885];
+
 /** A street lamp: a pole whose arm reaches toward −y to a lantern under a cap, which glows at night. */
 export function streetLamp(): Model {
+    const [x, y, z] = LANTERN;
     const m = new Model().beam([0, 0, 0], [0, 0, 6], 0.14, POLE, { sides: 6 }).beam([0, 0, 5.85], [0, -0.9, 6.05], 0.07, POLE);
-    m.box([0, -1.05, 6.08], [0.3, 0.56, 0.05], POLE);
+    m.box([x, y, z + 0.195], [0.3, 0.56, 0.05], POLE);
     const glass = m.triangles;
-    return m.box([0, -1.05, 5.97], [0.24, 0.48, 0.17], LAMP).glowing(glass);
+    return m.box([x, y, z + 0.085], [0.24, 0.48, 0.17], LAMP).glowing(glass);
 }
 
 /** A drinking fountain: a stone trough of water with a pillar and its spout. */

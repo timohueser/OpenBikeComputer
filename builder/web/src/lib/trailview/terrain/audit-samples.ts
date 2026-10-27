@@ -2,7 +2,7 @@
 // in each lake and on its shore, along each river; and the checks of a tile's water levels. A worker uses it.
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
-import { BRIDGE, cores, crossSlope, features, insideRings, ringsDistance, junctions, metresPerUnit, mitre, RAIL, RIVER, ROAD, RULES, STREAM, type Line, type Node } from './bins';
+import { BRIDGE, cores, crossSlope, features, insideRings, junctions, metresPerUnit, mitre, RAIL, ringsDistance, RIVER, ROAD, RULES, STREAM, type Line, type Node } from './bins';
 
 /** Words of a sample, and its kinds. */
 export const SAMPLE = 12;

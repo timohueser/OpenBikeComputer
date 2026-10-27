@@ -51,4 +51,18 @@ describe('kinds', () => {
         expect(lamps({ highway: 'residential', bridge: 'yes' })).toEqual([]);
         expect(lamps({ highway: 'track' })).toEqual([]);
     });
+
+    it('stands no street lamp in a long building whose first corner lies far from the road', () => {
+        // At Engelberg, 46.82°N 8.4°E: a road 120 m east, a house 10 m north of it, and a hall from 100 m south of it to 1 m.
+        const x = 0.523 * 2 ** 30, y = 2 ** 29 * (1 - Math.asinh(Math.tan(46.82 * Math.PI / 180)) / Math.PI), m = 1 / metresPerUnit(y);
+        const road = { outer: false, xy: [x, y, x + 120 * m, y] }, house = { rings: [[x, y - 10 * m, x + 120 * m, y - 10 * m, x + 120 * m, y - 20 * m]], outer: [true] };
+        const hall = { rings: [[x, y + 100 * m, x + 120 * m, y + 100 * m, x + 120 * m, y + m, x, y + m]], outer: [true] };
+        const lamps = (buildings: unknown[]) => {
+            const placed: Placement[] = [];
+            lampKind(3.5).build({ tags: { highway: 'residential' }, parts: [road] }, { owns: () => true, place: (p: Placement) => placed.push(p), ways: [], buildings } as unknown as Build);
+            return placed.length;
+        };
+        expect(lamps([house])).toBe(4);
+        expect(lamps([house, hall])).toBe(0);
+    });
 });

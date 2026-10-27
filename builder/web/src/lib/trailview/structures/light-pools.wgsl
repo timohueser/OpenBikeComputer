@@ -2,9 +2,9 @@
 // draws the back faces of a box about the reach of its light; a pixel finds its point from the depth (reversed Z:
 // depth = NEAR / distance along the view) and its normal from the points next to it. The light falls off with the
 // square of the distance and the slant of the face, as from a point, and fades to nothing at the light's radius. A
-// lamp hangs in a housing, so the light falls below it and beside it, not above it. The mesh draws the ground in
-// flat facets, which a low light would show: a face within a few degrees of the ground's slope at the light takes
-// that slope.
+// housed light, a lamp, falls below its source and beside it, not above it; a fire lights all about it. The mesh
+// draws the ground in flat facets, which a low light would show: a face within a few degrees of the ground's slope
+// at the light takes that slope.
 // #include ../terrain/drawn-mesh.wgsl
 // #include ../light/shade.wgsl
 
@@ -20,7 +20,7 @@ struct Frame {
 // As POOL_WORDS of light-pools.ts.
 struct Pool {
     at: vec2i,
-    // sRGB bytes, red lowest.
+    // sRGB bytes, red lowest; the top byte is 255 for a housed light, 0 for one without a housing.
     colour: u32,
     // The radius and the source's height over the ground, metres, as two float16.
     size: u32,
@@ -36,7 +36,7 @@ struct Pool {
 const NEAR: f32 = 0.1;
 // The light on the ground under the source over its colour.
 const STRENGTH: f32 = 0.3;
-// The light reaches this share of its radius above its source, and fades from below its height.
+// A housed light reaches this share of its radius above its source, and fades from below its height.
 const RISE: f32 = 0.2;
 // The cosines between a face and the ground's slope from which the face takes some of the slope, and all of it.
 const FACET_COS = vec2f(0.94, 0.985);
@@ -47,6 +47,8 @@ struct PoolOut {
     @location(1) @interpolate(flat) radius: f32,
     @location(2) @interpolate(flat) light: vec3f,
     @location(3) @interpolate(flat) ground: vec3f,
+    // 1 for a housed light, 0 for one without a housing.
+    @location(4) @interpolate(flat) housed: f32,
 }
 
 fn ground(s: vec2f) -> f32 {
@@ -74,11 +76,13 @@ fn pool_vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) k: u32) -
     let size = unpack2x16float(pool.size);
     var c = vec3f(to_render(s), h + size.y - frame.eye);
     c.z -= frame.curvature * dot(c.xy, c.xy);
+    let colour = unpack4x8unorm(pool.colour);
+    out.housed = colour.a;
     let box = vec3f(f32(corner & 1u), f32((corner >> 1u) & 1u), f32(corner >> 2u));
-    out.clip = frame.view_proj * vec4f(c + vec3f((box.xy * 2.0 - 1.0) * size.x, mix(-size.x, RISE * size.x, box.z)), 1.0);
+    out.clip = frame.view_proj * vec4f(c + vec3f((box.xy * 2.0 - 1.0) * size.x, mix(-1.0, mix(1.0, RISE, out.housed), box.z) * size.x), 1.0);
     out.source = c;
     out.radius = size.x;
-    let srgb = unpack4x8unorm(pool.colour).rgb;
+    let srgb = colour.rgb;
     // The ground under the source, size.y below it, takes STRENGTH.
     out.light = srgb * srgb * STRENGTH * (size.y * size.y + 1.0) * smoothstep(0.0, 0.4, look.ambient.w);
     out.ground = render_normal(drawn_normal(s));
@@ -118,7 +122,7 @@ fn pool_fragment(in: PoolOut) -> @location(0) vec4f {
     let toward = to / far;
     let facet = normal_at(pixel, p);
     let n = normalize(mix(facet, in.ground, smoothstep(FACET_COS.x, FACET_COS.y, dot(facet, in.ground))));
-    let shine = max(dot(n, toward), 0.0) * smoothstep(-RISE, 0.4, toward.z);
+    let shine = max(dot(n, toward), 0.0) * mix(1.0, smoothstep(-RISE, 0.4, toward.z), in.housed);
     let fade = 1.0 - pow(far / in.radius, 4.0);
     return vec4f(in.light * shine * fade * fade / (far * far + 1.0), 0.0);
 }

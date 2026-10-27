@@ -7,7 +7,8 @@ import { metresPerUnit } from '../terrain/bins';
 
 /**
  * Words of a pool, as `Pool` of light-pools.wgsl: x, y of its source (int32 world units), the colour as
- * sRGB bytes, and the radius and the source's height over the ground in metres as two float16.
+ * sRGB bytes with 255 in the top byte for a housed light, and the radius and the source's height over the
+ * ground in metres as two float16.
  */
 export const POOL_WORDS = 4;
 /** A pool draws the 12 triangles of a box about its light, as pool_vertex of light-pools.wgsl. */
@@ -15,16 +16,17 @@ const VERTICES = 36;
 
 /**
  * The light that a kind's model sheds about it at night: it reaches `radius` metres from its source, which
- * stands at `at` in the model's metres from its foot, x right, y forward (−y the front) and z up.
+ * stands at `at` in the model's metres from its foot, x right, y forward (−y the front) and z up. The housing
+ * of a `housed` light shades what lies above its source.
  */
-export interface Light { colour: string; radius: number; at: [number, number, number] }
+export interface Light { colour: string; radius: number; at: [number, number, number]; housed?: boolean }
 
 /** The words of a pool of `light` of a model at world point x, y, turned by `turn` 256ths of a turn as points.wgsl turns it. */
-export function poolWords(x: number, y: number, turn: number, { colour, radius, at: [right, ahead, up] }: Light): number[] {
+export function poolWords(x: number, y: number, turn: number, { colour, radius, at: [right, ahead, up], housed }: Light): number[] {
     const yaw = turn / 256 * 2 * Math.PI, cos = Math.cos(yaw), sin = Math.sin(yaw), unit = metresPerUnit(y);
     // East and north in metres, as draw.wgsl turns a model; world y runs south.
     const east = cos * right - sin * ahead, north = sin * right + cos * ahead;
-    return [Math.round(x + east / unit), Math.round(y - north / unit), parseInt(colour.slice(5, 7) + colour.slice(3, 5) + colour.slice(1, 3), 16), f16(radius) | (f16(up) << 16)];
+    return [Math.round(x + east / unit), Math.round(y - north / unit), parseInt((housed ? 'ff' : '00') + colour.slice(5, 7) + colour.slice(3, 5) + colour.slice(1, 3), 16), f16(radius) | (f16(up) << 16)];
 }
 
 interface Resources { gpu: Gpu; pipeline: GPURenderPipeline; layout: GPUBindGroupLayout; frame: GPUBuffer; size: GPUBuffer; pools?: GPUBuffer }
