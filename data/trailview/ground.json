@@ -125,6 +125,71 @@
             [{"landuse": "orchard"}, "orchard"]
           ]
         }
+      },
+      {
+        "source": "land-cover-ie",
+        "protocol": "arcgis-features",
+        "field": "LEVEL_2_VALUE",
+        "combine": "authority",
+        "about": "Mapped from 1 m imagery to 0.05 ha. Its buildings, ways and artificial surfaces name no material: OSM draws the houses and roads.",
+        "legend": {
+          "match": "word",
+          "classes": [
+            ["exposed rock", "bare-rock"],
+            ["heath", "heath"],
+            ["bog", "bog"],
+            ["peat", "bog"],
+            ["fen", "marsh"],
+            ["swamp", "marsh"],
+            ["bracken", "bracken"],
+            ["wet grassland", "wet-grassland"],
+            ["dry grassland", "rough-grass"],
+            ["improved grassland", "pasture"],
+            ["amenity grassland", "pasture"],
+            ["scrub", "scrub"],
+            ["transitional forest", "scrub"],
+            ["hedgerow", "hedge"],
+            ["treeline", "hedge"],
+            ["sand", "sand"],
+            ["coastal sediments", "beach"],
+            ["mudflat", "sand"],
+            ["saltmarsh", "salt-marsh"],
+            ["bare soil", "bare-soil"]
+          ]
+        }
+      },
+      {
+        "source": "land-cover-gb-sct",
+        "protocol": "wfs",
+        "layer": "habitatsandspecies:habmosnvccleaned",
+        "field": "HABITAT_CODE",
+        "combine": "authority",
+        "about": "EUNIS codes. Woodland keeps WorldCover's trees; constructed ground (J) names no material.",
+        "legend": {
+          "match": "prefix",
+          "classes": [
+            ["F4", "heath"],
+            ["F2", "heath"],
+            ["D1", "bog"],
+            ["D2", "bog"],
+            ["D4", "marsh"],
+            ["H2", "scree"],
+            ["H3", "bare-rock"],
+            ["B3", "bare-rock"],
+            ["E5.3", "bracken"],
+            ["E5", "rough-grass"],
+            ["E1", "rough-grass"],
+            ["E3", "wet-grassland"],
+            ["E4", "rough-grass"],
+            ["E2", "pasture"],
+            ["I", "pasture"],
+            ["F3", "scrub"],
+            ["F9", "scrub"],
+            ["G5", "scrub"],
+            ["B1", "sand"],
+            ["A2.5", "salt-marsh"]
+          ]
+        }
       }
     ]
   },
@@ -347,6 +412,66 @@
             ["pyroclasticRock", "tuff"],
             ["pyroclasticMaterial", "cinder-scoria"],
             ["ashBrecciaBombOrBlockTephra", "cinder-scoria"]
+          ]
+        }
+      },
+      {
+        "source": "geology-es",
+        "protocol": "arcgis-features",
+        "field": "DESC_UNIT",
+        "zoom": 11,
+        "combine": "authority",
+        "about": "A unit's description names its main rock first, and variegated beds right after their rock.",
+        "legend": {
+          "match": "word",
+          "classes": [
+            ["alternancia", "limestone-marl"],
+            ["flysch", "limestone-marl"],
+            ["margos", "limestone-marl"],
+            ["yeso", "gypsum"],
+            ["calcaren", "limestone"],
+            ["caliza", "limestone"],
+            ["dolom", "dolomite"],
+            ["arenisca", "sandstone"],
+            ["conglomerad", "conglomerate"],
+            ["marga", "marl-clay"],
+            ["arcilla", "marl-clay"],
+            ["limo", "marl-clay"],
+            ["pizarra", "schist-slate-shale"],
+            ["esquisto", "schist-slate-shale"],
+            ["granit", "granite"],
+            ["cuarcita", "quartzite"],
+            ["glacis", "alluvium-colluvium"],
+            ["coluvi", "alluvium-colluvium"],
+            ["aluvi", "alluvium-colluvium"],
+            ["terraza", "alluvium-colluvium"],
+            ["deyecc", "alluvium-colluvium"],
+            ["deslizamiento", "alluvium-colluvium"],
+            ["arroyada", "alluvium-colluvium"],
+            ["colada", "basalt-lava"],
+            ["basalt", "basalt-lava"],
+            ["basált", "basalt-lava"],
+            ["ankaramit", "basalt-lava"],
+            ["fonolit", "felsic-lava"],
+            ["fonolít", "felsic-lava"],
+            ["traqui", "felsic-lava"],
+            ["sálic", "felsic-lava"],
+            ["dique", "dolerite"],
+            ["intrusiv", "dolerite"],
+            ["escoria", "cinder-scoria"],
+            ["piroclast", "cinder-scoria"],
+            ["pumit", "pumice"],
+            ["pómez", "pumice"],
+            ["toba", "tuff"],
+            ["arcillas abigarrad", "variegated-marl"],
+            ["arcilla abigarrad", "variegated-marl"],
+            ["margas abigarrad", "variegated-marl"],
+            ["marga abigarrad", "variegated-marl"],
+            ["limos abigarrad", "variegated-marl"],
+            ["limo abigarrad", "variegated-marl"],
+            ["areniscas abigarrad", "variegated-marl"],
+            ["arenisca abigarrad", "variegated-marl"],
+            ["abigarrad", "variegated-marl"]
           ]
         }
       }

@@ -49,9 +49,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn corine_is_captured_and_the_downloads_are_not() {
+    fn the_national_maps_and_corine_are_captured_and_the_downloads_are_not() {
         let ground = Ground::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").as_path()).unwrap();
-        assert!(ground.captured("corine-land-cover"));
+        for id in ["corine-land-cover", "land-cover-ie", "land-cover-gb-sct", "geology-es"] {
+            assert!(ground.captured(id), "{id}");
+        }
         for id in ["egdi-geology", "esa-worldcover", "osm-planet", "sentinel-2-mosaics"] {
             assert!(!ground.captured(id), "{id}");
         }

@@ -1755,6 +1755,17 @@ mod tests {
     }
 
     #[test]
+    fn a_ground_step_reads_each_source_once_and_a_national_map_only_where_its_extent_meets_the_bounds() {
+        let chains = obc_data::ground::Ground::load(&root()).unwrap();
+        let kerry = [-9.8, 51.9, -9.6, 52.1];
+        assert_eq!(
+            ground_sources(&chains.material.sources, kerry),
+            ["esa-worldcover", "sentinel-2-mosaics", "osm-planet", "corine-land-cover", "land-cover-ie"]
+        );
+        assert_eq!(ground_sources(&chains.lithology.sources, kerry), ["igme5000", "egdi-geology"]);
+    }
+
+    #[test]
     fn trailview_snow_reads_the_snow_archive_and_each_band_has_a_grid() {
         let temp = temp("planner-trailview-snow");
         let store = store(&temp, &["2026-10-01"]);

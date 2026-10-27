@@ -1,5 +1,5 @@
-"""The ground sources of ground.json: the legends' matchers, the combine rules, the satellite's heath
-and the lithology chain."""
+"""The ground sources of ground.json: the legends' matchers, the combine rules, the satellite's heath,
+the lithology chain, and one captured sample of each national map through its capture and reader."""
 
 import json
 import math
@@ -20,6 +20,7 @@ from tools.trailview import sources, tiles
 VOCABULARY = sources.Vocabulary(json.loads(Path("data/trailview/materials.json").read_text()))
 M, L = VOCABULARY.material, VOCABULARY.lithology
 GROUND = json.loads(Path("data/trailview/ground.json").read_text())
+CAPTURED = Path("fixtures/sources/trailview-ground")
 
 
 class LegendTest(unittest.TestCase):
@@ -103,6 +104,34 @@ class LithologyTest(unittest.TestCase):
         self.assertEqual(rock[256, column(west + 5 * km)], L["chalk"])
         self.assertEqual(rock[256, column(west + 11 * km)], L["chalk"], "IGME 5000's limestone 1 km from EGDI's chalk")
         self.assertEqual(rock[256, column(west + 15 * km)], L["limestone"], "5 km from EGDI's chalk")
+
+
+class CaptureTest(unittest.TestCase):
+    """A captured answer of each service, through the capture and the vector reader."""
+
+    def polygons(self, source, bounds, answer):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(sources, "get", side_effect=answer):
+            sources.fetch(source, bounds, Path(tmp), 13, GROUND)
+            files = {path.name: path for path in Path(tmp).iterdir()}
+            entry = sources.entry_of(source, GROUND)
+            layer = M if any(entry is e for e in GROUND["material"]["sources"]) else L
+            return sources.vector_polygons(files, entry, bounds, sources.Legend(entry["legend"], layer))
+
+    def arcgis(self, folder):
+        return lambda url, params=None, data=None, **_: (CAPTURED / folder / ("ids.json" if data.get("returnIdsOnly") else "features.geojson")).read_bytes()
+
+    def test_ireland_names_exposed_rock_and_wet_grassland(self):
+        polygons = self.polygons("land-cover-ie", [-9.744, 51.998, -9.742, 51.999], self.arcgis("land-cover-ie"))
+        self.assertEqual(sorted(polygons.codes), sorted([M["bare-rock"], M["bare-rock"], M["wet-grassland"]]))
+
+    def test_scotland_names_dry_and_wet_heath(self):
+        page = lambda url, params=None, **_: (CAPTURED / "land-cover-gb-sct" / "page.json").read_bytes()
+        polygons = self.polygons("land-cover-gb-sct", [-3.230, 57.021, -3.226, 57.024], page)
+        self.assertEqual(polygons.codes, [M["heath"], M["heath"]])
+
+    def test_spain_names_limestone_and_no_rock_for_scree_or_a_formation_without_one(self):
+        polygons = self.polygons("geology-es", [-4.856, 43.194, -4.855, 43.195], self.arcgis("geology-es"))
+        self.assertEqual(polygons.codes, [L["limestone"]])
 
 
 if __name__ == "__main__":
