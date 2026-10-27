@@ -1621,7 +1621,7 @@ region to the newest complete version of `forest` on the target before it, in th
   order.
 - `ch` reads `canopy-ch` through HTTP range requests, in strips of whole block rows, so each
   block of a tile downloads once: at each 0.5 m pixel, the newest acquisition that has it. Its leaf
-  type is `hrl-dominant-leaf-type` at 4 × 4 samples per cell, from the image export of its service.
+  type is `hrl-dominant-leaf-type` of 2024 at 4 × 4 samples per cell, from its tiles on CDSE S3.
 - The run uploads the tiles in batches of 64. The manifest names each model that the version
   read and `hrl-dominant-leaf-type` at the date of the version, with the [digest](#keys) of the
   pixel SHA-256 of the tiles that it made.

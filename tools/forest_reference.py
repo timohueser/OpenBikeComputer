@@ -13,7 +13,6 @@ import json
 import math
 import os
 import time
-import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -37,8 +36,10 @@ BANDS = ("height_dm", "cover_pct", "stems_per_ha", "conifer_pct")
 
 VHM = ("https://data.geo.admin.ch/api/stac/v0.9/collections/"
        "ch.bafu.landesforstinventar-vegetationshoehenmodell_lidar/items")
-DLT = ("https://image.discomap.eea.europa.eu/arcgis/rest/services/GioLandPublic/"
-       "HRL_DominanteLeafType_2018/ImageServer/exportImage")
+# Dominant Leaf Type of CLMS on CDSE S3, in tiles of 100 km in EPSG:3035 named by their south-west corner.
+DLT_YEAR = 2024
+DLT = ("/vsis3/eodata/CLMS/landcover_landuse/dominant_leaf_type/clms_vlcc_dominant-leaf-type_europe_10m_yearly_v1/"
+       f"{DLT_YEAR}/01/01/{{name}}/{{name}}.tif")
 
 
 @njit(nogil=True, cache=True)
@@ -256,19 +257,38 @@ def vhm_years():
 
 
 def leaf_type(x, y):
-    """The conifer share of the tree pixels of each cell, in %, from HRL Dominant Leaf Type 2018
+    """The conifer share of the tree pixels of each cell, in %, from Dominant Leaf Type `DLT_YEAR`
     (1 broadleaved, 2 coniferous) at four sub-pixels per cell side; `NODATA` without a tree pixel."""
     import rasterio
-    from rasterio.io import MemoryFile
+    from rasterio.enums import Resampling
+    from rasterio.errors import RasterioIOError
+    from rasterio.transform import from_origin
+    from rasterio.vrt import WarpedVRT
+    from rasterio.warp import transform_bounds
 
+    from . import planner_snow
+
+    planner_snow.cdse_credentials()
     west, top = tile_origin(x, y)
-    query = {"bbox": f"{west},{top - SIZE * CELL},{west + SIZE * CELL},{top}", "bboxSR": 3857, "imageSR": 3857,
-             "size": f"{4 * SIZE},{4 * SIZE}", "format": "tiff", "pixelType": "U8",
-             "interpolation": "RSP_NearestNeighbor", "f": "image"}
-    with MemoryFile(http(f"{DLT}?{urllib.parse.urlencode(query)}")) as memory, memory.open() as image:
-        if image.crs != rasterio.crs.CRS.from_epsg(3857) or image.shape != (4 * SIZE, 4 * SIZE):
-            raise ValueError(f"the leaf type service gave {image.crs} {image.shape}")
-        classes = image.read(1).reshape(SIZE, 4, SIZE, 4)
+    span, side = SIZE * CELL, 4 * SIZE
+    left, bottom, right, upper = transform_bounds("EPSG:3857", "EPSG:3035", west, top - span, west + span, top)
+    grid = {"crs": "EPSG:3857", "transform": from_origin(west, top, span / side, span / side), "width": side,
+            "height": side, "resampling": Resampling.nearest, "nodata": 255}
+    classes = np.full((side, side), 255, np.uint8)
+    with rasterio.Env(**GDAL):
+        for e in range(int(left // 100_000), int(right // 100_000) + 1):
+            for n in range(int(bottom // 100_000), int(upper // 100_000) + 1):
+                try:
+                    source = rasterio.open(DLT.format(name=f"CLMS_HRLVLCC_DLT_S{DLT_YEAR}_R10m_E{e}N{n}_03035_V01_R00"))
+                except RasterioIOError as error:
+                    # CLMS publishes no tile without land.
+                    if "No such file" in str(error):
+                        continue
+                    raise
+                with source, WarpedVRT(source, **grid) as warped:
+                    part = warped.read(1)
+                classes = np.where(part != 255, part, classes)
+    classes = classes.reshape(SIZE, 4, SIZE, 4)
     broad, conifer = ((classes == value).sum(axis=(1, 3)) for value in (1, 2))
     trees = broad + conifer
     return np.where(trees > 0, np.rint(100 * conifer / np.maximum(trees, 1)), NODATA).astype(np.uint16)
