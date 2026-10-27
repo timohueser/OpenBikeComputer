@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
-from tools.landmark_capture import BACKOFF_ATTEMPTS, BATCH, PHOTO_SOURCES, Capture, Entities, LeadImage, acquire_requested_photos, batches, bbox, capture_assets, category_coverage_complete, category_files, claim_values, class_parents, digest, entity, image_metadata_url, photo_bytes, photo_metadata, query, retry_after, select_candidates, semantic_sources
+from tools.landmark_capture import BACKOFF_ATTEMPTS, BATCH, MAX_LOCALE_DEPTH, MAX_LOCALES, PHOTO_SOURCES, Capture, Entities, LeadImage, acquire_requested_photos, batches, bbox, capture_assets, capture_locales, category_coverage_complete, category_files, claim_values, class_parents, digest, entity, image_metadata_url, photo_bytes, photo_metadata, query, retry_after, select_candidates, semantic_sources
 
 
 class Response(BytesIO):
@@ -301,6 +301,28 @@ class LandmarkCaptureTests(unittest.TestCase):
         self.assertFalse(category_coverage_complete([place]))
         metadata.assert_not_called()
 
+    def test_a_failed_commons_category_is_incomplete_and_adds_no_photo(self):
+        value = {
+            "sitelinks": {"enwiki": {"title": "Example"}},
+            "claims": {
+                "P18": [{"mainsnak": {"datavalue": {"value": "Lead.jpg"}}}],
+                "P373": [{"mainsnak": {"datavalue": {"value": "Example"}}}],
+            },
+        }
+        metadata = json.dumps({"query": {"pages": {"7": {"pageid": 7, "title": "File:Lead.jpg", "imageinfo": [
+            {"mime": "image/jpeg", "size": 10, "url": "https://example.test/Lead.jpg"}]}}}}).encode()
+        # Every other request answers with a usable photo, so any listed member would become an image.
+        def answer(request, **_kwargs):
+            if "list=categorymembers" in request.full_url:
+                raise HTTPError(Response.url, 404, "Not found", {}, None)
+            return Response(metadata)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("tools.landmark_capture.urlopen", side_effect=answer):
+                place = capture_assets(Capture(Path(directory), interval=0), "Q5", value)
+        self.assertEqual([(image["source"], image["filename"]) for image in place["images"]], [("P18", "Lead.jpg")])
+        self.assertFalse(place["commons_categories"][0]["complete"])
+        self.assertFalse(category_coverage_complete([place]))
+
     def test_bounded_category_stops_at_one_response_and_reports_the_limit(self):
         capture = Mock(root=Path("unused-capture"))
         capture.json.return_value = {"continue":{"cmcontinue":"next"}, "query":{"categorymembers":
@@ -583,10 +605,6 @@ class LandmarkCaptureTests(unittest.TestCase):
         self.assertEqual(PHOTO_SOURCES[0], "P18")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class LocaleCaptureTests(unittest.TestCase):
     def test_administrative_cycle_is_bounded_and_country_is_captured(self):
         from tools.landmark_capture import capture_locales, LANGUAGES
@@ -598,3 +616,29 @@ class LocaleCaptureTests(unittest.TestCase):
         with patch("tools.landmark_capture.entity", return_value=admin) as fetch:
             capture_locales(Mock(), place)
         self.assertEqual([call.args[1:] for call in fetch.call_args_list], [("Q20", "locales"), ("Q10", "locales")])
+
+    def test_administrative_traversal_asks_for_each_locale_once_within_its_bounds(self):
+        def claims(*qids):
+            return [{"mainsnak": {"datavalue": {"value": {"id": qid}}}} for qid in qids]
+        deep = [f"Q{100 + level}" for level in range(MAX_LOCALE_DEPTH + 1)]
+        wide = [f"Q{1000 + index}" for index in range(MAX_LOCALES + 1)]
+        # Every locale also names itself as its parent, so each traversal meets a cycle.
+        cases = {
+            "depth": ([deep[0]], {qid: [qid, *deep[level + 1:level + 2]] for level, qid in enumerate(deep)}, deep[:MAX_LOCALE_DEPTH]),
+            "nodes": (wide, {qid: [qid] for qid in wide}, wide[:MAX_LOCALES]),
+        }
+        for bound, (first, parents, expected) in cases.items():
+            with self.subTest(bound=bound), tempfile.TemporaryDirectory() as directory:
+                requested = []
+                def answer(request, **_kwargs):
+                    qid = request.full_url.rsplit("/", 1)[1].removesuffix(".json")
+                    requested.append(qid)
+                    return Response(json.dumps({"entities": {qid: {"claims": {"P131": claims(*parents.get(qid, ()))}}}}).encode())
+                place = {"claims": {"P17": claims("Q1"), "P131": claims(*first)}}
+                with patch("tools.landmark_capture.urlopen", side_effect=answer):
+                    capture_locales(Capture(Path(directory), interval=0), place)
+                self.assertEqual(sorted(requested), sorted(["Q1", *expected]))
+
+
+if __name__ == "__main__":
+    unittest.main()
