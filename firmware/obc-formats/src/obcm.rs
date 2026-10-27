@@ -1088,4 +1088,40 @@ mod tests {
         assert_eq!(poi_label_of(SETTLEMENT_SUBTYPE_VILLAGE), Some("Village"));
         assert_eq!(poi_label_of(SETTLEMENT_SUBTYPE_HAMLET), Some("Hamlet"));
     }
+
+    #[test]
+    fn only_version_19_passes_the_header_prefix() {
+        assert_eq!(HEADER_LEN, 71);
+        let mut header = [0u8; HEADER_LEN];
+        header[..4].copy_from_slice(&MAGIC);
+        for (version, expected) in [
+            (0x13, Ok(())),
+            (0x12, Err(DecodeError::Version)),
+            (0x14, Err(DecodeError::Version)),
+            (0x00, Err(DecodeError::Version)),
+            (0xFF, Err(DecodeError::Version)),
+        ] {
+            header[4] = version;
+            assert_eq!(validate_header_prefix(&header), expected, "version {version:#04x}");
+        }
+    }
+
+    #[test]
+    fn settlement_subtypes_21_to_24_map_to_their_class_category_and_label() {
+        for (subtype_id, class, label) in [
+            (21, SettlementClass::City, "City"),
+            (22, SettlementClass::Town, "Town"),
+            (23, SettlementClass::Village, "Village"),
+            (24, SettlementClass::Hamlet, "Hamlet"),
+        ] {
+            assert_eq!(class.subtype_id(), subtype_id);
+            assert_eq!(settlement_class_of(subtype_id), Some(class));
+            assert_eq!(poi_directory_category_of(subtype_id), Some(SETTLEMENT_CATEGORY_ID));
+            assert_eq!(poi_category_of(subtype_id), None);
+            assert_eq!(poi_label_of(subtype_id), Some(label));
+        }
+        for subtype_id in [0, 1, 19, 20, 25, CHUNK_END] {
+            assert_eq!(settlement_class_of(subtype_id), None, "subtype {subtype_id}");
+        }
+    }
 }
