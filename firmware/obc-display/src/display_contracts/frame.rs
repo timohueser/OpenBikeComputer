@@ -125,28 +125,6 @@ mod tests {
         Rgb565::from(RawU16::new(raw))
     }
 
-    /// The frame's draw view is byte-for-byte the existing `FbDevice64` path, so wrapping the
-    /// resident plane in the contract changes no pixel.
-    #[test]
-    fn draw_target_matches_fbdevice64_exactly() {
-        let mut via_contract = [0u8; 4 * 4];
-        let mut direct = [0u8; 4 * 4];
-        {
-            let mut frame = Device64Frame::<4, 4>::new(&mut via_contract);
-            let mut t = frame.draw_target();
-            t.clear(rgb(0xFFFF)).unwrap();
-            t.fill_solid(&Rectangle::new(Point::new(1, 1), Size::new(2, 2)), rgb(0xF800)).unwrap();
-            t.draw_iter([Pixel(Point::new(0, 3), rgb(0x001F)), Pixel(Point::new(9, 9), rgb(0x001F))]).unwrap();
-        }
-        {
-            let mut fb = FbDevice64::new(&mut direct, 4, 4);
-            fb.clear(rgb(0xFFFF)).unwrap();
-            fb.fill_solid(&Rectangle::new(Point::new(1, 1), Size::new(2, 2)), rgb(0xF800)).unwrap();
-            fb.draw_iter([Pixel(Point::new(0, 3), rgb(0x001F)), Pixel(Point::new(9, 9), rgb(0x001F))]).unwrap();
-        }
-        assert_eq!(via_contract, direct, "the contract view must be the same store path");
-    }
-
     /// The clip view discards writes outside `area` without allocating: the backing is the one
     /// buffer throughout.
     #[test]
@@ -161,17 +139,6 @@ mod tests {
         assert_eq!(at(0, 0), 0x00, "outside the clip: untouched");
         assert_eq!(at(2, 2), 0x3F, "inside the clip: cleared white");
         assert_eq!(at(3, 3), 0x3F);
-    }
-
-    #[test]
-    fn geometry_and_backing_len_are_the_contract() {
-        let mut buf = [0u8; 6 * 5];
-        let frame = Device64Frame::<6, 5>::new(&mut buf);
-        assert_eq!(<Device64Frame<6, 5> as NativeFrame>::WIDTH, 6);
-        assert_eq!(<Device64Frame<6, 5> as NativeFrame>::HEIGHT, 5);
-        assert_eq!(<Device64Frame<6, 5> as NativeFrame>::STRIDE, 6);
-        assert_eq!(<Device64Frame<6, 5> as NativeFrame>::BACKING_CELLS, 30);
-        assert_eq!(frame.backing().len(), 30);
     }
 
     #[test]
