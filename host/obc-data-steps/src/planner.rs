@@ -49,9 +49,10 @@ pub static PLANNER_SNOW: Layer = Layer { revision: 2, ..whole("planner/snow", 1,
 /// Its format is `features_format` of `specs/trailview-features.md`.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
     Layer { revision: 6, ..whole("planner/trailview-features", 2, &[&WEB_PLANNER]) };
-/// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`.
+/// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
+/// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
-    whole("planner/trailview-rules", 1, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_GROUND]);
+    whole("planner/trailview-rules", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_GROUND]);
 /// The TrailView ground tiles: the material, the lithology and the region in one tile. Its format is
 /// `trailview_format` of the ground archive in `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_GROUND: Layer = whole("planner/trailview-ground", 3, &[&WEB_PLANNER]);
