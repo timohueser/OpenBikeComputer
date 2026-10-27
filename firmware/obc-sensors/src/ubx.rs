@@ -445,6 +445,15 @@ mod tests {
     }
 
     #[test]
+    fn microdegrees_round_to_nearest_with_ties_away_from_zero() {
+        // 1e-7° → 1e-6°: 1.5 → 2, -1.5 → -2, 1.4 → 1.
+        let fix = parse_nav_pvt(&nav_pvt_payload(3, 0x01, 15, -15, 0, 0)).unwrap().to_fix().unwrap();
+        assert_eq!((fix.lat, fix.lon), (2, -2));
+        let fix = parse_nav_pvt(&nav_pvt_payload(3, 0x01, 14, 0, 0, 0)).unwrap().to_fix().unwrap();
+        assert_eq!(fix.lat, 1);
+    }
+
+    #[test]
     fn no_fix_yields_none() {
         // fixType 0 (acquiring) → no Fix, even though gnssFixOK happens to be set.
         let p = nav_pvt_payload(0, 0x01, 1, 2, 0, 0);

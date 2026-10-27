@@ -33,6 +33,13 @@ fn command_result_vector() {
 }
 
 #[test]
+fn command_bytes_match_spec_section_4_4() {
+    use obc_ble::{CMD_FORGET_BOND, CMD_INSTALL_FW, CMD_SET_CLOCK};
+
+    assert_eq!((CMD_INSTALL_FW, CMD_FORGET_BOND, CMD_SET_CLOCK), (3, 4, 5));
+}
+
+#[test]
 fn command_forget_bond_round_trip() {
     use obc_ble::{CommandStatus, CMD_FORGET_BOND};
 
