@@ -281,21 +281,30 @@ def leaf_type(x, y):
     grid = {"crs": "EPSG:3857", "transform": from_origin(west, top, span / side, span / side), "width": side,
             "height": side, "resampling": Resampling.nearest, "nodata": 255}
     classes = np.full((side, side), 255, np.uint8)
+
+    def read(name):
+        """The classes of tile `name` on the grid, or None where CLMS publishes none. The waits
+        ride out a refused connection, which the GDAL retries do not cover."""
+        for delay in (5, 30, 120, 600, None):
+            try:
+                with rasterio.open(DLT.format(name=name)) as source, WarpedVRT(source, **grid) as warped:
+                    return warped.read(1)
+            except RasterioIOError as error:
+                # CLMS publishes no tile without land; CDSE S3 answers NoSuchKey.
+                if "NoSuchKey" in str(error):
+                    return None
+                if delay is None:
+                    raise
+                time.sleep(delay)
+
     # The tile programs together open more connections than the 4 that CDSE allows a user: the
-    # retries wait out a refusal for about as long as `http` does.
+    # retries wait out a refusal.
     with rasterio.Env(**{**GDAL, "GDAL_HTTP_MAX_RETRY": 8, "GDAL_HTTP_RETRY_DELAY": 3}):
         for e in range(int(left // 100_000), int(right // 100_000) + 1):
             for n in range(int(bottom // 100_000), int(upper // 100_000) + 1):
-                try:
-                    source = rasterio.open(DLT.format(name=f"CLMS_HRLVLCC_DLT_S{DLT_YEAR}_R10m_E{e}N{n}_03035_V01_R00"))
-                except RasterioIOError as error:
-                    # CLMS publishes no tile without land; CDSE S3 answers NoSuchKey.
-                    if "NoSuchKey" in str(error):
-                        continue
-                    raise
-                with source, WarpedVRT(source, **grid) as warped:
-                    part = warped.read(1)
-                classes = np.where(part != 255, part, classes)
+                part = read(f"CLMS_HRLVLCC_DLT_S{DLT_YEAR}_R10m_E{e}N{n}_03035_V01_R00")
+                if part is not None:
+                    classes = np.where(part != 255, part, classes)
     classes = classes.reshape(SIZE, 4, SIZE, 4)
     broad, conifer = ((classes == value).sum(axis=(1, 3)) for value in (1, 2))
     trees = broad + conifer
