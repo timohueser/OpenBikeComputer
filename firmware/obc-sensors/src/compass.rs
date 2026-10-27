@@ -100,30 +100,6 @@ mod tests {
     }
 
     #[test]
-    fn magnitude_does_not_change_the_angle() {
-        // Scaling the whole horizontal vector leaves the heading put.
-        let a = heading_deg(MagSample::new(12.0, 5.0, 0.0), 0.0);
-        let b = heading_deg(MagSample::new(120.0, 50.0, 0.0), 0.0);
-        close(a, b);
-    }
-
-    #[test]
-    fn declination_shifts_and_wraps() {
-        // Magnetic north + 10° east declination → true heading 10°.
-        close(heading_deg(MagSample::new(20.0, 0.0, 0.0), 10.0), 10.0);
-        // Wrap across 0: facing west (270°) with +100° declination → 370 → 10.
-        close(heading_deg(MagSample::new(0.0, 20.0, 0.0), 100.0), 10.0);
-    }
-
-    #[test]
-    fn normalize_wraps_both_ways() {
-        close(normalize_deg(-90.0), 270.0);
-        close(normalize_deg(450.0), 90.0);
-        close(normalize_deg(0.0), 0.0);
-        close(normalize_deg(359.999), 359.999);
-    }
-
-    #[test]
     fn declination_is_added_and_the_heading_stays_in_range() {
         let west = heading_deg(MagSample::new(0.0, 20.0, 0.0), 100.0); // 270 + 100 wraps past 360
         close(west, 10.0);

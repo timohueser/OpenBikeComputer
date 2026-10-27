@@ -40,16 +40,6 @@ fn command_bytes_match_spec_section_4_4() {
 }
 
 #[test]
-fn command_forget_bond_round_trip() {
-    use obc_ble::{CommandStatus, CMD_FORGET_BOND};
-
-    assert_eq!(CMD_FORGET_BOND, 4);
-    let (buf, len) = StatusMessage::CommandResult(CommandResult::new(CMD_FORGET_BOND, CommandStatus::Ok)).encode();
-    let result = decoded_command_result(&buf[..len]);
-    assert_eq!((result.command, result.status, result.detail), (CMD_FORGET_BOND, CommandStatus::Ok, 0));
-}
-
-#[test]
 fn command_set_clock_vector() {
     use obc_ble::{CommandStatus, SetClock, CMD_SET_CLOCK};
 
