@@ -17,7 +17,7 @@ use obc_dem::bake::{
 use obc_dem::container::CellRect;
 use obc_dem::crest::{cell_window, LiftMap};
 use obc_dem::geotiff::{DemMosaic, DemTile};
-use obc_dem::reference::{ReferenceArchive, TileLookup, TILE_PIXELS};
+use obc_dem::reference::{ReferenceArchive, TileLookup, Window, STEP_LOG2, TILE_PIXELS};
 use obc_dem::BboxUdeg;
 use obc_elevation::grid::{cell_base_sample, cell_of, lattice_coord, locate};
 use obc_elevation::{TerrainReader, TileCache, DEFAULT_TILE_SLOTS};
@@ -207,19 +207,39 @@ fn a_cell_is_the_same_bytes_alone_as_inside_a_shard() {
 /// The heights are whole metres because an archive pixel is: the rule sees the archive's own
 /// rounding, not a continuous function.
 fn write_reference(root: &Path, cells: &[(u32, u32)], surface: impl Fn(f64, f64) -> Option<f64>) {
+    let windows: Vec<Window> = cells.iter().map(|&(ci, cj)| fixture_window(ci, cj)).collect();
     let tiles: Vec<ArchiveTile> = reference_tiles(cells)
         .into_iter()
-        .map(|(ti, tj)| ArchiveTile::filled(ti, tj, |lat, lon| surface(lat as f64, lon as f64).map(quantise)))
+        .map(|(ti, tj)| read_tile(ti, tj, &windows, |lat, lon| surface(lat as f64, lon as f64).map(quantise)))
         .collect();
     assert!(!tiles.is_empty(), "a fixture archive with no tile proves nothing");
     write_archive(root, "ch", &tiles);
+}
+
+/// The reference pixels cell `(ci, cj)` reads at the fixture pairing.
+fn fixture_window(ci: u32, cj: u32) -> Window {
+    cell_window(ci, cj, POSTING_LOG2, CELL_LOG2).expect("the fixture pairing")
+}
+
+/// A tile filled from `surface` only where `windows` read it, and absent elsewhere. A bake reads
+/// only the pixels whose centres its window holds, and filling all 1024² of them is most of a test's
+/// time.
+fn read_tile(ti: u32, tj: u32, windows: &[Window], surface: impl Fn(i64, i64) -> Option<i16>) -> ArchiveTile {
+    // A pooled pixel also reads its corners, half a step past its centre.
+    let pad = 1i64 << STEP_LOG2;
+    let read = |w: &Window, lat: i64, lon: i64| {
+        (w.lat_lo - pad..w.lat_hi + pad).contains(&lat) && (w.lon_lo - pad..w.lon_hi + pad).contains(&lon)
+    };
+    ArchiveTile::filled(ti, tj, |lat, lon| {
+        windows.iter().any(|w| read(w, lat, lon)).then(|| surface(lat, lon)).flatten()
+    })
 }
 
 /// Every archive tile a list of cells reads, halo included, in the order an index names them.
 fn reference_tiles(cells: &[(u32, u32)]) -> Vec<(u32, u32)> {
     let mut ids = std::collections::BTreeSet::new();
     for &(ci, cj) in cells {
-        ids.extend(cell_window(ci, cj, POSTING_LOG2, CELL_LOG2).expect("the fixture pairing").tiles());
+        ids.extend(fixture_window(ci, cj).tiles());
     }
     ids.into_iter().collect()
 }
@@ -597,9 +617,9 @@ fn a_cell_lifted_only_on_its_seam_still_has_a_map() {
 /// The id of one tile the fixture's first cell reads, and a correct raster for it.
 fn fixture_tile() -> (u32, u32, ArchiveTile) {
     let rect = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap();
-    let window = cell_window(rect.min_i, rect.min_j, POSTING_LOG2, CELL_LOG2).unwrap();
+    let window = fixture_window(rect.min_i, rect.min_j);
     let (ti, tj) = window.tiles().next().expect("the cell reads at least one tile");
-    let tile = ArchiveTile::filled(ti, tj, |lat, lon| Some(quantise(Cone::slope(lat as f64, lon as f64))));
+    let tile = read_tile(ti, tj, &[window], |lat, lon| Some(quantise(Cone::slope(lat as f64, lon as f64))));
     (ti, tj, tile)
 }
 
@@ -774,7 +794,7 @@ fn a_short_mirror_credits_only_the_tiles_it_holds_and_counts_the_rest() {
     // which is what a mirror short of its box looks like.
     let cone = Cone::on_node(ci, cj, 8, 8, 120.0);
     let (centre_lat, centre_lon) = node_udeg(ci, cj, SPAN / 2, SPAN / 2);
-    let held = obc_dem::reference::Window {
+    let held = Window {
         lat_lo: i64::from(centre_lat),
         lat_hi: i64::from(centre_lat) + 1,
         lon_lo: i64::from(centre_lon),
@@ -786,7 +806,7 @@ fn a_short_mirror_credits_only_the_tiles_it_holds_and_counts_the_rest() {
     let absent: Vec<(u32, u32)> = ids.iter().copied().filter(|&id| id != held).collect();
 
     let scratch = Scratch::new("short-mirror");
-    let tile = ArchiveTile::filled(held.0, held.1, |lat, lon| Some(quantise(cone.reference(lat as f64, lon as f64))));
+    let tile = read_tile(held.0, held.1, &[window], |lat, lon| Some(quantise(cone.reference(lat as f64, lon as f64))));
     std::fs::write(common::tile_path(scratch.path(), held.0, held.1), tile.to_geotiff()).unwrap();
     let entry = |f: &dyn Fn(&(u32, u32)) -> String| ids.iter().map(f).collect::<Vec<_>>().join(", ");
     let key = |id: &(u32, u32)| if *id == held { "ch" } else { "absent-source" };
