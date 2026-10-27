@@ -9,6 +9,7 @@ const FLAME = rgb('#ff7a1c'), CORE = rgb('#ffd04a'), POST = rgb('#2f7fc1'), PUMP
 // As the logo, brand/signpost.svg.
 const OLIVE = rgb('#5c5a2e'), SIGN = rgb('#f4a81d');
 const POLE = rgb('#4a4f54'), LAMP = rgb('#fff1c4');
+const BAG = rgb('#f08a24'), CROSS = rgb('#2fa84f'), HOSPITAL = rgb('#1f5fae'), WHITE = rgb('#f7f7f2');
 
 /** A park bench: a seat, a back and two pairs of legs. */
 export function bench(): Model {
@@ -100,4 +101,39 @@ export function bikeRepair(): Model {
     const m = new Model().box([0, 0, 0.02], [0.8, 0.6, 0.04], STONE).box([0, 0, 0.72], [0.12, 0.12, 1.4], POST);
     for (const x of [-1, 1]) m.beam([0.04 * x, 0, 1.32], [0.34 * x, 0, 1.48], 0.04, METAL);
     return m.beam([0.28, -0.2, 0.04], [0.28, -0.2, 0.95], 0.13, PUMP, { sides: 6, capped: true });
+}
+
+// The signs of a building's use: a symbol on a bracket across a wall in the x–z plane, so that the street
+// toward −y sees it from both ways, at the height of the ground floor, which every building has. It glows at night.
+
+/** The bracket from the wall, and the middle of the symbol that it holds. */
+function bracket(): { m: Model; at: Vec } {
+    return { m: new Model().beam([0, 0, 2.8], [0, -0.45, 2.8], 0.05, METAL), at: [0, -0.78, 2.8] };
+}
+
+/** A shop: a shopping bag with its handle. */
+export function shopSign(): Model {
+    const { m, at: [x, y, z] } = bracket(), symbol = m.triangles;
+    m.box([x, y, z - 0.04], [0.08, 0.44, 0.38], BAG);
+    for (const [a, b] of [[[y + 0.12, z + 0.15], [y + 0.1, z + 0.29]], [[y + 0.1, z + 0.29], [y - 0.1, z + 0.29]], [[y - 0.1, z + 0.29], [y - 0.12, z + 0.15]]]) {
+        m.beam([x, a[0], a[1]], [x, b[0], b[1]], 0.035, BAG);
+    }
+    return m.glowing(symbol);
+}
+
+/** A pharmacy: a green cross. */
+export function pharmacySign(): Model {
+    const { m, at } = bracket(), symbol = m.triangles;
+    return m.box(at, [0.08, 0.18, 0.56], CROSS).box(at, [0.08, 0.56, 0.18], CROSS).glowing(symbol);
+}
+
+/** A hospital: a white H on a blue square, as the road sign shows it, on both faces. */
+export function hospitalSign(): Model {
+    const { m, at: [x, y, z] } = bracket(), symbol = m.triangles;
+    m.box([x, y, z], [0.06, 0.56, 0.56], HOSPITAL);
+    for (const face of [-0.04, 0.04]) {
+        for (const dy of [-0.14, 0.14]) m.box([x + face, y + dy, z], [0.02, 0.08, 0.38], WHITE);
+        m.box([x + face, y, z], [0.02, 0.22, 0.08], WHITE);
+    }
+    return m.glowing(symbol);
 }

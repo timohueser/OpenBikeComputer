@@ -64,22 +64,29 @@ export function pointModels(feature: Placed, out: Build, instance: (x: number, y
 /** A model faces the nearest way within this many metres. */
 const FACE_M = 15;
 
+/** The nearest of `ways` within FACE_M of world point x, y: its line, its unit direction there and the offset to it, in world units. */
+export function nearestWay(ways: Line[], x: number, y: number): { line: Line; dx: number; dy: number; px: number; py: number } | undefined {
+    let best = (FACE_M / metresPerUnit(y)) ** 2, way: ReturnType<typeof nearestWay>;
+    for (const line of ways) for (let i = 0; i + 3 < line.xy.length; i += 2) {
+        const ax = line.xy[i], ay = line.xy[i + 1], dx = line.xy[i + 2] - ax, dy = line.xy[i + 3] - ay, l = dx * dx + dy * dy;
+        const t = l ? Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / l)) : 0, px = ax + t * dx - x, py = ay + t * dy - y;
+        if (!l || px * px + py * py >= best) continue;
+        best = px * px + py * py;
+        way = { line, dx: dx / Math.sqrt(l), dy: dy / Math.sqrt(l), px, py };
+    }
+    return way;
+}
+
 /**
  * The yaw that stands a model at world point x, y along the nearest of `ways` within FACE_M, its front
  * (−y) toward it, as a bench beside a path; undefined without one.
  */
 export function facing(ways: Line[], x: number, y: number): number | undefined {
-    let best = (FACE_M / metresPerUnit(y)) ** 2, yaw: number | undefined;
-    for (const { xy } of ways) for (let i = 0; i + 3 < xy.length; i += 2) {
-        const ax = xy[i], ay = xy[i + 1], dx = xy[i + 2] - ax, dy = xy[i + 3] - ay, l = dx * dx + dy * dy;
-        const t = l ? Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / l)) : 0, px = ax + t * dx - x, py = ay + t * dy - y;
-        if (!l || px * px + py * py >= best) continue;
-        best = px * px + py * py;
-        // World y runs south: the way's direction and the front's, east and north.
-        const along = Math.atan2(-dy, dx);
-        yaw = Math.sin(along) * px + Math.cos(along) * py > 0 ? along : along + Math.PI;
-    }
-    return yaw;
+    const way = nearestWay(ways, x, y);
+    if (!way) return undefined;
+    // World y runs south: the way's direction and the front's, east and north.
+    const along = Math.atan2(-way.dy, way.dx);
+    return Math.sin(along) * way.px + Math.cos(along) * way.py > 0 ? along : along + Math.PI;
 }
 
 /**

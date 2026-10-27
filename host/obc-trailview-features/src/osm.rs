@@ -17,6 +17,21 @@ pub const LIFT_REACH_M: f64 = 20000.0;
 const METRES_PER_DEGREE: f64 = 111320.0;
 /// The landuse areas whose value a building in them keeps as its tag `landuse`. They are not features.
 pub const LANDUSE: [&str; 2] = ["farmyard", "industrial"];
+/// The uses that a building shows on its walls, as its tag `use`: its own, or that of a point in it or an
+/// area about it. One before another in the list wins.
+pub const USES: [&str; 3] = ["pharmacy", "hospital", "shop"];
+
+/// The use of an object's tags, of USES.
+pub fn use_of(tags: &Tags) -> Option<&'static str> {
+    let is = |key: &str, value: &str| tags.get(key).is_some_and(|v| v == value);
+    if is("amenity", "pharmacy") || is("healthcare", "pharmacy") {
+        Some("pharmacy")
+    } else if is("amenity", "hospital") || is("healthcare", "hospital") {
+        Some("hospital")
+    } else {
+        tags.contains_key("shop").then_some("shop")
+    }
+}
 
 /// The Osmium program: `OBC_OSMIUM`, else `osmium` on the path; and its version.
 pub fn probe() -> Result<(PathBuf, String), String> {
@@ -96,9 +111,15 @@ pub fn selected(entries: &[Entry], pbf: &Path, binary: &Path, tiles: &Tiles, wor
         std::fs::remove_file(&area_pbf).map_err(|e| e.to_string())?;
         Ok(kept)
     };
-    // A building of the region keeps the landuse of the area that holds it.
-    let landuse = format!("nwr/landuse={}", LANDUSE.join(","));
-    let mut paths = vec![cut("near", area(MAX_ZOOM, LIFT_REACH_M), &active, &[landuse])?];
+    // A building of the region keeps the landuse of the area that holds it, and shows the use of the
+    // points in it and the areas about it.
+    let more = [
+        format!("nwr/landuse={}", LANDUSE.join(",")),
+        "nwr/shop".into(),
+        "nwr/amenity=pharmacy,hospital".into(),
+        "nwr/healthcare=pharmacy,hospital".into(),
+    ];
+    let mut paths = vec![cut("near", area(MAX_ZOOM, LIFT_REACH_M), &active, &more)?];
     if let Some(zoom) = low.iter().map(|e| e.min_zoom).min() {
         paths.push(cut("wide", area(zoom, 0.0), &low, &[])?);
     }
@@ -113,12 +134,13 @@ pub fn selected(entries: &[Entry], pbf: &Path, binary: &Path, tiles: &Tiles, wor
     Ok(out)
 }
 
-/// What an exported object becomes: a feature of an entry, or a landuse area that a building takes
-/// its `landuse` from.
+/// What an exported object becomes: a feature of an entry, a landuse area that a building takes
+/// its `landuse` from, or a point or an area that a building takes its `use` from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Selected {
     Entry(usize),
     Landuse,
+    Use,
 }
 
 /// An exported object: what it becomes, the tags that it keeps, and its parts. A ring does not repeat
@@ -177,6 +199,7 @@ fn object(entries: &[Entry], feature: &Value) -> Option<Object> {
         None if kind == Geometry::Area && tags.get("landuse").is_some_and(|l| LANDUSE.contains(&l.as_str())) => {
             (Selected::Landuse, vec!["landuse".to_string()])
         }
+        None if kind != Geometry::Line && use_of(&tags).is_some() => (Selected::Use, Vec::new()),
         None => return None,
     };
     let point = |v: &Value| -> Option<[f64; 2]> { Some(world(v[0].as_f64()?, v[1].as_f64()?)) };
@@ -208,7 +231,15 @@ fn object(entries: &[Entry], feature: &Value) -> Option<Object> {
             parts
         }
     };
-    let kept = keep.iter().filter_map(|k| Some((k.clone(), tags.get(k)?.clone()))).collect();
+    let mut kept: Tags = keep.iter().filter_map(|k| Some((k.clone(), tags.get(k)?.clone()))).collect();
+    let shows = match selected {
+        Selected::Entry(e) => entries[e].kind == "building",
+        Selected::Use => true,
+        Selected::Landuse => false,
+    };
+    if let Some(value) = use_of(&tags).filter(|_| shows) {
+        kept.insert("use".into(), value.into());
+    }
     Some((selected, kept, parts))
 }
 

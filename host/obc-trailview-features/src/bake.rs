@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 
 use crate::geometry::{area, bounds, contains, key, Boxes};
 use crate::kinds::{kind_of, Entry};
-use crate::osm::{self, Selected, LANDUSE, LIFT_REACH_M};
+use crate::osm::{self, Selected, LANDUSE, LIFT_REACH_M, USES};
 use crate::pmtiles::{self, Header};
 use crate::roads::{self, Classes, River};
 use crate::structures::{self, class_of, is_bridge, is_track, leading_number, road_half};
@@ -94,14 +94,18 @@ pub fn bake(
     // The lifts wait for the buildings and the other lifts: a station shares their places. The buildings
     // of the region wait for the landuse areas that hold them; the features of the solvers for all of
     // their kind.
-    let (mut lift_ways, mut lift_entry, mut buildings, mut houses, mut landuse) =
-        (Vec::new(), None, Vec::new(), Vec::new(), Vec::new());
+    let (mut lift_ways, mut lift_entry, mut buildings, mut houses, mut landuse, mut uses) =
+        (Vec::new(), None, Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut waters, mut ways, mut stations, mut beyond, mut river_areas) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     osm::objects(kinds, &cut, &binary, |(selected, tags, mut parts)| {
         let Selected::Entry(e) = selected else {
             if placer.tiles.meets(MAX_ZOOM, &parts) {
-                landuse.push((tags, parts));
+                if selected == Selected::Use {
+                    uses.push((tags, parts))
+                } else {
+                    landuse.push((tags, parts))
+                }
             }
             return;
         };
@@ -146,12 +150,20 @@ pub fn bake(
     std::fs::remove_file(&cut).map_err(|e| e.to_string())?;
     eprintln!("osm: {:.1} s", started.elapsed().as_secs_f64());
     let values = landuse_of(&houses.iter().map(|(_, _, parts)| parts).collect::<Vec<_>>(), &landuse);
-    for ((e, mut tags, parts), value) in houses.into_iter().zip(&values) {
+    let shown = uses_of(&houses.iter().map(|(_, tags, parts)| (tags, parts)).collect::<Vec<_>>(), &uses);
+    for (((e, mut tags, parts), value), shows) in houses.into_iter().zip(&values).zip(&shown) {
         if let Some(value) = value {
             tags.insert("landuse".into(), value.clone());
         }
+        if let Some(shows) = shows {
+            tags.insert("use".into(), shows.clone());
+        }
         placer.entry(&kinds[e], tags, parts);
     }
+    let use_counts: Map<String, Value> =
+        USES.iter().map(|u| (u.to_string(), shown.iter().filter(|v| v.as_deref() == Some(u)).count().into())).collect();
+    metrics.insert("uses".into(), use_counts.into());
+    drop(uses);
     let landuse_counts: Map<String, Value> = LANDUSE
         .iter()
         .map(|l| (l.to_string(), values.iter().filter(|v| v.as_deref() == Some(l)).count().into()))
@@ -468,6 +480,42 @@ fn landuse_of(buildings: &[&Vec<Part>], areas: &[(Tags, Vec<Part>)]) -> Vec<Opti
         .collect()
 }
 
+/// Per building, the use that it shows: the first in USES of its own, those of the points of `uses` in
+/// its outer ring, and those of the areas of `uses` that hold the middle of that ring.
+fn uses_of(buildings: &[(&Tags, &Vec<Part>)], uses: &[(Tags, Vec<Part>)]) -> Vec<Option<String>> {
+    let rank = |u: &str| USES.iter().position(|v| *v == u).unwrap_or(USES.len());
+    let mut shown: Vec<Option<String>> = buildings.iter().map(|(tags, _)| tags.get("use").cloned()).collect();
+    let mut offer = |k: usize, value: &String| {
+        if shown[k].as_deref().is_none_or(|old| rank(value) < rank(old)) {
+            shown[k] = Some(value.clone());
+        }
+    };
+    let rings: Vec<&[[f64; 2]]> = buildings.iter().map(|(_, parts)| parts[0].points.as_slice()).collect();
+    let houses = Boxes::new(&rings.iter().map(|ring| bounds(ring.iter())).collect::<Vec<_>>());
+    let (points, areas): (Vec<_>, Vec<_>) = uses.iter().partition(|(_, parts)| !parts[0].outer);
+    for (tags, parts) in points {
+        let p = parts[0].points[0];
+        for k in houses.overlapping([p[0], p[1], p[0], p[1]]) {
+            if contains(&[rings[k]], p) {
+                offer(k, &tags["use"]);
+            }
+        }
+    }
+    let about =
+        Boxes::new(&areas.iter().map(|(_, parts)| bounds(parts.iter().flat_map(|p| &p.points))).collect::<Vec<_>>());
+    for (k, ring) in rings.iter().enumerate() {
+        let (sx, sy) = ring.iter().fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
+        let middle = [sx / ring.len() as f64, sy / ring.len() as f64];
+        for a in about.overlapping([middle[0], middle[1], middle[0], middle[1]]) {
+            let area_rings: Vec<&[[f64; 2]]> = areas[a].1.iter().map(|p| p.points.as_slice()).collect();
+            if contains(&area_rings, middle) {
+                offer(k, &areas[a].0["use"]);
+            }
+        }
+    }
+    shown
+}
+
 /// The area of the region in km².
 fn area_km2([west, south, east, north]: [f64; 4]) -> f64 {
     EARTH_RADIUS_KM.powi(2) * (east - west).to_radians() * (north.to_radians().sin() - south.to_radians().sin())
@@ -514,5 +562,39 @@ fn low_zooms(placer: &mut Placer) {
             let parts = simplified(feature.geometry, &feature.parts, &anchors, tolerance);
             placer.tiles.add(zoom, &feature.kind, feature.geometry, &feature.tags, &parts);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn square(x: f64, y: f64, side: f64) -> Vec<Part> {
+        vec![Part { outer: true, points: vec![[x, y], [x + side, y], [x + side, y + side], [x, y + side]], z: None }]
+    }
+
+    #[test]
+    fn a_building_shows_the_strongest_use_of_its_own_its_points_and_the_areas_about_it() {
+        let point =
+            |x: f64, y: f64, u: &str| (tags(&[("use", u)]), vec![Part { outer: false, points: vec![[x, y]], z: None }]);
+        // A shop with a pharmacy in it; a building in a hospital's grounds with a kiosk in it; a shop of its
+        // own; a building with nothing.
+        let (own, plain) = (tags(&[("use", "shop")]), tags(&[]));
+        let houses =
+            [square(0.0, 0.0, 10.0), square(100.0, 0.0, 10.0), square(200.0, 0.0, 10.0), square(300.0, 0.0, 10.0)];
+        let buildings: Vec<(&Tags, &Vec<Part>)> =
+            vec![(&plain, &houses[0]), (&plain, &houses[1]), (&own, &houses[2]), (&plain, &houses[3])];
+        let uses = vec![
+            point(2.0, 2.0, "shop"),
+            point(5.0, 5.0, "pharmacy"),
+            point(105.0, 5.0, "shop"),
+            (tags(&[("use", "hospital")]), square(90.0, -10.0, 40.0)),
+        ];
+        let shown = uses_of(&buildings, &uses);
+        assert_eq!(shown, [Some("pharmacy".into()), Some("hospital".into()), Some("shop".into()), None]);
     }
 }
