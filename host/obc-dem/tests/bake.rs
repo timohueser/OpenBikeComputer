@@ -737,15 +737,16 @@ fn an_index_without_contributors_falls_back_to_the_best_source_key() {
 /// without a lift.
 #[test]
 fn a_posting_finer_than_the_archive_step_is_refused() {
-    let (ti, tj, tile) = fixture_tile();
+    let (_, _, tile) = fixture_tile();
     let scratch = Scratch::new("too-fine");
     write_archive(scratch.path(), "ch", &[tile]);
     let archive = ReferenceArchive::open(scratch.path()).unwrap();
     let native = |_: i32, _: i32| 1000i16;
-    let _ = (ti, tj);
+    // The smallest cell all three postings pair with, so the allowed bake scans a single tile of nodes.
+    let cell_log2 = 10;
 
     for posting in [4u8, 5] {
-        let error = match LiftMap::bake(0, 0, posting, 19, native, &archive) {
+        let error = match LiftMap::bake(0, 0, posting, cell_log2, native, &archive) {
             Err(e) => e,
             Ok(_) => panic!("a posting of 2^{posting} µdeg is finer than the archive and must be refused"),
         };
@@ -753,7 +754,7 @@ fn a_posting_finer_than_the_archive_step_is_refused() {
         assert!(error.contains("2^6 µdeg"), "and the archive's step: {error}");
     }
     // The archive's own step is the finest posting the rule can serve, and it is allowed.
-    assert!(LiftMap::bake(0, 0, 6, 19, native, &archive).is_ok());
+    assert!(LiftMap::bake(0, 0, 6, cell_log2, native, &archive).is_ok());
 }
 
 /// Attribution follows what the bake read, not what the index promised: a mirror that is short of
