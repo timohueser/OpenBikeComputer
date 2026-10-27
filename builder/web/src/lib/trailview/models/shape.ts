@@ -8,6 +8,7 @@ export type Vec = [number, number, number];
 export class V {
     constructor(public x = 0, public y = 0, public z = 0) {}
     set(x: number, y: number, z: number): this { this.x = x; this.y = y; this.z = z; return this; }
+    setY(y: number): this { this.y = y; return this; }
     setZ(z: number): this { this.z = z; return this; }
     clone(): V { return new V(this.x, this.y, this.z); }
     add(v: V): this { return this.set(this.x + v.x, this.y + v.y, this.z + v.z); }
