@@ -742,7 +742,7 @@ fn trailview_canopy(
     (bounds, countries): ([f64; 4], &[String]),
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<Step>, Unplanned> {
-    use crate::forest_reference::{model_tiles, models, ID, LEAF_TYPE};
+    use crate::forest_reference::{model_tiles, models, FORMAT, ID, LEAF_TYPE};
     let sources = obc_data::sources::all();
     let path = |(x, y): (u32, u32)| format!("12/{x}/{y}.tif");
     let tiles = |bbox: Option<&Bbox>, countries: &[String]| -> Result<BTreeMap<String, Vec<String>>, Unplanned> {
@@ -767,6 +767,13 @@ fn trailview_canopy(
         }
     };
     let Some(manifest) = crate::device::manifest(store, ID, &pinned, wanted)? else { return Ok(None) };
+    let region = &inputs.settings.region;
+    if manifest.format != FORMAT {
+        return Err(invalid(format!(
+            "{ID}@{} is of format {}, not {FORMAT}. Fix: obc data source prepare {ID} --region {region}",
+            manifest.version, manifest.format
+        )));
+    }
     // A version holds each tile with a pixel in its scope and in the scopes that it extends.
     let mut covered = BTreeSet::new();
     for scope in manifest.extends.iter().chain([&manifest.scope]) {
@@ -774,7 +781,6 @@ fn trailview_canopy(
         covered.extend(tiles(bbox.as_ref(), &countries)?.into_keys());
     }
     if needed.keys().any(|tile| !covered.contains(tile)) {
-        let region = &inputs.settings.region;
         return Err(invalid(format!(
             "{ID}@{} does not cover all of the region `{region}`. Fix: obc data source prepare {ID} --region {region}",
             manifest.version
@@ -1415,7 +1421,7 @@ mod tests {
         let manifest = |scope: Option<Scope>, extends: Vec<Option<Scope>>| Manifest {
             source: id.into(),
             version: "2026-10-20".into(),
-            format: 2,
+            format: crate::forest_reference::FORMAT,
             revision: 1,
             inputs: vec![Read { source: "canopy-ch".into(), version: "2026-10-20".into(), digest: "d".into() }],
             files: ["12/2100/1400.tif", "12/2143/1443.tif", "12/2144/1443.tif"].map(file).into(),
@@ -1455,7 +1461,8 @@ mod tests {
         let [Input::Snapshot { source, version, files, .. }] = &step.inputs[..] else { panic!("one snapshot") };
         assert_eq!((source.as_str(), version), (id, &pinned));
         assert_eq!(files, &["12/2143/1443.tif", "12/2144/1443.tif"]);
-        let credits = format!("{}; {}", attribution("canopy-ch"), attribution("hrl-dominant-leaf-type"));
+        let credits =
+            [attribution("canopy-ch"), attribution("canopy-global"), attribution("hrl-dominant-leaf-type")].join("; ");
         assert_eq!(step.options["attribution"], credits);
 
         // A version of a box that holds the tile 2143/1443 only, then one that extends another box.
@@ -1467,8 +1474,16 @@ mod tests {
         pin(&mut inputs, &manifest(region("small", 8.40, 8.42), vec![region("east", 8.42, 8.45)]));
         assert!(trailview_canopy(&inputs, &store, swiss, &mut Vec::new()).unwrap().is_some());
 
-        // A region of a country without a canopy model has none.
-        let german = (swiss.0, &["DE".to_string()][..]);
+        // A version of the format before refuses.
+        pin(&mut inputs, &Manifest { format: crate::forest_reference::FORMAT - 1, ..manifest(None, Vec::new()) });
+        let Err(Unplanned::Invalid(message)) = trailview_canopy(&inputs, &store, swiss, &mut Vec::new()) else {
+            panic!("a version of the format before refuses")
+        };
+        assert!(message.contains("is of format"), "{message}");
+        pin(&mut inputs, &manifest(None, Vec::new()));
+
+        // A version of everything holds no tile of `canopy-global`, which the Black Forest reads.
+        let german = ([8.0, 48.0, 8.05, 48.02], &["DE".to_string()][..]);
         assert!(matches!(trailview_canopy(&inputs, &store, german, &mut Vec::new()), Err(Unplanned::Invalid(_))));
     }
 

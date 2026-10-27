@@ -38,10 +38,10 @@ VHM = ("https://data.geo.admin.ch/api/stac/v0.9/collections/"
        "ch.bafu.landesforstinventar-vegetationshoehenmodell_lidar/items")
 # Canopy Height Maps v2 of Meta and WRI: a COG per zoom 10 tile, named by its quadkey, at the pixels of zoom 17.
 CHM = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v2/global/dinov3_global_chm_v2_ml3/chm"
-# Its heights read low and its tree tops are artefacts. Fitted against `canopy-ch` on eight tiles of the Jura,
-# the Mittelland and the Alps: the height of a cell is `CHM_SCALE` times the height of the model plus
-# `CHM_OFFSET_M`, and its stems fill `STEMS_SHARE` of its cover with crowns of its height.
-CHM_SCALE, CHM_OFFSET_M, STEMS_SHARE = 0.795, 8.65, 0.46
+# Its heights read low and its tree tops are artefacts. Fitted against `canopy-ch` on the canopy cells of eight
+# tiles of the Jura, the Mittelland and the Alps: the height of a cell is `CHM_SCALE` times the height of the
+# model plus `CHM_OFFSET_M`, and its stems fill `STEMS_SHARE` of its cover with crowns of its height.
+CHM_SCALE, CHM_OFFSET_M, STEMS_SHARE = 0.982, 3.73, 0.417
 # Dominant Leaf Type of CLMS on CDSE S3, in tiles of 100 km in EPSG:3035 named by their south-west corner.
 DLT_YEAR = 2024
 DLT = ("/vsis3/eodata/CLMS/landcover_landuse/dominant_leaf_type/clms_vlcc_dominant-leaf-type_europe_10m_yearly_v1/"
@@ -361,7 +361,7 @@ def canopy_sums(read, rows, cols, block, pixel_m, cells, tops=True):
     rows are read in strips of whole
     blocks of `block` rows, so each block downloads once; one thread reads the next strip while the
     other reduces this one."""
-    margin = halo(pixel_m)
+    margin = halo(pixel_m) if tops else 0
     edges = [rows[0], *range((rows[0] // block + 1) * block, rows[1], block), rows[1]]
     strips = list(zip(edges, edges[1:]))
     sums, seen, done = totals(SIZE * SIZE), False, rows[0]
@@ -380,7 +380,7 @@ def canopy_sums(read, rows, cols, block, pixel_m, cells, tops=True):
                 part = heights[done - first:last - first]
                 found = tree_tops(heights, pixel_m)[done - first:last - first] if tops else np.zeros(part.shape, np.bool_)
                 accumulate(cells((done, last)), part, found, *sums)
-            done, context = max(done, last), heights[-2 * margin:]
+            done, context = max(done, last), heights[len(heights) - 2 * margin:]
     return sums if seen else None
 
 
@@ -408,25 +408,20 @@ def tile_global(x, y):
                     (raster.transform.a, -raster.transform.e, raster.transform.c, raster.transform.f),
                     (CELL / 32, CELL / 32, west, top)):
                 raise ValueError(f"{quadkey}.tif is not on the pixels of zoom 17 of its zoom 10 tile")
-            pixel_m, margin = CELL / 32, halo(CELL / 32)
             r0, c0 = (y & 3) * side, (x & 3) * side
-            rows = (max(r0 - margin, 0), min(r0 + side + margin, raster.height))
-            cols = (max(c0 - margin, 0), min(c0 + side + margin, raster.width))
-            at = np.arange(cols[0], cols[1]) - c0
-            columns = np.where((at >= 0) & (at < side), at // 32, -1)
+            rows, cols = (r0, r0 + side), (c0, c0 + side)
+            columns = np.arange(SIZE, dtype=np.int32).repeat(32)
 
             def read(span):
-                return read_window(raster, Window(cols[0], span[0], cols[1] - cols[0], span[1] - span[0]))
+                return read_window(raster, Window(c0, span[0], side, span[1] - span[0]))
 
             def cells(span):
-                at = np.arange(*span) - r0
-                rows_of = np.where((at >= 0) & (at < side), at // 32, -1)
-                return np.where((rows_of[:, None] >= 0) & (columns >= 0), rows_of[:, None] * SIZE + columns, -1).astype(np.int32)
+                return ((np.arange(*span, dtype=np.int32) - r0) // 32 * SIZE)[:, None] + columns
 
-            sums = canopy_sums(read, rows, cols, raster.block_shapes[0][0], pixel_m, cells, tops=False)
+            sums = canopy_sums(read, rows, cols, raster.block_shapes[0][0], CELL / 32, cells, tops=False)
     if sums is None:
         return None
-    height, cover, _ = cell_stats(sums, pixel_m).reshape(3, SIZE, SIZE).astype(np.float64)
+    height, cover, _ = cell_stats(sums, CELL / 32).reshape(3, SIZE, SIZE).astype(np.float64)
     height = np.where(height > 0, np.minimum(np.rint(10 * (CHM_SCALE * height / 10 + CHM_OFFSET_M)), TALLEST_DM), 0)
     crown = np.vectorize(crown_radius)(height / 10, 1.0)
     stems = np.where(height > 0, np.rint(STEMS_SHARE * cover / 100 * 1e4 / (np.pi * crown ** 2)), 0)
@@ -500,8 +495,8 @@ TILES = {"ch": tile_ch, "global": tile_global}
 
 def command_fetch(args):
     """One tile of `forest` from the canopy models `<key>,…` into `--out`: `12/<x>/<y>.tif`, then
-    `12-<x>-<y>.sha256`, the digest of its pixels; or the empty `12-<x>-<y>.none` where no model
-    has a pixel in the tile. A cell takes the first model that has a pixel in it."""
+    `12-<x>-<y>.sha256`, the digest of its pixels; or the empty `12-<x>-<y>.none` where no cell of
+    the tile has a canopy. A cell takes the first model that has a pixel in it."""
     z, x, y = map(int, args.tile.split("-"))
     if z != ZOOM or not (0 <= x < 1 << z and 0 <= y < 1 << z):
         raise SystemExit(f"--tile {args.tile} is 12-<x>-<y>, a zoom 12 tile")
@@ -513,7 +508,7 @@ def command_fetch(args):
         if part is not None:
             unknown = bands[0] == NODATA
             bands[:3, unknown] = part[:, unknown]
-    if (bands[0] == NODATA).all():
+    if not ((bands[0] != NODATA) & (bands[0] > 0)).any():
         (out / f"{args.tile}.none").touch()
         return 0
     bands[3] = np.where(bands[0] != NODATA, leaf_type(x, y), NODATA)

@@ -1586,7 +1586,7 @@ the same format; `prod` takes a version of a region.
 
 #### `forest`
 
-The producer `forest`, format 2, makes the forest of each cell of the zoom 12 tiles at
+The producer `forest`, format 3, makes the forest of each cell of the zoom 12 tiles at
 256 × 256 cells, which [the canopy archive](trailview-tiles.md#canopy) packs. A version adds a
 region to the newest complete version of `forest` on the target before it, in the same format;
 `prod` takes a version of a region.
@@ -1595,12 +1595,13 @@ region to the newest complete version of `forest` on the target before it, in th
   country code, and `canopy-global`. A version reads each national model whose `extent` meets the
   box of the region and, when the region names `countries`, whose country is one of them; all of
   them for a version of everything. A region that names no `countries` has those of its leaves, as
-  for `terrain`. It reads `canopy-global` where its `extent` meets the box. Its tiles are the zoom
+  for `terrain`. It reads `canopy-global` where its `extent` meets the box; a version of everything
+  reads no `canopy-global`. Its tiles are the zoom
   12 tiles whose inside meets the `extent` of a model and the box of the region.
 - For each tile, `python -m tools.forest_reference fetch <key>,… --tile 12-<x>-<y>` writes
   `12/<x>/<y>.tif` and then `12-<x>-<y>.sha256`, the SHA-256 of its pixels. The keys are the models
   that meet the tile, the national ones in the order of `data/sources.toml` and then `global`; a
-  cell takes the first model that has a pixel in it. Where no model has a pixel in the tile, it
+  cell takes the first model that has a pixel in it. Where no cell of the tile has a canopy, it
   writes the empty `12-<x>-<y>.none`. It keeps no raw raster. The run keeps
   the SHA-256 or the `.none` of each tile until the version is complete, so a resume makes no tile
   again that it has.
@@ -1624,9 +1625,10 @@ region to the newest complete version of `forest` on the target before it, in th
   order.
 - `global` reads `canopy-global`, Canopy Height Maps v2, through HTTP range requests: a COG per zoom
   10 tile, whose pixels of zoom 17 lie on the cells, 32 × 32 to a cell. Its heights are whole metres,
-  where 0 is also no data. It reads low and its tree tops are artefacts, so a cell takes 0.795 times
-  its height plus 8.65 m, and the stems that fill 46 % of its cover with crowns of that height. The
-  factors are fitted against `canopy-ch` on eight tiles of the Jura, the Mittelland and the Alps.
+  where 0 is also no data. It reads low and its tree tops are artefacts, so a cell takes 0.982 times
+  its height plus 3.73 m, and the stems that fill 41.7 % of its cover with crowns of that height. The
+  factors are fitted against `canopy-ch` on the canopy cells of eight tiles of the Jura, the
+  Mittelland and the Alps.
 - `ch` reads `canopy-ch` through HTTP range requests, in strips of whole block rows, so each
   block of a tile downloads once: at each 0.5 m pixel, the newest acquisition that has it.
 - The leaf type of a cell with a height is `hrl-dominant-leaf-type` of 2024 at 4 × 4 samples per

@@ -20,6 +20,8 @@ use crate::terrain_reference::area;
 pub const ID: &str = "forest";
 
 const ZOOM: u32 = 12;
+/// The format of the tiles; a version of format 2 has no tile of `canopy-global`.
+pub(crate) const FORMAT: u32 = 3;
 /// The key of the model of every country, which a cell reads only where no national model has it.
 const GLOBAL: &str = "global";
 
@@ -47,7 +49,7 @@ impl Prepared for ForestReference {
     }
 
     fn format(&self) -> u32 {
-        2
+        FORMAT
     }
 
     fn revision(&self) -> u32 {
@@ -139,7 +141,8 @@ impl Prepared for ForestReference {
 
 /// The canopy models `canopy-<key>` of `sources` that meet `bbox`, with their keys: the national
 /// models, whose key is the lowercase country code, of one of `countries` when the region names
-/// some, and then the model `canopy-global`.
+/// some, and then the model `canopy-global` when there is a box: a version of everything reads
+/// national models only.
 pub(crate) fn models<'a>(
     sources: &'a [Source],
     bbox: Option<&'a Bbox>,
@@ -150,7 +153,8 @@ pub(crate) fn models<'a>(
         let key = source.id.strip_prefix("canopy-").filter(|key| *key != GLOBAL)?;
         (near(source) && (countries.is_empty() || countries.contains(&key.to_uppercase()))).then_some((key, source))
     });
-    let global = sources.iter().filter(move |source| source.id == format!("canopy-{GLOBAL}") && near(source));
+    let global =
+        sources.iter().filter(move |source| bbox.is_some() && source.id == format!("canopy-{GLOBAL}") && near(source));
     national.chain(global.map(|source| (GLOBAL, source)))
 }
 
