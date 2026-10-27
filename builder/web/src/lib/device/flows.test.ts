@@ -122,7 +122,7 @@ describe("map upload from a file", () => {
 
             expect(result.payloadLength).toBe(BigInt(bytes.length));
             expect(result.payloadCrc32).toBe(Crc32.of(bytes));
-            expect(device.payloadOf(result.objectId)).toEqual(bytes);
+            expectBytes(device.payloadOf(result.objectId), bytes);
             expect(device.entries[0].displayName).toBe("built-monaco");
         });
     });
@@ -137,7 +137,7 @@ describe("map upload from a file", () => {
             expect(result.objectId).toBe(1n);
             expect(result.payloadLength).toBe(BigInt(bytes.length));
             expect(result.payloadCrc32).toBe(Crc32.of(bytes));
-            expect(device.payloadOf(result.objectId)).toEqual(bytes);
+            expectBytes(device.payloadOf(result.objectId), bytes);
             expect(device.entries[0].displayName).toBe("grimsel-default");
             // `committing` is named because the wire goes quiet there: the last byte is gone and the
             // device is still landing its staging half.
@@ -228,7 +228,7 @@ describe("map upload from a file", () => {
         await withDevice({ packetSize: 4096 }, async ({ client, device }) => {
             const result = await sendMapFile(client, file, context());
             expect(result.payloadLength).toBe(BigInt(bytes.length));
-            expect(device.payloadOf(result.objectId)).toEqual(bytes);
+            expectBytes(device.payloadOf(result.objectId), bytes);
         });
     }, 30_000);
 
@@ -258,7 +258,7 @@ describe("map upload from a file", () => {
             const result = await sendMapFile(client, file, context());
             expect(result.objectId).toBe(installed.objectId);
             expect(result.revision).toBe(installed.revision + 1n);
-            expect(device.payloadOf(result.objectId)).toEqual(bytes);
+            expectBytes(device.payloadOf(result.objectId), bytes);
         });
     }, 30_000);
 
@@ -447,6 +447,12 @@ function damageOneStreamWrite(link: DeviceLink): { link: DeviceLink; arm: () => 
             armed = true;
         },
     };
+}
+
+/** `toEqual` walks a typed array one element at a time, which takes seconds for a megabyte. */
+function expectBytes(actual: Uint8Array | null, expected: Uint8Array): void {
+    expect(actual?.length).toBe(expected.length);
+    expect(actual!.findIndex((byte, i) => byte !== expected[i]), "the first byte that differs").toBe(-1);
 }
 
 function syntheticBytes(total: number): Uint8Array<ArrayBuffer> {
