@@ -40,7 +40,7 @@ describe('kinds', () => {
         const road = { outer: false, xy: [0, y, 320 * m, y] }, house = { rings: [[0, y - 10 * m, 100 * m, y - 10 * m, 100 * m, y - 20 * m]], outer: [true] };
         const lamps = (tags: Record<string, string>) => {
             const placed: Placement[] = [];
-            const out = { owns: () => true, place: (p: Placement) => placed.push(p), ways: [], buildings: [house] } as unknown as Build;
+            const out = { owns: () => true, place: (p: Placement) => placed.push(p), ways: [], buildings: [house], cornered: () => false } as unknown as Build;
             lampKind(3.5).build({ tags, parts: [road] }, out);
             return placed.map(p => Math.round(p.x / m));
         };

@@ -1,7 +1,7 @@
 // Street lamps along the roads of built-up places. The map holds few of them, and not in every region,
 // so a rule stands them: along a lit road, every SPACING_M on one side, where a building is near. A lamp
 // stands on the road's sidewalk where it has one, KERB_M behind its kerb: the town rule of the sidewalks
-// decides its side at its foot.
+// decides its side at its foot. None stands in a junction's corner, where the kerb turns off its road.
 import { facing, unitModel, type Build, type Kind, type Placed } from '../kinds/kind';
 import { streetLamp } from '../models/amenities';
 import { halfWidth, metresPerUnit, sidewalkOf, surfaceOf } from '../terrain/bins';
@@ -38,7 +38,7 @@ function lamps({ tags, parts }: Placed, out: Build, side: number): void {
                 if (!out.owns(...spot(1)) && !out.owns(...spot(-1))) continue;
                 const sides = sidesNear(town, ax + t * dx, ay + t * dy, dx, dy, BUILT_M / unit);
                 const [x, y] = spot(sidewalk && !(sides & RIGHT) ? -1 : 1);
-                if (!sides || !out.owns(x, y)) continue;
+                if (!sides || !out.owns(x, y) || out.cornered(x, y)) continue;
                 out.place({ x, y, yaw: facing(out.ways, x, y) ?? 0, height: lamp.height, model: 'lamp' });
             }
             done += length;

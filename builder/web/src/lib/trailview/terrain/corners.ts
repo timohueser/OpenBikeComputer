@@ -1,8 +1,9 @@
 // The corners of the junctions of paved roads. Where two roads leave a shared vertex less than MAX_TURN
 // apart, their kerb turns from the edge of the one to the edge of the other round an arc: the stamps paint
-// its asphalt and the sidewalk round it and hold their ground, and the slabs follow it.
+// its asphalt and the sidewalk round it and hold their ground, and the slabs follow it. A corner that
+// another line's band reaches into stays sharp, so its paint covers no other way or water.
 import { crossSlope, metresPerUnit, PROFILES, ROAD, type Line } from './bins';
-import { LEFT, RIGHT } from './town';
+import { gridOf, LEFT, near, RIGHT, type Grid } from './town';
 
 /**
  * The kerb's radius, at least LEAST_M; the most that an end of its arc lies from the junction along each
@@ -22,11 +23,23 @@ export interface Corner { o: [number, number]; a: [number, number]; b: [number, 
 /** A road's way out of its vertex v, step 1 or -1 along it: its direction in world units toward its point TANGENT_M on, and the metres that it runs on within STRAIGHT_M of that. */
 interface Way { line: Line; v: number; step: number; ux: number; uy: number; angle: number; room: number }
 
-const found = new WeakMap<Line[], Corner[]>();
+const found = new WeakMap<Line[], { corners: Corner[]; grid: Grid }>();
 
 export function cornersOf(lines: Line[]): Corner[] {
-    let corners = found.get(lines);
-    if (corners) return corners;
+    return cornersIn(lines).corners;
+}
+
+/** Whether a point lies in a corner of a tile's lines. */
+export function cornered(lines: Line[], x: number, y: number): boolean {
+    const { corners, grid } = cornersIn(lines);
+    let hit = false;
+    near(grid, x, y, x, y, 0, k => (hit ||= inCorner(corners[k], x, y)));
+    return hit;
+}
+
+function cornersIn(lines: Line[]): { corners: Corner[]; grid: Grid } {
+    const known = found.get(lines);
+    if (known) return known;
     const at = new Map<string, { line: Line; v: number }[]>();
     for (const line of lines) {
         if (line.kind !== ROAD || !PAVED.includes(line.code)) continue;
@@ -35,18 +48,49 @@ export function cornersOf(lines: Line[]): Corner[] {
             (at.get(key) ?? at.set(key, []).get(key)!).push({ line, v });
         }
     }
-    corners = [];
+    const all = segmentsOf(lines), corners: Corner[] = [];
     for (const here of at.values()) {
         if (here.every(({ line }) => line === here[0].line)) continue;
         const out = here.flatMap(({ line, v }) => [-1, 1].filter(step => v + step >= 0 && v + step < line.z.length).map(step => wayOut(line, v, step))).sort((p, q) => p.angle - q.angle);
         out.forEach((p, i) => {
             const q = out[(i + 1) % out.length], turn = q.angle - p.angle + (i + 1 === out.length ? 2 * Math.PI : 0);
             const corner = turn < MAX_TURN ? cornerOf(p, q) : undefined;
-            if (corner) corners!.push(corner);
+            if (corner && !reached(all, corner, p.line, q.line)) corners.push(corner);
         });
     }
-    found.set(lines, corners);
-    return corners;
+    const grid = gridOf(corners.map(({ o, a, b }) => [Math.min(o[0], a[0], b[0]), Math.min(o[1], a[1], b[1]), Math.max(o[0], a[0], b[0]), Math.max(o[1], a[1], b[1])]));
+    found.set(lines, { corners, grid });
+    return { corners, grid };
+}
+
+/** Every segment of every line, and their boxes in a grid. */
+interface Segments { list: [Line, number][]; grid: Grid }
+
+function segmentsOf(lines: Line[]): Segments {
+    const list: [Line, number][] = [], boxes: number[][] = [];
+    for (const line of lines) for (let v = 0; v + 1 < line.z.length; v++) {
+        const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), pad = line.h / metresPerUnit(ay);
+        list.push([line, v]);
+        boxes.push([Math.min(ax, bx) - pad, Math.min(ay, by) - pad, Math.max(ax, bx) + pad, Math.max(ay, by) + pad]);
+    }
+    return { list, grid: gridOf(boxes) };
+}
+
+/** Whether the band of a line but the corner's own two reaches into it, at points about a metre apart along and across each segment. */
+function reached({ list, grid }: Segments, corner: Corner, ...own: Line[]): boolean {
+    const { o, a, b } = corner, unit = metresPerUnit(o[1]);
+    let hit = false;
+    near(grid, Math.min(o[0], a[0], b[0]), Math.min(o[1], a[1], b[1]), Math.max(o[0], a[0], b[0]), Math.max(o[1], a[1], b[1]), corner.h / unit, k => {
+        const [line, v] = list[k];
+        if (hit || own.includes(line)) return;
+        const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), dx = bx - ax, dy = by - ay, l = Math.hypot(dx, dy) || 1;
+        const along = Math.ceil(l * unit), across = Math.max(1, Math.ceil(2 * line.h));
+        for (let i = 0; i <= along && !hit; i++) for (let j = 0; j <= across && !hit; j++) {
+            const t = i / along, side = ((2 * j) / across - 1) * line.h / unit / l;
+            hit = inCorner(corner, ax + t * dx - dy * side, ay + t * dy + dx * side);
+        }
+    });
+    return hit;
 }
 
 function wayOut(line: Line, v: number, step: number): Way {

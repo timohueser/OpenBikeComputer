@@ -6,7 +6,7 @@
 // splits runs on into its next line across their shared mitre. In a junction's corner the slab follows
 // the kerb's arc from the one road's sidewalk to the other's, or narrows to the bare kerb into a road
 // without one. Farther off, the mask paints them.
-import { cornersOf, inCorner, type Corner } from '../terrain/corners';
+import { cornered, cornersOf, type Corner } from '../terrain/corners';
 import { crossSlope, metresPerUnit, PAVING_CODE, PROFILES, RAIL, ROAD, type Line } from '../terrain/bins';
 import { gridOf, LEFT, near, RIGHT, type Grid } from '../terrain/town';
 import { GROUND, mix, PAINT, rgb, station, type MeshBuilder, type Station } from './mesh';
@@ -24,8 +24,8 @@ const RUNS_ON = 0.7;
 const ARC_STEP = Math.PI / 16;
 const PAVED = (rgb('#000000', PAINT) | PAVING_CODE) >>> 0, GRANITE = rgb('#c3c0b8'), EDGING = rgb('#a8a59e');
 
-/** The carriageways of a tile in a grid of their segments, per road end the end of the road it runs on into, and the junctions' corners in a grid. */
-interface Roads { grid: Grid; segments: { line: Line; v: number; rank: number }[]; partner: Map<Line, [Line?, Line?]>; corners: Corner[]; cornerGrid: Grid }
+/** The carriageways of a tile in a grid of their segments, and per road end the end of the road it runs on into. */
+interface Roads { grid: Grid; segments: { line: Line; v: number; rank: number }[]; partner: Map<Line, [Line?, Line?]> }
 const known = new WeakMap<Line[], Roads>();
 
 function roadsOf(lines: Line[]): Roads {
@@ -60,8 +60,7 @@ function roadsOf(lines: Line[]): Roads {
         if (!best) continue;
         for (const [a, b] of [[best[0], best[1]], [best[1], best[0]]]) (partner.get(here[a].line) ?? partner.set(here[a].line, [undefined, undefined]).get(here[a].line)!)[here[a].end] = here[b].line;
     }
-    const corners = cornersOf(lines), cornerGrid = gridOf(corners.map(({ o, a, b }) => [Math.min(o[0], a[0], b[0]), Math.min(o[1], a[1], b[1]), Math.max(o[0], a[0], b[0]), Math.max(o[1], a[1], b[1])]));
-    const roads = { grid: gridOf(boxes), segments, partner, corners, cornerGrid };
+    const roads = { grid: gridOf(boxes), segments, partner };
     known.set(lines, roads);
     return roads;
 }
@@ -86,8 +85,8 @@ function stationAt(line: Line, v: number, partner?: Line): Station {
 
 /** The slabs of the sidewalks of the lines whose segments' first vertex a node `owns`. */
 export function sidewalks(b: MeshBuilder, lines: Line[], owns: Owns): void {
-    const { grid, segments, partner, corners, cornerGrid } = roadsOf(lines);
-    for (const corner of corners) if ((corner.walk[0] || corner.walk[1]) && owns(...corner.a)) arc(b, corner);
+    const { grid, segments, partner } = roadsOf(lines);
+    for (const corner of cornersOf(lines)) if ((corner.walk[0] || corner.walk[1]) && owns(...corner.a)) arc(b, corner);
     lines.forEach((line, rank) => {
         if (!line.sidewalks) return;
         const n = line.z.length, h = line.h, walk = walkOf(line), ends = partner.get(line), unit = metresPerUnit(line.xy[1]);
@@ -105,21 +104,16 @@ export function sidewalks(b: MeshBuilder, lines: Line[], owns: Owns): void {
             return found;
         };
         /** The middle of the slab of segment v on a side a share u along it. */
-        const middle = (v: number, side: number, u: number) => {
+        const middle = (v: number, side: number, u: number): [number, number] => {
             const p = mix(at(v), at(v + 1), u), m = (side === LEFT ? 1 : -1) * (h + walk / 2);
             return [p.x + p.ax * m, p.y + p.ay * m];
         };
         /** Whether the slab of segment v on a side lies in a junction's corner a share u along it, where the corner's arc takes it on. */
-        const cornered = (v: number, side: number, u: number) => {
-            const [x, y] = middle(v, side, u);
-            let hit = false;
-            near(cornerGrid, x, y, x, y, 0, k => (hit ||= inCorner(corners[k], x, y)));
-            return hit;
-        };
+        const inCorner = (v: number, side: number, u: number) => cornered(lines, ...middle(v, side, u));
         /** Whether the slab of segment v on a side is open a share u along it: no corner and no carriageway there, and no sidewalk of a road that keeps a corner. */
         const open = (v: number, side: number, u: number) => {
             const [x, y] = middle(v, side, u);
-            return !cornered(v, side, u) && around(v, side).every(({ line: other, v: w, rank: order }) => {
+            return !inCorner(v, side, u) && around(v, side).every(({ line: other, v: w, rank: order }) => {
                 const ax = other.xy[2 * w], ay = other.xy[2 * w + 1], dx = other.xy[2 * w + 2] - ax, dy = other.xy[2 * w + 3] - ay, l2 = dx * dx + dy * dy || 1;
                 const along = ((x - ax) * dx + (y - ay) * dy) / l2, cross = (dx * (y - ay) - dy * (x - ax)) / Math.sqrt(l2) * unit;
                 const t0 = Math.min(1, Math.max(0, along)), d = Math.sqrt((x - ax - t0 * dx) ** 2 + (y - ay - t0 * dy) ** 2) * unit;
@@ -148,7 +142,7 @@ export function sidewalks(b: MeshBuilder, lines: Line[], owns: Owns): void {
                         if (open(v, side, half)) inside = half;
                         else outside = half;
                     }
-                    return [inside, !cornered(v, side, outside)];
+                    return [inside, !inCorner(v, side, outside)];
                 };
                 const kept = Array.from({ length: pieces }, (_, k) => open(v, side, centre(k)));
                 for (let k = 0; k < pieces; k++) {

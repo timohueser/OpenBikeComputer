@@ -36,6 +36,8 @@ export interface Build {
     /** The roads and paths of the tile, and its buildings' rings. */
     ways: Line[];
     buildings: Shapes['buildings'];
+    /** Whether a point lies in a junction's corner, which paints its asphalt and its sidewalk. */
+    cornered: (x: number, y: number) => boolean;
 }
 
 export interface Kind {
