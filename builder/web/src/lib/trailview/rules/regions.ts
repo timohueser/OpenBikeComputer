@@ -29,7 +29,7 @@ export interface Look {
     ramps: Partial<Record<string, Ramp | Partial<Record<Season, Ramp>>>>;
     moor?: { heather: string; share: number };
     speckle?: { colour: string; share: number; size_m: number };
-    materials?: Partial<Record<string, { colour?: string | Partial<Record<Season, string>>; satellite?: number }>>;
+    materials?: Partial<Record<string, { colour?: string | Partial<Record<Season, string>>; satellite?: number; stones?: number; clumps?: number }>>;
     lithology?: Partial<Record<string, { colour: string; banded?: true }>>;
     outcrops: number;
     turf_deg: number;
@@ -72,15 +72,16 @@ export interface HerdRule {
     on: string[];
 }
 
-/** A ground plant of a pack: its model, and the keys of the model's `ground` that the pack changes. */
+/** A ground plant of a pack: its species, its model, and the keys of the model's `ground` that the pack changes. */
 export interface GroundRule {
+    id: string;
     model: string;
     on?: string[];
     height?: [number, number];
     share?: number;
     habitat?: 'moor' | 'lush';
     own?: true;
-    clumped?: true;
+    clumped?: boolean;
 }
 
 /** A tree species of a pack: its model, leaf type, cover, elevation band in metres and weight. */
@@ -104,15 +105,23 @@ export interface HouseStyle {
     timber: 'none' | 'upper' | 'all' | 'frame';
     shutters: boolean;
     balconies?: boolean;
+    /** Gabled dormers that rise from the front wall into the roof. */
+    dormers?: boolean;
     chimneys: 0 | 1 | 2;
-    spire?: 'onion';
+    /** A church's tower top: an onion dome, else a spire; `domes`: a church of shingled wood with onion domes on its tower and nave. */
+    spire?: 'onion' | 'domes';
+    /** The windows' size as a share of the kind's; smaller windows stand farther apart. */
+    windows?: number;
     storeys?: number;
-    palette: Record<'render' | 'wood' | 'roof' | 'door' | 'shutter', string[]> & { plinth: string; chimney: string };
+    /** Instead of a pitched roof: a stone cone over each bay, or a flat roof behind a parapet. */
+    roof?: 'cone' | 'flat';
+    palette: Record<'render' | 'wood' | 'roof' | 'door' | 'shutter', string[]> & { plinth: string | string[]; chimney: string };
 }
 
 /** The ground vocabulary of `materials.json`: a material or lithology code is its index. */
 export interface Vocabulary {
-    materials: { id: string; cover: string }[];
+    /** `clumps`: the share of ground in tussocks and low shrubs, 0 by default; `shrubs`: the share of its cover's shrubs that stand on it, 1 by default. */
+    materials: { id: string; cover: string; clumps?: number; shrubs?: number }[];
     lithologies: { id: string; hardness: number }[];
 }
 
@@ -146,11 +155,11 @@ function orchardOf(packs: Record<string, Record<string, unknown>> | undefined, p
     return typeof model === 'string' ? model : undefined;
 }
 
-/** The trees, herds or ground plants of a pack: one that a child sets to null is dropped, a model defaults to its name. */
+/** The trees, herds or ground plants of a pack by species: one that a child sets to null is dropped, a model defaults to its species. */
 function entriesOf<T extends { model: string }>(packs: Record<string, Record<string, unknown>> | undefined, pack: unknown, field: 'trees' | 'herds' | 'ground'): T[] {
     if (typeof pack !== 'string' || !packs?.[pack]) return [];
     const entries = (inherited(packs, pack)[field] ?? {}) as Record<string, Partial<T> | null>;
-    return Object.entries(entries).flatMap(([name, rule]) => (rule ? [{ ...rule, model: rule.model ?? name } as T] : []));
+    return Object.entries(entries).flatMap(([name, rule]) => (rule ? [{ ...rule, ...(field === 'ground' && { id: name }), model: rule.model ?? name } as T] : []));
 }
 
 /** The resolved regions of a `rules.json`; a chain that misses a file or loops throws. */

@@ -148,7 +148,8 @@ def tables(materials):
         "ramps": each(RAMP_COVERS, lambda v, p: ramp(v, p) if isinstance(v, list) else each(SEASONS, ramp)(v, p)),
         "moor": obj({"heather": colour, "share": number(0, 1)}),
         "speckle": obj({"colour": colour, "share": number(0, 1), "size_m": speckle_size}),
-        "materials": each(materials["materials"], obj({"colour": paint, "satellite": number(0, 1), "stones": number(0, 1)})),
+        "materials": each(materials["materials"], obj({"colour": paint, "satellite": number(0, 1), "stones": number(0, 1),
+                                                       "clumps": number(0, 1)})),
         "lithology": each(materials["lithologies"][1:], obj({"colour": colour, "banded": one_of(True)})),
         "bare_luma": lambda v, p: listed(number(0, 1), 4)(v, p) if isinstance(v, list) else number(0, 1)(v, p),
         "outcrops": number(0, 1), "turf_deg": number(0, 90), "rock": colour, "cliff": colour,
@@ -172,7 +173,7 @@ def tables(materials):
     })
     ground = obj({
         "model": text, "latin": text, "on": listed(one_of(*COVERS)), "height": listed(number(0, 50), 2), "share": number(0, 1),
-        "habitat": one_of("moor", "lush"), "own": one_of(True), "clumped": one_of(True),
+        "habitat": one_of("moor", "lush"), "own": one_of(True), "clumped": one_of(True, False),
     })
     herd = obj({"model": text, "latin": text, "groups": number(1, 100), "size": listed(number(1, 1000), 2),
                 "on": listed(one_of(*materials["materials"]))})
@@ -183,9 +184,11 @@ def tables(materials):
     style = obj({
         "name": text, "about": text, "extends": text, "pitch": listed(number(0, 80), 2), "eave": number(0, 5), "verge": number(0, 5),
         "hip": number(0, 1), "timber": one_of("none", "upper", "all", "frame"), "shutters": one_of(True, False),
-        "balconies": one_of(True, False), "chimneys": one_of(0, 1, 2), "spire": one_of("onion"), "storeys": number(1, 8),
+        "balconies": one_of(True, False), "dormers": one_of(True, False), "chimneys": one_of(0, 1, 2), "spire": one_of("onion", "domes"),
+        "windows": number(0.3, 1.5), "storeys": number(1, 8), "roof": one_of("cone", "flat"),
         "palette": obj({"render": listed(colour), "wood": listed(colour), "roof": listed(colour), "door": listed(colour),
-                        "shutter": listed(colour), "plinth": colour, "chimney": colour}),
+                        "shutter": listed(colour), "plinth": lambda v, p: (listed(colour) if isinstance(v, list) else colour)(v, p),
+                        "chimney": colour}),
     })
     return region, pack, style, obj({"look": obj(OVERLAY_LOOK)})
 
@@ -224,6 +227,8 @@ def vocabulary_problems(vocabulary):
     for i, entry in enumerate(vocabulary["materials"]):
         if entry["cover"] not in COVER_ORDER:
             out.append(f"materials.json: materials[{i}].cover: {entry['cover']} is not one of {', '.join(COVER_ORDER)}")
+        out += [f"materials.json: {problem}" for share in ("stones", "clumps", "shrubs") if share in entry
+                for problem in number(0, 1)(entry[share], f"materials[{i}].{share}")]
     for key in ("materials", "lithologies"):
         ids = [entry["id"] for entry in vocabulary[key]]
         out += [f"materials.json: {key}[{i}].id: {id_} is also {key}[{ids.index(id_)}]" for i, id_ in enumerate(ids) if ids.index(id_) != i]

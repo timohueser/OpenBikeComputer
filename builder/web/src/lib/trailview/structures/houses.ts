@@ -102,7 +102,7 @@ function styleWords(rules: Rules): { styles: Uint32Array<ArrayBuffer>; regions: 
         f.set([style.pitch[0], style.pitch[1], style.eave, style.verge, style.hip], at);
         u.set([Math.max(0, TIMBER.indexOf(style.timber)), +style.shutters | (+!!style.balconies << 1) | (+(style.spire === 'onion') << 2), style.chimneys], at + 5);
         f[at + 8] = style.storeys ?? 0;
-        u.set([colour(palette.plinth), colour(palette.chimney), lists.reduce((n, c, k) => n | (Math.min(c.length, 4) << (4 * k)), 0)], at + 9);
+        u.set([colour([palette.plinth].flat()[0]), colour(palette.chimney), lists.reduce((n, c, k) => n | (Math.min(c.length, 4) << (4 * k)), 0)], at + 9);
         lists.forEach((c, k) => c.slice(0, 4).forEach((hex, j) => (u[at + 12 + 4 * k + j] = colour(hex))));
     });
     return { styles: u, regions: Uint32Array.from(rules.regions.flatMap(({ houses }) => houses)) };
