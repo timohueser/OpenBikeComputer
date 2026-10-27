@@ -29,13 +29,14 @@ export const FLAT = 'flat';
 const FLAT_TILE = Buffer.from('UklGRiwAAABXRUJQVlA4TB8AAAAv/8F/EAcQEREQCCT7e89QRP8z/vOf//znP//5z/8BAA==', 'base64');
 /** The `world` region of the engine's ground without a ruleset (ground.ts), as a rules.json. */
 const FLAT_RULES = {
-    format: 1, materials: { materials: [{ id: 'none', cover: 'grass' }], lithologies: [{ id: 'unknown', hardness: 0.5 }] },
-    regions: [{
-        id: 'world', leaf: 'mixed', look: {
+    format: 2, materials: { materials: [{ id: 'none', cover: 'grass' }], lithologies: [{ id: 'unknown', hardness: 0.5 }] },
+    ids: [['world', '*']],
+    regions: {
+        world: { leaf: 'mixed', look: {
             snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35, ramps: {}, outcrops: 0, snow_share: 0.5, turf_deg: 42,
             rock: '#8c877d', sea: { deep: '#2c5874', shallow: '#4f8088' }, grade: { shadow: [-0.004, 0, 0.012], light: [0.01, 0.004, -0.008], saturation: 1.08 },
-        },
-    }],
+        } },
+    },
 };
 
 /**
