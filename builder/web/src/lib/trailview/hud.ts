@@ -57,7 +57,7 @@ export function hud(element: HTMLElement, engine: TrailView, labs: Labs): void {
         const stats = engine.stats(), view = engine.view, passes = Object.entries(stats.gpu);
         debug.value = view.debug;
         if (document.activeElement !== date && resting === undefined) [date.valueAsNumber, dateLabel.textContent] = [dayOfYear(view.date), view.date];
-        if (document.activeElement !== time) [time.valueAsNumber, timeLabel.textContent] = [Number(view.time.slice(0, 2)) * 60 + Number(view.time.slice(3)), view.time];
+        if (document.activeElement !== time) [time.valueAsNumber, timeLabel.textContent] = [Number(view.time.slice(0, 2)) * 60 + Number(view.time.slice(3, 5)), view.time];
         const frame = passes.reduce((sum, [, ms]) => sum + ms, 0);
         const problems = [
             stats.recoveries && `${stats.recoveries} lost devices recovered`,

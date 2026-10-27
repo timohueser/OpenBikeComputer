@@ -23,7 +23,7 @@ export interface View {
     height: number;
     /** YYYY-MM-DD */
     date: string;
-    /** HH:MM */
+    /** HH:MM or HH:MM:SS */
     time: string;
     weather: Weather;
     debug: DebugView;
@@ -57,7 +57,7 @@ export function parseView(search: string, fallback: View): View {
         pitch: number(q.get('pitch'), -89, 89) ?? fallback.pitch,
         ...(alt !== undefined ? { mode: 'fly', height: alt } : eye !== undefined ? { mode: 'walk', height: eye } : { mode: fallback.mode, height: fallback.height }),
         date: isDay(date) ? date : fallback.date,
-        time: /^([01]\d|2[0-3]):[0-5]\d$/.test(time) ? time : fallback.time,
+        time: /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(time) ? time : fallback.time,
         weather: choice(q.get('weather'), WEATHERS) ?? fallback.weather,
         debug: choice(q.get('debug'), DEBUG_VIEWS) ?? fallback.debug,
     };
