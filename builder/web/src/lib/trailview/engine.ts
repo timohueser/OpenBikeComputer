@@ -6,10 +6,12 @@ import { CURVATURE, frameAt, type Frame } from './frame/frame';
 import { Gpu } from './gpu/device';
 import { PassTimes } from './gpu/timing';
 import { Ground, groundPipelines, type GroundStats } from './ground/ground';
-import { eyeLook, lightAt, weatherLight, WEATHERS } from './light/light';
+import { moonAt, starFrame, type Mat3 } from './light/celestial';
+import { eyeLook, lightAt, moonlit, moonShare, weatherLight, WEATHERS, type EyeLook } from './light/light';
 import { LOOK_BYTES, lookUniform } from './light/look';
 import { Shadow } from './light/shadow';
-import { Sky, skyPipeline } from './light/sky';
+import { DARK_SKY, nightSky } from './light/night';
+import { Sky, SKY_CREDITS, skyPipeline } from './light/sky';
 import { Resolve, resolvePipeline } from './resolve/resolve';
 import { MAX_SCALE, Targets } from './resolve/targets';
 import { jitter, STILL_FRAMES, Temporal, type Step } from './resolve/temporal';
@@ -142,6 +144,12 @@ export class TrailView {
     private lastFrame?: Omit<LastFrame, 'moved'> & { eye: number[] };
     /** Whether the last frame that placed the instances moved or changed: the next one places them again, culled by a depth of the same view. */
     private unrest = true;
+    /**
+     * The brightness of the sky at the eye on a moonless night, in magnitudes per square arcsecond, as
+     * a sky quality meter reads it: about 22 far from lights, 18 in a town. It sets the faintest
+     * stars and the Milky Way's share (light/night.ts). Nothing sets it from data yet.
+     */
+    private skyMagnitude = DARK_SKY;
 
     private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number) {
         // `destroy()` aborts it: it ends the tile requests, the workers and the listeners.
@@ -226,6 +234,15 @@ export class TrailView {
         this.request();
     }
 
+    get skyBrightness(): number {
+        return this.skyMagnitude;
+    }
+
+    set skyBrightness(magnitude: number) {
+        this.skyMagnitude = magnitude;
+        this.request();
+    }
+
     stats(): Stats {
         const { gpu, times } = this.gpuState, { pages } = this.terrain, terrain = this.terrain.stats, ground = this.groundLook.stats, forest = this.forest.requests;
         return {
@@ -235,9 +252,9 @@ export class TrailView {
         };
     }
 
-    /** The credits of the ground layers. */
+    /** The credits of the ground layers and the sky. */
     get attribution(): string[] {
-        return this.groundLook.attribution;
+        return [...this.groundLook.attribution, SKY_CREDITS];
     }
 
     /** drawnHeight at points from the probe and from an instance shader, and the share of the sun there, with the state of the last frame. */
@@ -372,7 +389,7 @@ export class TrailView {
             if (this.destroyed || this.gpuState.gpu !== gpu) return;
             // A destroy during these attaches released the scope before they made their buffers, also when one fails.
             try {
-                await Promise.all([shadow, this.terrain.attachParts(frames), this.houses.attach(gpu, frames, surface, features), this.instances.attach(gpu, frames, { surface, features })]);
+                await Promise.all([shadow, this.terrain.attachParts(frames), this.houses.attach(gpu, frames, surface, features), this.instances.attach(gpu, frames, { surface, features }), this.sky.attachStars(gpu)]);
             } finally {
                 if (this.destroyed) gpu.release();
             }
@@ -521,23 +538,32 @@ export class TrailView {
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
         let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false, cascade = -1;
+        let lights: Lights | undefined;
         if (eye && group) {
-            const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify(this.extras);
+            const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify([this.extras, this.skyMagnitude]);
             moved = camera.some((value, i) => value !== this.camera[i]);
             changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || extras !== this.drawnExtras;
             this.camera = camera;
             this.drawnExtras = extras;
             this.completed = false;
-            const sun = this.sun(), casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent;
-            if (this.complete) cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, sun, { casters, reshaped: this.terrain.reshaped }, moved);
-            this.shadow.write(gpu, [eye.east, eye.north, eye.z], sun);
+            lights = this.lights();
+            const light = lights.key, casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent;
+            if (this.complete) cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, light, { casters, reshaped: this.terrain.reshaped }, moved);
+            this.shadow.write(gpu, [eye.east, eye.north, eye.z], light);
             // A new map changes the frame as new content does.
             step = this.temporal.next(moved, changed || cascade >= 0, debug ? 1 : STILL_FRAMES);
             if (step && !debug) offset = jitter(step.sample);
             // The jitter in clip space: render pixels are y down.
             ndc = [2 * offset[0] / width, -2 * offset[1] / height];
-            gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, jittered(viewProj, ndc), 2 * Math.tan(VFOV * RAD / 2) / targets.height));
-            gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, aspect, ndc, scale, step?.sample ?? 0));
+            gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, jittered(viewProj, ndc), 2 * Math.tan(VFOV * RAD / 2) / targets.height, light));
+            const near = this.regionLook(eye);
+            gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, near, lights, aspect, ndc, scale, step?.sample ?? 0));
+            const { cover } = near.weather, night = lightAt(lights.sunAltitude).night;
+            this.sky.write(gpu, {
+                stars: lights.stars, moon: lights.moon, moonLight: lights.share > 0,
+                night: nightSky({ sun: lights.sunAltitude, moon: lights.moonAltitude, phase: lights.phase, sky: this.skyMagnitude, cover }),
+                moonDisk: (1 - cover) * (0.35 + 0.65 * night), pixel: [2 / width, 2 / height],
+            });
         } else this.temporal.reset();
         const encoder = gpu.device.createCommandEncoder();
         const probed = this.terrain.encode(encoder, pass => times.writes(pass));
@@ -551,7 +577,7 @@ export class TrailView {
         const pixels = targets.viewport(this.scale)[1], placing = !!(eye && group && step) && (moved || changed || this.unrest || this.instances.due(pixels));
         if (placing) this.unrest = moved || changed || !last;
         const placed = this.vegetation(encoder, placing ? pixels : 0, last, () => times.writes('vegetation'));
-        const cast = cascade >= 0 && step && eye && group ? this.cast(encoder, group, eye, cascade) : () => {};
+        const cast = cascade >= 0 && step && eye && group && lights ? this.cast(encoder, group, eye, cascade, lights.key) : () => {};
         if (!eye || !group) {
             // Until the eye has ground nothing draws: the horizon of the weather fills the canvas.
             encoder.beginRenderPass({
@@ -619,11 +645,11 @@ export class TrailView {
      * Draws a cascade's shadow map: the producers and the houses cull for the sun's view, then the
      * casters draw. Call the returned function after the submit.
      */
-    private cast(encoder: GPUCommandEncoder, group: GPUBindGroup, eye: Eye, cascade: number): () => void {
+    private cast(encoder: GPUCommandEncoder, group: GPUBindGroup, eye: Eye, cascade: number, light: number[]): () => void {
         const { gpu, times } = this.gpuState, computeGroup = this.groundLook.computeGroup, label = PASSES[PASSES.indexOf('casters') + 2 * cascade];
         const at: [number, number, number] = [eye.east, eye.north, eye.z], viewProj = this.shadow.matrix(cascade, at);
         // The sun's view culls nothing by its size on screen.
-        gpu.device.queue.writeBuffer(this.shadow.frame, 0, this.uniforms(eye, viewProj, 1e-6));
+        gpu.device.queue.writeBuffer(this.shadow.frame, 0, this.uniforms(eye, viewProj, 1e-6, light));
         this.instances.begin(SUN, 0, this.shadow.run(cascade));
         const pass = encoder.beginComputePass({ label, timestampWrites: times.writes(label) });
         this.instances.run(pass, group, SUN);
@@ -649,29 +675,35 @@ export class TrailView {
         return true;
     }
 
-    /** Frame of terrain.wgsl; `pixel` is the metres per pixel at 1 m from the eye. */
-    private uniforms(eye: Eye, viewProj: Float32Array, pixel: number): ArrayBuffer {
+    /** Frame of terrain.wgsl; `pixel` is the metres per pixel at 1 m from the eye, `light` the key light of `lights()`. */
+    private uniforms(eye: Eye, viewProj: Float32Array, pixel: number, light: number[]): ArrayBuffer {
         const data = new ArrayBuffer(FRAME_BYTES), floats = new Float32Array(data);
         floats.set(viewProj, 0);
-        floats.set(this.sun().slice(0, 4), 16);
+        floats.set(light.slice(0, 4), 16);
         floats.set([eye.z, CURVATURE], 20);
         new Uint32Array(data)[22] = DEBUG_VIEWS.indexOf(this.extras.debug);
         floats[23] = pixel;
         return data;
     }
 
+    /** The look of the regions about the eye under the view's weather. */
+    private regionLook(eye: Eye): EyeLook {
+        const [lon, lat] = this.frame.lonLat(eye.east, eye.north);
+        return eyeLook(this.groundLook.rules.regions, this.groundLook.regionsAt(lon, lat), this.extras.weather);
+    }
+
     /**
-     * The look of shade.wgsl: the light keys at the sun's altitude under the weather, and the haze,
-     * light and grade of the regions about the eye.
+     * The look of shade.wgsl: the light keys at the sun's altitude under the weather, with the moon's
+     * light at night, and the haze, light and grade of the regions about the eye.
      */
-    private look(eye: Eye, aspect: number, jitter: [number, number], scale: number, sample: number): ArrayBuffer {
-        const [x, y, z, , bearing] = this.sun(), [lon, lat] = this.frame.lonLat(eye.east, eye.north), { rules } = this.groundLook;
-        const near = eyeLook(rules.regions, this.groundLook.regionsAt(lon, lat), this.extras.weather);
+    private look(eye: Eye, near: EyeLook, lights: Lights, aspect: number, jitter: [number, number], scale: number, sample: number): ArrayBuffer {
+        const [x, y, z, , bearing] = lights.key, light = lightAt(lights.sunAltitude);
         const h = this.pose.heading * RAD, p = this.pose.pitch * RAD, ty = Math.tan(VFOV * RAD / 2), tx = ty * aspect;
         const forward = [Math.sin(h) * Math.cos(p), Math.cos(h) * Math.cos(p), Math.sin(p)], right = [Math.cos(h), -Math.sin(h), 0];
         const up = [right[1] * forward[2] - right[2] * forward[1], right[2] * forward[0] - right[0] * forward[2], right[0] * forward[1] - right[1] * forward[0]];
         return lookUniform({
-            sun: [x, y, z, bearing], light: weatherLight(lightAt(Math.asin(z) / RAD), near.weather), eye: near, altitude: eye.z, place: [eye.east, eye.north],
+            sun: [x, y, z, bearing], skySun: lights.sun, light: weatherLight(lights.share > 0 ? moonlit(light, lights.share) : light, near.weather),
+            eye: near, altitude: eye.z, place: [eye.east, eye.north],
             camera: { right: right.map(v => v * tx), up: up.map(v => v * ty), forward },
             codes: this.groundLook.codes,
             debug: DEBUG_VIEWS.indexOf(this.extras.debug), sample,
@@ -679,9 +711,13 @@ export class TrailView {
         });
     }
 
-    /** The direction to the sun in the frame, the sunlight, and the sun's bearing in turns from true north, at the view's place, date and time. */
-    private sun(): number[] {
-        const { east, north } = this.pose, [lon, lat] = this.frame.lonLat(east, north);
+    /**
+     * The sun and the moon at the view's place, date and time, in the frame. `key` is the light that
+     * shades and shadows: the direction to it, its light, and its bearing in turns from true north. The
+     * moon takes the sun's place once the sun's light is gone.
+     */
+    private lights(): Lights {
+        const { east, north } = this.pose, place = this.frame.lonLat(east, north);
         const [hours, minutes] = this.extras.time.split(':').map(Number), minute = 60 * hours + minutes;
         let instant: number;
         try {
@@ -690,11 +726,37 @@ export class TrailView {
             // The clock skips this time when it changes to summer time.
             instant = instantAt(this.extras.date, minute + 60, TIME_ZONE);
         }
-        const { bearing, altitude } = solarPosition([lon, lat], solarTerms(instant));
-        const b = bearing + this.convergence(east, north) * RAD;
-        const light = WEATHERS[this.extras.weather].sun * Math.min(1, Math.max(0, (altitude + 0.05) / 0.15));
-        return [Math.sin(b) * Math.cos(altitude), Math.cos(b) * Math.cos(altitude), Math.sin(altitude), light, bearing / (2 * Math.PI)];
+        // East, north and up to the frame, whose north turns from true north by the convergence.
+        const c = this.convergence(east, north) * RAD, cos = Math.cos(c), sin = Math.sin(c);
+        const toFrame = ([e, n, u]: number[]) => [e * cos + n * sin, n * cos - e * sin, u];
+        const { bearing, altitude } = solarPosition(place, solarTerms(instant));
+        const sun = toFrame([Math.sin(bearing) * Math.cos(altitude), Math.cos(bearing) * Math.cos(altitude), Math.sin(altitude)]);
+        const toMoon = moonAt(place, instant), moon = toFrame(toMoon);
+        const sunAltitude = altitude / RAD, moonAltitude = Math.asin(toMoon[2]) / RAD;
+        const phase = Math.acos(Math.min(1, Math.max(-1, -(sun[0] * moon[0] + sun[1] * moon[1] + sun[2] * moon[2])))) / RAD;
+        const share = moonShare(sunAltitude, moonAltitude, phase), weather = WEATHERS[this.extras.weather].sun;
+        const turns = (b: number) => ((b / (2 * Math.PI)) % 1 + 1) % 1;
+        const key = share > 0
+            ? [...moon, weather * share, turns(Math.atan2(toMoon[0], toMoon[1]))]
+            : [...sun, weather * Math.min(1, Math.max(0, (altitude + 0.05) / 0.15)), turns(bearing)];
+        const m = starFrame(place, instant);
+        const stars = [0, 1, 2].map(j => cos * m[j] + sin * m[3 + j]).concat([0, 1, 2].map(j => cos * m[3 + j] - sin * m[j]), m.slice(6)) as Mat3;
+        return { key, sun, sunAltitude, moon, moonAltitude, phase, share, stars };
     }
+}
+
+/** The sun and the moon of `lights()`: directions in the frame, altitudes and the phase angle in degrees. */
+interface Lights {
+    key: number[];
+    sun: number[];
+    sunAltitude: number;
+    moon: number[];
+    moonAltitude: number;
+    phase: number;
+    /** The moon's share of its full light, 0 while the sun is the light. */
+    share: number;
+    /** J2000 equatorial directions to the frame, rows first. */
+    stars: Mat3;
 }
 
 /** A view projection whose image moves by `ndc` in clip space. */

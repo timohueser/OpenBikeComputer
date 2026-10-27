@@ -2,11 +2,13 @@ import { linear, VARIEGATED } from '../ground/rules';
 import type { EyeLook, Light } from './light';
 
 /** Bytes of `Look` in shade.wgsl, and the offset of its `codes`. */
-export const LOOK_BYTES = 288, LOOK_CODES = 240;
+export const LOOK_BYTES = 304, LOOK_CODES = 240;
 
 export interface LookInput {
-    /** Toward the sun in render space, and its bearing in turns clockwise from true north. */
+    /** Toward the light in render space, and its bearing in turns clockwise from true north: the sun, or the moon at night. */
     sun: number[];
+    /** Toward the sun in render space, which the sky's glow follows. */
+    skySun: number[];
     light: Light;
     eye: EyeLook;
     /** The eye: metres above sea level, and metres east and north in the frame. */
@@ -29,7 +31,7 @@ export function lookUniform(input: LookInput): ArrayBuffer {
     const data = new ArrayBuffer(LOOK_BYTES), floats = new Float32Array(data), words = new Uint32Array(data);
     const { light, eye } = input;
     floats.set(input.sun, 0);
-    floats.set([...light.sunColour, light.glow], 4);
+    floats.set([...light.sunColour, 0], 4);
     floats.set([...light.ambient, light.night], 8);
     floats.set([...light.zenith, eye.softness], 12);
     floats.set([...light.horizon, eye.gradient], 16);
@@ -42,5 +44,6 @@ export function lookUniform(input: LookInput): ArrayBuffer {
     words.set(input.codes, LOOK_CODES / 4);
     words.set([input.debug, input.sample, 0, 0], 64);
     floats.set([...input.jitter, input.scale, 0], 68);
+    floats.set([...input.skySun, light.glow], 72);
     return data;
 }

@@ -6,6 +6,7 @@
 
 import { linear } from '../ground/rules';
 import type { Look, Preset, Region, WeatherKeys } from '../rules/regions';
+import { moonMagnitude } from './night';
 
 type Rgb = [number, number, number];
 
@@ -26,7 +27,7 @@ export interface Light {
 // so a lit face does not wash out, and shade keeps about a third of it; toward sunset the sky light
 // drops faster than the sun, so contrast rises.
 const KEYS = [
-    { altitude: -18, zenith: '#0b1322', horizon: '#1a2438', sun: '#000000', ambient: '#2a3866', glow: 0 },
+    { altitude: -18, zenith: '#060a14', horizon: '#111a2c', sun: '#000000', ambient: '#2a3866', glow: 0 },
     { altitude: -9, zenith: '#1b2f52', horizon: '#4f5d8a', sun: '#000000', ambient: '#3a4878', glow: 0.15 },
     { altitude: -4, zenith: '#2c4a7a', horizon: '#c08a98', sun: '#401010', ambient: '#4a5482', glow: 0.6 },
     { altitude: -1, zenith: '#3d5f93', horizon: '#f39a72', sun: '#e2563a', ambient: '#5a5f8c', glow: 1.1 },
@@ -53,6 +54,26 @@ export function lightAt(degrees: number): Light {
         sunColour: scale(key('sun'), DAYLIGHT), zenith: key('zenith'), horizon: key('horizon'),
         glow: a.glow + (b.glow - a.glow) * t, ambient: scale(key('ambient'), DAYLIGHT), night: Math.min(Math.max((-4 - degrees) / 8, 0), 1),
     };
+}
+
+// The light of a full moon high in the sky, and the sky light and the sky that it adds. Chosen, not
+// measured: the eye adapts to the night, so a full moon lights a face about as the blue hour does.
+const MOONLIGHT = linear('#5c6f94'), MOON_AMBIENT = linear('#1c2440'), MOON_SKY = linear('#1a2a4c');
+
+/**
+ * The moon's share of its full light, 0 while the sun lights the scene: it takes the sun's place
+ * from −9°, where the sun's light is gone, and is whole from −12°. It rises with the moon's height,
+ * and with the square root of its brightness by its phase angle in degrees, as an adapted eye sees it.
+ */
+export function moonShare(sun: number, moon: number, phase: number): number {
+    const night = Math.min(Math.max((-9 - sun) / 3, 0), 1), height = Math.min(Math.max(moon / 6, 0), 1);
+    return night * height * 10 ** (-0.2 * (moonMagnitude(phase) - moonMagnitude(0)));
+}
+
+/** The light with the moon's light in the sun's place, at a share of its full light. */
+export function moonlit(light: Light, share: number): Light {
+    const add = (c: Rgb, moon: Rgb) => c.map((v, i) => v + moon[i] * share) as Rgb;
+    return { ...light, sunColour: scale(MOONLIGHT, share), ambient: add(light.ambient, MOON_AMBIENT), zenith: add(light.zenith, MOON_SKY), horizon: add(light.horizon, MOON_SKY) };
 }
 
 /** The weather presets: the cloud layer, the wet and the rain, and what they do to the light. */
