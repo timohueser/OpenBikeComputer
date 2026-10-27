@@ -14,8 +14,8 @@ export default {
   leaves: {
     winter: 'bare',
     // Oak leafs late, with a yellow-olive flush.
-    spring: ['#55692c', '#7f9a3c', '#b8c86c'],
-    summer: ['#273919', '#3c5223', '#60723a'],
+    spring: ['#526134', '#6e8041', '#9aa953'],
+    summer: ['#2e4027', '#3d5231', '#566844'],
     autumn: ['#4e4a24', '#7a6e30', '#a8964a'],
   },
   twigs: ['#4a433c', '#625a52', '#7c746a'],
