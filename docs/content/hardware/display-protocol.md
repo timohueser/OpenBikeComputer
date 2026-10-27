@@ -83,7 +83,7 @@ holding an image.
 
 ## Implementation
 
-- COM driver: [`com.rs`](src:firmware/obc-fw-nrf54l/src/com.rs), [`com_hw.rs`](src:firmware/obc-fw-nrf54l/src/com_hw.rs)
+- COM driver: [`com.rs`](src:firmware/obc-fw-nrf54l/src/com.rs)
 - Scan program: [`flpr_scan.c`](src:firmware/obc-fw-nrf54l/src/flpr/flpr_scan.c)
 - Wire packer: [`wire.rs`](src:firmware/obc-display/src/ls021/wire.rs)
 - Presenter: [rendering pipeline](../../software/rendering/)

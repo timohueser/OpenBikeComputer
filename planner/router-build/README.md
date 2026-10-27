@@ -1,20 +1,17 @@
 # Regional route builder
 
-Build the package with Rust. The input is one or more local OSM PBF files.
-Choose bounds inside the source extract, with room around the intended trip.
-The importer clips the graph at those bounds. It does not fetch missing data.
+`obc data` builds the `planner/routing` layer of a region with this crate
+(`step::step`). The step reads the OSM PBF files of the region and clips the graph
+at the region bounds. It does not fetch missing data. `data/planner.toml` lists
+the profiles. To build the layer again after a code change, run:
 
 ```sh
-cargo run --release -p planner-router-build -- \
-  /data/freiburg-regbez.osm.pbf --output /data/routes/freiburg \
-  --region freiburg --bounds 7.5,47.7,8.5,48.4 --profiles all --countries DE
+obc data update local --only planner/routing
 ```
 
-The output directory must not exist. The builder writes objects to a temporary
-directory and publishes the manifest with a directory rename. Keep old packages
-until their consumers finish. Do not edit an installed package in place.
+The step writes a new layer directory. Do not edit an installed package in place.
 
-The builder also writes `overlays.sqlite` into the output directory: the route
+The builder also writes `overlays.sqlite` into the package directory: the route
 networks and access restrictions of the source data, bound to the new manifest
 identity. The [planner release contract](../../specs/planner-release.md) gives
 its layout. The source OSM objects stay in memory only; the package does not
@@ -33,31 +30,23 @@ not live closures.
 
 ## Route catalog
 
-With `--countries`, the builder also writes `route-catalog.json`, the signed
-routes in the format of [the catalog contract](../../specs/route-catalog.md). It
-prints a JSON report: the counts, the dropped relations by reason and the
-shaping points. The catalog needs the `touring`, `road`, `gravel`,
-`mtb/technical` and `hiking/alpine` profiles. Name the region's countries, so that the catalog can omit
-route marks in France. When France is the only country, no record has a route
-mark. A region with France and another country fails. The builder checks these
-options before the import.
+The builder also writes `route-catalog.json`, the signed routes in the format of
+[the catalog contract](../../specs/route-catalog.md). The step metrics are its
+report: the counts, the dropped relations by reason and the shaping points. The
+catalog needs the `touring`, `road`, `gravel`, `mtb/technical` and
+`hiking/alpine` profiles. Name the region's countries, so that the catalog can
+omit route marks in France. When France is the only country, no record has a route
+mark. A region with France and another country fails. The builder checks the
+profiles and countries before the import.
 
 ## Terrain
 
-`terrain::apply` takes a height callback. The command reads heights from the
-OBC bare-earth archive and local Copernicus GeoTIFFs through `obc-dem`:
-
-```sh
-cargo run --release -p planner-router-build -- \
-  /data/freiburg-regbez.osm.pbf --output /data/routes/freiburg \
-  --region freiburg --bounds 7.5,47.7,8.5,48.4 --profiles all \
-  --reference /data/obc-reference --dem /data/copernicus
-```
-
-The ground archive takes precedence. Preserve its source credits with the
-package. Terrain samples are at most 20 m apart. A symmetric 20 m filter leaves
-junction heights and missing samples intact. Bridges and tunnels interpolate
-between their endpoints. Without terrain, climb and slope remain unknown.
+`terrain::apply` takes a height callback. The step reads heights from the
+Copernicus GLO-30 tiles of the bounds through `obc-dem`. Preserve their source
+credits with the package. Terrain samples are at most 20 m apart. A symmetric
+20 m filter leaves junction heights and missing samples intact. Bridges and
+tunnels interpolate between their endpoints. Without a height, climb and slope
+remain unknown.
 
 ## Supported import policy
 
@@ -87,7 +76,7 @@ explicit tags.
 
 ## Profiles
 
-Pass `--profiles all` to prepare all 17 metrics, or supply comma-separated IDs.
+The `profiles` option names the profile IDs, or `all` for all 17 metrics.
 Rebuild packages after changing the profile code. Rider validation is required.
 
 | Road profile | Preference |
