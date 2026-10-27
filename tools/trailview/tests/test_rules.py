@@ -32,7 +32,7 @@ CASES = [
     ("materials", ["materials", 9, "clumps"], 2, "materials.json: materials[9].clumps: 2 is not a number from 0 to 1"),
     ("styles/trullo", ["roof"], "dome", 'styles/trullo.json: roof: "dome" is not one of "cone", "flat"'),
     # Not the prototype's: the engine draws each model that a pack names, also one that a child pack inherits.
-    ("packs/alps", ["trees", "norway-spruce", "model"], "monkey-puzzle", "regions/alps.insubric.json: pack alps.insubric: tree norway-spruce has no model monkey-puzzle"),
+    ("packs/alps", ["trees", "norway-spruce", "model"], "no-such-tree", "regions/alps.insubric.json: pack alps.insubric: tree norway-spruce has no model no-such-tree"),
     ("packs/alps", ["ground", "bilberry", "model"], "norway-spruce", "regions/alps.json: pack alps: ground plant bilberry has no model norway-spruce"),
     ("packs/alps", ["orchard"], "apple", "regions/alps.json: pack alps: orchard has no model apple"),
     ("packs/alps", ["style", "xx-yy"], "chalet", "regions/alps.json: xx-yy is not a place of countries.json"),
@@ -76,10 +76,10 @@ class RulesetTest(unittest.TestCase):
         trees = ruleset["packs"]["alps"]["trees"]
         spruce = {**trees["norway-spruce"], "model": "norway-spruce"}
         trees.update({f"spruce-{i}": spruce for i in range(rules.MAX_TREE_SPECIES)})
-        trees["swiss-stone-pine"] = {**spruce, "model": "swiss-stone-pine"}
+        trees["no-such-tree"] = {**spruce, "model": "no-such-tree"}
         problems = rules.validate(ruleset)
         self.assertTrue(any(p.startswith("regions/alps.json: pack alps has ") and p.endswith("more than the 32 that the forest holds") for p in problems), problems)
-        self.assertIn("regions/alps.json: pack alps: tree swiss-stone-pine has no model swiss-stone-pine", problems)
+        self.assertIn("regions/alps.json: pack alps: tree no-such-tree has no model no-such-tree", problems)
 
     def test_a_pack_with_more_shrubs_or_ground_plants_than_the_plants_hold_is_a_problem(self):
         ruleset = copy.deepcopy(RULESET)
