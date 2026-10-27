@@ -7,7 +7,7 @@ import type { ModelSpec } from '../instances/instances';
 import type { AnchoredBuilder } from '../structures/anchored';
 import { GROUND, mix, type MeshBuilder, station, type Corner } from '../structures/mesh';
 import type { Owns } from '../structures/node';
-import { metresPerUnit, type Line, type Node } from '../terrain/bins';
+import { metresPerUnit, type Line, type Node, type Shapes } from '../terrain/bins';
 
 /**
  * A feature of a tile in world units: each part's x, y in turn. The cut of a tile keeps one vertex past
@@ -32,8 +32,9 @@ export interface Build {
     near: { mesh: MeshBuilder; anchored: AnchoredBuilder };
     place: (placement: Placement) => void;
     owns: Owns;
-    /** The roads and paths of the tile. */
+    /** The roads and paths of the tile, and its buildings' rings. */
     ways: Line[];
+    buildings: Shapes['buildings'];
 }
 
 export interface Kind {
@@ -84,13 +85,19 @@ export function facing(ways: Line[], x: number, y: number): number | undefined {
  * draws to `reach` metres.
  */
 export function modelKind(name: string, model: () => Model, reach: number, facesWay = false): Kind {
-    const height = Math.max(...model().points.filter((_, i) => i % 3 === 2));
+    const { height, spec } = unitModel(model, reach);
     return {
         build(feature, out) {
             pointModels(feature, out, (x, y) => ({ yaw: (facesWay ? facing(out.ways, x, y) : undefined) ?? ((x * 7 + y * 13) % 628) / 100, height, model: name }));
         },
-        models: { [name]: () => ({ tiers: [{ mesh: geometry(model().place(0, [0, 0, 0], 1 / height)), until: reach }] }) },
+        models: { [name]: spec },
     };
+}
+
+/** A model in metres as the instances take it, 1 tall, with its height in metres; it draws to `reach` metres. */
+export function unitModel(model: () => Model, reach: number): { height: number; spec: () => ModelSpec } {
+    const height = Math.max(...model().points.filter((_, i) => i % 3 === 2));
+    return { height, spec: () => ({ tiers: [{ mesh: geometry(model().place(0, [0, 0, 0], 1 / height)), until: reach }] }) };
 }
 
 /** The smallest rectangle about a ring, one side along an edge: its middle in world units, the angle of its width counter-clockwise from east, and its width and depth in metres. */

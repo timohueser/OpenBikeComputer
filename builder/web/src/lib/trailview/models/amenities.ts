@@ -6,6 +6,9 @@ import { Model, roof, type Vec } from './flat';
 const WOOD = rgb('#8a6440'), PALE_WOOD = rgb('#a5815a'), DARK_WOOD = rgb('#5e4630'), METAL = rgb('#4b5157');
 const STONE = rgb('#9a958c'), DARK_STONE = rgb('#77726a'), ASH = rgb('#3a3430'), WATER = rgb('#5d8fb0'), JET = rgb('#cfe6f2');
 const FLAME = rgb('#ff7a1c'), CORE = rgb('#ffd04a'), POST = rgb('#2f7fc1'), PUMP = rgb('#c8402a'), ROOF = rgb('#7a5136');
+// As the logo, brand/signpost.svg.
+const OLIVE = rgb('#5c5a2e'), SIGN = rgb('#f4a81d');
+const PIT = rgb('#2a2622'), GALVANISED = rgb('#9aa0a4'), POLE = rgb('#4a4f54'), LAMP = rgb('#fff1c4');
 
 /** A park bench: a seat, a back and two pairs of legs. */
 export function bench(): Model {
@@ -49,14 +52,43 @@ export function bbq(): Model {
     return fire(m, 0.72, 0.45);
 }
 
-/** Two crossed tongues of fire and a core from `z`, `scale` times their size in a fireplace, each seen from both sides: they glow. */
+/** Two crossed tongues of fire and a core from `z`, `scale` times their size in a fireplace, that rise and glow at night. */
 function fire(m: Model, z: number, scale: number): Model {
     const first = m.triangles;
     for (const [a, w, h, colour] of [[0, 0.26, 0.8, FLAME], [Math.PI / 2, 0.26, 0.7, FLAME], [Math.PI / 4, 0.14, 0.45, CORE]] as const) {
-        const c = Math.cos(a) * w * scale, s = Math.sin(a) * w * scale, l: Vec = [-c, -s, z], r: Vec = [c, s, z], top: Vec = [0, 0, z + h * scale];
-        m.tri(l, r, top, colour).tri(r, l, top, colour);
+        const c = Math.cos(a) * w * scale, s = Math.sin(a) * w * scale;
+        m.tri([-c, -s, z], [c, s, z], [0, 0, z + h * scale], colour);
     }
-    return m.glowing(first);
+    return m.glowing(first, true);
+}
+
+/** A guidepost as the logo draws it: an olive post with two arrow plates that point either way along +x. */
+export function guidepost(): Model {
+    const m = new Model().box([0, 0, 1.25], [0.12, 0.12, 2.5], OLIVE);
+    for (const [z, way, tilt] of [[2.2, -1, 0.07], [1.85, 1, -0.07]]) {
+        const plate = new Model().prism([[0.06, -0.1], [0.06, 0.1], [0.56, 0.1], [0.7, 0], [0.56, -0.1]], -0.02, 0.02, SIGN);
+        m.add(plate.map(([x, y, h]) => [way * x, y, z + h + tilt * x]));
+    }
+    return m;
+}
+
+/**
+ * A cattle grid: bars across a dark pit between two concrete sills, flush with the way that runs along +x.
+ * The pit and the sills reach down, so that where the way slopes across, the low side shows the pit's edge.
+ */
+export function cattleGrid(): Model {
+    const m = new Model().box([0, 0, -0.2], [2, 2.8, 0.44], PIT);
+    for (const x of [-1.06, 1.06]) m.box([x, 0, -0.12], [0.12, 2.9, 0.36], STONE);
+    for (let k = 0; k < 9; k++) m.beam([-0.88 + 0.22 * k, -1.4, 0.025], [-0.88 + 0.22 * k, 1.4, 0.025], 0.05, GALVANISED);
+    return m;
+}
+
+/** A street lamp: a pole whose arm reaches toward −y to a lantern under a cap, which glows at night. */
+export function streetLamp(): Model {
+    const m = new Model().beam([0, 0, 0], [0, 0, 6], 0.14, POLE, { sides: 6 }).beam([0, 0, 5.85], [0, -0.9, 6.05], 0.07, POLE);
+    m.box([0, -1.05, 6.08], [0.3, 0.56, 0.05], POLE);
+    const glass = m.triangles;
+    return m.box([0, -1.05, 5.97], [0.24, 0.48, 0.17], LAMP).glowing(glass);
 }
 
 /** A drinking fountain: a stone trough of water with a pillar and its spout. */

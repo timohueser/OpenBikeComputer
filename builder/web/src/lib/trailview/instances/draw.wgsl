@@ -49,8 +49,8 @@ struct MeshIn {
     @location(2) colour: vec4f,
 }
 
-// A model's faces that glow (`glowing` of models/flat.ts) rise from their foot as the night falls and shine
-// in their own colour this many times over.
+// A model's faces that glow (`glowing` of models/flat.ts) shine at night in their own colour this many times over;
+// those that rise, as a flame, rise from their foot as the night falls.
 const GLOW_GAIN: f32 = 2.5;
 
 struct MeshOut {
@@ -179,11 +179,11 @@ fn lifted(z: f32, top: f32, m: Model, lift: f32) -> f32 {
     return lift + (z - m.crown) * raise;
 }
 
-// A vertex of an instance in render space; a glowing face rises from its foot by `rise`.
+// A vertex of an instance in render space; a face that rises stands `rise` of its height.
 fn placed(v: MeshIn, i: Instance, m: Model, rise: f32) -> vec3f {
     let turn = unpack2x16float(i.turn);
     let model = v.position.xyz * m.extent;
-    let local = vec3f(model.xy, lifted(model.z, v.position.w, m, f32((i.look >> 8u) & 255u) / 255.0) * mix(1.0, rise, 1.0 - v.colour.a));
+    let local = vec3f(model.xy, lifted(model.z, v.position.w, m, f32((i.look >> 8u) & 255u) / 255.0) * mix(1.0, rise, v.normal.w));
     return i.at.xyz + i.at.w * vec3f(turn.x * local.x - turn.y * local.y, turn.y * local.x + turn.x * local.y, local.z);
 }
 

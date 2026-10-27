@@ -223,6 +223,20 @@
     "height": "surface"
   },
   {
+    "kind": "guidepost",
+    "geometry": "point",
+    "match": [{"tourism": ["information"], "information": ["guidepost"]}],
+    "keep": [],
+    "height": "surface"
+  },
+  {
+    "kind": "cattle-grid",
+    "geometry": "point",
+    "match": [{"barrier": ["cattle_grid"]}],
+    "keep": [],
+    "height": "surface"
+  },
+  {
     "kind": "bench",
     "geometry": "point",
     "match": [{"amenity": ["bench"]}],
