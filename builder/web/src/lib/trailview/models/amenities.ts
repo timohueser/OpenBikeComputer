@@ -8,7 +8,7 @@ const STONE = rgb('#9a958c'), DARK_STONE = rgb('#77726a'), ASH = rgb('#3a3430'),
 const FLAME = rgb('#ff7a1c'), CORE = rgb('#ffd04a'), POST = rgb('#2f7fc1'), PUMP = rgb('#c8402a'), ROOF = rgb('#7a5136');
 // As the logo, brand/signpost.svg.
 const OLIVE = rgb('#5c5a2e'), SIGN = rgb('#f4a81d');
-const PIT = rgb('#2a2622'), GALVANISED = rgb('#9aa0a4'), POLE = rgb('#4a4f54'), LAMP = rgb('#fff1c4');
+const POLE = rgb('#4a4f54'), LAMP = rgb('#fff1c4');
 
 /** A park bench: a seat, a back and two pairs of legs. */
 export function bench(): Model {
@@ -69,17 +69,6 @@ export function guidepost(): Model {
         const plate = new Model().prism([[0.06, -0.1], [0.06, 0.1], [0.56, 0.1], [0.7, 0], [0.56, -0.1]], -0.02, 0.02, SIGN);
         m.add(plate.map(([x, y, h]) => [way * x, y, z + h + tilt * x]));
     }
-    return m;
-}
-
-/**
- * A cattle grid: bars across a dark pit between two concrete sills, flush with the way that runs along +x.
- * The pit and the sills reach down, so that where the way slopes across, the low side shows the pit's edge.
- */
-export function cattleGrid(): Model {
-    const m = new Model().box([0, 0, -0.2], [2, 2.8, 0.44], PIT);
-    for (const x of [-1.06, 1.06]) m.box([x, 0, -0.12], [0.12, 2.9, 0.36], STONE);
-    for (let k = 0; k < 9; k++) m.beam([-0.88 + 0.22 * k, -1.4, 0.025], [-0.88 + 0.22 * k, 1.4, 0.025], 0.05, GALVANISED);
     return m;
 }
 
