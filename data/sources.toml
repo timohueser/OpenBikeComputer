@@ -203,6 +203,20 @@ version = "date"
 redistribute = true
 
 [[source]]
+id = "dtm-cz"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Czechia: DMR 5G 2 m"
+licence = "CC-BY-4.0"
+attribution = "© ČÚZK"
+fetch = { kind = "dtm", url = "https://ags.cuzk.gov.cz/arcgis2/rest/services/dmr5g/ImageServer/exportImage" }
+extent = [12.0, 48.5, 18.9, 51.1]
+areas = ["europe/czech-republic"]
+version = "date"
+redistribute = true
+
+[[source]]
 id = "dtm-de-bw"
 kind = "data"
 group = "Elevation"
@@ -285,6 +299,21 @@ attribution = "© Geobasis NRW"
 fetch = { kind = "dtm", url = "https://www.wcs.nrw.de/geobasis/wcs_nw_dgm" }
 extent = [5.8, 50.3, 9.5, 52.6]
 areas = ["europe/germany/nordrhein-westfalen"]
+version = "date"
+redistribute = true
+
+[[source]]
+id = "dtm-de-rp"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Rhineland-Palatinate, Germany: DGM1 1 m"
+licence = "DL-DE-BY-2.0"
+# The agency asks for the year of the data and for a note that the data were processed.
+attribution = "©GeoBasis-DE / LVermGeoRP{year}, dl-de/by-2-0, www.lvermgeo.rlp.de [Daten bearbeitet]"
+fetch = { kind = "dtm", url = "https://geobasis-rlp.de/data/dgm1/current/tif/" }
+extent = [6.1, 48.9, 8.6, 51.0]
+areas = ["europe/germany/rheinland-pfalz"]
 version = "date"
 redistribute = true
 
@@ -392,6 +421,49 @@ version = "date"
 redistribute = true
 
 [[source]]
+id = "dtm-gb-sct"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Scotland: Scottish Public Sector LiDAR DTM 0.5–1 m"
+licence = "OGL-UK-3.0"
+# One credit for all the surveys of the row: each survey states its own sentence.
+attribution = "Contains Scottish Public Sector LiDAR: Crown copyright Scottish Government, SEPA and Scottish Water (2012); Copyright Scottish Government and SEPA (2014), Fugro retain the commercial copyright; © SEPA (2019); Crown copyright Scottish Government © Crown copyright and database right (2025). Open Government Licence v3"
+fetch = { kind = "dtm", url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com/lidar/" }
+extent = [-8.7, 54.6, -0.7, 60.9]
+areas = ["europe/united-kingdom/scotland"]
+version = "date"
+redistribute = true
+
+[[source]]
+id = "dtm-is"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Iceland: ÍslandsDEM v1.0 10 m"
+licence = "CC-BY-4.0"
+attribution = "ÍslandsDEM v1.0 © Náttúrufræðistofnun"
+fetch = { kind = "dtm", url = "https://ftp.natt.is/gisdata/raster/IslandsDEMv1.0_10x10m_isn2016_zmasl.tif" }
+extent = [-24.6, 63.2, -13.4, 66.6]
+areas = ["europe/iceland"]
+version = "date"
+redistribute = true
+
+[[source]]
+id = "dtm-it"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Italy: TINITALY 1.1 10 m"
+licence = "CC-BY-4.0"
+attribution = "TINITALY/1.1 © INGV, doi:10.13127/tinitaly/1.1"
+fetch = { kind = "dtm", url = "https://tinitaly.pi.ingv.it/TINItaly_1_1/wcs" }
+extent = [6.6, 35.4, 18.6, 47.1]
+areas = ["europe/italy"]
+version = "date"
+redistribute = true
+
+[[source]]
 id = "dtm-it-bz"
 kind = "data"
 group = "Elevation"
@@ -460,6 +532,22 @@ version = "date"
 redistribute = true
 
 [[source]]
+id = "dtm-pl"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Poland: NMT 1 m"
+licence = "LicenseRef-GUGiK-free-use"
+licence_url = "https://www.geoportal.gov.pl/pl/dane/numeryczny-model-terenu-nmt/"
+obligations = "None: GUGiK states that the NMT is free of charge and free for any use"
+attribution = "Główny Urząd Geodezji i Kartografii"
+fetch = { kind = "dtm", url = "https://mapy.geoportal.gov.pl/wss/service/PZGIK/NMT/GRID1/WCS/DigitalTerrainModelFormatTIFF" }
+extent = [14.1, 49.0, 24.2, 54.9]
+areas = ["europe/poland"]
+version = "date"
+redistribute = true
+
+[[source]]
 id = "dtm-se"
 kind = "data"
 group = "Elevation"
@@ -474,6 +562,22 @@ hosts = ["*.lantmateriet.se"]
 version = "date"
 redistribute = true
 credential = { env = ["OBC_REFERENCE_SE_USER", "OBC_REFERENCE_SE_PASSWORD"], register = "https://geotorget.lantmateriet.se", hint = "Apply for Markhöjdmodell Nedladdning, grid 1+ with Basic authentication, then copy the consumer user name and password." }
+
+[[source]]
+id = "dtm-sk"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Slovakia: DMR 5.0 1 m"
+licence = "CC-BY-4.0"
+attribution = "DMR 5.0 © ÚGKK SR; quasigeoid © GKÚ Bratislava"
+fetch = { kind = "dtm", url = "https://inspirews.skgeodesy.sk/geoserver/el/wcs" }
+extent = [16.8, 47.7, 22.6, 49.7]
+areas = ["europe/slovakia"]
+# GKÚ's quasigeoid grid, which moves the service's ellipsoidal heights onto Bpv.
+hosts = ["cdn.proj.org"]
+version = "date"
+redistribute = true
 
 [[source]]
 id = "dtm-uk"

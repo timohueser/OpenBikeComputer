@@ -20,9 +20,9 @@ MEAN = "mean"
 # the ranking does not move when an adapter lands.
 PRIORITY = (
     "dk", "nl", "it-tn",
-    "de-nw", "de-he", "de-ni", "de-by", "de-sn", "de-th", "de-mv", "de-st", "de-bw",
-    "fr", "at", "no", "uk", "se", "us", "ca", "nz",
-    "ch", "fi", "it-bz", "es", "au",
+    "de-nw", "de-he", "de-ni", "de-by", "de-sn", "de-th", "de-mv", "de-st", "de-rp", "de-bw",
+    "fr", "at", "no", "uk", "gb-sct", "se", "sk", "pl", "us", "ca", "nz",
+    "ch", "fi", "cz", "it-bz", "es", "au", "it", "is",
 )
 
 def priority_rank(key: str) -> int:

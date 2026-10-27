@@ -3,7 +3,8 @@
 There is no national DGM service, and the states do not agree on how to publish. Three
 shapes cover the six biggest: a WCS 2.0.1 (North Rhine-Westphalia, Hesse), a grid of
 tiles at a fixed URL (Bavaria, Saxony, Thuringia, Baden-Württemberg), and a STAC of
-cloud-optimised GeoTIFFs (Lower Saxony). All of them are keyless.
+cloud-optimised GeoTIFFs (Lower Saxony). Rhineland-Palatinate is a grid of tiles whose names
+only its folder index states. All of them are keyless.
 
 Bavaria's INSPIRE WCS answers 401 and its credentials come from the LDBV by post, so
 Bavaria is a download. Saxony and Thuringia publish no WCS at all. Brandenburg's WCS
@@ -15,8 +16,11 @@ NRW's coverage is `x`/`y` and the two INSPIRE coverages are `E`/`N`. A server re
 subset whose label it does not know, so the row carries the labels its capabilities state.
 """
 
-from .base import RASTER_SUFFIXES
-from .grid import GridTiles
+import re
+
+from .base import RASTER_SUFFIXES, http_get
+from .bulk import BulkSource
+from .grid import GridTiles, grid_squares
 from .protocols import Wcs10Source, Wcs20Source
 from .stac import StacSearchSource
 
@@ -115,4 +119,28 @@ NI = StacSearchSource(
     asset="dgm1-tif",
 )
 
-DE = (NW, HE, BW, MV, ST, BY, SN, TH, NI)
+
+class YearTiles(BulkSource):
+    """1 km tiles whose names end in the year the square was flown, which only the folder's
+    index states. The index is read once per fetch; a square it does not name is outside the
+    state."""
+
+    def __init__(self, *args, base, **kw):
+        super().__init__(*args, **kw)
+        self.base = base
+
+    def files(self, bbox):
+        listing = http_get(self.base).decode("utf-8")
+        index = {square: name for name, square in
+                 re.findall(r'"(dgm1_32_(\d+_\d+)_1_rp_\d{4}\.tif)"', listing)}
+        squares = sorted({f"{x // 1000}_{y // 1000}" for x, y in grid_squares(bbox, 25832, 1000)})
+        return [(index[square], self.base + index[square]) for square in squares if square in index]
+
+
+RP = YearTiles(
+    "de-rp", "Germany, Rhineland-Palatinate", "DGM1 1 m", 1.0,
+    "dl-de/by-2-0", DHHN,
+    base="https://geobasis-rlp.de/data/dgm1/current/tif/",
+)
+
+DE = (NW, HE, BW, MV, ST, BY, SN, TH, NI, RP)
