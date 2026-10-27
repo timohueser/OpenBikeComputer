@@ -84,7 +84,8 @@ export function random(seed = 1): () => number {
 }
 
 /** Triangles with a normal and a colour per vertex. */
-export interface Geometry { position: number[]; normal: number[]; color: number[]; index: number[] }
+/** `glow`: how much each vertex glows at night, 0 to 1; none when absent. */
+export interface Geometry { position: number[]; normal: number[]; color: number[]; index: number[]; glow?: number[] }
 
 const empty = (): Geometry => ({ position: [], normal: [], color: [], index: [] });
 const count = (geo: Geometry) => geo.position.length / 3;

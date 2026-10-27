@@ -1,6 +1,7 @@
 // What a kind module is, and the shared handlers that most kinds use. A kind module in kinds/ has the name
 // of its entry in data/trailview/kinds.json and default-exports a Kind; the registry (index.ts) finds it,
 // so a new kind changes no other file of the engine.
+import { geometry, type Model } from '../models/flat';
 import { EXTENT, unitScale, type Feature } from '../stream/features';
 import type { ModelSpec } from '../instances/instances';
 import type { AnchoredBuilder } from '../structures/anchored';
@@ -52,6 +53,20 @@ export function pointModels(feature: Placed, out: Build, instance: (x: number, y
         const it = instance(xy[i], xy[i + 1]);
         if (it) out.place({ x: xy[i], y: xy[i + 1], ...it });
     }
+}
+
+/**
+ * A kind of one model at each point: `model` in metres with its base at the origin, turned by the hash of
+ * its place, as the map does not tell which way it faces. It draws to `reach` metres.
+ */
+export function modelKind(name: string, model: () => Model, reach: number): Kind {
+    const height = Math.max(...model().points.filter((_, i) => i % 3 === 2));
+    return {
+        build(feature, out) {
+            pointModels(feature, out, (x, y) => ({ yaw: ((x * 7 + y * 13) % 628) / 100, height, model: name }));
+        },
+        models: { [name]: () => ({ tiers: [{ mesh: geometry(model().place(0, [0, 0, 0], 1 / height)), until: reach }] }) },
+    };
 }
 
 /** The smallest rectangle about a ring, one side along an edge: its middle in world units, the angle of its width counter-clockwise from east, and its width and depth in metres. */

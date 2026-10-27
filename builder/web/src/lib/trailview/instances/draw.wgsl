@@ -49,6 +49,10 @@ struct MeshIn {
     @location(2) colour: vec4f,
 }
 
+// A model's faces that glow (`glowing` of models/flat.ts) rise from their foot as the night falls and shine
+// in their own colour this many times over.
+const GLOW_GAIN: f32 = 2.5;
+
 struct MeshOut {
     @builtin(position) clip: vec4f,
     @location(0) normal: vec3f,
@@ -61,6 +65,13 @@ struct MeshOut {
     @location(6) relative: vec3f,
     // 1 where `sun` holds the objects' shadow too (mesh_vertex), 0 for a tree, which reads it per pixel.
     @location(7) @interpolate(flat) shaded: u32,
+    // How much the face glows: 0 to 1.
+    @location(8) glow: f32,
+}
+
+// 0 by day to 1 at night, as the lamplight of the houses.
+fn nightfall() -> f32 {
+    return smoothstep(0.0, 0.4, look.ambient.w);
 }
 
 // The haze between the eye and a point of render space, as the factor and the term that `atmosphere`
@@ -168,18 +179,18 @@ fn lifted(z: f32, top: f32, m: Model, lift: f32) -> f32 {
     return lift + (z - m.crown) * raise;
 }
 
-// A vertex of an instance in render space.
-fn placed(v: MeshIn, i: Instance, m: Model) -> vec3f {
+// A vertex of an instance in render space; a glowing face rises from its foot by `rise`.
+fn placed(v: MeshIn, i: Instance, m: Model, rise: f32) -> vec3f {
     let turn = unpack2x16float(i.turn);
     let model = v.position.xyz * m.extent;
-    let local = vec3f(model.xy, lifted(model.z, v.position.w, m, f32((i.look >> 8u) & 255u) / 255.0));
+    let local = vec3f(model.xy, lifted(model.z, v.position.w, m, f32((i.look >> 8u) & 255u) / 255.0) * mix(1.0, rise, 1.0 - v.colour.a));
     return i.at.xyz + i.at.w * vec3f(turn.x * local.x - turn.y * local.y, turn.y * local.x + turn.x * local.y, local.z);
 }
 
-// A vertex of a caster in the shadow map (light/shadow.ts), whose frame holds the sun's view.
+// A vertex of a caster in the shadow map (light/shadow.ts), whose frame holds the sun's view. A flame casts no shadow.
 @vertex
 fn caster_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> @builtin(position) vec4f {
-    return frame.view_proj * vec4f(placed(v, lists[bases[draw.x] + instance], models[draw.x / TIERS]), 1.0);
+    return frame.view_proj * vec4f(placed(v, lists[bases[draw.x] + instance], models[draw.x / TIERS], 0.0), 1.0);
 }
 
 @vertex
@@ -187,7 +198,7 @@ fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     let i = lists[bases[draw.x] + instance];
     let m = models[draw.x / TIERS];
     let model = v.position.xyz * m.extent;
-    let p = placed(v, i, m);
+    let p = placed(v, i, m, nightfall());
     let t = normalize(unpack2x16float(i.turn));
     var out: MeshOut;
     out.clip = frame.view_proj * vec4f(p, 1.0);
@@ -204,6 +215,7 @@ fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     let colour = select(crown, summer, v.position.w > 0.0);
     out.albedo = snowed(tied(colour, tint, m.tie, i.ground) * crown_shade(model, m) * far_tone(m, length(p)), v.normal.z, i.look);
     out.look = i.look;
+    out.glow = (1.0 - v.colour.a) * nightfall();
     out.sun = sun_of(i.ground);
     // A plant, a rock or an animal is small: one read of the objects' shadow at its middle, lifted out
     // of its own caster, shades it whole, for less than a read per pixel of its many small faces.
@@ -247,5 +259,5 @@ fn mesh_lit(in: MeshOut) -> vec4f {
     if (in.shaded == 0u) {
         sun = crown_sun_share(sun, in.relative, n);
     }
-    return vec4f(in.fog * light_up(in.albedo, n, sun, 1.0, look.horizon.w) + in.air, 1.0);
+    return vec4f(in.fog * light_up(in.albedo, n, sun, 1.0, look.horizon.w) + in.air + in.albedo * GLOW_GAIN * in.glow, 1.0);
 }
