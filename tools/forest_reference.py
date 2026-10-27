@@ -297,8 +297,8 @@ def leaf_type(x, y):
                     raise
                 time.sleep(delay)
 
-    # The tile programs together open more connections than the 4 that CDSE allows a user: the
-    # retries wait out a refusal.
+    # The tile programs together open more connections than the 4 that CDSE allows a user: GDAL
+    # retries the HTTP status of that refusal.
     with rasterio.Env(**{**GDAL, "GDAL_HTTP_MAX_RETRY": 8, "GDAL_HTTP_RETRY_DELAY": 3}):
         for e in range(int(left // 100_000), int(right // 100_000) + 1):
             for n in range(int(bottom // 100_000), int(upper // 100_000) + 1):
@@ -312,7 +312,7 @@ def leaf_type(x, y):
 
 
 GDAL = {"GDAL_CACHEMAX": 512, "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR", "GDAL_HTTP_MAX_RETRY": 5,
-        "GDAL_HTTP_RETRY_DELAY": 2, "GDAL_NUM_THREADS": 4, "GDAL_HTTP_MULTIPLEX": "YES"}
+        "GDAL_HTTP_RETRY_DELAY": 2, "GDAL_HTTP_TIMEOUT": 120, "GDAL_NUM_THREADS": 4, "GDAL_HTTP_MULTIPLEX": "YES"}
 
 
 def tile_ch(x, y):
