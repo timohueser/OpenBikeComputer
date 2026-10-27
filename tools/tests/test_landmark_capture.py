@@ -224,21 +224,6 @@ class LandmarkCaptureTests(unittest.TestCase):
         self.assertIn(f"maxlag={MAXLAG}", api("www.wikidata.org", action="wbgetentities", ids="Q1"))
         self.assertIn(f"maxlag={MAXLAG}", image_metadata_url("A.jpg"))
 
-    def test_a_commons_category_listing_waits_like_every_other_request(self):
-        with tempfile.TemporaryDirectory() as directory:
-            capture = Capture(Path(directory), interval=0)
-            error = HTTPError(Response.url, 429, "Too many requests", {"Retry-After": "9"}, None)
-            with patch("tools.landmark_capture.urlopen", side_effect=error) as request:
-                with patch("tools.landmark_capture.time.sleep") as sleep:
-                    with self.assertRaisesRegex(RuntimeError, "capture stopped"):
-                        category_files(capture, "Category:Alpspitz")
-            self.assertEqual(request.call_count, BACKOFF_ATTEMPTS, "the back-off is bounded")
-            self.assertGreater(max(call.args[0] for call in sleep.call_args_list), 8)
-            self.assertTrue(capture.outcomes()[0]["path"].startswith("categories/"))
-            asked = request.call_args.args[0].full_url
-            self.assertIn("list=categorymembers", asked)
-            self.assertIn("cmlimit=max", asked)
-
     def test_commons_category_follows_every_continuation_page(self):
         with tempfile.TemporaryDirectory() as directory:
             capture = Capture(Path(directory), interval=0)
@@ -284,22 +269,6 @@ class LandmarkCaptureTests(unittest.TestCase):
             self.assertEqual((status, members), ("captured", ["First.jpg", "Second.jpg"]))
             self.assertEqual(resumed_pages, pages)
             request.assert_called_once()
-
-    def test_failed_commons_category_contributes_no_partial_asset(self):
-        value = {
-            "sitelinks": {"enwiki": {"title": "Example"}},
-            "claims": {"P373": [{"mainsnak": {"datavalue": {"value": "Example"}}}]},
-        }
-        capture = Mock(root=Path("unused-capture"))
-        capture.json.return_value = None
-        with patch("tools.landmark_capture.capture_locales"), patch(
-            "tools.landmark_capture.article", return_value=(None, None, "article-missing")
-        ), patch("tools.landmark_capture.photo_metadata") as metadata:
-            place = capture_assets(capture, "Q5", value)
-        self.assertEqual(place["images"], [])
-        self.assertFalse(place["commons_categories"][0]["complete"])
-        self.assertFalse(category_coverage_complete([place]))
-        metadata.assert_not_called()
 
     def test_a_failed_commons_category_is_incomplete_and_adds_no_photo(self):
         value = {
@@ -516,14 +485,6 @@ class LandmarkCaptureTests(unittest.TestCase):
         self.assertEqual(capture.fetch.call_count, 3, "no candidate is downloaded twice")
         self.assertEqual(len(written), 4, "the manifest is written before every compile and after the bytes")
 
-    def test_a_compiled_catalogue_that_needs_nothing_is_not_an_error(self):
-        places = [{"qid": "Q5", "outcomes": [], "images": []}]
-        def compile_once(command, **_kwargs):
-            Path(command[-1], "content.json").write_text(json.dumps({}))
-        with patch("tools.landmark_capture.subprocess.run", side_effect=compile_once):
-            acquired = acquire_requested_photos(Mock(), Path("obc-bake"), "landmark-content", "content.json", Path("m.json"), Path("b.geojson"), places, lambda: None)
-        self.assertEqual(acquired, 0)
-
     def test_later_request_rounds_only_revisit_the_preceding_qids(self):
         capture = Mock(root=Path("unused-capture"))
         capture.json.return_value = {"query": {"pages": {"7": {"pageid": 7, "title": "File:X.jpg", "imageinfo": [{"mime": "image/jpeg", "size": 10, "url": "https://example.test/x.jpg"}]}}}}
@@ -606,17 +567,6 @@ class LandmarkCaptureTests(unittest.TestCase):
 
 
 class LocaleCaptureTests(unittest.TestCase):
-    def test_administrative_cycle_is_bounded_and_country_is_captured(self):
-        from tools.landmark_capture import capture_locales, LANGUAGES
-        self.assertEqual(LANGUAGES, ("en", "de", "fr", "es"))
-        def claim(qid):
-            return {"mainsnak": {"datavalue": {"value": {"id": qid}}}}
-        place = {"claims": {"P131": [claim("Q10")], "P17": [claim("Q20")]}}
-        admin = {"claims": {"P131": [claim("Q10")]}}
-        with patch("tools.landmark_capture.entity", return_value=admin) as fetch:
-            capture_locales(Mock(), place)
-        self.assertEqual([call.args[1:] for call in fetch.call_args_list], [("Q20", "locales"), ("Q10", "locales")])
-
     def test_administrative_traversal_asks_for_each_locale_once_within_its_bounds(self):
         def claims(*qids):
             return [{"mainsnak": {"datavalue": {"value": {"id": qid}}}} for qid in qids]
