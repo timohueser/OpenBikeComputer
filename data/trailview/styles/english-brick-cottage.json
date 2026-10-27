@@ -1,0 +1,17 @@
+{
+ "name": "English brick cottage",
+ "extends": "cottage",
+ "about": "Red-brown brick, the upper floor and the gables hung with tiles or clad in white weatherboard, under a steep roof of dark plain tile with a stack at each gable: the Weald, the Downs, the Chilterns and Kent.",
+ "pitch": [46, 54],
+ "eave": 0.3,
+ "verge": 0.2,
+ "timber": "upper",
+ "palette": {
+  "render": ["#9b4a35", "#8e4431", "#a65640", "#87412f"],
+  "wood": ["#a4553b", "#94492f", "#b06044", "#f1efe8"],
+  "roof": ["#6b3a2c", "#5e3427", "#744030", "#4f3a33"],
+  "door": ["#2f3f5a", "#3f5a3a", "#f0ede5", "#2e2b29"],
+  "plinth": "#5f4a42",
+  "chimney": "#8e4431"
+ }
+}

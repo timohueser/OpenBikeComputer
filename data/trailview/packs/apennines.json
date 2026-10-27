@@ -9,7 +9,7 @@
   "black-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [400, 1600], "weight": 2 },
   "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [700, 1700], "weight": 1 },
   "italian-maple": { "model": "sycamore-maple", "latin": "Acer opalus", "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1600], "weight": 1 },
-  "whitebeam": { "latin": "Sorbus aria", "leaf": "broadleaved", "cover": "tree", "elevation": [800, 1900], "weight": 0.5 },
+  "whitebeam": { "model": "hawthorn", "latin": "Sorbus aria", "leaf": "broadleaved", "cover": "tree", "elevation": [800, 1900], "weight": 0.5 },
   "hop-hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1300], "weight": 2 },
   "manna-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1200], "weight": 1 },
   "turkey-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1200], "weight": 2 },

@@ -1,0 +1,18 @@
+{
+ "name": "Andalusian white house",
+ "extends": "whitewashed-house",
+ "about": "Lime-white walls over a band of ochre or blue at the base, with small, deep windows, under a low roof of red tile: Andalusia and the Alentejo.",
+ "pitch": [14, 22],
+ "eave": 0.2,
+ "verge": 0.1,
+ "hip": 0,
+ "shutters": false,
+ "windows": 0.65,
+ "palette": {
+  "render": ["#f8f7f2", "#f5f4ee", "#f8f6ef"],
+  "roof": ["#b0583a", "#a5523a", "#9c5038"],
+  "door": ["#5a4030", "#3f5a3a", "#3f6caa"],
+  "plinth": ["#d9a441", "#3f6caa", "#e0b04c", "#4f7fbf"],
+  "chimney": "#f5f4ee"
+ }
+}
