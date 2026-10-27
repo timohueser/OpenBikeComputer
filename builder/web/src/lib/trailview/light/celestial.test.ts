@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { solarPosition, solarTerms } from '../../planner/layers/sun';
+import { solarPosition, solarTerms } from '../../planner/solar';
 import { moonAt, moonEcliptic, starFrame } from './celestial';
 
 const RAD = Math.PI / 180;
