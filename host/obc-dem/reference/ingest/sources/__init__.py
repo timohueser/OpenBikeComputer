@@ -11,20 +11,25 @@ from .au import AU
 from .base import Credential, ManualSource, Source, http_get
 from .ca import CA
 from .ch import CH
+from .cz import CZ
 from .de import DE
 from .dk import DK
 from .es import ES
 from .fi import FI
 from .fr import FR
+from .gb import SCT
+from .is_ import IS
 from .it import IT
 from .nl import NL
 from .no import NO
 from .nz import NZ
+from .pl import PL
 from .se import SE
+from .sk import SK
 from .uk import UK
 from .us import US
 
 SOURCES = {source.key: source for source in
-           (CH, FR, US, NO, ES, NL, UK, AT, CA, NZ, DK, SE, FI, AU, *DE, *IT)}
+           (CH, FR, US, NO, ES, NL, UK, SCT, AT, CA, NZ, DK, SE, FI, AU, PL, CZ, SK, IS, *DE, *IT)}
 
 __all__ = ["SOURCES", "Credential", "ManualSource", "Source", "http_get"]

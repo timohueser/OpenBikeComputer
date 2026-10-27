@@ -65,8 +65,8 @@ the first of them. `index-terrain` writes it.
 | `cli.py` | The `fetch` and `index-terrain` steps. |
 
 An adapter has one job: `fetch(bbox, workdir) -> list[Path]`, rasters in any CRS and dtype.
-The shared tail turns voids and heights outside −500 m to 9 000 m into absence, pools pixel
-centres onto the lattice tile.
+The shared tail turns voids, the row's `void` and heights outside −500 m to 9 000 m into
+absence, and pools pixel centres onto the lattice tile.
 
 `PRIORITY` in `ingest/archive.py` orders the sources, finest and best-maintained first. The fold
 is per pixel, because coverage stops at borders: a better source keeps its own pixels and leaves
@@ -74,7 +74,8 @@ the others' pixels in its gaps.
 
 Refused by name: a box at the antimeridian or outside the world box, a scaled band, an ESRI ASCII
 or XYZ grid whose row names no `grid_epsg`, and a vertical datum `ORTHOMETRIC` in `sources/base.py` does
-not recognise. An ellipsoidal product must be converted to orthometric first; nothing here does.
+not recognise. An ellipsoidal product must be converted to orthometric first; only the `sk`
+adapter does, with its agency's quasigeoid.
 
 Memory is one source raster plus the tile. A **monolithic** raster, such as a
 whole-state DGM of several gigabytes, is held whole: cut it up with `gdal_retile` first.
@@ -109,9 +110,11 @@ only where the registry says a name is arithmetic, such as a grid square outside
 product, resolution, licence and vertical datum. Its credit and its box are `attribution` and
 `extent` of `dtm-<key>` in `data/sources.toml`.
 
-Open services, no key: `ch`, `fr`, `us`, `no`, `es`, `nl`, `uk`, `at`, `ca`, `nz`, `it-bz`,
-`it-tn`, and the German states `de-nw`, `de-he`, `de-bw`, `de-mv`, `de-st`, `de-by`, `de-sn`,
-`de-th`, `de-ni`. Germany publishes elevation per state, so `de-*` is a family of rows.
+Open services, no key: `ch`, `fr`, `us`, `no`, `es`, `nl`, `uk`, `gb-sct`, `at`, `ca`, `nz`,
+`pl`, `cz`, `sk`, `is`, `it`, `it-bz`, `it-tn`, and the German states `de-nw`, `de-he`, `de-bw`,
+`de-mv`, `de-st`, `de-by`, `de-sn`, `de-th`, `de-ni`, `de-rp`. Germany publishes elevation per
+state, so `de-*` is a family of rows. `it` and `is` are 10 m, coarser than the lattice, so they
+reach only some of its pixels.
 
 Behind a free account: `dk`, `se`, `fi`. The machine that prepares sets the credential; each
 module names where the account is made. `au` is ordered by hand: `OBC_REFERENCE_AU_INPUT` names

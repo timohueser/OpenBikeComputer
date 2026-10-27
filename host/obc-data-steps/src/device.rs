@@ -1338,10 +1338,13 @@ pub(crate) mod tests {
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &["N46_00_E008"]);
         let (mut inputs, regions) = grimsel(&store, "1");
-        // The boxes of `dtm-fr` and `dtm-de-by` reach the Grimsel; their polygons stop west and east of it.
-        for (area, [west, south, east, north]) in
-            [("europe/france", [-5.0, 42.0, 7.5, 51.0]), ("europe/germany/bayern", [8.97, 47.27, 13.84, 50.56])]
-        {
+        // The boxes of `dtm-fr`, `dtm-de-by` and `dtm-it` reach the Grimsel; their polygons stop west, east
+        // and south of it.
+        for (area, [west, south, east, north]) in [
+            ("europe/france", [-5.0, 42.0, 7.5, 51.0]),
+            ("europe/germany/bayern", [8.97, 47.27, 13.84, 50.56]),
+            ("europe/italy", [6.6, 35.4, 18.6, 46.0]),
+        ] {
             let poly = box_poly(&Bbox { west, south, east, north });
             fetched(&store, POLY, "2", &[("area".into(), area.into())], &[(format!("{area}.poly"), poly)]);
         }
