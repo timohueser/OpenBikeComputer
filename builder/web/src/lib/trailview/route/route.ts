@@ -1,5 +1,4 @@
 import type { Coordinate } from '../../planner/geo';
-import { gradeBands, gradeThresholds } from '../../planner/grade-data';
 import { worldPixel } from '../../planner/layers/mercator';
 import { UNITS } from '../frame/space';
 import type { Gpu } from '../gpu/device';
@@ -8,92 +7,76 @@ import { wgsl } from '../gpu/wgsl';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import { metresPerUnit } from '../terrain/bins';
 
-/** Words of a point, as `Point` of route.wgsl: x, y (int32 world units), metres along, the first and last point of its grade window; the stride of its vec2i adds one. */
-export const POINT_WORDS = 6;
+/** Words of a point, as `Point` of route.wgsl: x, y (int32 world units) and its colour as sRGB bytes; the stride of its vec2i adds one. */
+export const POINT_WORDS = 4;
 /** The line bends at most this far from the surface between two points. */
 const STEP_M = 5;
-/** The grade is the rise over this many metres to each side of a point, as profileGrades of grade-data.ts. */
-const WINDOW_M = 50;
-/** As the planner's map: the first day's line. */
-const LINE = '#cc2a93';
-const STYLE_BYTES = 15 * 16;
+/** The size of a pin image in image pixels, as PIN of route.wgsl: twice its output pixels. */
+export const PIN_SIZE: [number, number] = [72, 96];
+
+/** A pin on the ground: the bottom centre of its image stands on the coordinate. */
+export interface RoutePin { coordinate: Coordinate; image: GPUCopyExternalImageSource }
 
 /**
  * The points of a route in riding order: its vertices, and between them points at most STEP_M apart, so
- * that the ribbon follows the surface; each with its metres along and its grade window.
+ * that the ribbon follows the surface. A point takes the colour of the edge that ends at it, the first one that of the first edge.
  */
-export function routePoints(route: readonly Coordinate[]): Uint32Array<ArrayBuffer> {
-    const xy: number[] = [], along: number[] = [];
-    for (const coordinate of route) {
-        const [x, y] = worldPixel(coordinate, UNITS), n = along.length;
-        if (!n) {
-            xy.push(x, y);
-            along.push(0);
-            continue;
-        }
-        const [lx, ly] = [xy[2 * n - 2], xy[2 * n - 1]], metres = Math.hypot(x - lx, y - ly) * metresPerUnit((y + ly) / 2);
+export function routePoints(route: readonly Coordinate[], colours: readonly string[]): Uint32Array<ArrayBuffer> {
+    const words: number[] = [];
+    const push = (x: number, y: number, colour: string) => words.push(Math.round(x), Math.round(y), packed(colour), 0);
+    route.forEach((coordinate, i) => {
+        const [x, y] = worldPixel(coordinate, UNITS);
+        if (!i) return push(x, y, colours[0]);
+        const [lx, ly] = worldPixel(route[i - 1], UNITS), metres = Math.hypot(x - lx, y - ly) * metresPerUnit((y + ly) / 2);
         const steps = Math.ceil(metres / STEP_M);
-        for (let k = 1; k <= steps; k++) {
-            xy.push(lx + (x - lx) * k / steps, ly + (y - ly) * k / steps);
-            along.push(along[n - 1] + metres * k / steps);
-        }
-    }
-    const words = new Uint32Array(along.length * POINT_WORDS), ints = new Int32Array(words.buffer), floats = new Float32Array(words.buffer);
-    let behind = 0, ahead = 0;
-    along.forEach((metres, i) => {
-        while (metres - along[behind] > WINDOW_M) behind++;
-        while (ahead + 1 < along.length && along[ahead + 1] - metres <= WINDOW_M) ahead++;
-        ints.set([Math.round(xy[2 * i]), Math.round(xy[2 * i + 1])], i * POINT_WORDS);
-        floats[i * POINT_WORDS + 2] = metres;
-        words.set([behind, ahead], i * POINT_WORDS + 3);
+        for (let k = 1; k <= steps; k++) push(lx + (x - lx) * k / steps, ly + (y - ly) * k / steps, colours[i - 1]);
     });
-    return words;
+    return new Uint32Array(new Int32Array(words).buffer);
 }
 
-/** `Style` of route.wgsl. The shaders take an sRGB colour squared as linear light. */
-function styleOf(graded: boolean): Float32Array<ArrayBuffer> {
-    const linear = (hex: string) => [1, 3, 5].map(i => (parseInt(hex.slice(i, i + 2), 16) / 255) ** 2);
-    const style = new Float32Array(STYLE_BYTES / 4);
-    style.set([...linear(LINE), graded ? 1 : 0, ...gradeThresholds], 0);
-    style.set(gradeBands.flatMap(({ color }) => [...linear(color), 1]), 12);
-    return style;
+/** '#rrggbb' as the bytes of WGSL's unpack4x8unorm: red lowest. */
+function packed(hex: string): number {
+    return parseInt(hex.slice(5, 7) + hex.slice(3, 5) + hex.slice(1, 3), 16);
 }
 
 interface Resources {
     gpu: Gpu;
-    pipeline: GPURenderPipeline;
+    line: GPURenderPipeline;
+    pin: GPURenderPipeline;
     layout: GPUBindGroupLayout;
     frame: GPUBuffer;
-    style: GPUBuffer;
     empty: GPUBindGroup;
+    sampler: GPUSampler;
     points?: GPUBuffer;
+    pins?: GPUBuffer;
+    images?: GPUTexture;
     group?: GPUBindGroup;
 }
 
-/** The planned route on the drawn surface, with route.wgsl. */
+/** The planned route on the drawn surface and the pins along it, with route.wgsl. */
 export class Route {
-    /** Whether the route or its look changed since the last draw. */
+    /** Whether the route changed since the last draw. */
     newContent = false;
     private points = new Uint32Array(0);
-    private graded = false;
+    private pins: readonly RoutePin[] = [];
     private resources?: Resources;
-    /** Whether the points and the style are not on the GPU yet. */
+    /** Whether the route is not on the GPU yet. */
     private fresh = true;
 
-    /** The route in riding order; fewer than two points draw none. `graded` colours it by its grade. */
-    set(route: readonly Coordinate[], graded: boolean): void {
-        this.points = route.length < 2 ? new Uint32Array(0) : routePoints(route);
-        this.graded = graded;
+    /** The route in riding order with the colour of each edge; fewer than two points draw none. */
+    set(route: readonly Coordinate[], colours: readonly string[], pins: readonly RoutePin[]): void {
+        this.points = route.length < 2 ? new Uint32Array(0) : routePoints(route, colours);
+        this.pins = pins;
         this.fresh = this.newContent = true;
     }
 
     /** `frame` is the frame uniform of the eye's view. */
     async attach(gpu: Gpu, frame: GPUBuffer): Promise<void> {
         this.resources = undefined;
-        const { pipeline, layout, empty } = await gpu.once(routePipeline);
+        const { line, pin, layout, empty } = await gpu.once(routePipelines);
         this.resources = {
-            gpu, pipeline, layout, frame, style: gpu.buffer('route', STYLE_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
-            empty: gpu.device.createBindGroup({ layout: empty, entries: [] }),
+            gpu, line, pin, layout, frame, empty: gpu.device.createBindGroup({ layout: empty, entries: [] }),
+            sampler: gpu.device.createSampler({ magFilter: 'linear', minFilter: 'linear' }),
         };
         this.fresh = true;
     }
@@ -103,44 +86,74 @@ export class Route {
         this.newContent = false;
         if (!r) return;
         if (this.fresh) this.write(r);
-        if (!r.group || !this.points.length) return;
-        pass.setPipeline(r.pipeline);
+        if (!r.group) return;
         [r.group, surface, r.empty, features].forEach((group, k) => pass.setBindGroup(k, group));
-        pass.draw(2 * this.points.length / POINT_WORDS);
+        if (this.points.length) {
+            pass.setPipeline(r.line);
+            pass.draw(2 * this.points.length / POINT_WORDS);
+        }
+        if (this.pins.length) {
+            pass.setPipeline(r.pin);
+            pass.draw(6, this.pins.length);
+        }
     }
 
     private write(r: Resources): void {
         this.fresh = false;
-        const { gpu } = r;
-        gpu.device.queue.writeBuffer(r.style, 0, styleOf(this.graded));
-        if (!this.points.length) return;
-        if (!r.points || r.points.size < this.points.byteLength) {
+        const { gpu } = r, { device } = gpu;
+        r.group = undefined;
+        if (!this.points.length && !this.pins.length) return;
+        // The bindings take at least one point, pin and image.
+        const points = this.points.length ? this.points : new Uint32Array(POINT_WORDS), pins = Math.max(this.pins.length, 1);
+        if (!r.points || r.points.size < points.byteLength) {
             if (r.points) gpu.destroy('route', r.points);
-            r.points = gpu.buffer('route', this.points.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+            r.points = gpu.buffer('route', points.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         }
-        gpu.device.queue.writeBuffer(r.points, 0, this.points);
-        // The shader counts the points by the bound size, so a shorter route binds less of the buffer.
-        r.group = gpu.device.createBindGroup({ layout: r.layout, entries: [
-            { binding: 0, resource: { buffer: r.frame } }, { binding: 1, resource: { buffer: r.points, size: this.points.byteLength } },
-            { binding: 2, resource: { buffer: r.style } },
+        device.queue.writeBuffer(r.points, 0, points);
+        if (!r.pins || r.pins.size < pins * 8) {
+            if (r.pins) gpu.destroy('route', r.pins);
+            r.pins = gpu.buffer('route', pins * 8, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        }
+        device.queue.writeBuffer(r.pins, 0, new Int32Array(this.pins.flatMap(({ coordinate }) => worldPixel(coordinate, UNITS).map(Math.round))));
+        if (r.images?.depthOrArrayLayers !== pins) {
+            if (r.images) gpu.destroy('route', r.images);
+            r.images = gpu.texture('route', {
+                size: [...PIN_SIZE, pins], format: 'rgba8unorm',
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+            }, PIN_SIZE[0] * PIN_SIZE[1] * 4 * pins);
+        }
+        const images = r.images;
+        this.pins.forEach(({ image }, k) => device.queue.copyExternalImageToTexture(
+            { source: image }, { texture: images, origin: [0, 0, k], premultipliedAlpha: true }, PIN_SIZE));
+        // The shader counts the points and the pins by the bound size, so a shorter route binds less of each buffer.
+        r.group = device.createBindGroup({ layout: r.layout, entries: [
+            { binding: 0, resource: { buffer: r.frame } }, { binding: 1, resource: { buffer: r.points, size: points.byteLength } },
+            { binding: 2, resource: { buffer: r.pins, size: pins * 8 } }, { binding: 3, resource: images.createView({ dimension: '2d-array' }) },
+            { binding: 4, resource: r.sampler },
         ] });
     }
 }
 
-async function routePipeline(gpu: Gpu) {
-    const { device } = gpu, { surface, features } = gpu.once(layouts), VF = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
+async function routePipelines(gpu: Gpu) {
+    const { device } = gpu, { surface, features } = gpu.once(layouts), { VERTEX, FRAGMENT } = GPUShaderStage;
     const layout = device.createBindGroupLayout({ entries: [
-        { binding: 0, visibility: VF, buffer: { type: 'uniform' } }, { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
-        { binding: 2, visibility: VF, buffer: { type: 'uniform' } },
+        { binding: 0, visibility: VERTEX | FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 3, visibility: FRAGMENT, texture: { viewDimension: '2d-array' } },
+        { binding: 4, visibility: FRAGMENT, sampler: {} },
     ] });
     const empty = device.createBindGroupLayout({ entries: [] }), module = device.createShaderModule({ label: 'route', code: wgsl('route/route.wgsl') });
+    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout, surface, empty, features] });
+    // Premultiplied: what is drawn covers by its alpha and adds the rest of its light.
     const blend: GPUBlendComponent = { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' };
-    const pipeline = await device.createRenderPipelineAsync({
-        label: 'route', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surface, empty, features] }),
-        vertex: { module, entryPoint: 'route_vertex' },
-        fragment: { module, entryPoint: 'route_fragment', targets: [{ format: sceneFormat(gpu), blend: { color: blend, alpha: blend } }] },
-        primitive: { topology: 'triangle-strip' },
+    const pipeline = (name: 'route' | 'pin', topology: GPUPrimitiveTopology) => device.createRenderPipelineAsync({
+        label: name, layout: pipelineLayout,
+        vertex: { module, entryPoint: `${name}_vertex` },
+        fragment: { module, entryPoint: `${name}_fragment`, targets: [{ format: sceneFormat(gpu), blend: { color: blend, alpha: blend } }] },
+        primitive: { topology },
         depthStencil: { format: DEPTH, depthWriteEnabled: false, depthCompare: 'greater' },
     });
-    return { pipeline, layout, empty };
+    const [line, pin] = await Promise.all([pipeline('route', 'triangle-strip'), pipeline('pin', 'triangle-list')]);
+    return { line, pin, layout, empty };
 }

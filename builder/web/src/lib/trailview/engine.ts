@@ -25,7 +25,7 @@ import { Orchards } from './vegetation/orchards';
 import { Plants } from './vegetation/plants';
 import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
-import { Route } from './route/route';
+import { Route, type RoutePin } from './route/route';
 import { Pacer } from './pacer';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
@@ -243,9 +243,9 @@ export class TrailView {
         return this.groundLook.attribution;
     }
 
-    /** Draws the planned route in riding order on the surface; `graded` colours it by its grade. Fewer than two points draw none. */
-    showRoute(route: readonly Coordinate[], graded = false): void {
-        this.route.set(route, graded);
+    /** Draws the planned route in riding order on the surface, each edge in its colour, and the pins on the ground. Fewer than two points draw no route. */
+    showRoute(route: readonly Coordinate[], colours: readonly string[], pins: readonly RoutePin[] = []): void {
+        this.route.set(route, colours, pins);
         this.request();
     }
 
@@ -581,8 +581,9 @@ export class TrailView {
             this.instances.draw(pass, group);
             this.terrain.draw(pass, group);
             this.houses.draw(pass, group);
-            if (this.terrain.surface && this.terrain.features) this.route.draw(pass, this.terrain.surface, this.terrain.features);
             if (this.extras.debug !== 'cracks') this.sky.draw(pass, group);
+            // After the sky, which draws where nothing did: the route and its pins write no depth.
+            if (this.terrain.surface && this.terrain.features) this.route.draw(pass, this.terrain.surface, this.terrain.features);
             pass.end();
             this.resolve.encode(encoder, targets, this.context.getCurrentTexture().createView(), group,
                 { viewProj, eye: [eye.east, eye.north, eye.z], render: [width, height], jitter: offset }, { weight: step.weight, clip: step.clip, copy: debug }, times.writes('resolve'));
