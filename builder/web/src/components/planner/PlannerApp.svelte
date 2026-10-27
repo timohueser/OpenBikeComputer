@@ -23,6 +23,7 @@
     import TrailViewControl from './TrailViewControl.svelte';
     import TrailViewWindow from './TrailViewWindow.svelte';
     import type { Near } from '../../lib/planner/trailview-first';
+    import { routeColours } from '../../lib/planner/trailview-route';
     import { dataLayers } from '../../lib/planner/layers/registry';
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
@@ -1122,7 +1123,10 @@
 
     function openTrailView(at: Coordinate, origin: [number, number]) {
         if (mapMode?.kind === 'look') mapMode = null;
-        trailView = { at, origin, near: { metresPerPx: map?.metresPerPixel(at[1]) ?? 0, route: showRoute ? coordinates : [] } };
+        const nights = multi ? trip.points.filter(p => p.kind === 'night').map(p => ({
+            coordinate: p.coordinate, color: dayColor(p.night!), category: sleepCategory(p.placeKind), label: String(dayLabels[p.night!] ?? p.night),
+        })) : [];
+        trailView = { at, origin, near: { metresPerPx: map?.metresPerPixel(at[1]) ?? 0, route: showRoute ? coordinates : [], looks: { colours: routeColours(view.line, days), nights } } };
     }
 
     /** The binoculars without a drag turn the pick on the map on and off. */

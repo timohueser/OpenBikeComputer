@@ -3,6 +3,7 @@
 // lying would show it thinner than BODY_PIXELS it turns to face the eye. A crisp body with a lighter middle
 // covers the ground, and a narrow glow beyond its edges adds light. Its depth moves toward the eye by
 // PULL_M and PULL_PIXELS, so that the ground between two points does not hide it. It is not lit.
+// A pin is an image PIN output pixels in size that faces the eye, its bottom centre on the ground.
 // #include ../terrain/drawn-mesh.wgsl
 
 // As Frame of terrain.wgsl, which shares its buffer.
@@ -18,26 +19,15 @@ struct Frame {
 // As POINT_WORDS of route.ts.
 struct Point {
     at: vec2i,
-    // Metres along the route.
-    along: f32,
-    // The first and the last point of the grade window about the point.
-    behind: u32,
-    ahead: u32,
-}
-
-// As `styleOf` of route.ts: colours in linear light.
-struct Style {
-    // w: 1 when the line takes the colour of its grade band.
-    line: vec4f,
-    // The grade thresholds in percent, as gradeThresholds of grade-data.ts.
-    steps: array<vec4f, 2>,
-    // As gradeBands of grade-data.ts: the steepest descent first, then flat, then the climbs, then unknown.
-    bands: array<vec4f, 12>,
+    // sRGB bytes, red lowest.
+    colour: u32,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> points: array<Point>;
-@group(0) @binding(2) var<uniform> style: Style;
+@group(0) @binding(2) var<storage, read> pins: array<vec2i>;
+@group(0) @binding(3) var images: texture_2d_array<f32>;
+@group(0) @binding(4) var image_sampler: sampler;
 
 const LIFT_M: f32 = 0.3;
 // The half-width of the body and the width of the glow beyond it, in metres and at least in output pixels.
@@ -53,9 +43,9 @@ const OPACITY: f32 = 0.95;
 const GLOW_GAIN: f32 = 0.8;
 const PULL_M: f32 = 0.5;
 const PULL_PIXELS: f32 = 4.0;
-// A grade window shorter than this has no grade, as in profileGrades of grade-data.ts.
-const LEAST_WINDOW_M: f32 = 20.0;
-const UNKNOWN_BAND: u32 = 11u;
+// The output pixels of a pin: half PIN_SIZE of route.ts.
+const PIN: vec2f = vec2f(36.0, 48.0);
+const PIN_PULL_M: f32 = 2.0;
 
 struct RouteOut {
     @builtin(position) clip: vec4f,
@@ -80,27 +70,15 @@ fn direction(d: vec2f, fallback: vec2f) -> vec2f {
     return select(fallback, normalize(d), dot(d, d) > 1e-12);
 }
 
-// As gradeBand of grade-data.ts.
-fn band(grade: f32) -> u32 {
-    let magnitude = round(abs(grade) * 10.0) / 10.0;
-    var level = 0u;
-    while (level < 5u && magnitude >= style.steps[level / 4u][level % 4u]) {
-        level++;
-    }
-    return select(5u + level, 5u - level, grade < 0.0);
+// sRGB squared as linear light, as the colours of the terrain.
+fn linear(srgb: vec3f) -> vec3f {
+    return srgb * srgb;
 }
 
-fn colour_of(p: Point) -> vec3f {
-    if (style.line.w < 0.5) {
-        return style.line.rgb;
-    }
-    let window = points[p.ahead].along - points[p.behind].along;
-    let low = ground(centre(p.behind));
-    let high = ground(centre(p.ahead));
-    if (window < LEAST_WINDOW_M || !known(low) || !known(high)) {
-        return style.bands[UNKNOWN_BAND].rgb;
-    }
-    return style.bands[band((high - low) / window * 100.0)].rgb;
+// Moves p toward the eye by metres and pixels, keeping at least half its distance; its screen position stays.
+fn pulled(p: vec3f, metres: f32, pixels: f32) -> vec3f {
+    let reach = max(length(p), 1e-6);
+    return p * max(reach - metres - pixels * frame.pixel * reach, 0.5 * reach) / reach;
 }
 
 fn eye_space(s: vec2f, h: f32) -> vec3f {
@@ -133,14 +111,12 @@ fn route_vertex(@builtin(vertex_index) v: u32) -> RouteOut {
     // Across the line as the eye sees it, on the side of left; a line that runs straight at the eye turns flat.
     let facing = cross(vec3f(tangent, 0.0), c) * select(1.0, -1.0, c.z > 0.0);
     let across = select(left, normalize(facing), dot(facing, facing) > 1e-6 * distance * distance);
-    var p = mix(c + across * side * half, lie, lying);
-    let reach = length(p);
-    p *= max(reach - PULL_M - PULL_PIXELS * frame.pixel * reach, 0.5 * reach) / max(reach, 1e-6);
+    let p = pulled(mix(c + across * side * half, lie, lying), PULL_M, PULL_PIXELS);
     var out: RouteOut;
     out.clip = frame.view_proj * vec4f(p, 1.0);
     out.side = side;
     out.body = body / half;
-    out.colour = colour_of(points[i]);
+    out.colour = linear(unpack4x8unorm(points[i].colour).rgb);
     // The crack and surface views show the terrain alone.
     out.kept = select(0.0, 1.0, known(h) && frame.debug != 3u && frame.debug != 4u);
     return out;
@@ -161,4 +137,39 @@ fn route_fragment(in: RouteOut) -> @location(0) vec4f {
     let glow = GLOW_GAIN * (1.0 - outer) * (1.0 - outer);
     let light = in.colour * (shade * cover * OPACITY + glow * (1.0 - cover));
     return vec4f(light, cover * OPACITY);
+}
+
+struct PinOut {
+    @builtin(position) clip: vec4f,
+    @location(0) uv: vec2f,
+    @location(1) @interpolate(flat) layer: u32,
+    @location(2) kept: f32,
+}
+
+@vertex
+fn pin_vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) k: u32) -> PinOut {
+    let corner = vec2f(f32((0x32u >> v) & 1u), f32((0x2cu >> v) & 1u));
+    let s = lod_space(vec2f(pins[k] - surface.anchor));
+    let h = ground(s);
+    let foot = eye_space(s, h);
+    // The image faces the eye, upright as the eye sees it.
+    let right = vec3f(direction(vec2f(-foot.y, foot.x), vec2f(1.0, 0.0)), 0.0);
+    let up = normalize(cross(foot, right));
+    let size = PIN * frame.pixel * length(foot);
+    let p = foot + right * (corner.x - 0.5) * size.x + up * corner.y * size.y;
+    var out: PinOut;
+    out.clip = frame.view_proj * vec4f(pulled(p, PIN_PULL_M, PULL_PIXELS), 1.0);
+    out.uv = vec2f(corner.x, 1.0 - corner.y);
+    out.layer = k;
+    out.kept = select(0.0, 1.0, known(h) && frame.debug != 3u && frame.debug != 4u);
+    return out;
+}
+
+@fragment
+fn pin_fragment(in: PinOut) -> @location(0) vec4f {
+    let texel = textureSample(images, image_sampler, in.uv, in.layer);
+    if (in.kept < 0.999) {
+        discard;
+    }
+    return vec4f(linear(texel.rgb / max(texel.a, 1e-6)) * texel.a, texel.a);
 }

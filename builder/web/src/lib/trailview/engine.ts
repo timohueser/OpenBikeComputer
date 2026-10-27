@@ -25,7 +25,7 @@ import { Orchards } from './vegetation/orchards';
 import { Plants } from './vegetation/plants';
 import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
-import { Route } from './route/route';
+import { Route, type RoutePin } from './route/route';
 import { Pacer } from './pacer';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
@@ -243,9 +243,9 @@ export class TrailView {
         return this.groundLook.attribution;
     }
 
-    /** Draws the planned route in riding order on the surface; `graded` colours it by its grade. Fewer than two points draw none. */
-    showRoute(route: readonly Coordinate[], graded = false): void {
-        this.route.set(route, graded);
+    /** Draws the planned route in riding order on the surface, each edge in its colour, and the pins on the ground. Fewer than two points draw no route. */
+    showRoute(route: readonly Coordinate[], colours: readonly string[], pins: readonly RoutePin[] = []): void {
+        this.route.set(route, colours, pins);
         this.request();
     }
 

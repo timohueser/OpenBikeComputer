@@ -10,6 +10,7 @@ import { fetchTile } from './layers/archive';
 import { latitudeAt, worldPixel } from './layers/mercator';
 import { terrainHeights, UNKNOWN_HEIGHT } from './layers/terrain';
 import { DEM_TILE } from './map-style';
+import type { RouteLooks } from './trailview-route';
 
 /** Metres east and north of the drop. */
 export type Xy = [number, number];
@@ -22,6 +23,7 @@ export interface Near {
     metresPerPx: number;
     /** The plan's route in riding order; empty without a shown route. */
     route: readonly Coordinate[];
+    looks: RouteLooks;
 }
 
 export interface FirstView { lon: number; lat: number; heading: number }
