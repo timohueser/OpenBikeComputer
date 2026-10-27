@@ -26,6 +26,8 @@ struct Night {
 @group(0) @binding(3) var moon_face: texture_2d<f32>;
 
 const TAU: f32 = 6.2831853;
+// The pole of the ecliptic in J2000 equatorial directions: the obliquity is 23.44°.
+const ECLIPTIC_POLE = vec3f(0.0, -0.3977772, 0.9174821);
 // The half width of the drawn sun in radians, twice the real one, and of the real moon (0.26°).
 const SUN_DISK: f32 = 0.0085;
 const MOON_DISK: f32 = 0.0045;
@@ -74,7 +76,7 @@ fn moon_disk() -> f32 {
 
 // The moon over the sky colour `c` at a pixel's ray: a sphere lit from the sun, so its phase and the
 // tilt of its lit side follow from the two directions. Its face turns lunar north toward the pole of
-// the sky, as it nearly does.
+// the ecliptic, which lunar north stays within 1.5° of.
 fn moon(c: vec3f, dir: vec3f) -> vec3f {
     let m = night.moon.xyz;
     let across = (dir - m * dot(dir, m)) / moon_disk();
@@ -82,7 +84,7 @@ fn moon(c: vec3f, dir: vec3f) -> vec3f {
     if (r >= 1.0 || dot(dir, m) <= 0.0) {
         return c;
     }
-    let pole = night.stars[2];
+    let pole = night.stars * ECLIPTIC_POLE;
     let north = normalize(pole - m * dot(pole, m));
     let uv = vec2f(0.5 + 0.5 * dot(across, cross(m, north)), 0.5 - 0.5 * dot(across, north));
     let albedo = textureSampleLevel(moon_face, bilinear, uv, 0.0).rgb / MOON_MEAN;
@@ -135,12 +137,17 @@ fn star_vertex(@builtin(vertex_index) i: u32, @location(0) star: vec4f, @locatio
     let right = look.right.xyz;
     let up = look.up.xyz;
     let at = vec2f(dot(dir, right) / dot(right, right), dot(dir, up) / dot(up, up)) / ahead + look.screen.xy;
-    let radius = STAR_RADIUS * (1.0 + 0.5 * clamp(1.0 - star.w / 2.0, 0.0, 1.5));
+    // The radius in render pixels is at least 1, so that a star covers a pixel's centre at every
+    // jitter also below a render scale of 0.67; its light spreads over the radius that it takes.
+    let pixels = max(STAR_RADIUS * (1.0 + 0.5 * clamp(1.0 - star.w / 2.0, 0.0, 1.5)) * look.screen.z, 1.0);
+    let radius = pixels / look.screen.z;
     let light = STAR_LIGHT * pow(10.0, -STAR_STEP * star.w) * show / (radius * radius);
-    return Star(vec4f(at + corner * radius * look.screen.z * night.pixel.xy, 0.0, 1.0), corner, tint.rgb * light);
+    return Star(vec4f(at + corner * pixels * night.pixel.xy, 0.0, 1.0), corner, tint.rgb * light);
 }
 
 @fragment
 fn star_fragment(in: Star) -> @location(0) vec4f {
-    return vec4f(in.colour * exp(-4.0 * dot(in.corner, in.corner)), 1.0);
+    // A Gaussian that falls to 0 at the quad's inscribed circle, so no square shows about a bright star.
+    let fall = max(exp(-4.0 * dot(in.corner, in.corner)) - exp(-4.0), 0.0) / (1.0 - exp(-4.0));
+    return vec4f(in.colour * fall, 1.0);
 }
