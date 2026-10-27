@@ -7,11 +7,15 @@ files of the service over a box.
 """
 
 import base64
+import collections
 import io
+import itertools
 import json
 import math
 import re
 import sys
+import tempfile
+import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -34,6 +38,9 @@ CODES = 256
 IMAGE_MAX_PX = 4096
 FEATURE_BATCH = 200
 WFS_PAGE = 5000
+TRIES = 6
+# Features per read of a vector file while the step keeps its units.
+UNITS_CHUNK = 50_000
 
 
 class Tile(NamedTuple):
@@ -116,12 +123,16 @@ class Legend:
     """A source's native classes as codes of its layer, 0 for none. `code` matches the whole value, or
     the last part of a URI; `prefix` the longest class that starts the value; `word` the class found
     earliest in the text, ignoring case, the longest on a tie; `tags` the first class whose tags an OSM
-    area has."""
+    area has. A `word` legend's `qualifier` names its own class where its word follows the found word
+    within `within` characters, or stands in a text without a class."""
 
     def __init__(self, legend, codes):
         self.match = legend["match"]
         self.classes = [(native, codes[name]) for native, name in legend["classes"]]
         self.exact = {native: code for native, code in self.classes} if self.match == "code" else {}
+        self.qualifier = legend.get("qualifier")
+        if self.qualifier:
+            self.qualifier = {**self.qualifier, "code": codes[self.qualifier["class"]]}
 
     def __call__(self, value):
         if value is None:
@@ -133,14 +144,30 @@ class Legend:
             return self.exact.get(value) or self.exact.get(value.rsplit("/", 1)[-1], 0)
         if self.match == "prefix":
             found = [(len(native), code) for native, code in self.classes if value.startswith(native)]
-        else:
-            lower = value.lower()
-            found = [(-lower.find(native), len(native), code) for native, code in self.classes if native in lower]
-        return max(found)[-1] if found else 0
+            return max(found)[-1] if found else 0
+        lower = value.lower()
+        found = min(((lower.find(native), -len(native), code) for native, code in self.classes if native in lower), default=None)
+        if q := self.qualifier:
+            at = lower.find(q["word"])
+            if at >= 0 and (found is None or 0 <= at - found[0] + found[1] <= q["within"]):
+                return q["code"]
+        return found[2] if found else 0
 
     def table(self):
         """The codes of the byte values 0 to 255."""
         return np.array([self(value) for value in range(256)], np.uint8)
+
+    def where(self, field):
+        """An ArcGIS `where` that keeps the features whose `field` may have a class."""
+        quote = lambda text: "'" + text.replace("'", "''") + "'"
+        if self.match == "code":
+            terms = [f"{field} = {quote(native)} OR {field} LIKE {quote('%/' + native)}" for native, _ in self.classes]
+        elif self.match == "prefix":
+            terms = [f"{field} LIKE {quote(native + '%')}" for native, _ in self.classes]
+        else:
+            words = [native for native, _ in self.classes] + ([self.qualifier["word"]] if self.qualifier else [])
+            terms = [f"LOWER({field}) LIKE {quote('%' + word + '%')}" for word in words]
+        return " OR ".join(terms)
 
 
 def combine(out, proposed, rule, fine, keep=()):
@@ -161,28 +188,19 @@ def refinements(refines, codes):
     return fine
 
 
-class Polygons:
-    """Polygons with a code, burnt onto tiles: the smaller over the larger, 0 under none."""
-
-    def __init__(self, polygons):
-        import shapely
-
-        self.geometries = [geometry for geometry, _ in polygons]
-        self.codes = [code for _, code in polygons]
-        self.areas = shapely.area(self.geometries) if polygons else []
-        self.tree = shapely.STRtree(self.geometries)
+class Burn:
+    """Polygons with a code, burnt onto tiles: the smaller over the larger, 0 under none. `within(box)`
+    gives the geometries, codes and areas that meet an EPSG:3857 box."""
 
     def burn(self, transform, size=tiles.TILE):
-        import shapely
         from rasterio.features import rasterize
 
         x0, y0 = transform.c, transform.f
-        box = shapely.box(x0, y0 + transform.e * size, x0 + transform.a * size, y0)
-        found = sorted(self.tree.query(box), key=lambda i: -self.areas[i])
-        if not found:
+        geometries, codes, areas = self.within((x0, y0 + transform.e * size, x0 + transform.a * size, y0))
+        if not len(codes):
             return np.zeros((size, size), np.uint8)
-        return rasterize([(self.geometries[i], self.codes[i]) for i in found], out_shape=(size, size), transform=transform,
-                         dtype=np.uint8)
+        order = np.argsort(-np.asarray(areas), kind="stable")
+        return rasterize([(geometries[i], codes[i]) for i in order], out_shape=(size, size), transform=transform, dtype=np.uint8)
 
     def __call__(self, tile):
         return self.burn(tile.transform)
@@ -197,32 +215,73 @@ class Polygons:
         return spread(codes, codes == 0, 0, steps=pad)[pad:pad + tiles.TILE, pad:pad + tiles.TILE]
 
 
-def vector_polygons(files, entry, bounds, legend):
-    """The units of a vector source over the bounds that its legend names, in EPSG:3857. A file is a
-    GeoPackage, a zipped Shapefile or GeoJSON, by its name; a store object has no extension."""
-    import pyogrio
-    import shapely
-    from pyproj import Transformer
+class Polygons(Burn):
+    """Polygons [(geometry in EPSG:3857, code)] in memory."""
 
-    out, field, layer = [], entry["field"], entry.get("layer")
-    for name, path in sorted(files.items()):
-        if name.endswith(".zip"):
-            path, layer_of = shapefile(path, layer), None
-        elif name.endswith((".gpkg", ".geojson")):
-            path, layer_of = str(path), layer if name.endswith(".gpkg") else None
-        else:
-            continue
-        crs = pyogrio.read_info(path, layer=layer_of)["crs"]
-        to_map = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-        to_tiles = Transformer.from_crs(crs, "EPSG:3857", always_xy=True)
-        _, _, wkb, (values,) = pyogrio.raw.read(path, layer=layer_of, columns=[field],
-                                                bbox=to_map.transform_bounds(*bounds, densify_pts=21))
-        codes = {}
-        for geometry, value in zip(shapely.from_wkb(wkb), values):
-            code = codes[value] if value in codes else codes.setdefault(value, legend(value))
-            if code and geometry is not None:
-                out.append((shapely.transform(geometry, lambda xy: np.stack(to_tiles.transform(xy[:, 0], xy[:, 1]), axis=-1)), code))
-    return Polygons(out)
+    def __init__(self, polygons):
+        import shapely
+
+        self.geometries = [geometry for geometry, _ in polygons]
+        self.codes = [code for _, code in polygons]
+        self.areas = shapely.area(self.geometries) if polygons else []
+        self.tree = shapely.STRtree(self.geometries)
+
+    def within(self, box):
+        import shapely
+
+        found = self.tree.query(shapely.box(*box))
+        return [self.geometries[i] for i in found], [self.codes[i] for i in found], [self.areas[i] for i in found]
+
+
+class Units(Burn):
+    """The units of a vector source over the bounds that its legend names, kept in the GeoPackage `path`
+    in EPSG:3857 with their code and area, and read per tile: a national map never fits in memory. A
+    file is a GeoPackage, a zipped Shapefile or GeoJSON, by its name; a store object has no extension."""
+
+    def __init__(self, files, entry, bounds, legend, path):
+        import pyogrio
+        import shapely
+        from pyproj import Transformer
+
+        self.path, self.count = str(path), 0
+        field, layer, transformers = entry["field"], entry.get("layer"), {}
+        for name, source in sorted(files.items()):
+            if name.endswith(".zip"):
+                source, layer_of = shapefile(source, layer), None
+            elif name.endswith((".gpkg", ".geojson")):
+                source, layer_of = str(source), layer if name.endswith(".gpkg") else None
+            else:
+                continue
+            crs = pyogrio.read_info(source, layer=layer_of)["crs"]
+            if crs not in transformers:
+                to_map = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+                transformers[crs] = (to_map.transform_bounds(*bounds, densify_pts=21),
+                                     Transformer.from_crs(crs, "EPSG:3857", always_xy=True))
+            box, to_tiles = transformers[crs]
+            names = {}
+            for skip in itertools.count(0, UNITS_CHUNK):
+                _, _, wkb, (values,) = pyogrio.raw.read(source, layer=layer_of, columns=[field], bbox=box,
+                                                        skip_features=skip, max_features=UNITS_CHUNK)
+                codes = np.array([names[v] if v in names else names.setdefault(v, legend(v)) for v in values], np.int32)
+                geometries = shapely.from_wkb(wkb)
+                keep = (codes > 0) & ~shapely.is_missing(geometries)
+                if keep.any():
+                    kept = shapely.transform(geometries[keep], lambda xy: np.stack(to_tiles.transform(xy[:, 0], xy[:, 1]), axis=-1))
+                    pyogrio.raw.write(self.path, geometry=shapely.to_wkb(kept), field_data=[codes[keep], shapely.area(kept)],
+                                      fields=["code", "area"], geometry_type="Unknown", crs="EPSG:3857", driver="GPKG",
+                                      layer="units", append=self.count > 0)
+                    self.count += int(keep.sum())
+                if len(values) < UNITS_CHUNK:
+                    break
+
+    def within(self, box):
+        import pyogrio
+        import shapely
+
+        if not self.count:
+            return [], [], []
+        _, _, wkb, (codes, areas) = pyogrio.raw.read(self.path, layer="units", columns=["code", "area"], bbox=box)
+        return shapely.from_wkb(wkb), codes, areas
 
 
 def shapefile(archive, layer):
@@ -375,15 +434,16 @@ class Heath:
 
 
 def chain(layer, ground, vocabulary, files, bounds, osm=None):
-    """The steps of `layer` (`material` or `lithology`) for the sources that the step reads, and their
-    zooms. `files(source)` gives the files of a source, None for one it does not read; `osm` is the
-    OSM file. A material's authority keeps the water."""
+    """The steps of `layer` (`material` or `lithology`) for the sources that the step reads, and the
+    zooms of those with units in the bounds. `files(source)` gives the files of a source, None for one
+    it does not read; `osm` is the OSM file. A material's authority keeps the water. The units of the
+    vector sources go to a folder of `TMPDIR`, which the engine removes when the step ends."""
     spec, codes = ground[layer], getattr(vocabulary, layer)
     fine, keep = refinements(spec["refines"], codes), [vocabulary.water] if layer == "material" else []
     entries = [entry for entry in spec["sources"] if (osm if entry.get("protocol") == "osm" else files(entry["source"]) is not None)]
     on_osm = [Legend(entry["legend"], codes) for entry in entries if entry.get("protocol") == "osm"]
     burnt = iter(osm_polygons(osm, on_osm) if on_osm else [])
-    steps = []
+    steps, zooms, scratch = [], [], tempfile.mkdtemp(prefix="ground-")
     for entry in entries:
         if entry.get("rule") == "satellite-heath":
             steps.append(Heath(entry, vocabulary))
@@ -396,9 +456,11 @@ def chain(layer, ground, vocabulary, files, bounds, osm=None):
         elif protocol == "arcgis-image":
             propose = Image(entry["crs"], map_images(found, entry["layer"], legend))
         else:
-            propose = vector_polygons(found, entry, bounds, legend)
+            propose = Units(found, entry, bounds, legend, Path(scratch) / f"units-{len(steps)}.gpkg")
+            if "zoom" in entry and propose.count:
+                zooms.append(entry["zoom"])
         steps.append(Map(propose, entry["combine"], fine, keep, entry.get("reach_m", 0)))
-    return steps, [entry["zoom"] for entry in entries if "zoom" in entry]
+    return steps, zooms
 
 
 def entry_of(source, ground):
@@ -419,21 +481,39 @@ def fetch(source, bounds, out, zoom, ground=None):
     entry = entry_of(source, ground)
     url = data_registry.SOURCES[source]["fetch"]["url"]
     out.mkdir(parents=True, exist_ok=True)
-    tolerance = 360 / ((1 << entry.get("zoom", zoom)) * tiles.TILE) / 4
-    {"arcgis-image": fetch_image, "arcgis-features": fetch_features, "wfs": fetch_wfs}[entry["protocol"]](
-        url, entry, bounds, out, tolerance)
+    if entry["protocol"] == "arcgis-image":
+        fetch_image(url, entry, bounds, out)
+    elif entry["protocol"] == "wfs":
+        fetch_wfs(url, entry, bounds, out)
+    else:
+        tolerance = 360 / ((1 << entry.get("zoom", zoom)) * tiles.TILE) / 4
+        fetch_features(url, entry, bounds, out, tolerance, Legend(entry["legend"], collections.defaultdict(int)))
 
 
-def get(url, params=None, data=None, timeout=300):
-    """The body of the answer to a GET with `params`, or to a POST of the form `data`."""
+def get(url, params=None, data=None, check=None, timeout=300):
+    """The body of the answer to a GET with `params`, or to a POST of the form `data`. A failed try, a
+    5xx or 429 answer or a body that `check` refuses with ValueError is tried again, TRIES in all,
+    after 2, 4, 8 … seconds."""
+    from urllib.error import HTTPError, URLError
     from urllib.request import Request
 
     from .. import planner_runtime as runtime
 
     query = f"?{urllib.parse.urlencode(params)}" if params else ""
     body = urllib.parse.urlencode(data).encode() if data else None
-    with runtime.open_url(Request(url + query, data=body), timeout=timeout) as response:
-        return response.read()
+    for attempt in range(TRIES):
+        try:
+            with runtime.open_url(Request(url + query, data=body), timeout=timeout) as response:
+                answer = response.read()
+            if check:
+                check(answer)
+            return answer
+        except (HTTPError, URLError, TimeoutError, ConnectionError, ValueError) as error:
+            final = isinstance(error, HTTPError) and error.code < 500 and error.code != 429
+            if final or attempt == TRIES - 1:
+                raise
+            print(f"{url}: {error}; again in {2 << attempt} s", file=sys.stderr, flush=True)
+            time.sleep(2 << attempt)
 
 
 def write(target, body):
@@ -444,12 +524,12 @@ def write(target, body):
     print(f"{target.parent.name} {target.name}", file=sys.stderr, flush=True)
 
 
-def fetch_image(url, entry, bounds, out, _):
+def fetch_image(url, entry, bounds, out):
     """The legend, and the map images of layer `layer` that cover the bounds in `crs` at `px_m`, at
     most IMAGE_MAX_PX on a side, each named W_S_E_N.png by its box in whole metres."""
     from pyproj import Transformer
 
-    (out / "legend.json").write_bytes(get(f"{url}/legend", {"f": "json"}))
+    (out / "legend.json").write_bytes(get(f"{url}/legend", {"f": "json"}, check=arcgis))
     px, epsg = entry["px_m"], entry["crs"].split(":")[1]
     west, south, east, north = Transformer.from_crs("EPSG:4326", entry["crs"], always_xy=True).transform_bounds(*bounds, densify_pts=21)
     snap = lambda v, rounding: int(rounding(v / px) * px)
@@ -467,53 +547,65 @@ def fetch_image(url, entry, bounds, out, _):
 
 
 def arcgis(body):
-    """The JSON of an ArcGIS answer, which reports an error with status 200."""
+    """The JSON of an ArcGIS answer, which reports an error with status 200: ValueError then."""
     found = json.loads(body)
     if "error" in found:
-        raise RuntimeError(f"ArcGIS: {found['error']}")
+        raise ValueError(f"ArcGIS: {found['error']}")
     return found
 
 
-def fetch_features(url, entry, bounds, out, tolerance):
-    """The features of the layer at `url` that meet the bounds, as GeoJSON in EPSG:4326 with the field
-    `field`: `features-NNNNN.geojson`, FEATURE_BATCH by object id each, three requests at a time."""
+def fetch_features(url, entry, bounds, out, tolerance, legend):
+    """The features of the layer at `url` that meet the bounds and whose `field` the legend may name, as
+    GeoJSON in EPSG:4326 with that field: `features-NNNNN.geojson`, FEATURE_BATCH by object id each,
+    three requests at a time. A batch that lacks ids, as past the service's transfer limit, asks again
+    for those."""
     west, south, east, north = bounds
-    ids = arcgis(get(f"{url}/query", data={
-        "where": "1=1", "geometry": f"{west},{south},{east},{north}", "geometryType": "esriGeometryEnvelope", "inSR": 4326,
-        "spatialRel": "esriSpatialRelIntersects", "returnIdsOnly": "true", "f": "json"}))["objectIds"] or []
-    ids = sorted(ids)
+    found = arcgis(get(f"{url}/query", data={
+        "where": legend.where(entry["field"]), "geometry": f"{west},{south},{east},{north}",
+        "geometryType": "esriGeometryEnvelope", "inSR": 4326, "spatialRel": "esriSpatialRelIntersects",
+        "returnIdsOnly": "true", "f": "json"}, check=arcgis))
+    key, ids = found["objectIdFieldName"], sorted(found["objectIds"] or [])
 
     def batch(i):
         target = out / f"features-{i // FEATURE_BATCH:05}.geojson"
-        if not target.exists():
-            body = get(f"{url}/query", data={
-                "objectIds": ",".join(map(str, ids[i:i + FEATURE_BATCH])), "outFields": entry["field"], "outSR": 4326,
-                "geometryPrecision": 6, "maxAllowableOffset": f"{tolerance:.8f}", "f": "geojson"})
-            arcgis(body)
-            write(target, body)
+        if target.exists():
+            return
+        features, wanted = [], ids[i:i + FEATURE_BATCH]
+        while wanted:
+            found = arcgis(get(f"{url}/query", data={
+                "objectIds": ",".join(map(str, wanted)), "outFields": f"{key},{entry['field']}", "outSR": 4326,
+                "geometryPrecision": 6, "maxAllowableOffset": f"{tolerance:.8f}", "f": "geojson"}, check=arcgis))["features"]
+            got = {feature["properties"][key] for feature in found} & set(wanted)
+            if not got:
+                raise RuntimeError(f"{url}: no feature of the ids {wanted[0]} to {wanted[-1]}")
+            features += [feature for feature in found if feature["properties"][key] in got]
+            wanted = [i for i in wanted if i not in got]
+        write(target, json.dumps({"type": "FeatureCollection", "features": features}).encode())
 
     with ThreadPoolExecutor(3) as pool:
         list(pool.map(batch, range(0, len(ids), FEATURE_BATCH)))
 
 
-def fetch_wfs(url, entry, bounds, out, _):
+def fetch_wfs(url, entry, bounds, out):
     """The features of the WFS 2.0 type `layer` that meet the bounds, as GeoJSON in EPSG:4326 with only
-    the field `field`: `features-NNNNN.geojson`, WFS_PAGE each."""
+    the field `field`: `features-NNNNN.geojson`, WFS_PAGE each, in the order of the unique attribute
+    `sort`. The pages hold `numberMatched` features in all."""
     west, south, east, north = bounds
-    field, page = entry["field"], 0
-    while True:
+    query = {"service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": entry["layer"],
+             "bbox": f"{south},{west},{north},{east},urn:ogc:def:crs:EPSG::4326"}
+    matched = int(re.search(rb'numberMatched="(\d+)"', get(url, {**query, "resultType": "hits"}))[1])
+    for page in range(math.ceil(matched / WFS_PAGE)):
         target = out / f"features-{page:05}.geojson"
         if target.exists():
-            features = json.loads(target.read_bytes())["features"]
-        else:
-            features = json.loads(get(url, {
-                "service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": entry["layer"],
-                "outputFormat": "application/json", "srsName": "EPSG:4326", "count": WFS_PAGE, "startIndex": page * WFS_PAGE,
-                "bbox": f"{south},{west},{north},{east},urn:ogc:def:crs:EPSG::4326"}))["features"]
-            features = [{"type": "Feature", "geometry": f["geometry"], "properties": {field: f["properties"].get(field)}}
-                        for f in features]
-            if features:
-                write(target, json.dumps({"type": "FeatureCollection", "features": features}).encode())
-        if len(features) < WFS_PAGE:
-            return
-        page += 1
+            continue
+        expected = min(WFS_PAGE, matched - page * WFS_PAGE)
+
+        def whole(body):
+            if len(json.loads(body)["features"]) != expected:
+                raise ValueError(f"page {page} has not {expected} features")
+
+        features = json.loads(get(url, {**query, "outputFormat": "application/json", "srsName": "EPSG:4326", "count": WFS_PAGE,
+                                        "startIndex": page * WFS_PAGE, "sortBy": entry["sort"]}, check=whole))["features"]
+        write(target, json.dumps({"type": "FeatureCollection", "features": [
+            {"type": "Feature", "geometry": f["geometry"], "properties": {entry["field"]: f["properties"].get(entry["field"])}}
+            for f in features]}).encode())

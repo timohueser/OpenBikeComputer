@@ -230,6 +230,11 @@ def vocabulary_problems(vocabulary):
     return out
 
 
+# The keys that each protocol of a ground source reads.
+NEEDS = {"vector": ("field",), "arcgis-features": ("field",), "wfs": ("layer", "field", "sort"),
+         "arcgis-image": ("layer", "crs", "px_m")}
+
+
 def ground_problems(ground, ids):
     """The problems of `ground.json`: each source a row of data/sources.toml, read by a protocol that it
     can be fetched for, and each name one of the vocabulary."""
@@ -242,14 +247,20 @@ def ground_problems(ground, ids):
     def needs(keys, check):
         return lambda v, p: check(v, p) + [f"{p}: has no {key}" for key in keys if isinstance(v, dict) and key not in v]
 
+    def lower(v, p):
+        return text(v, p) or ([] if v == v.lower() else wrong(p, f"{said(v)} is not lowercase, as a word matches"))
+
     def legend(name):
         def check(v, p):
             match = v.get("match") if isinstance(v, dict) else None
-            native = (lambda x, q: [] if isinstance(x, dict) and x and all(isinstance(y, str) for y in x.values())
-                      else wrong(q, f"{said(x)} is not an object of tags")) if match == "tags" else text
+            native = {"tags": lambda x, q: [] if isinstance(x, dict) and x and all(isinstance(y, str) for y in x.values())
+                      else wrong(q, f"{said(x)} is not an object of tags"), "word": lower}.get(match, text)
             pair = lambda x, q: (native(x[0], f"{q}[0]") + name(x[1], f"{q}[1]") if isinstance(x, list) and len(x) == 2
                                  else wrong(q, f"{said(x)} is not a [native class, name] pair"))
-            return needs(("match", "classes"), obj({"match": one_of(*sources.MATCHES), "classes": listed(pair)}))(v, p)
+            qualifier = needs(("word", "within", "class"), obj({"word": lower, "within": number(0, 100), "class": name}))
+            return needs(("match", "classes"), obj({
+                "match": one_of(*sources.MATCHES), "classes": listed(pair),
+                **({"qualifier": qualifier} if match == "word" else {})}))(v, p)
         return check
 
     out = []
@@ -260,7 +271,8 @@ def ground_problems(ground, ids):
     out += obj({"about": text, "material": lambda v, p: [], "lithology": lambda v, p: []})(ground, "")
     for layer, name, names in (("material", material, "materials"), ("lithology", lithology, "lithologies")):
         entry = needs(("source", "protocol", "combine", "legend") + (("zoom",) if layer == "lithology" else ()), obj({
-            "source": source, "protocol": one_of(*sources.PROTOCOLS), "layer": text, "field": text, "crs": text, "px_m": positive,
+            "source": source, "protocol": one_of(*sources.PROTOCOLS), "layer": text, "field": text, "sort": text, "crs": text,
+            "px_m": positive,
             "combine": one_of(*sources.COMBINES), "reach_m": positive, "about": text, "legend": legend(name),
             **({"zoom": number(10, 13)} if layer == "lithology" else {})}))
         spec = ground.get(layer, {})
@@ -270,8 +282,9 @@ def ground_problems(ground, ids):
             at = f"{layer}.sources[{i}]"
             out += (heath if layer == "material" and "rule" in found else entry)(found, at)
             protocol, fetch = found.get("protocol"), data_registry.SOURCES.get(found.get("source"), {}).get("fetch", {})
-            if protocol in sources.VECTOR and "field" not in found:
-                out.append(f"{at}: has no field")
+            for key in NEEDS.get(protocol, ()):
+                if key not in found:
+                    out.append(f"{at}: has no {key}, which the protocol {protocol} needs")
             if "reach_m" in found and protocol not in sources.VECTOR:
                 out.append(f"{at}.reach_m: only a vector source reaches")
             if protocol in sources.CAPTURED and fetch.get("kind") != "capture":

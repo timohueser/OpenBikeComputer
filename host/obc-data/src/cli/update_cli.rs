@@ -1813,6 +1813,10 @@ pub(super) mod tests {
         let mut head = crate::fetch::tests::source("https://example.org/head.txt", "date");
         (head.id, head.fetch.kind) = ("head".into(), FetchKind::Capture);
         fixture.with_sources(&[head]);
+        write(
+            &fixture.root().join("data/trailview/ground.json"),
+            r#"{"material": {"sources": []}, "lithology": {"sources": []}}"#,
+        );
         let target = Target::Dir(fixture.scratch.0.join("local"));
         update(fixture, &target, region).unwrap();
         write(&fixture.root().join("listed"), "");

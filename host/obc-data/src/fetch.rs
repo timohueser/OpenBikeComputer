@@ -1023,7 +1023,7 @@ pub(crate) mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_manual_capture_never_resumes_a_failed_run_and_joins_only_a_started_version() {
+    fn a_manual_capture_resumes_a_failed_run_and_joins_only_a_started_version() {
         let scratch = Scratch::new("manual-capture");
         let store = Store::at(&scratch.0);
         let model = located(FetchKind::Dtm, "https://example.org/model");
@@ -1043,12 +1043,10 @@ pub(crate) mod tests {
                 },
             )
         };
-        assert!(run("q=1", None, "echo raw > \"$1/raw.xyz\"; echo half > \"$2/a.tif\"; exit 1").is_err());
-        let partial = std::fs::read_dir(scratch.0.join("partial")).map_or(0, Iterator::count);
-        assert_eq!(partial, 0, "a failed manual run keeps no raw download");
-        let names: Vec<_> =
-            run("q=1", None, "echo whole > \"$2/b.tif\"").unwrap().files.into_iter().map(|file| file.name).collect();
-        assert_eq!(names, ["#q=1/b.tif"], "the half of the failed run is no data");
+        assert!(run("q=1", None, "echo raw > \"$1/raw.xyz\"; echo whole > \"$2/a.tif\"; exit 1").is_err());
+        let resumed = run("q=1", None, "test -f \"$1/raw.xyz\" && test -f \"$2/a.tif\" && echo whole > \"$2/b.tif\"");
+        let names: Vec<_> = resumed.unwrap().files.into_iter().map(|file| file.name).collect();
+        assert_eq!(names, ["#q=1/a.tif", "#q=1/b.tif"], "the next run resumes what the failed one kept");
 
         let started = Snapshot { source: model.id.clone(), version: "2026-01-01".into(), files: Vec::new() };
         store.put_snapshot(&started).unwrap();

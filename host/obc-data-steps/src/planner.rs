@@ -884,13 +884,15 @@ fn trailview(
         };
         let chains = obc_data::ground::Ground::load(root).map_err(Unplanned::Failed)?;
         let mut read = |chain: &[GroundSource], mut reads: Vec<Input>| {
-            for id in ground_sources(chain, bounds) {
+            for step in ground_sources(chain, bounds)? {
+                let id = step.source.as_str();
                 reads.push(match id {
                     "osm-planet" => layer_files("planner/osm", &["osm.pbf"]),
                     "esa-worldcover" => snapshot(inputs, store, id, tiles.clone(), wanted)?,
                     "sentinel-2-mosaics" => snapshot(inputs, store, id, mosaics.clone(), wanted)?,
                     _ if embedded(id).fetch.kind == FetchKind::Capture => {
-                        snapshot(inputs, store, id, vec![bbox.clone()], wanted)?
+                        let digest = ("ground".to_string(), step.capture_digest());
+                        snapshot(inputs, store, id, vec![bbox.clone(), digest], wanted)?
                     }
                     _ => snapshot(inputs, store, id, Vec::new(), wanted)?,
                 });
@@ -906,7 +908,8 @@ fn trailview(
             .iter()
             .map(|(layer, _)| layer_files(&format!("planner/trailview-{layer}"), &[&format!("{layer}.pmtiles")]));
         let mut joined = ground("ground", joined.collect());
-        let mut credits = ground_sources(chains.material.sources.iter().chain(&chains.lithology.sources), bounds);
+        let read = ground_sources(chains.material.sources.iter().chain(&chains.lithology.sources), bounds)?;
+        let mut credits: Vec<&str> = read.iter().map(|step| step.source.as_str()).collect();
         credits.extend(["resolve-ecoregions", "natural-earth"]);
         joined.options["attribution"] = json!(credit(&credits));
         steps.extend(parts.into_iter().map(|(layer, reads)| Step { client: Client::None, ..ground(layer, reads) }));
@@ -991,15 +994,23 @@ fn ruleset(root: &Path) -> Result<String, String> {
 
 /// The sources of a ground chain that its step reads over `bounds`, each once: a source with an
 /// `extent` only where the extent meets the bounds.
-fn ground_sources<'a>(chain: impl IntoIterator<Item = &'a GroundSource>, bounds: [f64; 4]) -> Vec<&'a str> {
-    let mut ids: Vec<&str> = Vec::new();
+fn ground_sources<'a>(
+    chain: impl IntoIterator<Item = &'a GroundSource>,
+    bounds: [f64; 4],
+) -> Result<Vec<&'a GroundSource>, Unplanned> {
+    let mut found: Vec<&GroundSource> = Vec::new();
     for step in chain {
-        let source = embedded(&step.source);
-        if (source.extent.is_none() || source.meets(bounds)) && !ids.contains(&step.source.as_str()) {
-            ids.push(&step.source);
+        let Some(source) = obc_data::sources::all().iter().find(|source| source.id == step.source) else {
+            return Err(invalid(format!(
+                "data/trailview/ground.json reads `{}`, which data/sources.toml lacks",
+                step.source
+            )));
+        };
+        if (source.extent.is_none() || source.meets(bounds)) && !found.iter().any(|seen| seen.source == step.source) {
+            found.push(step);
         }
     }
-    ids
+    Ok(found)
 }
 
 /// The 3° WorldCover tiles that `bounds` overlaps and that its grid lists, named by their south-west
@@ -1713,6 +1724,9 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
+        let corine =
+            obc_data::ground::Ground::load(&root()).unwrap().entry("corine-land-cover").unwrap().capture_digest();
+        let corine = format!(r#"corine-land-cover[("bbox", "7.79,47.99,7.82,48.02"), ("ground", "{corine}")]"#);
         assert_eq!(
             read(get("planner/trailview-material")),
             [
@@ -1721,7 +1735,7 @@ mod tests {
                 r#"esa-worldcover[("tile", "N45E006")]"#,
                 r#"sentinel-2-mosaics[("bbox", "7.79,47.99,7.82,48.02"), ("year", "2025")]"#,
                 r#"planner/osm["osm.pbf"]"#,
-                r#"corine-land-cover[("bbox", "7.79,47.99,7.82,48.02")]"#,
+                corine.as_str(),
             ]
         );
         assert_eq!(
@@ -1758,11 +1772,20 @@ mod tests {
     fn a_ground_step_reads_each_source_once_and_a_national_map_only_where_its_extent_meets_the_bounds() {
         let chains = obc_data::ground::Ground::load(&root()).unwrap();
         let kerry = [-9.8, 51.9, -9.6, 52.1];
+        let ids =
+            |chain| ground_sources(chain, kerry).unwrap().iter().map(|step| step.source.clone()).collect::<Vec<_>>();
         assert_eq!(
-            ground_sources(&chains.material.sources, kerry),
+            ids(&chains.material.sources),
             ["esa-worldcover", "sentinel-2-mosaics", "osm-planet", "corine-land-cover", "land-cover-ie"]
         );
-        assert_eq!(ground_sources(&chains.lithology.sources, kerry), ["igme5000", "egdi-geology"]);
+        assert_eq!(ids(&chains.lithology.sources), ["igme5000", "egdi-geology"]);
+        let unknown: obc_data::ground::Ground =
+            serde_json::from_str(r#"{"material": {"sources": [{"source": "nowhere"}]}, "lithology": {"sources": []}}"#)
+                .unwrap();
+        let refused = ground_sources(&unknown.material.sources, kerry).unwrap_err();
+        assert!(
+            matches!(refused, Unplanned::Invalid(reason) if reason.contains("`nowhere`, which data/sources.toml lacks"))
+        );
     }
 
     #[test]

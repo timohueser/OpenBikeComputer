@@ -73,6 +73,13 @@ four have no data, and a missing child has no data. A coarser barren share is th
 the children with data. Finer than the last zoom of its layer, a lithology or region texel is the
 texel of that zoom that holds its centre. A tile is in the archive where its material has data.
 
+The region is the ecoregion of `ecoregions.json` that holds the texel centre, or the nearest one
+within 25 km, else `world`. From there the texel steps into the subregion whose `where` holds it,
+the smallest on a tie, until none does. The place of the texel is the subdivision of
+`countries.json` that holds its centre, else the country, else the nearest place within 5 km in the
+tile. The texel takes the id of the region and its subdivision, else of the region and its
+country, else of the region and `"*"`.
+
 ### Ground sources
 
 `data/trailview/ground.json` lists the sources of the material and of the lithology. The ruleset
@@ -82,7 +89,8 @@ layer has `refines` and `sources`:
 - `refines` maps a material or lithology to the ones that it names more precisely.
 - `sources` is the chain, in the order it applies. A material texel starts as `none`, a lithology
   texel as `unknown`. A step reads each source of its chain once, and a source with an `extent` in
-  `data/sources.toml` only where the extent meets the bounds.
+  `data/sources.toml` only where the extent meets the bounds. A lithology source raises the last
+  zoom of the lithology only where it names a unit in the bounds.
 
 A source of the chain has these keys:
 
@@ -92,6 +100,7 @@ A source of the chain has these keys:
 | `protocol` | How the step reads its files, see below |
 | `layer` | The layer of a vector file, the type of a WFS, or the layer of a map service |
 | `field` | The attribute that names the class of a feature |
+| `sort` | A `wfs` source only: a unique attribute, the order of the pages of its capture |
 | `px_m` | The pixel size of a raster or of a map image, in metres |
 | `crs` | The CRS of the map images |
 | `legend` | `match` and `classes`: `[native class, name]` pairs, where a name is an id of `materials.json` |
@@ -113,10 +122,12 @@ A class matches by its `match`:
 | --- | --- |
 | `code` | The native class equals the value, or the last part of a URI value |
 | `prefix` | The longest native class that starts the value |
-| `word` | The native class that the value holds first, ignoring case; the longest on a tie |
+| `word` | The native class that the value holds first, ignoring case; the longest on a tie. A native class is lowercase |
 | `tags` | The first native class, an object of tags, whose tags all hold on the OSM area |
 
-A value without a class names nothing. `authority` takes each class that the source names, but a
+A `word` legend may have a `qualifier`: `word`, `within` and `class`. Where its word follows the
+word of the found class within `within` characters, or the value holds its word and no class, the
+value names its `class`. A value without a class names nothing. `authority` takes each class that the source names, but a
 material source keeps `inland-water`. `refine` takes a class only where `refines` lists the
 texel's code for that class.
 
@@ -126,13 +137,6 @@ nothing, measured green below `green_red` × red, an NDVI of `ndvi` or more, and
 than `peak` below the year's highest. On a lithology of `spring_on`, spring also measured green
 below `spring_green_red` × red, or saw snow or nothing. The material step reads the lithology
 archive for this rule.
-
-The region is the ecoregion of `ecoregions.json` that holds the texel centre, or the nearest one
-within 25 km, else `world`. From there the texel steps into the subregion whose `where` holds it,
-the smallest on a tie, until none does. The place of the texel is the subdivision of
-`countries.json` that holds its centre, else the country, else the nearest place within 5 km in the
-tile. The texel takes the id of the region and its subdivision, else of the region and its
-country, else of the region and `"*"`.
 
 ## Colour
 

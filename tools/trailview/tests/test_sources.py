@@ -1,10 +1,12 @@
 """The ground sources of ground.json: the legends' matchers, the combine rules, the satellite's heath,
 the lithology chain, and one captured sample of each national map through its capture and reader."""
 
+import io
 import json
 import math
 import tempfile
 import unittest
+import urllib.parse
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -34,6 +36,12 @@ class LegendTest(unittest.TestCase):
         word = legend("word", [["bog", "bog"], ["heath", "heath"], ["wet heath", "scrub"]])
         self.assertEqual([word("Heath and bog"), word("Blanket Bog with heath"), word("Wet Heath"), word("Lake")],
                          [M["heath"], M["bog"], M["scrub"], 0], "the earliest word, the longest on a tie")
+        qualified = sources.Legend({"match": "word", "classes": [["arcilla", "marl-clay"], ["caliza", "limestone"]],
+                                    "qualifier": {"word": "abigarrad", "within": 3, "class": "variegated-marl"}}, L)
+        self.assertEqual([qualified("Arcillas abigarradas"), qualified("Calizas y arcillas abigarradas"),
+                          qualified("Tramos abigarrados"), qualified("Arcillas rojas abigarradas")],
+                         [L["variegated-marl"], L["limestone"], L["variegated-marl"], L["marl-clay"]],
+                         "the qualifier right after the earliest word, or alone")
         tags = legend("tags", [[{"natural": "wetland", "wetland": "bog"}, "bog"], [{"natural": "heath"}, "heath"]])
         self.assertEqual([tags({"natural": "wetland", "wetland": "bog"}), tags({"natural": "wetland"}), tags({"natural": "heath", "x": "y"})],
                          [M["bog"], 0, M["heath"]])
@@ -98,7 +106,8 @@ class LithologyTest(unittest.TestCase):
             from tools.trailview import ground
 
             rock = ground.Lithology(steps)(z, x, y)
-            self.assertEqual(sorted(path.name for path in root.iterdir()), ["33e6f843", "a1b2c3", "shp"], "the zip is read in place")
+            kept = sorted(path.name for path in root.iterdir() if not path.name.startswith("ground-"))
+            self.assertEqual(kept, ["33e6f843", "a1b2c3", "shp"], "the zip is read in place, the units kept in the scratch")
         self.assertEqual(zooms, [10, 10])
         column = lambda lon: int((lon - west) / (east - west) * tiles.TILE)
         self.assertEqual(rock[256, column(west + 5 * km)], L["chalk"])
@@ -106,32 +115,112 @@ class LithologyTest(unittest.TestCase):
         self.assertEqual(rock[256, column(west + 15 * km)], L["limestone"], "5 km from EGDI's chalk")
 
 
-class CaptureTest(unittest.TestCase):
-    """A captured answer of each service, through the capture and the vector reader."""
+def playing(service):
+    """The services of a capture played by `service(params)`, the query and form of a request, which
+    gives a body or raises; no wait between tries."""
+    def open_url(request, timeout=60):
+        params = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(request.full_url).query))
+        return io.BytesIO(service(params | dict(urllib.parse.parse_qsl((request.data or b"").decode()))))
+    return mock.patch("tools.planner_runtime.open_url", open_url), mock.patch.object(sources.time, "sleep")
 
-    def polygons(self, source, bounds, answer):
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(sources, "get", side_effect=answer):
-            sources.fetch(source, bounds, Path(tmp), 13, GROUND)
-            files = {path.name: path for path in Path(tmp).iterdir()}
+
+class CaptureTest(unittest.TestCase):
+    """A captured answer of each national service through its capture and the units of its source; and
+    the capture's batches, pages, retries and resume against a service that a test plays."""
+
+    def units(self, source, bounds, service):
+        network, wait = playing(service)
+        with tempfile.TemporaryDirectory() as tmp, network, wait:
+            out = Path(tmp) / "out"
+            sources.fetch(source, bounds, out, 13, GROUND)
             entry = sources.entry_of(source, GROUND)
             layer = M if any(entry is e for e in GROUND["material"]["sources"]) else L
-            return sources.vector_polygons(files, entry, bounds, sources.Legend(entry["legend"], layer))
+            units = sources.Units({p.name: p for p in out.iterdir()}, entry, bounds, sources.Legend(entry["legend"], layer),
+                                  Path(tmp) / "units.gpkg")
+            return sorted(units.within((-2e7, -2e7, 2e7, 2e7))[1].tolist())
 
     def arcgis(self, folder):
-        return lambda url, params=None, data=None, **_: (CAPTURED / folder / ("ids.json" if data.get("returnIdsOnly") else "features.geojson")).read_bytes()
+        return lambda params: (CAPTURED / folder / ("ids.json" if "returnIdsOnly" in params else "features.geojson")).read_bytes()
 
     def test_ireland_names_exposed_rock_and_wet_grassland(self):
-        polygons = self.polygons("land-cover-ie", [-9.744, 51.998, -9.742, 51.999], self.arcgis("land-cover-ie"))
-        self.assertEqual(sorted(polygons.codes), sorted([M["bare-rock"], M["bare-rock"], M["wet-grassland"]]))
+        codes = self.units("land-cover-ie", [-9.744, 51.998, -9.742, 51.999], self.arcgis("land-cover-ie"))
+        self.assertEqual(codes, sorted([M["bare-rock"], M["bare-rock"], M["wet-grassland"]]))
 
     def test_scotland_names_dry_and_wet_heath(self):
-        page = lambda url, params=None, **_: (CAPTURED / "land-cover-gb-sct" / "page.json").read_bytes()
-        polygons = self.polygons("land-cover-gb-sct", [-3.230, 57.021, -3.226, 57.024], page)
-        self.assertEqual(polygons.codes, [M["heath"], M["heath"]])
+        page = lambda params: (b'<wfs:FeatureCollection numberMatched="2"/>' if params.get("resultType") == "hits"
+                               else (CAPTURED / "land-cover-gb-sct" / "page.json").read_bytes())
+        self.assertEqual(self.units("land-cover-gb-sct", [-3.230, 57.021, -3.226, 57.024], page), [M["heath"], M["heath"]])
 
-    def test_spain_names_limestone_and_no_rock_for_scree_or_a_formation_without_one(self):
-        polygons = self.polygons("geology-es", [-4.856, 43.194, -4.855, 43.195], self.arcgis("geology-es"))
-        self.assertEqual(polygons.codes, [L["limestone"]])
+    def test_spain_names_limestone_and_variegated_marl_and_no_rock_where_a_unit_names_none(self):
+        codes = self.units("geology-es", [-4.86, 43.19, -4.85, 43.20], self.arcgis("geology-es"))
+        self.assertEqual(codes, sorted([L["limestone"], L["variegated-marl"]]))
+
+    def test_an_arcgis_capture_filters_by_the_legend_retries_asks_again_past_the_transfer_limit_and_resumes(self):
+        from urllib.error import HTTPError
+
+        entry, asked, calls = sources.entry_of("land-cover-ie", GROUND), [], []
+
+        def service(params):
+            calls.append(params)
+            if len(calls) == 1:
+                raise HTTPError("https://arcgis.example.org", 502, "Bad Gateway", {}, None)
+            if len(calls) == 3:
+                return b'{"error": {"code": 500, "message": "busy"}}'
+            if "returnIdsOnly" in params:
+                self.assertIn("LOWER(LEVEL_2_VALUE) LIKE '%exposed rock%'", params["where"])
+                return json.dumps({"objectIdFieldName": "OBJECTID", "objectIds": list(range(450, 0, -1))}).encode()
+            ids = [int(i) for i in params["objectIds"].split(",")]
+            asked.append(ids)
+            return json.dumps({"type": "FeatureCollection", "features": [
+                {"type": "Feature", "geometry": None, "properties": {"OBJECTID": i, "LEVEL_2_VALUE": "Scrub"}} for i in ids[:150]]}).encode()
+
+        network, wait = playing(service)
+        with tempfile.TemporaryDirectory() as tmp, network, wait, mock.patch.object(sources, "ThreadPoolExecutor", lambda n: Serial()):
+            out = Path(tmp)
+            (out / "features-00001.geojson").write_text('{"type": "FeatureCollection", "features": []}')
+            sources.fetch_features("https://arcgis.example.org/0", entry, [-9.8, 51.9, -9.6, 52.1], out, 1e-5,
+                                   sources.Legend(entry["legend"], M))
+            pages = {path.name: [f["properties"]["OBJECTID"] for f in json.loads(path.read_text())["features"]]
+                     for path in sorted(out.iterdir())}
+        self.assertEqual(pages["features-00000.geojson"], list(range(1, 201)), "asked again for the ids past the limit of 150")
+        self.assertEqual(pages["features-00001.geojson"], [], "the page that a failed run kept stays")
+        self.assertEqual(pages["features-00002.geojson"], list(range(401, 451)))
+        self.assertEqual([ids[0] for ids in asked], [1, 151, 401], "the kept page is not asked again")
+
+    def test_a_wfs_capture_pages_in_a_stable_order_until_it_holds_every_matched_feature(self):
+        entry, starts = sources.entry_of("land-cover-gb-sct", GROUND), []
+
+        def service(params):
+            if params.get("resultType") == "hits":
+                return b'<wfs:FeatureCollection numberMatched="7"/>'
+            self.assertEqual(params["sortBy"], "POLYGON_ID_1")
+            start = int(params["startIndex"])
+            starts.append(start)
+            # The first answer for the second page is short; the next try gets it whole.
+            n = 2 if (start, starts.count(start)) == (3, 1) else min(3, 7 - start)
+            feature = {"type": "Feature", "geometry": None, "properties": {"HABITAT_CODE": "F4", "OTHER": 1}}
+            return json.dumps({"features": [feature] * n}).encode()
+
+        network, wait = playing(service)
+        with tempfile.TemporaryDirectory() as tmp, network, wait, mock.patch.object(sources, "WFS_PAGE", 3):
+            sources.fetch_wfs("https://wfs.example.org/ows", entry, [-3.3, 57.0, -3.2, 57.1], Path(tmp))
+            pages = [json.loads(path.read_text())["features"] for path in sorted(Path(tmp).iterdir())]
+        self.assertEqual([len(page) for page in pages], [3, 3, 1])
+        self.assertEqual(starts, [0, 3, 3, 6])
+        self.assertEqual(pages[0][0]["properties"], {"HABITAT_CODE": "F4"})
+
+
+class Serial:
+    """A pool that runs each call in turn, so a played service sees one order."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def map(self, function, items):
+        return map(function, items)
 
 
 if __name__ == "__main__":

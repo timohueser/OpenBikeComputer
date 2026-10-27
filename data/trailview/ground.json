@@ -163,6 +163,7 @@
         "protocol": "wfs",
         "layer": "habitatsandspecies:habmosnvccleaned",
         "field": "HABITAT_CODE",
+        "sort": "POLYGON_ID_1",
         "combine": "authority",
         "about": "EUNIS codes. Woodland keeps WorldCover's trees; constructed ground (J) names no material.",
         "legend": {
@@ -421,7 +422,7 @@
         "field": "DESC_UNIT",
         "zoom": 11,
         "combine": "authority",
-        "about": "A unit's description names its main rock first, and variegated beds right after their rock.",
+        "about": "A unit's description names its main rock first, and variegated beds right after their rock (\"arcillas abigarradas\").",
         "legend": {
           "match": "word",
           "classes": [
@@ -462,17 +463,9 @@
             ["piroclast", "cinder-scoria"],
             ["pumit", "pumice"],
             ["pómez", "pumice"],
-            ["toba", "tuff"],
-            ["arcillas abigarrad", "variegated-marl"],
-            ["arcilla abigarrad", "variegated-marl"],
-            ["margas abigarrad", "variegated-marl"],
-            ["marga abigarrad", "variegated-marl"],
-            ["limos abigarrad", "variegated-marl"],
-            ["limo abigarrad", "variegated-marl"],
-            ["areniscas abigarrad", "variegated-marl"],
-            ["arenisca abigarrad", "variegated-marl"],
-            ["abigarrad", "variegated-marl"]
-          ]
+            ["toba", "tuff"]
+          ],
+          "qualifier": {"word": "abigarrad", "within": 3, "class": "variegated-marl"}
         }
       }
     ]

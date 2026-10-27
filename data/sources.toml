@@ -822,7 +822,7 @@ extent = [-71, 21, 100, 81]
 version = "digest"
 redistribute = true
 
-# The national maps of data/trailview/ground.json. Each box is the extent of its service, in whole degrees.
+# The national maps of data/trailview/ground.json. Each box holds its map, in whole degrees.
 
 [[source]]
 id = "land-cover-ie"
@@ -856,8 +856,6 @@ version = "date"
 refresh = "manual"
 redistribute = true
 
-# IGME's licence note on the service: no paid value-added service without contact with IGME.
-
 [[source]]
 id = "geology-es"
 kind = "data"
@@ -869,7 +867,9 @@ licence_url = "https://mapas.igme.es/gis/rest/services/Cartografia_Geologica/IGM
 attribution = "GEODE 1:50 000 © IGME"
 obligations = "Contact IGME before a paid value-added service uses the map"
 fetch = { kind = "capture", url = "https://mapas.igme.es/gis/rest/services/Cartografia_Geologica/IGME_Geode_50/MapServer/8" }
-extent = [-19, 27, 5, 44]
+# Peninsular Spain and the Balearic Islands, without the Canary Islands, so the box stays near Spain.
+extent = [-10, 35, 5, 44]
+areas = ["europe/spain"]
 version = "date"
 refresh = "manual"
 redistribute = false
