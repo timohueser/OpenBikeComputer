@@ -379,8 +379,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         if (kind == JUNCTION) {
             junction = junction || length(vec2f(p - point(r))) * unit < 2.0 * junction_reach(real(r + 6u), texel);
         } else if (kind == CORNER) {
-            // Between the ends of a corner's arc seen from its centre and off both roads, the arc is the
-            // nearest edge: the corner paints over the roads and holds the ground of its asphalt and sidewalk,
+            // Between the ends of a corner's arc seen from its centre, off both roads or less than the narrower
+            // one's half-width onto them, the arc is the nearest edge, as inCorner of corners.ts has it: the corner paints over the roads and holds the ground of its asphalt and sidewalk,
             // with the radius, height and width of its ends by the share of the arc between them, as the slab has them.
             let rule = profiles[(word(r + 5u) >> 16u) & 0xffu];
             let o = point(r);
@@ -388,7 +388,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             let eb = vec2f(point(r + 10u) - o);
             let e = vec2f(p - o);
             let t = atan2(ea.x * e.y - ea.y * e.x, dot(ea, e)) / atan2(ea.x * eb.y - ea.y * eb.x, dot(ea, eb));
-            if (!road_shows(real(r + 12u), rule, level) || t < 0.0 || t > 1.0 || dot(e - ea, ea) > 0.0 || dot(e - eb, eb) > 0.0) {
+            let onto = real(r + 12u) / unit;
+            if (!road_shows(real(r + 12u), rule, level) || t < 0.0 || t > 1.0 || dot(e - ea, ea) > onto * length(ea) || dot(e - eb, eb) > onto * length(eb)) {
                 continue;
             }
             let d = (mix(length(ea), length(eb), t) - length(e)) * unit;

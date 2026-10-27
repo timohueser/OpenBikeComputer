@@ -116,7 +116,7 @@ function segmentsOf(lines: Line[]): Segments {
     return { list, grid: gridOf(boxes) };
 }
 
-/** Whether the band of a line but the corner's own two reaches into it, at points about a metre apart along and across each segment. */
+/** Whether the band of a line but the corner's own two reaches into it off both roads, at points about a metre apart along and across each segment. */
 function reached({ list, grid }: Segments, corner: Corner, ...own: Line[]): boolean {
     const unit = metresPerUnit(corner.o[1]), [x0, y0, x1, y1] = boxOf(corner);
     let hit = false;
@@ -127,7 +127,7 @@ function reached({ list, grid }: Segments, corner: Corner, ...own: Line[]): bool
         const along = Math.ceil(l * unit), across = Math.max(1, Math.ceil(2 * line.h));
         for (let i = 0; i <= along && !hit; i++) for (let j = 0; j <= across && !hit; j++) {
             const t = i / along, side = ((2 * j) / across - 1) * line.h / unit / l;
-            hit = inCorner(corner, ax + t * dx - dy * side, ay + t * dy + dx * side);
+            hit = inCorner(corner, ax + t * dx - dy * side, ay + t * dy + dx * side, 0);
         }
     });
     return hit;
@@ -198,16 +198,21 @@ function cornerOf(p: Way, q: Way, partners: Map<Line, [Line?, Line?]>): Corner |
     };
 }
 
-/** The box of a corner: of its arc's centre and ends, and of the roads' corner, where the edges through its ends meet. */
-export function boxOf({ o, a, b }: Corner): number[] {
+/** The box of a corner: of its arc's centre and ends, and of the roads' corner, where the edges through its ends meet, with its reach into the roads. */
+export function boxOf({ o, a, b, h }: Corner): number[] {
     const da = [o[1] - a[1], a[0] - o[0]], eb = [b[0] - o[0], b[1] - o[1]], t = ((b[0] - a[0]) * eb[0] + (b[1] - a[1]) * eb[1]) / (da[0] * eb[0] + da[1] * eb[1]);
-    const xs = [o[0], a[0], b[0], a[0] + t * da[0]], ys = [o[1], a[1], b[1], a[1] + t * da[1]];
-    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+    const xs = [o[0], a[0], b[0], a[0] + t * da[0]], ys = [o[1], a[1], b[1], a[1] + t * da[1]], pad = h / metresPerUnit(o[1]);
+    return [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad];
 }
 
-/** Whether a point lies in a corner: between the ends of its arc seen from its centre, and off both roads. */
-export function inCorner({ o, a, b }: Corner, x: number, y: number): boolean {
-    const ea = [a[0] - o[0], a[1] - o[1]], eb = [b[0] - o[0], b[1] - o[1]], e = [x - o[0], y - o[1]];
+/**
+ * Whether a point lies in a corner: between the ends of its arc seen from its centre, and off both roads or
+ * less than the narrower road's half-width onto them, where the arc is the nearest kerb. So no road's edge
+ * that the arc replaces paints or holds a slab where a road bends inside the corner.
+ */
+export function inCorner({ o, a, b, h }: Corner, x: number, y: number, onto = h): boolean {
+    const ea = [a[0] - o[0], a[1] - o[1]], eb = [b[0] - o[0], b[1] - o[1]], e = [x - o[0], y - o[1]], reach = onto / metresPerUnit(o[1]);
     const t = Math.atan2(ea[0] * e[1] - ea[1] * e[0], ea[0] * e[0] + ea[1] * e[1]) / Math.atan2(ea[0] * eb[1] - ea[1] * eb[0], ea[0] * eb[0] + ea[1] * eb[1]);
-    return t >= 0 && t <= 1 && (e[0] - ea[0]) * ea[0] + (e[1] - ea[1]) * ea[1] <= 0 && (e[0] - eb[0]) * eb[0] + (e[1] - eb[1]) * eb[1] <= 0;
+    const past = (end: number[]) => ((e[0] - end[0]) * end[0] + (e[1] - end[1]) * end[1]) / Math.hypot(end[0], end[1]);
+    return t >= 0 && t <= 1 && past(ea) <= reach && past(eb) <= reach;
 }

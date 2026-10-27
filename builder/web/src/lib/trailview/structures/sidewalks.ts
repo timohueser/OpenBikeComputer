@@ -15,12 +15,10 @@ import type { Owns } from './node';
 
 /** The slab's height over the road and the width of its granite kerb, as KERB_M of roads.wgsl; its kerb's face reaches FOOT_M under the road, its skirt SINK_M into the drawn ground. */
 const RISE_M = 0.12, KERB_M = 0.18, FOOT_M = 0.05, SINK_M = 0.3;
-/** A slab is tested in pieces about PIECE_M long; BISECTIONS halvings place the ends of its runs. */
+/** A slab is tested, and an arc cut, in pieces about PIECE_M long; BISECTIONS halvings place the ends of its runs. */
 const PIECE_M = 0.5, BISECTIONS = 4;
 /** No sidewalk reaches farther from its road's line. */
 const REACH_M = 10;
-/** The most that a piece of a corner's arc turns: its chord leaves a 5 m arc by 2.4 cm. */
-const ARC_STEP = Math.PI / 16;
 const PAVED = (rgb('#000000', PAINT) | PAVING_CODE) >>> 0, GRANITE = rgb('#c3c0b8'), EDGING = rgb('#a8a59e');
 
 /** The carriageways of a tile in a grid of their segments, and per road end the end of the road it runs on into. */
@@ -142,7 +140,7 @@ export function sidewalks(b: MeshBuilder, lines: Line[], owns: Owns): void {
  */
 function arc(b: MeshBuilder, { o, a, b: end, z, walk }: Corner): void {
     const ea = [a[0] - o[0], a[1] - o[1]], eb = [end[0] - o[0], end[1] - o[1]], ra = Math.hypot(ea[0], ea[1]), rb = Math.hypot(eb[0], eb[1]), unit = metresPerUnit(o[1]);
-    const turn = Math.atan2(ea[0] * eb[1] - ea[1] * eb[0], ea[0] * eb[0] + ea[1] * eb[1]), pieces = Math.max(1, Math.ceil(Math.abs(turn) / ARC_STEP));
+    const turn = Math.atan2(ea[0] * eb[1] - ea[1] * eb[0], ea[0] * eb[0] + ea[1] * eb[1]), pieces = Math.max(1, Math.ceil((Math.abs(turn) * Math.max(ra, rb) * unit) / PIECE_M));
     const at = (k: number): Station => {
         const angle = Math.atan2(ea[1], ea[0]) + (turn * k) / pieces, cos = Math.cos(angle), sin = Math.sin(angle), r = ra + ((rb - ra) * k) / pieces;
         return { x: o[0] + r * cos, y: o[1] + r * sin, z: z[0] + ((z[1] - z[0]) * k) / pieces, ax: cos / unit, ay: sin / unit };
