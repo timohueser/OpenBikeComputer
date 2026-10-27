@@ -8,8 +8,8 @@
 use obc_map_scene::BBox;
 use obc_reader::{Error, MapCache, MapTables, Reader, SliceSource, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 use obcm_testkit::{
-    align_up, build_file, pack_line, pack_line_decl, pack_poly_holes, resolve_offset, scaled, seal, LodSpec, Style,
-    FILLER, STYLE_OFFSET, UNIT,
+    align_up, build_file, pack_line, pack_line_decl, pack_poly_decl, pack_poly_holes, resolve_offset, scaled, seal,
+    LodSpec, Style, FILLER, STYLE_OFFSET, UNIT,
 };
 
 const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3, false, None), (2, -1, 0x07E0, 1, 3, false, None)];
@@ -453,4 +453,23 @@ fn negative_microdegrees_decode_with_correct_sign() {
     assert_eq!(f.exterior.len(), 3);
     // bbox spans the negative coordinates exactly.
     assert_eq!(f.bbox, BBox { min_lon: -1950, min_lat: -975, max_lon: -1900, max_lat: -950 });
+}
+
+/// Confirms a polygon exterior over capacity is dropped whole, just like a line.
+#[test]
+fn polygon_exterior_overflow_drops_whole_feature() {
+    const DECL: u16 = 3000; // > MAX_FEAT_PTS (2048)
+    let deltas: Vec<(i8, i8)> = vec![(1i8, 0i8); DECL as usize - 1];
+    let chunk = pack_poly_decl(2, 0, 0, DECL, &deltas);
+    assert!(chunk.len() <= MAX_CHUNK_BYTES);
+    let bytes = single_leaf((0, 0, 1_000_000, 1_000_000), chunk, MAX_CHUNK_BYTES);
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+
+    let (feats, status) = decode_chunk_status(&r, 0, 0, &r.bbox);
+    assert!(feats.is_empty());
+    assert_eq!(status.capacity_dropped, 1);
+    assert_eq!(status.malformed, 0);
 }
