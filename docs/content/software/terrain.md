@@ -90,6 +90,20 @@ baked again.
 Each finer model keeps its own attribution, and it must travel with the map. See
 [Attribution](#attribution).
 
+## Terrain of the planner and TrailView
+
+The planner maps and TrailView read one pyramid of
+[terrain tiles](src:specs/planner-release.md). A national model gives the height where it holds
+the ground, and GLO-30 gives it elsewhere. GLO-30 leaves the sea edge above sea level, spreads a sea
+cliff over a ramp up to 100 m wide, and rounds a summit into a dome.
+
+Where GLO-30 gives the height, the bake corrects these faults from OSM. The sea beside the
+coastline is at sea level, a mapped sea cliff becomes sheer, and a mapped summit with a height
+rises to the cone of its flanks, never above that height. Each correction uses only the mapped
+feature and the GLO-30 heights near it, so a wrong tag cannot raise a false peak. An inland cliff
+keeps its GLO-30 heights, because there GLO-30 already shows a sloping rock face. The rules are in
+[`shape.rs`](src:host/obc-dem/src/shape.rs).
+
 ## Peak View
 
 Peak View draws the horizon around the rider and names the summits on it. It uses the loaded map
