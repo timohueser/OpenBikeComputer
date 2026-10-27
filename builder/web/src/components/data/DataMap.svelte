@@ -9,24 +9,17 @@
     const background = (map: L.Map) =>
         L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap contributors" }).addTo(map);
 
-    // Squares and an outline on the basemap. With `picking`, a click picks the smallest of `regions`
-    // that holds the point; the regions are not drawn. With `drawing`, a drag draws a box.
+    // Squares and an outline on the basemap. With `drawing`, a drag draws a box.
     type Bounds = [DegPoint, DegPoint];
     let {
         cells = [],
         outline = [],
-        regions = [],
-        picking = false,
         drawing = false,
-        onpick,
         onbox,
     }: {
         cells?: { bounds: Bounds; color: string; label: string }[];
         outline?: Bounds[];
-        regions?: { id: string; name: string; rings: DegPoint[][] }[];
-        picking?: boolean;
         drawing?: boolean;
-        onpick?: (id: string) => void;
         onbox?: (south: number, west: number, north: number, east: number) => void;
     } = $props();
 
@@ -36,8 +29,8 @@
     onMount(() => {
         const box = (...edges: number[]) => edges.map((edge) => edge.toFixed(3)).join(", ");
         view = new CoverageMapView(element, {
-            onRegionPick: (id) => onpick?.(id),
-            onRegionLadder: (ids) => onpick?.(ids[0]),
+            onRegionPick: () => {},
+            onRegionLadder: () => {},
             onBoxDrawn: (south, west, north, east) => onbox?.(south, west, north, east),
             boxDragLabel: (south, west, north, east) => box(west, south, east, north),
             onLassoDrawn: () => {},
@@ -49,8 +42,6 @@
     });
     $effect(() => view?.setCells(cells));
     $effect(() => view?.setParts([{ id: "area", kind: "box", rings: outline.map(ring), highlighted: false }]));
-    $effect(() => view?.setRegions(regions, true));
-    $effect(() => view?.setRegionToolArmed(picking));
     $effect(() => void (drawing ? view?.armBoxDraw() : view?.cancelBoxDraw()));
     // The map frames the squares and the outline once they are known, and again when they move.
     const frame = $derived.by(() => {

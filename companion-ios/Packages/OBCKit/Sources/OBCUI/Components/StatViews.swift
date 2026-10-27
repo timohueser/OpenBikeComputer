@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// One formatted statistic for the strips and grids: a tabular value, an optional small
+/// One formatted statistic for the strips and ledgers: a tabular value, an optional small
 /// unit, and an uppercase key ("62.4 km / DISTANCE").
 public struct OBCStat: Identifiable, Equatable {
     public let value: String
@@ -71,42 +71,6 @@ public struct OBCStatStrip: View {
     }
 }
 
-/// The two-column stat grid under a full-bleed route card, in hairline-divided cells.
-public struct OBCStatGrid: View {
-    let stats: [OBCStat]
-
-    public init(_ stats: [OBCStat]) { self.stats = stats }
-
-    public var body: some View {
-        let rows = stride(from: 0, to: stats.count, by: 2).map { Array(stats[$0..<min($0 + 2, stats.count)]) }
-        VStack(spacing: 1) {
-            ForEach(0..<rows.count, id: \.self) { r in
-                HStack(spacing: 1) {
-                    ForEach(rows[r]) { stat in
-                        cell(stat)
-                    }
-                    if rows[r].count == 1 {
-                        OBCTheme.surface.frame(maxWidth: .infinity)
-                    }
-                }
-            }
-        }
-        .background(OBCTheme.hairline)
-        .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline))
-    }
-
-    private func cell(_ stat: OBCStat) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            statValue(stat, style: .title2)
-            statKey(stat)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(OBCTheme.surface)
-    }
-}
-
 /// The route ledger, in the device route overview's layout: one row per stat, the caption left
 /// and the value right, on a surface card with hairlines between rows. At accessibility text
 /// sizes the caption sits over its value.
@@ -166,29 +130,4 @@ private func statValue(_ stat: OBCStat, style: Font.TextStyle) -> some View {
 
 private func statKey(_ stat: OBCStat) -> some View {
     OBCEyebrow(stat.key)
-}
-
-#Preview("Stats") {
-    VStack(spacing: 20) {
-        OBCLedger([
-            OBCStat(value: "18.7", unit: "km", key: "Distance"),
-            OBCStat(value: "1,087", unit: "m", key: "Climb"),
-            OBCStat(value: "1:19", unit: "h", key: "Est. time"),
-            OBCStat(value: "14", unit: "%", key: "Max grade"),
-        ])
-        OBCStatStrip([
-            OBCStat(value: "62.4", unit: "km", key: "Distance"),
-            OBCStat(value: "840", unit: "m", key: "Climb"),
-            OBCStat(value: "3:20", key: "Est. time"),
-            OBCStat(value: "4", key: "Points"),
-        ])
-        OBCStatGrid([
-            OBCStat(value: "58.2", unit: "km", key: "Distance"),
-            OBCStat(value: "2:51", key: "Moving"),
-            OBCStat(value: "20.4", unit: "kph", key: "Avg"),
-            OBCStat(value: "812", unit: "m", key: "Climb"),
-        ])
-    }
-    .padding()
-    .background(OBCTheme.page)
 }

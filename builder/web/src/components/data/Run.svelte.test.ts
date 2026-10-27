@@ -79,8 +79,8 @@ it("shows why a run failed, its fix, what the store kept, and the bake that resu
         expect(error.textContent).toContain("✗ planner/search failed: the store disk is full");
         expect(error.textContent).toContain("Fix · Free space with obc data clean --apply, or move the store");
         expect(error.textContent).toContain("Kept · device/landmarks, device/map, and planner/search/pois. The next update reuses them.");
-        expect(error.querySelector("a")?.getAttribute("href")).toBe("#/bake?region=freiburg&on=device,map,sun");
-        expect(error.querySelector(".resume")?.textContent).toBe("obc data update local --add sun --dry-run");
+        expect(error.querySelector("a")?.getAttribute("href")).toBe("#/bake?region=freiburg&on=device,map,climate");
+        expect(error.querySelector(".resume")?.textContent).toBe("obc data update local --add climate --dry-run");
         expect(text()).toContain("local did not change · the local lock is free");
         expect(text()).toContain("stopped at 2 of 3");
         expect(button("Stop…")).toBeUndefined();

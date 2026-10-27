@@ -14,8 +14,6 @@ struct SettingsScreen: View {
     private let onOpenFirmwareUpdate: () -> Void
     private let onReplaySetup: () -> Void
 
-    private let onOpenDevPanel: (() -> Void)?
-
     init(
         transport: any DeviceTransport,
         bondStore: any BondStore,
@@ -23,9 +21,7 @@ struct SettingsScreen: View {
         onDeviceRenamed: @escaping (String) -> Void,
         onForget: @escaping () -> Void,
         onOpenFirmwareUpdate: @escaping () -> Void,
-        onReplaySetup: @escaping () -> Void,
-
-        onOpenDevPanel: (() -> Void)?
+        onReplaySetup: @escaping () -> Void
     ) {
         _model = State(initialValue: SettingsModel(
             transport: transport,
@@ -36,17 +32,13 @@ struct SettingsScreen: View {
         ))
         self.onOpenFirmwareUpdate = onOpenFirmwareUpdate
         self.onReplaySetup = onReplaySetup
-
-        self.onOpenDevPanel = onOpenDevPanel
     }
 
     var body: some View {
         SettingsView(
             model: model,
             onOpenFirmwareUpdate: onOpenFirmwareUpdate,
-            onReplaySetup: onReplaySetup,
-
-            onOpenDevPanel: onOpenDevPanel
+            onReplaySetup: onReplaySetup
         )
     }
 }
@@ -97,7 +89,7 @@ struct RouteDetailScreen: View {
     @State private var tripPickerShown = false
     @State private var deleteShown = false
     private let transport: any DeviceTransport
-    /// The in-flight ledger the upload sheet claims a token from. Nil in previews.
+    /// The in-flight ledger the upload sheet claims a token from.
     private let activity: TransferActivity?
     private let deviceName: String
     private let onDelete: (() -> Void)?

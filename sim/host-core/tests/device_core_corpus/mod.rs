@@ -458,17 +458,6 @@ impl CorpusState {
         self.facts.note_store_revision(facts.store_revision().unwrap());
     }
 
-    fn tick_without_fix(&mut self) {
-        struct NoFix;
-        impl LocationSource for NoFix {
-            fn poll(&mut self) -> Option<obc_ports::Fix> {
-                None
-            }
-        }
-        let mut location = NoFix;
-        self.app.tick(RideClock(0), Sensors::new(&mut location), None);
-    }
-
     fn open_detour_plan(&mut self) {
         if !matches!(self.app.top_screen(), Screen::Detour(_)) {
             self.reset_to_riding_map();
@@ -694,10 +683,6 @@ impl CorpusState {
             Action::FillNavPreview => {}
         }
     }
-
-    pub fn snapshot_state(&self) -> VisibleState {
-        visible_state(&self.app, self.settings_revision, self.delete_attempts)
-    }
 }
 
 /// The normalized rider-visible state every runner is compared on.
@@ -849,34 +834,6 @@ impl TripCatalog for BorrowedTrips<'_> {
         } else {
             app.set_trips(&[]);
         }
-    }
-}
-
-fn ride_delivery_key(requested: u64, current: Option<u64>) -> &'static str {
-    match (requested, current) {
-        (70, Some(70)) => "ride.track.requested-morning.current-morning",
-        (70, Some(90)) => "ride.track.requested-morning.current-evening",
-        (90, Some(70)) => "ride.track.requested-evening.current-morning",
-        (90, Some(90)) => "ride.track.requested-evening.current-evening",
-        (70, None) => "ride.track.requested-morning.current-none",
-        (90, None) => "ride.track.requested-evening.current-none",
-        (_, Some(70)) => "ride.track.requested-other.current-morning",
-        (_, Some(90)) => "ride.track.requested-other.current-evening",
-        (_, Some(_)) => "ride.track.requested-other.current-other",
-        (_, None) => "ride.track.requested-other.current-none",
-    }
-}
-
-fn nav_delivery_key(requested: u16, current: u16) -> &'static str {
-    match (requested, current) {
-        (0, 0) => "nav.preview.requested-g0.current-g0",
-        (0, 1) => "nav.preview.requested-g0.current-g1",
-        (0, 2) => "nav.preview.requested-g0.current-g2",
-        (1, 1) => "nav.preview.requested-g1.current-g1",
-        (1, 2) => "nav.preview.requested-g1.current-g2",
-        (2, 2) => "nav.preview.requested-g2.current-g2",
-        _ if requested == current => "nav.preview.requested-other.current-matching",
-        _ => "nav.preview.requested-other.current-replacement",
     }
 }
 
@@ -1273,8 +1230,4 @@ pub fn step<'a>(
         .iter()
         .find(|step| step.input == TraceInput::Named(name))
         .unwrap_or_else(|| panic!("{} has no {name} step", trace.scenario))
-}
-
-pub fn feeder_count(trace: &Trace<VisibleState>, kind: FeederKind) -> usize {
-    trace.steps.iter().flat_map(|step| &step.feeder_calls).filter(|call| call.feeder == kind).count()
 }

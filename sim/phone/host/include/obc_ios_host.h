@@ -53,7 +53,6 @@ void obc_ios_button(ObcHost *host, ObcButton button, bool down);
 
 int32_t obc_ios_import_route(ObcHost *host, const char *path);  /* .obcr or .gpx; 0 on success */
 const char *obc_ios_screen(const ObcHost *host);               /* static, NUL-terminated Screen::name() */
-bool obc_ios_recording(const ObcHost *host);
 const char *obc_ios_last_error(void);                          /* thread-local, NUL-terminated, empty until a call fails; valid until the next failing call */
 
 #ifdef __cplusplus

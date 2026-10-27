@@ -213,13 +213,3 @@ public struct TrackMapView: View {
     }
     #endif
 }
-
-#if DEBUG
-#Preview("Track map") {
-    TrackMapView(
-        coordinates: TrackPreview.obcSample.coordinates,
-        title: "Kettle Moraine Loop",
-        onClose: {}
-    )
-}
-#endif

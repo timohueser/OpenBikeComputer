@@ -785,10 +785,6 @@ impl Reader<'_> {
         }
         Ok(())
     }
-
-    pub fn poi_opening_status(&self, hours_ref: u16, local: Option<(u8, u16)>) -> OpeningStatus {
-        self.poi_hours(hours_ref).map_or(OpeningStatus::Unknown, |schedule| schedule.status(local))
-    }
 }
 
 /// The box of a chunk's points on segments that can project into `from_m..=to_m`, plus the last

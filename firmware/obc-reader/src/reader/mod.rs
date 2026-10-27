@@ -356,12 +356,6 @@ impl MapTables {
         self.terrain
     }
 
-    /// Whether LOD `lod` is written empty in this file's LOD table: a mount-time predicate for
-    /// I/O avoidance, and nothing more.
-    pub fn lod_is_empty(&self, lod: usize) -> bool {
-        self.lods.get(lod).is_none_or(|entry| entry.node_count() == 0)
-    }
-
     #[inline]
     pub fn lods(&self) -> &[Lod] {
         &self.lods

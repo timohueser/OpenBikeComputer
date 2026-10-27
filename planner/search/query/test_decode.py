@@ -1,10 +1,9 @@
-"""Hand-tagged cases for decode.py, and a few for rules.py. Markup: "[words|SLOT]"."""
+"""Hand-tagged cases for decode.py. Markup: "[words|SLOT]"."""
 
 import re
 
 import pytest
 
-import rules
 import schema
 import words
 from decode import (Span, decode, name_of, parse_along, parse_point, parse_stretch, parse_what,
@@ -198,28 +197,6 @@ def test_a_mark_after_a_point_decodes_as_the_mark():
     assert decode(text, "places", labels)["where"] == {"along": {"ref": "km", "at": km(80)}}
 
 
-@pytest.mark.parametrize("text,gold", [
-    ("campsites end of day 4",
-     {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}}),
-    ("route to the nearest pharmacy", {"type": "route", "to": {"kind": "pharmacy"}}),
-    ("Basel to Nice in 7 days",
-     {"type": "route", "from": {"name": "Basel"}, "to": {"name": "Nice"}, "days": 7}),
-    ("supermarché ouvert dimanche jour 3",
-     {"type": "places", "what": ["supermarket"], "open": {"weekday": "sun"}, "where": {"day": 3}}),
-    ("wo kann ich am Ende von Tag 4 zelten",
-     {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}}),
-    ("make day 3 flatter", {"type": "none"}),
-    ("water gaps", {"type": "stretches", "what": "gap:water"}),
-    ("end day 4 at saint-michel", {"type": "end_day", "day": 4, "at": {"name": "saint-michel"}}),
-    ("Kandel", {"type": "place", "name": "Kandel"}),
-    ("is the galibier worth it", {"type": "none"}),
-])
-def test_rules(text, gold):
-    got = rules.parse(text)
-    schema.validate(got)
-    assert schema.same(got, gold), got
-
-
 # --- round 2: gaps found by the generator's filter pass ----------------------------------------
 
 @pytest.mark.parametrize("text,kind", [
@@ -339,22 +316,7 @@ def test_round2(intent, markup, gold):
     test_decode(intent, markup, gold)
 
 
-# --- round 3: determinism, FR/IT gaps, elided names --------------------------------------------
-
-def test_same_output_under_any_hash_seed():
-    import os
-    from pathlib import Path
-    import subprocess
-    import sys
-    script = ("import json, rules; print(json.dumps([rules.parse(t) for t in "
-              "['water gaps', 'Épiceries le soir du jour 10', 'pharmcy near me', "
-              "'dove posso prendere un caffè', 'Tours panoramiques au km 230', "
-              "'Wasserlücken auf Tag 2', 'supermakret morgen Mittag']], sort_keys=True))")
-    outs = {subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, cwd=Path(__file__).parent,
-                           env={**os.environ, "PYTHONHASHSEED": seed}, check=True).stdout
-            for seed in ("0", "1", "2")}
-    assert len(outs) == 1, outs
-
+# --- round 3: FR/IT gaps, elided names ---------------------------------------------------------
 
 ROUND3 = [
     # kinds, aligned to the generator's taxonomy

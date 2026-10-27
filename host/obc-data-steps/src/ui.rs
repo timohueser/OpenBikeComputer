@@ -491,7 +491,7 @@ mod tests {
             &["runs", "r1"],
             &["runs", "r1", "--stop"],
             &["update", "local", "--dry-run"],
-            &["update", "local", "--region", "freiburg", "--add", "sun", "--refresh", "wiki=30", "--dry-run"],
+            &["update", "local", "--region", "freiburg", "--add", "snow", "--refresh", "wiki=30", "--dry-run"],
             &["update", "local", "--box", "-5,40,-4,41", "--only", "device/map", "--dry-run"],
             &["update", "local", "--region", "dach", "--plan"],
             &["update", "local", "--region", "freiburg", "--expect", "4c1e"],

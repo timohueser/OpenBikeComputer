@@ -73,8 +73,6 @@ public final class MockControl: @unchecked Sendable {
     private var _cancelledRouteCatalogReadCount = 0
     /// The firmware version the phone staged this session, which a modelled reboot reconnects on.
     private var _firmwareStagedVersion: String?
-    /// What the next `installFw` request answers.
-    private var _firmwareInstallOutcome: FirmwareInstallResult = .accepted
     private var _supportsClockSync: Bool
     /// Every `setClock` sample the transport sent, in order.
     private var _setClockSamples: [WallClockSample] = []
@@ -374,11 +372,6 @@ public final class MockControl: @unchecked Sendable {
         return catalog
     }
 
-    /// The stored copy behind a device object id.
-    func deviceRouteEntry(_ id: DeviceObjectID) -> RouteEntry? {
-        lock.withLocked { _fixtures.routes.first { $0.deviceObjectID == id } }
-    }
-
     func recordSetClock(_ sample: WallClockSample) -> ClockSyncOutcome {
         lock.withLocked {
             // The command was sent whatever the answer, so record it first. An old-firmware
@@ -446,7 +439,6 @@ public final class MockControl: @unchecked Sendable {
         var id: DeviceObjectID
         var name: String
         var stageIDs: [DeviceObjectID]
-        var payload: Data
         var crc32: UInt32
     }
 
@@ -469,12 +461,6 @@ public final class MockControl: @unchecked Sendable {
                 )
             }
         }
-    }
-
-    /// The stored trip object behind a device id: a byte-faithful decode of what an upload wrote.
-    func deviceTripDecoded(_ id: DeviceObjectID) -> TripObjectCodec.Trip? {
-        guard let trip = (lock.withLocked { _deviceTrips.first { $0.id == id } }) else { return nil }
-        return try? TripObjectCodec.decode(trip.payload)
     }
 
     /// Begin a simulated trip upload. A new trip takes a fresh id from the trip counter. On commit
@@ -514,8 +500,7 @@ public final class MockControl: @unchecked Sendable {
     private func recordDeviceTripCopy(of blob: TripBlob, objectID: DeviceObjectID) {
         let committedCRC = CRC32.checksum(blob.payload)
         let stored = DeviceTrip(
-            id: objectID, name: blob.name, stageIDs: blob.deviceStageIDs,
-            payload: blob.payload, crc32: committedCRC)
+            id: objectID, name: blob.name, stageIDs: blob.deviceStageIDs, crc32: committedCRC)
         lock.withLocked {
             if let index = _deviceTrips.firstIndex(where: { $0.id == objectID }) {
                 _deviceTrips[index] = stored
@@ -607,12 +592,6 @@ public final class MockControl: @unchecked Sendable {
 
     // MARK: Firmware update
 
-    /// What the next `installFw` request answers.
-    public var firmwareInstallOutcome: FirmwareInstallResult {
-        get { lock.withLocked { _firmwareInstallOutcome } }
-        set { lock.withLocked { _firmwareInstallOutcome = newValue } }
-    }
-
     /// Pace a firmware upload like a route push. On completion, remember the container's version
     /// so a modelled install reboot can reconnect the device onto it.
     func beginFirmwareUpload(_ container: Data) -> TransferHandle {
@@ -629,12 +608,11 @@ public final class MockControl: @unchecked Sendable {
         return handle
     }
 
-    /// Answer an `installFw` request with the configured outcome. On `accepted`, model the
-    /// device's reboot: after a beat the link drops and comes back on the staged version.
+    /// Accept an `installFw` request and model the device's reboot: after a beat the link drops
+    /// and comes back on the staged version.
     func installFirmware() -> FirmwareInstallResult {
-        let outcome = lock.withLocked { _firmwareInstallOutcome }
-        if outcome == .accepted { scheduleFirmwareReboot() }
-        return outcome
+        scheduleFirmwareReboot()
+        return .accepted
     }
 
     /// Model the post-confirm reboot: drop the link, then reconnect reporting the staged firmware

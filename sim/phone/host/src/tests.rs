@@ -249,7 +249,6 @@ fn the_c_surface_opens_a_card_it_imported_and_takes_a_null_host_as_nothing() {
         assert!(!obc_ios_tick(ptr::null_mut(), 0.0));
         assert!(obc_ios_frame(ptr::null()).is_null());
         assert!(obc_ios_screen(ptr::null()).is_null());
-        assert!(!obc_ios_recording(ptr::null()));
         obc_ios_push_fix(ptr::null_mut(), GRIMSEL.lat, GRIMSEL.lon, 90.0, 4.0, 1_700_000_123);
         obc_ios_push_heading(ptr::null_mut(), 10.0);
         obc_ios_push_altitude(ptr::null_mut(), 2_005.0);

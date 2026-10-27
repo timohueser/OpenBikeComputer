@@ -22,8 +22,8 @@ pub mod client;
 pub mod vectors;
 
 pub use engine::{
-    Admission, CancelCause, Ceilings, Channel, Engine, Link, Reaction, Stall, StreamBuffers, UploadEnd, UploadProgress,
-    UsbMapBatch, DEFAULT_STAGE, STALL_TIMEOUT_MS,
+    Admission, CancelCause, Ceilings, Channel, Engine, Link, Reaction, Stall, UploadEnd, UploadProgress, UsbMapBatch,
+    DEFAULT_STAGE, STALL_TIMEOUT_MS,
 };
 pub use ids::{DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revision, StoreId};
 pub use records::{

@@ -109,12 +109,6 @@ pub enum Refresh {
     Manual,
 }
 
-impl Refresh {
-    /// Common policies offered as shortcuts.
-    pub const ALL: [Refresh; 5] =
-        [Refresh::Days(7), Refresh::Days(30), Refresh::Days(90), Refresh::Days(365), Refresh::Manual];
-}
-
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 enum RefreshRepr {

@@ -1,10 +1,9 @@
 /**
  * The CRC-32 constants of the interface spec, pinned as literals.
  *
- * `vectors.test.ts` asserts the same things against `specs/vectors/`; this file states them
- * without any file to read, so a hasher that quietly became CRC-32C — same shape, same API, wrong
- * answers — fails here with the spec paragraph next to it rather than as a byte mismatch four
- * layers away.
+ * They are stated without any file to read, so a hasher that quietly became CRC-32C — same
+ * shape, same API, wrong answers — fails here with the spec paragraph next to it rather than as a
+ * byte mismatch four layers away.
  */
 
 import { describe, expect, it } from "vitest";

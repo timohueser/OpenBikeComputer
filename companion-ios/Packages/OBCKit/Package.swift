@@ -12,8 +12,7 @@ let languageMode: [SwiftSetting] = [
 let package = Package(
     name: "OBCKit",
     // iOS is the ship target; the macOS floor only lets host tooling (`swift test`)
-    // compile the SwiftUI-using code (OBCUI, the OBCMock dev panel — whose
-    // two-parameter `onChange` needs 14). The app itself is iPhone-only.
+    // compile the SwiftUI-using code. The app itself is iPhone-only.
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         .library(name: "OBCDomain", targets: ["OBCDomain"]),
@@ -36,13 +35,13 @@ let package = Package(
             name: "OBCDomain",
             swiftSettings: languageMode
         ),
-        // FLAT store protocol v4, kept apart from the transports and judged by the pinned records
-        // under `specs/vectors/flat-store-v4/`. The transfer client depends only on its
-        // physical-link seam, so its announce → stream → result and STATUS reconcile paths are
-        // host-testable.
+        // FLAT store protocol v4, kept apart from the transports. The Rust client builds and
+        // decodes the frames; Swift only checks record framing at the link. The transfer client
+        // depends only on its physical-link seam, so its announce → stream → result and STATUS
+        // reconcile paths are host-testable.
         .target(
             name: "OBCProtocolV4",
-            dependencies: ["OBCDomain", "OBCHost"],
+            dependencies: ["OBCHost"],
             swiftSettings: languageMode
         ),
         .target(
@@ -60,7 +59,7 @@ let package = Package(
         .target(
             name: "OBCMock",
             dependencies: ["OBCTransport", "OBCDomain", "OBCFormats"],
-            // Editable JSON fixture sets (routes/rides/config/diagnostics) the mock
+            // Editable JSON fixture sets (routes/rides/config) the mock
             // serves. The Swift that loads them is `#if DEBUG`; these are inert data.
             resources: [.process("Fixtures")],
             swiftSettings: languageMode
@@ -82,7 +81,7 @@ let package = Package(
             resources: [.copy("Fixtures")],
             swiftSettings: languageMode
         ),
-        // Driven entirely by the checked-in protocol-v4 vectors resolved from `#filePath`.
+        // Fake links and the checked-in protocol-v4 vectors, resolved from `#filePath`.
         .testTarget(
             name: "OBCProtocolV4Tests",
             dependencies: ["OBCProtocolV4"],

@@ -15,7 +15,7 @@ import sys
 import threading
 from urllib.parse import unquote, urlsplit
 
-from . import planner_grid, planner_map_archive, planner_maps, planner_runtime
+from . import planner_geo, planner_grid, planner_map_archive, planner_runtime
 
 
 FORMATS = {"planner/index": planner_runtime.INDEX_FORMAT}
@@ -94,7 +94,7 @@ class Downloads:
         names = set(shared)
         geometry = [min([actual[i], *[c["routing"]["geometry_bounds"][i] for c in selected]]) if i < 2
                     else max([actual[i], *[c["routing"]["geometry_bounds"][i] for c in selected]]) for i in range(4)]
-        terrain = planner_maps.terrain_bounds(geometry)
+        terrain = planner_geo.terrain_bounds(geometry)
         for b in publication["map_blocks"]:
             if planner_map_archive.selected(b["tile"], geometry, terrain=b["kind"] == "terrain"): names.update(b["files"])
         for cell in cells: names.update(cell["files"])
@@ -115,7 +115,7 @@ class Downloads:
                 f"https://offline.openbikecomputer.invalid/{identity}/{kind}/{{z}}/{{x}}/{{y}}"],
                 "minzoom": minzoom, "maxzoom": maxzoom, "bounds": terrain if kind == "terrain" else geometry})
         release = {**self.manifest, "format": 1, "region": graph["data"]["region"], "bounds": actual,
-                   "routing_package": package, "source_files": {}, "terrain_bounds": terrain,
+                   "routing_package": package, "terrain_bounds": terrain,
                    "offline": {"format": 2, "id": identity, "zoom": publication["zoom"], "map_zoom": publication["map_zoom"],
                                "source_routing": publication["routing_source"],
                                "cells": [{"id": c["id"], "bounds": c["bounds"], "files": c["files"]} for c in cells]},

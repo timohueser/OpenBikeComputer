@@ -5,7 +5,7 @@ Build and test instructions are in [README.md](README.md).
 ## UI source of truth
 
 The tracked SwiftUI implementation is authoritative. Reuse `OBCTheme` and the `OBCUI` component
-kit, and read the component gallery and the screenshot tests for the current states. Do not
+kit, and read the components and the screenshot tests for the current states. Do not
 introduce one-off colours or chrome metrics. List rows draw the track sketch, never a map;
 detail pages use native MapLibre with the published OSM tiles and fall back to the sketch. Copy stays English-only until localization is a complete feature.
 

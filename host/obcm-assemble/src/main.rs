@@ -12,131 +12,17 @@
 //! `cells.json` is the cutter's provenance sidecar, which already states every cell's band, path
 //! and `partial` flag plus the schema they were baked at, so the common case needs no second
 //! document. `--schema` overrides it, which is what a hosted catalog hands in.
-//!
-//! The `mem-profile` feature — off by default, native only — wraps the global allocator and the
-//! CLI's [`Clock`], so every phase boundary the engine ticks also snapshots the peak since the
-//! previous one. It prints a table to stderr; the summary on stdout, `--json` included, is
-//! byte-for-byte unchanged. `dev/fetch_region.py` fetches a real region from the published catalog
-//! to run it against.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
 use obc_file_source::FileSource;
-use obc_formats::io::{ByteSource, Error as IoError};
+use obc_formats::io::ByteSource;
 use obcm_assemble::grid::CellId;
+use obcm_assemble::native::{FileScratch, FileStore};
 use obcm_assemble::schema::{Schema, Skin};
-use obcm_assemble::{
-    assemble_full, Articles, CellInput, Clock, Error, MapStore, Options, Result, ScratchId, ScratchStore,
-    TerrainCellInput, TerrainJob, TerrainParams,
-};
-
-/// A file this driver reads on demand: an input cell, a terrain cell, or the sealed map the verify
-/// pass reads back. Cell regions are copied in 256 KB blocks, so the whole tree never has to be
-/// resident.
-///
-/// The shared adapter does the reading; what this adds is the profiler's split between the reads
-/// that feed the assembly and the reads that verify the sealed map.
-struct ProfiledSource {
-    src: FileSource,
-    #[cfg(feature = "mem-profile")]
-    verification: bool,
-}
-
-impl ProfiledSource {
-    fn open(path: &Path) -> std::io::Result<ProfiledSource> {
-        Ok(ProfiledSource {
-            src: FileSource::open(path)?,
-            #[cfg(feature = "mem-profile")]
-            verification: false,
-        })
-    }
-}
-
-impl ByteSource for ProfiledSource {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::result::Result<(), IoError> {
-        #[cfg(feature = "mem-profile")]
-        mem_profile::io(if self.verification { 1 } else { 0 }, buf.len());
-        self.src.read_at(offset, buf)
-    }
-    fn len(&self) -> u64 {
-        self.src.len()
-    }
-}
-
-/// Native file output with the CLI's I/O attribution.
-struct FileStore {
-    inner: obcm_assemble::native::FileStore,
-    path: PathBuf,
-    sealed: Option<ProfiledSource>,
-}
-
-impl FileStore {
-    fn new(path: &Path) -> Result<Self> {
-        Ok(Self { inner: obcm_assemble::native::FileStore::new(path)?, path: path.into(), sealed: None })
-    }
-}
-
-impl MapStore for FileStore {
-    fn begin(&mut self) -> Result<()> {
-        self.sealed = None;
-        self.inner.begin()
-    }
-    fn write(&mut self, buf: &[u8]) -> Result<()> {
-        #[cfg(feature = "mem-profile")]
-        mem_profile::io(2, buf.len());
-        self.inner.write(buf)
-    }
-    fn seal(&mut self) -> Result<()> {
-        self.inner.seal()?;
-        let source = ProfiledSource::open(&self.path).map_err(|_| Error::Io(IoError::Io))?;
-        #[cfg(feature = "mem-profile")]
-        let source = ProfiledSource { verification: true, ..source };
-        self.sealed = Some(source);
-        Ok(())
-    }
-    fn source(&self) -> Result<&dyn ByteSource> {
-        self.sealed.as_ref().map(|source| source as &dyn ByteSource).ok_or(Error::Io(IoError::BadOffset))
-    }
-}
-
-struct FileScratch(obcm_assemble::native::FileScratch);
-
-impl FileScratch {
-    fn new() -> std::result::Result<Self, String> {
-        obcm_assemble::native::FileScratch::new().map(Self).map_err(|e| e.to_string())
-    }
-}
-
-impl ScratchStore for FileScratch {
-    fn create(&self) -> Result<ScratchId> {
-        self.0.create()
-    }
-    fn append(&self, id: ScratchId, buf: &[u8]) -> Result<()> {
-        #[cfg(feature = "mem-profile")]
-        mem_profile::io(3, buf.len());
-        self.0.append(id, buf)?;
-        #[cfg(feature = "mem-profile")]
-        mem_profile::scratch_grew(buf.len());
-        Ok(())
-    }
-    fn read_at(&self, id: ScratchId, offset: u64, buf: &mut [u8]) -> Result<()> {
-        #[cfg(feature = "mem-profile")]
-        mem_profile::io(4, buf.len());
-        self.0.read_at(id, offset, buf)
-    }
-    fn len(&self, id: ScratchId) -> Result<u64> {
-        self.0.len(id)
-    }
-    fn remove(&self, id: ScratchId) -> Result<()> {
-        #[cfg(feature = "mem-profile")]
-        if let Ok(len) = self.0.len(id) {
-            mem_profile::scratch_removed(len as usize);
-        }
-        self.0.remove(id)
-    }
-}
+use obcm_assemble::{assemble_full, Articles, CellInput, Clock, Options, TerrainCellInput, TerrainJob, TerrainParams};
 
 /// The terrain sidecar the CLI is driven by: the catalog's lattice plus the downloaded cells, in
 /// the same shape `cells.json` states the OBCM ones.
@@ -183,218 +69,6 @@ impl Clock for StdClock {
         self.0.elapsed().as_micros() as u64
     }
 }
-
-/// The peak-allocation harness (`--features mem-profile`). Compiled out by default.
-#[cfg(feature = "mem-profile")]
-mod mem_profile {
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::cell::RefCell;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use obcm_assemble::{Clock, Summary};
-
-    static IO_CALLS: [AtomicUsize; 5] = [const { AtomicUsize::new(0) }; 5];
-    static IO_BYTES: [AtomicUsize; 5] = [const { AtomicUsize::new(0) }; 5];
-    static SCRATCH_LIVE: AtomicUsize = AtomicUsize::new(0);
-    static SCRATCH_PEAK: AtomicUsize = AtomicUsize::new(0);
-
-    pub fn io(kind: usize, bytes: usize) {
-        IO_CALLS[kind].fetch_add(1, Ordering::Relaxed);
-        IO_BYTES[kind].fetch_add(bytes, Ordering::Relaxed);
-    }
-    pub fn scratch_grew(bytes: usize) {
-        let live = SCRATCH_LIVE.fetch_add(bytes, Ordering::Relaxed) + bytes;
-        raise(&SCRATCH_PEAK, live);
-    }
-    pub fn scratch_removed(bytes: usize) {
-        SCRATCH_LIVE.fetch_sub(bytes, Ordering::Relaxed);
-    }
-
-    /// Bytes currently owned by the process, as `Layout`s state them.
-    static LIVE: AtomicUsize = AtomicUsize::new(0);
-    /// The high-water mark since the last phase boundary; [`ProfilingClock`] swaps it on every tick.
-    static WINDOW: AtomicUsize = AtomicUsize::new(0);
-    /// The high-water mark over the whole run, never reset.
-    static PEAK: AtomicUsize = AtomicUsize::new(0);
-
-    /// Raise `slot` to `now` if `now` is higher. Relaxed throughout: each counter is a statistic,
-    /// not a lock, and the assembly is single-threaded, so the only contention is with whatever the
-    /// runtime allocates on its own threads.
-    #[inline]
-    fn raise(slot: &AtomicUsize, now: usize) {
-        let mut seen = slot.load(Ordering::Relaxed);
-        while now > seen {
-            match slot.compare_exchange_weak(seen, now, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => break,
-                Err(actual) => seen = actual,
-            }
-        }
-    }
-
-    #[inline]
-    fn grew(now: usize) {
-        raise(&WINDOW, now);
-        raise(&PEAK, now);
-    }
-
-    /// A pass-through over [`System`] that counts. It charges the net size change of every
-    /// allocation, so a `Vec` growth the system realloc satisfies by copying into a fresh block is
-    /// charged its increment rather than `old + new`. That undercount is bounded by the largest
-    /// single buffer, which is why a run worth publishing is cross-checked against peak RSS.
-    pub struct Tracking;
-
-    unsafe impl GlobalAlloc for Tracking {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            let p = unsafe { System.alloc(layout) };
-            if !p.is_null() {
-                grew(LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size());
-            }
-            p
-        }
-
-        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-            let p = unsafe { System.alloc_zeroed(layout) };
-            if !p.is_null() {
-                grew(LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size());
-            }
-            p
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
-            unsafe { System.dealloc(ptr, layout) }
-        }
-
-        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            let p = unsafe { System.realloc(ptr, layout, new_size) };
-            if !p.is_null() {
-                let old = layout.size();
-                if new_size >= old {
-                    grew(LIVE.fetch_add(new_size - old, Ordering::Relaxed) + (new_size - old));
-                } else {
-                    LIVE.fetch_sub(old - new_size, Ordering::Relaxed);
-                }
-            }
-            p
-        }
-    }
-
-    /// One phase boundary: when the engine ticked, how high the heap got since the previous tick,
-    /// and how much of it was still owned at the tick itself.
-    struct Sample {
-        us: u64,
-        window_peak: usize,
-        live: usize,
-    }
-
-    /// The CLI's clock, plus a snapshot at every tick.
-    ///
-    /// The engine calls its [`Clock`] once per phase boundary, in the order `assemble_full`
-    /// documents. [`ProfilingClock::report`] labels the samples against the summary it is handed,
-    /// and falls back to positional labels if the engine ticks a different number of times than
-    /// that arithmetic predicts: a wrong label on a real number is worse than an honest `tick N`.
-    pub struct ProfilingClock<C: Clock> {
-        inner: C,
-        samples: RefCell<Vec<Sample>>,
-    }
-
-    impl<C: Clock> ProfilingClock<C> {
-        pub fn new(inner: C) -> Self {
-            // Reserved up front so the recording itself does not allocate mid-phase.
-            ProfilingClock { inner, samples: RefCell::new(Vec::with_capacity(256)) }
-        }
-
-        /// Print the per-phase table to stderr. `nav_section_bytes` is the assembly's one natural
-        /// yardstick: the section the whole rewrite exists to produce.
-        pub fn report(&self, summary: &Summary) {
-            for (kind, label) in
-                ["input_read", "verification_read", "output_write", "scratch_write", "scratch_read"].iter().enumerate()
-            {
-                eprintln!(
-                    "io-profile {label} calls={} bytes={}",
-                    IO_CALLS[kind].load(Ordering::Relaxed),
-                    IO_BYTES[kind].load(Ordering::Relaxed)
-                );
-            }
-            eprintln!("io-profile scratch_peak_live_bytes={}", SCRATCH_PEAK.load(Ordering::Relaxed));
-            let samples = self.samples.borrow();
-            let labels = labels_for(samples.len());
-            eprintln!("\nmem-profile — peak heap per phase (the window resets at every phase boundary)");
-            eprintln!("  {:<28}{:>14}{:>14}{:>12}", "phase", "peak", "live after", "at");
-            for (s, label) in samples.iter().zip(&labels) {
-                eprintln!(
-                    "  {:<28}{:>14}{:>14}{:>11.1}s",
-                    label,
-                    mib(s.window_peak),
-                    mib(s.live),
-                    s.us as f64 / 1_000_000.0
-                );
-            }
-            let peak = PEAK.load(Ordering::Relaxed);
-            let nav = summary.stats.nav_section_bytes;
-            eprintln!("  {:-<68}", "");
-            eprintln!("  {:<28}{:>14}  ({peak} bytes)", "overall peak", mib(peak));
-            eprintln!("  {:<28}{:>14}  ({nav} bytes)", "nav section written", mib(nav as usize));
-            if nav > 0 {
-                eprintln!("  {:<28}{:>13.2}x", "overall peak / nav section", peak as f64 / nav as f64);
-            }
-        }
-    }
-
-    impl<C: Clock> Clock for ProfilingClock<C> {
-        fn nav_phase(&self, name: &'static str) {
-            thread_local! { static PREVIOUS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
-            let now = self.inner.now_us();
-            PREVIOUS.with(|previous| {
-                let start = previous.replace(now);
-                if name != "start" {
-                    eprintln!("nav-profile {name} us={}", now - start);
-                }
-            });
-        }
-        fn now_us(&self) -> u64 {
-            let us = self.inner.now_us();
-            let live = LIVE.load(Ordering::Relaxed);
-            // Close the window at the level the heap is sitting at, so the next phase's number is
-            // what that phase added rather than what a previous one left behind.
-            let window_peak = WINDOW.swap(live, Ordering::Relaxed);
-            self.samples.borrow_mut().push(Sample { us, window_peak, live });
-            us
-        }
-    }
-
-    fn mib(bytes: usize) -> String {
-        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
-    }
-
-    /// The tick order `assemble_full` documents.
-    fn labels_for(ticks: usize) -> Vec<String> {
-        let mut out: Vec<String> = [
-            "start (CLI: sidecar + open)",
-            "open cells",
-            "merge POIs",
-            "merge nav",
-            "plan map",
-            "(pre-write)",
-            "write",
-            "(pre-verify)",
-            "verify",
-            "release navigation scratch",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        if out.len() != ticks {
-            // The engine's tick order changed under us: number them rather than mislabel them.
-            out = (0..ticks).map(|k| format!("tick {k}")).collect();
-        }
-        out
-    }
-}
-
-#[cfg(feature = "mem-profile")]
-#[global_allocator]
-static TRACKING_ALLOCATOR: mem_profile::Tracking = mem_profile::Tracking;
 
 /// One cell as the cutter's sidecar states it.
 struct SidecarCell {
@@ -555,10 +229,10 @@ fn run() -> std::result::Result<(), String> {
     if selected.is_empty() {
         return Err("the selection is empty".into());
     }
-    let mut sources: Vec<ProfiledSource> = Vec::with_capacity(selected.len());
+    let mut sources: Vec<FileSource> = Vec::with_capacity(selected.len());
     for c in &selected {
         let path = root.join(&c.path);
-        sources.push(ProfiledSource::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?);
+        sources.push(FileSource::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?);
     }
     let inputs: Vec<CellInput<'_>> = selected
         .iter()
@@ -575,16 +249,16 @@ fn run() -> std::result::Result<(), String> {
         }
     };
     let terrain_root = terrain_path.as_ref().and_then(|p| p.parent()).unwrap_or(Path::new(".")).to_path_buf();
-    let mut terrain_sources: Vec<ProfiledSource> = Vec::new();
+    let mut terrain_sources: Vec<FileSource> = Vec::new();
     if let Some(sidecar) = &terrain_sidecar {
         for (_, path, _) in &sidecar.cells {
             let path = terrain_root.join(path);
-            terrain_sources.push(ProfiledSource::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?);
+            terrain_sources.push(FileSource::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?);
         }
     }
 
-    let open = |paths: &[PathBuf]| -> std::result::Result<Vec<ProfiledSource>, String> {
-        paths.iter().map(|p| ProfiledSource::open(p).map_err(|e| format!("open {}: {e}", p.display()))).collect()
+    let open = |paths: &[PathBuf]| -> std::result::Result<Vec<FileSource>, String> {
+        paths.iter().map(|p| FileSource::open(p).map_err(|e| format!("open {}: {e}", p.display()))).collect()
     };
     let (landmark_sources, peak_sources) = (open(&landmark_paths)?, open(&peak_paths)?);
     let articles = Articles {
@@ -603,13 +277,9 @@ fn run() -> std::result::Result<(), String> {
             .collect(),
     });
 
-    #[cfg(not(feature = "mem-profile"))]
     let clock = StdClock(Instant::now());
-    #[cfg(feature = "mem-profile")]
-    let clock = mem_profile::ProfilingClock::new(StdClock(Instant::now()));
-    // The engine's spill area. Real files, so the merge's sorted passes are genuinely off-heap,
-    // which is also what makes the `mem-profile` numbers mean anything.
-    let scratch = FileScratch::new()?;
+    // The engine's spill area. Real files, so the merge's sorted passes are genuinely off-heap.
+    let scratch = FileScratch::new().map_err(|e| e.to_string())?;
     let summary =
         assemble_full(inputs, Vec::new(), job, articles, &schema, &map_styles, &opts, &mut store, &clock, &scratch)
             .map_err(|e| e.to_string())?;
@@ -624,9 +294,6 @@ fn run() -> std::result::Result<(), String> {
     } else {
         print_summary(&summary, &out_path);
     }
-    // stderr, and last: the summary above is pinned by tests and by the builder's parser.
-    #[cfg(feature = "mem-profile")]
-    clock.report(&summary);
     Ok(())
 }
 

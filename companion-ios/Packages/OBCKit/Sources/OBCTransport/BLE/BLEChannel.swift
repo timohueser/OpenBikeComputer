@@ -17,9 +17,6 @@ public struct BLEChannel: Sendable {
         self.chunkSize = max(1, chunkSize)
     }
 
-    /// Maximum protocol payload that leaves the 16-byte v4 stream header inside one CoC SDU.
-    public var maximumRecordPayload: Int { max(0, chunkSize - FlatStoreV4.streamHeaderLength) }
-
     /// One complete protocol-v4 stream record in one CoC SDU.
     public func sendRecord(_ record: Data) async throws {
         guard record.count <= chunkSize else { throw DeviceError.transferRejected }

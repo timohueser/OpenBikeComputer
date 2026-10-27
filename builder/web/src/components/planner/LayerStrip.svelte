@@ -53,11 +53,11 @@
 
 <div class="strip">
     <div class="label">
-        <span><strong>{strip.label ?? layer.label}</strong><span class="hint">{layer.error || (samples ? `${scaled ? `${scaled.range} · ` : ''}${dateLabel(date)} · ${strip.hint ?? 'hover for past years'}` : 'Loading…')}</span></span>
+        <span><strong>{strip.label ?? layer.label}</strong><span class="hint">{layer.error || (samples ? `${scaled ? `${scaled.range} · ` : ''}${dateLabel(date)} · hover for past years` : 'Loading…')}</span></span>
         {#if strip.legend}<span class="key"><LayerLegend legend={strip.legend(theme)} label={`${layer.label} colours`} /></span>{/if}
     </div>
     <div class="bar" bind:this={bar} role="slider" tabindex={samples ? 0 : -1} aria-label={`${layer.label} along the route on ${dateLabel(date)}`}
-        aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round((at?.progress ?? from) * 100)} aria-valuetext={chart?.headline ?? strip.hint ?? 'Hover or use the arrow keys for past years'}
+        aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round((at?.progress ?? from) * 100)} aria-valuetext={chart?.headline ?? 'Hover or use the arrow keys for past years'}
         onpointermove={point} onpointerleave={hide} onfocus={() => show(from)} onblur={hide} onkeydown={key}>
         {#each runs as run, i (i)}
             {@const swatch = fills[run.value]}

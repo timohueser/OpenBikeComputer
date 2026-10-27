@@ -111,7 +111,6 @@ def fixture(
         },
         "config": {"name": "Trailhead", "units": "metric"},
         "battery": 82,
-        "diagnostics": "Landing-page Grimsel fixture\n",
         "routes": [{
             "id": "grimsel-pass",
             "deviceObjectID": 7,

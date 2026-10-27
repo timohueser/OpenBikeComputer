@@ -24,24 +24,20 @@ final class MockLaunchOptionsTests: XCTestCase {
         }
     }
 
-    func testParsesFixturesConnectionTransportAndPanelFlag() {
+    func testParsesFixturesConnectionTransportAndFlags() {
         let options = parse([
             "-OBCScenario", "outOfRange",
-            "-OBCFixtures", "large",
+            "-OBCFixtures", "trips",
             "-OBCConnection", "connecting",
             "-OBCTransport", "ble",
-            "-OBCShowDevPanel",
-            "-OBCShowUIGallery",
             "-OBCHideMockHUD",
             "-OBCDisableAnimations",
             "-OBCHoldConfirmations",
         ])
         XCTAssertEqual(options.scenario, .outOfRange)
-        XCTAssertEqual(options.fixtures, "large")
+        XCTAssertEqual(options.fixtures, "trips")
         XCTAssertEqual(options.connection, .connecting)
         XCTAssertTrue(options.useBLETransport)
-        XCTAssertTrue(options.showDevPanel)
-        XCTAssertTrue(options.showUIGallery)
         XCTAssertTrue(options.hideMockHUD)
         XCTAssertTrue(options.disableAnimations)
         XCTAssertTrue(options.holdConfirmations)
@@ -65,14 +61,10 @@ final class MockLaunchOptionsTests: XCTestCase {
         let options = parse([], env: [
             "OBC_SCENARIO": "emptyLibrary",
             "OBC_CONNECTION": "outOfRange",
-            "OBC_SHOW_DEV_PANEL": "1",
-            "OBC_SHOW_UI_GALLERY": "1",
             "OBC_HIDE_MOCK_HUD": "1",
         ])
         XCTAssertEqual(options.scenario, .emptyLibrary)
         XCTAssertEqual(options.connection, .outOfRange)
-        XCTAssertTrue(options.showDevPanel)
-        XCTAssertTrue(options.showUIGallery)
         XCTAssertTrue(options.hideMockHUD)
         // The argument wins over the environment when both are present.
         let overridden = parse(["-OBCScenario", "readError"], env: ["OBC_SCENARIO": "emptyLibrary"])
@@ -96,7 +88,7 @@ final class MockLaunchOptionsTests: XCTestCase {
         XCTAssertNil(parse([]).importSample)
         // A bare flag means gpx, including when another -OBCKey follows.
         XCTAssertEqual(parse(["-OBCImportSample"]).importSample, .gpx)
-        XCTAssertEqual(parse(["-OBCImportSample", "-OBCShowDevPanel"]).importSample, .gpx)
+        XCTAssertEqual(parse(["-OBCImportSample", "-OBCHideMockHUD"]).importSample, .gpx)
         XCTAssertEqual(parse(["-OBCImportSample", "tcx"]).importSample, .tcx)
         XCTAssertEqual(parse(["-OBCImportSample", "bad"]).importSample, .bad)
         XCTAssertEqual(parse(["-OBCImportSample", "grimsel"]).importSample, .grimsel)
@@ -129,7 +121,7 @@ final class MockLaunchOptionsTests: XCTestCase {
         XCTAssertEqual(parse([], env: ["OBC_FIRMWARE_DEMO": "send"]).firmwareDemo, .sending)
         // Unknown token degrades to staged, never crashes; a following flag isn't a token.
         XCTAssertEqual(parse(["-OBCFirmwareDemo", "wat"]).firmwareDemo, .staged)
-        XCTAssertEqual(parse(["-OBCFirmwareDemo", "-OBCShowDevPanel"]).firmwareDemo, .staged)
+        XCTAssertEqual(parse(["-OBCFirmwareDemo", "-OBCHideMockHUD"]).firmwareDemo, .staged)
     }
 
     func testSampleFirmwareFileIsAValidContainer() throws {

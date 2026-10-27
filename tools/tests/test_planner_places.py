@@ -7,7 +7,21 @@ import sqlite3
 import tempfile
 import unittest
 
-from tools import planner_places as places
+from tools import planner_mvt as mvt, planner_places as places
+
+
+def pois(tile):
+    """(id, properties) of each feature of the tile's `pois` layer."""
+    for _, layer in mvt.fields(tile):
+        parts = list(mvt.fields(layer))
+        if dict(parts).get(1) != b"pois":
+            continue
+        keys = [value.decode() for field, value in parts if field == 3]
+        values = [next(text.decode() for number, text in mvt.fields(value) if number == 1) for field, value in parts if field == 4]
+        for feature in (value for field, value in parts if field == 2):
+            fields = dict(mvt.fields(feature))
+            tags = mvt.packed(fields.get(2, b""))
+            yield fields.get(1), {keys[k]: values[v] for k, v in zip(tags[::2], tags[1::2])}
 
 
 class PlacesArchive(unittest.TestCase):
@@ -27,7 +41,7 @@ class PlacesArchive(unittest.TestCase):
                 data=MmapSource(stream)
                 self.assertEqual(Reader(data).metadata()['osm_sha256'],'a'*64)
                 tiles=list(all_tiles(data))
-            records=list(places.pois(gzip.decompress(tiles[0][1])))
+            records=list(pois(gzip.decompress(tiles[0][1])))
             self.assertEqual([r[0] for r in records], [4*2**44+5,2**44+1,3*2**44+3])
             self.assertEqual([r[1] for r in records], [
                 {'kind':'pass','name':'Curated pass','lon':'7.900002','lat':'47.900002'},
@@ -38,7 +52,7 @@ class PlacesArchive(unittest.TestCase):
             empty = Path(directory) / 'empty.pmtiles'
             self.assertEqual(places.derive(source, empty), {'places': 0, 'tiles': 1})
             with empty.open('rb') as stream:
-                self.assertEqual(list(places.pois(gzip.decompress(list(all_tiles(MmapSource(stream)))[0][1]))), [])
+                self.assertEqual(list(pois(gzip.decompress(list(all_tiles(MmapSource(stream)))[0][1]))), [])
             with sqlite3.connect(source) as db:
                 db.execute("UPDATE metadata SET value='\"addresses\"' WHERE key='component'")
             with self.assertRaisesRegex(ValueError,'POI search component'):

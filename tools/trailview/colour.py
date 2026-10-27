@@ -4,17 +4,14 @@ defines them.
 
 The `obc data` step is `planner/trailview-colour` (`--step`). `--fetch` is the capture of
 `sentinel-2-mosaics`: the window over a box of each band of each mosaic tile of a year, over CDSE S3
-with the keys of `tools/planner_snow.py`. `--variants` bakes each variant from a capture and prints
-its bytes per km².
+with the keys of `tools/planner_snow.py`.
 """
 
 import argparse
 import io
-import json
 import re
 import sys
 import threading
-import time
 import urllib.parse
 from pathlib import Path
 
@@ -243,28 +240,19 @@ def encoder(variant):
     return encode
 
 
-def bake(mosaics, bounds, variants, output, metadata):
-    """Write the archives of each of `variants`, which share a last zoom, in `output/<variant>/`; return
-    their bytes per archive and zoom by variant."""
-    top, = {VARIANTS[variant][1] for variant in variants}
-    encoders = {variant: encoder(variant) for variant in variants}
-    encode = lambda texels: {f"{variant}/{name}": data for variant, code in encoders.items() for name, data in code(texels).items()}
+def bake(mosaics, bounds, variant, output, metadata):
+    """Write the archives of `variant` in `output`; return their bytes per archive and zoom."""
     stack = lambda z, x, y: np.stack([q for _, q in sorted(quarters(mosaics, tiles.transform(z, x, y), tiles.texel_m(z, y)).items())])
-    sizes = tiles.pyramid(bounds, range(BOTTOM_ZOOM, top + 1), stack, average, encode, output,
-                          {**metadata, "trailview_format": FORMAT})
-    return {variant: {name.split("/")[1]: zooms for name, zooms in sizes.items() if name.startswith(f"{variant}/")} for variant in variants}
+    return tiles.pyramid(bounds, range(BOTTOM_ZOOM, VARIANTS[variant][1] + 1), stack, average, encoder(variant), output,
+                         {**metadata, "trailview_format": FORMAT})
 
 
 def step():
     request = step_request.read()
     options = request["options"]
-    variant, output = options["variant"], Path(request["output"])
-    sizes = bake(mosaics(step_request.files(request, "sentinel-2-mosaics")), options["bounds"], [variant], output / "variant",
-                 {"attribution": options["attribution"].format(year=options["year"]), "variant": variant})[variant]
-    for path in (output / "variant" / variant).iterdir():
-        path.rename(output / path.name)
-    for folder in (output / "variant" / variant, output / "variant"):
-        folder.rmdir()
+    variant = options["variant"]
+    sizes = bake(mosaics(step_request.files(request, "sentinel-2-mosaics")), options["bounds"], variant, Path(request["output"]),
+                 {"attribution": options["attribution"].format(year=options["year"]), "variant": variant})
     step_request.metrics(request, {"bytes_per_zoom": sizes, "bytes_per_km2": per_km2(sizes, options["bounds"])})
 
 
@@ -309,21 +297,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bounds", type=geo.bounds, required=True)
     parser.add_argument("--year", type=int, required=True)
-    parser.add_argument("--fetch", type=Path, help="write the capture of sentinel-2-mosaics here")
-    parser.add_argument("--variants", type=Path, help="bake each variant from the capture in this folder")
-    parser.add_argument("--output", type=Path, help="with --variants: the folder of the archives")
+    parser.add_argument("--fetch", type=Path, required=True, help="write the capture of sentinel-2-mosaics here")
     args = parser.parse_args()
-    if args.fetch:
-        fetch(args.bounds, args.year, args.fetch)
-        return
-    if not (args.variants and args.output):
-        parser.error("give --fetch, or --variants with --output")
-    files = {path.relative_to(args.variants).as_posix(): path for path in args.variants.rglob("*.tif")}
-    for top in sorted({zoom for _, zoom, _ in VARIANTS.values()}):
-        start = time.monotonic()
-        variants = [variant for variant, (_, zoom, _) in VARIANTS.items() if zoom == top]
-        for variant, sizes in bake(mosaics(files), args.bounds, variants, args.output, {"attribution": ""}).items():
-            print(json.dumps({"variant": variant, "bytes_per_km2": per_km2(sizes, args.bounds), "s": round(time.monotonic() - start)}))
+    fetch(args.bounds, args.year, args.fetch)
 
 
 if __name__ == "__main__":

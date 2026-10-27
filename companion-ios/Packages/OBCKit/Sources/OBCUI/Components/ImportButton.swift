@@ -58,13 +58,3 @@ public struct OBCImportButton: View {
             .obcFixedGeometryType()
     }
 }
-
-#Preview("Import button") {
-    HStack {
-        Text("Library").font(.system(.largeTitle, weight: .bold)).foregroundStyle(OBCTheme.ink)
-        Spacer()
-        OBCImportButton(fileExtensions: ["gpx", "tcx"]) { _ in }
-    }
-    .padding(20)
-    .background(OBCTheme.page)
-}

@@ -172,13 +172,6 @@ fn main() {
         fs::copy(path, out.join("demo_ride.obcr")).expect("copy OBC_DEMO_RIDE_FILE");
     }
 
-    // Cargo sets CARGO_FEATURE_<NAME> for the build script when a feature is enabled.
-
-    // The on-device POI router rides every build. The cfg stays so the `#[cfg(has_nav)]` sites need
-    // no churn, but no build shape turns it off.
-    println!("cargo:rustc-check-cfg=cfg(has_nav)");
-    println!("cargo:rustc-cfg=has_nav");
-
     fs::write(out.join("memory.x"), flpr_memory_x()).unwrap();
     println!("cargo:rustc-link-search={}", out.display());
     println!("cargo:rerun-if-changed=build.rs");

@@ -457,10 +457,6 @@ pub struct Render<'a> {
     /// The frozen route-corridor POI snapshot the Up-ahead timeline merges with
     /// [`waypoints`](Render::waypoints), ascending by along-route distance.
     pub corridor: &'a [obc_reader::CorridorPoi],
-    /// Whether that snapshot has settled: taken, or settled empty on a query error. `false` only
-    /// while the query still waits for its inputs, which keeps the Up-ahead empty state from
-    /// flashing an answer the next frame contradicts.
-    pub corridor_status: obc_reader::reader::places::QueryProgress,
     /// The App-owned per-category "next ahead" cache behind the `Next: <category>` stat tiles,
     /// refreshed on a progress-keyed policy rather than per frame.
     pub next_ahead: &'a crate::next_ahead::NextAhead,

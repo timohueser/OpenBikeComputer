@@ -172,38 +172,6 @@ public struct MultiTrackPreviewView: View {
     }
 }
 
-/// A route end on the map: the ink start dot or the rust end square.
-private struct EndMark<S: InsettableShape>: View {
-    let shape: S
-    let fill: Color
-
-    var body: some View {
-        shape.fill(fill)
-            .frame(width: 10, height: 10)
-            .overlay(shape.strokeBorder(OBCTheme.surface, lineWidth: 2))
-    }
-}
-
-/// A pin: a filled circle with a white rim, or a surface disc with the symbol.
-private struct PinMark: View {
-    let pin: MultiTrackPreviewView.Pin
-
-    var body: some View {
-        if let systemImage = pin.systemImage {
-            Image(systemName: systemImage)
-                .font(.system(.caption2, weight: .semibold))
-                .foregroundStyle(pin.color)
-                .frame(width: 20, height: 20)
-                .background(Circle().fill(OBCTheme.surface))
-                .overlay(Circle().strokeBorder(OBCTheme.hairlineStrong))
-        } else {
-            Circle().fill(pin.color)
-                .frame(width: 8, height: 8)
-                .overlay(Circle().strokeBorder(.white, lineWidth: 1.2))
-        }
-    }
-}
-
 /// The card chrome shared by both preview modes, matching ``TrackPreviewView``'s.
 private struct PreviewChrome: ViewModifier {
     let showsChrome: Bool

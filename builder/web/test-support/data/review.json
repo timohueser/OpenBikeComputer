@@ -2,7 +2,7 @@
     "id": "4c1e0d2a91b7",
     "target": "local",
     "base": "6a77777777777777777777777777777777777777777777777777777777777777",
-    "settings": {"region": "freiburg", "definitions": {"freiburg": "name = \"Freiburg\"\nkind = \"box\"\nbox = [7.7, 47.9, 8.0, 48.1]\ncountries = [\"DE\"]\n"}, "layers": ["sun"], "refresh": {"wiki": 30}},
+    "settings": {"region": "freiburg", "definitions": {"freiburg": "name = \"Freiburg\"\nkind = \"box\"\nbox = [7.7, 47.9, 8.0, 48.1]\ncountries = [\"DE\"]\n"}, "layers": ["climate"], "refresh": {"wiki": 30}},
     "layers": [
         {
             "layer": "device/map",
@@ -59,7 +59,7 @@
     "machine": {"memory_bytes": 34359738368, "store_free_bytes": 442381631488, "refusals": []},
     "after": {"rollback": "0d9e444444444444444444444444444444444444444444444444444444444444", "collects": null},
     "args": ["update", "local", "--expect", "4c1e0d2a91b7", "--accept-format-change"],
-    "optional": ["climate", "snow", "sun"],
+    "optional": ["climate", "snow"],
     "notes": [{"layer": "device/terrain", "text": "terrain has no tile of dtm-de here: device/terrain uses GLO-30 there. Fix: add this region to terrain: obc data source prepare terrain --region REGION"}],
     "services": []
 }

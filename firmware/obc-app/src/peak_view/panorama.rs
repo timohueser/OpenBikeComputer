@@ -30,11 +30,6 @@ impl Panorama {
         view_sectors(heading, fov).all(|sector| self.finished & (1 << sector) != 0)
     }
 
-    /// Completed sectors in the view; changes outside it do not need a redraw.
-    pub fn view_progress(&self, heading: u16, fov: i32) -> u8 {
-        view_sectors(heading, fov).filter(|sector| self.finished & (1 << sector) != 0).count() as u8
-    }
-
     pub fn has_incomplete_coverage(&self) -> bool {
         self.incomplete.iter().any(|&byte| byte != 0)
     }
@@ -113,7 +108,6 @@ mod tests {
         assert!(!image.ready_at_bearing_q4(24));
         assert_eq!(image.tone_at_bearing_q4(24, 0), 0);
         assert!(!image.view_ready(0, 240));
-        assert_eq!(image.view_progress(0, 240), 2);
         image.finished = u64::MAX;
         assert!(image.view_ready(0, 240));
     }

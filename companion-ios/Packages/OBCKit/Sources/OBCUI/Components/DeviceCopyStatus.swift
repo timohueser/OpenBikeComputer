@@ -96,14 +96,3 @@ public struct DeviceCopyStatus: View {
         }
     }
 }
-
-#Preview("Device copy status") {
-    VStack(alignment: .leading, spacing: 24) {
-        DeviceCopyStatus(state: .notOnDevice, connection: .connected, deviceName: "Trailhead", onSend: {})
-        DeviceCopyStatus(state: .upToDate, connection: .connected, deviceName: "Trailhead", onSend: {})
-        DeviceCopyStatus(state: .outdated, connection: .connected, deviceName: "Trailhead", onSend: {})
-        DeviceCopyStatus(state: .notOnDevice, connection: .outOfRange, deviceName: "Trailhead", onSend: {})
-    }
-    .padding(20)
-    .background(OBCTheme.page)
-}

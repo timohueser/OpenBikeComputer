@@ -64,7 +64,6 @@ user_config.json
 !companion-ios/Packages/OBCKit/Sources/OBCFormats/Resources/grimsel-pass.gpx
 # ...and the captured route-import provider exports, the canonical copy of the same bytes.
 !fixtures/sources/route-import/*.gpx
-!fixtures/sources/kandel-ride/*.gpx
 # Generated builder core and test-device bindings.
 builder/web/src/lib/core/pkg/
 builder/web/test-support/flat-device/pkg/

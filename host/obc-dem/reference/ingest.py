@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The entry point of the reference archive tool. Everything is in the `ingest` package.
 
-    python3 ingest.py ingest ch --bbox 8.30,46.75,8.60,46.95 --archive ref/
+    python3 ingest.py fetch ch --tile 4812-4223 --work /tmp/work --out /tmp/out
 """
 
 import sys

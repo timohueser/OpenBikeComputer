@@ -239,7 +239,6 @@ private final class HandDrivenUploadTransport: DeviceLink, DeviceObjects, @unche
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo { fatalError("unused") }
     func listRoutes() async throws -> [RouteCatalogEntry] { [] }
-    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { fatalError("unused") }
     func deleteRoute(_ id: DeviceObjectID) async throws {}
     func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
     func downloadRides(_ ids: [RideID]) -> RideDownload { fatalError("unused") }

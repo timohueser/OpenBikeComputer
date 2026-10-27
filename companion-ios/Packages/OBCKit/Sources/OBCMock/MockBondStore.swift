@@ -3,8 +3,8 @@ import Foundation
 import OBCTransport
 
 /// The mock `BondStore`: a view onto `MockControl.bonded`, so the scenario preset decides the
-/// launch branch and the dev panel can flip it live to replay first-run pairing. Nothing
-/// persists; every launch starts from the scenario, which is what automation wants.
+/// launch branch. Nothing persists; every launch starts from the scenario, which is what
+/// automation wants.
 public struct MockBondStore: BondStore {
     private let control: MockControl
 

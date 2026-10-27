@@ -120,32 +120,3 @@ extension OBCDisclosureRow where Content == EmptyView {
         self.content = EmptyView()
     }
 }
-
-#if DEBUG
-private struct DisclosureRowPreviewHost: View {
-    @State private var expanded = true
-
-    var body: some View {
-        VStack(spacing: 14) {
-            OBCDisclosureRow(systemImage: "mappin.and.ellipse", label: "Waypoints", value: "4")
-            OBCDisclosureRow(
-                systemImage: "mappin.and.ellipse",
-                label: "Waypoints",
-                value: "2",
-                isExpanded: $expanded
-            ) {
-                Text("Dropdown content")
-                    .font(.system(.subheadline))
-                    .foregroundStyle(OBCTheme.secondary)
-                    .padding(.vertical, 12)
-            }
-        }
-        .padding(20)
-        .background(OBCTheme.page)
-    }
-}
-
-#Preview("Disclosure row") {
-    DisclosureRowPreviewHost()
-}
-#endif

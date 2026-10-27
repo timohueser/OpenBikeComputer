@@ -504,7 +504,6 @@ private struct TruncatedRideCatalogTransport: DeviceLink, DeviceObjects {
     func disconnect() async { await base.disconnect() }
     func deviceInfo() async throws -> DeviceInfo { try await base.deviceInfo() }
     func listRoutes() async throws -> [RouteCatalogEntry] { try await base.listRoutes() }
-    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { try await base.routeDetail(id) }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
     func deleteRoute(_ id: DeviceObjectID) async throws { try await base.deleteRoute(id) }
     func downloadRides(_ ids: [RideID]) -> RideDownload { base.downloadRides(ids) }
@@ -528,7 +527,6 @@ private struct ScriptedDownloadTransport: DeviceLink, DeviceObjects {
     func disconnect() async { await base.disconnect() }
     func deviceInfo() async throws -> DeviceInfo { try await base.deviceInfo() }
     func listRoutes() async throws -> [RouteCatalogEntry] { try await base.listRoutes() }
-    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { try await base.routeDetail(id) }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
     func deleteRoute(_ id: DeviceObjectID) async throws { try await base.deleteRoute(id) }
     func confirmRideArchive(_ receipt: RideArchiveReceipt) async throws -> RideArchiveConfirmation { .confirmed }

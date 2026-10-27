@@ -1,6 +1,6 @@
 import type { Coordinate } from './geo';
 import { dataLayers } from './layers/registry';
-import { solarPosition, solarTerms } from './layers/sun';
+import { solarPosition, solarTerms } from './solar';
 
 // The upper limb at the horizon, with refraction.
 const horizon = -.833 * Math.PI / 180;

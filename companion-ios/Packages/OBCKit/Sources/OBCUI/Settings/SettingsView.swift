@@ -6,18 +6,13 @@ import OBCTransport
 /// here implies a cloud or an account.
 public struct SettingsView: View {
     @Bindable private var model: SettingsModel
-    /// Push the firmware-update screen. `nil` leaves the Update firmware row out (previews, and
-    /// any wiring that does not host the update screen).
+    /// Push the firmware-update screen. `nil` leaves the Update firmware row out, for wiring that
+    /// does not host the update screen.
     private let onOpenFirmwareUpdate: (() -> Void)?
     private let onReplaySetup: (() -> Void)?
 
-    /// Debug-only: five taps on the App version row open the mock dev panel. `nil` in
-    /// Release wiring, where the gesture goes nowhere.
-    private let onOpenDevPanel: (() -> Void)?
-
     @State private var renameShown = false
     @State private var forgetShown = false
-    @State private var versionTaps = 0
     @State private var acknowledgementsShown = false
     @Environment(\.openURL) private var openURL
     @Environment(\.obcOfflineMaps) private var offlineMaps
@@ -29,14 +24,11 @@ public struct SettingsView: View {
     public init(
         model: SettingsModel,
         onOpenFirmwareUpdate: (() -> Void)? = nil,
-        onReplaySetup: (() -> Void)? = nil,
-        onOpenDevPanel: (() -> Void)? = nil
+        onReplaySetup: (() -> Void)? = nil
     ) {
         self.model = model
         self.onOpenFirmwareUpdate = onOpenFirmwareUpdate
         self.onReplaySetup = onReplaySetup
-
-        self.onOpenDevPanel = onOpenDevPanel
     }
 
     public var body: some View {
@@ -241,14 +233,7 @@ public struct SettingsView: View {
                 iconColor: OBCTheme.tint,
                 label: "App version",
                 value: Self.appVersion,
-                showsDivider: false,
-                action: onOpenDevPanel == nil ? nil : {
-                    versionTaps += 1
-                    if versionTaps >= 5 {
-                        versionTaps = 0
-                        onOpenDevPanel?()
-                    }
-                }
+                showsDivider: false
             )
         }
     }
@@ -261,35 +246,3 @@ public struct SettingsView: View {
         return "\(version) (build \(build))"
     }
 }
-
-#if DEBUG
-#Preview("Settings (G)") {
-    // OBCUI cannot import OBCMock, so previews use placeholder wiring.
-    NavigationStack {
-        SettingsView(model: SettingsModel(
-            transport: PreviewSettingsTransport(),
-            bondStore: PreviewNoopBondStore()
-        ))
-    }
-}
-
-private struct PreviewSettingsTransport: DeviceLink, DeviceBattery, DeviceConfiguration, DeviceBonding {
-    var state: AsyncStream<ConnectionState> {
-        AsyncStream { $0.yield(.connected); $0.finish() }
-    }
-    var battery: AsyncStream<Int> { AsyncStream { $0.yield(82); $0.finish() } }
-    func connect() async throws {}
-    func disconnect() async {}
-    func deviceInfo() async throws -> DeviceInfo {
-        DeviceInfo(name: "Trailhead", firmwareVersion: "0.4.2")
-    }
-    func readConfig() async throws -> DeviceConfig { DeviceConfig(name: "Trailhead") }
-    func writeConfig(_ config: DeviceConfig) async throws {}
-}
-
-private struct PreviewNoopBondStore: BondStore {
-    func load() -> BondRecord? { BondRecord(deviceName: "Trailhead") }
-    func save(_ record: BondRecord) {}
-    func clear() {}
-}
-#endif

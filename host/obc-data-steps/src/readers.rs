@@ -44,8 +44,6 @@ pub static IOS_OFFLINE_ROUTER: Reader = Reader {
 pub static ROUTER_SERVICE: Reader = service!("router service");
 pub static SEARCH_SERVICE: Reader = service!("search service");
 pub static DOWNLOADS_SERVICE: Reader = service!("downloads service");
-pub static PLANNER_SUN: Reader =
-    Reader { name: "planner/sun", on_new_format: "planner/sun bakes again from the new data in the same update." };
 pub static PLANNER_TRAILVIEW_FEATURES: Reader = Reader {
     name: "planner/trailview-features",
     on_new_format: "planner/trailview-features bakes again from the new data in the same update.",

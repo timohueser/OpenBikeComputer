@@ -45,19 +45,3 @@ public struct OBCSearchField: View {
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium))
     }
 }
-
-#Preview("Search field") {
-    struct Demo: View {
-        @State private var empty = ""
-        @State private var query = "devils"
-        var body: some View {
-            VStack(spacing: 14) {
-                OBCSearchField(text: $empty)
-                OBCSearchField(text: $query)
-            }
-            .padding(20)
-            .background(OBCTheme.page)
-        }
-    }
-    return Demo()
-}

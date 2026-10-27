@@ -25,8 +25,6 @@ public enum TransferClientError: Error, Equatable, Sendable {
     case invalidLinkCeiling(Int)
     case unexpectedResponse
     case unexpectedStream
-    case payloadTooLarge
-    case lengthMismatch
     case checksumMismatch
     case requestIDExhausted
     case responseTimedOut
@@ -128,28 +126,11 @@ public actor TransferClient {
         return RemoveResult(commitSequence: value.flag ? value.sequence : nil)
     }
 
-    public func cancel(transfer: RequestID) async throws -> CancelResult {
-        try await acquire()
-        defer { release() }
-        var input = request(6)
-        input.object_id = UInt64(transfer.rawValue)
-        return try await execute(input).flag ? .cancelled : .noSuchTransfer
-    }
-
     public func arm(packageObjectID: ObjectID, expectedRevision: Revision) async throws -> ArmResult {
         try await acquire()
         defer { release() }
         let value = try await execute(request(7, id: packageObjectID, revision: expectedRevision))
         return ArmResult(rollbackObjectID: value.objectID, commitSequence: value.sequence)
-    }
-
-    public func format(expectedStoreID: StoreID, replacementStoreID: StoreID) async throws -> FormatResult {
-        try await acquire()
-        defer { release() }
-        var input = request(8, store: expectedStoreID)
-        copy(replacementStoreID, to: &input.replacement)
-        let value = try await execute(input)
-        return FormatResult(storeID: value.store)
     }
 
     public func archiveRide(storeID: StoreID, objectID: ObjectID, revision: Revision,
