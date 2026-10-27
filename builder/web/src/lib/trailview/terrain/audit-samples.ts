@@ -2,7 +2,7 @@
 // in each lake and on its shore, along each river; and the checks of a tile's water levels. A worker uses it.
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
-import { BRIDGE, cores, crossSlope, features, insideRings, junctions, metresPerUnit, mitre, RAIL, RIVER, ROAD, RULES, STREAM, type Line, type Node } from './bins';
+import { BRIDGE, cores, crossSlope, features, insideRings, junctions, metresPerUnit, mitre, RAIL, ringsDistance, RIVER, ROAD, RULES, STREAM, type Line, type Node } from './bins';
 
 /** Words of a sample, and its kinds. */
 export const SAMPLE = 12;
@@ -42,19 +42,6 @@ function lineDistance({ xy }: Line, x: number, y: number): number {
         const ax = xy[i], ay = xy[i + 1], dx = xy[i + 2] - ax, dy = xy[i + 3] - ay;
         const t = Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
         best = Math.min(best, Math.hypot(x - ax - t * dx, y - ay - t * dy));
-    }
-    return best;
-}
-
-/** The distance from a point to the nearest edge of rings, in the units of the points. */
-function shoreDistance(rings: number[][], x: number, y: number): number {
-    let best = Infinity;
-    for (const ring of rings) {
-        for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
-            const ax = ring[j], ay = ring[j + 1], dx = ring[i] - ax, dy = ring[i + 1] - ay;
-            const t = Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
-            best = Math.min(best, Math.hypot(x - ax - t * dx, y - ay - t * dy));
-        }
     }
     return best;
 }
@@ -140,14 +127,14 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
     // A shore sample has no other water near: a river's mouth, another lake.
     const rivers = lines.filter(line => line.kind === RIVER), near = DRY_TEXELS * texel;
     const wet = (x: number, y: number, self: unknown) =>
-        lakes.some(lake => lake !== self && (insideRings(lake.rings, x, y) || shoreDistance(lake.rings, x, y) * unit < near)) ||
+        lakes.some(lake => lake !== self && (insideRings(lake.rings, x, y) || ringsDistance(lake.rings, x, y) * unit < near)) ||
         rivers.some(line => lineDistance(line, x, y) * unit < line.h + near);
     for (const lake of lakes) {
         const { level, rings } = lake;
         // Inside: a grid over the node, every point at its distance from the shore.
         const grid = side / 32;
         for (let y = y0 + grid / 2; y < y0 + side; y += grid) for (let x = x0 + grid / 2; x < x0 + side; x += grid) {
-            if (insideRings(rings, Math.round(x), Math.round(y))) push(x, y, IN_WATER, level, 0, shoreDistance(rings, Math.round(x), Math.round(y)) * unit);
+            if (insideRings(rings, Math.round(x), Math.round(y))) push(x, y, IN_WATER, level, 0, ringsDistance(rings, Math.round(x), Math.round(y)) * unit);
         }
         // The shore: points on both sides of each edge in the node, in the band of its ramp.
         for (const ring of rings) {
@@ -157,7 +144,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
                 const normal = [-(ring[i + 1] - ring[j + 1]) / length, (ring[i] - ring[j]) / length];
                 for (const sign of [-1, 1]) for (const past of [0.25, 0.75, 1.25]) {
                     const d = past * band / unit, x = Math.round(mx + sign * normal[0] * d), y = Math.round(my + sign * normal[1] * d);
-                    if (inNode(x, y) && !wet(x, y, lake)) push(x, y, insideRings(rings, x, y) ? IN_WATER : ON_BANK, level, 0, shoreDistance(rings, x, y) * unit);
+                    if (inNode(x, y) && !wet(x, y, lake)) push(x, y, insideRings(rings, x, y) ? IN_WATER : ON_BANK, level, 0, ringsDistance(rings, x, y) * unit);
                 }
             }
         }
@@ -171,7 +158,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
     for (let y = y0 + fine / 2; y < y0 + side; y += fine) for (let x = x0 + fine / 2; x < x0 + side; x += fine) {
         const [px, py] = [Math.round(x), Math.round(y)], near = lakes.filter((_, i) => px >= boxes[i][0] && py >= boxes[i][1] && px <= boxes[i][2] && py <= boxes[i][3]);
         if (!near.length) continue;
-        const d = Math.min(...near.map(({ rings }) => shoreDistance(rings, px, py))) * unit;
+        const d = Math.min(...near.map(({ rings }) => ringsDistance(rings, px, py))) * unit;
         if (d < SIDE_TEXELS * texel) push(px, py, SHORE_SIDE, 0, 0, near.some(({ rings }) => insideRings(rings, px, py)) ? -d : d);
     }
     // Rivers: the middle of the river, away from a lake's bed. Its level may leave the mesh by the
@@ -187,7 +174,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
             const count = Math.ceil(length / step), steepest = Math.max(grade(line, v - 1), grade(line, v), grade(line, v + 1));
             for (let i = 0; i < count; i++) {
                 const t = (i + 0.5) / count, cx = Math.round(ax + t * (bx - ax)), cy = Math.round(ay + t * (by - ay)), z = roadHeight(line, [cx, cy], line.h / unit, unit);
-                if (inNode(cx, cy) && !Number.isNaN(z) && !lakes.some(({ rings }) => insideRings(rings, cx, cy) || shoreDistance(rings, cx, cy) * unit < near)) push(cx, cy, IN_WATER | (line.profile << 8), z, line.h, 0, Infinity, 0, [0, 0], steepest);
+                if (inNode(cx, cy) && !Number.isNaN(z) && !lakes.some(({ rings }) => insideRings(rings, cx, cy) || ringsDistance(rings, cx, cy) * unit < near)) push(cx, cy, IN_WATER | (line.profile << 8), z, line.h, 0, Infinity, 0, [0, 0], steepest);
             }
         }
     }

@@ -1,16 +1,21 @@
 // Street lamps along the roads of built-up places. The map holds few of them, and not in every region,
 // so a rule stands them: along a lit road, every SPACING_M on one side, where a building is near.
 import { facing, unitModel, type Build, type Kind, type Placed } from '../kinds/kind';
-import { streetLamp } from '../models/amenities';
-import { metresPerUnit, type Shapes } from '../terrain/bins';
+import { LANTERN, streetLamp } from '../models/amenities';
+import { insideRings, metresPerUnit, ringsDistance, type Shapes } from '../terrain/bins';
 
-/** The roads that have lamps; a lamp stands this many metres apart from the next, and only within about BUILT_M of a building. */
+/**
+ * The roads that have lamps; a lamp stands this many metres apart from the next, only within about BUILT_M
+ * of a building, and at least CLEAR_M from its walls.
+ */
 const LIT = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified', 'residential', 'living_street']);
-const SPACING_M = 32, BUILT_M = 35, REACH_M = 600;
+const SPACING_M = 32, BUILT_M = 35, CLEAR_M = 2, REACH_M = 600;
 
 const lamp = unitModel(streetLamp, REACH_M);
-/** The cells of BUILT_M that hold a vertex of a building, by the buildings of a tile. */
-const built = new WeakMap<Shapes['buildings'], Set<string>>();
+type Buildings = Shapes['buildings'];
+/** The buildings of a tile by the cells of `size`, about BUILT_M, that their bounds touch. */
+interface Cells { size: number; cells: Map<string, Buildings> }
+const built = new WeakMap<Buildings, Cells>();
 
 /** The kind of a lit road: lamps `side` metres from its middle. */
 export function lampKind(side: number): Kind {
@@ -19,7 +24,7 @@ export function lampKind(side: number): Kind {
             if (LIT.has(feature.tags.highway) && !(feature.tags.bridge && feature.tags.bridge !== 'no')) lamps(feature, out, side);
         },
         models: { lamp: lamp.spec },
-        lights: { lamp: { colour: '#ffc98a', radius: 9 } },
+        lights: { lamp: { colour: '#ffc98a', radius: 16, at: LANTERN, housed: true } },
     };
 }
 
@@ -34,7 +39,9 @@ function lamps({ parts }: Placed, out: Build, side: number): void {
                 const t = (next - done) / length, offset = side / unit / Math.hypot(dx, dy);
                 // On the right of the way, in world units, whose y runs south.
                 const x = ax + t * dx - dy * offset, y = ay + t * dy + dx * offset;
-                if (!out.owns(x, y) || !near(cells, x, y)) continue;
+                if (!out.owns(x, y)) continue;
+                const near = nearBuildings(cells, x, y);
+                if (!near.length || near.some(({ rings }) => insideRings(rings, x, y) || ringsDistance(rings, x, y) * unit < CLEAR_M)) continue;
                 out.place({ x, y, yaw: facing(out.ways, x, y) ?? 0, height: lamp.height, model: 'lamp' });
             }
             done += length;
@@ -42,24 +49,30 @@ function lamps({ parts }: Placed, out: Build, side: number): void {
     }
 }
 
-function cellsOf(buildings: Shapes['buildings']): Set<string> {
-    let cells = built.get(buildings);
-    if (!cells) {
-        cells = new Set();
-        for (const { rings } of buildings) for (const ring of rings) for (let i = 0; i < ring.length; i += 2) cells.add(cell(ring[i], ring[i + 1]));
-        built.set(buildings, cells);
+function cellsOf(buildings: Buildings): Cells {
+    let index = built.get(buildings);
+    if (!index) {
+        // One size for the tile: a size at each building's own y would shift its cells against the lamps' cells.
+        const y = buildings.flatMap(({ rings }) => rings).find(ring => ring.length)?.[1] ?? 0;
+        index = { size: BUILT_M / metresPerUnit(y), cells: new Map() };
+        const { size, cells } = index;
+        for (const building of buildings) {
+            let [x0, x1, y0, y1] = [Infinity, -Infinity, Infinity, -Infinity];
+            for (const ring of building.rings) for (let i = 0; i < ring.length; i += 2) [x0, x1, y0, y1] = [Math.min(x0, ring[i]), Math.max(x1, ring[i]), Math.min(y0, ring[i + 1]), Math.max(y1, ring[i + 1])];
+            for (let cx = Math.floor(x0 / size); cx <= Math.floor(x1 / size); cx++) for (let cy = Math.floor(y0 / size); cy <= Math.floor(y1 / size); cy++) {
+                const key = `${cx},${cy}`, list = cells.get(key);
+                if (list) list.push(building);
+                else cells.set(key, [building]);
+            }
+        }
+        built.set(buildings, index);
     }
-    return cells;
+    return index;
 }
 
-const cell = (x: number, y: number) => {
-    const size = BUILT_M / metresPerUnit(y);
-    return `${Math.floor(x / size)},${Math.floor(y / size)}`;
-};
-
-/** Whether a building is in the cell of x, y or a cell next to it. */
-function near(cells: Set<string>, x: number, y: number): boolean {
-    const size = BUILT_M / metresPerUnit(y);
-    for (const dx of [-1, 0, 1]) for (const dy of [-1, 0, 1]) if (cells.has(cell(x + dx * size, y + dy * size))) return true;
-    return false;
+/** The buildings in the cell of x, y and the cells next to it. */
+function nearBuildings({ size, cells }: Cells, x: number, y: number): Buildings {
+    const cx = Math.floor(x / size), cy = Math.floor(y / size), near = new Set<Buildings[number]>();
+    for (const dx of [-1, 0, 1]) for (const dy of [-1, 0, 1]) for (const building of cells.get(`${cx + dx},${cy + dy}`) ?? []) near.add(building);
+    return [...near];
 }

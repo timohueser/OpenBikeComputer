@@ -41,7 +41,7 @@ export class KindPoints {
         for (let i = 2; i < out.length; i += POINT_WORDS) {
             // The pool draws CAPACITY points at most: a point that it leaves out sheds no light either.
             const light = i < CAPACITY * POINT_WORDS ? this.lightOf[out[i] & 0xffff] : undefined;
-            if (light) lights.push(...poolWords(ints[i - 2], ints[i - 1], light));
+            if (light) lights.push(...poolWords(ints[i - 2], ints[i - 1], (out[i] >> 16) & 255, light));
             out[i] = (out[i] & 0xffff0000) | ((out[i] & 0xffff) + first);
         }
         this.lights = new Uint32Array(lights);

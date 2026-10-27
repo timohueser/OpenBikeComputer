@@ -34,18 +34,35 @@ describe('kinds', () => {
         expect(facing([way([-50 * m, y + 20 * m, 50 * m, y + 20 * m])], 0, y)).toBeUndefined();
     });
 
-    it('stands street lamps along a lit road where a building is near, none on a bridge or a track', () => {
+    it('stands street lamps along a lit road where a building is near, none in or by a building, on a bridge or a track', () => {
         const y = 2 ** 29, m = 1 / metresPerUnit(y);
         // A road 320 m east; one building 10 m north of its first 100 m.
         const road = { outer: false, xy: [0, y, 320 * m, y] }, house = { rings: [[0, y - 10 * m, 100 * m, y - 10 * m, 100 * m, y - 20 * m]], outer: [true] };
-        const lamps = (tags: Record<string, string>) => {
+        // A shed on the right of the road at 48 m, and a wall 1 m from the lamp at 80 m.
+        const square = (x: number, y0: number, y1: number) => ({ rings: [[x - 3 * m, y + y0 * m, x + 3 * m, y + y0 * m, x + 3 * m, y + y1 * m, x - 3 * m, y + y1 * m]], outer: [true] });
+        const lamps = (tags: Record<string, string>, buildings = [house]) => {
             const placed: Placement[] = [];
-            const out = { owns: () => true, place: (p: Placement) => placed.push(p), ways: [], buildings: [house] } as unknown as Build;
+            const out = { owns: () => true, place: (p: Placement) => placed.push(p), ways: [], buildings } as unknown as Build;
             lampKind(3.5).build({ tags, parts: [road] }, out);
             return placed.map(p => Math.round(p.x / m));
         };
         expect(lamps({ highway: 'residential' })).toEqual([16, 48, 80, 112]);
+        expect(lamps({ highway: 'residential' }, [house, square(48 * m, 2, 8), square(80 * m, 4.5, 8)])).toEqual([16, 112]);
         expect(lamps({ highway: 'residential', bridge: 'yes' })).toEqual([]);
         expect(lamps({ highway: 'track' })).toEqual([]);
+    });
+
+    it('stands no street lamp in a long building whose first corner lies far from the road', () => {
+        // At Engelberg, 46.82°N 8.4°E: a road 120 m east, a house 10 m north of it, and a hall from 100 m south of it to 1 m.
+        const x = 0.523 * 2 ** 30, y = 2 ** 29 * (1 - Math.asinh(Math.tan(46.82 * Math.PI / 180)) / Math.PI), m = 1 / metresPerUnit(y);
+        const road = { outer: false, xy: [x, y, x + 120 * m, y] }, house = { rings: [[x, y - 10 * m, x + 120 * m, y - 10 * m, x + 120 * m, y - 20 * m]], outer: [true] };
+        const hall = { rings: [[x, y + 100 * m, x + 120 * m, y + 100 * m, x + 120 * m, y + m, x, y + m]], outer: [true] };
+        const lamps = (buildings: unknown[]) => {
+            const placed: Placement[] = [];
+            lampKind(3.5).build({ tags: { highway: 'residential' }, parts: [road] }, { owns: () => true, place: (p: Placement) => placed.push(p), ways: [], buildings } as unknown as Build);
+            return placed.length;
+        };
+        expect(lamps([house])).toBe(4);
+        expect(lamps([house, hall])).toBe(0);
     });
 });
