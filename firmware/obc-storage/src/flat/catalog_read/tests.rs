@@ -172,3 +172,42 @@ fn loaders_survive_every_media_read_refusal_without_leaking_a_handle() {
         }
     }
 }
+
+/// Each loader keeps the newest heads its staging holds, omits the one it cannot decode, and reports
+/// each route's flags at the index the route was returned at.
+#[test]
+fn loaders_keep_the_newest_decodable_heads_and_their_flags() {
+    let disk = SparseDisk::blank(250_000, 9);
+    let store = FlatStore::initialize(&disk, StoreId([0x47; 16])).unwrap();
+    populate(&store, 76, 20);
+
+    // 64 staging slots hold routes 13..=76, and route 75 does not decode.
+    let routes = current_routes(&store).unwrap();
+    let ids: Vec<u64> = (13..=76).rev().filter(|id| *id != 75).collect();
+    assert_eq!(routes.ids, ids);
+    let plain = RouteSummary::read(&obc_formats::io::SliceSource(include_bytes!(
+        "../../../../../specs/vectors/route-plain.obcr"
+    )))
+    .unwrap();
+    assert!(routes.summaries.len() == ids.len() && routes.summaries.iter().all(|summary| *summary == plain));
+    // `populate` gives route `id` the flags of `(id - 1) % 4`: an accepted candidate, an unaccepted
+    // candidate, a temporary route, a built day. Every one of them is internal.
+    let mask = |want: u64| -> u64 {
+        ids.iter().enumerate().filter(|(_, id)| (*id - 1) % 4 == want).map(|(index, _)| 1 << index).sum()
+    };
+    assert_eq!(routes.candidates, mask(1), "only an unaccepted candidate is offered");
+    assert_eq!(routes.temporary, mask(2));
+    assert_eq!(routes.internal, (1 << ids.len()) - 1);
+
+    // 16 staging slots hold trip keys 5..=20, and key 19 does not decode. Trip `key` is object
+    // `76 + key`, after the routes.
+    let trips = current_trips(&store).unwrap();
+    let keys: Vec<u64> = (5..=20).rev().filter(|key| *key != 19).collect();
+    assert_eq!(trips.metas.iter().map(|meta| meta.key).collect::<Vec<_>>(), keys);
+    assert_eq!(trips.ids, keys.iter().map(|key| 76 + key).collect::<Vec<_>>());
+    let days: Vec<u64> = (0..32).map(|day| 0x1_0000_0000 + day).collect();
+    for meta in &trips.metas {
+        assert_eq!((meta.name.as_str(), u64::from(meta.start_date)), ("Trip", meta.key - 1), "trip {}", meta.key);
+        assert!(meta.truncated && meta.day_routes[..] == days[..], "trip {} lost its day routes", meta.key);
+    }
+}

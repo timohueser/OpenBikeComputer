@@ -242,6 +242,51 @@ fn a_mount_costs_the_pinned_card_commands() {
     assert!(census.io_micros() <= 35_000, "a mount reads {} µs, above the 35 ms this case allows", census.io_micros());
 }
 
+/// The commit at an empty catalog, at the few hundred entries the budget is quoted for, and at the
+/// 1,024 the bench's worst case used. Each case publishes the next object, so the body it writes
+/// holds `entries + 1`.
+///
+/// Each command count is a ceiling: a commit may issue fewer, never more. Writes are at most
+/// `1 + ceil(body_blocks / 8) + 2`: the payload's staged partial block, the body in windows, and the
+/// two gate blocks. Reads are two windowed passes over the live prefix plus `find`'s block-at-a-time
+/// binary search. The fourth `sync` is the payload's. The latency ceilings are the projections plus
+/// about a tenth.
+#[test]
+fn a_commit_stays_within_its_command_and_latency_budget() {
+    // (entries, the most reads, writes and syncs, the ceiling the projection has to stay under)
+    let cases = [(0u16, 0, 4, 4, 7_000u64), (300, 26, 13, 4, 88_000), (1_024, 72, 36, 4, 280_000)];
+    for (entries, reads, writes, syncs, ceiling) in cases {
+        let census = commit_census(entries);
+        let projected = census.micros(COMMIT_M33_PER_ENTRY_US);
+        std::println!("commit at {entries} entries: {census:?} = {projected} µs projected");
+        assert!(census.reads <= reads, "the commit at {entries} entries issues {} reads", census.reads);
+        assert!(census.writes <= writes, "the commit at {entries} entries issues {} writes", census.writes);
+        assert!(census.syncs <= syncs, "the commit at {entries} entries issues {} syncs", census.syncs);
+        assert!(
+            projected <= ceiling,
+            "the commit at {entries} entries projects {projected} µs, above the {ceiling} µs this case allows",
+        );
+    }
+}
+
+/// The mount, at the 1,025 entries the bench measured: one superblock, two gates, and the live
+/// prefix, header block included, in windows of
+/// [`MOUNT_STREAM_WINDOW`](super::layout::MOUNT_STREAM_WINDOW). It may issue fewer than 69 reads,
+/// never more, and it writes nothing.
+///
+/// Most of a mount is the M33 decoding the entries, checking the structural rules, claiming their
+/// extents and folding the body CRC, so the whole path has a 140 ms ceiling and its reading 35 ms.
+#[test]
+fn a_mount_stays_within_its_command_and_latency_budget() {
+    let census = mount_census(1_025);
+    let projected = census.micros(MOUNT_M33_PER_ENTRY_US);
+    std::println!("mount at 1,025 entries: {census:?} = {projected} µs projected");
+    assert!(census.reads <= 69, "a mount issues {} reads, above the 69 it is allowed", census.reads);
+    assert_eq!((census.writes, census.syncs), (0, 0), "a clean mount wrote to the card");
+    assert!(projected <= 140_000, "a mount projects {projected} µs, above the 140 ms this case allows");
+    assert!(census.io_micros() <= 35_000, "a mount reads {} µs, above the 35 ms this case allows", census.io_micros());
+}
+
 /// Finishing a ride is O(1) in ride length: it copies only the selected tail slot and commits one
 /// catalog, so one page and one thousand pages issue the same card commands and blocks.
 #[test]

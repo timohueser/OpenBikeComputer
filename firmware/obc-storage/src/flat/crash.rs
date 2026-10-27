@@ -15,7 +15,7 @@ use std::vec::Vec;
 use super::catalog::{Entry, Gate};
 use super::layout::{
     catalog_gate, slot_block, slot_header_block, Geometry, Ranges, BLOCK, CATALOG, EXTENT_AREA, PROGRAM_PAGE, SLOTS,
-    SUPERBLOCK,
+    SLOT_BLOCKS, SUPERBLOCK,
 };
 use super::model::{self, Change, Model, Snapshot};
 use super::raw::crc32;
@@ -1220,6 +1220,41 @@ fn a_checkpoint_durably_orders_the_tail_before_its_header() {
     );
 }
 
+/// The split-slot durability order: every block of the 16 KiB tail slot is written and synchronized
+/// before the one header block that certifies it, and a final sync follows the header.
+#[test]
+fn a_checkpoint_syncs_its_whole_tail_slot_before_writing_its_header() {
+    let disk = card(9, &holding(&[recording()], 6), 0);
+    let store = FlatStore::mount(&disk);
+    let start = disk.ops();
+    let tail = payload(200);
+    store.journal(ride_checkpoint(&tail, &RESUME)).unwrap();
+
+    let ledger = disk.ledger();
+    let writes: Vec<_> = disk.write_log().into_iter().filter(|(op, _, _)| *op > start).collect();
+    let header =
+        writes.iter().filter(|(_, lba, _)| (0..SLOTS).any(|slot| *lba == slot_header_block(slot))).collect::<Vec<_>>();
+    let [&(header_op, header_lba, _)] = header[..] else { panic!("one header write expected, got {header:?}") };
+    let slot = (0..SLOTS).find(|slot| slot_header_block(*slot) == header_lba).unwrap();
+    let tail_blocks = slot_block(slot)..slot_block(slot) + SLOT_BLOCKS;
+    let mut covered = Vec::new();
+    let mut last_tail_op = 0;
+    for &(op, lba, blocks) in &writes {
+        if tail_blocks.contains(&lba) {
+            covered.extend(lba..lba + blocks);
+            last_tail_op = last_tail_op.max(op);
+        }
+    }
+    covered.sort_unstable();
+    assert_eq!(covered, tail_blocks.collect::<Vec<_>>(), "the tail slot was not written whole");
+    let synced = |after: u32, before: u32| {
+        ledger.iter().any(|(op, kind, _)| *kind == MediaOp::Sync && *op > after && *op < before)
+    };
+    assert!(last_tail_op < header_op, "the header was written before the tail");
+    assert!(synced(last_tail_op, header_op), "the tail was not synchronized before the header was written");
+    assert!(synced(header_op, u32::MAX), "the header was not synchronized");
+}
+
 /// A damaged source may leave uncommitted bytes in the target tail page, so the checkpoint must be
 /// refused before the target header gate makes them recoverable.
 #[test]
@@ -1646,6 +1681,42 @@ fn a_reader_joining_a_trimmed_hold_still_returns_the_whole_reserve() {
     assert_eq!(FlatStore::mount(&disk).free_extents(), EXTENTS - 1, "and the next mount says the same");
 }
 
+/// Finalising a ride trims 31 of its 32 reserve extents. A reader that opened before the amend keeps
+/// the row, so the trimmed extents stay out of the allocator until the last reader closes, and a
+/// reader joining that row sees the amended length.
+#[test]
+fn an_amend_under_a_live_reader_defers_its_trim_until_the_last_close() {
+    let ride = recording();
+    let mut before = holding(&[ride], 6);
+    before.ride = Some((0, 900));
+    let disk = recording_card(&before, &ride, 0, 900)(43);
+    let store = FlatStore::mount(&disk);
+    assert_eq!(store.free_extents(), EXTENTS - 32);
+
+    let first = store.open(ObjectId(1), Some(Revision(1))).unwrap();
+    assert_eq!(store.read(&first, 0, &mut [0u8; 16]).unwrap(), 0, "a recording ride served bytes");
+    let finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, 900, "Tuesday", &[(0, 1)]);
+    store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap();
+    assert_eq!(store.free_extents(), EXTENTS - 32, "the trimmed reserve was freed under a live reader");
+
+    let joiner = store.open(ObjectId(1), Some(Revision(1))).unwrap();
+    let mut bytes = vec![0u8; 900];
+    assert_eq!(store.read(&joiner, 0, &mut bytes).unwrap(), 900, "the joiner inherited a stale length");
+    assert_eq!(bytes, payload(900));
+    store.close(joiner);
+    assert_eq!(store.free_extents(), EXTENTS - 32, "the row went away while the first reader held it");
+    store.close(first);
+    assert_eq!(store.free_extents(), EXTENTS - 1, "the trimmed tail did not come back at the last close");
+
+    let fresh = store.open(ObjectId(1), None).unwrap();
+    let mut bytes = vec![0u8; 900];
+    assert_eq!(store.read(&fresh, 0, &mut bytes).unwrap(), 900);
+    assert_eq!(bytes, payload(900));
+    store.close(fresh);
+    disk.reboot();
+    assert_eq!(FlatStore::mount(&disk).free_extents(), EXTENTS - 1, "and the next mount says the same");
+}
+
 /// A slot whose ranges differ from the recording entry's belongs to an earlier ride.
 #[test]
 fn a_slot_from_another_ride_is_not_this_ones() {
@@ -1712,6 +1783,41 @@ fn a_card_with_no_usable_catalog_mounts_read_only() {
     assert!(matches!(store.open(ObjectId(1), None), Err(super::error::StoreError::ReadOnly)));
     // Evidence preserved: nothing was repaired, and the torn block is still on the card.
     assert_eq!(disk.block(CATALOG[0] + 1), torn);
+}
+
+/// No well-formed gate, two well-formed gates at one sequence, a body that fails its CRC and an
+/// unformatted card all mount read-only. A read-only mount reports no free space, because a number
+/// left over from a refused copy would be a promise the store cannot keep, serves nothing, and
+/// repairs nothing: the damaged block is still on the card.
+#[test]
+fn a_card_without_a_usable_catalog_mounts_read_only_and_keeps_the_evidence() {
+    let route = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
+    let model = holding(&[route], 4);
+
+    let no_gate = card(2, &model, 0);
+    no_gate.install(catalog_gate(0), &[0u8; BLOCK]);
+    let two_gates = card(3, &model, 0);
+    install_catalog(&two_gates, &model, 1);
+    let bad_body = card(4, &model, 0);
+    let mut torn = bad_body.block(CATALOG[0] + 1);
+    torn[0] ^= 0xFF;
+    bad_body.install(CATALOG[0] + 1, &torn);
+    let unformatted = SparseDisk::blank(TOTAL_BLOCKS, 1);
+
+    let cases = [
+        ("no well-formed gate", no_gate, Mode::CatalogUnreadable, catalog_gate(0)),
+        ("two gates at one sequence", two_gates, Mode::CatalogUnreadable, catalog_gate(1)),
+        ("a body that fails its CRC", bad_body, Mode::CatalogUnreadable, CATALOG[0] + 1),
+        ("an unformatted card", unformatted, Mode::Unformatted, SUPERBLOCK[0]),
+    ];
+    for (name, disk, mode, evidence) in cases {
+        let damaged = disk.block(evidence);
+        let store = FlatStore::mount(&disk);
+        assert_eq!(store.mode(), mode, "{name}");
+        assert_eq!(store.free_extents(), 0, "{name}: a refused catalog left its free map resident");
+        assert!(matches!(store.open(ObjectId(1), None), Err(super::error::StoreError::ReadOnly)), "{name}");
+        assert_eq!(disk.block(evidence), damaged, "{name}: the evidence was rewritten");
+    }
 }
 
 #[test]

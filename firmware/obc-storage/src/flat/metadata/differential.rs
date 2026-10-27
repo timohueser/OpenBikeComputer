@@ -177,6 +177,117 @@ fn operation_scripts_and_every_write_cut_match_the_card_oracle() {
     assert_eq!((cases, crc.finalize()), (229, 0xe1fc040d));
 }
 
+/// What a remount serves from the metadata image, and whether the route it binds is accepted.
+#[derive(Debug, PartialEq)]
+struct Served {
+    checkpoint: Result<Option<NavigatorCheckpoint>, Error>,
+    census: Result<Vec<Row>, Error>,
+    progress: Result<Vec<TripProgress>, Error>,
+    policy: Result<Vec<Row>, Error>,
+    accepted: bool,
+}
+
+const STEPS: usize = 7;
+
+/// Runs the first `steps` steps of the script with an optional power cut on the `ordinal`th write
+/// or sync of `trace`, then remounts. Returns the step that failed, if one did, and what the
+/// remount serves.
+fn run(steps: usize, cut: Option<(usize, When)>, trace: &[(u32, MediaOp, u64)]) -> (Option<usize>, Served) {
+    let disk = SparseDisk::blank(200_000, 9);
+    let store = FlatStore::initialize(&disk, CARD).unwrap();
+    let route = publish(&store, ObjectKind::Route, b"route");
+    let ride = publish(&store, ObjectKind::Ride, b"ride");
+    let checkpoint = super::tests::checkpoint(route, None);
+    let progress = TripProgress {
+        day_route: obc_formats::trip_progress::RouteVersion { id: route.id.0, revision: 0 },
+        ..super::tests::progress(1)
+    };
+    if let Some((ordinal, when)) = cut {
+        let (op, _, _) = trace.iter().filter(|(_, kind, _)| *kind != MediaOp::Read).nth(ordinal).unwrap();
+        disk.plan(FaultPlan { op: *op, when });
+    }
+    let failed = (0..steps).find(|step| match step {
+        0 | 1 => archive_ride(&store, CARD, ride.id, ride.revision, ride.payload_len, ride.payload_crc).is_err(),
+        2 => write_checkpoint(&store, CARD, store.sequence(), None, Some(checkpoint)).is_err(),
+        3 => write_progress(&store, progress.clone(), |_| true).is_err(),
+        4 => write_checkpoint(&store, CARD, store.sequence(), Some(checkpoint), None).is_err(),
+        5 => store.commit(&[Mutation::Remove { id: ride.id, revision: ride.revision }]).is_err(),
+        _ => reconcile(&store).is_err(),
+    });
+
+    disk.reboot();
+    let store = FlatStore::mount(&disk);
+    assert_eq!(store.mode(), crate::flat::Mode::ReadWrite, "cut {cut:?} left a read-only card");
+    let mut rows = Vec::new();
+    let mut records = Vec::new();
+    let mut kept = Vec::new();
+    let route = store.find_entry(|entry| entry.id == route.id && entry.flags.is_route_head()).unwrap().unwrap();
+    let served = Served {
+        checkpoint: read_checkpoint(&store),
+        census: census(&store, |row| rows.push(row)).map(|_| rows),
+        progress: read_progress(&store, |record| records.push(record)).map(|_| records),
+        policy: read_rows(&store, |row| kept.push(row)).map(|_| kept),
+        accepted: route.flags.has(EntryFlags::ASSISTANT_ACCEPTED),
+    };
+    (failed, served)
+}
+
+/// Every write and sync of a metadata script, cut before, during, after and inside: the remount is
+/// writable and serves the state before the step the cut failed or the state after it, never a mix.
+#[test]
+fn every_cut_of_a_metadata_script_serves_the_state_before_or_after_its_step() {
+    let trace = trace_script();
+    let states: Vec<Served> = (0..=STEPS)
+        .map(|steps| {
+            let (failed, served) = run(steps, None, &trace);
+            assert_eq!(failed, None, "the fault-free script failed within {steps} steps");
+            served
+        })
+        .collect();
+    let ids = |rows: &Result<Vec<Row>, Error>| rows.clone().map(|rows| rows.iter().map(|row| row.id.0).collect());
+    let keys = |served: &Served| served.progress.clone().map(|records| records.iter().map(|r| r.key).collect());
+    // The route is object 1 and the ride object 2.
+    let nothing = Served {
+        checkpoint: Ok(None),
+        census: Ok(Vec::new()),
+        progress: Ok(Vec::new()),
+        policy: Ok(Vec::new()),
+        accepted: false,
+    };
+    assert_eq!(states[0], nothing);
+    assert_eq!(ids(&states[1].census), Ok(std::vec![2]), "the archive receipt wrote no row");
+    assert_eq!(states[2], states[1], "a duplicate receipt changed the image");
+    assert!(matches!(states[3].checkpoint, Ok(Some(c)) if c.route.object == 1) && states[3].accepted);
+    assert_eq!(keys(&states[4]), Ok(std::vec![1]), "the progress record was not written");
+    assert!(states[5].checkpoint == Ok(None) && states[5].accepted, "clearing the checkpoint un-accepted the route");
+    assert_eq!((ids(&states[6].census), ids(&states[6].policy)), (Ok(std::vec![2]), Ok(Vec::new())));
+    let last = &states[STEPS];
+    assert_eq!((&last.checkpoint, ids(&last.census), ids(&last.policy)), (&Ok(None), Ok(Vec::new()), Ok(Vec::new())));
+    assert!(keys(last) == Ok(std::vec![1]) && last.accepted, "reconcile lost the progress or the acceptance");
+
+    let mut cut_steps = std::collections::BTreeSet::new();
+    for (ordinal, (_, kind, width)) in trace.iter().filter(|(_, kind, _)| *kind != MediaOp::Read).enumerate() {
+        let mut whens = EVERY_WHEN.to_vec();
+        if *kind == MediaOp::Write {
+            for blocks in 0..*width as u32 {
+                for (tear, durable) in [(true, true), (true, false), (false, true)] {
+                    whens.push(When::Inside { blocks, tear, durable });
+                }
+            }
+        }
+        for when in whens {
+            let (failed, served) = run(STEPS, Some((ordinal, when)), &trace);
+            let admissible = failed.map_or(&states[STEPS..], |step| &states[step..=step + 1]);
+            assert!(
+                admissible.contains(&served),
+                "a cut {when:?} on write or sync {ordinal} failed step {failed:?} and served {served:?}",
+            );
+            cut_steps.extend(failed);
+        }
+    }
+    assert_eq!(cut_steps.into_iter().collect::<Vec<_>>(), (0..STEPS).collect::<Vec<_>>(), "a step was never cut");
+}
+
 #[test]
 fn malformed_trailing_records_never_expose_an_earlier_row() {
     let mut bytes = [0; MAX_LEN];
