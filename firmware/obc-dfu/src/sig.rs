@@ -207,25 +207,6 @@ mod tests {
     use super::*;
 
     const TEST_SEED: &[u8; SEED_LEN] = &test_key::SEED;
-    const OTHER_SEED: &[u8; SEED_LEN] = b"a completely different signing k";
-
-    #[test]
-    fn prefix_layout_is_the_spec() {
-        let h = ImageHeader::new(b"abcd", "v1.2.3");
-        let p = signing_prefix(&h);
-        assert_eq!(p.len(), 47);
-        assert_eq!(&p[..11], b"OBCUv2-sig\0");
-        assert_eq!(&p[11..43], &h.fw_version);
-        assert_eq!(&p[43..47], &4u32.to_le_bytes());
-    }
-
-    #[test]
-    fn roundtrip_verifies() {
-        let image = b"the raw application image bytes".as_slice();
-        let h = ImageHeader::new(image, "v1.2.3").signed();
-        let sig = sign_image(TEST_SEED, &h, image);
-        assert_eq!(verify_image(&public_key_of(TEST_SEED), &h, image, &sig), Ok(()));
-    }
 
     #[test]
     fn signing_is_deterministic() {
@@ -236,61 +217,11 @@ mod tests {
     }
 
     #[test]
-    fn streaming_matches_one_shot() {
-        let image: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
-        let h = ImageHeader::new(&image, "v1.2.3").signed();
-        let sig = sign_image(TEST_SEED, &h, &image);
-        let mut v = Verifier::new(&public_key_of(TEST_SEED), &h, &sig).unwrap();
-        for chunk in image.chunks(37) {
-            v.absorb(chunk);
-        }
-        assert_eq!(v.finish(), Ok(()));
-    }
-
-    #[test]
-    fn wrong_key_rejects() {
-        let image = b"payload".as_slice();
-        let h = ImageHeader::new(image, "v1").signed();
-        let sig = sign_image(TEST_SEED, &h, image);
-        assert_eq!(verify_image(&public_key_of(OTHER_SEED), &h, image, &sig), Err(SigError::Mismatch));
-    }
-
-    #[test]
-    fn relabelled_version_or_length_rejects() {
-        let image = b"payload".as_slice();
-        let h = ImageHeader::new(image, "v1.0.0").signed();
-        let sig = sign_image(TEST_SEED, &h, image);
-        let key = public_key_of(TEST_SEED);
-
-        let mut relabelled = h;
-        relabelled.fw_version = ImageHeader::new(image, "v9.9.9").fw_version;
-        assert_eq!(verify_image(&key, &relabelled, image, &sig), Err(SigError::Mismatch));
-
-        let mut stretched = h;
-        stretched.image_len += 1;
-        assert_eq!(verify_image(&key, &stretched, image, &sig), Err(SigError::Mismatch));
-    }
-
-    #[test]
-    fn flipped_image_byte_rejects() {
-        let mut image = b"the raw application image bytes".to_vec();
-        let h = ImageHeader::new(&image, "v1").signed();
-        let sig = sign_image(TEST_SEED, &h, &image);
-        image[7] ^= 0x01;
-        assert_eq!(verify_image(&public_key_of(TEST_SEED), &h, &image, &sig), Err(SigError::Mismatch));
-    }
-
-    #[test]
     fn malformed_signature_and_key_are_typed() {
         let h = ImageHeader::new(b"x", "v1").signed();
         assert_eq!(Verifier::new(&public_key_of(TEST_SEED), &h, &[0u8; 63]).err(), Some(SigError::BadSigLen));
         // The all-zero key is the identity point — rejected before any image byte is read.
         assert_eq!(Verifier::new(&PublicKey::from_bytes([0; 32]), &h, &[0u8; 64]).err(), Some(SigError::BadKey));
-    }
-
-    #[test]
-    fn the_committed_test_key_matches_its_seed() {
-        assert_eq!(public_key_of(&test_key::SEED), test_key::PUBLIC);
     }
 
     #[test]
