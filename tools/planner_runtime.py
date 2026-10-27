@@ -8,12 +8,12 @@ from urllib.request import Request, urlopen
 
 # Optional data layers. Each is one archive `maps/NAME.pmtiles`, baked when the region recipe has the
 # field NAME. The value is a metadata key that every complete archive has. The catalogue entry lists
-# each layer in `layers`; the web planner shows snow, climate and sun through its module in
+# each layer in `layers`; the web planner shows snow and climate through its module in
 # builder/web/src/lib/planner/layers/registry.ts, and TrailView reads the `trailview-*` archives of
 # specs/trailview-features.md and specs/trailview-tiles.md.
 TRAILVIEW = ("ground", "colour-q1", "colour-q2", "colour-q3", "colour-q4")
 DATA_LAYERS = {
-    "snow": "seasons", "climate": "years", "sun": "sun_format", "trailview-features": "features_format",
+    "snow": "seasons", "climate": "years", "trailview-features": "features_format",
     "trailview-canopy": "canopy_format",
     **{f"trailview-{name}": "trailview_format" for name in TRAILVIEW},
     # The bands of the snow days, `BANDS` of tools/trailview/snow.py.

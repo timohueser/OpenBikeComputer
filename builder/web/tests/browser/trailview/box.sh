@@ -54,7 +54,7 @@ if ! grep -q '^CDSE_S3_SECRET_KEY=.' "$CDSE"; then
   exit 1
 fi
 
-PY=(env PYTHONHASHSEED=0 nice -n 10 uv run --quiet --locked --group trailview --group planner-sun python)
+PY=(env PYTHONHASHSEED=0 nice -n 10 uv run --quiet --locked --group trailview --group forest-reference python)
 "${PY[@]}" -c ''
 
 get() {  # URL FILE

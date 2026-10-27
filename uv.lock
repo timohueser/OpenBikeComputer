@@ -1442,6 +1442,12 @@ dev = [
     { name = "pyyaml", version = "6.0.2", source = { registry = "https://pypi.org/simple" } },
     { name = "unittest-xml-reporting" },
 ]
+forest-reference = [
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "pmtiles" },
+]
 planner-climate = [
     { name = "h5py" },
     { name = "numcodecs" },
@@ -1464,12 +1470,6 @@ planner-snow = [
     { name = "pillow" },
     { name = "pmtiles" },
     { name = "rasterio" },
-]
-planner-sun = [
-    { name = "numba" },
-    { name = "numpy" },
-    { name = "pillow" },
-    { name = "pmtiles" },
 ]
 search-runtime = [
     { name = "numpy" },
@@ -1574,6 +1574,12 @@ dev = [
     { name = "pyyaml", specifier = "==6.0.2" },
     { name = "unittest-xml-reporting", specifier = "==4.0.0" },
 ]
+forest-reference = [
+    { name = "numba", specifier = "==0.68.0" },
+    { name = "numpy", specifier = "==2.5.3" },
+    { name = "pillow", specifier = "==12.3.0" },
+    { name = "pmtiles", specifier = "==3.8.1" },
+]
 planner-climate = [
     { name = "h5py", specifier = "==3.16.0" },
     { name = "numcodecs", specifier = "==0.17.0" },
@@ -1596,12 +1602,6 @@ planner-snow = [
     { name = "pillow", specifier = "==12.3.0" },
     { name = "pmtiles", specifier = "==3.8.1" },
     { name = "rasterio", specifier = "==1.5.2" },
-]
-planner-sun = [
-    { name = "numba", specifier = "==0.68.0" },
-    { name = "numpy", specifier = "==2.5.3" },
-    { name = "pillow", specifier = "==12.3.0" },
-    { name = "pmtiles", specifier = "==3.8.1" },
 ]
 search-runtime = [
     { name = "numpy", specifier = "==2.5.3" },

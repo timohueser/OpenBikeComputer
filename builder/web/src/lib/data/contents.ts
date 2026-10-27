@@ -62,7 +62,6 @@ export const CONTENTS: Content[] = [
         reference: { source: "forest", required: true, without: "no trees" },
         shownBy: ["trailview"],
     },
-    { id: "sun", title: "Sun", about: "Sunrise and sunset behind the terrain", layers: ["sun"], credentials: [], shownBy: ["map"], terrain: true },
     {
         id: "snow",
         title: "Snow",

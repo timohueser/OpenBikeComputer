@@ -794,7 +794,7 @@ check *args:
     if want test; then
       rm -rf .artifacts/python/repository-tools
       step "firmware production dependency direction" python3 "$OBC_ROOT/firmware/tools/check_dependencies.py"
-      step "fixture registry unit tests" uv run --locked --group dev --group planner-snow --group planner-sun python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
+      step "fixture registry unit tests" uv run --locked --group dev --group planner-snow --group forest-reference python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
       step "test (fast hermetic binaries)" bash tools/ci/test.sh nextest-fast
       step "doctests (selected packages)" bash tools/ci/test.sh doctests
       step "obc-formats (default features = the device's shape)" bash tools/ci/test.sh formats-default

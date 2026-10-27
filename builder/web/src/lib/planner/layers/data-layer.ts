@@ -5,7 +5,7 @@ import type { Coordinate } from '../map-types';
 export type Theme = 'light' | 'dark';
 
 /** The data archives of a region; each data layer reads one. */
-export type Archive = 'snow' | 'climate' | 'sun';
+export type Archive = 'snow' | 'climate';
 
 export interface Swatch {
     label: string;
@@ -59,9 +59,6 @@ export interface DataLayer<Samples = unknown> {
     readonly source: string;
     readonly error: string;
     /** A choice of the map variable in the date bar; the map redraws when `value` changes. */
-    readonly time?: { value: string; timezone: string; detail?: string };
-    /** Resample when a layer depends on the selected instant. */
-    sampleKey?(date: string): string;
     readonly variable?: { label: string; options: { value: string; label: string }[]; value: string };
     /** The legend of the map. */
     legend(theme: Theme): Legend;
@@ -73,7 +70,6 @@ export interface DataLayer<Samples = unknown> {
     readonly strip?: {
         /** The strip title; the layer label without it. */
         label?: string;
-        hint?: string;
         legend?(theme: Theme): Legend;
         fills(theme: Theme): Swatch[];
         values(samples: Samples, date: string): Uint8Array;

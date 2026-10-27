@@ -144,7 +144,7 @@ time_zone = "Europe/Berlin"
     ];
     let version = |id: &str| if id == "nominatim-country-data" { nominatim.clone() } else { "1".into() };
     let serving = read.map(|id| ((id.to_string(), Vec::new()), version(id)));
-    let layers = ["map", "routing", "search", "sun"].map(String::from).into();
+    let layers = ["map", "routing", "search"].map(String::from).into();
     let settings = Settings { region: AREA.into(), layers, ..Settings::default() };
     let mut inputs = Inputs { settings, serving: BTreeMap::from(serving), ..Inputs::default() };
     inputs.resolved.insert(("wiki".into(), Vec::new()), wiki(&store));
@@ -220,17 +220,7 @@ time_zone = "Europe/Berlin"
     }
     // Machine setup, which a set-up machine has done: the step itself runs offline.
     let sync = Command::new("uv")
-        .args([
-            "sync",
-            "--locked",
-            "--inexact",
-            "--group",
-            "planner-maps",
-            "--group",
-            "planner-search",
-            "--group",
-            "planner-sun",
-        ])
+        .args(["sync", "--locked", "--inexact", "--group", "planner-maps", "--group", "planner-search"])
         .current_dir(&root)
         .status();
     assert!(sync.unwrap().success(), "uv sync of the planner groups");
@@ -259,7 +249,7 @@ time_zone = "Europe/Berlin"
     let archive = std::fs::read(store.object(&overlays.files[0].sha256)).unwrap();
     assert_eq!((&archive[..7], archive[7]), (&b"PMTiles"[..], 3), "overlays.pmtiles is a PMTiles v3 archive");
     assert!(overlays.metrics["tiles"].as_u64().unwrap() > 0, "the cycle route draws tiles");
-    for kind in ["places", "overlays", "terrain", "sun"] {
+    for kind in ["places", "overlays", "terrain"] {
         let name = format!("planner/{kind}/grid");
         let receipt = &built.iter().find(|built| built.receipt.step == name).unwrap().receipt;
         let index = receipt.files.iter().find(|file| file.path == "index.json").unwrap();
@@ -309,19 +299,15 @@ time_zone = "Europe/Berlin"
             "python",
             "-c",
             r#"
-import copy, hashlib, json, pathlib, sqlite3, sys
+import copy, json, pathlib, sqlite3, sys
 from tools import planner_runtime as runtime, planner_offline as offline, planner_downloads as downloads, planner_grid_index as grid_index
 source = pathlib.Path(sys.argv[1])
 _, document = runtime.release(source, include_sources=False)
 assert document['osm_sha256'] == sys.argv[2]
 indexes = {index['kind']: index for path in (source / 'indexes').rglob('index.json')
     for index in [json.loads(path.read_bytes())]}
-assert indexes['sun']['metadata']['sun_format'] == 3
-assert indexes['sun']['metadata']['terrain_grid_sha256'] == hashlib.sha256(runtime.encoded(indexes['terrain'])).hexdigest()
-assert set(indexes['sun']['files']) == {'maps/sun.json'}
 options = {key: document[key] for key in ('region', 'bounds', 'attribution', 'landcover_attribution')}
-for kind, field, value in [('places', 'osm_sha256', '0' * 64), ('addresses', 'bounds', [0, 0, 1, 1]),
-                          ('sun', 'terrain_grid_sha256', '0' * 64)]:
+for kind, field, value in [('places', 'osm_sha256', '0' * 64), ('addresses', 'bounds', [0, 0, 1, 1])]:
     wrong = copy.deepcopy(indexes)
     wrong[kind]['metadata'][field] = value
     try:
@@ -332,7 +318,7 @@ for kind, field, value in [('places', 'osm_sha256', '0' * 64), ('addresses', 'bo
         raise AssertionError('an inconsistent source or coverage is rejected')
 offline.materialize(source, source / 'runtime', document, ('offline/', 'routing/', 'search/'))
 catalog = json.loads((source / 'runtime/offline/catalog.json').read_bytes())
-assert not any(block['kind'] in ('terrain', 'sun') for block in catalog['map_blocks'])
+assert not any(block['kind'] == 'terrain' for block in catalog['map_blocks'])
 assert catalog['release']['terrain_bounds'] == document['terrain_bounds']
 assert catalog['release']['osm_sha256'] == document['osm_sha256']
 search = json.loads((source / 'runtime/search/test.grid.json').read_bytes())

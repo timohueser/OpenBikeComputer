@@ -8,7 +8,6 @@ test('tile routes bound archive selection and coordinates', () => {
   assert.deepEqual(tileRoute(`${base}/basemap/14/16383/16383.mvt`).tile, [14, 16383, 16383]);
   assert.deepEqual(tileRoute(`${base}/snow/13/4290/2911`).tile, [13, 4290, 2911]);
   assert.deepEqual(tileRoute(`${base}/climate/9/218/37`).tile, [9, 218, 37]);
-  assert.deepEqual(tileRoute(`${base}/sun/10/535/356.webp`).tile, [10, 535, 356]);
   assert.deepEqual(tileRoute(`${base}/trailview-colour-q1/12/2143/1442.webp`).tile, [12, 2143, 1442]);
   assert.equal(tileRoute(`${base}/terrain.json`).name, 'terrain');
   for (const path of [`${base}/terrain/12/4096/0.webp`, `${base}/basemap/27/0/0.mvt`, `${base}/places/0/0/0.png`,
@@ -106,19 +105,19 @@ test('range reads deliver decoded tiles, cache tiles and empty coverage, and do 
   assert.equal(reads.count, readsBeforeEmpty);
   // A missing release, and an archive that the release does not publish.
   for (const missing of [`https://tiles.example/releases/${'b'.repeat(64)}/terrain.json`, `https://tiles.example/releases/${'b'.repeat(64)}/terrain/0/0/0`,
-    `https://tiles.example${base}/sun.json`, `https://tiles.example${base}/sun/0/0/0`]) {
+    `https://tiles.example${base}/climate.json`, `https://tiles.example${base}/climate/0/0/0`]) {
     const response = await worker.fetch(new Request(missing), env, ctx);
     assert.equal(response.status, 404); assert.equal(response.headers.get('Cache-Control'), 'no-store');
     assert.ok(![...cached.keys()].some(key => key.split('?')[0] === missing));
   }
-  // Valid empty sunlight has metadata, while each absent shard is unknown coverage.
-  const sun = Buffer.from('{"tilejson":"3.0.0","sun_format":3,"minzoom":0,"maxzoom":12}');
+  // An archive with metadata and no tiles: each absent shard is unknown coverage.
+  const climate = Buffer.from('{"tilejson":"3.0.0","years":10,"minzoom":0,"maxzoom":12}');
   const digest = '8'.repeat(64);
-  objects.set(`${prefix}/public/maps/sun.json.json`, pointer(digest, sun));
-  objects.set(`objects/${digest}`, sun);
-  const sunMeta = await (await worker.fetch(new Request(`https://tiles.example${base}/sun.json`), env, ctx)).json();
-  assert.equal(sunMeta.sun_format, 3);
-  assert.equal((await worker.fetch(new Request(sunMeta.tiles[0].replace('{z}', '12').replace('{x}', '1').replace('{y}', '1')), env, ctx)).status, 204);
+  objects.set(`${prefix}/public/maps/climate.json.json`, pointer(digest, climate));
+  objects.set(`objects/${digest}`, climate);
+  const climateMeta = await (await worker.fetch(new Request(`https://tiles.example${base}/climate.json`), env, ctx)).json();
+  assert.equal(climateMeta.years, 10);
+  assert.equal((await worker.fetch(new Request(climateMeta.tiles[0].replace('{z}', '12').replace('{x}', '1').replace('{y}', '1')), env, ctx)).status, 204);
   delete globalThis.caches;
 });
 

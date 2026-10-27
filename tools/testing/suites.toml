@@ -311,7 +311,7 @@ triggers = [
   "builder/web/src/lib/planner/release.ts",
   "builder/web/src/lib/planner/layers/archive.ts",
   "builder/web/src/lib/planner/layers/mercator.ts",
-  "builder/web/src/lib/planner/layers/sun.ts",
+  "builder/web/src/lib/planner/solar.ts",
   "builder/web/src/lib/planner/layers/terrain.ts",
   "builder/web/src/trailview.ts",
   "builder/web/trailview.html",
@@ -336,7 +336,7 @@ triggers = ["builder/web/tests/browser/trailview/**"]
 [[suite]]
 id = "python.repository-tools"
 route = "required"
-command = "rm -rf .artifacts/python/repository-tools && uv run --locked --group dev --group planner-snow --group planner-sun python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
+command = "rm -rf .artifacts/python/repository-tools && uv run --locked --group dev --group planner-snow --group forest-reference python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
 jobs = ["guards", "selection"]
 triggers = [
   "planner/search/place-kinds.json",
@@ -369,7 +369,7 @@ triggers = [
 [[suite]]
 id = "python.firmware-tools"
 route = "ordinary"
-command = "rm -rf .artifacts/python/firmware-tools && uv run --locked --group dev --group planner-snow --group planner-sun python -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools"
+command = "rm -rf .artifacts/python/firmware-tools && uv run --locked --group dev --group planner-snow --group forest-reference python -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools"
 jobs = ["test"]
 triggers = [
   "pyproject.toml", "uv.lock",

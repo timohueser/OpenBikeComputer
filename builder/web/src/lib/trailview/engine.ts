@@ -1,5 +1,5 @@
 import type { PlannerConfig } from '../planner/config';
-import { instantAt, solarPosition, solarTerms } from '../planner/layers/sun';
+import { instantAt, solarPosition, solarTerms } from '../planner/solar';
 import { eyeAltitude, follow, groundOf, MIN_CLEARANCE, move, VFOV, viewProjection, type Footing, type Pose } from './frame/camera';
 import { Controls } from './frame/controls';
 import { CURVATURE, frameAt, type Frame } from './frame/frame';
