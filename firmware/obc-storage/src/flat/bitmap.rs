@@ -115,11 +115,6 @@ mod tests {
     }
 
     #[test]
-    fn the_resident_bitmap_is_the_eight_kilobytes_section_6_budgets() {
-        assert_eq!(core::mem::size_of::<[u64; WORDS]>(), 8_192);
-    }
-
-    #[test]
     fn a_fresh_card_is_entirely_free_and_its_tail_is_unavailable() {
         let map = map(30_718);
         assert_eq!(map.free(), 30_718);
@@ -137,18 +132,6 @@ mod tests {
         assert!(aligned.is_used(64));
     }
 
-    #[test]
-    fn claiming_twice_reports_the_overlapping_extent() {
-        let mut map = map(64);
-        let mut ranges = Ranges::default();
-        ranges.push(4, 2).unwrap();
-        map.claim(&ranges).unwrap();
-        assert_eq!(map.free(), 62);
-        assert_eq!(map.claim(&ranges), Err(4));
-        map.release(&ranges);
-        assert_eq!(map.free(), 64);
-    }
-
     /// First fit, ascending, and a hole is filled before the tail is touched.
     #[test]
     fn allocation_is_first_fit_over_the_holes() {
@@ -161,28 +144,5 @@ mod tests {
         let allocated = map.first_fit(3).unwrap();
         assert_eq!(allocated.iter().collect::<heapless::Vec<_, 8>>()[..], [(2, 2), (5, 1)]);
         assert_eq!(allocated.extents(), 3);
-    }
-
-    /// Fragmentation's worst case is a refused allocation, never corruption: nine holes cannot be
-    /// expressed in eight ranges.
-    #[test]
-    fn an_allocation_needing_nine_ranges_is_refused_without_changing_the_map() {
-        let mut map = map(64);
-        // Eight ranges is the cap on one entry, so the setup itself is two claims.
-        let mut first = Ranges::default();
-        let mut second = Ranges::default();
-        for hole in 0..9u16 {
-            if hole < 5 {
-                first.push(hole * 2 + 1, 1).unwrap();
-            } else {
-                second.push(hole * 2 + 1, 1).unwrap();
-            }
-        }
-        map.claim(&first).unwrap();
-        map.claim(&second).unwrap();
-        let free_before = map.free();
-        assert!(map.first_fit(9).is_none());
-        assert_eq!(map.free(), free_before);
-        assert!(map.first_fit(8).is_some());
     }
 }

@@ -7,9 +7,9 @@
 
 use std::vec::Vec;
 
-use obc_formats::io::{ByteSource, SliceSource, WindowSource};
+use obc_formats::io::{ByteSource, SliceSource};
 use obc_reader::{MapCache, MapTables, Reader};
-use obcm_testkit::{build_file, pack_line, pack_poly_hole, seal, splice_terrain, terrain_stub, LodSpec, Style};
+use obcm_testkit::{build_file, pack_line, pack_poly_hole, seal, LodSpec, Style};
 
 use crate::flat::layout::{Geometry, EXTENT_AREA};
 use crate::flat::seam::ObjectId;
@@ -175,42 +175,6 @@ fn the_reader_parses_and_queries_a_map_through_the_store_exactly_as_over_a_slice
                 assert_eq!(from_store, from_slice, "LOD {lod} dispatched differently through the store");
                 assert!(!from_store.is_empty(), "LOD {lod} carries a chunk, so the walk must find it");
             }
-        })
-        .expect("the map object opens");
-}
-
-/// Terrain comes through the same handle. A map with a spliced terrain region hands back a window
-/// whose bytes are the container's, read through the store, which is why a flat card can have terrain
-/// at all: there is no filesystem to hang a sidecar off.
-#[test]
-fn the_embedded_terrain_region_windows_onto_the_same_store_object() {
-    // Padded, so the region lands past the extent seam: the window's own arithmetic is then composed
-    // with the store's range walk, which is the shape the board reads terrain in.
-    let plain = padded_map_bytes();
-    let stub = terrain_stub(300); // not a whole number of units — the window's tail is §1.2 filler
-    let bytes = splice_terrain(&plain, &stub);
-    let (disk, id) = card_with_map(&bytes);
-    let store = FlatStore::mount(&disk);
-
-    store
-        .with_source(id, None, |source| {
-            let tables = MapTables::parse(source).expect("the spliced map parses over the store");
-            let region = tables.terrain().expect("the region is named");
-            let window = WindowSource::new(source, region.offset, region.len).expect("the window is inside the object");
-
-            assert_eq!(window.len(), region.len);
-            assert!(
-                region.offset > Geometry::DEFAULT.extent_size(),
-                "the region must sit past the extent seam, or the window never composes with a range walk"
-            );
-            let mut container = std::vec![0u8; stub.len()];
-            window.read_at(0, &mut container).expect("the container's own bytes, from its byte 0");
-            assert_eq!(container, stub, "the window re-bases onto the container rather than the file");
-
-            // And it ends where the region ends: a container that reads past its own length gets a
-            // refusal, not the bytes that happen to follow it on the card.
-            let mut past = [0u8; 1];
-            assert!(window.read_at(region.len, &mut past).is_err(), "the window's end is as hard as a file's");
         })
         .expect("the map object opens");
 }

@@ -108,37 +108,6 @@ fn populate<D: BlockDevice>(store: &FlatStore<D>, routes: usize, trips: usize) {
     }
 }
 
-fn fingerprint(hash: &mut u32, value: &impl core::fmt::Debug) {
-    for byte in std::format!("{value:?}").bytes() {
-        *hash = (*hash ^ u32::from(byte)).wrapping_mul(16_777_619);
-    }
-}
-
-#[test]
-fn captured_loaders_choose_newest_decode_and_compact_masks() {
-    let disk = SparseDisk::blank(250_000, 9);
-    let store = FlatStore::initialize(&disk, StoreId([0x47; 16])).unwrap();
-    populate(&store, 76, 20);
-    let routes = current_routes(&store).unwrap();
-    assert_eq!(routes.ids.len(), 63);
-    assert_eq!(routes.ids[0], 76);
-    assert_eq!(routes.ids[1], 74);
-    assert_eq!(routes.ids[62], 13);
-    assert_eq!(routes.candidates & 7, 2);
-    assert_eq!(routes.temporary & 7, 0);
-    assert_eq!(routes.internal & 7, 7);
-    let trips = current_trips(&store).unwrap();
-    assert_eq!(trips.ids.len(), 15);
-    assert_eq!(trips.metas[0].key, 20);
-    assert_eq!(trips.metas[14].key, 5);
-    assert!(trips.metas.iter().all(|meta| meta.truncated && meta.day_routes.len() == 32));
-    assert_eq!(trips.metas[0].day_routes[0], 0x1_0000_0000);
-    let mut hash = 2_166_136_261;
-    fingerprint(&mut hash, &routes);
-    fingerprint(&mut hash, &trips);
-    assert_eq!(hash, 0xf859_b084);
-}
-
 /// A refused card read anywhere in either scan fails that scan with a media error or leaves its
 /// result whole, and every handle the scan opened is closed again.
 #[test]

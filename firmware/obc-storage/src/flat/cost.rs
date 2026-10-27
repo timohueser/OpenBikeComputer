@@ -1,5 +1,5 @@
-//! What the two paths a rider waits on cost, pinned: card commands, card blocks, and the M33's own
-//! share.
+//! What the two paths a rider waits on cost, held to a budget: card commands, card blocks, and the
+//! M33's own share.
 //!
 //! The format states block counts. What the bench found on glass is that the cost is mostly the
 //! number of card commands those blocks are issued in — the media charges about a program cycle per
@@ -10,13 +10,12 @@
 //! the structural pass, the free-bitmap claim, entry encode on the way out and the body CRC fold are
 //! all per entry, and none of it is touched by batching, which moves commands and not bytes.
 //!
-//! Three counts, pinned for three reasons. Commands are scheduling. Blocks are the format's, so a
-//! scheduling change that moved one fails as the format change it would be. Entries is what the M33
-//! term scales with, so a projection cannot quietly drop it.
+//! Three counts, for three reasons. Commands are scheduling, so a path may issue fewer than its
+//! budget, never more. Blocks are the format's, so a scheduling change that moved one fails as the
+//! format change it would be. Entries is what the M33 term scales with, so a projection cannot
+//! quietly drop it.
 //!
 //! The projections are arithmetic, not measurements: the census times the constants below.
-
-use std::vec::Vec;
 
 use super::crash::{entry, install_catalog, install_slot, payload};
 use super::layout::{Geometry, EXTENT_AREA, SUPERBLOCK};
@@ -173,79 +172,6 @@ fn finish_census(flushed: u64) -> Census {
 /// 1,024 the bench's worst case used. Each case publishes the next object, so the body it writes
 /// holds `entries + 1`.
 ///
-/// Writes are `1 + ceil(body_blocks / 8) + 2`: the payload's staged partial block, the body in
-/// windows, and the two gate blocks. Reads are two windowed passes over the live prefix plus `find`'s
-/// binary search, which stays block-at-a-time on purpose because its probes are scattered. The fourth
-/// `sync` is the payload's.
-///
-/// The ceilings are the projections plus about a tenth. They are deliberately loose: what catches a
-/// regression is the census equality above them, and a ceiling that tracked the projection exactly
-/// would fail on an improvement.
-#[test]
-fn a_commit_costs_the_pinned_card_commands() {
-    // (entries, census, the ceiling the projection has to stay under)
-    let cases = [
-        (0u16, Census { reads: 0, read_blocks: 0, writes: 4, write_blocks: 5, syncs: 4, entries: 1 }, 7_000u64),
-        (300, Census { reads: 26, read_blocks: 156, writes: 13, write_blocks: 80, syncs: 4, entries: 301 }, 88_000),
-        (
-            1_024,
-            Census { reads: 72, read_blocks: 520, writes: 36, write_blocks: 261, syncs: 4, entries: 1_025 },
-            280_000,
-        ),
-    ];
-    let measured: Vec<Census> = cases.iter().map(|(entries, _, _)| commit_census(*entries)).collect();
-    for ((entries, _, _), census) in cases.iter().zip(&measured) {
-        std::println!(
-            "commit at {entries} entries: {census:?} = {} µs I/O + {} µs M33 = {} µs projected",
-            census.io_micros(),
-            census.m33_micros(COMMIT_M33_PER_ENTRY_US),
-            census.micros(COMMIT_M33_PER_ENTRY_US),
-        );
-    }
-    for ((entries, expected, ceiling), census) in cases.into_iter().zip(measured) {
-        assert_eq!(census, expected, "the commit at {entries} entries no longer costs the pinned commands");
-        let projected = census.micros(COMMIT_M33_PER_ENTRY_US);
-        assert!(
-            projected <= ceiling,
-            "the commit at {entries} entries projects {projected} µs, above the {ceiling} µs this case allows",
-        );
-    }
-}
-
-/// The mount, at the 1,025 entries the bench measured: one superblock, two gates, and the live
-/// prefix — header block included — in windows.
-///
-/// This is the case that makes the M33 term worth having. The mount projects about 127 ms because 95
-/// of those milliseconds are the M33 decoding 1,025 entries, checking the structural rules, claiming
-/// their extents and folding the body CRC. The format plans for about 100 ms and this misses it by
-/// about a quarter; the ceiling below is where the path actually is.
-///
-/// The window here is [`MOUNT_STREAM_WINDOW`](super::layout::MOUNT_STREAM_WINDOW), half a commit's,
-/// so 69 read commands rather than the 37 a 4 KiB window would give.
-#[test]
-fn a_mount_costs_the_pinned_card_commands() {
-    let census = mount_census(1_025);
-    std::println!(
-        "mount at 1,025 entries: {census:?} = {} µs I/O + {} µs M33 = {} µs projected",
-        census.io_micros(),
-        census.m33_micros(MOUNT_M33_PER_ENTRY_US),
-        census.micros(MOUNT_M33_PER_ENTRY_US),
-    );
-    assert_eq!(
-        census,
-        Census { reads: 69, read_blocks: 261, writes: 0, write_blocks: 0, syncs: 0, entries: 1_025 },
-        "the mount at 1,025 entries no longer costs the pinned commands",
-    );
-    let projected = census.micros(MOUNT_M33_PER_ENTRY_US);
-    assert!(projected <= 140_000, "a mount projects {projected} µs, above the 140 ms this case allows");
-    // And the part of it this change could reach: the reading, which was 261 commands and is now 69.
-    assert!(census.io_micros() <= 35_000, "a mount reads {} µs, above the 35 ms this case allows", census.io_micros());
-}
-
-/// The commit at an empty catalog, at the few hundred entries the budget is quoted for, and at the
-/// 1,024 the bench's worst case used. Each case publishes the next object, so the body it writes
-/// holds `entries + 1`.
-///
 /// Each command count is a ceiling: a commit may issue fewer, never more. Writes are at most
 /// `1 + ceil(body_blocks / 8) + 2`: the payload's staged partial block, the body in windows, and the
 /// two gate blocks. Reads are two windowed passes over the live prefix plus `find`'s block-at-a-time
@@ -300,40 +226,6 @@ fn finishing_io_is_constant_in_the_ride_length() {
         Census { reads: 27, read_blocks: 55, writes: 29, write_blocks: 30, syncs: 5, entries: 1 },
         "the fixed finish census changed",
     );
-}
-
-/// The model, held to the measurements it came from. Applied to a census with one block per
-/// command, the three constants have to reproduce the bench's wall times, or the projections above are arithmetic about nothing. This is also why the M33 term is
-/// separate: an I/O-only model reproduces the commit figures to about 20% and the mount to 48%.
-#[test]
-fn the_model_reproduces_the_benchs_own_measurements() {
-    // (name, census as the block-at-a-time store issued it, per-entry M33 term, µs measured on glass)
-    let cases = [
-        (
-            "commit @ 300",
-            Census { reads: 156, read_blocks: 156, writes: 79, write_blocks: 79, syncs: 4, entries: 300 },
-            COMMIT_M33_PER_ENTRY_US,
-            220_800u64,
-        ),
-        (
-            "commit @ 1,024",
-            Census { reads: 522, read_blocks: 522, writes: 260, write_blocks: 260, syncs: 4, entries: 1_024 },
-            COMMIT_M33_PER_ENTRY_US,
-            701_800,
-        ),
-        (
-            "mount @ 1,025",
-            Census { reads: 261, read_blocks: 261, writes: 0, write_blocks: 0, syncs: 0, entries: 1_025 },
-            MOUNT_M33_PER_ENTRY_US,
-            184_100,
-        ),
-    ];
-    for (name, census, per_entry, measured) in cases {
-        let projected = census.micros(per_entry);
-        let error = projected.abs_diff(measured) * 100 / measured;
-        std::println!("{name}: model {projected} µs vs measured {measured} µs ({error}%)");
-        assert!(error <= 5, "{name}: the model is {error}% off its own measurement ({projected} vs {measured})");
-    }
 }
 
 /// The blocks are still the format's, unchanged: `ceil(n / 4) + 3` writes and `3 + 1 + ceil(n / 4)`

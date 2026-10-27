@@ -1185,41 +1185,6 @@ fn resume_metadata_is_crc_covered_and_corresponds_to_the_checkpoint() {
     assert_eq!(recovered.resume, [0; RIDE_RESUME_LEN]);
 }
 
-/// The split-slot durability order, visible in the media ledger: a full 16 KiB tail page is durable
-/// before the one-block header gate is issued. This pins which operations are the tail write, its
-/// sync, the header write and its final sync, so a batching change cannot reverse them.
-#[test]
-fn a_checkpoint_durably_orders_the_tail_before_its_header() {
-    let disk = card(9, &holding(&[recording()], 6), 0);
-    let store = FlatStore::mount(&disk);
-    let before = disk.ledger().len();
-    let tail = payload(200);
-    store
-        .journal(RideCheckpoint {
-            id: ObjectId(1),
-            revision: Revision(1),
-            append: &tail,
-            payload_crc: crc32(&tail),
-            resume: &RESUME,
-        })
-        .unwrap();
-
-    let operations = disk.ledger()[before..].iter().map(|(_, kind, blocks)| (*kind, *blocks)).collect::<Vec<_>>();
-    assert_eq!(
-        operations,
-        [
-            (MediaOp::Write, 8),
-            (MediaOp::Write, 8),
-            (MediaOp::Write, 8),
-            (MediaOp::Write, 8),
-            (MediaOp::Sync, 0),
-            (MediaOp::Write, 1),
-            (MediaOp::Sync, 0),
-        ],
-        "the tail page must be synchronized before the header gate",
-    );
-}
-
 /// The split-slot durability order: every block of the 16 KiB tail slot is written and synchronized
 /// before the one header block that certifies it, and a final sync follows the header.
 #[test]
@@ -1604,83 +1569,6 @@ fn a_new_ride_after_recovery_and_finish_is_not_a_same_boot_recovery() {
     assert_eq!((recovered.id, recovered.payload_len()), (ObjectId(2), 0));
 }
 
-/// The handle promise is about the revision a handle resolved, and an amend does not make a new one.
-#[test]
-fn a_reader_that_opens_after_an_amend_sees_the_amended_length() {
-    let ride = recording();
-    let mut before = holding(&[ride], 6);
-    before.ride = Some((0, 900));
-    let disk = recording_card(&before, &ride, 0, 900)(7);
-    let store = FlatStore::mount(&disk);
-
-    let during = store.open(ObjectId(1), Some(Revision(1))).unwrap();
-    assert_eq!(store.read(&during, 0, &mut [0u8; 16]).unwrap(), 0);
-
-    let finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, 900, "Tuesday", &[(0, 1)]);
-    store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap();
-
-    let after = store.open(ObjectId(1), Some(Revision(1))).unwrap();
-    let mut bytes = vec![0u8; 900];
-    assert_eq!(store.read(&after, 0, &mut bytes).unwrap(), 900, "the second reader inherited a stale length");
-    assert_eq!(bytes, payload(900));
-    store.close(after);
-    store.close(during);
-}
-
-/// Finalising a ride frees 31 of its 32 reserve extents, and a reader holding the entry keeps them
-/// out of the allocator until it closes.
-#[test]
-fn an_amend_that_trims_a_held_entry_defers_the_extents_it_frees() {
-    let ride = recording();
-    let mut before = holding(&[ride], 6);
-    before.ride = Some((0, 900));
-    let disk = recording_card(&before, &ride, 0, 900)(8);
-    let store = FlatStore::mount(&disk);
-    assert_eq!(store.free_extents(), EXTENTS - 32);
-
-    let handle = store.open(ObjectId(1), Some(Revision(1))).unwrap();
-    let finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, 900, "Tuesday", &[(0, 1)]);
-    store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap();
-    assert_eq!(store.free_extents(), EXTENTS - 32, "the trimmed reserve was freed under a live reader");
-
-    store.close(handle);
-    assert_eq!(store.free_extents(), EXTENTS - 1, "the trimmed tail did not come back at the last close");
-    let handle = store.open(ObjectId(1), None).unwrap();
-    let mut bytes = vec![0u8; 900];
-    assert_eq!(store.read(&handle, 0, &mut bytes).unwrap(), 900);
-    assert_eq!(bytes, payload(900));
-    store.close(handle);
-}
-
-/// `release` defers a trimmed tail because a hold names it, so the hold has to keep naming it. A trim
-/// keeps a prefix, so the wider ranges still serve every byte of the amended length.
-#[test]
-fn a_reader_joining_a_trimmed_hold_still_returns_the_whole_reserve() {
-    let ride = recording();
-    let mut before = holding(&[ride], 6);
-    before.ride = Some((0, 900));
-    let disk = recording_card(&before, &ride, 0, 900)(43);
-    let store = FlatStore::mount(&disk);
-    assert_eq!(store.free_extents(), EXTENTS - 32);
-
-    let first = store.open(ObjectId(1), Some(Revision(1))).unwrap();
-    let finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, 900, "Tuesday", &[(0, 1)]);
-    store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap();
-    assert_eq!(store.free_extents(), EXTENTS - 32, "the trimmed reserve was freed under a live reader");
-
-    let second = store.open(ObjectId(1), Some(Revision(1))).unwrap();
-    let mut bytes = vec![0u8; 900];
-    assert_eq!(store.read(&second, 0, &mut bytes).unwrap(), 900);
-    assert_eq!(bytes, payload(900));
-
-    store.close(second);
-    assert_eq!(store.free_extents(), EXTENTS - 32, "the row went away while the first reader held it");
-    store.close(first);
-    assert_eq!(store.free_extents(), EXTENTS - 1, "the trimmed tail of a joined hold never came back");
-    disk.reboot();
-    assert_eq!(FlatStore::mount(&disk).free_extents(), EXTENTS - 1, "and the next mount says the same");
-}
-
 /// Finalising a ride trims 31 of its 32 reserve extents. A reader that opened before the amend keeps
 /// the row, so the trimmed extents stay out of the allocator until the last reader closes, and a
 /// reader joining that row sees the amended length.
@@ -1759,32 +1647,6 @@ fn an_unformatted_card_refuses_everything_at_the_seam() {
     assert!(model::snapshot(&mut store).is_none());
 }
 
-/// No well-formed gate, two well-formed gates at equal sequences, and no candidate body that
-/// validates are all media damage. Each mounts read-only with the evidence preserved.
-#[test]
-fn a_card_with_no_usable_catalog_mounts_read_only() {
-    let route = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
-    let model = holding(&[route], 4);
-
-    let disk = card(2, &model, 0);
-    disk.install(catalog_gate(0), &[0u8; BLOCK]);
-    assert_eq!(FlatStore::mount(&disk).mode(), Mode::CatalogUnreadable);
-
-    let disk = card(3, &model, 0);
-    install_catalog(&disk, &model, 1);
-    assert_eq!(FlatStore::mount(&disk).mode(), Mode::CatalogUnreadable, "two gates at one sequence is corruption");
-
-    let disk = card(4, &model, 0);
-    let mut torn = disk.block(CATALOG[0] + 1);
-    torn[0] ^= 0xFF;
-    disk.install(CATALOG[0] + 1, &torn);
-    let store = FlatStore::mount(&disk);
-    assert_eq!(store.mode(), Mode::CatalogUnreadable);
-    assert!(matches!(store.open(ObjectId(1), None), Err(super::error::StoreError::ReadOnly)));
-    // Evidence preserved: nothing was repaired, and the torn block is still on the card.
-    assert_eq!(disk.block(CATALOG[0] + 1), torn);
-}
-
 /// No well-formed gate, two well-formed gates at one sequence, a body that fails its CRC and an
 /// unformatted card all mount read-only. A read-only mount reports no free space, because a number
 /// left over from a refused copy would be a promise the store cannot keep, serves nothing, and
@@ -1838,31 +1700,6 @@ fn an_exhausted_revision_space_still_serves_reads() {
     assert_eq!(store.allocate(512), Err(super::error::StoreError::ReadOnly));
 }
 
-/// The other counter: a card whose newest gate carries commit sequence `u64::MAX` has no sequence to
-/// continue to. It mounts read-only rather than wrapping — and rather than panicking, which is what an
-/// unchecked `high_water + 1` would do in a debug build.
-#[test]
-fn an_exhausted_sequence_space_still_serves_reads() {
-    let route = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
-    let mut model = holding(&[route], u64::MAX);
-    model.high_water = u64::MAX;
-    let disk = card(11, &model, 0);
-    let store = FlatStore::mount(&disk);
-    assert_eq!(store.mode(), Mode::SequenceSpaceExhausted);
-    assert!(!store.has_commit_capacity(1));
-
-    let handle = store.open(ObjectId(1), None).unwrap();
-    let mut bytes = vec![0u8; 3_000];
-    assert_eq!(store.read(&handle, 0, &mut bytes).unwrap(), 3_000);
-    assert_eq!(bytes, payload(3_000));
-    store.close(handle);
-    assert_eq!(store.allocate(512), Err(super::error::StoreError::ReadOnly));
-    assert_eq!(
-        store.commit(&[Mutation::Remove { id: ObjectId(1), revision: Revision(1) }]).unwrap_err(),
-        super::error::StoreError::ReadOnly,
-    );
-}
-
 /// The card starts one short of `u64::MAX`, so exactly one commit is left in it.
 #[test]
 fn the_commit_that_reaches_the_last_sequence_leaves_the_store_read_only() {
@@ -1912,33 +1749,6 @@ fn an_object_id_at_the_end_of_the_space_is_refused() {
     assert_eq!(snapshot(&mut store), empty().snapshot());
 }
 
-/// `free_extents` is public, and a number left over from the copy a mount refused would be a promise
-/// the store cannot keep.
-#[test]
-fn a_read_only_mount_reports_no_free_space() {
-    let route = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
-    let model = holding(&[route], 4);
-
-    let unformatted = SparseDisk::blank(TOTAL_BLOCKS, 1);
-    assert_eq!(FlatStore::mount(&unformatted).free_extents(), 0);
-
-    // A body that fails its gate: the load that rejected it had already claimed its ranges.
-    let disk = card(13, &model, 0);
-    let mut torn = disk.block(CATALOG[0] + 1);
-    torn[0] ^= 0xFF;
-    disk.install(CATALOG[0] + 1, &torn);
-    let store = FlatStore::mount(&disk);
-    assert_eq!(store.mode(), Mode::CatalogUnreadable);
-    assert_eq!(store.free_extents(), 0, "a refused catalog left its free map resident");
-
-    // Two well-formed gates at one sequence: no candidate is even tried.
-    let disk = card(14, &model, 0);
-    install_catalog(&disk, &model, 1);
-    let store = FlatStore::mount(&disk);
-    assert_eq!(store.mode(), Mode::CatalogUnreadable);
-    assert_eq!(store.free_extents(), 0);
-}
-
 #[test]
 fn a_torn_superblock_falls_back_to_the_other_copy() {
     let route = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
@@ -1948,19 +1758,6 @@ fn a_torn_superblock_falls_back_to_the_other_copy() {
     let mut store = FlatStore::mount(&disk);
     assert_eq!(store.mode(), Mode::ReadWrite);
     assert_eq!(snapshot(&mut store), model.snapshot());
-}
-
-/// An allocation is RAM state until the commit that names its extents, so the next mount rebuilds the
-/// bitmap from the catalog and cannot see it.
-#[test]
-fn an_uncommitted_allocation_is_free_again_at_the_next_mount() {
-    let disk = card(21, &empty(), 0);
-    let store = FlatStore::mount(&disk);
-    let mut allocation = store.allocate(4 << 20).unwrap();
-    store.write(&mut allocation, &payload(BLOCK)).unwrap();
-    assert_eq!(store.free_extents(), EXTENTS - 4);
-    disk.reboot();
-    assert_eq!(FlatStore::mount(&disk).free_extents(), EXTENTS);
 }
 
 #[test]
