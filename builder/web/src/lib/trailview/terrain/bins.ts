@@ -483,6 +483,19 @@ export function insideRings(rings: number[][], x: number, y: number): boolean {
     return inside;
 }
 
+/** The distance from a point to the nearest edge of rings, in the units of the points. */
+export function ringsDistance(rings: number[][], x: number, y: number): number {
+    let best = Infinity;
+    for (const ring of rings) {
+        for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
+            const ax = ring[j], ay = ring[j + 1], dx = ring[i] - ax, dy = ring[i + 1] - ay;
+            const t = Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
+            best = Math.min(best, Math.hypot(x - ax - t * dx, y - ay - t * dy));
+        }
+    }
+    return best;
+}
+
 /** What a node stamps: its packed data for stamp.wgsl, and what it holds. */
 export interface NodeStamps {
     /** The words of stamp-core.wgsl: counts, cell offsets, cell entries, records. Null when nothing is near. */

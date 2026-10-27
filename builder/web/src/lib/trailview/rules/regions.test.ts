@@ -7,12 +7,12 @@ const look = { snap: 0.4, hazeKm: 35, grade: { shadow: [0, 0, 0], light: [0, 0, 
 describe('rulesOf', () => {
     it('resolves a region as the prototype does: objects merge, ramps come whole, a value by place takes "*"', () => {
         const rules = rulesOf({
-            format: 1, materials,
-            regions: [
-                { id: 'alps', extends: 'world', leaf: 'needleleaved', look: { hazeKm: 22, grade: { saturation: 1.2 }, ramps: { needle: { summer: ['#010101', '#020202', '#030303'] } } } },
-                { id: 'alps.insubric', extends: 'alps', look: { roadLine: { 'it-21': '#ffffff', '*': '#d6d4cc' }, ramps: { grass: ['#333333', '#444444', '#555555'] } } },
-                { id: 'world', leaf: 'mixed', look },
-            ],
+            format: 2, materials, ids: [['alps', '*'], ['alps.insubric', '*'], ['world', '*']],
+            regions: {
+                alps: { extends: 'world', leaf: 'needleleaved', look: { hazeKm: 22, grade: { saturation: 1.2 }, ramps: { needle: { summer: ['#010101', '#020202', '#030303'] } } } },
+                'alps.insubric': { extends: 'alps', look: { roadLine: { 'it-21': '#ffffff', '*': '#d6d4cc' }, ramps: { grass: ['#333333', '#444444', '#555555'] } } },
+                world: { leaf: 'mixed', look },
+            },
             overlays: { alps: { look: { mistTop: 900 } } },
         });
         const insubric = rules.regions[1];
@@ -25,11 +25,24 @@ describe('rulesOf', () => {
         expect(insubric.look.mistTop).toBe(900);
     });
 
+    it('gives a region id the value of its place, else of its country, else "*"', () => {
+        const style = (name: string) => ({ name, pitch: [40, 45], eave: 0.5, verge: 0.3, hip: 0, timber: 'none', shutters: false, chimneys: 1, palette: {} });
+        const rules = rulesOf({
+            format: 2, materials, ids: [['alps', '*'], ['alps', 'ch-ti'], ['alps', 'it-21'], ['world', '*']],
+            regions: { alps: { leaf: 'needleleaved', look, pack: 'alps' }, world: { leaf: 'mixed', look } },
+            packs: { alps: { style: { '*': 'chalet', 'ch-ti': 'stone-house', it: 'village-house' } } },
+            styles: { chalet: style('chalet'), 'stone-house': style('stone-house'), 'village-house': style('village-house') },
+        });
+        const styleOf = (id: number) => rules.styles[rules.regions[id].houses[0]].name;
+        expect([0, 1, 2].map(styleOf)).toEqual(['chalet', 'stone-house', 'village-house']);
+        expect(rules.regions.map(region => region.id)).toEqual(['alps', 'alps', 'alps', 'world']);
+    });
+
     it("takes a region's trees and herds from its pack: a child adds or changes one, null drops one, a model defaults to its name", () => {
         const spruce = { leaf: 'needleleaved', cover: 'tree', elevation: [600, 2000], weight: 5 };
         const rules = rulesOf({
-            format: 1, materials,
-            regions: [{ id: 'alps', leaf: 'needleleaved', look, pack: 'alps' }, { id: 'world', leaf: 'mixed', look }],
+            format: 2, materials, ids: [['alps', '*'], ['world', '*']],
+            regions: { alps: { leaf: 'needleleaved', look, pack: 'alps' }, world: { leaf: 'mixed', look } },
             packs: {
                 base: { trees: { 'norway-spruce': spruce, 'scots-pine': { ...spruce, weight: 1 } }, herds: { sheep: { groups: 1, size: [2, 6], on: ['pasture'] } } },
                 alps: {

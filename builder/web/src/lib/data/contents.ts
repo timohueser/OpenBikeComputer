@@ -2,7 +2,7 @@
 // `obc data update` that only make sense together. The bake adds what a card reads, such as the
 // terrain; `shownBy` names the cards that show it, without which it has no reader.
 import type { Bbox } from "./areas";
-import { modelsOf, type SourceRow } from "./sources";
+import { globalModelOf, modelsOf, type SourceRow } from "./sources";
 
 export interface Content {
     id: string;
@@ -130,9 +130,11 @@ export function needs(content: Content, area: Bbox | null, sources: SourceRow[],
         const regions = [...new Set(listed.flatMap((version) => (version.region ? [version.region] : [])))];
         reference = { source: row.id, version: newest ? { version: newest.version, target: target! } : null, regions };
     }
-    const models = id && area ? modelsOf(id, sources).filter(({ row, country }) => row.extent && meets(row.extent, area) && (!countries.length || countries.includes(country))) : [];
+    const national = id && area ? modelsOf(id, sources).filter(({ row, country }) => row.extent && meets(row.extent, area) && (!countries.length || countries.includes(country))) : [];
+    const everywhere = id && area ? globalModelOf(id, sources) : undefined;
+    const models = [...national.map(({ row }) => row), ...(everywhere?.extent && meets(everywhere.extent, area!) ? [everywhere] : [])];
     const covered = !!models.length && !!reference?.version;
-    return { credentials, reference, models: models.map(({ row }) => row), ready: !credentials.length && (!content.reference?.required || covered) };
+    return { credentials, reference, models, ready: !credentials.length && (!content.reference?.required || covered) };
 }
 
 /** The `--add` and `--remove` flags that switch on exactly the layers of the cards in `on`. */

@@ -119,9 +119,7 @@ fn fragment_main(in: Fragment) -> @location(0) vec4f {
     if (frame.debug == 0u || (frame.debug > 4u && frame.debug != MASK_VIEW)) {
         return vec4f(ground_colour(in.s, in.relative, in.h, in.level), 1.0);
     }
-    let m = drawn_normal(in.s);
-    // LOD space axes turn into render space axes with the linear part of the cubic.
-    let n = normalize(vec3f(m.x * vec2f(coefficient(1u), coefficient(11u)) + m.y * vec2f(coefficient(2u), coefficient(12u)), m.z));
+    let n = render_normal(drawn_normal(in.s));
     let light = max(dot(n, frame.sun.xyz), 0.0) * frame.sun.w + 0.3;
     if (frame.debug == 1u) {
         return vec4f(n * 0.5 + 0.5, 1.0);

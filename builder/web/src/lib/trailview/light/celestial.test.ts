@@ -1,26 +1,43 @@
 import { describe, expect, it } from 'vitest';
-import { solarPosition, solarTerms } from '../../planner/layers/sun';
-import { moonAt, moonEcliptic, starFrame } from './celestial';
+import { moonAt, moonEcliptic, starFrame, sunAt } from './celestial';
+import { sunlightLeft } from './eclipse';
 
 const RAD = Math.PI / 180;
 const angle = (a: number[], b: number[]) => Math.acos(Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2])) / RAD;
 
 describe('the sky about a place', () => {
     it('puts the moon where Meeus puts it', () => {
-        // Example 47.a: 1992 April 12, 0 h.
-        const moon = moonEcliptic(Date.UTC(1992, 3, 12));
-        expect(moon.longitude).toBeCloseTo(133.162655, 2);
-        expect(moon.latitude).toBeCloseTo(-3.229126, 2);
-        // The cut series leaves out distance terms of up to 30 km.
-        expect(Math.abs(moon.km - 368409.7)).toBeLessThan(100);
+        // Example 47.a: 1992 April 12, 0 h TT.
+        const moon = moonEcliptic(Date.UTC(1992, 3, 12) - 69184);
+        expect(moon.longitude).toBeCloseTo(133.162655, 4);
+        expect(moon.latitude).toBeCloseTo(-3.229126, 4);
+        expect(moon.km).toBeCloseTo(368409.7, 0);
     });
 
-    it('covers the sun with the moon in Dallas during the eclipse of 8 April 2024', () => {
-        // Totality in Dallas lasted from 18:40:43 to 18:44:34 UTC; the drawn disks are 0.27° wide.
-        const place: [number, number] = [-96.797, 32.777], instant = Date.UTC(2024, 3, 8, 18, 42, 40);
-        const { altitude, bearing } = solarPosition(place, solarTerms(instant));
-        const sun = [Math.sin(bearing) * Math.cos(altitude), Math.cos(bearing) * Math.cos(altitude), Math.sin(altitude)];
-        expect(angle(moonAt(place, instant), sun)).toBeLessThan(0.05);
+    it('casts the shadow of 12 August 2026 where NASA puts its path', () => {
+        // Espenak's path table: the central line and the limits at 17:30 UT over Greenland and at 18:28 UT over Spain.
+        const rows: [number, [number, number], [number, number], [number, number]][] = [
+            [Date.UTC(2026, 7, 12, 17, 30), [-27.788, 73.683], [-23.145, 74.267], [-31.972, 73.043]],
+            [Date.UTC(2026, 7, 12, 18, 28), [-6.188, 43.372], [-2.085, 42.908], [-9.552, 43.607]],
+        ];
+        for (const [instant, central, ...limits] of rows) {
+            const at = (place: [number, number]) => {
+                const sun = sunAt(place, instant), moon = moonAt(place, instant);
+                return { apart: angle(sun.toward, moon.toward) * 3600, umbra: (moon.radius - sun.radius) / RAD * 3600 };
+            };
+            // 1″ moves the shadow by about 2 km; the umbra's radius is 30″ to 37″.
+            expect(at(central).apart).toBeLessThan(3);
+            for (const limit of limits) expect(Math.abs(at(limit).apart - at(limit).umbra)).toBeLessThan(2);
+        }
+    });
+
+    it('leaves Madrid a sliver of the sun on 12 August 2026, and Burgos none', () => {
+        const least = (place: [number, number]) => Math.min(...Array.from({ length: 600 }, (_, s) => {
+            const instant = Date.UTC(2026, 7, 12, 18, 25, s);
+            return sunlightLeft(sunAt(place, instant), moonAt(place, instant));
+        }));
+        expect(least([-3.70, 42.34])).toBe(0);
+        expect(least([-3.70, 40.42])).toBeGreaterThan(0);
     });
 
     it('turns the stars about the pole', () => {

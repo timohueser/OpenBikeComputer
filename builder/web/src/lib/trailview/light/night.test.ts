@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DARK_SKY, nightSky } from './night';
 
-const MIDNIGHT = { sun: -40, moon: -30, phase: 180, sky: DARK_SKY, cover: 0 };
+const MIDNIGHT = { sun: -40, moon: -30, phase: 180, sky: DARK_SKY, cover: 0, left: 1 };
 
 describe('the night sky', () => {
     it('shows the faint stars and the Milky Way far from lights, and only bright stars under a town sky', () => {

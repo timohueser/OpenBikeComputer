@@ -33,6 +33,7 @@ CASES = [
     ("packs/alps", ["trees", "norway-spruce", "model"], "monkey-puzzle", "regions/alps.insubric.json: pack alps.insubric: tree norway-spruce has no model monkey-puzzle"),
     ("packs/alps", ["ground", "bilberry", "model"], "norway-spruce", "regions/alps.json: pack alps: ground plant bilberry has no model norway-spruce"),
     ("packs/alps", ["orchard"], "apple", "regions/alps.json: pack alps: orchard has no model apple"),
+    ("packs/alps", ["style", "xx-yy"], "chalet", "regions/alps.json: xx-yy is not a place of countries.json"),
 ]
 
 
@@ -59,13 +60,14 @@ class RulesetTest(unittest.TestCase):
             with self.subTest(file=file, path=path):
                 self.assertIn(problem, rules.validate(edited(file, path, value)))
 
-    def test_more_regions_than_one_byte_of_the_region_tiles_holds_is_a_problem(self):
+    def test_more_region_ids_than_one_byte_of_the_region_tiles_holds_is_a_problem(self):
         ruleset = copy.deepcopy(RULESET)
         world = ruleset["regions"]["world"]
-        ruleset["regions"].update({f"world.extra-{i}": {**world, "extends": "world", "where": [[0, 0, 1, 1]]} for i in range(255 - len(ruleset["regions"]))})
+        ruleset["regions"].update({f"world.extra-{i}": {**world, "extends": "world", "where": [[0, 0, 1, 1]]}
+                                   for i in range(255 - len(rules.region_ids(ruleset)))})
         self.assertEqual([problem for problem in rules.validate(ruleset) if problem.startswith("regions/: ")], [])
         ruleset["regions"]["world.extra-last"] = ruleset["regions"]["world.extra-0"]
-        self.assertIn("regions/: 256 regions, more than the 255 that one byte of the region tiles holds", rules.validate(ruleset))
+        self.assertIn("regions/: 256 region ids, more than the 255 that one byte of the region tiles holds", rules.validate(ruleset))
 
     def test_a_pack_with_more_tree_species_than_the_forest_holds_or_an_unknown_model_is_a_problem(self):
         ruleset = copy.deepcopy(RULESET)
@@ -96,16 +98,19 @@ class RulesetTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "packs/aegean.json: Infinity is not JSON"):
                 rules.load(root)
 
-    def test_a_region_id_is_its_index_among_the_sorted_regions_and_the_chains_stay_whole(self):
+    def test_a_region_has_an_id_for_itself_and_for_each_place_that_its_chain_names_and_the_chains_stay_whole(self):
         bundled, regions = rules.bundle(RULESET)
-        names = [region["id"] for region in bundled["regions"]]
-        self.assertEqual(names, sorted(RULESET["regions"]))
-        self.assertEqual([region["id"] for region in regions["regions"]], names)
-        alps = bundled["regions"][names.index("alps.insubric")]
-        self.assertEqual(alps["extends"], "alps")
-        self.assertNotIn("where", alps)
-        self.assertIn("where", regions["regions"][names.index("alps.insubric")])
-        self.assertEqual({e["short"] for e in regions["ecoregions"]} - set(names), set())
+        ids = bundled["ids"]
+        self.assertEqual(regions["ids"], ids)
+        self.assertEqual(sorted({name for name, _ in ids}), sorted(RULESET["regions"]))
+        self.assertEqual([place for name, place in ids if name == "celtic"], ["*", "ie"])
+        self.assertEqual([place for name, place in ids if name == "celtic.irish-coast"], ["*"], "its pack replaces the map with one style")
+        self.assertEqual([place for name, place in ids if name == "world"], ["*"])
+        insubric = bundled["regions"]["alps.insubric"]
+        self.assertEqual(insubric["extends"], "alps")
+        self.assertNotIn("where", insubric)
+        self.assertIn("where", regions["regions"]["alps.insubric"])
+        self.assertEqual({e["short"] for e in regions["ecoregions"]} - set(bundled["regions"]), set())
 
 
 if __name__ == "__main__":
