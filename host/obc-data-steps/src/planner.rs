@@ -1514,7 +1514,7 @@ mod tests {
             assert_eq!(step.layer.name, layer(&step.name), "{}", step.name);
         }
         let named: BTreeSet<&str> = steps.iter().map(|step| step.layer.name).collect();
-        assert_eq!(named.len(), 18, "seventeen operator layers and the OSM of the region: {named:?}");
+        assert_eq!(named.len(), 17, "sixteen operator layers and the OSM of the region: {named:?}");
 
         // A target holds only client files: a step reads only those of a step of another layer
         // that a program reads, so another machine can bake it without baking that step again. A
