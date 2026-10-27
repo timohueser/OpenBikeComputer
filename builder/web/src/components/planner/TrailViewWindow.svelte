@@ -7,7 +7,7 @@
     import { config } from '../../lib/planner/map-data';
     import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo';
     import { FIRST_HEADING, loadTrailView } from '../../lib/planner/trailview';
-    import { nightPin, type RouteLook } from '../../lib/planner/trailview-route';
+    import { nightBadge, type RouteLook } from '../../lib/planner/trailview-route';
     import { sampleIndex } from '../../lib/planner/profile-data';
     import type { TrailView } from '../../lib/trailview/engine';
     import { VFOV } from '../../lib/trailview/frame/camera';
@@ -40,7 +40,7 @@
     const hasRoute = $derived(near.route.length > 1);
     const line = $derived([...near.route]);
     let routeShown = $state(true), look = $state<RouteLook>('day'), position = $state<number | null>(null);
-    const nightPins = $derived(near.overlay.nights.map(night => ({ coordinate: night.coordinate, image: nightPin(night) })));
+    const nightPins = $derived(near.overlay.nights.map(night => ({ coordinate: night.coordinate, colour: night.color, badge: nightBadge(night) })));
     const drawRoute = () => {
         engine?.showRoute(routeShown ? near.route : [], near.overlay.colours[look]);
         engine?.showPins(routeShown && hasRoute ? nightPins : []);

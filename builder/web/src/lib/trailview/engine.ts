@@ -249,9 +249,9 @@ export class TrailView {
         this.request();
     }
 
-    /** Stands the marker on the ground at `at` with a sphere in `colour`; null takes it away. */
+    /** Stands a pin with a sphere in `colour` at `at`, apart from the others so that it moves cheaply; null takes it away. */
     showMarker(at: Coordinate | null, colour = '#ffffff'): void {
-        this.route.setMarker(at, colour);
+        this.route.setMarker(at ? { coordinate: at, colour } : undefined);
         this.request();
     }
 

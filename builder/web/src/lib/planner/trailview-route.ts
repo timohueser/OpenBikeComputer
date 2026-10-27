@@ -1,5 +1,5 @@
 // The plan's route in TrailView: the colour of each edge in each look, a pin at each night, and its profile.
-import { PIN_SIZE } from '../trailview/route/route';
+import { BADGE_SIZE } from '../trailview/route/route';
 import { dayColor } from './day-colors';
 import { cumulative, type Coordinate } from './geo';
 import { gradeBand, gradeBands, profileGrades } from './grade-data';
@@ -38,11 +38,21 @@ export function routeColours(line: Pick<RoutingLine, 'coordinates' | 'elevation'
     };
 }
 
-/** The image of a night's pin, PIN_SIZE: a drop in the day's colour that points down at the night. */
-export function nightPin({ color, category, label }: RouteNight): OffscreenCanvas {
-    const { canvas, context, x, y } = drop(color, '#ffffff');
+/** The badge of a night's pin, BADGE_SIZE: a disc in the day's colour with a white edge. */
+export function nightBadge({ color, category, label }: RouteNight): OffscreenCanvas {
+    const canvas = new OffscreenCanvas(BADGE_SIZE, BADGE_SIZE), context = canvas.getContext('2d')!;
+    // Drawn in output pixels, at half the image's pixels.
+    context.scale(2, 2);
+    const c = BADGE_SIZE / 4;
+    context.beginPath();
+    context.arc(c, c, c - 1.5, 0, Math.PI * 2);
+    context.fillStyle = color;
+    context.fill();
+    context.lineWidth = 2.5;
+    context.strokeStyle = '#ffffff';
+    context.stroke();
     if (category) {
-        context.translate(x - 9, y - 9);
+        context.translate(c - 9, c - 9);
         context.scale(18 / 24, 18 / 24);
         context.lineWidth = 2.4;
         context.lineCap = context.lineJoin = 'round';
@@ -52,24 +62,7 @@ export function nightPin({ color, category, label }: RouteNight): OffscreenCanva
         context.font = '700 15px system-ui, sans-serif';
         context.textAlign = 'center';
         context.textBaseline = 'middle';
-        context.fillText(label, x, y + 1);
+        context.fillText(label, c, c + 1);
     }
     return canvas;
-}
-
-/** A drop, PIN_SIZE, filled and outlined, its point at the bottom centre; it draws in output pixels about the centre x, y of its head. */
-function drop(fill: string, outline: string) {
-    const canvas = new OffscreenCanvas(...PIN_SIZE), context = canvas.getContext('2d')!;
-    context.scale(2, 2);
-    const [x, y, r] = [PIN_SIZE[0] / 4, 17, 15];
-    context.beginPath();
-    context.arc(x, y, r, Math.PI * 0.8, Math.PI * 0.2);
-    context.lineTo(x, PIN_SIZE[1] / 2 - 2);
-    context.closePath();
-    context.fillStyle = fill;
-    context.fill();
-    context.lineWidth = 2.5;
-    context.strokeStyle = outline;
-    context.stroke();
-    return { canvas, context, x, y };
 }

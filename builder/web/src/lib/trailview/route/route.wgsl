@@ -3,9 +3,8 @@
 // lying would show it thinner than BODY_PIXELS it turns to face the eye. A crisp body with a lighter middle
 // covers the ground, and a narrow glow beyond its edges adds light. Its depth moves toward the eye by
 // PULL_M and PULL_PIXELS, so that the ground between two points does not hide it. It is not lit.
-// A pin is an image PIN output pixels in size that faces the eye, its bottom centre on the ground.
-// The marker is a sphere in the sun on a stem, over a ring on the ground, all of a constant size on the screen; it
-// shows faintly through what hides it.
+// A pin stands on a stem over a ring on the ground, all of a constant size on the screen: on top, a badge that
+// faces the eye, or a sphere in the sun. It shows faintly through what hides it.
 // #include ../terrain/drawn-mesh.wgsl
 
 // As Frame of terrain.wgsl, which shares its buffer.
@@ -25,20 +24,20 @@ struct Point {
     colour: u32,
 }
 
-// As `Route.setMarker` of route.ts.
-struct Marker {
+// As PIN_WORDS of route.ts.
+struct Pin {
     at: vec2i,
     // sRGB bytes, red lowest.
     colour: u32,
-    shown: u32,
+    // The layer of the badge plus one, or 0 for a sphere.
+    badge: u32,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> points: array<Point>;
-@group(0) @binding(2) var<storage, read> pins: array<vec2i>;
-@group(0) @binding(3) var images: texture_2d_array<f32>;
-@group(0) @binding(4) var image_sampler: sampler;
-@group(0) @binding(5) var<uniform> marker: Marker;
+@group(0) @binding(2) var<storage, read> pins: array<Pin>;
+@group(0) @binding(3) var badges: texture_2d_array<f32>;
+@group(0) @binding(4) var badge_sampler: sampler;
 
 const LIFT_M: f32 = 0.3;
 // The half-width of the body, in metres and at least in output pixels, and the width of the glow beyond it in output pixels.
@@ -56,15 +55,15 @@ const FADE_NEAR_M: f32 = 2.0;
 const FADE_FAR_M: f32 = 12.0;
 const PULL_M: f32 = 0.5;
 const PULL_PIXELS: f32 = 4.0;
-// The output pixels of a pin: half PIN_SIZE of route.ts.
-const PIN: vec2f = vec2f(36.0, 48.0);
 const PIN_PULL_M: f32 = 2.0;
-// The marker in output pixels: the radius of its sphere and of its ring, the height of the sphere's centre, and the half-width of the stem.
-const HEAD_PIXELS: f32 = 11.0;
+// A pin in output pixels: the radius of its sphere, of its badge (half BADGE_SIZE of route.ts) and of its ring,
+// the height of its stem and the stem's half-width.
+const SPHERE_PIXELS: f32 = 11.0;
+const BADGE_PIXELS: f32 = 16.0;
 const RING_PIXELS: f32 = 16.0;
-const STEM_PIXELS: f32 = 42.0;
+const STEM_PIXELS: f32 = 34.0;
 const STEM_WIDTH_PIXELS: f32 = 1.75;
-// The share of its light that the marker shows where something hides it: route.ts draws it again behind what is drawn.
+// The share of its light that a pin shows where something hides it: route.ts draws the pins again behind what is drawn.
 override SHOWN: f32 = 1.0;
 
 struct RouteOut {
@@ -163,106 +162,78 @@ fn route_fragment(in: RouteOut) -> @location(0) vec4f {
 
 struct PinOut {
     @builtin(position) clip: vec4f,
+    // −1 to 1 across the part.
     @location(0) uv: vec2f,
-    @location(1) @interpolate(flat) layer: u32,
-    @location(2) kept: f32,
+    // 0 the ring, 1 the stem, 2 the head.
+    @location(1) @interpolate(flat) part: u32,
+    @location(2) @interpolate(flat) pin: u32,
+    // The axes of the head's image: right and up on the screen, and toward the eye.
+    @location(3) @interpolate(flat) right: vec3f,
+    @location(4) @interpolate(flat) up: vec3f,
+    @location(5) @interpolate(flat) toward: vec3f,
+    @location(6) kept: f32,
 }
 
 @vertex
 fn pin_vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) k: u32) -> PinOut {
-    let corner = vec2f(f32((0x32u >> v) & 1u), f32((0x2cu >> v) & 1u));
-    let s = lod_space(vec2f(pins[k] - surface.anchor));
-    let h = ground(s);
-    let foot = eye_space(s, h);
-    // The image faces the eye, upright as the eye sees it.
-    let right = vec3f(direction(vec2f(-foot.y, foot.x), vec2f(1.0, 0.0)), 0.0);
-    let up = normalize(cross(foot, right));
-    let size = PIN * frame.pixel * length(foot);
-    let p = foot + right * (corner.x - 0.5) * size.x + up * corner.y * size.y;
-    var out: PinOut;
-    out.clip = frame.view_proj * vec4f(pulled(p, PIN_PULL_M, PULL_PIXELS), 1.0);
-    out.uv = vec2f(corner.x, 1.0 - corner.y);
-    out.layer = k;
-    out.kept = select(0.0, 1.0, known(h) && frame.debug != 3u && frame.debug != 4u);
-    return out;
-}
-
-@fragment
-fn pin_fragment(in: PinOut) -> @location(0) vec4f {
-    let texel = textureSample(images, image_sampler, in.uv, in.layer);
-    if (in.kept < 0.999) {
-        discard;
-    }
-    return vec4f(linear(texel.rgb / max(texel.a, 1e-6)) * texel.a, texel.a);
-}
-
-struct MarkerOut {
-    @builtin(position) clip: vec4f,
-    // −1 to 1 across the part.
-    @location(0) uv: vec2f,
-    // 0 the ring, 1 the stem, 2 the sphere.
-    @location(1) @interpolate(flat) part: u32,
-    // The axes of the sphere's image: right and up on the screen, and toward the eye.
-    @location(2) @interpolate(flat) right: vec3f,
-    @location(3) @interpolate(flat) up: vec3f,
-    @location(4) @interpolate(flat) toward: vec3f,
-    @location(5) kept: f32,
-}
-
-@vertex
-fn marker_vertex(@builtin(vertex_index) v: u32) -> MarkerOut {
-    let k = v % 6u;
-    let uv = vec2f(f32((0x32u >> k) & 1u), f32((0x2cu >> k) & 1u)) * 2.0 - 1.0;
+    let corner = v % 6u;
+    let uv = vec2f(f32((0x32u >> corner) & 1u), f32((0x2cu >> corner) & 1u)) * 2.0 - 1.0;
     let part = v / 6u;
-    let s = lod_space(vec2f(marker.at - surface.anchor));
+    let s = lod_space(vec2f(pins[k].at - surface.anchor));
     let h = ground(s);
     let foot = eye_space(s, h);
     let distance = max(length(foot), 1e-6);
     let metre = frame.pixel * distance;
     let right = vec3f(direction(vec2f(-foot.y, foot.x), vec2f(1.0, 0.0)), 0.0);
     let up = normalize(cross(foot, right));
+    let head = select(SPHERE_PIXELS, BADGE_PIXELS, pins[k].badge > 0u);
     var p = foot + vec3f(uv, 0.0) * RING_PIXELS * metre;
     if (part == 1u) {
         p = foot + right * uv.x * STEM_WIDTH_PIXELS * metre + vec3f(0.0, 0.0, (uv.y * 0.5 + 0.5) * STEM_PIXELS * metre);
     } else if (part == 2u) {
-        p = foot + vec3f(0.0, 0.0, STEM_PIXELS * metre) + (right * uv.x + up * uv.y) * HEAD_PIXELS * metre;
+        p = foot + vec3f(0.0, 0.0, (STEM_PIXELS + head) * metre) + (right * uv.x + up * uv.y) * head * metre;
     }
-    var out: MarkerOut;
+    var out: PinOut;
     out.clip = frame.view_proj * vec4f(pulled(p, PIN_PULL_M, PULL_PIXELS), 1.0);
     out.uv = uv;
     out.part = part;
+    out.pin = k;
     out.right = right;
     out.up = up;
     out.toward = -foot / distance;
-    out.kept = select(0.0, 1.0, marker.shown == 1u && known(h) && frame.debug != 3u && frame.debug != 4u);
+    out.kept = select(0.0, 1.0, known(h) && frame.debug != 3u && frame.debug != 4u);
     return out;
 }
 
 // Premultiplied, as the route.
 @fragment
-fn marker_fragment(in: MarkerOut) -> @location(0) vec4f {
-    let colour = linear(unpack4x8unorm(marker.colour).rgb);
+fn pin_fragment(in: PinOut) -> @location(0) vec4f {
+    let pin = pins[in.pin];
+    let colour = linear(unpack4x8unorm(pin.colour).rgb);
     let r = length(in.uv);
-    // From the middle to the edge: of the sphere and the ring by the radius, of the stem across it.
+    // From the middle to the edge: of the head and the ring by the radius, of the stem across it.
     let x = select(abs(in.uv.x), r, in.part != 1u);
     let aa = max(fwidth(x), 1e-4);
+    let texel = textureSample(badges, badge_sampler, in.uv * vec2f(0.5, -0.5) + 0.5, max(pin.badge, 1u) - 1u);
     if (in.kept < 0.999) {
         discard;
     }
     if (in.part == 0u) {
-        // A shadow that darkens the ground under a ring in the line's colour.
+        // A shadow that darkens the ground under a ring in the pin's colour.
         let shadow = 0.35 * (1.0 - smoothstep(0.0, 1.0, r));
         let ring = clamp((0.12 - abs(r - 0.82)) / aa + 0.5, 0.0, 1.0);
         return vec4f(colour * ring, max(shadow, ring)) * SHOWN;
     }
-    // The stem and the sphere take the sun on their round sides.
+    if (in.part == 2u && pin.badge > 0u) {
+        return vec4f(linear(texel.rgb / max(texel.a, 1e-6)) * texel.a, texel.a) * SHOWN;
+    }
+    // The stem and the sphere take the sun on their round sides; the sphere's edge turns from the eye and darkens.
     let across = select(vec2f(in.uv.x, 0.0), in.uv, in.part == 2u);
     let n = normalize(in.right * across.x + in.up * across.y + in.toward * sqrt(max(1.0 - x * x, 0.0)));
     let sun = max(dot(n, frame.sun.xyz), 0.0) * frame.sun.w;
     let shine = pow(max(dot(reflect(-frame.sun.xyz, n), in.toward), 0.0), 20.0) * frame.sun.w;
     let base = select(vec3f(0.85), colour, in.part == 2u);
-    // The edge turns away from the eye and darkens, which rounds the sphere.
-    let rim = mix(0.55, 1.0, dot(n, in.toward));
+    let rim = mix(0.7, 1.0, dot(n, in.toward));
     let cover = clamp((1.0 - x) / aa + 0.5, 0.0, 1.0);
-    return vec4f((base * (sun + 0.2) * rim + shine) * cover, cover) * SHOWN;
+    return vec4f((base * (sun + 0.5) * rim + shine) * cover, cover) * SHOWN;
 }
