@@ -1,9 +1,7 @@
 """Slovakia: ÚGKK's DMR 5.0, the national 1 m ALS terrain model, on a keyless INSPIRE WCS 2.0.1.
 
-The download page offers one 183 GB file or an export by e-mail; the WCS needs neither.
-
-This is the one row whose service answers ellipsoidal heights, GRS80 heights about 42 m above
-sea level. The adapter moves each answer to Baltic 1957 normal heights with GKÚ's quasigeoid,
+This is the one row whose service answers ellipsoidal heights, GRS80 heights tens of metres
+above sea level. The adapter moves each answer to Baltic 1957 normal heights with GKÚ's quasigeoid,
 the grid PROJ publishes, before the answer is written, so the tail sees orthometric metres.
 """
 
@@ -13,8 +11,9 @@ import numpy as np
 import rasterio
 from rasterio.warp import Resampling, reproject
 
+from ..lattice import Refuse
 from .base import http_download
-from .protocols import Wcs20Source
+from .protocols import Wcs20Source, projected_box
 
 
 def minus_geoid(body: bytes, grid: Path) -> bytes:
@@ -50,7 +49,13 @@ class QuasigeoidWcs(Wcs20Source):
     def describe(self):
         # EPSG:3046 is the northing-first UTM 34N, and GeoServer writes the envelope's corners
         # in that order under the labels `E N`, so the parsed corners are swapped back.
+        # A server that one day writes them in label order would clip every box to nothing, so an
+        # envelope that misses the row's extent is refused.
         lo_n, lo_e, hi_n, hi_e = super().describe()
+        (x0, y0, x1, y1), _ = projected_box(self.extent, self.epsg)
+        if not (lo_e < x1 and hi_e > x0 and lo_n < y1 and hi_n > y0):
+            raise Refuse(f"{self.key} DescribeCoverage: the envelope {(lo_e, lo_n, hi_e, hi_n)} does not "
+                         "meet the row's extent; the server no longer states it northing first")
         return lo_e, lo_n, hi_e, hi_n
 
     def request(self, box):

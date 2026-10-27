@@ -1,8 +1,8 @@
 """Poland: GUGiK's NMT, the national 1 m ALS terrain model, on a keyless WCS 2.0.1.
 
 GUGiK states that the NMT is free of charge and free for any use. The service declares no
-nodata and answers 0 for the land abroad, so 0 is the row's void. Ground at exactly 0.000 m
-is lost with it, which only a coastal pixel can be.
+nodata and answers 0 for the land abroad, so 0 is the row's void. A pixel at sea level is lost
+with it, which costs little: a lattice pixel pools many source pixels.
 
 EPSG:2180 calls the northing `x`, but this service's `x` is the easting, and the subsets
 follow the service.

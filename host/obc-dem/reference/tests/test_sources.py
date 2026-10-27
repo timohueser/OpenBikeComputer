@@ -445,7 +445,9 @@ class NamedGrids(unittest.TestCase):
         listings = {
             "lidar/phase-1/dtm/27700/gridded/NN": [
                 ("lidar/phase-1/dtm/27700/gridded/NN15_1M_DTM_PHASE1.tif", "token"),
-                ("lidar/phase-1/dtm/27700/gridded/NN16_1M_DTM_PHASE1.tif", None)],
+                ("lidar/phase-1/dtm/27700/gridded/NN15NW_50CM_DTM_PHASE1.tif", None)],
+            "lidar/phase-3/dtm/27700/gridded/NN": [
+                ("lidar/phase-3/dtm/27700/gridded/NN16_1M_DTM_PHASE3.tif", None)],
             "lidar/phase-4/dtm/27700/gridded/NN": [
                 ("lidar/phase-4/dtm/27700/gridded/NN15NE_50CM_DTM_PHASE4.tif", None)],
             "lidar/national-lidar-programme/dtm/27700/gridded/NN": [
@@ -467,13 +469,14 @@ class NamedGrids(unittest.TestCase):
         source = gb_module.SurveyListing("x", "Scotland", "p", 0.5, "l", "Ordnance Datum Newlyn",
                                          base="https://bucket/", surveys=tuple(
                                              prefix[:-2] for prefix in listings))
-        # A box round (214 000, 758 300), in NN15 and NN1458 but not in NN15NE or NN16.
+        # A box round (214 000, 758 300), in NN15, NN15NW and NN1458 but not in NN15NE or NN16.
         box = (-5.0419, 56.6763, -5.0339, 56.6823)
         self.assertEqual([name for name, _ in source.urls(box)],
-                         ["NN15_1M_DTM_PHASE1.tif", "NN1458_50cm_DTM_ScotlandNationalLiDAR.tif"])
+                         ["NN15_1M_DTM_PHASE1.tif", "NN15NW_50CM_DTM_PHASE1.tif",
+                          "NN1458_50cm_DTM_ScotlandNationalLiDAR.tif"])
         self.assertEqual(source.urls(box)[0][1],
                          "https://bucket/lidar/phase-1/dtm/27700/gridded/NN15_1M_DTM_PHASE1.tif")
-        self.assertEqual(len(asked), 4)  # two pages, two surveys, and nothing again
+        self.assertEqual(len(asked), 5)  # two pages, three surveys, and nothing again
 
     def test_rhineland_palatinates_names_come_from_its_index(self):
         """The year in a name is only in the folder's index, and a square it does not name
@@ -683,12 +686,18 @@ class RemoteWindows(TempCase):
 class Slovakia(unittest.TestCase):
     """The one service of ellipsoidal heights, and the one envelope stated northing first."""
 
-    def test_the_envelope_is_read_back_easting_first(self):
-        describe = ('<gml:Envelope axisLabels="E N"><gml:lowerCorner>5289631.0 191148.0'
-                    '</gml:lowerCorner><gml:upperCorner>5497220.0 614666.0</gml:upperCorner>')
+    def test_the_envelope_is_read_back_easting_first_and_one_in_label_order_is_refused(self):
+        def answer(lower, upper):
+            ingest.sources.protocols.http_get = lambda url, what=None: (
+                f'<gml:Envelope axisLabels="E N"><gml:lowerCorner>{lower}</gml:lowerCorner>'
+                f'<gml:upperCorner>{upper}</gml:upperCorner>').encode()
+
         self.addCleanup(setattr, ingest.sources.protocols, "http_get", ingest.sources.protocols.http_get)
-        ingest.sources.protocols.http_get = lambda url, what=None: describe.encode()
+        answer("5289631.0 191148.0", "5497220.0 614666.0")
         self.assertEqual(ingest.SOURCES["sk"].describe(), (191148.0, 5289631.0, 614666.0, 5497220.0))
+        answer("191148.0 5289631.0", "614666.0 5497220.0")
+        with self.assertRaises(ingest.Refuse):
+            ingest.SOURCES["sk"].describe()
 
     def test_the_quasigeoid_is_taken_off_every_height_and_no_void(self):
         with TemporaryDirectory() as directory:

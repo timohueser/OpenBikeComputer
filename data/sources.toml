@@ -309,7 +309,8 @@ group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Rhineland-Palatinate, Germany: DGM1 1 m"
 licence = "DL-DE-BY-2.0"
-# The agency asks for the year of the data and for a note that the data were processed.
+# The agency asks for the year the data were obtained (Jahr des Datenbezugs), which `{year}` fills
+# from the fetch day, and for a note that the data were processed.
 attribution = "©GeoBasis-DE / LVermGeoRP{year}, dl-de/by-2-0, www.lvermgeo.rlp.de [Daten bearbeitet]"
 fetch = { kind = "dtm", url = "https://geobasis-rlp.de/data/dgm1/current/tif/" }
 extent = [6.1, 48.9, 8.6, 51.0]
@@ -427,8 +428,9 @@ group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Scotland: Scottish Public Sector LiDAR DTM 0.5–1 m"
 licence = "OGL-UK-3.0"
-# One credit for all the surveys of the row: each survey states its own sentence.
-attribution = "Contains Scottish Public Sector LiDAR: Crown copyright Scottish Government, SEPA and Scottish Water (2012); Copyright Scottish Government and SEPA (2014), Fugro retain the commercial copyright; © SEPA (2019); Crown copyright Scottish Government © Crown copyright and database right (2025). Open Government Licence v3"
+# One credit for all the surveys of the row: the attribution statement of each DTM record, in the
+# order of `surveys` in sources/gb.py.
+attribution = "Contains Scottish LiDAR: Crown copyright Scottish Government, SEPA and Scottish Water (2012); Copyright Scottish Government and SEPA (2014); Crown copyright Scottish Government, SEPA and Fugro (2020); Crown copyright Scottish Government and Fugro (2020); Crown copyright Scottish Government and Fugro (2021); Crown copyright Scottish Government and Fugro (2022); © SEPA (2019); Crown copyright Orkney Islands Council © Crown copyright and database right (2023); Crown copyright Scottish Government © Crown copyright and database right (2026); Crown copyright Scottish Government © Crown copyright and database right (2025). Open Government Licence v3"
 fetch = { kind = "dtm", url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com/lidar/" }
 extent = [-8.7, 54.6, -0.7, 60.9]
 areas = ["europe/united-kingdom/scotland"]
@@ -442,7 +444,8 @@ group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Iceland: ÍslandsDEM v1.0 10 m"
 licence = "CC-BY-4.0"
-attribution = "ÍslandsDEM v1.0 © Náttúrufræðistofnun"
+# ÍslandsDEM is made from ArcticDEM and Copernicus GLO-30, so their credits travel with it.
+attribution = "ÍslandsDEM v1.0 © Náttúrufræðistofnun; made from ArcticDEM, DEMs provided by the Polar Geospatial Center under NSF-OPP awards 1043681, 1559691, 1542736, 1810976, and 2129685, and from Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA"
 fetch = { kind = "dtm", url = "https://ftp.natt.is/gisdata/raster/IslandsDEMv1.0_10x10m_isn2016_zmasl.tif" }
 extent = [-24.6, 63.2, -13.4, 66.6]
 areas = ["europe/iceland"]

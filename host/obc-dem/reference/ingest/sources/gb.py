@@ -3,7 +3,7 @@
 The portal puts each survey on a public S3 bucket as its own folder of tiled GeoTIFFs in British
 National Grid, one per OS grid square: 10 km for Phases I and II, 5 km quarters for Phases III to
 VI and the Outer Hebrides, 1 km for the National LiDAR Programme, Orkney and the coast. No survey
-covers the country; together they hold about half of it, and the National LiDAR Programme grows.
+covers the whole country.
 
 A file is named after its square, so where a file lies is arithmetic, but which squares a survey
 flew is not. The bucket listing is the index: one request per survey and 100 km square, read
