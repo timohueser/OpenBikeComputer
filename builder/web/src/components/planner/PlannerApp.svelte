@@ -1126,7 +1126,7 @@
         const nights = multi ? trip.points.filter(p => p.kind === 'night').map(p => ({
             coordinate: p.coordinate, color: dayColor(p.night!), category: sleepCategory(p.placeKind), label: String(dayLabels[p.night!] ?? p.night),
         })) : [];
-        trailView = { at, origin, near: { metresPerPx: map?.metresPerPixel(at[1]) ?? 0, route: showRoute ? coordinates : [], looks: { colours: routeColours(view.line, days), nights } } };
+        trailView = { at, origin, near: { metresPerPx: map?.metresPerPixel(at[1]) ?? 0, route: showRoute ? coordinates : [], overlay: { colours: routeColours(view.line, days), nights, profile: profileSamples(view.line) } } };
     }
 
     /** The binoculars without a drag turn the pick on the map on and off. */

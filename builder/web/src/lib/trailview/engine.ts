@@ -243,9 +243,21 @@ export class TrailView {
         return this.groundLook.attribution;
     }
 
-    /** Draws the planned route in riding order on the surface, each edge in its colour, and the pins on the ground. Fewer than two points draw no route. */
-    showRoute(route: readonly Coordinate[], colours: readonly string[], pins: readonly RoutePin[] = []): void {
-        this.route.set(route, colours, pins);
+    /** Draws the planned route in riding order on the surface, each edge in its colour. Fewer than two points draw none. */
+    showRoute(route: readonly Coordinate[], colours: readonly string[]): void {
+        this.route.set(route, colours);
+        this.request();
+    }
+
+    /** Stands a pin with a sphere in `colour` at `at`, apart from the others so that it moves cheaply; null takes it away. */
+    showMarker(at: Coordinate | null, colour = '#ffffff'): void {
+        this.route.setMarker(at ? { coordinate: at, colour } : undefined);
+        this.request();
+    }
+
+    /** Stands the pins on the ground in place of the ones before. */
+    showPins(pins: readonly RoutePin[]): void {
+        this.route.setPins(pins);
         this.request();
     }
 

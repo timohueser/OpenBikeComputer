@@ -11,11 +11,15 @@ import { metresPerUnit } from '../terrain/bins';
 export const POINT_WORDS = 4;
 /** The line bends at most this far from the surface between two points. */
 const STEP_M = 5;
-/** The size of a pin image in image pixels, as PIN of route.wgsl: twice its output pixels. */
-export const PIN_SIZE: [number, number] = [72, 96];
+/** The side of a badge image in image pixels, as BADGE_PIXELS of route.wgsl: twice its output pixels. */
+export const BADGE_SIZE = 64;
+/** Words of a pin, as `Pin` of route.wgsl. */
+const PIN_WORDS = 4;
+/** The share of its light that a pin shows where something hides it. */
+const HIDDEN_PIN = 0.35;
 
-/** A pin on the ground: the bottom centre of its image stands on the coordinate. */
-export interface RoutePin { coordinate: Coordinate; image: GPUCopyExternalImageSource }
+/** A pin on the ground: a stem over a ring in its colour, with its badge on top, or without one a sphere in its colour. */
+export interface RoutePin { coordinate: Coordinate; colour: string; badge?: GPUCopyExternalImageSource }
 
 /**
  * The points of a route in riding order: its vertices, and between them points at most STEP_M apart, so
@@ -42,32 +46,45 @@ function packed(hex: string): number {
 interface Resources {
     gpu: Gpu;
     line: GPURenderPipeline;
-    pin: GPURenderPipeline;
+    /** The pins where they are in sight, and where something hides them. */
+    pin: GPURenderPipeline[];
     layout: GPUBindGroupLayout;
     frame: GPUBuffer;
     empty: GPUBindGroup;
     sampler: GPUSampler;
     points?: GPUBuffer;
     pins?: GPUBuffer;
-    images?: GPUTexture;
+    badges?: GPUTexture;
     group?: GPUBindGroup;
 }
 
-/** The planned route on the drawn surface and the pins along it, with route.wgsl. */
+/** The planned route on the drawn surface and the pins on the ground, with route.wgsl. */
 export class Route {
-    /** Whether the route changed since the last draw. */
+    /** Whether the route or a pin changed since the last draw. */
     newContent = false;
     private points = new Uint32Array(0);
     private pins: readonly RoutePin[] = [];
+    /** The pin that follows the rider's pointer, after the others. */
+    private marker?: RoutePin;
     private resources?: Resources;
-    /** Whether the route is not on the GPU yet. */
-    private fresh = true;
+    /** What is not on the GPU yet. */
+    private fresh = { points: true, pins: true, badges: true };
 
     /** The route in riding order with the colour of each edge; fewer than two points draw none. */
-    set(route: readonly Coordinate[], colours: readonly string[], pins: readonly RoutePin[]): void {
+    set(route: readonly Coordinate[], colours: readonly string[]): void {
         this.points = route.length < 2 ? new Uint32Array(0) : routePoints(route, colours);
+        this.fresh.points = this.newContent = true;
+    }
+
+    setPins(pins: readonly RoutePin[]): void {
         this.pins = pins;
-        this.fresh = this.newContent = true;
+        this.fresh.pins = this.fresh.badges = this.newContent = true;
+    }
+
+    /** A pin without a badge, which moves without loading the badges again. */
+    setMarker(marker: Omit<RoutePin, 'badge'> | undefined): void {
+        this.marker = marker;
+        this.fresh.pins = this.newContent = true;
     }
 
     /** `frame` is the frame uniform of the eye's view. */
@@ -78,57 +95,67 @@ export class Route {
             gpu, line, pin, layout, frame, empty: gpu.device.createBindGroup({ layout: empty, entries: [] }),
             sampler: gpu.device.createSampler({ magFilter: 'linear', minFilter: 'linear' }),
         };
-        this.fresh = true;
+        this.fresh = { points: true, pins: true, badges: true };
     }
 
     draw(pass: GPURenderPassEncoder, surface: GPUBindGroup, features: GPUBindGroup): void {
         const r = this.resources;
         this.newContent = false;
         if (!r) return;
-        if (this.fresh) this.write(r);
+        if (this.fresh.points || this.fresh.pins || this.fresh.badges) this.write(r);
         if (!r.group) return;
         [r.group, surface, r.empty, features].forEach((group, k) => pass.setBindGroup(k, group));
         if (this.points.length) {
             pass.setPipeline(r.line);
             pass.draw(2 * this.points.length / POINT_WORDS);
         }
-        if (this.pins.length) {
-            pass.setPipeline(r.pin);
-            pass.draw(6, this.pins.length);
+        const pins = this.pins.length + (this.marker ? 1 : 0);
+        if (pins) for (const pipeline of r.pin) {
+            pass.setPipeline(pipeline);
+            // A ring, a stem and a head of two triangles each.
+            pass.draw(18, pins);
         }
     }
 
     private write(r: Resources): void {
-        this.fresh = false;
         const { gpu } = r, { device } = gpu;
-        r.group = undefined;
-        if (!this.points.length && !this.pins.length) return;
-        // The bindings take at least one point, pin and image.
-        const points = this.points.length ? this.points : new Uint32Array(POINT_WORDS), pins = Math.max(this.pins.length, 1);
-        if (!r.points || r.points.size < points.byteLength) {
-            if (r.points) gpu.destroy('route', r.points);
-            r.points = gpu.buffer('route', points.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        const pins = this.marker ? [...this.pins, this.marker] : this.pins;
+        // The bindings take at least one point, pin and badge.
+        const points = this.points.length ? this.points : new Uint32Array(POINT_WORDS);
+        const words = new Int32Array(Math.max(pins.length, 1) * PIN_WORDS), layers = Math.max(this.pins.length, 1);
+        if (this.fresh.points) {
+            if (!r.points || r.points.size < points.byteLength) {
+                if (r.points) gpu.destroy('route', r.points);
+                r.points = gpu.buffer('route', points.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+            }
+            device.queue.writeBuffer(r.points, 0, points);
         }
-        device.queue.writeBuffer(r.points, 0, points);
-        if (!r.pins || r.pins.size < pins * 8) {
-            if (r.pins) gpu.destroy('route', r.pins);
-            r.pins = gpu.buffer('route', pins * 8, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        if (this.fresh.pins) {
+            // x, y, the colour, and the layer of the badge plus one, or 0 for a sphere.
+            pins.forEach(({ coordinate, colour, badge }, k) => words.set([...worldPixel(coordinate, UNITS).map(Math.round), packed(colour), badge ? k + 1 : 0], k * PIN_WORDS));
+            if (!r.pins || r.pins.size < words.byteLength) {
+                if (r.pins) gpu.destroy('route', r.pins);
+                r.pins = gpu.buffer('route', words.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+            }
+            device.queue.writeBuffer(r.pins, 0, words);
         }
-        device.queue.writeBuffer(r.pins, 0, new Int32Array(this.pins.flatMap(({ coordinate }) => worldPixel(coordinate, UNITS).map(Math.round))));
-        if (r.images?.depthOrArrayLayers !== pins) {
-            if (r.images) gpu.destroy('route', r.images);
-            r.images = gpu.texture('route', {
-                size: [...PIN_SIZE, pins], format: 'rgba8unorm',
-                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
-            }, PIN_SIZE[0] * PIN_SIZE[1] * 4 * pins);
+        if (this.fresh.badges) {
+            if (r.badges?.depthOrArrayLayers !== layers) {
+                if (r.badges) gpu.destroy('route', r.badges);
+                r.badges = gpu.texture('route', {
+                    size: [BADGE_SIZE, BADGE_SIZE, layers], format: 'rgba8unorm',
+                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+                }, BADGE_SIZE * BADGE_SIZE * 4 * layers);
+            }
+            const badges = r.badges;
+            this.pins.forEach(({ badge }, k) => badge && device.queue.copyExternalImageToTexture(
+                { source: badge }, { texture: badges, origin: [0, 0, k], premultipliedAlpha: true }, [BADGE_SIZE, BADGE_SIZE]));
         }
-        const images = r.images;
-        this.pins.forEach(({ image }, k) => device.queue.copyExternalImageToTexture(
-            { source: image }, { texture: images, origin: [0, 0, k], premultipliedAlpha: true }, PIN_SIZE));
-        // The shader counts the points and the pins by the bound size, so a shorter route binds less of each buffer.
+        this.fresh = { points: false, pins: false, badges: false };
+        // The shader counts the points by the bound size, so a shorter route binds less of the buffer.
         r.group = device.createBindGroup({ layout: r.layout, entries: [
-            { binding: 0, resource: { buffer: r.frame } }, { binding: 1, resource: { buffer: r.points, size: points.byteLength } },
-            { binding: 2, resource: { buffer: r.pins, size: pins * 8 } }, { binding: 3, resource: images.createView({ dimension: '2d-array' }) },
+            { binding: 0, resource: { buffer: r.frame } }, { binding: 1, resource: { buffer: r.points!, size: points.byteLength } },
+            { binding: 2, resource: { buffer: r.pins! } }, { binding: 3, resource: r.badges!.createView({ dimension: '2d-array' }) },
             { binding: 4, resource: r.sampler },
         ] });
     }
@@ -139,7 +166,7 @@ async function routePipelines(gpu: Gpu) {
     const layout = device.createBindGroupLayout({ entries: [
         { binding: 0, visibility: VERTEX | FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 1, visibility: VERTEX, buffer: { type: 'read-only-storage' } },
-        { binding: 2, visibility: VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: VERTEX | FRAGMENT, buffer: { type: 'read-only-storage' } },
         { binding: 3, visibility: FRAGMENT, texture: { viewDimension: '2d-array' } },
         { binding: 4, visibility: FRAGMENT, sampler: {} },
     ] });
@@ -147,13 +174,16 @@ async function routePipelines(gpu: Gpu) {
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout, surface, empty, features] });
     // Premultiplied: what is drawn covers by its alpha and adds the rest of its light.
     const blend: GPUBlendComponent = { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' };
-    const pipeline = (name: 'route' | 'pin', topology: GPUPrimitiveTopology) => device.createRenderPipelineAsync({
+    const pipeline = (name: 'route' | 'pin', topology: GPUPrimitiveTopology, hidden = false) => device.createRenderPipelineAsync({
         label: name, layout: pipelineLayout,
         vertex: { module, entryPoint: `${name}_vertex` },
-        fragment: { module, entryPoint: `${name}_fragment`, targets: [{ format: sceneFormat(gpu), blend: { color: blend, alpha: blend } }] },
+        fragment: {
+            module, entryPoint: `${name}_fragment`, targets: [{ format: sceneFormat(gpu), blend: { color: blend, alpha: blend } }],
+            constants: hidden ? { SHOWN: HIDDEN_PIN } : {},
+        },
         primitive: { topology },
-        depthStencil: { format: DEPTH, depthWriteEnabled: false, depthCompare: 'greater' },
+        depthStencil: { format: DEPTH, depthWriteEnabled: false, depthCompare: hidden ? 'less-equal' : 'greater' },
     });
-    const [line, pin] = await Promise.all([pipeline('route', 'triangle-strip'), pipeline('pin', 'triangle-list')]);
+    const [line, ...pin] = await Promise.all([pipeline('route', 'triangle-strip'), pipeline('pin', 'triangle-list'), pipeline('pin', 'triangle-list', true)]);
     return { line, pin, layout, empty };
 }
