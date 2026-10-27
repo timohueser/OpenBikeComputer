@@ -83,9 +83,9 @@ export class Route {
 
     draw(pass: GPURenderPassEncoder, surface: GPUBindGroup, features: GPUBindGroup): void {
         const r = this.resources;
+        this.newContent = false;
         if (!r) return;
         if (this.fresh) this.write(r);
-        this.newContent = false;
         if (!r.group) return;
         [r.group, surface, r.empty, features].forEach((group, k) => pass.setBindGroup(k, group));
         if (this.points.length) {
