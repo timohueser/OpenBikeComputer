@@ -43,6 +43,7 @@
         const lng = (value: number) => edge(Math.min(180, Math.max(-180, value)));
         return { west: lng(bounds.getWest()), south: edge(bounds.getSouth()), east: lng(bounds.getEast()), north: edge(bounds.getNorth()) };
     };
+    const valid = ({ west, south, east, north }: Bbox) => west < east && south < north;
     const latLngBounds = (box: Bbox) => L.latLngBounds(corners(box));
     const rect = (bounds: L.LatLngBoundsExpression, className: string) => L.rectangle(bounds, { className, interactive: false });
     const showTip = (bounds: L.LatLngBounds) => tip.setLatLng(bounds.getNorthEast()).setContent(extent(boxOf(bounds))).addTo(map!);
@@ -104,7 +105,10 @@
             marker.on("drag", () => {
                 const at = marker.getLatLng();
                 if (i === 4) {
-                    const [dLat, dLng] = [at.lat - from.getCenter().lat, at.lng - from.getCenter().lng];
+                    // A move stops at the edge of the world, so the box keeps its size.
+                    const within = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
+                    const dLat = within(at.lat - from.getCenter().lat, -90 - from.getSouth(), 90 - from.getNorth());
+                    const dLng = within(at.lng - from.getCenter().lng, -180 - from.getWest(), 180 - from.getEast());
                     bounds = L.latLngBounds([from.getSouth() + dLat, from.getWest() + dLng], [from.getNorth() + dLat, from.getEast() + dLng]);
                 } else bounds = L.latLngBounds(spots(from)[(i + 2) % 4], at);
                 box.setBounds(bounds);
@@ -113,7 +117,12 @@
             });
             marker.on("dragend", () => {
                 tip.remove();
-                onarea(boxOf(bounds));
+                const next = boxOf(bounds);
+                if (valid(next)) return onarea(next);
+                // A corner dragged past the edge of the world leaves no box: the box returns.
+                bounds = from;
+                box.setBounds(from);
+                spots(from).forEach((spot, j) => handles[j].setLatLng(spot));
             });
         });
     });
@@ -147,9 +156,10 @@
         tip.remove();
         [start, rubber] = [null, null];
         const [a, b] = [map.latLngToContainerPoint(bounds.getNorthWest()), map.latLngToContainerPoint(bounds.getSouthEast())];
-        if (Math.abs(a.x - b.x) < 8 || Math.abs(a.y - b.y) < 8) return;
+        const drawn = boxOf(bounds);
+        if (Math.abs(a.x - b.x) < 8 || Math.abs(a.y - b.y) < 8 || !valid(drawn)) return;
         drawing = false;
-        onarea?.(boxOf(bounds));
+        onarea?.(drawn);
     }
     function key(event: KeyboardEvent) {
         if (event.key !== "Escape" || !drawing) return;

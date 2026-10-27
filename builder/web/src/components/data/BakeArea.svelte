@@ -85,7 +85,7 @@
         if (event.key === "ArrowDown") active = Math.min(active + 1, rows.length - 1);
         else if (event.key === "ArrowUp") active = Math.max(active - 1, 0);
         else if (event.key === "Enter" && row && !same(row.area, picked)) pick(row.area);
-        else if (event.key === "Enter" && picked) choose(picked);
+        else if (event.key === "Enter" && picked && (row || !query.trim())) choose(picked);
         else return;
         event.preventDefault();
         document.getElementById(`area-${active}`)?.scrollIntoView({ block: "nearest" });
