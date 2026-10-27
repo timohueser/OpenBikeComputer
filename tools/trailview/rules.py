@@ -5,6 +5,9 @@
 
 The `obc data` step `planner/trailview-rules` (`--step`) checks the ruleset and writes `rules.json`
 for the engine, and `regions.json` and `materials.json` for the ground tiles.
+
+A region id is a region and a place: the region's own id, then one id per country or subdivision
+that a value by place in its chain names.
 """
 
 import hashlib
@@ -15,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RULESET = ROOT / "data/trailview"
-FORMAT = 1
+FORMAT = 2
 
 # WorldCover's groups in the order of the prototype's ramps (`src/materials.ts`).
 COVER_ORDER = ("tree", "shrub", "grass", "crop", "built", "bare", "snow", "water", "wetland", "mangrove", "moss")
@@ -27,7 +30,7 @@ PLACE = re.compile(r"^([a-z]{2}(-[a-z0-9]{1,3})?|\*)$")
 # The look keys of the engine that overlays/ may set, as a key table like LOOK's below.
 OVERLAY_LOOK = {}
 # A region id is one byte of the region tiles, and 255 is no data there.
-MAX_REGIONS = 255
+MAX_REGION_IDS = 255
 # The tree species of a region that the engine's forest holds (SPECIES of vegetation/forest.ts), its
 # ground plants and its shrubs that the plants hold (SLOTS of vegetation/plants.ts), and the engine's
 # models: one file per tree and per plant, named by its id.
@@ -206,11 +209,12 @@ def read(root, name):
 
 
 def load(root=RULESET):
-    """The ruleset: the vocabulary, the ecoregions and each file of the folders by name."""
+    """The ruleset: the vocabulary, the ecoregions, the places and each file of the folders by name."""
     folder = lambda name: {path.stem: read(root, path.relative_to(root).as_posix()) for path in sorted((root / name).glob("*.json"))}
-    vocabulary = read(root, "materials.json")
+    vocabulary, places = read(root, "materials.json"), read(root, "countries.json")
     return {
         "materials": vocabulary, "ecoregions": read(root, "ecoregions.json")["regions"],
+        "places": places["countries"] + places["subdivisions"],
         "regions": folder("regions"), "packs": folder("packs"), "styles": folder("styles"), "overlays": folder("overlays"),
     }
 
@@ -230,8 +234,6 @@ def validate(ruleset):
     """Every problem of the ruleset, one line each: the file, the key path and what is wrong."""
     vocabulary = ruleset["materials"]
     out = vocabulary_problems(vocabulary)
-    if len(ruleset["regions"]) > MAX_REGIONS:
-        out.append(f"regions/: {len(ruleset['regions'])} regions, more than the {MAX_REGIONS} that one byte of the region tiles holds")
     ids = {key: [entry["id"] for entry in vocabulary[key]] for key in ("materials", "lithologies")}
     region_check, pack_check, style_check, overlay_check = tables(ids)
     regions, packs, styles = ruleset["regions"], ruleset["packs"], ruleset["styles"]
@@ -264,8 +266,8 @@ def validate(ruleset):
     for name, overlay in ruleset["overlays"].items():
         file = f"overlays/{name}.json"
         add(file, overlay_check(overlay, "") if name in regions else [f"has no regions/{name}.json"])
-    # The packs' trees resolve through the chains, which must be sound first.
-    return out or model_problems(regions, packs)
+    # The packs' trees and the places resolve through the chains, which must be sound first.
+    return out or model_problems(regions, packs) + place_problems(ruleset)
 
 
 def chain(table, name):
@@ -313,22 +315,54 @@ def model_problems(regions, packs, models=MODELS):
     return out
 
 
+def merged(table, name):
+    """A file with the files that it extends merged in: objects merge, anything else replaces."""
+    def merge(a, b):
+        return {**a, **{key: merge(a[key], value) if isinstance(value, dict) and isinstance(a.get(key), dict) else value
+                        for key, value in b.items()}}
+    out = {}
+    for data in reversed(chain(table, name)):
+        out = merge(out, data)
+    return out
+
+
+def region_ids(ruleset):
+    """Each region id as [region, place]: per region by name, "*" and then each country or
+    subdivision that its pack's `style` or its `look.roadLine` names."""
+    out = []
+    for name in sorted(ruleset["regions"]):
+        region = merged(ruleset["regions"], name)
+        pack = merged(ruleset["packs"], region["pack"]) if "pack" in region else {}
+        places = {key for value in (pack.get("style"), region.get("look", {}).get("roadLine")) if isinstance(value, dict) for key in value}
+        out += [[name, place] for place in ["*", *sorted(places - {"*"})]]
+    return out
+
+
+def place_problems(ruleset):
+    ids = region_ids(ruleset)
+    known = {place["iso"] for place in ruleset["places"]}
+    out = [f"regions/{name}.json: {place} is not a place of countries.json" for name, place in ids if place != "*" and place not in known]
+    if len(ids) > MAX_REGION_IDS:
+        out.append(f"regions/: {len(ids)} region ids, more than the {MAX_REGION_IDS} that one byte of the region tiles holds")
+    return out
+
+
 def bundle(ruleset):
-    """`rules.json` and `regions.json`: a region's id is its index in the sorted list of regions."""
-    names = sorted(ruleset["regions"])
+    """`rules.json` and `regions.json`: a region id is its index in `ids`."""
     plain = lambda data: {key: value for key, value in data.items() if key not in ("about", "where")}
+    ids = region_ids(ruleset)
     rules = {
-        "format": FORMAT, "materials": ruleset["materials"],
-        "regions": [{"id": name, **plain(ruleset["regions"][name])} for name in names],
+        "format": FORMAT, "materials": ruleset["materials"], "ids": ids,
+        "regions": {name: plain(data) for name, data in ruleset["regions"].items()},
         "packs": {name: plain(data) for name, data in ruleset["packs"].items()},
         "styles": {name: plain(data) for name, data in ruleset["styles"].items()},
         "overlays": ruleset["overlays"],
     }
     regions = {
-        "format": FORMAT,
-        "regions": [{"id": name, **{key: data[key] for key in ("extends", "where") if key in data}}
-                    for name, data in ((name, ruleset["regions"][name]) for name in names)],
+        "format": FORMAT, "ids": ids,
+        "regions": {name: {key: data[key] for key in ("extends", "where") if key in data} for name, data in ruleset["regions"].items()},
         "ecoregions": [{"short": e["short"], "polygons": e["polygons"]} for e in ruleset["ecoregions"] if e.get("short") in ruleset["regions"]],
+        "places": ruleset["places"],
     }
     return rules, regions
 
@@ -350,7 +384,7 @@ def step():
     rules, regions = bundle(ruleset)
     for name, value in (("rules.json", rules), ("regions.json", regions), ("materials.json", ruleset["materials"])):
         (output / name).write_bytes(encoded(value))
-    step_request.metrics(request, {"regions": len(rules["regions"]), "rules_bytes": (output / "rules.json").stat().st_size})
+    step_request.metrics(request, {"region_ids": len(rules["ids"]), "rules_bytes": (output / "rules.json").stat().st_size})
 
 
 def main():

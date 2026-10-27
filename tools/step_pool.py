@@ -25,8 +25,7 @@ def free_memory():
 
 def worker_count(memory=1 << 30):
     """One worker for each core that this process can use, and one at most for each `memory` bytes of `free_memory`.
-    The default is a GB: a snow worker holds the planes of one chunk, about 0.6 GB for nine seasons of HR-WSI at 48° N
-    (measured with two seasons)."""
+    The default is a GB: the steps that use it have not measured their workers."""
     free = free_memory()
     return cores() if free is None else max(1, min(cores(), free // memory))
 
@@ -42,14 +41,14 @@ def end_with(parent):
         os._exit(1)
 
 
-def pool(workers=None):
-    """`workers` processes, by default `worker_count()`, that fork from this process and end with it. A fork is not
-    safe on macOS: there the pool runs `workers` threads, by default 4."""
+def pool(workers=None, memory=1 << 30):
+    """`workers` processes, by default `worker_count(memory)`, that fork from this process and end with it. A fork is
+    not safe on macOS: there the pool runs `workers` threads, by default 4."""
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
     if sys.platform == "linux":
-        return ProcessPoolExecutor(workers or worker_count(), mp_context=multiprocessing.get_context("fork"),
+        return ProcessPoolExecutor(workers or worker_count(memory), mp_context=multiprocessing.get_context("fork"),
                                    initializer=end_with, initargs=(os.getpid(),))
     return ThreadPoolExecutor(workers or 4)
 
