@@ -48,7 +48,7 @@ bytes:
 | Red | The material byte: the material code and two flags, see below |
 | Green | The barren share |
 | Blue | The lithology: the index of the lithology in `lithologies` of `materials.json`; 0 is unknown |
-| Alpha | The region id: the index of the region in `regions` of `rules.json`; 255 is no data |
+| Alpha | The region id: the index in `ids` of `rules.json`; 255 is no data |
 
 The material byte:
 
@@ -62,8 +62,8 @@ The barren share is round(255 × (1 − smoothstep(0.15, 0.35, NDVI))) of the hi
 quarter of the year measured, and 0 where no quarter looked or the texel has no data. A quarter that
 saw snow counts as NDVI −1.
 
-A material code above 63 needs a new format. The ruleset check rejects more than 255 regions, so
-a region id is 0 to 254; more regions need a new format, with two bytes.
+A material code above 63 needs a new format. The ruleset check rejects more than 255 region ids, so
+a region id is 0 to 254; more ids need a new format, with two bytes.
 
 The material and the barren share come from the sources at zoom 13, the lithology and the region
 at zoom 10. A coarser texel takes the most common byte of its four children, the first in reading
@@ -88,7 +88,10 @@ names no rock. A term that the tables `EGDI` and `IGME5000` of `ground.py` do no
 
 The region is the ecoregion of `ecoregions.json` that holds the texel centre, or the nearest one
 within 25 km, else `world`. From there the texel steps into the subregion whose `where` holds it,
-the smallest on a tie, until none does.
+the smallest on a tie, until none does. The place of the texel is the subdivision of
+`countries.json` that holds its centre, else the country, else the nearest place within 5 km in the
+tile. The texel takes the id of the region and its subdivision, else of the region and its
+country, else of the region and `"*"`.
 
 ## Colour
 
@@ -176,9 +179,10 @@ ruleset with a problem.
 
 | Key | Value |
 | --- | --- |
-| `format` | `1` |
+| `format` | `2` |
 | `materials` | `materials.json` as it is |
-| `regions` | The files of `regions/` sorted by name, each with `id`, its name. The index is the region id |
+| `ids` | Each region id as `[region, place]`: per region by name, `"*"` and then each country or subdivision that a value by place of the region names, by code. The index is the region id |
+| `regions` | The files of `regions/` by name |
 | `packs`, `styles` | The files of `packs/` and `styles/` by name |
 | `overlays` | The files of `overlays/` by region name |
 
@@ -188,8 +192,8 @@ the prototype's `regions.ts` does:
 - A file inherits what it does not say from the file that it `extends`. Objects merge, and any
   other value replaces.
 - `look.ramps` of a cover comes whole from the nearest region of the chain that names it.
-- A value by place, `{"es-ga": …, "es": …, "*": …}`, takes the entry of the subdivision, else of
-  the country, else `"*"`. The release has no layer of the place yet, so the engine takes `"*"`.
+- A value by place, `{"es-ga": …, "es": …, "*": …}`, takes the entry of the place of the region id,
+  else of its country, else `"*"`. The values by place are `style` of the pack and `look.roadLine`.
 - In a pack, `trees`, `ground` and `herds` are keyed by species. A child adds or changes one, and
   `null` drops one.
 

@@ -19,7 +19,7 @@ const RADIUS_M = 8000, KEPT = 400, REQUESTS = 6;
 /** Each zoom 14 tile takes its houses from its quarter of the zoom 13 feature tile. */
 const ZOOM = 14, EARTH_M = 40075016.686;
 /** Words of `Kept`, bytes of `Drawn` and words of `Style` in houses.wgsl; the bytes of `Params` and where its styles start; the stride of the dynamic offset of `DrawOf`. */
-const FIT_WORDS = 4, DRAWN_BYTES = 160, STYLE_WORDS = 32, STYLES_AT = 48 + 64 * 16 + 256 * 16, STYLES = 32, PARAMS_BYTES = STYLES_AT + STYLES * STYLE_WORDS * 4, DRAW_STRIDE = 256;
+const FIT_WORDS = 4, DRAWN_BYTES = 160, STYLE_WORDS = 32, STYLES_AT = 48 + 128 * 16 + 256 * 16, STYLES = 32, PARAMS_BYTES = STYLES_AT + STYLES * STYLE_WORDS * 4, DRAW_STRIDE = 256;
 /**
  * Houses drawn in a frame at most; past ROOM of them, the narrowest on screen go first. The sun's view
  * holds the casters of a shadow map (light/shadow.ts): up to 2 100 on the kit's flights (measured).
@@ -427,9 +427,9 @@ export class Houses {
         new Uint32Array(params).set([this.count, capacity]);
         new Float32Array(params).set([PAD.burial, PAD.plinth, PAD.margin, full, least, ...PAD.steep], 2);
         new Uint32Array(params)[10] = shown.length;
-        new Uint32Array(params, 48).set(this.regions.subarray(0, 256));
+        new Uint32Array(params, 48).set(this.regions.subarray(0, 512));
         // Each tile's first workgroup of `fit` and of `refit`, so that they run no workgroup without houses.
-        const ranges = new Uint32Array(params, 48 + 64 * 16, 4 * RANGES);
+        const ranges = new Uint32Array(params, 48 + 128 * 16, 4 * RANGES);
         let fits = 0, refits = 0;
         shown.forEach(({ start, count }, k) => {
             ranges.set([start, count, fits, refits], 4 * k);

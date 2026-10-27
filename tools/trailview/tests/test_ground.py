@@ -207,16 +207,36 @@ class RegionTest(unittest.TestCase):
         # The ecoregion ends 15 km west of the tile; the subregion is a box 1 to 4 km into the tile.
         edge = west - 15 * km
         regions = {
-            "regions": [{"id": "alps", "extends": "world"},
-                        {"id": "alps.sub", "extends": "alps", "where": [[west + 1 * km, south, west + 4 * km, north]]},
-                        {"id": "world"}],
+            "ids": [["alps", "*"], ["alps.sub", "*"], ["world", "*"]],
+            "regions": {"alps": {"extends": "world"}, "alps.sub": {"extends": "alps", "where": [[west + 1 * km, south, west + 4 * km, north]]}, "world": {}},
             "ecoregions": [{"short": "alps", "polygons": [[[[edge - 1, south - 1], [edge, south - 1], [edge, north + 1], [edge - 1, north + 1]]]]}],
+            "places": [],
         }
         region = ground.Region(regions, [west, south, east, north])(z, x, y)
         column = lambda lon: int((lon - west) / (east - west) * tiles.TILE)
         self.assertEqual(region[256, column(west + 2 * km)], 1)
         self.assertEqual(region[256, column(west + 6 * km)], 0, "21 km from the ecoregion")
         self.assertEqual(region[256, column(west + 15 * km)], 2, "30 km from the ecoregion")
+
+    def test_a_texel_takes_the_id_of_its_subdivision_else_of_its_country_else_of_its_region(self):
+        z, x, y = 10, *map(int, geo.mercator(8.40, 46.82, 10))
+        west, south, east, north = geo.tile_bounds(z, x, y)
+        km = 1 / (111.32 * math.cos(math.radians((south + north) / 2)))
+        box = lambda w, e: [[[w, south - 1], [e, south - 1], [e, north + 1], [w, north + 1], [w, south - 1]]]
+        regions = {
+            "ids": [["alps", "*"], ["alps", "ch"], ["alps", "ch-ti"], ["world", "*"]],
+            "regions": {"alps": {"extends": "world"}, "world": {}},
+            "ecoregions": [{"short": "alps", "polygons": [box(west - 1, east + 1)]}],
+            # A subdivision before its country, as countries.json does not order them.
+            "places": [{"iso": "ch-ti", "rings": box(west + 4 * km, west + 8 * km)}, {"iso": "ch", "rings": box(west - 1, west + 10 * km)},
+                       {"iso": "fr", "rings": box(west + 20 * km, east + 1)}],
+        }
+        region = ground.Region(regions, [west, south, east, north])(z, x, y)
+        column = lambda lon: int((lon - west) / (east - west) * tiles.TILE)
+        self.assertEqual(region[256, column(west + 2 * km)], 1)
+        self.assertEqual(region[256, column(west + 7 * km)], 2)
+        self.assertEqual(region[256, column(west + 12 * km)], 1, "outside every place, nearest to Switzerland")
+        self.assertEqual(region[256, column(west + 25 * km)], 0, "France, which the region does not name")
 
 
 class OsmAreasTest(unittest.TestCase):
