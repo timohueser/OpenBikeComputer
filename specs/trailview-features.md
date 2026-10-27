@@ -223,8 +223,8 @@ A `building` in an area `landuse=industrial` or `landuse=farmyard` has the tag `
 of the smallest such area that holds the mean of the vertices of its first outer ring. The tiles do not
 hold these areas.
 
-A `building` has the tag `use`, `pharmacy`, `hospital` or `shop`, when it, a node in its first outer ring,
-or an area that holds the mean of that ring's vertices has that use. `amenity` or `healthcare`
+A `building` has the tag `use`, `pharmacy`, `hospital` or `shop`, when it, a node that lies inside its first
+outer ring, or an area that holds the mean of that ring's vertices has that use. `amenity` or `healthcare`
 `pharmacy` is a pharmacy, `amenity` or `healthcare` `hospital` a hospital, and any `shop` a shop. Of
 several uses, the first in that order wins. The tiles do not hold these nodes and areas.
 
