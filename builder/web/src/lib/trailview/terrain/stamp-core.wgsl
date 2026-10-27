@@ -474,11 +474,12 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             }
             // The paint follows the carriageway: a road that ends at a junction ends at its mitre line,
             // but for the round cap that fills the outer wedge of a bend where the through road runs on.
-            // A texel in a carriageway takes it, so no path or walk paints over one; elsewhere the nearest
-            // outer edge wins, past a sidewalk: two roads' sidewalks meet in a corner, and a side road's
-            // mouth cuts through the through road's sidewalk.
+            // A texel in a carriageway takes it, then one in a road's sidewalk that road, so no path or walk
+            // paints over either, and the snap finds the sidewalk's outer edge under a house's forecourt.
+            // Elsewhere, and between sidewalks, the nearest outer edge wins: two roads' sidewalks meet in a
+            // corner, and a side road's mouth cuts through the through road's sidewalk.
             let x = g.lateral - h;
-            let rank = select(x - walk, x - 1000.0, paved && x < 0.0);
+            let rank = select(select(x - walk, x - walk - 1000.0, walk > 0.0 && x < walk), x - 2000.0, paved && x < 0.0);
             if (g.paint && rank < paint_rank) {
                 paint_rank = rank;
                 out.road = x;
@@ -504,8 +505,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             }
             if (paved && road_shows(h, rule, level)) {
                 let tol = rule.tol;
-                // Past a sidewalk the ground stays flat for a mesh cell more, so no mesh triangle under its slab rises through it.
-                let core_half = select(h, wall, gallery) + walk + select(0.0, MESH_TEXELS * texel, walk > 0.0);
+                let core_half = select(h, wall, gallery) + walk;
                 if (g.core && g.lateral <= core_half) {
                     let bucket = select(ROAD_CORE, PORTAL_CORE, kind == TUNNEL);
                     lo[bucket] = max(lo[bucket], g.z - tol);
