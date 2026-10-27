@@ -45,6 +45,7 @@ SOURCES = {
     "nasa-modis": {"resolution_m": 500, "smooth": False},
     "copernicus-hr-wsi": {"resolution_m": 20, "smooth": True},
 }
+HANSEN_GFC = "v1.11"
 CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{0}/Hansen_GFC-2023-{0}_treecover2000_{1}.tif"
 # MODIS sees the canopy, not the snow under it; HR-WSI corrects for trees. The owner chose 75 % canopy cover as
 # "dense": below it, MODIS still sees the snow between the trees.
@@ -668,7 +669,7 @@ def step():
 def main():
     # The step gets its credit and its versions in its options, so only this command line reads
     # the registry and the versions.
-    from . import data_registry, planner_sources
+    from . import data_registry
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("region", nargs="?", help="region id: a box region in data/regions/ and the default output folder")
@@ -694,7 +695,7 @@ def main():
         credit = data_registry.attribution("hr-wsi", year=dt.date.today().year)
     else:
         seasons = range(args.first_season, args.last_season + 1)
-        canopy = [CANOPY.format(planner_sources.VERSIONS["hansen-gfc"], name) for name in canopy_tiles(bounds)]
+        canopy = [CANOPY.format(HANSEN_GFC, name) for name in canopy_tiles(bounds)]
         groups = (items for _, items in modis_seasons(bounds, args.first_season, args.last_season))
         modis = modis_planes(groups, bounds, args.first_season, args.last_season, canopy)
         source = lambda chunk: modis

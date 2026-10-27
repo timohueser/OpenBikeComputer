@@ -6,8 +6,8 @@ The pipeline verifies the input hash and builds the search packages and place ti
 It needs no Nominatim database, Photon export, or PostgreSQL installation.
 
 For a direct bake, use a complete OSM extract with room around the search region.
-Export the static country data from the pinned archive in
-[`tools/planner_sources.py`](../../tools/planner_sources.py):
+Export the static country data from the `nominatim-country-data` archive of
+[`data/sources.toml`](../../data/sources.toml):
 
 ```sh
 uv run --locked --group planner-search python host/obc-search-bake/policy.py COUNTRY_DATA.whl /tmp/country-data

@@ -25,3 +25,11 @@ def tile_bounds(z, x, y):
     n = 1 << z
     latitude = lambda row: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / n))))
     return [x / n * 360 - 180, latitude(y + 1), (x + 1) / n * 360 - 180, latitude(y)]
+
+
+def terrain_bounds(region):
+    # Contours start at zoom 10 and read a 3×3 tile neighbourhood.
+    count = 1 << 10
+    left, top = (max(0, math.floor(value) - 1) for value in mercator(region[0], region[3], 10))
+    right, bottom = (min(count - 1, math.floor(value) + 1) for value in mercator(region[2], region[1], 10))
+    return tile_bounds(10, left, bottom)[:2] + tile_bounds(10, right, top)[2:]

@@ -74,10 +74,6 @@ def tile(lon, lat, zoom=ZOOM):
     return tuple(min(n - 1, max(0, int(value))) for value in planner_geo.mercator(lon, lat, zoom))
 
 
-def intersects(a, b):
-    return a[0] <= b[2] and a[2] >= b[0] and a[1] <= b[3] and a[3] >= b[1]
-
-
 def cells(bounds):
     left, top = tile(bounds[0], bounds[3])
     right, bottom = tile(bounds[2], bounds[1])

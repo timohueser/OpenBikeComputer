@@ -15,7 +15,7 @@ import sys
 import threading
 from urllib.parse import unquote, urlsplit
 
-from . import planner_grid, planner_map_archive, planner_maps, planner_runtime
+from . import planner_geo, planner_grid, planner_map_archive, planner_runtime
 
 
 FORMATS = {"planner/index": planner_runtime.INDEX_FORMAT}
@@ -94,7 +94,7 @@ class Downloads:
         names = set(shared)
         geometry = [min([actual[i], *[c["routing"]["geometry_bounds"][i] for c in selected]]) if i < 2
                     else max([actual[i], *[c["routing"]["geometry_bounds"][i] for c in selected]]) for i in range(4)]
-        terrain = planner_maps.terrain_bounds(geometry)
+        terrain = planner_geo.terrain_bounds(geometry)
         for b in publication["map_blocks"]:
             if planner_map_archive.selected(b["tile"], geometry, terrain=b["kind"] == "terrain"): names.update(b["files"])
         for cell in cells: names.update(cell["files"])

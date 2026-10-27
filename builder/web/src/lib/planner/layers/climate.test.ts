@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Coordinate } from '../map-types';
 import {
-    DETAIL, OVERVIEW, SECTORS, cellAt, cellHistory, climateMeta,
-    climateTile, locate, read, typicalRain, temperatureAt, weekMonth, weekValues, wetDaysOf7, windChance, windMode, windRose,
+    DETAIL, OVERVIEW, SECTORS, cellAt, climateMeta,
+    climateTile, locate, read, typicalRain, temperatureAt, weekMonth, wetDaysOf7, windChance, windMode, windRose,
 } from './climate';
 import { lineBearings, weatherRows, windRow } from './climate-route';
 import { climateSource, detailCell, sampleLine, type TileGetter } from './climate-source';
@@ -34,18 +34,7 @@ describe('climate tiles', () => {
         expect([read(tile, 'tmax', 10, 5), read(tile, 'tmax', 10, 6)]).toEqual([-1.5, NaN]);
         // The last value of the body.
         expect(read(tile, 'wind', 51, 383)).toBe(3.5);
-        expect(weekValues(tile, 'rain', 1)[5]).toBe(105);
         expect(() => read(tile, 'wet_days', 0, 0)).toThrow('no wet_days');
-    });
-
-    it('reads every year and week of a detail cell', () => {
-        const t = specTile(DETAIL);
-        t.set('wet_days', 52 * 9 + 51, 95, 9);
-        t.set('tmin', 52 * 3 + 7, 95, -20);
-        const history = cellHistory(t.tile(), 95);
-        expect(history.wetDays[519]).toBe(9);
-        expect(history.tmin[52 * 3 + 7]).toBe(-10);
-        expect(Number.isNaN(history.rain[0])).toBe(true);
     });
 
     it('validates the metadata', () => {
