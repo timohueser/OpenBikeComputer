@@ -309,7 +309,7 @@ export class TrailView {
 
     private idle(): boolean {
         return this.complete && this.terrain.idle && this.groundLook.idle && this.houses.idle && this.trees.idle && this.forest.idle && this.plants.idle && this.orchards.idle && this.instances.idle
-            && !this.shadow.pending && this.settled() && !this.converging;
+            && this.sky.idle && !this.shadow.pending && this.settled() && !this.converging;
     }
 
     /**
@@ -387,9 +387,14 @@ export class TrailView {
         // A device lost before the first frame leaves the other passes to the next attach.
         this.rest = drawn.then(async () => {
             if (this.destroyed || this.gpuState.gpu !== gpu) return;
+            // The night sky's files load on their own: the passes and the shadows never wait for them.
+            void this.sky.attachNight(gpu).then(() => {
+                if (this.destroyed) gpu.release();
+                else this.request();
+            });
             // A destroy during these attaches released the scope before they made their buffers, also when one fails.
             try {
-                await Promise.all([shadow, this.terrain.attachParts(frames), this.houses.attach(gpu, frames, surface, features), this.instances.attach(gpu, frames, { surface, features }), this.sky.attachNight(gpu)]);
+                await Promise.all([shadow, this.terrain.attachParts(frames), this.houses.attach(gpu, frames, surface, features), this.instances.attach(gpu, frames, { surface, features })]);
             } finally {
                 if (this.destroyed) gpu.release();
             }
@@ -542,7 +547,7 @@ export class TrailView {
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify([this.extras, this.skyMagnitude]);
             moved = camera.some((value, i) => value !== this.camera[i]);
-            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || extras !== this.drawnExtras;
+            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || this.sky.newContent || extras !== this.drawnExtras;
             this.camera = camera;
             this.drawnExtras = extras;
             this.completed = false;

@@ -41,6 +41,12 @@ interface Stars { buffer: GPUBuffer; magnitudes: Float32Array; pipeline: GPURend
  * have loaded (`attachNight`), the sky draws without them and the moon plain grey.
  */
 export class Sky {
+    /** Whether the stars, the Milky Way or the moon's face arrived since the last `write`: the frame changes. */
+    newContent = false;
+    /** Whether `attachNight` still loads. */
+    private loading = false;
+    /** The device of the last `attach`: a load for an older one comes to nothing. */
+    private gpu?: Gpu;
     private pipeline?: GPURenderPipeline;
     private empty?: GPUBindGroup;
     private uniform?: GPUBuffer;
@@ -56,21 +62,39 @@ export class Sky {
         this.group = this.night(gpu, pixel(gpu, [0, 0, 0, 255]), pixel(gpu, [170, 170, 170, 255]));
         this.stars = undefined;
         this.pipeline = pipeline;
+        this.gpu = gpu;
     }
 
-    /** Loads the Milky Way, the stars and the moon's face, and compiles the stars' pipeline. */
+    /** Whether nothing loads. */
+    get idle(): boolean {
+        return !this.loading;
+    }
+
+    /**
+     * Loads the Milky Way, the stars and the moon's face, and compiles the stars' pipeline. It never
+     * fails: without them the sky draws on as before. Nothing is made on a device that `attach` left.
+     */
     async attachNight(gpu: Gpu): Promise<void> {
-        const [milkyWay, face, table, pipeline] = await Promise.all([
-            image(gpu, MILKY_WAY), image(gpu, MOON), fetch(STARS).then(response => response.arrayBuffer()), gpu.once(starPipeline),
-        ]);
-        const { data, magnitudes } = starVertices(table), buffer = gpu.buffer('sky', data.byteLength, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST);
-        gpu.device.queue.writeBuffer(buffer, 0, data);
-        this.group = this.night(gpu, milkyWay, face);
-        this.stars = { buffer, magnitudes, pipeline };
+        this.loading = true;
+        try {
+            const [milkyWay, face, table, pipeline] = await Promise.all([bitmap(MILKY_WAY), bitmap(MOON), fetched(STARS).then(response => response.arrayBuffer()), gpu.once(starPipeline)]);
+            if (!table.byteLength || table.byteLength % 6) throw new Error(`${STARS} is not a table of stars`);
+            if (this.gpu !== gpu) return;
+            const { data, magnitudes } = starVertices(table), buffer = gpu.buffer('sky', data.byteLength, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST);
+            gpu.device.queue.writeBuffer(buffer, 0, data);
+            this.group = this.night(gpu, texture(gpu, milkyWay), texture(gpu, face));
+            this.stars = { buffer, magnitudes, pipeline };
+            this.newContent = true;
+        } catch (error) {
+            console.warn('TrailView draws the sky without its stars, Milky Way and moon face:', error);
+        } finally {
+            if (this.gpu === gpu) this.loading = false;
+        }
     }
 
     /** Writes `Night` of sky.wgsl for this frame. */
     write(gpu: Gpu, state: SkyState): void {
+        this.newContent = false;
         const data = new Float32Array(NIGHT_BYTES / 4), { stars: m, night } = state;
         // mat3x3f: three columns of four floats.
         data.set([m[0], m[3], m[6], 0, m[1], m[4], m[7], 0, m[2], m[5], m[8], 0], 0);
@@ -107,14 +131,25 @@ export class Sky {
     }
 }
 
-/** An sRGB image file as a texture. */
-async function image(gpu: Gpu, url: URL): Promise<GPUTexture> {
-    const bitmap = await fetch(url).then(response => response.blob()).then(blob => createImageBitmap(blob, { colorSpaceConversion: 'none' }));
-    const texture = gpu.texture('sky', {
-        size: [bitmap.width, bitmap.height], format: 'rgba8unorm-srgb', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
-    }, 4 * bitmap.width * bitmap.height);
-    gpu.device.queue.copyExternalImageToTexture({ source: bitmap }, { texture }, [bitmap.width, bitmap.height]);
-    return texture;
+/** The answer to a request that succeeded. */
+async function fetched(url: URL): Promise<Response> {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`${url}: ${response.status}`);
+    return response;
+}
+
+/** An image file, decoded without a colour conversion. */
+async function bitmap(url: URL): Promise<ImageBitmap> {
+    return createImageBitmap(await (await fetched(url)).blob(), { colorSpaceConversion: 'none' });
+}
+
+/** An sRGB image as a texture. */
+function texture(gpu: Gpu, image: ImageBitmap): GPUTexture {
+    const made = gpu.texture('sky', {
+        size: [image.width, image.height], format: 'rgba8unorm-srgb', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    }, 4 * image.width * image.height);
+    gpu.device.queue.copyExternalImageToTexture({ source: image }, { texture: made }, [image.width, image.height]);
+    return made;
 }
 
 /** A texture of one sRGB texel, which stands for an image until it loads. */
