@@ -21,7 +21,7 @@ describe('the rules of the ground', () => {
     it('lays out the slots that look.wgsl reads', () => {
         const SLOT = slots(vocabulary);
         expect(SLOT.materials).toBe(33);
-        expect(SLOT.satellite).toBe(33 + 3);
+        expect(SLOT.traits).toBe(33 + 3);
         expect(SLOT.lithologies).toBe(33 + 6);
         expect([SLOT.heather, SLOT.speckle, SLOT.terrain, SLOT.bedding, SLOT.snap].map(slot => slot - SLOT.cliff)).toEqual([1, 2, 3, 4, 5]);
         expect(SLOT.kinds).toBe(SLOT.cliff + 15);
