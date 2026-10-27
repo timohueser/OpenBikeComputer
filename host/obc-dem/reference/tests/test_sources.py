@@ -13,10 +13,9 @@ import unittest.mock
 import urllib.parse
 import zipfile
 from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Thread
 
 import numpy as np
 import rasterio
@@ -34,6 +33,7 @@ from ingest.sources import fr as fr_module  # noqa: E402
 from ingest.sources.grid import grid_squares  # noqa: E402
 from ingest.sources.nz import sheets as nz_sheets  # noqa: E402
 from ingest.sources.protocols import MAX_PIXELS, request_boxes  # noqa: E402
+from http_serving import serve  # noqa: E402
 
 BOX = (6.8255, 45.9257, 6.8495, 45.9417)  # about 1.9 x 1.8 km over Chamonix
 
@@ -304,7 +304,7 @@ class Requests(unittest.TestCase):
     def test_a_box_larger_than_the_cap_becomes_several_requests(self):
         """Half-metre LiDAR overruns every server's size cap, so the box is cut up."""
 
-        wide = (6.0, 46.0, 6.2, 46.2)  # about 15 km by 22 km
+        wide = (6.0, 46.0, 6.03, 46.03)  # about 2.3 km by 3.3 km: over the cap on both axes
         for key in ("us", "nl"):
             with self.subTest(key):
                 source = ingest.SOURCES[key]
@@ -501,10 +501,7 @@ class RemoteWindows(TempCase):
         self.served = self.root / "served"
         self.served.mkdir()
         handler = partial(RangeHandler, directory=str(self.served))
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.server_close)
-        self.addCleanup(self.httpd.shutdown)
+        self.httpd = serve(self, handler)
         self.source = ingest.sources.cog.CogGrid(
             "xx", "Nowhere", "DTM 1 m", 1.0, "CC BY 4.0", "DHHN2016",
             base=f"http://127.0.0.1:{self.httpd.server_address[1]}/",
@@ -584,10 +581,7 @@ class RemoteWindows(TempCase):
             def log_message(self, *args):
                 pass
 
-        broken = ThreadingHTTPServer(("127.0.0.1", 0), Broken)
-        Thread(target=broken.serve_forever, daemon=True).start()
-        self.addCleanup(broken.server_close)
-        self.addCleanup(broken.shutdown)
+        broken = serve(self, Broken)
         self.source.base = f"http://127.0.0.1:{broken.server_address[1]}/"
 
         real = ingest.sources.base.RETRY_DELAYS
@@ -772,10 +766,7 @@ class Registry(unittest.TestCase):
             def log_message(self, *args):
                 pass
 
-        flaky = ThreadingHTTPServer(("127.0.0.1", 0), Flaky)
-        Thread(target=flaky.serve_forever, daemon=True).start()
-        self.addCleanup(flaky.server_close)
-        self.addCleanup(flaky.shutdown)
+        flaky = serve(self, Flaky)
         real = ingest.sources.base.RETRY_DELAYS
         ingest.sources.base.RETRY_DELAYS = (0,)
         self.addCleanup(setattr, ingest.sources.base, "RETRY_DELAYS", real)
