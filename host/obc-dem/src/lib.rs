@@ -67,6 +67,8 @@ pub mod planner;
 #[cfg(feature = "geotiff")]
 pub mod reference;
 #[cfg(all(feature = "geotiff", feature = "fetch"))]
+pub mod shape;
+#[cfg(all(feature = "geotiff", feature = "fetch"))]
 pub mod step;
 pub mod surface;
 /// The planner map terrain writer. Its own feature, because only it needs a WebP encoder and SQLite.

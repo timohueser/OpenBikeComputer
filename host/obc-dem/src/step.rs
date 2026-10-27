@@ -88,23 +88,31 @@ pub fn terrain(request: &Request) -> Result<(), String> {
 }
 
 /// The terrain of the planner maps. The option `bounds` is `[west, south, east, north]` in
-/// degrees, and `attribution` the credit of GLO-30. The layer input, when the request has one, is
-/// the mean archive of the national models below `reference/`. The layer is `terrain.mbtiles`: the
-/// bytes that `planner-dem` writes from the same GLO-30 tiles and archive.
+/// degrees, `attribution` the credit of GLO-30 and `osm_attribution` that of OSM. The layer
+/// `planner/reference`, when the request has it, is the mean archive of the national models below
+/// `reference/`; the layer `planner/osm`, when the request has it, gives the coastlines, cliffs and
+/// summits that correct GLO-30. The layer is `terrain.mbtiles`: the bytes that `planner-dem` writes
+/// from the same GLO-30 tiles, archive and OSM.
 #[cfg(feature = "terrarium")]
 pub fn planner_terrain(request: &Request) -> Result<(), String> {
     let bounds = bounds(&request.options)?;
-    let credit = request.options["attribution"].as_str().ok_or("option `attribution` is not a string")?;
-    let reference = match request.layers.values().collect::<Vec<_>>()[..] {
-        [] => None,
-        [files] => {
+    let text = |name: &str| request.options[name].as_str().ok_or(format!("option `{name}` is not a string"));
+    let credit = text("attribution")?;
+    let reference = match request.layers.get("planner/reference") {
+        None => None,
+        Some(files) => {
             let view = request.output.with_file_name("view");
             obc_data::engine::view(files, &view)?;
             Some(view.join("reference"))
         }
-        _ => return Err("the request reads more than one layer: the planner has one reference archive".into()),
     };
     let mut terrain = crate::planner::Terrain::open(&glo30(request, bounds), credit, reference.as_deref(), bounds)?;
+    if let Some(files) = request.layers.get("planner/osm") {
+        let [pbf] = files.values().collect::<Vec<_>>()[..] else { return Err("`planner/osm` is not one file".into()) };
+        let work = request.output.with_file_name("shapes");
+        std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
+        terrain = terrain.shaped(crate::shape::read(pbf, &work)?, text("osm_attribution")?);
+    }
     let text = bounds.map(|value| value.to_string()).join(",");
     crate::terrarium::write(&mut terrain, bounds, &text, &request.output.join("terrain.mbtiles"))
 }

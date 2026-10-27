@@ -10,6 +10,9 @@
 //! [`FEATHER_M`], and the bias fades out from depth 0 to −[`FEATHER_M`]. So the weight is 0
 //! wherever the archive misses a pixel near a point, also at a concave edge such as a national
 //! border, and the height is continuous everywhere.
+//!
+//! Where GLO-30 has weight, [`crate::shape`] corrects it at the coastlines, sea cliffs and summits
+//! of OSM.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::RangeInclusive;
@@ -22,6 +25,7 @@ use rayon::prelude::*;
 use crate::fetch::TileId;
 use crate::geotiff::{DemMosaic, DemTile};
 use crate::reference::{ReferenceArchive, ReferenceTile, TileLookup, Window, ORIGIN, STEP, TILE_PIXELS, TILE_UDEG};
+use crate::shape::{Features, Shapes, CLIFF_REACH_M};
 
 /// The width of each ramp of the seam in metres. A canopy step of 20 m between the archive and
 /// GLO-30 ramps over it at 2 %, which the relief does not show as an edge.
@@ -84,6 +88,9 @@ pub struct Terrain {
     used: Mutex<BTreeSet<String>>,
     /// The credit of GLO-30.
     credit: String,
+    /// The mapped features that correct GLO-30, and their credit.
+    shapes: Shapes,
+    shapes_credit: Option<String>,
 }
 
 impl Terrain {
@@ -127,6 +134,8 @@ impl Terrain {
             identities,
             used: Mutex::default(),
             credit: credit.into(),
+            shapes: Shapes::default(),
+            shapes_credit: None,
         };
         terrain.measure_seam(window)?;
         Ok(terrain)
@@ -169,6 +178,16 @@ impl Terrain {
         Ok(())
     }
 
+    /// The terrain with GLO-30 shaped by the coastlines, cliffs and summits of OSM, whose credit is
+    /// `credit`. A feature where the archive holds the ground alone has no effect, and is left out.
+    pub fn shaped(self, (lines, peaks): Features, credit: &str) -> Self {
+        let udeg = |degrees: f64| (degrees * 1e6).round() as i32;
+        let keep = |[lat, lon]: [f64; 2]| self.seam.depth(udeg(lat), udeg(lon)) < FEATHER_M + CLIFF_REACH_M;
+        let shapes = Shapes::new(lines, peaks, keep);
+        let shapes_credit = (!shapes.is_empty()).then(|| credit.to_string());
+        Self { shapes, shapes_credit, ..self }
+    }
+
     /// Decode the GLO-30 squares of the latitudes `lats` and drop every other square.
     pub fn load(&mut self, lats: RangeInclusive<i32>) -> Result<(), String> {
         let missing: Vec<_> = self
@@ -186,17 +205,21 @@ impl Terrain {
     }
 
     /// The height in metres at `lat`, `lon` in microdegrees, or `None` where no source has one.
-    /// GLO-30 answers from the squares that [`Terrain::load`] decoded, which must hold
-    /// [`squares`] of `lat`.
+    /// GLO-30, corrected by the shapes, answers from the squares that [`Terrain::load`] decoded,
+    /// which must hold [`squares`] of `lat`.
     pub fn height(&self, lat: i32, lon: i32, recent: &mut Recent) -> Result<Option<f64>, String> {
         debug_assert!(
             squares(lat).all(|lat| self.loaded.contains(&lat) || !self.glo30.contains_key(&lat)),
             "the GLO-30 squares of {lat} µdeg are not loaded"
         );
-        let glo30 = self.fallback.height(lat as f64 * 1e-6, lon as f64 * 1e-6);
-        let Some(archive) = &self.reference else { return Ok(glo30) };
+        let fallback = |lat: f64, lon: f64| self.fallback.height(lat, lon);
+        let glo30 = || self.shapes.height(lat as f64 * 1e-6, lon as f64 * 1e-6, &fallback);
+        let Some(archive) = &self.reference else { return Ok(glo30()) };
         let national = self.national(archive, lat, lon, recent)?;
-        Ok(blend(national, glo30, self.seam.depth(lat, lon), self.bias))
+        let depth = self.seam.depth(lat, lon);
+        // Where the archive holds the ground alone, GLO-30 has no weight.
+        let glo30 = if national.is_some() && depth >= FEATHER_M { None } else { glo30() };
+        Ok(blend(national, glo30, depth, self.bias))
     }
 
     /// Whether the archive holds the ground somewhere in `bounds` (west, south, east, north in
@@ -288,6 +311,7 @@ impl Terrain {
         }
         if !self.glo30.is_empty() {
             credits.push(self.credit.clone());
+            credits.extend(self.shapes_credit.clone());
         }
         credits
     }
