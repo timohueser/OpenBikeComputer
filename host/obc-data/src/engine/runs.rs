@@ -1728,10 +1728,15 @@ pub(crate) mod tests {
         assert!(fixture.run(&pipeline(), &plan, none).unwrap_err().contains("the limit of jobs is 0"));
     }
 
-    const SLEEP: &str = "import json, os, sys, time
+    /// Waits until each of the `argv[1]` steps of the run started, for 0.3 s at most: steps that
+    /// run together end at once, and a step that runs alone waits the whole time.
+    const MEET: &str = "import json, os, sys, time
 request = json.load(sys.stdin)
 start = time.time()
-time.sleep(0.3)
+os.makedirs('started', exist_ok=True)
+open(os.path.join('started', request['step'].replace('/', '-')), 'w').close()
+while len(os.listdir('started')) < int(sys.argv[1]) and time.time() < start + 0.3:
+    time.sleep(0.005)
 open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time()}')
 ";
 
@@ -1742,8 +1747,8 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
         steps: &[(&str, Option<Estimate>)],
         memory_bytes: u64,
     ) -> HashMap<String, (f64, f64)> {
-        write(&fixture.root().join("sleep.py"), SLEEP);
-        let command = || StepRun::Command(vec!["python3".into(), "sleep.py".into()]);
+        write(&fixture.root().join("meet.py"), MEET);
+        let command = || StepRun::Command(vec!["python3".into(), "meet.py".into(), steps.len().to_string()]);
         let estimates: HashMap<String, _> =
             steps.iter().map(|(name, estimate)| (format!("test/{name}"), *estimate)).collect();
         let steps: Vec<Step> = steps
