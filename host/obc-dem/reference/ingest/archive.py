@@ -85,7 +85,7 @@ def pool_tile(rasters: list[Path], source: Source, ti: int, tj: int):
     total = np.zeros((TILE_PX, TILE_PX), dtype="float64")
     count = np.zeros((TILE_PX, TILE_PX), dtype="int64")
     for path in rasters:
-        values, src_transform, src_crs, bounds, _ = read_source(path, source.grid_crs())
+        values, src_transform, src_crs, bounds, _ = read_source(path, source.grid_crs(), source.void)
         check_world(bounds, str(path))
         window = covering_window(bounds, pad=1)
         row0, row1 = max(window.row0, tile.row0), min(window.row0 + window.rows, top)
