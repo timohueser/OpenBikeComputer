@@ -34,8 +34,12 @@ const SEASONAL: Record<'grass' | 'crop' | 'needle' | 'broad', Ramp>[] = [
 
 /** Share of broadleaf trees for a region's `leaf`. */
 const DECIDUOUS: Record<Region['leaf'], number> = { needleleaved: 0.2, mixed: 0.5, broadleaved: 1 };
-/** Road surfaces: main, road, gravel, dirt, grass, path. */
+/** Road surfaces: main, road, gravel, dirt, grass, path; a region may name its own. */
 const ROADS = ['#6b6b68', '#7a7873', '#b0a48c', '#8f7a5c', '#8c9a62', '#a39272'];
+/** A town's paving: its footways, sidewalks and walks; the granite of a kerb. */
+const PAVING = '#a9a59d', KERB = '#c3c0b8';
+/** A slot per surface code up to the tracks, as SURFACES of bins.ts (a one-way road paints as a main road), then the kerb. */
+const ROAD_SLOTS = ROADS.length + 3;
 const ROAD_LINE = '#d6d4cc';
 /** The bands of variegated rock, such as Keuper clays: red, gypsum white, green-grey. */
 export const VARIEGATED = ['#9e6252', '#ddd2bc', '#869690'];
@@ -59,17 +63,17 @@ const lerp = (a: number[], b: number[], t: number) => a.map((v, i) => v + (b[i] 
  * 1 where it is banded; the cliff (alpha 1 where named), the heather (alpha its share), the speckle
  * (alpha its share), the terrain scalars (outcrops, cos turf_deg, snow_share; alpha the speckle
  * size), the bedding normal (alpha the season's bare_luma, 0 for none) and the palette snap; the
- * sea's deep and shallow colours, the road surfaces and the edge line of main roads. Then the
+ * sea's deep and shallow colours, the road surfaces with the kerb and the edge line of main roads. Then the
  * vocabulary: per material its cover, moor (only in a region with heather, so that no other region
  * runs the heather), rocky and rough; per lithology its hardness.
  */
 export function slots(vocabulary: Vocabulary) {
     const materials = 3 * COVER_ORDER.length, m = vocabulary.materials.length, l = vocabulary.lithologies.length;
     const satellite = materials + m, lithologies = satellite + m, cliff = lithologies + l, roads = cliff + 8;
-    const kinds = roads + ROADS.length + 1, hardness = kinds + m;
+    const kinds = roads + ROAD_SLOTS + 1, hardness = kinds + m;
     return {
         materials, satellite, lithologies, cliff, heather: cliff + 1, speckle: cliff + 2, terrain: cliff + 3, bedding: cliff + 4, snap: cliff + 5,
-        sea: cliff + 6, roads, roadLine: roads + ROADS.length, kinds, hardness, count: hardness + l,
+        sea: cliff + 6, roads, roadLine: roads + ROAD_SLOTS, kinds, hardness, count: hardness + l,
     };
 }
 
@@ -117,7 +121,8 @@ export function packRules(regions: Region[], vocabulary: Vocabulary, season: num
         set(SLOT.snap, [look.snap, 0, 0], 0);
         set(SLOT.sea, linear(look.sea.deep), 1);
         set(SLOT.sea + 1, linear(look.sea.shallow), 1);
-        (look.roads ?? ROADS).forEach((hex, i) => set(SLOT.roads + i, linear(hex), 1));
+        const roads = look.roads ?? ROADS;
+        [...roads, roads[0], PAVING, KERB].forEach((hex, i) => set(SLOT.roads + i, linear(hex), 1));
         set(SLOT.roadLine, linear(look.roadLine ?? ROAD_LINE), 1);
     });
     return data;

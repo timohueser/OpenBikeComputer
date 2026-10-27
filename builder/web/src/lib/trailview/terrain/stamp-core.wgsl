@@ -13,15 +13,16 @@
 
 // The profile of a road or path class, as `Profile` in bins.ts: the core tolerance, the reach of the
 // cut and fill, the least of them that a level must fit to stamp a road, the cut and the fill slopes,
-// and how far a path's bench may follow the hillside across it. A uniform array element takes a
-// multiple of 16 bytes.
+// how far a path's bench may follow the hillside across it, and the width of a road's sidewalks. A
+// uniform array element takes a multiple of 16 bytes.
 struct Profile {
     tol: f32,
     reach: f32,
     least: f32,
     cut: f32,
     fill: f32,
-    @size(12) tilt: f32,
+    tilt: f32,
+    @size(8) walk: f32,
 }
 
 // Per class, the row that a segment record names. A uniform, as the audit has every storage buffer that a stage may have.
@@ -47,7 +48,7 @@ const RAIL: u32 = 10u;
 const PAD: u32 = 11u;
 const AREA: u32 = 12u;
 // As RAIL_CODE and SLEEPER_M of bins.ts: the surface code of the first track, and the spacing of its sleepers.
-const TRACK_CODE: u32 = 8u;
+const TRACK_CODE: u32 = 9u;
 const SLEEPER_M: f32 = 0.6;
 const FORD: u32 = 1u;
 const CORE_A: u32 = 2u;
@@ -56,6 +57,11 @@ const CONE_A: u32 = 8u;
 const CONE_B: u32 = 16u;
 const JOIN_A: u32 = 32u;
 const JOIN_B: u32 = 64u;
+// A segment's code byte holds its surface code in the low 4 bits, and above them the sides with a
+// sidewalk, as LEFT and RIGHT of town.ts: its left and its right.
+const SURFACE_BITS: u32 = 15u;
+const LEFT_WALK: u32 = 16u;
+const RIGHT_WALK: u32 = 32u;
 
 // The buckets, from the top.
 const WATER_CORE: u32 = 0u;
@@ -292,8 +298,10 @@ fn crosses(c: vec2f, p: vec2f, a: vec2f, b: vec2f) -> bool {
     return left(a - c, p - c) != left(b - c, p - c) && one != left(b - a, p - a);
 }
 
-// The intervals at a texel and what the mask holds: the nearest road edge (negative inside), the
-// metres from the middle of that road (signed by side), its surface and a track's sleepers from its start, the water height (NONE without water) and the flags.
+// The intervals at a texel and what the mask holds: the edge of the carriageway of the painted road
+// (negative inside), the metres from its middle (signed by side), its surface, the width of its
+// sidewalk on the texel's side and whether it has one on either side, a track's sleepers from its start,
+// the water height (NONE without water) and the flags.
 struct Stamp {
     lo: f32,
     hi: f32,
@@ -302,6 +310,8 @@ struct Stamp {
     road: f32,
     across: f32,
     surface: u32,
+    walk: f32,
+    town: bool,
     ford: bool,
     sleepers: f32,
     // The nearest lake shore alone, negative in a lake.
@@ -316,7 +326,7 @@ struct Stamp {
 // The stamp of world point p, a texel centre of a node of `level` whose first texel is `first`, from
 // the node's data at `data`.
 fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
-    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, false, 0.0, INF, false, false, false);
+    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, 0.0, false, false, 0.0, INF, false, false, false);
     if (data == NO_DATA) {
         return out;
     }
@@ -358,6 +368,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     var cone_hi_road = false;
     // Whether p lies under the road of a deck.
     var under_deck = false;
+    // The rank of the paint so far: a carriageway outranks all else, then the nearest outer edge.
+    var paint_rank = INF;
     let first_entry = offset & 0xffffffu;
     let last_entry = word(data + HEAD + u32(c) + 1u) & 0xffffffu;
     for (var e = first_entry; e < last_entry; e++) {
@@ -451,19 +463,29 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 continue;
             }
             let paved = kind == ROAD || kind == RAIL || bridge || kind == TUNNEL;
-            if (paved && road_shows(h, rule, level) && (g.beside <= h || (g.core && g.lateral <= h))) {
+            // A town road's sidewalk lies at the height of its edge: its core reaches past it.
+            let walk = select(0.0, rule.walk, (word(r + 5u) & select(LEFT_WALK, RIGHT_WALK, g.side > 0.0)) != 0u);
+            if (paved && road_shows(h, rule, level) && (g.beside <= h + walk || (g.core && g.lateral <= h + walk))) {
                 line_near = true;
-                line_held = line_held || (g.core && g.lateral <= h);
+                line_held = line_held || (g.core && g.lateral <= h + walk);
             }
             if (g.lateral >= INF) {
                 continue;
             }
             // The paint follows the carriageway: a road that ends at a junction ends at its mitre line,
             // but for the round cap that fills the outer wedge of a bend where the through road runs on.
-            if (g.paint && g.lateral - h < out.road) {
-                out.road = g.lateral - h;
+            // A texel in a carriageway takes it, so no path or walk paints over one; elsewhere the nearest
+            // outer edge wins, past a sidewalk: two roads' sidewalks meet in a corner, and a side road's
+            // mouth cuts through the through road's sidewalk.
+            let x = g.lateral - h;
+            let rank = select(x - walk, x - 1000.0, paved && x < 0.0);
+            if (g.paint && rank < paint_rank) {
+                paint_rank = rank;
+                out.road = x;
                 out.across = g.side * g.lateral;
-                out.surface = word(r + 5u) & 0xffu;
+                out.surface = word(r + 5u) & SURFACE_BITS;
+                out.walk = walk;
+                out.town = (word(r + 5u) & (LEFT_WALK | RIGHT_WALK)) != 0u;
                 out.ford = ((word(r + 5u) >> 8u) & FORD) != 0u;
                 out.sleepers = select(0.0, sleepers_at(r, kind, g), out.surface >= TRACK_CODE);
             }
@@ -482,7 +504,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             }
             if (paved && road_shows(h, rule, level)) {
                 let tol = rule.tol;
-                let core_half = select(h, wall, gallery);
+                // Past a sidewalk the ground stays flat for a mesh cell more, so no mesh triangle under its slab rises through it.
+                let core_half = select(h, wall, gallery) + walk + select(0.0, MESH_TEXELS * texel, walk > 0.0);
                 if (g.core && g.lateral <= core_half) {
                     let bucket = select(ROAD_CORE, PORTAL_CORE, kind == TUNNEL);
                     lo[bucket] = max(lo[bucket], g.z - tol);

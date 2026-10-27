@@ -33,7 +33,7 @@ const pierColour = (road: boolean) => (road ? CONCRETE : rgb('#8d8a82'));
 export const deckHalf = (line: Line) => line.h + PARAPET[0];
 
 /** A paved road or path, by its surface, as `paved` of roads.wgsl: its deck is painted, not planked. */
-const isPaved = (line: Line) => line.code <= 2 || line.code === 7;
+const isPaved = (line: Line) => line.code <= 2 || line.code === 7 || line.code === 8;
 /** A railway's bridge: no parapets, which would stand between the decks of two tracks side by side, but a steel railing. */
 const isTrack = (line: Line) => line.code >= RAIL_CODE;
 

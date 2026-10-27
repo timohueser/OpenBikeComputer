@@ -2,7 +2,7 @@
 // and a mesh of walls and a flat roof for the footprints that no template fits. A worker uses it.
 import earcut from 'earcut';
 import { EXTENT, square, unitScale, type Feature } from '../stream/features';
-import { metresPerUnit, type Node } from '../terrain/bins';
+import { features, metresPerUnit, type Node } from '../terrain/bins';
 
 /** Words of a record, as `House` in houses.wgsl. */
 export const RECORD_WORDS = 8;
@@ -155,6 +155,16 @@ function parts(ring: number[][], fit: { x: number; y: number; angle: number }): 
     }) : null;
 }
 
+/**
+ * The wall of a house's rectangle that faces `front` (east, south), + 1, as `front` of houses.wgsl numbers
+ * them: 1 across −, 2 along +, 3 across +, 4 along −; 0 without a front.
+ */
+function door(angle: number, front?: [number, number]): number {
+    if (!front) return 0;
+    const along = front[0] * Math.cos(angle) - front[1] * Math.sin(angle), across = -front[0] * Math.sin(angle) - front[1] * Math.cos(angle);
+    return Math.abs(along) >= Math.abs(across) ? (along > 0 ? 2 : 4) : across > 0 ? 3 : 1;
+}
+
 /** A stable seed from a point. */
 const seedOf = (x: number, y: number) => (Math.imul(x, 73856093) ^ Math.imul(y, 19349663)) >>> 16;
 
@@ -163,9 +173,12 @@ export function tileHouses(list: Feature[], tile: Node, owned: Node = tile): Til
     const scale = unitScale(tile.level), [west, north, size] = square(tile, owned);
     const records: number[] = [], outlines: number[] = [], floats = new Float32Array(1), word = new Uint32Array(floats.buffer);
     const f32 = (v: number) => ((floats[0] = v), word[0]);
-    const left = tile.x * EXTENT, top = tile.y * EXTENT;
+    const left = tile.x * EXTENT, top = tile.y * EXTENT, { buildings } = features(list, tile);
+    let building = -1;
     for (const feature of list) {
         if (feature.kind !== 'building') continue;
+        // The outward direction of the wall that its walk leaves, in world units; features() lists the buildings in this order.
+        const front = buildings[++building].front;
         const tag = feature.tags.building ?? 'yes', part = feature.parts.find(p => p.outer);
         if (SKIPPED.has(tag) || !part || part.xy.length < 6) continue;
         // Metres east and north of the first vertex.
@@ -190,7 +203,7 @@ export function tileHouses(list: Feature[], tile: Node, owned: Node = tile): Til
             const [L, W, angle] = piece.width >= piece.depth ? [piece.width, piece.depth, fit.angle] : [piece.depth, piece.width, fit.angle + Math.PI / 2];
             const x = Math.round((left + x0 + piece.x / m) * scale), y = Math.round((top + y0 - piece.y / m) * scale);
             records.push(x, y, f32(angle), f32(L), f32(W), f32(outline ? wall || OUTLINE_WALL_M : wall), f32(unit),
-                (kind | (roof << 3) | (+outline << 5) | (+flatRoof << 6) | (seed << 16)) >>> 0);
+                (kind | (roof << 3) | (+outline << 5) | (+flatRoof << 6) | (door(angle, front) << 7) | (seed << 16)) >>> 0);
         }
         if (!outline) continue;
         // The walls, from the bottom to the top, with the metres along the outline; then the roof.

@@ -20,7 +20,8 @@ struct House {
     wall: f32,
     // Metres per world unit at the house.
     unit: f32,
-    // The kind (3 bits), the roof that OSM names (2), the shape (1) at bit 5, a flat roof (1), a seed at bit 16.
+    // The kind (3 bits), the roof that OSM names (2), the shape (1) at bit 5, a flat roof (1), the front wall + 1
+    // (3, 0 for none) at bit 7, a seed at bit 16.
     bits: u32,
 }
 
@@ -519,10 +520,11 @@ fn fit(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) loc
     d.storeys = s.storeys;
     let below = out.ground;
     d.ground = vec2u(pack2x16float(below.xy), pack2x16float(below.zw));
-    // The door is in the wall whose ground lies nearest the floor.
+    // The door is in the wall that the walk from the road reaches, else in the wall whose ground lies nearest the floor.
     let mids = abs(0.5 * (below + below.yzwx));
     let nearest = min(min(mids.x, mids.y), min(mids.z, mids.w));
-    let front = select(select(select(3u, 2u, mids.z == nearest), 1u, mids.y == nearest), 0u, mids.x == nearest);
+    let walked = (h.bits >> 7u) & 7u;
+    let front = select(select(select(select(3u, 2u, mids.z == nearest), 1u, mids.y == nearest), 0u, mids.x == nearest), walked - 1u, walked != 0u);
     d.bits = s.kind | (s.form << 3u) | (s.timber << 5u) | (u32(s.shutters) << 7u) | (front << 8u) | (h.bits & 0xffff0000u);
     let seed = h.bits >> 16u;
     let wood = pick(out.style, 1u, seed);

@@ -77,14 +77,14 @@ fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) insta
 // The debug view of the mask, as `mask` in DEBUG_VIEWS of view.ts.
 const MASK_VIEW: u32 = 10u;
 
-// The road surfaces of the mask, by code: main, road, gravel, dirt, grass, path, oneway, then the tracks
-// in purple: standard and narrow gauge, each without and with a rack.
-const SURFACE_COLOURS = array<vec3f, 11>(vec3f(0.2, 0.2, 0.22), vec3f(0.35, 0.35, 0.37), vec3f(0.62, 0.55, 0.42),
-    vec3f(0.5, 0.36, 0.22), vec3f(0.45, 0.6, 0.3), vec3f(0.85, 0.75, 0.55), vec3f(0.16, 0.22, 0.34),
+// The road surfaces of the mask, by code: main, road, gravel, dirt, grass, path, oneway, paving, then the
+// tracks in purple: standard and narrow gauge, each without and with a rack.
+const SURFACE_COLOURS = array<vec3f, 12>(vec3f(0.2, 0.2, 0.22), vec3f(0.35, 0.35, 0.37), vec3f(0.62, 0.55, 0.42),
+    vec3f(0.5, 0.36, 0.22), vec3f(0.45, 0.6, 0.3), vec3f(0.85, 0.75, 0.55), vec3f(0.16, 0.22, 0.34), vec3f(0.75, 0.74, 0.7),
     vec3f(0.45, 0.2, 0.55), vec3f(0.62, 0.35, 0.75), vec3f(0.3, 0.1, 0.4), vec3f(0.5, 0.25, 0.6));
 
-// The decoded features, flat on grey terrain: roads by surface, cut and fill faces orange, conflicts
-// red, fords cyan.
+// The decoded features, flat on grey terrain: roads by surface, sidewalks as paving, cut and fill faces
+// orange, conflicts red, fords cyan.
 fn mask_view(s: vec2f, grey: vec3f) -> vec3f {
     let mask = mask_at(s, u32(ceil(lod(s))), false);
     var colour = grey;
@@ -93,6 +93,8 @@ fn mask_view(s: vec2f, grey: vec3f) -> vec3f {
     }
     if (mask.kind.x != 0u && mask.shape.x < 0.5) {
         colour = select(SURFACE_COLOURS[mask.kind.x - 1u], vec3f(0.2, 0.85, 0.9), (mask.kind.y & FORDED) != 0u);
+    } else if (mask.kind.x != 0u && mask_metres(mask.shape.x) < mask.walk) {
+        colour = SURFACE_COLOURS[PAVING_CODE - 1u];
     }
     colour = mix(colour, vec3f(0.95, 0.55, 0.1), 0.7 * mask.shape.w);
     if ((mask.kind.y & CONFLICT) != 0u) {
