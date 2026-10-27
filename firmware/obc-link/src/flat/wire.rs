@@ -1124,6 +1124,49 @@ mod tests {
     }
 
     #[test]
+    fn a_stream_record_shorter_than_its_frame_or_below_its_carried_payload_is_refused() {
+        let mut record = [0u8; STREAM_HEADER_LEN + 4];
+        record[12..14].copy_from_slice(&4u16.to_le_bytes());
+        assert!(StreamFrame::split(&record).is_some());
+        assert!(StreamFrame::split(&record[..STREAM_HEADER_LEN - 1]).is_none(), "a record below the frame");
+        record[12..14].copy_from_slice(&3u16.to_le_bytes());
+        assert!(StreamFrame::split(&record).is_none(), "a length below the carried payload");
+    }
+
+    #[test]
+    fn the_stream_assembler_recovers_back_to_back_records_whatever_the_chunking() {
+        let mut first = [0u8; STREAM_HEADER_LEN + 4];
+        let mut second = [0u8; STREAM_HEADER_LEN + 3];
+        write_stream(&mut first, RequestId(7), 0, 4).unwrap();
+        write_stream(&mut second, RequestId(7), 4, 3).unwrap();
+        first[STREAM_HEADER_LEN..].copy_from_slice(&[1, 2, 3, 4]);
+        second[STREAM_HEADER_LEN..].copy_from_slice(&[5, 6, 7]);
+        let wire = [first.as_slice(), second.as_slice()].concat();
+
+        for (a, b) in (0..=wire.len()).flat_map(|a| (a..=wire.len()).map(move |b| (a, b))) {
+            let mut assembler = StreamRecordAssembler::new();
+            let mut buffer = [0u8; 32];
+            let mut recovered = Vec::new();
+            for mut rest in [&wire[..a], &wire[a..b], &wire[b..]] {
+                while !rest.is_empty() {
+                    let (used, state) = assembler.push(&mut buffer, rest);
+                    assert!(used > 0, "chunks {a}/{b} stalled");
+                    rest = &rest[used..];
+                    match state {
+                        StreamAssembly::Complete(len) => {
+                            recovered.push(buffer[..len].to_vec());
+                            assembler.reset();
+                        }
+                        StreamAssembly::NeedMore => assert!(rest.is_empty(), "chunks {a}/{b} stopped with input left"),
+                        StreamAssembly::TooLarge(_) => panic!("chunks {a}/{b} overflowed"),
+                    }
+                }
+            }
+            assert_eq!(recovered, [first.to_vec(), second.to_vec()], "chunks {a}/{b}");
+        }
+    }
+
+    #[test]
     fn the_stream_assembler_refuses_a_record_above_its_adapter_buffer() {
         let mut header = [0u8; STREAM_HEADER_LEN];
         header[12..14].copy_from_slice(&240u16.to_le_bytes());

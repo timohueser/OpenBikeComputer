@@ -1,6 +1,7 @@
 //! The loop the fixtures close: the files on disk are what the producer emits, the codec agrees
 //! with those bytes in both directions, and every refusal carries its stated code and detail.
 
+use std::collections::BTreeSet;
 use std::string::String;
 use std::vec::Vec;
 
@@ -63,6 +64,32 @@ fn every_fixture_has_a_unique_name_and_a_digest_in_the_manifest() {
     assert_eq!(count(Category::Stream), 4);
     assert_eq!(count(Category::Error), 14);
     assert_eq!(count(Category::Negative), 34);
+}
+
+#[test]
+fn fixture_names_are_unique_and_the_directory_holds_exactly_the_manifest_files() {
+    let root = dir();
+    let all = fixtures();
+    let names: BTreeSet<&str> = all.iter().map(|fixture| fixture.name.as_str()).collect();
+    assert_eq!(names.len(), all.len(), "two fixtures share a name");
+
+    let mut on_disk = BTreeSet::new();
+    for category in std::fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().path()).filter(|path| path.is_dir()) {
+        for file in std::fs::read_dir(&category).unwrap() {
+            on_disk.insert(format!(
+                "{}/{}",
+                category.file_name().unwrap().to_str().unwrap(),
+                file.unwrap().file_name().to_str().unwrap()
+            ));
+        }
+    }
+    let manifest = std::fs::read_to_string(root.join("manifest.json")).unwrap();
+    let listed: BTreeSet<String> = manifest
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("\"file\": \"")?.strip_suffix("\","))
+        .map(String::from)
+        .collect();
+    assert_eq!(on_disk, listed, "a fixture file is missing from the manifest, or the manifest names a missing file");
 }
 
 #[test]

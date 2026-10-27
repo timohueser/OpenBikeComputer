@@ -357,6 +357,28 @@ fn a_mutating_catalog_restarts_from_the_first_page() {
     assert!(entries.windows(2).all(|p| p[0].id < p[1].id));
 }
 
+#[test]
+fn a_multi_page_catalog_lists_in_order_and_restarts_when_a_commit_lands_mid_listing() {
+    let disk = formatted_card(TOTAL_BLOCKS, 6);
+    let mut s = Session::new(&disk);
+    for _ in 0..4 {
+        first_put(&mut s);
+    }
+    let list = |s: &mut Session<'_>| {
+        let Outcome::Catalog { store, entries, .. } =
+            s.run(Request::List(ListRequest { kind: Some(ObjectKind::Route), cursor: None })).unwrap()
+        else {
+            panic!("LIST result");
+        };
+        assert_eq!(store, StoreId(STORE.0));
+        assert!(entries.windows(2).all(|pair| pair[0].id < pair[1].id));
+        entries.len()
+    };
+    assert_eq!(list(&mut s), 4);
+    s.mutate_listing = true;
+    assert_eq!(list(&mut s), 5, "the listing restarts and includes the new route");
+}
+
 fn take_control(client: &mut Client) -> (u64, Vec<u8>) {
     loop {
         match client.next_action().expect("control action") {
