@@ -1,4 +1,5 @@
 import type { PlannerConfig } from '../planner/config';
+import type { Coordinate } from '../planner/geo';
 import { instantAt, solarPosition, solarTerms } from '../planner/layers/sun';
 import { eyeAltitude, follow, groundOf, MIN_CLEARANCE, move, VFOV, viewProjection, type Footing, type Pose } from './frame/camera';
 import { Controls } from './frame/controls';
@@ -24,6 +25,7 @@ import { Orchards } from './vegetation/orchards';
 import { Plants } from './vegetation/plants';
 import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
+import { Route } from './route/route';
 import { Pacer } from './pacer';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
@@ -105,6 +107,7 @@ export class TrailView {
     private readonly orchards: Orchards;
     private readonly kindPoints: KindPoints;
     private readonly dressing: Dressing;
+    private readonly route = new Route();
     private readonly sky = new Sky();
     private readonly shadow = new Shadow();
     private readonly resolve = new Resolve();
@@ -240,6 +243,12 @@ export class TrailView {
         return this.groundLook.attribution;
     }
 
+    /** Draws the planned route in riding order on the surface; `graded` colours it by its grade. Fewer than two points draw none. */
+    showRoute(route: readonly Coordinate[], graded = false): void {
+        this.route.set(route, graded);
+        this.request();
+    }
+
     /** drawnHeight at points from the probe and from an instance shader, and the share of the sun there, with the state of the last frame. */
     check(points: [number, number][]): Promise<{ probe: number[]; instance: number[]; sun: number[] }> {
         return this.terrain.check(points, this.groundLook.group!);
@@ -372,7 +381,7 @@ export class TrailView {
             if (this.destroyed || this.gpuState.gpu !== gpu) return;
             // A destroy during these attaches released the scope before they made their buffers, also when one fails.
             try {
-                await Promise.all([shadow, this.terrain.attachParts(frames), this.houses.attach(gpu, frames, surface, features), this.instances.attach(gpu, frames, { surface, features })]);
+                await Promise.all([shadow, this.terrain.attachParts(frames), this.houses.attach(gpu, frames, surface, features), this.instances.attach(gpu, frames, { surface, features }), this.route.attach(gpu, uniform)]);
             } finally {
                 if (this.destroyed) gpu.release();
             }
@@ -524,7 +533,7 @@ export class TrailView {
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify(this.extras);
             moved = camera.some((value, i) => value !== this.camera[i]);
-            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || extras !== this.drawnExtras;
+            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || this.route.newContent || extras !== this.drawnExtras;
             this.camera = camera;
             this.drawnExtras = extras;
             this.completed = false;
@@ -572,6 +581,7 @@ export class TrailView {
             this.instances.draw(pass, group);
             this.terrain.draw(pass, group);
             this.houses.draw(pass, group);
+            if (this.terrain.surface && this.terrain.features) this.route.draw(pass, this.terrain.surface, this.terrain.features);
             if (this.extras.debug !== 'cracks') this.sky.draw(pass, group);
             pass.end();
             this.resolve.encode(encoder, targets, this.context.getCurrentTexture().createView(), group,
