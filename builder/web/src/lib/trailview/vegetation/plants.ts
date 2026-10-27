@@ -25,6 +25,9 @@ const TIE = 0.85, OWN_TIE = 0.35;
 const MOOR = ['heath', 'bog'], NONE = 0xffff;
 const HABITAT = { moor: 1 << 12, lush: 1 << 13 }, CLUMPED = 1 << 14, MOOR_REGION = 1;
 
+/** A ground plant's salt of its stands, from its species, so its stands stay put whatever the other plants' shares. */
+const standSalt = (id: string) => [...id].reduce((h, c) => (31 * h + c.charCodeAt(0)) % 997, 7);
+
 interface Resources { gpu: Gpu; ground: GPUComputePipeline; shrubs: GPUComputePipeline; groups: GPUBindGroup[]; params: GPUBuffer }
 
 /** A plant model of the instances: a shape of a ground plant or a plant that stands as a shrub; in its season or evergreen. */
@@ -61,7 +64,8 @@ export class Plants implements Producer {
         instances.produce(this);
         const { materials } = rules.vocabulary;
         const data = new Uint32Array(64 + rules.regions.length * REGION_WORDS * 4).fill(NONE), floats = new Float32Array(data.buffer);
-        materials.forEach(({ id, cover }, code) => (data[code] = Math.max(0, COVER_ORDER.indexOf(cover as (typeof COVER_ORDER)[number])) | (MOOR.includes(id) ? 256 : 0)));
+        materials.forEach(({ id, cover, shrubs = 1 }, code) =>
+            (data[code] = Math.max(0, COVER_ORDER.indexOf(cover as (typeof COVER_ORDER)[number])) | (MOOR.includes(id) ? 256 : 0) | (Math.round(shrubs * 255) << 16)));
         // The first of a run of models, one per entry.
         const models = (entries: Model[]) => {
             const at = this.list.findIndex(m => m.model === entries[0].model && m.shrub === entries[0].shrub && m.evergreen === entries[0].evergreen && m.tie === entries[0].tie);
@@ -83,7 +87,7 @@ export class Plants implements Producer {
             ground.forEach((rule, k) => {
                 const on = rule.on.reduce((bits, cover) => bits | (1 << COVER_ORDER.indexOf(cover as (typeof COVER_ORDER)[number])), 0);
                 const w = at + 4 * (1 + k);
-                data.set([rule.first, on | (rule.habitat ? HABITAT[rule.habitat] : 0) | (rule.clumped ? CLUMPED : 0), 0, f16(rule.height[0]) | (f16(rule.height[1]) << 16)], w);
+                data.set([rule.first, on | (rule.habitat ? HABITAT[rule.habitat] : 0) | (rule.clumped ? CLUMPED : 0) | (standSalt(rule.id) << 16), 0, f16(rule.height[0]) | (f16(rule.height[1]) << 16)], w);
                 floats[w + 2] = rule.share;
             });
             const shrubs = region.trees.filter(rule => rule.cover === 'shrub' && (rule.model in PLANTS || rule.model in TREES)).sort((a, b) => b.weight - a.weight).slice(0, SLOTS).flatMap(rule => {
