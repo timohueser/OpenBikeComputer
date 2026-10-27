@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EXTENT, type Feature } from '../stream/features';
 import { metresPerUnit } from '../terrain/bins';
-import { BARN, CHURCH, FARMHOUSE, INDUSTRIAL, OUTLINE, OUTLINE_WORDS, RECORD_WORDS, TEMPLATE, tileHouses } from './house-records';
+import { BARN, CHURCH, FARMHOUSE, GRANARY, GREENHOUSE, INDUSTRIAL, OUTLINE, OUTLINE_WORDS, RECORD_WORDS, TEMPLATE, tileHouses } from './house-records';
 
 /** A zoom 13 tile at Wengen; 8 world units per tile unit. */
 const TILE = { level: 13, x: 4276, y: 2907 };
@@ -62,5 +62,14 @@ describe('the house records of a feature tile', () => {
         expect(kind({ building: 'warehouse' }, 100)).toBe(INDUSTRIAL);
         expect(kind({ landuse: 'farmyard' }, 60)).toBe(FARMHOUSE);
         expect(kind({ landuse: 'farmyard' }, 300)).toBe(BARN);
+    });
+
+    it('raises a small granary on pillars and keeps a large one a barn; a greenhouse is a greenhouse at any size', () => {
+        const kind = (tag: string, side: number) => tileHouses([building(tag, rectangle(4000, 4000, side, side, 0))], TILE).records[7] & 15;
+        // 36 units square are about 54 m², 40 units about 67 m².
+        expect(kind('granary', 36)).toBe(GRANARY);
+        expect(kind('horreo', 40)).toBe(BARN);
+        expect(kind('greenhouse', 20)).toBe(GREENHOUSE);
+        expect(kind('greenhouse', 300)).toBe(GREENHOUSE);
     });
 });

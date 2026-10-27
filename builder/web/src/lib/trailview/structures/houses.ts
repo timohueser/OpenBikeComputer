@@ -18,8 +18,10 @@ const HOUSES = 2 ** 16, OUTLINE_BYTES = 2 * 2 ** 20;
 const RADIUS_M = 8000, KEPT = 400, REQUESTS = 6;
 /** Each zoom 14 tile takes its houses from its quarter of the zoom 13 feature tile. */
 const ZOOM = 14, EARTH_M = 40075016.686;
-/** Words of `Kept`, bytes of `Drawn` and words of `Style` in houses.wgsl; the bytes of `Params` and where its styles start; the stride of the dynamic offset of `DrawOf`. */
-const FIT_WORDS = 4, DRAWN_BYTES = 192, STYLE_WORDS = 36, STYLES_AT = 48 + 128 * 16 + 256 * 16, STYLES = 64, PARAMS_BYTES = STYLES_AT + STYLES * STYLE_WORDS * 4, DRAW_STRIDE = 256;
+/** Words of `Style` in houses.wgsl. */
+export const STYLE_WORDS = 36;
+/** Words of `Kept` and bytes of `Drawn` in houses.wgsl; the bytes of `Params` and where its styles start; the stride of the dynamic offset of `DrawOf`. */
+const FIT_WORDS = 4, DRAWN_BYTES = 192, STYLES_AT = 48 + 128 * 16 + 256 * 16, STYLES = 64, PARAMS_BYTES = STYLES_AT + STYLES * STYLE_WORDS * 4, DRAW_STRIDE = 256;
 /**
  * Houses drawn in a frame at most; past ROOM of them, the narrowest on screen go first. The sun's view
  * holds the casters of a shadow map (light/shadow.ts): up to 2 100 on the kit's flights (measured).
@@ -48,7 +50,7 @@ const LISTS = 4 * DRAWS + 4;
 const NO_DRAWS = new Uint32Array(HOUSES).fill(0xffffffff);
 const TIMBER = ['none', 'upper', 'all', 'frame'];
 /** The flags of `Style` in houses.wgsl. */
-const SHUTTERS = 1, BALCONIES = 2, ONION_DOME = 4, DORMERS = 8, WOODEN = 16, CONE_ROOF = 32, FLAT_ROOF = 64;
+export const SHUTTERS = 1, BALCONIES = 2, ONION_DOME = 4, DORMERS = 8, WOODEN = 16, CONE_ROOF = 32, FLAT_ROOF = 64;
 /**
  * The pad of a house, as `Params` in houses.wgsl: the floor stands `plinth` metres over the lowest
  * ground about the footprint, and at most `burial` storeys under the highest, a full storey where
@@ -94,7 +96,7 @@ interface Resources {
 }
 
 /** The style table of houses.wgsl: `Style` per style, INDUSTRIAL last, then the styles of each region. */
-function styleWords(rules: Rules): { styles: Uint32Array<ArrayBuffer>; regions: Uint32Array<ArrayBuffer> } {
+export function styleWords(rules: Rules): { styles: Uint32Array<ArrayBuffer>; regions: Uint32Array<ArrayBuffer> } {
     const list: HouseStyle[] = [...(rules.styles.length ? rules.styles : [FALLBACK]).slice(0, STYLES - 1)];
     list[STYLES - 1] = INDUSTRIAL;
     const words = new ArrayBuffer(STYLES * STYLE_WORDS * 4), u = new Uint32Array(words), f = new Float32Array(words);
