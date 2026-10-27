@@ -235,8 +235,8 @@ def tile_origin(x, y):
 
 
 def http(url, delays=(5, 30, 120, 600)):
-    """The body of `url`. The waits ride out an outage of the leaf type service of minutes, as one
-    failed tile ends the whole prepare."""
+    """The body of `url`. The waits ride out an outage of a service of minutes, as one failed tile
+    ends the whole prepare."""
     for delay in (*delays, None):
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "openbikecomputer"})
@@ -275,14 +275,16 @@ def leaf_type(x, y):
     grid = {"crs": "EPSG:3857", "transform": from_origin(west, top, span / side, span / side), "width": side,
             "height": side, "resampling": Resampling.nearest, "nodata": 255}
     classes = np.full((side, side), 255, np.uint8)
-    with rasterio.Env(**GDAL):
+    # The tile programs together open more connections than the 4 that CDSE allows a user: the
+    # retries wait out a refusal for about as long as `http` does.
+    with rasterio.Env(**{**GDAL, "GDAL_HTTP_MAX_RETRY": 8, "GDAL_HTTP_RETRY_DELAY": 3}):
         for e in range(int(left // 100_000), int(right // 100_000) + 1):
             for n in range(int(bottom // 100_000), int(upper // 100_000) + 1):
                 try:
                     source = rasterio.open(DLT.format(name=f"CLMS_HRLVLCC_DLT_S{DLT_YEAR}_R10m_E{e}N{n}_03035_V01_R00"))
                 except RasterioIOError as error:
-                    # CLMS publishes no tile without land.
-                    if "No such file" in str(error):
+                    # CLMS publishes no tile without land; CDSE S3 answers NoSuchKey.
+                    if "NoSuchKey" in str(error):
                         continue
                     raise
                 with source, WarpedVRT(source, **grid) as warped:
