@@ -52,7 +52,7 @@ def edited(file, path, value):
 
 
 class RulesetTest(unittest.TestCase):
-    def test_the_snapshot_has_no_problems(self):
+    def test_the_ruleset_has_no_problems(self):
         self.assertEqual(rules.validate(RULESET), [])
 
     def test_each_bad_case_of_the_prototype_check_is_a_problem(self):

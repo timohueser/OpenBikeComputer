@@ -4,29 +4,17 @@ The rules that the TrailView ground layers index and that the engine reads. The 
 `planner/trailview-rules` checks them and bundles them as `rules.json`;
 [specs/trailview-tiles.md](../../specs/trailview-tiles.md) defines the bundle and the region ids.
 
-| Path | What it is | Source |
-| --- | --- | --- |
-| `materials.json` | The ground vocabulary: a material or lithology code is its index | snapshot |
-| `regions/`, `packs/`, `styles/` | Rulesets, asset packs and house styles. A file inherits what it does not say from the file it `extends` | snapshot |
-| `ecoregions.json` | The RESOLVE ecoregions of Europe, simplified to about 1 km | snapshot |
-| `countries.json` | Natural Earth countries and first-level subdivisions: the places of a value by place | snapshot |
-| `kinds.json` | The feature kinds of `planner/trailview-features`: [specs/trailview-features.md](../../specs/trailview-features.md) | this repository |
-| `roads.json` | The rules per class of road and track, from the most important down: the grade and smoothing of the road solver, the stamp profile of the engine | this repository |
-| `overlays/<region>.json` | Look keys of the engine that the prototype does not have | this repository |
+| Path | What it is |
+| --- | --- |
+| `materials.json` | The ground vocabulary: a material or lithology code is its index |
+| `regions/`, `packs/`, `styles/` | Rulesets, asset packs and house styles. A file inherits what it does not say from the file it `extends` |
+| `ecoregions.json` | The RESOLVE ecoregions of Europe, simplified to about 1 km |
+| `countries.json` | Natural Earth countries and first-level subdivisions: the places of a value by place |
+| `kinds.json` | The feature kinds of `planner/trailview-features`: [specs/trailview-features.md](../../specs/trailview-features.md) |
+| `roads.json` | The rules per class of road and track, from the most important down: the grade and smoothing of the road solver, the stamp profile of the engine |
+| `overlays/<region>.json` | Look keys of the engine per region, merged over the region's `look` |
 
-## Re-sync
-
-The snapshot files are verbatim copies from the prototype branch. Until the Europe tune of the prototype
-ends, change them only with this command, from the repository root:
-
-```sh
-S=prototype/trail-view T=data/trailview; git fetch origin archive/trail-view-prototype && \
-  git rm -rq --ignore-unmatch $T/{materials.json,regions,packs,styles,ecoregions.json,countries.json} && \
-  git checkout origin/archive/trail-view-prototype -- $S/{materials.json,regions,packs,styles} $S/tune/{ecoregions,countries}.json && \
-  git mv $S/{materials.json,regions,packs,styles} $S/tune/{ecoregions,countries}.json $T/ && rm -r prototype
-```
-
-The command does not touch `overlays/` or this README. Then run the check:
+## Check
 
 ```sh
 uv run --locked --group trailview python -m tools.trailview.rules
