@@ -47,6 +47,7 @@ const TUNNEL: u32 = 9u;
 const RAIL: u32 = 10u;
 const PAD: u32 = 11u;
 const AREA: u32 = 12u;
+const CORNER: u32 = 14u;
 // As RAIL_CODE and SLEEPER_M of bins.ts: the surface code of the first track, and the spacing of its sleepers.
 const TRACK_CODE: u32 = 9u;
 const SLEEPER_M: f32 = 0.6;
@@ -367,7 +368,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     var cone_hi_road = false;
     // Whether p lies under the road of a deck.
     var under_deck = false;
-    // The rank of the paint so far: a carriageway outranks all else, then the nearest outer edge.
+    // The rank of the paint so far: a corner outranks all else, then a carriageway, then the nearest outer edge.
     var paint_rank = INF;
     let first_entry = offset & 0xffffffu;
     let last_entry = word(data + HEAD + u32(c) + 1u) & 0xffffffu;
@@ -377,6 +378,36 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         let kind = word(r + 4u);
         if (kind == JUNCTION) {
             junction = junction || length(vec2f(p - point(r))) * unit < 2.0 * junction_reach(real(r + 6u), texel);
+        } else if (kind == CORNER) {
+            // Between the ends of a corner's arc seen from its centre and off both roads, the arc is the
+            // nearest edge: the corner paints over the roads and holds the ground of its asphalt and sidewalk,
+            // with the radius, height and width of its ends by the share of the arc between them, as the slab has them.
+            let rule = profiles[(word(r + 5u) >> 16u) & 0xffu];
+            let o = point(r);
+            let ea = vec2f(point(r + 2u) - o);
+            let eb = vec2f(point(r + 10u) - o);
+            let e = vec2f(p - o);
+            let t = atan2(ea.x * e.y - ea.y * e.x, dot(ea, e)) / atan2(ea.x * eb.y - ea.y * eb.x, dot(ea, eb));
+            if (!road_shows(real(r + 12u), rule, level) || t < 0.0 || t > 1.0 || dot(e - ea, ea) > 0.0 || dot(e - eb, eb) > 0.0) {
+                continue;
+            }
+            let d = (mix(length(ea), length(eb), t) - length(e)) * unit;
+            let walk = mix(real(r + 8u), real(r + 9u), t);
+            if (d <= walk) {
+                let z = mix(real(r + 6u), real(r + 7u), t);
+                lo[ROAD_CORE] = max(lo[ROAD_CORE], z - rule.tol);
+                hi[ROAD_CORE] = min(hi[ROAD_CORE], z + rule.tol);
+            }
+            if (d - 3000.0 < paint_rank) {
+                paint_rank = d - 3000.0;
+                out.road = d;
+                // Far from any road's middle: no middle line.
+                out.across = INF;
+                out.surface = word(r + 5u) & SURFACE_BITS;
+                out.walk = walk;
+                out.ford = false;
+                out.sleepers = 0.0;
+            }
         } else if (kind == EDGE) {
             // Relative to the cell's origin and to the edge, so that every node that holds the edge gets the same bits.
             let a = point(r);

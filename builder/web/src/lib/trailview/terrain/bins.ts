@@ -4,6 +4,7 @@ import { EARTH_RADIUS } from '../frame/frame';
 import { DEEPEST, EXTENT, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
+import { cornersOf } from './corners';
 import { BUILT_M, LEFT, near, RIGHT, sidesNear, townOf, type Town } from './town';
 
 /** Words of a primitive record. */
@@ -21,9 +22,10 @@ export const INSIDE = 1 << 30;
  * the ground under its deck, and a tunnel holds the ground over its bore. A track holds its bed as a road
  * does, and counts its sleepers where a road has its tilts. A pad holds the ground inside its edges under
  * its level, as a platform does. An area, a building or a river area, holds no ground: the mask takes its
- * inside, where nothing stands. A walk from a house to its road only paints.
+ * inside, where nothing stands. A walk from a house to its road only paints. A corner of a junction paints
+ * and holds the ground of its asphalt and its sidewalk, as corners.ts makes it.
  */
-export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6, STREAM = 7, BRIDGE = 8, TUNNEL = 9, RAIL = 10, PAD = 11, AREA = 12, WALK = 13;
+export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6, STREAM = 7, BRIDGE = 8, TUNNEL = 9, RAIL = 10, PAD = 11, AREA = 12, WALK = 13, CORNER = 14;
 /** Road flags: a ford, the round caps of the core and the cone at the start and the end, and of the paint where the through road runs on into another line. */
 export const FORD = 1, CORE_A = 2, CORE_B = 4, CONE_A = 8, CONE_B = 16, JOIN_A = 32, JOIN_B = 64;
 /** No stamp reaches further than the feature tiles' buffer, so a primitive goes to each cell within it. */
@@ -662,6 +664,12 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
         if (!touched.length) continue;
         const at = record([x, y, 0, 0, JUNCTION, 0, f(h)]);
         for (const c of touched) cells[0][c].push(at);
+    }
+    for (const { o, a, b, z, walk, code, profile, h } of cornersOf(lines)) {
+        const xs = [o[0], a[0], b[0]], ys = [o[1], a[1], b[1]], touched = within([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], h);
+        if (!touched.length) continue;
+        const at = record([...o, ...a, CORNER, code | (profile << 16), f(z[0]), f(z[1]), f(walk[0]), f(walk[1]), ...b, f(h)]);
+        for (const c of touched) cells[2][c].push(at);
     }
     let heights = false;
     [...lines, ...walks].forEach((line, id) => {
