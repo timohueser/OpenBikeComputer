@@ -32,6 +32,10 @@
     let engine: TrailView | undefined;
     let view = $state<View>();
     let width = $state(0), height = $state(0);
+    // The plan's route draws on the terrain until the rider hides it; it may take the colours of its grade.
+    const hasRoute = $derived(near.route.length > 1);
+    let routeShown = $state(true), graded = $state(false);
+    const drawRoute = () => engine?.showRoute(routeShown ? near.route : [], graded);
     // The horizontal angle of the view, from the engine's vertical one and the window's shape.
     const fov = $derived(height ? 2 * Math.atan(Math.tan(VFOV * Math.PI / 360) * width / height) * 180 / Math.PI : VFOV);
 
@@ -61,6 +65,7 @@
             };
             if (abort.signal.aborted) return stop();
             engine = started;
+            drawRoute();
             view = started.view;
             started.onView = (next) => view = next;
             credits = creditsWith(started.attribution);
@@ -108,6 +113,12 @@
     {:else if view}
         <TrailViewMiniMap lat={view.lat} lon={view.lon} heading={view.heading} {fov} />
         <TrailViewConditions {view} onChange={change} />
+        {#if hasRoute}
+            <div class="route" role="group" aria-label="Route">
+                <button type="button" aria-pressed={routeShown} onclick={() => { routeShown = !routeShown; drawRoute(); }}><Icon name="route" />Route</button>
+                <button type="button" aria-pressed={graded} disabled={!routeShown} onclick={() => { graded = !graded; drawRoute(); }}><Icon name="mountain" />Grade</button>
+            </div>
+        {/if}
     {/if}
     <button type="button" class="close" aria-label="Close TrailView" onclick={() => dialog.close()}><Icon name="close" /></button>
     {#if credits.length}
@@ -230,6 +241,44 @@
     }
     .close:hover {
         color: var(--link);
+    }
+    .route {
+        position: absolute;
+        top: max(12px, env(safe-area-inset-top));
+        right: calc(max(12px, env(safe-area-inset-right)) + 44px);
+        display: flex;
+        height: 36px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--panel);
+        box-shadow: var(--planner-shadow);
+    }
+    .route button {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 12px;
+        border: 0;
+        background: none;
+        color: var(--ink-soft);
+        font: 700 14px var(--sans);
+        cursor: pointer;
+    }
+    .route button + button {
+        border-left: 1px solid var(--line-strong);
+    }
+    .route button[aria-pressed="true"] {
+        background: var(--parchment-2);
+        color: var(--ink);
+    }
+    .route button:disabled {
+        opacity: 0.45;
+        cursor: default;
+    }
+    .route button:focus-visible {
+        outline: 2px solid var(--forest);
+        outline-offset: -2px;
     }
     .credits {
         position: absolute;
