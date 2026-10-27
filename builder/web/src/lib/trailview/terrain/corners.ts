@@ -88,13 +88,13 @@ function cornersIn(lines: Line[]): { corners: Corner[]; grid: Grid } {
             (at.get(key) ?? at.set(key, []).get(key)!).push({ line, v });
         }
     }
-    const all = segmentsOf(lines), corners: Corner[] = [];
+    const all = segmentsOf(lines), partners = partnersOf(lines), corners: Corner[] = [];
     for (const here of at.values()) {
         if (here.every(({ line }) => line === here[0].line)) continue;
         const out = here.flatMap(({ line, v }) => [-1, 1].filter(step => v + step >= 0 && v + step < line.z.length).map(step => wayOut(line, v, step))).sort((p, q) => p.angle - q.angle);
         out.forEach((p, i) => {
             const q = out[(i + 1) % out.length], turn = q.angle - p.angle + (i + 1 === out.length ? 2 * Math.PI : 0);
-            const corner = turn < MAX_TURN ? cornerOf(p, q) : undefined;
+            const corner = turn < MAX_TURN ? cornerOf(p, q, partners) : undefined;
             if (corner && !reached(all, corner, p.line, q.line)) corners.push(corner);
         });
     }
@@ -154,7 +154,7 @@ function wayOut(line: Line, v: number, step: number): Way {
 }
 
 /** The corner from way p to way q, which turns toward it, with the arc's radius cut to keep its ends where the roads run straight from the junction. */
-function cornerOf(p: Way, q: Way): Corner | undefined {
+function cornerOf(p: Way, q: Way, partners: Map<Line, [Line?, Line?]>): Corner | undefined {
     const x = p.line.xy[2 * p.v], y = p.line.xy[2 * p.v + 1], unit = metresPerUnit(y);
     // The normals toward the corner, and the centre of the arc of radius r as metres from the junction.
     const np = [-p.uy, p.ux], nq = [q.uy, -q.ux], det = np[0] * nq[1] - np[1] * nq[0];
@@ -185,9 +185,10 @@ function cornerOf(p: Way, q: Way): Corner | undefined {
             if (step > 0 ? u <= 1 || s + 2 === line.z.length : u >= 0 || s === 0) break;
         }
         u = Math.min(1, Math.max(0, u));
-        const l = Math.hypot(dx, dy) || 1, side = dx * n[1] - dy * n[0] > 0 ? RIGHT : LEFT, sign = side === LEFT ? 1 : -1, across = (sign * line.h) / unit / l;
+        const h = halfAt(line, s, partners) + (halfAt(line, s + 1, partners) - halfAt(line, s, partners)) * u;
+        const l = Math.hypot(dx, dy) || 1, side = dx * n[1] - dy * n[0] > 0 ? RIGHT : LEFT, sign = side === LEFT ? 1 : -1, across = (sign * h) / unit / l;
         const at: [number, number] = [Math.round(line.xy[2 * s] + u * dx + dy * across), Math.round(line.xy[2 * s + 1] + u * dy - dx * across)];
-        const z = line.z[s] + (line.z[s + 1] - line.z[s]) * u - sign * line.h * crossSlope(line, s, u * l * unit, (1 - u) * l * unit);
+        const z = line.z[s] + (line.z[s + 1] - line.z[s]) * u - sign * h * crossSlope(line, s, u * l * unit, (1 - u) * l * unit);
         return [at, z, (line.sidewalks?.[s] ?? 0) & side ? Object.values(PROFILES)[line.profile].walk : 0];
     };
     const [a, za, wa] = end(p, np), [b, zb, wb] = end(q, nq), narrow = p.line.h <= q.line.h ? p.line : q.line;
