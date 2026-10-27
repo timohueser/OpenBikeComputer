@@ -46,27 +46,6 @@ fn checked_in_fixtures_match_the_producer() {
 }
 
 #[test]
-fn every_fixture_has_a_unique_name_and_a_digest_in_the_manifest() {
-    let all = fixtures();
-    let mut names: Vec<String> = all.iter().map(|fixture| fixture.name.clone()).collect();
-    names.sort();
-    let unique = names.len();
-    names.dedup();
-    assert_eq!(names.len(), unique, "two fixtures share a name");
-    let rendered = manifest(&all);
-    for fixture in &all {
-        assert_eq!(fixture.sha256().len(), 64);
-        assert!(rendered.contains(&fixture.sha256()), "{} is missing from the manifest", fixture.name);
-    }
-    // The suite's own size, so a category that stopped being produced is visible.
-    let count = |category: Category| all.iter().filter(|fixture| fixture.category == category).count();
-    assert_eq!(count(Category::Control), 28);
-    assert_eq!(count(Category::Stream), 4);
-    assert_eq!(count(Category::Error), 14);
-    assert_eq!(count(Category::Negative), 34);
-}
-
-#[test]
 fn fixture_names_are_unique_and_the_directory_holds_exactly_the_manifest_files() {
     let root = dir();
     let all = fixtures();

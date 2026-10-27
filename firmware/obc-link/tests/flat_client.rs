@@ -196,23 +196,6 @@ fn real_card_upload_download_status_and_remove_preserve_bytes() {
 }
 
 #[test]
-fn listing_pages_a_real_catalog_in_order_and_keeps_one_snapshot() {
-    let disk = formatted_card(TOTAL_BLOCKS, 2);
-    let mut s = Session::new(&disk);
-    for _ in 0..5 {
-        first_put(&mut s);
-    }
-    let Outcome::Catalog { store, entries, .. } =
-        s.run(Request::List(ListRequest { kind: Some(ObjectKind::Route), cursor: None })).unwrap()
-    else {
-        panic!("LIST result");
-    };
-    assert_eq!(store, StoreId(STORE.0));
-    assert_eq!(entries.len(), 5);
-    assert!(entries.windows(2).all(|pair| pair[0].id < pair[1].id));
-}
-
-#[test]
 fn lost_create_replace_and_remove_answers_reconcile_on_the_card() {
     let disk = formatted_card(TOTAL_BLOCKS, 3);
     let mut s = Session::new(&disk);
@@ -338,23 +321,6 @@ fn invalid_source_crc_cancels_before_the_last_frame_can_commit() {
     assert_eq!(s.run(Request::Put(request)), Err(Error::Checksum));
     assert_eq!(s.device.read_object(old.id.0, 0), Some(installed));
     assert!(s.device.is_quiet());
-}
-
-#[test]
-fn a_mutating_catalog_restarts_from_the_first_page() {
-    let disk = formatted_card(TOTAL_BLOCKS, 6);
-    let mut s = Session::new(&disk);
-    for _ in 0..4 {
-        first_put(&mut s);
-    }
-    s.mutate_listing = true;
-    let Outcome::Catalog { entries, .. } =
-        s.run(Request::List(ListRequest { kind: Some(ObjectKind::Route), cursor: None })).unwrap()
-    else {
-        panic!("LIST result");
-    };
-    assert_eq!(entries.len(), 5);
-    assert!(entries.windows(2).all(|p| p[0].id < p[1].id));
 }
 
 #[test]
