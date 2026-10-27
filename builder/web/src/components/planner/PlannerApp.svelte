@@ -1146,7 +1146,7 @@
                 <a href={`${siteBase}docs/`}>Docs</a>
                 <a href={`${siteBase}blog/`}>Blog</a>
                 <a href={`${siteBase}builder/`}>Maps</a>
-            {:else}<a href="/map-study.html">Map study</a>{/if}
+            {/if}
             <span aria-current="page">Route planner</span>
         </nav>
         <button type="button" class="theme" aria-label={theme === 'light' ? 'Use dark theme' : 'Use light theme'} onclick={toggleTheme}>

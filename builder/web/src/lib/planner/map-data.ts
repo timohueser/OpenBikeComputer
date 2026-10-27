@@ -1,5 +1,4 @@
 import { plannerConfig, type Bounds } from "./config";
-import type { Coordinate } from "./map-types";
 import { activeRelease, pageRelease, releaseFetch } from "./release";
 import type { CatalogRecord } from "./signed-routes";
 
@@ -8,13 +7,6 @@ const preview: string | undefined = import.meta.env.VITE_PLANNER_CONFIG;
 /** The planner config: the one that a local preview build carries, else the active release at page load. */
 export const config = plannerConfig(preview ? JSON.parse(preview) : await activeRelease());
 pageRelease(config.id);
-
-export const MAP_VIEWS: { name: string; center: Coordinate; zoom: number }[] = [
-    { name: "Freiburg · street detail", center: [7.849, 47.997], zoom: 14 },
-    { name: "Feldberg · mountain detail", center: [8.005, 47.873], zoom: 13 },
-    { name: "Stuttgart · city", center: [9.182, 48.775], zoom: 12 },
-    { name: "Baden-Württemberg · overview", center: [8.95, 48.65], zoom: 7 },
-];
 
 /** Whether the zoom 9 cell `9-X-Y` overlaps the bounds with a positive area. */
 export function coversCell(bounds: Bounds, id: string): boolean {
