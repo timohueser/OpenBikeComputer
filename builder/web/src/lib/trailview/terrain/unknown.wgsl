@@ -8,6 +8,8 @@ struct Varyings {
     @location(2) known: f32,
     @location(3) h: f32,
     @location(4) @interpolate(flat) level: u32,
+    // Metres to the nearest footprint of a portal's box (terrain.wgsl).
+    @location(5) near: f32,
 }
 
 // The fragment shader reads what the vertex shader writes.

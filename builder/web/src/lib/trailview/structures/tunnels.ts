@@ -4,14 +4,18 @@
 // hill over the bore behind it, and the terrain draws no ground in the box: the box hides the slope
 // between. Where the terrain draws coarser than level 17, that slope reaches past the box, and a dark
 // void fills the opening.
-import { metresPerUnit, RAIL_CODE, TUNNEL, type Line } from '../terrain/bins';
-import { INSIDE, LAMP, MeshBuilder, PAINT, posts, rgb, stationsOf, VOID, type Corner, type Station } from './mesh';
+import { metresPerUnit, RAIL_CODE, RULES, TUNNEL, type Line } from '../terrain/bins';
+import { BORE, LAMP, MeshBuilder, PAINT, posts, rgb, stationsOf, VOID, type Corner, type Station } from './mesh';
 import type { Owns } from './node';
 
 /** A portal of a road and of a path: the bore's margin past the road and the facade's wings past the opening. */
 const ROAD_PORTAL = { margin: 0.6, wings: 3 }, PATH_PORTAL = { margin: 0.3, wings: 1.2 };
-/** The depth of a portal's box: on level 17 the slope of the ground up over the bore (PORTAL_CELLS of stamp-core.wgsl) lies inside it. */
-const BOX_M = 12;
+/**
+ * The depth of a portal's box at world row y: on level 17, from which the bore shows (VOID_LOD of
+ * structures.wgsl), the ground's slope up over the bore ends within PORTAL_CELLS and a cell's diagonal
+ * of mesh cells from the facade. Level 17's texel is 32 world units.
+ */
+const boxDepth = (y: number) => (RULES.PORTAL_CELLS + Math.SQRT2) * RULES.MESH_TEXELS * 32 * metresPerUnit(y) + 1;
 /** A road's bore: the kerb's height, and its lamps' length and spacing. */
 const KERB_M = 0.15, LAMP_M = 1.2, LAMPS_M = 10;
 /** The arch springs at this share of the bore's height; the void stands this far in. The bore's road lies this far over the ground that runs into the portal. */
@@ -26,8 +30,8 @@ const ARCH = 8;
 
 const FACADE = rgb('#a5a299'), BOX = rgb('#8f8c84'), DARK = rgb('#0a0a0b', VOID);
 const ROCK_FACADE = rgb('#77716a'), ROCK_BOX = rgb('#6a655e');
-const TILES = rgb('#dcdad3', INSIDE), ARCH_LINING = rgb('#7f7e7a', INSIDE), WALK = rgb('#a3a19b', INSIDE), LIGHT = rgb('#fff3d6', LAMP);
-const ROCK = rgb('#6f6a62', INSIDE), ROCK_FLOOR = rgb('#7d7262', INSIDE), LINING = rgb('#8a877f', INSIDE);
+const TILES = rgb('#dcdad3', BORE), ARCH_LINING = rgb('#7f7e7a', BORE), WALK = rgb('#a3a19b', BORE), LIGHT = rgb('#fff3d6', LAMP);
+const ROCK = rgb('#6f6a62', BORE), ROCK_FLOOR = rgb('#7d7262', BORE), LINING = rgb('#8a877f', BORE);
 
 /** The half-width of a tunnel's bore, to its walls. */
 export const boreHalf = (line: Line) => line.h + (line.deck! > 3 ? ROAD_PORTAL : PATH_PORTAL).margin;
@@ -76,17 +80,19 @@ const segment = (line: Line, v: number) => Math.hypot(line.xy[2 * v + 2] - line.
  * its depth, its half-width to the middle of its walls, the heights of its roof's top and of the bore's
  * floor at the facade, and the rise of both per metre into the tunnel. The ground under the floor draws,
  * so no gap opens under the threshold. The rise is the least from the facade to a vertex in the box, so
- * that the box's foot stays under the floor where the tunnel steepens; a short tunnel's box ends at its
- * other portal.
+ * that the box's foot stays under the floor where the tunnel steepens, and the roof rises at the facade
+ * until it clears the crown at each vertex: the vault hides the ground over it. A box ends at the other
+ * end of a shorter tunnel if that end is a portal.
  */
 export function portalBox(line: Line, from: number, to: number, widen = 0): [number, number, number, number, number] {
-    const step = Math.sign(to - from), z = line.z[from];
-    let depth = 0, rise = Infinity;
-    for (let v = from; v !== to && depth < BOX_M; v += step) {
-        depth = Math.min(BOX_M, depth + segment(line, Math.min(v, v + step)));
-        rise = Math.min(rise, (along(line, from, to, depth).z - z) / depth);
+    const step = Math.sign(to - from), z = line.z[from], depth = boxDepth(line.xy[2 * from + 1]), places: [number, number][] = [];
+    for (let v = from, s = 0; v !== to && s < depth; v += step) {
+        s = Math.min(depth, s + segment(line, Math.min(v, v + step)));
+        places.push([s, along(line, from, to, s).z - z]);
     }
-    return [depth, boreHalf(line) + widen + WALL_M / 2, z + line.deck! + WALL_M, z + LIFT_M, rise];
+    const rise = Math.min(...places.map(([s, dz]) => dz / s)), lift = Math.max(0, ...places.map(([s, dz]) => dz - rise * s - WALL_M));
+    const end = places[places.length - 1][0], portal = line.abut![step > 0 ? 1 : 0];
+    return [portal ? end : depth, boreHalf(line) + widen + WALL_M / 2, z + line.deck! + WALL_M + lift, z + LIFT_M, rise];
 }
 
 /** The outline of a bore from its left foot over the arch to its right foot. */
@@ -140,7 +146,7 @@ function portal(b: MeshBuilder, line: Line, from: number, to: number, size: type
         const st = along(line, from, to, s);
         return { ...st, x: st.x + st.ax * pair.shift, y: st.y + st.ay * pair.shift };
     };
-    const front = at(0), face = at(FACADE_M), inside = at(VOID_M), back = at(BOX_M);
+    const front = at(0), face = at(FACADE_M), inside = at(VOID_M), back = at(boxDepth(line.xy[2 * from + 1]));
     const half = boreHalf(line) + pair.widen, height = line.deck!, spring = SPRING * height, wing = half + size.wings, top = height + WALL_M;
     const facade = road ? FACADE : ROCK_FACADE, body = road ? BOX : ROCK_BOX, arch = outline(half, height);
     // Out of the tunnel, east, north and up.
@@ -167,7 +173,7 @@ function portal(b: MeshBuilder, line: Line, from: number, to: number, size: type
 function bore(b: MeshBuilder, s: Station, t: Station, line: Line, half: number, road: boolean, length: number): void {
     const h = line.h, height = line.deck!, spring = SPRING * height, arch = outline(half, height);
     if (road) {
-        const paint = rgb('#000000', PAINT | INSIDE) | line.code;
+        const paint = rgb('#000000', PAINT | BORE) | line.code;
         b.quad([b.at(s, [-h, LIFT_M], paint, -h, h), b.at(s, [h, LIFT_M], paint, h, h), b.at(t, [h, LIFT_M], paint, h, h), b.at(t, [-h, LIFT_M], paint, -h, h)], b.outward(s, t, [0, 1]));
         for (const side of [1, -1]) {
             b.strip(s, t, [side * h, LIFT_M], [side * h, KERB_M], WALK, [-side, 0]);

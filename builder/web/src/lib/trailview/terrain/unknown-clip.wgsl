@@ -11,6 +11,8 @@ struct Varyings {
     @location(1) relative: vec3f,
     @location(3) h: f32,
     @location(4) @interpolate(flat) level: u32,
+    // Metres to the nearest footprint of a portal's box (terrain.wgsl).
+    @location(5) near: f32,
 }
 
 // A fragment shader cannot read a clip distance.
@@ -20,6 +22,8 @@ struct Fragment {
     @location(1) relative: vec3f,
     @location(3) h: f32,
     @location(4) @interpolate(flat) level: u32,
+    // Metres to the nearest footprint of a portal's box (terrain.wgsl).
+    @location(5) near: f32,
 }
 
 fn mark_known(out: ptr<function, Varyings>, known: bool) {

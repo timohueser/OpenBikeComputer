@@ -13,9 +13,11 @@ export const NO_SLEEPERS = -1e9;
 /**
  * Vertex flags in the colour's alpha: z is metres above the drawn surface; the face is a road, its colour's
  * red the surface code; the face is the dark void of a tunnel's opening, drawn only where the terrain draws
- * coarser than level 17; the face lies inside a tunnel, lit by its lamps; the face is a lamp.
+ * coarser than level 17; the face lies under a gallery's roof, in an even light; the face is a lamp; the
+ * face lies in a tunnel's bore, lit by its lamps and near a portal by daylight. 32 and 64 are flags of
+ * anchored.ts.
  */
-export const GROUND = 1, PAINT = 2, VOID = 4, INSIDE = 8, LAMP = 16;
+export const GROUND = 1, PAINT = 2, VOID = 4, INSIDE = 8, LAMP = 16, BORE = 128;
 
 export interface StructureMesh {
     vertices: ArrayBuffer;
