@@ -239,7 +239,7 @@ mod tests {
             (2, lon + 0.6, ("building", "yes")),
             (3, lon + 0.6, ("natural", "water")),
             (4, lon + 4.0, ("natural", "water")),
-            (5, lon + 0.002, ("amenity", "bench")),
+            (5, lon + 0.002, ("amenity", "parking")),
         ];
         let (mut nodes, mut points, mut lines) = (0, String::new(), String::new());
         for (way, x, (key, value)) in ways {
