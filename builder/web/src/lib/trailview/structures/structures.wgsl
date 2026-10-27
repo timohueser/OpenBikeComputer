@@ -202,7 +202,7 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     let along_w = max(abs(dpdx(in.sleepers)), abs(dpdy(in.sleepers))) * SLEEPER_SPACING_M;
     if ((flags & ROAD_FACE) != 0u) {
         let across = abs(in.road.x);
-        albedo = road_surface(region_at(lod_space(in.u)), u32(round(in.colour.r * 255.0)), max(in.road.y - across, 0.0), across, in.road.y, false, in.sleepers, look.place.xy + in.relative.xy, w, w, along_w).rgb;
+        albedo = road_surface(region_at(lod_space(in.u)), u32(round(in.colour.r * 255.0)), max(in.road.y - across, 0.0), across, in.road.y, in.sleepers, look.place.xy + in.relative.xy, w, w, along_w).rgb;
     }
     if ((flags & STONE_FACE) != 0u) {
         let su = lod_space(in.u);

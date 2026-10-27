@@ -300,7 +300,7 @@ fn crosses(c: vec2f, p: vec2f, a: vec2f, b: vec2f) -> bool {
 
 // The intervals at a texel and what the mask holds: the edge of the carriageway of the painted road
 // (negative inside), the metres from its middle (signed by side), its surface, the width of its
-// sidewalk on the texel's side and whether it has one on either side, a track's sleepers from its start,
+// sidewalk on the texel's side, a track's sleepers from its start,
 // the water height (NONE without water) and the flags.
 struct Stamp {
     lo: f32,
@@ -311,7 +311,6 @@ struct Stamp {
     across: f32,
     surface: u32,
     walk: f32,
-    town: bool,
     ford: bool,
     sleepers: f32,
     // The nearest lake shore alone, negative in a lake.
@@ -326,7 +325,7 @@ struct Stamp {
 // The stamp of world point p, a texel centre of a node of `level` whose first texel is `first`, from
 // the node's data at `data`.
 fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
-    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, 0.0, false, false, 0.0, INF, false, false, false);
+    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, 0.0, false, 0.0, INF, false, false, false);
     if (data == NO_DATA) {
         return out;
     }
@@ -486,7 +485,6 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 out.across = g.side * g.lateral;
                 out.surface = word(r + 5u) & SURFACE_BITS;
                 out.walk = walk;
-                out.town = (word(r + 5u) & (LEFT_WALK | RIGHT_WALK)) != 0u;
                 out.ford = ((word(r + 5u) >> 8u) & FORD) != 0u;
                 out.sleepers = select(0.0, sleepers_at(r, kind, g), out.surface >= TRACK_CODE);
             }

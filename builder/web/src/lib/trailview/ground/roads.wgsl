@@ -98,10 +98,10 @@ fn kerbed(region: u32, road: vec3f, edge: f32, walk: f32, p: vec2f, w: f32, cros
 
 // A road's surface at `inside` metres in from its edge and `across` metres from its middle, `half`
 // metres wide on each side, seen by a pixel w metres wide that spans `cross_w` metres across the road, with the share of the ground beside it that shows through. Paved main roads
-// keep a line along each edge and one in the middle; lanes out of `town` and tracks wear two wheel ruts, grass and
-// dirt ones with grass between; gravel lies in grains. Codes as SURFACES of bins.ts: main, road,
+// keep a line along each edge and one in the middle; asphalt wears no ruts, gravel, dirt and grass
+// tracks wear two, the dirt and grass ones with grass between; gravel lies in grains. Codes as SURFACES of bins.ts: main, road,
 // gravel, dirt, grass, path, oneway: a one-way main road, no line in its middle; paving; then the tracks.
-fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, town: bool, sleepers: f32, p: vec2f, w: f32, cross_w: f32, along_w: f32) -> vec4f {
+fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, sleepers: f32, p: vec2f, w: f32, cross_w: f32, along_w: f32) -> vec4f {
     if (code >= RAIL_CODE) {
         return vec4f(track_surface(code, across, sleepers, p, w, cross_w, along_w), 0.0);
     }
@@ -118,14 +118,9 @@ fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, tow
         let line = rule(region, slot_road_line()).rgb;
         c = mix(c, line, max(band(inside, 0.25, 0.37, cross_w), select(band(across, -0.06, 0.06, cross_w), 0.0, oneway)));
     }
-    if (code == 3u) {
-        c *= 0.93 + 0.14 * mix(0.5, noise(p / 0.18), 1.0 - smoothstep(0.05, 0.25, w));
-    }
     let ruts = band(across, 0.55, 1.05, cross_w);
-    // One car wide; a town's asphalt wears no ruts.
-    let lane = half < 2.6 && !town;
-    if ((code == 2u && lane) || code == 3u) {
-        c *= 1.0 - 0.08 * ruts;
+    if (code == 3u) {
+        c *= (0.93 + 0.14 * mix(0.5, noise(p / 0.18), 1.0 - smoothstep(0.05, 0.25, w))) * (1.0 - 0.08 * ruts);
     }
     if (code == 4u) {
         return vec4f(c * (1.0 - 0.18 * ruts), band(across, -1.0, 0.3 + 0.12 * noise(p / 0.6), cross_w) * 0.85);
@@ -195,7 +190,7 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
     let cross_w = select(w, max(length(vec2f(dot(ds[0], mask.axis), dot(ds[1], mask.axis))), 1e-3), known);
     let ahead = vec2f(-mask.axis.y, mask.axis.x);
     let along_w = select(w, max(length(vec2f(dot(ds[0], ahead), dot(ds[1], ahead))), 1e-3), known);
-    var surface = road_surface(region, code, max(-edge, 0.0), across, half, mask.town, mask.sleepers, p, w, cross_w, along_w);
+    var surface = road_surface(region, code, max(-edge, 0.0), across, half, mask.sleepers, p, w, cross_w, along_w);
     if (walk > 0.0) {
         surface = vec4f(kerbed(region, surface.rgb, edge, walk, p, w, cross_w), surface.w);
     }
