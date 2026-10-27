@@ -20,6 +20,8 @@ forest-reference = [{ include-group = "planner-maps" }, "numpy==2.5.3", "numba==
 terrain-reference = ["rasterio==1.5.2", "pyproj==3.8.0", "numpy==2.5.3"]
 # TrailView: the ruleset, ground and colour tiles. rasterio and pyogrio each bring their own GDAL; osmium reads the OSM areas.
 trailview = [{ include-group = "planner-maps" }, "rasterio==1.5.2", "pyproj==3.8.0", "numpy==2.5.3", "shapely==2.1.2", "pyogrio==0.13.0", "osmium==4.3.2"]
+# The TrailView night sky: OpenEXR reads the Milky Way.
+trailview-sky = [{ include-group = "planner-maps" }, "numpy==2.5.3", "openexr==3.5.2"]
 # The search databases, and the country policy that PyYAML reads from the Nominatim archive.
 planner-search = ["orjson==3.12.0", "pyyaml==6.0.2", "shapely==2.1.2", "zstandard==0.25.0"]
 
