@@ -14,10 +14,11 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Reader, Run, Shape, Step};
+use obc_data::ground::GroundSource;
 use obc_data::product::{version, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{geofabrik, Area, Bbox, Regions};
 use obc_data::release::{Output, Release};
-use obc_data::sources::{attribution, embedded};
+use obc_data::sources::{attribution, embedded, FetchKind};
 use obc_data::store::Store;
 use obc_dem::reference::{Window, TILE_LOG2};
 use obc_dem::step::GLO30;
@@ -55,7 +56,8 @@ pub static PLANNER_TRAILVIEW_RULES: Layer =
     whole("planner/trailview-rules", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_GROUND]);
 /// The TrailView ground tiles: the material, the lithology and the region in one tile. Its format is
 /// `trailview_format` of the ground archive in `specs/trailview-tiles.md`.
-pub static PLANNER_TRAILVIEW_GROUND: Layer = whole("planner/trailview-ground", 3, &[&WEB_PLANNER]);
+pub static PLANNER_TRAILVIEW_GROUND: Layer =
+    Layer { revision: 2, ..whole("planner/trailview-ground", 3, &[&WEB_PLANNER]) };
 /// The TrailView colour tiles. Its format is `trailview_format` of a colour archive in
 /// `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_COLOUR: Layer = whole("planner/trailview-colour", 2, &[&WEB_PLANNER]);
@@ -867,7 +869,8 @@ fn trailview(
     };
     if let Some(grid) = grid {
         let rules = |file: &str| layer_files("planner/trailview-rules", &[file]);
-        let tiles = worldcover_tiles(bounds, &grid)?.into_iter().map(|tile| ("tile".to_string(), tile)).collect();
+        let tiles: Vec<_> =
+            worldcover_tiles(bounds, &grid)?.into_iter().map(|tile| ("tile".to_string(), tile)).collect();
         let ground = |layer: &str, reads: Vec<Input>| {
             let output = format!("{layer}.pmtiles");
             python(
@@ -879,32 +882,33 @@ fn trailview(
                 &[&output],
             )
         };
-        let material = vec![
-            rules("materials.json"),
-            layer_files("planner/osm", &["osm.pbf"]),
-            snapshot(inputs, store, "esa-worldcover", tiles, wanted)?,
-            snapshot(inputs, store, "corine-land-cover", vec![bbox.clone()], wanted)?,
-            snapshot(inputs, store, "sentinel-2-mosaics", mosaics.clone(), wanted)?,
-        ];
-        let maps = ["egdi-geology", "igme5000"];
-        let lithology = std::iter::once(Ok(rules("materials.json")))
-            .chain(maps.map(|source| snapshot(inputs, store, source, Vec::new(), wanted)))
-            .collect::<Result<_, _>>()?;
+        let chains = obc_data::ground::Ground::load(root).map_err(Unplanned::Failed)?;
+        let mut read = |chain: &[GroundSource], mut reads: Vec<Input>| {
+            for id in ground_sources(chain, bounds) {
+                reads.push(match id {
+                    "osm-planet" => layer_files("planner/osm", &["osm.pbf"]),
+                    "esa-worldcover" => snapshot(inputs, store, id, tiles.clone(), wanted)?,
+                    "sentinel-2-mosaics" => snapshot(inputs, store, id, mosaics.clone(), wanted)?,
+                    _ if embedded(id).fetch.kind == FetchKind::Capture => {
+                        snapshot(inputs, store, id, vec![bbox.clone()], wanted)?
+                    }
+                    _ => snapshot(inputs, store, id, Vec::new(), wanted)?,
+                });
+            }
+            Ok::<_, Unplanned>(reads)
+        };
+        let lithology_output = layer_files("planner/trailview-lithology", &["lithology.pmtiles"]);
+        let chain_rules = || layer_files("planner/trailview-rules", &["materials.json", "ground.json"]);
+        let material = read(&chains.material.sources, vec![chain_rules(), lithology_output])?;
+        let lithology = read(&chains.lithology.sources, vec![chain_rules()])?;
         let parts = [("material", material), ("lithology", lithology), ("region", vec![rules("regions.json")])];
         let joined = parts
             .iter()
             .map(|(layer, _)| layer_files(&format!("planner/trailview-{layer}"), &[&format!("{layer}.pmtiles")]));
         let mut joined = ground("ground", joined.collect());
-        joined.options["attribution"] = json!(credit(&[
-            "esa-worldcover",
-            "sentinel-2-mosaics",
-            "corine-land-cover",
-            "osm-planet",
-            "egdi-geology",
-            "igme5000",
-            "resolve-ecoregions",
-            "natural-earth"
-        ]));
+        let mut credits = ground_sources(chains.material.sources.iter().chain(&chains.lithology.sources), bounds);
+        credits.extend(["resolve-ecoregions", "natural-earth"]);
+        joined.options["attribution"] = json!(credit(&credits));
         steps.extend(parts.into_iter().map(|(layer, reads)| Step { client: Client::None, ..ground(layer, reads) }));
         steps.push(joined);
     }
@@ -983,6 +987,19 @@ fn ruleset(root: &Path) -> Result<String, String> {
     let mut files = Vec::new();
     walk(&base, &base, &mut files)?;
     Ok(obc_data::engine::digest(files.iter().map(|(name, sha256)| (name.as_str(), sha256.as_str()))))
+}
+
+/// The sources of a ground chain that its step reads over `bounds`, each once: a source with an
+/// `extent` only where the extent meets the bounds.
+fn ground_sources<'a>(chain: impl IntoIterator<Item = &'a GroundSource>, bounds: [f64; 4]) -> Vec<&'a str> {
+    let mut ids: Vec<&str> = Vec::new();
+    for step in chain {
+        let source = embedded(&step.source);
+        if (source.extent.is_none() || source.meets(bounds)) && !ids.contains(&step.source.as_str()) {
+            ids.push(&step.source);
+        }
+    }
+    ids
 }
 
 /// The 3° WorldCover tiles that `bounds` overlaps and that its grid lists, named by their south-west
@@ -1699,12 +1716,18 @@ mod tests {
         assert_eq!(
             read(get("planner/trailview-material")),
             [
-                r#"planner/trailview-rules["materials.json"]"#,
-                r#"planner/osm["osm.pbf"]"#,
+                r#"planner/trailview-rules["materials.json", "ground.json"]"#,
+                r#"planner/trailview-lithology["lithology.pmtiles"]"#,
                 r#"esa-worldcover[("tile", "N45E006")]"#,
-                r#"corine-land-cover[("bbox", "7.79,47.99,7.82,48.02")]"#,
                 r#"sentinel-2-mosaics[("bbox", "7.79,47.99,7.82,48.02"), ("year", "2025")]"#,
+                r#"planner/osm["osm.pbf"]"#,
+                r#"corine-land-cover[("bbox", "7.79,47.99,7.82,48.02")]"#,
             ]
+        );
+        assert_eq!(
+            read(get("planner/trailview-lithology")),
+            [r#"planner/trailview-rules["materials.json", "ground.json"]"#, "igme5000[]", "egdi-geology[]",],
+            "no national map meets the box"
         );
         assert_eq!(read(get("planner/trailview-region")), [r#"planner/trailview-rules["regions.json"]"#]);
         assert_eq!(

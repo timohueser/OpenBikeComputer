@@ -36,25 +36,6 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                 },
             )
         }
-        "corine-land-cover" => {
-            let [bbox] = values(request, ["bbox"])?;
-            let bbox = parse_bbox(bbox)?;
-            capture(
-                store,
-                request,
-                &format!("bbox={bbox}"),
-                &[source],
-                |_| &[0],
-                false,
-                |_, out| {
-                    let mut command = python(root, Some("trailview"))?;
-                    command
-                        .args(["-m", "tools.trailview.ground", &format!("--bounds={bbox}"), "--fetch-corine"])
-                        .arg(out);
-                    Ok(command)
-                },
-            )
-        }
         "sentinel-2-mosaics" => {
             let [bbox, year] = values(request, ["bbox", "year"])?;
             let bbox = parse_bbox(bbox)?;
@@ -94,6 +75,32 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                     let mut command = python(root, Some("planner-climate"))?;
                     command.args(["-m", "tools.planner_climate", &format!("--bounds={bbox}"), "--first-year", first]);
                     command.arg("--fetch").arg(out);
+                    Ok(command)
+                },
+            )
+        }
+        id if crate::ground::Ground::load(root).is_ok_and(|ground| ground.captured(id)) => {
+            let [bbox] = values(request, ["bbox"])?;
+            let bbox = parse_bbox(bbox)?;
+            capture(
+                store,
+                request,
+                &format!("bbox={bbox}"),
+                &[source],
+                |_| &[0],
+                // A national map has no feature in parts of its extent.
+                true,
+                |_, out| {
+                    let mut command = python(root, Some("trailview"))?;
+                    command.args([
+                        "-m",
+                        "tools.trailview.ground",
+                        &format!("--bounds={bbox}"),
+                        "--source",
+                        id,
+                        "--fetch",
+                    ]);
+                    command.arg(out);
                     Ok(command)
                 },
             )

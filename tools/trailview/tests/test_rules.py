@@ -34,6 +34,13 @@ CASES = [
     ("packs/alps", ["ground", "bilberry", "model"], "norway-spruce", "regions/alps.json: pack alps: ground plant bilberry has no model norway-spruce"),
     ("packs/alps", ["orchard"], "apple", "regions/alps.json: pack alps: orchard has no model apple"),
     ("packs/alps", ["style", "xx-yy"], "chalet", "regions/alps.json: xx-yy is not a place of countries.json"),
+    # Not the prototype's: a ground source is a row of data/sources.toml, and its legend names the vocabulary.
+    ("ground", ["material", "sources", 3, "source"], "land-cover-xx",
+     'ground.json: material.sources[3].source: "land-cover-xx" is not a source of data/sources.toml'),
+    ("ground", ["lithology", "sources", 0, "legend", "classes", 0, 1], "lava",
+     'ground.json: lithology.sources[0].legend.classes[0][1]: "lava" is not one of ' + ", ".join(
+         f'"{entry["id"]}"' for entry in RULESET["materials"]["lithologies"])),
+    ("ground", ["lithology", "sources", 0, "zoom"], DELETE, "ground.json: lithology.sources[0]: has no zoom"),
 ]
 
 

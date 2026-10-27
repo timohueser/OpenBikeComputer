@@ -65,26 +65,67 @@ saw snow counts as NDVI −1.
 A material code above 63 needs a new format. The ruleset check rejects more than 255 region ids, so
 a region id is 0 to 254; more ids need a new format, with two bytes.
 
-The material and the barren share come from the sources at zoom 13, the lithology and the region
-at zoom 10. A coarser texel takes the most common byte of its four children, the first in reading
-order on a tie. A material or region texel with no data counts only where all four have no data,
-and a missing child has no data. A coarser barren share is the rounded mean of the children with
-data. At zooms 11 to 13, a lithology or region texel is the zoom 10 texel that holds its centre.
-A tile is in the archive where its material has data.
+The material and the barren share come from the sources at zoom 13 and the region at zoom 10. The
+lithology comes from the sources at the highest `zoom` of the lithology sources that the step reads,
+and at least at zoom 10. A coarser texel takes the most common byte of its four children,
+the first in reading order on a tie. A material or region texel with no data counts only where all
+four have no data, and a missing child has no data. A coarser barren share is the rounded mean of
+the children with data. Finer than the last zoom of its layer, a lithology or region texel is the
+texel of that zoom that holds its centre. A tile is in the archive where its material has data.
 
-The material chain refines a baseline. Each step changes a texel only where the step names the
-material more precisely: the table `REFINES` of `ground.py`.
+### Ground sources
 
-1. ESA WorldCover, its class as a material. Finer than its 10 m pixels, a shore takes the
-   majority of water within half a pixel.
-2. Sentinel-2 heath: open ground that is as red as it is green while its NDVI is high and near
-   the year's highest.
-3. OSM forests with a `leaf_type`.
-4. CORINE Land Cover.
-5. OSM natural and landuse areas, and kinds of wetland.
+`data/trailview/ground.json` lists the sources of the material and of the lithology. The ruleset
+step checks it and writes it as `ground.json`, which the material and lithology steps read. Each
+layer has `refines` and `sources`:
 
-The lithology is the rock of the unit of EGDI's 1:1 000 000 map, and of IGME 5000 where EGDI
-names no rock. A term that the tables `EGDI` and `IGME5000` of `ground.py` do not list is unknown.
+- `refines` maps a material or lithology to the ones that it names more precisely.
+- `sources` is the chain, in the order it applies. A material texel starts as `none`, a lithology
+  texel as `unknown`. A step reads each source of its chain once, and a source with an `extent` in
+  `data/sources.toml` only where the extent meets the bounds.
+
+A source of the chain has these keys:
+
+| Key | Value |
+| --- | --- |
+| `source` | The id of its row in `data/sources.toml`: its licence, credit, fetch and extent |
+| `protocol` | How the step reads its files, see below |
+| `layer` | The layer of a vector file, the type of a WFS, or the layer of a map service |
+| `field` | The attribute that names the class of a feature |
+| `px_m` | The pixel size of a raster or of a map image, in metres |
+| `crs` | The CRS of the map images |
+| `legend` | `match` and `classes`: `[native class, name]` pairs, where a name is an id of `materials.json` |
+| `combine` | `authority` or `refine`, see below |
+| `zoom` | A lithology source only: the highest zoom that its detail fills, 10 to 13 |
+| `reach_m` | A vector source only: where it names no class, its nearest class within this reach also refines the texel |
+
+| `protocol` | Files |
+| --- | --- |
+| `raster` | GeoTIFFs of class values. With `px_m`, finer than its pixels, a shore takes the majority of `inland-water` within half a pixel |
+| `vector` | A GeoPackage, a zipped Shapefile or GeoJSON, by the file name |
+| `arcgis-features`, `wfs` | The GeoJSON of its capture, see [Fetch](obc-data.md#fetch) |
+| `arcgis-image` | The map images of its capture: a class is the label of the legend swatch of its colour |
+| `osm` | The areas of `osm.pbf` of `planner/osm` |
+
+A class matches by its `match`:
+
+| `match` | Class |
+| --- | --- |
+| `code` | The native class equals the value, or the last part of a URI value |
+| `prefix` | The longest native class that starts the value |
+| `word` | The native class that the value holds first, ignoring case; the longest on a tie |
+| `tags` | The first native class, an object of tags, whose tags all hold on the OSM area |
+
+A value without a class names nothing. `authority` takes each class that the source names, but a
+material source keeps `inland-water`. `refine` takes a class only where `refines` lists the
+texel's code for that class.
+
+The entry with `rule: satellite-heath` reads `sentinel-2-mosaics`. It makes `material` of each
+texel whose material it lists in `on`, where the summer quarter, or spring where summer saw
+nothing, measured green below `green_red` × red, an NDVI of `ndvi` or more, and an NDVI no more
+than `peak` below the year's highest. On a lithology of `spring_on`, spring also measured green
+below `spring_green_red` × red, or saw snow or nothing. The material step reads the lithology
+archive for this rule.
 
 The region is the ecoregion of `ecoregions.json` that holds the texel centre, or the nearest one
 within 25 km, else `world`. From there the texel steps into the subregion whose `where` holds it,
