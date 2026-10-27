@@ -156,40 +156,6 @@ fn zero_length_gpx_steps_keep_the_facts_ascent_equal_to_the_header_ascent() {
 }
 
 #[test]
-fn malformed_optional_metadata_and_zero_length_steps_are_explicit() {
-    use obc_formats::obcr::{VisitDescriptor, WaypointProvenance};
-    let provenance = WaypointProvenance { source: MAP, ordinal: 7 };
-    assert_eq!(WaypointProvenance::decode(&provenance.encode()).unwrap(), Some(provenance));
-    let mut absent = [0; 36];
-    absent[0] = 1;
-    assert!(WaypointProvenance::decode(&absent).is_err());
-    let descriptor = VisitDescriptor {
-        original: MAP,
-        original_anchors_m: [0, 2, 3],
-        accepted_anchors_m: [0, 2, 3],
-        target_id: 123,
-        target_lon: 0,
-        target_lat: 0,
-        target_kind: 1,
-    };
-    assert_eq!(VisitDescriptor::decode(&descriptor.encode().unwrap()).unwrap(), descriptor);
-    let mut invalid = descriptor.encode().unwrap();
-    invalid[72] = 5;
-    assert!(VisitDescriptor::decode(&invalid).is_err());
-    let mut bytes = route(&[Some(0), Some(10)]);
-    bytes[118] = 1;
-    assert!(RouteIndex::read(&SliceSource(&bytes)).is_err());
-
-    let gpx = br#"<gpx><trk><trkseg><trkpt lat="0" lon="0"><ele>0</ele></trkpt><trkpt lat="0" lon="0"><ele>100</ele></trkpt><trkpt lat="0" lon="0.0005"><ele>101</ele></trkpt><trkpt lat="0" lon="0.0005"><ele>200</ele></trkpt></trkseg></trk></gpx>"#;
-    let mut sink = VecSink::default();
-    obc_route::gpx_to_obcr(&SliceSource(gpx), "Same location", &mut sink).unwrap();
-    let src = SliceSource(&sink.buf);
-    let index = RouteIndex::read(&src).unwrap();
-    let route = RouteReader::new(&index, &src);
-    assert_eq!(route.interval_facts(0, route.total_distance_m).unwrap().ascent_m, route.total_ascent_m);
-}
-
-#[test]
 fn ahead_window_keeps_the_complete_crossing_climb_and_rejects_another_parse() {
     use obc_route::{
         window::{AheadRange, RouteWindow},

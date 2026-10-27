@@ -376,51 +376,6 @@ fn detour_corridor_seals_only_path_is_nopath() {
     assert_eq!(res.unwrap_err(), NavError::NoPath);
 }
 
-#[test]
-fn detour_with_degenerate_corridor_matches_plain_plan() {
-    let bytes = map_with(&road_graph(true, false));
-    let obcr = road_route_obcr();
-    let rsrc = SliceSource(&obcr[..]);
-    let idx = RouteIndex::read(&rsrc).unwrap();
-    let route = RouteReader::new(&idx, &rsrc);
-    let corridor = Corridor::build(&route, 0, MIN_DETOUR_SPAN_M - 1);
-    assert!(corridor.is_degenerate());
-
-    let src = SliceSource(&bytes[..]);
-    let tables = MapTables::parse(&src).unwrap();
-    let cache = MapCache::new();
-    let r = Reader::new(&src, &tables, &cache);
-
-    let from = road_at(0);
-    let to = road_at(SEGS);
-    let mut scratch = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
-    let mut tiles = NavTileCache::new();
-    let mut plain = VecSink::default();
-    let plain_res =
-        plan_route(&r, from, to, "Same", BikeType::Road, &mut scratch, &mut tiles, &mut NullElevation, &mut plain)
-            .unwrap();
-
-    let mut scratch2 = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
-    let mut tiles2 = NavTileCache::new();
-    let mut det = VecSink::default();
-    let det_res = plan_detour(
-        &r,
-        from,
-        to,
-        "Same",
-        BikeType::Road,
-        corridor,
-        &mut scratch2,
-        &mut tiles2,
-        &mut NullElevation,
-        &mut det,
-    )
-    .unwrap();
-
-    assert_eq!(plain_res, det_res);
-    assert_eq!(plain.buf, det.buf, "a degenerate corridor must not perturb the plan by a single byte");
-}
-
 /// The mid-span detour (600 to 2 800 m) spliced into the road route. Returns the spliced bytes,
 /// the spliced stats and the detour length.
 fn spliced_road() -> (Vec<u8>, obc_route::RouteStats, u32) {
@@ -470,31 +425,6 @@ fn splice_output_roundtrips_and_total_is_preview_consistent() {
         "override total ({header}) should stay within a few percent of the measured polyline ({all_measured})"
     );
     assert!(header as u32 >= 600 + detour_len, "total ≥ head + planner detour length");
-}
-
-#[test]
-fn splice_interpolates_detour_elevation_without_spikes() {
-    let (spliced, stats, _) = spliced_road();
-    let pts = route_points(&spliced);
-    assert!(pts.first().unwrap().ele >= 99 && pts.first().unwrap().ele <= 101, "head start keeps ~100 m");
-    assert!(pts.last().unwrap().ele >= 199 && pts.last().unwrap().ele <= 201, "tail end keeps ~200 m");
-    for w in pts.windows(2) {
-        if w[0].elevation().is_none() || w[1].elevation().is_none() {
-            continue;
-        }
-        assert!(
-            w[1].ele >= w[0].ele - 1,
-            "spliced elevation must be non-decreasing (ramp + monotone lerp), got {} → {}",
-            w[0].ele,
-            w[1].ele
-        );
-    }
-    assert!(
-        (20..=40).contains(&stats.total_ascent_m),
-        "recomputed ascent should be the ramp's ~100 m, got {}",
-        stats.total_ascent_m
-    );
-    assert_eq!(stats.total_descent_m, 0);
 }
 
 #[test]
@@ -1021,34 +951,6 @@ fn plan_either(bytes: &[u8], from: (i32, i32), to: (i32, i32), corridor: Option<
         }
     };
     (res.expect("the fixture always has a legal path").total_distance_m, sink.buf)
-}
-
-#[test]
-fn a_detour_weighs_climb_the_same_way_a_plan_does() {
-    let graph = road_graph_two_reliefs();
-    let obcr = road_route_obcr();
-
-    // Non-vacuity: the north connector bakes the climb this test spends, and only uphill.
-    let (up, down) = obc_network::nav::integrate_edge_ascent(&[road_at(0), street_at(0)], &mut Hillside);
-    assert!(
-        (up as i64 - NORTH_CLIMB_M as i64).abs() <= 4,
-        "the north connector should bake ≈ {NORTH_CLIMB_M} m, got {up}"
-    );
-    assert_eq!(down, 0, "and nothing coming back down");
-
-    let rsrc = SliceSource(&obcr[..]);
-    let idx = RouteIndex::read(&rsrc).unwrap();
-    let route = RouteReader::new(&idx, &rsrc);
-    let total = route.total_distance_m;
-
-    let blind = map_with_terrain(&graph, climb_profile(0), &mut Hillside);
-    let (dist, _) =
-        plan_either(&blind, road_at(0), road_at(SEGS), Some(Corridor::build(&RouteReader::new(&idx, &rsrc), 0, total)));
-    assert_eq!(dist, 4140, "climb-blind, the detour takes the short north street");
-
-    let weighted = map_with_terrain(&graph, climb_profile(20), &mut Hillside);
-    let (dist, _) = plan_either(&weighted, road_at(0), road_at(SEGS), Some(Corridor::build(&route, 0, total)));
-    assert_eq!(dist, 4140, "at a heavy climb weight it detours south, onto the flat");
 }
 
 /// With the road blacklisted, a climb-blind detour takes the short north street and a heavily

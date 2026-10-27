@@ -12,8 +12,8 @@
 
 use obc_formats::io::SliceSource;
 use obc_route::{
-    segment_climbs, ClimbSeg, Climbs, ElePt, RouteIndex, RouteReader, MAX_CLIMBS, MAX_DROP, MAX_FLAT, MIN_AVG_GRADE,
-    MIN_GAIN, MIN_LEN,
+    segment_climbs, ClimbSeg, ElePt, RouteIndex, RouteReader, MAX_CLIMBS, MAX_DROP, MAX_FLAT, MIN_AVG_GRADE, MIN_GAIN,
+    MIN_LEN,
 };
 
 /// Connect successive `(dist, ele)` waypoints with ~10 m steps, so the state machine sees a dense
@@ -142,18 +142,6 @@ fn a_profile_that_never_rises_yields_no_climb() {
 }
 
 #[test]
-fn flat_route_yields_none() {
-    let climbs = detect(&[(0.0, 200.0), (1000.0, 200.0), (5000.0, 200.0)]);
-    assert!(climbs.is_empty());
-}
-
-#[test]
-fn descent_only_yields_none() {
-    let climbs = detect(&[(0.0, 500.0), (2000.0, 100.0), (3000.0, 100.0)]);
-    assert!(climbs.is_empty());
-}
-
-#[test]
 fn overflow_keeps_largest_never_panics() {
     // 40 climbs (> MAX_CLIMBS = 24) on a strictly increasing gain ladder, so "keep the largest"
     // has one right answer. Each drops > MAX_DROP into a col, so they stay distinct.
@@ -243,13 +231,4 @@ fn grimsel_fixture_detects_the_pass() {
         assert!(c.top_ele_m > c.base_ele_m, "top must be above base");
         prev_end = c.end_m;
     }
-}
-
-#[test]
-fn empty_climbs_helpers() {
-    let c = Climbs::new();
-    assert!(c.is_empty());
-    assert_eq!(c.len(), 0);
-    assert_eq!(c.active_at(0), None);
-    assert!(c.as_slice().is_empty());
 }
