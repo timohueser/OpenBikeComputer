@@ -2,13 +2,16 @@
 // lamps; and where a tunnel meets the ground, a portal: a facade with an arched opening across the road
 // and a box of the bore into the hill. The stamps hold the road on the ground into the portal and the
 // hill over the bore behind it, and the terrain draws no ground in the box: the box hides the slope
-// between. Beyond the reach of the masks the terrain has no hole, and a dark void fills the opening.
+// between. Where the terrain draws coarser than level 17, that slope reaches past the box, and a dark
+// void fills the opening.
 import { metresPerUnit, RAIL_CODE, TUNNEL, type Line } from '../terrain/bins';
 import { INSIDE, LAMP, MeshBuilder, PAINT, posts, rgb, stationsOf, VOID, type Corner, type Station } from './mesh';
 import type { Owns } from './node';
 
-/** A portal of a road and of a path: the bore's margin past the road, the depth of the box and the facade's wings past the opening. */
-const ROAD_PORTAL = { margin: 0.6, depth: 12, wings: 3 }, PATH_PORTAL = { margin: 0.3, depth: 6, wings: 1.2 };
+/** A portal of a road and of a path: the bore's margin past the road and the facade's wings past the opening. */
+const ROAD_PORTAL = { margin: 0.6, wings: 3 }, PATH_PORTAL = { margin: 0.3, wings: 1.2 };
+/** The depth of a portal's box: on level 17 the slope of the ground up over the bore (PORTAL_CELLS of stamp-core.wgsl) lies inside it. */
+const BOX_M = 12;
 /** A road's bore: the kerb's height, and its lamps' length and spacing. */
 const KERB_M = 0.15, LAMP_M = 1.2, LAMPS_M = 10;
 /** The arch springs at this share of the bore's height; the void stands this far in. The bore's road lies this far over the ground that runs into the portal. */
@@ -65,14 +68,25 @@ export function twins(lines: Line[]): Map<Line, [Twin?, Twin?]> {
     return out;
 }
 
+/** The length of segment `v` of a line in metres. */
+const segment = (line: Line, v: number) => Math.hypot(line.xy[2 * v + 2] - line.xy[2 * v], line.xy[2 * v + 3] - line.xy[2 * v + 1]) * metresPerUnit(line.xy[2 * v + 1]);
+
 /**
  * The box of a tunnel's portal at vertex `from` toward vertex `to`, in which the terrain draws nothing:
- * its depth, its half-width to the middle of its walls, the heights of its roof's top and of its walls'
- * foot at the facade, and the rise of both per metre into the tunnel.
+ * its depth, its half-width to the middle of its walls, the heights of its roof's top and of the bore's
+ * floor at the facade, and the rise of both per metre into the tunnel. The ground under the floor draws,
+ * so no gap opens under the threshold. The rise is the least from the facade to a vertex in the box, so
+ * that the box's foot stays under the floor where the tunnel steepens; a short tunnel's box ends at its
+ * other portal.
  */
 export function portalBox(line: Line, from: number, to: number, widen = 0): [number, number, number, number, number] {
-    const depth = (line.deck! > 3 ? ROAD_PORTAL : PATH_PORTAL).depth, z = line.z[from];
-    return [depth, boreHalf(line) + widen + WALL_M / 2, z + line.deck! + WALL_M, z - SINK_M, (along(line, from, to, depth).z - z) / depth];
+    const step = Math.sign(to - from), z = line.z[from];
+    let depth = 0, rise = Infinity;
+    for (let v = from; v !== to && depth < BOX_M; v += step) {
+        depth = Math.min(BOX_M, depth + segment(line, Math.min(v, v + step)));
+        rise = Math.min(rise, (along(line, from, to, depth).z - z) / depth);
+    }
+    return [depth, boreHalf(line) + widen + WALL_M / 2, z + line.deck! + WALL_M, z + LIFT_M, rise];
 }
 
 /** The outline of a bore from its left foot over the arch to its right foot. */
@@ -110,8 +124,7 @@ export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns): void {
         const at = stationsOf(line);
         for (let v = 0; v + 1 < n; v++) {
             if (!owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
-            const length = Math.hypot(line.xy[2 * v + 2] - line.xy[2 * v], line.xy[2 * v + 3] - line.xy[2 * v + 1]) * metresPerUnit(line.xy[2 * v + 1]);
-            bore(b, at(v), at(v + 1), line, boreHalf(line), road, length);
+            bore(b, at(v), at(v + 1), line, boreHalf(line), road, segment(line, v));
         }
         for (const [end, from, to] of [[0, 0, n - 1], [1, n - 1, 0]]) {
             const x = line.xy[2 * from], y = line.xy[2 * from + 1];
@@ -127,7 +140,7 @@ function portal(b: MeshBuilder, line: Line, from: number, to: number, size: type
         const st = along(line, from, to, s);
         return { ...st, x: st.x + st.ax * pair.shift, y: st.y + st.ay * pair.shift };
     };
-    const front = at(0), face = at(FACADE_M), inside = at(VOID_M), back = at(size.depth);
+    const front = at(0), face = at(FACADE_M), inside = at(VOID_M), back = at(BOX_M);
     const half = boreHalf(line) + pair.widen, height = line.deck!, spring = SPRING * height, wing = half + size.wings, top = height + WALL_M;
     const facade = road ? FACADE : ROCK_FACADE, body = road ? BOX : ROCK_BOX, arch = outline(half, height);
     // Out of the tunnel, east, north and up.

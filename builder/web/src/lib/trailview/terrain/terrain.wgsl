@@ -28,16 +28,16 @@ struct Node {
 @group(0) @binding(1) var<storage, read> nodes: array<Node>;
 // The boxes of the tunnels' portals near the eye: x the count; then per box its facade's middle in units
 // about the anchor and its way into the tunnel; in metres its depth, its half-width, the heights of its
-// roof's top and of its walls' foot at the facade; and the rise of both per metre in.
+// roof's top and of its floor at the facade; and the rise of both per metre in.
 @group(0) @binding(2) var<storage, read> holes: array<vec4f>;
 
-// The nodes with a tunnel's portal draw no terrain in its box between its walls' foot and its roof: the
-// bore shows through.
+// The nodes with a tunnel's portal draw no terrain in its box between its floor and its roof: the bore
+// shows through. Only their pipeline discards: a discard turns off the hidden-surface removal of
+// tile-based GPUs such as Apple's.
 override HOLES: bool = false;
 
 // Metres from a point of the terrain, `u` units about the anchor at height `h`, to the nearest portal
-// box, negative inside. The distance is convex, so its interpolation over a triangle never clips the
-// terrain outside a box: beside it, behind it, on the hill over its roof or on the slope under it.
+// box, negative inside.
 fn hole_distance(u: vec2f, h: f32) -> f32 {
     var d = 1e6;
     for (var i = 0u; i < u32(holes[0].x); i++) {
@@ -68,7 +68,6 @@ fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) insta
     out.s = v.s;
     out.relative = p;
     mark_known(&out, known(v.h));
-    mark_hole(&out, select(1e6, hole_distance(units_of(v.s), v.h), HOLES));
     out.h = v.h;
     out.level = node.level;
     return out;
@@ -109,6 +108,10 @@ fn hue(level: f32) -> vec3f {
 @fragment
 fn fragment_main(in: Fragment) -> @location(0) vec4f {
     drop_unknown(in);
+    // Per fragment, the cut is exact: `s` and `h` are linear on the drawn triangle.
+    if (HOLES && hole_distance(units_of(in.s), in.h) < 0.0) {
+        discard;
+    }
     if (frame.debug == 0u || (frame.debug > 4u && frame.debug != MASK_VIEW)) {
         return vec4f(ground_colour(in.s, in.relative, in.h, in.level), 1.0);
     }

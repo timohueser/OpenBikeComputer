@@ -12,8 +12,8 @@ const ROAD_RANGE_M = 16;
 export const NO_SLEEPERS = -1e9;
 /**
  * Vertex flags in the colour's alpha: z is metres above the drawn surface; the face is a road, its colour's
- * red the surface code; the face is the dark void of a tunnel's opening, drawn only where the terrain has
- * no hole in the portal; the face lies inside a tunnel, lit by its lamps; the face is a lamp.
+ * red the surface code; the face is the dark void of a tunnel's opening, drawn only where the terrain draws
+ * coarser than level 17; the face lies inside a tunnel, lit by its lamps; the face is a lamp.
  */
 export const GROUND = 1, PAINT = 2, VOID = 4, INSIDE = 8, LAMP = 16;
 

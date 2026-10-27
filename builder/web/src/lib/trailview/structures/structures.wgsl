@@ -33,6 +33,8 @@ struct Anchor {
 @group(0) @binding(2) var<storage, read_write> anchor_out: array<f32>;
 @group(0) @binding(3) var<uniform> anchor_count: vec4u;
 @group(0) @binding(4) var<storage, read> anchor_z: array<vec2f>;
+// The boxes of the tunnels' portals near the eye, as `holes` of terrain.wgsl.
+@group(0) @binding(5) var<storage, read> portals: array<vec4f>;
 
 struct StructureIn {
     @location(0) at: vec2i,
@@ -76,11 +78,16 @@ const CABLE_M: f32 = 0.05;
 const CABLE_PIXELS: f32 = 1.5;
 const CABLE_COVER: f32 = 0.4;
 const OFFSET_M: f32 = 1.0 / 256.0;
-// The light inside a tunnel: its lamps, the same everywhere.
-const TUNNEL_LIGHT: vec3f = vec3f(0.36, 0.35, 0.33);
-// The void of a portal draws past this share of the masks' reach: nearer, the terrain has its hole in
-// the box and the bore shows through.
-const VOID_REACH: f32 = 0.75;
+// Inside a tunnel: the light of its lamps under the crown, less on the walls and the vault, and less with
+// the distance from the eye down to DIM of it; and daylight from a portal, which fades out DAYLIGHT_M in.
+const TUNNEL_LIGHT: vec3f = vec3f(0.5, 0.48, 0.45);
+const DIM: f32 = 0.5;
+const DIM_M: f32 = 60.0;
+const DAYLIGHT_M: f32 = 20.0;
+// The void of a portal draws where the terrain draws coarser than this level: from it on, the slope of
+// the ground up over the bore lies inside the portal's box (BOX_M of tunnels.ts), and the bore shows
+// through the terrain's hole.
+const VOID_LOD: f32 = 17.0;
 // As ROAD_RANGE_M of mesh.ts.
 const ROAD_RANGE_M: f32 = 16.0;
 
@@ -100,7 +107,7 @@ fn structure_vertex(v: StructureIn) -> StructureOut {
     p.z -= frame.curvature * dot(p.xy, p.xy);
     out.clip = frame.view_proj * vec4f(p, 1.0);
     // The crack and surface views show the terrain alone: past the near plane, the triangle clips.
-    if (frame.debug == 3u || frame.debug == 4u || ((flags & VOID_FACE) != 0u && length(p) < VOID_REACH * masks.reach)) {
+    if (frame.debug == 3u || frame.debug == 4u) {
         out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
     }
     out.u = u;
@@ -110,6 +117,23 @@ fn structure_vertex(v: StructureIn) -> StructureOut {
     out.road = v.road * ROAD_RANGE_M;
     out.sleepers = v.sleepers;
     return out;
+}
+
+// The share of daylight on a face inside a tunnel at `u` units about the anchor and height `h`: all of it
+// at the facade of a portal, none from DAYLIGHT_M in. A face off the box's section fades out over a metre
+// more per metre in, so that a bore that bends past the box keeps its light, with no step.
+fn daylight(u: vec2f, h: f32) -> f32 {
+    var light = 0.0;
+    for (var i = 0u; i < u32(portals[0].x); i++) {
+        let a = portals[1u + 3u * i];
+        let b = portals[2u + 3u * i];
+        let p = (u - a.xy) * surface.unit;
+        let along = max(dot(p, a.zw), 0.0);
+        let height = h - portals[3u + 3u * i].x * along;
+        let off = max(abs(a.z * p.y - a.w * p.x) - b.y, max(b.w - 1.0 - height, height - b.z));
+        light = max(light, (1.0 - smoothstep(0.0, DAYLIGHT_M, along)) * (1.0 - smoothstep(0.0, 1.0 + along, off)));
+    }
+    return light;
 }
 
 // The heights of the frame's anchors, one lane per end: the drawn surface there (`stand_height`), NONE
@@ -213,9 +237,14 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     if ((flags & CABLE_EDGE) != 0u && hash(in.clip.xy + look.screen.xy * 4096.0) > in.road.x) {
         discard;
     }
+    // Per fragment: per vertex, a fan that the LOD crosses would collapse in part and streak.
+    if ((flags & VOID_FACE) != 0u && lod(lod_space(in.u)) >= VOID_LOD) {
+        discard;
+    }
     var lit = light_up(albedo, n, sun_share(sun_at(lod_space(in.u)), in.relative, n, LIFT_SOLID), 1.0, look.horizon.w);
     if ((flags & INSIDE_FACE) != 0u) {
-        lit = albedo * TUNNEL_LIGHT;
+        let lamps = albedo * TUNNEL_LIGHT * (0.8 + 0.2 * n.z) * mix(DIM, 1.0, exp(-length(in.relative) / DIM_M));
+        lit = mix(lamps, light_up(albedo, n, 0.0, 1.0, look.horizon.w), daylight(in.u, in.altitude));
     }
     if ((flags & (VOID_FACE | LAMP_FACE)) != 0u) {
         lit = albedo;
