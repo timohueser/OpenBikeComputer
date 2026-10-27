@@ -1680,6 +1680,59 @@ fn the_displayed_distance_ignores_the_climb_term_entirely() {
     assert!(route.total_distance_m < ROW_CLIMB_M * 100, "and not the weighted g");
 }
 
+/// The header total is the measured ground length of the emitted geometry, never the weighted `g`
+/// that a way-kind multiplier or the climb term inflate.
+#[test]
+fn the_displayed_distance_is_the_ground_length_not_the_weighted_g() {
+    let east = (BASE.0 + SP, BASE.1);
+    let multiplied = map_with_profiles(
+        &NavGraph {
+            nodes: vec![Node { id: 0, coord: BASE }, Node { id: 1, coord: east }],
+            edges: vec![Edge { a: 0, b: 1, polyline: vec![BASE, east], length_m: 2_000, kind: K_PRIMARY }],
+        },
+        &[profile("p2", &[(K_PRIMARY, 32)])],
+    );
+    let pass = at(1, 1);
+    let uphill = map_with_terrain(
+        &NavGraph {
+            nodes: vec![Node { id: 0, coord: BASE }, Node { id: 1, coord: pass }],
+            edges: vec![Edge { a: 0, b: 1, polyline: vec![BASE, pass], length_m: PASS_LEG, kind: 0 }],
+        },
+        &[climb_profile("Heavy", 100)],
+        &mut Hillside,
+    );
+    for (name, bytes, to, ground_m, weighted_g) in [
+        ("2.0x multiplier", multiplied, east, 1113, 2 * 2_000),
+        ("climb weight 100 uphill", uphill, pass, 1574, PASS_LEG + 100 * ROW_CLIMB_M),
+    ] {
+        let (res, _, _) = plan_p(&bytes, BASE, to, "Honest", BikeType::Road);
+        let total = res.expect("a single-edge route plans").total_distance_m;
+        assert_eq!(total, ground_m, "{name}: the header total is the ground length, not the weighted g ≈ {weighted_g}");
+    }
+}
+
+/// Over [`pass_vs_valley`] only the climb weight moves. The corridors tie at `w = 5`, so the pass
+/// wins below it and the valley above it, and the displayed distance stays the ground length. A
+/// cost model that folded the climb term inside the shift, scaled it by the way-kind multiplier, or
+/// charged both directions of an edge would miss the crossover. At `w = 255` the pass leg's climb
+/// term alone passes `u16::MAX`: a saturated `g` must clamp to unattractive, never wrap to cheap.
+#[test]
+fn the_climb_weight_steers_between_the_pass_and_the_valley() {
+    let (up, down) = obc_network::nav::integrate_edge_ascent(&[at(0, 0), at(1, 1)], &mut Hillside);
+    assert!(
+        (up as i64 - ROW_CLIMB_M as i64).abs() <= 4,
+        "the pass leg bakes about {ROW_CLIMB_M} m of ascent, baked {up}"
+    );
+    assert_eq!(down, 0, "and nothing coming back down: ascent is directional");
+    assert!(ROW_CLIMB_M * 255 > u16::MAX as u32, "the w = 255 row must actually reach saturation");
+
+    let graph = pass_vs_valley();
+    for (climb_weight, over_the_pass) in [(0, true), (4, true), (6, false), (10, false), (255, false)] {
+        let bytes = map_with_terrain(&graph, &[climb_profile("w", climb_weight)], &mut Hillside);
+        assert_eq!(plan_corridor(&bytes), (3148, over_the_pass), "climb weight {climb_weight}");
+    }
+}
+
 /// At `w = 255` the pass leg's climb term alone passes `u16::MAX`, so the frontier's `g` clamps. A
 /// saturated node must be maximally unattractive, never wrapped: the plan still completes and still
 /// takes the flat valley.

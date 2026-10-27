@@ -159,6 +159,46 @@ fn long_collinear_run_keeps_an_intermediate_vertex() {
     );
 }
 
+/// An oversized 2-point span has no raw candidate to keep, so the converter densifies it into
+/// `MAX_SEGMENT_UDEG` (30 000) pieces, interpolating both axes and elevation. Every stored Δ then
+/// fits the int16 the reader decodes, and the endpoints round-trip exactly.
+#[test]
+fn an_oversized_span_is_densified_without_int16_wrap() {
+    let p = |lon, lat, ele| RoutePoint { lon, lat, ele, surface: 0, elevation_incomplete: false };
+    for (name, raw, expected) in [
+        (
+            // 40 000 µdeg east-west: one midpoint.
+            "east-west",
+            [(48.0, 7.80, Some(100.0)), (48.0, 7.84, Some(100.0))],
+            vec![p(7_800_000, 48_000_000, 100), p(7_820_000, 48_000_000, 100), p(7_840_000, 48_000_000, 100)],
+        ),
+        (
+            // 90 000 µdeg on both axes: four pieces, three interpolated vertices.
+            "diagonal",
+            [(48.0, 7.80, Some(100.0)), (48.09, 7.89, Some(200.0))],
+            vec![
+                p(7_800_000, 48_000_000, 100),
+                p(7_822_500, 48_022_500, 125),
+                p(7_845_000, 48_045_000, 150),
+                p(7_867_500, 48_067_500, 175),
+                p(7_890_000, 48_090_000, 200),
+            ],
+        ),
+    ] {
+        let bytes = convert(name, &gpx(&raw));
+        let src = SliceSource(&bytes);
+        let ridx = RouteIndex::read(&src).unwrap();
+        let r = RouteReader::new(&ridx, &src);
+        assert_eq!(r.point_count as usize, expected.len(), "{name}");
+        let pts = decode(&r, 0);
+        assert_eq!(pts, expected, "{name}");
+        for w in pts.windows(2) {
+            assert!((w[1].lon - w[0].lon).abs() <= i16::MAX as i32, "{name}: Δlon fits int16");
+            assert!((w[1].lat - w[0].lat).abs() <= i16::MAX as i32, "{name}: Δlat fits int16");
+        }
+    }
+}
+
 /// A single oversized segment with no intermediate raw candidate is split, so the stored Δ never
 /// wraps. `MAX_SPAN_M` only force-keeps a pending candidate and a 2-point GPX has none, so the
 /// converter densifies the span itself into `MAX_SEGMENT_UDEG` (30 000) pieces.

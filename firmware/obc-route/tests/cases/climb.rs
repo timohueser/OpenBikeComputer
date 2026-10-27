@@ -132,6 +132,16 @@ fn long_plateau_closes_climb() {
 }
 
 #[test]
+fn a_profile_that_never_rises_yields_no_climb() {
+    for (name, points) in [
+        ("dead flat", [(0.0, 200.0), (1000.0, 200.0), (5000.0, 200.0)]),
+        ("pure descent", [(0.0, 500.0), (2000.0, 100.0), (3000.0, 100.0)]),
+    ] {
+        assert!(detect(&points).is_empty(), "{name}");
+    }
+}
+
+#[test]
 fn flat_route_yields_none() {
     let climbs = detect(&[(0.0, 200.0), (1000.0, 200.0), (5000.0, 200.0)]);
     assert!(climbs.is_empty());

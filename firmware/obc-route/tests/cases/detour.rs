@@ -1051,6 +1051,45 @@ fn a_detour_weighs_climb_the_same_way_a_plan_does() {
     assert_eq!(dist, 4140, "at a heavy climb weight it detours south, onto the flat");
 }
 
+/// With the road blacklisted, a climb-blind detour takes the short north street and a heavily
+/// climb-weighted one takes the longer flat south street.
+#[test]
+fn the_climb_weight_picks_the_detour_relief_street() {
+    let graph = road_graph_two_reliefs();
+    let obcr = road_route_obcr();
+
+    // Non-vacuity: the north connector bakes the climb this test spends, and only uphill.
+    let (up, down) = obc_network::nav::integrate_edge_ascent(&[road_at(0), street_at(0)], &mut Hillside);
+    assert!(
+        (up as i64 - NORTH_CLIMB_M as i64).abs() <= 4,
+        "the north connector should bake ≈ {NORTH_CLIMB_M} m, got {up}"
+    );
+    assert_eq!(down, 0, "and nothing coming back down");
+
+    let rsrc = SliceSource(&obcr[..]);
+    let idx = RouteIndex::read(&rsrc).unwrap();
+    let route = RouteReader::new(&idx, &rsrc);
+    // Latitudes of the detour points inside the blacklisted span, where only a relief street runs.
+    let span_lats = |climb_weight: u8| {
+        let bytes = map_with_terrain(&graph, climb_profile(climb_weight), &mut Hillside);
+        let corridor = Corridor::build(&route, 0, route.total_distance_m);
+        let (_, detour) = plan_either(&bytes, road_at(0), road_at(SEGS), Some(corridor));
+        let lats: Vec<i32> = route_points(&detour)
+            .iter()
+            .filter(|p| p.lon > road_at(1).0 && p.lon < road_at(SEGS - 1).0)
+            .map(|p| p.lat)
+            .collect();
+        assert!(!lats.is_empty(), "the detour crosses the span");
+        lats
+    };
+    for (climb_weight, street_lat, side) in [(0, BASE.1 + STREET_OFF, "north"), (20, BASE.1 - STREET_OFF, "south")] {
+        assert!(
+            span_lats(climb_weight).iter().all(|&lat| lat == street_lat),
+            "at climb weight {climb_weight} the detour takes the {side} street"
+        );
+    }
+}
+
 /// The corridor is the only thing the detour dispatch adds. Here the map's ascents are real and
 /// the profile charges 20 flat metres for each, so the two paths must agree on a cost the climb
 /// term dominates.
