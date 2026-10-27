@@ -19,7 +19,7 @@ const RADIUS_M = 8000, KEPT = 400, REQUESTS = 6;
 /** Each zoom 14 tile takes its houses from its quarter of the zoom 13 feature tile. */
 const ZOOM = 14, EARTH_M = 40075016.686;
 /** Words of `Kept`, bytes of `Drawn` and words of `Style` in houses.wgsl; the bytes of `Params` and where its styles start; the stride of the dynamic offset of `DrawOf`. */
-const FIT_WORDS = 4, DRAWN_BYTES = 160, STYLE_WORDS = 32, STYLES_AT = 48 + 128 * 16 + 256 * 16, STYLES = 32, PARAMS_BYTES = STYLES_AT + STYLES * STYLE_WORDS * 4, DRAW_STRIDE = 256;
+const FIT_WORDS = 4, DRAWN_BYTES = 192, STYLE_WORDS = 36, STYLES_AT = 48 + 128 * 16 + 256 * 16, STYLES = 64, PARAMS_BYTES = STYLES_AT + STYLES * STYLE_WORDS * 4, DRAW_STRIDE = 256;
 /**
  * Houses drawn in a frame at most; past ROOM of them, the narrowest on screen go first. The sun's view
  * holds the casters of a shadow map (light/shadow.ts): up to 2 100 on the kit's flights (measured).
@@ -43,10 +43,12 @@ const TURNS = 4;
 /** Houses per workgroup of `refit`: nine lanes each, and of `fit`: one each, as in houses.wgsl. */
 const PER_GROUP = 7, FIT_GROUP = 64;
 /** Words of the draws and the drawn count before the lists, as LISTS in houses.wgsl. */
-const LISTS = 36;
+const LISTS = 4 * DRAWS + 4;
 /** The outline houses' entries after a re-upload, until `fit` writes them: NO_DRAW in houses.wgsl. */
 const NO_DRAWS = new Uint32Array(HOUSES).fill(0xffffffff);
 const TIMBER = ['none', 'upper', 'all', 'frame'];
+/** The flags of `Style` in houses.wgsl. */
+const SHUTTERS = 1, BALCONIES = 2, ONION_DOME = 4, DORMERS = 8, WOODEN = 16, CONE_ROOF = 32, FLAT_ROOF = 64;
 /**
  * The pad of a house, as `Params` in houses.wgsl: the floor stands `plinth` metres over the lowest
  * ground about the footprint, and at most `burial` storeys under the highest, a full storey where
@@ -98,11 +100,13 @@ function styleWords(rules: Rules): { styles: Uint32Array<ArrayBuffer>; regions: 
     const words = new ArrayBuffer(STYLES * STYLE_WORDS * 4), u = new Uint32Array(words), f = new Float32Array(words);
     const colour = (hex: string) => parseInt(hex.slice(1, 3), 16) | (parseInt(hex.slice(3, 5), 16) << 8) | (parseInt(hex.slice(5, 7), 16) << 16);
     list.forEach((style, i) => {
-        const at = i * STYLE_WORDS, { palette } = style, lists = [palette.render, palette.wood, palette.roof, palette.door, palette.shutter];
+        const at = i * STYLE_WORDS, { palette } = style, lists = [palette.render, palette.wood, palette.roof, palette.door, palette.shutter, [palette.plinth].flat()];
+        const flags = (style.shutters ? SHUTTERS : 0) | (style.balconies ? BALCONIES : 0) | (style.spire ? ONION_DOME : 0) | (style.dormers ? DORMERS : 0)
+            | (style.spire === 'domes' ? WOODEN : 0) | (style.roof === 'cone' ? CONE_ROOF : 0) | (style.roof === 'flat' ? FLAT_ROOF : 0);
         f.set([style.pitch[0], style.pitch[1], style.eave, style.verge, style.hip], at);
-        u.set([Math.max(0, TIMBER.indexOf(style.timber)), +style.shutters | (+!!style.balconies << 1) | (+(style.spire === 'onion') << 2), style.chimneys], at + 5);
-        f[at + 8] = style.storeys ?? 0;
-        u.set([colour([palette.plinth].flat()[0]), colour(palette.chimney), lists.reduce((n, c, k) => n | (Math.min(c.length, 4) << (4 * k)), 0)], at + 9);
+        u.set([Math.max(0, TIMBER.indexOf(style.timber)), flags, style.chimneys], at + 5);
+        f.set([style.storeys ?? 0, style.windows ?? 1], at + 8);
+        u.set([colour(palette.chimney), lists.reduce((n, c, k) => n | (Math.min(c.length, 4) << (4 * k)), 0)], at + 10);
         lists.forEach((c, k) => c.slice(0, 4).forEach((hex, j) => (u[at + 12 + 4 * k + j] = colour(hex))));
     });
     return { styles: u, regions: Uint32Array.from(rules.regions.flatMap(({ houses }) => houses)) };
