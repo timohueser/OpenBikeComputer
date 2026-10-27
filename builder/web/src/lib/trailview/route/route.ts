@@ -13,6 +13,8 @@ export const POINT_WORDS = 4;
 const STEP_M = 5;
 /** The size of a pin image in image pixels, as PIN of route.wgsl: twice its output pixels. */
 export const PIN_SIZE: [number, number] = [72, 96];
+/** The share of its light that the marker shows where something hides it. */
+const HIDDEN_MARKER = 0.35;
 
 /** A pin on the ground: the bottom centre of its image stands on the coordinate. */
 export interface RoutePin { coordinate: Coordinate; image: GPUCopyExternalImageSource }
@@ -43,25 +45,30 @@ interface Resources {
     gpu: Gpu;
     line: GPURenderPipeline;
     pin: GPURenderPipeline;
+    /** The marker where it is in sight, and where something hides it. */
+    marker: GPURenderPipeline[];
     layout: GPUBindGroupLayout;
     frame: GPUBuffer;
     empty: GPUBindGroup;
     sampler: GPUSampler;
+    /** `Marker` of route.wgsl. */
+    markerBuffer: GPUBuffer;
     points?: GPUBuffer;
     pins?: GPUBuffer;
     images?: GPUTexture;
     group?: GPUBindGroup;
 }
 
-/** The planned route on the drawn surface and the pins along it, with route.wgsl. */
+/** The planned route on the drawn surface, the pins along it and a marker, with route.wgsl. */
 export class Route {
     /** Whether the route changed since the last draw. */
     newContent = false;
     private points = new Uint32Array(0);
     private pins: readonly RoutePin[] = [];
+    private marker = new Uint32Array(4);
     private resources?: Resources;
     /** Whether the route or the pins are not on the GPU yet. */
-    private fresh = { points: true, pins: true };
+    private fresh = { points: true, pins: true, marker: true };
 
     /** The route in riding order with the colour of each edge; fewer than two points draw none. */
     set(route: readonly Coordinate[], colours: readonly string[]): void {
@@ -74,21 +81,33 @@ export class Route {
         this.fresh.pins = this.newContent = true;
     }
 
+    /** The marker on the ground at `at` with a sphere in `colour`, or none. */
+    setMarker(at: Coordinate | null, colour: string): void {
+        const [x, y] = at ? worldPixel(at, UNITS).map(Math.round) : [0, 0];
+        this.marker = new Uint32Array(new Int32Array([x, y, packed(colour), at ? 1 : 0]).buffer);
+        this.fresh.marker = this.newContent = true;
+    }
+
     /** `frame` is the frame uniform of the eye's view. */
     async attach(gpu: Gpu, frame: GPUBuffer): Promise<void> {
         this.resources = undefined;
-        const { line, pin, layout, empty } = await gpu.once(routePipelines);
+        const { line, pin, marker, layout, empty } = await gpu.once(routePipelines);
         this.resources = {
-            gpu, line, pin, layout, frame, empty: gpu.device.createBindGroup({ layout: empty, entries: [] }),
+            gpu, line, pin, marker, layout, frame, empty: gpu.device.createBindGroup({ layout: empty, entries: [] }),
             sampler: gpu.device.createSampler({ magFilter: 'linear', minFilter: 'linear' }),
+            markerBuffer: gpu.buffer('route', 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
         };
-        this.fresh = { points: true, pins: true };
+        this.fresh = { points: true, pins: true, marker: true };
     }
 
     draw(pass: GPURenderPassEncoder, surface: GPUBindGroup, features: GPUBindGroup): void {
         const r = this.resources;
         this.newContent = false;
         if (!r) return;
+        if (this.fresh.marker) {
+            r.gpu.device.queue.writeBuffer(r.markerBuffer, 0, this.marker);
+            this.fresh.marker = false;
+        }
         if (this.fresh.points || this.fresh.pins) this.write(r);
         if (!r.group) return;
         [r.group, surface, r.empty, features].forEach((group, k) => pass.setBindGroup(k, group));
@@ -99,6 +118,10 @@ export class Route {
         if (this.pins.length) {
             pass.setPipeline(r.pin);
             pass.draw(6, this.pins.length);
+        }
+        if (this.marker[3]) for (const pipeline of r.marker) {
+            pass.setPipeline(pipeline);
+            pass.draw(18);
         }
     }
 
@@ -130,12 +153,12 @@ export class Route {
             this.pins.forEach(({ image }, k) => device.queue.copyExternalImageToTexture(
                 { source: image }, { texture: images, origin: [0, 0, k], premultipliedAlpha: true }, PIN_SIZE));
         }
-        this.fresh = { points: false, pins: false };
+        this.fresh.points = this.fresh.pins = false;
         // The shader counts the points and the pins by the bound size, so a shorter route binds less of each buffer.
         r.group = device.createBindGroup({ layout: r.layout, entries: [
             { binding: 0, resource: { buffer: r.frame } }, { binding: 1, resource: { buffer: r.points!, size: points.byteLength } },
             { binding: 2, resource: { buffer: r.pins!, size: pins * 8 } }, { binding: 3, resource: r.images!.createView({ dimension: '2d-array' }) },
-            { binding: 4, resource: r.sampler },
+            { binding: 4, resource: r.sampler }, { binding: 5, resource: { buffer: r.markerBuffer } },
         ] });
     }
 }
@@ -148,18 +171,24 @@ async function routePipelines(gpu: Gpu) {
         { binding: 2, visibility: VERTEX, buffer: { type: 'read-only-storage' } },
         { binding: 3, visibility: FRAGMENT, texture: { viewDimension: '2d-array' } },
         { binding: 4, visibility: FRAGMENT, sampler: {} },
+        { binding: 5, visibility: VERTEX | FRAGMENT, buffer: { type: 'uniform' } },
     ] });
     const empty = device.createBindGroupLayout({ entries: [] }), module = device.createShaderModule({ label: 'route', code: wgsl('route/route.wgsl') });
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout, surface, empty, features] });
     // Premultiplied: what is drawn covers by its alpha and adds the rest of its light.
     const blend: GPUBlendComponent = { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' };
-    const pipeline = (name: 'route' | 'pin', topology: GPUPrimitiveTopology) => device.createRenderPipelineAsync({
+    const pipeline = (name: 'route' | 'pin' | 'marker', topology: GPUPrimitiveTopology, hidden = false) => device.createRenderPipelineAsync({
         label: name, layout: pipelineLayout,
         vertex: { module, entryPoint: `${name}_vertex` },
-        fragment: { module, entryPoint: `${name}_fragment`, targets: [{ format: sceneFormat(gpu), blend: { color: blend, alpha: blend } }] },
+        fragment: {
+            module, entryPoint: `${name}_fragment`, targets: [{ format: sceneFormat(gpu), blend: { color: blend, alpha: blend } }],
+            constants: hidden ? { SHOWN: HIDDEN_MARKER } : {},
+        },
         primitive: { topology },
-        depthStencil: { format: DEPTH, depthWriteEnabled: false, depthCompare: 'greater' },
+        depthStencil: { format: DEPTH, depthWriteEnabled: false, depthCompare: hidden ? 'less-equal' : 'greater' },
     });
-    const [line, pin] = await Promise.all([pipeline('route', 'triangle-strip'), pipeline('pin', 'triangle-list')]);
-    return { line, pin, layout, empty };
+    const [line, pin, ...marker] = await Promise.all([
+        pipeline('route', 'triangle-strip'), pipeline('pin', 'triangle-list'), pipeline('marker', 'triangle-list'), pipeline('marker', 'triangle-list', true),
+    ]);
+    return { line, pin, marker, layout, empty };
 }

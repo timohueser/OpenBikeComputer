@@ -57,16 +57,6 @@ export function nightPin({ color, category, label }: RouteNight): OffscreenCanva
     return canvas;
 }
 
-/** The image of the pin at a point of the profile: a white drop with a dot in the ink colour. */
-export function positionPin(): OffscreenCanvas {
-    const { canvas, context, x, y } = drop('#ffffff', '#1c1b14');
-    context.beginPath();
-    context.arc(x, y, 6, 0, Math.PI * 2);
-    context.fillStyle = '#1c1b14';
-    context.fill();
-    return canvas;
-}
-
 /** A drop, PIN_SIZE, filled and outlined, its point at the bottom centre; it draws in output pixels about the centre x, y of its head. */
 function drop(fill: string, outline: string) {
     const canvas = new OffscreenCanvas(...PIN_SIZE), context = canvas.getContext('2d')!;

@@ -4,6 +4,8 @@
 // covers the ground, and a narrow glow beyond its edges adds light. Its depth moves toward the eye by
 // PULL_M and PULL_PIXELS, so that the ground between two points does not hide it. It is not lit.
 // A pin is an image PIN output pixels in size that faces the eye, its bottom centre on the ground.
+// The marker is a sphere in the sun on a stem, over a ring on the ground, all of a constant size on the screen; it
+// shows faintly through what hides it.
 // #include ../terrain/drawn-mesh.wgsl
 
 // As Frame of terrain.wgsl, which shares its buffer.
@@ -23,11 +25,20 @@ struct Point {
     colour: u32,
 }
 
+// As `Route.setMarker` of route.ts.
+struct Marker {
+    at: vec2i,
+    // sRGB bytes, red lowest.
+    colour: u32,
+    shown: u32,
+}
+
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> points: array<Point>;
 @group(0) @binding(2) var<storage, read> pins: array<vec2i>;
 @group(0) @binding(3) var images: texture_2d_array<f32>;
 @group(0) @binding(4) var image_sampler: sampler;
+@group(0) @binding(5) var<uniform> marker: Marker;
 
 const LIFT_M: f32 = 0.3;
 // The half-width of the body, in metres and at least in output pixels, and the width of the glow beyond it in output pixels.
@@ -48,6 +59,13 @@ const PULL_PIXELS: f32 = 4.0;
 // The output pixels of a pin: half PIN_SIZE of route.ts.
 const PIN: vec2f = vec2f(36.0, 48.0);
 const PIN_PULL_M: f32 = 2.0;
+// The marker in output pixels: the radius of its sphere and of its ring, the height of the sphere's centre, and the half-width of the stem.
+const HEAD_PIXELS: f32 = 11.0;
+const RING_PIXELS: f32 = 16.0;
+const STEM_PIXELS: f32 = 42.0;
+const STEM_WIDTH_PIXELS: f32 = 1.75;
+// The share of its light that the marker shows where something hides it: route.ts draws it again behind what is drawn.
+override SHOWN: f32 = 1.0;
 
 struct RouteOut {
     @builtin(position) clip: vec4f,
@@ -176,4 +194,75 @@ fn pin_fragment(in: PinOut) -> @location(0) vec4f {
         discard;
     }
     return vec4f(linear(texel.rgb / max(texel.a, 1e-6)) * texel.a, texel.a);
+}
+
+struct MarkerOut {
+    @builtin(position) clip: vec4f,
+    // −1 to 1 across the part.
+    @location(0) uv: vec2f,
+    // 0 the ring, 1 the stem, 2 the sphere.
+    @location(1) @interpolate(flat) part: u32,
+    // The axes of the sphere's image: right and up on the screen, and toward the eye.
+    @location(2) @interpolate(flat) right: vec3f,
+    @location(3) @interpolate(flat) up: vec3f,
+    @location(4) @interpolate(flat) toward: vec3f,
+    @location(5) kept: f32,
+}
+
+@vertex
+fn marker_vertex(@builtin(vertex_index) v: u32) -> MarkerOut {
+    let k = v % 6u;
+    let uv = vec2f(f32((0x32u >> k) & 1u), f32((0x2cu >> k) & 1u)) * 2.0 - 1.0;
+    let part = v / 6u;
+    let s = lod_space(vec2f(marker.at - surface.anchor));
+    let h = ground(s);
+    let foot = eye_space(s, h);
+    let distance = max(length(foot), 1e-6);
+    let metre = frame.pixel * distance;
+    let right = vec3f(direction(vec2f(-foot.y, foot.x), vec2f(1.0, 0.0)), 0.0);
+    let up = normalize(cross(foot, right));
+    var p = foot + vec3f(uv, 0.0) * RING_PIXELS * metre;
+    if (part == 1u) {
+        p = foot + right * uv.x * STEM_WIDTH_PIXELS * metre + vec3f(0.0, 0.0, (uv.y * 0.5 + 0.5) * STEM_PIXELS * metre);
+    } else if (part == 2u) {
+        p = foot + vec3f(0.0, 0.0, STEM_PIXELS * metre) + (right * uv.x + up * uv.y) * HEAD_PIXELS * metre;
+    }
+    var out: MarkerOut;
+    out.clip = frame.view_proj * vec4f(pulled(p, PIN_PULL_M, PULL_PIXELS), 1.0);
+    out.uv = uv;
+    out.part = part;
+    out.right = right;
+    out.up = up;
+    out.toward = -foot / distance;
+    out.kept = select(0.0, 1.0, marker.shown == 1u && known(h) && frame.debug != 3u && frame.debug != 4u);
+    return out;
+}
+
+// Premultiplied, as the route.
+@fragment
+fn marker_fragment(in: MarkerOut) -> @location(0) vec4f {
+    let colour = linear(unpack4x8unorm(marker.colour).rgb);
+    let r = length(in.uv);
+    // From the middle to the edge: of the sphere and the ring by the radius, of the stem across it.
+    let x = select(abs(in.uv.x), r, in.part != 1u);
+    let aa = max(fwidth(x), 1e-4);
+    if (in.kept < 0.999) {
+        discard;
+    }
+    if (in.part == 0u) {
+        // A shadow that darkens the ground under a ring in the line's colour.
+        let shadow = 0.35 * (1.0 - smoothstep(0.0, 1.0, r));
+        let ring = clamp((0.12 - abs(r - 0.82)) / aa + 0.5, 0.0, 1.0);
+        return vec4f(colour * ring, max(shadow, ring)) * SHOWN;
+    }
+    // The stem and the sphere take the sun on their round sides.
+    let across = select(vec2f(in.uv.x, 0.0), in.uv, in.part == 2u);
+    let n = normalize(in.right * across.x + in.up * across.y + in.toward * sqrt(max(1.0 - x * x, 0.0)));
+    let sun = max(dot(n, frame.sun.xyz), 0.0) * frame.sun.w;
+    let shine = pow(max(dot(reflect(-frame.sun.xyz, n), in.toward), 0.0), 20.0) * frame.sun.w;
+    let base = select(vec3f(0.85), colour, in.part == 2u);
+    // The edge turns away from the eye and darkens, which rounds the sphere.
+    let rim = mix(0.55, 1.0, dot(n, in.toward));
+    let cover = clamp((1.0 - x) / aa + 0.5, 0.0, 1.0);
+    return vec4f((base * (sun + 0.2) * rim + shine) * cover, cover) * SHOWN;
 }

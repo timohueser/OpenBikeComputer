@@ -249,6 +249,12 @@ export class TrailView {
         this.request();
     }
 
+    /** Stands the marker on the ground at `at` with a sphere in `colour`; null takes it away. */
+    showMarker(at: Coordinate | null, colour = '#ffffff'): void {
+        this.route.setMarker(at, colour);
+        this.request();
+    }
+
     /** Stands the pins on the ground in place of the ones before. */
     showPins(pins: readonly RoutePin[]): void {
         this.route.setPins(pins);
