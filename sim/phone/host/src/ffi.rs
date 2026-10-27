@@ -302,15 +302,6 @@ fn screen_name(name: &str) -> *const c_char {
     names.iter().find(|known| known.to_bytes() == name.as_bytes()).map_or(ptr::null(), |name| name.as_ptr())
 }
 
-/// Whether a ride is open. The shell keeps the screen awake while it is.
-///
-/// # Safety
-/// `host` is NULL or an open handle from [`obc_ios_open`].
-#[no_mangle]
-pub unsafe extern "C" fn obc_ios_recording(host: *const Host) -> bool {
-    read(host, false, Host::recording)
-}
-
 /// Why the last call on this thread failed; empty when none has. Valid until the next failing call.
 #[no_mangle]
 pub extern "C" fn obc_ios_last_error() -> *const c_char {

@@ -13,14 +13,14 @@ import OBCMock
 /// Composition root. The single place allowed to choose a `DeviceTransport` conformer;
 /// everything below `RootView` sees only the protocol.
 ///
-/// CoreBluetooth lives only in `BLETransport`, and mock or panel code only inside `#if DEBUG`.
+/// CoreBluetooth lives only in `BLETransport`, and mock code only inside `#if DEBUG`.
 @main
 struct OBCCompanionApp: App {
     #if DEBUG
     /// The launch surface, parsed once.
     private static let launchOptions = MockLaunchOptions.parse()
-    /// The live control shared by the Debug transport, the dev panel and the HUD. Nil when the
-    /// launch arguments force the real path.
+    /// The live control shared by the Debug transport and the HUD. Nil when the launch arguments
+    /// force the real path.
     static let mockControl: MockControl? =
         launchOptions.useBLETransport ? nil : launchOptions.makeControl()
     #endif
@@ -83,12 +83,14 @@ struct OBCCompanionApp: App {
                 .environment(\.obcOfflineMaps, Self.offlineMaps)
                 .obcAppearance()
             #if DEBUG
-                .devMockOverlay(
-                    control: Self.mockControl,
-                    showPanelAtLaunch: Self.launchOptions.showDevPanel,
-                    showGalleryAtLaunch: Self.launchOptions.showUIGallery,
-                    hideHUD: Self.launchOptions.hideMockHUD
-                )
+                // The status tag the UI tests assert. Forced-BLE runs have no control to show.
+                .overlay(alignment: .bottomTrailing) {
+                    if let control = Self.mockControl, !Self.launchOptions.hideMockHUD {
+                        MockStatusHUD(control: control)
+                            .padding(6)
+                            .allowsHitTesting(false)
+                    }
+                }
                 // The SwiftUI half of the animation switch: every state change in this subtree
                 // lands unanimated, presentations included. A no-op without the flag.
                 .transaction { transaction in
@@ -252,8 +254,8 @@ struct OBCCompanionApp: App {
         return UpdateChecker()
     }
 
-    /// The bond record behind the launch branch. Mock runs read it from the scenario, so the dev
-    /// panel can replay first-run pairing; the real path persists it in `UserDefaults`.
+    /// The bond record behind the launch branch. Mock runs read it from the scenario; the real
+    /// path persists it in `UserDefaults`.
     static func makeBondStore() -> any BondStore {
         #if DEBUG
         if let mockControl { return MockBondStore(control: mockControl) }

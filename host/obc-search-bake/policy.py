@@ -1,5 +1,8 @@
-"""Read static country data from a pinned Nominatim archive; no import or database."""
-import argparse
+"""The `obc data` step `planner/search/policy`: static country data from a pinned Nominatim
+archive; no import or database.
+
+    uv run --locked --group planner-search python host/obc-search-bake/policy.py --step
+"""
 import json
 from pathlib import Path
 import sys
@@ -46,13 +49,7 @@ def step():
     export(archive, Path(request['output']))
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('archive', type=Path)
-    parser.add_argument('output', type=Path)
-    args = parser.parse_args()
-    export(args.archive, args.output)
-
-
 if __name__ == '__main__':
-    step() if sys.argv[1:] == ['--step'] else main()
+    if sys.argv[1:] != ['--step']:
+        sys.exit(__doc__)
+    step()

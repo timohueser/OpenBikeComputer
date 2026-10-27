@@ -1,13 +1,10 @@
-"""A source behind an account: the delivered files, the refusal, and the wizard.
+"""A source behind an account: the delivered files, the credential, and the refusals.
 
 No test here reaches the network or wants a credential. What the portals deliver is built
-synthetically, in the format `README.md` documents for each one — the name pattern, the
-CRS, the dtype and the nodata value — and put through `ingest --input`, because that path
-is the whole adapter for a source nobody can fetch unattended. The live probes are in
-`README.md`.
+synthetically, in the format each one documents — the name pattern, the CRS, the dtype and
+the nodata value — and read the way a delivery is read.
 """
 
-import argparse
 import io
 import os
 import sys
@@ -29,17 +26,9 @@ from rasterio.transform import Affine
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import ingest  # noqa: E402
 
-#: What each portal delivers, as `README.md` states it. `corner` is the south-west corner
-#: of the synthetic tile on the source's own grid, inside the country the row covers.
+#: What two portals deliver: a zip of GeoTIFFs and a bare ESRI ASCII grid. `corner` is the
+#: south-west corner of the synthetic tile on the source's own grid, inside the row's country.
 DELIVERIES = {
-    "dk": {"name": "DTM_1km_6171_723.tif", "epsg": 25832, "corner": (723_000, 6_171_000),
-           "step": 0.4, "dtype": "float32", "nodata": -9999.0},
-    "se": {"name": "m753_64.tif", "epsg": 5845, "corner": (640_000, 7_530_000),
-           "step": 1.0, "dtype": "float32", "nodata": -9999.0},
-    "fi": {"name": "N4331A.tif", "epsg": 3067, "corner": (370_000, 6_700_000),
-           "step": 2.0, "dtype": "float32", "nodata": -9999.0},
-    "nz": {"name": "BX15.tiff", "epsg": 2193, "corner": (1_360_000, 5_170_000),
-           "step": 1.0, "dtype": "float32", "nodata": -9999.0},
     "au": {"name": "Wollongong_2020_DEM.tif", "epsg": 28356, "corner": (300_000, 6_180_000),
            "step": 1.0, "dtype": "float32", "nodata": -9999.0, "zip": "elvis_order.zip"},
     "it-tn": {"name": "5h643551120_DTM.asc", "epsg": 25832, "corner": (643_500, 5_112_000),
@@ -103,13 +92,6 @@ def deliver(directory: Path, delivery, tower=TOWER) -> Path:
     return bundle
 
 
-def arguments(key, archive, bbox, inputs):
-    """The parsed arguments a subcommand runs with, as the CLI's parser builds them."""
-
-    return argparse.Namespace(source=key, archive=str(archive), bbox=bbox,
-                              input=str(inputs) if inputs else None, work=None)
-
-
 def parse(bbox: str):
     return tuple(float(part) for part in bbox.split(","))
 
@@ -130,55 +112,12 @@ def box_of(delivery, pad=0.0002) -> str:
 
 
 class Deliveries(unittest.TestCase):
-    """What `--input` makes of what each portal hands over."""
+    """What `local_rasters` makes of what each portal hands over."""
 
     def setUp(self):
         self.work = TemporaryDirectory()
         self.root = Path(self.work.name)
         self.addCleanup(self.work.cleanup)
-
-    def ingest(self, key, delivery, inputs=None, archive=None, work=None):
-        if inputs is None:
-            inputs = self.root / key / "delivery"
-            inputs.mkdir(parents=True)
-            deliver(inputs, delivery)
-        archive = archive or self.root / key / "archive"
-        datum = ingest.SOURCES[key].confirm_datum
-        code = ingest.main(["ingest", key, "--bbox", box_of(delivery),
-                            "--archive", str(archive), "--input", str(inputs),
-                            "--work", str(work or self.root / key / "work")]
-                           + (["--datum", datum] if datum else []))
-        self.assertEqual(code, 0)
-        return archive
-
-    def test_every_portals_own_format_becomes_an_archive_tile(self):
-        """One synthetic delivery per source, in the format the README documents.
-
-        The tower is what the assertion is about: the delivery went through the shared
-        tail, so the archive holds the maximum of the source pixels and not a resampling
-        of them, whatever CRS, dtype and packaging the portal used.
-        """
-
-        for key, delivery in DELIVERIES.items():
-            with self.subTest(key):
-                archive = self.ingest(key, delivery)
-                index = ingest.read_index(archive)
-                self.assertEqual(set(index["sources"]), {key})
-                # The index carries the credit a published map has to show, which for one
-                # agency names the month the data was fetched.
-                facts = index["sources"][key]
-                self.assertEqual(facts["attribution"],
-                                 ingest.SOURCES[key].credit(facts["fetched"]))
-                self.assertNotIn("{", facts["attribution"])
-                highest = None
-                for tile in index["tiles"]:
-                    ti, tj = (int(part) for part in tile.split("/"))
-                    with rasterio.open(ingest.tile_path(archive, ti, tj)) as src:
-                        data = src.read(1)
-                    seen = data[data != ingest.NODATA]
-                    if seen.size:
-                        highest = max(highest or -32768, int(seen.max()))
-                self.assertEqual(highest, round(TOWER))
 
     def test_an_ascii_grid_gets_its_crs_in_the_work_dir_and_the_delivery_is_untouched(self):
         """The CRS an ESRI ASCII grid arrives without is written where the tool may write.
@@ -217,37 +156,6 @@ class Deliveries(unittest.TestCase):
         self.assertEqual(kept, [grid])
         with rasterio.open(grid) as src:
             self.assertEqual(src.crs, CRS.from_epsg(32632))
-
-    def test_a_re_issued_delivery_of_the_same_name_reaches_the_archive(self):
-        """A portal re-uses a file name freely, so the name cannot be the identity.
-
-        The second order holds a different tower. Keyed on the name alone, its members
-        would be skipped as already unpacked and the archive would keep the first one.
-        """
-
-        delivery = DELIVERIES["au"]
-        inputs = self.root / "orders"
-        inputs.mkdir()
-        archive = self.root / "twice" / "archive"
-        work = self.root / "twice" / "work"
-        higher = TOWER + 200.0
-
-        deliver(inputs, delivery)
-        self.ingest("au", delivery, inputs=inputs, archive=archive, work=work)
-        first = ingest.read_index(archive)["sha256"]
-
-        (inputs / delivery["zip"]).unlink()
-        deliver(inputs, delivery, tower=higher)
-        self.ingest("au", delivery, inputs=inputs, archive=archive, work=work)
-
-        second = ingest.read_index(archive)["sha256"]
-        self.assertEqual(set(first), set(second))
-        self.assertNotEqual(first, second)
-        for tile in second:
-            ti, tj = (int(part) for part in tile.split("/"))
-            with rasterio.open(ingest.tile_path(archive, ti, tj)) as src:
-                data = src.read(1)
-            self.assertEqual(int(data.max()), round(higher))
 
     def test_an_ascii_grid_of_a_row_that_states_no_grid_is_refused_by_name(self):
         """A `.prj` guessed wrong puts a mountain in the wrong country, so it is a
@@ -297,20 +205,6 @@ class Deliveries(unittest.TestCase):
                                  self.root / "work")
         self.assertIn("orders/inner.zip", str(refusal.exception))
 
-    def test_a_work_directory_inside_the_delivery_is_refused(self):
-        """The tool writes into the work directory, so it cannot be the owner's download."""
-
-        delivery = DELIVERIES["dk"]
-        inputs = self.root / "dk" / "delivery"
-        inputs.mkdir(parents=True)
-        deliver(inputs, delivery)
-        for work in (inputs, inputs / "unpacked"):
-            with self.subTest(str(work)):
-                code = ingest.main(["ingest", "dk", "--bbox", box_of(delivery),
-                                    "--archive", str(self.root / "a"),
-                                    "--input", str(inputs), "--work", str(work)])
-                self.assertEqual(code, 1)
-
     def test_a_directory_that_holds_nothing_the_portal_delivers_says_so(self):
         inputs = self.root / "empty"
         inputs.mkdir()
@@ -336,7 +230,7 @@ class Credentials(unittest.TestCase):
         os.environ[name] = value
         self.addCleanup(os.environ.pop, name, None)
 
-    def test_a_fetch_without_the_credential_names_the_variable_and_the_wizard(self):
+    def test_a_fetch_without_the_credential_names_the_variable(self):
         for key, expected in (("dk", "OBC_REFERENCE_DK_TOKEN"),
                               ("fi", "OBC_REFERENCE_FI_TOKEN"),
                               ("se", "OBC_REFERENCE_SE_USER and OBC_REFERENCE_SE_PASSWORD")):
@@ -345,8 +239,6 @@ class Credentials(unittest.TestCase):
                     ingest.SOURCES[key].require_credential()
                 message = str(refusal.exception)
                 self.assertIn(expected, message)
-                self.assertIn("--input", message)
-                self.assertIn(f"wizard {key}", message)
 
     def test_half_a_credential_is_no_credential(self):
         """Sweden wants two variables, and one of them is not a login."""
@@ -617,118 +509,3 @@ class Redirects(unittest.TestCase):
         self.assertEqual([path for path, _ in RedirectHandler.seen], ["/start", "/end"])
         self.assertEqual(RedirectHandler.seen[0][1], "Basic Y29uc3VtZXI6c2VjcmV0")
         self.assertIsNone(RedirectHandler.seen[1][1])
-
-
-class Wizard(unittest.TestCase):
-    """The walk-through, driven by a list of answers instead of a person."""
-
-    def setUp(self):
-        self.work = TemporaryDirectory()
-        self.root = Path(self.work.name)
-        self.addCleanup(self.work.cleanup)
-        for name in ("OBC_REFERENCE_DK_TOKEN", "OBC_REFERENCE_SE_USER",
-                     "OBC_REFERENCE_SE_PASSWORD"):
-            if name in os.environ:
-                real = os.environ.pop(name)
-                self.addCleanup(os.environ.__setitem__, name, real)
-
-    def run_wizard(self, key, answers, inputs=None):
-        self.said = []
-        asked = []
-
-        def ask(prompt):
-            asked.append(prompt)
-            return answers.pop(0) if answers else "q"
-
-        code = ingest.command_wizard(
-            arguments(key, self.root / key / "archive", box_of(DELIVERIES[key]), inputs),
-            ask=ask, say=self.said.append)
-        return code, asked
-
-    def test_the_steps_are_walked_and_the_delivery_is_ingested(self):
-        """Australia is the source with no fetch at all, so the wizard is the whole path.
-
-        The answers are every step, the directory, `y` to ingest, and `y` to the datum
-        the order's metadata states.
-        """
-
-        delivery = DELIVERIES["au"]
-        inputs = self.root / "au" / "delivery"
-        inputs.mkdir(parents=True)
-        deliver(inputs, delivery)
-        steps = len(ingest.SOURCES["au"].steps)
-        code, asked = self.run_wizard("au", [""] * steps + [str(inputs), "y", "y"])
-        self.assertEqual(code, 0)
-        self.assertEqual(len(asked), steps + 3)
-        self.assertIn("AHD", asked[-1])
-        said = "\n".join(self.said)
-        self.assertIn("Step 1 of", said)
-        self.assertIn(f"Step {steps} of {steps}", said)
-        self.assertIn("elevation.fsdf.org.au", said)
-        self.assertIn(ingest.SOURCES["au"].attribution, said)
-        self.assertIn(delivery["zip"], said)
-        self.assertTrue(ingest.read_index(self.root / "au" / "archive")["tiles"])
-
-    def test_a_delivery_the_owner_cannot_confirm_the_datum_of_is_not_ingested(self):
-        """An ellipsoidal order is tens of metres out, which is the size of a lift."""
-
-        delivery = DELIVERIES["au"]
-        inputs = self.root / "au" / "delivery"
-        inputs.mkdir(parents=True)
-        deliver(inputs, delivery)
-        steps = len(ingest.SOURCES["au"].steps)
-        code, _ = self.run_wizard("au", [""] * steps + [str(inputs), "y", "n"])
-        self.assertEqual(code, 1)
-        self.assertIn("ellipsoidal height stands tens of metres", "\n".join(self.said))
-        self.assertFalse((self.root / "au" / "archive").exists())
-
-    def test_q_at_a_step_ingests_nothing(self):
-        code, asked = self.run_wizard("au", ["", "q"])
-        self.assertEqual(code, 1)
-        self.assertEqual(len(asked), 2)
-        self.assertIn("nothing was ingested", "\n".join(self.said))
-        self.assertFalse((self.root / "au" / "archive").exists())
-
-    def test_a_delivery_that_is_not_there_stops_before_the_ingest(self):
-        steps = len(ingest.SOURCES["au"].steps)
-        code, _ = self.run_wizard("au", [""] * steps + [str(self.root / "nowhere")])
-        self.assertEqual(code, 1)
-        self.assertIn("is not a directory", "\n".join(self.said))
-
-    def test_a_pasted_credential_goes_into_the_environment_and_not_into_argv(self):
-        """The wizard's own process runs the ingest, so the token needs no command line."""
-
-        said, asked = [], []
-
-        def ask(prompt):
-            asked.append(prompt)
-            return "pasted-token-value"
-
-        self.assertTrue(ingest.wizard.take_credential(ingest.SOURCES["dk"], ask, said.append))
-        self.assertEqual(asked, ["  OBC_REFERENCE_DK_TOKEN: "])
-        self.assertEqual(os.environ["OBC_REFERENCE_DK_TOKEN"], "pasted-token-value")
-        self.assertNotIn("pasted-token-value", "\n".join(said))
-
-    def test_an_empty_answer_falls_back_to_the_download_by_hand(self):
-        said = []
-        self.assertFalse(ingest.wizard.take_credential(
-            ingest.SOURCES["se"], lambda _: "", said.append))
-        self.assertNotIn("OBC_REFERENCE_SE_USER", os.environ)
-        self.assertIn("the download by hand it is", "\n".join(said))
-
-    def test_a_credential_that_is_already_set_asks_nothing(self):
-        os.environ["OBC_REFERENCE_DK_TOKEN"] = "a token"
-        said = []
-        self.assertTrue(ingest.wizard.take_credential(
-            ingest.SOURCES["dk"], lambda _: self.fail("it asked"), said.append))
-        self.assertIn("OBC_REFERENCE_DK_TOKEN is already set", "\n".join(said))
-
-    def test_a_source_that_needs_no_account_says_to_ingest_it_directly(self):
-        with self.assertRaises(ingest.Refuse) as refusal:
-            ingest.command_wizard(arguments("nz", self.root / "a", "170,-44,170.1,-43.9", None),
-                                  ask=lambda _: "", say=lambda _: None)
-        self.assertIn("needs no account", str(refusal.exception))
-
-
-if __name__ == "__main__":
-    unittest.main()

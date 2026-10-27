@@ -187,17 +187,6 @@ pub struct UploadProgress {
     pub declared: u64,
 }
 
-pub struct StreamBuffers<'record, 'out> {
-    record: &'record [u8],
-    out: &'out mut [u8],
-}
-
-impl<'record, 'out> StreamBuffers<'record, 'out> {
-    pub fn new(record: &'record [u8], out: &'out mut [u8]) -> Self {
-        Self { record, out }
-    }
-}
-
 pub struct UsbMapBatch<'stage> {
     request: RequestId,
     offset: u64,
@@ -515,10 +504,48 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         record: &[u8],
         out: &mut [u8],
     ) -> Reaction {
-        self.on_stream_with_stage(link, store, policy, record, out, None)
+        // The silent discard, one step earlier: bytes on a wire that owns no transfer, including
+        // the other link's wire, belong to no transfer this can be sure of.
+        if self.live_link() != Some(link) {
+            return Reaction::Idle;
+        }
+        let Some((frame, payload)) = StreamFrame::split(record) else {
+            // A malformed stream record terminates the transfer, and there is exactly one live.
+            let Live::Upload(upload) = &self.live else { return Reaction::Idle };
+            let request = upload.request;
+            self.abandon(store);
+            return self.emit_error(
+                out,
+                Opcode::Put,
+                request,
+                Refusal::new(ErrorCode::InvalidFrame, detail::invalid_frame::LENGTH),
+            );
+        };
+        // A frame whose `RequestId` is not the live upload's is discarded in silence, and so is one
+        // bearing a live download's: those bytes go the other way.
+        let Live::Upload(upload) = &self.live else { return Reaction::Idle };
+        if frame.transfer != upload.request {
+            return Reaction::Idle;
+        }
+        let (offset, declared) = (upload.received, upload.declared_len);
+        if frame.len as usize > upload.ceilings.stream - STREAM_HEADER_LEN {
+            return self.fail_upload(store, Refusal::new(ErrorCode::InvalidFrame, detail::invalid_frame::LENGTH), out);
+        }
+        // Frames are contiguous and ascending. A gap and an overlap are the same refusal.
+        if frame.offset != offset || offset + payload.len() as u64 > declared {
+            let refusal = Refusal::new(ErrorCode::InvalidRequest, detail::invalid_request::STREAM_OFFSET);
+            return self.fail_upload(store, refusal, out);
+        }
+        if let Err(error) = self.absorb(store, payload) {
+            return self.fail_upload(store, media_refusal(error, detail::media_io::WRITE), out);
+        }
+        if offset + (payload.len() as u64) < declared {
+            return Reaction::Idle;
+        }
+        self.finish_upload(store, policy, out)
     }
 
-    /// The bank the cable adapter must lend to [`on_stream_staged`](Self::on_stream_staged). The
+    /// The bank the cable adapter must lend to [`on_usb_map_batch`](Self::on_usb_map_batch). The
     /// index comes before the borrow so an arena-backed adapter forms `&mut` for the inactive half
     /// alone; deferred card DMA may still hold the other half.
     pub fn upload_stage_bank(&self) -> Option<usize> {
@@ -526,29 +553,6 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             Live::Upload(upload) => Some(upload.stage_bank),
             _ => None,
         }
-    }
-
-    /// One whole stream record, using `stage` as the current bank of this upload's two-bank
-    /// write-combining buffer, so several records reach [`Store::write`] as one contiguous run.
-    /// Radio adapters use [`on_stream`](Self::on_stream) and the engine's resident stage.
-    ///
-    /// The bank must be a non-zero multiple of 512 bytes, and the same index and length must be
-    /// supplied until it fills. An adapter that loses its scratch must cancel the transfer:
-    /// stopping part-way changes the storage beneath `Upload::staged`.
-    pub fn on_stream_staged<P: Policy>(
-        &mut self,
-        link: Link,
-        store: &S,
-        policy: &mut P,
-        buffers: StreamBuffers<'_, '_>,
-        bank: usize,
-        stage: &mut [u8],
-    ) -> Reaction {
-        let StreamBuffers { record, out } = buffers;
-        if stage.len() < 512 || !stage.len().is_multiple_of(512) || self.upload_stage_bank() != Some(bank) {
-            return Reaction::Close(Channel::Stream);
-        }
-        self.on_stream_with_stage(link, store, policy, record, out, Some((bank, stage)))
     }
 
     /// Commit one adapter-assembled USB map batch already resident in the current arena bank. The
@@ -597,59 +601,8 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         if upload.received < upload.declared_len {
             Reaction::Idle
         } else {
-            self.finish_upload(store, policy, out, None)
+            self.finish_upload(store, policy, out)
         }
-    }
-
-    fn on_stream_with_stage<P: Policy>(
-        &mut self,
-        link: Link,
-        store: &S,
-        policy: &mut P,
-        record: &[u8],
-        out: &mut [u8],
-        mut stage: Option<(usize, &mut [u8])>,
-    ) -> Reaction {
-        // The silent discard, one step earlier: bytes on a wire that owns no transfer, including
-        // the other link's wire, belong to no transfer this can be sure of.
-        if self.live_link() != Some(link) {
-            return Reaction::Idle;
-        }
-        let Some((frame, payload)) = StreamFrame::split(record) else {
-            // A malformed stream record terminates the transfer, and there is exactly one live.
-            let Live::Upload(upload) = &self.live else { return Reaction::Idle };
-            let request = upload.request;
-            self.abandon(store);
-            return self.emit_error(
-                out,
-                Opcode::Put,
-                request,
-                Refusal::new(ErrorCode::InvalidFrame, detail::invalid_frame::LENGTH),
-            );
-        };
-        // A frame whose `RequestId` is not the live upload's is discarded in silence, and so is one
-        // bearing a live download's: those bytes go the other way.
-        let Live::Upload(upload) = &self.live else { return Reaction::Idle };
-        if frame.transfer != upload.request {
-            return Reaction::Idle;
-        }
-        let (offset, declared) = (upload.received, upload.declared_len);
-        if frame.len as usize > upload.ceilings.stream - STREAM_HEADER_LEN {
-            return self.fail_upload(store, Refusal::new(ErrorCode::InvalidFrame, detail::invalid_frame::LENGTH), out);
-        }
-        // Frames are contiguous and ascending. A gap and an overlap are the same refusal.
-        if frame.offset != offset || offset + payload.len() as u64 > declared {
-            let refusal = Refusal::new(ErrorCode::InvalidRequest, detail::invalid_request::STREAM_OFFSET);
-            return self.fail_upload(store, refusal, out);
-        }
-        let staged = stage.as_mut().map(|(bank, bytes)| (*bank, &mut **bytes));
-        if let Err(error) = self.absorb(store, payload, staged) {
-            return self.fail_upload(store, media_refusal(error, detail::media_io::WRITE), out);
-        }
-        if offset + (payload.len() as u64) < declared {
-            return Reaction::Idle;
-        }
-        self.finish_upload(store, policy, out, stage)
     }
 
     /// Pumps the engine: a live download's next record, or an error owed to a dropped transfer.
@@ -1116,20 +1069,10 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     }
 
     /// Folds one payload into the running CRC and the stage, writing whole stages to the card.
-    fn absorb(&mut self, store: &S, payload: &[u8], stage: Option<(usize, &mut [u8])>) -> Result<(), StoreError> {
-        let external = stage.is_some();
-        let staging: &mut [u8] = match stage {
-            Some((_, stage)) => stage,
-            None => &mut self.staging,
-        };
+    fn absorb(&mut self, store: &S, payload: &[u8]) -> Result<(), StoreError> {
+        let staging = &mut self.staging;
         let Live::Upload(upload) = &mut self.live else { return Err(StoreError::Invalid) };
         let stage_len = staging.len();
-        let base = 0;
-        // A record must not fill this bank and need the next one in the same call: the board cannot
-        // borrow that next bank until this borrow ends, because the write starts deferred DMA.
-        if external && upload.staged + payload.len() > stage_len {
-            return Err(StoreError::Invalid);
-        }
         if let Some(crc) = &mut upload.crc {
             crc.update(payload);
         }
@@ -1145,28 +1088,19 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
                 continue;
             }
             let take = (stage_len - upload.staged).min(input.len());
-            staging[base + upload.staged..base + upload.staged + take].copy_from_slice(&input[..take]);
+            staging[upload.staged..upload.staged + take].copy_from_slice(&input[..take]);
             upload.staged += take;
             input = &input[take..];
             if upload.staged == stage_len {
-                store.write(&mut upload.allocation, &staging[base..base + stage_len])?;
+                store.write(&mut upload.allocation, staging)?;
                 upload.staged = 0;
-                if external {
-                    upload.stage_bank ^= 1;
-                }
             }
         }
         Ok(())
     }
 
     /// The last byte: verify the whole-payload CRC, run the kind's validator, and commit.
-    fn finish_upload<P: Policy>(
-        &mut self,
-        store: &S,
-        policy: &mut P,
-        out: &mut [u8],
-        stage: Option<(usize, &mut [u8])>,
-    ) -> Reaction {
+    fn finish_upload<P: Policy>(&mut self, store: &S, policy: &mut P, out: &mut [u8]) -> Reaction {
         let Live::Upload(upload) = &self.live else { return Reaction::Idle };
         let (kind, declared_len, declared_crc, replaced) =
             (upload.kind, upload.declared_len, upload.declared_crc, upload.displaced.is_some());
@@ -1185,7 +1119,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             return self.fail_upload(store, Refusal::new(ErrorCode::Rejected, reason), out);
         }
         // Everything received is on the card before the commit begins.
-        if let Err(error) = self.flush(store, stage) {
+        if let Err(error) = self.flush(store) {
             return self.fail_upload(store, media_refusal(error, detail::media_io::WRITE), out);
         }
         let request = self.owed_request();
@@ -1203,18 +1137,12 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    fn flush(&mut self, store: &S, stage: Option<(usize, &mut [u8])>) -> Result<(), StoreError> {
+    fn flush(&mut self, store: &S) -> Result<(), StoreError> {
         let Live::Upload(upload) = &mut self.live else { return Ok(()) };
         if upload.staged == 0 {
             return Ok(());
         }
-        let staged = upload.staged;
-        let staging: &[u8] = match stage {
-            Some((_, stage)) => stage,
-            None => &self.staging,
-        };
-        let base = 0;
-        store.write(&mut upload.allocation, &staging[base..base + staged])?;
+        store.write(&mut upload.allocation, &self.staging[..upload.staged])?;
         upload.staged = 0;
         Ok(())
     }

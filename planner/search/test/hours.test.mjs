@@ -55,11 +55,11 @@ test('the region time zone decides the local day', () => {
 
 test('regional hours match native Berlin results on hosts in other time zones', () => {
   const host = Date;
-  const expected = hoursCases(null, ()=>'', {timeZone:'Europe/Berlin', openingState, currentOpening}).samples.map(row=>row.result);
+  const expected = hoursCases({timeZone:'Europe/Berlin', openingState, currentOpening});
   try {
     for (const zone of ['UTC', 'America/New_York', 'Asia/Tokyo', 'Pacific/Auckland']) {
       process.env.TZ = zone;
-      assert.deepEqual(hoursCases(null, ()=>'').samples.map(row=>row.result), expected, zone);
+      assert.deepEqual(hoursCases(), expected, zone);
       assert.equal(globalThis.Date, host);
     }
   } finally { process.env.TZ = 'Europe/Berlin'; }

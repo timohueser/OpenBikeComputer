@@ -8,10 +8,6 @@
 # and area that the bounds touch.
 margin_m = 15000
 
-[terrain]
-# The sun layer reads the horizon this far around the region, so the terrain covers it.
-margin_m = 30000
-
 [routing]
 # The profiles of the routing package. The route catalog needs touring, road, gravel, mtb/technical
 # and hiking/alpine.
@@ -43,11 +39,6 @@ first_year = 2016
 # The first and the last season of HR-WSI Snow Phenology and of MODIS, each from 1 September. The
 # HR-WSI catalogue has the seasons 2016 to 2024 over Baden-Württemberg.
 seasons = [2016, 2024]
-
-[sun]
-# The grid cells along each tile edge and the directions of a horizon profile: specs/planner-sun-tiles.md.
-horizon_samples = 32
-horizon_directions = 72
 
 [trailview]
 # The year of the Sentinel-2 quarterly mosaics, as the prototype reads them, and the colour variant

@@ -1,6 +1,5 @@
 """Scores a parser on the held-out test set (testset/*.jsonl).
 
-    python evaluate.py rules
     speed/.venv/bin/python evaluate.py model:work/ckpt-en-de
     speed/.venv/bin/python evaluate.py onnx:work/ckpt-en-de/model.int8.onnx --tokenizer work/ckpt-en-de
 
@@ -29,12 +28,6 @@ def load_testset(paths: list[str] | None) -> list[dict]:
     for f in files:
         rows += [json.loads(line) for line in f.read_text(encoding="utf-8").splitlines() if line]
     return rows
-
-
-def rules_parser():
-    from rules import parse
-
-    return lambda texts: [parse(t) for t in texts]
 
 
 def gated(request: dict, conf: float, gate: float) -> dict:
@@ -150,7 +143,7 @@ def pct(a: int, b: int) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("parser", help="runtime:<directory> | rules | model:<checkpoint> | onnx:<file>")
+    ap.add_argument("parser", help="runtime:<directory> | model:<checkpoint> | onnx:<file>")
     ap.add_argument("--tokenizer")
     ap.add_argument("--files", nargs="*")
     ap.add_argument("--errors", help="write the errors as JSON lines here")
@@ -161,8 +154,6 @@ def main() -> None:
         from runtime import Parser
         runtime = Parser(Path(args.parser[8:]))
         parse = lambda texts: [runtime.parse(t)["request"] for t in texts]
-    elif args.parser == "rules":
-        parse = rules_parser()
     elif args.parser.startswith("model:"):
         parse = model_parser(args.parser[6:], args.gate)
     elif args.parser.startswith("onnx:"):

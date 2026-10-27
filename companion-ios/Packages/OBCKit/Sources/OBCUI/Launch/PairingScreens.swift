@@ -231,15 +231,3 @@ struct PairFailedView: View {
         }
     }
 }
-
-#Preview("Scanning") {
-    PairScanningView(devices: [], onTapDevice: { _ in }, onCancel: {})
-}
-
-#Preview("Paired") {
-    PairedView(deviceName: "Trailhead", name: .constant("Trailhead"), onSave: {}, onKeepName: {})
-}
-
-#Preview("Timeout") {
-    PairFailedView(failure: .timeout, onRetry: {}, onHelp: {})
-}

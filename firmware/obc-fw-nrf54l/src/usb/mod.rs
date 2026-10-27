@@ -189,27 +189,6 @@ static mut CONTROL_BUF: MaybeUninit<[u8; CONTROL_BUF_LEN]> = MaybeUninit::uninit
 /// borrows it for.
 static mut INFO_HANDLER: MaybeUninit<DeviceInfoHandler> = MaybeUninit::uninit();
 
-#[cfg(feature = "peak-view-demo")]
-struct EnumerationDiagnostics;
-
-#[cfg(feature = "peak-view-demo")]
-impl embassy_usb::Handler for EnumerationDiagnostics {
-    fn reset(&mut self) {
-        info!("usb-enum: bus reset");
-    }
-
-    fn addressed(&mut self, address: u8) {
-        info!("usb-enum: addressed {=u8}", address);
-    }
-
-    fn configured(&mut self, configured: bool) {
-        info!("usb-enum: configured {=bool}", configured);
-    }
-}
-
-#[cfg(feature = "peak-view-demo")]
-static mut ENUMERATION_DIAGNOSTICS: MaybeUninit<EnumerationDiagnostics> = MaybeUninit::uninit();
-
 /// The `iSerialNumber` string, pinned for the `'static` life the descriptor borrows it for.
 static mut SERIAL: MaybeUninit<heapless::String<16>> = MaybeUninit::uninit();
 
@@ -428,13 +407,6 @@ fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
         init_static(core::ptr::addr_of_mut!(INFO_HANDLER), DeviceInfoHandler { interface: interface_number })
     };
     builder.handler(info);
-    #[cfg(feature = "peak-view-demo")]
-    {
-        // SAFETY: built once alongside INFO_HANDLER; the zero-sized handler owns no buffers.
-        let diagnostics =
-            unsafe { init_static(core::ptr::addr_of_mut!(ENUMERATION_DIAGNOSTICS), EnumerationDiagnostics) };
-        builder.handler(diagnostics);
-    }
 
     // The burst mask above names an endpoint index, and indices follow the allocation order those
     // four lines fix. Check the one the builder returned: a reordering would burst the wrong

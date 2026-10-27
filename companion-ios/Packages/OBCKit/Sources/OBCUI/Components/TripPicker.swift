@@ -162,19 +162,3 @@ public struct TripPickerSheet: View {
         dismiss()
     }
 }
-
-#if DEBUG
-#Preview("Trip picker") {
-    Color.clear.sheet(isPresented: .constant(true)) {
-        TripPickerSheet(
-            title: "Add to trip",
-            trips: [
-                TripPickerItem(id: TripID("a"), name: "Driftless Weekender", dayCount: 2),
-                TripPickerItem(id: TripID("b"), name: "Alpine Traverse", dayCount: 5),
-            ],
-            allowsNone: true,
-            onPick: { _ in }
-        )
-    }
-}
-#endif

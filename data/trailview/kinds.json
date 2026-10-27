@@ -221,5 +221,61 @@
     "match": [{"historic": ["wayside_shrine"]}],
     "keep": ["height"],
     "height": "surface"
+  },
+  {
+    "kind": "guidepost",
+    "geometry": "point",
+    "match": [{"tourism": ["information"], "information": ["guidepost"]}],
+    "keep": [],
+    "height": "surface"
+  },
+  {
+    "kind": "bench",
+    "geometry": "point",
+    "match": [{"amenity": ["bench"]}],
+    "keep": [],
+    "height": "surface"
+  },
+  {
+    "kind": "picnic-table",
+    "geometry": "point",
+    "match": [{"leisure": ["picnic_table"]}],
+    "keep": [],
+    "height": "surface"
+  },
+  {
+    "kind": "firepit",
+    "geometry": "point",
+    "match": [{"leisure": ["firepit"]}],
+    "keep": [],
+    "height": "surface"
+  },
+  {
+    "kind": "bbq",
+    "geometry": "point",
+    "match": [{"amenity": ["bbq"]}],
+    "keep": [],
+    "height": "surface"
+  },
+  {
+    "kind": "drinking-water",
+    "geometry": "point",
+    "match": [{"amenity": ["drinking_water"]}, {"man_made": ["water_tap"]}, {"amenity": ["fountain"], "drinking_water": ["yes"]}],
+    "keep": [],
+    "height": "surface"
+  },
+  {
+    "kind": "shelter",
+    "geometry": "point",
+    "match": [{"amenity": ["shelter"]}],
+    "keep": [],
+    "height": "surface"
+  },
+  {
+    "kind": "bike-repair",
+    "geometry": "point",
+    "match": [{"amenity": ["bicycle_repair_station"]}],
+    "keep": [],
+    "height": "surface"
   }
 ]

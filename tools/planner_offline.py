@@ -13,27 +13,6 @@ COMPRESSED = {".bin", ".pmtiles", ".webp", ".png"}
 CHUNK = 1024 * 1024
 
 
-def sync_directory(path):
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def atomic_write(path, data):
-    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
-        temporary = Path(stream.name)
-        try:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-            temporary.replace(path)
-            sync_directory(path.parent)
-        finally:
-            temporary.unlink(missing_ok=True)
-
-
 def verify(path, item):
     if path.stat().st_size != item["bytes"] or runtime.digest(path) != item["sha256"]:
         raise ValueError(f"Checksum mismatch: {path.name}")

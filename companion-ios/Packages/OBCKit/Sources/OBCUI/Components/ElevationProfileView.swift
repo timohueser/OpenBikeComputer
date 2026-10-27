@@ -136,12 +136,3 @@ public struct ElevationProfileView: View {
         )
     }
 }
-
-#Preview("Elevation profile") {
-    VStack(alignment: .leading, spacing: 4) {
-        OBCEyebrow("Elevation profile")
-        ElevationProfileView(samples: [220, 260, 240, 380, 330, 470, 360, 450, 390, 410])
-    }
-    .padding(20)
-    .background(OBCTheme.page)
-}

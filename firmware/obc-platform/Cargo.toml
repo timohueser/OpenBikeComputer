@@ -3,7 +3,7 @@ name = "obc-platform"
 version = "0.1.0"
 edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
-description = "Board-agnostic no_std firmware source/handoff adapters over obc-ports — written once, reused by every OBC board crate: the button debouncer, the transport-agnostic debug-sensor protocol, the real-sensor and BLE-sensor cross-task hand-offs, and the synthetic/stub fallback sources. The display seam, sensor decoders, and SD adapters live in the sibling obc-display / obc-sensors / obc-storage crates."
+description = "Board-agnostic no_std firmware source/handoff adapters over obc-ports — written once, reused by every OBC board crate: the button debouncer, the transport-agnostic debug-sensor protocol, the real-sensor and BLE-sensor cross-task hand-offs, and the stub fuel gauge. The display seam, sensor decoders, and SD adapters live in the sibling obc-display / obc-sensors / obc-storage crates."
 
 [features]
 # Transport-agnostic fake-sensor debug protocol (issue #38). The pure codec in `debug_link` (line
@@ -52,29 +52,13 @@ embassy-futures = { version = "0.1", optional = true }
 # Same 0.8 the rest of the OBC stack uses.
 heapless = { workspace = true }
 
-obc-map-scene = { workspace = true }
-
 # `Signal` for the `debug-link` fresh-fix hand-off (transport task → app poll). Pinned to the 0.8 the
 # nRF board crate already resolves so the board build shares one embassy-sync. Optional — only
 # the `debug-link` feature pulls it.
 embassy-sync = { version = "0.8", optional = true }
-
-# `Instant`/`Duration` for the `time::SaturatingElapsed` fix (issue #51) and the `synth`
-# stand-in GPS's wall-clock cadence. Pinned to the same 0.5.1 the nRF board resolves so
-# `Instant` unifies across the two crates (the trait impl applies to the board's `Instant`).
-# `default-features = false` here; the board adds `defmt` itself and cargo unions the features.
-# NB: no time-*driver* is selected — the MCU build links embassy-nrf's, and the host *test*
-# build links the `std` driver from the dev-dependency below.
-embassy-time = { version = "0.5.1", default-features = false }
 
 [dev-dependencies]
 # `cargo test --features debug-link` compiles the Signal-based sources, which reference
 # `critical_section::with`; the std impl satisfies the link on the host. Dev-only — it never
 # reaches the firmware build (which provides cortex-m's single-core impl), so no double impl.
 critical-section = { version = "1.1", features = ["std"] }
-
-# The host time-driver for tests: `embassy_time::Instant::now()` (reached by `SaturatingElapsed`
-# and `SynthLocation`) needs a *linked* time driver or the test binary fails to link. `std`
-# registers `driver_std` on the host. Dev-only, so the MCU lib build never pulls it — there the
-# board's embassy-nrf driver is the one linked.
-embassy-time = { version = "0.5.1", features = ["std"] }

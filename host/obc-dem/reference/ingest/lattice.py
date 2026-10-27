@@ -77,16 +77,11 @@ class Window:
         lat_top = (GRID_ORIGIN + (self.row0 + self.rows) * STEP) / DEGREE
         return Affine(STEP / DEGREE, 0, lon0, 0, -STEP / DEGREE, lat_top)
 
-    def tiles(self):
-        for ti in range(tile_index(self.row0), tile_index(self.row0 + self.rows - 1) + 1):
-            for tj in range(tile_index(self.col0), tile_index(self.col0 + self.cols - 1) + 1):
-                yield ti, tj
-
 
 def covering_window(bounds: tuple[float, float, float, float], pad: int = 0) -> Window:
     """The smallest lattice window that covers a degree box, with `pad` pixels of margin.
 
-    An ingest pads by one pixel. The pooling below drops any centre that lands outside the
+    A pool pads by one pixel. The pooling below drops any centre that lands outside the
     window, and a reprojected boundary is an approximation of a curve, so the margin is
     what makes that drop a safety net rather than a way to lose an edge pixel.
     """
@@ -131,18 +126,3 @@ def check_world(bounds: tuple[float, float, float, float], what: str) -> None:
     box = (udeg_floor(west), udeg_floor(south), udeg_ceil(east), udeg_ceil(north))
     if box[0] < WORLD[0] or box[1] < WORLD[1] or box[2] > WORLD[2] or box[3] > WORLD[3]:
         raise Refuse(f"{what}: {west},{south},{east},{north} reaches outside the world box")
-
-def box_tiles(bbox, halo: int = 1) -> list[str]:
-    """The tiles a box needs, with a ring of `halo` tiles around it.
-
-    The baker reads a cell's nodes plus a two-node halo, and a node at the edge of a cell
-    takes its pixels from the tile next door, so the box alone is one tile short on every
-    side.
-    """
-
-    window = covering_window(bbox)
-    # The core is the tiles the box's own pixels are in — a box on tile lines is exactly its
-    # own tiles, not one more — and the ring goes around that.
-    rows = range(max(tile_index(window.row0) - halo, 0), tile_index(window.row0 + window.rows - 1) + halo + 1)
-    cols = range(max(tile_index(window.col0) - halo, 0), tile_index(window.col0 + window.cols - 1) + halo + 1)
-    return [tile_id(ti, tj) for ti in rows for tj in cols]

@@ -277,11 +277,6 @@ final class OBCNativeMapView: MLNMapView {
                                    edgePadding: UIEdgeInsets(top: 30, left: 24, bottom: bottom + 30, right: 24),
                                    animated: animated, completionHandler: nil)
     }
-
-    var mapRect: MKMapRect {
-        let sw = MKMapPoint(visibleCoordinateBounds.sw), ne = MKMapPoint(visibleCoordinateBounds.ne)
-        return MKMapRect(x: sw.x, y: ne.y, width: ne.x - sw.x, height: sw.y - ne.y)
-    }
 }
 
 struct OBCMapView: UIViewRepresentable {

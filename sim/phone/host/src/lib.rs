@@ -261,11 +261,6 @@ impl Host {
         self.device.app.top_screen().name()
     }
 
-    /// Whether a ride is open. The shell keeps the screen awake while it is.
-    pub fn recording(&self) -> bool {
-        self.device.app.recording()
-    }
-
     /// The key that binds a converted route to this exact map revision.
     fn attribution_key(&self) -> obc_formats::obcr::RouteSourceKey {
         let source = self.device.map.source();

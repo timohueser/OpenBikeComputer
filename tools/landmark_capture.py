@@ -39,8 +39,8 @@ MAX_SOURCE = 32 * 1024 * 1024
 # What the compiler reads a pinned JSON source up to (`landmarks::MAX_JSON_SOURCE`). A batch whose
 # response passes it is asked for again in halves, so every response a capture keeps is readable.
 MAX_JSON_SOURCE = 16 * 1024 * 1024
-# Every tagged object contributes its own types, so the closure is wider than a policy-root sweep
-# makes it. The bound is here to stop a runaway traversal, not to size the closure.
+# Every tagged object contributes its own types, so the closure is wider than the policy roots
+# make it. The bound is here to stop a runaway traversal, not to size the closure.
 MAX_CLASSES = 65536
 REQUESTS_PER_SECOND = 4
 # Commons permits 25 Mbps. Serial media reads stay below that limit.
@@ -52,8 +52,6 @@ BACKOFF_STATUS = (429, 503)
 BACKOFF_ATTEMPTS = 3
 BACKOFF_SECONDS = 5.0
 QID = r"Q[1-9][0-9]*"
-# The one group whose places are often unmapped, so the class query stays available for it.
-SWEEP_GROUP = "Natural curiosities"
 # The photo candidate pools the compiler ranks, best first, read from the file the compiler reads.
 # A pool one side offers and the other refuses is a photo that can never be selected.
 PHOTO_POOL_BYTES = (Path(__file__).resolve().parents[1] / "specs/photo-pools.json").read_bytes()
@@ -300,26 +298,6 @@ def polygons(boundary: dict) -> list:
 def bbox(boundary: dict) -> tuple[float, float, float, float]:
     points = [point for polygon in polygons(boundary) for ring in polygon for point in ring]
     return min(p[0] for p in points), min(p[1] for p in points), max(p[0] for p in points), max(p[1] for p in points)
-
-
-def query(root: str, bounds: tuple, *, box: bool = False) -> str:
-    west, south, east, north = bounds
-    if not re.fullmatch(QID, root):
-        raise ValueError("invalid policy root")
-    if box:
-        return f'''SELECT DISTINCT ?item ?location WHERE {{
-  SERVICE wikibase:box {{ ?item wdt:P625 ?location.
-    bd:serviceParam wikibase:cornerSouthWest "Point({west} {south})"^^geo:wktLiteral;
-      wikibase:cornerNorthEast "Point({east} {north})"^^geo:wktLiteral. }}
-  ?item wdt:P31/wdt:P279* wd:{root}.
-}}'''
-    # Match Wikidata's best-rank semantics. The compiler applies the exact polygon
-    # and excluded classes again against the captured raw entity revisions.
-    return f'''SELECT DISTINCT ?item ?location WHERE {{
-  ?item wdt:P31/wdt:P279* wd:{root}; wdt:P625 ?location.
-  FILTER(geof:latitude(?location)>={south} && geof:latitude(?location)<={north}
-    && geof:longitude(?location)>={west} && geof:longitude(?location)<={east})
-}}'''
 
 
 def claim_values(entity: dict, property_id: str) -> list:
@@ -617,18 +595,8 @@ def capture_locales(capture: Capture, value: dict) -> None:
         pending = following
 
 
-def capture_place(capture: Capture, qid: str, photo_without_text: bool = False) -> dict:
-    value = entity(capture, qid)
-    place = dict(qid=qid, articles=[], images=[], outcomes=[])
-    if not value or "missing" in value:
-        place["outcomes"].append(dict(asset="entity", status="acquisition-failed"))
-        return place
-    return capture_assets(capture, qid, value, photo_without_text)
-
-
-def capture_assets(capture: Capture, qid: str, value: dict, photo_without_text: bool = False) -> dict:
-    """`photo_without_text` is the peak collection, where a photo alone is a record. A collection
-    that needs text asks for no image of an entity that cannot have one."""
+def capture_assets(capture: Capture, qid: str, value: dict) -> dict:
+    """A landmark needs text, so an entity that cannot have one gets no image either."""
     place = dict(qid=qid, articles=[], images=[], outcomes=[])
     place["entity_revision"] = value.get("lastrevid")
     place["name"] = next((value.get("labels", {}).get(lang, {}).get("value") for lang in LANGUAGES if value.get("labels", {}).get(lang)), qid)
@@ -638,23 +606,21 @@ def capture_assets(capture: Capture, qid: str, value: dict, photo_without_text: 
                   for prop in IMAGE_PROPERTIES for name in claim_values(value, prop) if isinstance(name, str)}
     if not any(lang + "wiki" in value.get("sitelinks", {}) for lang in LANGUAGES):
         place["outcomes"].append(dict(asset="article", status="no-supported-sitelink"))
-        if not photo_without_text:
-            return place
-    else:
-        capture_locales(capture, value)
-        for language in LANGUAGES:
-            link = value.get("sitelinks", {}).get(language + "wiki")
-            if not link:
-                place["outcomes"].append(dict(asset="article", language=language, status="no-sitelink"))
-                continue
-            record, lead, status = article(capture, qid, language, link["title"])
-            place["outcomes"].append(dict(asset="article", language=language, status=status))
-            if record:
-                place["articles"].append(record)
-                if not lead:
-                    place["outcomes"].append(dict(asset="photo", source="wikipedia-lead", language=language, status=record["lead_image_status"]))
-            if lead:
-                candidates.add((lead, "wikipedia-lead", language))
+        return place
+    capture_locales(capture, value)
+    for language in LANGUAGES:
+        link = value.get("sitelinks", {}).get(language + "wiki")
+        if not link:
+            place["outcomes"].append(dict(asset="article", language=language, status="no-sitelink"))
+            continue
+        record, lead, status = article(capture, qid, language, link["title"])
+        place["outcomes"].append(dict(asset="article", language=language, status=status))
+        if record:
+            place["articles"].append(record)
+            if not lead:
+                place["outcomes"].append(dict(asset="photo", source="wikipedia-lead", language=language, status=record["lead_image_status"]))
+        if lead:
+            candidates.add((lead, "wikipedia-lead", language))
     place["commons_categories"] = []
     for category in [v for v in claim_values(value, "P373") if isinstance(v, str)][:PHOTO_FALLBACK["categories"]]:
         if not isinstance(category, str):
@@ -677,7 +643,7 @@ def capture_assets(capture: Capture, qid: str, value: dict, photo_without_text: 
     return place
 
 
-def acquire_requested_photos(capture: Capture, executable: Path, subcommand: str, document: str, snapshot: Path, boundary: Path, places: list[dict], write_manifest) -> int:
+def acquire_requested_photos(capture: Capture, executable: Path, snapshot: Path, boundary: Path, places: list[dict], write_manifest) -> int:
     """Ask the compiler which originals it would use, acquire exactly those, and ask again.
 
     Ranking is compiler policy and reads metadata alone, so acquisition never repeats it and never
@@ -695,18 +661,13 @@ def acquire_requested_photos(capture: Capture, executable: Path, subcommand: str
         with tempfile.TemporaryDirectory(prefix="obc-photo-selection-") as temporary:
             output = Path(temporary) / "out"
             output.mkdir()
-            command = [str(executable.resolve()), subcommand, "--snapshot", str(snapshot), "--boundary", str(boundary), "--out", str(output)]
-            if subcommand == "landmark-photo-requests":
-                if affected is not None:
-                    qids = Path(temporary) / "qids.json"
-                    qids.write_text(json.dumps(affected))
-                    command += ["--qids", str(qids)]
-                key = "requests"
-            else:
-                command.insert(2, "--photo-requests")
-                key = "photo_requests"
+            command = [str(executable.resolve()), "landmark-photo-requests", "--snapshot", str(snapshot), "--boundary", str(boundary), "--out", str(output)]
+            if affected is not None:
+                qids = Path(temporary) / "qids.json"
+                qids.write_text(json.dumps(affected))
+                command += ["--qids", str(qids)]
             subprocess.run(command, check=True)
-            requests = json.loads((output / document).read_text()).get(key, [])
+            requests = json.loads((output / "photo-requests.json").read_text()).get("requests", [])
         fresh = [r for r in requests if (r["qid"], r["metadata_path"]) not in tried and (r["qid"], r["metadata_path"]) in images]
         if not fresh:
             break
@@ -727,61 +688,20 @@ def acquire_requested_photos(capture: Capture, executable: Path, subcommand: str
     return acquired
 
 
-def sweep(capture: Capture, policy: dict, boundary: dict) -> tuple[set[str], list[dict]]:
-    """The Wikidata class query, kept for one group: a natural curiosity is often an unmapped place
-    that no OSM object tags."""
-    group = policy["groups"].get(SWEEP_GROUP)
-    if not group or not group["include"]:
-        raise ValueError(f"the policy has no included {SWEEP_GROUP} group to sweep")
-    qids, queries = set(), []
-    for root in sorted(group["roots"], key=lambda q: int(q[1:])):
-        sparql = query(root, bbox(boundary))
-        raw = capture.json(f"queries/{root}.json", "https://query.wikidata.org/sparql?" + urlencode({"query": sparql, "format": "json"}))
-        rows = raw.get("results", {}).get("bindings") if raw else None
-        strategy = "class-first"
-        if not isinstance(rows, list):
-            strategy = "box-first"
-            sparql = query(root, bbox(boundary), box=True)
-            raw = capture.json(f"queries/{root}-box.json", "https://query.wikidata.org/sparql?" + urlencode({"query": sparql, "format": "json"}))
-            rows = raw.get("results", {}).get("bindings") if raw else None
-        queries.append(dict(root=root, strategy=strategy, complete=isinstance(rows, list), rows=len(rows) if isinstance(rows, list) else None))
-        if isinstance(rows, list):
-            for row in rows:
-                qid = row.get("item", {}).get("value", "").rsplit("/", 1)[-1]
-                if not re.fullmatch(QID, qid):
-                    raise ValueError("invalid Wikidata query identity")
-                qids.add(qid)
-        print(f"sweep {root}: {queries[-1]}; union={len(qids)}", flush=True)
-    return qids, queries
-
-
-def generated(args, command: list[str], name: str) -> bytes:
-    """The file `name` that a selection command of the compiler writes with `--out`."""
-    with tempfile.TemporaryDirectory(prefix="obc-landmark-input-") as temporary:
-        path = Path(temporary) / name
-        subprocess.run([str(args.select_with.resolve()), *command, "--out", str(path)], check=True)
-        return path.read_bytes()
-
-
 def run(args) -> int:
     boundary_bytes = args.boundary.read_bytes()
     policy_bytes = args.policy.read_bytes()
-    if args.osm:
-        candidate_bytes = generated(args, ["landmark-candidates", "--osm", str(args.osm)], "candidates.json")
-    else:
-        candidate_bytes = args.candidates.read_bytes()
+    candidate_bytes = args.candidates.read_bytes()
     boundary, policy = json.loads(boundary_bytes), json.loads(policy_bytes)
     candidates = json.loads(candidate_bytes)
     capture = Capture(args.out)
     recipe = dict(schema=1, rank="best-rank", boundary_sha256=digest(boundary_bytes), policy_sha256=digest(policy_bytes),
-                  candidates_sha256=digest(candidate_bytes), sweep=bool(args.sweep), languages=LANGUAGES,
+                  candidates_sha256=digest(candidate_bytes), languages=LANGUAGES,
                   locale_policy="P131-P37-depth8-nodes64;P17-P37;ui-order", language_sha256=digest(LANGUAGE_BYTES))
     recipe_path = args.out / "recipe.json"
     if recipe_path.exists() and json.loads(recipe_path.read_text()) != json.loads(json.dumps(recipe)):
         raise ValueError("capture recipe changed; use a new output directory")
     write_json(recipe_path, recipe)
-    if args.retry_failed:
-        capture.retry_failed()
     (args.out / "boundary.geojson").write_bytes(boundary_bytes)
     (args.out / "policy.json").write_bytes(policy_bytes)
     (args.out / "candidates.json").write_bytes(candidate_bytes)
@@ -790,10 +710,6 @@ def run(args) -> int:
         if not re.fullmatch(QID, qid):
             raise ValueError("invalid candidate identity")
         qids.add(qid)
-    queries = []
-    if args.sweep:
-        swept, queries = sweep(capture, policy, boundary)
-        qids |= swept
     ordered = sorted(qids, key=lambda q: int(q[1:]))
     roots = sorted({root for group in policy["groups"].values() if group["include"] for root in group["roots"]}, key=lambda q: int(q[1:]))
 
@@ -838,23 +754,22 @@ def run(args) -> int:
         # A batch that was asked for again in halves is answered by those halves. Its own response
         # is neither a source the compiler reads nor a failure the capture is missing.
         split = set(entities.split)
-        unresolved = [o for o in failures if not o["path"].startswith("queries/") and o["path"] not in split]
+        unresolved = [o for o in failures if o["path"] not in split]
         sources = [source for source in semantic_sources(outcomes) if source["path"] not in split]
         sources.append(dict(path="candidates.json", url="urn:openbikecomputer:osm-landmarks:" + candidates["osm_sha256"],
                             bytes=len(candidate_bytes), sha256=digest(candidate_bytes)))
         sources.sort(key=lambda source: source["path"])
         categories_complete = category_coverage_complete(places)
         asset_phase_complete = asset_phase_complete and categories_complete
-        coverage = dict(kind="osm-wikidata-links", country_complete=asset_phase_complete and entities_complete and all(q["complete"] for q in queries) and not unresolved and not missing,
-                    query_coverage_complete=all(q["complete"] for q in queries), bbox=bbox(boundary), boundary_path="boundary.geojson",
-                    policy_path="policy.json", candidates_path="candidates.json", queries=queries,
+        coverage = dict(kind="osm-wikidata-links", country_complete=asset_phase_complete and entities_complete and not unresolved and not missing,
+                    bbox=bbox(boundary), boundary_path="boundary.geojson",
+                    policy_path="policy.json", candidates_path="candidates.json",
                     candidate_identities=len(qids), acquired_entities=sum("entity_revision" in p for p in places),
                     unresolved_identities=len(unresolved_identities), entity_coverage_complete=entities_complete,
                     asset_phase_complete=asset_phase_complete, category_coverage_complete=categories_complete,
                     request_failures=len(failures), unresolved_source_failures=len(unresolved),
                     split_requests=len(split), missing_classes=missing,
-                    selection="Explicit OSM wikidata tags" + (f"; Wikidata class sweep for {SWEEP_GROUP}" if args.sweep else "")
-                              + ". No name or coordinate match. The compiler applies the exact polygon, best-rank claims and exclusions.")
+                    selection="Explicit OSM wikidata tags. No name or coordinate match. The compiler applies the exact polygon, best-rank claims and exclusions.")
         write_json(args.out / "manifest.json", dict(schema=2, sources=sources, places=places, classes_path="classes.json", missing_classes=missing, coverage=coverage, outcomes=outcomes))
         return coverage
     write_json(args.out / "classes.json", classes)
@@ -876,7 +791,7 @@ def run(args) -> int:
             captured[place["qid"]] = place
             print(f"place {len(captured)}/{len(selected)}: {place['qid']} articles={len(place['articles'])} images={len(place['images'])}", flush=True)
         places = [captured.get(p["qid"], dict(p, outcomes=[dict(asset="site", status="excluded-by-production-selection")])) for p in places]
-    acquire_requested_photos(capture, args.select_with, "landmark-photo-requests", "photo-requests.json", args.out / "manifest.json", args.boundary, places, lambda: manifest(True))
+    acquire_requested_photos(capture, args.select_with, args.out / "manifest.json", args.boundary, places, lambda: manifest(True))
     coverage = manifest(True)
     print(json.dumps(coverage, indent=2), flush=True)
     return 0 if coverage["country_complete"] else 2
@@ -884,30 +799,13 @@ def run(args) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--boundary", type=Path, help="GeoJSON boundary; or --poly")
-    parser.add_argument("--poly", type=Path, help="Osmosis .poly; the compiler makes the boundary from it")
-    parser.add_argument("--policy", type=Path, help="required for landmark policy discovery")
-    parser.add_argument("--candidates", type=Path, help="QID list from `obc-bake landmark-candidates`; or --osm")
-    parser.add_argument("--osm", type=Path, help="regional OSM extract; the compiler finds the landmark candidates in it")
-    parser.add_argument("--sweep", action="store_true", help=f"also query Wikidata for the {SWEEP_GROUP} group")
-    parser.add_argument("--peaks-osm", type=Path, help="capture a separate peak catalogue from this regional OSM extract")
+    parser.add_argument("--boundary", required=True, type=Path, help="GeoJSON boundary")
+    parser.add_argument("--policy", required=True, type=Path, help="landmark category policy")
+    parser.add_argument("--candidates", required=True, type=Path, help="QID list from `obc-bake landmark-candidates`")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--select-with", required=True, type=Path, help="built obc-bake or obc data binary; it selects entities before asset acquisition")
-    parser.add_argument("--retry-failed", action="store_true", help="retry failed requests once, retaining their previous outcomes")
     args = parser.parse_args()
     try:
-        if (args.boundary is None) == (args.poly is None):
-            raise ValueError("give one of --boundary and --poly")
-        if args.poly:
-            # The capture keeps its boundary there in any case.
-            args.out.mkdir(parents=True, exist_ok=True)
-            args.boundary = args.out / "boundary.geojson"
-            args.boundary.write_bytes(generated(args, ["boundary", "--poly", str(args.poly)], "boundary.geojson"))
-        if args.peaks_osm:
-            from peak_capture import run as run_peaks
-            return run_peaks(args)
-        if args.policy is None or (args.candidates is None) == (args.osm is None):
-            raise ValueError("landmarks require --policy and one of --candidates and --osm")
         return run(args)
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"landmark capture: {error}\n")

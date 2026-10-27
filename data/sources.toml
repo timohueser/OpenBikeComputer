@@ -921,6 +921,55 @@ version = "release"
 start = "v2"
 redistribute = true
 
+# The night sky of TrailView: `tools/trailview/sky.py` makes the engine's files from these three.
+[[source]]
+id = "nasa-svs-milky-way"
+kind = "asset"
+group = "Map styles and tools"
+used_by = ["trailview"]
+use = "The Milky Way of the TrailView night sky"
+licence = "LicenseRef-public-domain"
+licence_url = "https://www.nasa.gov/nasa-brand-center/images-and-media/"
+attribution = "Milky Way: NASA/Goddard Space Flight Center Scientific Visualization Studio, Gaia DR2: ESA/Gaia/DPAC"
+obligations = "Credit NASA/GSFC SVS and ESA/Gaia/DPAC"
+fetch = { kind = "http", url = "https://svs.gsfc.nasa.gov/vis/a000000/a004800/a004851/milkyway_2020_4k.exr" }
+version = "digest"
+start = "2eb802d6e68d170b410f766c7fec07f7518619f6b6708fdc81e9302d93e74fdb"
+refresh = "manual"
+redistribute = true
+
+[[source]]
+id = "nasa-svs-moon"
+kind = "asset"
+group = "Map styles and tools"
+used_by = ["trailview"]
+use = "The face of the moon in the TrailView sky"
+licence = "LicenseRef-public-domain"
+licence_url = "https://www.nasa.gov/nasa-brand-center/images-and-media/"
+attribution = "Moon: NASA's Scientific Visualization Studio, CGI Moon Kit (LRO LROC)"
+obligations = "Credit NASA's Scientific Visualization Studio"
+fetch = { kind = "http", url = "https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/lroc_color_poles_1k.jpg" }
+version = "digest"
+start = "b246064f217f8d479df78c49c7c8595a8f5fbda008a72fd539978d2e121e0109"
+refresh = "manual"
+redistribute = true
+
+[[source]]
+id = "yale-bright-stars"
+kind = "asset"
+group = "Map styles and tools"
+used_by = ["trailview"]
+use = "The stars of the TrailView night sky"
+licence = "LicenseRef-public-domain"
+licence_url = "https://catalog.data.gov/dataset/bright-star-catalog"
+attribution = "Stars: Yale Bright Star Catalogue, 5th edition (Hoffleit & Warren 1991, CDS V/50)"
+obligations = "Cite the catalogue"
+fetch = { kind = "http", url = "https://cdsarc.cds.unistra.fr/ftp/V/50/catalog.gz" }
+version = "digest"
+start = "3dc44b1e90be8fbe5bcc7656032560f51275f985c7e3f783c9028e1838ec7bed"
+refresh = "manual"
+redistribute = true
+
 # ── Tools: code that steps run; nothing of theirs ships ─────────────────────
 
 [[source]]

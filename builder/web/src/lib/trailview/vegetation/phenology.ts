@@ -3,8 +3,8 @@
 // share of trees past a turn rises with the date, and a tree passes the turns in their order and never
 // turns back. Higher up, spring comes later and autumn earlier.
 
-/** The phases between the turns, in the order of SEASONS: winter (bare), spring, summer, autumn. */
-export const WINTER = 0, SUMMER = 2;
+/** Summer's phase. The phases between the turns follow SEASONS: winter (bare), spring, summer, autumn. */
+export const SUMMER = 2;
 
 /**
  * As TURNS of phenology.wgsl, per turn: its day of the year at REFERENCE_M (0 is 1 January), the days

@@ -604,18 +604,3 @@ pub fn emit_poi_section(section_offset: usize, blocks: &[PoiBytes], pool: &[[u8;
     out.extend_from_slice(&payload);
     out
 }
-
-/// The same POI directory and empty hours pool as a map with no place records.
-pub fn empty_poi_section(section_offset: usize) -> Vec<u8> {
-    let blocks: Vec<_> = obc_formats::obcm::PoiCategory::ALL
-        .iter()
-        .map(|category| PoiBytes {
-            cat_id: category.id(),
-            index: Vec::new(),
-            node_count: 0,
-            chunks: Vec::new(),
-            chunk_count: 0,
-        })
-        .collect();
-    emit_poi_section(section_offset, &blocks, &[])
-}

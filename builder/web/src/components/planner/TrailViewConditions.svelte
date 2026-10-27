@@ -3,7 +3,7 @@
     import Icon from './PlannerIcon.svelte';
     import DateStepper from './DateStepper.svelte';
     import Segmented from './Segmented.svelte';
-    import { clock, daylight } from '../../lib/planner/layers/sun';
+    import { clock, daylight } from '../../lib/planner/solar';
     import { TIME_ZONE, today, type View, type Weather } from '../../lib/trailview/view';
 
     type Conditions = Pick<View, 'date' | 'time' | 'weather'>;

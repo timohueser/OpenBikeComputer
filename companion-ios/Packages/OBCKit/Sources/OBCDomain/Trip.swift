@@ -155,9 +155,6 @@ public struct Trip: Identifiable, Equatable, Sendable {
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed?.isEmpty == false ? trimmed : nil
     }
-
-    /// Whether some device holds a copy of the trip object.
-    public var uploadedToDevice: Bool { deviceLink != nil }
 }
 
 /// A trip's totals, summed over its days in ride order.

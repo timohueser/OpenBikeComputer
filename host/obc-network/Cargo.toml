@@ -7,7 +7,6 @@ license = "GPL-3.0-only"
 description = "OBCM network producer"
 
 [dependencies]
-obc-pbf = { workspace = true }
 obc-map-core = { workspace = true }
 obc-places = { workspace = true }
 obc-formats = { workspace = true }
@@ -15,5 +14,3 @@ obc-elevation = { workspace = true }
 obc-map-scene = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 obc-tree-walk = { workspace = true }
-
-[dev-dependencies]

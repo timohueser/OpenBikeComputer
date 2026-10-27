@@ -1,7 +1,7 @@
 import XCTest
 
-/// Launching with a scenario argument boots directly into that state, and the dev panel is
-/// reachable. The app under test is a Debug build, so the mock status HUD tags are present.
+/// Launching with a scenario argument boots directly into that state. The app under test is a
+/// Debug build, so the mock status HUD tags are present.
 final class ScenarioLaunchTests: XCTestCase {
     /// Keep in sync with `Scenario.allCases`. The token round-trip is host-tested in
     /// `MockLaunchOptionsTests`; this list is what proves each token boots the app end to end.
@@ -57,18 +57,5 @@ final class ScenarioLaunchTests: XCTestCase {
         let device = app.descendants(matching: .any)["topbar.device"].firstMatch
         let named = NSPredicate(format: "label BEGINSWITH 'Trailhead,'")
         wait(for: [expectation(for: named, evaluatedWith: device)], timeout: 10)
-    }
-
-    /// The dev panel presents at launch through its argument, and dismisses.
-    @MainActor
-    func testDevPanelOpensViaLaunchArgAndDismisses() {
-        let app = launch(arguments: ["-OBCShowDevPanel"])
-        let panel = app.otherElements["devPanel"].firstMatch
-        let done = app.buttons["devPanel.done"]
-        XCTAssertTrue(done.waitForExistence(timeout: 10), "dev panel did not present")
-        XCTAssertTrue(panel.exists || app.collectionViews.count > 0)
-        done.tap()
-        XCTAssertTrue(app.staticTexts["mockScenarioTag"].waitForExistence(timeout: 5))
-        XCTAssertFalse(done.exists)
     }
 }

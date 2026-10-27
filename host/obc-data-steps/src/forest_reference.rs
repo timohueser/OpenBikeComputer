@@ -34,7 +34,7 @@ pub const FOREST_REFERENCE: ForestReference = ForestReference { tool };
 fn tool(root: &Path) -> Result<Command, String> {
     let mut command = Command::new("uv");
     command.args(["run", "--locked", "--offline", "--no-default-groups", "--no-python-downloads"]);
-    command.args(["--group", "planner-snow", "--group", "planner-sun", "python", "-m", "tools.forest_reference"]);
+    command.args(["--group", "planner-snow", "--group", "forest-reference", "python", "-m", "tools.forest_reference"]);
     command.env("UV_PYTHON", obc_data::engine::python_executable(root)?).env("UV_NO_SYNC", "0");
     Ok(command)
 }

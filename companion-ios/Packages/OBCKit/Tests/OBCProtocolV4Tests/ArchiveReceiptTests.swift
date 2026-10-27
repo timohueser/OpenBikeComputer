@@ -19,10 +19,10 @@ struct ArchiveReceiptTests {
         let frames = await link.frames
         #expect(frames.map(\.opcode) == [.list, .archiveRide])
         var expected = link.store.bytes
-        expected.receiptLE(UInt64(0x1234_5678_9ABC_DEF0))
-        expected.receiptLE(UInt64(0xFEDC_BA98_7654_3210))
-        expected.receiptLE(UInt64(0x1_0000_0001))
-        expected.receiptLE(UInt32(0))
+        expected.appendLE(UInt64(0x1234_5678_9ABC_DEF0))
+        expected.appendLE(UInt64(0xFEDC_BA98_7654_3210))
+        expected.appendLE(UInt64(0x1_0000_0001))
+        expected.appendLE(UInt32(0))
         #expect(frames.last?.payload == expected)
     }
 
@@ -116,7 +116,7 @@ private actor ReceiptLink: TransferLink {
         self.replaceOnRestore = replaceOnRestore
     }
     func sendControlRecord(_ record: Data) async throws {
-        let frame = try ControlFrame(decoding: record, direction: .request)
+        let frame = try ControlFrame(decodingRequest: record)
         frames.append(frame)
         pending = frame
     }
@@ -130,9 +130,8 @@ private actor ReceiptLink: TransferLink {
         pending = nil
         if frame.opcode == .list {
             var body = replaceOnRestore && restores > 0 ? replacement.bytes : store.bytes
-            body.receiptLE(UInt64(17))
-            return ControlFrame(opcode: .list, flags: ControlFrame.responseFlag,
-                                requestID: frame.requestID, payload: body).encode()
+            body.appendLE(UInt64(17))
+            return responseRecord(.list, requestID: frame.requestID, payload: body)
         }
         guard frame.opcode == .archiveRide, !steps.isEmpty else { throw TransferClientError.unexpectedResponse }
         switch steps.removeFirst() {
@@ -146,21 +145,19 @@ private actor ReceiptLink: TransferLink {
             }
         case .reject(let code):
             var body = Data()
-            body.receiptLE(code.rawValue)
-            body.receiptLE(UInt16(0))
-            body.receiptLE(UInt32(0))
-            body.receiptLE(UInt64(0))
-            return ControlFrame(opcode: .archiveRide, flags: ControlFrame.responseFlag | ControlFrame.errorFlag,
-                                requestID: frame.requestID, payload: body).encode()
+            body.appendLE(code.rawValue)
+            body.appendLE(UInt16(0))
+            body.appendLE(UInt32(0))
+            body.appendLE(UInt64(0))
+            return responseRecord(.archiveRide, requestID: frame.requestID, payload: body, error: true)
         }
     }
     private func response(_ frame: ControlFrame, timestamp: UInt32, requestID: RequestID? = nil) -> Data {
         var body = Data()
-        body.receiptLE(UInt64(17))
-        body.receiptLE(timestamp)
-        body.receiptLE(UInt32(0))
-        return ControlFrame(opcode: .archiveRide, flags: ControlFrame.responseFlag,
-                            requestID: requestID ?? frame.requestID, payload: body).encode()
+        body.appendLE(UInt64(17))
+        body.appendLE(timestamp)
+        body.appendLE(UInt32(0))
+        return responseRecord(.archiveRide, requestID: requestID ?? frame.requestID, payload: body)
     }
     func waitUntilParked() async {
         if waiter != nil { return }
@@ -175,11 +172,4 @@ private actor ReceiptLink: TransferLink {
     func cancelStreamReceive() async {}
     func sendStreamRecord(_ record: Data) async throws { throw TransferClientError.unexpectedStream }
     func receiveStreamRecord() async throws -> Data { throw TransferClientError.unexpectedStream }
-}
-
-private extension Data {
-    mutating func receiptLE<T: FixedWidthInteger>(_ value: T) {
-        var little = value.littleEndian
-        Swift.withUnsafeBytes(of: &little) { append(contentsOf: $0) }
-    }
 }

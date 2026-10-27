@@ -233,16 +233,18 @@ def tile_origin(x, y):
     return x * SIZE * CELL - WORLD / 2, WORLD / 2 - y * SIZE * CELL
 
 
-def http(url, tries=5):
-    for attempt in range(tries):
+def http(url, delays=(5, 30, 120, 600)):
+    """The body of `url`. The waits ride out an outage of the leaf type service of minutes, as one
+    failed tile ends the whole prepare."""
+    for delay in (*delays, None):
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "openbikecomputer"})
             with urllib.request.urlopen(request, timeout=120) as response:
                 return response.read()
         except OSError:
-            if attempt == tries - 1:
+            if delay is None:
                 raise
-            time.sleep(2 ** attempt)
+            time.sleep(delay)
 
 
 def vhm_years():

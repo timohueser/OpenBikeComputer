@@ -301,36 +301,6 @@ pub fn format_counts(pois: &[Poi], dropped: usize) -> String {
     format!("pois: {} (dedup dropped {dropped})", per_cat.join(", "))
 }
 
-/// `--dump-pois` output: one line per POI for eyeballing against a known extract.
-pub fn dump(pois: &[Poi]) {
-    for p in pois {
-        let row = table_row(p.subtype);
-        println!(
-            "poi: {}/{} ({}) at {:.6},{:.6} name={:?}{} src={}",
-            CATEGORY_NAMES[row.category() as usize],
-            row.value,
-            row.label(),
-            p.lat_udeg as f64 / 1e6,
-            p.lon_udeg as f64 / 1e6,
-            p.name.as_deref().unwrap_or("-"),
-            p.population.map_or(String::new(), |n| format!(" pop={n}")),
-            if p.from_node { "node" } else { "way" },
-        );
-    }
-}
-
-/// `--dump-hours` output: one line per POI that carries a parsed schedule, for
-/// eyeballing the parsed weekly hours against the raw `opening_hours` in an
-/// extract. POIs without hours are skipped.
-pub fn dump_hours(pois: &[Poi]) {
-    for p in pois {
-        if let Some(sched) = &p.hours {
-            let name = p.name.as_deref().unwrap_or_else(|| table_row(p.subtype).label());
-            println!("hours: {}: {}", name, crate::hours::describe(sched));
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

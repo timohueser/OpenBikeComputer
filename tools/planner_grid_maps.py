@@ -15,12 +15,6 @@ MAP_ZOOM = 11
 FINE_ZOOM = 13
 
 
-def map_kinds(maps):
-    """The tile archives of a map bundle; optional layers exist only when requested."""
-    return ["basemap", "places", "overlays", "terrain"] + [
-        layer for layer in runtime.DATA_LAYERS if (maps / f"{layer}.pmtiles").exists()]
-
-
 def recoded(tiles):
     """Terrain tiles encoded again by libwebp: the same pixels in fewer bytes than `planner-dem` writes. Pillow holds
     the GIL while it encodes, so the tiles go to processes."""
@@ -34,7 +28,7 @@ def smaller(data):
     return lossless(data)[0]
 
 
-def map_tiles(source, output, kinds=None):
+def map_tiles(source, output, kinds):
     from pmtiles.reader import Reader, MmapSource, all_tiles
     from pmtiles.tile import zxy_to_tileid
     from pmtiles.writer import Writer
@@ -42,7 +36,7 @@ def map_tiles(source, output, kinds=None):
     import tempfile
 
     output.mkdir(parents=True, exist_ok=True)
-    for kind in kinds or map_kinds(source):
+    for kind in kinds:
         target = output / kind
         target.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".tiles-", dir=output) as temporary:
@@ -100,21 +94,12 @@ def step(request):
         archives = work / "archives"
         archives.mkdir()
         archive = archives / f"{kind}.pmtiles"
-        empty = False
-        if name.endswith(".mbtiles"):
-            empty_metadata = empty_mbtiles(source)
-            empty = empty_metadata is not None
-            if empty:
-                header, metadata = empty_metadata
-            # The PMTiles writer requires at least one tile; sea-only terrain has none.
-            if not empty:
-                mbtiles_to_pmtiles(source, archive, None)
-        elif kind == "sun" and name == "sun/empty.json":
-            metadata = json.loads(Path(source).read_bytes())
-            if metadata.get("sun_format") != 3:
-                raise ValueError("Unsupported empty sunlight metadata")
-            header = {"min_zoom": 0, "max_zoom": 12}
-            empty = True
+        # The PMTiles writer requires at least one tile; sea-only terrain has none.
+        empty = empty_mbtiles(source) if name.endswith(".mbtiles") else None
+        if empty:
+            header, metadata = empty
+        elif name.endswith(".mbtiles"):
+            mbtiles_to_pmtiles(source, archive, None)
         else:
             archive.symlink_to(Path(source).absolute())
         if not empty:

@@ -1,22 +1,20 @@
-"""Map archives cover their contour neighbours and a bundle check detects changed files."""
+"""Map archives cover their contour neighbours."""
 
-import hashlib
 import io
-import json
 import math
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools import planner_maps as maps
+from tools import planner_geo as geo
 from tools import planner_map_archive as archive
 
 
 class PlannerMaps(unittest.TestCase):
     def test_terrain_covers_contour_neighbours_at_every_supported_zoom(self):
         for region in [[5.95, 45.8, 10.5, 49.85], [148.8, -37.2, 149.1, -36.5]]:
-            west, south, east, north = maps.terrain_bounds(region)
+            west, south, east, north = geo.terrain_bounds(region)
             for zoom in range(10, 16):
                 count = 1 << zoom
                 for lon in [region[0], region[2]]:
@@ -32,17 +30,6 @@ class PlannerMaps(unittest.TestCase):
                                 center_lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (dem_y + 0.5) / dem_count))))
                                 self.assertTrue(west < center_lon < east and south < center_lat < north,
                                                 (region, zoom, dem_x, dem_y))
-
-    def test_full_bundle_check_refuses_a_changed_file(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            destination = Path(temporary)
-            (destination / "basemap.pmtiles").write_bytes(b"base")
-            (destination / "manifest.json").write_text(json.dumps({"files": {"basemap.pmtiles": {
-                "bytes": 4, "sha256": hashlib.sha256(b"base").hexdigest()}}}))
-            maps.check_bundle(destination, full=True)
-            (destination / "basemap.pmtiles").write_bytes(b"oops")
-            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
-                maps.check_bundle(destination, full=True)
 
     def test_per_zoom_halo_covers_contour_overzoom_without_growing_high_zoom_padding(self):
         for region in [[5.95, 45.8, 10.5, 49.85], [148.8, -37.2, 149.1, -36.5], [-180, 0, -179, 1], [179, -1, 180, 0]]:

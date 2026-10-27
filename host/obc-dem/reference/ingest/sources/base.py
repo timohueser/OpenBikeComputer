@@ -1,8 +1,8 @@
 """What every adapter is: the manifest facts, and a way to obtain rasters for a box.
 
 Every request in the registry goes through `with_retry`, so one rule covers all of them: a
-dropped connection, a 429 and a 5xx are retried; every other 4xx is the server's final
-answer and is refused at once, with its body, because that body is the only thing that
+dropped connection, a 408, a 429, a 5xx and an OWS code of `SERVER_FAULTS` are retried; every
+other 4xx is the server's final answer and is refused at once, with its body, because that body is the only thing that
 says what happened.
 
 Two rules hold a credential. A refusal quotes what came off the wire, and a URL with a
@@ -65,6 +65,8 @@ READABLE = RASTER_SUFFIXES | GRID_SUFFIXES | XYZ_SUFFIXES
 # A country run is days of requests, and a public service that is restarted or briefly
 # overloaded answers 5xx for minutes, not seconds: the delays add up to twelve and a half.
 RETRY_DELAYS = (5, 30, 120, 600)
+# OWS exception codes that name a fault of the server, whatever status they ride on.
+SERVER_FAULTS = (b"NoApplicableCode", b"LayerNotDefined")
 
 # The orthometric height systems the registry knows. A row has to name one of them: the
 # archive is orthometric metres and the bakery holds the reference against Copernicus on
@@ -163,10 +165,13 @@ def with_retry(attempt, what: str, absent=()):
             # at the top of the report; the rest of a server-controlled body is not read.
             raw = error.read(64 * 1024)
             body = raw[:400].decode("utf-8", "replace").replace("\n", " ").strip()
-            # An OWS `NoApplicableCode` is the server's own fault whatever status it rides
-            # on; the LGL WCS sends it as a 404 while it is overloaded. So it is retried
-            # like a 5xx, and only a 4xx that names the request's fault is final.
-            if error.code != 429 and error.code < 500 and b"NoApplicableCode" not in raw:
+            # Some faults of a server ride on a 4xx: the LGL WCS sends `NoApplicableCode` as a
+            # 404 while it is overloaded, and the IGN WMS sends a 408 while it is busy and,
+            # from some of its nodes, `LayerNotDefined` for a layer of its capabilities. So
+            # they are retried like a 5xx, and only a 4xx that names the request's fault is
+            # final.
+            if (error.code not in (408, 429) and error.code < 500
+                    and not any(code in raw for code in SERVER_FAULTS)):
                 raise Refuse(redact(f"{what}: HTTP {error.code} — {body}")) from error
             if delay is None:
                 raise Refuse(redact(f"{what}: HTTP {error.code} after {len(RETRY_DELAYS)} "
@@ -351,8 +356,7 @@ class Credential:
     These portals read a key out of the URL or out of an `Authorization` header, so a
     credential is one of two shapes: a `param` that `OBC_REFERENCE_<KEY>_TOKEN` becomes,
     or HTTP Basic from `OBC_REFERENCE_<KEY>_USER` and `_PASSWORD`. Either way the secret
-    is in the environment, the rule `publish` already holds to, because argv is readable
-    by every process on the box.
+    is in the environment, because argv is readable by every process on the box.
     """
 
     def __init__(self, key: str, param: str | None = None):
@@ -398,12 +402,11 @@ class Source:
     The credit and the box that the product covers are in its row `dtm-<key>` of
     data/sources.toml: `attribution` and `extent`.
 
-    Five keywords are for a source behind an account. `credential` is what the portal
+    Four keywords are for a source behind an account. `credential` is what the portal
     wants before it answers and `credential_hosts` are the hosts it may be sent to;
     `grid_epsg` is the grid its ESRI ASCII files are on, because that format carries no
-    CRS; `confirm_datum` is the datum an `--input` delivery has to be confirmed as, for a
-    portal that also publishes an ellipsoidal one; and `steps` are the clicks only a
-    person can do, which `wizard` walks and nothing else reads.
+    CRS; and `confirm_datum` is the datum a delivery has to be confirmed as, for a portal
+    that also publishes an ellipsoidal one.
     """
 
     #: How this kind of adapter carries a credential: `"query"` when its requests are
@@ -414,8 +417,7 @@ class Source:
     credential_style = None
 
     def __init__(self, key, country, product, resolution_m, licence, vertical_datum,
-                 credential=None, credential_hosts=(), grid_epsg=None, confirm_datum=None,
-                 steps=()):
+                 credential=None, credential_hosts=(), grid_epsg=None, confirm_datum=None):
         self.check_datum(key, vertical_datum)
         self.check_credential(key, credential, credential_hosts)
         self.key = key
@@ -428,7 +430,6 @@ class Source:
         self.credential_hosts = credential_hosts
         self.grid_epsg = grid_epsg
         self.confirm_datum = confirm_datum
-        self.steps = steps
 
     @property
     def attribution(self) -> str:
@@ -483,26 +484,12 @@ class Source:
                 "add it to ORTHOMETRIC in sources/base.py if the agency documents one"
             )
 
-    def covers(self, bbox) -> bool:
-        west, south, east, north = bbox
-        a, b, c, d = self.extent
-        return not (east < a or west > c or north < b or south > d)
-
     def require_credential(self) -> None:
-        """Refuse a fetch the portal will not answer, before any request is made.
-
-        This is the whole difference a credential makes to the tool: with it set the
-        adapter fetches live, and without it the refusal names the variable, `--input`
-        and the wizard, so a source nobody can fetch is not a dead end.
-        """
+        """Refuse a fetch the portal will not answer, before any request is made."""
 
         if self.credential is None or self.credential.present():
             return
-        raise Refuse(
-            f"{self.key} needs {self.credential.names} in the environment to fetch live. "
-            f"Set it, or download the files by hand and pass --input <dir>; "
-            f"`python3 ingest.py wizard {self.key}` walks the portal step by step"
-        )
+        raise Refuse(f"{self.key} needs {self.credential.names} in the environment to fetch")
 
     def headers_for(self, url: str) -> dict[str, str]:
         """What a download of that URL carries, which is the credential or nothing.
@@ -540,7 +527,7 @@ class Source:
         return attribution.replace("{year}", fetched[:4])
 
     def fetch(self, bbox, workdir) -> list[Path]:
-        raise Refuse(f"{self.key} has no adapter; fetch the rasters by hand and pass --input")
+        raise Refuse(f"{self.key} has no adapter")
 
 
 class ManualSource(Source):
@@ -549,7 +536,7 @@ class ManualSource(Source):
     A source is here when a download needs a credential, when it is a whole-country
     archive, or when its index is a shape the tool does not read yet. The row stays in the
     registry either way, so the licence, the attribution and the datum are recorded and
-    `--input` treats the hand-fetched rasters exactly like fetched ones.
+    the delivery that `OBC_REFERENCE_<KEY>_INPUT` names is read like fetched rasters.
     """
 
     def __init__(self, *args, why, **kw):
@@ -557,6 +544,5 @@ class ManualSource(Source):
         self.why = why
 
     def fetch(self, bbox, workdir) -> list[Path]:
-        walk = (f"; `python3 ingest.py wizard {self.key}` walks the portal step by step"
-                if self.steps else "")
-        raise Refuse(f"{self.key}: {self.why}. Fetch the rasters by hand and pass --input{walk}")
+        raise Refuse(f"{self.key}: {self.why}. Order the rasters by hand and set "
+                     f"OBC_REFERENCE_{self.key.upper().replace('-', '_')}_INPUT to the delivery")

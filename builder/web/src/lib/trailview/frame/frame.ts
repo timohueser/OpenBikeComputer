@@ -1,4 +1,4 @@
-import { latitudeAt, worldPixel } from '../../planner/layers/mercator';
+import { latitudeAt } from '../../planner/layers/mercator';
 
 export const EARTH_RADIUS = 6_371_000;
 /** The refraction coefficient of the atmosphere: light bends down, so the Earth looks flatter. */
@@ -47,11 +47,4 @@ export function frameAt(lon0: number, lat0: number): Frame {
 export function tileLonLat(x: number, y: number, z: number): [number, number] {
     const n = 2 ** z;
     return [x / n * 360 - 180, latitudeAt(y, n)];
-}
-
-/** The tile of zoom z that holds a point, and the point's position in it from 0 to 1. */
-export function tileAt(lon: number, lat: number, z: number): { x: number; y: number; u: number; v: number } {
-    const n = 2 ** z, [fx, fy] = worldPixel([lon, lat], n);
-    const x = Math.min(n - 1, Math.floor(fx)), y = Math.min(n - 1, Math.floor(fy));
-    return { x, y, u: fx - x, v: fy - y };
 }

@@ -14,7 +14,7 @@ import { featureTile, NEAR, profileTable } from './bins';
 import { cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
-import { Water } from './water';
+import { OPAQUE, Water } from './water';
 import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
@@ -168,6 +168,8 @@ export class Terrain {
     private nodes: Node[] = [];
     /** The first drawn nodes that hold a tunnel's portal: they draw with its hole. */
     private holed = 0;
+    /** The first drawn nodes, with the holed ones, that draw the detail of the look (DETAIL of look.wgsl). */
+    private detailed = 0;
     /** The portals' boxes of those nodes, as BOX words per box. */
     private boxes: Float64Array[] = [];
     private wantedNodes: Node[] = [];
@@ -406,15 +408,17 @@ export class Terrain {
         // The eye field: its nodes and the parents that they morph toward.
         const eyeField = new Set(field(EYE_M).flatMap(({ level, x, y }) => [key({ level, x, y }), key({ level: level - 1, x: x >> 1, y: y >> 1 })]).filter(name => keys.has(name)));
         const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField);
-        // After the update, so that a page draws in the frame that it arrives in. The nodes of the levels
-        // with masks come first: they draw with the road paint, those with a tunnel's portal first of all,
-        // with its hole. Each pipeline draws near to far, so that a GPU that shades before the depth test
-        // shades few hidden fragments.
+        // After the update, so that a page draws in the frame that it arrives in. The nodes that draw the
+        // detail of the look come first, those with a tunnel's portal first of all, with its hole. A node
+        // coarser than NEAR draws without the detail only when its distance keeps it from splitting: a
+        // shortage can make a coarser level the finest, under the eye. Each pipeline draws near to far,
+        // so that a GPU without hidden-surface removal shades few hidden fragments.
         const drawn = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node));
-        const group = drawn.map(node => (node.level < NEAR ? 2 : this.stamps.known(node)?.portals ? 0 : 1)), near = drawn.map(node => distances(eye, node)[0]);
+        const group = drawn.map(node => (node.level < Math.min(NEAR, rule.finest) ? 2 : this.stamps.known(node)?.portals ? 0 : 1)), near = drawn.map(node => distances(eye, node)[0]);
         this.boxes = drawn.flatMap((node, i) => (group[i] === 0 ? [this.stamps.known(node)!.portals!] : []));
         this.nodes = drawn.map((_, i) => i).sort((a, b) => group[a] - group[b] || near[a] - near[b]).map(i => drawn[i]);
         this.holed = group.filter(g => g === 0).length;
+        this.detailed = group.filter(g => g < 2).length;
         const drawing = this.nodes.map(node => this.pages.drawing(node)!);
         const water = this.water.update(drawing);
         const structures = this.structures.update(this.nodes, { x: ex, y: ey, unit: anchor.unit });
@@ -540,9 +544,12 @@ export class Terrain {
     draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {
         const r = this.resources;
         if (!r || !this.nodes.length) return;
-        const painted = this.nodes.filter(node => node.level >= NEAR).length, holed = this.holed;
-        // Before the terrain: the terrain that they hide fails the depth test.
+        const { detailed, holed } = this;
+        // Before the terrain: the terrain that they hide fails the depth test, also on a GPU without
+        // hidden-surface removal, where the draw order decides what early-Z rejects. The ribbons blend
+        // over the terrain.
         this.structures.draw(pass, r.surfaceGroup, ground, r.featureGroup);
+        this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup, OPAQUE);
         pass.setBindGroup(0, r.meshGroup);
         pass.setBindGroup(1, r.surfaceGroup);
         pass.setBindGroup(2, ground);
@@ -551,10 +558,10 @@ export class Terrain {
         pass.setPipeline(r.holedMesh ?? r.mesh);
         if (holed) pass.drawIndexed(GRID_INDICES.length, holed);
         pass.setPipeline(r.mesh);
-        if (painted > holed) pass.drawIndexed(GRID_INDICES.length, painted - holed, 0, 0, holed);
-        pass.setPipeline(r.plainMesh);
-        if (painted < this.nodes.length) pass.drawIndexed(GRID_INDICES.length, this.nodes.length - painted, 0, 0, painted);
-        this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup);
+        if (detailed > holed) pass.drawIndexed(GRID_INDICES.length, detailed - holed, 0, 0, holed);
+        pass.setPipeline(r.farMesh);
+        if (detailed < this.nodes.length) pass.drawIndexed(GRID_INDICES.length, this.nodes.length - detailed, 0, 0, detailed);
+        this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup, ['ribbons']);
     }
 
     /**
@@ -841,18 +848,18 @@ function compute(gpu: Gpu, file: string, entryPoint: string, groups: GPUBindGrou
     return gpu.device.createComputePipelineAsync({ label: entryPoint, layout: gpu.device.createPipelineLayout({ bindGroupLayouts: groups }), compute: { module: shader(gpu, file), entryPoint } });
 }
 
-/** The draw of the nodes: with the road paint (the near nodes), without, or with the holes of the tunnels' portals. */
-function meshPipeline(gpu: Gpu, paint: boolean, holes = false): Promise<GPURenderPipeline> {
+/** The draw of the nodes: with the detail of the look (DETAIL of look.wgsl), without it (the far nodes), or with the holes of the tunnels' portals. */
+function meshPipeline(gpu: Gpu, detail: boolean, holes = false): Promise<GPURenderPipeline> {
     const { device } = gpu, L = gpu.once(terrainLayouts), shared = gpu.once(layouts), module = shader(gpu, 'terrain');
     return device.createRenderPipelineAsync({
-        label: holes ? 'terrain with holes' : paint ? 'terrain' : 'terrain without paint',
+        label: holes ? 'terrain with holes' : detail ? 'terrain' : 'far terrain',
         layout: device.createPipelineLayout({ bindGroupLayouts: [L.mesh, shared.surface, shared.ground, shared.features] }),
         vertex: { module, entryPoint: 'vertex_main', constants: { HOLES: holes ? 1 : 0 } },
-        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { PAINT: paint ? 1 : 0 } },
-        // The plain nodes cull back faces: no snap moves their vertices, so no triangle turns over, and a
-        // ray from an eye above them meets a front face first. The painted (near) nodes draw both faces:
+        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { DETAIL: detail ? 1 : 0 } },
+        // The far nodes cull back faces: no snap moves their vertices, so no triangle turns over, and a
+        // ray from an eye above them meets a front face first. The other nodes draw both faces:
         // the eye can be under the near mesh for some frames, and its underside then hides what is behind.
-        primitive: { topology: 'triangle-list', cullMode: paint ? 'none' : 'back' },
+        primitive: { topology: 'triangle-list', cullMode: detail ? 'none' : 'back' },
         depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
     });
 }
@@ -862,7 +869,7 @@ type Pipelines = Awaited<ReturnType<typeof terrainPipelines>>;
 /** What the terrain draws and computes with from its first frame. */
 export async function terrainPipelines(gpu: Gpu) {
     const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
-    const [mesh, plainMesh, synthesize, quantize, probe, clampEye, stamp, snap] = await Promise.all([
+    const [mesh, farMesh, synthesize, quantize, probe, clampEye, stamp, snap] = await Promise.all([
         meshPipeline(gpu, true), meshPipeline(gpu, false),
         compute(gpu, 'pages', 'synthesize', [L.job, surface]),
         compute(gpu, 'quantize', 'quantize', [L.quantize]),
@@ -871,7 +878,7 @@ export async function terrainPipelines(gpu: Gpu) {
         compute(gpu, 'stamp', 'stamp', [L.stamp, surface]),
         compute(gpu, 'stamp', 'snap', [L.snap]),
     ]);
-    return { mesh, plainMesh, synthesize, quantize, probe, clampEye, stamp, snap };
+    return { mesh, farMesh, synthesize, quantize, probe, clampEye, stamp, snap };
 }
 
 /** The draw of the nodes with a tunnel's portal, with its hole. */

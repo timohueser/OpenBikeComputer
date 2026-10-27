@@ -65,11 +65,3 @@ struct RadioBlockedView: View {
         #endif
     }
 }
-
-#Preview("Bluetooth off") {
-    RadioBlockedView(block: .off, onRetry: {}, onBrowseLibrary: {})
-}
-
-#Preview("Permission denied") {
-    RadioBlockedView(block: .denied, onRetry: {}, onBrowseLibrary: {})
-}

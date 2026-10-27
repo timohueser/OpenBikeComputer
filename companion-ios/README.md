@@ -11,8 +11,8 @@ The app imports planned routes, pushes them to the device, and syncs recorded ri
 View models depend on capability-sized protocols declared by `OBCTransport`, so the same UI runs
 against CoreBluetooth on a device and against the deterministic mock in tests and the simulator.
 Use the broad `DeviceTransport` aggregate only for true aggregate consumers and composition-root
-wiring. CoreBluetooth stays in `OBCTransport/BLE/`, and mock and dev-panel code stays in `OBCMock`
-behind `#if DEBUG`. Tests enforce these boundaries.
+wiring. CoreBluetooth stays in `OBCTransport/BLE/`, and mock code stays in `OBCMock` behind
+`#if DEBUG`. Tests enforce these boundaries.
 
 ```text
 OBCDomain -> OBCTransport -> OBCMock
@@ -64,8 +64,7 @@ header says how to keep your edit out of git.
 
 Debug uses `MockTransport` by default. The authoritative launch arguments are in
 `OBCMock/MockLaunchOptions.swift`, and the scenario presets in `OBCMock/Scenario.swift`. Useful
-entry points: `-OBCScenario`, `-OBCFixtures`, `-OBCConnection`, `-OBCImportSample`,
-`-OBCShowDevPanel`, `-OBCShowUIGallery`.
+entry points: `-OBCScenario`, `-OBCFixtures`, `-OBCConnection`, `-OBCImportSample`.
 
 `-OBCHideMockHUD`, `-OBCDisableAnimations` and `-OBCHoldConfirmations` make automated captures
 deterministic. Website captures come from `scripts/capture-website-screenshots.sh`. **Wait for an

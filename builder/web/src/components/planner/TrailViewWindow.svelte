@@ -3,9 +3,12 @@
     import Icon from './PlannerIcon.svelte';
     import TrailViewConditions from './TrailViewConditions.svelte';
     import TrailViewMiniMap from './TrailViewMiniMap.svelte';
+    import TrailViewProfile from './TrailViewProfile.svelte';
     import { config } from '../../lib/planner/map-data';
-    import type { Coordinate } from '../../lib/planner/geo';
+    import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo';
     import { FIRST_HEADING, loadTrailView } from '../../lib/planner/trailview';
+    import { nightBadge, type RouteLook } from '../../lib/planner/trailview-route';
+    import { sampleIndex } from '../../lib/planner/profile-data';
     import type { TrailView } from '../../lib/trailview/engine';
     import { VFOV } from '../../lib/trailview/frame/camera';
     import { defaultView, formatView, type View } from '../../lib/trailview/view';
@@ -32,6 +35,23 @@
     let engine: TrailView | undefined;
     let view = $state<View>();
     let width = $state(0), height = $state(0);
+    // The plan's route draws on the terrain in the colours of its days, its grade or its surface, with a pin at
+    // each night and a marker at the point of the profile under the pointer, until the rider hides it.
+    const hasRoute = $derived(near.route.length > 1);
+    const line = $derived([...near.route]);
+    let routeShown = $state(true), look = $state<RouteLook>('day'), position = $state<number | null>(null);
+    const nightPins = $derived(near.overlay.nights.map(night => ({ coordinate: night.coordinate, colour: night.color, badge: nightBadge(night) })));
+    const drawRoute = () => {
+        engine?.showRoute(routeShown ? near.route : [], near.overlay.colours[look]);
+        engine?.showPins(routeShown && hasRoute ? nightPins : []);
+        drawMarker();
+    };
+    // The marker takes the colour of the edge it stands on.
+    const drawMarker = () => {
+        const colours = near.overlay.colours[look], edge = Math.max(sampleIndex(near.overlay.profile, position ?? 0) - 1, 0);
+        engine?.showMarker(!routeShown || position === null ? null : coordinateAt(line, position), colours[Math.min(edge, colours.length - 1)]);
+    };
+    const choose = (next: RouteLook) => { look = look === next ? 'day' : next; drawRoute(); };
     // The horizontal angle of the view, from the engine's vertical one and the window's shape.
     const fov = $derived(height ? 2 * Math.atan(Math.tan(VFOV * Math.PI / 360) * width / height) * 180 / Math.PI : VFOV);
 
@@ -61,6 +81,7 @@
             };
             if (abort.signal.aborted) return stop();
             engine = started;
+            drawRoute();
             view = started.view;
             started.onView = (next) => view = next;
             credits = creditsWith(started.attribution);
@@ -108,6 +129,17 @@
     {:else if view}
         <TrailViewMiniMap lat={view.lat} lon={view.lon} heading={view.heading} {fov} />
         <TrailViewConditions {view} onChange={change} />
+        {#if hasRoute}
+            <div class="route" role="group" aria-label="Route">
+                <button type="button" aria-pressed={routeShown} onclick={() => { routeShown = !routeShown; position = null; drawRoute(); }}><Icon name="route" />Route</button>
+                <button type="button" aria-pressed={look === 'grade'} disabled={!routeShown} onclick={() => choose('grade')}><Icon name="mountain" />Grade</button>
+                <button type="button" aria-pressed={look === 'surface'} disabled={!routeShown} onclick={() => choose('surface')}><Icon name="layers" />Surface</button>
+            </div>
+            {#if routeShown}
+                <TrailViewProfile profile={near.overlay.profile} colours={near.overlay.colours[look]} total={cumulative(line).at(-1) ?? 0}
+                    onHover={progress => { position = progress; drawMarker(); }} />
+            {/if}
+        {/if}
     {/if}
     <button type="button" class="close" aria-label="Close TrailView" onclick={() => dialog.close()}><Icon name="close" /></button>
     {#if credits.length}
@@ -230,6 +262,44 @@
     }
     .close:hover {
         color: var(--link);
+    }
+    .route {
+        position: absolute;
+        top: max(12px, env(safe-area-inset-top));
+        right: calc(max(12px, env(safe-area-inset-right)) + 44px);
+        display: flex;
+        height: 36px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--panel);
+        box-shadow: var(--planner-shadow);
+    }
+    .route button {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 12px;
+        border: 0;
+        background: none;
+        color: var(--ink-soft);
+        font: 700 14px var(--sans);
+        cursor: pointer;
+    }
+    .route button + button {
+        border-left: 1px solid var(--line-strong);
+    }
+    .route button[aria-pressed="true"] {
+        background: var(--parchment-2);
+        color: var(--ink);
+    }
+    .route button:disabled {
+        opacity: 0.45;
+        cursor: default;
+    }
+    .route button:focus-visible {
+        outline: 2px solid var(--forest);
+        outline-offset: -2px;
     }
     .credits {
         position: absolute;

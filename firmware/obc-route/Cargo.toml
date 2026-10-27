@@ -19,7 +19,6 @@ obc-crc = { workspace = true } # the stored checksum of a candidate measured whi
 obc-elevation = { workspace = true } # the shared elevation dead-band + (from EL7) the OBCT sampler
 obc-formats = { workspace = true }
 obc-map-scene = { workspace = true }
-obc-ports = { workspace = true }
 obc-reader = { workspace = true }
 
 [dev-dependencies]
@@ -29,6 +28,7 @@ obc-bake = { workspace = true }
 obc-draw = { workspace = true }
 obc-map-core = { workspace = true }
 obc-network = { workspace = true }
+obc-ports = { workspace = true }
 # Shared OBCM byte builder — the corridor tests need a real packed POI quadtree to query.
 obcm-testkit = { workspace = true }
 obc-fixtures = { workspace = true }

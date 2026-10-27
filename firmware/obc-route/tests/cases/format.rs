@@ -403,6 +403,28 @@ fn rejects_bad_input() {
     }
 }
 
+/// A medium that fails every read.
+struct DeadMedium(u64);
+
+impl ByteSource for DeadMedium {
+    fn read_at(&self, _offset: u64, _buf: &mut [u8]) -> Result<(), Error> {
+        Err(Error::Io)
+    }
+    fn len(&self) -> u64 {
+        self.0
+    }
+}
+
+/// A failed header read is the medium's fault, not the object's: the catalog scan aborts on `Io`
+/// but leaves out an object that does not decode, so the two must stay apart.
+#[test]
+fn a_failed_header_read_is_io_not_a_bad_object() {
+    let src = DeadMedium(two_chunk_route().len() as u64);
+    assert_eq!(RouteIndex::read(&src).err(), Some(Error::Io));
+    assert_eq!(RouteSummary::read(&src).err(), Some(Error::Io));
+    assert_eq!(obc_route::TripMeta::read(&DeadMedium(obc_route::trip_object_len(1))).err(), Some(Error::Io));
+}
+
 /// `chunk_count > MAX_ROUTE_CHUNKS` is rejected before any chunk is read: a corrupt header must
 /// fail with `TooLarge`, not overrun the fixed-capacity index buffer.
 #[test]

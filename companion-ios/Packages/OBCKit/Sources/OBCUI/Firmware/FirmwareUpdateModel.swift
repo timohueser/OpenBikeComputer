@@ -90,7 +90,7 @@ public final class FirmwareUpdateModel {
     private let transport: any DeviceLink & DeviceUpdates
     /// The foreground-only policy's in-flight ledger, shared with the upload sheet and the
     /// ride-sync coordinator. A firmware send claims a token while transferring, so it is drained
-    /// and not dropped across a background transition. Nil in previews and tests.
+    /// and not dropped across a background transition. Nil in tests.
     @ObservationIgnored private let activity: TransferActivity?
     @ObservationIgnored private var activityToken: TransferActivity.Token?
     /// Nil in wiring that does not want an update check, which leaves the screen the Files
@@ -107,7 +107,7 @@ public final class FirmwareUpdateModel {
     /// switches from "confirm on the device" to "installing".
     @ObservationIgnored private var sawDropSinceInstall = false
 
-    /// A pre-staged update for automation and previews, validated and staged on `start()`,
+    /// A pre-staged update for automation, validated and staged on `start()`,
     /// because the Files picker cannot be driven from automation.
     @ObservationIgnored private let prestage: Data?
     /// Fire Send once the pre-staged file is validated, so a demo run walks the whole flow.

@@ -1,5 +1,5 @@
-//! A routing package from OSM files: the build of the `planner-router-build` command, and the planner
-//! routing step of `obc data`, which adds the routing blocks and the routes of each grid cell.
+//! The planner routing step of `obc data`: a routing package from OSM files, the routing blocks and
+//! the routes of each grid cell.
 
 use std::fs;
 use std::io::Read;
@@ -13,24 +13,23 @@ use sha2::{Digest, Sha256};
 
 use crate::{catalog, grid, overlays};
 
-pub struct Build {
+struct Build {
     /// OSM PBF files.
-    pub inputs: Vec<PathBuf>,
-    pub region: String,
+    inputs: Vec<PathBuf>,
+    region: String,
     /// West, south, east, north in degrees. Routes are exact within this clipped graph.
-    pub bounds: [f64; 4],
+    bounds: [f64; 4],
     /// Profile ids, or `all`.
-    pub profiles: Vec<String>,
-    /// The ISO codes of the countries of the region. With them, the build also writes the route
-    /// catalog.
-    pub countries: Vec<String>,
+    profiles: Vec<String>,
+    /// The ISO codes of the countries of the region, for the route catalog.
+    countries: Vec<String>,
     /// The credit of the OSM data.
-    pub attribution: String,
+    attribution: String,
 }
 
-/// Write the package, its overlay index and, with countries, its route catalog into the empty
-/// directory `output`. `terrain` gives the heights of the roads. Returns the report of the catalog.
-pub fn build(args: Build, terrain: Option<Terrain>, output: &Path) -> Result<Option<catalog::Report>, String> {
+/// Write the package, its overlay index and its route catalog into the empty directory `output`.
+/// `terrain` gives the heights of the roads. Returns the report of the catalog.
+fn build(args: Build, mut terrain: Terrain, output: &Path) -> Result<catalog::Report, String> {
     let profiles: Vec<_> = Profile::presets()
         .into_iter()
         .filter(|p| args.profiles.iter().any(|name| name == "all" || name == &p.name))
@@ -40,7 +39,7 @@ pub fn build(args: Build, terrain: Option<Terrain>, output: &Path) -> Result<Opt
     {
         return Err("Unknown profile ID".into());
     }
-    let france = (!args.countries.is_empty()).then(|| catalog::check(&args.countries, &profiles)).transpose()?;
+    let france = catalog::check(&args.countries, &profiles)?;
     let mut identities = Vec::new();
     for path in &args.inputs {
         let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
@@ -57,14 +56,12 @@ pub fn build(args: Build, terrain: Option<Terrain>, output: &Path) -> Result<Opt
     }
     eprintln!("Importing {}", args.region);
     let mut graph = crate::osm::import(&args.inputs, args.bounds)?;
-    if let Some(mut terrain) = terrain {
-        eprintln!("Sampling terrain");
-        terrain.load(i32::MIN..=i32::MAX)?;
-        let mut recent = Recent::default();
-        crate::terrain::apply(&mut graph, |point| terrain.height(point.lat, point.lon, &mut recent))?;
-        identities.extend(terrain.identities.iter().cloned());
-        graph.warnings.extend(terrain.attribution());
-    }
+    eprintln!("Sampling terrain");
+    terrain.load(i32::MIN..=i32::MAX)?;
+    let mut recent = Recent::default();
+    crate::terrain::apply(&mut graph, |point| terrain.height(point.lat, point.lon, &mut recent))?;
+    identities.extend(terrain.identities.iter().cloned());
+    graph.warnings.extend(terrain.attribution());
     eprintln!("Preparing {} profiles for {} directed roads", profiles.len(), graph.roads.len());
     crate::layout::spatial_order(&mut graph)?;
     let mut writer = Writer::create(output).map_err(|e| e.to_string())?;
@@ -87,9 +84,8 @@ pub fn build(args: Build, terrain: Option<Terrain>, output: &Path) -> Result<Opt
     drop(graph);
     eprintln!("Writing the overlay index");
     overlays::write(&output.join(overlays::FILE), &package::digest(&manifest), args.bounds, &osm)?;
-    let Some(france) = france else { return Ok(None) };
     eprintln!("Writing the route catalog");
-    catalog::write(output, osm, france).map(Some)
+    catalog::write(output, osm, france)
 }
 
 /// The planner routing step. It reads the OSM files of its input layers and the GLO-30 tiles of
@@ -125,7 +121,7 @@ pub fn step(request: &Request) -> Result<(), String> {
     let terrain = Terrain::open(&obc_dem::step::glo30(request, bounds), &credit, None, bounds)?;
     let routing = request.output.join("routing");
     fs::create_dir(&routing).map_err(|e| format!("{}: {e}", routing.display()))?;
-    let report = build(args, Some(terrain), &routing)?.expect("a build with countries writes the route catalog");
+    let report = build(args, terrain, &routing)?;
 
     let cells = grid::cells(bounds);
     crate::blocks::publish(&routing, &cells, &request.output.join("blocks")).map_err(|e| e.to_string())?;

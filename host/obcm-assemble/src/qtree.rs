@@ -417,11 +417,6 @@ pub fn rec_len(r: &[u8; TREE_REC]) -> u16 {
     u16::from_le_bytes(r[16..18].try_into().expect("2 bytes"))
 }
 
-/// Tree order, then input order — a total order, because `ord` is unique.
-pub fn by_tree_order(a: &[u8; TREE_REC], b: &[u8; TREE_REC]) -> std::cmp::Ordering {
-    (rec_key(a), rec_ord(a)).cmp(&(rec_key(b), rec_ord(b)))
-}
-
 /// Where one leaf's records go: `chunk u32, at u32, first u32, count u32` — the chunk it was binned
 /// into, the offset inside it, and the leaf's run of the tree-ordered stream.
 pub const PLACE_REC: usize = 16;
@@ -703,7 +698,7 @@ pub struct Flattened {
 /// [`build`] plus [`flatten`] with `bin_pack`, over a stream: the tree's shape from a tree-ordered
 /// record stream, the bin packing over its leaves, and the chunk bytes.
 ///
-/// `points` is a [`TREE_REC`] stream sorted by [`by_tree_order`]. `recs` holds the records' packed
+/// `points` is a [`TREE_REC`] stream sorted by tree key, then input order. `recs` holds the records' packed
 /// bytes back to back in the same order, so each point's `at` is where its bytes start. Both files
 /// are consumed. The three walks are:
 ///

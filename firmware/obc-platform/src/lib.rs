@@ -4,7 +4,7 @@
 //! `no_std`, over `embedded-hal` and `obc-ports`, so the board crate stays thin (clocks, concrete
 //! pins, the main loop) and the reusable bridges live here, ported to the next board by
 //! re-pointing the pins: the button debouncer, the transport-agnostic debug-sensor protocol, the
-//! real-sensor and BLE-sensor cross-task hand-offs, and the synthetic fallback sources.
+//! real-sensor and BLE-sensor cross-task hand-offs, and the stub fuel gauge.
 //!
 //! What remains here is exactly the adapter role: the pieces that turn a board-side event (a GPIO
 //! edge, a decoded UBX sample, a BLE notification, a debug-UART line) into an [`obc_ports`]
@@ -14,8 +14,8 @@
 //!
 //! [`backlight`] owns the level-to-duty ladder, [`sound`] the cue-to-pattern table,
 //! [`button_input`] the debouncer and its edge-wake, [`debug_link`] the fake-sensor protocol,
-//! [`sensor_hub`] the instance-owned cross-task sensor streams, [`synth`] the synthetic moving
-//! location, and [`fuel`] a fixed-level fuel gauge.
+//! [`sensor_hub`] the instance-owned cross-task sensor streams, and [`fuel`] a fixed-level fuel
+//! gauge.
 //!
 //! Two-plane architecture: each board's main loop runs the device on two planes across two
 //! executors, so input and the overlay stay responsive while a map frame renders. `render_map` is
@@ -47,9 +47,6 @@ pub mod button_input;
 pub mod debug_link;
 // Stand-in battery fuel gauge until the nPM1300 PMIC gauge is wired in.
 pub mod fuel;
-// Always compiled: the synthetic GPS is the `synth`-feature fallback, so it must exist without
-// the real-sensor features.
-pub mod synth;
 // The instance-owned sensor hub: one `SensorHub` owns every cross-task sensor stream, constructed
 // once in static storage by the board and split into typed producer, consumer and control handles.
 // Gated behind `sensor-link`, which pulls embassy-sync.
@@ -61,7 +58,6 @@ pub use button_input::ButtonInput;
 pub use fuel::StubFuelGauge;
 #[cfg(feature = "sensor-link")]
 pub use sensor_hub::SensorHub;
-pub use synth::SynthLocation;
 
 #[cfg(test)]
 mod deleted_knobs {

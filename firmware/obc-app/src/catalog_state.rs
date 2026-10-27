@@ -7,7 +7,7 @@
 //! revision, so no cache key has to be walked across a live rescan.
 //!
 //! Ride rows own their durable identity and summary together. Route summaries stay contiguous with
-//! a parallel id column and are exposed through [`RouteEntry`].
+//! a parallel id column.
 //!
 //! `App` stays the composition root: screen-stack remaps and `Activity` key remaps live there, and
 //! this component never sees a `Screen`.
@@ -22,15 +22,6 @@ use crate::ride::{RideCatalog, RideEntry, RideTrip, RideTrips, UI_RIDES_CAP};
 use crate::route::{Catalog, RouteSummary, MAX_ROUTES};
 use crate::trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
 use crate::CatalogObjectId;
-
-/// One route-catalog entry: the durable object id and its summary, handed out together so the
-/// pairing is a type, not a convention.
-#[derive(Debug, Clone, Copy)]
-pub struct RouteEntry<'a> {
-    /// The route's durable object id, which survives a live rescan.
-    pub id: CatalogObjectId,
-    pub summary: &'a RouteSummary,
-}
 
 /// The snapshot of a catalog's ids before a replacement, which
 /// [`CatalogState::remap_route`] and [`CatalogState::remap_ride`] resolve an old index through.

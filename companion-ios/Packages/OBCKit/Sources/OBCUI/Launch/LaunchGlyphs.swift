@@ -174,23 +174,3 @@ struct NoLinkMark: View {
             .accessibilityHidden(true)
     }
 }
-
-#Preview("Launch glyphs") {
-    ScrollView {
-        VStack(spacing: 30) {
-            DeviceGlyphView(variant: .home(name: "Trailhead"))
-            DeviceGlyphView(variant: .passkey)
-            ZStack {
-                PulsingRings()
-                BluetoothTile()
-            }
-            .frame(width: 200, height: 200)
-            RadioBlockedGlyph(block: .off)
-            RadioBlockedGlyph(block: .denied)
-            NoLinkMark(tint: OBCTheme.danger)
-        }
-        .padding(30)
-        .frame(maxWidth: .infinity)
-    }
-    .background(OBCTheme.page)
-}
