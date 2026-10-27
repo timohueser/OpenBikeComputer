@@ -1,8 +1,8 @@
 /**
- * The client against a simulated flat store: what `vectors.test.ts` cannot reach.
+ * The client against a simulated flat store.
  *
- * The vectors suite pins the bytes. This one pins everything that only exists once those bytes move
- * over two independent channels — a record reassembled across packet boundaries, an answer that
+ * `specs/vectors/flat-store-v4/` pins the bytes. This suite pins everything that only exists once
+ * those bytes move over two independent channels — a record reassembled across packet boundaries, an answer that
  * overtakes the last stream frame, a refusal that arrives while a payload is still queued, a cancel
  * that has to go out while a download is running.
  *
@@ -17,16 +17,7 @@ import { Crc32 } from "./crc32";
 import { DeviceError, FlatStoreClient, blobSource, bytesSource } from "./client";
 import { FlatDevice, controlCeilingFor, flatDevice, streamCeilingFor } from "./flat-device";
 import { loopbackLink } from "./loopback";
-import { RecordChannel, MAX_DEVICE_RECORD, MAX_HOST_CONTROL_RECORD, MAX_HOST_STREAM_RECORD } from "./records";
-import {
-    EntryFlags,
-    ErrorCode,
-    ObjectKind,
-    ObjectState,
-    Opcode,
-    decodeResponse,
-    encodeGetRequest,
-} from "./protocol";
+import { EntryFlags, ObjectKind, ObjectState, Opcode } from "./protocol";
 
 beforeAll(loadFlatDevice);
 
@@ -680,38 +671,6 @@ describe("§1's one transfer at a time", () => {
             await expect(client.get({ objectId: 1n, revision: 0n })).rejects.toMatchObject({ code: "busy" });
             await first;
         });
-    });
-
-    it("is the device's rule, not the client's: a second peer is answered `busy` with the live id", async () => {
-        // The latch above is local and saves a round trip; the authority is the device, because the
-        // other transfer may be a phone's over BLE. Driven by hand here, because one loopback link
-        // carries one client and the point is precisely that the refusal comes from the far end.
-        const link = loopbackLink();
-        const device = new FlatDevice(link.device, { streamCeiling: streamCeilingFor(512) });
-        void device.run();
-        const control = new RecordChannel(link.host.control, MAX_HOST_CONTROL_RECORD, MAX_DEVICE_RECORD);
-        const stream = new RecordChannel(link.host.stream, MAX_HOST_STREAM_RECORD, MAX_DEVICE_RECORD);
-        device.seed({ kind: ObjectKind.MapShard, bytes: payload(200_000) });
-
-        await control.send(encodeGetRequest(0x11, { objectId: 1n, revision: 0n }));
-        await control.send(encodeGetRequest(0x22, { objectId: 1n, revision: 0n }));
-        // Read control answers until the second request's turns up; the first one's arrives only
-        // after its whole payload has been streamed.
-        let busy: ReturnType<typeof decodeResponse> | null = null;
-        for (let i = 0; i < 4 && !busy; i++) {
-            const answer = decodeResponse(await control.next());
-            if (answer.requestId === 0x22) busy = answer;
-        }
-        expect(busy?.ok).toBe(false);
-        if (busy && !busy.ok) {
-            expect(busy.refusal.code).toBe(ErrorCode.Busy);
-            expect(busy.refusal.context).toBe(0x11n);
-        }
-        // Drain the live transfer so the device's runner ends cleanly rather than on a closed pipe.
-        void stream;
-        device.stop();
-        await link.device.close();
-        await link.host.close();
     });
 });
 

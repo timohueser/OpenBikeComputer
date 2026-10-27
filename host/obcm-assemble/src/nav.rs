@@ -407,7 +407,7 @@ fn node_tree_key(r: &[u8; NODE_TREE_REC]) -> (u64, u32) {
     )
 }
 
-/// `qtree::by_tree_order` over junctions: tree key, then dense id.
+/// Tree order over junctions: tree key, then dense id.
 fn by_node_tree_order(a: &[u8; NODE_TREE_REC], b: &[u8; NODE_TREE_REC]) -> Ordering {
     node_tree_key(a).cmp(&node_tree_key(b))
 }
@@ -424,7 +424,7 @@ fn anchor_ord(r: &[u8; ANCHOR_REC]) -> u32 {
     u32::from_le_bytes(r[8..12].try_into().expect("4 bytes"))
 }
 
-/// `qtree::by_tree_order` over anchors.
+/// Tree order over anchors: tree key, then input order.
 fn by_anchor_tree_order(a: &[u8; ANCHOR_REC], b: &[u8; ANCHOR_REC]) -> Ordering {
     (anchor_key(a), anchor_ord(a)).cmp(&(anchor_key(b), anchor_ord(b)))
 }

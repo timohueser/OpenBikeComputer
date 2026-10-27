@@ -3,7 +3,7 @@
 //! Protomaps map, `planner/terrain` the terrain of the maps, `planner/routing` the routing package
 //! with its grid, and `planner/search/dump` the search records of the OSM. `planner/overlays`,
 //! `planner/assets`, `planner/model`, `planner/places`, the other `planner/search/*` layers and
-//! the optional layers `planner/climate`, `planner/snow`, `planner/sun` and `planner/trailview-*`
+//! the optional layers `planner/climate`, `planner/snow` and `planner/trailview-*`
 //! are Python steps.
 //! Each map producer is intermediate. Its `/grid` step partitions and packs the client tiles.
 //! The release document, the public files and the grid indexes are the files that a client finds
@@ -35,8 +35,7 @@ use crate::{functions, python};
 pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, &IOS]);
 /// The terrain of the maps and of TrailView: its format is that of the terrain tiles of
 /// `specs/planner-release.md`.
-pub static PLANNER_TERRAIN: Layer =
-    whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_SUN, &readers::PLANNER_TRAILVIEW_FEATURES]);
+pub static PLANNER_TERRAIN: Layer = whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_FEATURES]);
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer =
     whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER]);
@@ -47,8 +46,6 @@ pub static PLANNER_SEARCH: Layer = Layer { revision: 2, ..whole("planner/search"
 pub static PLANNER_PLACES: Layer = whole("planner/places", 1, &[&WEB_PLANNER]);
 pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER]);
 pub static PLANNER_SNOW: Layer = whole("planner/snow", 1, &[&WEB_PLANNER]);
-/// Its format is `sun_format` of `specs/planner-sun-tiles.md`.
-pub static PLANNER_SUN: Layer = whole("planner/sun", 3, &[&WEB_PLANNER]);
 /// Its format is `features_format` of `specs/trailview-features.md`.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
     Layer { revision: 6, ..whole("planner/trailview-features", 2, &[&WEB_PLANNER]) };
@@ -93,11 +90,9 @@ const BASEMAP_SOURCES: [&str; 7] = [
 #[serde(deny_unknown_fields)]
 struct Config {
     osm: Osm,
-    terrain: Terrain,
     routing: Routing,
     climate: Climate,
     snow: Snow,
-    sun: Sun,
     trailview: TrailView,
 }
 
@@ -122,20 +117,7 @@ struct Snow {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Sun {
-    horizon_samples: u8,
-    horizon_directions: u8,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Osm {
-    margin_m: f64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Terrain {
     margin_m: f64,
 }
 
@@ -177,7 +159,6 @@ impl Product for Planner {
             "search",
             "climate",
             "snow",
-            "sun",
             "trailview-features",
             "trailview-rules",
             "trailview-ground",
@@ -213,7 +194,7 @@ impl Planner {
         let origins = catalog::publication(root).map_err(Unplanned::Failed)?;
         let id = &inputs.settings.region;
         let region = regions.get(id).ok_or_else(|| Unplanned::Failed(format!("no region `{id}`")))?;
-        // A region without a time zone, such as a box, gives the times of the search and the sun in UTC.
+        // A region without a time zone, such as a box, gives the times of the search in UTC.
         let time_zone = region.time_zone.as_deref().unwrap_or("UTC");
         let on = |layer: &str| inputs.settings.layers.iter().any(|name| name == layer);
         let mut wanted = Vec::new();
@@ -258,7 +239,7 @@ impl Planner {
         let (west, south, east, north) = requested.bbox();
         let bounds = [west, south, east, north].map(|udeg| udeg as f64 / 1e6);
         let bbox = ("bbox".to_string(), bounds.map(|degrees| degrees.to_string()).join(","));
-        let coverage = terrain_bounds(bounds, config.terrain.margin_m);
+        let coverage = zoom_10_neighbourhood(bounds);
         let source_steps = crate::region_sources::inputs("planner", &selection);
         let osm = if selection.sources.len() == 1 {
             Step {
@@ -463,22 +444,6 @@ impl Planner {
         if on("snow") {
             steps.push(snow(inputs, store, bounds, config.snow.seasons, &mut wanted)?);
         }
-        if on("sun") {
-            steps.push(python(
-                &PLANNER_SUN,
-                "planner/sun",
-                vec![Input::step("planner/terrain/grid")],
-                json!({
-                    "bounds": bounds,
-                    "time_zone": time_zone,
-                    "distance_m": config.terrain.margin_m as u32,
-                    "horizon_samples": config.sun.horizon_samples,
-                    "horizon_directions": config.sun.horizon_directions,
-                }),
-                ("tools.planner_sun", Some("planner-sun")),
-                &["sun"],
-            ));
-        }
         if on("trailview-features") {
             osmium.map_err(Unplanned::Invalid)?;
             let kinds: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/kinds.json"))
@@ -507,7 +472,6 @@ impl Planner {
             "overlays",
             "climate",
             "snow",
-            "sun",
             "trailview-features",
             "trailview-ground",
             "trailview-canopy",
@@ -616,7 +580,7 @@ const PARTS: [(&str, &[&str]); 3] = [
 const GATHERERS: [&str; 3] = ["planner/fonts/grid", "planner/index", catalog::STEP];
 
 /// Remove the steps of each core part that is off, and then each step that no step reads any more.
-/// A step that a part that is on reads stays, such as the terrain that the sun reads or the POIs
+/// A step that a part that is on reads stays, such as the terrain that the TrailView features read or the POIs
 /// that the places of the map read.
 fn prune(steps: &mut Vec<Step>, on: &dyn Fn(&str) -> bool) {
     let reads = |steps: &[Step]| -> HashSet<String> {
@@ -1054,14 +1018,6 @@ fn canopy_tiles([west, south, east, north]: [f64; 4]) -> Vec<String> {
     lats.flat_map(|lat| lons.clone().map(move |lon| name(lat, lon))).collect()
 }
 
-/// The terrain of the maps around `bounds`: the zoom 10 tiles that it touches and their
-/// neighbours, because the contours of a tile read a 3 × 3 tile neighbourhood; and at least
-/// `margin_m` metres around `bounds`.
-fn terrain_bounds(bounds: [f64; 4], margin_m: f64) -> [f64; 4] {
-    let (tiles, around) = (zoom_10_neighbourhood(bounds), around(bounds, margin_m));
-    [tiles[0].min(around[0]), tiles[1].min(around[1]), tiles[2].max(around[2]), tiles[3].max(around[3])]
-}
-
 /// `bounds` and at least `margin_m` metres around them, within ±180° and ±90°: Osmium makes a box
 /// with a corner outside them a point, without an error.
 fn around([west, south, east, north]: [f64; 4], margin_m: f64) -> [f64; 4] {
@@ -1075,6 +1031,8 @@ fn around([west, south, east, north]: [f64; 4], margin_m: f64) -> [f64; 4] {
     ]
 }
 
+/// The terrain of the maps around `bounds`: the zoom 10 tiles that it touches and their
+/// neighbours, because the contours of a tile read a 3 × 3 tile neighbourhood.
 fn zoom_10_neighbourhood([west, south, east, north]: [f64; 4]) -> [f64; 4] {
     const ZOOM: u32 = 10;
     let last = (1 << ZOOM) - 1;
@@ -1108,8 +1066,8 @@ mod tests {
         "egdi-geology",
         "igme5000",
     ];
-    const OPTIONAL: [&str; 7] =
-        ["climate", "snow", "sun", "trailview-features", "trailview-rules", "trailview-ground", "trailview-colour"];
+    const OPTIONAL: [&str; 6] =
+        ["climate", "snow", "trailview-features", "trailview-rules", "trailview-ground", "trailview-colour"];
     /// The day of the version of `wiki` in the store.
     const DAY: &str = "2026-10-01";
 
@@ -1287,14 +1245,13 @@ mod tests {
             let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
             steps.into_iter().map(|step| step.name).collect::<HashSet<_>>()
         };
-        let sun = only(&["sun"]);
-        assert!(["planner/terrain/grid", "planner/sun/grid", "planner/index", catalog::STEP]
+        let features = only(&["trailview-features"]);
+        assert!(["planner/terrain/grid", "planner/trailview-features/grid", "planner/index", catalog::STEP]
             .iter()
-            .all(|step| sun.contains(*step)));
-        let core = |step: &String| {
-            ["osm", "routing", "search", "basemap", "places", "fonts"].iter().any(|part| step.contains(part))
-        };
-        assert!(!sun.iter().any(core), "{sun:?}");
+            .all(|step| features.contains(*step)));
+        let core =
+            |step: &String| ["routing", "search", "basemap", "places", "fonts"].iter().any(|part| step.contains(part));
+        assert!(!features.iter().any(core), "{features:?}");
         let map = only(&["map"]);
         assert!(
             map.contains("planner/search/pois") && map.contains("planner/fonts/grid"),
@@ -1388,8 +1345,8 @@ mod tests {
         }
         let Input::Snapshot { source, version, params, .. } = &source.inputs[0] else { panic!("not a snapshot") };
         assert_eq!((source.as_str(), version.as_str(), params), (EXTRACTS, "2026-10-02", &area));
-        // The terrain covers the region with a margin of 30 km for the sun layer.
-        assert_eq!(terrain.options["bounds"], json!([7.382257389170511, 47.71727272727273, 8.4375, 48.45835188280866]));
+        // The terrain covers the zoom 10 tiles of the region and their neighbours.
+        assert_eq!(terrain.options["bounds"], json!([7.3828125, 47.754097979680026, 8.4375, 48.45835188280866]));
         assert_eq!(
             tiles(&terrain.inputs[0]),
             ["N47_00_E007", "N48_00_E007"],
@@ -1428,17 +1385,6 @@ mod tests {
         );
         assert_eq!(basemap.options["bounds"], routing.options["bounds"]);
         assert!(basemap.options["attribution"].as_str().unwrap().contains("Natural Earth"));
-        // Pinned bounds: about Baden-Württemberg, and Baden-Württemberg with Switzerland.
-        let pinned = [7.03125, 47.04018214480666, 10.922533154247459, 50.07272727272727];
-        assert!(terrain_bounds([7.5, 47.5, 10.5, 49.8], 30_000.0)
-            .into_iter()
-            .zip(pinned)
-            .all(|(got, expected)| (got - expected).abs() < 1e-12));
-        let pinned = [5.2734375, 45.33670190996811, 10.922970099182649, 50.28933925329178];
-        assert!(terrain_bounds([5.95, 45.8, 10.5, 49.85], 30_000.0)
-            .into_iter()
-            .zip(pinned)
-            .all(|(got, expected)| (got - expected).abs() < 1e-12));
 
         let store = store(&temp, &["2026-10-01"]);
         let result = Planner.steps(&root(), &inputs("no-countries", &[]), &regions(), &store);
@@ -1553,7 +1499,6 @@ mod tests {
                 ["planner", "places", ..] => "planner/places",
                 ["planner", "climate", ..] => "planner/climate",
                 ["planner", "snow", ..] => "planner/snow",
-                ["planner", "sun", ..] => "planner/sun",
                 ["planner", "trailview-features", ..] => "planner/trailview-features",
                 ["planner", "trailview-rules", ..] => "planner/trailview-rules",
                 ["planner", "trailview-material" | "trailview-lithology" | "trailview-region" | "trailview-ground", ..] => {
@@ -1569,7 +1514,7 @@ mod tests {
             assert_eq!(step.layer.name, layer(&step.name), "{}", step.name);
         }
         let named: BTreeSet<&str> = steps.iter().map(|step| step.layer.name).collect();
-        assert_eq!(named.len(), 18, "seventeen operator layers and the OSM of the region: {named:?}");
+        assert_eq!(named.len(), 17, "sixteen operator layers and the OSM of the region: {named:?}");
 
         // A target holds only client files: a step reads only those of a step of another layer
         // that a program reads, so another machine can bake it without baking that step again. A

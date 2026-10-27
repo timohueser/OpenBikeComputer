@@ -2,9 +2,8 @@
 
 `SOURCES` is the whole registry, and adding a country is a module here plus a row in it.
 Every row records its licence, its attribution and its vertical datum, whether or not it
-can be fetched: a row behind an account states the credential it wants and the steps
-`wizard` walks, and `ingest --input` takes the files the portal delivered. `README.md`
-records every probe, including the ones that failed.
+can be fetched: a row behind an account states the credential it wants, and a row ordered
+by hand reads the delivery that the environment names.
 """
 
 from .at import AT

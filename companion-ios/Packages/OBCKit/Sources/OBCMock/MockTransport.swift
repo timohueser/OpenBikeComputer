@@ -108,11 +108,6 @@ public struct MockTransport: DeviceTransport {
         control.setConfig(config)
     }
 
-    public func readDiagnostics() async throws -> Data {
-        try await preludeThrowing()
-        return control.fixtures.diagnostics
-    }
-
     // MARK: Data plane
 
     public func listRoutes() async throws -> [RouteCatalogEntry] {
@@ -139,12 +134,6 @@ public struct MockTransport: DeviceTransport {
         return control.deviceTripCatalog()
     }
 
-    public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Trip {
-        try await preludeThrowing()
-        guard let decoded = control.deviceTripDecoded(id) else { throw DeviceError.readFailed }
-        return decoded
-    }
-
     public func uploadTrip(_ trip: TripBlob) -> TransferHandle {
         control.beginTripUpload(trip)
     }
@@ -163,14 +152,6 @@ public struct MockTransport: DeviceTransport {
         try await preludeThrowing()
         return control.recordSetClock(sample)
     }
-    public func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
-        try await preludeThrowing()
-        guard let entry = control.deviceRouteEntry(id) else {
-            throw DeviceError.readFailed
-        }
-        return entry.detail()
-    }
-
     public func uploadRoute(_ route: RouteBlob) -> TransferHandle {
         control.beginRouteUpload(route)
     }

@@ -47,8 +47,8 @@ public final class ReachabilityStore {
 }
 
 private struct IsOnlineKey: EnvironmentKey {
-    // Optimistic default: with no monitor injected (previews, the gallery, host tests)
-    // a preview that has coordinates still shows its basemap.
+    // Optimistic default: with no monitor injected (host tests) a preview that has
+    // coordinates still shows its basemap.
     static let defaultValue = true
 }
 

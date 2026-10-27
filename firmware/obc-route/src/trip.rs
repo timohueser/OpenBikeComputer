@@ -130,7 +130,7 @@ const fn day_offset(k: usize) -> u64 {
 
 fn read_header(src: &dyn ByteSource) -> Result<TripSummary, Error> {
     let mut h = [0u8; TRIP_HEADER_LEN];
-    src.read_at(0, &mut h).map_err(|_| Error::BadOffset)?;
+    src.read_at(0, &mut h)?;
     if h[0] != TRIP_VERSION {
         return Err(Error::BadVersion);
     }

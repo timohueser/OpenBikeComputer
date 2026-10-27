@@ -34,19 +34,12 @@ mod flpr_mux;
 // One RAM block time-shared by the render scratch, the nav block and the USB staging buffer,
 // which are never live at the same time. The only place this feature's `unsafe` lives.
 mod arena;
-#[cfg(has_nav)]
 mod assistant;
-#[cfg(has_nav)]
 mod detour;
 mod peak_view;
-#[cfg(has_nav)]
 mod visit;
 // The COM electrode square wave. The FLPR drives the frames; only this stays on the M33.
 mod com;
-// The COM square wave from a TIMER-DPPI-GPIOTE toggle chain instead of the M33 `com_task`, so
-// the core can sleep between events. Off by default: the waveform needs hardware verification.
-#[cfg(feature = "com-hw")]
-mod com_hw;
 // The LS021/FLPR panel — this crate's presenter backend. The display seam itself and the
 // simulator backend live in obc-platform.
 mod ls021_flpr;
@@ -61,8 +54,8 @@ mod settings;
 // page write, the status stream, and the ride loop's trial confirm.
 mod dfu;
 // Real GPS (SAM-M10Q) and altimeter (BMP581) on the shared TWIM22 bus. Built only for the
-// real-sensor build, because `synth` and `debug-uart` supply the location source instead.
-#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+// real-sensor build, because `debug-uart` supplies the location source instead.
+#[cfg(not(feature = "debug-uart"))]
 mod sensors;
 // The BLE stack: MPSL, SDC and TrouBLE, the advertise loop, and the link-status plumbing.
 mod ble;
@@ -78,8 +71,8 @@ mod link_control;
 
 // The radio is not optional: MPSL provides the critical-section implementation, its radio timing
 // forbids the interrupt-disable kind, and two implementations give duplicate link symbols. The
-// one build carries the ride loop, the radio and the USB plane; `debug-uart` (VCOM-fed ride) and
-// `synth` (synthetic ride) compose with it.
+// one build carries the ride loop, the radio and the USB plane; `debug-uart` (VCOM-fed ride)
+// composes with it.
 
 use defmt::info;
 use embassy_executor::Spawner;
@@ -107,10 +100,7 @@ use obc_reader::{MapCache, MapTables};
 use obc_render::zoom_for_mpp;
 use obc_route::RouteCache;
 
-#[cfg(not(feature = "com-hw"))]
 use com::com_task;
-#[cfg(feature = "com-hw")]
-use com_hw::HwCom;
 use input_plane::{input_task, CHORDS, EXECUTOR_HP, GESTURES};
 use ls021_flpr::{launch_flpr, relaunch_flpr, FlprError, Frame64, Ls021Flpr};
 use map_plane::{run_map_recovery, show_boot_fault, MapDisplay};
@@ -155,12 +145,9 @@ const MAP_RESIDENT: usize = core::mem::size_of::<obc_app::App>()
 /// plan-frame local, and a budget that moved with the card's contents would not be a budget. It is
 /// deliberately not an arena arm, because `App::sample_terrain` reads it at every fresh fix during a
 /// ride, which is while the map plane renders and no search runs. It is state, not scratch.
-#[cfg(has_nav)]
 const TERRAIN_RESIDENT: usize = core::mem::size_of::<
     obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>,
 >() + core::mem::size_of::<obc_formats::io::WindowSource<'static>>();
-#[cfg(not(has_nav))]
-const TERRAIN_RESIDENT: usize = 0;
 
 // A report-only table of target-side allocation sizes, kept out of every shipping ELF by
 // `cfg(feature = "resource-report")`. `resource_guard.py report` extracts it without running the
@@ -206,8 +193,7 @@ mod resource_report {
         entry("ble_v4_adapter", ble::V4_ADAPTER_BYTES),
     ];
 
-    /// The terrain entries are the *types'* sizes, reported in every profile, even where `has_nav`
-    /// keeps the statics out of the image.
+    /// The terrain entries are the *types'* sizes.
     const TERRAIN_ENTRIES: [Entry; 2] = [
         entry(
             "terrain",
@@ -302,16 +288,13 @@ static mut SHARED_SETTINGS_SLOT: MaybeUninit<SharedSettingsMutex> = MaybeUninit:
 /// The mounted map's terrain: the OBCT reader plus its four-tile cache, about 2.1 KB. It is
 /// `.bss` because `TerrainElevation` embeds the cache and a stack copy inside the emit path would
 /// be a fat local. Written once at boot, and only when the map carries a terrain region.
-#[cfg(has_nav)]
 static mut TERRAIN: MaybeUninit<obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>> =
     MaybeUninit::uninit();
 /// The window the OBCT container is read through. It must be `'static`: [`TERRAIN`]'s parsed
 /// reader borrows its source for the session.
-#[cfg(has_nav)]
 static mut TERRAIN_WINDOW: MaybeUninit<obc_formats::io::WindowSource<'static>> = MaybeUninit::uninit();
 /// The no-terrain source, a ZST. The emit path then has one uniform seam and no `Option` branch
 /// per point.
-#[cfg(has_nav)]
 static mut NULL_ELEV: obc_route::NullElevation = obc_route::NullElevation;
 
 /// Parse immutable map tables directly in the static slot.
@@ -343,7 +326,6 @@ unsafe fn parse_map_tables(
 ///
 /// The `&'static mut` does not come from `map`, which is what `clippy::mut_from_ref` cannot see:
 /// it comes from [`TERRAIN`], a slot this function solely owns and writes at most once per boot.
-#[cfg(has_nav)]
 #[inline(never)]
 #[allow(clippy::mut_from_ref)]
 fn mount_terrain(
@@ -543,7 +525,6 @@ mod stackmeter {
     /// [`used`], but forcing a fresh full scan instead of obeying the [`SCAN_INTERVAL_MS`]
     /// throttle — for a caller that has just finished a stack-notable operation and wants the peak
     /// including it now.
-    #[cfg(has_nav)]
     pub fn rescan(now: u32) -> usize {
         LAST_USED.store(0, Ordering::Relaxed); // 0 = "never scanned" → `used` always rescans
         used(now)
@@ -604,8 +585,8 @@ async fn vcom_tx_task(mut tx: BufferedUarteTx<'static, peripherals::SERIAL20>) {
 }
 
 /// The board's one sensor hand-off: every cross-task sensor stream, split into typed producer,
-/// consumer and control handles that are wired at composition below. In every build — a `synth`
-/// build still needs the injector for BLE sensor connections.
+/// consumer and control handles that are wired at composition below. Every build has it, because
+/// BLE sensor connections feed it too.
 static SENSOR_HUB: obc_platform::SensorHub = obc_platform::SensorHub::new();
 
 #[embassy_executor::main]
@@ -647,7 +628,7 @@ async fn main(_spawner: Spawner) {
         // The VCOM debug-sensor stream, behind `debug-uart`. Bring it up first, so the link is live
         // while the card and panel come up. The DK has no USB peripheral, so the fake GPS, baro and
         // compass feed and the ride telemetry ride UARTE20 on the J-Link VCOM (TX P1_16, RX P1_17);
-        // defmt logs share the same cable over RTT. Without the feature the app rides `SynthLocation`.
+        // defmt logs share the same cable over RTT. Without the feature the app rides the real sensors.
         #[cfg(feature = "debug-uart")]
         {
             // The `'static` rings behind the interrupt-fed UARTE, written in place so a warm reset
@@ -674,7 +655,7 @@ async fn main(_spawner: Spawner) {
 
         // Real GPS and altimeter, default build only. The event-driven sensor task probes both chips
         // and publishes datapoints into `SENSOR_HUB`.
-        #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+        #[cfg(not(feature = "debug-uart"))]
         {
             // EasyDMA cannot fetch a write buffer from flash, so byte-literal register writes need a
             // RAM bounce buffer. 32 B covers the widest VALSET frame.
@@ -721,26 +702,13 @@ async fn main(_spawner: Spawner) {
                 Output::new(p.P2_04, Level::Low, OutputDrive::Standard), // B1 (shared: sEMMC D1)
             ];
             // COM electrode lines: 56 to 77 nF of load each, so high-drive. They boot `Lo` and stay
-            // `Lo` through the init-black frame below, then start. Default: three `Output`s the M33
-            // `com_task` toggles at 60 Hz — VCOM P1.22 and VB P1.23 in phase, VA P1.24 inverse. With
-            // `com-hw` the same nets become GPIOTE20 toggle channels that a TIMER and DPPI chain
-            // free-runs with no CPU. `HwCom::start` establishes VA's inverse phase before it enables
-            // the toggle.
-            #[cfg(not(feature = "com-hw"))]
+            // `Lo` through the init-black frame below, then start: three `Output`s the M33
+            // `com_task` toggles at 60 Hz — VCOM P1.22 and VB P1.23 in phase, VA P1.24 inverse.
             let (vcom, vb, va) = (
                 Output::new(p.P1_22, Level::Low, OutputDrive::HighDrive),
                 Output::new(p.P1_23, Level::Low, OutputDrive::HighDrive),
                 Output::new(p.P1_24, Level::Low, OutputDrive::HighDrive),
             );
-            #[cfg(feature = "com-hw")]
-            let (vcom, vb, va) = {
-                use embassy_nrf::gpiote::{OutputChannel, OutputChannelPolarity::Toggle};
-                (
-                    OutputChannel::new(p.GPIOTE20_CH0, p.P1_22, Level::Low, OutputDrive::HighDrive, Toggle),
-                    OutputChannel::new(p.GPIOTE20_CH1, p.P1_23, Level::Low, OutputDrive::HighDrive, Toggle),
-                    OutputChannel::new(p.GPIOTE20_CH2, p.P1_24, Level::Low, OutputDrive::HighDrive, Toggle),
-                )
-            };
 
             // Launch the FLPR (copy the blob, arm the control block, wait for ALIVE), with one full
             // relaunch retry on failure, because a cold-boot race deserves a second attempt. A launch
@@ -788,17 +756,10 @@ async fn main(_spawner: Spawner) {
             };
 
             let hp = EXECUTOR_HP.start(interrupt::SWI01);
-            // COM starts only now, after the init-black frame above. The default `com_task` runs on
-            // the high-priority executor, because it must keep toggling during the blocking
-            // whole-frame push. With `com-hw` the hardware chain does it with no task and no wakes.
-            #[cfg(not(feature = "com-hw"))]
+            // COM starts only now, after the init-black frame above. `com_task` runs on the
+            // high-priority executor, because it must keep toggling during the blocking whole-frame
+            // push.
             hp.spawn(defmt::unwrap!(com_task(vcom, vb, va)));
-            #[cfg(feature = "com-hw")]
-            let com_hw = {
-                let c = HwCom::start(p.TIMER21, p.PPI20_CH0, vcom, vb, va);
-                info!("FLPR LS021: COM on hardware TIMER21+DPPI+GPIOTE20 (zero-CPU); M33 can WFI between events");
-                c
-            };
             hp.spawn(defmt::unwrap!(input_task(buttons, input_plane, GESTURES.sender(), CHORDS.sender())));
             info!("FLPR LS021: gesture/bulge plane on SWI01 @ P3; map plane: thread mode (event-driven, #219)");
             let display = MapDisplay {
@@ -812,8 +773,6 @@ async fn main(_spawner: Spawner) {
                 degraded: false,
                 _gate_bus: gate_bus,
                 _src_bus: src_bus,
-                #[cfg(feature = "com-hw")]
-                _com_hw: com_hw,
             };
             (display, hp)
         };
@@ -951,19 +910,14 @@ async fn main(_spawner: Spawner) {
         // The map's embedded terrain. It mounts right behind the tables, because the region is a
         // header field and there is nothing to mount until the header is parsed. `mount_terrain`'s
         // `#[inline(never)]` keeps the parse temporary out of this task's poll frame.
-        #[cfg(has_nav)]
         let terrain = mount_terrain(flat_map, map_tables);
 
-        // Boot to Home: the rider drives Home, Route menu, Map with the buttons. The `sd-bench`
-        // image starts on the live Map instead, so an unattended run exercises the map-reader path
-        // as `SynthLocation` moves. Built in place in `.bss`, never on the stack.
+        // Boot to Home: the rider drives Home, Route menu, Map with the buttons. Built in place in
+        // `.bss`, never on the stack.
         // SAFETY: sole owner of APP; `init_idle` fully initialises it before the `&mut` below reads it.
         let app: &mut App = unsafe {
             let slot = core::ptr::addr_of_mut!(APP) as *mut App;
-            #[cfg(not(feature = "sd-bench"))]
             App::init_idle(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
-            #[cfg(feature = "sd-bench")]
-            App::init_map(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
             &mut *slot
         };
         {
@@ -972,10 +926,7 @@ async fn main(_spawner: Spawner) {
             // loop reports the store's live `sequence()`, and the first pass sees that move from "no
             // store" to a revision, which arms exactly one catalog read. This snapshot is what the
             // menu shows until that read lands.
-            if let Some(mut catalogs) = arena::claim_catalogs(
-                #[cfg(has_nav)]
-                None,
-            ) {
+            if let Some(mut catalogs) = arena::claim_catalogs(None) {
                 let _ = flat_store::load_routes(flat, app, &mut catalogs);
                 let _ = flat_store::load_trips(flat, app, &mut catalogs);
             }
@@ -998,9 +949,7 @@ async fn main(_spawner: Spawner) {
 
         // The router's resident half. The A* table, the graph-tile cache and the planner slot are
         // the arena's nav arm, claimed per search, so all that is threaded into the ride loop is the
-        // map's terrain (or the null source), which is sampled at fix cadence. Without `has_nav` it
-        // is the unit stand-in and the ride loop answers plan requests with the failure tier.
-        #[cfg(has_nav)]
+        // map's terrain (or the null source), which is sampled at fix cadence.
         let nav = ride::NavResident {
             // SAFETY: `NULL_ELEV` is a ZST written nowhere else, and `terrain` is the sole reference
             // to the `TERRAIN` slot, moved here.
@@ -1009,8 +958,6 @@ async fn main(_spawner: Spawner) {
                 None => unsafe { &mut *core::ptr::addr_of_mut!(NULL_ELEV) },
             },
         };
-        #[cfg(not(has_nav))]
-        let nav = ride::NavResident;
 
         // The persistent settings store over the carved RRAM page. Built here, where `p` is live,
         // and moved into the ride loop. Every boot bumps the persisted boot counter.
@@ -1082,9 +1029,7 @@ async fn main(_spawner: Spawner) {
         _spawner.spawn(defmt::unwrap!(spawn_usb_stack(_spawner, p.USBHS)));
 
         // Hand the display and the resident set to the shared, backend-agnostic ride loop.
-        // `display` is the only per-backend value crossing this seam. `cam_center` is threaded only
-        // on the `synth` build: the host feed and the real GPS stream absolute positions.
-        #[cfg(any(feature = "debug-uart", not(feature = "synth")))]
+        // `display` is the only per-backend value crossing this seam.
         let app_fut = ride::run_app(
             display,
             app,
@@ -1101,25 +1046,8 @@ async fn main(_spawner: Spawner) {
             wdt_handle,
             // The hub's consumer and control handles: ownership is visible here at composition.
             SENSOR_HUB.consumer(),
-            #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+            #[cfg(not(feature = "debug-uart"))]
             SENSOR_HUB.control(),
-        );
-        #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
-        let app_fut = ride::run_app(
-            display,
-            app,
-            shared_settings,
-            map_tables,
-            map_cache,
-            flat_map,
-            flat,
-            route_cache,
-            nav,
-            &mut led,
-            backlight,
-            buzzer,
-            wdt_handle,
-            (cam_lon, cam_lat),
         );
         // The ride loop is `main`'s tail future, and the BLE stack runs beside it as the task
         // spawned above — both on the one thread-mode executor, both driving the shared store.

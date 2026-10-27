@@ -110,13 +110,6 @@ impl Runtime {
     pub fn new(app: &mut App, map: &'static dyn ByteSource, tables: &MapTables) -> Self {
         let source = open(map, tables);
         app.state.peak_view_profile = source.map(|_| PeakViewProfile::at(0, 0, 0));
-        #[cfg(feature = "peak-view-demo")]
-        {
-            app.state.user_fix =
-                Some(obc_ports::Fix { lat: 46_585_000, lon: 7_961_000, course: None, speed_mps: Some(0.0) });
-            app.state.compass_deg = Some(141.25);
-            app.show_peak_view();
-        }
         Self {
             lifecycle: Lifecycle::default(),
             job: Job { source, arm: None, started: Instant::now(), search: Default::default(), revision: 0 },

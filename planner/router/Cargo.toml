@@ -6,10 +6,6 @@ publish = false
 license = "GPL-3.0-only"
 description = "Turn-aware regional routing with immutable prepared profiles"
 
-[[example]]
-name = "phone_benchmark"
-crate-type = ["staticlib"]
-
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

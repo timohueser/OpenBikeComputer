@@ -100,8 +100,7 @@ public struct UserDefaultsUpdateCheckStore: UpdateCheckStore, @unchecked Sendabl
     }
 }
 
-/// An in-memory store, the default for previews and tests, so no run leaks its cached answer into
-/// the next.
+/// An in-memory store, the default for tests, so no run leaks its cached answer into the next.
 public final class InMemoryUpdateCheckStore: UpdateCheckStore, @unchecked Sendable {
     private let lock = NSLock()
     private var record: UpdateCheckRecord?

@@ -3,9 +3,8 @@ name = "obc-fw-nrf54l"
 version = "0.1.0"
 edition = "2021"
 publish = false  # board firmware — not published to crates.io
-# `cargo run --release` = the firmware. The crate carries several diagnostic binaries, all of them
-# always buildable, so cargo cannot pick one on its own (the diagnostic bins are explicit `--bin`
-# runs).
+# `cargo run --release` = the firmware. The crate also carries the always-buildable
+# `flat_store_bench` diagnostic binary, so cargo cannot pick one on its own.
 default-run = "obc-fw-nrf54l"
 description = "nRF54LM20-DK board firmware for OpenBikeComputer — the real hardware target (Cortex-M33 + the reflective LS021B7DD02 memory-LCD driven by the FLPR coprocessor). Brings the shared obc-app up on glass; board-agnostic glue stays in obc-platform / obc-app."
 
@@ -27,9 +26,9 @@ description = "nRF54LM20-DK board firmware for OpenBikeComputer — the real har
 # The default build also drives the **real sensors** (issue #218): a u-blox SAM-M10Q GPS + a Bosch
 # BMP581 altimeter on a shared TWIM22 I²C bus (P1.04/03/05). `obc-platform/sensor-link` pulls the
 # embassy-sync `Signal` hand-off the board's `sensors::sensor_task` publishes through. Real sensors
-# are the *baseline* — selected by the **absence** of `synth`/`debug-uart` — so a board with no Qwiic
+# are the *baseline* — selected by the **absence** of `debug-uart` — so a board with no Qwiic
 # hardware attached still builds and idles waiting for a fix (RTT shows the probes); for indoor work
-# without a sky view build `--features synth` (the square-loop stand-in) or `--features debug-uart`.
+# without a sky view build `--features debug-uart`.
 # Build with `cargo run --release` (add `--features debug-uart` to stream a recorded ride from a host).
 # See `firmware/docs/ls021-flpr.md` + the crate README.
 #
@@ -41,23 +40,8 @@ description = "nRF54LM20-DK board firmware for OpenBikeComputer — the real har
 # `ble` feature named a configuration that had not compiled for months, so there is no `default`
 # list — the features below are all opt-in overlays on the one shape.
 
-# Replace the real GPS/altimeter with the always-compiled `SynthLocation` square-loop stand-in (no
-# I²C hardware needed) — indoor testing without a sky view, where a real fix never comes. A runtime
-# *source* override, orthogonal to the panel backend; `sensor-link` stays linked (its Signals just go
-# unused) since Cargo can't disable a default feature. See issue #218.
-synth = []
-
-# Seed a Kleine Scheidegg test fix and open the selected map's Peak View at boot.
-peak-view-demo = []
-
 # Factory station only: write the marked demo ride, then halt until normal firmware is flashed.
 factory-demo-ride = []
-
-# On-device SD read profiler. Adds relaxed counters at the concrete BlockDevice boundary and one
-# RTT line per map redraw, splitting the renderer's logical ByteSource requests from the physical
-# sEMMC command shape and wall time. Off in every shipping build; use with `synth` so a moving
-# camera generates repeatable cold/warm map frames without the debug-UART control path.
-sd-bench = []
 
 # Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127). The
 # nRF54L15 has no USB peripheral, so the debug-sensor /
@@ -69,16 +53,8 @@ sd-bench = []
 # `--features debug-uart` to drive the board from a recorded ride via `obc-usb-host --port <VCOM
 # tty>` (the indoor path that needs no sky view). Enables the protocol + sources in obc-platform
 # (`debug-link` is the transport-agnostic handoff gate there; the board crate owns the concrete UARTE
-# driver). Takes precedence over the real sensors + `synth`.
+# driver). Takes precedence over the real sensors.
 debug-uart = ["obc-platform/debug-link"]
-
-# Zero-CPU hardware COM driver (issue #219): generate the LS021 `VCOM`/`VB`/`VA` square wave from a
-# **TIMER → DPPI → GPIOTE** toggle chain instead of the M33 `com_task` GPIO toggle, so the panel's
-# anti-DC-bias COM keeps alternating with **no CPU wakes** and the M33 can WFI between events — the
-# lever that turns the event-driven loop into a real idle-power win. It owns the same canonical
-# P1.22/P1.23/P1.24 COM nets as the default driver, through GPIOTE20. This stays **off by default**
-# until its waveform is verified on glass and a logic analyzer. See `src/com_hw.rs` + `src/board.rs`.
-com-hw = []
 
 # Developer/CI-only compile-time allocation report. This adds a self-describing
 # `.obc_resources` table to the ELF so `firmware/tools/resource_guard.py` can read exact
@@ -140,7 +116,7 @@ embedded-storage = "0.3"
 
 # The board-agnostic glue: the `Panel` banded-display seam + the `Band` frame-absolute draw view
 # the source/handoff adapters over obc-ports: the button debouncer, the debug-sensor codec + its
-# `debug-link` sources, the `sensor-link`/BLE-sensor hand-offs, and the synth/stub fallback sources.
+# `debug-link` sources, the `sensor-link`/BLE-sensor hand-offs, and the stub fuel gauge.
 # `debug-link` stays off (no embassy-sync) until the sensor stream at N6. (#807 split the display
 # seam, sensor decoders, and SD adapters into the sibling crates below.)
 obc-platform = { path = "../obc-platform", features = ["sensor-link", "input-wait"] }

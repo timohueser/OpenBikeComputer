@@ -15,8 +15,6 @@ export const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 /** Slash-separated region / extract id. */
 export const PATH_ID = /^[a-z0-9]+(-[a-z0-9]+)*(\/[a-z0-9]+(-[a-z0-9]+)*)*$/;
 export const SHA256 = /^[0-9a-f]{64}$/;
-/** Exactly one spelling — twenty characters, `Z`, no fractional seconds. */
-export const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 export const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 export function fail(what: string): never {
@@ -112,13 +110,6 @@ export function realDate(spelling: string, where: string): void {
     if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) {
         fail(`${where}: ${spelling} is not a real date`);
     }
-}
-
-/** A timestamp: the one spelling, and a date that exists. */
-export function instant(o: Obj, key: string, where: string): string {
-    const v = str(o, key, where, INSTANT);
-    realDate(v, `${where}.${key}`);
-    return v;
 }
 
 /** Whole body in, parsed tree out. A document is read entire and parsed as one JSON

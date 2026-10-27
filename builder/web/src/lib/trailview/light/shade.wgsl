@@ -4,9 +4,10 @@
 // it with `// #include ../light/shade.wgsl`.
 
 struct Look {
-    // xyz: toward the sun, in render space. w: its bearing in turns clockwise from north, as LOD space has it.
+    // The light that shades and shadows the scene: the sun, or the moon once the sun's light is gone.
+    // xyz: toward it, in render space. w: its bearing in turns clockwise from north, as LOD space has it.
     sun: vec4f,
-    // rgb: the sunlight. w: the warm glow about a low sun.
+    // rgb: its light. w: unused.
     sun_colour: vec4f,
     // rgb: the sky light on a face that points up. w: night, 0 by day to 1.
     ambient: vec4f,
@@ -36,11 +37,21 @@ struct Look {
     modes: vec4u,
     // xy: this frame's jitter in clip space. z: render pixels per output pixel, the render scale. w: unused.
     screen: vec4f,
+    // xyz: toward the sun, which the sky's glow follows also while the moon is the light. w: the warm
+    // glow about a low sun.
+    sky_sun: vec4f,
 }
 
 @group(2) @binding(0) var<uniform> look: Look;
 
 const GLOW = vec3f(1.0, 0.62, 0.36);
+
+// A dither value of a pixel in [0, 1): interleaved gradient noise, turned by the golden ratio with
+// each jittered frame, so the frames of a still view take evenly spread values and their mean is smooth.
+fn dither(pixel: vec2f) -> f32 {
+    let ign = fract(52.9829189 * fract(dot(floor(pixel), vec2f(0.06711056, 0.00583715))));
+    return fract(ign + 0.6180340 * f32(look.modes.y));
+}
 
 fn luma(c: vec3f) -> f32 {
     return dot(c, vec3f(0.3, 0.59, 0.11));
@@ -49,9 +60,9 @@ fn luma(c: vec3f) -> f32 {
 fn sky(dir: vec3f) -> vec3f {
     let up = clamp(dir.z, 0.0, 1.0);
     let c = mix(look.horizon.rgb, look.zenith.rgb, sqrt(up));
-    let toward = max(dot(normalize(dir.xy + 1e-6), normalize(look.sun.xy + 1e-6)), 0.0);
-    let near = max(dot(dir, look.sun.xyz), 0.0);
-    return c + GLOW * look.sun_colour.w * (0.35 * pow(toward, 3.0) * exp(-5.0 * up) + 0.5 * pow(near, 24.0));
+    let toward = max(dot(normalize(dir.xy + 1e-6), normalize(look.sky_sun.xy + 1e-6)), 0.0);
+    let near = max(dot(dir, look.sky_sun.xyz), 0.0);
+    return c + GLOW * look.sky_sun.w * (0.35 * pow(toward, 3.0) * exp(-5.0 * up) + 0.5 * pow(near, 24.0));
 }
 
 // Linear light to the screen: a hue-keeping tone curve (Khronos PBR Neutral), then a grade that leans
@@ -85,10 +96,10 @@ fn light_up(albedo: vec3f, n: vec3f, shadow: f32, open: f32, relief: f32) -> vec
 // The haze between the eye and a point `view` metres from it, at `altitude` above sea level.
 fn atmosphere(colour: vec3f, view: vec3f, altitude: f32) -> vec3f {
     let d = length(view);
-    // Haze lit from behind glows in the sun's colour, most of all when the sun is low.
+    // Haze lit from behind glows in the light's colour, most of all when the sun is low.
     let toward = max(dot(view / max(d, 1e-3), look.sun.xyz), 0.0);
     let haze = sky(normalize(vec3f(view.xy, 0.0) + vec3f(0.0, 0.0, 1e-6)))
-        + look.sun_colour.rgb * (0.12 + look.sun_colour.w) * (0.25 * pow(toward, 6.0) + 0.6 * pow(toward, 40.0));
+        + look.sun_colour.rgb * (0.12 + look.sky_sun.w) * (0.25 * pow(toward, 6.0) + 0.6 * pow(toward, 40.0));
     // Height fog: the mean of exp(-altitude / H) along the sight line.
     let a0 = look.haze.w;
     let h = look.haze.y;

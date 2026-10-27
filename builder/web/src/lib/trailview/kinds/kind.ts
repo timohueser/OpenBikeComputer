@@ -1,12 +1,14 @@
 // What a kind module is, and the shared handlers that most kinds use. A kind module in kinds/ has the name
 // of its entry in data/trailview/kinds.json and default-exports a Kind; the registry (index.ts) finds it,
 // so a new kind changes no other file of the engine.
+import { geometry, type Model } from '../models/flat';
 import { EXTENT, unitScale, type Feature } from '../stream/features';
 import type { ModelSpec } from '../instances/instances';
 import type { AnchoredBuilder } from '../structures/anchored';
 import { GROUND, mix, type MeshBuilder, station, type Corner } from '../structures/mesh';
+import type { Light } from '../structures/light-pools';
 import type { Owns } from '../structures/node';
-import { metresPerUnit, type Line, type Node } from '../terrain/bins';
+import { metresPerUnit, type Line, type Node, type Shapes } from '../terrain/bins';
 
 /**
  * A feature of a tile in world units: each part's x, y in turn. The cut of a tile keeps one vertex past
@@ -31,12 +33,17 @@ export interface Build {
     near: { mesh: MeshBuilder; anchored: AnchoredBuilder };
     place: (placement: Placement) => void;
     owns: Owns;
+    /** The roads and paths of the tile, and its buildings' rings. */
+    ways: Line[];
+    buildings: Shapes['buildings'];
 }
 
 export interface Kind {
     build(feature: Placed, out: Build): void;
     /** The models that `place` names, each 1 tall with its base at the origin, for the instances. */
     models?: Record<string, () => ModelSpec>;
+    /** The light that a model sheds on the ground about it at night, by the model's name. */
+    lights?: Record<string, Light>;
 }
 
 /** A feature of a tile in world units. */
@@ -52,6 +59,56 @@ export function pointModels(feature: Placed, out: Build, instance: (x: number, y
         const it = instance(xy[i], xy[i + 1]);
         if (it) out.place({ x: xy[i], y: xy[i + 1], ...it });
     }
+}
+
+/** A model faces the nearest way within this many metres. */
+const FACE_M = 15;
+
+/** The nearest of `ways` within FACE_M of world point x, y: its line, its unit direction there and the offset to it, in world units. */
+export function nearestWay(ways: Line[], x: number, y: number): { line: Line; dx: number; dy: number; px: number; py: number } | undefined {
+    let best = (FACE_M / metresPerUnit(y)) ** 2, way: ReturnType<typeof nearestWay>;
+    for (const line of ways) for (let i = 0; i + 3 < line.xy.length; i += 2) {
+        const ax = line.xy[i], ay = line.xy[i + 1], dx = line.xy[i + 2] - ax, dy = line.xy[i + 3] - ay, l = dx * dx + dy * dy;
+        const t = l ? Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / l)) : 0, px = ax + t * dx - x, py = ay + t * dy - y;
+        if (!l || px * px + py * py >= best) continue;
+        best = px * px + py * py;
+        way = { line, dx: dx / Math.sqrt(l), dy: dy / Math.sqrt(l), px, py };
+    }
+    return way;
+}
+
+/**
+ * The yaw that stands a model at world point x, y along the nearest of `ways` within FACE_M, its front
+ * (−y) toward it, as a bench beside a path; undefined without one.
+ */
+export function facing(ways: Line[], x: number, y: number): number | undefined {
+    const way = nearestWay(ways, x, y);
+    if (!way) return undefined;
+    // World y runs south: the way's direction and the front's, east and north.
+    const along = Math.atan2(-way.dy, way.dx);
+    return Math.sin(along) * way.px + Math.cos(along) * way.py > 0 ? along : along + Math.PI;
+}
+
+/**
+ * A kind of one model at each point: `model` in metres with its base at the origin. The map does not tell
+ * which way it faces: with `facesWay` it faces the nearest way, else the hash of its place turns it. It
+ * draws to `reach` metres, and sheds `light` at night.
+ */
+export function modelKind(name: string, model: () => Model, reach: number, { facesWay = false, light }: { facesWay?: boolean; light?: Light } = {}): Kind {
+    const { height, spec } = unitModel(model, reach);
+    return {
+        build(feature, out) {
+            pointModels(feature, out, (x, y) => ({ yaw: (facesWay ? facing(out.ways, x, y) : undefined) ?? ((x * 7 + y * 13) % 628) / 100, height, model: name }));
+        },
+        models: { [name]: spec },
+        lights: light && { [name]: light },
+    };
+}
+
+/** A model in metres as the instances take it, 1 tall, with its height in metres; it draws to `reach` metres. */
+export function unitModel(model: () => Model, reach: number): { height: number; spec: () => ModelSpec } {
+    const height = Math.max(...model().points.filter((_, i) => i % 3 === 2));
+    return { height, spec: () => ({ tiers: [{ mesh: geometry(model().place(0, [0, 0, 0], 1 / height)), until: reach }] }) };
 }
 
 /** The smallest rectangle about a ring, one side along an edge: its middle in world units, the angle of its width counter-clockwise from east, and its width and depth in metres. */

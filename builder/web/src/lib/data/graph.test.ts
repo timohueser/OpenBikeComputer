@@ -13,13 +13,13 @@ it("lays out the 13 layers of prod in a band for each product, a column for each
             "planner",
             [
                 ["planner/routing", "planner/basemap", "planner/search", "planner/terrain", "planner/climate", "planner/snow"],
-                ["planner/places", "planner/sun"],
+                ["planner/places", "planner/trailview-features"],
                 ["planner/index"],
             ],
         ],
     ]);
     expect(followers(layers, "planner/search")).toEqual(["planner/places", "planner/index"]);
-    expect(followers(layers, "planner/terrain")).toEqual(["planner/sun", "planner/index"]);
+    expect(followers(layers, "planner/terrain")).toEqual(["planner/trailview-features", "planner/index"]);
     expect(sourcesOf(layers, "device/map")).toEqual(["copernicus-glo-30", "geofabrik-extracts", "geofabrik-poly", "land-polygons", "terrain"]);
 });
 

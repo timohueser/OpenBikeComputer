@@ -190,5 +190,8 @@ fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
         let high = max(blended, max(max(a, b), max(e, f)));
         shown = clamp(blended + resolve.jitter.w * (blended - 0.25 * (a + b + e + f)), low, high);
     }
-    return Out(vec4f(finish(expand(shown)), 1.0), vec4f(encode(blended), 1.0), vec4f(nearest * DEPTH_SCALE));
+    // Half a step of the 8-bit canvas and of the 10-bit history up or down by the pixel, so that the
+    // slow gradients of a dark sky show no bands.
+    let step = dither(at.xy) - 0.5;
+    return Out(vec4f(finish(expand(shown)) + step / 255.0, 1.0), vec4f(encode(blended) + step / 1023.0, 1.0), vec4f(nearest * DEPTH_SCALE));
 }

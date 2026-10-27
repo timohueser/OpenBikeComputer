@@ -34,11 +34,11 @@ neighbours. Highlighted places use zoom 11.
 Extract a smaller map archive with bounds inside its source coverage:
 
 ```sh
-python3 -m tools.planner_maps compact /srv/planner/bw/maps/terrain.pmtiles \
+uv run --locked --group planner-maps python -m tools.planner_map_archive /srv/planner/bw/maps/terrain.pmtiles \
   /srv/planner/terrain.pmtiles --bbox=7.8,47.9,8.1,48.2 --terrain
 ```
 
-Omit `--terrain` for a basemap. The command uses `uv` with pinned dependencies.
+Omit `--terrain` for a basemap.
 A map cutout does not change routing or search coverage.
 Use `--no-recompress` to crop compressed terrain without encoding it again.
 
@@ -52,13 +52,6 @@ npm run check
 ```
 
 Type checking needs generated WASM.
-Sunlight benchmark:
-
-```sh
-node ../../tools/planner_sun_bench.mjs http://127.0.0.1:4175
-```
-
-[Sunlight index](../../../../../specs/planner-sun-tiles.md).
 See the [search README](../../../../../planner/search/README.md) for its
 code and real-data suites. iOS rendering and offline downloads have separate
 validation.

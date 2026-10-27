@@ -247,12 +247,6 @@ export interface Catalog {
     articles: ArtifactPin | null;
 }
 
-/** What a satellite has to match before it is believed. */
-export interface DocumentPin {
-    bytes: number;
-    sha256: string;
-}
-
 const ROLES: readonly BandRole[] = ["core", "coarse", "geometry"];
 const SECTIONS: readonly BandSection[] = ["nav", "poi"];
 

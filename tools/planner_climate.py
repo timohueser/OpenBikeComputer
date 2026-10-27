@@ -1,12 +1,10 @@
 """Bake the planner climate layer of one region: `climate.pmtiles`, as `specs/planner-climate-tiles.md` defines it.
 
-    uv run --locked --group planner-climate python -m tools.planner_climate REGION --first-year YEAR
+    uv run --locked --group planner-climate python -m tools.planner_climate --bounds W,S,E,N --first-year YEAR --fetch DIR
 
 The source is ERA5-Land, read from the ECMWF ARCO geo-chunked Zarr stores with the CDS personal access
-token in `~/.cdsapirc`. The bake reads only the source chunks around the region and keeps them in
-`~/.cache/obc/planner/sources/era5-land`. A cached chunk serves every later bake that it holds final
-data for, so an interrupted bake or a yearly update downloads only what is missing.
-`--check` bakes again from the cache only and fails unless the result equals the archive byte for byte.
+token in `~/.cdsapirc`. `--fetch` downloads only the source chunks around the region, for `obc data fetch`;
+the step bakes from them.
 """
 
 import argparse
@@ -65,7 +63,6 @@ OROGRAPHY = ("https://confluence.ecmwf.int/download/attachments/140385202/geo_12
              "6fe9d064e7eae98bfe20348430bc4290bc94daa838b560c355999cd85cb1a559")
 GRAVITY = 9.80665
 DOI = "10.24381/cds.e2161bac"
-CACHE = Path.home() / ".cache/obc/planner/sources/era5-land"
 USER_AGENT = "OpenBikeComputer planner climate bake (https://github.com/timohueser/OpenBikeComputer)"
 
 # Hourly inputs in display units.
@@ -316,11 +313,10 @@ class Source:
     chunk, and `read` checks the bytes against it.
     """
 
-    def __init__(self, final_hour, key=None, cache=CACHE):
+    def __init__(self, final_hour, key=None, cache=None):
         self.final_hour, self.key, self.cache = final_hour, key, cache
         self.layout = None
         self.digests = {variable: {} for variable in SOURCE}
-        self.downloaded = 0
 
     def threshold(self, name):
         """The store hour count from which chunk `name` is final: FINAL_AFTER_DAYS past its end or past the bake."""
@@ -353,7 +349,6 @@ class Source:
         for older in (self.cache / variable).glob(f"{name}.*"):
             if older != path:
                 older.unlink()
-        self.downloaded += len(data)
         self.digests[variable][name] = path.name.split(".")[4]
         return path
 
@@ -371,7 +366,7 @@ class Source:
                 for variable, chunks in self.digests.items()}
 
 
-def orography(region, key=None, cache=CACHE):
+def orography(region, key=None, *, cache):
     """ERA5-Land orography in metres (rows, cols)."""
     import h5py
 
@@ -514,7 +509,7 @@ def tiles(region, values):
     return result
 
 
-def bake(bounds, first_year, source, output, credit, key=None):
+def bake(bounds, first_year, source, output, credit):
     """Write the archive; return the tile count of each zoom. `credit` is the attribution of ERA5-Land,
     with `{year}`."""
     from pmtiles.tile import Compression, TileType, tileid_to_zxy
@@ -522,7 +517,7 @@ def bake(bounds, first_year, source, output, credit, key=None):
 
     region = Region(bounds)
     weekly, monthly, rose = climate(region, first_year, source)
-    archive = tiles(region, planes(region, first_year, weekly, monthly, rose, orography(region, key, cache=source.cache)))
+    archive = tiles(region, planes(region, first_year, weekly, monthly, rose, orography(region, cache=source.cache)))
     west, south, east, north = bounds
     e7 = lambda value: round(value * 1e7)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -563,40 +558,12 @@ def step():
 
 
 def main():
-    # The step gets its credit in its options, so only this command line reads the registry.
-    from . import data_registry
-
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("region", nargs="?", help="region id: the box in data/regions/ and the default output folder")
-    parser.add_argument("--bounds", type=geo.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
+    parser.add_argument("--bounds", type=geo.bounds, required=True, help="west,south,east,north")
     parser.add_argument("--first-year", type=int, required=True, help="the first of the ten years")
-    parser.add_argument("--output", type=Path, help="default: ~/.cache/obc/planner/REGION/maps/climate.pmtiles")
-    parser.add_argument("--check", action="store_true", help="bake from the cache only and compare with the output")
-    parser.add_argument("--fetch", type=Path, help="only download the source chunks and the orography to this directory")
+    parser.add_argument("--fetch", type=Path, required=True, help="the directory of the source chunks and the orography")
     args = parser.parse_args()
-    if not args.region and not (args.fetch and args.bounds):
-        parser.error("give a region, or --bounds with --fetch")
-    bounds = args.bounds or data_registry.region_box(args.region)
-    if args.fetch:
-        fetch_sources(bounds, args.first_year, args.fetch)
-        return
-    output = args.output or Path.home() / ".cache/obc/planner" / args.region / "maps/climate.pmtiles"
-    final = final_hour(args.first_year)
-    credit = data_registry.SOURCES["era5-land"]["attribution"]
-    start = time.monotonic()
-    if args.check:
-        with tempfile.TemporaryDirectory() as directory:
-            bake(bounds, args.first_year, Source(final), Path(directory) / output.name, credit)
-            if (Path(directory) / output.name).read_bytes() != output.read_bytes():
-                sys.exit(f"{output} differs from a bake of the cached sources")
-        print(f"{output} equals a bake of the cached sources")
-        return
-    key = token()
-    source = Source(final, key)
-    counts = bake(bounds, args.first_year, source, output, credit, key)
-    print(json.dumps({"output": str(output), "bytes": output.stat().st_size, "tiles": counts,
-                      "downloaded_bytes": source.downloaded, "source_chunks": sum(map(len, source.digests.values())),
-                      "seconds": round(time.monotonic() - start)}))
+    fetch_sources(args.bounds, args.first_year, args.fetch)
 
 
 if __name__ == "__main__":

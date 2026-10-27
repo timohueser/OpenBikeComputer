@@ -411,12 +411,6 @@ mod web {
             self.cells.len() + self.source_cells.len() + self.known_empty.len()
         }
 
-        /// How many terrain cells are waiting.
-        #[wasm_bindgen(getter, js_name = terrainCellCount)]
-        pub fn terrain_cell_count(&self) -> usize {
-            self.terrain_cells.len()
-        }
-
         /// Assemble, and return the summary as JSON: the same document `obcm-assemble --json`
         /// prints. The bytes are then taken with [`Assembler::take_file`], unless a `sink` wrote
         /// them, in which case the host already has them.
@@ -568,18 +562,6 @@ mod web {
                 Some(o) => o.warnings.iter().map(|w| JsValue::from_str(w)).collect(),
                 None => js_sys::Array::new(),
             }
-        }
-
-        /// Drop the input cell buffers. Automatic on `run`, and exposed for the caller that
-        /// abandons an assembly it was still feeding.
-        #[wasm_bindgen(js_name = releaseCells)]
-        pub fn release_cells(&mut self) {
-            self.cells = Vec::new();
-            self.source_cells = Vec::new();
-            self.known_empty = Vec::new();
-            self.terrain_cells = Vec::new();
-            self.landmarks = Vec::new();
-            self.peaks = Vec::new();
         }
     }
 

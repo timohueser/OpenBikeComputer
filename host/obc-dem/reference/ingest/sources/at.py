@@ -6,8 +6,7 @@ the path is the delivery the registry points at; a later delivery is a new date.
 
 The per-state models are the same survey flights gathered per state, and they come in
 eight horizontal CRSs, three height systems and one city datum with a 156.68 m offset.
-One national grid in one CRS is the better row, so the registry carries that; `README.md`
-lists the state products as documented alternatives for `--input`.
+One national grid in one CRS is the better row, so the registry carries that.
 """
 
 from .cog import CogGrid

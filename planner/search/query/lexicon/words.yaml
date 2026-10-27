@@ -335,7 +335,7 @@ stop:
     fr: [le, la, les, "l'", un, une, des, du, de, "d'", au, aux, à, en, sur, dans, et, ou, "s'il", vous, plaît, svp, moi, me, je, "j'", où, peux, puis, trouve, trouver, montre, montrez, cherche, il, y, a, "est-ce", "qu'", que, quel, quels, tous, toutes, environ, vers, pour, nous, notre, nos, on, bon, bons, bonne, bonnes, pas, ne, "n'", donne, donne-moi, veux, voudrais, besoin, possible, plus, aussi, tout, toute, entier, entière, seulement, uniquement, mon, ma, mes, chercher, trouver, avoir, ai, faut, est, sont, exactement, juste, même, encore, prendre, acheter, aller, municipal, municipaux, municipale, municipales, complet, complète, sncf, ter, salut, bonjour, merci, ok, test]
     it: [il, lo, la, i, gli, le, "l'", un, uno, una, "un'", di, del, della, dello, dei, degli, delle, da, dal, dalla, a, al, alla, allo, ai, agli, alle, in, nel, nella, nei, su, sul, sulla, e, o, per, favore, mi, me, io, dove, posso, trova, trovami, mostra, mostrami, cerca, "c'è", ci, sono, tutti, tutte, circa, verso, noi, nostro, nostra, buono, buoni, buona, buone, qualche, "dell'", "all'", "nell'", "sull'", "dall'", dammi, voglio, vorrei, cerco, serve, servono, possibile, più, tutto, tutta, intero, intera, solo, soltanto, mio, mia, miei, mie, trovare, cercare, finire, avere, ho, hai, bisogno, esattamente, proprio, ancora, prendere, comprare, andare, comunale, comunali, completo, completa, trenitalia, fs, ciao, grazie, ok, test]
 
-# Role prepositions, for the rules baseline and for stripping names.
+# Role prepositions, for stripping names.
 prep:
   to: {en: [to, towards, toward, up, up to, into, till, until, onto, over to], de: [nach, zu, zum, zur, bis, bis nach, bis zum, bis zur, hoch, hinauf, rauf, auf, auf den, auf die, in Richtung], fr: [à, au, aux, vers, jusqu'à, jusqu'au, pour, en direction de], it: [a, al, alla, allo, ai, "all'", verso, fino a, fino al, in direzione di]}
   from: {en: [from, starting at, starting from, starting in, leaving from, out of, starting], de: [von, vom, ab, aus, los von, startend in], fr: [de, du, des, "d'", depuis, à partir de, en partant de], it: [da, dal, dalla, dallo, "dall'", partendo da, a partire da]}
@@ -347,7 +347,7 @@ prep:
   between: {en: [between], de: [zwischen], fr: [entre], it: [tra, fra]}
   with: {en: [with, that have, which have, having], de: [mit, die haben], fr: [avec, qui ont], it: [con, che hanno]}
 
-# Request-type words for the rules baseline.
+# Request-type words: the split verbs, and votes for the language of a request.
 intent:
   route: {en: [route, directions, navigate, take me, bring me, get me, lead me, plan a route, route me, how do i get, i want to go, a route, ride, cycle], de: [Route, Weg, navigiere, navigieren, bring mich, führe mich, fahre, fahren, wie komme ich], fr: [itinéraire, emmène-moi, emmène moi, amène-moi, conduis-moi, aller, rouler, comment aller, trajet], it: [percorso, portami, andare, naviga, come arrivo, come arrivare, itinerario, strada]}
   add: {en: [add, insert, include, put, plan, schedule], de: [hinzufügen, füge, füg, einfügen, ergänzen, einplanen, plane, einbauen], fr: [ajouter, ajoute, ajoutez, insérer, insère, inclure, prévoir, prévois], it: [aggiungere, aggiungi, inserire, inserisci, includere, includi, prevedere, prevedi]}

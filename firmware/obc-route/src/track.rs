@@ -1,6 +1,6 @@
 //! Recorded-track format: the fixed-record ride log and its GPX export.
 //!
-//! While riding, the device appends one [`TrackPoint`](obc_ports::TrackPoint) per accepted GPS
+//! While riding, the device appends one `obc_ports::TrackPoint` per accepted GPS
 //! fix as a fixed 20-byte record. Finalize appends the ride footer and does not rewrite the
 //! samples. [`track_to_gpx`] accepts only a finished ride object and excludes the footer from its
 //! point walk.
@@ -19,7 +19,7 @@ const BLOCK_RECORDS: usize = 64;
 
 /// Convert a finished ride object into GPX 1.1 in one streaming pass.
 ///
-/// A fresh `<trkseg>` opens on each [`segment_start`](obc_ports::TrackPoint::segment_start) and
+/// A fresh `<trkseg>` opens on each `segment_start` and
 /// on the first point, so a pause becomes an honest segment break. `<time>` is omitted until the
 /// device has a real clock.
 pub fn track_to_gpx(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -> Result<(), Error> {

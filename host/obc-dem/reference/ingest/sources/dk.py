@@ -6,10 +6,11 @@ ordinary WCS 1.0.0 row plus one query parameter, and the box comes from the capa
 document's own `lonLatEnvelope`.
 
 The agency's own example URL names the format `GTiff`, which is this MapServer's word for
-a GeoTIFF, and states the grid in EPSG:25832.
+a GeoTIFF, and states the grid in EPSG:25832. The token is account-wide: a free account at
+https://dataforsyningen.dk makes one under `Administrer token til webservices og API'er`.
 
 The credit the agency asks for names the month of the delivery, so the row's attribution
-holds `{month}` and `{year}` and `fill` fills them from the day the ingest fetched.
+holds `{month}` and `{year}` and `fill` fills them from the day of the fetch.
 """
 
 from .base import Credential
@@ -37,23 +38,4 @@ DK = DhmWcs(
     coverage="dhm_terraen",
     epsg=25832,
     image_format="GTiff",
-    steps=(
-        "Open https://dataforsyningen.dk and select `Opret bruger` to make a free account.\n"
-        "The account is the same one the whole Dataforsyningen catalogue uses.",
-
-        "Sign in, select the user icon, and open\n"
-        "`Administrer token til webservices og API'er`.",
-
-        "Select `Opret ny token`. The token is account-wide: it is not per service, so one\n"
-        "token answers for DHM and for everything else in the catalogue. Copy it.",
-
-        "The wizard asks for that token in a moment and keeps it in this process only.\n"
-        "Go on to the next step instead if you would rather download the tiles.",
-
-        "To download by hand, open https://dataforsyningen.dk/data/930, select `Download`,\n"
-        "draw the area, and take `DHM/Terræn (0,4 m grid)` as GeoTIFF.",
-
-        "Unpack the delivery into one directory. The tiles are GeoTIFF in EPSG:25832 with\n"
-        "−9999 for no data; leave the file names as they are.",
-    ),
 )

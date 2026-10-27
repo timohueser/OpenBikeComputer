@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
-from tools.landmark_capture import BACKOFF_ATTEMPTS, BATCH, MAX_LOCALE_DEPTH, MAX_LOCALES, PHOTO_SOURCES, Capture, Entities, LeadImage, acquire_requested_photos, batches, bbox, capture_assets, capture_locales, category_coverage_complete, category_files, claim_values, class_parents, digest, entity, image_metadata_url, photo_bytes, photo_metadata, query, retry_after, select_candidates, semantic_sources
+from tools.landmark_capture import BACKOFF_ATTEMPTS, BATCH, MAX_LOCALE_DEPTH, MAX_LOCALES, PHOTO_SOURCES, Capture, Entities, LeadImage, acquire_requested_photos, batches, capture_assets, capture_locales, category_coverage_complete, category_files, claim_values, class_parents, digest, entity, image_metadata_url, photo_bytes, photo_metadata, retry_after, select_candidates, semantic_sources
 
 
 class Response(BytesIO):
@@ -426,18 +426,6 @@ class LandmarkCaptureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid class redirect"):
             class_parents(value, "Q4")
 
-    def test_geographic_queries_include_boundary_without_country_filter(self):
-        boundary = {"type": "Polygon", "coordinates": [[[5, 45], [11, 45], [11, 48], [5, 48], [5, 45]]]}
-        bounds = bbox(boundary)
-        self.assertEqual(bounds, (5, 45, 11, 48))
-        sparql = query("Q133056", bounds)
-        self.assertNotIn("P17", sparql)
-        self.assertIn("wdt:P31/wdt:P279*", sparql)
-        self.assertIn(">=45", sparql)
-        self.assertIn("<=48", sparql)
-        with self.assertRaises(ValueError):
-            query("Q1 }", bounds)
-
     def test_lead_image_uses_exact_commons_filename_before_heading(self):
         parser = LeadImage()
         parser.feed('<a class="mw-file-description" href="/wiki/File:Outside.jpg"></a><div id="mw-content-text"><a class="mw-file-description" href="/wiki/File:Example_%C3%A9.jpg"><img src="//upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Example_%C3%A9.jpg/240px-Example.jpg"></a><h2>History</h2><a class="mw-file-description" href="/wiki/File:Other.jpg"></a></div>')
@@ -473,13 +461,12 @@ class LandmarkCaptureTests(unittest.TestCase):
             {"filename": f"{name}.jpg", "metadata_path": f"images/{name}.json", "source": "P18"} for name in "abc"]}]
         def request(name):
             return {"qid": "Q5", "filename": f"{name}.jpg", "metadata_path": f"images/{name}.json"}
-        rounds = [{"photo_requests": [request("a"), request("b")]}, {"photo_requests": [request("c")]}, {}]
+        rounds = [{"requests": [request("a"), request("b")]}, {"requests": [request("c")]}, {}]
         def compile_once(command, **_kwargs):
-            self.assertIn("--photo-requests", command)
-            Path(command[-1], "content.json").write_text(json.dumps(rounds.pop(0)))
+            Path(command[command.index("--out") + 1], "photo-requests.json").write_text(json.dumps(rounds.pop(0)))
         written = []
         with patch("tools.landmark_capture.subprocess.run", side_effect=compile_once) as compiler:
-            acquired = acquire_requested_photos(capture, Path("obc-bake"), "landmark-content", "content.json", Path("m.json"), Path("b.geojson"), places, lambda: written.append(True))
+            acquired = acquire_requested_photos(capture, Path("obc-bake"), Path("m.json"), Path("b.geojson"), places, lambda: written.append(True))
         self.assertEqual((acquired, compiler.call_count), (1, 3), "one more round after the failures, then done")
         self.assertEqual([image.get("path") for image in places[0]["images"]], [None, None, f"images/{digest(b'c.jpg')}.jpg"])
         self.assertEqual(capture.fetch.call_count, 3, "no candidate is downloaded twice")
@@ -519,8 +506,7 @@ class LandmarkCaptureTests(unittest.TestCase):
             )
         with patch("tools.landmark_capture.subprocess.run", side_effect=compile_once):
             acquired = acquire_requested_photos(
-                capture, Path("obc-bake"), "landmark-photo-requests", "photo-requests.json",
-                Path("m.json"), Path("b.geojson"), places, lambda: None,
+                capture, Path("obc-bake"), Path("m.json"), Path("b.geojson"), places, lambda: None,
             )
         self.assertEqual(acquired, 2)
         self.assertEqual(filters, [None, ["Q5", "Q6"], ["Q5"]])
@@ -528,20 +514,19 @@ class LandmarkCaptureTests(unittest.TestCase):
         self.assertIsNone(places[0]["images"][0].get("path"), "a failed shared original stays absent for this QID")
         self.assertIsNotNone(places[1]["images"][0].get("path"), "the other QID owns its acquired-path update")
 
-    def test_a_peak_entity_with_no_supported_sitelink_still_reaches_its_photos(self):
+    def test_an_entity_with_no_supported_sitelink_gets_no_photos(self):
         value = {"labels": {"de": {"value": "Schafberg"}}, "sitelinks": {"cebwiki": {"title": "Schafberg"}},
                  "claims": {"P18": [{"mainsnak": {"datavalue": {"value": "Peak.jpg"}}}]}}
         metadata = json.dumps({"query": {"pages": {"1": {"pageid": 1, "title": "File:Peak.jpg", "imageinfo": [
             {"mime": "image/jpeg", "size": 10, "url": "https://example.test/Peak.jpg", "sha1": "a", "extmetadata": {}}]}}}}).encode()
-        for photo_without_text, images in ((False, []), (True, ["Peak.jpg"])):
-            with tempfile.TemporaryDirectory() as directory:
-                capture = Capture(Path(directory), interval=0)
-                with patch("tools.landmark_capture.urlopen", return_value=Response(metadata)):
-                    place = capture_assets(capture, "Q5", value, photo_without_text)
-                self.assertEqual([image["filename"] for image in place["images"]], images)
-                self.assertEqual(place["articles"], [], "an unsupported edition is never an article")
-                self.assertIn(dict(asset="article", status="no-supported-sitelink"), place["outcomes"])
-                self.assertEqual(place["name"], "Schafberg")
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Capture(Path(directory), interval=0)
+            with patch("tools.landmark_capture.urlopen", return_value=Response(metadata)):
+                place = capture_assets(capture, "Q5", value)
+            self.assertEqual(place["images"], [])
+            self.assertEqual(place["articles"], [], "an unsupported edition is never an article")
+            self.assertIn(dict(asset="article", status="no-supported-sitelink"), place["outcomes"])
+            self.assertEqual(place["name"], "Schafberg")
 
     def test_candidate_pool_uses_direct_images_and_one_bounded_category(self):
         def claims(**properties):

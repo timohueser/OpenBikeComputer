@@ -4,20 +4,16 @@ Binary fixtures pinning the byte layouts of
 [`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md), the OBCR route format
 ([`OBCR_Spec.md`](../OBCR_Spec.md)), the 20-byte ride-sample codec and complete ride-v6
 object, and the OBCT terrain raster ([`OBCT_Spec.md`](../OBCT_Spec.md)), consumed by
-**four** implementations:
+three implementations:
 
 - **Firmware**: `cargo test -p obc-vectors` (workspace `firmware/`) verifies every
   file byte-for-byte against builders written straight from the spec text, and
   loads the route vectors through the production `obc-route` reader.
 - **App**: the `OBCKit` Swift tests pin the config, command, route, ride, trip and update
   codecs to the same files.
-- **Browser**: two consumers.
-  - The wasm conversion bridge (`builder/wasm`) must reproduce the route and
-    finished-ride fixtures byte-for-byte from the same inputs —
-    `builder/web/src/lib/convert/bridge.test.ts`.
-  - The **USB protocol client** (`builder/web/src/lib/usb/`) pins the protocol-v4
-    control and stream layouts under `flat-store-v4/` —
-    `.../src/lib/usb/vectors.test.ts`.
+- **Browser**: the wasm conversion bridge (`builder/wasm`) must reproduce the
+  route and finished-ride fixtures byte-for-byte from the same inputs —
+  `builder/web/src/lib/convert/bridge.test.ts`.
 
 A drift on any side fails that side's tests — the files are the contract.
 

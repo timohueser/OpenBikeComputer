@@ -251,9 +251,9 @@ do_terrain() {
     for bbox in "$GRIMSEL_TERRAIN_BBOX" "$TENINGEN_TERRAIN_BBOX"; do
         "$obc_dem" fetch --bbox "$bbox" --out "$dem"
     done
-    # A mirror of the reference archive raises the Grimsel crests to the national
-    # model's height (OBCT §9). Opt-in, because re-recording the frames it moves is
-    # a decision: OBC_REFERENCE_ARCHIVE=<mirror of the grimsel box>.
+    # A reference archive that holds the Grimsel box raises its crests to the
+    # national model's height (OBCT §9). Opt-in, because re-recording the frames it
+    # moves is a decision: OBC_REFERENCE_ARCHIVE=<archive root>.
     local reference=()
     [[ -n "${OBC_REFERENCE_ARCHIVE:-}" ]] && reference=(--reference "$OBC_REFERENCE_ARCHIVE")
     "$obc_dem" bake --sources "$dem" --bbox "$GRIMSEL_TERRAIN_BBOX" "${reference[@]+"${reference[@]}"}" \

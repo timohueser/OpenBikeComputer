@@ -3,7 +3,8 @@
 The service answers `HTTP 401` to everything without `api-key`, including the
 capabilities, so the coverage id, the axes and the grid come from the agency's technical
 description rather than from a probe. It states WCS 2.0.1, the coverage `korkeusmalli_2m`,
-the subsets named `E` and `N`, and ETRS-TM35FIN (EPSG:3067).
+the subsets named `E` and `N`, and ETRS-TM35FIN (EPSG:3067). The key comes from a free
+account at https://omatili.maanmittauslaitos.fi, under `API-avaimet`.
 
 The row takes the native 2 m step (`scale=False`): `scalesize` is not in what the agency
 documents, and asking a server for fewer pixels than the box holds is how a reference
@@ -23,22 +24,4 @@ FI = Wcs20Source(
     epsg=3067,
     axes=("E", "N"),
     scale=False,
-    steps=(
-        "Open https://omatili.maanmittauslaitos.fi and select `Rekisteröidy` to make a\n"
-        "free NLS account (`Register` in the English version).",
-
-        "Sign in, open `API-avaimet` / `API keys`, and create a key for the open data\n"
-        "interfaces. Copy the key, which looks like a UUID.",
-
-        "The wizard asks for that key in a moment and keeps it in this process only.\n"
-        "Go on to the next step instead if you would rather download the tiles.",
-
-        "To download by hand, open\n"
-        "https://asiointi.maanmittauslaitos.fi/karttapaikka/tiedostopalvelu/korkeusmalli,\n"
-        "select `Korkeusmalli 2 m`, pick the map sheets over the area, and order them as\n"
-        "GeoTIFF. The service sends a download link by e-mail.",
-
-        "Unpack the delivery into one directory. The tiles are GeoTIFF in EPSG:3067,\n"
-        "float32 metres with −9999 for no data, one 3 km square per file.",
-    ),
 )

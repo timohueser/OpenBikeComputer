@@ -1563,12 +1563,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "embassy-executor-timer-queue"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fc328bf943af66b80b98755db9106bf7e7471b0cf47dc8559cd9a6be504cc9c"
-
-[[package]]
 name = "embassy-futures"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1585,42 +1579,6 @@ dependencies = [
  "embedded-io-async",
  "futures-core",
  "futures-sink",
- "heapless 0.9.3",
-]
-
-[[package]]
-name = "embassy-time"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "592b0c143ec626e821d4d90da51a2bd91d559d6c442b7c74a47d368c9e23d97a"
-dependencies = [
- "cfg-if",
- "critical-section",
- "document-features",
- "embassy-time-driver",
- "embassy-time-queue-utils",
- "embedded-hal 0.2.7",
- "embedded-hal 1.0.0",
- "embedded-hal-async",
- "futures-core",
-]
-
-[[package]]
-name = "embassy-time-driver"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ee71af1b3a0deaa53eaf2d39252f83504c853646e472400b763060389b9fcc9"
-dependencies = [
- "document-features",
-]
-
-[[package]]
-name = "embassy-time-queue-utils"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "168297bf80aaf114b3c9ad589bf38b01b3009b9af7f97cd18086c5bbf96f5693"
-dependencies = [
- "embassy-executor-timer-queue",
  "heapless 0.9.3",
 ]
 
@@ -1649,16 +1607,6 @@ dependencies = [
 
 [[package]]
 name = "embedded-hal"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35949884794ad573cf46071e41c9b60efb0cb311e3ca01f7af807af1debc66ff"
-dependencies = [
- "nb 0.1.3",
- "void",
-]
-
-[[package]]
-name = "embedded-hal"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
@@ -1669,7 +1617,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c4c685bbef7fe13c3c6dd4da26841ed3980ef33e841cddfa15ce8a8fb3f1884"
 dependencies = [
- "embedded-hal 1.0.0",
+ "embedded-hal",
 ]
 
 [[package]]
@@ -3433,21 +3381,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nb"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "801d31da0513b6ec5214e9bf433a77966320625a37860f910be265be6e18d06f"
-dependencies = [
- "nb 1.1.0",
-]
-
-[[package]]
-name = "nb"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d5439c4ad607c3c23abf66de8c8bf57ba8adcd1f129e699851a6e43935d339d"
-
-[[package]]
 name = "ndk"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3656,7 +3589,6 @@ dependencies = [
  "obc-map-core",
  "obc-map-scene",
  "obc-network",
- "obc-osm",
  "obc-pack",
  "obc-pbf",
  "obc-places",
@@ -3692,7 +3624,6 @@ name = "obc-ble"
 version = "0.1.0"
 dependencies = [
  "obc-crc",
- "obc-formats",
  "obc-vectors",
 ]
 
@@ -3710,7 +3641,6 @@ dependencies = [
  "obc-link",
  "obc-map-core",
  "obc-map-scene",
- "obc-network",
  "obc-pack",
  "obc-places",
  "obc-ports",
@@ -3830,11 +3760,8 @@ dependencies = [
  "obc-pbf",
  "obc-places",
  "obc-reader",
- "obc-render",
- "obcm-testkit",
  "osmpbf",
  "rayon",
- "serde_json",
  "sha2 0.11.0",
  "zip",
 ]
@@ -3894,7 +3821,6 @@ dependencies = [
  "obc-map-core",
  "obc-map-scene",
  "obc-network",
- "obc-pack",
  "obc-places",
  "obc-ports",
  "obc-reader",
@@ -3936,7 +3862,6 @@ dependencies = [
  "obc-link",
  "obc-platform",
  "obc-ports",
- "obc-render",
  "obc-route",
  "obc-storage",
  "obcm-testkit",
@@ -3995,7 +3920,6 @@ dependencies = [
  "obc-formats",
  "obc-map-core",
  "obc-map-scene",
- "obc-pbf",
  "obc-places",
  "obc-tree-walk",
  "serde_json",
@@ -4021,15 +3945,12 @@ dependencies = [
  "obc-data",
  "obc-dem",
  "obc-elevation",
- "obc-fixtures",
  "obc-formats",
  "obc-map-core",
- "obc-map-scene",
  "obc-pbf",
  "obc-places",
  "obc-reader",
  "obc-render",
- "obc-vectors",
  "obcm-testkit",
  "osmpbf",
  "percent-encoding",
@@ -4076,11 +3997,9 @@ dependencies = [
  "critical-section",
  "embassy-futures",
  "embassy-sync",
- "embassy-time",
- "embedded-hal 1.0.0",
+ "embedded-hal",
  "embedded-hal-async",
  "heapless 0.8.0",
- "obc-map-scene",
  "obc-ports",
 ]
 
@@ -4149,7 +4068,6 @@ dependencies = [
 name = "obc-search-bake"
 version = "0.1.0"
 dependencies = [
- "clap",
  "flate2",
  "geo",
  "obc-data",
@@ -4269,7 +4187,6 @@ name = "obc-vectors"
 version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
- "miniz_oxide",
  "obc-dfu",
  "obc-elevation",
  "obc-formats",
@@ -4933,7 +4850,6 @@ dependencies = [
 name = "planner-router-build"
 version = "0.1.0"
 dependencies = [
- "clap",
  "country-boundaries",
  "obc-data",
  "obc-dem",
@@ -6634,12 +6550,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "void"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
 
 [[package]]
 name = "walkdir"

@@ -149,21 +149,3 @@ struct PhotoPin: View {
     }
 }
 #endif
-
-#if DEBUG
-#Preview("Map track preview") {
-    VStack(spacing: 16) {
-        MapTrackPreviewView(.obcSample, style: .hero)
-            .frame(height: 214)
-        HStack(spacing: 16) {
-            MapTrackPreviewView(.obcSample)
-                .frame(width: 128, height: 116)
-            MapTrackPreviewView(.obcSample)
-                .frame(width: 128, height: 116)
-                .environment(\.obcIsOnline, false)
-        }
-    }
-    .padding()
-    .background(OBCTheme.page)
-}
-#endif

@@ -54,7 +54,7 @@ if ! grep -q '^CDSE_S3_SECRET_KEY=.' "$CDSE"; then
   exit 1
 fi
 
-PY=(env PYTHONHASHSEED=0 nice -n 10 uv run --quiet --locked --group trailview --group planner-sun python)
+PY=(env PYTHONHASHSEED=0 nice -n 10 uv run --quiet --locked --group trailview --group forest-reference python)
 "${PY[@]}" -c ''
 
 get() {  # URL FILE
@@ -213,7 +213,7 @@ if [[ ! -s $GROUND/trailview-canopy.pmtiles ]]; then
   mv "$OUT/step/trailview-canopy.pmtiles" "$GROUND/"
 fi
 if [[ ! -s $GROUND/snow.pmtiles ]]; then
-  _run "${PY[@]}" -m tools.planner_snow trailview-box --bounds "$BOX" --source copernicus-hr-wsi --output "$OUT/snow.tmp.pmtiles"
+  _run "${PY[@]}" -m tools.planner_snow --bounds "$BOX" --source copernicus-hr-wsi --output "$OUT/snow.tmp.pmtiles"
   mv "$OUT/snow.tmp.pmtiles" "$GROUND/snow.pmtiles"
 fi
 # The page reads the joined ground and the snow day bands.

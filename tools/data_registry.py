@@ -1,5 +1,4 @@
-"""The data registry for Python steps: the credit of a source, the box of a region, and the files of
-a source from the store.
+"""The data registry for Python steps: the credit of a source and the box of a region.
 
 specs/obc-data.md defines the files and `obc data` checks them. This module reads only what
 Python steps need, so it adds no rule of its own. Shell scripts call it as
@@ -8,33 +7,17 @@ Python steps need, so it adds no rule of its own. Shell scripts call it as
     python3 tools/data_registry.py attribution SOURCE
 """
 
-import json
-import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {source["id"]: source for source in tomllib.loads((ROOT / "data/sources.toml").read_text())["source"]}
-OBC_DATA = ["cargo", "run", "--quiet", "--locked", "--manifest-path", str(ROOT / "Cargo.toml"), "-p", "obc-data", "--"]
 
 
 def attribution(source, **fill):
     """The credit of a source as the product must show it. `fill` gives `{year}` and `{month}`."""
     return SOURCES[source]["attribution"].format(**fill)
-
-
-def fetch(source, *params):
-    """The store path of each file of `source`, as SOURCE or SOURCE@VERSION: `obc data fetch SOURCE NAME=VALUE… --json`."""
-    done = subprocess.run([*OBC_DATA, "fetch", source, *params, "--json"], cwd=ROOT, stdout=subprocess.PIPE, text=True)
-    if done.returncode:
-        # With --json, the error document is on standard output.
-        try:
-            error = json.loads(done.stdout.strip().splitlines()[-1])["error"]
-        except (IndexError, KeyError, TypeError, ValueError):
-            raise RuntimeError(f"obc data fetch {source} failed with status {done.returncode}") from None
-        raise RuntimeError(f"obc data fetch {source}: {error['message']}\n{error['fix']}")
-    return [Path(file["path"]) for file in json.loads(done.stdout)["files"]]
 
 
 def region(id):

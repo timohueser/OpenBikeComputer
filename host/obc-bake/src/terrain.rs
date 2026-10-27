@@ -39,7 +39,7 @@
 //! A run whose cells are short of tiles the index names is refused, because this stage publishes:
 //! such a cell is lifted on one side of that tile's edge and not the other. The verdict is
 //! collected over the whole pass and reached after it, so one message sizes the problem and one
-//! `--bbox` fixes it, and it is recorded per cell so a later run that skips the cell reaches the
+//! box fixes it, and it is recorded per cell so a later run that skips the cell reaches the
 //! same verdict. `--allow-short-reference` publishes anyway.
 //!
 //! A new reference archive release moves baked samples, exactly as a new DEM release does, so it is
@@ -268,7 +268,7 @@ pub struct ShortReference {
     /// The µdeg box the cell's rule reads, as `(min_lat, min_lon, max_lat, max_lon)`.
     ///
     /// The cutter reports it because the cutter is the only thing that knows how far past a cell
-    /// its rule reaches. The run turns the union of these into the `--bbox` an operator mirrors.
+    /// its rule reaches. The run turns the union of these into the box an operator completes.
     pub window_udeg: (i64, i64, i64, i64),
 }
 
@@ -702,11 +702,11 @@ impl TerrainBakery<'_> {
     }
 }
 
-/// The cells of one run whose reference window the mirror is short of, and the box that would cover
+/// The cells of one run whose reference window the archive is short of, and the box that would cover
 /// every one of their windows.
 ///
 /// Collected through the whole pass rather than acted on per cell, so one message names the size of
-/// the problem and one `--bbox` fixes all of it — and so a refused run still writes the documents
+/// the problem and one box fixes all of it — and so a refused run still writes the documents
 /// for what it did bake.
 #[derive(Debug, Default)]
 struct ShortTally {
@@ -735,30 +735,27 @@ impl ShortTally {
         self.cells.iter().map(|(_, short)| short.tiles).sum()
     }
 
-    /// The union of the short cells' windows as an `ingest.py --bbox`: longitude first, as that
-    /// tool takes it, and already padded to the windows rather than to the cells, because `mirror`
-    /// pads a box by one tile — which is a whole cell at `2^16` but eight tiles short of a `2^19`
-    /// cell's overhang.
-    fn mirror_bbox(&self) -> String {
+    /// The union of the short cells' windows, longitude first: the windows and not the cells, because
+    /// a `2^19` cell's rule reads eight tiles past its own edge.
+    fn short_box(&self) -> String {
         let (lo_lat, lo_lon, hi_lat, hi_lon) = self.window.expect("a non-empty tally has a window");
         let deg = |udeg: i64| format!("{:.6}", udeg as f64 / 1e6);
         format!("{},{},{},{}", deg(lo_lon), deg(lo_lat), deg(hi_lon), deg(hi_lat))
     }
 
-    /// What to tell an operator: how much is short, where it starts, and the one command that fixes
-    /// it.
+    /// What to tell an operator: how much is short, where it starts, and the box that fixes it.
     fn describe(&self) -> String {
         let (cell, first) = &self.cells[0];
         format!(
-            "{} terrain cell(s) read reference tiles this mirror does not hold — {} tile(s) in all, the first at \
-             {}/{} for cell {cell}. Such a cell is lifted on one side of that tile's edge and not the other, which \
-             is a step in its contours and its route profile that no ground has.\n  Mirror the box their rules read \
-             and re-run:\n    python3 host/obc-dem/reference/ingest.py mirror --archive <archive> --bbox {}",
+            "{} terrain cell(s) read reference tiles that the index names and this archive does not hold — {} \
+             tile(s) in all, the first at {}/{} for cell {cell}. Such a cell is lifted on one side of that tile's \
+             edge and not the other, which is a step in its contours and its route profile that no ground has.\n  \
+             Complete the archive over the box their rules read, west,south,east,north, and re-run: {}",
             self.cells.len(),
             self.tiles(),
             first.first.0,
             first.first.1,
-            self.mirror_bbox(),
+            self.short_box(),
         )
     }
 }

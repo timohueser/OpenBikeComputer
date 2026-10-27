@@ -288,19 +288,6 @@ final class SegmentedLineOverlay: NSObject, MKOverlay {
         }
         return (pieces, centre.distance)
     }
-
-    /// The map point at a distance along the line, on the segment `MeasuredLine.index` picks.
-    func mapPoint(at distance: Double) -> MKMapPoint {
-        let i = line.index(at: distance)
-        guard i + 1 < mapPoints.count else { return mapPoints[i] }
-        let a = line.vertices[i], b = line.vertices[i + 1]
-        let span = b.distance - a.distance
-        let t = span > 0 ? min(max((distance - a.distance) / span, 0), 1) : 0
-        return MKMapPoint(
-            x: mapPoints[i].x + (mapPoints[i + 1].x - mapPoints[i].x) * t,
-            y: mapPoints[i].y + (mapPoints[i + 1].y - mapPoints[i].y) * t
-        )
-    }
 }
 
 

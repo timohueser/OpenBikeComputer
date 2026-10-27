@@ -62,18 +62,11 @@ final class ObservedMockTransport: DeviceLink, DeviceBattery, DeviceObjects, Dev
         return try await base.listRoutes()
     }
 
-    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
-        try await base.routeDetail(id)
-    }
-
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
     func deleteRoute(_ id: DeviceObjectID) async throws { try await base.deleteRoute(id) }
     func listTrips() async throws -> [TripCatalogEntry] {
         lock.withLock { tripCatalogStarted += 1 }
         return try await base.listTrips()
-    }
-    func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Trip {
-        try await base.downloadTrip(id)
     }
     func uploadTrip(_ trip: TripBlob) -> TransferHandle { base.uploadTrip(trip) }
     func deleteTrip(_ id: DeviceObjectID) async throws { try await base.deleteTrip(id) }

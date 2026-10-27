@@ -119,15 +119,3 @@ struct PixelBitmap {
         self.runs = runs.map { Run(x: $0.x, y: $0.y - top, length: $0.length) }
     }
 }
-
-#Preview("Pixel text") {
-    VStack(alignment: .leading, spacing: 12) {
-        PixelText("TRAILHEAD", size: .label, color: OBCTheme.onRust)
-            .padding(8)
-            .background(OBCTheme.rust)
-        PixelText("ON DEVICE", color: OBCTheme.ink)
-        PixelText("Grimsel Pass", size: .display, scale: 2)
-    }
-    .padding(20)
-    .background(OBCTheme.page)
-}

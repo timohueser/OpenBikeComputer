@@ -478,14 +478,9 @@ impl App {
     /// and the device boot through [`new_idle`](App::new_idle) instead.
     pub fn new(state: AppState) -> Self {
         let mut app = Self::new_idle(state);
-        app.open_map_first();
+        app.activity = Activity::new(Mode::Riding);
+        let _ = app.ui.stack.push(Screen::Map(MapScreen::new()));
         app
-    }
-
-    /// The map-first tail both map-first constructors share.
-    fn open_map_first(&mut self) {
-        self.activity = Activity::new(Mode::Riding);
-        let _ = self.ui.stack.push(Screen::Map(MapScreen::new()));
     }
 
     define_placement_constructors!(
@@ -524,17 +519,6 @@ impl App {
             cues: crate::cues::Cues::new(),
         }
     );
-
-    /// Build the map-first [`App`] in place at `slot`: initialise the idle state, then drop
-    /// straight onto the live Map. Firmware uses it to put the map on glass before buttons exist.
-    ///
-    /// # Safety
-    /// Same contract as [`init_idle`](App::init_idle).
-    pub unsafe fn init_map(slot: *mut App, state: AppState) {
-        // SAFETY: caller's contract. `init_idle` fully initialises the slot, so `&mut *slot` is sound.
-        unsafe { Self::init_idle(slot, state) };
-        unsafe { &mut *slot }.open_map_first();
-    }
 
     /// Assert the [`new_idle`](App::new_idle) boot state field by field. The destructure is
     /// exhaustive, so a field added to the plan must state its boot value here too.
@@ -3313,7 +3297,6 @@ impl App {
             detour_preview,
             poi_scratch: &ui.poi_scratch,
             corridor: ui.corridor_scratch.entries(),
-            corridor_status: ui.corridor_scratch.status(),
             next_ahead: &ui.next_ahead,
             sensor_status: ui.sensor_status.as_slice(),
             sensor_scan_hits: ui.sensor_scan_hits.as_slice(),
@@ -4363,27 +4346,6 @@ mod tests {
             slot.assume_init_ref()
         };
         placed.assert_idle_boot_state(state);
-    }
-
-    #[test]
-    fn init_map_matches_new_map() {
-        let state = AppState::new(1, 2, 3.0);
-        let by_value = App::new(state);
-
-        let mut slot = core::mem::MaybeUninit::<App>::uninit();
-        // SAFETY: `slot` is a valid, aligned, exclusively-owned region for one `App`.
-        let placed = unsafe {
-            App::init_map(slot.as_mut_ptr(), state);
-            slot.assume_init_ref()
-        };
-
-        for app in [&by_value, placed] {
-            assert_eq!(app.state, state, "the camera state is preserved verbatim");
-            assert_eq!(app.activity.mode, Mode::Riding, "map-first boots Riding");
-            assert_eq!(app.ui.stack.len(), 2, "exactly Home + Map");
-            assert!(matches!(app.ui.stack[0], Screen::Home(_)), "Home stays the always-present root");
-            assert!(matches!(app.ui.stack[1], Screen::Map(_)), "the Map is on top");
-        }
     }
 
     /// Feed one altitude sample through `App::tick`'s altimeter arm.

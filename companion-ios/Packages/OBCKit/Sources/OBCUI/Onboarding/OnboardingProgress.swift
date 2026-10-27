@@ -13,7 +13,7 @@ public final class OnboardingProgress {
     private static let stageKey = "obc.onboarding.stage"
     private static let readyKey = "obc.onboarding.ready"
 
-    /// A nil store keeps previews and simulator scenarios independent of previous launches.
+    /// A nil store keeps simulator scenarios independent of previous launches.
     public init(defaults: UserDefaults? = nil) {
         self.defaults = defaults
         stage = defaults?.string(forKey: Self.stageKey).flatMap(Stage.init(rawValue:)) ?? .inactive

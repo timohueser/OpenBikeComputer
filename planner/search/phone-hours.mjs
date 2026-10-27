@@ -12,24 +12,15 @@ const dates = [
   '2026-10-25T00:59:00Z','2026-10-25T01:00:00Z','2026-06-21T03:00:00Z','2026-07-30T10:00:00Z',
 ];
 
-export function run(_native,digest,hours=openingHours('Europe/Berlin')) {
-  const samples = [];
+// One result per schedule and instant, weekday or date; the host time zone must not change them.
+export function run(hours=openingHours('Europe/Berlin')) {
+  const results = [];
   for (const schedule of schedules) {
     const place = {lat:48.13,lon:7.81,region:'Baden-Württemberg',country:'de',opening_hours:schedule};
-    for (const now of dates) {
-      const started = performance.now();
-      const result = {current:hours.currentOpening(place,Date.parse(now)),filtered:hours.openingState(place,{now:true},{now})};
-      samples.push({kind:'hours',input:{schedule,now},elapsedMs:performance.now()-started,result,sha256:digest(JSON.stringify(result))});
-    }
-    for (const weekday of ['mon','tue','wed','thu','fri','sat','sun']) {
-      const started = performance.now(), result = hours.openingState(place,{weekday},{});
-      samples.push({kind:'hours',input:{schedule,weekday},elapsedMs:performance.now()-started,result,sha256:digest(JSON.stringify(result))});
-    }
-    for (const openDate of ['2026-12-25','2026-07-30']) {
-      const started = performance.now(), result = hours.openingState(place,{}, {openDate});
-      samples.push({kind:'hours',input:{schedule,openDate},elapsedMs:performance.now()-started,result,sha256:digest(JSON.stringify(result))});
-    }
+    for (const now of dates)
+      results.push({current:hours.currentOpening(place,Date.parse(now)),filtered:hours.openingState(place,{now:true},{now})});
+    for (const weekday of ['mon','tue','wed','thu','fri','sat','sun']) results.push(hours.openingState(place,{weekday},{}));
+    for (const openDate of ['2026-12-25','2026-07-30']) results.push(hours.openingState(place,{},{openDate}));
   }
-  return {scope:'Shared opening_hours evaluator',calendarZone:hours.timeZone,
-    hostTimeZone:new Intl.DateTimeFormat('en').resolvedOptions().timeZone,samples};
+  return results;
 }

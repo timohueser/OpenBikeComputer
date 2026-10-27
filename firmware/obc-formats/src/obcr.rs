@@ -33,7 +33,6 @@ pub const FLAG_TEMPORARY: u8 = 32;
 pub const fn disposable_navigation(flags: u8) -> bool {
     flags & FLAG_TEMPORARY != 0 && flags & (FLAG_ASSISTANT_CANDIDATE | FLAG_BUILT_DAY) == 0
 }
-pub const WAYPOINT_PROVENANCE_OFF: usize = 44;
 pub const VISIT_DESCRIPTOR_VERSION: u8 = 1;
 pub const VISIT_DESCRIPTOR_LEN: usize = 80;
 pub const FACTS_POLICY: u16 = 1;
