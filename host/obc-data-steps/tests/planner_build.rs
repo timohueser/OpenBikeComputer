@@ -300,9 +300,9 @@ time_zone = "Europe/Berlin"
             "-c",
             r#"
 import copy, json, pathlib, sqlite3, sys
-from tools import planner_runtime as runtime, planner_offline as offline, planner_downloads as downloads, planner_grid_index as grid_index
+from tools import planner_offline as offline, planner_downloads as downloads, planner_grid_index as grid_index
 source = pathlib.Path(sys.argv[1])
-_, document = runtime.release(source, include_sources=False)
+document = json.loads((source / 'release.json').read_bytes())
 assert document['osm_sha256'] == sys.argv[2]
 indexes = {index['kind']: index for path in (source / 'indexes').rglob('index.json')
     for index in [json.loads(path.read_bytes())]}

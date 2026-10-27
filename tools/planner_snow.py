@@ -1,18 +1,17 @@
 """Bake the planner snow layer of one region: `snow.pmtiles`, as `specs/planner-snow-tiles.md` defines it.
 
-The `obc data` step (`--step`) reads HR-WSI where it has data and MODIS elsewhere. The command line
-reads one source:
+The `obc data` step (`--step`) reads HR-WSI where it has data and MODIS elsewhere. `--fetch` writes
+the source windows of one source for `obc data fetch`:
 
-    uv run --locked --group planner-snow python -m tools.planner_snow REGION
+    uv run --locked --group planner-snow python -m tools.planner_snow --bounds W,S,E,N --fetch DIR
 
 The default source is NASA MODIS daily snow cover from the anonymous Microsoft Planetary Computer
-copy. It ends in June 2025. The bake reads only the region window of each daily file and writes no
-raw files. Seasons after June 2025 are not supported yet.
+copy. It ends in June 2025. Seasons after June 2025 are not supported yet.
 
-`--source copernicus-hr-wsi` reads the HR-WSI Snow Phenology S2 yearly rasters (20 m) instead. It
-reads the window of one zoom-9 tile at a time from each file on the Copernicus Data Space S3 endpoint
-`https://eodata.dataspace.copernicus.eu`, with `CDSE_S3_ACCESS_KEY` and `CDSE_S3_SECRET_KEY` in
-`~/.config/openbikecomputer/cdse-s3.env`.
+`--source copernicus-hr-wsi` reads the HR-WSI Snow Phenology S2 yearly rasters (20 m) instead, from
+the Copernicus Data Space S3 endpoint `https://eodata.dataspace.copernicus.eu`, with
+`CDSE_S3_ACCESS_KEY` and `CDSE_S3_SECRET_KEY` in `~/.config/openbikecomputer/cdse-s3.env`. With it,
+`--output` bakes the archive directly; the TrailView test box uses this.
 """
 
 import argparse
@@ -45,8 +44,6 @@ SOURCES = {
     "nasa-modis": {"resolution_m": 500, "smooth": False},
     "copernicus-hr-wsi": {"resolution_m": 20, "smooth": True},
 }
-HANSEN_GFC = "v1.11"
-CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{0}/Hansen_GFC-2023-{0}_treecover2000_{1}.tif"
 # MODIS sees the canopy, not the snow under it; HR-WSI corrects for trees. The owner chose 75 % canopy cover as
 # "dense": below it, MODIS still sees the snow between the trees.
 DENSE_CANOPY_PERCENT = 75
@@ -218,17 +215,6 @@ def parent(children, seasons, smoothed=False):
         block = blend(values, np.full((4, half * half), 0.25, np.float32))
         out[:, :, dy * half:(dy + 1) * half, dx * half:(dx + 1) * half] = block.reshape(seasons, 2, half, half)
     return out
-
-
-def canopy_tiles(bounds):
-    """Names of the 10° Hansen tiles, named by their north-west corner, that the bounds overlap with one MODIS pixel of
-    margin: the bake samples the MODIS pixels around its edge. As `canopy_tiles` of the planner step list."""
-    pad = 10 / MODIS_PIXELS
-    widen = pad / math.cos(math.radians(max(abs(bounds[1]), abs(bounds[3]))))
-    west, south, east, north = bounds[0] - widen, bounds[1] - pad, bounds[2] + widen, bounds[3] + pad
-    return [f"{abs(lat):02d}{'N' if lat >= 0 else 'S'}_{abs(lon):03d}{'E' if lon >= 0 else 'W'}"
-            for lat in range(math.floor(south / 10) * 10 + 10, math.ceil(north / 10) * 10 + 1, 10)
-            for lon in range(math.floor(west / 10) * 10, math.ceil(east / 10) * 10, 10)]
 
 
 def canopy_cover(grid, paths):
@@ -667,44 +653,29 @@ def step():
 
 
 def main():
-    # The step gets its credit and its versions in its options, so only this command line reads
-    # the registry and the versions.
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--bounds", type=geo.bounds, required=True, help="west,south,east,north")
+    parser.add_argument("--source", choices=SOURCES, default="nasa-modis")
+    parser.add_argument("--first-season", type=int, default=2000, help="the first season to fetch")
+    parser.add_argument("--last-season", type=int, default=2024, help="the last season to fetch (NASA 2024 ends in June 2025)")
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--fetch", type=Path, help="write the source windows of the seasons to this directory")
+    action.add_argument("--output", type=Path, help="bake every HR-WSI season to this archive")
+    args = parser.parse_args()
+    if args.fetch:
+        fetch(args.source, args.bounds, args.first_season, args.last_season, args.fetch)
+        return
+    if args.source != "copernicus-hr-wsi":
+        parser.error("--output bakes only --source copernicus-hr-wsi")
+    # The step gets its credit in its options, so only this command line reads the registry.
     from . import data_registry
 
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("region", nargs="?", help="region id: a box region in data/regions/ and the default output folder")
-    parser.add_argument("--bounds", type=geo.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
-    parser.add_argument("--output", type=Path, help="default: ~/.cache/obc/planner/REGION/maps/snow.pmtiles")
-    parser.add_argument("--source", choices=SOURCES, default="nasa-modis")
-    parser.add_argument("--first-season", type=int, default=2000, help="the first NASA season")
-    parser.add_argument("--last-season", type=int, default=2024, help="the last NASA season (2024 ends in June 2025)")
-    parser.add_argument("--fetch", type=Path, help="only write the source windows of the seasons to this directory")
-    args = parser.parse_args()
-    if not args.region and not (args.fetch and args.bounds):
-        parser.error("give a region, or --bounds with --fetch")
-    bounds = args.bounds or data_registry.region_box(args.region)
-    if args.fetch:
-        fetch(args.source, bounds, args.first_season, args.last_season, args.fetch)
-        return
-    output = args.output or Path.home() / ".cache/obc/planner" / args.region / "maps/snow.pmtiles"
-    start = time.monotonic()
-    if args.source == "copernicus-hr-wsi":
-        cdse_credentials()
-        seasons = range(min(files := copernicus_files(bounds)), max(files) + 1)
-        source = lambda chunk: copernicus_planes(copernicus_files(chunk), chunk, seasons)
-        credit = data_registry.attribution("hr-wsi", year=dt.date.today().year)
-    else:
-        seasons = range(args.first_season, args.last_season + 1)
-        canopy = [CANOPY.format(HANSEN_GFC, name) for name in canopy_tiles(bounds)]
-        groups = (items for _, items in modis_seasons(bounds, args.first_season, args.last_season))
-        modis = modis_planes(groups, bounds, args.first_season, args.last_season, canopy)
-        source = lambda chunk: modis
-        credit = f"{data_registry.attribution('modis-snow')}; tree canopy: {data_registry.attribution('hansen-gfc')}"
+    cdse_credentials()
+    seasons = range(min(files := copernicus_files(args.bounds)), max(files) + 1)
+    source = lambda chunk: copernicus_planes(copernicus_files(chunk), chunk, seasons)
+    credit = data_registry.attribution("hr-wsi", year=dt.date.today().year)
     # CDSE S3 allows 4 connections per user.
-    workers = 4 if args.source == "copernicus-hr-wsi" else None
-    count = bake([(args.source, source)], seasons.start, len(seasons), bounds, output, credit, workers)
-    print(json.dumps({"output": str(output), "bytes": output.stat().st_size, "tiles": count, "seasons": len(seasons),
-                      "total_s": round(time.monotonic() - start)}))
+    bake([(args.source, source)], seasons.start, len(seasons), args.bounds, args.output, credit, 4)
 
 
 if __name__ == "__main__":

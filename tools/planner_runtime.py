@@ -60,21 +60,6 @@ def relative_path(name):
     return path
 
 
-def storage_files(document):
-    """Map the published object names to their stored size and digest."""
-    result = {}
-    for name, item in document["files"].items():
-        relative_path(name)
-        stored = item["transport"] if document.get("grid") else item
-        if document.get("grid") and not re.fullmatch(r"[a-f0-9]{64}", stored.get("sha256", "")):
-            raise ValueError("Invalid release checksum")
-        key = "objects/" + stored["sha256"] if document.get("grid") else name
-        if key in result and result[key] != stored:
-            raise ValueError("Conflicting release object")
-        result[key] = stored
-    return result
-
-
 def public_metadata(document):
     """Small immutable pointers let tile requests avoid a world-sized catalogue. The packs of a grid cell
     share a block index, so a release does not hold a key for each cell of each layer."""
@@ -98,19 +83,3 @@ def public_metadata(document):
         if len(result[block]) > INDEX_BYTES:
             raise ValueError(f"{block} exceeds the {INDEX_BYTES} bytes that the tiles Worker reads")
     return result
-
-
-def release(data, include_sources=True):
-    path = data / "release.json"
-    document = json.loads(path.read_bytes())
-    identity = digest(path)
-    if document["format"] != 1 or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", document["region"]):
-        raise ValueError("Unsupported planner release")
-    files = {**storage_files(document), **(document.get("source_files", {}) if include_sources else {})}
-    for name, item in files.items():
-        file = data / name
-        if not file.resolve().is_relative_to(data.resolve()) or not re.fullmatch(r"[a-f0-9]{64}", item["sha256"]):
-            raise ValueError("Invalid release file")
-        if file.stat().st_size != item["bytes"] or digest(file) != item["sha256"]:
-            raise ValueError(f"Release checksum mismatch: {name}")
-    return identity, document

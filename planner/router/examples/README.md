@@ -4,11 +4,7 @@ Run these commands from the repository root. Use immutable packages and a
 Release build. Keep reports in the pull request. Extend the sample corpus for the workload under test.
 
 ```sh
-python3 tools/planner_bench.py corpus PACKAGE planner/router/examples/requests.json > /tmp/requests.json
-cargo run --release -p planner-router --example benchmark -- PACKAGE /tmp/requests.json > /tmp/routes.json
-python3 tools/planner_bench.py summary /tmp/routes.json
-python3 tools/planner_bench.py server http://127.0.0.1:8788 /tmp/requests.json --concurrency 2
-python3 tools/planner_bench.py audit RELEASE_DIRECTORY
+cargo run --release -p planner-router --example benchmark -- PACKAGE planner/router/examples/requests.json > /tmp/routes.json
 ```
 
 The native runner records complete route time, object reads, costs, geometry
@@ -18,13 +14,8 @@ The optional final arguments set iterations and the routing memory budget in
 MiB; without one, the package's default budget applies. Timing excludes
 JSON serialization. Append `retained` to keep one router and change the first
 coordinate on each iteration. This mode measures fresh requests with retained
-caches. Reports include the budget. HTTP timing includes serialization and
-response transfer.
-Compare equal request corpora, profile lists, and input identities.
-
-The file audit verifies all runtime hashes and counts complete gzip output.
-Its transfer figure is a codec measurement, not a bundle format. It excludes
-source mirrors and includes every runtime index and manifest.
+caches. Reports include the budget.
+Compare equal request corpora and input identities.
 
 ## Physical iPhone
 
@@ -38,7 +29,7 @@ xcodegen generate --spec planner/router/examples/phone/project.yml
 xcodebuild -quiet -project planner/router/examples/phone/PlannerBenchmark.xcodeproj -scheme PlannerBenchmark -configuration Release -destination 'generic/platform=iOS' -derivedDataPath target/planner-phone/build DEVELOPMENT_TEAM="$TEAM" -allowProvisioningUpdates build
 xcrun devicectl device install app --device "$DEVICE" target/planner-phone/build/Build/Products/Release-iphoneos/PlannerBenchmark.app
 xcrun devicectl device copy to --device "$DEVICE" --domain-type appDataContainer --domain-identifier com.openbikecomputer.PlannerBenchmark --source PACKAGE --destination Documents/routing
-xcrun devicectl device copy to --device "$DEVICE" --domain-type appDataContainer --domain-identifier com.openbikecomputer.PlannerBenchmark --source /tmp/requests.json --destination Documents/requests.json
+xcrun devicectl device copy to --device "$DEVICE" --domain-type appDataContainer --domain-identifier com.openbikecomputer.PlannerBenchmark --source planner/router/examples/requests.json --destination Documents/requests.json
 xcrun devicectl device process launch --device "$DEVICE" com.openbikecomputer.PlannerBenchmark
 ```
 
