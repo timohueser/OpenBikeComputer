@@ -54,13 +54,3 @@ public struct OBCLargeTitleBar<Actions: View>: View {
         .padding(.bottom, 8)
     }
 }
-
-#Preview("Large title bar") {
-    VStack(spacing: 0) {
-        OBCLargeTitleBar("Library") {
-            OBCImportButton(fileExtensions: ["gpx", "tcx"]) { _ in }
-        }
-        Spacer()
-    }
-    .background(OBCTheme.page)
-}

@@ -239,7 +239,7 @@ public enum SampleRouteFile {
     }
 
     /// The files of one kind, in arrival order.
-    public static func files(_ kind: Kind = .gpx) -> [(data: Data, fileName: String)] {
+    public static func files(_ kind: Kind) -> [(data: Data, fileName: String)] {
         switch kind {
         case .gpx, .tcx:
             bundled("sample-import", kind.rawValue).map { [($0, "sample-import.\(kind.rawValue)")] } ?? []
@@ -257,8 +257,8 @@ public enum SampleRouteFile {
     }
 }
 
-/// A synthetic update container for the firmware demo launch hook and for previews: the Files
-/// picker cannot be driven from automation, so a demo run needs a pre-staged file. Both CRCs are
+/// A synthetic update container for the firmware demo launch hook: the Files picker cannot be
+/// driven from automation, so a demo run needs a pre-staged file. Both CRCs are
 /// correct and the signature marker is set, so validation accepts it just like a real one. It is
 /// not a real image: the raw body is a deterministic pattern.
 ///

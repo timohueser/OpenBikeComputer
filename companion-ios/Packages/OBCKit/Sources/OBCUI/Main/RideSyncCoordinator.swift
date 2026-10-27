@@ -109,7 +109,7 @@ public final class RideSyncCoordinator {
     private let transport: any DeviceLink & DeviceObjects
     private let library: any LibraryStore
     private let timing: Timing
-    /// The foreground-only policy's in-flight ledger. Nil in tests and previews.
+    /// The foreground-only policy's in-flight ledger. Nil in tests.
     @ObservationIgnored private let activity: TransferActivity?
     /// This coordinator's claim while a batch is syncing.
     @ObservationIgnored private var activityToken: TransferActivity.Token?

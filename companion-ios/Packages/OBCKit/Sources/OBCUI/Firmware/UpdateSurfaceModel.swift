@@ -22,9 +22,9 @@ public final class UpdateSurfaceModel {
 
     private let transport: any DeviceLink
     private let bondStore: any BondStore
-    /// The shared decision path. `nil` disables the launch check (previews, tests).
+    /// The shared decision path. `nil` disables the launch check (tests).
     @ObservationIgnored private let runner: UpdateSurfaceRunner?
-    /// `nil` where there is no notification center to talk to (previews, tests).
+    /// `nil` where there is no notification center to talk to (tests).
     @ObservationIgnored private let notifier: (any UpdateNotifying)?
     @ObservationIgnored private var stateTask: Task<Void, Never>?
     @ObservationIgnored private var checkTask: Task<Void, Never>?

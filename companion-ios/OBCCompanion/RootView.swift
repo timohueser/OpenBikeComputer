@@ -3,6 +3,9 @@ import OBCDomain
 import OBCTransport
 import OBCFormats
 import OBCUI
+#if DEBUG
+import OBCMock
+#endif
 
 /// The app's root: first-use setup or the Library, with a quiet reconnect for a saved bond.
 /// The main screen pushes the detail screens. Holds only the seams the
@@ -691,8 +694,7 @@ struct RootView: View {
                     path.removeAll()
                     onboarding.replay()
                     launchModel.replaySetup()
-                },
-                onOpenDevPanel: devPanelOpener
+                }
             )
         case .firmwareUpdate:
             FirmwareUpdateScreen(
@@ -734,17 +736,6 @@ struct RootView: View {
                 { importModel.open(route: route, fileName: fileName, fileData: Data(), bikeType: ride.summary.bikeType) }
             }
         )
-    }
-
-    /// The hidden dev-panel entry Settings hosts: Debug-only, and only when the mock is driving.
-    /// Release and forced-BLE runs pass nil, so the gesture goes nowhere.
-    private var devPanelOpener: (() -> Void)? {
-        #if DEBUG
-        guard OBCCompanionApp.mockControl != nil else { return nil }
-        return { NotificationCenter.default.post(name: .obcDeviceDidShake, object: nil) }
-        #else
-        return nil
-        #endif
     }
 
     private var plannerOpener: (() -> Void)? {
@@ -824,26 +815,3 @@ enum MainDestination: Hashable {
 
     case firmwareUpdate
 }
-
-#if DEBUG
-import OBCMock
-
-#Preview("Bonded (main)") {
-    let control = MockControl(scenario: .happyPath)
-    RootView(transport: MockTransport(control: control), bondStore: MockBondStore(control: control))
-}
-
-#Preview("First run (pairing)") {
-    let control = MockControl(scenario: .noDevice)
-    RootView(transport: MockTransport(control: control), bondStore: MockBondStore(control: control))
-}
-
-#Preview("Import choice") {
-    let control = MockControl(scenario: .happyPath)
-    RootView(
-        transport: MockTransport(control: control),
-        bondStore: MockBondStore(control: control),
-        importAtLaunch: SampleRouteFile.files()
-    )
-}
-#endif

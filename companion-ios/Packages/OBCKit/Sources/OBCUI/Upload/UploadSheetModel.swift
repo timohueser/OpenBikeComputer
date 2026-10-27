@@ -51,7 +51,7 @@ public final class UploadSheetModel {
     private let blob: RouteBlob
     private let timing: Timing
     private let onCompleted: (DeviceObjectID?, UInt32) -> Void
-    /// The foreground-only policy's in-flight ledger. Nil in tests and previews.
+    /// The foreground-only policy's in-flight ledger. Nil in tests.
     @ObservationIgnored private let activity: TransferActivity?
     /// This upload's claim while an attempt is actually moving bytes. Released on a drop, because
     /// a stalled upload must not hold the background grace window open, on any terminal outcome,

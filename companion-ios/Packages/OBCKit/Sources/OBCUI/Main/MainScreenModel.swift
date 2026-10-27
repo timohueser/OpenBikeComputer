@@ -88,7 +88,7 @@ public final class MainScreenModel {
     let transport: any DeviceLink & DeviceBattery & DeviceObjects & DeviceClock
     let library: any LibraryStore
     let lastBikeType: LastBikeTypeStore
-    /// Runs once per established connection. Nil in tests and previews skips it.
+    /// Runs once per established connection. Nil in tests skips it.
     private let nameReconciler: DeviceNameReconciler?
     /// Device rides deleted on the phone. The merge hides them so a sync cannot restore them.
     @ObservationIgnored private var deletedRideIDs: Set<RideID> = []
@@ -118,11 +118,11 @@ public final class MainScreenModel {
     @ObservationIgnored var deviceTripCRCs: [DeviceObjectID: UInt32] = [:]
     /// Each trip's day routes with the trip they were cut from.
     @ObservationIgnored var tripDayCache: [TripID: (trip: Trip, days: [TripDayRoute])] = [:]
-    /// Names the place at a coordinate, such as its locality. Nil in tests and previews.
+    /// Names the place at a coordinate, such as its locality. Nil in tests.
     let placeName: (@Sendable (Coordinate) async -> String?)?
     /// The trip reviews' place names, for the session.
     let placeNameCache: PlaceNameCache?
-    /// The in-flight transfer ledger. Nil in tests and previews.
+    /// The in-flight transfer ledger. Nil in tests.
     @ObservationIgnored let transferActivity: TransferActivity?
     /// Reconnect waits for the previous identity read to drain before starting another.
     @ObservationIgnored private(set) var identityTask: Task<Void, Never>?

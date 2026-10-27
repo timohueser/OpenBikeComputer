@@ -178,16 +178,3 @@ public struct OBCIconTile: View {
             .obcFixedGeometryType()
     }
 }
-
-#Preview("Grouped list") {
-    ScrollView {
-        VStack(spacing: 26) {
-            OBCGroupedSection("Device", footer: "Renaming updates the name shown on the device at the next sync.") {
-                OBCListRow(icon: "pencil", iconColor: OBCTheme.tint, label: "Name", value: "Trailhead", showsChevron: true) {}
-                OBCListRow(icon: "xmark.circle", iconColor: OBCTheme.danger, label: "Forget this device", showsDivider: false) {}
-            }
-        }
-        .padding(20)
-    }
-    .background(OBCTheme.page)
-}

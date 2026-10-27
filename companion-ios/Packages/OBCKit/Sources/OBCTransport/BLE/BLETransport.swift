@@ -1277,7 +1277,7 @@ extension BLETransport: TransferLink {
 
     public func sendControlRecord(_ record: Data) async throws {
         do {
-            _ = try ControlFrame(decoding: record, direction: .request)
+            _ = try ControlFrame(decodingRequest: record)
             _ = try await readyChannel()
             try Task.checkCancellation()
             queue.async { [self] in

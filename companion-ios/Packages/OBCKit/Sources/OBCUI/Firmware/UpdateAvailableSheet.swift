@@ -83,32 +83,3 @@ public struct UpdateAvailableSheet: View {
         ByteCountFormatter.string(fromByteCount: Int64(update.release.bytes), countStyle: .file)
     }
 }
-
-#if DEBUG
-#Preview("Update available") {
-    struct Demo: View {
-        @State private var shown = true
-        var body: some View {
-            OBCTheme.page
-                .ignoresSafeArea()
-                .sheet(isPresented: $shown) {
-                    UpdateAvailableSheet(
-                        update: UpdateSurfaceModel.PendingUpdate(
-                            release: FirmwareRelease(
-                                version: "1.4.0",
-                                bytes: 874_496,
-                                sha256: String(repeating: "a", count: 64),
-                                url: URL(string: "https://updates.openbikecomputer.com/fw/UPDATE.BIN")!,
-                                notes: "https://github.com/timohueser/OpenBikeComputer/releases"
-                            ),
-                            deviceName: "Trailhead"
-                        ),
-                        onView: {},
-                        onNotNow: { shown = false }
-                    )
-                }
-        }
-    }
-    return Demo()
-}
-#endif

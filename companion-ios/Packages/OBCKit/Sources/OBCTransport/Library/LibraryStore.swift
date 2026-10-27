@@ -127,7 +127,7 @@ extension LibraryStore {
     }
 }
 
-/// The no-filesystem conformer: unit tests, previews, and Debug mock runs. Persistence across
+/// The no-filesystem conformer: unit tests and Debug mock runs. Persistence across
 /// relaunches is `FileLibraryStore`'s job, and scenario-driven launches must start from their
 /// fixtures alone.
 public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {

@@ -123,7 +123,7 @@ private actor AbandonedAnswerLink: TransferLink {
     var trace: Trace { state }
 
     func sendControlRecord(_ record: Data) async throws {
-        let frame = try ControlFrame(decoding: record, direction: .request)
+        let frame = try ControlFrame(decodingRequest: record)
         pending = frame
         state.opcodes.append(frame.opcode)
         if frame.opcode == .put {
@@ -150,9 +150,7 @@ private actor AbandonedAnswerLink: TransferLink {
             body.appendLE(UInt16(0))
             body.appendLE(UInt64(0))
             body.appendLE(UInt32(0))
-            return ControlFrame(
-                opcode: .put, flags: ControlFrame.responseFlag | ControlFrame.errorFlag,
-                requestID: abandoned, payload: body).encode()
+            return responseRecord(.put, requestID: abandoned, payload: body, error: true)
         }
         guard let frame = pending else { throw TransferClientError.unexpectedResponse }
         pending = nil
@@ -160,13 +158,13 @@ private actor AbandonedAnswerLink: TransferLink {
         case .list:
             var body = storeID
             body.appendLE(UInt64(7))
-            return response(opcode: .list, requestID: frame.requestID, payload: body)
+            return responseRecord(.list, requestID: frame.requestID, payload: body)
         case .status:
             var body = Data([StatusState.superseded.rawValue, 0, 0, 0])
             body.appendLE(UInt64(3))
             body.appendLE(UInt64(12))
             body.appendLE(UInt32(0x1234_5678))
-            return response(opcode: .status, requestID: frame.requestID, payload: body)
+            return responseRecord(.status, requestID: frame.requestID, payload: body)
         case .put:
             if let readyAnswer {
                 self.readyAnswer = nil
@@ -189,7 +187,7 @@ private actor AbandonedAnswerLink: TransferLink {
         body.appendLE(UInt64(payload.count))
         body.appendLE(CRC32.checksum(payload))
         body.appendLE(UInt32(0))
-        let answer = response(opcode: .put, requestID: stream.requestID, payload: body)
+        let answer = responseRecord(.put, requestID: stream.requestID, payload: body)
         if let answerWaiter {
             self.answerWaiter = nil
             answerWaiter.resume(returning: answer)
@@ -215,12 +213,6 @@ private actor AbandonedAnswerLink: TransferLink {
 
     func cancelStreamReceive() async {}
     func restore() async throws { state.restores += 1 }
-
-    private func response(opcode: Opcode, requestID: RequestID, payload: Data) -> Data {
-        ControlFrame(
-            opcode: opcode, flags: ControlFrame.responseFlag,
-            requestID: requestID, payload: payload).encode()
-    }
 }
 
 private actor PagedIdentityLink: TransferLink {
@@ -231,7 +223,7 @@ private actor PagedIdentityLink: TransferLink {
     private(set) var listRequests = 0
 
     func sendControlRecord(_ record: Data) async throws {
-        let frame = try ControlFrame(decoding: record, direction: .request)
+        let frame = try ControlFrame(decodingRequest: record)
         guard frame.opcode == .list else { throw TransferClientError.unexpectedResponse }
         pending = frame
         listRequests += 1
@@ -253,12 +245,7 @@ private actor PagedIdentityLink: TransferLink {
         payload.append(Data("Test".utf8))
         payload.append(Data(repeating: 0, count: 44))
         payload.appendLE(UInt32(0))
-        return ControlFrame(
-            opcode: .list,
-            flags: ControlFrame.responseFlag | ControlFrame.moreFlag,
-            requestID: frame.requestID,
-            payload: payload
-        ).encode()
+        return responseRecord(.list, requestID: frame.requestID, payload: payload, more: true)
     }
 
     func sendStreamRecord(_ record: Data) async throws { throw TransferClientError.unexpectedStream }
@@ -280,7 +267,7 @@ private actor FreshCreateLink: TransferLink {
     init(payload: Data) { self.payload = payload }
 
     func sendControlRecord(_ record: Data) async throws {
-        let frame = try ControlFrame(decoding: record, direction: .request)
+        let frame = try ControlFrame(decodingRequest: record)
         pending = frame
         opcodes.append(frame.opcode)
     }
@@ -303,12 +290,7 @@ private actor FreshCreateLink: TransferLink {
             body.append(Data("Test".utf8))
             body.append(Data(repeating: 0, count: 44))
             body.appendLE(UInt32(0))
-            return ControlFrame(
-                opcode: .list,
-                flags: ControlFrame.responseFlag | ControlFrame.moreFlag,
-                requestID: frame.requestID,
-                payload: body
-            ).encode()
+            return responseRecord(.list, requestID: frame.requestID, payload: body, more: true)
         case .put:
             if let readyResponse {
                 self.readyResponse = nil
@@ -329,10 +311,7 @@ private actor FreshCreateLink: TransferLink {
         body.appendLE(UInt64(payload.count))
         body.appendLE(CRC32.checksum(payload))
         body.appendLE(UInt32(0))
-        let response = ControlFrame(
-            opcode: .put, flags: ControlFrame.responseFlag,
-            requestID: stream.requestID, payload: body
-        ).encode()
+        let response = responseRecord(.put, requestID: stream.requestID, payload: body)
         if let responseWaiter {
             self.responseWaiter = nil
             responseWaiter.resume(returning: response)
@@ -372,7 +351,7 @@ private actor DisconnectingLink: TransferLink {
     var trace: Trace { state }
 
     func sendControlRecord(_ record: Data) async throws {
-        let frame = try ControlFrame(decoding: record, direction: .request)
+        let frame = try ControlFrame(decodingRequest: record)
         pending = frame
         state.opcodes.append(frame.opcode)
         if frame.opcode == .put {
@@ -386,13 +365,13 @@ private actor DisconnectingLink: TransferLink {
         pending = nil
         switch frame.opcode {
         case .list:
-            return response(opcode: .list, requestID: frame.requestID, payload: listPayload())
+            return responseRecord(.list, requestID: frame.requestID, payload: listPayload())
         case .status:
             var body = Data([StatusState.superseded.rawValue, 0, 0, 0])
             body.appendLE(UInt64(3))
             body.appendLE(UInt64(12))
             body.appendLE(UInt32(0x1234_5678))
-            return response(opcode: .status, requestID: frame.requestID, payload: body)
+            return responseRecord(.status, requestID: frame.requestID, payload: body)
         case .put:
             if putAttempts == 1, firstPutBroke { throw TransferLinkLost() }
             if let readyResponse {
@@ -426,7 +405,7 @@ private actor DisconnectingLink: TransferLink {
             body.appendLE(UInt64(payload.count))
             body.appendLE(CRC32.checksum(payload))
             body.appendLE(UInt32(0))
-            let result = response(opcode: .put, requestID: stream.requestID, payload: body)
+            let result = responseRecord(.put, requestID: stream.requestID, payload: body)
             if let responseWaiter {
                 self.responseWaiter = nil
                 responseWaiter.resume(returning: result)
@@ -450,20 +429,6 @@ private actor DisconnectingLink: TransferLink {
         var body = storeID
         body.appendLE(UInt64(7))
         return body
-    }
-
-    private func response(opcode: Opcode, requestID: RequestID, payload: Data) -> Data {
-        ControlFrame(
-            opcode: opcode, flags: ControlFrame.responseFlag,
-            requestID: requestID, payload: payload).encode()
-    }
-}
-
-private extension Data {
-    mutating func appendLE<T: FixedWidthInteger>(_ value: T) {
-        for shift in stride(from: 0, to: T.bitWidth, by: 8) {
-            append(UInt8(truncatingIfNeeded: value >> T(shift)))
-        }
     }
 }
 
@@ -513,7 +478,7 @@ private actor ArchiveGetLink: TransferLink {
     init(fault: Fault) { self.fault = fault }
 
     func sendControlRecord(_ record: Data) async throws {
-        let frame = try ControlFrame(decoding: record, direction: .request)
+        let frame = try ControlFrame(decodingRequest: record)
         opcodes.append(frame.opcode)
         pending = frame
         if frame.opcode == .get { getID = frame.requestID }
@@ -545,19 +510,19 @@ private actor ArchiveGetLink: TransferLink {
             body.appendLE(CRC32.checksum(payload) ^ (fault == .checksum ? 1 : 0))
             body.appendLE(UInt32(0))
         case .cancel:
-            // This fixture has already sent its terminal GET answer and all payload bytes.
-            body.append(CancelResult.noSuchTransfer.rawValue)
+            // This fixture has already sent its terminal GET answer and all payload bytes, so the
+            // outcome is 1, no such transfer.
+            body.append(1)
         default: throw TransferClientError.unexpectedResponse
         }
-        return ControlFrame(opcode: frame.opcode, flags: ControlFrame.responseFlag,
-                            requestID: frame.requestID, payload: body).encode()
+        return responseRecord(frame.opcode, requestID: frame.requestID, payload: body)
     }
 
     func receiveStreamRecord() async throws -> Data {
         if streamCancelled || Task.isCancelled { throw CancellationError() }
         if !sentStream, let getID {
             sentStream = true
-            return try StreamRecord(requestID: getID, offset: 0, payload: payload).encode()
+            return streamRecord(requestID: getID, offset: 0, payload: payload)
         }
         return try await withCheckedThrowingContinuation { streamWaiter = $0 }
     }
@@ -617,7 +582,7 @@ private actor CancellationDrainLink: TransferLink {
     var reusedBeforeCleanup = false
 
     func sendControlRecord(_ bytes: Data) async throws {
-        let frame = try ControlFrame(decoding: bytes, direction: .request)
+        let frame = try ControlFrame(decodingRequest: bytes)
         var body = Data()
         switch frame.opcode {
         case .list: body.append(store); body.appendLE(UInt64(1))
@@ -632,8 +597,7 @@ private actor CancellationDrainLink: TransferLink {
         case .cancel: body.append(0)
         default: throw TransferClientError.unexpectedResponse
         }
-        let response = ControlFrame(opcode: frame.opcode, flags: ControlFrame.responseFlag,
-                                    requestID: frame.requestID, payload: body).encode()
+        let response = responseRecord(frame.opcode, requestID: frame.requestID, payload: body)
         if let waiter = controlWaiter {
             controlWaiter = nil
             waiter.resume(returning: response)
@@ -652,7 +616,7 @@ private actor CancellationDrainLink: TransferLink {
     func receiveStreamRecord() async throws -> Data {
         guard let getID else { throw TransferClientError.unexpectedStream }
         if getRequests > 1 {
-            return try StreamRecord(requestID: getID, offset: 0, payload: payload).encode()
+            return streamRecord(requestID: getID, offset: 0, payload: payload)
         }
         // AsyncThrowingStream settles its parked iterator on task cancellation. The physical
         // channel cleanup below remains independent and must also belong to the barrier.

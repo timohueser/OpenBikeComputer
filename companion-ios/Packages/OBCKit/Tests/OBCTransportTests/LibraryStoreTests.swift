@@ -502,7 +502,7 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(Set(reloaded.map(\.id)), [a.id, b.id])
     }
 
-    // MARK: The in-memory conformer (previews / mock runs)
+    // MARK: The in-memory conformer (mock runs)
 
     func testInMemoryStoreBehavesLikeALibrary() {
         let store = InMemoryLibraryStore()

@@ -4,146 +4,52 @@ import Testing
 
 @Suite("FLAT store protocol v4 vectors")
 struct FlatStoreVectorTests {
-    @Test("Every positive control vector decodes and re-encodes byte-for-byte")
-    func controls() throws {
+    @Test("Every request control vector passes the outgoing check")
+    func requests() throws {
         for entry in try Vectors.entries(in: "controls") {
             let object = try Vectors.object(entry)
-            let bytes = try Vectors.hex(object["frame"])
-            let direction: ControlDirection = object["direction"] as? String == "request" ? .request : .response
-            let frame = try ControlFrame(decoding: bytes, direction: direction)
-            #expect(frame.encode() == bytes, "\(entry)")
-            if case .response = direction {
-                if frame.isError {
-                    #expect(throws: WireError.self) { try ControlResponse(decoding: bytes) }
-                } else {
-                    _ = try ControlResponse(decoding: bytes)
-                }
-            }
+            guard object["direction"] as? String == "request" else { continue }
+            let frame = try ControlFrame(decodingRequest: Vectors.hex(object["frame"]))
+            let opcode = (object["opcode"] as? [String: Any])?["value"] as? Int
+            #expect(Int(frame.opcode.rawValue) == opcode, "\(entry)")
         }
     }
 
-    @Test("Metadata remains readable in an all-kind listing and cannot be uploaded")
-    func metadataOwnership() throws {
-        let bytes = try Vectors.frame(named: "list-response-metadata")
-        guard case .list(let page) = try ControlResponse(decoding: bytes) else {
-            Issue.record("Expected a catalog page")
-            return
-        }
-        #expect(page.entries.map(\.kind) == [.metadata])
-        let request = PutRequest(payloadLength: 112, payloadCRC32: 0, kind: .metadata, displayName: "")
-        #expect(throws: WireError.self) {
-            try ControlRequest.put(request).frame(requestID: RequestID(rawValue: 1)!)
-        }
+    @Test("A PUT of device-owned metadata is refused")
+    func metadataCannotBeUploaded() throws {
+        var bytes = try Vectors.frame(named: "put-create-request")
+        _ = try ControlFrame(decodingRequest: bytes)
+        // The kind follows the object, revision, length and CRC fields of the PUT body.
+        bytes[FlatStoreV4.controlHeaderLength + 28] = UInt8(ObjectKind.metadata.rawValue)
+        #expect(throws: WireError.invalidCombination) { try ControlFrame(decodingRequest: bytes) }
     }
 
-    @Test("A PUT shortens a long multi-byte display name to 48 bytes on a character boundary")
-    func longDisplayNameIsShortened() throws {
-        let full = "Grimselpass → Furkapass → Oberalppass über Andermatt und Disentis"
-        let request = PutRequest(payloadLength: 1, payloadCRC32: 0, kind: .route, displayName: full)
-        let name = request.displayName
-        #expect(name.utf8.count <= FlatStoreV4.maximumDisplayNameLength)
-        #expect(Array(full).starts(with: Array(name)))
-        let next = full[full.index(full.startIndex, offsetBy: name.count)]
-        #expect(name.utf8.count + String(next).utf8.count > FlatStoreV4.maximumDisplayNameLength)
-        _ = try ControlRequest.put(request).frame(requestID: RequestID(rawValue: 1)!).encode()
-    }
-
-    @Test("Accepted Assistant routes remain readable and undefined catalog flags fail")
-    func assistantCatalogFlags() throws {
-        var bytes = try Vectors.frame(named: "list-response-two-entries")
-        guard case .list(let original) = try ControlResponse(decoding: bytes) else {
-            Issue.record("Expected a catalog page")
-            return
-        }
-        let routeFlagsOffset = FlatStoreV4.controlHeaderLength + 24 + 30
-        bytes[routeFlagsOffset] = 1 << 3
-        guard case .list(let accepted) = try ControlResponse(decoding: bytes) else {
-            Issue.record("Expected the accepted route catalog page")
-            return
-        }
-        #expect(accepted.entries.count == 2)
-        #expect(accepted.entries[0].kind == .route)
-        #expect(accepted.entries[0].objectID == original.entries[0].objectID)
-        #expect(accepted.entries[0].revision == original.entries[0].revision)
-        #expect(accepted.entries[0].flags == .assistantAccepted)
-        #expect(accepted.entries[1] == original.entries[1])
-        for bit in 4..<16 {
-            let flags = UInt16(1 << 3) | UInt16(1 << bit)
-            bytes[routeFlagsOffset] = UInt8(truncatingIfNeeded: flags)
-            bytes[routeFlagsOffset + 1] = UInt8(truncatingIfNeeded: flags >> 8)
-            #expect(throws: WireError.invalidFlags) { try ControlResponse(decoding: bytes) }
-        }
-    }
-
-    @Test("Every stream vector decodes and re-encodes byte-for-byte")
+    @Test("Every stream vector decodes to its header fields")
     func streams() throws {
         for entry in try Vectors.entries(in: "streams") {
             let object = try Vectors.object(entry)
-            let bytes = try Vectors.hex(object["record"])
-            #expect(try StreamRecord(decoding: bytes).encode() == bytes, "\(entry)")
+            let record = try StreamRecord(decoding: Vectors.hex(object["record"]))
+            #expect(Int(record.requestID.rawValue) == object["requestId"] as? Int, "\(entry)")
+            #expect(String(record.offset) == object["offset"] as? String, "\(entry)")
+            #expect(record.payload.count == object["payloadLength"] as? Int, "\(entry)")
         }
     }
 
-    @Test("Every pinned error decodes to its typed remote error")
-    func errors() throws {
-        for entry in try Vectors.entries(in: "errors") {
-            let bytes = try Vectors.hex(try Vectors.object(entry)["frame"])
-            let frame = try ControlFrame(decoding: bytes, direction: .response)
-            #expect(frame.encode() == bytes, "\(entry)")
-            #expect(throws: WireError.self, "\(entry)") {
-                try ControlResponse(decoding: bytes)
-            }
-        }
-    }
-
-    @Test("Every pinned malformed record is refused")
+    @Test("Every pinned malformed request or stream record is refused")
     func negatives() throws {
         for entry in try Vectors.entries(in: "negative") {
             let object = try Vectors.object(entry)
             let bytes = try Vectors.hex(object["bytes"])
-            let target = object["target"] as? String
-            if target == "streamRecord" {
+            switch object["target"] as? String {
+            case "streamRecord":
                 #expect(throws: WireError.self, "\(entry)") { try StreamRecord(decoding: bytes) }
-            } else if target == "controlResponse" {
-                #expect(throws: WireError.self, "\(entry)") { try ControlResponse(decoding: bytes) }
-            } else {
-                #expect(throws: WireError.self, "\(entry)") {
-                    try ControlFrame(decoding: bytes, direction: .request)
-                }
+            case "controlRecord":
+                #expect(throws: WireError.self, "\(entry)") { try ControlFrame(decodingRequest: bytes) }
+            default:
+                // Response checks belong to the Rust client.
+                break
             }
         }
-    }
-
-    @Test("Request builders match the pinned examples")
-    func requestBuilders() throws {
-        let requestID = RequestID(rawValue: 0x2A01)!
-        let put = PutRequest(
-            payloadLength: 42_137, payloadCRC32: 0x9C4A_7E21, kind: .route,
-            displayName: "Grimsel Loop")
-        #expect(
-            try ControlRequest.put(put).frame(requestID: requestID).encode()
-                == Vectors.frame(named: "put-create-request"))
-
-        let archive = ControlRequest.archiveRide(
-            storeID: try StoreID(bytes: Vectors.hex("8f2c41d96b074ea3b1559c207de83466")),
-            objectID: ObjectID(rawValue: 2), revision: Revision(rawValue: 1),
-            payloadLength: 42_137, payloadCRC32: 0x9C4A_7E21)
-        #expect(try archive.frame(requestID: RequestID(rawValue: 0x2A09)!).encode()
-            == Vectors.frame(named: "archive-ride-request"))
-        let stamped = try Vectors.frame(named: "archive-ride-response-stamped")
-        guard case .archiveRide(let result) = try ControlResponse(
-            decoding: stamped, expectedOpcode: .archiveRide, expectedRequestID: RequestID(rawValue: 0x2A09)!
-        ) else { Issue.record("Expected an archive receipt result"); return }
-        #expect(result.timestamp == 0x65000000)
-        #expect(throws: WireError.self) {
-            try ControlResponse(decoding: stamped, expectedRequestID: RequestID(rawValue: 0x2A08)!)
-        }
-
-        let stream = try StreamRecord(
-            requestID: requestID, offset: 40_960,
-            payload: Data((0..<1_024).map { UInt8($0 % 251) }))
-        let expectedStream = try Vectors.record(named: "stream-frame-of-section-3-11")
-        #expect(stream.encode() == expectedStream)
     }
 }
 
@@ -171,12 +77,6 @@ private enum Vectors {
         guard let entry = try entries(in: "controls").first(where: { $0.hasSuffix("/\(name).json") })
         else { throw VectorFault.missing }
         return try hex(try object(entry)["frame"])
-    }
-
-    static func record(named name: String) throws -> Data {
-        guard let entry = try entries(in: "streams").first(where: { $0.hasSuffix("/\(name).json") })
-        else { throw VectorFault.missing }
-        return try hex(try object(entry)["record"])
     }
 
     static func hex(_ value: Any?) throws -> Data {

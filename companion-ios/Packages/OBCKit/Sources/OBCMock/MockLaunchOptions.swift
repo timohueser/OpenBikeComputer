@@ -16,10 +16,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
     public var connection: ConnectionState?
     /// Force the real `BLETransport`. Device only: the simulator has no BLE.
     public var useBLETransport: Bool
-    /// Present the dev control panel immediately at launch.
-    public var showDevPanel: Bool
-    /// Present the OBCUI component gallery immediately at launch.
-    public var showUIGallery: Bool
     /// Open the route-planner preview with its sample route.
     public var showPlanner: Bool
     /// Suppress the Debug scenario tag for product screenshots. The mock transport stays active.
@@ -51,8 +47,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
         fixtures: String? = nil,
         connection: ConnectionState? = nil,
         useBLETransport: Bool = false,
-        showDevPanel: Bool = false,
-        showUIGallery: Bool = false,
         showPlanner: Bool = false,
         hideMockHUD: Bool = false,
         disableAnimations: Bool = false,
@@ -68,8 +62,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
         self.fixtures = fixtures
         self.connection = connection
         self.useBLETransport = useBLETransport
-        self.showDevPanel = showDevPanel
-        self.showUIGallery = showUIGallery
         self.showPlanner = showPlanner
         self.hideMockHUD = hideMockHUD
         self.disableAnimations = disableAnimations
@@ -99,10 +91,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
         let fixtures = value("OBCFixtures", env: "OBC_FIXTURES")
         let connection = value("OBCConnection", env: "OBC_CONNECTION").flatMap(ConnectionState.init(launchToken:))
         let transport = value("OBCTransport", env: "OBC_TRANSPORT")
-        let showPanel = arguments.contains("-OBCShowDevPanel")
-            || environment["OBC_SHOW_DEV_PANEL"] == "1"
-        let showGallery = arguments.contains("-OBCShowUIGallery")
-            || environment["OBC_SHOW_UI_GALLERY"] == "1"
         let showPlanner = arguments.contains("-OBCShowPlanner")
             || environment["OBC_SHOW_PLANNER"] == "1"
         let hideMockHUD = arguments.contains("-OBCHideMockHUD")
@@ -161,8 +149,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
             fixtures: fixtures,
             connection: connection,
             useBLETransport: transport == "ble",
-            showDevPanel: showPanel,
-            showUIGallery: showGallery,
             showPlanner: showPlanner,
             hideMockHUD: hideMockHUD,
             disableAnimations: disableAnimations,

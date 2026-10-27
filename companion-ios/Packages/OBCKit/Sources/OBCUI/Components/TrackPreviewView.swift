@@ -249,32 +249,3 @@ public struct TrackPreviewView: View {
         drawEnd(in: &context, at: CGPoint(x: origin.x + 20 * s, y: origin.y + 19 * s))
     }
 }
-
-#Preview("Track preview") {
-    VStack(spacing: 16) {
-        TrackPreviewView(.obcSample, style: .hero)
-            .frame(height: 214)
-        HStack(spacing: 16) {
-            TrackPreviewView(.obcSample)
-                .frame(width: 128, height: 116)
-            TrackPreviewView(nil)
-                .frame(width: 128, height: 116)
-        }
-    }
-    .padding()
-    .background(OBCTheme.page)
-}
-
-extension TrackPreview {
-    /// Preview and gallery sample: a real Kettle Moraine loop, so the sketch
-    /// and the basemap both render a plausible track. Built through `normalizing` so
-    /// `points` and `coordinates` stay aligned.
-    public static let obcSample = TrackPreview.normalizing([
-        .init(latitude: 42.905, longitude: -88.520), .init(latitude: 42.918, longitude: -88.505),
-        .init(latitude: 42.930, longitude: -88.498), .init(latitude: 42.938, longitude: -88.478),
-        .init(latitude: 42.929, longitude: -88.455), .init(latitude: 42.915, longitude: -88.447),
-        .init(latitude: 42.902, longitude: -88.458), .init(latitude: 42.896, longitude: -88.480),
-        .init(latitude: 42.905, longitude: -88.500), .init(latitude: 42.918, longitude: -88.512),
-        .init(latitude: 42.905, longitude: -88.520),
-    ])
-}

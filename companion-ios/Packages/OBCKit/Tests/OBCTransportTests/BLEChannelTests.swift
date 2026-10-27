@@ -6,15 +6,22 @@ import OBCProtocolV4
 
 @Suite("BLE record channel")
 struct BLEChannelTests {
-    private func record(offset: UInt64 = 0) throws -> Data {
-        try StreamRecord(requestID: RequestID(rawValue: 7)!, offset: offset, payload: Data([1, 2, 3, 4])).encode()
+    /// A stream record for request 7: request ID, offset, payload length and a zero reserved
+    /// field, little-endian, then the payload.
+    private func record(offset: UInt64 = 0, payload: Data = Data([1, 2, 3, 4])) -> Data {
+        let fields: [(value: UInt64, bytes: Int)] = [(7, 4), (offset, 8), (UInt64(payload.count), 2), (0, 2)]
+        var header = Data()
+        for field in fields {
+            header.append(contentsOf: (0..<field.bytes).map { UInt8(truncatingIfNeeded: field.value >> (8 * $0)) })
+        }
+        return header + payload
     }
 
     @Test("Each write stays one record; partial reads preserve record boundaries", arguments: [1, 7, 16, 64])
     func recordBoundaries(readSize: Int) async throws {
         let pipe = BufferedChannel(readSize: readSize)
         let channel = BLEChannel(channel: pipe, chunkSize: 20)
-        let first = try record(), second = try record(offset: 4)
+        let first = record(), second = record(offset: 4)
         try await channel.sendRecord(first)
         try await channel.sendRecord(second)
         #expect(pipe.writes == [first, second])
@@ -26,7 +33,7 @@ struct BLEChannelTests {
     func invalidWrites() async throws {
         let pipe = BufferedChannel()
         let channel = BLEChannel(channel: pipe, chunkSize: 20)
-        let valid = try record()
+        let valid = record()
         await #expect(throws: DeviceError.transferRejected) { try await channel.sendRecord(valid + Data([0])) }
         var malformed = valid
         malformed[14] = 1
@@ -36,7 +43,7 @@ struct BLEChannelTests {
 
     @Test("Incomplete and invalid incoming records cannot be returned")
     func invalidReads() async throws {
-        let valid = try record()
+        let valid = record()
         for prefix in [Data(valid.prefix(5)), Data(valid.dropLast())] {
             let pipe = BufferedChannel()
             try await pipe.write(prefix)
@@ -56,9 +63,7 @@ struct BLEChannelTests {
     @Test("Peer records can exceed the outbound chunk size", arguments: [229, 240, 1024])
     func independentReceiveSize(payloadSize: Int) async throws {
         let pipe = BufferedChannel(readSize: 7)
-        let incoming = try StreamRecord(
-            requestID: RequestID(rawValue: 7)!, offset: 0,
-            payload: Data(repeating: 42, count: payloadSize)).encode()
+        let incoming = record(payload: Data(repeating: 42, count: payloadSize))
         try await pipe.write(incoming)
         try await pipe.write(record(offset: UInt64(payloadSize)))
         let channel = BLEChannel(channel: pipe)
@@ -69,7 +74,7 @@ struct BLEChannelTests {
     @Test("A cancelled partial record is retired; cancellation between records keeps the channel",
           arguments: [0, 5, 16, 18])
     func interruptedRecord(consumed: Int) async throws {
-        let bytes = try record()
+        let bytes = record()
         let pipe = InterruptedChannel(prefix: Data(bytes.prefix(consumed)))
         let channel = BLEChannel(channel: pipe)
         await #expect(throws: CancellationError.self) { try await channel.receiveRecord() }
@@ -78,7 +83,7 @@ struct BLEChannelTests {
 
     @Test("A malformed peer record closes the channel before another request can reuse it")
     func malformedRecordRetiresChannel() async throws {
-        var bytes = try record()
+        var bytes = record()
         bytes[14] = 1
         let pipe = InterruptedChannel(prefix: bytes)
         let channel = BLEChannel(channel: pipe)
