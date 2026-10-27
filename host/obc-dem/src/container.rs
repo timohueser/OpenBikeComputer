@@ -6,15 +6,15 @@
 //! map's tail. Two code paths that each decided the layout would be the first place the three could
 //! drift.
 //!
-//! So the layout lives in [`validate`], [`header_bytes`] and [`container_prefix`], and the two
-//! emitters are thin over it:
+//! So the layout lives in [`validate`], [`header_bytes`] and [`container_prefix_with_surface`], and
+//! the two emitters are thin over it:
 //!
 //! * [`ShardWriter`] streams a container whose presence it discovers as it goes — the baker's
 //!   position, since a cell turns out to be all-`NODATA` only once it has been sampled — and
 //!   patches its directory at the end, which needs a seek.
-//! * [`container_prefix`] serves a caller that knows every present square up front and cannot seek,
-//!   because it is splicing the container into a file it is streaming. It returns the finished
-//!   header and directory; the caller writes the present blocks in slot order behind it.
+//! * [`container_prefix_with_surface`] serves a caller that knows every present square up front and
+//!   cannot seek, because it is splicing the container into a file it is streaming. It returns the
+//!   finished header and directory; the caller writes the present blocks in slot order behind it.
 //!
 //! `the_streamed_prefix_is_what_the_shard_writer_patches` compares the two byte-for-byte.
 //!
@@ -139,12 +139,8 @@ fn header_bytes(posting_log2: u8, cell_log2: u8, rect: CellRect, surface: bool) 
 ///
 /// This is the half that could drift, and it is therefore the half that is shared: a caller writes
 /// this prefix and then the present blocks in slot order, and gets the bytes `ShardWriter` would
-/// have left behind.
-pub fn container_prefix(posting_log2: u8, cell_log2: u8, rect: CellRect, present: &[bool]) -> Result<Vec<u8>, String> {
-    container_prefix_with_surface(posting_log2, cell_log2, rect, present, false)
-}
-
-/// A surface container aligns its height blocks and stores the fixed v2 cell layout.
+/// have left behind. A `surface` container aligns its height blocks and stores the fixed v2 cell
+/// layout.
 pub fn container_prefix_with_surface(
     posting_log2: u8,
     cell_log2: u8,
@@ -376,10 +372,10 @@ mod tests {
         assert!(bytes[36..].iter().all(|&b| b == 0xAB));
     }
 
-    /// The two emitters are one layout. [`container_prefix`] claims to return exactly what
-    /// [`ShardWriter::finish`] would have patched in; this is that claim, checked byte-for-byte over
-    /// a rectangle with present and absent slots in both orders, so a directory that started at the
-    /// wrong cursor or skipped an absent slot's four bytes cannot pass.
+    /// The two emitters are one layout. [`container_prefix_with_surface`] claims to return exactly
+    /// what [`ShardWriter::finish`] would have patched in; this is that claim, checked byte-for-byte
+    /// over a rectangle with present and absent slots in both orders, so a directory that started at
+    /// the wrong cursor or skipped an absent slot's four bytes cannot pass.
     ///
     /// It is the guarantee behind the streamed splice: the assembler writes this prefix into the
     /// middle of a map it cannot seek back into, and a container that disagreed with the baker's by
@@ -399,7 +395,7 @@ mod tests {
             }
             let patched = w.finish().unwrap().into_inner();
 
-            let mut streamed = container_prefix(9, 13, rect, &present).unwrap();
+            let mut streamed = container_prefix_with_surface(9, 13, rect, &present, false).unwrap();
             for (k, _) in present.iter().enumerate().filter(|(_, here)| **here) {
                 streamed.extend_from_slice(&block(512, k as u8));
             }
@@ -407,12 +403,12 @@ mod tests {
         }
         // The prefix is the whole of what a seek would have fixed up, so it is exactly the header
         // and the directory, never a byte of raster.
-        let prefix = container_prefix(9, 13, rect, &[false; 6]).unwrap();
+        let prefix = container_prefix_with_surface(9, 13, rect, &[false; 6], false).unwrap();
         assert_eq!(prefix.len(), HEADER_LEN + 6 * DIR_ENTRY_LEN);
         // A presence plan that does not describe this rectangle is a caller bug, not a shorter file.
-        assert!(container_prefix(9, 13, rect, &[false; 5]).is_err(), "one entry per slot");
+        assert!(container_prefix_with_surface(9, 13, rect, &[false; 5], false).is_err(), "one entry per slot");
         // The pairing and rectangle refusals are the writer's own, through the same `validate`.
-        assert!(container_prefix(9, 12, rect, &[false; 6]).is_err(), "not a pairing OBCT permits");
+        assert!(container_prefix_with_surface(9, 12, rect, &[false; 6], false).is_err(), "not a pairing OBCT permits");
     }
 
     #[test]

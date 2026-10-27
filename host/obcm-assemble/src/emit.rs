@@ -259,23 +259,6 @@ pub fn projected_bytes(plan: &MapPlan, style_len: usize, poi_len: u64, nav: crat
     Ok(plan.layout(style_len, poi_len, nav)?.total)
 }
 
-/// Bytes added before terrain by summit metadata and the surface sector alignment.
-pub fn peak_view_prefix_bytes(
-    plan: &MapPlan,
-    style_len: usize,
-    poi_len: u64,
-    summit_bytes: u64,
-    nav: crate::nav::NavProjection,
-) -> Result<u64> {
-    let layout = plan.layout(style_len, poi_len, nav)?;
-    let native_nav = layout
-        .nav_offset
-        .checked_sub(summit_bytes)
-        .ok_or_else(|| Error::Capacity("summit section exceeds the map layout".into()))?;
-    let native_start = align_up(native_nav + nav.bytes_at(native_nav) + plan.landmark_bytes + plan.peak_bytes);
-    Ok(layout.terrain_offset - native_start)
-}
-
 /// The nav section's exact bytes in `plan`, for the assembly report. Kept beside
 /// [`projected_bytes`] so reporting and the write use the same absolute-offset arithmetic.
 pub fn projected_nav_bytes(

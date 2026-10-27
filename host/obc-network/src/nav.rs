@@ -6,8 +6,8 @@
 //! routable ways only, each way's node-id sequence, so a node two ways share becomes a junction.
 //! That shared-node join is the whole point.
 //!
-//! The routable-class predicate ([`obc_places::routing::is_routable`]) and the [`obc_places::routing::classify`] way-kind are independent of
-//! render styling and config-free, so packing the same extract always yields the same graph.
+//! The way classifier ([`obc_places::routing::classify`]) is independent of render styling and
+//! config-free, so packing the same extract always yields the same graph.
 //! [`build_graph`] also classifies way kinds, drops bike-illegal ways, prunes tiny islands, and
 //! splits edges so the serialized `i16` neighbor deltas and `u16` costs hold by construction.
 //!
@@ -616,7 +616,7 @@ pub fn format_summary(g: &NavGraph, stats: &NavStats) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use obc_places::routing::{classify, is_routable};
+    use obc_places::routing::classify;
 
     /// Build a `RoutableWay` of kind 0 from `(node_id, lon_udeg, lat_udeg)` triples.
     fn way(pts: &[(i64, i32, i32)]) -> RoutableWay {
@@ -711,10 +711,10 @@ mod tests {
         // dismount stays routable with its normal footway kind.
         assert_eq!(classify(tags(&[("highway", "footway"), ("bicycle", "dismount")])).map(|k| k & 0x1F), Some(3));
         // Other access values stay routable.
-        assert!(is_routable(tags(&[("highway", "track"), ("access", "permissive")])));
-        assert!(is_routable(tags(&[("highway", "cycleway"), ("access", "destination")])));
+        assert!(classify(tags(&[("highway", "track"), ("access", "permissive")])).is_some());
+        assert!(classify(tags(&[("highway", "cycleway"), ("access", "destination")])).is_some());
         // Not a highway at all.
-        assert!(!is_routable(tags(&[("natural", "water")])));
+        assert_eq!(classify(tags(&[("natural", "water")])), None);
     }
 
     /// Three ways meeting at a shared node: one junction of degree 3, and three edges.

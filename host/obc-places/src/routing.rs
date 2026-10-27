@@ -93,15 +93,6 @@ where
     Some((surface_class(surface) << 5) | hclass)
 }
 
-/// Whether a way is routable for a bike: exactly `classify(tags).is_some()`. A named predicate
-/// because that is how the ingest reads it — routability first, then the kind.
-pub fn is_routable<'a, I>(tags: I) -> bool
-where
-    I: IntoIterator<Item = (&'a str, &'a str)>,
-{
-    classify(tags).is_some()
-}
-
 /// One routable way handed to the graph builder: the OSM node-id sequence, the matching µdeg
 /// `(lon, lat)` coordinates in way order, and the way's packed [`classify`] `kind`. The caller
 /// filters before pushing, so `kind` is always a real class here.

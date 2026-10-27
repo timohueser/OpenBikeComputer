@@ -18,7 +18,6 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use obc_bake::cut::CutOptions;
 use obc_bake::pipeline::{pack, PackOptions};
 use obc_map_core::config::Config;
 use obc_map_core::progress::{PackError, Progress};
@@ -71,8 +70,7 @@ fn parse_args() -> Result<Args, String> {
                     [--terrain <path>] [--landmarks <content.json>]… [--peaks <peaks.json>] [--dump-pois] [--dump-hours] \
                     [--allow-large]\n       \
                     obc-pack schema                                 (print the config JSON Schema envelope)\n       \
-                    obc-pack catalog <bake-tree> --base-url <url>   (write a bake tree's catalog manifest)\n       \
-                    obc-pack cells <pbf...> <config.json> <out-dir> (cut the extract into OBCA grid cells)"
+                    obc-pack catalog <bake-tree> --base-url <url>   (write a bake tree's catalog manifest)"
             .into());
     }
     let output = positional.pop().unwrap();
@@ -187,74 +185,12 @@ fn run_catalog(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `obc-pack cells <pbf...> <config.json> <out-dir> [flags]`
-///
-/// Ingests the sources **once** and cuts the cell artifacts of every band that the extract touches
-/// (`OBCA_Spec.md`), plus the provenance sidecar the bakery turns into a catalog. Cell sizes come
-/// from the schema's band table: `--bands` supplies the catalog's own, and the recommended table is
-/// the default.
-fn run_cells(args: &[String]) -> Result<(), String> {
-    const USAGE: &str = "usage: obc-pack cells <pbf...> <config.json> <out-dir> [--bands <bands.json>] \
-                         [--band <id>]... [--cell <log2/i/j>]... \
-                         [--source <id>[@<snapshot>][=W,S,E,N]]... \
-                         [--bbox W,S,E,N] [--chunk-size N] [--no-land] [--terrain <path>] [--landmarks <content.json>]… [--peaks <peaks.json>]";
-    let mut positional: Vec<String> = Vec::new();
-    let mut opts = CutOptions::default();
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        let mut next = |flag: &str| it.next().cloned().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"));
-        match a.as_str() {
-            "--bands" => opts.bands = obc_map_core::grid::BandTable::load(&next("--bands")?)?,
-            "--band" => opts.only_bands.push(next("--band")?),
-            "--cell" => opts.select.push(obc_map_core::grid::CellId::parse(&next("--cell")?)?),
-            "--source" => opts.sources.push(obc_bake::cut::SourceExtent::parse(&next("--source")?)?),
-            "--bbox" => opts.bbox = Some(Bbox::parse(&next("--bbox")?)?),
-            "--chunk-size" => {
-                opts.chunk_size = Some(next("--chunk-size")?.parse().map_err(|_| "--chunk-size needs a number")?);
-            }
-            "--no-land" => opts.no_land = true,
-            "--land" => opts.land = Some(PathBuf::from(next("--land")?)),
-            "--terrain" => opts.terrain = Some(PathBuf::from(next("--terrain")?)),
-            "--peaks" => opts.peaks.push(PathBuf::from(next("--peaks")?)),
-            "--landmarks" => opts.landmarks.push(PathBuf::from(next("--landmarks")?)),
-            other if other.starts_with("--") => return Err(format!("unknown flag `{other}`\n{USAGE}")),
-            other => positional.push(other.to_string()),
-        }
-    }
-    if positional.len() < 3 {
-        return Err(USAGE.into());
-    }
-    let out_dir = positional.pop().unwrap();
-    let config = Config::load(&positional.pop().unwrap())?;
-    let summary = match obc_bake::cut::cut(&positional, &config, Path::new(&out_dir), &opts, &Progress::stdout()) {
-        Ok(s) => s,
-        Err(PackError::Failed(e)) => return Err(e),
-        Err(PackError::Cancelled) => return Err("cancelled".into()),
-    };
-    println!(
-        "{out_dir}: {} cell(s), {} bytes, {} partial ({})",
-        summary.cells.len(),
-        summary.bytes,
-        summary.partial,
-        obc_bake::cut::MANIFEST_NAME
-    );
-    if summary.partial > 0 && opts.sources.iter().all(|s| s.coverage.is_none()) {
-        // A bakery that forgets `--source …=W,S,E,N` gets every cell marked partial, which is correct
-        // (nothing was shown to be covered) and useless. Say so rather than let it publish that.
-        eprintln!(
-            "obc-pack cells: no source coverage was declared, so every cell is marked `partial` — pass \
-             `--source <id>[@<snapshot>]=W,S,E,N` for the extract(s) this run baked from"
-        );
-    }
-    Ok(())
-}
-
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version") {
         println!(
             "obc-pack {} (merge + ingest + relations + land + contours + quadtree + serialize + POIs & hours + nav \
-             graph + cell cutter + catalog)",
+             graph + catalog)",
             env!("CARGO_PKG_VERSION")
         );
         return ExitCode::SUCCESS;
@@ -266,15 +202,6 @@ fn main() -> ExitCode {
             _ => println!("{}", obc_map_core::config::schema_envelope()),
         }
         return ExitCode::SUCCESS;
-    }
-    if args.first().map(String::as_str) == Some("cells") {
-        return match run_cells(&args[1..]) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("obc-pack cells: {e}");
-                ExitCode::FAILURE
-            }
-        };
     }
     if args.first().map(String::as_str) == Some("catalog") {
         return match run_catalog(&args[1..]) {

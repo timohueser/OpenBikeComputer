@@ -20,9 +20,10 @@
 //! [`TerrainRegion::emit`] streams the container into the map's tail with no seek.
 //! [`TerrainRegion::verify`] runs after the file is sealed, on the window the header now names.
 //!
-//! The container's header and directory come from [`obc_dem::container::container_prefix`], the
-//! same module whose [`obc_dem::container::ShardWriter`] the bakery bakes cells with, which is what
-//! makes "a cell is a 1 × 1 shard" a fact rather than a claim.
+//! The container's header and directory come from
+//! [`obc_dem::container::container_prefix_with_surface`], the same module whose
+//! [`obc_dem::container::ShardWriter`] the bakery bakes cells with, which is what makes "a cell is a
+//! 1 × 1 shard" a fact rather than a claim.
 
 use obc_dem::container::{container_prefix_with_surface, fill_cell_index, CellRect};
 use obc_elevation::TerrainReader;
@@ -352,9 +353,9 @@ impl<'a> TerrainRegion<'a> {
 
     /// Stream the container: the prefix, then every present block in slot order.
     ///
-    /// No seek, which is why [`obc_dem::container::container_prefix`] exists: this runs in the
-    /// middle of a map being written forward into a file or a browser download, and the directory
-    /// has to be right the first time.
+    /// No seek, which is why [`obc_dem::container::container_prefix_with_surface`] exists: this runs
+    /// in the middle of a map being written forward into a file or a browser download, and the
+    /// directory has to be right the first time.
     pub fn emit(&self, w: &mut crate::emit::MapWriter<'_>) -> Result<()> {
         let start = w.at();
         w.put(&self.prefix)?;
