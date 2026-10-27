@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { instantAt, SHADE, SUN, solarPosition, solarTerms, TILE, visibility } from '../../../src/lib/planner/layers/sun.ts';
+import { worldPixel } from '../../../src/lib/planner/layers/mercator.ts';
+import { instantAt, solarPosition, solarTerms } from '../../../src/lib/planner/solar.ts';
 import { errorsOf, FLAT, routeFixture } from './harness.js';
 
 // Down onto the middle of the fixture from high up, so that ground pages hold all of it, on a day of a low sun.
@@ -10,12 +11,12 @@ const TIMES = ['09:30', '10:30', '11:30', '12:30', '13:30', '14:30', '15:30'];
 // PENUMBRA of look.wgsl: the half width of the soft edge, in radians of the sun's altitude. And half a
 // horizon texel of the finest ground pages (52 m at 47° N): the horizons spread a shadow's edge over it.
 const PENUMBRA = 0.017, SPREAD_M = 26, METRES_PER_DEGREE = 111_320;
-// The fixture's tiles of the native zoom of visibility(): x 2143 to 2144, y 1443 to 1444.
-const FIRST = [2143, 1443], TILES = 2, SIDE = TILES * TILE;
+// The fixture's terrain tiles at zoom 12: x 2143 to 2144, y 1443 to 1444.
+const TILE = 512, ZOOM = 12, FIRST = [2143, 1443], TILES = 2, SIDE = TILES * TILE;
 // Far below any terrain: where the fixture has no tile, nothing blocks the sun.
 const LOW = -1e4;
 
-/** The heights of the fixture at the native zoom of visibility(), decoded in the page: SIDE × SIDE pixels from tile FIRST. */
+/** The heights of the fixture at zoom 12, decoded in the page: SIDE × SIDE pixels from tile FIRST. */
 async function fixtureHeights(page) {
     const values = await page.evaluate(async ({ first, tiles, tile, low }) => {
         const out = new Float32Array(tiles * tiles * tile * tile);
@@ -35,15 +36,42 @@ async function fixtureHeights(page) {
     return Float32Array.from(values);
 }
 
-/** The Surface of visibility() at its native pixels; the march over each pixel needs no block maxima. */
-const surfaceOf = heights => ({
-    height(level, x, y) {
-        const i = x - FIRST[0] * TILE, j = y - FIRST[1] * TILE;
-        return i >= 0 && j >= 0 && i < SIDE && j < SIDE ? heights[j * SIDE + i] : LOW;
-    },
-});
+/** The height at a pixel centre of zoom 12. */
+const heightOf = heights => (x, y) => {
+    const i = x - FIRST[0] * TILE, j = y - FIRST[1] * TILE;
+    return i >= 0 && j >= 0 && i < SIDE && j < SIDE ? heights[j * SIDE + i] : LOW;
+};
 
-test('the terrain shadows agree with visibility() of the planner outside the penumbra, in the first frame after each change of the time', { tag: '@gpu' }, async ({ page }) => {
+const CURVE = 1 / (2 * 6371008.8);
+
+/**
+ * The reference: whether terrain blocks a ray to the sun from 1 m over the bilinear surface. The ray
+ * crosses each pixel cell and compares with the exact maximum of the cell's bilinear patch, with Earth curvature.
+ */
+function shaded(height, [lon, lat], sun, distance) {
+    const [wx, wy] = worldPixel([lon, lat], TILE * 2 ** ZOOM), px = wx - .5, py = wy - .5;
+    const corners = (x, y) => [height(x, y), height(x + 1, y), height(x, y + 1), height(x + 1, y + 1)];
+    const x0 = Math.floor(px), y0 = Math.floor(py), fx = px - x0, fy = py - y0, h = corners(x0, y0);
+    const observer = h[0] * (1 - fx) * (1 - fy) + h[1] * fx * (1 - fy) + h[2] * (1 - fx) * fy + h[3] * fx * fy + 1;
+    const pitch = 2 * Math.PI * 6378137 * Math.cos(lat * Math.PI / 180) / (TILE * 2 ** ZOOM);
+    const dx = Math.sin(sun.bearing) / pitch, dy = -Math.cos(sun.bearing) / pitch, slope = Math.tan(sun.altitude);
+    for (let lo = 0; lo < distance;) {
+        const x = Math.floor(px + dx * (lo + 1e-5)), y = Math.floor(py + dy * (lo + 1e-5));
+        const tx = dx > 0 ? (x + 1 - px) / dx : dx < 0 ? (x - px) / dx : Infinity;
+        const ty = dy > 0 ? (y + 1 - py) / dy : dy < 0 ? (y - py) / dy : Infinity;
+        const hi = Math.min(tx, ty, distance), v = corners(x, y), [ox, oy] = [px - x, py - y];
+        // The patch height minus the ray along the segment is a quadratic in the distance t.
+        const e = v[1] - v[0], n = v[2] - v[0], cross = v[3] - v[2] - v[1] + v[0];
+        const a = cross * dx * dy - CURVE, b = e * dx + n * dy + cross * (ox * dy + oy * dx) - slope;
+        const above = t => (a * t + b) * t + v[0] + e * ox + n * oy + cross * ox * oy - observer;
+        const peak = -b / (2 * a);
+        if (Math.max(above(lo), above(hi), a < 0 && peak > lo && peak < hi ? above(peak) : -Infinity) > 0) return true;
+        lo = hi;
+    }
+    return false;
+}
+
+test('the terrain shadows agree with a reference ray march outside the penumbra, in the first frame after each change of the time', { tag: '@gpu' }, async ({ page }) => {
     test.slow();
     await page.setViewportSize({ width: 480, height: 300 });
     const errors = errorsOf(page);
@@ -52,7 +80,7 @@ test('the terrain shadows agree with visibility() of the planner outside the pen
     await page.waitForFunction(() => window.trailView, null, { timeout: 60_000 });
     await page.evaluate(() => window.trailView.waitForIdle());
     expect((await page.evaluate(() => window.trailView.stats())).ground.resident).toBeGreaterThan(0);
-    const surface = surfaceOf(await fixtureHeights(page));
+    const height = heightOf(await fixtureHeights(page));
     // A grid over the fixture, 400 m inside its bounds.
     const points = [];
     for (let j = 0; j < 16; j++) for (let i = 0; i < 16; i++) points.push([8.376 + 0.078 * i / 15, 46.769 + 0.057 * j / 15]);
@@ -69,18 +97,18 @@ test('the terrain shadows agree with visibility() of the planner outside the pen
         for (let k = 0; k < points.length; k += 64) shares.push(...(await page.evaluate(chunk => window.trailView.check(chunk), points.slice(k, k + 64))).sun);
         const [hours, minutes] = time.split(':').map(Number);
         const sun = solarPosition(EYE, solarTerms(instantAt(DATE, 60 * hours + minutes, 'Europe/Zurich')));
-        const state = ([lon, lat], altitude) => visibility(surface, [lon, lat], { ...sun, altitude }, 10_000, undefined, false);
+        expect(sun.altitude - PENUMBRA).toBeGreaterThan(0);
+        const state = ([lon, lat], altitude) => shaded(height, [lon, lat], { ...sun, altitude }, 10_000);
         points.forEach(([lon, lat], i) => {
             // The penumbra: the sun within PENUMBRA of the horizon, and for edge also a shadow edge within SPREAD_M.
             const step = [SPREAD_M / (METRES_PER_DEGREE * Math.cos(lat * Math.PI / 180)), SPREAD_M / METRES_PER_DEGREE];
             const states = [state([lon, lat], sun.altitude - PENUMBRA), state([lon, lat], sun.altitude + PENUMBRA),
                 ...[[1, 0], [-1, 0], [0, 1], [0, -1]].map(([x, y]) => state([lon + x * step[0], lat + y * step[1]], sun.altitude))];
             const tally = count => {
-                expect([SUN, SHADE]).toContain(states[0]);
                 count.checked++;
-                if (states[0] === SHADE) count.shade++;
-                if (shares[i] > 0.5 && states[0] === SHADE) count.lit++;
-                if (shares[i] <= 0.5 && states[0] === SUN) count.shaded++;
+                if (states[0]) count.shade++;
+                if (shares[i] > 0.5 && states[0]) count.lit++;
+                if (shares[i] <= 0.5 && !states[0]) count.shaded++;
             };
             if (states[0] === states[1]) tally(counts.angle);
             if (states.every(value => value === states[0])) tally(counts.edge);

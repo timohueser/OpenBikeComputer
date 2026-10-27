@@ -273,9 +273,6 @@ public struct RideCatalog: Equatable, Sendable {
     /// fit.
     public var hiddenRideCount: Int
 
-    /// Whether the device dropped rides past its cap: the warning trigger.
-    public var isTruncated: Bool { hiddenRideCount > 0 }
-
     public init(rides: [RideSummary], hiddenRideCount: Int = 0) {
         self.rides = rides
         self.hiddenRideCount = max(0, hiddenRideCount)

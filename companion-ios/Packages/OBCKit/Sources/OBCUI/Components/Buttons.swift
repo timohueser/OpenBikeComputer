@@ -68,17 +68,3 @@ public extension ButtonStyle where Self == OBCButtonStyle {
         OBCButtonStyle(kind: .primary, fullWidth: fullWidth)
     }
 }
-
-#Preview("Buttons") {
-    VStack(spacing: 10) {
-        Button {} label: {
-            Label("Upload to Trailhead", systemImage: "square.and.arrow.up")
-        }
-        .buttonStyle(.obcPrimary)
-        Button("Save to Planned") {}.buttonStyle(.obcGhost)
-        Button("Delete route") {}.buttonStyle(.obcDestructive)
-        Button("Disabled") {}.buttonStyle(.obcPrimary).disabled(true)
-    }
-    .padding(20)
-    .background(OBCTheme.page)
-}

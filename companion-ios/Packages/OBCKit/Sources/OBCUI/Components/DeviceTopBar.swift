@@ -214,13 +214,3 @@ public struct OBCSpinner: View {
         .frame(width: 20, height: 20)
     }
 }
-
-#Preview("Device top bar") {
-    VStack(spacing: 0) {
-        DeviceTopBar(deviceName: "Trailhead", connection: .connected, batteryPercent: 82)
-        DeviceTopBar(deviceName: "Trailhead", connection: .connected, batteryPercent: 82, syncState: .syncing)
-        DeviceTopBar(deviceName: "Trailhead", connection: .connected, batteryPercent: 12, syncState: .done)
-        DeviceTopBar(deviceName: "Trailhead", connection: .outOfRange, batteryPercent: 82)
-    }
-    .background(OBCTheme.page)
-}

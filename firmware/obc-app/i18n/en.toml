@@ -24,7 +24,6 @@
 title = "MENU"
 routes = "Routes"
 rides = "Rides"
-pois = "POIs"
 map = "Map"
 peaks = "Peaks"
 settings = "Settings"
@@ -42,7 +41,6 @@ no_peaks = "NO NAMED PEAKS"
 # --- is gone (#1515 D3); `filter`/`sources` are the Up-ahead sheet's two value rows (D4a), which
 # --- are the only home either control has.
 [ride_context]
-easier = "Easier"
 up_ahead = "Up ahead"
 detour = "Detour"
 inspect_rejoin = "Inspect rejoin"
@@ -59,10 +57,6 @@ everything = "Everything"
 none = "Nothing up ahead"
 none_sub = "No stops on route"
 none_category_sub = "None of this kind"
-# The two source-scoped empty sub-lines (U4): with only one source feeding the list, "No stops on
-# route" would be a lie — name the scope instead.
-none_waypoints_sub = "Waypoints only"
-none_pois_sub = "Map POIs only"
 no_route_sub = "Load a route first"
 
 # --- UpAheadSource enum labels (epic #946 U4; the Up-ahead sheet's Sources row since #1515 D4a).
@@ -229,9 +223,6 @@ no_gps_fix = "No GPS Fix"
 off_route = "off route "
 # The route-less browse map's one-shot start hint chip (auto-hides after a few seconds).
 press_to_start = "Press to start a ride"
-# The Recalculating freeze banner (#1146): up on the overlay plane while the host plans a
-# reroute and the map is held still.
-recalculating = "Recalculating..."
 
 # --- The Statistics riding screen ---
 [stats]
@@ -387,10 +378,6 @@ pharmacy = "Pharmacy"
 bike_shop = "Bike shop"
 train = "Train"
 
-# --- POI category menu ---
-[poi_menu]
-title = "POIS"
-
 # --- POI list screen ---
 [poi_list]
 unavailable = "Places unavailable"
@@ -408,7 +395,6 @@ closed_today = "Closed today"
 today = "Today"
 open = "OPEN"
 closed = "CLOSED"
-route_here = "Route here"
 ahead = "Ahead"
 away = "Away"
 off_route = "Off route"
@@ -471,7 +457,6 @@ no_route = "No route"
 no_route_sub = "Back to the list"
 distance = "DISTANCE"
 est_time = "EST TIME"
-climb = "CLIMB"
 bike_type = "BIKE TYPE"
 start_ride = "START RIDE"
 loading_profile = "loading profile"
@@ -517,9 +502,6 @@ commit_failed = "Couldn't apply detour."
 rejoin_hint = "Try a farther rejoin."
 
 [nav_route]
-create_route = "Create route"
-cancel = "Cancel"
-away = "away"
 title = "CREATE ROUTE"
 finding = "Finding a route..."
 too_far = "Too far to route here."
@@ -738,16 +720,6 @@ storagefault_fix = "Restart the device"
 [route_context]
 bike_type = "Bike type"
 
-[compass]
-n = "N"
-ne = "NE"
-e = "E"
-se = "SE"
-s = "S"
-sw = "SW"
-w = "W"
-nw = "NW"
-
 # --- The universal quick drawer (Up + Select) ---
 [quick]
 brightness = "BRIGHTNESS"
@@ -761,29 +733,14 @@ powering_off = "POWERING OFF..."
 
 [ahead]
 route_end = "Route end"
-next = "Next"
 ahead = "Ahead"
 no_route = "No active route"
 changed = "Route changed: hold to refresh"
-on_climb = "On climb"
-climb_in = "Climb in"
-no_climb = "No climb ahead"
-incomplete = "Elevation incomplete"
 waypoint = "Waypoint"
-no_waypoint = "No custom waypoint ahead"
-none = "none"
-explore = "Explore ahead"
-unavailable = "Place unavailable"
-climb = "Climb"
 loading = "Loading ahead..."
 no_matches = "No matches"
 read_failed = "Could not read route"
-map_unavailable = "Map unavailable"
-passed = "Passed"
 custom = "Custom waypoint"
-access = "off route: access unknown"
-whole_climb = "whole climb"
-at = "at"
 
 [route_cleanup]
 title = "STORAGE FULL"
@@ -802,8 +759,6 @@ no_matches = "No routes matched this age. Try a shorter age or delete routes fro
 done = "Old routes deleted. Retry the upload. Press to close."
 
 [assistant]
-route_end_to_pin = "Route end to pin"
-straight_line = "(direct)"
 title = "Assistant"
 find = "Find a place"
 next = "What's next"
@@ -829,8 +784,6 @@ refresh_needed = "Refresh needed"
 no_choices = "No choices"
 none_found = "None found"
 finding = "Finding places"
-on_way = "On the way"
-nearby = "Nearby"
 place = "Place"
 closed = "Closed"
 extra = "extra"
@@ -844,7 +797,6 @@ go_here = "Route here"
 saving = "Saving"
 back_map = "Back to map"
 visit_unavailable = "Cannot visit"
-unknown = "Unknown"
 more_landmarks = "More landmarks"
 within = "Within"
 straight = "direct"
@@ -887,7 +839,6 @@ landmarks_missing = "No landmark data"
 unsupported = "Not supported"
 content_unavailable = "Content missing"
 map_changed = "Map changed"
-none_within = "None within"
 select_landmark = "Select a landmark"
 photo_missing = "No photo available"
 photo_unavailable = "Photo unavailable"

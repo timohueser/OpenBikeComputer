@@ -116,18 +116,3 @@ extension TrackPreviewView.Marker {
         Int((max(0, min(fraction, 1)) * Double(pointCount - 1)).rounded())
     }
 }
-
-#Preview("Waypoints dropdown") {
-    ScrollView {
-        WaypointsDropdownContent(
-            waypoints: [
-                Waypoint(index: 0, name: "Ottawa Lake trailhead", note: "Start · parking & water", distanceAlongMeters: 0, coordinate: .init(latitude: 42.9, longitude: -88.6)),
-                Waypoint(index: 1, name: "Emma Carlin junction", note: "Water · trail crossing", distanceAlongMeters: 14200, coordinate: .init(latitude: 42.9, longitude: -88.5)),
-                Waypoint(index: 2, name: "Bald Bluff overlook", note: "Summit · 12% pitch before", distanceAlongMeters: 31600, coordinate: .init(latitude: 42.9, longitude: -88.4)),
-                Waypoint(index: 3, name: "Ottawa Lake", note: "Finish", distanceAlongMeters: 62400, coordinate: .init(latitude: 42.9, longitude: -88.6)),
-            ]
-        )
-        .padding(20)
-    }
-    .background(OBCTheme.page)
-}

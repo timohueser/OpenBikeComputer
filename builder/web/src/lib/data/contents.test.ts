@@ -28,13 +28,13 @@ it("terrain falls back without a reference, a prod version wins, and a missing l
 it("the flags switch exactly the layers of the cards that are on, and off the others", () => {
     expect(layerFlags(["map", "snow"]).filter(([flag]) => flag === "--add").map(([, layer]) => layer)).toEqual(["map", "snow"]);
     expect(layerFlags(["trailview", "snow"]).filter(([flag]) => flag === "--add").map(([, layer]) => layer)).toContain("trailview-snow");
-    const flags = layerFlags(["trailview", "sun"]);
+    const flags = layerFlags(["trailview", "climate"]);
     expect(flags.filter(([flag]) => flag === "--add").map(([, layer]) => layer)).toEqual([
         "trailview-features",
         "trailview-rules",
         "trailview-ground",
         "trailview-colour",
-        "sun",
+        "climate",
     ]);
     expect(flags.filter(([flag]) => flag === "--remove").map(([, layer]) => layer)).toEqual([
         "device",
@@ -44,14 +44,13 @@ it("the flags switch exactly the layers of the cards that are on, and off the ot
         "trailview-canopy",
         "snow",
         "trailview-snow",
-        "climate",
     ]);
 });
 
 it("a card needs a card that shows it, and goes when the last one goes", () => {
-    expect(unshown(card("sun"), ["routing"])).toBe("Shows in Planner map: switch it on first.");
+    expect(unshown(card("climate"), ["routing"])).toBe("Shows in Planner map: switch it on first.");
     expect(unshown(card("snow"), ["trailview"])).toBeNull();
-    expect(toggled(["map", "trailview", "sun", "snow", "trailview-canopy"], "map", false)).toEqual(["trailview", "snow", "trailview-canopy"]);
+    expect(toggled(["map", "trailview", "climate", "snow", "trailview-canopy"], "map", false)).toEqual(["trailview", "snow", "trailview-canopy"]);
     expect(toggled(["trailview", "snow", "trailview-canopy"], "trailview", false)).toEqual([]);
 });
 

@@ -6,8 +6,8 @@ import AppKit
 #endif
 
 /// The companion UI's tracked design-token authority: colours, radii and chrome metrics.
-/// Reuse these values instead of introducing one-off styling. The component gallery and the
-/// screenshot tests are the visual reference for how the tokens compose.
+/// Reuse these values instead of introducing one-off styling. The components and the screenshot
+/// tests are the visual reference for how the tokens compose.
 ///
 /// Every colour carries a Day and a Tent (dark) value and follows the system appearance. The
 /// colours take the roles of the device's 64-colour palette, tuned for a phone. Amber is never a

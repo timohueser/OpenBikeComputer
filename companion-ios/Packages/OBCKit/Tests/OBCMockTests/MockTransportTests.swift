@@ -68,12 +68,6 @@ final class MockTransportTests: XCTestCase {
         XCTAssertEqual(info.libraryScope?.storeID, FixtureSet.defaultStoreID)
     }
 
-    func testReadDiagnosticsReturnsFixtureBlob() async throws {
-        let transport = MockTransport(control: fastControl())
-        let text = String(decoding: try await transport.readDiagnostics(), as: UTF8.self)
-        XCTAssertTrue(text.contains("OBC diagnostics"))
-    }
-
     func testConnectDrivesStateToConnected() async throws {
         let control = fastControl(.noDevice)  // starts disconnected
         let transport = MockTransport(control: control)

@@ -234,13 +234,8 @@ impl Splicer {
         }
     }
 
-    /// Visit composition keeps the existing flags and adds no unresolved avoidance.
     pub fn set_assistant_candidate(&mut self) {
         self.assistant_candidate = true;
-    }
-    pub fn set_visit_composition(&mut self) {
-        self.assistant_candidate = true;
-        self.adds_avoidance = false;
     }
 
     fn fail(&mut self, e: Error) -> SpliceStep {

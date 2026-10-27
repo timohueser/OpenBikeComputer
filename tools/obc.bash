@@ -41,7 +41,7 @@ _obc_tasks() {
     [[ -f "$justfile" ]] || justfile="$t/justfile"
     python3 "$t/tasks.py" --justfile "$justfile" --names "${scope[@]}" 2>/dev/null && return
   fi
-  echo "fixtures sim board flash flash-boot uart debug rtt pack bake web site desktop build test fmt licenses bench check check-device clean doctor setup"
+  echo "fixtures sim board flash flash-boot uart debug rtt pack bake web site desktop test fmt licenses check clean doctor setup"
 }
 
 _obc_fixture_ids() {
@@ -109,15 +109,13 @@ _obc() {
       compopt -o filenames 2>/dev/null
       _obc_reply < <(compgen -W "$(_obc_gpx)" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur") ;;
     flash)
-      _obc_reply < <(compgen -W "debug-uart synth build" -- "$cur") ;;
+      _obc_reply < <(compgen -W "debug-uart build" -- "$cur") ;;
     pack)
       case "$idx" in
         0) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -f -X '!*.pbf' -- "$cur"; compgen -d -- "$cur") ;;
         1) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_presets)" -- "$cur"; compgen -f -X '!*.json' -- "$cur") ;;
         *) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -f -- "$cur") ;;
       esac ;;
-    bench)
-      (( idx == 0 )) && _obc_reply < <(compgen -W "check write" -- "$cur") ;;
     desktop)
       _obc_reply < <(compgen -W "dev build" -- "$cur") ;;
     board)

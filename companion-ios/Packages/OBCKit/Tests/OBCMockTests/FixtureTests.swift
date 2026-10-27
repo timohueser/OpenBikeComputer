@@ -9,7 +9,7 @@ final class FixtureTests: XCTestCase {
     func testDefaultFixturesMatchDesignSampleData() {
         let set = FixtureSet.load("default")
         XCTAssertEqual(set.deviceInfo.name, "Trailhead")
-        for name in ["default", "empty", "large", "trips", "journal", "website", "website-rides", "effort"] {
+        for name in ["default", "empty", "trips", "journal", "website", "website-rides", "effort"] {
             XCTAssertEqual(FixtureSet.load(name).deviceInfo.libraryScope?.storeID, FixtureSet.defaultStoreID)
         }
         XCTAssertEqual(set.battery, 82)
@@ -73,11 +73,6 @@ final class FixtureTests: XCTestCase {
         let set = FixtureSet.load("website-rides")
         XCTAssertTrue(set.routes.isEmpty)
         XCTAssertEqual(set.rides.map(\.summary.name), ["Grimsel Pass"])
-    }
-
-    func testLargeFixturesHaveAManyRouteLibrary() {
-        let set = FixtureSet.load("large")
-        XCTAssertGreaterThanOrEqual(set.routes.count, 20)
     }
 
     func testUnknownFixtureNameFallsBackToBuiltIn() {

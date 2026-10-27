@@ -32,7 +32,7 @@ use obc_crc::Crc32;
 use obc_link::flat::store::Policy;
 use obc_link::flat::{
     CancelCause, Ceilings, Channel, Engine, Link, ObjectId as WireObjectId, Reaction as EngineReaction, RequestId,
-    Revision as WireRevision, Stall, StreamBuffers, UploadEnd, UploadProgress,
+    Revision as WireRevision, Stall, UploadEnd, UploadProgress,
 };
 use obc_link::flat::{ObjectKind as WireKind, OpenPolicy};
 use obc_storage::flat::seam::Store;
@@ -233,25 +233,6 @@ impl<D: BlockDevice> Device<D> {
             return Reaction::Idle;
         }
         let reaction = self.engine.on_stream(link, &self.store, policy, record, &mut self.out);
-        self.own(reaction)
-    }
-
-    /// One stream record through an adapter-owned write-combining stage: the cable's throughput
-    /// seam. `stage` is the whole two-bank arena; the device lends the engine the half it asked for.
-    pub fn on_stream_staged(&mut self, link: Link, record: &[u8], stage: &mut [u8]) -> Reaction {
-        if !self.answering {
-            return Reaction::Idle;
-        }
-        let bank = self.engine.upload_stage_bank().expect("a staged stream record needs a live upload");
-        let half = stage.len() / 2;
-        let reaction = self.engine.on_stream_staged(
-            link,
-            &self.store,
-            &mut OpenPolicy,
-            StreamBuffers::new(record, &mut self.out),
-            bank,
-            &mut stage[bank * half..(bank + 1) * half],
-        );
         self.own(reaction)
     }
 

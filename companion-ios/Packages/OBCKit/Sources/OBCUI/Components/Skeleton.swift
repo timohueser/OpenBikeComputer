@@ -42,13 +42,3 @@ public struct OBCSkeleton: View {
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
     }
 }
-
-#Preview("Skeletons") {
-    VStack(spacing: 12) {
-        TrackRowSkeleton()
-        TrackRowSkeleton()
-        TrackRowSkeleton()
-    }
-    .padding(20)
-    .background(OBCTheme.page)
-}

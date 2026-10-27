@@ -1,8 +1,8 @@
 //! Generated Terminus pixel-font data, the typeface behind [`Font`](crate::text::Font).
 //!
 //! Terminus (SIL OFL, see `fonts/terminus/LICENSE`) is a bold monospace bitmap font. Each tier is
-//! one Terminus BDF converted to embedded-graphics' `MonoFont` strip layout by
-//! `fonts/convert_bdf.py`.
+//! one Terminus BDF size in embedded-graphics' `MonoFont` strip layout, checked in as a `.raw`
+//! strip.
 //!
 //! The four text tiers ship the `latin` charset, ASCII plus Latin-1 Supplement plus Latin
 //! Extended-A, so European route, ride and POI names render their accents instead of `?`. `Huge`
@@ -10,9 +10,6 @@
 //!
 //! Sizes target physical cap heights on the 240 px panel: `Caption` 1.76 mm, `Label` 2.03 mm,
 //! `Body` 2.44 mm and `Display` 2.71 mm.
-//!
-//! Regenerate from the Terminus BDFs with `fonts/convert_bdf.py` per text cut, then
-//! `fonts/double_strip.py` for the doubled clock strip.
 
 use embedded_graphics::{
     geometry::Size,

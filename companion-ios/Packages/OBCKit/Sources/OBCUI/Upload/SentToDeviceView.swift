@@ -66,17 +66,3 @@ public struct SentToDeviceView: View {
         }
     }
 }
-
-#if DEBUG
-#Preview("Sent to device") {
-    SentToDeviceView(
-        overview: DeviceRouteOverview(
-            name: "Grimsel Pass", distanceMeters: 18_700, estimatedDuration: 4_740, track: .obcSample
-        ),
-        deviceName: "Trailhead",
-        onDone: {}
-    )
-    .padding(22)
-    .background(OBCTheme.surface)
-}
-#endif

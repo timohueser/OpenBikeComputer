@@ -45,11 +45,6 @@ pub struct PackOptions {
     /// The `land-polygons-split-3857.zip` of the store. Absent, the store fetches the source
     /// `land-polygons` when a map needs land.
     pub land: Option<PathBuf>,
-    /// Print the classified POI list. It writes to stdout directly rather than through the progress
-    /// sink, because a host with a log pane has no use for a few thousand POI lines.
-    pub dump_pois: bool,
-    /// Print each POI's parsed weekly schedule. Same stdout caveat.
-    pub dump_hours: bool,
     /// Baked OBCT terrain (a `.obcd` container or a directory of them) to integrate the
     /// per-direction `Ascent M` from. Absent means every adjacency entry gets `0`, a decode-valid
     /// map that routes climb-blind.
@@ -116,12 +111,6 @@ fn run(
     let mut ingested = ingest_osm(pbfs, config, opts.bbox, progress)?;
     if ingested.source.features.is_empty() && ingested.source.coastlines.is_empty() {
         return Err("no features found matching config".into());
-    }
-    if opts.dump_pois {
-        obc_places::metadata::dump(&ingested.source.pois);
-    }
-    if opts.dump_hours {
-        obc_places::metadata::dump_hours(&ingested.source.pois);
     }
     progress.check()?;
 

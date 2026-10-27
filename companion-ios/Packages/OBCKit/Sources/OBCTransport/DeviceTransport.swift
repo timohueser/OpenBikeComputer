@@ -92,17 +92,12 @@ public protocol DeviceObjects: Sendable {
     /// Enumerate routes stored on the device: reconcile input for the "on device" badge, never
     /// Planned-list rows.
     func listRoutes() async throws -> [RouteCatalogEntry]
-    /// Full detail for one stored route: the stored object, decoded app-side.
-    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail
     /// Upload a route. `resume()` after a drop restarts the whole upload.
     func uploadRoute(_ route: RouteBlob) -> TransferHandle
     func deleteRoute(_ id: DeviceObjectID) async throws
     /// Enumerate trips stored on the device. Reconcile input for the trip card's badge, where the
     /// per-entry `crc32` is the fingerprint; never list rows.
     func listTrips() async throws -> [TripCatalogEntry]
-    /// The stored trip object: its name and stage device ids in ride order, dangling refs
-    /// included. Reconcile fetches this only when the catalog fingerprint cannot decide.
-    func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Trip
     /// Upload a whole trip object, the trip sibling of `uploadRoute`. A fresh trip lets the device
     /// mint an id; a re-push or an adoption sends the stored id to replace it in place. The queue
     /// sends this last, after every member route.
@@ -134,11 +129,7 @@ public protocol DeviceUpdates: Sendable {
 }
 
 public protocol DeviceTransport: DeviceLink, DevicePairing, DeviceBattery, DeviceConfiguration,
-    DeviceBonding, DeviceObjects, DeviceClock, DeviceUpdates {
-    // MARK: Control plane
-    func readDiagnostics() async throws -> Data
-
-}
+    DeviceBonding, DeviceObjects, DeviceClock, DeviceUpdates {}
 
 extension DeviceLink {
     /// Default single-phase behaviour for conformers that do not split pairing: `discover()` does
@@ -182,19 +173,12 @@ extension DeviceClock {
     public func setClock(_ sample: WallClockSample) async throws -> ClockSyncOutcome { .unsupported }
 }
 
-extension DeviceTransport {
-
-}
-
 extension DeviceObjects {
     // MARK: Trips
     //
     // Defaults for stand-ins that do not model trips: an empty trip catalog and no transfers.
 
     public func listTrips() async throws -> [TripCatalogEntry] { [] }
-    public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Trip {
-        throw DeviceError.readFailed
-    }
     /// Default: trip upload reads as "no link" rather than trapping.
     public func uploadTrip(_ trip: TripBlob) -> TransferHandle {
         .immediatelyFinished(.failed(.notConnected))

@@ -5,9 +5,6 @@ edition = "2021"
 publish = false  # internal host tool — not published to crates.io
 description = "Device content and catalog production"
 
-[features]
-external-fixtures = []
-
 [dependencies]
 obc-pbf = { workspace = true }
 obc-map-core = { workspace = true }
@@ -34,19 +31,13 @@ tar = { version = "0.4", default-features = false }
 zstd = "0.14"
 
 [dev-dependencies]
-obc-map-scene = { workspace = true }
 obc-reader = { workspace = true, features = ["alloc"] }
-obc-fixtures = { workspace = true }
 # The shared scratch-path helper the CLI/oracle tests build their throwaway trees with.
 obcm-testkit = { workspace = true }
 # Validate generated manifests against the checked-in JSON Schema the hosted site
 # will use, so "it validates" is a test result and not an assumption. Draft 2020-12,
 # offline (no remote `$ref` resolution), test-only.
 boon = "0.6"
-# The OBCT container builder the §8.3 ascent tests bake their synthetic terrain with. It is the
-# spec-fixture crate, so the test input is written from OBCT_Spec.md's field tables rather than by
-# the reader that has to parse it back.
-obc-vectors = { workspace = true }
 # The surface converter a catalog test reads a terrain cell back with. `default-features = false`
 # leaves the GeoTIFF decoder and the HTTP client out.
 obc-dem = { workspace = true }

@@ -20,6 +20,9 @@ export const pick = <T>(list: T[], seed: number, salt = 0) => list[Math.abs(Math
 export class Model {
     readonly points: number[] = [];
     readonly colours: number[] = [];
+    /** How much each triangle glows at night, 0 to 1, and whether it rises from its foot as the night falls, as a flame. */
+    readonly glows: number[] = [];
+    readonly rises: boolean[] = [];
 
     get triangles(): number {
         return this.colours.length;
@@ -28,6 +31,15 @@ export class Model {
     tri(a: Vec, b: Vec, c: Vec, colour: number): this {
         this.points.push(...a, ...b, ...c);
         this.colours.push(colour);
+        this.glows.push(0);
+        this.rises.push(false);
+        return this;
+    }
+
+    /** The triangles from `first` on glow at night, as a lamp; with `rises`, they rise from their foot at dusk, as a flame. */
+    glowing(first: number, rises = false): this {
+        this.glows.fill(1, first);
+        this.rises.fill(rises, first);
         return this;
     }
 
@@ -40,6 +52,8 @@ export class Model {
     add(other: Model): this {
         this.points.push(...other.points);
         this.colours.push(...other.colours);
+        this.glows.push(...other.glows);
+        this.rises.push(...other.rises);
         return this;
     }
 
@@ -141,6 +155,8 @@ const linear = (byte: number) => {
 /** A model as the instances read a mesh: each face's own corners, its normal and its colour in linear light. */
 export function geometry(model: Model): Geometry {
     const out: Geometry = { position: [...model.points], normal: [], color: [], index: [] }, p = model.points;
+    if (model.glows.some(Boolean)) out.glow = model.glows.flatMap(glow => [glow, glow, glow]);
+    if (model.rises.some(Boolean)) out.rise = model.rises.flatMap(rise => [+rise, +rise, +rise]);
     model.colours.forEach((colour, f) => {
         const i = 9 * f, u = [p[i + 3] - p[i], p[i + 4] - p[i + 1], p[i + 5] - p[i + 2]], w = [p[i + 6] - p[i], p[i + 7] - p[i + 1], p[i + 8] - p[i + 2]];
         const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], l = Math.hypot(...n) || 1;

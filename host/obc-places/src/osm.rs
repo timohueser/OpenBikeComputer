@@ -8,8 +8,8 @@ use obc_pbf::scan::Keyed;
 use std::collections::HashMap;
 
 /// Capture a routable way's node-id sequence and µdeg coords for the nav graph. Routability is
-/// tag-based ([`crate::routing::is_routable`]) and independent of styling. `coords` is snapped here to the µdeg
-/// grid POIs and the serializer use, so edge lengths and later serialization agree.
+/// tag-based ([`crate::routing::classify`]) and independent of styling. `coords` is snapped here to
+/// the µdeg grid POIs and the serializer use, so edge lengths and later serialization agree.
 pub fn push_routable_way(id: i64, w: &osmpbf::Way, refs: &[i64], coords: &[(f64, f64)], out: &mut Keyed<RoutableWay>) {
     if refs.len() < 2 {
         return;

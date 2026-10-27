@@ -6,15 +6,10 @@ publish = false
 license = "GPL-3.0-only"
 description = "OSM enrichment for planner search and place tiles"
 
-[[bin]]
-name = "search-bake"
-path = "src/main.rs"
-
 [dependencies]
 obc-places = { workspace = true }
 # The planner search dump step of `obc data`.
 obc-data = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
 osmpbfreader = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"

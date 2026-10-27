@@ -123,7 +123,7 @@ public struct UserDefaultsUpdateSurfaceStore: UpdateSurfaceStore, @unchecked Sen
     }
 }
 
-/// In-memory, the default for previews and tests, so no run leaks its ledger into the next.
+/// In-memory, the default for tests, so no run leaks its ledger into the next.
 public final class InMemoryUpdateSurfaceStore: UpdateSurfaceStore, @unchecked Sendable {
     private let lock = NSLock()
     private var autoCheck: Bool

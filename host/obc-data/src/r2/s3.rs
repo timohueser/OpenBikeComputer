@@ -77,7 +77,10 @@ fn agent() -> &'static ureq::Agent {
 impl Writer {
     /// The bytes at `key` and their tag, or `None` when the bucket has no such key.
     pub fn get(&self, key: &str) -> Result<Option<(Vec<u8>, Tag)>, String> {
-        let mut response = self.send("GET", key, Vec::new(), &[])?;
+        // R2 compresses a JSON body for a client that accepts gzip and then gives a weak ETag, which
+        // an `if-match` of a write never matches.
+        let identity = vec![("accept-encoding".to_string(), "identity".to_string())];
+        let mut response = self.send("GET", key, identity, &[])?;
         match response.status().as_u16() {
             404 => Ok(None),
             200 => {

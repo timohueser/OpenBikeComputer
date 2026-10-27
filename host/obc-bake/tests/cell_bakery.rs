@@ -872,12 +872,8 @@ fn a_cell_short_of_its_reference_tiles_is_refused_unless_the_operator_allows_it(
     assert!(error.contains("5 terrain cell(s) read reference tiles"), "the refusal sizes it: {error}");
     assert!(error.contains("4809/4222") && error.contains("19/0601/0525"), "…names a tile and a cell: {error}");
     assert!(error.contains("--allow-short-reference"), "…and the way out: {error}");
-    // The bbox is the union of the cells' windows, longitude first, ready to paste: the mirror tool
-    // pads a box by one tile, which is nothing like a cell's overhang at 2^19.
-    assert!(
-        error.contains("--bbox 8.257536,46.727168,8.323072,46.792704"),
-        "…and the box to mirror, copy-pasteable: {error}"
-    );
+    // The box is the union of the cells' windows, longitude first, which reach past a 2^19 cell.
+    assert!(error.contains("re-run: 8.257536,46.727168,8.323072,46.792704"), "…and the box to complete: {error}");
     // What it baked before it refused is described by the tree, or nothing could explain the cells
     // now on disk. Nothing is selectable yet: the region wiring is past the refusal.
     assert!(f.tree.join("terrain.json").is_file(), "the refused run still states what it baked");

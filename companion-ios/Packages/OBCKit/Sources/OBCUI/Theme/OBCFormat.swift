@@ -22,16 +22,6 @@ public enum OBCFormat {
         return "\(Int((meters / 10).rounded()) * 10) m"
     }
 
-    /// "+0.8 km" or "−0.2 km": what a change adds to a distance, always in kilometres.
-    public static func extraDistance(meters: Double, locale: Locale = .current) -> String {
-        let formatter = numberFormatter(locale: locale)
-        formatter.minimumFractionDigits = 1
-        formatter.maximumFractionDigits = 1
-        let km = abs(meters) / 1000
-        let value = formatter.string(from: NSNumber(value: km)) ?? "\(km)"
-        return "\(meters < -50 ? "−" : "+")\(value) km"
-    }
-
     /// "840 m ↑" or "1,240 m ↑": climb with grouping.
     public static func climb(meters: Double, locale: Locale = .current) -> String {
         let formatter = numberFormatter(locale: locale)
@@ -245,14 +235,6 @@ public enum OBCFormat {
         locale: Locale = .current
     ) -> String {
         "\(rideDay(date, relativeTo: now, calendar: calendar, locale: locale)), \(clock(date, locale: locale))"
-    }
-    /// "today", "in 1 day" or "in N days": the tail of the near-expiry phrase.
-    private static func relativeExpiryPhrase(days: Int) -> String {
-        switch days {
-        case ..<1: "today"
-        case 1: "in 1 day"
-        default: "in \(days) days"
-        }
     }
 
     // MARK: Transfers

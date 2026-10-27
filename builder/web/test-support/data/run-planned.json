@@ -41,7 +41,7 @@
                 "freiburg": "name = \"Freiburg\"\nkind = \"box\"\nbox = [7.7, 47.9, 8.0, 48.1]\ncountries = [\"DE\"]\n"
             },
             "layers": [
-                "sun"
+                "climate"
             ],
             "refresh": {
                 "wiki": 30
@@ -222,8 +222,7 @@
         ],
         "optional": [
             "climate",
-            "snow",
-            "sun"
+            "snow"
         ],
         "notes": [
             {

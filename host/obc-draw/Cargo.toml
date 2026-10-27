@@ -14,7 +14,6 @@ obc-places = { workspace = true }
 obc-formats = { workspace = true }
 obc-elevation = { workspace = true }
 obc-map-scene = { workspace = true }
-serde_json = { workspace = true, features = ["preserve_order"] }
 geos = { version = "11.1.1", features = ["v3_14_0"] }
 osmpbf = "0.3.8"
 rayon = "1"
@@ -22,6 +21,4 @@ zip = { workspace = true, features = ["deflate-flate2"] }
 obc-reader = { workspace = true }
 
 [dev-dependencies]
-obcm-testkit = { workspace = true }
 sha2 = { workspace = true, default-features = true }
-obc-render = { workspace = true }

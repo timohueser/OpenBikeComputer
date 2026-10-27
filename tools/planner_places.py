@@ -21,29 +21,6 @@ def rider_kinds():
     return {kind for kinds in json.loads(KINDS.read_text()).values() for kind in kinds}
 
 
-def pois(tile):
-    """Each single point of the tile's `pois` layer as (id, properties, x, y, extent)."""
-    for number, layer in mvt.fields(tile):
-        if number != 3: continue
-        name, extent, keys, values, features = None, 4096, [], [], []
-        for field, value in mvt.fields(layer):
-            if field == 1: name = value.decode()
-            elif field == 2: features.append(value)
-            elif field == 3: keys.append(value.decode())
-            elif field == 4: values.append(next((v.decode() for f, v in mvt.fields(value) if f == 1), None))
-            elif field == 5: extent = value
-        if name != "pois": continue
-        for feature in features:
-            parts = dict(mvt.fields(feature))
-            geometry = mvt.packed(parts.get(4, b""))
-            # A single point is one MoveTo command with one zigzag-encoded coordinate pair.
-            if parts.get(3) != 1 or len(geometry) != 3 or geometry[0] != 9: continue
-            tags = mvt.packed(parts.get(2, b""))
-            properties = {keys[k]: values[v] for k, v in zip(tags[::2], tags[1::2])}
-            x, y = ((v >> 1) ^ -(v & 1) for v in geometry[1:])
-            yield parts.get(1), properties, x, y, extent
-
-
 def tile(places):
     """A vector tile with one `pois` layer of (id, properties, x, y) points."""
     layer = mvt.Layer("pois")

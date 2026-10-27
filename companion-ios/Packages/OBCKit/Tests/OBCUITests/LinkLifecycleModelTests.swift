@@ -278,7 +278,6 @@ private final class SpyTransport: DeviceLink, DeviceBattery, DeviceObjects, Devi
         return []
     }
 
-    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { .immediatelyFinished(.failed(.notConnected)) }
     func deleteRoute(_ id: DeviceObjectID) async throws { throw DeviceError.notConnected }
     func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }

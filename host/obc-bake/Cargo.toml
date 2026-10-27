@@ -17,7 +17,6 @@ obc-elevation = { workspace = true }
 rayon = "1"
 obc-pbf = { workspace = true }
 obc-map-core = { workspace = true }
-obc-osm = { workspace = true }
 # Device content and the one catalog generator.
 obc-pack = { workspace = true }
 # The shared file adapter the verifier reads an artifact through, never resident.

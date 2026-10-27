@@ -14,7 +14,8 @@ planner-maps = ["pmtiles==3.8.1", "pillow==12.3.0"]
 planner-climate = [{ include-group = "planner-maps" }, "numpy==2.5.3", "numcodecs==0.17.0", "h5py==3.16.0"]
 # rasterio brings its own GDAL wheel.
 planner-snow = [{ include-group = "planner-maps" }, "rasterio==1.5.2", "numpy==2.5.3"]
-planner-sun = [{ include-group = "planner-maps" }, "numpy==2.5.3", "numba==0.68.0"]
+# The forest reference layers: numba compiles their rasteriser.
+forest-reference = [{ include-group = "planner-maps" }, "numpy==2.5.3", "numba==0.68.0"]
 # The national terrain models: their fetch, and the merge of the device-map reference layers.
 terrain-reference = ["rasterio==1.5.2", "pyproj==3.8.0", "numpy==2.5.3"]
 # TrailView: the ruleset, ground and colour tiles. rasterio and pyogrio each bring their own GDAL; osmium reads the OSM areas.
@@ -40,7 +41,6 @@ search-test = [
     "iniconfig==2.3.0",
     "packaging==26.3",
     "pluggy==1.6.0",
-    "pyflakes==4.0.0",
     "pygments==2.21.0",
     "pytest==9.1.1",
     "pyyaml==6.0.3",

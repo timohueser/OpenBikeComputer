@@ -52,7 +52,7 @@ const QUAD = { position: [-1, -1, 0, 1, -1, 0, -1, 0, 0, 1, 0, 0, -1, 1, 0, 1, 1
  * triangle. A tree's first `trunk` vertices are its trunk, which stretches to meet its crown when the
  * crown lifts (draw.wgsl).
  */
-export interface Mesh { position: ArrayLike<number>; normal: ArrayLike<number>; color: ArrayLike<number>; index: ArrayLike<number>; trunk?: number }
+export interface Mesh { position: ArrayLike<number>; normal: ArrayLike<number>; color: ArrayLike<number>; index: ArrayLike<number>; trunk?: number; glow?: ArrayLike<number>; rise?: ArrayLike<number> }
 
 /**
  * A model: its mesh per tier, finest first, and the distance in metres where each tier ends; then,
@@ -855,7 +855,7 @@ export function sinks(spec: ModelSpec): number[] {
 /**
  * The vertices of a mesh as the instance pipeline reads them, 16 bytes each: the position over
  * `extent` as snorm16 × 3 and, for a vertex of the trunk, the trunk's top in model units (else 0); the
- * normal as snorm8 × 4 and the colour in sRGB as unorm8 × 4.
+ * normal as snorm8 × 3 and whether it rises at dusk; and the colour in sRGB as unorm8 × 3 with 1 − its glow at night.
  */
 function quantize(mesh: Mesh, extent: number): ArrayBuffer {
     const count = mesh.position.length / 3, out = new ArrayBuffer(count * VERTEX_BYTES);
@@ -869,8 +869,9 @@ function quantize(mesh: Mesh, extent: number): ArrayBuffer {
             i8[16 * k + 8 + d] = Math.round(127 * (mesh.normal[3 * k + d] ?? 0));
             u8[16 * k + 12 + d] = srgb(mesh.color[3 * k + d] ?? 1);
         }
+        i8[16 * k + 11] = Math.round(127 * (mesh.rise?.[k] ?? 0));
         i16[8 * k + 3] = k < trunk ? Math.max(1, Math.round(32767 * Math.min(1, top))) : 0;
-        u8[16 * k + 15] = 255;
+        u8[16 * k + 15] = 255 - Math.round(255 * (mesh.glow?.[k] ?? 0));
     }
     return out;
 }

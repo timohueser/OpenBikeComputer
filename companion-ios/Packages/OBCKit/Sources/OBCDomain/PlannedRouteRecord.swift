@@ -49,8 +49,6 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
 
     public var id: RouteID { summary.id }
 
-    public var uploadedToDevice: Bool { deviceLink != nil }
-
     public init(
         summary: RouteSummary,
         route: ImportedRoute,
@@ -73,8 +71,7 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
         self.plan = plan
     }
 
-    /// The detail screen's data, derived from the canonical geometry. The device may never
-    /// have held this route, so `routeDetail` cannot answer for it.
+    /// The detail screen's data, derived from the canonical geometry.
     public func detail() -> RouteDetail {
         let stats = RouteStats.compute(from: route.points)
         return RouteDetail(

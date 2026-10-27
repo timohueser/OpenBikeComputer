@@ -32,8 +32,7 @@ static PEAK: AtomicUsize = AtomicUsize::new(0);
 
 struct Counting;
 
-/// Charges the net change of every allocation, exactly as the CLI's `mem-profile` harness does, so
-/// the two report the same kind of number.
+/// Charges the net change of every allocation.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let p = unsafe { System.alloc(layout) };

@@ -344,17 +344,8 @@ impl crate::App {
         crate::screen::apply(&mut self.ui.stack, Transition::Push(Screen::Landmarks(crate::screen::LandmarksScreen)));
         self.ui.map_dirty = true;
     }
-    pub fn landmarks_status(&self) -> Status {
-        self.ui.landmarks.status
-    }
     pub fn landmarks_pending(&self) -> bool {
         self.ui.landmarks.status == Status::Loading && matches!(self.ui.stack.last(), Some(Screen::Landmarks(_)))
-    }
-    pub fn landmark_count(&self) -> usize {
-        self.ui.landmarks.rows.len()
-    }
-    pub fn landmark_qid(&self) -> Option<u64> {
-        self.ui.landmarks.selected().map(|r| r.key.qid)
     }
     pub(crate) fn prepare_landmarks(&mut self, reader: Option<&Reader>) {
         let Some(screen) = self.ui.stack.last() else {

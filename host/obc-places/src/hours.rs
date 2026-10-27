@@ -60,14 +60,6 @@ impl Schedule {
         }
         out
     }
-
-    fn seasonal(&self) -> bool {
-        self.flags & FLAG_SEASONAL != 0
-    }
-
-    fn truncated(&self) -> bool {
-        self.flags & FLAG_TRUNCATED != 0
-    }
 }
 
 /// Parse a raw OSM `opening_hours` value into a [`Schedule`], or `None` when the string is fully
@@ -422,39 +414,6 @@ pub fn build_hours_pool<T>(
     (pool, refs)
 }
 
-/// Human-readable one-line rendering of a schedule for `--dump-hours`, e.g.
-/// `Mo 08:30-19:30 | Tu 08:30-19:30 | ... | Su closed [flags: -]`.
-pub fn describe(sched: &Schedule) -> String {
-    const NAMES: [&str; DAYS] = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
-    let mut parts = Vec::with_capacity(DAYS);
-    for (d, day) in sched.days.iter().enumerate() {
-        let ivs: Vec<String> = day
-            .iter()
-            .filter(|iv| **iv != Interval::default())
-            .map(|iv| format!("{}-{}", fmt_q(iv.open_q), fmt_q(iv.close_q)))
-            .collect();
-        let body = if ivs.is_empty() { "closed".to_string() } else { ivs.join(",") };
-        parts.push(format!("{} {}", NAMES[d], body));
-    }
-    let mut flag_str = String::new();
-    if sched.seasonal() {
-        flag_str.push('S');
-    }
-    if sched.truncated() {
-        flag_str.push('T');
-    }
-    if flag_str.is_empty() {
-        flag_str.push('-');
-    }
-    format!("{} [flags: {}]", parts.join(" | "), flag_str)
-}
-
-/// Quarter-hours → `HH:MM` (with `96` → `24:00`).
-fn fmt_q(q: u8) -> String {
-    let minutes = q as u32 * 15;
-    format!("{:02}:{:02}", minutes / 60, minutes % 60)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,16 +646,5 @@ mod tests {
         // The referenced blobs match the schedules.
         assert_eq!(pool[0], parse("Mo-Fr 08:00-18:00").unwrap().encode());
         assert_eq!(pool[1], parse("24/7").unwrap().encode());
-    }
-
-    #[test]
-    fn describe_is_human_readable() {
-        let s = parse("Mo-Sa 08:30-19:30; Su off").unwrap();
-        let d = describe(&s);
-        assert!(d.contains("Mo 08:30-19:30"), "Mon shown: {d}");
-        assert!(d.contains("Su closed"), "Sun closed: {d}");
-        assert!(d.contains("[flags: -]"), "no flags: {d}");
-        let seasonal = parse("Apr-Oct: Mo-Su 09:00-18:00").unwrap();
-        assert!(describe(&seasonal).contains("[flags: S]"), "seasonal flag shown");
     }
 }

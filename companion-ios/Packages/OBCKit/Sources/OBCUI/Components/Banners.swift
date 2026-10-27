@@ -124,23 +124,3 @@ public extension View {
         .animation(.easeOut(duration: 0.25), value: isPresented.wrappedValue)
     }
 }
-
-#Preview("Banners + toast") {
-    VStack(spacing: 12) {
-        OBCToast(message: "You're up to date — no new rides on Trailhead.")
-        OBCInlineBanner(
-            systemImage: "wifi.slash",
-            title: "Trailhead is out of range.",
-            message: "Showing your last sync."
-        )
-        OBCInlineBanner(
-            tone: .warning,
-            systemImage: "exclamationmark.triangle",
-            title: "Sync interrupted.",
-            message: "Got 2 of 5 rides.",
-            actionTitle: "Resume"
-        )
-    }
-    .padding(20)
-    .background(OBCTheme.page)
-}

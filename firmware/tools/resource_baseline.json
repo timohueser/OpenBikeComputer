@@ -1,27 +1,14 @@
 {
   "schema_version": 4,
-  "measurement": {
-    "source_commit": "FS8 #1390 acceptance state on 9f76040f (local uncommitted diff, 2026-08-20). A field re-pinned after that names its own build: the resident band (`measured_resident`, `resident_ram_max`) is the shipping link of claude/sensor-links-concurrent on the pinned host, which holds three live sensor links; the `embedded` CI job re-pins it.",
-    "rustc": "1.97.1 (8bab26f4f 2026-07-14) on CI; itemized on the pinned 1.96.0 (ac68faa20 2026-05-25)",
-    "llvm": "22.1.6 on CI; 22.1.2 on the pinned host",
-    "riscv_gcc": "riscv64-elf-gcc (GCC) 16.1.0",
-    "riscv_binutils": "GNU objcopy (GNU Binutils) 2.46.1",
-    "build_host": "x86_64-unknown-linux-gnu (GitHub Actions ubuntu-latest). The `embedded` CI job is the gate and the authority for `measured_resident` and `resident_ram_max`. The pinned host below is what per-symbol itemization is diffed on; it links 8 B less resident, which the resident band absorbs; re-pin the resident figures from CI.",
-    "target": "thumbv8m.main-none-eabihf",
-    "capacity_profile": "LM20 (nRF54LM20-DK, 512 KiB SRAM; 480 KiB M33 carve \u2014 the 20 KiB below the display FLPR's carve holds the sEMMC soft-peripheral image, the live storage transport; default = all-features/ble + the unconditional USB device plane; SDC size measured on glass 2026-07-24)"
-  },
   "board": {
     "default": {
-      "features": "default (= all-features: map + router + BLE + USB device plane, LS021/FLPR, real sensors)",
       "measured_resident": 315032,
       "resident_ram_max": 319128,
       "resident_ram_slack": 4096,
-      "_resident_measurement": "Shipping head 2e6b02168, GitHub Actions run 35899318336, embedded job 107311243590: 315,032 B resident. Re-pin both ends of the existing 4,096 B band; no base rebuild.",
       "_resident_ram_slack_note": "The guard holds the link within one slack of `measured_resident` in each direction: `resident_ram_max` is `measured_resident` plus the slack, and a link more than the slack BELOW `measured_resident` fails too. The slack is what one slice can spend to widen a few protocol structs without a ceiling pull request, and the same figure is what a deletion can save before it must re-pin. A slack of a few dozen bytes is too tight for a single protocol type, and a row nobody can stay inside is a row nobody re-pins. Dead ceiling is therefore bounded by two slacks, instead of growing without limit as it did when only the upper end was gated. Re-pin both figures from the `embedded` CI job; a host toolchain links a little less, which the band absorbs.",
       "uninit_max": 132096,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
-      "poll_frame_measured": 9760,
       "poll_frame_limit": 12288,
       "compile_time_allocations": {
         "framebuffer": 76800,
@@ -51,7 +38,7 @@
         "ble_sensor_manager": 358,
         "usb_named": 35973,
         "sd_bounce": 2048,
-        "semmc_driver": 52,
+        "semmc_driver": 48,
         "flat_store": 10152,
         "flat_requests": 3064,
         "flat_ride_delta": 570,
@@ -61,34 +48,10 @@
         "flat_engine": 768,
         "ble_v4_adapter": 763
       },
-      "_help_allocation_measurement": {
-        "source_commit": "376d5c972c6a57246fcc74a71c25d3be7dc2f010",
-        "build": "GitHub Actions run 37846564731, embedded job 113549444306, resource-report head build",
-        "changes": "App 63,320 B. The distress signal stores a start time and a last-played slot, 16 B. RAM, stack and flash limits stay unchanged."
-      },
-      "_route_service_line_allocation_measurement": {
-        "source_commit": "76d5852a8",
-        "build": "cargo build --release --locked --features resource-report --bin obc-fw-nrf54l on aarch64-apple-darwin",
-        "changes": "App 63,304 B; map tables 7,600 B; place cache 129,148 B inside the existing 131,072 B shared arena. RAM, stack and flash limits stay unchanged."
-      },
-      "_route_walk_allocation_measurement": {
-        "source_commit": "c5dbd82a",
-        "build": "resource-report head build of c5dbd82a on x86_64-unknown-linux-gnu, rustc 1.99.0, xPack riscv-none-elf-gcc 13.2.0-2",
-        "changes": "RouteCache slots keep a chunk's validated 7-byte records instead of decoded points: route_cache 9260 -> 5396 B, linked resident 311,472 B, inside the resident band.",
-        "verification": "The shipping build of the same commit passed the board guards: residual main stack 47,952 B, deep-ride margin 16,612 B, image 1,959,832 B."
-      },
-      "_paired_map_styles_allocation_measurement": {
-        "source_commit": "49bc0e29a",
-        "build": "GitHub Actions run 35783440348, embedded job 106934698982, resource-report head build",
-        "changes": "MapTables +3088 B for the second authored style table, backdrop and marker. All RAM, stack and flash ceilings are unchanged.",
-        "verification": "The same CI build measured map_tables at 7528 B. Board RAM, stack and flash guards passed before the allocation inventory check. No base rebuild."
-      },
       "_app_note": "58,032 B on head 21c6f2ecd, measured with the resource-report build on rustc 1.96.0, aarch64-apple-darwin. The ride detail keeps the viewed ride's descent and its 60-bucket HR and power series beside the ride profile, 124 B, power in 4 W steps. RAM, stack and flash ceilings stay unchanged.",
       "_flat_catalog_uploads_note": "The entry measures `size_of::<Mutex<CS, RefCell<UploadFacts>>>()`. It was 737 B while the loss bit was a separate 1-byte `AtomicBool` beside a 736 B queue container. The bit now lives inside `UploadFacts`, so it pays the queue's alignment instead of packing beside it: 740 B, measured on the head `--features resource-report` link. The 3 B buys the eviction that raises the bit and the drain that clears it one owner, which a host test can reach.",
       "full_frame_sized_writable_count": 2,
-      "task_frame_measured": 5008,
       "task_frame_limit": 8192,
-      "residual_stack_measured": 47520,
       "residual_stack_min": 38808,
       "boot_chain_ceiling": 24576,
       "boot_chain_headroom_min": 4096,
@@ -97,90 +60,15 @@
         "obc_fw_nrf54l::mount_terrain",
         "mount_in_place"
       ],
-      "boot_chain_measured_ci": 4812,
-      "boot_chain_measured_pinned_host": 17592,
-      "_crc_outline_measurement": {
-        "source_commit": "299fbb352",
-        "build": "Shipping and resource-report head builds on aarch64-apple-darwin, rustc 1.96.0, LLVM 22.1.2, riscv64-elf-gcc 16.1.0; cargo build --release --locked -j 2",
-        "changes": "Crc32::update is out of line. All 35 allocation sizes remain unchanged. CI remains the authority for the resident band.",
-        "verification": "Shipping image 1,929,532 B; resident 311,904 B; poll 9,760 B; residual stack 47,520 B; task body 5,008 B; boot chain 17,592 B; init_idle 1,856 B. All resource guards pass. No base rebuild."
-      },
       "deep_ride_high_water": 31340,
       "deep_ride_high_water_measured": "2026-09-22 (nRF54LM20-DK, debug-uart image 17cb922ac2f45eb358303a7117a1cb34f0f4e6725aaa66b40103bf7bcb47e1bc of 0ff49e0c; 31,340 / 45,080 B; reproduced on two boots)",
       "deep_ride_margin_min": 8704,
       "_deep_ride_margin_note": "A durable raw 8,704 B floor leaves 8,192 B effective after the 512 B below MSPLIM reserved for fault handling; it is deliberately not pinned to today's exact margin. The shipping image measured beside the run above has 46,328 B residual, so it clears the 31,340 B peak by 14,988 B raw / 14,476 B effective.",
       "_deep_ride_high_water_note": "Read off the board's own stackmeter on the nRF54LM20-DK over the VCOM harness, with the grimsel-demo map on the card. One walk reached the peak and a second boot reproduced it exactly. What the walk covered: a route opened from the Route menu and a ride started from it; map redraws under an injected 1 Hz fix; a Find a place search and its return; three planner runs through the debug N line, each released; Peak View generation, a peak article and its photo page, and the return to Peak View; the ride finished and saved; and, across a warm reset taken while recording, the section 7.3 ride recovery, its Continue and a second finish. The peak lands on ride entry; nothing after it goes deeper. The image is the debug-uart one, because the host has to inject the buttons and the fixes, and that image compiles the ride loop differently: it binds the debug sensor sources where the shipping image builds the hub drains as call temporaries, and it never spawns sensor_task. The gated image is therefore not the measured one, so the static frames were compared before this row moved down. On the same two ELFs, resource_guard.py frames --match run_app gives 4,640 B shipping against 4,656 B debug-uart, --match ride gives the same 16,184 B largest frame in both, the largest guarded poll frame is 9,776 B in both, and the largest task body is 4,816 B shipping against 4,808 B. The measured compilation of the ride loop is therefore 16 B DEEPER than the shipping one, and the whole shipping-only sensor path fits in frames of at most 200 B inside its own task. Not covered, and therefore not claimed: the real-sensor paths, because the measured image runs none of them - the GPS, altimeter and compass drains and sensor_task itself; a plan that finds a path (this map answers no-path); an off-route rejoin; an archive receipt; and BLE or USB traffic during the ride.",
-      "_boot_chain_roots_note": "The mount_in_place root is unscoped because toolchains demangle FlatStore<D> differently. The symbol resolver rejects missing or ambiguous roots; a second matching constructor must be resolved with an explicit, portable needle.",
-      "_first_use_setup_allocation_measurement": {
-        "source_commit": "claude/zu-skills-install-x0qn6t on develop 532ef127f",
-        "build": "cargo build --release --locked --features resource-report on x86_64-unknown-linux-gnu, rustc 1.98.1 (App 58,448 B)",
-        "changes": "Against develop: App +8 B over 58,440 B, because App holds the factory name that the host declares. BLE settings cache +4 B over 128 B (Settings +2 B for the persisted setup step, padded), also counted in ble_total. The pairing code is a constant module table; no QR encoder links into the image. All other named allocations and ceilings are unchanged.",
-        "verification": "One head build compared with the recorded baseline; no base rebuild. On the shipping link of the same head the board guards passed: 315,744 B linked resident inside the band, residual main stack 43,680 B, poll frame 9,864 B, init_idle frame 1,856 B, image 1,956,188 B of the 2,019,328 B slot limit."
-      },
-      "_ride_zone_limits_allocation_measurement": {
-        "source_commit": "claude/ride-zone-limits on develop 0a0b15804",
-        "build": "cargo build --release --locked --features resource-report on the pinned aarch64-apple-darwin host, rustc 1.96.0 (App 58,440 B)",
-        "changes": "flat_ride_delta +4 B over 566 B: the ride footer grows from 150 B to 154 B to keep the effort limits in force at the ride start. App +256 B over 58,184 B: each of the 32 resident ride catalog entries keeps its ride's 4 B limits for the detail's zones, and the u64 object id rounds the entry from 112 B to 120 B. All other named allocations and ceilings are unchanged.",
-        "verification": "One head build compared with the recorded baseline; no base rebuild. On the shipping link of the same head the board guards passed: 315,736 B linked resident inside the band, residual main stack 43,688 B, poll frame 9,864 B, init_idle frame 1,856 B."
-      },
-      "_sound_cues_allocation_measurement": {
-        "source_commit": "a6485a93 on claude/sound-s7-alerts, merged with develop at fac1d7cc",
-        "build": "cargo build --release --locked --features resource-report on x86_64-unknown-linux-gnu, rustc 1.98.1 (App 58,184 B)",
-        "changes": "App +48 B over 58,136 B: the cue state keeps one level for off route, one for the GPS and one for each of the three sensor slots, five levels of 20 B (settled level, settle start, last loss cue), and the last raise of a failure alert, beside the pending cue and what the ride has seen of the GPS, sensors, battery thresholds and arrival. All other named allocations and ceilings are unchanged.",
-        "verification": "One head build compared with the recorded baseline; no base rebuild. On the shipping link of the same head the board guards passed: 315,472 B linked resident inside the band, residual main stack 43,952 B, poll frame 9,864 B, init_idle frame 1,856 B."
-      },
-      "_trip_rode_on_allocation_measurement": {
-        "source_commit": "5fb5eb1e9 on claude/rtr-trip-active",
-        "build": "the embedded CI job's resource report on that head (App 58,064 B)",
-        "changes": "App +32 B: the Metadata machine keeps, beside a Finish's owed progress record, the last fix and the next day of a ride that rode on past the end of its day, and the navigator's ride end keeps whether the rider rode on. All other named allocations and ceilings are unchanged.",
-        "verification": "No local board build: the DK is in use and the build host is short of disk. The same CI job passed the resident band (315,192 B linked), the poll frame (9,864 B) and the residual main stack (44,232 B)."
-      },
-      "_map_icons_allocation_measurement": {
-        "source_commit": "c4bf8201d",
-        "build": "cargo build --release --locked --features resource-report on aarch64-apple-darwin",
-        "changes": "App +2272 B for bounded icon candidates, incremental query cursors and cache identity. BLE settings cache +4 B, also counted in ble_total. All other named allocations and ceilings are unchanged.",
-        "verification": "Final diagnostic head compared with the recorded baseline; no base rebuild. Board and init_idle frame guards pass. Resident 312488 B; residual stack 46936 B; margin above recorded deep-ride high-water 9920 B versus 8704 B floor (1216 B spare). Shipping ELF verification remains in CI. One earlier diagnostic build preceded the review fixes."
-      },
-      "_navigation_resume_allocation_measurement": {
-        "source_commit": "5db59821 on claude/closeout-nav-resume, rebased on 425dbcf7",
-        "build": "cargo build --release --locked --features resource-report on aarch64-apple-darwin",
-        "changes": "App +8 B: the Resume offer keeps the catalog row the standing checkpoint names, so the card can say which route it would resume, and Navigator keeps two flags for what the selection still owes the card. All other named allocations and resource ceilings are unchanged.",
-        "verification": "One diagnostic head build compared with the recorded baseline. Board guards passed on that ELF: 313,096 B linked resident inside the band, residual main stack 46,328 B, poll frame 9,776 B, init_idle frame 1,720 B. Shipping ELF verification remains in CI. No base rebuild and no device flash."
-      },
-      "_start_away_allocation_measurement": {
-        "source_commit": "claude/rtr-start-away head",
-        "build": "cargo build --release --locked --features resource-report on aarch64-apple-darwin",
-        "changes": "App +32 B: Navigator keeps the join point Join nearest gives the next fresh ride, whether the detour-family plan is Ride to start, and the adopted splice's and route's ids, so the ride is saved under the route's name. All other named allocations and ceilings are unchanged.",
-        "verification": "One head build compared with the recorded baseline. Board guards passed: 311,576 B linked resident, residual main stack 47,848 B. No base rebuild or device flash."
-      },
-      "_easier_allocation_measurement": {
-        "source_commit": "claude/ra-easier-gpx (PR #2112), merged with develop",
-        "build": "the embedded CI job's resource report on that head (App 59,512 B)",
-        "changes": "App +24 B: the reviewed route keeps the easier candidate's costs, measured at the same stations as the original. All other named allocations and ceilings are unchanged.",
-        "verification": "No local board build: the build host is short of disk. One head build compared with the recorded baseline."
-      },
-      "_ahead_query_allocation_measurement": {
-        "source_commit": "ee00d734f on claude/ra-ahead-query-perf, merged with develop",
-        "build": "the embedded CI job's resource report (App 59,512 B), less the 24 B page-start field the next head removes, measured with size_of on the host",
-        "changes": "App +40 B: each place query keeps its route chunk's clipped search box, and the What's next Overview keeps its place status and quarter hour. All other named allocations and ceilings are unchanged.",
-        "verification": "No local board build: the build host is short of disk. The next embedded CI run confirms the figure."
-      },
-      "_find_place_allocation_measurement": {
-        "source_commit": "45e463b67b2ac69626b1f65ef29b7f74e0e604c7",
-        "build": "cargo build --release --locked --features resource-report on aarch64-apple-darwin",
-        "toolchain": "rustc 1.96.0; LLVM 22.1.2; riscv64-elf-gcc 16.1.0; binutils 2.46.1",
-        "changes": "App +384 B for up to six results, twelve candidate costs/reviews, and hours-filter identity. BLE settings cache +4 B, also counted in ble_total. All other named allocations and resource ceilings are unchanged.",
-        "verification": "One diagnostic head build compared with the recorded baseline. Board guards passed on that ELF; shipping ELF verification remains in CI. No base rebuild or device flash."
-      },
-      "_firmware_architecture_allocation_measurement": {
-        "source_commit": "codex/firmware-architecture worktree based on f45f9b43a",
-        "build": "cargo build --release --locked --features resource-report; rustc 1.96.0; aarch64-apple-darwin",
-        "changes": "Measured App 58,568 B with durable route identities; BLE sensor manager 358 B and BLE total 24,965 B after removing the scan request signal. The shared ride writer keeps the 570 B buffer. Resource limits stay unchanged."
-      }
+      "_boot_chain_roots_note": "The mount_in_place root is unscoped because toolchains demangle FlatStore<D> differently. The symbol resolver rejects missing or ambiguous roots; a second matching constructor must be resolved with an explicit, portable needle."
     }
   },
   "bootloader": {
-    "features": "default (no RTT)",
     "flash_budget": 32768
   }
 }

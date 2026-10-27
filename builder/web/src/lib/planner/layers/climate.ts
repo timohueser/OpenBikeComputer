@@ -99,19 +99,6 @@ export function weekMonth(week: number): number {
     return new Date(Date.UTC(2001, 0, 1 + 7 * week + 3)).getUTCMonth();
 }
 
-/** Overview values of a week plane at every cell of the tile. */
-export function weekValues(tile: ClimateTile, plane: WeekPlane, week: number): Float32Array {
-    return Float32Array.from({ length: tileCells(tile.level) }, (_, cell) => read(tile, plane, week, cell));
-}
-
-export interface CellHistory { wetDays: Float32Array; rain: Float32Array; tmax: Float32Array; tmin: Float32Array; wind: Float32Array }
-
-/** Every year × week of a detail cell, at index 52 × year + week; temperatures at the cell orography. */
-export function cellHistory(tile: ClimateTile, cell: number): CellHistory {
-    const plane = (name: Plane) => Float32Array.from({ length: YEARS * WEEKS }, (_, i) => read(tile, name, i, cell));
-    return { wetDays: plane('wet_days'), rain: plane('rain'), tmax: plane('tmax'), tmin: plane('tmin'), wind: plane('wind') };
-}
-
 /** A temperature at the cell orography, moved to `elevation` with a lapse rate in K/km. */
 export function atElevation(temperature: number, lapse: number, orography: number, elevation: number): number {
     return temperature + lapse * (elevation - orography) / 1000;

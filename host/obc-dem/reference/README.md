@@ -4,44 +4,26 @@ Copernicus GLO-30 is the native elevation source, but 30 m cannot hold a rock to
 holds finer national DTM heights on the OBCT lattice, and the bakery lifts a crest to them. See
 `specs/OBCT_Spec.md` §9 for the lift rule.
 
-`ingest.py` fills the archive from a national DTM. It runs once per source release, never during
-a bake.
+`obc data source prepare terrain` fills the archive from the national DTMs, never a bake.
 
 ## Run it
-
-Needs the uv group `terrain-reference` of the root `pyproject.toml`: `uv run --group
-terrain-reference python3 ingest.py …`.
-
-```sh
-cd host/obc-dem/reference
-python3 ingest.py ingest ch --bbox 8.30,46.75,8.60,46.95 --archive ref/ --work /tmp/ch
-python3 ingest.py ingest ch --bbox 5.9,45.8,10.5,47.9 --archive ref/ --work /tmp/ch --per-tile
-python3 ingest.py wizard se --bbox 18.48,67.89,18.51,67.91 --archive ref/
-python3 ingest.py index   --archive ref/
-python3 ingest.py check   --archive ref/
-python3 ingest.py publish --archive ref/
-python3 ingest.py mirror  --archive ref/ --bbox 8.30,46.75,8.60,46.95
-```
-
-`--bbox` is longitude first, like `obc-pack --bbox` and unlike `obc-dem --bbox`.
-`ingest --input <dir>` takes hand-fetched files instead of the service. `wizard` walks the
-account and download steps of a source behind a login, then runs the ingest. `check` holds every
-tile against the contract below. `publish` and `mirror` are `rclone copy`; a publish only ever
-adds, and it merges its index with the one already on R2.
 
 `obc data source prepare terrain --region R` adds a region to the version before: per tile,
 `ingest.py fetch <keys> --tile <ti>-<tj> --base …` folds each model into the tile before, then
 `index-terrain` runs per pool. `merge.py --step` is `device/reference/<leaf>` and
 `planner/reference`: the tiles of the version, cut to the leaf.
 
-**A country-scale ingest is an owner-run job**, and it takes `--per-tile`: one archive tile at a
-time, the work wiped after each and the finished tile marked done in the source manifest, so disk
-holds one tile's rasters and a stopped run resumes. The index is rebuilt at the end. It still
-moves hundreds of gigabytes and takes days: run one source at a time, `check` before `publish`.
+The steps need the uv group `terrain-reference` of the root `pyproject.toml`. One tile by hand:
+
+```sh
+uv run --group terrain-reference python3 host/obc-dem/reference/ingest.py \
+    fetch ch --tile 4812-4223 --work /tmp/ch-work --out /tmp/ch
+```
 
 ## The tile contract
 
-`tile_problems` in `ingest/archive.py` is the contract as code, and `check` runs it.
+`write_tile` in `ingest/archive.py` writes it, and `tile_problems` in `tests/test_ingest.py`
+holds a tile to it.
 
 - **Lattice**: OBCT `GRID_ORIGIN` (−2^28 µdeg on both axes), step `2^6` µdeg
   (`REFERENCE_STEP_LOG2 = 6`, about 7.1 m latitude and 4.9 m longitude at 47° N).
@@ -70,7 +52,7 @@ moves hundreds of gigabytes and takes days: run one source at a time, `check` be
 file, because two GDAL builds deflate the same
 heights into different bytes and the terrain bakery keys its skip decision on the digest.
 `contributors` lists every source holding a pixel in the tile, best priority first; `tiles` names
-the first of them. `index` rebuilds all of this from the manifests in `sources/<key>.json`.
+the first of them. `index-terrain` writes it.
 
 ## The code
 
@@ -78,17 +60,15 @@ the first of them. `index` rebuilds all of this from the manifests in `sources/<
 | --- | --- |
 | `lattice.py` | Integer microdegrees: the grid, `Window`, tile ids, and the refusals for a box the lattice cannot hold. |
 | `pool.py` | One source raster in, the lattice maximum and mean out: voids and the pooling rule. |
-| `archive.py` | Tiles, `PRIORITY`, the per-pixel merge, the manifests, `index.json` and `tile_problems`. |
-| `publish.py` | The rclone remote and the `publish` and `mirror` plans. |
+| `archive.py` | Tiles, `PRIORITY`, the per-pixel fold, the pooling of one tile, and the deliveries on disk. |
 | `sources/` | One module per country, one row per product. `base.py` is what an adapter is; `__init__.py` is the `SOURCES` registry. |
-| `wizard.py` | The steps of a portal behind a login, and the check on what it delivered. |
-| `cli.py` | The subcommands. |
+| `cli.py` | The `fetch` and `index-terrain` steps. |
 
 An adapter has one job: `fetch(bbox, workdir) -> list[Path]`, rasters in any CRS and dtype.
 The shared tail turns voids and heights outside −500 m to 9 000 m into absence, pools pixel
-centres onto the lattice, and cuts the window into whole tiles.
+centres onto the lattice tile.
 
-`PRIORITY` in `ingest/archive.py` orders the sources, finest and best-maintained first. The merge
+`PRIORITY` in `ingest/archive.py` orders the sources, finest and best-maintained first. The fold
 is per pixel, because coverage stops at borders: a better source keeps its own pixels and leaves
 the others' pixels in its gaps.
 
@@ -96,7 +76,7 @@ Refused by name: a box at the antimeridian or outside the world box, a scaled ba
 or XYZ grid whose row names no `grid_epsg`, and a vertical datum `ORTHOMETRIC` in `sources/base.py` does
 not recognise. An ellipsoidal product must be converted to orthometric first; nothing here does.
 
-Memory is one source raster plus the tiles it touches. A **monolithic** raster, such as a
+Memory is one source raster plus the tile. A **monolithic** raster, such as a
 whole-state DGM of several gigabytes, is held whole: cut it up with `gdal_retile` first.
 
 ### Credentials
@@ -117,9 +97,9 @@ Three rules keep it there, and each one is a test:
 
 `credential_style` on the adapter and the row's credential shape are checked at the row.
 
-Every request goes through `with_retry` in `sources/base.py`: a dropped connection, a 429 and a
-5xx, and an OWS `NoApplicableCode` on any status, are retried for up to twelve minutes; every
-other 4xx is refused at once with its body. A 404 is absence
+Every request goes through `with_retry` in `sources/base.py`: a dropped connection, a 408, a 429
+and a 5xx, and an OWS `NoApplicableCode` or `LayerNotDefined` on any status, are retried for up to
+twelve minutes; every other 4xx is refused at once with its body. A 404 is absence
 only where the registry says a name is arithmetic, such as a grid square outside its state. A WCS
 2.0.1 request is clipped to the envelope `DescribeCoverage` states; a subset outside it is refused.
 
@@ -133,19 +113,17 @@ Open services, no key: `ch`, `fr`, `us`, `no`, `es`, `nl`, `uk`, `at`, `ca`, `nz
 `it-tn`, and the German states `de-nw`, `de-he`, `de-bw`, `de-mv`, `de-st`, `de-by`, `de-sn`,
 `de-th`, `de-ni`. Germany publishes elevation per state, so `de-*` is a family of rows.
 
-Behind a free account: `dk`, `se`, `fi`, `au`. Set the credential and `ingest <key>` fetches
-live; without it, `ingest <key> --input <dir>` takes what the portal delivered. `wizard <key>`
-holds the account and download steps. For a prepare, `OBC_REFERENCE_AU_INPUT` names the `au`
-delivery as an absolute path, and `OBC_REFERENCE_AU_DATUM` its datum.
+Behind a free account: `dk`, `se`, `fi`. The machine that prepares sets the credential; each
+module names where the account is made. `au` is ordered by hand: `OBC_REFERENCE_AU_INPUT` names
+the delivery as an absolute path, and `OBC_REFERENCE_AU_DATUM` its datum.
 
 `de-sn` and `de-th` carry the Quellenvermerk their services state. One obligation the rows cannot settle by themselves:
 
-- **`au` needs one answer by hand.** Some ELVIS datasets are ellipsoidal, so `ingest au --input`
-  refuses until `--datum AHD` is passed, and `wizard au` asks.
+- **`au` needs one answer by hand.** Some ELVIS datasets are ellipsoidal, so a fetch of `au`
+  refuses until `OBC_REFERENCE_AU_DATUM` is `AHD`.
 
-`ingest --input` reads every `.tif`, `.tiff`, `.asc` and `.zip` under the directory and **writes
-nothing into it**; unpacked members go into the work directory under the digest of their bytes,
-so a re-issued delivery of the same name is a different directory.
+A fetch reads every `.tif`, `.tiff`, `.asc`, `.xyz` and `.zip` under a delivery and **writes
+nothing into it**; unpacked members go into the work directory under the digest of their bytes.
 
 ## Attribution
 
@@ -154,45 +132,16 @@ Copernicus attribution the native heights carry. `index.json` states it per sour
 bakery records per cell which sources its lifts came from, and the catalog's terrain block lists
 each of them once in `references` (`OBCC_Spec.md` §13.1).
 
-## Publishing and mirroring
+## A local archive
 
-Both commands pass these R2 variables through the child environment:
+`obc-dem bake --reference DIR` and `obc-bake terrain --reference DIR` read a local archive, such as
+the `reference/` layer of `device/reference/<leaf>`. `OBC_REFERENCE_ARCHIVE` in `tools/obc.local`
+names one for every `obc bake`; a bake that forgets it re-bakes every lifted cell without lifts.
 
-```
-OBC_R2_ACCOUNT_ID        Cloudflare account id (builds the endpoint)
-OBC_R2_BUCKET            bucket name; the archive is at <bucket>/reference/v1/
-OBC_R2_ACCESS_KEY_ID     R2 API token id
-OBC_R2_SECRET_ACCESS_KEY
-OBC_R2_ENDPOINT          optional, overrides the derived endpoint
-```
+An archive must hold the tiles the *cells* read, not the rider's box: a terrain cell overhangs a
+coverage polygon by up to its own side, and the node halo reads one tile further.
 
-```sh
-set -a; . tools/obc.local; set +a
-python3 host/obc-dem/reference/ingest.py publish --archive /tmp/cp4-work/archive
-```
-
-The archive sits beside the catalog prefix, which `obc bake clean-r2` purges. The bakery reads a
-local archive, named as `OBC_REFERENCE_ARCHIVE` in `tools/obc.local` so that every `obc bake`
-passes `--reference`; a bake that forgets it re-bakes every lifted cell without lifts. Another
-machine mirrors the box it bakes first:
-
-```sh
-python3 host/obc-dem/reference/ingest.py mirror --archive ref/ --bbox 8.30,46.75,8.60,46.95
-obc-dem bake --reference ref/ …          # one box, straight to containers
-obc-bake terrain --reference ref/ …      # the curated coverage, into a published tree
-```
-
-Mirror the box the *cells* cover, not the rider's box: a terrain cell overhangs a coverage
-polygon by up to its own side. `mirror` pads the box by one tile for the baker's node halo, and
-names the tiles the archive does not hold.
-
-The two bakers answer a short mirror differently. `obc-dem bake` warns and names the tiles.
-`obc-bake terrain` refuses the run, names how many cells are short and prints a
-`mirror --bbox` that covers them; `--allow-short-reference` publishes anyway. Either way the
-cell's skip key records the tiles the bake could read, so completing the mirror re-bakes exactly
-the short cells.
-
-### Removing a tile
-
-`publish` never deletes, and `index.json` names every tile on R2: delete none.
-`reference/v1/` goes whole after the cutover.
+The two bakers answer a short archive differently. `obc-dem bake` warns and names the tiles.
+`obc-bake terrain` refuses the run, names how many cells are short and prints the box that covers
+them; `--allow-short-reference` publishes anyway. Either way the cell's skip key records the tiles
+the bake could read, so completing the archive re-bakes exactly the short cells.

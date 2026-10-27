@@ -98,31 +98,3 @@ public struct OBCEmptyStateView: View {
         }
     }
 }
-
-#Preview("Empty / error states") {
-    ScrollView {
-        VStack(spacing: 44) {
-            OBCEmptyStateView(
-                glyph: .trackTile,
-                title: "No planned routes yet",
-                message: "Tap + to import a .gpx from Files, or share one from Komoot, Strava, or any app.",
-                actionTitle: "Import a route",
-                actionSystemImage: "plus"
-            )
-            OBCEmptyStateView(
-                glyph: .warning(systemImage: "exclamationmark.triangle"),
-                title: "Couldn't read Trailhead",
-                message: "The connection dropped mid-read. Your saved routes are still here.",
-                actionTitle: "Retry"
-            )
-            OBCEmptyStateView(
-                glyph: .muted(systemImage: "antenna.radiowaves.left.and.right.slash"),
-                title: "Bluetooth is off",
-                message: "Turn on Bluetooth to reach Trailhead. Your library is still here to browse.",
-                actionTitle: "Open Settings"
-            )
-        }
-        .padding(.vertical, 30)
-    }
-    .background(OBCTheme.page)
-}

@@ -302,29 +302,6 @@ public struct TrackRowSkeleton: View {
     }
 }
 
-#if DEBUG
-#Preview("Track rows") {
-    let route = RouteSummary(
-        id: RouteID("kettle"), name: "Kettle Moraine Loop", distanceMeters: 62_400,
-        elevationGainMeters: 840, estimatedDuration: 3 * 3600 + 12 * 60, trackPreview: .obcSample
-    )
-    List {
-        TrackRow(route: route).obcGroupedRow(first: true, last: false)
-        TrackRow(route: route, onDevice: .upToDate).obcGroupedRow(first: false, last: false)
-        TrackRow(route: route, onDevice: .outdated).obcGroupedRow(first: false, last: false)
-        TrackRow(
-            tripName: "Driftless Weekender", stats: TripStats(distanceMeters: 56_500, elevationGainMeters: 381, dayCount: 3),
-            daySummaries: [route, route, route], onDevice: .upToDate
-        )
-        .obcGroupedRow(first: false, last: false)
-        TrackRowSkeleton().obcGroupedRow(first: false, last: true)
-    }
-    .listStyle(.plain)
-    .scrollContentBackground(.hidden)
-    .background(OBCTheme.page)
-}
-#endif
-
 struct DemoRideBadge: View {
     var body: some View {
         PixelText("DEMO", scale: 2 / 3, color: OBCTheme.secondary)

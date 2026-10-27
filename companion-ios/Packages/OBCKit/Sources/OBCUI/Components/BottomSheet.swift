@@ -45,28 +45,3 @@ public struct OBCSheetContainer<Content: View>: View {
         .presentationBackground(OBCTheme.surface)
     }
 }
-
-#Preview("Bottom sheet") {
-    struct Demo: View {
-        @State private var shown = true
-        var body: some View {
-            OBCTheme.page
-                .ignoresSafeArea()
-                .sheet(isPresented: $shown) {
-                    OBCSheetContainer {
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text("Uploading to Trailhead")
-                                .font(.system(.title2, weight: .bold))
-                                .foregroundStyle(OBCTheme.ink)
-                            OBCProgressBar(value: 0.62)
-                            Text("2.1 MB of 3.4 MB")
-                                .font(.system(.caption).monospacedDigit())
-                                .foregroundStyle(OBCTheme.secondary)
-                            Button("Cancel") {}.buttonStyle(.obcGhost)
-                        }
-                    }
-                }
-        }
-    }
-    return Demo()
-}

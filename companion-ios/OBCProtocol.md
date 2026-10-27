@@ -4,7 +4,7 @@ The normative wire contract is
 [`../specs/obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md). It owns every UUID,
 byte layout, state transition and security rule, and it wins over anything here. The ride archive
 rules are in [`../specs/Ride_Archive_Contract.md`](../specs/Ride_Archive_Contract.md). Shared
-fixtures under `specs/vectors/` pin the Swift and Rust codecs byte for byte.
+fixtures under `specs/vectors/` pin the codecs byte for byte.
 
 This file records only the choices an iOS contributor needs while reading the implementation.
 
@@ -28,8 +28,10 @@ announce/stream/result lifetime, and `BLETransport` keeps only live-link records
 One `objectControl` Write Request announces an operation. `PUT` and `GET` stream framed records on
 the live CoC under that request id, then receive exactly one indicated result. **Transfers never
 resume.** After a broken link the client opens a fresh link, repeats `LIST`, and reconciles named
-mutations with `STATUS`; a lost create uses its catalog fingerprint. The checked-in
-`specs/vectors/flat-store-v4/` bytes are the codec oracle.
+mutations with `STATUS`; a lost create uses its catalog fingerprint. The Rust store client
+(`obc_client_*` through `OBCHost`) builds and decodes the v4 frames, and `firmware/obc-link` pins
+them to the checked-in `specs/vectors/flat-store-v4/` bytes. Swift checks only the framing of each
+request and stream record at the link.
 
 ## Object formats
 

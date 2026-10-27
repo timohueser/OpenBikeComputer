@@ -1025,7 +1025,6 @@ impl CellBakery<'_> {
     }
 }
 
-/// Shared final tree metadata for curated and planet bakes.
 pub(crate) fn write_schema_and_skins(
     out: &Path,
     schema: &StyleDoc,
