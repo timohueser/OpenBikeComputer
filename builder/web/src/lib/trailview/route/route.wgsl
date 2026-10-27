@@ -184,8 +184,8 @@ fn pin_vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) k: u32) ->
     let foot = eye_space(s, h);
     let distance = max(length(foot), 1e-6);
     let metre = frame.pixel * distance;
-    let right = vec3f(direction(vec2f(-foot.y, foot.x), vec2f(1.0, 0.0)), 0.0);
-    let up = normalize(cross(foot, right));
+    let right = vec3f(direction(vec2f(foot.y, -foot.x), vec2f(1.0, 0.0)), 0.0);
+    let up = normalize(cross(right, foot));
     let head = select(SPHERE_PIXELS, BADGE_PIXELS, pins[k].badge > 0u);
     var p = foot + vec3f(uv, 0.0) * RING_PIXELS * metre;
     if (part == 1u) {
