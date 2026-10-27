@@ -37,10 +37,23 @@ export function firepit(): Model {
         const a = (2 * Math.PI * k) / 3 + 0.4;
         m.beam([0.32 * Math.cos(a), 0.32 * Math.sin(a), 0.04], [0, 0, 0.42], 0.08, DARK_WOOD);
     }
-    // Two crossed tongues of fire and a core, each seen from both sides.
+    return fire(m, 0.05, 1);
+}
+
+/** A barbecue: a stone hearth at waist height behind a low wall, with a grate over a fire that burns at night. */
+export function bbq(): Model {
+    const m = new Model().box([0, 0, 0.35], [1.1, 0.8, 0.7], STONE).box([0, 0.33, 0.88], [1.1, 0.14, 0.36], DARK_STONE);
+    for (const x of [-0.5, 0.5]) m.box([x, -0.03, 0.82], [0.1, 0.6, 0.24], DARK_STONE);
+    m.box([0, -0.03, 0.71], [0.88, 0.58, 0.02], ASH);
+    for (let k = 0; k < 6; k++) m.beam([-0.42, -0.27 + 0.1 * k, 0.86], [0.42, -0.27 + 0.1 * k, 0.86], 0.02, METAL);
+    return fire(m, 0.72, 0.45);
+}
+
+/** Two crossed tongues of fire and a core from `z`, `scale` times their size in a fireplace, each seen from both sides: they glow. */
+function fire(m: Model, z: number, scale: number): Model {
     const first = m.triangles;
-    for (const [a, w, h, colour] of [[0, 0.26, 0.85, FLAME], [Math.PI / 2, 0.26, 0.75, FLAME], [Math.PI / 4, 0.14, 0.5, CORE]] as const) {
-        const c = Math.cos(a), s = Math.sin(a), l: Vec = [-w * c, -w * s, 0.05], r: Vec = [w * c, w * s, 0.05], top: Vec = [0, 0, h];
+    for (const [a, w, h, colour] of [[0, 0.26, 0.8, FLAME], [Math.PI / 2, 0.26, 0.7, FLAME], [Math.PI / 4, 0.14, 0.45, CORE]] as const) {
+        const c = Math.cos(a) * w * scale, s = Math.sin(a) * w * scale, l: Vec = [-c, -s, z], r: Vec = [c, s, z], top: Vec = [0, 0, z + h * scale];
         m.tri(l, r, top, colour).tri(r, l, top, colour);
     }
     return m.glowing(first);

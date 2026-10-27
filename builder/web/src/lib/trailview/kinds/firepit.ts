@@ -1,4 +1,4 @@
-// Fireplaces and barbecues: a ring of stones whose fire burns at night, a model on the surface at each point.
+// Fireplaces: a ring of stones whose fire burns at night, a model on the surface at each point.
 import { firepit } from '../models/amenities';
 import { modelKind } from './kind';
 

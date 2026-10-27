@@ -239,7 +239,14 @@
   {
     "kind": "firepit",
     "geometry": "point",
-    "match": [{"leisure": ["firepit"]}, {"amenity": ["bbq"]}],
+    "match": [{"leisure": ["firepit"]}],
+    "keep": [],
+    "height": "surface"
+  },
+  {
+    "kind": "bbq",
+    "geometry": "point",
+    "match": [{"amenity": ["bbq"]}],
     "keep": [],
     "height": "surface"
   },
