@@ -1,8 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { rulesOf } from './regions';
+import { bits, named, rulesOf } from './regions';
 
 const materials = { materials: [{ id: 'none', cover: 'grass' }], lithologies: [{ id: 'unknown', hardness: 0.5 }] };
 const look = { snap: 0.4, hazeKm: 35, grade: { shadow: [0, 0, 0], light: [0, 0, 0], saturation: 1 }, ramps: { grass: ['#000000', '#111111', '#222222'] } };
+
+describe('a list of ground', () => {
+    it('names materials by cover, by id and by #tag, as bits of their codes', () => {
+        const vocabulary = { ...materials, materials: [{ id: 'none', cover: 'grass' }, { id: 'heath', cover: 'grass', tags: ['moor'] }, { id: 'scrub', cover: 'shrub' }] };
+        expect(named(vocabulary, ['shrub'])).toEqual([2]);
+        expect(named(vocabulary, ['#moor', 'scrub'])).toEqual([1, 2]);
+        expect(named(vocabulary, ['moor'])).toEqual([]);
+        expect(bits([1, 33, 63, 64])).toEqual([2, (2 | 2 ** 31) >>> 0]);
+    });
+});
 
 describe('rulesOf', () => {
     it('resolves a region as the prototype does: objects merge, ramps come whole, a value by place takes "*"', () => {

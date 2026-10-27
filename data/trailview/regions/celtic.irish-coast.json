@@ -10,7 +10,7 @@
  "look": {
   "bare_luma": [0.063, 0.101, 0.103, 0.068],
   "ramps": { "grass": ["#857c55", "#6d6e48", "#5a7444"], "moss": ["#8a7a58", "#8a8a5a", "#7a8c56"] },
-  "moor": { "heather": "#6e4f63", "share": 0.3 },
+  "patches": [{ "on": ["#moor"], "colour": "#6e4f63", "share": 0.3, "size_m": 4, "form": "blotches" }],
   "materials": {
    "bare-rock": { "colour": "#7a7553" },
    "scree": { "colour": "#7a7553" },

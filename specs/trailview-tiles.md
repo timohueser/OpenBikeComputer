@@ -196,6 +196,8 @@ with these rules:
   else of its country, else `"*"`. The values by place are `style` of the pack and `look.roadLine`.
 - In a pack, `trees`, `ground` and `herds` are keyed by species. A child adds or changes one, and
   `null` drops one.
+- A list of ground (`on` and `off` of a ground plant, `on` of a herd and of a look's patch) names
+  covers, materials by id, and the `tags` of materials in `materials.json` as `#tag`.
 
 An overlay holds more look keys of a region, as `{"look": {…}}`. The engine merges the overlays
 of the chain of a region over its look, root first, with the same merge. The key table

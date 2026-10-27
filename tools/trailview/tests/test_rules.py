@@ -36,6 +36,11 @@ CASES = [
     ("packs/alps", ["ground", "bilberry", "model"], "norway-spruce", "regions/alps.json: pack alps: ground plant bilberry has no model norway-spruce"),
     ("packs/alps", ["orchard"], "no-such-orchard", "regions/alps.json: pack alps: orchard has no model no-such-orchard"),
     ("packs/alps", ["style", "xx-yy"], "chalet", "regions/alps.json: xx-yy is not a place of countries.json"),
+    ("packs/alps", ["ground", "bilberry", "on"], ["#heath"],
+     'packs/alps.json: ground.bilberry.on[0]: "#heath" is not a cover, a material or a #tag of materials.json'),
+    ("regions/fjell", ["look", "patches", 0, "size_m"], 4, "regions/fjell.json: look.patches[0].size_m: 4 is above 3: the dots of larger bushes stop where the far nodes start"),
+    ("regions/fjell", ["look", "patches"], 3 * [{"on": ["#moor"], "colour": "#6a5232", "share": 0.3, "size_m": 4, "form": "blotches"}],
+     "regions/fjell.json: look.patches: has 3 patches, more than the 2 that the ground draws"),
 ]
 
 

@@ -27,8 +27,9 @@ export interface Look {
     softness: number;
     gradient: number;
     ramps: Partial<Record<string, Ramp | Partial<Record<Season, Ramp>>>>;
-    moor?: { heather: string; share: number };
-    speckle?: { colour: string; share: number; size_m: number };
+    patches?: Patch[];
+    /** The material whose paint a ledge of turf on exposed rock takes. */
+    turf?: string;
     materials?: Partial<Record<string, { colour?: string | Partial<Record<Season, string>>; satellite?: number; clumps?: number }>>;
     lithology?: Partial<Record<string, { colour: string; banded?: true }>>;
     outcrops: number;
@@ -43,6 +44,18 @@ export interface Look {
     sea: { deep: string; shallow: string };
     grade: { shadow: [number, number, number]; light: [number, number, number]; saturation: number };
     weather?: Partial<Record<Preset, Partial<WeatherKeys>>>;
+}
+
+/**
+ * A colour over a share of the ground of the materials that `on` names: blotches about `size_m` and
+ * 5.75 × `size_m` across, or dots of bushes `size_m` across.
+ */
+export interface Patch {
+    on: string[];
+    colour: string | Partial<Record<Season, string>>;
+    share: number;
+    size_m: number;
+    form: 'blotches' | 'dots';
 }
 
 export interface Region {
@@ -77,9 +90,9 @@ export interface GroundRule {
     id: string;
     model: string;
     on?: string[];
+    off?: string[];
     height?: [number, number];
     share?: number;
-    habitat?: 'moor' | 'lush';
     own?: true;
     clumped?: boolean;
 }
@@ -121,8 +134,21 @@ export interface HouseStyle {
 /** The ground vocabulary of `materials.json`: a material or lithology code is its index. */
 export interface Vocabulary {
     /** `clumps`: the share of ground in tussocks and low shrubs, 0 by default; `shrubs`: the share of its cover's shrubs that stand on it, 1 by default. */
-    materials: { id: string; cover: string; clumps?: number; shrubs?: number }[];
+    materials: { id: string; cover: string; clumps?: number; shrubs?: number; tags?: string[] }[];
     lithologies: { id: string; hardness: number }[];
+}
+
+/** The codes of the materials that a list names, each entry a cover, a material or `#tag`. */
+export function named(vocabulary: Vocabulary, names: readonly string[] = []): number[] {
+    return vocabulary.materials.flatMap(({ id, cover, tags = [] }, code) =>
+        (names.some(name => name === id || name === cover || (name.startsWith('#') && tags.includes(name.slice(1)))) ? [code] : []));
+}
+
+/** Material codes as two words of bits, as the GPU reads a set of materials; a code from 64 on has no bit. */
+export function bits(codes: number[]): [number, number] {
+    const words: [number, number] = [0, 0];
+    for (const code of codes) if (code < 64) words[code >> 5] = (words[code >> 5] | (1 << (code & 31))) >>> 0;
+    return words;
 }
 
 export interface Rules { vocabulary: Vocabulary; regions: Region[]; styles: HouseStyle[] }

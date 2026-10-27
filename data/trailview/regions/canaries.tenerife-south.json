@@ -12,7 +12,7 @@
    "crop": ["#b8a37a", "#9a9a64", "#7a8a52"],
    "bare": ["#7a5c48", "#866850", "#94765a"]
   },
-  "speckle": { "colour": "#6f7350", "share": 0.3, "size_m": 1.5 },
+  "patches": [{ "on": ["#rough"], "colour": "#6f7350", "share": 0.3, "size_m": 1.5, "form": "dots" }],
   "hazeKm": 40,
   "outcrops": 0.3,
   "snap": 0.35

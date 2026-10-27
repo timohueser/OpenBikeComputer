@@ -30,8 +30,7 @@ struct Look {
     right: vec4f,
     up: vec4f,
     forward: vec4f,
-    // x: the material code of heath. y: the finest ground level. z, w: the materials and the
-    // lithologies of the vocabulary.
+    // x: unused. y: the finest ground level. z, w: the materials and the lithologies of the vocabulary.
     codes: vec4u,
     // x: the debug view of terrain.wgsl. y: the jittered frame's sample, which turns the dithers. z, w: unused.
     modes: vec4u,

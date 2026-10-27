@@ -40,7 +40,7 @@
    "dolerite": {"colour": "#6f675d"},
    "felsic-lava": {"colour": "#7a7064"}
   },
-  "speckle": {"colour": "#4a5232", "share": 0.15, "size_m": 2.5},
+  "patches": [{ "on": ["#rough"], "colour": "#4a5232", "share": 0.15, "size_m": 2.5, "form": "dots" }],
   "materials": {
    "olive-grove": {"colour": "#848658"}
   },

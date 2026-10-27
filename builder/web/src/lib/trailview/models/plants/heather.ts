@@ -60,5 +60,5 @@ export default {
     name: 'Heather',
     latin: 'Calluna vulgaris',
     build: (season, seed) => heather(season, false, seed, random(seed)),
-    ground: { on: ['shrub', 'moss', 'bare'], height: [0.2, 0.4], share: 0.4, habitat: 'moor' },
+    ground: { on: ['shrub', 'moss', 'bare'], height: [0.2, 0.4], share: 0.4 },
 } satisfies Plant;

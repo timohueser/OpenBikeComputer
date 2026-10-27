@@ -7,7 +7,7 @@ import { Instances, VIEWS, type Producer, type Surfaces } from '../instances/ins
 import { animal, BREEDS } from '../models/animals';
 import { geometry, type Model } from '../models/flat';
 import { rock } from '../models/rocks';
-import type { Rules } from '../rules/regions';
+import { bits, named, type Rules } from '../rules/regions';
 
 /** Herds stand within this many metres, rocks within this many; as HERDS and SLABS of dressing.wgsl. */
 const HERD_REACH_M = 1500, ROCK_REACH_M = 300, HERDS = 4, SLABS = 3;
@@ -20,7 +20,7 @@ interface Resources { gpu: Gpu; herds: GPUComputePipeline; rocks: GPUComputePipe
 
 /**
  * The dressing of the ground (dressing.wgsl): the herds of the regions' packs on the materials that
- * they graze, and rocks on open and rocky ground, placed on the GPU each frame.
+ * they graze, and rocks on rough and rocky ground, placed on the GPU each frame.
  */
 export class Dressing implements Producer {
     private resources?: Resources;
@@ -38,19 +38,14 @@ export class Dressing implements Producer {
             const first = instances.add(...BREEDS[name].coats.map((_, coat) => spec(animal(name, coat), HERD_REACH_M)));
             if (first !== undefined) breeds.set(name, first);
         }
-        const materials = rules.vocabulary.materials.map(material => material.id);
         this.table = new Uint32Array(Math.max(1, rules.regions.length) * HERDS * HERD_WORDS);
         const floats = new Float32Array(this.table.buffer);
         rules.regions.forEach((region, r) => {
             region.herds.filter(herd => breeds.has(herd.model)).slice(0, HERDS).forEach((herd, k) => {
-                const at = (r * HERDS + k) * HERD_WORDS, grazes = [0, 0];
-                for (const id of herd.on) {
-                    const code = materials.indexOf(id);
-                    if (code >= 0 && code < 64) grazes[code >> 5] |= 1 << (code & 31);
-                }
+                const at = (r * HERDS + k) * HERD_WORDS;
                 this.table.set([breeds.get(herd.model)!, BREEDS[herd.model].coats.length], at);
                 floats.set([herd.groups, BREEDS[herd.model].height, ...herd.size], at + 2);
-                this.table.set(grazes.map(bits => bits >>> 0), at + 6);
+                this.table.set(bits(named(rules.vocabulary, herd.on)), at + 6);
             });
         });
     }

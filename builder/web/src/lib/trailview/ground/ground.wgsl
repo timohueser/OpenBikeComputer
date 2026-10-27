@@ -142,7 +142,7 @@ fn ground_main(@builtin(global_invocation_id) id: vec3u) {
     // Woodland is crowns and the shade between them, darker than its leaves.
     let albedo = albedo_of(parts, region, cell.r, sat, barren) * mix(1.0, 0.68, parts.tree);
     textureStore(cache_out, at, CACHE_PLANES * layer, vec4f(sqrt(albedo), (data.r + (1.0 - data.g) * data.b) * dry));
-    textureStore(cache_out, at, CACHE_PLANES * layer + 1, vec4f(parts.tree, parts.rough, parts.moor, green));
+    textureStore(cache_out, at, CACHE_PLANES * layer + 1, vec4f(parts.tree, parts.patches, green));
     textureStore(cache_out, at, CACHE_PLANES * layer + 2, vec4f(mix(bare_from, min(bare_from, rule(region, slot_cliff() + 3).y), green), barren * dry,
         parts.sward * (1.0 - barren * dry), parts.banded));
 }

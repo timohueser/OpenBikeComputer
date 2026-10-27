@@ -5,7 +5,7 @@
 // Herds: one workgroup per herd cell of HERD_SHIFT. A cell holds the groups of each herd of the region
 // at its middle, as many per area as the pack's groups per eye's circle of 400 m; a group stands where
 // its middle's material is one that the herd grazes, its animals about it on such material too.
-// Rocks: one thread per point of a grid of ROCK_SHIFT, jittered: a rock stands on open or rocky
+// Rocks: one thread per point of a grid of ROCK_SHIFT, jittered: a rock stands on rough or rocky
 // ground as the region's outcrops, the slope and the hardness of the rock under it say.
 // #include ../terrain/drawn-mesh.wgsl
 // #include ../ground/look.wgsl
@@ -134,7 +134,7 @@ fn rocks_of(@builtin(global_invocation_id) id: vec3u) {
     let cell = cell_at(s, u32(ceil(lod(s))));
     let kinds = rule(cell.b, slot_kinds() + i32(cell.r));
     let outcrops = rule(cell.b, slot_cliff() + 3).x;
-    // Open ground or exposed rock: kinds.a open, kinds.z rocky.
+    // Rough ground or exposed rock: kinds.a rough, kinds.z rocky.
     if ((kinds.a == 0.0 && kinds.z == 0.0) || outcrops <= 0.0) {
         return;
     }

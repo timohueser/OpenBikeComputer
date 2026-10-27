@@ -27,7 +27,7 @@
   },
   "snap": 0.6,
   "roads": ["#8a8680", "#a19c92", "#cdbf9f", "#c2ad88", "#a9a070", "#c7b591"],
-  "speckle": { "colour": "#57583a", "share": 0.45, "size_m": 2.5 },
+  "patches": [{ "on": ["#rough"], "colour": "#57583a", "share": 0.45, "size_m": 2.5, "form": "dots" }],
   "hazeKm": 80,
   "outcrops": 0.3,
   "rock": "#d3c6a6",

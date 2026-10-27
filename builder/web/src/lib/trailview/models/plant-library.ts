@@ -4,18 +4,17 @@
 import type { Season } from '../rules/regions';
 import { unit, type Geometry } from './shape';
 
-/** The covers of the ground that a plant stands on. */
-export const COVERS = ['tree', 'shrub', 'grass', 'crop', 'bare', 'wetland', 'moss'] as const;
-export type Cover = (typeof COVERS)[number];
-
-/** Where a ground plant grows, how tall it stands, and the share of grid points that it takes there. */
+/**
+ * Where a ground plant grows, how tall it stands, and the share of grid points that it takes there.
+ * `on` and `off` name ground as covers, materials or `#tag`s of materials.json: it grows on what `on`
+ * names but `off` does not.
+ */
 export interface Ground {
-    on: Cover[];
+    on: string[];
+    off?: string[];
     /** In metres; a plant model that stands as a shrub takes it too. */
     height: [number, number];
     share: number;
-    /** In a region with moor, a moor plant grows on its heath and bog, and a lush one only off them. */
-    habitat?: 'moor' | 'lush';
     /** It keeps its own colour rather than the ground's. */
     own?: true;
     /** It grows in stands: patches a few tens of metres across. */

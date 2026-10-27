@@ -22,8 +22,6 @@ FORMAT = 2
 
 # WorldCover's groups in the order of the prototype's ramps (`src/materials.ts`).
 COVER_ORDER = ("tree", "shrub", "grass", "crop", "built", "bare", "snow", "water", "wetland", "mangrove", "moss")
-# The covers a ground plant stands on (`src/models/library.ts`), and the seasons (`src/models/trees.ts`).
-COVERS = ("tree", "shrub", "grass", "crop", "bare", "wetland", "moss")
 SEASONS = ("winter", "spring", "summer", "autumn")
 RAMP_COVERS = (*(cover for cover in COVER_ORDER if cover != "tree"), "needle", "broad")
 PLACE = re.compile(r"^([a-z]{2}(-[a-z0-9]{1,3})?|\*)$")
@@ -31,6 +29,8 @@ PLACE = re.compile(r"^([a-z]{2}(-[a-z0-9]{1,3})?|\*)$")
 OVERLAY_LOOK = {}
 # A region id is one byte of the region tiles, and 255 is no data there.
 MAX_REGION_IDS = 255
+# The patches of a region's look that the ground draws (PATCHES of ground/rules.ts).
+MAX_PATCHES = 2
 # The tree species of a region that the engine's forest holds (SPECIES of vegetation/forest.ts), its
 # ground plants and its shrubs that the plants hold (SLOTS of vegetation/plants.ts), and the engine's
 # models: one file per tree and per plant, named by its id.
@@ -128,15 +128,35 @@ def area(v, p):
     return wrong(p, f"{said(v)} is not a box [west, south, east, north] or a ring of 3 or more [lon, lat]")
 
 
-def speckle_size(v, p):
-    """A bush's size in metres. The far nodes draw without the bushes' dots (DETAIL of ground/look.wgsl):
-    up to 3 m and 64° N, the dots fade out before them."""
-    return [] if is_number(v) and 0 <= v <= 3 else wrong(
-        p, f"{said(v)} is not a number from 0 to 3: the dots of larger bushes stop where the far nodes start")
+def ground_names(materials):
+    """A list of ground: each entry a cover, a material or "#tag" of `materials`."""
+    known = set(COVER_ORDER) | set(materials["materials"]) | {f"#{tag}" for tag in materials["tags"]}
+    return listed(lambda v, p: [] if isinstance(v, str) and v in known
+                  else wrong(p, f"{said(v)} is not a cover, a material or a #tag of materials.json"))
+
+
+def patches(materials, paint):
+    """The patches of a look, MAX_PATCHES at most. The far nodes draw without the dots (DETAIL of
+    ground/look.wgsl): with bushes up to 3 m and up to 64° N, the dots fade out before them."""
+    keys = obj({"on": ground_names(materials), "colour": paint, "share": number(0, 1), "size_m": number(0.1, 100),
+                "form": one_of("blotches", "dots")})
+
+    def check(v, p):
+        if problems := keys(v, p):
+            return problems
+        missing = [key for key in ("on", "colour", "share", "size_m", "form") if key not in v]
+        if missing:
+            return wrong(p, f"has no {', '.join(missing)}")
+        if v["form"] == "dots" and v["size_m"] > 3:
+            return wrong(f"{p}.size_m", f"{said(v['size_m'])} is above 3: the dots of larger bushes stop where the far nodes start")
+        return []
+    each = listed(check)
+    return lambda v, p: each(v, p) or (wrong(p, f"has {len(v)} patches, more than the {MAX_PATCHES} that the ground draws")
+                                       if len(v) > MAX_PATCHES else [])
 
 
 def tables(materials):
-    """The key tables of the region, pack and style files, which name the materials of `materials`."""
+    """The key tables of the region, pack and style files, which name the materials and tags of `materials`."""
     ramp = listed(colour, 3)
     weather = obj({
         "cover": number(0, 1), "base": number(0, 9000), "dark": number(0, 1), "sun": number(0, 2), "ambient": number(0, 2),
@@ -148,8 +168,8 @@ def tables(materials):
         "snap": number(0, 1), "hazeKm": number(1, 500), "hazeHeight": number(100, 20_000), "mistTop": number(0, 5000),
         "softness": number(0, 1), "gradient": number(0, 1),
         "ramps": each(RAMP_COVERS, lambda v, p: ramp(v, p) if isinstance(v, list) else each(SEASONS, ramp)(v, p)),
-        "moor": obj({"heather": colour, "share": number(0, 1)}),
-        "speckle": obj({"colour": colour, "share": number(0, 1), "size_m": speckle_size}),
+        "patches": patches(materials, paint),
+        "turf": one_of(*materials["materials"]),
         "materials": each(materials["materials"], obj({"colour": paint, "satellite": number(0, 1), "stones": number(0, 1),
                                                        "clumps": number(0, 1)})),
         "lithology": each(materials["lithologies"][1:], obj({"colour": colour, "banded": one_of(True)})),
@@ -174,11 +194,11 @@ def tables(materials):
         "elevation": listed(number(-500, 9000), 2), "weight": positive, "evergreen": one_of(True, False),
     })
     ground = obj({
-        "model": text, "latin": text, "on": listed(one_of(*COVERS)), "height": listed(number(0, 50), 2), "share": number(0, 1),
-        "habitat": one_of("moor", "lush"), "own": one_of(True), "clumped": one_of(True, False),
+        "model": text, "latin": text, "on": ground_names(materials), "off": ground_names(materials), "height": listed(number(0, 50), 2),
+        "share": number(0, 1), "own": one_of(True), "clumped": one_of(True, False),
     })
     herd = obj({"model": text, "latin": text, "groups": number(1, 100), "size": listed(number(1, 1000), 2),
-                "on": listed(one_of(*materials["materials"]))})
+                "on": ground_names(materials)})
     pack = obj({
         "name": text, "about": text, "extends": text, "trees": entries(species), "ground": entries(ground),
         "herds": entries(herd), "style": by_place(text), "houses": text, "orchard": text,
@@ -231,6 +251,9 @@ def vocabulary_problems(vocabulary):
             out.append(f"materials.json: materials[{i}].cover: {entry['cover']} is not one of {', '.join(COVER_ORDER)}")
         out += [f"materials.json: {problem}" for share in ("stones", "clumps", "shrubs") if share in entry
                 for problem in number(0, 1)(entry[share], f"materials[{i}].{share}")]
+        if "tags" in entry:
+            tag = lambda v, p: [] if isinstance(v, str) and re.fullmatch(r"[a-z]+(-[a-z]+)*", v) else wrong(p, f"{said(v)} is not a tag")
+            out += [f"materials.json: {problem}" for problem in listed(tag)(entry["tags"], f"materials[{i}].tags")]
     for key in ("materials", "lithologies"):
         ids = [entry["id"] for entry in vocabulary[key]]
         out += [f"materials.json: {key}[{i}].id: {id_} is also {key}[{ids.index(id_)}]" for i, id_ in enumerate(ids) if ids.index(id_) != i]
@@ -242,6 +265,8 @@ def validate(ruleset):
     vocabulary = ruleset["materials"]
     out = vocabulary_problems(vocabulary)
     ids = {key: [entry["id"] for entry in vocabulary[key]] for key in ("materials", "lithologies")}
+    ids["tags"] = {tag for entry in vocabulary["materials"] if isinstance(entry.get("tags"), list)
+                   for tag in entry["tags"] if isinstance(tag, str)}
     region_check, pack_check, style_check, overlay_check = tables(ids)
     regions, packs, styles = ruleset["regions"], ruleset["packs"], ruleset["styles"]
     add = lambda file, problems: out.extend(f"{file}: {problem}" for problem in problems)
