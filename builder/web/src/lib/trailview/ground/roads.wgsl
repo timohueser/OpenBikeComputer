@@ -169,14 +169,14 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
     let paved = code <= 2u || code == 7u || code == PAVING_CODE;
     // The paint and the road's cut and fill reach past its sidewalk on this side.
     let walk = mask.walk;
-    var wall = select(0.0, reach * mask.shape.w, paved || code >= RAIL_CODE);
+    var wall = select(0.0, reach * mask.face, paved || code >= RAIL_CODE);
     // A face is a wall from the road's edge out where it is still a face WALL_M out, where its cone is
     // steeper than 75°; elsewhere the slope stays ground.
     if (wall > 0.0) {
-        let out = mask_at(s + mask.away * (WALL_M + walk - mask_metres(mask.shape.x)), mask.level, false);
-        wall *= out.shape.w;
+        let out = mask_at(s + mask.away * (WALL_M + walk - mask.edge), mask.level, false);
+        wall *= out.face;
     }
-    var edge = mask_metres(mask.shape.x);
+    var edge = mask.edge;
     let half = max(mask.half, 0.05);
     let shaped_m = select(SHAPED_M, PATH_SHAPED_M, half < PATH_HALF_M);
     let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, edge - walk));

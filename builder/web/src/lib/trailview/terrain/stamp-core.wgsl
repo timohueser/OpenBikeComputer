@@ -593,16 +593,13 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         if ((b == PORTAL_CORE || b == TROUGH || b == COVER) && (l > out.hi || u < out.lo)) {
             continue;
         }
+        // The cones of two roads: the ground ramps from the fill of the one to the cut of the other by
+        // the share of the way between them, so it has no step where the conflict begins nor inside it.
+        // A ramp is ground, never a wall: a retaining wall holds the slope beside one road.
+        let ramp = l > u && b == CONES;
         if (l > u) {
             out.conflict = true;
-            // The cones of two roads: the ground ramps from the fill of the one to the cut of the
-            // other by the share of the way between them, so it has no step where the conflict
-            // begins nor inside it. The look draws a wall where the ramp is steep.
-            if (b == CONES) {
-                l = mix(l, u, cone_lo_x / max(cone_lo_x + cone_hi_x, 1e-3));
-            } else {
-                l = 0.5 * (l + u);
-            }
+            l = select(0.5 * (l + u), mix(l, u, cone_lo_x / max(cone_lo_x + cone_hi_x, 1e-3)), ramp);
             u = l;
         }
         if (l > out.hi || u < out.lo) {
@@ -615,11 +612,11 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         // A road's slope may be a retaining wall; a path's never is.
         if (l > out.lo) {
             out.lo = l;
-            out.fill = b == CONES && cone_lo_road;
+            out.fill = b == CONES && cone_lo_road && !ramp;
         }
         if (u < out.hi) {
             out.hi = u;
-            out.cut = b == CONES && cone_hi_road;
+            out.cut = b == CONES && cone_hi_road && !ramp;
         }
     }
     return out;

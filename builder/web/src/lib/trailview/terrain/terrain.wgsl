@@ -91,12 +91,12 @@ fn mask_view(s: vec2f, grey: vec3f) -> vec3f {
     if (mask.level == 0u) {
         return colour;
     }
-    if (mask.kind.x != 0u && mask.shape.x < 0.5) {
+    if (mask.kind.x != 0u && mask.edge < 0.0) {
         colour = select(SURFACE_COLOURS[mask.kind.x - 1u], vec3f(0.2, 0.85, 0.9), (mask.kind.y & FORDED) != 0u);
-    } else if (mask.kind.x != 0u && mask_metres(mask.shape.x) < mask.walk) {
+    } else if (mask.kind.x != 0u && mask.edge < mask.walk) {
         colour = SURFACE_COLOURS[PAVING_CODE - 1u];
     }
-    colour = mix(colour, vec3f(0.95, 0.55, 0.1), 0.7 * mask.shape.w);
+    colour = mix(colour, vec3f(0.95, 0.55, 0.1), 0.7 * mask.face);
     if ((mask.kind.y & CONFLICT) != 0u) {
         colour = vec3f(0.9, 0.1, 0.1);
     }

@@ -72,8 +72,10 @@ fn faced(texel: vec4f) -> f32 {
 }
 
 struct Mask {
-    // The distances of the texel layout, and in w the share of the texels on a road's cut or fill face.
-    shape: vec4f,
+    // The metres to the painted road's edge, filtered as metres: the asinh codes bend between texels.
+    edge: f32,
+    // The share of the texels on a road's cut or fill face.
+    face: f32,
     // The surface code and the flags.
     kind: vec2u,
     // The level of the page that holds it; 0 where no page within reach has a mask.
@@ -135,10 +137,11 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
             let a = clamp(t.whole, first, first + vec2i(255));
             let b = clamp(t.whole + vec2i(1), first, first + vec2i(255));
             let ab = array(shape_at(page, a), shape_at(page, vec2i(b.x, a.y)), shape_at(page, vec2i(a.x, b.y)), shape_at(page, b));
-            let shape = mix(mix(ab[0], ab[1], t.part.x), mix(ab[2], ab[3], t.part.x), t.part.y);
+            let e = array(mask_metres(ab[0].x), mask_metres(ab[1].x), mask_metres(ab[2].x), mask_metres(ab[3].x));
+            let edge = mix(mix(e[0], e[1], t.part.x), mix(e[2], e[3], t.part.x), t.part.y);
             let face = mix(mix(faced(ab[0]), faced(ab[1]), t.part.x), mix(faced(ab[2]), faced(ab[3]), t.part.x), t.part.y);
             // Texel rows run along -y of LOD space.
-            let rise = vec2f(mix(ab[1].x - ab[0].x, ab[3].x - ab[2].x, t.part.y), -mix(ab[2].x - ab[0].x, ab[3].x - ab[1].x, t.part.x));
+            let rise = vec2f(mix(e[1] - e[0], e[3] - e[2], t.part.y), -mix(e[2] - e[0], e[3] - e[1], t.part.x));
             let away = select(vec2f(0.0), normalize(rise), dot(rise, rise) > 0.0);
             let half = mix(mix(half_width(ab[0]), half_width(ab[1]), t.part.x), mix(half_width(ab[2]), half_width(ab[3]), t.part.x), t.part.y);
             // The sleepers of the nearest texel, carried on along the track: across the rise of the metres
@@ -151,15 +154,15 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
             let y = shape_at(page, whole).y;
             let sleepers = y + dot(t.part - round(t.part), ahead) * texel_metres(level, whole.y) / SLEEPER_SPACING_M;
             let walk = select(u32(round(y * 255.0)), 0u, (byte & 15u) >= RAIL_CODE);
-            return Mask(vec4f(shape.xyz, face), vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, f32(walk) * WALK_STEP_M);
+            return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, f32(walk) * WALK_STEP_M);
         }
     }
-    return Mask(vec4f(0.5), vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0);
+    return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0);
 }
 
 // Whether the mask keeps a thing off a point: in water or in a building, on a road, its sidewalk, a path or
 // a track, or nearer to their outer edge than `clear` metres.
 fn kept_off(s: vec2f, clear: f32) -> bool {
     let mask = mask_at(s, u32(ceil(lod(s))), true);
-    return mask.level != 0u && ((mask.kind.y & TAKEN) != 0u || (mask.kind.x != 0u && mask_metres(mask.shape.x) - mask.walk < clear));
+    return mask.level != 0u && ((mask.kind.y & TAKEN) != 0u || (mask.kind.x != 0u && mask.edge - mask.walk < clear));
 }
