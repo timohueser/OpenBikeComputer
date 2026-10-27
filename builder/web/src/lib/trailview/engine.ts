@@ -26,7 +26,7 @@ import { Plants } from './vegetation/plants';
 import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
 import { LightPools } from './structures/light-pools';
-import { Route } from './route/route';
+import { Route, type RoutePin } from './route/route';
 import { Pacer } from './pacer';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
@@ -245,9 +245,21 @@ export class TrailView {
         return this.groundLook.attribution;
     }
 
-    /** Draws the planned route in riding order on the surface; `graded` colours it by its grade. Fewer than two points draw none. */
-    showRoute(route: readonly Coordinate[], graded = false): void {
-        this.route.set(route, graded);
+    /** Draws the planned route in riding order on the surface, each edge in its colour. Fewer than two points draw none. */
+    showRoute(route: readonly Coordinate[], colours: readonly string[]): void {
+        this.route.set(route, colours);
+        this.request();
+    }
+
+    /** Stands a pin with a sphere in `colour` at `at`, apart from the others so that it moves cheaply; null takes it away. */
+    showMarker(at: Coordinate | null, colour = '#ffffff'): void {
+        this.route.setMarker(at ? { coordinate: at, colour } : undefined);
+        this.request();
+    }
+
+    /** Stands the pins on the ground in place of the ones before. */
+    showPins(pins: readonly RoutePin[]): void {
+        this.route.setPins(pins);
         this.request();
     }
 
@@ -584,8 +596,9 @@ export class TrailView {
             this.instances.draw(pass, group);
             this.terrain.draw(pass, group);
             this.houses.draw(pass, group);
-            if (this.terrain.surface && this.terrain.features) this.route.draw(pass, this.terrain.surface, this.terrain.features);
             if (this.extras.debug !== 'cracks') this.sky.draw(pass, group);
+            // After the sky, which draws where nothing did: the route and its pins write no depth.
+            if (this.terrain.surface && this.terrain.features) this.route.draw(pass, this.terrain.surface, this.terrain.features);
             pass.end();
             if (this.terrain.surface && this.terrain.features) this.lightPools.encode(encoder, targets.scene!, targets.depth!, [width, height], this.terrain.surface, group, this.terrain.features);
             this.resolve.encode(encoder, targets, this.context.getCurrentTexture().createView(), group,

@@ -3,9 +3,12 @@
     import Icon from './PlannerIcon.svelte';
     import TrailViewConditions from './TrailViewConditions.svelte';
     import TrailViewMiniMap from './TrailViewMiniMap.svelte';
+    import TrailViewProfile from './TrailViewProfile.svelte';
     import { config } from '../../lib/planner/map-data';
-    import type { Coordinate } from '../../lib/planner/geo';
+    import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo';
     import { FIRST_HEADING, loadTrailView } from '../../lib/planner/trailview';
+    import { nightBadge, type RouteLook } from '../../lib/planner/trailview-route';
+    import { sampleIndex } from '../../lib/planner/profile-data';
     import type { TrailView } from '../../lib/trailview/engine';
     import { VFOV } from '../../lib/trailview/frame/camera';
     import { defaultView, formatView, type View } from '../../lib/trailview/view';
@@ -32,10 +35,23 @@
     let engine: TrailView | undefined;
     let view = $state<View>();
     let width = $state(0), height = $state(0);
-    // The plan's route draws on the terrain until the rider hides it; it may take the colours of its grade.
+    // The plan's route draws on the terrain in the colours of its days, its grade or its surface, with a pin at
+    // each night and a marker at the point of the profile under the pointer, until the rider hides it.
     const hasRoute = $derived(near.route.length > 1);
-    let routeShown = $state(true), graded = $state(false);
-    const drawRoute = () => engine?.showRoute(routeShown ? near.route : [], graded);
+    const line = $derived([...near.route]);
+    let routeShown = $state(true), look = $state<RouteLook>('day'), position = $state<number | null>(null);
+    const nightPins = $derived(near.overlay.nights.map(night => ({ coordinate: night.coordinate, colour: night.color, badge: nightBadge(night) })));
+    const drawRoute = () => {
+        engine?.showRoute(routeShown ? near.route : [], near.overlay.colours[look]);
+        engine?.showPins(routeShown && hasRoute ? nightPins : []);
+        drawMarker();
+    };
+    // The marker takes the colour of the edge it stands on.
+    const drawMarker = () => {
+        const colours = near.overlay.colours[look], edge = Math.max(sampleIndex(near.overlay.profile, position ?? 0) - 1, 0);
+        engine?.showMarker(!routeShown || position === null ? null : coordinateAt(line, position), colours[Math.min(edge, colours.length - 1)]);
+    };
+    const choose = (next: RouteLook) => { look = look === next ? 'day' : next; drawRoute(); };
     // The horizontal angle of the view, from the engine's vertical one and the window's shape.
     const fov = $derived(height ? 2 * Math.atan(Math.tan(VFOV * Math.PI / 360) * width / height) * 180 / Math.PI : VFOV);
 
@@ -115,9 +131,14 @@
         <TrailViewConditions {view} onChange={change} />
         {#if hasRoute}
             <div class="route" role="group" aria-label="Route">
-                <button type="button" aria-pressed={routeShown} onclick={() => { routeShown = !routeShown; drawRoute(); }}><Icon name="route" />Route</button>
-                <button type="button" aria-pressed={graded} disabled={!routeShown} onclick={() => { graded = !graded; drawRoute(); }}><Icon name="mountain" />Grade</button>
+                <button type="button" aria-pressed={routeShown} onclick={() => { routeShown = !routeShown; position = null; drawRoute(); }}><Icon name="route" />Route</button>
+                <button type="button" aria-pressed={look === 'grade'} disabled={!routeShown} onclick={() => choose('grade')}><Icon name="mountain" />Grade</button>
+                <button type="button" aria-pressed={look === 'surface'} disabled={!routeShown} onclick={() => choose('surface')}><Icon name="layers" />Surface</button>
             </div>
+            {#if routeShown}
+                <TrailViewProfile profile={near.overlay.profile} colours={near.overlay.colours[look]} total={cumulative(line).at(-1) ?? 0}
+                    onHover={progress => { position = progress; drawMarker(); }} />
+            {/if}
         {/if}
     {/if}
     <button type="button" class="close" aria-label="Close TrailView" onclick={() => dialog.close()}><Icon name="close" /></button>
