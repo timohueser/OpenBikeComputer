@@ -28,7 +28,7 @@ export interface Plant {
     /** The plant at any size with its root at the origin and z up; the seed picks its shape. */
     build: (season: Season, seed: number) => Geometry;
     ground: Ground;
-    /** It keeps the size that it builds itself at instead of being scaled 1 tall, so stubble stands lower than the crop and a flower pole above its rosette. */
+    /** It builds itself 1 tall in its tallest season and keeps that scale, so `height` stays metres and stubble stands lower than the crop. */
     sized?: true;
 }
 
@@ -38,5 +38,5 @@ const byId = <T>(files: Record<string, unknown>) =>
 /** The files of plants/ that are plants; a file may also export a builder that another plant reuses. */
 export const PLANTS = byId<Plant>(import.meta.glob('./plants/*.ts', { eager: true, import: 'default' }));
 
-/** A plant model, 1 tall unless it is sized. */
+/** A plant model, 1 tall, or in its own scale if it is sized. */
 export const plant = (id: string, season: Season, seed = 1) => (PLANTS[id].sized ? PLANTS[id].build(season, seed) : unit(PLANTS[id].build(season, seed)));

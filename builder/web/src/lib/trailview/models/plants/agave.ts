@@ -17,7 +17,7 @@ const POLE: Record<Season, [pole: string, clusters: string]> = {
 };
 
 /** Of the plant's shapes, the third carries a flower pole. */
-const POLE_SEED = 3;
+export const POLE_SEED = 3;
 
 /**
  * Agave: a rosette of thick, stiff sword leaves, the inner ones upright and the outer ones spread

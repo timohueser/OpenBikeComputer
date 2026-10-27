@@ -760,7 +760,7 @@ function largest(values: ArrayLike<number>): number {
     return most;
 }
 
-/** The radius of a sphere about (0, 0, 0.5) that holds every mesh of a model 1 tall. */
+/** The radius of a sphere about (0, 0, 0.5) that holds every mesh of a model, in model units; a sized plant may stand taller than 1. */
 function radius(spec: ModelSpec): number {
     let most = 0;
     for (const { mesh: { position: p } } of spec.tiers) for (let i = 0; i < p.length; i += 3) most = Math.max(most, Math.hypot(p[i], p[i + 1], p[i + 2] - 0.5));

@@ -73,6 +73,6 @@ export default {
     name: 'Grapevine',
     latin: 'Vitis vinifera',
     build: (season, seed) => grapevine(season, random(seed)),
-    // The near field plants it in rows on vineyards (rows.ts), never scattered: share 0.
+    // One piece of a trellised row: it stands only along vineyard rows, never scattered, so share 0.
     ground: { on: ['crop'], height: [1.2, 1.7], share: 0 },
 } satisfies Plant;
