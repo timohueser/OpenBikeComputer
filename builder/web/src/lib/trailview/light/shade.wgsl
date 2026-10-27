@@ -46,6 +46,13 @@ struct Look {
 
 const GLOW = vec3f(1.0, 0.62, 0.36);
 
+// A dither value of a pixel in [0, 1): interleaved gradient noise, turned by the golden ratio with
+// each jittered frame, so the frames of a still view take evenly spread values and their mean is smooth.
+fn dither(pixel: vec2f) -> f32 {
+    let ign = fract(52.9829189 * fract(dot(floor(pixel), vec2f(0.06711056, 0.00583715))));
+    return fract(ign + 0.6180340 * f32(look.modes.y));
+}
+
 fn luma(c: vec3f) -> f32 {
     return dot(c, vec3f(0.3, 0.59, 0.11));
 }

@@ -214,13 +214,6 @@ fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     return out;
 }
 
-// A dither value of a pixel in [0, 1): interleaved gradient noise, turned by the golden ratio with
-// each jittered frame, so the frames of a still view take evenly spread values and their mean is smooth.
-fn dither(pixel: vec2f) -> f32 {
-    let ign = fract(52.9829189 * fract(dot(floor(pixel), vec2f(0.06711056, 0.00583715))));
-    return fract(ign + 0.6180340 * f32(look.modes.y));
-}
-
 // Whether a pixel of an instance draws: the share `appear` of its pixels, by the dither.
 fn kept(pixel: vec2f, look: u32) -> bool {
     return dither(pixel + vec2f(37.0, 11.0)) < f32(look >> 24u) / 255.0;

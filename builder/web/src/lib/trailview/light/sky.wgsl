@@ -91,7 +91,9 @@ fn sky_fragment(in: Sky) -> @location(0) vec4f {
     c = moon(c, dir);
     let disk = smoothstep(SUN_DISK + 0.001, SUN_DISK - 0.001, acos(clamp(dot(dir, look.sky_sun.xyz), -1.0, 1.0)));
     c = mix(c, look.sun_colour.rgb * 3.0 + 0.3, disk * (1.0 - night.moon.w) * step(0.001, dot(look.sun_colour.rgb, vec3f(1.0))));
-    return vec4f(c, 1.0);
+    // Half a step of the frame's 5-bit blue mantissa (rg11b10ufloat) up or down by the pixel and the
+    // frame, so that the slow gradients of a dark sky show no bands.
+    return vec4f(c * (1.0 + (dither(in.clip.xy) - 0.5) / 32.0), 1.0);
 }
 
 struct Star {
