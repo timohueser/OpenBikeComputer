@@ -747,7 +747,7 @@ pub(crate) struct Header {
 
 pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     let mut h = [0u8; HEADER_FULL_LEN];
-    src.read_at(0, &mut h).map_err(|_| Error::BadOffset)?;
+    src.read_at(0, &mut h)?;
     // `obc-formats` owns the magic and version gate: one prefix check for every OBCR consumer. It
     // reports `Version` only after the magic matched, which keeps the "not an OBCR" and "an OBCR
     // we cannot read" answers apart.

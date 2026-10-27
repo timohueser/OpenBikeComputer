@@ -18,7 +18,7 @@ struct Trips {
     ids: Vec<u64>,
 }
 
-fn current_routes<D: BlockDevice>(store: &FlatStore<D>) -> Result<Routes, ()> {
+fn current_routes<D: BlockDevice>(store: &FlatStore<D>) -> Result<Routes, StoreError> {
     let mut routes = Routes::default();
     super::scan(store, ObjectKind::Route, &mut [super::Head::EMPTY; 64], &mut |head, accepted, source| {
         let (summary, flags) = RouteSummary::read_with_flags(source)?;
@@ -36,19 +36,17 @@ fn current_routes<D: BlockDevice>(store: &FlatStore<D>) -> Result<Routes, ()> {
         routes.summaries.push(summary);
         routes.ids.push(head.id.0);
         Ok(())
-    })
-    .map_err(|_| ())?;
+    })?;
     Ok(routes)
 }
 
-fn current_trips<D: BlockDevice>(store: &FlatStore<D>) -> Result<Trips, ()> {
+fn current_trips<D: BlockDevice>(store: &FlatStore<D>) -> Result<Trips, StoreError> {
     let mut trips = Trips::default();
     super::scan(store, ObjectKind::Trip, &mut [super::Head::EMPTY; 16], &mut |head, _, source| {
         trips.metas.push(TripMeta::read(source)?);
         trips.ids.push(head.id.0);
         Ok(())
-    })
-    .map_err(|_| ())?;
+    })?;
     Ok(trips)
 }
 
@@ -141,41 +139,36 @@ fn captured_loaders_choose_newest_decode_and_compact_masks() {
     assert_eq!(hash, 0xf859_b084);
 }
 
+/// A refused card read anywhere in either scan fails that scan with a media error or leaves its
+/// result whole, and every handle the scan opened is closed again.
 #[test]
-fn captured_loaders_release_handles_after_every_media_read_refusal() {
+fn loaders_survive_every_media_read_refusal_without_leaking_a_handle() {
     let disk = SparseDisk::blank(250_000, 9);
     let faults = FaultOnce::new(&disk);
     let store = FlatStore::initialize(&faults, StoreId([0x47; 16])).unwrap();
     populate(&store, 8, 4);
     let start = disk.ops();
-    current_routes(&store).unwrap();
-    current_trips(&store).unwrap();
+    let routes = current_routes(&store).unwrap();
+    let trips = current_trips(&store).unwrap();
     let reads = disk.ops() - start;
-    assert_eq!(reads, 91);
-    let mut hash = 2_166_136_261;
     for skip in 0..reads {
         faults.fault_after(MediaOp::Read, skip);
-        let routes = current_routes(&store);
-        let trips = current_trips(&store);
-        assert!(faults.fired(), "read refusal {skip}/{reads}");
-        fingerprint(&mut hash, &(skip, (&routes, &trips)));
-        let mut published_routes = Routes { ids: std::vec![999], ..Default::default() };
-        let mut published_trips = Trips { ids: std::vec![999], ..Default::default() };
-        if let Ok(routes) = &routes {
-            published_routes = routes.clone();
-        } else {
-            assert_eq!(published_routes.ids, [999]);
-        }
-        if let Ok(trips) = &trips {
-            published_trips = trips.clone();
-        } else {
-            assert_eq!(published_trips.ids, [999]);
-        }
-        assert!(!published_routes.ids.is_empty() && !published_trips.ids.is_empty());
-        let handles: Vec<_> = (0..5).map(|_| store.open(ObjectId(1), Some(Revision(1))).unwrap()).collect();
+        let faulted_routes = current_routes(&store);
+        let faulted_trips = current_trips(&store);
+        assert!(faults.fired(), "read refusal {skip}/{reads} never landed");
+        assert!(
+            matches!(faulted_routes, Err(StoreError::Media)) || faulted_routes.as_ref() == Ok(&routes),
+            "read refusal {skip}: routes {faulted_routes:?}",
+        );
+        assert!(
+            matches!(faulted_trips, Err(StoreError::Media)) || faulted_trips.as_ref() == Ok(&trips),
+            "read refusal {skip}: trips {faulted_trips:?}",
+        );
+        let handles: Vec<_> = (1..=crate::flat::store::MAX_OPEN_OBJECTS as u64)
+            .map(|id| store.open(ObjectId(id), None).unwrap_or_else(|error| panic!("refusal {skip} leaked: {error:?}")))
+            .collect();
         for handle in handles {
             store.close(handle);
         }
     }
-    assert_eq!(hash, 0xaa52_9348);
 }
