@@ -2,4 +2,4 @@
 import { guidepost } from '../models/amenities';
 import { modelKind } from './kind';
 
-export default modelKind('guidepost', guidepost, 600, true);
+export default modelKind('guidepost', guidepost, 600, { facesWay: true });

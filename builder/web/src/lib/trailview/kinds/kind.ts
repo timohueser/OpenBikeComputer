@@ -6,6 +6,7 @@ import { EXTENT, unitScale, type Feature } from '../stream/features';
 import type { ModelSpec } from '../instances/instances';
 import type { AnchoredBuilder } from '../structures/anchored';
 import { GROUND, mix, type MeshBuilder, station, type Corner } from '../structures/mesh';
+import type { Light } from '../structures/light-pools';
 import type { Owns } from '../structures/node';
 import { metresPerUnit, type Line, type Node, type Shapes } from '../terrain/bins';
 
@@ -41,6 +42,8 @@ export interface Kind {
     build(feature: Placed, out: Build): void;
     /** The models that `place` names, each 1 tall with its base at the origin, for the instances. */
     models?: Record<string, () => ModelSpec>;
+    /** The light that a model sheds on the ground about it at night, by the model's name. */
+    lights?: Record<string, Light>;
 }
 
 /** A feature of a tile in world units. */
@@ -82,15 +85,16 @@ export function facing(ways: Line[], x: number, y: number): number | undefined {
 /**
  * A kind of one model at each point: `model` in metres with its base at the origin. The map does not tell
  * which way it faces: with `facesWay` it faces the nearest way, else the hash of its place turns it. It
- * draws to `reach` metres.
+ * draws to `reach` metres, and sheds `light` at night.
  */
-export function modelKind(name: string, model: () => Model, reach: number, facesWay = false): Kind {
+export function modelKind(name: string, model: () => Model, reach: number, { facesWay = false, light }: { facesWay?: boolean; light?: Light } = {}): Kind {
     const { height, spec } = unitModel(model, reach);
     return {
         build(feature, out) {
             pointModels(feature, out, (x, y) => ({ yaw: (facesWay ? facing(out.ways, x, y) : undefined) ?? ((x * 7 + y * 13) % 628) / 100, height, model: name }));
         },
         models: { [name]: spec },
+        lights: light && { [name]: light },
     };
 }
 

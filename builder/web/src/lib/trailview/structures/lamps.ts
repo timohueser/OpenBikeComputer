@@ -19,6 +19,7 @@ export function lampKind(side: number): Kind {
             if (LIT.has(feature.tags.highway) && !(feature.tags.bridge && feature.tags.bridge !== 'no')) lamps(feature, out, side);
         },
         models: { lamp: lamp.spec },
+        lights: { lamp: { colour: '#ffc98a', radius: 9 } },
     };
 }
 

@@ -2,4 +2,4 @@
 import { bench } from '../models/amenities';
 import { modelKind } from './kind';
 
-export default modelKind('bench', bench, 300, true);
+export default modelKind('bench', bench, 300, { facesWay: true });
