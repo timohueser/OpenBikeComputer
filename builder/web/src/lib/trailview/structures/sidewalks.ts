@@ -3,7 +3,7 @@
 // drawn ground on the outer side. The stamps hold the ground under a slab at the road's height. A slab
 // stops where a carriageway crosses it, at a side road's mouth; where two roads' sidewalks meet in a
 // corner, the road of the first class in roads.json, then the first line, keeps it. A road that OSM
-// splits runs on into its next line across their shared mitre. In a junction's corner the slab follows
+// splits runs on into its next line across their shared mitre, each as wide as the paint has it. In a junction's corner the slab follows
 // the kerb's arc from the one road's sidewalk to the other's, or narrows to the bare kerb into a road
 // without one. Farther off, the mask paints them.
 import { cornered, cornersOf, type Corner } from '../terrain/corners';
@@ -127,10 +127,6 @@ export function sidewalks(b: MeshBuilder, lines: Line[], owns: Owns): void {
         for (let v = 0; v + 1 < n; v++) {
             if (!line.sidewalks[v] || !owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
             const s = at(v), t = at(v + 1), length = Math.hypot(t.x - s.x, t.y - s.y) * unit;
-            // At an end that runs on into a partner of another width, the kerb and the outer edge meet the partner's halfway.
-            const meet = (w: number, end: 0 | 1, own: number, of: (other: Line) => number) => (w === (end ? n - 1 : 0) && ends?.[end] ? (own + of(ends[end]!)) / 2 : own);
-            const halves: [number, number] = [meet(v, 0, h, other => other.h), meet(v + 1, 1, h, other => other.h)];
-            const walks: [number, number] = [meet(v, 0, walk, walkOf), meet(v + 1, 1, walk, walkOf)];
             const pieces = Math.max(1, Math.ceil(length / PIECE_M)), centre = (k: number) => (k + 0.5) / pieces;
             for (const side of [LEFT, RIGHT]) {
                 if (!(line.sidewalks[v] & side)) continue;
@@ -152,7 +148,7 @@ export function sidewalks(b: MeshBuilder, lines: Line[], owns: Owns): void {
                     const [u0, face0] = k > 0 ? edge(centre(k), centre(k - 1)) : [0, !runsOn(v, side, -1)];
                     const [u1, face1] = last + 1 < pieces ? edge(centre(last), centre(last + 1)) : [1, !runsOn(v, side, 1)];
                     const slope = (u: number) => crossSlope(line, v, u * length, (1 - u) * length);
-                    slab(b, s, t, u0, u1, side === LEFT ? 1 : -1, halves, walks, [face0, face1], slope);
+                    slab(b, s, t, u0, u1, side === LEFT ? 1 : -1, [h, h], [walk, walk], [face0, face1], slope);
                 }
             }
         }

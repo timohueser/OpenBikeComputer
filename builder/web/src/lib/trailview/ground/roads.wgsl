@@ -169,7 +169,8 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
     let paved = code <= 2u || code == 7u || code == PAVING_CODE;
     // The paint and the road's cut and fill reach past its sidewalk on this side.
     let walk = mask.walk;
-    var wall = select(0.0, reach * mask.face, paved || code >= RAIL_CODE);
+    // A wall stands under a road's or a track's paint, never under paving: a footway's or a forecourt's.
+    var wall = select(0.0, reach * mask.face, code <= 2u || code == 7u || code >= RAIL_CODE);
     // A face is a wall from the road's edge out where it is still a face WALL_M out, where its cone is
     // steeper than 75°; elsewhere the slope stays ground.
     if (wall > 0.0) {
