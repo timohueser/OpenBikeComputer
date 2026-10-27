@@ -9,7 +9,6 @@
   },
   "config": { "name": "Trailhead", "units": "metric" },
   "battery": 82,
-  "diagnostics": "OBC diagnostics\nfw 0.4.2  hw nRF54LM20 rev B\nuptime 4h 12m\nresets 0  hardfaults 0\nlast boot: clean\nSD: ok (14.2 GB free)\nGPS: 3D fix, 11 sats\nbaro: 992.4 hPa\n",
   "routes": [
     {
       "id": "kettle-moraine-loop",

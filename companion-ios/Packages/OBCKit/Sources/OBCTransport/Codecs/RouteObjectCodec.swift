@@ -12,8 +12,6 @@ public enum RouteObjectCodec {
     /// The one version the device accepts. Older files are rejected on both sides, so a stored
     /// route re-imports rather than mis-decoding.
     static let version: UInt8 = 5
-    /// The header's ride core; every ride-path field lives here. The waypoint extension follows.
-    static let headerBaseLength = 112
     static let headerLength = 160
     static let chunkMetaLength = 44
     static let waypointLength = 80
@@ -23,8 +21,6 @@ public enum RouteObjectCodec {
     static let nameCap = 48
     /// Waypoint short-name cap.
     static let waypointNameCap = 24
-    /// `INT16_MIN` = "elevation unknown" in a waypoint record.
-    static let waypointElevationUnknown = Int16.min
 
     // MARK: Encode
 

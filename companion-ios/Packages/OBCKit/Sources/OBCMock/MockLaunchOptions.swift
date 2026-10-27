@@ -41,8 +41,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
     public var firmwareDemo: FirmwareDemoStage?
     /// Pad the mock device's route catalog to the 64-route resident-menu boundary.
     public var deviceRoutesFull: Bool
-
-    public var oldFirmware: Bool
     /// The simulator photo library's access state. `nil` starts undetermined, as a fresh install.
     public var photoAccess: PhotoAccess?
     /// The mock library's last photo is gone after it is added.
@@ -63,7 +61,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
         networkOnline: Bool? = nil,
         firmwareDemo: FirmwareDemoStage? = nil,
         deviceRoutesFull: Bool = false,
-        oldFirmware: Bool = false,
         photoAccess: PhotoAccess? = nil,
         photoGone: Bool = false
     ) {
@@ -81,7 +78,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
         self.networkOnline = networkOnline
         self.firmwareDemo = firmwareDemo
         self.deviceRoutesFull = deviceRoutesFull
-        self.oldFirmware = oldFirmware
         self.photoAccess = photoAccess
         self.photoGone = photoGone
     }
@@ -152,8 +148,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
 
         let deviceRoutesFull = arguments.contains("-OBCDeviceRoutesFull")
             || environment["OBC_DEVICE_ROUTES_FULL"] == "1"
-        let oldFirmware = arguments.contains("-OBCOldFirmware")
-            || environment["OBC_OLD_FIRMWARE"] == "1"
         let photoAccess: PhotoAccess? = switch value("OBCPhotoAccess", env: "OBC_PHOTO_ACCESS") {
         case "full": .full
         case "limited": .limited
@@ -177,7 +171,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
             networkOnline: networkOnline,
             firmwareDemo: firmwareDemo,
             deviceRoutesFull: deviceRoutesFull,
-            oldFirmware: oldFirmware,
             photoAccess: photoAccess,
             photoGone: photoGone)
     }
@@ -187,10 +180,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
         if let fixtures { control.loadFixtures(fixtures) }
         if let connection { control.connection = connection }
         control.routesNearlyFull = deviceRoutesFull
-        // The flag forces old-firmware even over a scenario that supports clock sync;
-        // it never re-enables it (a `.oldFirmware` scenario stays old).
-        if oldFirmware { control.supportsClockSync = false }
-
         return control
     }
 }

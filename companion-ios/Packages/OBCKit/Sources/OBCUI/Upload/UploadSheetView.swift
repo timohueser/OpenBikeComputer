@@ -129,7 +129,6 @@ private struct PreviewUploadTransport: DeviceLink, DeviceObjects {
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo { DeviceInfo(name: "Trailhead", firmwareVersion: "0") }
     func listRoutes() async throws -> [RouteCatalogEntry] { [] }
-    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
     func deleteRoute(_ id: DeviceObjectID) async throws {}
     func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
     func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }

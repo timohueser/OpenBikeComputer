@@ -16,18 +16,15 @@ public struct FixtureSet: Sendable {
     /// Trips grouping some of `routes`, seeded into the library as phone records. A trip is app
     /// metadata; the device knows nothing of it until an upload.
     public var trips: [TripEntry]
-    public var diagnostics: Data
 
     public init(deviceInfo: DeviceInfo, config: DeviceConfig, battery: Int,
-                routes: [RouteEntry], rides: [RideEntry], trips: [TripEntry] = [],
-                diagnostics: Data) {
+                routes: [RouteEntry], rides: [RideEntry], trips: [TripEntry] = []) {
         self.deviceInfo = deviceInfo
         self.config = config
         self.battery = battery
         self.routes = routes
         self.rides = rides
         self.trips = trips
-        self.diagnostics = diagnostics
     }
 }
 
@@ -120,7 +117,7 @@ public struct RouteEntry: Sendable {
         RouteBlob(summary: summary, waypoints: waypoints, payload: MockPayload.make(count: payloadByteCount))
     }
 
-    /// What the device serves for this route.
+    /// The detail screen's data for this route.
     public func detail() -> RouteDetail {
         RouteDetail(
             summary: summary, waypoints: waypoints,
@@ -227,8 +224,7 @@ extension FixtureSet {
             serial: "OBC-MOCK-000000", storeID: defaultStoreID,
             obcmVersion: defaultObcmVersion),
         config: DeviceConfig(name: "OBC (mock)"),
-        battery: 72, routes: [], rides: [],
-        diagnostics: Data("OBC diagnostics — built-in fallback\n".utf8)
+        battery: 72, routes: [], rides: []
     )
 }
 
@@ -318,7 +314,6 @@ private struct FixtureFile: Decodable {
     let deviceInfo: DeviceInfoDTO
     let config: ConfigDTO
     let battery: Int
-    let diagnostics: String?
     let routes: [RouteDTO]
     let rides: [RideDTO]
     /// Optional, and carried only by the trip fixtures: it joins some of `routes` into trips
@@ -332,8 +327,7 @@ private struct FixtureFile: Decodable {
             battery: battery,
             routes: routes.map(\.entry),
             rides: rides.map(\.entry),
-            trips: (trips ?? []).map(\.entry),
-            diagnostics: Data((diagnostics ?? "").utf8)
+            trips: (trips ?? []).map(\.entry)
         )
     }
 }

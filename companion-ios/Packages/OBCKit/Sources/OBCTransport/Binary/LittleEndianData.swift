@@ -28,14 +28,6 @@ extension Data {
         self[index + 1] = UInt8((value >> 8) & 0xFF)
     }
 
-    mutating func writeUInt32LE(_ value: UInt32, at offset: Int) {
-        let index = startIndex + offset
-        self[index] = UInt8(value & 0xFF)
-        self[index + 1] = UInt8((value >> 8) & 0xFF)
-        self[index + 2] = UInt8((value >> 16) & 0xFF)
-        self[index + 3] = UInt8((value >> 24) & 0xFF)
-    }
-
     func readUInt16LE(at index: Index) -> UInt16 {
         UInt16(self[index]) | (UInt16(self[index + 1]) << 8)
     }

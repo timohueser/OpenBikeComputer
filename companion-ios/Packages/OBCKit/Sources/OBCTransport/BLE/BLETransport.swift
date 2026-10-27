@@ -331,11 +331,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         try await write(ConfigObjectCodec.encode(config), to: GATT.config)
     }
 
-    public func readDiagnostics() async throws -> Data {
-        // Protocol v4 has no diagnostics kind, so this surface stays fail-closed.
-        throw DeviceError.readFailed
-    }
-
     public func deleteRoute(_ id: DeviceObjectID) async throws {
         try await remove(id)
     }
@@ -384,31 +379,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         return RideCatalog(rides: rides, hiddenRideCount: 0)
     }
 
-    public func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
-        // The stored route blob, decoded app-side for the waypoints and the elevation profile.
-        // Header totals are exact; the profile and max grade come from the stored geometry.
-        let decoded = try RouteObjectCodec.decode(try await download(id))
-        let geometry = RouteStats.compute(from: decoded.points)
-        // A device-stored object has no library identity, so the summary rides under a
-        // placeholder id that nothing keys on.
-        let summary = RouteSummary(
-            id: RouteID("device-\(id.raw)"),
-            name: decoded.name,
-            distanceMeters: Double(decoded.totalDistanceMeters),
-            elevationGainMeters: Double(decoded.totalAscentMeters),
-            estimatedDuration: TimeInterval(decoded.bikeType.estimatedSeconds(
-                distanceMeters: decoded.totalDistanceMeters, ascentMeters: decoded.totalAscentMeters)),
-            pointCount: decoded.points.count,
-            trackPreview: TrackPreview.normalizing(decoded.points.map(\.coordinate))
-        )
-        return RouteDetail(
-            summary: summary,
-            waypoints: decoded.waypoints,
-            elevationProfile: geometry.elevationProfile,
-            maxGradePercent: geometry.maxGradePercent
-        )
-    }
-
     public func listTrips() async throws -> [TripCatalogEntry] {
         // Badge and reconcile input, like routes. Stage details are fetched only by a download.
         try await headEntries(kind: .trip).map { entry in
@@ -417,12 +387,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 distanceMeters: 0, elevationGainMeters: 0,
                 stageCount: 0, crc32: entry.payloadCRC32)
         }
-    }
-
-    public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Trip {
-        // The stored trip blob, decoded app-side for its name and stage ids. Reconcile falls back
-        // to it only when the trip catalog's CRC cannot confirm the fingerprint.
-        try TripObjectCodec.decode(try await download(id))
     }
 
     public func deleteTrip(_ id: DeviceObjectID) async throws {
@@ -496,13 +460,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 payloadLength: downloaded.result.payloadLength,
                 payloadCRC32: downloaded.result.payloadCRC32)
             return DownloadedRide(id: id, payload: downloaded.payload, source: verified)
-        } catch { throw deviceError(for: error) }
-    }
-
-    /// GET with no revision returns the head, so reading one object by id needs no revision read.
-    fileprivate func download(_ id: DeviceObjectID) async throws -> Data {
-        do {
-            return try await transferClient.get(objectID: ObjectID(rawValue: id.raw)).payload
         } catch { throw deviceError(for: error) }
     }
 

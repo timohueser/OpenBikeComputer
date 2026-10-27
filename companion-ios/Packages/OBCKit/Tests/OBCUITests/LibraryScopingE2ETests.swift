@@ -59,9 +59,6 @@ import OBCTransport
         }
 
         func listRoutes() async throws -> [RouteCatalogEntry] { [] }
-        func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
-            throw DeviceError.readFailed
-        }
         func uploadRoute(_ route: RouteBlob) -> TransferHandle {
             .immediatelyFinished(.failed(.notConnected))
         }

@@ -376,7 +376,6 @@ private struct PreviewNoopTransport: DeviceLink, DeviceObjects {
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo { DeviceInfo(name: "Preview", firmwareVersion: "0") }
     func listRoutes() async throws -> [RouteCatalogEntry] { [] }
-    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { .immediatelyFinished(.failed(.notConnected)) }
     func deleteRoute(_ id: DeviceObjectID) async throws {}
     func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
