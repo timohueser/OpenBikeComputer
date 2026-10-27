@@ -131,7 +131,7 @@
         <TrailViewConditions {view} onChange={change} />
         {#if hasRoute}
             <div class="route" role="group" aria-label="Route">
-                <button type="button" aria-pressed={routeShown} onclick={() => { routeShown = !routeShown; drawRoute(); }}><Icon name="route" />Route</button>
+                <button type="button" aria-pressed={routeShown} onclick={() => { routeShown = !routeShown; position = null; drawRoute(); }}><Icon name="route" />Route</button>
                 <button type="button" aria-pressed={look === 'grade'} disabled={!routeShown} onclick={() => choose('grade')}><Icon name="mountain" />Grade</button>
                 <button type="button" aria-pressed={look === 'surface'} disabled={!routeShown} onclick={() => choose('surface')}><Icon name="layers" />Surface</button>
             </div>
