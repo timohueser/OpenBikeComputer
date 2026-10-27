@@ -58,7 +58,7 @@ function cornersIn(lines: Line[]): { corners: Corner[]; grid: Grid } {
             if (corner && !reached(all, corner, p.line, q.line)) corners.push(corner);
         });
     }
-    const grid = gridOf(corners.map(({ o, a, b }) => [Math.min(o[0], a[0], b[0]), Math.min(o[1], a[1], b[1]), Math.max(o[0], a[0], b[0]), Math.max(o[1], a[1], b[1])]));
+    const grid = gridOf(corners.map(boxOf));
     found.set(lines, { corners, grid });
     return { corners, grid };
 }
@@ -78,9 +78,9 @@ function segmentsOf(lines: Line[]): Segments {
 
 /** Whether the band of a line but the corner's own two reaches into it, at points about a metre apart along and across each segment. */
 function reached({ list, grid }: Segments, corner: Corner, ...own: Line[]): boolean {
-    const { o, a, b } = corner, unit = metresPerUnit(o[1]);
+    const unit = metresPerUnit(corner.o[1]), [x0, y0, x1, y1] = boxOf(corner);
     let hit = false;
-    near(grid, Math.min(o[0], a[0], b[0]), Math.min(o[1], a[1], b[1]), Math.max(o[0], a[0], b[0]), Math.max(o[1], a[1], b[1]), corner.h / unit, k => {
+    near(grid, x0, y0, x1, y1, 0, k => {
         const [line, v] = list[k];
         if (hit || own.includes(line)) return;
         const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), dx = bx - ax, dy = by - ay, l = Math.hypot(dx, dy) || 1;
@@ -155,6 +155,13 @@ function cornerOf(p: Way, q: Way): Corner | undefined {
         o: [Math.round(x + o[0] / unit), Math.round(y + o[1] / unit)], a, b, z: [za, zb], walk: [wa, wb],
         code: p.line.code === q.line.code ? p.line.code : ROAD_CODE, profile: narrow.profile, h: narrow.h,
     };
+}
+
+/** The box of a corner: of its arc's centre and ends, and of the roads' corner, where the edges through its ends meet. */
+export function boxOf({ o, a, b }: Corner): number[] {
+    const da = [o[1] - a[1], a[0] - o[0]], eb = [b[0] - o[0], b[1] - o[1]], t = ((b[0] - a[0]) * eb[0] + (b[1] - a[1]) * eb[1]) / (da[0] * eb[0] + da[1] * eb[1]);
+    const xs = [o[0], a[0], b[0], a[0] + t * da[0]], ys = [o[1], a[1], b[1], a[1] + t * da[1]];
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
 }
 
 /** Whether a point lies in a corner: between the ends of its arc seen from its centre, and off both roads. */

@@ -4,7 +4,7 @@ import { EARTH_RADIUS } from '../frame/frame';
 import { DEEPEST, EXTENT, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
-import { cornersOf } from './corners';
+import { boxOf, cornersOf } from './corners';
 import { BUILT_M, LEFT, near, RIGHT, sidesNear, townOf, type Town } from './town';
 
 /** Words of a primitive record. */
@@ -665,8 +665,8 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
         const at = record([x, y, 0, 0, JUNCTION, 0, f(h)]);
         for (const c of touched) cells[0][c].push(at);
     }
-    for (const { o, a, b, z, walk, code, profile, h } of cornersOf(lines)) {
-        const xs = [o[0], a[0], b[0]], ys = [o[1], a[1], b[1]], touched = within([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], h);
+    for (const corner of cornersOf(lines)) {
+        const { o, a, b, z, walk, code, profile, h } = corner, touched = within(boxOf(corner), 1);
         if (!touched.length) continue;
         const at = record([...o, ...a, CORNER, code | (profile << 16), f(z[0]), f(z[1]), f(walk[0]), f(walk[1]), ...b, f(h)]);
         for (const c of touched) cells[2][c].push(at);
