@@ -745,11 +745,11 @@ fn trailview_canopy(
     use crate::forest_reference::{model_tiles, models, ID, LEAF_TYPE};
     let sources = obc_data::sources::all();
     let path = |(x, y): (u32, u32)| format!("12/{x}/{y}.tif");
-    let tiles = |bbox: Option<&Bbox>, countries: &[String]| -> Result<BTreeMap<String, String>, Unplanned> {
-        let mut tiles = BTreeMap::new();
+    let tiles = |bbox: Option<&Bbox>, countries: &[String]| -> Result<BTreeMap<String, Vec<String>>, Unplanned> {
+        let mut tiles: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (_, model) in models(sources, bbox, countries) {
             for tile in model_tiles(model, bbox).map_err(Unplanned::Failed)? {
-                tiles.entry(path(tile)).or_insert_with(|| model.id.clone());
+                tiles.entry(path(tile)).or_default().push(model.id.clone());
             }
         }
         Ok(tiles)
@@ -786,7 +786,7 @@ fn trailview_canopy(
         return Err(invalid("the region has no canopy: switch the layer trailview-canopy off".into()));
     }
     let mut credits: Vec<&str> = Vec::new();
-    for model in files.iter().map(|path| needed[path].as_str()).chain([LEAF_TYPE]) {
+    for model in files.iter().flat_map(|path| needed[path].iter().map(String::as_str)).chain([LEAF_TYPE]) {
         let credit = attribution(model);
         if !credits.contains(&credit) {
             credits.push(credit);
