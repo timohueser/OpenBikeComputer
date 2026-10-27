@@ -99,7 +99,7 @@ describe('the stamp data of a node', () => {
             // Junctions, then each lake's edges and its marker, then the corners, the segments, each line's together, and the walks.
             const kinds = Array.from(entries, entry => `${word(entry & ~INSIDE, 4)},`).join('');
             expect(kinds).toMatch(new RegExp(`^(${JUNCTION},)*((${EDGE},)*${LAKE},)*(${CORNER},)*((${ROAD}|${PATH}),)*(${WALK},)*$`));
-            const lines = Array.from(entries, entry => entry & ~INSIDE).filter(r => [ROAD, PATH].includes(word(r, 4))).map(r => word(r, 13));
+            const lines = Array.from(entries, entry => entry & ~INSIDE).filter(r => [ROAD, PATH].includes(word(r, 4))).map(r => word(r, 13) & 0xffff);
             expect(lines.filter((id, i) => id !== lines[i - 1]).length).toBe(new Set(lines).size);
             const marker = Array.from(entries).find(entry => word(entry & ~INSIDE, 4) === LAKE);
             if (insideRings(lake.rings, origin[0], origin[1])) {

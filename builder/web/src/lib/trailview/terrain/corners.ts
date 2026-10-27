@@ -2,7 +2,7 @@
 // apart, their kerb turns from the edge of the one to the edge of the other round an arc: the stamps paint
 // its asphalt and the sidewalk round it and hold their ground, and the slabs follow it. A corner that
 // another line's band reaches into stays sharp, so its paint covers no other way or water.
-import { crossSlope, metresPerUnit, PROFILES, ROAD, type Line } from './bins';
+import { crossSlope, metresPerUnit, PROFILES, RAIL, ROAD, type Line } from './bins';
 import { gridOf, LEFT, near, RIGHT, type Grid } from './town';
 
 /**
@@ -24,6 +24,46 @@ export interface Corner { o: [number, number]; a: [number, number]; b: [number, 
 interface Way { line: Line; v: number; step: number; ux: number; uy: number; angle: number; room: number }
 
 const found = new WeakMap<Line[], { corners: Corner[]; grid: Grid }>();
+const paired = new WeakMap<Line[], Map<Line, [Line?, Line?]>>();
+/** Two ends of roads that meet at most this straight run on into each other: the cosine of the angle between their ways out. */
+const RUNS_ON = 0.7;
+
+/** Per road, the roads that its start and its end run on into: where OSM splits a road and no road or track passes through, the two ends that run most nearly straight on. */
+export function partnersOf(lines: Line[]): Map<Line, [Line?, Line?]> {
+    const known = paired.get(lines);
+    if (known) return known;
+    const key = (line: Line, v: number) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
+    const ends = new Map<string, { line: Line; end: 0 | 1 }[]>(), inner = new Set<string>();
+    for (const line of lines) {
+        if (line.kind !== ROAD && line.kind !== RAIL) continue;
+        const n = line.z.length;
+        for (let v = 1; v + 1 < n; v++) inner.add(key(line, v));
+        if (line.kind === ROAD) for (const end of [0, 1] as const) ends.set(key(line, end ? n - 1 : 0), [...(ends.get(key(line, end ? n - 1 : 0)) ?? []), { line, end }]);
+    }
+    const partner = new Map<Line, [Line?, Line?]>();
+    for (const [at, here] of ends) {
+        if (inner.has(at) || here.length < 2) continue;
+        const away = ({ line, end }: (typeof here)[number]) => {
+            const n = line.z.length, [v, w] = end ? [n - 1, n - 2] : [0, 1], dx = line.xy[2 * w] - line.xy[2 * v], dy = line.xy[2 * w + 1] - line.xy[2 * v + 1], l = Math.hypot(dx, dy) || 1;
+            return [dx / l, dy / l];
+        };
+        let best: [number, number] | undefined, least = RUNS_ON;
+        for (let i = 0; i < here.length; i++) for (let k = i + 1; k < here.length; k++) {
+            const [p, q] = [away(here[i]), away(here[k])], cos = p[0] * q[0] + p[1] * q[1];
+            if (cos < least) [least, best] = [cos, [i, k]];
+        }
+        if (!best) continue;
+        for (const [a, b] of [[best[0], best[1]], [best[1], best[0]]]) (partner.get(here[a].line) ?? partner.set(here[a].line, [undefined, undefined]).get(here[a].line)!)[here[a].end] = here[b].line;
+    }
+    paired.set(lines, partner);
+    return partner;
+}
+
+/** A road's half-width at its vertex v: halfway to its partner's at an end that runs on into one, so the paint's and the slab's edges run on across the joint. */
+export function halfAt(line: Line, v: number, partners: Map<Line, [Line?, Line?]>): number {
+    const other = v === 0 ? partners.get(line)?.[0] : v === line.z.length - 1 ? partners.get(line)?.[1] : undefined;
+    return other ? (line.h + other.h) / 2 : line.h;
+}
 
 export function cornersOf(lines: Line[]): Corner[] {
     return cornersIn(lines).corners;

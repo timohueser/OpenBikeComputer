@@ -462,15 +462,16 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 hi[BANKS] = min(hi[BANKS], g.z + (rule.tol + widen(max(x, 0.0), reach, rule.cut)));
             }
         } else {
-            if (word(r + 13u) != line) {
+            if ((word(r + 13u) & 0xffffu) != line) {
                 out.conflict = out.conflict || (line_near && !line_held);
-                line = word(r + 13u);
+                line = word(r + 13u) & 0xffffu;
                 line_near = false;
                 line_held = false;
             }
-            let h = real(r + 8u);
             let rule = profiles[(word(r + 5u) >> 16u) & 0xffu];
             let g = along(r, p, unit);
+            // The half-width grows from the start to the end by the centimetres in the high half of the line's word.
+            let h = real(r + 8u) + f32(bitcast<i32>(word(r + 13u)) >> 16u) * 0.01 * clamp(g.da / max(g.da + g.db, 1e-6), 0.0, 1.0);
             // A bridge past its abutments holds the ground under its deck, and paints nothing: the deck draws its road.
             let bridge = kind == BRIDGE;
             if (bridge && g.lateral < INF && road_shows(h, rule, level)

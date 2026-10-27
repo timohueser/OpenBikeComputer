@@ -4,7 +4,7 @@ import { EARTH_RADIUS } from '../frame/frame';
 import { DEEPEST, EXTENT, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
-import { boxOf, cornersOf } from './corners';
+import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
 import { BUILT_M, LEFT, near, RIGHT, sidesNear, townOf, type Town } from './town';
 
 /** Words of a primitive record. */
@@ -672,6 +672,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
         for (const c of touched) cells[2][c].push(at);
     }
     let heights = false;
+    const partners = partnersOf(lines);
     [...lines, ...walks].forEach((line, id) => {
         const stamps = shows(line, gateTexel(node.level));
         if (line.kind === STREAM || (!stamps && node.level < NEAR)) return;
@@ -696,8 +697,10 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             const ends = line.abut ? [line.abut[0] ? along[v] : 1e30, line.abut[1] ? along[n - 1] - along[v + 1] : 1e30].map(f)
                 : line.gallery ? [along[v], along[n - 1] - along[v + 1]].map(f) : line.sleepers ? [line.sleepers[v], line.sleepers[v + 1]].map(f)
                     : [line.tilt?.[2 * v] ?? 0, line.tilt?.[2 * v + 1] ?? 0];
-            // The surface code in the low 4 bits, the sides with a sidewalk above it.
-            const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h), f(mx), f(my), f(nx), f(ny), id,
+            // The surface code in the low 4 bits, the sides with a sidewalk above it. The half-width at the
+            // start, and with the line's index the centimetres that it grows to the end, where it meets a partner's.
+            const ha = halfAt(line, v, partners), grow = Math.round(100 * (halfAt(line, v + 1, partners) - ha));
+            const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(ha), f(mx), f(my), f(nx), f(ny), id | (grow << 16),
                 ...ends]);
             for (const c of touched) cells[2][c].push(at);
             heights ||= stamps;

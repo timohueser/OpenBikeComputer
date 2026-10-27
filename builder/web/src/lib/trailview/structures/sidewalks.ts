@@ -3,10 +3,11 @@
 // drawn ground on the outer side. The stamps hold the ground under a slab at the road's height. A slab
 // stops where a carriageway crosses it, at a side road's mouth; where two roads' sidewalks meet in a
 // corner, the road of the first class in roads.json, then the first line, keeps it. A road that OSM
-// splits runs on into its next line across their shared mitre, each as wide as the paint has it. In a junction's corner the slab follows
+// splits runs on into its next line across their shared mitre, its kerb halfway between their widths there
+// as the paint has it. In a junction's corner the slab follows
 // the kerb's arc from the one road's sidewalk to the other's, or narrows to the bare kerb into a road
 // without one. Farther off, the mask paints them.
-import { cornered, cornersOf, type Corner } from '../terrain/corners';
+import { cornered, cornersOf, halfAt, partnersOf, type Corner } from '../terrain/corners';
 import { crossSlope, metresPerUnit, PAVING_CODE, PROFILES, RAIL, ROAD, type Line } from '../terrain/bins';
 import { gridOf, LEFT, near, RIGHT, type Grid } from '../terrain/town';
 import { GROUND, mix, PAINT, rgb, station, type MeshBuilder, type Station } from './mesh';
@@ -18,8 +19,6 @@ const RISE_M = 0.12, KERB_M = 0.18, FOOT_M = 0.05, SINK_M = 0.3;
 const PIECE_M = 0.5, BISECTIONS = 4;
 /** No sidewalk reaches farther from its road's line. */
 const REACH_M = 10;
-/** Two ends of roads that meet at most this straight run on into each other: the cosine of the angle between their ways out. */
-const RUNS_ON = 0.7;
 /** The most that a piece of a corner's arc turns: its chord leaves a 5 m arc by 2.4 cm. */
 const ARC_STEP = Math.PI / 16;
 const PAVED = (rgb('#000000', PAINT) | PAVING_CODE) >>> 0, GRANITE = rgb('#c3c0b8'), EDGING = rgb('#a8a59e');
@@ -31,8 +30,7 @@ const known = new WeakMap<Line[], Roads>();
 function roadsOf(lines: Line[]): Roads {
     const found = known.get(lines);
     if (found) return found;
-    const segments: Roads['segments'] = [], boxes: number[][] = [], key = (line: Line, v: number) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
-    const ends = new Map<string, { line: Line; end: 0 | 1 }[]>(), inner = new Set<string>();
+    const segments: Roads['segments'] = [], boxes: number[][] = [];
     lines.forEach((line, rank) => {
         if (line.kind !== ROAD && line.kind !== RAIL) return;
         const n = line.z.length;
@@ -40,27 +38,9 @@ function roadsOf(lines: Line[]): Roads {
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4);
             segments.push({ line, v, rank });
             boxes.push([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)]);
-            if (v > 0) inner.add(key(line, v));
         }
-        if (line.kind === ROAD) for (const end of [0, 1] as const) ends.set(key(line, end ? n - 1 : 0), [...(ends.get(key(line, end ? n - 1 : 0)) ?? []), { line, end }]);
     });
-    // Where no road passes through, the two ends that run most nearly straight on pair up.
-    const partner = new Map<Line, [Line?, Line?]>();
-    for (const [at, here] of ends) {
-        if (inner.has(at) || here.length < 2) continue;
-        const away = ({ line, end }: (typeof here)[number]) => {
-            const n = line.z.length, [v, w] = end ? [n - 1, n - 2] : [0, 1], dx = line.xy[2 * w] - line.xy[2 * v], dy = line.xy[2 * w + 1] - line.xy[2 * v + 1], l = Math.hypot(dx, dy) || 1;
-            return [dx / l, dy / l];
-        };
-        let best: [number, number] | undefined, least = RUNS_ON;
-        for (let i = 0; i < here.length; i++) for (let k = i + 1; k < here.length; k++) {
-            const [p, q] = [away(here[i]), away(here[k])], cos = p[0] * q[0] + p[1] * q[1];
-            if (cos < least) [least, best] = [cos, [i, k]];
-        }
-        if (!best) continue;
-        for (const [a, b] of [[best[0], best[1]], [best[1], best[0]]]) (partner.get(here[a].line) ?? partner.set(here[a].line, [undefined, undefined]).get(here[a].line)!)[here[a].end] = here[b].line;
-    }
-    const roads = { grid: gridOf(boxes), segments, partner };
+    const roads = { grid: gridOf(boxes), segments, partner: partnersOf(lines) };
     known.set(lines, roads);
     return roads;
 }
@@ -148,7 +128,7 @@ export function sidewalks(b: MeshBuilder, lines: Line[], owns: Owns): void {
                     const [u0, face0] = k > 0 ? edge(centre(k), centre(k - 1)) : [0, !runsOn(v, side, -1)];
                     const [u1, face1] = last + 1 < pieces ? edge(centre(last), centre(last + 1)) : [1, !runsOn(v, side, 1)];
                     const slope = (u: number) => crossSlope(line, v, u * length, (1 - u) * length);
-                    slab(b, s, t, u0, u1, side === LEFT ? 1 : -1, [h, h], [walk, walk], [face0, face1], slope);
+                    slab(b, s, t, u0, u1, side === LEFT ? 1 : -1, [halfAt(line, v, partner), halfAt(line, v + 1, partner)], [walk, walk], [face0, face1], slope);
                 }
             }
         }
