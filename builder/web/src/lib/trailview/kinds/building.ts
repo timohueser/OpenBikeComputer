@@ -1,11 +1,15 @@
-// Buildings show their use, which the bake gives them (specs/trailview-features.md): a sign on the wall that
-// faces the nearest way. The houses draw the buildings themselves.
+// Buildings show their use, which the bake gives them (specs/trailview-features.md): a sign at the corner of the
+// wall that faces the nearest way. The houses draw the buildings themselves.
 import { hospitalSign, pharmacySign, shopSign } from '../models/amenities';
 import { metresPerUnit } from '../terrain/bins';
 import { nearestWay, unitModel, type Kind } from './kind';
 
-/** A sign hangs on a wall at least this long, and draws to REACH_M. */
-const WALL_M = 2.5, REACH_M = 500;
+/**
+ * A sign hangs on a wall at least WALL_M long, CORNER_M from its corner nearer the way: closer than a
+ * window or a shutter of any house of houses.wgsl comes to it, and far from the door in the wall's
+ * middle. It draws to REACH_M.
+ */
+const WALL_M = 2.5, CORNER_M = 0.12, REACH_M = 500;
 const SIGNS = { shop: unitModel(shopSign, REACH_M), pharmacy: unitModel(pharmacySign, REACH_M), hospital: unitModel(hospitalSign, REACH_M) };
 
 export default {
@@ -20,11 +24,15 @@ export default {
             const ax = ring[2 * i], ay = ring[2 * i + 1], bx = ring[(2 * i + 2) % ring.length], by = ring[(2 * i + 3) % ring.length];
             const length = Math.hypot(bx - ax, by - ay);
             if (length * unit < WALL_M) continue;
-            const x = (ax + bx) / 2, y = (ay + by) / 2, way = nearestWay(out.ways, x, y);
+            const mx = (ax + bx) / 2, my = (ay + by) / 2, way = nearestWay(out.ways, mx, my);
             // Out of the building: across the wall, away from its middle.
-            const side = (by - ay) * (x - cx) - (bx - ax) * (y - cy) > 0 ? 1 : -1, ox = side * (by - ay) / length, oy = -side * (bx - ax) / length;
+            const side = (by - ay) * (mx - cx) - (bx - ax) * (my - cy) > 0 ? 1 : -1, ox = side * (by - ay) / length, oy = -side * (bx - ax) / length;
             const score = way ? Math.hypot(way.px, way.py) * unit : 1e6 - length * unit;
-            if (!best || score < best.score) best = { x, y, ox, oy, score };
+            if (best && score >= best.score) continue;
+            // The corner nearer the way, and CORNER_M from it along the wall.
+            const [wx, wy] = way ? [mx + way.px, my + way.py] : [ax, ay], fromA = Math.hypot(wx - ax, wy - ay) <= Math.hypot(wx - bx, wy - by);
+            const [x, y] = fromA ? [ax, ay] : [bx, by], along = (fromA ? 1 : -1) * CORNER_M / unit / length;
+            best = { x: x + (bx - ax) * along, y: y + (by - ay) * along, ox, oy, score };
         }
         if (!best) return;
         const x = best.x + best.ox * 0.1 / unit, y = best.y + best.oy * 0.1 / unit;
