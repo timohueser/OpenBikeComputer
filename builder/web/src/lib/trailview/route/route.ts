@@ -8,7 +8,7 @@ import { wgsl } from '../gpu/wgsl';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import { metresPerUnit } from '../terrain/bins';
 
-/** Words of a point, as `Point` of route.wgsl: x, y (int32 world units), metres along, the first and last point of its grade window, and a pad. */
+/** Words of a point, as `Point` of route.wgsl: x, y (int32 world units), metres along, the first and last point of its grade window; the stride of its vec2i adds one. */
 export const POINT_WORDS = 6;
 /** The line bends at most this far from the surface between two points. */
 const STEP_M = 5;
@@ -117,9 +117,13 @@ export class Route {
         if (!r.points || r.points.size < this.points.byteLength) {
             if (r.points) gpu.destroy('route', r.points);
             r.points = gpu.buffer('route', this.points.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
-            r.group = gpu.device.createBindGroup({ layout: r.layout, entries: [r.frame, r.points, r.style].map((buffer, binding) => ({ binding, resource: { buffer } })) });
         }
         gpu.device.queue.writeBuffer(r.points, 0, this.points);
+        // The shader counts the points by the bound size, so a shorter route binds less of the buffer.
+        r.group = gpu.device.createBindGroup({ layout: r.layout, entries: [
+            { binding: 0, resource: { buffer: r.frame } }, { binding: 1, resource: { buffer: r.points, size: this.points.byteLength } },
+            { binding: 2, resource: { buffer: r.style } },
+        ] });
     }
 }
 

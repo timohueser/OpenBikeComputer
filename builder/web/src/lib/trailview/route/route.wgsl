@@ -130,8 +130,8 @@ fn route_vertex(@builtin(vertex_index) v: u32) -> RouteOut {
     let foot = s + left.xy * side * half;
     let foot_h = ground(foot);
     let lie = eye_space(foot, select(h, foot_h, known(foot_h)));
-    // Across the line as the eye sees it; a line that runs straight at the eye turns flat.
-    let facing = cross(vec3f(tangent, 0.0), c);
+    // Across the line as the eye sees it, on the side of left; a line that runs straight at the eye turns flat.
+    let facing = cross(vec3f(tangent, 0.0), c) * select(1.0, -1.0, c.z > 0.0);
     let across = select(left, normalize(facing), dot(facing, facing) > 1e-6 * distance * distance);
     var p = mix(c + across * side * half, lie, lying);
     let reach = length(p);
