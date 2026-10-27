@@ -57,7 +57,7 @@ struct FirmwareReleaseTests {
     @Test(arguments: [
         "not json",
         "[]",
-        #"{"version":"1.4.0","size":1,"sha256":"aaaa"}"#,                                       // no url
+        #"{"version":"1.4.0","size":1,"sha256":"§64§"}"#,                                       // no url
         #"{"version":"abc1234","size":1,"sha256":"§64§","url":"https://x/"}"#,                  // not a version
         #"{"version":"1.4.0","size":0,"sha256":"§64§","url":"https://x/"}"#,                    // size 0
         #"{"version":"1.4.0","size":1,"sha256":"nope","url":"https://x/"}"#,                    // short digest
@@ -278,32 +278,15 @@ struct FirmwareReleaseTests {
         #expect(try await checker.check().release?.version == "1.5.0")
     }
 
-    @Test func anEmptyPreReleaseChannelIsSimplyIgnored() async throws {
+    @Test(arguments: [(404, Data()), (500, Data()), (200, Data("not json".utf8))])
+    func aMissingOrBrokenPreReleaseChannelLeavesTheStableAnswerStanding(status: Int, body: Data) async throws {
         let fetcher = StubFetcher()
         fetcher.stub(UpdateChecker.manifestURL, body: Self.manifest(version: "1.4.0"))
-        fetcher.stub(UpdateChecker.prereleaseManifestURL, status: 404)
+        fetcher.stub(UpdateChecker.prereleaseManifestURL, status: status, body: body)
         let checker = UpdateChecker(fetcher: fetcher, store: InMemoryUpdateCheckStore())
         checker.setIncludePrereleases(true)
 
         #expect(try await checker.check().release?.version == "1.4.0")
-    }
-
-    @Test func aBrokenPreReleaseChannelLeavesTheStableAnswerStanding() async throws {
-        let fetcher = StubFetcher()
-        fetcher.stub(UpdateChecker.manifestURL, body: Self.manifest(version: "1.4.0"))
-        fetcher.stub(UpdateChecker.prereleaseManifestURL, status: 500)
-        let checker = UpdateChecker(fetcher: fetcher, store: InMemoryUpdateCheckStore())
-        checker.setIncludePrereleases(true)
-
-        #expect(try await checker.check().release?.version == "1.4.0")
-
-        let garbage = StubFetcher()
-        garbage.stub(UpdateChecker.manifestURL, body: Self.manifest(version: "1.4.0"))
-        garbage.stub(UpdateChecker.prereleaseManifestURL, body: Data("not json".utf8))
-        let second = UpdateChecker(fetcher: garbage, store: InMemoryUpdateCheckStore())
-        second.setIncludePrereleases(true)
-
-        #expect(try await second.check().release?.version == "1.4.0")
     }
 
     /// A malformed stable manifest is a publishing failure: hiding it would hide it forever.
