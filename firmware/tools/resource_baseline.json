@@ -38,7 +38,7 @@
         "ble_sensor_manager": 358,
         "usb_named": 35973,
         "sd_bounce": 2048,
-        "semmc_driver": 52,
+        "semmc_driver": 48,
         "flat_store": 10152,
         "flat_requests": 3064,
         "flat_ride_delta": 570,
