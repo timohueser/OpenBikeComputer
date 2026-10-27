@@ -11,8 +11,8 @@ name: CI
 #     needs its own invocation, run from inside the crate dir so its .cargo/config.toml selects the
 #     thumbv8m target (a `--manifest-path` from the root would build it for the host and fail on
 #     embassy-nrf). It has its own Cargo.lock, and no test harness (no_std on bare metal), so it gets
-#     `clippy`/`build` but not `--all-targets`/`test`. No `--all-features` build (the `debug-uart`
-#     and `synth` source overrides are mutually exclusive), so each config is linted on its own. Every leg cross-compiles a RISC-V blob (see `embedded`).
+#     `clippy`/`build` but not `--all-targets`/`test`. No `--all-features` build: each config is
+#     linted on its own. Every leg cross-compiles a RISC-V blob (see `embedded`).
 #   * nRF is the only board in the tree — optimise the shared crates for nRF freely.
 #   * There is no board in CI, so every embedded target is build-only.
 #   * The toolchain (channel + rustfmt/clippy + the thumbv8m / wasm32 targets) is declared once in
@@ -438,7 +438,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # default = the shipping LS021/FLPR map + two-plane path (square-loop GPS, no host feed).
+          # default = the shipping LS021/FLPR map + two-plane path (real sensors, no host feed).
           # It is the whole device: the **USB device plane** (#889) since 2026-07-26 and the **radio**
           # (#1530) since the `ble` feature was retired are compiled, linted and resource-gated by the
           # default legs below — no separate USB or BLE matrix leg exists or is needed, and neither

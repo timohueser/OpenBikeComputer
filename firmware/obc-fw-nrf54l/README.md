@@ -69,7 +69,7 @@ its own resistors on the rest. **The production board should fit external 10–1
 | P1.14 | BSP          | source sub-line start (the lone P1 source line)            |
 | P1.16 | VCOM TX      | UARTE20 → host (`debug-uart` builds only)                  |
 | P1.17 | VCOM RX      | UARTE20 ← host (`debug-uart` only; needs HWFC OFF)         |
-| P1.22 | VCOM (COM)   | COM electrode, HighDrive — or a GPIOTE toggle on `com-hw`  |
+| P1.22 | VCOM (COM)   | COM electrode, HighDrive                                   |
 | P1.23 | VB           | COM electrode                                              |
 | P1.24 | VA           | COM electrode (inverse phase)                              |
 | P1.25 | LED1         | liveness heartbeat                                         |
@@ -110,12 +110,8 @@ are refused. Set `OBC_DEMO_RIDE_FILE` to an absolute path for another marked dem
 
 | Feature | Purpose |
 | --- | --- |
-| `synth` | Square-loop GPS and altimeter source. |
-| `debug-uart` | Host sensors and commands over VCOM; overrides real sensors and `synth`. |
-| `com-hw` | TIMER21 → DPPIC20 → GPIOTE20 COM wave; verify on glass and a logic analyzer before use. |
-| `sd-bench` | SD counters and `map SD bench:` RTT lines; use with `synth`. |
+| `debug-uart` | Host sensors and commands over VCOM; overrides real sensors. |
 | `factory-demo-ride` | Write a demo ride, then stay idle. |
-| `peak-view-demo` | Seed a Kleine Scheidegg fix and open Peak View. |
 | `resource-report` | `.obc_resources` for the resource guard; never flash or package this diagnostic image. |
 | `flat-store-reset` | Destructive `flat_store_bench` maintenance mode. |
 
@@ -137,7 +133,7 @@ There is no chip select. Use the pull-ups specified in the pad table.
 
 Writes cap at 21.3 MHz; high-speed reads use 32 MHz. Re-test signal integrity on
 soldered hardware. RTT reports `SemmcError` and the aborted transfer.
-For read CRC errors at 32 MHz on a long harness, raise `READ_DELAY` in `src/semmc.rs`.
+For read CRC errors at 32 MHz on a long harness, raise `semmc::READ_DELAY`.
 
 ## Sensors
 
@@ -277,8 +273,3 @@ See [simulator controls](../../sim/desktop/README.md). Generation uses the share
 128 KiB scratch arena; Back must release it before navigation, rendering or USB.
 `obc-bake bake` writes the surface index. Convert standalone native terrain with
 `obc-dem surface native.obcd indexed.obcd`.
-
-```sh
-# Requires peak-view-demo and a fresh F fix over the debug link.
-OBC_TEST_MAP_OBJECT_ID=201 cargo run --release --features debug-uart,peak-view-demo
-```

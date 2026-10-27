@@ -513,8 +513,7 @@ impl Semmc {
     /// finish it: the one failure this driver cannot recover from. Here there is no yield at all.
     ///
     /// Blocking costs nothing here. The panel's anti-DC-bias COM wave runs on the SWI01 interrupt
-    /// executor at P3, which preempts thread mode, and on a `com-hw` build it is a TIMER, DPPI and
-    /// GPIOTE chain that uses no CPU. `async` cost 6,464 B of permanently allocated stack, because
+    /// executor at P3, which preempts thread mode. `async` cost 6,464 B of permanently allocated stack, because
     /// awaited from `main` this chain's coroutine flattens into `main`'s task-body poll frame, whose
     /// slot set is allocated on every poll for the life of the program. `#[inline(never)]` does not
     /// fix that: it governs the future constructor, not the coroutine body.

@@ -43,7 +43,7 @@
 //!
 //! The Board Configurator disconnects the on-DK QSPI device from P2_00..P2_05. Card-only pads are
 //! configured by `semmc`; claiming them as embassy GPIO would create two owners. COM is M33-driven
-//! by default and uses TIMER/DPPI/GPIOTE with `com-hw`, on the same P1_22..P1_24 nets.
+//! on P1_22..P1_24.
 //!
 //! ## Interrupt ladder
 //!
@@ -58,7 +58,7 @@
 
 #[cfg(feature = "debug-uart")]
 use embassy_nrf::buffered_uarte;
-#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+#[cfg(not(feature = "debug-uart"))]
 use embassy_nrf::twim;
 use embassy_nrf::{bind_interrupts, interrupt};
 
@@ -82,7 +82,7 @@ bind_interrupts!(pub(crate) struct UartIrqs {
 });
 
 // TWIM22 sensor-bus interrupt binding.
-#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+#[cfg(not(feature = "debug-uart"))]
 bind_interrupts!(pub(crate) struct SensorIrqs {
     SERIAL22 => twim::InterruptHandler<embassy_nrf::peripherals::SERIAL22>;
 });

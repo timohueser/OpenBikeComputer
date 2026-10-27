@@ -19,15 +19,12 @@ use obc_display::ls021::{FRAME_H, FRAME_W};
 use obc_display::FbDevice64;
 use obc_formats::io::{ByteSink, Error as ByteError};
 use obc_formats::obcr::HEADER_FULL_LEN;
-#[cfg(not(all(not(feature = "debug-uart"), feature = "synth")))]
 use obc_platform::sensor_hub::SensorConsumer;
-#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+#[cfg(not(feature = "debug-uart"))]
 use obc_platform::sensor_hub::SensorControl;
-#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+#[cfg(not(feature = "debug-uart"))]
 use obc_platform::sensor_hub::SensorDemand;
 use obc_platform::StubFuelGauge;
-#[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
-use obc_platform::SynthLocation;
 use obc_ports::{InputClock, RideClock, Sensors, SettingsStore};
 use obc_reader::{MapCache, MapTables, Reader};
 use obc_route::{RouteCache, RouteIndex, RouteReader};
@@ -48,15 +45,10 @@ const WDT_FEED_CAP_MS: u32 = 12_000;
 /// loop's own `now` counts as fresh, not as a wrapped staleness.
 const INPUT_HB_STALE_MS: u32 = 65_000;
 
-/// Synthetic-walk advance cadence on the `synth` build. The stand-in GPS publishes no signal, so
-/// the event-driven loop has no sensor event to wake on. The walk position is time-based.
-#[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
-const SYNTH_TICK_MS: u64 = 250;
-
 /// The single sensor or host wake the event-driven map loop selects on, so the loop sleeps until a
 /// datapoint arrives. With real sensors it is the hub's datapoint edge, with `debug-uart` the
-/// host-streamed edge, and with `synth` a coarse timer that steps the synthetic walk.
-#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+/// host-streamed edge.
+#[cfg(not(feature = "debug-uart"))]
 async fn wait_sensor_event(consumer: SensorConsumer<'static>) {
     consumer.wait_event().await
 }
@@ -65,19 +57,13 @@ async fn wait_sensor_event(consumer: SensorConsumer<'static>) {
 async fn wait_sensor_event() {
     obc_platform::debug_link::wait_event().await
 }
-#[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
-async fn wait_sensor_event() {
-    Timer::after_millis(SYNTH_TICK_MS).await
-}
 
 /// The loop's third select arm: a sensor or host datapoint, or a flat-store movement on either
 /// link, so a route or trip commit wakes the loop and the catalog rescan lands now.
-async fn wait_host_or_sensor_event(
-    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] consumer: SensorConsumer<'static>,
-) {
+async fn wait_host_or_sensor_event(#[cfg(not(feature = "debug-uart"))] consumer: SensorConsumer<'static>) {
     embassy_futures::select::select(
         wait_sensor_event(
-            #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+            #[cfg(not(feature = "debug-uart"))]
             consumer,
         ),
         embassy_futures::select::select(
@@ -202,10 +188,6 @@ struct NavRun {
     phase_us: [u64; 3],
     /// Store-task time spent flushing bounded output stages before the final checksum/commit.
     write_us: u64,
-    /// Physical-card reads issued inside planner steps, by phase. Unlike the cache counters this
-    /// sees sector splitting and alignment bounces at the block-device boundary.
-    #[cfg(feature = "sd-bench")]
-    read_perf: [crate::card_io::ReadPerf; 3],
 }
 
 enum NavIo {
@@ -436,27 +418,6 @@ fn nav_finish(
         hw,
         stackmeter::total()
     );
-    #[cfg(feature = "sd-bench")]
-    {
-        let mut total = crate::card_io::ReadPerf::ZERO;
-        for phase in run.read_perf {
-            total.add_assign(phase);
-        }
-        defmt::info!(
-            "nav SD bench: total_us={=u32} commands={=u32} blocks={=u32} single={=u32} multi={=u32} snap_us={=u32} snap_cmds={=u32} search_us={=u32} search_cmds={=u32} emit_us={=u32} emit_cmds={=u32}",
-            total.us,
-            total.commands,
-            total.blocks,
-            total.single_commands,
-            total.multi_commands,
-            run.read_perf[0].us,
-            run.read_perf[0].commands,
-            run.read_perf[1].us,
-            run.read_perf[1].commands,
-            run.read_perf[2].us,
-            run.read_perf[2].commands
-        );
-    }
 }
 
 /// The [`Gesture`](obc_app::Gesture) variant's name for the drained-input `defmt` breadcrumb. It
@@ -598,7 +559,7 @@ impl RideExec {
     }
 }
 
-#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+#[cfg(not(feature = "debug-uart"))]
 fn desired_sensor_power(app: &App) -> SensorDemand {
     SensorDemand::for_demand(
         app.recording(),
@@ -658,18 +619,14 @@ pub(crate) async fn run_app(
     // The watchdog feed handle, `None` only if the dog was already running with a foreign config.
     mut wdt: Option<wdt::WatchdogHandle>,
     // The sensor hub's consumer handle: the source drains, the presence flag and the event wake.
-    // Absent only on the pure `synth` build.
-    #[cfg(not(all(not(feature = "debug-uart"), feature = "synth")))] consumer: SensorConsumer<'static>,
+    consumer: SensorConsumer<'static>,
     // The hub's control handle: the GPS rate and power latches the sensor task awaits.
-    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] control: SensorControl<'static>,
-    // The map bbox centre. Only the `SynthLocation` stand-in needs it, because the host feed and the
-    // real GPS both stream absolute positions.
-    #[cfg(all(not(feature = "debug-uart"), feature = "synth"))] cam_center: (i32, i32),
+    #[cfg(not(feature = "debug-uart"))] control: SensorControl<'static>,
 ) -> ! {
     // Native renderer colour → identity `Rgb565`; `FbDevice64` quantizes to RGB222 on store.
     let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
 
-    // Sensor sources: three builds, and one `Sensors` either way, so the app cannot tell which.
+    // Sensor sources: two builds, and one `Sensors` either way, so the app cannot tell which.
     #[cfg(feature = "debug-uart")]
     let (mut debug_loc, mut debug_alt, mut debug_compass) = (
         obc_platform::debug_link::DebugLocation,
@@ -679,8 +636,6 @@ pub(crate) async fn run_app(
     // The hub sources are not bound here. They are stateless one-pointer drains, so each pass site
     // builds them as call temporaries; a binding would park one hub pointer per source in this
     // task's future for no behavioural difference.
-    #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
-    let mut synth = SynthLocation::new(cam_center.0, cam_center.1, Instant::now());
     // Battery: a fixed stand-in until the PMIC fuel gauge is wired in.
     let mut fuel = StubFuelGauge::new(75);
 
@@ -705,8 +660,6 @@ pub(crate) async fn run_app(
         exec.facts.raise_alerts(obc_app::Alert::RideRecoveredIncomplete);
     }
 
-    #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
-    let mut prev_route: Option<usize> = None;
     let mut prev_active: Option<usize> = None;
     // The ride session this executor has opened an object for. Never cleared by a close: a session
     // that has been served is served, whatever became of its object.
@@ -795,15 +748,15 @@ pub(crate) async fn run_app(
     // Align the GPS to the persisted fix interval: push it to the sensor task once at boot, then
     // again whenever the Power screen edits it. `prev_interval` gates the re-VALSET, so an unrelated
     // settings change does not reconfigure the receiver.
-    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+    #[cfg(not(feature = "debug-uart"))]
     let mut prev_interval = app.settings().fix_interval_s;
-    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+    #[cfg(not(feature = "debug-uart"))]
     control.set_rate(prev_interval);
 
     // Seed the receiver and compass demand; only changed levels are published after each pass.
-    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+    #[cfg(not(feature = "debug-uart"))]
     let mut prev_power = desired_sensor_power(app);
-    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+    #[cfg(not(feature = "debug-uart"))]
     control.set_power(prev_power);
 
     // Whether the map-transfer card was observed on the stack last pass: the latch that turns "the
@@ -897,7 +850,7 @@ pub(crate) async fn run_app(
 
         // The sensor task publishes once GPS responds or its startup deadline passes. Map chips that
         // are absent at that point to a dismissable warning; this is not a live-availability stream.
-        #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+        #[cfg(not(feature = "debug-uart"))]
         if let Some(p) = consumer.take_presence() {
             let mut w = obc_app::Alerts::NONE;
             if !p.gps {
@@ -1564,8 +1517,6 @@ pub(crate) async fn run_app(
                                             t0: Instant::now(),
                                             phase_us: [0; 3],
                                             write_us: 0,
-                                            #[cfg(feature = "sd-bench")]
-                                            read_perf: [crate::card_io::ReadPerf::ZERO; 3],
                                         });
                                         None
                                     }
@@ -1794,15 +1745,10 @@ pub(crate) async fn run_app(
                                     obc_route::NavPhase::Search => 1,
                                     obc_route::NavPhase::Emit | obc_route::NavPhase::Done => 2,
                                 };
-                                #[cfg(feature = "sd-bench")]
-                                let reads_before = crate::card_io::read_perf_snapshot();
                                 let ts = Instant::now();
                                 let step = nav_step(map_src, map_tables, map_cache, &mut bufs);
                                 let us = ts.elapsed().as_micros();
                                 run.phase_us[phase_idx] += us;
-                                #[cfg(feature = "sd-bench")]
-                                run.read_perf[phase_idx]
-                                    .add_assign(crate::card_io::read_perf_snapshot().since(reads_before));
                                 run.io = if step.appended == 0 && step.patch_len == 0 {
                                     match step.outcome {
                                         obc_route::Step::Running => {
@@ -2173,7 +2119,7 @@ pub(crate) async fn run_app(
                     SettingsEffect::PersistRevision { token, revision } => match settings_store.save(app.settings()) {
                         Ok(()) => {
                             // Push a changed GPS fix interval to the sensor task → it re-VALSETs the M10's rate.
-                            #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+                            #[cfg(not(feature = "debug-uart"))]
                             if app.settings().fix_interval_s != prev_interval {
                                 prev_interval = app.settings().fix_interval_s;
                                 control.set_rate(prev_interval);
@@ -2230,16 +2176,6 @@ pub(crate) async fn run_app(
                 index_route = None;
             }
             let active = app.active_route_index();
-            // Re-centre the synthetic GPS onto a freshly loaded route's start, so Follow does not
-            // yank the camera off it.
-            #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
-            if active != prev_route {
-                if let Some(r) = active.and_then(|i| app.routes().get(i)) {
-                    synth.recenter(r.start_lon, r.start_lat);
-                }
-                prev_route = active;
-            }
-
             if active != prev_active {
                 let active_id = active.and_then(|i| app.route_ids().get(i).copied());
                 crate::flat_store::reconcile_route(flat, active_id);
@@ -2451,7 +2387,7 @@ pub(crate) async fn run_app(
                     derived,
                     targets,
                 });
-                #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+                #[cfg(not(feature = "debug-uart"))]
                 let plan = app.run_pass(obc_app::device_core::PassInputs {
                     now: clock,
                     gestures: &gestures,
@@ -2467,20 +2403,6 @@ pub(crate) async fn run_app(
                         cadence: Some(&mut consumer.cadence()),
                         ..Sensors::new(&mut consumer.location())
                     },
-                    route: route.as_ref(),
-
-                    support: BOARD_SUPPORT,
-                    outcomes: &mut exec.outcomes,
-                    facts: &mut exec.facts,
-                    derived,
-                    targets,
-                });
-                #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
-                let plan = app.run_pass(obc_app::device_core::PassInputs {
-                    now: clock,
-                    gestures: &gestures,
-                    // The synthetic loop has no sensors at all — not even a clock source.
-                    sensors: Sensors { fuel: Some(&mut fuel), ..Sensors::new(&mut synth) },
                     route: route.as_ref(),
 
                     support: BOARD_SUPPORT,
@@ -2528,7 +2450,7 @@ pub(crate) async fn run_app(
 
             // Reconcile after input and fix delivery, so opening, fulfillment and leaving take effect
             // before this pass sleeps.
-            #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+            #[cfg(not(feature = "debug-uart"))]
             {
                 let power = desired_sensor_power(app);
                 if power != prev_power {
@@ -2806,8 +2728,6 @@ pub(crate) async fn run_app(
                         let sheet_only = app.sheet_only();
 
                         {
-                            #[cfg(feature = "sd-bench")]
-                            let read_before = crate::card_io::read_perf_snapshot();
                             let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
                                 let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
                                 if let Some(r) = clip {
@@ -2834,20 +2754,6 @@ pub(crate) async fn run_app(
                                 app.render_planning_banner(&mut fbdev, FRAME_W as f32, FRAME_H as f32, color_fn);
                                 stats
                             });
-                            #[cfg(feature = "sd-bench")]
-                            if needs_map {
-                                let reads = crate::card_io::read_perf_snapshot().since(read_before);
-                                defmt::info!(
-                                "map SD bench: {=u32} us | logical {=u32} read(s) / {=u32} B | physical {=u32} command(s) / {=u32} block(s) ({=u32} single + {=u32} multi)",
-                                reads.us,
-                                stats.map_sd_reads,
-                                stats.map_bytes_read,
-                                reads.commands,
-                                reads.blocks,
-                                reads.single_commands,
-                                reads.multi_commands
-                                );
-                            }
                             // The guard, when a map base took one, dies here at the end of the render
                             // span, never across the present's await.
                             drop(render_guard);
@@ -3145,7 +3051,7 @@ pub(crate) async fn run_app(
             // A sensor or host datapoint, or a store movement, so an upload or delete rescans the
             // catalog now rather than at the next timer wake.
             wait_host_or_sensor_event(
-                #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+                #[cfg(not(feature = "debug-uart"))]
                 consumer,
             ),
             // A BLE link edge — connect, disconnect and the pairing passkey — so the passkey card

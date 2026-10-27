@@ -32,8 +32,6 @@ use obc_display::ls021::{RowDamage, RowWindow, FRAME_H, FRAME_W};
 use obc_display::{Band, FbDevice64};
 use obc_render::RenderStats;
 
-#[cfg(feature = "com-hw")]
-use crate::com_hw::HwCom;
 use crate::ls021_flpr::{relaunch_flpr, Frame64, Ls021Flpr};
 
 // A full-width strip keeps both edge hints in the same panel scan. Twelve rows fit the presenter's
@@ -121,10 +119,6 @@ pub(crate) struct MapDisplay {
     /// the program's life. Dropping them would float the panel.
     pub(crate) _gate_bus: [Output<'static>; 4],
     pub(crate) _src_bus: [Output<'static>; 8],
-    /// The zero-CPU hardware COM generator, held for the program's life like the buses above:
-    /// dropping it would stop the toggle and let the panel take a DC bias.
-    #[cfg(feature = "com-hw")]
-    pub(crate) _com_hw: HwCom,
 }
 
 impl MapDisplay {

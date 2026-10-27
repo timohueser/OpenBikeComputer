@@ -151,10 +151,6 @@ impl BlockDevice for FlatCard {
     fn read(&self, lba: u64, buf: &mut [u8]) -> Result<(), SemmcError> {
         let start = FlatCard::lba(lba)?;
         let addr = buf.as_ptr() as usize;
-        #[cfg(feature = "sd-bench")]
-        let blocks = buf.len() / BLOCK_BYTES;
-        #[cfg(feature = "sd-bench")]
-        let bench_started = embassy_time::Instant::now();
         let result = FlatCard::access(|sd| {
             // A staged upload may have left the previous arena half in FLPR DMA while USB filled
             // the other one. No read may pass it; joining here preserves block-device ordering.
@@ -177,8 +173,6 @@ impl BlockDevice for FlatCard {
                 })
             }
         });
-        #[cfg(feature = "sd-bench")]
-        crate::card_io::note_read_perf(bench_started, addr, blocks);
         if let Err(error) = &result {
             if *error != SemmcError::Unhealthy {
                 defmt::warn!("SD: read at block {=u64}, {=usize} bytes failed: {}", lba, buf.len(), error);
@@ -1511,16 +1505,7 @@ pub(crate) fn map_name() -> &'static str {
 /// built, and the next thing to grow this type would do it silently.
 #[inline(never)]
 pub(crate) fn open_map(store: &'static FlatStore<FlatCard>) -> Option<&'static dyn obc_formats::io::ByteSource> {
-    #[cfg(feature = "peak-view-demo")]
-    let requested =
-        option_env!("OBC_TEST_MAP_OBJECT_ID").map(|value| value.parse::<u64>().map(ObjectId)).transpose().ok()?;
-    #[cfg(not(feature = "peak-view-demo"))]
-    let requested: Option<ObjectId> = None;
-    let meta = match requested {
-        Some(id) => store.find_entry(|entry| entry.id == id && entry.kind == ObjectKind::MapShard),
-        None => store.find_entry(|entry| entry.kind == ObjectKind::MapShard),
-    }
-    .ok()??;
+    let meta = store.find_entry(|entry| entry.kind == ObjectKind::MapShard).ok()??;
     match store.source(meta.id, None) {
         Ok(source) => {
             defmt::info!(

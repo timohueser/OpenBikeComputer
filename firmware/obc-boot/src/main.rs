@@ -162,8 +162,6 @@ fn boot(p: embassy_nrf::Peripherals) {
         Output::new(p.P2_10, Level::Low, OutputDrive::Standard), // G1
     ];
     // The COM electrodes are a 56–77 nF load, so these are high-drive, like the app's COM pins.
-    // These are the DK's COM pins; the production board reroutes COM onto GPIOTE-capable pins
-    // for the app's `com-hw` feature, so mirror that routing here when the board lands.
     let mut com = com::Com::start(
         Output::new(p.P1_22, Level::Low, OutputDrive::HighDrive), // VCOM
         Output::new(p.P1_23, Level::Low, OutputDrive::HighDrive), // VB

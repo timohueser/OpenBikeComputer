@@ -17,10 +17,6 @@ lib := OBC_TOOLS / "obc-dev.sh"
 default *args:
     @python3 '{{OBC_TOOLS}}/tasks.py' --justfile '{{justfile()}}' "$@"
 
-# ── Deployed services ────────────────────────────────────────────────────────
-
-#
-#
 # ── Simulator ────────────────────────────────────────────────────────────────
 
 # Common forms: `obc fixtures list`, `obc fixtures show grimsel`,
@@ -107,28 +103,26 @@ format-card *args:
     cd "$OBC_ROOT"
     _run cargo run --release -p obc-usb --bin obc-format-card -- "$@"
 
-# Build & flash the board. Opts (space-separated): debug-uart  synth  factory-demo-ride  build.
+# Build & flash the board. Opts (space-separated): debug-uart  factory-demo-ride  build.
 # The radio and the USB plane are in every image (#889, #1530) — there is nothing to turn on.
 # e.g.  obc flash            (real sensors)   obc flash debug-uart
 #       obc flash build      (compile only, no flash)
-[doc("Build & flash the board. Opts: debug-uart synth factory-demo-ride build (e.g. obc flash factory-demo-ride)")]
+[doc("Build & flash the board. Opts: debug-uart factory-demo-ride build (e.g. obc flash factory-demo-ride)")]
 [group('device')]
 flash *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_riscv || exit 1
-    du=0 synth=0 seed=0 action=run
+    du=0 seed=0 action=run
     for o in "$@"; do case "$o" in
       debug-uart|du)      du=1 ;;
-      synth)              synth=1 ;;
       factory-demo-ride)  seed=1 ;;
       build|build-only)   action=build ;;
-      *) _err "unknown flash option: '$o'  (want: debug-uart synth factory-demo-ride build)"; exit 1 ;;
+      *) _err "unknown flash option: '$o'  (want: debug-uart factory-demo-ride build)"; exit 1 ;;
     esac; done
     [[ "$action" == run ]] && { ensure_probe || exit 1; }
     a=(); feats=()
     (( du ))    && feats+=(debug-uart)
-    (( synth )) && feats+=(synth)
     if (( seed )); then
       feats+=(factory-demo-ride)
       if [[ -z "${OBC_DEMO_RIDE_FILE:-}" ]]; then
@@ -602,15 +596,6 @@ site *args:
     # *serving* directory and vanished the moment we left the repo root.
     _run python3 -m http.server "$port" --directory "$fe/dist/web"
 
-
-[doc("Build the host workspace (simulator + shared crates + packer).")]
-[group('build')]
-build:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init; ensure_geos
-    cd "$OBC_ROOT"; _run cargo build --release
-
 # A scope is required: `obc test -p obc-pack` runs nextest and then the same scope's doctests;
 # `--lib` runs the library target alone and no doctests.
 # The plan selector runs the affected packages and suites and prints why:
@@ -723,27 +708,6 @@ licenses *args:
     set -euo pipefail
     source "{{lib}}"; obc_init
     _run "$OBC_TOOLS/licenses/gen-third-party.sh" "$@"
-
-[doc("Render benchmark + pixel-hash / read-counter golden gate. Args: (none) | check | write.")]
-[group('test')]
-bench *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init; ensure_geos
-    cd "$OBC_ROOT"
-    case "${1:-}" in
-      check) _run cargo run -p obc-bench --release -- --check sim/bench/golden.txt ;;
-      write) _run cargo run -p obc-bench --release -- --write-golden sim/bench/golden.txt ;;
-      *)     _run cargo run -p obc-bench --release ;;
-    esac
-
-[doc("Confirm the shared stack still compiles for the device target (no board crate).")]
-[group('device')]
-check-device:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init
-    cd "$OBC_ROOT"; _run cargo build -p obc-app --target thumbv8m.main-none-eabihf
 
 [doc("Build the documentation and check internal links.")]
 [group('build')]
