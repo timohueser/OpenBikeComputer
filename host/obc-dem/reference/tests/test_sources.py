@@ -741,20 +741,29 @@ class BulkArchives(unittest.TestCase):
 
 
 class Registry(unittest.TestCase):
-    def test_an_ows_no_applicable_code_is_retried_whatever_status_it_rides_on(self):
+    def test_a_fault_of_the_server_is_retried_whatever_status_it_rides_on(self):
         """`NoApplicableCode` is the server's own fault; the LGL WCS sends it as a 404 while
-        it is overloaded, and a country run must outlive that rather than refuse."""
+        it is overloaded, and the IGN WMS sends a 408 or `LayerNotDefined`. A country run must
+        outlive that rather than refuse."""
 
+        for status, fault in ((404, b'<ows:ExceptionReport><ows:Exception exceptionCode='
+                                    b'"NoApplicableCode"/></ows:ExceptionReport>'),
+                              (408, b"<h1>408 Request Time-out</h1>"),
+                              (400, b'<ServiceException code="LayerNotDefined">Layer unknown'
+                                    b'</ServiceException>')):
+            with self.subTest(status):
+                self.assert_retried(status, fault)
+
+    def assert_retried(self, status, fault):
         calls = []
 
         class Flaky(SimpleHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
                 calls.append(1)
                 if len(calls) == 1:
-                    self.send_response(404)
+                    self.send_response(status)
                     self.end_headers()
-                    self.wfile.write(b'<ows:ExceptionReport><ows:Exception exceptionCode='
-                                     b'"NoApplicableCode"/></ows:ExceptionReport>')
+                    self.wfile.write(fault)
                 else:
                     self.send_response(200)
                     self.end_headers()

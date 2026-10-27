@@ -1,8 +1,8 @@
 """What every adapter is: the manifest facts, and a way to obtain rasters for a box.
 
 Every request in the registry goes through `with_retry`, so one rule covers all of them: a
-dropped connection, a 429 and a 5xx are retried; every other 4xx is the server's final
-answer and is refused at once, with its body, because that body is the only thing that
+dropped connection, a 408, a 429, a 5xx and an OWS code of `SERVER_FAULTS` are retried; every
+other 4xx is the server's final answer and is refused at once, with its body, because that body is the only thing that
 says what happened.
 
 Two rules hold a credential. A refusal quotes what came off the wire, and a URL with a
@@ -65,6 +65,8 @@ READABLE = RASTER_SUFFIXES | GRID_SUFFIXES | XYZ_SUFFIXES
 # A country run is days of requests, and a public service that is restarted or briefly
 # overloaded answers 5xx for minutes, not seconds: the delays add up to twelve and a half.
 RETRY_DELAYS = (5, 30, 120, 600)
+# OWS exception codes that name a fault of the server, whatever status they ride on.
+SERVER_FAULTS = (b"NoApplicableCode", b"LayerNotDefined")
 
 # The orthometric height systems the registry knows. A row has to name one of them: the
 # archive is orthometric metres and the bakery holds the reference against Copernicus on
@@ -163,10 +165,13 @@ def with_retry(attempt, what: str, absent=()):
             # at the top of the report; the rest of a server-controlled body is not read.
             raw = error.read(64 * 1024)
             body = raw[:400].decode("utf-8", "replace").replace("\n", " ").strip()
-            # An OWS `NoApplicableCode` is the server's own fault whatever status it rides
-            # on; the LGL WCS sends it as a 404 while it is overloaded. So it is retried
-            # like a 5xx, and only a 4xx that names the request's fault is final.
-            if error.code != 429 and error.code < 500 and b"NoApplicableCode" not in raw:
+            # Some faults of a server ride on a 4xx: the LGL WCS sends `NoApplicableCode` as a
+            # 404 while it is overloaded, and the IGN WMS sends a 408 while it is busy and,
+            # from some of its nodes, `LayerNotDefined` for a layer of its capabilities. So
+            # they are retried like a 5xx, and only a 4xx that names the request's fault is
+            # final.
+            if (error.code not in (408, 429) and error.code < 500
+                    and not any(code in raw for code in SERVER_FAULTS)):
                 raise Refuse(redact(f"{what}: HTTP {error.code} — {body}")) from error
             if delay is None:
                 raise Refuse(redact(f"{what}: HTTP {error.code} after {len(RETRY_DELAYS)} "
