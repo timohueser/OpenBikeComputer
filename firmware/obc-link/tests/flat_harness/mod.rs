@@ -126,12 +126,6 @@ impl<D: BlockDevice> Device<D> {
         self.drive_on(link, first, usize::MAX)
     }
 
-    /// One stream record through an adapter-owned write-combining stage.
-    pub fn stream_on_staged(&mut self, link: Link, record: &[u8], stage: &mut [u8]) -> Wire {
-        let first = self.inner.on_stream_staged(link, record, stage);
-        self.drive_on(link, first, usize::MAX)
-    }
-
     /// Pump a named link once.
     pub fn pump_on(&mut self, link: Link) -> Wire {
         let first = self.inner.poll_on(link);

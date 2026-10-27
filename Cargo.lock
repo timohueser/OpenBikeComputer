@@ -3692,7 +3692,6 @@ name = "obc-ble"
 version = "0.1.0"
 dependencies = [
  "obc-crc",
- "obc-formats",
  "obc-vectors",
 ]
 
@@ -3710,7 +3709,6 @@ dependencies = [
  "obc-link",
  "obc-map-core",
  "obc-map-scene",
- "obc-network",
  "obc-pack",
  "obc-places",
  "obc-ports",
@@ -3830,11 +3828,8 @@ dependencies = [
  "obc-pbf",
  "obc-places",
  "obc-reader",
- "obc-render",
- "obcm-testkit",
  "osmpbf",
  "rayon",
- "serde_json",
  "sha2 0.11.0",
  "zip",
 ]
@@ -3894,7 +3889,6 @@ dependencies = [
  "obc-map-core",
  "obc-map-scene",
  "obc-network",
- "obc-pack",
  "obc-places",
  "obc-ports",
  "obc-reader",
@@ -3936,7 +3930,6 @@ dependencies = [
  "obc-link",
  "obc-platform",
  "obc-ports",
- "obc-render",
  "obc-route",
  "obc-storage",
  "obcm-testkit",
@@ -3995,7 +3988,6 @@ dependencies = [
  "obc-formats",
  "obc-map-core",
  "obc-map-scene",
- "obc-pbf",
  "obc-places",
  "obc-tree-walk",
  "serde_json",
@@ -4021,15 +4013,12 @@ dependencies = [
  "obc-data",
  "obc-dem",
  "obc-elevation",
- "obc-fixtures",
  "obc-formats",
  "obc-map-core",
- "obc-map-scene",
  "obc-pbf",
  "obc-places",
  "obc-reader",
  "obc-render",
- "obc-vectors",
  "obcm-testkit",
  "osmpbf",
  "percent-encoding",
@@ -4269,7 +4258,6 @@ name = "obc-vectors"
 version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
- "miniz_oxide",
  "obc-dfu",
  "obc-elevation",
  "obc-formats",

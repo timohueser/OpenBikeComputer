@@ -68,11 +68,6 @@ pub(crate) const NAV_OUTPUT_STAGE_BYTES: usize = 16 * 1_024;
 /// Deliberately without the map's terrain. The terrain is sampled at fix cadence during a ride,
 /// which is while the map plane renders and no search runs, so it is always-live state and stays a
 /// resident static of its own.
-///
-/// It is defined in every profile, so [`NAV_ARM_BYTES`] can be the type's own size everywhere: the
-/// report's arm figures are sizes of types, not sums of parts, and a hand-summed fallback silently
-/// loses the struct's tail padding.
-#[cfg_attr(not(has_nav), allow(dead_code))]
 pub(crate) struct NavArm {
     /// The fixed A* table. The planner's first step of every request resets it.
     pub(crate) scratch: obc_route::NavScratch,
@@ -95,7 +90,6 @@ pub(crate) struct NavArm {
 }
 
 /// Parsed sources and resumable transform state exist only while the nav guard owns the arena.
-#[cfg(has_nav)]
 pub(crate) struct DetourArm {
     pub(crate) original: obc_route::RouteIndex,
     pub(crate) leg: obc_route::RouteIndex,
@@ -106,12 +100,10 @@ pub(crate) struct DetourArm {
     preview_chunk: usize,
     preview_pick: obc_route::Pick,
 }
-#[cfg(has_nav)]
 union DetourWork {
     trim: ManuallyDrop<obc_route::Trimmer>,
     splice: ManuallyDrop<obc_route::Splicer>,
 }
-#[cfg(has_nav)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NavPhase {
     Plan,
@@ -124,19 +116,16 @@ enum NavPhase {
 
 /// The final emitter and an easier trial's measure survive leg searches. Only the leg scratch and
 /// parsed sources overlap.
-#[cfg(has_nav)]
 #[repr(C)]
 struct VisitArm {
     builder: MaybeUninit<obc_route::visit::VisitBuilder>,
     measure: MaybeUninit<obc_route::easier::Measure>,
     work: VisitWork,
 }
-#[cfg(has_nav)]
 union VisitWork {
     plan: ManuallyDrop<NavArm>,
     sources: ManuallyDrop<VisitSources>,
 }
-#[cfg(has_nav)]
 struct VisitSources {
     original: obc_route::RouteIndex,
     leg: obc_route::RouteIndex,
@@ -156,11 +145,8 @@ union ScratchArena {
     peak_view: ManuallyDrop<PeakArm>,
     photo: ManuallyDrop<obc_app::photo::Runtime>,
     places: ManuallyDrop<obc_reader::reader::places::PlaceCache>,
-    #[cfg(has_nav)]
     nav: ManuallyDrop<NavArm>,
-    #[cfg(has_nav)]
     detour: ManuallyDrop<DetourArm>,
-    #[cfg(has_nav)]
     visit: ManuallyDrop<VisitArm>,
     /// USB upload bytes; written before read during one transfer grant.
     usb: ManuallyDrop<[u8; crate::usb::STAGE_LEN]>,
@@ -170,8 +156,7 @@ union ScratchArena {
 pub(crate) const ARENA_BYTES: usize = core::mem::size_of::<ScratchArena>();
 /// The render arm's size, for the resource report.
 pub(crate) const RENDER_ARM_BYTES: usize = core::mem::size_of::<obc_render::RenderScratch>();
-/// The nav arm's size, for the resource report. It is the type's size in every profile, even where
-/// `has_nav` would keep it out of the image. See [`NavArm`].
+/// The nav arm's size, for the resource report.
 pub(crate) const NAV_ARM_BYTES: usize = core::mem::size_of::<NavArm>();
 /// The cable upload arm's size, reported beside the arena maximum.
 pub(crate) const USB_ARM_BYTES: usize = crate::usb::STAGE_LEN;
@@ -184,7 +169,6 @@ const _: () = assert!(
      before re-pinning anything"
 );
 
-#[cfg(has_nav)]
 const _: () = assert!(core::mem::size_of::<DetourArm>() <= NAV_ARM_BYTES);
 
 /// The arena's storage, in the `.uninit` section: cortex-m-rt's `link.x` marks it `NOLOAD` and
@@ -324,7 +308,6 @@ pub(crate) fn claim_render() -> Result<RenderGuard, ArenaError> {
 
 const CATALOG_ALIGN: usize = core::mem::align_of::<crate::flat_store::CatalogScratch>();
 const CATALOG_OFFSET: usize = {
-    #[cfg(has_nav)]
     let used = {
         let nav = core::mem::size_of::<NavArm>();
         let detour = core::mem::size_of::<DetourArm>();
@@ -336,8 +319,6 @@ const CATALOG_OFFSET: usize = {
             visit
         }
     };
-    #[cfg(not(has_nav))]
-    let used = 0;
     used.div_ceil(CATALOG_ALIGN) * CATALOG_ALIGN
 };
 const _: () = assert!(
@@ -384,11 +365,8 @@ pub(crate) fn catalog_available() -> bool {
     matches!(owner(), ArenaOwner::None | ArenaOwner::Nav)
 }
 
-pub(crate) fn claim_catalogs<'a>(#[cfg(has_nav)] nav: Option<&'a mut NavGuard>) -> Option<CatalogLoan<'a>> {
-    #[cfg(has_nav)]
+pub(crate) fn claim_catalogs<'a>(nav: Option<&'a mut NavGuard>) -> Option<CatalogLoan<'a>> {
     let nav_held = nav.is_some();
-    #[cfg(not(has_nav))]
-    let nav_held = false;
     let render = if nav_held {
         None
     } else {
@@ -417,7 +395,6 @@ pub(crate) fn claim_catalogs<'a>(#[cfg(has_nav)] nav: Option<&'a mut NavGuard>) 
 /// cache and the planner must all survive from one bounded step to the next. The ride loop keeps
 /// this guard in its own state, and the Recalculating freeze is what keeps render claims away
 /// meanwhile. `!Send` for the same reason [`RenderGuard`] is.
-#[cfg(has_nav)]
 pub(crate) struct NavGuard {
     /// Whether [`begin_plan`](NavGuard::begin_plan) has written the arm's planner slot for this
     /// claim. It rides on the guard rather than in the arm, which is what makes it unforgeable:
@@ -428,7 +405,6 @@ pub(crate) struct NavGuard {
     _not_send: PhantomData<*const ()>,
 }
 
-#[cfg(has_nav)]
 impl NavGuard {
     #[inline(never)]
     pub(crate) fn begin_visit(
@@ -805,7 +781,6 @@ impl NavGuard {
     }
 }
 
-#[cfg(has_nav)]
 impl Deref for NavGuard {
     type Target = NavArm;
     fn deref(&self) -> &NavArm {
@@ -815,7 +790,6 @@ impl Deref for NavGuard {
     }
 }
 
-#[cfg(has_nav)]
 impl DerefMut for NavGuard {
     fn deref_mut(&mut self) -> &mut NavArm {
         assert!(self.phase == NavPhase::Plan);
@@ -824,7 +798,6 @@ impl DerefMut for NavGuard {
     }
 }
 
-#[cfg(has_nav)]
 impl Drop for NavGuard {
     fn drop(&mut self) {
         if self.phase == NavPhase::VisitSources {
@@ -847,7 +820,6 @@ impl Drop for NavGuard {
 /// leaves the planner slot a `MaybeUninit` nobody reads before the drain writes it, then the one
 /// field a zeroed image would get wrong — the tile cache's `EMPTY` tags are `u32::MAX`, so `reset`
 /// stamps them. A cold cache on every search is the accepted cost.
-#[cfg(has_nav)]
 pub(crate) fn claim_nav(quiesced: MapQuiesced) -> Result<NavGuard, ArenaError> {
     // SAFETY: see `gate`.
     unsafe { gate() }.claim_nav(quiesced).map_err(|e| refuse("nav", e))?;
@@ -987,7 +959,6 @@ pub(crate) fn claim_peak(
     Some(PeakGuard { _not_send: PhantomData })
 }
 
-#[cfg(has_nav)]
 const _: () = {
     assert!(core::mem::size_of::<VisitArm>() <= RENDER_ARM_BYTES);
     assert!(core::mem::align_of::<VisitArm>() <= core::mem::align_of::<ScratchArena>());

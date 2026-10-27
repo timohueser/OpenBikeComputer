@@ -55,13 +55,6 @@ impl BleStatus {
 
 use crate::device_core::{BondTag, OperationToken};
 
-/// What the rider asks of the bond store.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BondIntent {
-    /// Forget the paired phone: the guarded hold on the Bluetooth screen.
-    ForgetRequested,
-}
-
 /// The one bounded bond operation, carrying the [`OperationToken`] the domain issued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BondEffect {

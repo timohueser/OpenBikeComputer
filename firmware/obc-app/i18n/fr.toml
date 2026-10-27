@@ -11,7 +11,6 @@
 title = "MENU"
 routes = "Parcours"
 rides = "Sorties"
-pois = "POIs"
 map = "Carte"
 peaks = "Sommets"
 settings = "Réglages"
@@ -26,7 +25,6 @@ no_peaks = "AUCUN SOMMET NOMMÉ"
 
 # --- Le contexte de sortie (le panneau du bas), la liste À venir et le sélecteur de détour ---
 [ride_context]
-easier = "Plus facile"
 up_ahead = "À venir"
 detour = "Détour"
 inspect_rejoin = "Voir reprise"
@@ -43,8 +41,6 @@ everything = "Tout"
 none = "Rien devant"
 none_sub = "Aucun arrêt prévu"
 none_category_sub = "Rien de ce type"
-none_waypoints_sub = "Points seuls"
-none_pois_sub = "POI carte seuls"
 no_route_sub = "Chargez une route"
 
 [up_ahead_source]
@@ -203,7 +199,6 @@ avg_grad = "PENTE M."
 no_gps_fix = "Pas de GPS"
 off_route = "hors route "
 press_to_start = "Appuyer pour partir"
-recalculating = "Recalcul..."
 
 # --- The Statistics riding screen ---
 [stats]
@@ -358,10 +353,6 @@ pharmacy = "Pharmacie"
 bike_shop = "Vélociste"
 train = "Gare"
 
-# --- POI category menu ---
-[poi_menu]
-title = "POIS"
-
 # --- POI list screen ---
 [poi_list]
 unavailable = "Lieux indisponibles"
@@ -379,7 +370,6 @@ closed_today = "Fermé auj."
 today = "Auj."
 open = "OUVERT"
 closed = "FERMÉ"
-route_here = "Itinéraire ici"
 ahead = "À venir"
 away = "Dist."
 off_route = "Écart"
@@ -437,7 +427,6 @@ no_route = "Aucun parcours"
 no_route_sub = "Retour à la liste"
 distance = "DISTANCE"
 est_time = "DURÉE"
-climb = "MONTÉE"
 bike_type = "TYPE VÉLO"
 start_ride = "DÉMARRER"
 loading_profile = "Chargement"
@@ -483,9 +472,6 @@ commit_failed = "Échec du détour."
 rejoin_hint = "Essayez une reprise plus loin."
 
 [nav_route]
-create_route = "Créer parcours"
-cancel = "Annuler"
-away = "de distance"
 title = "CRÉER PARCOURS"
 finding = "Recherche..."
 too_far = "Trop loin pour router."
@@ -687,16 +673,6 @@ storagefault_fix = "Redémarrez l'appareil"
 [route_context]
 bike_type = "Type de vélo"
 
-[compass]
-n = "N"
-ne = "NE"
-e = "E"
-se = "SE"
-s = "S"
-sw = "SO"
-w = "O"
-nw = "NO"
-
 # --- Le tiroir rapide universel (Haut + Selection) ---
 [quick]
 brightness = "LUMINOSITE"
@@ -710,29 +686,14 @@ powering_off = "EXTINCTION..."
 
 [ahead]
 route_end = "Fin du parcours"
-next = "Prochains"
 ahead = "À venir"
 no_route = "Aucun parcours actif"
 changed = "Parcours modifié : maintenir"
-on_climb = "Dans la montée"
-climb_in = "Montée dans"
-no_climb = "Aucune montée"
-incomplete = "Altitude incomplète"
 waypoint = "Point de passage"
-no_waypoint = "Aucun point à venir"
-none = "aucun"
-explore = "Explorer la suite"
-unavailable = "Lieu indisponible"
-climb = "Montée"
 loading = "Chargement..."
 no_matches = "Aucun résultat"
 read_failed = "Lecture impossible"
-map_unavailable = "Carte indisponible"
-passed = "Passé"
 custom = "Point personnel"
-access = "hors parcours : accès inconnu"
-whole_climb = "montée entière"
-at = "à"
 
 [route_cleanup]
 title = "STOCKAGE PLEIN"
@@ -751,8 +712,6 @@ no_matches = "Aucun parcours trouvé. Choisissez un âge plus court ou utilisez 
 done = "Anciens parcours supprimés. Renvoyez le parcours. Appuyez pour fermer."
 
 [assistant]
-route_end_to_pin = "Fin route au point"
-straight_line = "(direct)"
 title = "Assistant"
 find = "Lieux proches"
 next = "Et ensuite ?"
@@ -778,8 +737,6 @@ refresh_needed = "Actualiser"
 no_choices = "Aucun choix"
 none_found = "Aucun résultat"
 finding = "Recherche de lieux"
-on_way = "Sur le trajet"
-nearby = "À proximité"
 place = "Lieu"
 closed = "Fermé"
 extra = "en plus"
@@ -793,7 +750,6 @@ go_here = "Aller ici"
 saving = "Enregistrement"
 back_map = "Retour carte"
 visit_unavailable = "Visite indispo."
-unknown = "Inconnu"
 more_landmarks = "Autres sites"
 within = "Dans un rayon"
 straight = "direct"
@@ -836,7 +792,6 @@ landmarks_missing = "Aucun contenu"
 unsupported = "Non pris en charge"
 content_unavailable = "Contenu absent"
 map_changed = "Carte modifiée"
-none_within = "Aucun dans"
 select_landmark = "Choisir un site"
 photo_missing = "Aucune photo"
 photo_unavailable = "Photo indisponible"

@@ -17,9 +17,7 @@ use embedded_graphics::primitives::Rectangle;
 use obc_app::App;
 use obc_display::ls021::{FRAME_H, FRAME_W};
 use obc_display::FbDevice64;
-#[cfg(has_nav)]
 use obc_formats::io::{ByteSink, Error as ByteError};
-#[cfg(has_nav)]
 use obc_formats::obcr::HEADER_FULL_LEN;
 #[cfg(not(all(not(feature = "debug-uart"), feature = "synth")))]
 use obc_platform::sensor_hub::SensorConsumer;
@@ -127,7 +125,7 @@ async fn read_catalogs(
     flat: &'static obc_storage::flat::FlatStore<crate::flat_store::FlatCard>,
     app: &mut App,
     facts: &mut obc_app::device_core::ExternalFacts,
-    #[cfg(has_nav)] nav: Option<&mut crate::arena::NavGuard>,
+    nav: Option<&mut crate::arena::NavGuard>,
 ) -> Option<Result<obc_app::device_core::StoreRevision, obc_app::catalog_state::CatalogError>> {
     use obc_app::catalog_state::CatalogError;
     if !crate::arena::catalog_available() {
@@ -140,10 +138,7 @@ async fn read_catalogs(
     }
     let start = crate::flat_store::catalog_scope(flat);
     let (routes_loaded, trips_loaded) = {
-        let mut catalogs = crate::arena::claim_catalogs(
-            #[cfg(has_nav)]
-            nav,
-        )?;
+        let mut catalogs = crate::arena::claim_catalogs(nav)?;
         (
             crate::flat_store::load_routes(flat, app, &mut catalogs),
             crate::flat_store::load_trips(flat, app, &mut catalogs),
@@ -177,21 +172,15 @@ impl obc_render::Clock for InstantClock {
 /// The router's resident half: everything the planner needs that is not an arm of the scratch
 /// arena. The terrain stays here because `App::sample_terrain` reads it at fix cadence during a
 /// ride, while the map plane renders and no search runs. It is state, not scratch.
-#[cfg(has_nav)]
 pub(crate) struct NavResident {
     /// The map's terrain, or the null source. It is a `&'static mut` because a `TerrainElevation`
     /// carries its tile cache inline and must never be copied into a plan frame.
     pub(crate) elev: &'static mut dyn obc_route::ElevationSource,
 }
-/// The stand-in for a build without the router. The ride loop still drains create-route requests
-/// and answers the generic failure tier, so the confirm never hangs.
-#[cfg(not(has_nav))]
-pub(crate) struct NavResident;
 
 /// One plan step's view of everything the planner touches: the scratch arena's nav arm, borrowed
 /// from the guard the ride loop holds for the whole search, and the resident terrain beside it. It
 /// is rebuilt per call, so no reference into the arena is ever live across an `.await`.
-#[cfg(has_nav)]
 struct NavBuffers<'a> {
     /// The guard itself, not the arm behind it: the planner slot is a `MaybeUninit` the claim
     /// leaves unwritten, and the guard is what carries "a plan has been written into it".
@@ -201,7 +190,6 @@ struct NavBuffers<'a> {
 
 /// One in-flight plan's board-side bookkeeping: the open reserved-file handle and the per-phase
 /// wall-time accumulators the log line reports.
-#[cfg(has_nav)]
 struct NavRun {
     allocation: Option<obc_storage::flat::Allocation>,
     io: NavIo,
@@ -220,7 +208,6 @@ struct NavRun {
     read_perf: [crate::card_io::ReadPerf; 3],
 }
 
-#[cfg(has_nav)]
 enum NavIo {
     NeedAllocate,
     Allocating(crate::flat_store::Ticket),
@@ -240,21 +227,17 @@ enum NavIo {
 /// Maximum bytes a computed OBCR can emit: 128-byte header, 256 full 1,530-byte chunk bodies,
 /// and 256 44-byte index records. The flat store rounds this reservation to one extent and trims
 /// it to the actual streamed length at commit.
-#[cfg(has_nav)]
 const NAV_ROUTE_RESERVE: u64 = HEADER_FULL_LEN as u64
     + 256 * (255 * obc_formats::obcr::POINT_RECORD_LEN as u64 + obc_formats::obcr::CHUNK_META_LEN as u64);
 
-#[cfg(has_nav)]
 static NAV_STORE_REPLY: crate::flat_store::Reply = embassy_sync::signal::Signal::new();
 
-#[cfg(has_nav)]
 pub(crate) struct NavStageSink<'a> {
     pub(crate) stage: &'a mut [u8; crate::arena::NAV_OUTPUT_STAGE_BYTES],
     pub(crate) appended: usize,
     pub(crate) patch_len: usize,
 }
 
-#[cfg(has_nav)]
 impl ByteSink for NavStageSink<'_> {
     fn write(&mut self, bytes: &[u8]) -> Result<(), ByteError> {
         let start = HEADER_FULL_LEN + self.appended;
@@ -275,7 +258,6 @@ impl ByteSink for NavStageSink<'_> {
     }
 }
 
-#[cfg(has_nav)]
 #[derive(Clone, Copy)]
 struct NavStep {
     outcome: obc_route::Step,
@@ -283,7 +265,6 @@ struct NavStep {
     patch_len: usize,
 }
 
-#[cfg(has_nav)]
 fn start_nav_flush(
     writer: crate::flat_store::Writer,
     guard: &mut crate::arena::NavGuard,
@@ -300,7 +281,6 @@ fn start_nav_flush(
 }
 
 /// Initialize a fresh planner in its arena slot.
-#[cfg(has_nav)]
 #[inline(never)]
 fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest, bike: obc_route::BikeType) {
     nav.guard.begin_plan(req.from, req.to, req.name(), bike, None);
@@ -324,7 +304,6 @@ fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest, bike: obc_route::B
 ///
 /// The arena's own owner is what enforces `nav ⊥ usb`. The refusal names the holder, because "wait
 /// for the cable" is something the rider can act on.
-#[cfg(has_nav)]
 fn nav_take_arena(app: &App, guard: &mut Option<crate::arena::NavGuard>) -> Result<(), &'static str> {
     use obc_app::{ArenaError, ArenaOwner};
     if guard.is_some() {
@@ -380,7 +359,6 @@ fn sensor_status_of(q: usize) -> obc_app::SensorStatus {
 ///
 /// Emitted OBCR bytes are staged in the arena and flushed through the flat store's sole writer
 /// between steps, so no card write happens inside the synchronous planner call.
-#[cfg(has_nav)]
 #[inline(never)]
 fn nav_step(
     map_src: &dyn obc_formats::io::ByteSource,
@@ -407,7 +385,6 @@ fn nav_step(
 /// In that line, `total_ms` is wall time from the request drain, so it spans every pass the plan
 /// was spread over, and `snap/search/emit_ms` is step time attributed to the planner's phase before
 /// each step.
-#[cfg(has_nav)]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
 fn nav_finish(
@@ -517,7 +494,7 @@ struct RenderedFrame {
 /// Platform features available for this boot. Detours use sealed temporary card storage and the
 /// shared planner arena; metadata changes go through the card writer.
 const BOARD_SUPPORT: obc_app::device_core::PlatformSupport = obc_app::device_core::PlatformSupport {
-    detour: cfg!(has_nav),
+    detour: true,
     settings_persistence: true,
     dfu: true,
 
@@ -555,7 +532,6 @@ struct RideExec {
     /// The in-flight removal, held across passes and polled without parking.
     catalog: Option<CatalogRemoval>,
     /// The operation the planner run is running under — the token every planner answer carries back.
-    #[cfg(has_nav)]
     nav_token: Option<obc_app::device_core::OperationToken<obc_app::device_core::NavigatorTag>>,
     /// A `DfuEffect::ArmInstall` passed its go/no-go and is waiting for the "Installing update" card
     /// to reach glass; the count is how many frames it has waited. The arm runs in the store tail,
@@ -673,8 +649,7 @@ pub(crate) async fn run_app(
     route_cache: &RouteCache,
     // The router's resident half: the map's terrain, threaded from `main` and never a local. Its A*
     // table, tile cache and planner slot are the scratch arena's nav arm, claimed per search below.
-    #[cfg(has_nav)] nav: NavResident,
-    #[cfg(not(has_nav))] nav: NavResident,
+    nav: NavResident,
     led: &mut Output<'static>,
     // The panel's brightness port, armed in `main` where the peripherals live. By value: this loop
     // is its only user, and it never returns.
@@ -738,21 +713,15 @@ pub(crate) async fn run_app(
     let mut opened_session: Option<u32> = None;
     // The in-flight route plan's bookkeeping: `Some` while a plan is being stepped, one bounded step
     // per pass. It guards the planner slot's initialization.
-    #[cfg(has_nav)]
     let mut nav_run: Option<NavRun> = None;
-    #[cfg(has_nav)]
     let mut review_publication: Option<obc_formats::assistant::PayloadFingerprint> = None;
-    #[cfg(has_nav)]
     let mut review_original: Option<obc_storage::flat::StoreSource<'static, crate::flat_store::FlatCard>> = None;
-    #[cfg(has_nav)]
     let mut detour = crate::detour::Executor::new();
-    #[cfg(has_nav)]
     let mut visit = crate::visit::Executor::new();
     // The scratch arena's nav arm, held for the whole search and so for many passes: the A* table,
     // the tile cache and the planner must all survive from one bounded step to the next. This loop
     // is the arena's sole owner-switcher. Taken at the plan drain, given back on the answer and on
     // every cancel path.
-    #[cfg(has_nav)]
     let mut nav_guard: Option<crate::arena::NavGuard> = None;
     // A map upload's write-combining arm. Only this loop switches arena owners; the USB task asks
     // through a level and edge handshake.
@@ -789,7 +758,6 @@ pub(crate) async fn run_app(
     // trailing redraw to clear its bar. A cancelled long press emits no gesture.
     let mut prev_hold_p = 0.0f32;
     // Terrain samples taken this boot, only to throttle the `altfuse:` log line.
-    #[cfg(has_nav)]
     let mut elev_fixes: u32 = 0;
     // The DFU trial confirm is anchored at "first frame presented and card mounted", which is the
     // first successful present below. A boot that cannot reach a presented frame never confirms, and
@@ -1208,14 +1176,7 @@ pub(crate) async fn run_app(
                     // indices by durable object id.
                     CatalogEffect::ReadCatalog { token } => {
                         let old_source = crate::flat_store::route_source_key();
-                        let read = read_catalogs(
-                            flat,
-                            app,
-                            &mut exec.facts,
-                            #[cfg(has_nav)]
-                            nav_guard.as_mut(),
-                        )
-                        .await;
+                        let read = read_catalogs(flat, app, &mut exec.facts, nav_guard.as_mut()).await;
                         if let Some(read) = read {
                             let active = app.active_route_index();
                             crate::flat_store::reconcile_route(
@@ -1384,10 +1345,8 @@ pub(crate) async fn run_app(
                 } else if let Some(effect) = exec.effects.metadata.take() {
                     use obc_app::metadata::MetadataOutcome;
                     let token = effect.token();
-                    #[cfg(has_nav)]
                     let resume = app.assistant_review_status() == obc_app::navigator::ReviewStatus::Saving
                         && app.assistant_preview().is_none();
-                    #[cfg(has_nav)]
                     let resume_current = !resume
                         || app.assistant_checkpoint().is_some_and(|checkpoint| {
                             flat.with_source(
@@ -1404,9 +1363,7 @@ pub(crate) async fn run_app(
                             )
                             .unwrap_or(false)
                         });
-                    #[cfg(has_nav)]
                     let clearing = app.assistant_checkpoint_payload(token).is_some_and(|change| change.next.is_none());
-                    #[cfg(has_nav)]
                     let sources_current = clearing
                         || resume_current
                             && app.assistant_review_context().is_none_or(|context| {
@@ -1422,8 +1379,6 @@ pub(crate) async fn run_app(
                                             })
                                     })
                             });
-                    #[cfg(not(has_nav))]
-                    let sources_current = app.assistant_review_context().is_none();
                     let current_scope = crate::flat_store::catalog_scope(flat);
                     let clear_scope_moved =
                         app.assistant_checkpoint_payload(token).is_some_and(|change| change.next.is_none())
@@ -1478,9 +1433,7 @@ pub(crate) async fn run_app(
 
             // Navigator requests each step and commit. Physical I/O may span several passes;
             // release is acknowledged only after the pending ticket and its cleanup settle.
-            #[allow(unused_mut, unused_assignments)]
             let mut nav_cancel = false;
-            #[cfg(has_nav)]
             if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted
                 && nav_run.is_none()
                 && review_publication.is_some_and(|source| {
@@ -1492,11 +1445,9 @@ pub(crate) async fn run_app(
                     flat.close(source.release());
                 }
             }
-            #[cfg(has_nav)]
             visit.accepted(app, flat);
             if let Some(effect) = exec.effects.navigator.take() {
                 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
-                #[cfg(has_nav)]
                 let composes = matches!(
                     effect,
                     NavigatorEffect::Acquire {
@@ -1504,7 +1455,6 @@ pub(crate) async fn run_app(
                         ..
                     }
                 );
-                #[cfg(has_nav)]
                 let source_error = if composes
                     && (app.assistant_visit_target().is_some()
                         || app
@@ -1525,8 +1475,6 @@ pub(crate) async fn run_app(
                 } else {
                     false
                 };
-                #[cfg(not(has_nav))]
-                let source_error = false;
                 if source_error {
                     RideExec::deliver(
                         &mut exec.outcomes.navigator,
@@ -1534,21 +1482,13 @@ pub(crate) async fn run_app(
                         "navigator",
                     );
                 }
-                #[cfg(has_nav)]
                 let visit_effect = !source_error && visit.accepts(&effect, app);
-                #[cfg(not(has_nav))]
-                let visit_effect = false;
-                #[cfg(has_nav)]
                 if visit_effect {
                     if let Some(outcome) = visit.accept(effect, app, flat, &mut nav_guard, &mut *nav.elev) {
                         RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
                     }
                 }
-                #[cfg(has_nav)]
                 let detour_effect = !source_error && !visit_effect && detour.accepts(&effect);
-                #[cfg(not(has_nav))]
-                let detour_effect = false;
-                #[cfg(has_nav)]
                 if detour_effect {
                     if let Some(outcome) = detour.accept(effect, app, flat, &mut nav_guard, app.settings().bike_type) {
                         RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
@@ -1556,7 +1496,6 @@ pub(crate) async fn run_app(
                 }
                 if !source_error && !visit_effect && !detour_effect {
                     match effect {
-                        #[cfg(has_nav)]
                         NavigatorEffect::Acquire {
                             token,
                             work: PlannerWork::Route(request) | PlannerWork::AssistantRoute(request),
@@ -1641,20 +1580,6 @@ pub(crate) async fn run_app(
                                 }
                             }
                         }
-                        // This image ships without the router, so the workspace this operation asks
-                        // for does not exist in it.
-                        #[cfg(not(has_nav))]
-                        NavigatorEffect::Acquire {
-                            token,
-                            work: PlannerWork::Route(_) | PlannerWork::AssistantRoute(_),
-                        } => {
-                            defmt::warn!("nav: router not built into the ble image (256K DK) — refusing the operation");
-                            RideExec::deliver(
-                                &mut exec.outcomes.navigator,
-                                NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
-                                "navigator",
-                            );
-                        }
                         NavigatorEffect::Acquire {
                             token,
                             work: PlannerWork::Detour(_) | PlannerWork::MeasureLegs(_) | PlannerWork::MeasureRoute(_),
@@ -1670,7 +1595,6 @@ pub(crate) async fn run_app(
                             );
                         }
                         NavigatorEffect::Release { token, retain_result, .. } => {
-                            #[cfg(has_nav)]
                             if nav_run.is_none() && !retain_result {
                                 if let Some(source) = review_publication {
                                     if let Some(writer) = crate::flat_store::writer() {
@@ -1716,29 +1640,17 @@ pub(crate) async fn run_app(
                                 continue;
                             }
                             nav_cancel = true;
-                            #[cfg(has_nav)]
-                            {
-                                exec.nav_token = Some(token);
-                                if let Some(run) = nav_run.as_mut() {
-                                    if let NavIo::Published(id) = run.io {
-                                        run.io = if retain_result {
-                                            NavIo::Complete
-                                        } else {
-                                            NavIo::NeedPublishCompensation(id)
-                                        };
-                                    }
+                            exec.nav_token = Some(token);
+                            if let Some(run) = nav_run.as_mut() {
+                                if let NavIo::Published(id) = run.io {
+                                    run.io = if retain_result {
+                                        NavIo::Complete
+                                    } else {
+                                        NavIo::NeedPublishCompensation(id)
+                                    };
                                 }
                             }
-                            #[cfg(not(has_nav))]
-                            let _ = retain_result;
-                            #[cfg(not(has_nav))]
-                            RideExec::deliver(
-                                &mut exec.outcomes.navigator,
-                                NavigatorOutcome::Released { token },
-                                "navigator",
-                            );
                         }
-                        #[cfg(has_nav)]
                         NavigatorEffect::Step { token } | NavigatorEffect::CommitRoute { token } => {
                             let next = nav_run.as_ref().and_then(|run| match (&effect, &run.io) {
                                 (NavigatorEffect::Step { .. }, NavIo::Ready) => Some(NavIo::StepRequested),
@@ -1769,19 +1681,10 @@ pub(crate) async fn run_app(
                                 run.io = next.unwrap();
                             }
                         }
-                        #[cfg(not(has_nav))]
-                        NavigatorEffect::Step { token } | NavigatorEffect::CommitRoute { token } => {
-                            RideExec::deliver(
-                                &mut exec.outcomes.navigator,
-                                NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
-                                "navigator",
-                            );
-                        }
                     }
                 }
             }
 
-            #[cfg(has_nav)]
             if let Some(writer) = crate::flat_store::writer() {
                 if let Some(outcome) = visit.poll(
                     app,
@@ -1813,7 +1716,6 @@ pub(crate) async fn run_app(
                 }
             }
 
-            #[cfg(has_nav)]
             {
                 // Whether this pass ended the search: the one place the arena's nav arm is given
                 // back. It is a flag rather than an inline release, because the guard is borrowed by
@@ -2251,11 +2153,6 @@ pub(crate) async fn run_app(
                     }
                 }
             }
-            #[cfg(not(has_nav))]
-            {
-                let _ = nav_cancel; // no plan can be in flight — the release is inert here
-                let _: &NavResident = &nav; // the unit stand-in — nothing to plan with
-            }
 
             // A BLE Config write persists units and name to RRAM, but the live `App` copy never
             // learns. Reload the BLE-owned fields before the change-detection save below, so the UI
@@ -2306,7 +2203,7 @@ pub(crate) async fn run_app(
             // A debug route-plan trigger: start a plan between two fixed coordinates exactly as the
             // confirm would, so a host can drive the resumable router repeatably and read the
             // `nav route:` breakdown.
-            #[cfg(all(feature = "debug-uart", has_nav))]
+            #[cfg(feature = "debug-uart")]
             if let Some((from, to)) = obc_platform::debug_link::take_nav() {
                 // Back may already have popped the screen while its cancellation is still queued. A
                 // debug trigger in that window must not become a replacement plan that overwrites the
@@ -2691,10 +2588,7 @@ pub(crate) async fn run_app(
             let mut dirty = render;
             // Keep an already-painted loading base while reader work advances between planner owners.
             find_loading_painted &= app.find_preparing() && app.find_place_state() != obc_app::find_place::State::Start;
-            #[cfg(has_nav)]
             let find_can_prepare = nav_guard.is_none();
-            #[cfg(not(has_nav))]
-            let find_can_prepare = true;
             if !app.ahead_preparing() {
                 ahead_work_us = 0;
             }
@@ -3218,10 +3112,7 @@ pub(crate) async fn run_app(
         // instead, because spinning at full speed against a commit that runs for hundreds of
         // milliseconds would starve the task answering it.
         let immediate = immediate || peak_view.busy();
-        #[cfg(has_nav)]
         let visit_immediate = visit.immediate(&NAV_STORE_REPLY, immediate || exec.owed());
-        #[cfg(not(has_nav))]
-        let visit_immediate = false;
         let next_ms = if visit_immediate {
             Some(0)
         } else if animating || exec.polling_store() {

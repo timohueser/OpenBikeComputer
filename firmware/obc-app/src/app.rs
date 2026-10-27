@@ -3313,7 +3313,6 @@ impl App {
             detour_preview,
             poi_scratch: &ui.poi_scratch,
             corridor: ui.corridor_scratch.entries(),
-            corridor_status: ui.corridor_scratch.status(),
             next_ahead: &ui.next_ahead,
             sensor_status: ui.sensor_status.as_slice(),
             sensor_scan_hits: ui.sensor_scan_hits.as_slice(),

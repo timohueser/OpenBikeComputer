@@ -112,6 +112,10 @@ const VRI_SPSYNC_AUX: usize = 0x74; // [6]; barrier: host counter in [0], firmwa
 
 /// `INTEN` mask: XFERCOMPLETE | ABORTED | READYTOTRANSFER → VEVIF event 20.
 const VRI_INTEN_ALL: u32 = 0x7;
+/// Firmware data-sampling offset in FLPR clock cycles. 0 is enough on the jumper harness at
+/// 32 MHz; a marginal harness may need 1 to 3. It is fixed rather than auto-tuned, because a silent
+/// retune would hide a wiring fault.
+const READ_DELAY: u32 = 0;
 
 // Response types (`SP_EMMC_COMMAND_CMD_RESPTYPE_*`). SD's R6 and R7 are R1-shaped on the wire, so
 // they ride `RESP_R1`.
@@ -447,11 +451,6 @@ pub struct Semmc {
     clk_hz: u32,
     /// 1 or 4. Mirrors `CONFIG.BUSWIDTH`.
     bus_width: u32,
-    /// Firmware data-sampling offset in FLPR clock cycles. 0 is enough on the jumper harness at
-    /// 32 MHz; a marginal harness may need 1 to 3. It is exposed through
-    /// [`set_read_delay`](Self::set_read_delay) rather than auto-tuned, because a silent retune
-    /// would hide a wiring fault.
-    read_delay: u32,
     num_retries: u32,
     /// Barrier handshake counter (wraps; only equality with the firmware's echo matters).
     counter: u32,
@@ -483,7 +482,6 @@ impl Semmc {
         Self {
             clk_hz: CLK_INIT_HZ,
             bus_width: 1,
-            read_delay: 0,
             num_retries: NUM_RETRIES,
             counter: 0,
             rca: 0,
@@ -495,24 +493,9 @@ impl Semmc {
         }
     }
 
-    /// What [`init_card`](Self::init_card) found, once it has run. The bring-up path gets this back
-    /// from [`start`](Self::start); this is the after-the-fact accessor for diagnostics.
-    #[allow(dead_code)]
-    pub fn card(&self) -> Option<CardInfo> {
-        self.card
-    }
-
     /// Capacity in 512 B blocks.
     pub fn num_blocks(&self) -> Result<u32, SemmcError> {
         self.card.map(|c| c.blocks).ok_or(SemmcError::NotInitialised)
-    }
-
-    /// Override the firmware's data-sampling delay, which defaults to 0. See
-    /// [`read_delay`](Self::read_delay). There is no caller: 0 is correct on every harness measured
-    /// so far, and the knob exists so a marginal one is a one-line change at the bring-up site.
-    #[allow(dead_code)]
-    pub fn set_read_delay(&mut self, cycles: u32) {
-        self.read_delay = cycles;
     }
 
     /// The one-call bring-up: pads to storage, cold-boot the image, power it on, let the card's
@@ -750,7 +733,7 @@ impl Semmc {
         vri_write(VRI_CFG_CLKFREQHZ, self.clk_hz);
         vri_write(VRI_CFG_BUSWIDTH, self.bus_width);
         vri_write(VRI_CFG_NUMRETRIES, self.num_retries);
-        vri_write(VRI_CFG_READDELAY, self.read_delay);
+        vri_write(VRI_CFG_READDELAY, READ_DELAY);
         vri_write(VRI_CMD_CMD, (idx & 0xFFFF) | (resp << 16) | (proc << 24));
         vri_write(VRI_CMD_ARG, arg);
         vri_write(VRI_CMD_RESPONSEADDR, &raw const RESP_RAW as u32);

@@ -34,12 +34,9 @@ mod flpr_mux;
 // One RAM block time-shared by the render scratch, the nav block and the USB staging buffer,
 // which are never live at the same time. The only place this feature's `unsafe` lives.
 mod arena;
-#[cfg(has_nav)]
 mod assistant;
-#[cfg(has_nav)]
 mod detour;
 mod peak_view;
-#[cfg(has_nav)]
 mod visit;
 // The COM electrode square wave. The FLPR drives the frames; only this stays on the M33.
 mod com;
@@ -155,12 +152,9 @@ const MAP_RESIDENT: usize = core::mem::size_of::<obc_app::App>()
 /// plan-frame local, and a budget that moved with the card's contents would not be a budget. It is
 /// deliberately not an arena arm, because `App::sample_terrain` reads it at every fresh fix during a
 /// ride, which is while the map plane renders and no search runs. It is state, not scratch.
-#[cfg(has_nav)]
 const TERRAIN_RESIDENT: usize = core::mem::size_of::<
     obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>,
 >() + core::mem::size_of::<obc_formats::io::WindowSource<'static>>();
-#[cfg(not(has_nav))]
-const TERRAIN_RESIDENT: usize = 0;
 
 // A report-only table of target-side allocation sizes, kept out of every shipping ELF by
 // `cfg(feature = "resource-report")`. `resource_guard.py report` extracts it without running the
@@ -206,8 +200,7 @@ mod resource_report {
         entry("ble_v4_adapter", ble::V4_ADAPTER_BYTES),
     ];
 
-    /// The terrain entries are the *types'* sizes, reported in every profile, even where `has_nav`
-    /// keeps the statics out of the image.
+    /// The terrain entries are the *types'* sizes.
     const TERRAIN_ENTRIES: [Entry; 2] = [
         entry(
             "terrain",
@@ -302,16 +295,13 @@ static mut SHARED_SETTINGS_SLOT: MaybeUninit<SharedSettingsMutex> = MaybeUninit:
 /// The mounted map's terrain: the OBCT reader plus its four-tile cache, about 2.1 KB. It is
 /// `.bss` because `TerrainElevation` embeds the cache and a stack copy inside the emit path would
 /// be a fat local. Written once at boot, and only when the map carries a terrain region.
-#[cfg(has_nav)]
 static mut TERRAIN: MaybeUninit<obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>> =
     MaybeUninit::uninit();
 /// The window the OBCT container is read through. It must be `'static`: [`TERRAIN`]'s parsed
 /// reader borrows its source for the session.
-#[cfg(has_nav)]
 static mut TERRAIN_WINDOW: MaybeUninit<obc_formats::io::WindowSource<'static>> = MaybeUninit::uninit();
 /// The no-terrain source, a ZST. The emit path then has one uniform seam and no `Option` branch
 /// per point.
-#[cfg(has_nav)]
 static mut NULL_ELEV: obc_route::NullElevation = obc_route::NullElevation;
 
 /// Parse immutable map tables directly in the static slot.
@@ -343,7 +333,6 @@ unsafe fn parse_map_tables(
 ///
 /// The `&'static mut` does not come from `map`, which is what `clippy::mut_from_ref` cannot see:
 /// it comes from [`TERRAIN`], a slot this function solely owns and writes at most once per boot.
-#[cfg(has_nav)]
 #[inline(never)]
 #[allow(clippy::mut_from_ref)]
 fn mount_terrain(
@@ -543,7 +532,6 @@ mod stackmeter {
     /// [`used`], but forcing a fresh full scan instead of obeying the [`SCAN_INTERVAL_MS`]
     /// throttle — for a caller that has just finished a stack-notable operation and wants the peak
     /// including it now.
-    #[cfg(has_nav)]
     pub fn rescan(now: u32) -> usize {
         LAST_USED.store(0, Ordering::Relaxed); // 0 = "never scanned" → `used` always rescans
         used(now)
@@ -951,7 +939,6 @@ async fn main(_spawner: Spawner) {
         // The map's embedded terrain. It mounts right behind the tables, because the region is a
         // header field and there is nothing to mount until the header is parsed. `mount_terrain`'s
         // `#[inline(never)]` keeps the parse temporary out of this task's poll frame.
-        #[cfg(has_nav)]
         let terrain = mount_terrain(flat_map, map_tables);
 
         // Boot to Home: the rider drives Home, Route menu, Map with the buttons. The `sd-bench`
@@ -972,10 +959,7 @@ async fn main(_spawner: Spawner) {
             // loop reports the store's live `sequence()`, and the first pass sees that move from "no
             // store" to a revision, which arms exactly one catalog read. This snapshot is what the
             // menu shows until that read lands.
-            if let Some(mut catalogs) = arena::claim_catalogs(
-                #[cfg(has_nav)]
-                None,
-            ) {
+            if let Some(mut catalogs) = arena::claim_catalogs(None) {
                 let _ = flat_store::load_routes(flat, app, &mut catalogs);
                 let _ = flat_store::load_trips(flat, app, &mut catalogs);
             }
@@ -998,9 +982,7 @@ async fn main(_spawner: Spawner) {
 
         // The router's resident half. The A* table, the graph-tile cache and the planner slot are
         // the arena's nav arm, claimed per search, so all that is threaded into the ride loop is the
-        // map's terrain (or the null source), which is sampled at fix cadence. Without `has_nav` it
-        // is the unit stand-in and the ride loop answers plan requests with the failure tier.
-        #[cfg(has_nav)]
+        // map's terrain (or the null source), which is sampled at fix cadence.
         let nav = ride::NavResident {
             // SAFETY: `NULL_ELEV` is a ZST written nowhere else, and `terrain` is the sole reference
             // to the `TERRAIN` slot, moved here.
@@ -1009,8 +991,6 @@ async fn main(_spawner: Spawner) {
                 None => unsafe { &mut *core::ptr::addr_of_mut!(NULL_ELEV) },
             },
         };
-        #[cfg(not(has_nav))]
-        let nav = ride::NavResident;
 
         // The persistent settings store over the carved RRAM page. Built here, where `p` is live,
         // and moved into the ride loop. Every boot bumps the persisted boot counter.

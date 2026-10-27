@@ -891,33 +891,8 @@ impl crate::App {
             || (self.navigator.review.status == ReviewStatus::Unresolved && self.navigator.review.change.is_some())
     }
 
-    /// Keep the newest trustworthy sample while a phase write is pending; the phase owner replays it after ACK.
-    pub fn observe_assistant_origin(&mut self, origin: ReviewOrigin) {
-        if origin.trustworthy {
-            self.navigator.review.latest_origin = Some(origin);
-        }
-    }
     pub fn latest_assistant_origin(&self) -> Option<ReviewOrigin> {
         self.navigator.review.latest_origin
-    }
-    pub fn checkpoint_assistant_phase(&mut self, next: NavigatorCheckpoint) -> bool {
-        let review = &mut self.navigator.review;
-        let Some(current) = review.checkpoint else {
-            return false;
-        };
-        if review.status != ReviewStatus::Accepted
-            || review.change.is_some()
-            || !next.valid()
-            || next.route != current.route
-            || (next.original != current.original
-                && !(next.phase == JourneyPhase::Following && next.original.is_none()))
-            || next.unresolved_avoidance != current.unresolved_avoidance
-        {
-            return false;
-        }
-        review.change = Some(Some(next));
-        review.after = AfterCheckpoint::Phase;
-        true
     }
     /// A recovered preview cannot be accepted when its frozen sources no longer match.
     pub fn invalidate_assistant_preview(&mut self) {

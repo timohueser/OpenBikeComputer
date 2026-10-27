@@ -769,7 +769,7 @@ fn source_head<D: BlockDevice>(store: &FlatStore<D>, id: ObjectId, kind: ObjectK
     entry.ok_or(Error::Stale)
 }
 
-pub fn check_scope<D: BlockDevice>(store: &FlatStore<D>, expected: StoreId, sequence: u64) -> Result<(), Error> {
+fn check_scope<D: BlockDevice>(store: &FlatStore<D>, expected: StoreId, sequence: u64) -> Result<(), Error> {
     if store.store_id() != expected {
         return Err(Error::WrongStore);
     }

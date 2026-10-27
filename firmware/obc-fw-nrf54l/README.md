@@ -137,7 +137,7 @@ There is no chip select. Use the pull-ups specified in the pad table.
 
 Writes cap at 21.3 MHz; high-speed reads use 32 MHz. Re-test signal integrity on
 soldered hardware. RTT reports `SemmcError` and the aborted transfer.
-For read CRC errors at 32 MHz on a long harness, try `Semmc::set_read_delay`.
+For read CRC errors at 32 MHz on a long harness, raise `READ_DELAY` in `src/semmc.rs`.
 
 ## Sensors
 

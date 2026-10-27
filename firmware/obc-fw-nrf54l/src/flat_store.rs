@@ -14,9 +14,7 @@ use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 
-use obc_link::flat::{
-    Ceilings, Engine, Link, Policy, Reaction, RequestId, Stall, StreamBuffers, UsbMapBatch, STALL_TIMEOUT_MS,
-};
+use obc_link::flat::{Ceilings, Engine, Link, Policy, Reaction, RequestId, Stall, UsbMapBatch, STALL_TIMEOUT_MS};
 use obc_storage::flat::store::MAX_BATCH;
 use obc_storage::flat::{
     Allocation, BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId,
@@ -379,7 +377,7 @@ pub(crate) const REQUEST_QUEUE_BYTES: usize =
 /// inherent. There is no allocator, so the lint's advice to box the large field is not available,
 /// and the alternatives — a `'static` batch slot per caller, or a commit of one mutation that gives
 /// up atomicity across a batch — are both worse than the roughly 1 KB this costs.
-#[allow(dead_code, clippy::large_enum_variant)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Request {
     ClearPersonalData {
         store: obc_app::device_core::StoreIdentity,
@@ -481,11 +479,6 @@ pub(crate) enum Request {
     /// One whole stream record: the 16-byte frame followed by exactly its payload.
     Stream {
         link: Link,
-        record: &'static [u8],
-        out: &'static mut [u8],
-    },
-    /// A USB stream record whose upload owns the arena's double 64 KiB stage.
-    StreamStaged {
         record: &'static [u8],
         out: &'static mut [u8],
     },
@@ -1043,7 +1036,6 @@ fn serve(
                     return Err(StoreError::NotFound);
                 }
             }
-            #[cfg(has_nav)]
             if !planner_map_current() {
                 return Err(StoreError::NotFound);
             }
@@ -1132,30 +1124,6 @@ fn serve(
         }
         Request::Stream { link, record, out } => {
             let reaction = engine.on_stream(link, store, policy, record, out);
-            publish_upload(store, engine);
-            Ok(Outcome::Reacted { reaction, out })
-        }
-        Request::StreamStaged { record, out } => {
-            let reaction = engine
-                .upload_stage_bank()
-                .and_then(|bank| {
-                    crate::arena::with_usb_stage_bank(bank, |stage| {
-                        engine.on_stream_staged(
-                            Link::Usb,
-                            store,
-                            policy,
-                            StreamBuffers::new(record, &mut *out),
-                            bank,
-                            stage,
-                        )
-                    })
-                })
-                .unwrap_or_else(|| {
-                    // Losing the arm invalidates the staged prefix. Cancel rather than switching to
-                    // the resident buffer and writing unrelated bytes under the same cursor.
-                    engine.on_link_lost(Link::Usb, store);
-                    Reaction::Close(obc_link::flat::Channel::Stream)
-                });
             publish_upload(store, engine);
             Ok(Outcome::Reacted { reaction, out })
         }
@@ -1465,13 +1433,11 @@ pub(crate) fn debug_census(store: &FlatStore<FlatCard>) {
 static mut MAP_SOURCE: MaybeUninit<obc_storage::flat::StoreSource<'static, FlatCard>> = MaybeUninit::uninit();
 
 /// Called only by the ride task after a map was opened successfully at boot.
-#[cfg(has_nav)]
 pub(crate) fn planner_map_current() -> bool {
     // SAFETY: run_app starts only with the initialized, session-long map source.
     unsafe { (&*core::ptr::addr_of!(MAP_SOURCE)).assume_init_ref().is_current() }
 }
 
-#[cfg(has_nav)]
 pub(crate) fn planner_map_key(store: &FlatStore<FlatCard>) -> obc_formats::obcr::RouteSourceKey {
     // SAFETY: the ride task runs only after the session-long source is initialized.
     let source = unsafe { (&*core::ptr::addr_of!(MAP_SOURCE)).assume_init_ref() };
@@ -1601,7 +1567,6 @@ pub(crate) fn route_source_key() -> Option<(ObjectId, obc_storage::flat::Revisio
 }
 
 /// Take another reader of the exact active route, never a replacement found through a stale menu.
-#[cfg(has_nav)]
 pub(crate) fn planner_original(
     store: &'static FlatStore<FlatCard>,
     id: ObjectId,

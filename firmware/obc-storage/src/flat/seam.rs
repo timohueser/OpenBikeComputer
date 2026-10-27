@@ -199,10 +199,6 @@ pub struct Allocation {
 }
 
 impl Allocation {
-    pub fn reserved_bytes(&self) -> u64 {
-        self.reserved
-    }
-
     /// Bytes appended so far, which is the final payload length of an oversized reservation.
     pub fn written_bytes(&self) -> u64 {
         self.written
