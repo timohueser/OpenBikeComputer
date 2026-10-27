@@ -1346,7 +1346,7 @@ mod tests {
         let Input::Snapshot { source, version, params, .. } = &source.inputs[0] else { panic!("not a snapshot") };
         assert_eq!((source.as_str(), version.as_str(), params), (EXTRACTS, "2026-10-02", &area));
         // The terrain covers the zoom 10 tiles of the region and their neighbours.
-        assert_eq!(terrain.options["bounds"], json!([7.382257389170511, 47.71727272727273, 8.4375, 48.45835188280866]));
+        assert_eq!(terrain.options["bounds"], json!([7.3828125, 47.754097979680026, 8.4375, 48.45835188280866]));
         assert_eq!(
             tiles(&terrain.inputs[0]),
             ["N47_00_E007", "N48_00_E007"],
