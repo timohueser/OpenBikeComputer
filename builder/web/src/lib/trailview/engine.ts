@@ -389,7 +389,7 @@ export class TrailView {
             if (this.destroyed || this.gpuState.gpu !== gpu) return;
             // A destroy during these attaches released the scope before they made their buffers, also when one fails.
             try {
-                await Promise.all([shadow, this.terrain.attachParts(frames), this.houses.attach(gpu, frames, surface, features), this.instances.attach(gpu, frames, { surface, features }), this.sky.attachStars(gpu)]);
+                await Promise.all([shadow, this.terrain.attachParts(frames), this.houses.attach(gpu, frames, surface, features), this.instances.attach(gpu, frames, { surface, features }), this.sky.attachNight(gpu)]);
             } finally {
                 if (this.destroyed) gpu.release();
             }

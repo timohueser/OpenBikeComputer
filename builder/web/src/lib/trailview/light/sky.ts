@@ -10,9 +10,9 @@ const NIGHT_BYTES = 96;
 /** Bytes of a star in the vertex buffer: its J2000 direction and V magnitude as floats, and its colour in bytes. */
 const STAR_BYTES = 20;
 // The files of tools/trailview/sky.py.
-const MILKY_WAY = new URL('./milkyway.webp', import.meta.url), STARS = new URL('./stars.bin', import.meta.url);
-/** The `attribution` of the sources `nasa-svs-milky-way` and `yale-bright-stars` in data/sources.toml, shortened. */
-export const SKY_CREDITS = 'Milky Way: NASA/GSFC SVS, ESA/Gaia/DPAC; stars: Yale Bright Star Catalogue';
+const MILKY_WAY = new URL('./milkyway.webp', import.meta.url), STARS = new URL('./stars.bin', import.meta.url), MOON = new URL('./moon.webp', import.meta.url);
+/** The `attribution` of the sources `nasa-svs-milky-way`, `nasa-svs-moon` and `yale-bright-stars` in data/sources.toml, shortened. */
+export const SKY_CREDITS = 'Milky Way and moon: NASA/GSFC SVS, ESA/Gaia/DPAC; stars: Yale Bright Star Catalogue';
 /** Star colours by B−V: blue-white, white, orange; an eye sees them pale. */
 const TINTS: [number, number[]][] = [[-0.3, [0.68, 0.78, 1]], [0.6, [1, 0.97, 0.92]], [1.6, [1, 0.74, 0.5]]];
 
@@ -35,8 +35,8 @@ interface Stars { buffer: GPUBuffer; magnitudes: Float32Array; pipeline: GPURend
 
 /**
  * The sky pass: one triangle at depth 0 behind the terrain, then the stars. Both read the look of
- * shade.wgsl in group 2 and `Night` in group 0. Until the stars and the Milky Way have loaded
- * (`attachStars`), the sky draws without them.
+ * shade.wgsl in group 2 and `Night` in group 0. Until the stars, the Milky Way and the moon's face
+ * have loaded (`attachNight`), the sky draws without them and the moon plain grey.
  */
 export class Sky {
     private pipeline?: GPURenderPipeline;
@@ -51,26 +51,19 @@ export class Sky {
         const pipeline = await gpu.once(skyPipeline);
         this.empty = gpu.device.createBindGroup({ layout: gpu.device.createBindGroupLayout({ entries: [] }), entries: [] });
         this.uniform = gpu.buffer('uniforms', NIGHT_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-        const none = gpu.texture('sky', { size: [1, 1], format: 'rgba8unorm-srgb', usage: GPUTextureUsage.TEXTURE_BINDING }, 4);
-        this.group = this.night(gpu, none);
+        this.group = this.night(gpu, pixel(gpu, [0, 0, 0, 255]), pixel(gpu, [170, 170, 170, 255]));
         this.stars = undefined;
         this.pipeline = pipeline;
     }
 
-    /** Loads the Milky Way and the stars and compiles the stars' pipeline. */
-    async attachStars(gpu: Gpu): Promise<void> {
-        const [image, table, pipeline] = await Promise.all([
-            fetch(MILKY_WAY).then(response => response.blob()).then(blob => createImageBitmap(blob, { colorSpaceConversion: 'none' })),
-            fetch(STARS).then(response => response.arrayBuffer()),
-            gpu.once(starPipeline),
+    /** Loads the Milky Way, the stars and the moon's face, and compiles the stars' pipeline. */
+    async attachNight(gpu: Gpu): Promise<void> {
+        const [milkyWay, face, table, pipeline] = await Promise.all([
+            image(gpu, MILKY_WAY), image(gpu, MOON), fetch(STARS).then(response => response.arrayBuffer()), gpu.once(starPipeline),
         ]);
-        const texture = gpu.texture('sky', {
-            size: [image.width, image.height], format: 'rgba8unorm-srgb', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
-        }, 4 * image.width * image.height);
-        gpu.device.queue.copyExternalImageToTexture({ source: image }, { texture }, [image.width, image.height]);
         const { data, magnitudes } = starVertices(table), buffer = gpu.buffer('sky', data.byteLength, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST);
         gpu.device.queue.writeBuffer(buffer, 0, data);
-        this.group = this.night(gpu, texture);
+        this.group = this.night(gpu, milkyWay, face);
         this.stars = { buffer, magnitudes, pipeline };
     }
 
@@ -100,14 +93,32 @@ export class Sky {
         pass.draw(4, this.count);
     }
 
-    private night(gpu: Gpu, texture: GPUTexture): GPUBindGroup {
+    private night(gpu: Gpu, milkyWay: GPUTexture, face: GPUTexture): GPUBindGroup {
         return gpu.device.createBindGroup({
             layout: gpu.once(nightLayout), entries: [
-                { binding: 0, resource: { buffer: this.uniform! } }, { binding: 1, resource: texture.createView() },
+                { binding: 0, resource: { buffer: this.uniform! } }, { binding: 1, resource: milkyWay.createView() },
                 { binding: 2, resource: gpu.device.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat' }) },
+                { binding: 3, resource: face.createView() },
             ],
         });
     }
+}
+
+/** An sRGB image file as a texture. */
+async function image(gpu: Gpu, url: URL): Promise<GPUTexture> {
+    const bitmap = await fetch(url).then(response => response.blob()).then(blob => createImageBitmap(blob, { colorSpaceConversion: 'none' }));
+    const texture = gpu.texture('sky', {
+        size: [bitmap.width, bitmap.height], format: 'rgba8unorm-srgb', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    }, 4 * bitmap.width * bitmap.height);
+    gpu.device.queue.copyExternalImageToTexture({ source: bitmap }, { texture }, [bitmap.width, bitmap.height]);
+    return texture;
+}
+
+/** A texture of one sRGB texel, which stands for an image until it loads. */
+function pixel(gpu: Gpu, rgba: number[]): GPUTexture {
+    const texture = gpu.texture('sky', { size: [1, 1], format: 'rgba8unorm-srgb', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST }, 4);
+    gpu.device.queue.writeTexture({ texture }, new Uint8Array(rgba), {}, [1, 1]);
+    return texture;
 }
 
 /** The stars of `stars.bin` (tools/trailview/sky.py) as vertices, brightest first, and their magnitudes. */
@@ -141,13 +152,14 @@ function below(values: Float32Array, limit: number): number {
     return lo;
 }
 
-/** Group 0 of the sky and the stars: `Night`, the Milky Way and its sampler. */
+/** Group 0 of the sky and the stars: `Night`, the Milky Way, their sampler and the moon's face. */
 function nightLayout({ device }: Gpu): GPUBindGroupLayout {
     const both = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
     return device.createBindGroupLayout({
         entries: [
             { binding: 0, visibility: both, buffer: { type: 'uniform' } },
             { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} }, { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+            { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: {} },
         ],
     });
 }

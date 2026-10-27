@@ -1,9 +1,9 @@
-"""Make the night sky of the TrailView engine: `milkyway.webp` and `stars.bin` in
+"""Make the night sky of the TrailView engine: `milkyway.webp`, `stars.bin` and `moon.webp` in
 builder/web/src/lib/trailview/light/.
 
     uv run --locked --group trailview-sky python -m tools.trailview.sky
 
-The sources are `nasa-svs-milky-way` and `yale-bright-stars` of data/sources.toml. The script
+The sources are `nasa-svs-milky-way`, `yale-bright-stars` and `nasa-svs-moon` of data/sources.toml. The script
 downloads each into ~/.cache/obc/trailview/sky once and fails unless its SHA-256 is the source's
 `start`.
 
@@ -13,6 +13,9 @@ downloads each into ~/.cache/obc/trailview/sky once and fails unless its SHA-256
 - `stars.bin`: per star of the catalogue with a J2000 position and V ≤ MAX_V, brightest first, 6
   bytes little-endian: right ascension u16 (a turn in 65 536 steps), declination i16 (±90° in ±32 767
   steps), V u8 ((V + 2) × 20), B−V u8 ((B−V + 0.5) × 80). `light/sky.ts` reads it.
+- `moon.webp`: the near side of the moon as the Earth sees it, seen from far away: an orthographic
+  disk filling the image, lunar north up and east longitudes to the right, in sRGB, its linear mean
+  over the disk MOON_MEAN.
 """
 
 import gzip
@@ -38,6 +41,10 @@ QUALITY = 70
 MAX_V = 6.5
 # B−V where the catalogue has none: a star like the sun.
 DEFAULT_BV = 0.65
+# The moon disk's side in texels, and its linear mean (MOON_MEAN of sky.wgsl), which leaves the
+# bright highlands below 1.
+MOON_SIDE = 128
+MOON_MEAN = 0.4
 
 
 def source(id: str) -> Path:
@@ -84,11 +91,40 @@ def stars(catalogue: Path) -> bytes:
     )
 
 
+def moon(colour: Path) -> bytes:
+    """The near side from the colour map (plate carrée, longitude 0 in the middle), as lossy WebP."""
+    srgb = np.asarray(Image.open(colour).convert("RGB"), dtype=np.float32) / 255
+    rgb = np.where(srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4)
+    h, w, _ = rgb.shape
+    x, y = np.meshgrid((np.arange(MOON_SIDE) + 0.5) / MOON_SIDE * 2 - 1, 1 - (np.arange(MOON_SIDE) + 0.5) / MOON_SIDE * 2)
+    disk = x * x + y * y < 1
+    # Each texel takes the mean of the map's texels that it covers: a 4 × 4 grid of rays.
+    face = np.zeros((MOON_SIDE, MOON_SIDE, 3))
+    for dx in np.arange(4) / 4 - 0.375:
+        for dy in np.arange(4) / 4 - 0.375:
+            sx, sy = np.clip(x + 2 * dx / MOON_SIDE, -1, 1), np.clip(y + 2 * dy / MOON_SIDE, -1, 1)
+            sz = np.sqrt(np.clip(1 - sx * sx - sy * sy, 0, 1))
+            lon, lat = np.arctan2(sx, sz), np.arcsin(sy)
+            col = ((lon / (2 * np.pi) + 0.5) * w).astype(int).clip(0, w - 1)
+            row = ((0.5 - lat / np.pi) * h).astype(int).clip(0, h - 1)
+            face += rgb[row, col] / 16
+    face *= MOON_MEAN / face[disk].mean()
+    face[~disk] = 0
+    out = np.where(face <= 0.0031308, 12.92 * face, 1.055 * np.power(np.clip(face, 0, 1), 1 / 2.4) - 0.055)
+    data = io.BytesIO()
+    Image.fromarray((np.clip(out, 0, 1) * 255 + 0.5).astype(np.uint8)).save(data, "WEBP", quality=85, method=6)
+    return data.getvalue()
+
+
 def main() -> None:
-    webp, table = milky_way(source("nasa-svs-milky-way")), stars(source("yale-bright-stars"))
-    (OUT / "milkyway.webp").write_bytes(webp)
-    (OUT / "stars.bin").write_bytes(table)
-    print(f"milkyway.webp: {len(webp)} bytes; stars.bin: {len(table) // 6} stars, {len(table)} bytes")
+    files = {
+        "milkyway.webp": milky_way(source("nasa-svs-milky-way")),
+        "stars.bin": stars(source("yale-bright-stars")),
+        "moon.webp": moon(source("nasa-svs-moon")),
+    }
+    for name, data in files.items():
+        (OUT / name).write_bytes(data)
+        print(f"{name}: {len(data)} bytes")
 
 
 if __name__ == "__main__":

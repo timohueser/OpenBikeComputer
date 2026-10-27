@@ -20,13 +20,17 @@ struct Night {
 // The Milky Way without its bright stars (tools/trailview/sky.py).
 @group(0) @binding(1) var milky_way: texture_2d<f32>;
 @group(0) @binding(2) var bilinear: sampler;
+// The near side of the moon, an orthographic disk with lunar north up (tools/trailview/sky.py).
+@group(0) @binding(3) var moon_face: texture_2d<f32>;
 
 const TAU: f32 = 6.2831853;
-// The half widths of the drawn disks in radians, twice the real ones.
+// The half width of the drawn sun in radians, twice the real one, and of the real moon (0.26°).
 const SUN_DISK: f32 = 0.0085;
-const MOON_DISK: f32 = 0.0085;
-// The light of a lit moon on the screen, and of its dark side in earthshine.
+const MOON_DISK: f32 = 0.0045;
+// The light of a lit moon on the screen, and of its dark side in earthshine. `moon_face` holds its
+// albedo with this mean.
 const MOON_LIGHT: f32 = 1.6;
+const MOON_MEAN: f32 = 0.4;
 const EARTHSHINE: f32 = 0.012;
 // The Milky Way's light at its full share: its texels hold up to 1 in its core. The eye sees little
 // colour at night, so the glow keeps this share of the image's colour.
@@ -59,19 +63,31 @@ fn clear(dir: vec3f) -> f32 {
     return exp(-0.28 * (mass - 1.0));
 }
 
+// The drawn moon's half width: 1.5 times the real one high in the sky, growing to 2.5 times at the
+// horizon, as the eye sees it.
+fn moon_disk() -> f32 {
+    let low = 1.0 - max(night.moon.z, 0.0);
+    return MOON_DISK * (1.5 + low * low);
+}
+
 // The moon over the sky colour `c` at a pixel's ray: a sphere lit from the sun, so its phase and the
-// tilt of its lit side follow from the two directions.
+// tilt of its lit side follow from the two directions. Its face turns lunar north toward the pole of
+// the sky, as it nearly does.
 fn moon(c: vec3f, dir: vec3f) -> vec3f {
     let m = night.moon.xyz;
-    let across = (dir - m * dot(dir, m)) / MOON_DISK;
+    let across = (dir - m * dot(dir, m)) / moon_disk();
     let r = dot(across, across);
     if (r >= 1.0 || dot(dir, m) <= 0.0) {
         return c;
     }
+    let pole = night.stars[2];
+    let north = normalize(pole - m * dot(pole, m));
+    let uv = vec2f(0.5 + 0.5 * dot(across, cross(m, north)), 0.5 - 0.5 * dot(across, north));
+    let albedo = textureSampleLevel(moon_face, bilinear, uv, 0.0).rgb / MOON_MEAN;
     let normal = across - m * sqrt(1.0 - r);
     let lit = smoothstep(-0.04, 0.12, dot(normal, look.sky_sun.xyz)) + EARTHSHINE;
-    let edge = smoothstep(1.0, 0.85, r);
-    return c + vec3f(0.94, 0.95, 1.0) * MOON_LIGHT * lit * edge * night.show.w;
+    let edge = smoothstep(1.0, 0.9, r);
+    return c + albedo * MOON_LIGHT * lit * edge * night.show.w;
 }
 
 @fragment
@@ -110,7 +126,8 @@ fn star_vertex(@builtin(vertex_index) i: u32, @location(0) star: vec4f, @locatio
     let ahead = dot(dir, look.forward.xyz);
     let show = smoothstep(0.0, 1.0, night.show.x - star.w) * night.show.y * clear(dir);
     let corner = vec2f(f32(i & 1u), f32(i >> 1u)) * 2.0 - 1.0;
-    if (ahead <= 0.01 || show <= 0.0) {
+    // The moon hides the stars behind it.
+    if (ahead <= 0.01 || show <= 0.0 || dot(dir, night.moon.xyz) > cos(moon_disk())) {
         return Star(vec4f(2.0, 2.0, 0.0, 1.0), corner, vec3f(0.0));
     }
     let right = look.right.xyz;
