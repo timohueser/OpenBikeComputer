@@ -60,14 +60,18 @@ export class Route {
     private points = new Uint32Array(0);
     private pins: readonly RoutePin[] = [];
     private resources?: Resources;
-    /** Whether the route is not on the GPU yet. */
-    private fresh = true;
+    /** Whether the route or the pins are not on the GPU yet. */
+    private fresh = { points: true, pins: true };
 
     /** The route in riding order with the colour of each edge; fewer than two points draw none. */
-    set(route: readonly Coordinate[], colours: readonly string[], pins: readonly RoutePin[]): void {
+    set(route: readonly Coordinate[], colours: readonly string[]): void {
         this.points = route.length < 2 ? new Uint32Array(0) : routePoints(route, colours);
+        this.fresh.points = this.newContent = true;
+    }
+
+    setPins(pins: readonly RoutePin[]): void {
         this.pins = pins;
-        this.fresh = this.newContent = true;
+        this.fresh.pins = this.newContent = true;
     }
 
     /** `frame` is the frame uniform of the eye's view. */
@@ -78,14 +82,14 @@ export class Route {
             gpu, line, pin, layout, frame, empty: gpu.device.createBindGroup({ layout: empty, entries: [] }),
             sampler: gpu.device.createSampler({ magFilter: 'linear', minFilter: 'linear' }),
         };
-        this.fresh = true;
+        this.fresh = { points: true, pins: true };
     }
 
     draw(pass: GPURenderPassEncoder, surface: GPUBindGroup, features: GPUBindGroup): void {
         const r = this.resources;
         this.newContent = false;
         if (!r) return;
-        if (this.fresh) this.write(r);
+        if (this.fresh.points || this.fresh.pins) this.write(r);
         if (!r.group) return;
         [r.group, surface, r.empty, features].forEach((group, k) => pass.setBindGroup(k, group));
         if (this.points.length) {
@@ -99,36 +103,38 @@ export class Route {
     }
 
     private write(r: Resources): void {
-        this.fresh = false;
         const { gpu } = r, { device } = gpu;
-        r.group = undefined;
-        if (!this.points.length && !this.pins.length) return;
         // The bindings take at least one point, pin and image.
         const points = this.points.length ? this.points : new Uint32Array(POINT_WORDS), pins = Math.max(this.pins.length, 1);
-        if (!r.points || r.points.size < points.byteLength) {
-            if (r.points) gpu.destroy('route', r.points);
-            r.points = gpu.buffer('route', points.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        if (this.fresh.points) {
+            if (!r.points || r.points.size < points.byteLength) {
+                if (r.points) gpu.destroy('route', r.points);
+                r.points = gpu.buffer('route', points.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+            }
+            device.queue.writeBuffer(r.points, 0, points);
         }
-        device.queue.writeBuffer(r.points, 0, points);
-        if (!r.pins || r.pins.size < pins * 8) {
-            if (r.pins) gpu.destroy('route', r.pins);
-            r.pins = gpu.buffer('route', pins * 8, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        if (this.fresh.pins) {
+            if (!r.pins || r.pins.size < pins * 8) {
+                if (r.pins) gpu.destroy('route', r.pins);
+                r.pins = gpu.buffer('route', pins * 8, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+            }
+            device.queue.writeBuffer(r.pins, 0, new Int32Array(this.pins.flatMap(({ coordinate }) => worldPixel(coordinate, UNITS).map(Math.round))));
+            if (r.images?.depthOrArrayLayers !== pins) {
+                if (r.images) gpu.destroy('route', r.images);
+                r.images = gpu.texture('route', {
+                    size: [...PIN_SIZE, pins], format: 'rgba8unorm',
+                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+                }, PIN_SIZE[0] * PIN_SIZE[1] * 4 * pins);
+            }
+            const images = r.images;
+            this.pins.forEach(({ image }, k) => device.queue.copyExternalImageToTexture(
+                { source: image }, { texture: images, origin: [0, 0, k], premultipliedAlpha: true }, PIN_SIZE));
         }
-        device.queue.writeBuffer(r.pins, 0, new Int32Array(this.pins.flatMap(({ coordinate }) => worldPixel(coordinate, UNITS).map(Math.round))));
-        if (r.images?.depthOrArrayLayers !== pins) {
-            if (r.images) gpu.destroy('route', r.images);
-            r.images = gpu.texture('route', {
-                size: [...PIN_SIZE, pins], format: 'rgba8unorm',
-                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
-            }, PIN_SIZE[0] * PIN_SIZE[1] * 4 * pins);
-        }
-        const images = r.images;
-        this.pins.forEach(({ image }, k) => device.queue.copyExternalImageToTexture(
-            { source: image }, { texture: images, origin: [0, 0, k], premultipliedAlpha: true }, PIN_SIZE));
+        this.fresh = { points: false, pins: false };
         // The shader counts the points and the pins by the bound size, so a shorter route binds less of each buffer.
         r.group = device.createBindGroup({ layout: r.layout, entries: [
-            { binding: 0, resource: { buffer: r.frame } }, { binding: 1, resource: { buffer: r.points, size: points.byteLength } },
-            { binding: 2, resource: { buffer: r.pins, size: pins * 8 } }, { binding: 3, resource: images.createView({ dimension: '2d-array' }) },
+            { binding: 0, resource: { buffer: r.frame } }, { binding: 1, resource: { buffer: r.points!, size: points.byteLength } },
+            { binding: 2, resource: { buffer: r.pins!, size: pins * 8 } }, { binding: 3, resource: r.images!.createView({ dimension: '2d-array' }) },
             { binding: 4, resource: r.sampler },
         ] });
     }

@@ -3,10 +3,11 @@
     import Icon from './PlannerIcon.svelte';
     import TrailViewConditions from './TrailViewConditions.svelte';
     import TrailViewMiniMap from './TrailViewMiniMap.svelte';
+    import TrailViewProfile from './TrailViewProfile.svelte';
     import { config } from '../../lib/planner/map-data';
-    import type { Coordinate } from '../../lib/planner/geo';
+    import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo';
     import { FIRST_HEADING, loadTrailView } from '../../lib/planner/trailview';
-    import { nightPin, type RouteLook } from '../../lib/planner/trailview-route';
+    import { nightPin, positionPin, type RouteLook } from '../../lib/planner/trailview-route';
     import type { TrailView } from '../../lib/trailview/engine';
     import { VFOV } from '../../lib/trailview/frame/camera';
     import { defaultView, formatView, type View } from '../../lib/trailview/view';
@@ -34,11 +35,18 @@
     let view = $state<View>();
     let width = $state(0), height = $state(0);
     // The plan's route draws on the terrain in the colours of its days, its grade or its surface, with a pin at
-    // each night, until the rider hides it.
+    // each night and one at the point of the profile under the pointer, until the rider hides it.
     const hasRoute = $derived(near.route.length > 1);
-    let routeShown = $state(true), look = $state<RouteLook>('day');
-    const drawRoute = () => engine?.showRoute(routeShown ? near.route : [], near.looks.colours[look],
-        routeShown && hasRoute ? near.looks.nights.map(night => ({ coordinate: night.coordinate, image: nightPin(night) })) : []);
+    const line = $derived([...near.route]);
+    let routeShown = $state(true), look = $state<RouteLook>('day'), position = $state<number | null>(null);
+    const nightPins = $derived(near.overlay.nights.map(night => ({ coordinate: night.coordinate, image: nightPin(night) })));
+    const marker = positionPin();
+    const drawRoute = () => {
+        engine?.showRoute(routeShown ? near.route : [], near.overlay.colours[look]);
+        drawPins();
+    };
+    const drawPins = () => engine?.showPins(!routeShown || !hasRoute ? []
+        : position === null ? nightPins : [...nightPins, { coordinate: coordinateAt(line, position), image: marker }]);
     const choose = (next: RouteLook) => { look = look === next ? 'day' : next; drawRoute(); };
     // The horizontal angle of the view, from the engine's vertical one and the window's shape.
     const fov = $derived(height ? 2 * Math.atan(Math.tan(VFOV * Math.PI / 360) * width / height) * 180 / Math.PI : VFOV);
@@ -123,6 +131,10 @@
                 <button type="button" aria-pressed={look === 'grade'} disabled={!routeShown} onclick={() => choose('grade')}><Icon name="mountain" />Grade</button>
                 <button type="button" aria-pressed={look === 'surface'} disabled={!routeShown} onclick={() => choose('surface')}><Icon name="layers" />Surface</button>
             </div>
+            {#if routeShown}
+                <TrailViewProfile profile={near.overlay.profile} colours={near.overlay.colours[look]} total={cumulative(line).at(-1) ?? 0}
+                    onHover={progress => { position = progress; drawPins(); }} />
+            {/if}
         {/if}
     {/if}
     <button type="button" class="close" aria-label="Close TrailView" onclick={() => dialog.close()}><Icon name="close" /></button>

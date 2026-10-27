@@ -30,9 +30,8 @@ struct Point {
 @group(0) @binding(4) var image_sampler: sampler;
 
 const LIFT_M: f32 = 0.3;
-// The half-width of the body and the width of the glow beyond it, in metres and at least in output pixels.
+// The half-width of the body, in metres and at least in output pixels, and the width of the glow beyond it in output pixels.
 const BODY_M: f32 = 1.0;
-const GLOW_M: f32 = 0.5;
 const BODY_PIXELS: f32 = 1.5;
 const GLOW_PIXELS: f32 = 2.0;
 // The body's light over the line's colour: LIGHTER more in the middle, DARKER less at the edge.
@@ -41,6 +40,9 @@ const LIGHTER: f32 = 0.6;
 const DARKER: f32 = 0.35;
 const OPACITY: f32 = 0.95;
 const GLOW_GAIN: f32 = 0.8;
+// The route fades in from FADE_NEAR_M to FADE_FAR_M from the eye, so that it does not cover the road under a walking eye.
+const FADE_NEAR_M: f32 = 2.0;
+const FADE_FAR_M: f32 = 12.0;
 const PULL_M: f32 = 0.5;
 const PULL_PIXELS: f32 = 4.0;
 // The output pixels of a pin: half PIN_SIZE of route.ts.
@@ -55,6 +57,7 @@ struct RouteOut {
     @location(2) colour: vec3f,
     // 1 where the surface under the vertex is known.
     @location(3) kept: f32,
+    @location(4) fade: f32,
 }
 
 fn centre(i: u32) -> vec2f {
@@ -101,7 +104,7 @@ fn route_vertex(@builtin(vertex_index) v: u32) -> RouteOut {
     // Metres of one output pixel at the point.
     let metre = frame.pixel * distance;
     let body = max(BODY_M, BODY_PIXELS * metre);
-    let half = body + max(GLOW_M, GLOW_PIXELS * metre);
+    let half = body + GLOW_PIXELS * metre;
     // The half-width in pixels that the body shows when it lies on the ground.
     let lying_pixels = BODY_M * length(cross(left, c)) / (distance * metre);
     let lying = 1.0 - smoothstep(1.0, 2.0, BODY_PIXELS / max(lying_pixels, 1e-6));
@@ -117,6 +120,7 @@ fn route_vertex(@builtin(vertex_index) v: u32) -> RouteOut {
     out.side = side;
     out.body = body / half;
     out.colour = linear(unpack4x8unorm(points[i].colour).rgb);
+    out.fade = smoothstep(FADE_NEAR_M, FADE_FAR_M, distance);
     // The crack and surface views show the terrain alone.
     out.kept = select(0.0, 1.0, known(h) && frame.debug != 3u && frame.debug != 4u);
     return out;
@@ -136,7 +140,7 @@ fn route_fragment(in: RouteOut) -> @location(0) vec4f {
     let outer = clamp((t - in.body) / max(1.0 - in.body, 1e-6), 0.0, 1.0);
     let glow = GLOW_GAIN * (1.0 - outer) * (1.0 - outer);
     let light = in.colour * (shade * cover * OPACITY + glow * (1.0 - cover));
-    return vec4f(light, cover * OPACITY);
+    return vec4f(light, cover * OPACITY) * in.fade;
 }
 
 struct PinOut {
