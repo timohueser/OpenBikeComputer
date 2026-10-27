@@ -133,15 +133,15 @@ function cornerOf(p: Way, q: Way): Corner | undefined {
     }
     if (!(r >= LEAST_M)) return undefined;
     const o = centre(r);
-    // An end of the arc on its road's edge beside the end on the straight way, with the kerb's height and the
-    // sidewalk's width there, as the slab of that segment has them.
+    // An end of the arc: the foot of its centre on its road's edge, where the arc meets the edge square and
+    // the road's slab stops across it; with the kerb's height and the sidewalk's width there, as that slab has them.
     const end = ({ line, v, step }: Way, n: number[]): [[number, number], number, number] => {
-        const tx = x + (o[0] - n[0] * r) / unit, ty = y + (o[1] - n[1] * r) / unit;
+        const ox = x + o[0] / unit, oy = y + o[1] / unit;
         let s = Math.min(v, v + step), u = 0, dx = 0, dy = 0;
         for (; s >= 0 && s + 1 < line.z.length; s += step) {
             dx = line.xy[2 * s + 2] - line.xy[2 * s];
             dy = line.xy[2 * s + 3] - line.xy[2 * s + 1];
-            u = ((tx - line.xy[2 * s]) * dx + (ty - line.xy[2 * s + 1]) * dy) / (dx * dx + dy * dy || 1);
+            u = ((ox - line.xy[2 * s]) * dx + (oy - line.xy[2 * s + 1]) * dy) / (dx * dx + dy * dy || 1);
             if (step > 0 ? u <= 1 || s + 2 === line.z.length : u >= 0 || s === 0) break;
         }
         u = Math.min(1, Math.max(0, u));
