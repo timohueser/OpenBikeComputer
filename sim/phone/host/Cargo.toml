@@ -14,8 +14,6 @@ crate-type = ["staticlib", "rlib"]
 obc-link = { workspace = true, features = ["client"] }
 obc-crc = { workspace = true }
 obc-route = { workspace = true }
-# The host owns the boxed RenderScratch it lends App each frame.
-obc-render = { workspace = true }
 obc-app = { workspace = true }
 # The pass's clock newtypes and the sensor ports the phone's sensors implement.
 obc-ports = { workspace = true }

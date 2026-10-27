@@ -1,6 +1,6 @@
 import { PipeError } from "./pipe";
 import { RecordError } from "./records";
-import { Detail, ErrorCode, ResponseError, opcodeName, refusalName, type Refusal } from "./protocol";
+import { Detail, ErrorCode, opcodeName, refusalName, type Refusal } from "./protocol";
 
 /**
  * Why a device operation failed.
@@ -160,7 +160,7 @@ export function asDeviceError(cause: unknown): DeviceError {
         if (cause.code === "closed") return new DeviceError("link", "The device disconnected.", { cause });
         return new DeviceError("device-error", cause.message, { cause });
     }
-    if (cause instanceof RecordError || cause instanceof ResponseError) {
+    if (cause instanceof RecordError) {
         return new DeviceError("protocol", cause.message, { cause });
     }
     return new DeviceError("device-error", cause instanceof Error ? cause.message : String(cause), { cause });
