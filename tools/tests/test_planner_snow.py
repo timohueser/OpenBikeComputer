@@ -113,9 +113,9 @@ class BakeTest(unittest.TestCase):
     def test_the_bake_reads_one_chunk_per_zoom_10_tile_and_stores_to_the_max_zoom(self):
         from pmtiles.reader import MmapSource, all_tiles
 
-        # Two zoom-11 tiles on each side of the seam between the zoom-10 tiles 539 and 540.
-        bounds = [*snow.geo.tile_bounds(11, 1079, 724)[:2], *snow.geo.tile_bounds(11, 1080, 724)[2:]]
-        west, north = 9.6, 46.6
+        # Two zoom-11 tiles on each side of the seam between the zoom-10 tiles 540 and 541, in one zoom-9 tile.
+        bounds = [*snow.geo.tile_bounds(11, 1081, 724)[:2], *snow.geo.tile_bounds(11, 1082, 724)[2:]]
+        west, north = 10.0, 46.6
         grid = snow.Grid("EPSG:4326", Affine.translation(west, north) @ Affine.scale(0.001, -0.001), (300, 300))
 
         with tempfile.TemporaryDirectory() as directory:
