@@ -6,7 +6,7 @@ import type { Mat3 } from './celestial';
 import type { NightSky } from './night';
 
 /** `Night` of sky.wgsl. */
-const NIGHT_BYTES = 96;
+const NIGHT_BYTES = 112;
 /** Bytes of a star in the vertex buffer: its J2000 direction and V magnitude as floats, and its colour in bytes. */
 const STAR_BYTES = 20;
 // The files of tools/trailview/sky.py.
@@ -22,6 +22,8 @@ export interface SkyState {
     stars: Mat3;
     /** Toward the moon in render space. */
     moon: number[];
+    /** The colour that the air gives the moon's disk. */
+    moonAir: number[];
     /** Whether the moon is the light in the sun's place. */
     moonLight: boolean;
     night: NightSky;
@@ -75,6 +77,7 @@ export class Sky {
         data.set([...state.moon, state.moonLight ? 1 : 0], 12);
         data.set([night.limit, night.stars, night.milkyWay, state.moonDisk], 16);
         data.set([...state.pixel, 0, 0], 20);
+        data.set([...state.moonAir, 0], 24);
         gpu.device.queue.writeBuffer(this.uniform!, 0, data);
         const magnitudes = this.stars?.magnitudes;
         this.count = magnitudes && night.stars > 0 ? below(magnitudes, night.limit) : 0;

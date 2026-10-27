@@ -7,7 +7,7 @@ import { Gpu } from './gpu/device';
 import { PassTimes } from './gpu/timing';
 import { Ground, groundPipelines, type GroundStats } from './ground/ground';
 import { moonAt, starFrame, type Mat3 } from './light/celestial';
-import { eyeLook, lightAt, moonlit, moonShare, weatherLight, WEATHERS, type EyeLook } from './light/light';
+import { airColour, eyeLook, lightAt, moonlit, moonShare, weatherLight, WEATHERS, type EyeLook } from './light/light';
 import { LOOK_BYTES, lookUniform } from './light/look';
 import { Shadow } from './light/shadow';
 import { DARK_SKY, nightSky } from './light/night';
@@ -560,7 +560,7 @@ export class TrailView {
             gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, near, lights, aspect, ndc, scale, step?.sample ?? 0));
             const { cover } = near.weather, night = lightAt(lights.sunAltitude).night;
             this.sky.write(gpu, {
-                stars: lights.stars, moon: lights.moon, moonLight: lights.share > 0,
+                stars: lights.stars, moon: lights.moon, moonAir: lights.moonAir, moonLight: lights.share > 0,
                 night: nightSky({ sun: lights.sunAltitude, moon: lights.moonAltitude, phase: lights.phase, sky: this.skyMagnitude, cover }),
                 moonDisk: (1 - cover) * (0.35 + 0.65 * night), pixel: [2 / width, 2 / height],
             });
@@ -702,7 +702,7 @@ export class TrailView {
         const forward = [Math.sin(h) * Math.cos(p), Math.cos(h) * Math.cos(p), Math.sin(p)], right = [Math.cos(h), -Math.sin(h), 0];
         const up = [right[1] * forward[2] - right[2] * forward[1], right[2] * forward[0] - right[0] * forward[2], right[0] * forward[1] - right[1] * forward[0]];
         return lookUniform({
-            sun: [x, y, z, bearing], skySun: lights.sun, light: weatherLight(lights.share > 0 ? moonlit(light, lights.share) : light, near.weather),
+            sun: [x, y, z, bearing], skySun: lights.sun, light: weatherLight(lights.share > 0 ? moonlit(light, lights.share, lights.moonAir) : light, near.weather),
             eye: near, altitude: eye.z, place: [eye.east, eye.north],
             camera: { right: right.map(v => v * tx), up: up.map(v => v * ty), forward },
             codes: this.groundLook.codes,
@@ -741,7 +741,7 @@ export class TrailView {
             : [...sun, weather * Math.min(1, Math.max(0, (altitude + 0.05) / 0.15)), turns(bearing)];
         const m = starFrame(place, instant);
         const stars = [0, 1, 2].map(j => cos * m[j] + sin * m[3 + j]).concat([0, 1, 2].map(j => cos * m[3 + j] - sin * m[j]), m.slice(6)) as Mat3;
-        return { key, sun, sunAltitude, moon, moonAltitude, phase, share, stars };
+        return { key, sun, sunAltitude, moon, moonAltitude, moonAir: airColour(moonAltitude), phase, share, stars };
     }
 }
 
@@ -752,6 +752,8 @@ interface Lights {
     sunAltitude: number;
     moon: number[];
     moonAltitude: number;
+    /** The air's colour at the moon's altitude (`airColour`). */
+    moonAir: [number, number, number];
     phase: number;
     /** The moon's share of its full light, 0 while the sun is the light. */
     share: number;

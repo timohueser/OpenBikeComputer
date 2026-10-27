@@ -14,6 +14,8 @@ struct Night {
     show: vec4f,
     // xy: clip space per render pixel. zw: unused.
     pixel: vec4f,
+    // rgb: the colour that the air gives the moon's disk at its altitude, as it gives the sun's.
+    moon_air: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> night: Night;
@@ -63,11 +65,11 @@ fn clear(dir: vec3f) -> f32 {
     return exp(-0.28 * (mass - 1.0));
 }
 
-// The drawn moon's half width: 1.5 times the real one high in the sky, growing to 2.5 times at the
+// The drawn moon's half width: 1.5 times the real one high in the sky, growing to 3 times at the
 // horizon, as the eye sees it.
 fn moon_disk() -> f32 {
     let low = 1.0 - max(night.moon.z, 0.0);
-    return MOON_DISK * (1.5 + low * low);
+    return MOON_DISK * (1.5 + 1.5 * low * low);
 }
 
 // The moon over the sky colour `c` at a pixel's ray: a sphere lit from the sun, so its phase and the
@@ -87,7 +89,7 @@ fn moon(c: vec3f, dir: vec3f) -> vec3f {
     let normal = across - m * sqrt(1.0 - r);
     let lit = smoothstep(-0.04, 0.12, dot(normal, look.sky_sun.xyz)) + EARTHSHINE;
     let edge = smoothstep(1.0, 0.9, r);
-    return c + albedo * MOON_LIGHT * lit * edge * night.show.w;
+    return c + albedo * night.moon_air.rgb * MOON_LIGHT * lit * edge * night.show.w;
 }
 
 @fragment

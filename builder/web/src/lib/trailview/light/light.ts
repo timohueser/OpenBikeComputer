@@ -70,10 +70,24 @@ export function moonShare(sun: number, moon: number, phase: number): number {
     return night * height * 10 ** (-0.2 * (moonMagnitude(phase) - moonMagnitude(0)));
 }
 
-/** The light with the moon's light in the sun's place, at a share of its full light. */
-export function moonlit(light: Light, share: number): Light {
+/** The moonlight keeps this share of the air's colour at the moon's altitude (`airColour`): a low moon lights the scene a little warmer. */
+const MOON_WARMTH = 0.3;
+
+/**
+ * The colour that the air gives the light of a body at an altitude in degrees: the sun's key there
+ * against the sun's key overhead, its largest channel 1. White high up, pale yellow below about 15°,
+ * orange in the last few degrees. Below −1° the key at −1° holds.
+ */
+export function airColour(degrees: number): Rgb {
+    const low = lightAt(Math.max(degrees, -1)).sunColour, high = lightAt(90).sunColour, c = low.map((v, i) => v / high[i]);
+    return scale(c, 1 / Math.max(...c));
+}
+
+/** The light with the moon's light in the sun's place, at a share of its full light, in the air's colour `air` at the moon's altitude. */
+export function moonlit(light: Light, share: number, air: Rgb): Light {
     const add = (c: Rgb, moon: Rgb) => c.map((v, i) => v + moon[i] * share) as Rgb;
-    return { ...light, sunColour: scale(MOONLIGHT, share), ambient: add(light.ambient, MOON_AMBIENT), zenith: add(light.zenith, MOON_SKY), horizon: add(light.horizon, MOON_SKY) };
+    const sunColour = MOONLIGHT.map((v, i) => v * share * (1 - MOON_WARMTH + MOON_WARMTH * air[i])) as Rgb;
+    return { ...light, sunColour, ambient: add(light.ambient, MOON_AMBIENT), zenith: add(light.zenith, MOON_SKY), horizon: add(light.horizon, MOON_SKY) };
 }
 
 /** The weather presets: the cloud layer, the wet and the rain, and what they do to the light. */
