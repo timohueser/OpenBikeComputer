@@ -13,7 +13,6 @@ import json
 import math
 import os
 import time
-import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -37,8 +36,16 @@ BANDS = ("height_dm", "cover_pct", "stems_per_ha", "conifer_pct")
 
 VHM = ("https://data.geo.admin.ch/api/stac/v0.9/collections/"
        "ch.bafu.landesforstinventar-vegetationshoehenmodell_lidar/items")
-DLT = ("https://image.discomap.eea.europa.eu/arcgis/rest/services/GioLandPublic/"
-       "HRL_DominanteLeafType_2018/ImageServer/exportImage")
+# Canopy Height Maps v2 of Meta and WRI: a COG per zoom 10 tile, named by its quadkey, at the pixels of zoom 17.
+CHM = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v2/global/dinov3_global_chm_v2_ml3/chm"
+# Its heights read low and its tree tops are artefacts. Fitted against `canopy-ch` on the canopy cells of eight
+# tiles of the Jura, the Mittelland and the Alps: the height of a cell is `CHM_SCALE` times the height of the
+# model plus `CHM_OFFSET_M`, and its stems fill `STEMS_SHARE` of its cover with crowns of its height.
+CHM_SCALE, CHM_OFFSET_M, STEMS_SHARE = 0.982, 3.73, 0.417
+# Dominant Leaf Type of CLMS on CDSE S3, in tiles of 100 km in EPSG:3035 named by their south-west corner.
+DLT_YEAR = 2024
+DLT = ("/vsis3/eodata/CLMS/landcover_landuse/dominant_leaf_type/clms_vlcc_dominant-leaf-type_europe_10m_yearly_v1/"
+       f"{DLT_YEAR}/01/01/{{name}}/{{name}}.tif")
 
 
 @njit(nogil=True, cache=True)
@@ -234,8 +241,8 @@ def tile_origin(x, y):
 
 
 def http(url, delays=(5, 30, 120, 600)):
-    """The body of `url`. The waits ride out an outage of the leaf type service of minutes, as one
-    failed tile ends the whole prepare."""
+    """The body of `url`. The waits ride out an outage of a service of minutes, as one failed tile
+    ends the whole prepare."""
     for delay in (*delays, None):
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "openbikecomputer"})
@@ -256,33 +263,61 @@ def vhm_years():
 
 
 def leaf_type(x, y):
-    """The conifer share of the tree pixels of each cell, in %, from HRL Dominant Leaf Type 2018
+    """The conifer share of the tree pixels of each cell, in %, from Dominant Leaf Type `DLT_YEAR`
     (1 broadleaved, 2 coniferous) at four sub-pixels per cell side; `NODATA` without a tree pixel."""
     import rasterio
-    from rasterio.io import MemoryFile
+    from rasterio.enums import Resampling
+    from rasterio.errors import RasterioIOError
+    from rasterio.transform import from_origin
+    from rasterio.vrt import WarpedVRT
+    from rasterio.warp import transform_bounds
 
+    from . import planner_snow
+
+    planner_snow.cdse_credentials()
     west, top = tile_origin(x, y)
-    query = {"bbox": f"{west},{top - SIZE * CELL},{west + SIZE * CELL},{top}", "bboxSR": 3857, "imageSR": 3857,
-             "size": f"{4 * SIZE},{4 * SIZE}", "format": "tiff", "pixelType": "U8",
-             "interpolation": "RSP_NearestNeighbor", "f": "image"}
-    with MemoryFile(http(f"{DLT}?{urllib.parse.urlencode(query)}")) as memory, memory.open() as image:
-        if image.crs != rasterio.crs.CRS.from_epsg(3857) or image.shape != (4 * SIZE, 4 * SIZE):
-            raise ValueError(f"the leaf type service gave {image.crs} {image.shape}")
-        classes = image.read(1).reshape(SIZE, 4, SIZE, 4)
+    span, side = SIZE * CELL, 4 * SIZE
+    left, bottom, right, upper = transform_bounds("EPSG:3857", "EPSG:3035", west, top - span, west + span, top)
+    grid = {"crs": "EPSG:3857", "transform": from_origin(west, top, span / side, span / side), "width": side,
+            "height": side, "resampling": Resampling.nearest, "nodata": 255}
+    classes = np.full((side, side), 255, np.uint8)
+
+    def read(name):
+        """The classes of tile `name` on the grid, or None where CLMS publishes none. The waits
+        ride out a refused connection, which the GDAL retries do not cover."""
+        for delay in (5, 30, 120, 600, None):
+            try:
+                with rasterio.open(DLT.format(name=name)) as source, WarpedVRT(source, **grid) as warped:
+                    return warped.read(1)
+            except RasterioIOError as error:
+                # CLMS publishes no tile without land; CDSE S3 answers NoSuchKey.
+                if "NoSuchKey" in str(error):
+                    return None
+                if delay is None:
+                    raise
+                time.sleep(delay)
+
+    # The tile programs together open more connections than the 4 that CDSE allows a user: GDAL
+    # retries the HTTP status of that refusal.
+    with rasterio.Env(**{**GDAL, "GDAL_HTTP_MAX_RETRY": 8, "GDAL_HTTP_RETRY_DELAY": 3}):
+        for e in range(int(left // 100_000), int(right // 100_000) + 1):
+            for n in range(int(bottom // 100_000), int(upper // 100_000) + 1):
+                part = read(f"CLMS_HRLVLCC_DLT_S{DLT_YEAR}_R10m_E{e}N{n}_03035_V01_R00")
+                if part is not None:
+                    classes = np.where(part != 255, part, classes)
+    classes = classes.reshape(SIZE, 4, SIZE, 4)
     broad, conifer = ((classes == value).sum(axis=(1, 3)) for value in (1, 2))
     trees = broad + conifer
     return np.where(trees > 0, np.rint(100 * conifer / np.maximum(trees, 1)), NODATA).astype(np.uint16)
 
 
 GDAL = {"GDAL_CACHEMAX": 512, "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR", "GDAL_HTTP_MAX_RETRY": 5,
-        "GDAL_HTTP_RETRY_DELAY": 2, "GDAL_NUM_THREADS": 4, "GDAL_HTTP_MULTIPLEX": "YES"}
+        "GDAL_HTTP_RETRY_DELAY": 2, "GDAL_HTTP_TIMEOUT": 120, "GDAL_NUM_THREADS": 4, "GDAL_HTTP_MULTIPLEX": "YES"}
 
 
 def tile_ch(x, y):
-    """The bands of tile x/y from the newest acquisition of the vegetation height model LiDAR NFI
-    at each pixel, or None where it has no pixel. The tile reads its window in strips of whole
-    block rows, so it downloads each block once; one thread reads the next strip while the other
-    reduces this one."""
+    """The height, cover and stems bands of tile x/y from the newest acquisition of the vegetation
+    height model LiDAR NFI at each pixel, or None where it has no pixel."""
     import rasterio
     from rasterio.warp import transform_bounds
 
@@ -320,37 +355,86 @@ def tile_ch(x, y):
         cols = (max(c0 - margin, 0), min(c1 + 1 + margin, grid.width))
         if rows[0] >= rows[1] or cols[0] >= cols[1]:
             return None
-        block = grid.block_shapes[0][0]
-        edges = [rows[0], *range((rows[0] // block + 1) * block, rows[1], block), rows[1]]
-        strips = list(zip(edges, edges[1:]))
-        sums, seen, done = totals(SIZE * SIZE), False, rows[0]
-        context = np.empty((0, cols[1] - cols[0]), np.float32)
-        with ThreadPoolExecutor(1) as reader:
-            pending = reader.submit(read, strips[0])
-            for k, (_, end) in enumerate(strips):
-                heights = np.vstack([context, pending.result()])
-                if k + 1 < len(strips):
-                    pending = reader.submit(read, strips[k + 1])
-                first = end - len(heights)
-                # The tree tops of a row are final once the `margin` rows after it are read.
-                last = end if end == rows[1] else end - margin
-                if last > done and not np.isnan(heights).all():
-                    seen = True
-                    tops = tree_tops(heights, pixel_m)[done - first:last - first]
-                    cells = pixel_cells(x, y, (done, last), cols, grid.transform)
-                    accumulate(cells, heights[done - first:last - first], tops, *sums)
-                done, context = max(done, last), heights[-2 * margin:]
+        sums = canopy_sums(read, rows, cols, grid.block_shapes[0][0], pixel_m,
+                           lambda span: pixel_cells(x, y, span, cols, grid.transform))
     finally:
         for raster in rasters:
             raster.close()
-    if not seen:
+    return None if sums is None else cell_stats(sums, pixel_m).reshape(3, SIZE, SIZE)
+
+
+def canopy_sums(read, rows, cols, block, pixel_m, cells, tops=True):
+    """The sums of `accumulate` of the raster rows `rows` and columns `cols` of a canopy height
+    model, or None where it has no pixel. `read(rows)` gives the heights of rows, NaN unknown, and
+    `cells(rows)` the cell of each of their pixels in `cols`; without `tops`, no tree top counts. The
+    rows are read in strips of whole
+    blocks of `block` rows, so each block downloads once; one thread reads the next strip while the
+    other reduces this one."""
+    margin = halo(pixel_m) if tops else 0
+    edges = [rows[0], *range((rows[0] // block + 1) * block, rows[1], block), rows[1]]
+    strips = list(zip(edges, edges[1:]))
+    sums, seen, done = totals(SIZE * SIZE), False, rows[0]
+    context = np.empty((0, cols[1] - cols[0]), np.float32)
+    with ThreadPoolExecutor(1) as reader:
+        pending = reader.submit(read, strips[0])
+        for k, (_, end) in enumerate(strips):
+            heights = np.vstack([context, pending.result()])
+            if k + 1 < len(strips):
+                pending = reader.submit(read, strips[k + 1])
+            first = end - len(heights)
+            # The tree tops of a row are final once the `margin` rows after it are read.
+            last = end if end == rows[1] else end - margin
+            if last > done and not np.isnan(heights).all():
+                seen = True
+                part = heights[done - first:last - first]
+                found = tree_tops(heights, pixel_m)[done - first:last - first] if tops else np.zeros(part.shape, np.bool_)
+                accumulate(cells((done, last)), part, found, *sums)
+            done, context = max(done, last), heights[len(heights) - 2 * margin:]
+    return sums if seen else None
+
+
+def tile_global(x, y):
+    """The height, cover and stems bands of tile x/y from Canopy Height Maps v2, whole metres where
+    0 is also no data, or None where it has no file. Its pixels lie on the cells: 32 × 32 to a cell.
+    The height and the stems are corrected as `CHM_SCALE` says."""
+    import rasterio
+    from rasterio.errors import RasterioIOError
+    from rasterio.windows import Window
+
+    qx, qy, side = x >> 2, y >> 2, 32 * SIZE
+    quadkey = "".join(str((qx >> i & 1) | (qy >> i & 1) << 1) for i in range(ZOOM - 3, -1, -1))
+    with rasterio.Env(**GDAL):
+        try:
+            raster = rasterio.open(f"/vsicurl/{CHM}/{quadkey}.tif")
+        except RasterioIOError as error:
+            # The model has no file of a tile without land.
+            if "404" in str(error):
+                return None
+            raise
+        with raster:
+            west, top = tile_origin(qx << 2, qy << 2)
+            if raster.crs != "EPSG:3857" or raster.shape != (4 * side, 4 * side) or not np.allclose(
+                    (raster.transform.a, -raster.transform.e, raster.transform.c, raster.transform.f),
+                    (CELL / 32, CELL / 32, west, top)):
+                raise ValueError(f"{quadkey}.tif is not on the pixels of zoom 17 of its zoom 10 tile")
+            r0, c0 = (y & 3) * side, (x & 3) * side
+            rows, cols = (r0, r0 + side), (c0, c0 + side)
+            columns = np.arange(SIZE, dtype=np.int32).repeat(32)
+
+            def read(span):
+                return read_window(raster, Window(c0, span[0], side, span[1] - span[0]))
+
+            def cells(span):
+                return ((np.arange(*span, dtype=np.int32) - r0) // 32 * SIZE)[:, None] + columns
+
+            sums = canopy_sums(read, rows, cols, raster.block_shapes[0][0], CELL / 32, cells, tops=False)
+    if sums is None:
         return None
-    out = np.full((4, SIZE, SIZE), NODATA, np.uint16)
-    out[:3] = cell_stats(sums, pixel_m).reshape(3, SIZE, SIZE)
-    if (out[0] == NODATA).all():
-        return None
-    out[3] = np.where(out[0] != NODATA, leaf_type(x, y), NODATA)
-    return out
+    height, cover, _ = cell_stats(sums, CELL / 32).reshape(3, SIZE, SIZE).astype(np.float64)
+    height = np.where(height > 0, np.minimum(np.rint(10 * (CHM_SCALE * height / 10 + CHM_OFFSET_M)), TALLEST_DM), 0)
+    crown = np.vectorize(crown_radius)(height / 10, 1.0)
+    stems = np.where(height > 0, np.rint(STEMS_SHARE * cover / 100 * 1e4 / (np.pi * crown ** 2)), 0)
+    return np.stack([height, cover, stems]).astype(np.uint16)
 
 
 def read_newest(rasters, coverage, rows, cols):
@@ -415,22 +499,30 @@ def write_tile(path, x, y, bands):
     os.replace(part, path)
 
 
-TILES = {"ch": tile_ch}
+TILES = {"ch": tile_ch, "global": tile_global}
 
 
 def command_fetch(args):
-    """One tile of `forest` from the canopy model `<key>` into `--out`: `12/<x>/<y>.tif`, then
-    `12-<x>-<y>.sha256`, the digest of its pixels; or the empty `12-<x>-<y>.none` where the source
-    has no pixel in the tile."""
+    """One tile of `forest` from the canopy models `<key>,…` into `--out`: `12/<x>/<y>.tif`, then
+    `12-<x>-<y>.sha256`, the digest of its pixels; or the empty `12-<x>-<y>.none` where no model
+    has a pixel in the tile. A cell takes the first model that has a pixel in it."""
     z, x, y = map(int, args.tile.split("-"))
     if z != ZOOM or not (0 <= x < 1 << z and 0 <= y < 1 << z):
         raise SystemExit(f"--tile {args.tile} is 12-<x>-<y>, a zoom 12 tile")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    bands = TILES[args.source](x, y)
-    if bands is None:
+    bands = np.full((4, SIZE, SIZE), NODATA, np.uint16)
+    for key in args.models.split(","):
+        part = TILES[key](x, y)
+        if part is not None:
+            unknown = bands[0] == NODATA
+            bands[:3, unknown] = part[:, unknown]
+    if (bands[0] == NODATA).all():
         (out / f"{args.tile}.none").touch()
         return 0
+    # A tile without a canopy needs no leaf type, which would ask CDSE for nothing.
+    if ((bands[0] != NODATA) & (bands[0] > 0)).any():
+        bands[3] = np.where(bands[0] != NODATA, leaf_type(x, y), NODATA)
     write_tile(out / f"12/{x}/{y}.tif", x, y, bands)
     (out / f"{args.tile}.sha256").write_text(pixel_digest(bands) + "\n")
     return 0
@@ -440,7 +532,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     fetch = commands.add_parser("fetch")
-    fetch.add_argument("source", choices=sorted(TILES))
+    fetch.add_argument("models", help=f"canopy models in order, of {', '.join(sorted(TILES))}, comma separated")
     fetch.add_argument("--tile", required=True)
     fetch.add_argument("--out", required=True)
     return command_fetch(parser.parse_args())

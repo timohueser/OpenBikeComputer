@@ -16,6 +16,8 @@ it("a card that needs a reference cannot bake until a national model meets the a
     expect(needs(card("trailview-canopy"), lucerne, forest(null))).toMatchObject({ ready: false, reference: { source: "forest", version: null } });
     expect(needs(card("trailview-canopy"), lucerne, forest("local")).ready).toBe(true);
     expect(needs(card("trailview-canopy"), { west: 11, south: 48, east: 12, north: 49 }, forest("prod"))).toMatchObject({ ready: false, models: [] });
+    const everywhere = source("canopy-global", { extent: [-180, -85, 180, 85] });
+    expect(needs(card("trailview-canopy"), { west: 11, south: 48, east: 12, north: 49 }, [...forest("prod"), everywhere])).toMatchObject({ ready: true, models: [everywhere] });
 });
 
 it("terrain falls back without a reference, a prod version wins, and a missing login blocks", () => {
