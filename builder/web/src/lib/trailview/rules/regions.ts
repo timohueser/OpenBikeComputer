@@ -1,6 +1,7 @@
 /**
  * The regions of `rules.json` (specs/trailview-tiles.md#rules), resolved as the prototype's
- * `regions.ts` resolves them. A region id is its index in `regions`, as the region tiles hold it.
+ * `regions.ts` resolves them. A region id is its index in `ids`, as the region tiles hold it: a
+ * region and the place whose values it takes.
  */
 
 export type Season = 'winter' | 'spring' | 'summer' | 'autumn';
@@ -45,6 +46,7 @@ export interface Look {
 }
 
 export interface Region {
+    /** The region's name; the ids of its places share it. */
     id: string;
     /** Root first. */
     chain: string[];
@@ -116,8 +118,6 @@ export interface Vocabulary {
 
 export interface Rules { vocabulary: Vocabulary; regions: Region[]; styles: HouseStyle[] }
 
-type Entry = Record<string, unknown> & { id: string; extends?: string };
-
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** Objects merge, any other value replaces. */
@@ -127,8 +127,9 @@ function merge(a: Record<string, unknown>, b: Record<string, unknown>): Record<s
     return out;
 }
 
-/** A value by place, `{"es-ga": …, "es": …, "*": …}`: the release has no layer of the place, so `"*"`. */
-const local = (value: unknown) => (isObject(value) && '*' in value ? value['*'] : value);
+/** A value by place, `{"es-ga": …, "es": …, "*": …}`: the entry of the place, else of its country, else `"*"`. */
+const local = (value: unknown, place: string) =>
+    isObject(value) ? (value[place] ?? value[place.split('-')[0]] ?? value['*']) : value;
 
 /** A file of a table with the files that it extends merged in, root first. */
 function inherited(table: Record<string, Record<string, unknown>>, name: string, seen: string[] = []): Record<string, unknown> {
@@ -154,30 +155,30 @@ function entriesOf<T extends { model: string }>(packs: Record<string, Record<str
 
 /** The resolved regions of a `rules.json`; a chain that misses a file or loops throws. */
 export function rulesOf(json: {
-    format: number; materials: Vocabulary; regions: Entry[]; overlays?: Record<string, { look?: Record<string, unknown> }>;
-    packs?: Record<string, Record<string, unknown>>; styles?: Record<string, Record<string, unknown>>;
+    format: number; materials: Vocabulary; ids: [string, string][]; regions: Record<string, Record<string, unknown> & { extends?: string }>;
+    overlays?: Record<string, { look?: Record<string, unknown> }>; packs?: Record<string, Record<string, unknown>>; styles?: Record<string, Record<string, unknown>>;
 }): Rules {
-    if (json.format !== 1) throw new Error(`rules.json has format ${json.format}, not 1.`);
-    const table = new Map(json.regions.map(entry => [entry.id, entry]));
+    if (json.format !== 2) throw new Error(`rules.json has format ${json.format}, not 2.`);
+    const table = json.regions;
     const names = Object.keys(json.styles ?? {}).sort(), styles = names.map(name => inherited(json.styles!, name) as unknown as HouseStyle);
-    const styleOf = (pack: unknown): [number, number] => {
+    const styleOf = (pack: unknown, place: string): [number, number] => {
         if (typeof pack !== 'string' || !json.packs?.[pack]) return [0, 0];
-        const { style, houses } = inherited(json.packs, pack), own = Math.max(0, names.indexOf(local(style) as string));
+        const { style, houses } = inherited(json.packs, pack), own = Math.max(0, names.indexOf(local(style, place) as string));
         return [own, typeof houses === 'string' ? Math.max(0, names.indexOf(houses)) : own];
     };
-    const regions = json.regions.map(({ id }): Region => {
+    const regions = json.ids.map(([id, place]): Region => {
         const chain = [id];
-        for (let up = table.get(id)!.extends; up !== undefined; up = table.get(up)!.extends) {
-            if (!table.has(up) || chain.includes(up)) throw new Error(`rules.json: region ${id} extends a missing region or loops.`);
+        for (let up = table[id].extends; up !== undefined; up = table[up].extends) {
+            if (!table[up] || chain.includes(up)) throw new Error(`rules.json: region ${id} extends a missing region or loops.`);
             chain.unshift(up);
         }
-        const files = chain.map(name => table.get(name)!);
-        const resolved = files.reduce<Record<string, unknown>>((out, { id: _, extends: __, ...own }) => merge(out, own), {});
+        const files = chain.map(name => table[name]);
+        const resolved = files.reduce<Record<string, unknown>>((out, { extends: _, ...own }) => merge(out, own), {});
         // A cover's ramp comes whole from the nearest region that names it.
         const ramps = Object.assign({}, ...files.map(file => (file.look as Look | undefined)?.ramps));
         const overlaid = chain.reduce((look, name) => merge(look, json.overlays?.[name]?.look ?? {}), resolved.look as Record<string, unknown>);
-        const look = { ...overlaid, ramps, roadLine: local(overlaid.roadLine) } as Look;
-        return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack),
+        const look = { ...overlaid, ramps, roadLine: local(overlaid.roadLine, place) } as Look;
+        return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack, place),
             trees: entriesOf<TreeRule>(json.packs, resolved.pack, 'trees'), herds: entriesOf<HerdRule>(json.packs, resolved.pack, 'herds'),
             ground: entriesOf<GroundRule>(json.packs, resolved.pack, 'ground'), orchard: orchardOf(json.packs, resolved.pack) };
     });
