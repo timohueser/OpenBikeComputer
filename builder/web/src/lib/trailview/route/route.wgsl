@@ -153,8 +153,8 @@ fn pin_vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) k: u32) ->
     let h = ground(s);
     let foot = eye_space(s, h);
     // The image faces the eye, upright as the eye sees it.
-    let right = vec3f(direction(vec2f(-foot.y, foot.x), vec2f(1.0, 0.0)), 0.0);
-    let up = normalize(cross(foot, right));
+    let right = vec3f(direction(vec2f(foot.y, -foot.x), vec2f(1.0, 0.0)), 0.0);
+    let up = normalize(cross(right, foot));
     let size = PIN * frame.pixel * length(foot);
     let p = foot + right * (corner.x - 0.5) * size.x + up * corner.y * size.y;
     var out: PinOut;

@@ -581,8 +581,9 @@ export class TrailView {
             this.instances.draw(pass, group);
             this.terrain.draw(pass, group);
             this.houses.draw(pass, group);
-            if (this.terrain.surface && this.terrain.features) this.route.draw(pass, this.terrain.surface, this.terrain.features);
             if (this.extras.debug !== 'cracks') this.sky.draw(pass, group);
+            // After the sky, which draws where nothing did: the route and its pins write no depth.
+            if (this.terrain.surface && this.terrain.features) this.route.draw(pass, this.terrain.surface, this.terrain.features);
             pass.end();
             this.resolve.encode(encoder, targets, this.context.getCurrentTexture().createView(), group,
                 { viewProj, eye: [eye.east, eye.north, eye.z], render: [width, height], jitter: offset }, { weight: step.weight, clip: step.clip, copy: debug }, times.writes('resolve'));
