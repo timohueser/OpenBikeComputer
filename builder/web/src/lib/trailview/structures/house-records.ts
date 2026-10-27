@@ -17,7 +17,7 @@ export const TEMPLATE = 0, OUTLINE = 1;
 const ROOFS: Record<string, number> = { gabled: 1, hipped: 2, pyramidal: 2, 'half-hipped': 3 };
 
 /** OSM building values that draw nothing, draw as a barn or shed, as a church or as a block, from the prototype's nearfield.ts. */
-const SKIPPED = new Set(['roof', 'ruins', 'construction', 'carport', 'storage_tank', 'bunker']);
+export const SKIPPED = new Set(['roof', 'ruins', 'construction', 'carport', 'storage_tank', 'bunker']);
 const SHEDS = new Set(['barn', 'farm_auxiliary', 'shed', 'garage', 'garages', 'stable', 'cowshed', 'hut', 'sty', 'greenhouse', 'boathouse']);
 const CHURCHES = new Set(['church', 'chapel', 'cathedral']);
 const BLOCKS = new Set([

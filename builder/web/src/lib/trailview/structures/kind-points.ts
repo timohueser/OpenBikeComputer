@@ -39,7 +39,8 @@ export class KindPoints {
         // A point's model is its number in POINT_MODELS: the instances number them from `first`.
         const lights: number[] = [], ints = new Int32Array(out.buffer);
         for (let i = 2; i < out.length; i += POINT_WORDS) {
-            const light = this.lightOf[out[i] & 0xffff];
+            // The pool draws CAPACITY points at most: a point that it leaves out sheds no light either.
+            const light = i < CAPACITY * POINT_WORDS ? this.lightOf[out[i] & 0xffff] : undefined;
             if (light) lights.push(...poolWords(ints[i - 2], ints[i - 1], light));
             out[i] = (out[i] & 0xffff0000) | ((out[i] & 0xffff) + first);
         }

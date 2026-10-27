@@ -55,9 +55,10 @@ fn pool_vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) k: u32) -
     var c = vec3f(to_render(s), h + SOURCE_M - frame.eye);
     c.z -= frame.curvature * dot(c.xy, c.xy);
     var out: PoolOut;
-    // A sphere seen from at least 1.5 radii fits in a square 1.4 radii to each side about its middle.
-    let square = c + (normalize(look.right.xyz) * corner.x + normalize(look.up.xyz) * corner.y) * 1.4 * pool.radius;
-    out.clip = select(frame.view_proj * vec4f(square, 1.0), vec4f(corner, 0.5, 1.0), length(c) < 1.5 * pool.radius);
+    // A sphere seen from at least 2 radii fits in a square 2 radii to each side about its middle, also
+    // toward the edge of the view, where the square, which faces along the view, cuts it at a slant.
+    let square = c + (normalize(look.right.xyz) * corner.x + normalize(look.up.xyz) * corner.y) * 2.0 * pool.radius;
+    out.clip = select(frame.view_proj * vec4f(square, 1.0), vec4f(corner, 0.5, 1.0), length(c) < 2.0 * pool.radius);
     out.source = c;
     out.radius = pool.radius;
     let srgb = unpack4x8unorm(pool.colour).rgb;

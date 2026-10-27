@@ -480,8 +480,8 @@ fn landuse_of(buildings: &[&Vec<Part>], areas: &[(Tags, Vec<Part>)]) -> Vec<Opti
         .collect()
 }
 
-/// Per building, the use that it shows: the first in USES of its own, those of the points of `uses` in
-/// its outer ring, and those of the areas of `uses` that hold the middle of that ring.
+/// Per building, the use that it shows: the first in USES of its own, those of the points of `uses` in or
+/// on its outer ring, and those of the areas of `uses` that hold the middle of that ring.
 fn uses_of(buildings: &[(&Tags, &Vec<Part>)], uses: &[(Tags, Vec<Part>)]) -> Vec<Option<String>> {
     let rank = |u: &str| USES.iter().position(|v| *v == u).unwrap_or(USES.len());
     let mut shown: Vec<Option<String>> = buildings.iter().map(|(tags, _)| tags.get("use").cloned()).collect();
@@ -496,7 +496,8 @@ fn uses_of(buildings: &[(&Tags, &Vec<Part>)], uses: &[(Tags, Vec<Part>)]) -> Vec
     for (tags, parts) in points {
         let p = parts[0].points[0];
         for k in houses.overlapping([p[0], p[1], p[0], p[1]]) {
-            if contains(&[rings[k]], p) {
+            // A shop is often a node of the outline, its entrance: on the ring, which the even-odd test leaves out half the time.
+            if contains(&[rings[k]], p) || rings[k].contains(&p) {
                 offer(k, &tags["use"]);
             }
         }
@@ -582,7 +583,7 @@ mod tests {
         let point =
             |x: f64, y: f64, u: &str| (tags(&[("use", u)]), vec![Part { outer: false, points: vec![[x, y]], z: None }]);
         // A shop with a pharmacy in it; a building in a hospital's grounds with a kiosk in it; a shop of its
-        // own; a building with nothing.
+        // own; a building with nothing but a shop at a corner of its outline.
         let (own, plain) = (tags(&[("use", "shop")]), tags(&[]));
         let houses =
             [square(0.0, 0.0, 10.0), square(100.0, 0.0, 10.0), square(200.0, 0.0, 10.0), square(300.0, 0.0, 10.0)];
@@ -593,8 +594,9 @@ mod tests {
             point(5.0, 5.0, "pharmacy"),
             point(105.0, 5.0, "shop"),
             (tags(&[("use", "hospital")]), square(90.0, -10.0, 40.0)),
+            point(310.0, 0.0, "shop"),
         ];
         let shown = uses_of(&buildings, &uses);
-        assert_eq!(shown, [Some("pharmacy".into()), Some("hospital".into()), Some("shop".into()), None]);
+        assert_eq!(shown, [Some("pharmacy".into()), Some("hospital".into()), Some("shop".into()), Some("shop".into())]);
     }
 }
