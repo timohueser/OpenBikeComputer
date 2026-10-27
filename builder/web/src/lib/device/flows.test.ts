@@ -28,6 +28,7 @@ import { loopbackLink } from "../usb/loopback";
 import type { BytePipe, DeviceLink } from "../usb/pipe";
 import { ObjectKind } from "../usb/protocol";
 import { initConvert } from "../convert/bridge";
+import { expectBytes } from "../../../test-support/bytes";
 import { loadFlatDevice } from "../../../test-support/flat-device/load";
 import { prepareRoute } from "./route";
 import { armUpdate, sendMapBlob, sendMapBytes, sendMapFile, sendRoute, stageFirmware } from "./write";
@@ -447,12 +448,6 @@ function damageOneStreamWrite(link: DeviceLink): { link: DeviceLink; arm: () => 
             armed = true;
         },
     };
-}
-
-/** `toEqual` walks a typed array one element at a time, which takes seconds for a megabyte. */
-function expectBytes(actual: Uint8Array | null, expected: Uint8Array): void {
-    expect(actual?.length).toBe(expected.length);
-    expect(actual!.findIndex((byte, i) => byte !== expected[i]), "the first byte that differs").toBe(-1);
 }
 
 function syntheticBytes(total: number): Uint8Array<ArrayBuffer> {
