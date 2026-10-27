@@ -223,6 +223,11 @@ A `building` in an area `landuse=industrial` or `landuse=farmyard` has the tag `
 of the smallest such area that holds the mean of the vertices of its first outer ring. The tiles do not
 hold these areas.
 
+A `building` has the tag `use`, `pharmacy`, `hospital` or `shop`, when it, a node that lies inside or on its first
+outer ring, or an area that holds the mean of that ring's vertices has that use. `amenity` or `healthcare`
+`pharmacy` is a pharmacy, `amenity` or `healthcare` `hospital` a hospital, and any `shop` a shop. Of
+several uses, the first in that order wins. The tiles do not hold these nodes and areas.
+
 Each vertex of a `river` or `stream` that is not in a tunnel has a water level, never higher than a
 vertex before it: the vertices run in the direction of the flow. OSM draws a waterway that way; the
 bake turns a way whose terrain rises by more than 5 m from end to end. The level is the fit that never
