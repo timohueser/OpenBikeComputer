@@ -835,7 +835,7 @@ fn trailview(
     }
     if on("trailview-rules") {
         let ruleset = json!({"ruleset": ruleset(root).map_err(Unplanned::Failed)?});
-        let outputs = ["rules.json", "regions.json", "materials.json"];
+        let outputs = ["rules.json", "regions.json", "materials.json", "ground.json"];
         let rules = python(
             &PLANNER_TRAILVIEW_RULES,
             "planner/trailview-rules",
