@@ -47,15 +47,9 @@ class DeviceHolder {
 
     private opening: Promise<DeviceSession | null> | null = null;
 
-    /**
-     * Open the session, at most once per page. Safe to call from several components' `onMount`.
-     *
-     * `openDevice` defaults to the host's own — the parameter exists because the first caller
-     * decides, which is how the dev harness puts a simulated device behind the same UI without the
-     * app carrying a reference to one.
-     */
-    open(openDevice: (() => Promise<DeviceSession>) | null = platform.device): Promise<DeviceSession | null> {
-        this.opening ??= this.start(openDevice);
+    /** Open the host's device session, at most once per page. Safe to call from several components' `onMount`. */
+    open(): Promise<DeviceSession | null> {
+        this.opening ??= this.start(platform.device);
         return this.opening;
     }
 

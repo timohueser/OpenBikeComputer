@@ -63,8 +63,6 @@ export interface FlatDeviceOptions {
     streamCeiling?: number;
     /** Whether `ARM` may succeed. `refuse` — the default — is the device's current policy. */
     armPolicy?: "refuse" | "allow";
-    /** Record every request the device was handed. On by default; the dev harness turns it off. */
-    trace?: boolean;
 }
 
 /** One record the device was asked to serve. */
@@ -117,7 +115,6 @@ export class FlatDevice {
     /** One send queue per channel: what keeps a channel's records in order. */
     private readonly sending = { control: Promise.resolve(), stream: Promise.resolve() };
     private readonly log: TracedRequest[] = [];
-    private readonly tracing: boolean;
     private running = false;
     /** Set when something may be pollable; cleared by the pump when it has drained the device. */
     private owed = false;
@@ -140,8 +137,7 @@ export class FlatDevice {
             control: new RecordChannel(link.control, MAX_DEVICE_RECORD, MAX_HOST_CONTROL_RECORD),
             stream: new RecordChannel(link.stream, MAX_DEVICE_RECORD, MAX_HOST_STREAM_RECORD),
         };
-        this.tracing = options.trace ?? true;
-        if (this.tracing) this.device.traceRequests();
+        this.device.traceRequests();
     }
 
     /**
@@ -264,7 +260,7 @@ export class FlatDevice {
 
     /** Take what the device traced before anything can drop it — a reboot starts a new trace. */
     private drainTrace(): void {
-        if (this.tracing) this.log.push(...(JSON.parse(this.device.takeTrace()) as TracedRequest[]));
+        this.log.push(...(JSON.parse(this.device.takeTrace()) as TracedRequest[]));
     }
 
     // --- the card --------------------------------------------------------------
