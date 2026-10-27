@@ -309,6 +309,41 @@ describe("direct assembler delivery", () => {
         await unmount(component);
     });
 
+    it("shows download progress, then the assembly phase the worker reports", async () => {
+        seams.holdAssembly = true;
+        let report!: (progress: { completedCells: number; totalCells: number; receivedBytes: number; totalBytes: number }) => void;
+        let finishDownload!: () => void;
+        seams.downloadCells.mockImplementation((_plan, options) => new Promise<void>((resolve) => {
+            report = options.onProgress!;
+            finishDownload = resolve;
+        }));
+        const { component, target } = await mountReadyStep();
+        (target.querySelector("button.primary") as HTMLButtonElement).click();
+        for (let attempt = 0; attempt < 30 && !report; attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+        expect(report).toBeDefined();
+        report({ completedCells: 1, totalCells: 2, receivedBytes: 500, totalBytes: 1_000 });
+        await tick();
+        expect(target.textContent).toContain("downloading cells — 1/2");
+        expect(target.textContent).toContain("500 B of 1000 B");
+        expect(target.querySelector(".bar span")?.getAttribute("style")).toContain("50%");
+
+        finishDownload();
+        for (let attempt = 0; attempt < 30 && seams.workerAssemble === 0; attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+        expect(seams.workerAssemble).toBe(1);
+        seams.worker!.onmessage!(new MessageEvent("message", { data: { type: "progress", phase: "nav", fraction: 0.25 } }));
+        await tick();
+        expect(target.textContent).toContain("assembling — stitching the road network · 25%");
+        expect(target.querySelector(".bar span")?.getAttribute("style")).toContain("25%");
+        [...target.querySelectorAll("button")].find((button) => button.textContent === "Cancel")!.click();
+        await unmount(component);
+    });
+
     it("refuses lost required cell storage before downloading", async () => {
         seams.cellStoreWritable.mockResolvedValue(true);
         seams.hasRoomFor.mockResolvedValue(true);
@@ -376,6 +411,64 @@ describe("direct assembler delivery", () => {
         expect(cells.has).toHaveBeenCalledWith("cached", 800_000_000);
         expect(cells.has).toHaveBeenCalledWith("missing", 200_000_000);
         await unmount(component);
+    });
+
+    it("admits a disk-only rebuild only when cached cells make the quota projection fit", async () => {
+        seams.memoryRequiresDisk = true;
+        seams.cellStoreWritable.mockResolvedValue(true);
+        // Between this run's disk projection with its 800 MB cell cached (2.2 GB) and with
+        // nothing cached (3 GB), so only the cache decides admission.
+        seams.hasRoomFor.mockImplementation(async (bytes: number) => bytes <= 2_500_000_000);
+        seams.plan = {
+            items: [
+                { band: "fine", cell: { id: "cell-1", sha256: "cached", bytes: 800_000_000 } },
+                { band: "fine", cell: { id: "cell-2", sha256: "missing", bytes: 200_000_000 } },
+            ],
+            totalBytes: 1_000_000_000,
+            knownEmpty: [],
+        };
+        seams.sendMapBlob.mockResolvedValue({ objectId: 1n });
+        const large = {
+            ...store,
+            ledger: {
+                totalBytes: 1_000_000_000,
+                cellCount: 2,
+                core: { bytes: 400_000_000 },
+                terrain: null,
+                isFinal: true,
+            },
+        };
+        // The rider kept map data last time, so the estimate counts cached cells from the start.
+        globalThis.localStorage.setItem("obcm.keepMapCells", "true");
+        const mountWithCells = async (cells: TestCellStore) => {
+            seams.openCellInventory.mockResolvedValue(cells);
+            seams.openCellStore.mockResolvedValue(cells);
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            const built = await mountReadyStep({ store: large });
+            const download = built.target.querySelector("button.primary") as HTMLButtonElement;
+            for (let attempt = 0; attempt < 40 && download.disabled && !built.target.querySelector(".warn"); attempt++) {
+                await new Promise<void>((resolve) => setTimeout(resolve, 20));
+                await tick();
+            }
+            return { ...built, download };
+        };
+
+        const cold = await mountWithCells(testCellStore());
+        expect(cold.target.querySelector(".warn")?.textContent ?? "").toContain("Reduce the coverage area");
+        expect(cold.download.disabled).toBe(true);
+        await unmount(cold.component);
+
+        const cached = testCellStore();
+        cached.has.mockImplementation(async (key) => key === "cached");
+        const warm = await mountWithCells(cached);
+        expect(warm.target.querySelector(".warn")).toBeNull();
+        expect(warm.download.disabled).toBe(false);
+        const job = new DeviceJob("map");
+        await job.run((ctx) => warm.component.sendToDevice({} as FlatStoreClient, ctx), () => "sent");
+        expect(job.phase).toBe("done");
+        expect(seams.workerAssemble).toBe(1);
+        expect(seams.requireDisk).toBe(true);
+        await unmount(warm.component);
     });
 
     it("keeps prior assembly files when the fresh disk preflight refuses", async () => {
@@ -897,6 +990,105 @@ describe("direct assembler delivery", () => {
         await unmount(built.component);
     });
 
+    /** Operation held, how to hold it, and the stale-store cleanups run 1 leaves behind. */
+    const unabortableOperations: Array<[
+        string,
+        (gate: () => Promise<undefined>, open: () => Promise<TestCellStore>) => void,
+        number,
+    ]> = [
+        ["destructive clear", (gate) => seams.clearCellStores.mockImplementationOnce(gate), 0],
+        [
+            "store open and its stale cleanup",
+            (gate, open) => seams.openCellStore.mockImplementationOnce(async () => {
+                await gate();
+                return open();
+            }),
+            1,
+        ],
+        [
+            "cell write and its cleanup",
+            (gate, open) => seams.openCellStore.mockImplementationOnce(async () => {
+                const cells = await open();
+                cells.put.mockImplementationOnce(gate);
+                return cells;
+            }),
+            1,
+        ],
+    ];
+
+    it.each(unabortableOperations)("keeps run 2 blocked until a cancelled %s has settled", async (_held, hold, staleCleanups) => {
+        const built = await mountReadyStep();
+        seams.cellStoreWritable.mockResolvedValue(true);
+        seams.hasRoomFor.mockResolvedValue(true);
+        seams.plan = {
+            items: [{ band: "fine", cell: { id: "cell-1", sha256: "digest", bytes: 4 } }],
+            totalBytes: 4,
+            knownEmpty: [],
+        };
+        const opened: TestCellStore[] = [];
+        const open = async () => {
+            const cells = testCellStore();
+            opened.push(cells);
+            return cells;
+        };
+        seams.openCellStore.mockImplementation(open);
+        seams.discardCellStore.mockImplementation(async () => {
+            const live = opened.at(-1);
+            if (live) live.alive = false;
+        });
+        let cellBytes = Uint8Array.of(1, 2, 3, 4);
+        // As with several download slots, an abort can settle the download while a cell write is in flight.
+        seams.downloadCells.mockImplementation((plan, options) => new Promise<void>((resolve, reject) => {
+            options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+            Promise.resolve(options.onCell((plan as typeof seams.plan).items[0], cellBytes)).then(() => resolve(), reject);
+        }));
+        let release!: () => void;
+        hold(() => new Promise<undefined>((resolve) => (release = () => resolve(undefined))), open);
+        const first = new DeviceJob("map");
+        const cancelled = first.run(
+            (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
+            () => "unreachable",
+        );
+        for (let attempt = 0; attempt < 20 && typeof release !== "function"; attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+        expect(release).toBeDefined();
+
+        first.cancel();
+        // Let every part of the cancellation that does not wait for the held operation finish.
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        await expectSecondRunRefused(built.component);
+        expect(first.running).toBe(true);
+        expect(built.target.textContent).not.toContain("Cancelled");
+        release();
+        await cancelled;
+        expect(first.phase).toBe("idle");
+
+        cellBytes = Uint8Array.of(5, 6, 7, 8);
+        await waitForReady(built.target);
+        let commit!: (result: { objectId: bigint }) => void;
+        seams.sendMapBlob.mockImplementationOnce(() => new Promise((resolve) => (commit = resolve)));
+        const second = new DeviceJob("map");
+        const survived = second.run(
+            (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
+            () => "second survived",
+        );
+        for (let attempt = 0; attempt < 20 && typeof commit !== "function"; attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+        const secondStore = opened.at(-1)!;
+        expect(secondStore.alive).toBe(true);
+        expect(secondStore.put).toHaveBeenCalledWith("digest", Uint8Array.of(5, 6, 7, 8));
+        expect(opened.slice(0, -1).every((cells) => !cells.alive)).toBe(true);
+        expect(seams.discardCellStore).toHaveBeenCalledTimes(staleCleanups);
+        commit({ objectId: 2n });
+        await expect(survived).resolves.toMatchObject({ objectId: 2n });
+        expect(second.result).toBe("second survived");
+        await unmount(built.component);
+    });
+
     it("keeps a remount and its run behind an unmounted component's deferred cell write", async () => {
         const firstBuilt = await mountReadyStep();
         seams.cellStoreWritable.mockResolvedValue(true);
@@ -1059,16 +1251,31 @@ describe("direct assembler delivery", () => {
         await unmount(ordinary.component);
     });
 
+    it("reports an assembly failure and reopens Download map", async () => {
+        seams.workerError = "the scratch handle was closed";
+        const { component, target } = await mountReadyStep();
+        (target.querySelector("button.primary") as HTMLButtonElement).click();
+        for (let attempt = 0; attempt < 40 && !target.textContent?.includes("Nothing was saved"); attempt++) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 10));
+            await tick();
+        }
+        expect(target.textContent).toContain("Nothing was saved: the scratch handle was closed");
+        expect(seams.saveBlob).not.toHaveBeenCalled();
+        await waitForReady(target);
+        await unmount(component);
+    });
+
     it("keeps the ordinary download path and does not delete its source early", async () => {
         seams.workerOutput = "file";
         const { component, target } = await mountReadyStep();
 
         (target.querySelector("button.primary") as HTMLButtonElement).click();
-        for (let attempt = 0; attempt < 20 && !target.textContent?.includes("Map ready"); attempt++) {
+        for (let attempt = 0; attempt < 20 && !target.textContent?.includes("Downloaded OBC map.obcm"); attempt++) {
             await Promise.resolve();
             await tick();
         }
 
+        expect(target.textContent).toContain("Downloaded OBC map.obcm");
         expect(seams.saveBlob).toHaveBeenCalledOnce();
         const [blob, name] = seams.saveBlob.mock.calls[0] as [Blob, string];
         expect(blob.size).toBe(4);
