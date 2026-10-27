@@ -29,7 +29,7 @@ export interface Look {
     ramps: Partial<Record<string, Ramp | Partial<Record<Season, Ramp>>>>;
     moor?: { heather: string; share: number };
     speckle?: { colour: string; share: number; size_m: number };
-    materials?: Partial<Record<string, { colour?: string | Partial<Record<Season, string>>; satellite?: number; stones?: number; clumps?: number }>>;
+    materials?: Partial<Record<string, { colour?: string | Partial<Record<Season, string>>; satellite?: number; clumps?: number }>>;
     lithology?: Partial<Record<string, { colour: string; banded?: true }>>;
     outcrops: number;
     turf_deg: number;

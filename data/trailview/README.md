@@ -28,4 +28,4 @@ uv run --locked --group trailview python -m tools.trailview.rules
   the region tiles bake again; the material tiles do not.
 - A pack names the engine's models (`builder/web/src/lib/trailview/models/trees/` and `plants/`).
   A new species in a pack needs its model there, or the check fails. A pack holds 32 tree species,
-  16 shrubs and 16 ground plants at most.
+  16 shrubs and 16 ground plants at most, and `styles/` 63 house styles.

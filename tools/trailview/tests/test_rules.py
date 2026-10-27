@@ -81,6 +81,13 @@ class RulesetTest(unittest.TestCase):
         self.assertTrue(any(p.startswith("regions/alps.json: pack alps has ") and p.endswith("more than the 32 that the forest holds") for p in problems), problems)
         self.assertIn("regions/alps.json: pack alps: tree no-such-tree has no model no-such-tree", problems)
 
+    def test_more_house_styles_than_the_style_table_holds_is_a_problem(self):
+        ruleset = copy.deepcopy(RULESET)
+        ruleset["styles"].update({f"cottage-{i}": ruleset["styles"]["cottage"] for i in range(rules.MAX_STYLES - len(ruleset["styles"]))})
+        self.assertEqual([p for p in rules.validate(ruleset) if p.startswith("styles/: ")], [])
+        ruleset["styles"]["cottage-last"] = ruleset["styles"]["cottage"]
+        self.assertIn("styles/: 64 house styles, more than the 63 that the engine's style table holds", rules.validate(ruleset))
+
     def test_a_pack_with_more_shrubs_or_ground_plants_than_the_plants_hold_is_a_problem(self):
         ruleset = copy.deepcopy(RULESET)
         pack = ruleset["packs"]["alps"]

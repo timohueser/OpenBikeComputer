@@ -36,6 +36,8 @@ MAX_REGION_IDS = 255
 # models: one file per tree and per plant, named by its id.
 MAX_TREE_SPECIES = 32
 MAX_PLANT_SLOTS = 16
+# The house styles that the style table of structures/houses.ts holds: STYLES of 64, the last the industrial hall's.
+MAX_STYLES = 63
 MODELS = ROOT / "builder/web/src/lib/trailview/models"
 
 
@@ -268,6 +270,8 @@ def validate(ruleset):
                     break
                 at = table[at].get("extends")
 
+    if len(styles) > MAX_STYLES:
+        out.append(f"styles/: {len(styles)} house styles, more than the {MAX_STYLES} that the engine's style table holds")
     for name, overlay in ruleset["overlays"].items():
         file = f"overlays/{name}.json"
         add(file, overlay_check(overlay, "") if name in regions else [f"has no regions/{name}.json"])

@@ -186,8 +186,8 @@ ruleset with a problem.
 | `packs`, `styles` | The files of `packs/` and `styles/` by name |
 | `overlays` | The files of `overlays/` by region name |
 
-The bundle keeps each file as it is, without `about` and `where`. The engine resolves a region as
-the prototype's `regions.ts` does:
+The bundle keeps each file as it is, without `about` and `where`. The engine resolves a region id
+with these rules:
 
 - A file inherits what it does not say from the file that it `extends`. Objects merge, and any
   other value replaces.
@@ -197,9 +197,9 @@ the prototype's `regions.ts` does:
 - In a pack, `trees`, `ground` and `herds` are keyed by species. A child adds or changes one, and
   `null` drops one.
 
-An overlay holds the look keys of the engine that the prototype does not have, as
-`{"look": {…}}`. The engine merges the overlays of the chain of a region over its look, in the
-same way. The key table `OVERLAY_LOOK` of `rules.py` lists the keys that an overlay may set.
+An overlay holds more look keys of a region, as `{"look": {…}}`. The engine merges the overlays
+of the chain of a region over its look, root first, with the same merge. The key table
+`OVERLAY_LOOK` of `rules.py` lists the keys that an overlay may set.
 
 ## Canopy
 
