@@ -209,6 +209,15 @@ mod tests {
     const TEST_SEED: &[u8; SEED_LEN] = &test_key::SEED;
 
     #[test]
+    fn flipped_image_byte_rejects() {
+        let mut image = b"the raw application image bytes".to_vec();
+        let h = ImageHeader::new(&image, "v1").signed();
+        let sig = sign_image(TEST_SEED, &h, &image);
+        image[7] ^= 0x01;
+        assert_eq!(verify_image(&public_key_of(TEST_SEED), &h, &image, &sig), Err(SigError::Mismatch));
+    }
+
+    #[test]
     fn signing_is_deterministic() {
         // If this goes red, something enabled `ed25519-compact`'s `random` feature.
         let image = b"payload".as_slice();
