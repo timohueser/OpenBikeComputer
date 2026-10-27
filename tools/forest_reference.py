@@ -495,8 +495,8 @@ TILES = {"ch": tile_ch, "global": tile_global}
 
 def command_fetch(args):
     """One tile of `forest` from the canopy models `<key>,…` into `--out`: `12/<x>/<y>.tif`, then
-    `12-<x>-<y>.sha256`, the digest of its pixels; or the empty `12-<x>-<y>.none` where no cell of
-    the tile has a canopy. A cell takes the first model that has a pixel in it."""
+    `12-<x>-<y>.sha256`, the digest of its pixels; or the empty `12-<x>-<y>.none` where no model
+    has a pixel in the tile. A cell takes the first model that has a pixel in it."""
     z, x, y = map(int, args.tile.split("-"))
     if z != ZOOM or not (0 <= x < 1 << z and 0 <= y < 1 << z):
         raise SystemExit(f"--tile {args.tile} is 12-<x>-<y>, a zoom 12 tile")
@@ -508,10 +508,12 @@ def command_fetch(args):
         if part is not None:
             unknown = bands[0] == NODATA
             bands[:3, unknown] = part[:, unknown]
-    if not ((bands[0] != NODATA) & (bands[0] > 0)).any():
+    if (bands[0] == NODATA).all():
         (out / f"{args.tile}.none").touch()
         return 0
-    bands[3] = np.where(bands[0] != NODATA, leaf_type(x, y), NODATA)
+    # A tile without a canopy needs no leaf type, which would ask CDSE for nothing.
+    if ((bands[0] != NODATA) & (bands[0] > 0)).any():
+        bands[3] = np.where(bands[0] != NODATA, leaf_type(x, y), NODATA)
     write_tile(out / f"12/{x}/{y}.tif", x, y, bands)
     (out / f"{args.tile}.sha256").write_text(pixel_digest(bands) + "\n")
     return 0

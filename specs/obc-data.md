@@ -1601,7 +1601,7 @@ region to the newest complete version of `forest` on the target before it, in th
 - For each tile, `python -m tools.forest_reference fetch <key>,… --tile 12-<x>-<y>` writes
   `12/<x>/<y>.tif` and then `12-<x>-<y>.sha256`, the SHA-256 of its pixels. The keys are the models
   that meet the tile, the national ones in the order of `data/sources.toml` and then `global`; a
-  cell takes the first model that has a pixel in it. Where no cell of the tile has a canopy, it
+  cell takes the first model that has a pixel in it. Where no model has a pixel in the tile, it
   writes the empty `12-<x>-<y>.none`. It keeps no raw raster. The run keeps
   the SHA-256 or the `.none` of each tile until the version is complete, so a resume makes no tile
   again that it has.
