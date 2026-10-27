@@ -6,7 +6,7 @@
 //!
 //! Positional CLI: `<pbf...> <config.json> <out.obcm>`, plus `--bbox W,S,E,N` to crop the sources
 //! during ingest, `--chunk-size`, `--no-land`, `--terrain <path>` for baked OBCT tiles to integrate
-//! the per-direction ascent from, `--dump-pois` and `--dump-hours`. A run refuses a region wider
+//! the per-direction ascent from. A run refuses a region wider
 //! than [`REGION_LIMIT_KM2`] and names the size it measured; `--allow-large` packs it anyway.
 //!
 //! It prints one stage string per phase, and the web builder UI matches those prefixes in this
@@ -56,10 +56,8 @@ fn parse_args() -> Result<Args, String> {
             "--terrain" => {
                 opts.terrain = Some(PathBuf::from(it.next().ok_or("--terrain needs a .obcd file or a directory")?));
             }
-            "--dump-pois" => opts.dump_pois = true,
             "--peaks" => opts.peaks.push(PathBuf::from(it.next().ok_or("--peaks needs peaks.json")?)),
             "--landmarks" => opts.landmarks.push(PathBuf::from(it.next().ok_or("--landmarks needs content.json")?)),
-            "--dump-hours" => opts.dump_hours = true,
             "--allow-large" => allow_large = true,
             _ => positional.push(a),
         }
@@ -67,7 +65,7 @@ fn parse_args() -> Result<Args, String> {
     // `<pbf...> <config.json> <out.obcm>`: last two positionals are config + output.
     if positional.len() < 3 {
         return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size N] [--no-land] \
-                    [--terrain <path>] [--landmarks <content.json>]… [--peaks <peaks.json>] [--dump-pois] [--dump-hours] \
+                    [--terrain <path>] [--landmarks <content.json>]… [--peaks <peaks.json>] \
                     [--allow-large]\n       \
                     obc-pack schema                                 (print the config JSON Schema envelope)\n       \
                     obc-pack catalog <bake-tree> --base-url <url>   (write a bake tree's catalog manifest)"

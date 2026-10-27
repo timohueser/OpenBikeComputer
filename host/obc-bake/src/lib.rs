@@ -40,7 +40,6 @@ pub mod guard;
 pub mod hash;
 mod known_empty;
 pub mod landmarks;
-pub mod planet;
 pub mod presets;
 pub mod previews;
 pub mod publish;

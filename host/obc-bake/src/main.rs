@@ -37,15 +37,13 @@ usage:
         --base-url URL       catalog object base (default: /obc-bake while staging)
         --regions DIR        region files (default: data/regions/ of the repository)
         --presets-dir DIR    schema.json + skins/ (default: builder/presets)
-        --source SOURCE      directory of extracts (default: Geofabrik from the store), or planet
-                             PBF file with --all (required)
-        --cache DIR          planet shards and DEM tile links
+        --source SOURCE      directory of extracts (default: Geofabrik from the store)
+        --cache DIR          DEM tile links and landmark captures
         --force              re-bake even when unchanged
         --no-land            skip land generation
         --chunk-size N       override schema chunk_size
         --fail-fast          stop at the first failure
         --summary-json FILE  write the machine-readable run summary
-        --all                bake the whole planet through resumable source shards
         --no-terrain         skip the automatic terrain stage below
         --peaks FILE         embed compiled peak peaks.json and its photos
         --dem-sources DIR    source DEM GeoTIFFs for it (default: fetched into <cache>/dem)
@@ -222,7 +220,7 @@ fn select_regions(
 fn run_bake(args: &[String]) -> Result<(), String> {
     let (flags, positional) = Flags::parse(
         args,
-        &["force", "no-land", "fail-fast", "all", "no-terrain", "allow-short-reference"],
+        &["force", "no-land", "fail-fast", "no-terrain", "allow-short-reference"],
         &[
             "out",
             "schema-id",
@@ -244,13 +242,6 @@ fn run_bake(args: &[String]) -> Result<(), String> {
     let out = PathBuf::from(flags.get("out").unwrap_or("obc-bake"));
 
     let all_regions = obc_bake::regions::load(flags.get("regions").map(Path::new))?;
-    if flags.has("all") {
-        if !positional.is_empty() {
-            return Err("`--all` cannot be combined with region selectors; omit `--all` for a curated bake".into());
-        }
-        let presets_dir = PathBuf::from(flags.get("presets-dir").unwrap_or("builder/presets"));
-        return run_planet_bake(&flags, out, all_regions, &presets_dir);
-    }
     // Region ids are positional, which also reads as "these regions are baked together" — and for
     // cells that is not cosmetic, because co-baked neighbours are what complete each other's border
     // cells.
@@ -384,86 +375,6 @@ fn run_cell_bake(
             summary.failures().len(),
             summary.uncovered_regions.len()
         ))
-    }
-}
-
-fn run_planet_bake(
-    flags: &Flags,
-    out: PathBuf,
-    regions: Vec<obc_bake::regions::Region>,
-    presets_dir: &Path,
-) -> Result<(), String> {
-    use obc_bake::planet::ShardRunner as _;
-
-    let schema = obc_bake::presets::load_schema(presets_dir)?;
-    obc_bake::previews::check_source(&schema.config)?;
-    let skin_ids = flags.all("skin");
-    let loaded = obc_bake::presets::load_skins(presets_dir, (!skin_ids.is_empty()).then_some(&skin_ids))?;
-    let skins: Vec<&obc_bake::presets::StyleDoc> = loaded.iter().collect();
-    let bands = match flags.get("bands") {
-        Some(path) => obc_map_core::grid::BandTable::load(path)?,
-        None => obc_map_core::grid::BandTable::recommended(),
-    };
-    let revision: u32 = match flags.get("schema-revision") {
-        Some(value) => value.parse().map_err(|_| "--schema-revision needs a number".to_string())?,
-        None => 1,
-    };
-    let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
-    let progress = obc_map_core::progress::Progress::stdout();
-    // Fail before the planet is read when Osmium, which shards it, is unavailable. Tests inject the
-    // runner at the library boundary; the CLI uses the real executable.
-    let runner = obc_bake::planet::OsmiumRunner::default();
-    runner.check()?;
-    let source = flags.get("source").ok_or("`--all` needs a planet PBF file: give --source FILE")?;
-    let polygons = obc_bake::source::GeofabrikExtracts;
-    let region_presets = obc_bake::planet::resolve_region_presets(&regions, &polygons, &bands, &progress)?;
-    // Held until the bake has read the planet: the sharder below reads it too.
-    let _planet = obc_bake::planet::lock_cache(&cache, &progress)?;
-    let input = obc_bake::planet::resolve_planet(source, &progress)?;
-    let shards = obc_bake::planet::PlanetSharder { input: &input, cache: &cache, runner: &runner }.run(&progress)?;
-    let cutter = obc_bake::cells::ObcCutter {
-        no_land: flags.has("no-land"),
-        land: Default::default(),
-        chunk_size: match flags.get("chunk-size") {
-            Some(value) => Some(value.parse().map_err(|_| "--chunk-size needs a number".to_string())?),
-            None => None,
-        },
-    };
-    let summary = obc_bake::planet::PlanetBake {
-        input: &input,
-        leaves: &shards.leaves,
-        regions: &region_presets,
-        schema: &schema,
-        skins: &skins,
-        cutter: &cutter,
-        source_leaves_reused: shards.reused,
-        source_leaves_refreshed: shards.refreshed,
-        source_leaves_changed: shards.changed,
-        opts: obc_bake::cells::CellBakeOptions {
-            out: out.clone(),
-            force: flags.has("force"),
-            fail_fast: flags.has("fail-fast"),
-            bands,
-            schema_id: flags.get("schema-id").unwrap_or("bikepacking").to_string(),
-            schema_revision: revision,
-            // Whatever `obc-bake terrain` has already published into this tree. Discovered rather
-            // than flagged: the terrain a cell samples must be the terrain the same catalog
-            // publishes, and a flag would be a second place for the two to disagree.
-            terrain: obc_bake::terrain::in_tree(&out)?,
-            peaks: flags.get("peaks").map(PathBuf::from),
-        },
-    }
-    .run(&progress)?;
-    print!("{}", summary.render());
-    if let Some(path) = flags.get("summary-json") {
-        let json = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
-        std::fs::write(path, format!("{json}\n")).map_err(|e| format!("{path}: {e}"))?;
-    }
-    if summary.ok() {
-        finish_tree(flags, &out)?;
-        Ok(())
-    } else {
-        Err(format!("{} planet leaf/leaves failed — see the summary above", summary.failures.len()))
     }
 }
 
@@ -709,8 +620,7 @@ fn run_guard(args: &[String]) -> Result<(), String> {
     }
 }
 
-/// Where the planet with its diffs applied, its shards, the DEM tile links and the raw landmark
-/// captures go. Downloads go to the store.
+/// Where the DEM tile links and the raw landmark captures go. Downloads go to the store.
 fn default_cache_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("OBCM_CACHE_DIR") {
         return PathBuf::from(dir).join("geofabrik");

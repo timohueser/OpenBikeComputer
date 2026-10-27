@@ -98,14 +98,11 @@ device format belong to the map serializer.
 
 ## Peak article catalogue
 
-The same capture program takes a regional OSM extract and produces a separate peak collection:
+A peak capture is a separate collection. `obc-bake peaks` compiles it:
 
 ```sh
-python3 tools/landmark_capture.py \
-  --peaks-osm REGION.osm.pbf --boundary REGION.geojson \
-  --out .artifacts/peak-source --select-with target/debug/obc-bake
 target/debug/obc-bake peaks \
-  --snapshot .artifacts/peak-source/manifest.json \
+  --snapshot CAPTURE/manifest.json \
   --boundary REGION.geojson --out .artifacts/peak-content
 ```
 
@@ -127,8 +124,8 @@ language variants share one photo.
 **The two collections do not mix.** A peak capture cannot enter the landmark compiler, and
 `peaks.json` cannot enter the landmark map serializer. The packer and cutter take
 `--peaks PATH/peaks.json`, repeatable for several catalogues, and join only the full node
-identities of emitted summit POIs. `obc-bake bake --peaks FILE` and the planet baker take one
-global catalogue; their cache keys include the peak content fingerprint.
+identities of emitted summit POIs. `obc-bake bake --peaks FILE` takes one global catalogue;
+its cache keys include the peak content fingerprint.
 
 ## Verify
 

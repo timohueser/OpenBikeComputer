@@ -1895,7 +1895,7 @@ A request that does not, and a command that the page does not run, get HTTP 403 
 
 The R2 client in `host/obc-data` reaches the bucket for `obc bake publish --target r2`,
 `obc bake clean-r2`, `obc fixtures publish` and the firmware publish workflow. rclone moves the
-bytes. The reference archive ingest reaches `reference/v1/` with rclone and the same variables.
+bytes.
 `obc data r2` is plumbing for scripts: those commands call it, and a person deletes a key with
 `obc data r2 delete`. It does not change the state of a release. Once the bucket has the
 `release.json` of `obc data`, `obc bake publish --target r2` refuses to run, and `obc data r2 put`

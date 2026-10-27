@@ -814,14 +814,14 @@ class Registry(unittest.TestCase):
                 with self.assertRaises(ingest.Refuse):
                     ingest.Source("x", "Nowhere", "p", 1.0, "l", datum)
 
-    def test_a_source_with_no_adapter_says_to_pass_input(self):
+    def test_a_source_with_no_adapter_names_the_variable_of_its_delivery(self):
         manual = ingest.sources.ManualSource(
             "xx", "Nowhere", "p", 1.0, "l", "NAP",
             why="the service needs a token")
         with self.assertRaises(ingest.Refuse) as refusal:
             manual.fetch(BOX, Path("/nonexistent"))
         self.assertIn("the service needs a token", str(refusal.exception))
-        self.assertIn("--input", str(refusal.exception))
+        self.assertIn("OBC_REFERENCE_XX_INPUT", str(refusal.exception))
 
 
 if __name__ == "__main__":

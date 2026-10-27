@@ -64,16 +64,6 @@ impl KnownEmptyIndex {
         Ok(Self { by_band })
     }
 
-    pub(crate) fn fact(&self, band: &str, id: CellId) -> Option<&KnownEmptyRun> {
-        let runs = self.by_band.get(band)?;
-        let position =
-            runs.partition_point(|run| CellId::parse(&run.start).is_ok_and(|start| (start.i, start.j) <= (id.i, id.j)));
-        let run = position.checked_sub(1).and_then(|index| runs.get(index))?;
-        let start = CellId::parse(&run.start).ok()?;
-        let end = CellId::parse(&run.end).ok()?;
-        (start.i == id.i && start.j <= id.j && end.j >= id.j).then_some(run)
-    }
-
     pub(crate) fn apply(&mut self, band: &str, changes: &[EmptyChange]) -> Result<(), String> {
         let runs = self.by_band.get_mut(band).ok_or_else(|| format!("unknown band `{band}`"))?;
         let mut by_row: BTreeMap<i64, BTreeMap<i64, (u32, Option<EmptyFact>)>> = BTreeMap::new();

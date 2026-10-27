@@ -146,6 +146,28 @@ fn collect(
     Ok(())
 }
 
+/// Refuse to publish or verify a tree that an incomplete whole-planet bake left behind.
+///
+/// A catalog cannot infer global holes from the artifacts that happen to exist, so such a tree
+/// carries `.planet-bake/status.json` as the missing negative fact. Curated trees have none.
+pub fn check_publishable_tree(tree: &Path) -> Result<(), String> {
+    #[derive(serde::Deserialize)]
+    struct Status {
+        state_version: u32,
+        complete: bool,
+    }
+    if !tree.join(".planet-bake").exists() {
+        return Ok(());
+    }
+    let path = tree.join(".planet-bake/status.json");
+    let text = std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let status: Status = serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+    if status.state_version != 1 || !status.complete {
+        return Err(format!("{}: a planet bake left this tree incomplete; bake a new tree", path.display()));
+    }
+    Ok(())
+}
+
 /// Generate the catalog into a cell tree, then publish it.
 ///
 /// The catalog is a root plus digest-pinned satellites, so the satellites are objects like any
@@ -158,7 +180,7 @@ pub fn publish(
     opts: &CatalogOptions,
     publish_opts: PublishOptions,
 ) -> Result<PublishReport, String> {
-    crate::planet::check_publishable_tree(tree)?;
+    check_publishable_tree(tree)?;
     // Publishing an existing tree is enough to pick up a new preview renderer: previews contain no
     // cell data, so requiring a multi-hour rebake would couple presentation to geometry by
     // accident.
@@ -458,6 +480,20 @@ impl ObjectStore for R2Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_incomplete_planet_marker_blocks_the_shared_gate() {
+        let dir = std::env::temp_dir().join(format!("obc-planet-status-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".planet-bake")).unwrap();
+        let status = |complete: bool| format!(r#"{{"state_version": 1, "complete": {complete}, "leaves": 9}}"#);
+        std::fs::write(dir.join(".planet-bake/status.json"), status(false)).unwrap();
+        let error = check_publishable_tree(&dir).expect_err("partial planet coverage is not publishable");
+        assert!(error.contains("incomplete"), "{error}");
+        std::fs::write(dir.join(".planet-bake/status.json"), status(true)).unwrap();
+        check_publishable_tree(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     struct RecordingStore {
         events: std::cell::RefCell<Vec<String>>,
