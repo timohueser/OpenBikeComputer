@@ -3,7 +3,7 @@ import { placed, type Build, type Placement } from '../kinds/kind';
 import { packPoints, type Point } from '../instances/points';
 import type { Feature } from '../stream/features';
 import { AnchoredBuilder, anchorBytes, type AnchoredMesh } from './anchored';
-import { BRIDGE, features, metresPerUnit, TUNNEL, type Node } from '../terrain/bins';
+import { BRIDGE, features, metresPerUnit, PATH, ROAD, TUNNEL, type Node } from '../terrain/bins';
 import { bridges, deckHalf } from './bridges';
 import { galleries } from './galleries';
 import { MeshBuilder, type StructureMesh } from './mesh';
@@ -90,7 +90,7 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
     const points: Point[] = [];
     let kind = '';
     const place = ({ model, tint = 1, ...at }: Placement) => points.push({ ...at, tint, model: POINT_MODELS.indexOf(`${kind}/${model}`) });
-    const out: Build = { far, near, owns, place };
+    const out: Build = { far, near, owns, place, ways: lines.filter(line => line.kind === ROAD || line.kind === PATH) };
     for (const feature of list) {
         kind = feature.kind;
         KINDS.get(kind)?.build(placed(feature, tile), out);

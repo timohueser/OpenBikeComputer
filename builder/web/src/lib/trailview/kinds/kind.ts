@@ -32,6 +32,8 @@ export interface Build {
     near: { mesh: MeshBuilder; anchored: AnchoredBuilder };
     place: (placement: Placement) => void;
     owns: Owns;
+    /** The roads and paths of the tile. */
+    ways: Line[];
 }
 
 export interface Kind {
@@ -55,15 +57,37 @@ export function pointModels(feature: Placed, out: Build, instance: (x: number, y
     }
 }
 
+/** A model faces the nearest way within this many metres. */
+const FACE_M = 15;
+
 /**
- * A kind of one model at each point: `model` in metres with its base at the origin, turned by the hash of
- * its place, as the map does not tell which way it faces. It draws to `reach` metres.
+ * The yaw that stands a model at world point x, y along the nearest of `ways` within FACE_M, its front
+ * (−y) toward it, as a bench beside a path; undefined without one.
  */
-export function modelKind(name: string, model: () => Model, reach: number): Kind {
+export function facing(ways: Line[], x: number, y: number): number | undefined {
+    let best = (FACE_M / metresPerUnit(y)) ** 2, yaw: number | undefined;
+    for (const { xy } of ways) for (let i = 0; i + 3 < xy.length; i += 2) {
+        const ax = xy[i], ay = xy[i + 1], dx = xy[i + 2] - ax, dy = xy[i + 3] - ay, l = dx * dx + dy * dy;
+        const t = l ? Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / l)) : 0, px = ax + t * dx - x, py = ay + t * dy - y;
+        if (!l || px * px + py * py >= best) continue;
+        best = px * px + py * py;
+        // World y runs south: the way's direction and the front's, east and north.
+        const along = Math.atan2(-dy, dx);
+        yaw = Math.sin(along) * px + Math.cos(along) * py > 0 ? along : along + Math.PI;
+    }
+    return yaw;
+}
+
+/**
+ * A kind of one model at each point: `model` in metres with its base at the origin. The map does not tell
+ * which way it faces: with `facesWay` it faces the nearest way, else the hash of its place turns it. It
+ * draws to `reach` metres.
+ */
+export function modelKind(name: string, model: () => Model, reach: number, facesWay = false): Kind {
     const height = Math.max(...model().points.filter((_, i) => i % 3 === 2));
     return {
         build(feature, out) {
-            pointModels(feature, out, (x, y) => ({ yaw: ((x * 7 + y * 13) % 628) / 100, height, model: name }));
+            pointModels(feature, out, (x, y) => ({ yaw: (facesWay ? facing(out.ways, x, y) : undefined) ?? ((x * 7 + y * 13) % 628) / 100, height, model: name }));
         },
         models: { [name]: () => ({ tiers: [{ mesh: geometry(model().place(0, [0, 0, 0], 1 / height)), until: reach }] }) },
     };
