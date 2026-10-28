@@ -2256,9 +2256,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `router` | `Router` |
 | `unlock` | `Unlocked` |
 | `sources` | `Sources` |
-| `source refresh`, `serve --detach`, `deploy WHAT --expect`, `r2 legacy --delete` | `Detached` |
+| `source refresh`, `source copy`, `serve --detach`, `deploy WHAT --expect`, `r2 legacy --delete` | `Detached` |
 | `source prepare` | `Started` |
 | `source prepare --dry-run` | `PrepareReview` |
+| `source copy --dry-run` | `CopyPlan` |
 | `fetch` | `Fetched` |
 | `archive status` | `ArchiveStatus` |
 | `archive get`, `archive verify` | `ArchiveDataset` |
@@ -2798,6 +2799,60 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "release",
         "keys",
         "bytes"
+      ],
+      "type": "object"
+    },
+    "CopiedVersion": {
+      "properties": {
+        "copy": {
+          "$ref": "#/$defs/Downloads",
+          "description": "The files that the home lacks."
+        },
+        "held": {
+          "$ref": "#/$defs/Downloads",
+          "description": "The files that the home holds."
+        },
+        "manifest_sha256": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "manifest_sha256",
+        "copy",
+        "held"
+      ],
+      "type": "object"
+    },
+    "CopyPlan": {
+      "description": "What a copy does.",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "root": {
+          "description": "The archive root of the home of the source.",
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "versions": {
+          "description": "Each version of the target, oldest first.",
+          "items": {
+            "$ref": "#/$defs/CopiedVersion"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "source",
+        "from",
+        "root",
+        "versions"
       ],
       "type": "object"
     },
@@ -3510,7 +3565,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "prepared",
-          "description": "R2 keeps what we make: a prepared source, a source that only a prepare reads, or our own asset.",
+          "description": "We keep what we make: the archive keeps a prepared source and a source that only a prepare\nreads, and R2 keeps our own asset.",
           "type": "string"
         }
       ]
@@ -4447,7 +4502,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "The review of a prepare. Its id names the decisions, so `--expect ID` starts a prepare only when\nthey are the ones that a person read.",
       "properties": {
         "abandoned": {
-          "description": "The version that a stopped run of this machine started and that this run does not resume:\nthe target has a newer complete version. `null` when there is none.",
+          "description": "The version that a stopped run of this machine started and that this run does not resume:\nthe home has a newer complete version. `null` when there is none.",
           "type": [
             "string",
             "null"
@@ -4465,7 +4520,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "done": {
           "$ref": "#/$defs/Downloads",
-          "description": "The files that earlier runs of the version uploaded: this run does not upload them again."
+          "description": "The files that earlier runs of the version moved into the home: this run does not make them\nagain."
         },
         "files": {
           "description": "The files of the version, at most; `null` when the producer cannot tell before the run.",
@@ -4482,7 +4537,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "integer"
         },
         "id": {
-          "description": "The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the\nversion, the format, the revision, the scope, the languages, `publish_text` and each planned\ninput, including archive paths, URLs, sizes and object identities.",
+          "description": "The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the root, the\nversion, the format, the revision, the scope, the languages, `publish_text` and each planned\ninput, including archive paths, URLs, sizes and object identities.",
           "type": "string"
         },
         "inputs": {
@@ -4498,7 +4553,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "listing": {
-          "description": "Whether the manifest of the version is on the target and names the files of the journal: the\nrun only lists the version, and makes and writes nothing else.",
+          "description": "Whether the manifest of the version is in the home and names the files of the journal: the\nrun only lists the version, and makes and writes nothing else.",
           "type": "boolean"
         },
         "machine": {
@@ -4515,6 +4570,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
+        },
+        "root": {
+          "description": "The archive root of the home of the source.",
+          "type": "string"
         },
         "scope": {
           "anyOf": [
@@ -4537,9 +4596,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
-        "target": {
-          "type": "string"
-        },
         "version": {
           "description": "The version that the run makes: the UTC date when its first run started, with `.2`, `.3`\nand so on after the first version of that day.",
           "type": "string"
@@ -4548,7 +4604,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "id",
         "source",
-        "target",
+        "root",
         "version",
         "abandoned",
         "listing",
@@ -4568,8 +4624,17 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "PreparedCost": {
-      "description": "Estimates from the newest version that the target lists; `null` without one.",
+      "description": "Estimates from the newest version in the home; `null` without one.",
       "properties": {
+        "archive_bytes": {
+          "description": "What goes into the archive: the files of the version that earlier runs did not move.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "peak_rss_bytes": {
           "format": "uint64",
           "minimum": 0,
@@ -4579,7 +4644,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "store_bytes": {
-          "description": "What goes into the store: the inputs that it lacks, and the files of the version.",
+          "description": "What goes into the store: the inputs that it lacks.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -4590,14 +4655,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "type": "string"
           },
           "type": "array"
-        },
-        "upload_bytes": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
         },
         "wall_ms": {
           "format": "uint64",
@@ -4612,8 +4669,49 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "wall_ms",
         "peak_rss_bytes",
         "store_bytes",
-        "upload_bytes",
+        "archive_bytes",
         "unknown"
+      ],
+      "type": "object"
+    },
+    "PreparedIn": {
+      "properties": {
+        "error": {
+          "description": "Why the versions or the lock of the source cannot be read; `null` when they can.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lock"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "root": {
+          "description": "The archive root of the home; `null` when no root of `OBC_DATA_ARCHIVE` has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "versions": {
+          "items": {
+            "$ref": "#/$defs/Version"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "root",
+        "versions",
+        "lock",
+        "error"
       ],
       "type": "object"
     },
@@ -4670,39 +4768,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "params",
         "bytes",
         "download_bytes"
-      ],
-      "type": "object"
-    },
-    "PreparedOn": {
-      "properties": {
-        "error": {
-          "description": "Why the versions or the lock of the source there cannot be read; `null` when they can.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "lock": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Lock"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "versions": {
-          "items": {
-            "$ref": "#/$defs/Version"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "versions",
-        "lock",
-        "error"
       ],
       "type": "object"
     },
@@ -5715,11 +5780,15 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "prepared": {
-          "additionalProperties": {
-            "$ref": "#/$defs/PreparedOn"
-          },
-          "description": "For a prepared source, by target: its complete versions there, and the run that holds the\nlock of the source there. Empty for another source.",
-          "type": "object"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreparedIn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a prepared source: its home in the archive, its complete versions there, and the run\nthat holds its lock. `null` for another source."
         },
         "publish_text": {
           "description": "A prepared source of article text publishes the text in its versions, unless this is\n`false`: then the text stays on the machine that prepares.",
@@ -6499,14 +6568,18 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "The run that held the lock."
         },
         "source": {
-          "description": "The prepared source whose lock it freed; `null` for the lock of the target.",
+          "description": "The prepared source whose lock it freed; `null` for the lock of a target.",
           "type": [
             "string",
             "null"
           ]
         },
         "target": {
-          "type": "string"
+          "description": "The target whose lock it freed; `null` for the lock of a prepared source.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

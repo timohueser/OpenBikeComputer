@@ -186,8 +186,13 @@ impl Http {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_archive(mut self, root: &Path) -> Self {
-        self.archive = Some(Archive::new(vec![root.to_path_buf()]));
+    pub(crate) fn with_archive(self, root: &Path) -> Self {
+        self.with_roots(vec![root.to_path_buf()])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.archive = Some(Archive::new(roots));
         self
     }
 
@@ -195,6 +200,11 @@ impl Http {
     /// copy serves before upstream.
     pub fn archive(&self, source: &Source) -> Option<&Archive> {
         self.archive.as_ref().filter(|_| source.keep == Keep::Archive)
+    }
+
+    /// The roots of the archive, whatever the source: the homes of the prepared sources are there.
+    pub fn roots(&self) -> &[PathBuf] {
+        self.archive.as_ref().map_or(&[], Archive::roots)
     }
 
     /// Authorize only requests to this HTTPS origin. Redirects strip authorization by default.

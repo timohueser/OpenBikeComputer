@@ -147,7 +147,7 @@ fn once_the_bucket_has_a_release_only_an_update_writes_its_keys() {
     let status = |args: &[&str]| obc_data_r2(&temp, args).status.code();
     assert_eq!(status(&["put", file, "planner/catalog.json"]), Some(0), "without a release, a pointer is free");
     assert_eq!(status(&["put", file, "release.json"]), Some(0));
-    for key in ["planner/catalog.json", "objects/a", "releases/b.json", "lock.json", "sources/terrain/versions.json"] {
+    for key in ["planner/catalog.json", "objects/a", "releases/b.json", "lock.json"] {
         assert_eq!(status(&["put", file, key]), Some(1), "{key}");
     }
     assert_eq!(status(&["delete", "planner/catalog.json", "--reason", "x", "--yes"]), Some(1));

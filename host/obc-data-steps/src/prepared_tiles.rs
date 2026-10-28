@@ -8,7 +8,7 @@ use std::process::Command;
 
 use obc_data::prepared::{Job, Program};
 
-/// The tiles of one upload.
+/// The tiles of one move into the home.
 const BATCH: usize = 64;
 /// The programs that run at once. Eight, chosen by the owner: a program waits mostly on its
 /// downloads, and one tile needs little memory.
@@ -22,7 +22,7 @@ pub struct Tile {
     pub marks: Vec<String>,
 }
 
-/// Make each tile that the version lacks, [`RUNNING`] at a time, and upload its files in batches.
+/// Make each tile that the version lacks, [`RUNNING`] at a time, and move its files into the home in batches.
 /// `command(job, name)` is the program that writes the files of tile `name` into `job.work`, then
 /// their marks, the mark of the last file last; or the empty `<name>.none` for a tile without data.
 /// Each line of its output, and its error, starts with `tile k/K <name>`: tile k of the K tiles of
@@ -84,7 +84,7 @@ fn done(job: &Job, marks: &Path, tile: &Tile) -> bool {
     tile.files.iter().all(|(path, _)| job.done(path)) || marks.join(format!("{}.none", tile.name)).exists()
 }
 
-/// Whether a run made the files of `tile` and stopped before their upload.
+/// Whether a run made the files of `tile` and stopped before their move into the home.
 fn waiting(job: &Job, marks: &Path, tile: &Tile) -> bool {
     tile.files.iter().all(|(path, mark)| marks.join(mark).exists() && job.work.join(path).exists())
 }
@@ -131,7 +131,7 @@ fn keep(job: &mut Job, marks: &Path, tile: &Tile, batch: &mut Vec<String>) -> Re
     add(job, tile, batch)
 }
 
-/// Add the files of `tile` to the batch, and upload a full batch.
+/// Add the files of `tile` to the batch, and move a full batch into the home.
 fn add(job: &mut Job, tile: &Tile, batch: &mut Vec<String>) -> Result<(), String> {
     batch.extend(tile.files.iter().map(|(path, _)| path.clone()));
     if batch.len() >= BATCH {

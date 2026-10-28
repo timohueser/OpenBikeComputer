@@ -94,11 +94,11 @@ export function toggled(on: string[], id: string, checked: boolean): string[] {
     return next;
 }
 
-/** The reference of a card: the target of its newest version, `null` while it has none, and the
+/** The reference of a card: its newest version in the archive, `null` while it has none, and the
  *  areas of the versions that a bake reads. */
 export interface Reference {
     source: string;
-    version: { version: string; target: string } | null;
+    version: { version: string } | null;
     regions: string[];
 }
 
@@ -117,18 +117,17 @@ const meets = (extent: [number, number, number, number], area: Bbox) =>
 
 /** What `content` needs for `area` in `countries` on this machine, from `obc data sources`. A model
  *  is of any country when the area names none, such as a drawn box. A bake reads the versions of
- *  `prod` while it lists one, else those of `local`. */
+ *  the archive. */
 export function needs(content: Content, area: Bbox | null, sources: SourceRow[], countries: string[] = []): Needs {
     const credentials = content.credentials.filter((id) => sources.find((source) => source.id === id)?.credential_missing);
     const id = content.reference?.source;
     const row = id && sources.find((source) => source.id === id);
     let reference: Reference | null = null;
     if (row) {
-        const target = ["prod", "local"].find((name) => row.prepared[name]?.versions.length);
-        const listed = target ? row.prepared[target].versions : [];
+        const listed = row.prepared?.versions ?? [];
         const newest = listed.at(-1);
         const regions = [...new Set(listed.flatMap((version) => (version.region ? [version.region] : [])))];
-        reference = { source: row.id, version: newest ? { version: newest.version, target: target! } : null, regions };
+        reference = { source: row.id, version: newest ? { version: newest.version } : null, regions };
     }
     const national = id && area ? modelsOf(id, sources).filter(({ row, country }) => row.extent && meets(row.extent, area) && (!countries.length || countries.includes(country))) : [];
     const everywhere = id && area ? globalModelOf(id, sources) : undefined;

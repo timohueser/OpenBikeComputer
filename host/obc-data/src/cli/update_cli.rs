@@ -482,7 +482,7 @@ pub(super) fn prepare(
     let prepared = sources.iter().filter(|source| source.fetch.kind == FetchKind::Prepared);
     let read: BTreeSet<_> =
         requests.iter().cloned().chain(prepared.map(|source| (source.id.clone(), Vec::new()))).collect();
-    crate::prepared::resolve(root, store, (name, target), (&sources, &read, producers), &mut inputs)?;
+    crate::prepared::resolve(http.roots(), (&sources, &read, producers), &mut inputs)?;
     let listed = {
         let mut fetch = listing::fetcher(root, store, http, &sources, run, true);
         // The listing asks for what the store lacks.

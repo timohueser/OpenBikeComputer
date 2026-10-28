@@ -12,12 +12,12 @@ const ANSWERS = {
   '["sources"]': fixture('sources'),
   '["router","prod"]': fixture('router'),
   '["deploy"]': fixture('deploy'),
-  [JSON.stringify(['source', 'prepare', 'wiki', '--to', 'prod', '--region', 'europe/dach', '--languages', 'en,de', '--dry-run'])]: fixture('prepare-review'),
+  [JSON.stringify(['source', 'prepare', 'wiki', '--region', 'europe/dach', '--languages', 'en,de', '--dry-run'])]: fixture('prepare-review'),
   [JSON.stringify(['runs', running.id])]: running,
   [JSON.stringify(['runs', failed.id])]: failed,
   [JSON.stringify(['runs', planned.id])]: planned,
 };
-const WIKI = '#/references/wiki/prepare?to=prod&region=europe/dach';
+const WIKI = '#/references/wiki/prepare?region=europe/dach';
 // Each screen, and a text that it shows once its answers came.
 const SCREENS = [
   ['#/', 'Country, region or saved area'],

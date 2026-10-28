@@ -176,7 +176,8 @@ pub enum Keep {
     Archive,
     /// The store keeps what each fetch took.
     Store,
-    /// R2 keeps what we make: a prepared source, a source that only a prepare reads, or our own asset.
+    /// We keep what we make: the archive keeps a prepared source and a source that only a prepare
+    /// reads, and R2 keeps our own asset.
     Prepared,
 }
 
@@ -484,7 +485,7 @@ pub fn status(source: &Source, serving: Option<&str>, upstream: &Upstream, today
     } else {
         let prepared = source.fetch.kind == FetchKind::Prepared;
         match (source.refresh, age_days) {
-            // A prepared source moves when a target lists a newer version: `prepared::resolve`.
+            // A prepared source moves when the archive lists a newer version: `prepared::resolve`.
             (Refresh::Days(max), Some(age)) if age > i64::from(max) && !prepared => match upstream {
                 Upstream::Newest(newest) if Some(newest.as_str()) > serving => {
                     (State::Stale, Some(format!("{age} d > {max} d, upstream {newest}")))

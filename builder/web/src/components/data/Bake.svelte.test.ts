@@ -63,7 +63,7 @@ it("walks area, contents, review and bake, each step from its URL", async () => 
     await unmount(area.shown);
 
     const contents = screen("#/bake?region=central-switzerland&on=trailview");
-    await vi.waitFor(() => expect(text()).toContain("2026-08-20 on R2 · covers central-switzerland"));
+    await vi.waitFor(() => expect(text()).toContain("2026-08-20 in the archive · covers central-switzerland"));
     expect(text()).toContain("Needs the login for era5-land");
     expect(document.querySelector<HTMLInputElement>('input[type="checkbox"]:disabled')).not.toBeNull();
     button("Make the plan").click();

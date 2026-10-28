@@ -148,7 +148,7 @@
         </div>
     </dl>
 
-    {#each review.notes as note (note.text)}<ReviewNote {note} to={target.target} region={review.settings.region} tone="stale" />{/each}
+    {#each review.notes as note (note.text)}<ReviewNote {note} region={review.settings.region} tone="stale" />{/each}
     {#each review.services as problem (problem)}<p class="missing">✗ {problem} <a href="#/{target.target}">Open the services of {target.target}</a></p>{/each}
     {#if review.machine.refusals.length}<p class="missing">{machine} cannot bake this: {review.machine.refusals.join("; ")}</p>{/if}
 

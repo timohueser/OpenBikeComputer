@@ -1,6 +1,6 @@
-//! `obc data unlock TARGET --from MACHINE [--source ID]`: free the lock of a target, or of a prepared
-//! source on it, whose run stopped without freeing it. The heartbeat of the holder must be
-//! [`lock::STALE`] old.
+//! `obc data unlock (TARGET | --source ID) --from MACHINE`: free the lock of a target, or of a
+//! prepared source in the archive, whose run stopped without freeing it. The heartbeat of the holder
+//! must be [`lock::STALE`] old.
 
 use std::path::Path;
 
@@ -14,8 +14,9 @@ use crate::store::Store;
 /// What `unlock` did.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Unlocked {
-    pub target: String,
-    /// The prepared source whose lock it freed; `null` for the lock of the target.
+    /// The target whose lock it freed; `null` for the lock of a prepared source.
+    pub target: Option<String>,
+    /// The prepared source whose lock it freed; `null` for the lock of a target.
     pub source: Option<String>,
     /// The run that held the lock.
     pub holder: Holder,
@@ -23,21 +24,29 @@ pub struct Unlocked {
 
 pub fn command(
     root: &Path,
-    (name, source): (&str, Option<&str>),
+    (name, source): (Option<&str>, Option<&str>),
     from: &str,
     yes: bool,
     json: bool,
 ) -> Result<(), Error> {
     let store = Store::open()?;
-    let target = crate::target::find(root, name, &store).map_err(|e| Code::Usage.error(e))?;
-    super::api::writable(name, &target, false)?;
-    let (label, unlock, target) = match source {
-        None => (format!("target `{name}`"), format!("obc data unlock {name}"), target),
-        Some(id) => (
-            format!("source `{id}` on `{name}`"),
-            format!("obc data unlock {name} --source {id}"),
-            crate::prepared::folder(&target, id),
-        ),
+    let (label, unlock, target) = match (name, source) {
+        (_, Some(id)) => {
+            let roots = crate::fetch::archive::roots();
+            let home = crate::prepared::home(&roots, id).ok_or_else(|| {
+                Code::Usage
+                    .error(format!("no root of OBC_DATA_ARCHIVE has prepared/{id}/; nothing changed"))
+                    .fix("Set OBC_DATA_ARCHIVE to the roots of the archive and mount their drives.")
+            })?;
+            let folder = crate::prepared::folder(home, id);
+            (format!("source `{id}` in the archive"), format!("obc data unlock --source {id}"), folder)
+        }
+        (Some(name), None) => {
+            let target = crate::target::find(root, name, &store).map_err(|e| Code::Usage.error(e))?;
+            super::api::writable(name, &target, false)?;
+            (format!("target `{name}`"), format!("obc data unlock {name}"), target)
+        }
+        (None, None) => return Err(Code::Usage.error("name a target or `--source ID`")),
     };
     let unreadable = |e: String| {
         Code::Failed
@@ -72,7 +81,11 @@ pub fn command(
     confirm(&question, yes)?;
     lock::free(&target, tag)
         .map_err(|e| Code::Failed.error(format!("{label}: {e}")).fix(format!("Run `{unlock} --from {from}` again.")))?;
-    let unlocked = Unlocked { target: name.into(), source: source.map(str::to_string), holder };
+    let unlocked = Unlocked {
+        target: name.filter(|_| source.is_none()).map(str::to_string),
+        source: source.map(str::to_string),
+        holder,
+    };
     if json {
         return print_json(&unlocked);
     }

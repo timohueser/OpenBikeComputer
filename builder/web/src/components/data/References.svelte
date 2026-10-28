@@ -4,7 +4,7 @@
     import { command } from "../../lib/data/cli";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { prepareHash, sourceAt } from "../../lib/data/screens";
-    import { size, when, type Status } from "../../lib/data/shapes";
+    import { size, when } from "../../lib/data/shapes";
     import { COVERAGE, coverage, coverageCells, modelsOf, REFERENCES, type Coverage, type SourceRow } from "../../lib/data/sources";
     import DataMap from "./DataMap.svelte";
     import Failure from "./Failure.svelte";
@@ -12,7 +12,7 @@
 
     // What we make once and keep: each reference as a map of the areas of its versions over its
     // national models, then its versions and the one action that makes the next.
-    let { hash, status }: { hash: string; status: CliQuery<Status> } = $props();
+    let { hash }: { hash: string } = $props();
 
     const sources = new CliQuery<{ sources: SourceRow[] }>(["sources"]);
     const areas = new CliQuery<Areas>(["areas"]);
@@ -22,22 +22,18 @@
     });
     const route = $derived(sourceAt(hash));
     const rows = $derived(sources.output?.sources ?? []);
-    const targets = $derived(status.output?.targets ?? []);
-    const r2 = (target: string) => (targets.find((at) => at.target === target)?.kind ?? (target === "prod" ? "r2" : "dir")) === "r2";
     const box = (region: string): [number, number, number, number] | null => {
         const b = areas.output && boundsOf(region, areas.output);
         return b ? [b.west, b.south, b.east, b.north] : null;
     };
-    const ORDER: Coverage[] = ["lock", "preparing", "r2", "local", "none"];
-    const TEXT: Record<Coverage, string> = { lock: "missing", preparing: "running", r2: "ready", local: "stale", none: "soft" };
-    /** Each version of `row`, newest first, with where it is and what it covers. */
+    const ORDER: Coverage[] = ["lock", "preparing", "archive", "none"];
+    const TEXT: Record<Coverage, string> = { lock: "missing", preparing: "running", archive: "ready", none: "soft" };
+    /** Each version of `row`, newest first, with what it covers. */
     const versions = (row: SourceRow) =>
-        Object.entries(row.prepared)
-            .flatMap(([target, at]) => at.versions.map((version) => ({ target, ...version })))
+        [...(row.prepared?.versions ?? [])]
             .sort((a, b) => b.version.localeCompare(a.version, "en", { numeric: true }))
             .map((version) => ({
                 ...version,
-                where: r2(version.target) ? "On R2" : "On this computer",
                 covers: version.region ? nameOf(version.region, areas.output) : row.extent ? "all of it" : "coverage not recorded",
             }));
 </script>
@@ -47,51 +43,51 @@
 
 {#snippet reference(row: SourceRow, add: string)}
     {@const made = versions(row)}
-    {@const state = coverage(row, r2)}
+    {@const state = coverage(row)}
+    {@const at = row.prepared}
     <div class="member">
         <span class={TEXT[state]}>{COVERAGE[state].label}</span>
         {#if made.length}
             <ul class="versions">
-                {#each made as version (`${version.target}|${version.version}`)}
-                    <li>{version.version} · {size(version.bytes)} · {version.where} · {version.covers}</li>
+                {#each made as version (version.version)}
+                    <li>{version.version} · {size(version.bytes)} · {version.covers}</li>
                 {/each}
             </ul>
         {/if}
-        {#each Object.entries(row.prepared) as [target, at] (target)}
-            {#if at.error}
-                <span class="missing">{r2(target) ? "R2" : "This computer"} cannot be read: {at.error}</span>
-            {:else if at.lock?.died}
-                <span class="missing">A run on {at.lock.machine} stopped without freeing the lock. The next preparation takes it over.</span>
-            {:else if at.lock?.stale}
-                <span class="missing">No heartbeat from {at.lock.machine} since {when(at.lock.heartbeat)}: the run likely stopped.</span>
-                <details class="terminal">
-                    <summary>In a terminal</summary>
-                    <code>{command(["unlock", target, "--source", row.id, "--from", at.lock.machine])}</code>
-                </details>
-            {:else if at.lock}
-                <span class="running">On {at.lock.machine}, at {at.lock.phase} · <a href="#/runs/{at.lock.run}">Follow it</a></span>
-            {/if}
-        {/each}
+        {#if at?.error}
+            <span class="missing">The archive cannot be read: {at.error}</span>
+        {:else if !at?.root}
+            <span class="soft">No archive root on this computer has it: OBC_DATA_ARCHIVE names the roots.</span>
+        {:else if at.lock?.died}
+            <span class="missing">A run on {at.lock.machine} stopped without freeing the lock. The next preparation takes it over.</span>
+        {:else if at.lock?.stale}
+            <span class="missing">No heartbeat from {at.lock.machine} since {when(at.lock.heartbeat)}: the run likely stopped.</span>
+            <details class="terminal">
+                <summary>In a terminal</summary>
+                <code>{command(["unlock", "--source", row.id, "--from", at.lock.machine])}</code>
+            </details>
+        {:else if at.lock}
+            <span class="running">On {at.lock.machine}, at {at.lock.phase} · <a href="#/runs/{at.lock.run}">Follow it</a></span>
+        {/if}
         {#if state !== "preparing"}
-            <a class="act" href={prepareHash(row.id, "prod")}>{made.length ? add : "Prepare"}</a>
+            <a class="act" href={prepareHash(row.id)}>{made.length ? add : "Prepare"}</a>
         {/if}
     </div>
 {/snippet}
 
 {#if route.prepare && route.id}
-    {#key `${route.id}|${route.prepare}`}
-        <Prepare id={route.id} {rows} to={route.prepare} area={route.area} {targets} areas={areas.output} />
+    {#key route.id}
+        <Prepare id={route.id} {rows} area={route.area} areas={areas.output} />
     {/key}
 {:else}
     <h1>References</h1>
     <p class="soft lead">
-        A reference is made once from large downloads and kept. Every bake reads only its area from it. On R2, every bake can use it; on this computer, only
-        the bakes here.
+        A reference is made once from large downloads and kept in the archive of this computer. Every bake reads only its area from it.
     </p>
     {#each REFERENCES as { id, title, about, add } (id)}
         {@const row = rows.find((at) => at.id === id)}
         {@const models = modelsOf(id, rows).map((at) => at.row)}
-        {@const cells = row ? coverageCells(row, models, r2, box) : []}
+        {@const cells = row ? coverageCells(row, models, box) : []}
         <section class="card" aria-labelledby="reference-{id}">
             <div class="title"><h2 id="reference-{id}">{title}</h2><span class="soft">{about}</span></div>
             {#if cells.length}

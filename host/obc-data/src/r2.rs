@@ -438,18 +438,12 @@ pub fn refuse_older_publish(bucket: &Bucket) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `obc data` writes `key`: `release.json`, `lock.json`, `planner/next.json`, a pointer, a
-/// key under `objects/` or `releases/`, or a key under `sources/<id>/` of a prepared source.
+/// Whether `obc data` writes `key`: `release.json`, `lock.json`, `planner/next.json`, a pointer, or
+/// a key under `objects/` or `releases/`.
 pub fn owned(key: &str) -> bool {
-    let prepared = |id: &str| {
-        crate::sources::all()
-            .iter()
-            .any(|source| source.id == id && source.fetch.kind == crate::sources::FetchKind::Prepared)
-    };
     ["release.json", "lock.json", crate::release::NEXT].contains(&key)
         || crate::release::POINTERS.contains(&key)
         || ["objects/", "releases/"].iter().any(|prefix| key.starts_with(prefix))
-        || key.strip_prefix("sources/").and_then(|rest| rest.split_once('/')).is_some_and(|(id, _)| prepared(id))
 }
 
 /// Whether `key` is of the legacy pipelines: under `cell-catalog/`, `planner/` or `reference/`.

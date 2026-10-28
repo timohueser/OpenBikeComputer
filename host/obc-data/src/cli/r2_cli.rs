@@ -283,7 +283,7 @@ fn legacy(store: &Store, target: &Target, args: LegacyArgs, json: bool) -> Resul
 
 /// The legacy keys of `target`, and with `--delete` the refusal of another list than `--expect`.
 fn listed(target: &Target, args: &LegacyArgs) -> Result<Legacy, Error> {
-    let listed = unused((&args.target, target), args.prefix.as_deref())?;
+    let listed = unused((&args.target, target), &crate::fetch::archive::roots(), args.prefix.as_deref())?;
     if args.delete {
         let what = format!("r2 legacy {}", args.target);
         super::update_cli::expect(&what, &listed.digest, Some(args.expect.as_deref().unwrap_or_default()))
@@ -320,9 +320,9 @@ fn remove(store: &Store, target: &Target, args: &LegacyArgs) -> Result<(), Error
 }
 
 /// The keys under `cell-catalog/` and `planner/`, or under `prefix`, that `obc data` does not
-/// write; `Release::check` keeps every other key of a release out of these folders. See the spec
-/// for when it refuses.
-fn unused((name, target): (&str, &Target), prefix: Option<&str>) -> Result<Legacy, Error> {
+/// write; `Release::check` keeps every other key of a release out of these folders. `roots` are the
+/// archive roots, where `terrain` is. See the spec for when it refuses.
+fn unused((name, target): (&str, &Target), roots: &[PathBuf], prefix: Option<&str>) -> Result<Legacy, Error> {
     if release::serving(target)?.is_none() {
         return Err(Code::Blocked
             .error(format!("target `{name}` serves no release; nothing is legacy before the cutover"))
@@ -332,11 +332,13 @@ fn unused((name, target): (&str, &Target), prefix: Option<&str>) -> Result<Legac
         let index: Option<Index> = target.get(INDEX)?.and_then(|bytes| serde_json::from_slice(&bytes).ok());
         let index = index.ok_or_else(|| Code::Blocked.error(format!("{INDEX} is missing or does not parse")))?;
         // The index of the newest version of `terrain` names each model that it holds.
-        let newest = crate::prepared::versions(target, "terrain")?.pop();
-        let held = match newest {
-            Some(newest) => target.get(&format!("sources/terrain/{}/index.json", newest.version))?,
-            None => None,
-        };
+        let mut held = None;
+        if let Some(root) = crate::prepared::home(roots, "terrain") {
+            let folder = crate::prepared::folder(root, "terrain");
+            if let Some(newest) = crate::prepared::versions(&folder, "terrain")?.pop() {
+                held = folder.get(&format!("{}/index.json", newest.version))?;
+            }
+        }
         let held: Option<Index> = held.and_then(|bytes| serde_json::from_slice(&bytes).ok());
         let held = held.map(|held| held.sources).unwrap_or_default();
         let missing: Vec<String> = index.sources.into_keys().filter(|key| !held.contains_key(key)).collect();
@@ -407,7 +409,7 @@ mod tests {
         for key in OLD.into_iter().chain([release::NEXT]) {
             target.put(key, b"{}", &crate::target::Condition::Any).unwrap();
         }
-        assert_eq!(unused(("local", &target), None).err().map(|e| e.code), Some(Code::Blocked), "no cutover");
+        assert_eq!(unused(("local", &target), &[], None).err().map(|e| e.code), Some(Code::Blocked), "no cutover");
         for device in ["device a", "device b"] {
             let (id, _) = crate::serve::tests::release_at(&target, device, device.as_bytes(), 1, "https://api.test");
             assert!(release::switch(&target, release::serving(&target).unwrap().as_ref(), &id).unwrap());
@@ -417,11 +419,13 @@ mod tests {
 
     #[test]
     fn legacy_lists_only_the_keys_that_obc_data_does_not_write() {
-        let (_scratch, target) = served("r2-legacy-list");
+        let (scratch, target) = served("r2-legacy-list");
         let serving = release::serving(&target).unwrap().unwrap().0;
         assert!(serving.rollback.is_some() && target.get(release::POINTERS[1]).unwrap().is_some());
-        let keys =
-            |prefix| unused(("local", &target), prefix).map(|l| l.folders.into_values().flatten().map(|k| k.key));
+        let roots = [scratch.0.join("archive")];
+        let keys = |prefix| {
+            unused(("local", &target), &roots, prefix).map(|l| l.folders.into_values().flatten().map(|k| k.key))
+        };
         assert_eq!(keys(None).unwrap().collect::<Vec<_>>(), OLD[..2]);
 
         // `reference/v1` goes only when the newest version of `terrain` holds each source of its index.
@@ -431,8 +435,10 @@ mod tests {
         put(INDEX, r#"{"sources": {"ch": {"product": "swissALTI3D"}}}"#);
         assert!(reference().unwrap_err().fix.ends_with(": ch."));
         let version = r#"[{"version": "2026-10-01", "manifest_sha256": "", "format": 3, "bytes": 1, "time": ""}]"#;
-        put("sources/terrain/versions.json", version);
-        put("sources/terrain/2026-10-01/index.json", r#"{"sources": {"ch": {"product": "swissALTI3D"}}}"#);
+        let terrain = crate::prepared::folder(&roots[0], "terrain");
+        let held = |key, bytes: &str| terrain.put(key, bytes.as_bytes(), &crate::target::Condition::Any).unwrap();
+        held("versions.json", version);
+        held("2026-10-01/index.json", r#"{"sources": {"ch": {"product": "swissALTI3D"}}}"#);
         assert_eq!(reference().unwrap(), [OLD[2], INDEX]);
     }
 
@@ -457,7 +463,7 @@ mod tests {
         let next = (vec![release::NEXT.to_string()], None, true);
         let refused = delete(&Bucket::local(&scratch.0.join("local")), next, None, "test", true, true).unwrap_err();
         assert!(refused.message.starts_with("the bucket has `release.json`"), "{}", refused.message);
-        let digest = unused(("local", &target), Some("planner")).unwrap().digest;
+        let digest = unused(("local", &target), &[], Some("planner")).unwrap().digest;
         remove(&store, &target, &args(&digest)).unwrap();
         let after = target.list().unwrap().into_iter().map(|listed| listed.key).collect::<Vec<_>>();
         let gone: Vec<_> = before.into_iter().map(|listed| listed.key).filter(|key| !after.contains(key)).collect();

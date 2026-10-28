@@ -78,7 +78,7 @@
     {:else if screen.id === "downloads"}
         <Downloads {hash} {status} />
     {:else}
-        <References {hash} {status} />
+        <References {hash} />
     {/if}
 </main>
 

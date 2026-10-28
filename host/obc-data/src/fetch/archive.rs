@@ -140,6 +140,11 @@ impl Archive {
         Self { roots, listing: OnceLock::new() }
     }
 
+    /// The roots, in order.
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+
     /// The archive of `OBC_DATA_ARCHIVE`, when it names a root.
     pub fn from_env() -> Option<Self> {
         Some(roots()).filter(|roots| !roots.is_empty()).map(Self::new)

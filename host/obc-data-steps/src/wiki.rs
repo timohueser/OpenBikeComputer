@@ -57,10 +57,6 @@ impl Prepared for Wiki {
         1
     }
 
-    fn regional(&self) -> bool {
-        true
-    }
-
     /// Reuse cached inputs and discover missing inputs from metadata. The review names each
     /// archive and its size; the number of output shards is unknown before the run.
     fn plan(
@@ -145,7 +141,7 @@ impl Prepared for Wiki {
         let failed = commons::rounds(job, &step, self.wait, &pin)?;
         let counts = state.join("counts.json");
         write_atomic(&counts, json!({"photo_compile_failures": failed}).to_string().as_bytes())?;
-        // The shards that the target has are not written again.
+        // The shards that the home has are not written again.
         let done: BTreeMap<&str, Value> =
             job.files().map(|file| (file.path.as_str(), json!({"sha256": file.sha256, "bytes": file.size}))).collect();
         let done_file = state.join("done.json");
@@ -325,7 +321,6 @@ mod tests {
     use obc_data::prepared::Opening;
     use obc_data::sources::Registry;
     use obc_data::store::Store;
-    use obc_data::target::Target;
 
     #[test]
     fn the_selection_is_each_subject_of_a_landmark_category_and_each_summit_with_its_categories() {
@@ -411,7 +406,7 @@ esac
     }
 
     #[test]
-    fn a_resume_runs_no_step_again_whose_output_it_has_and_uploads_only_new_shards() {
+    fn a_resume_runs_no_step_again_whose_output_it_has_and_moves_only_new_shards() {
         let temp = temp("wiki-resume");
         let (root, dumps) = (temp.0.join("repository"), temp.0.join("dumps"));
         fs::create_dir_all(root.join("data")).unwrap();
@@ -433,7 +428,7 @@ esac
             fs::write(dumps.join(name), name).unwrap();
         }
         std::env::set_var(DUMPS, &dumps);
-        let (store, target) = (Store::at(temp.0.join("store")), Target::Dir(temp.0.join("target")));
+        let (store, archive) = (Store::at(temp.0.join("store")), temp.0.join("archive"));
         let sources = Registry::load(&root).unwrap().sources;
         let (producer, http) = (Wiki { tools: script, wait: Duration::ZERO }, Http::new());
         let languages = producer.languages(&["de".into(), "en".into(), "de".into()]).unwrap();
@@ -465,7 +460,7 @@ esac
         let prepare = |sources: &[Source]| {
             let _ = fs::remove_file(root.join("calls"));
             let mut run = Run::create(&store, ["source", "prepare", "wiki"]).unwrap();
-            let opening = Opening { root: &root, store: &store, http: &http, sources, target: ("t", &target) };
+            let opening = Opening { root: &root, store: &store, http: &http, sources, home: &archive };
             let done = Job::open(opening, ("wiki", "2026-10-01"), Some(scope.clone()), &languages, &mut run).and_then(
                 |mut job| {
                     job.plan = plan.clone();
@@ -500,8 +495,7 @@ esac
         }
         let counts: Value = read_json(&root.join("counts.seen")).unwrap();
         assert_eq!(counts, json!({"photo_compile_failures": 1}), "the castle has no facts");
-        let Target::Dir(dir) = &target else { unreachable!() };
-        let version = dir.join("sources/wiki/2026-10-01");
+        let version = archive.join("prepared/wiki/2026-10-01");
         for path in ["common.tar.zst", "cells/0300-0262.tar.zst", "index.json"] {
             assert!(version.join(path).is_file(), "{path}");
         }

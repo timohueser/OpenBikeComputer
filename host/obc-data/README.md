@@ -34,7 +34,7 @@ serves, so they need no commit.
 | `data/planner.toml` | Planner producer options |
 | `data/planner-runtime.toml` | Runtime target and publication origins |
 | `OBC_DATA_STORE` | Build store |
-| `OBC_DATA_ARCHIVE` | Archive roots, separated by `:`, see the spec section Archive; unset: no archive. A source with `keep = "archive"` reads its files there before upstream. `obc data archive get DATASET` fills a root from `data/archive/` |
+| `OBC_DATA_ARCHIVE` | Archive roots, separated by `:`, see the spec section Archive; unset: no archive. A source with `keep = "archive"` reads its files there before upstream. `obc data archive get DATASET` fills a root from `data/archive/`. `prepared/ID/` of one root holds the versions of a prepared source: a prepare writes there, and a bake reads from there what the store lacks |
 | `OBC_WIKI_DUMPS` | Archive cache; default: `wiki-dumps/` in the store. Existing archives and symlinks are reused |
 | `OBC_WIKIMEDIA_ENTERPRISE_USERNAME`, `OBC_WIKIMEDIA_ENTERPRISE_REFRESH_TOKEN` | Download missing Wikipedia HTML; access tokens refresh automatically |
 | `OBC_WIKIMEDIA_ENTERPRISE_TOKEN` | Access token when no refresh credential is set |
@@ -68,13 +68,14 @@ Keep other secrets in the host environment or ignored `tools/obc.local`, never t
 | `obc data update prod --expect ID` | Publish the approved review to riders; asks, or `--yes` without a terminal. It waits up to 24 h until the follower serves the release |
 | `obc data rollback local` | Serve the rollback release again; a second rollback undoes it |
 | `obc data source refresh natural-earth` | Move a `digest` source to upstream's newest version |
-| `obc data source prepare ID --to local` | Make a version of a prepared source; the same command resumes it |
-| `obc data source prepare ID --dry-run` | Review a prepare for `prod`; the owner approves its id |
+| `obc data source prepare ID --dry-run` | Review a prepare; the owner approves its id |
+| `obc data source prepare ID --expect ID` | Make a version of a prepared source in the archive; the same command resumes it |
 | `obc data source prepare wiki --region europe/dach --languages en,de --dry-run` | Review a DACH version with English and German articles |
 | `obc data serve` | Serve `local` to the apps until Ctrl-C |
 | `obc data runs RUN --follow` | Observe progress; Ctrl-C ends only the following |
 | `obc data runs RUN --stop` | Stop a run: it frees the lock and keeps what it baked |
-| `obc data unlock local --from MACHINE` | Free the lock of a run that stopped on that machine; `--source ID` frees the lock of a prepared source |
+| `obc data unlock local --from MACHINE` | Free the lock of a run that stopped on that machine |
+| `obc data unlock --source ID --from MACHINE` | Free the lock of a prepared source in the archive |
 | `obc data clean` | Review unused store bytes before `--apply` |
 | `obc data ui` | Serve the page of this machine at `http://127.0.0.1:8700/` |
 | `obc data open MACHINE` | Open the page of another machine through an SSH tunnel |

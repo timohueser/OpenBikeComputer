@@ -45,9 +45,7 @@
     const blocked = $derived(cards.filter(({ content, needs }) => on.includes(content.id) && !needs.ready));
     const args = $derived(planArgs(to, [[area.flag, area.value], ...layerFlags(on), ...extra]));
     const toggle = (id: string, checked: boolean) => change(toggled(on, id, checked));
-    // A reference goes to R2, where every bake can read it.
-    const prepare = (source: string) => prepareHash(source, "prod", area);
-    const where = (target: string) => (target === "prod" ? "on R2" : "on this computer");
+    const prepare = (source: string) => prepareHash(source, area);
     const country = new Intl.DisplayNames(["en"], { type: "region" });
     /** `Switzerland and Germany`: the countries of the national models of reference `id`. */
     const modelled = (id: string) => list([...new Set(modelsOf(id, sources ?? []).map((at) => at.country))].map((code) => country.of(code) ?? code));
@@ -61,7 +59,7 @@
         {:else if terrain.reference?.version}
             {@const covers = terrain.reference.regions.length ? ` · covers ${terrain.reference.regions.join(", ")}` : ""}
             <span class="ready">
-                {`National LiDAR models · ${terrain.reference.version.version} ${where(terrain.reference.version.target)}${covers}.`}
+                {`National LiDAR models · ${terrain.reference.version.version} in the archive${covers}.`}
                 Where it has no tile, the bake uses Copernicus 30 m, and the review says where.
                 <a href={prepare("terrain")}>Add this area</a>
             </span>
@@ -100,7 +98,7 @@
                     {:else if needs.reference?.version}
                         {@const covers = needs.reference.regions.length ? ` · covers ${needs.reference.regions.join(", ")}` : ""}
                         <span class="ready">
-                            {about?.title} · {needs.reference.version.version} {where(needs.reference.version.target)}{covers}.
+                            {about?.title} · {needs.reference.version.version} in the archive{covers}.
                             <a href={prepare(source)}>Add this area</a>
                         </span>
                     {:else}
