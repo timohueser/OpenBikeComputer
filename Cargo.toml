@@ -130,6 +130,11 @@ ureq = "3"
 wasm-bindgen = "0.2"
 zip = { version = "9", default-features = false }
 
+# Full debug info is most of each test binary. Line tables keep file and line in backtraces;
+# a debugger loses local variables. `[profile.test]` inherits this.
+[profile.dev]
+debug = "line-tables-only"
+
 # Optimize CRC and storage crash-matrix loops in development and tests.
 [profile.dev.package.obc-crc]
 opt-level = 2
