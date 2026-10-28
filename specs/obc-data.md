@@ -285,8 +285,8 @@ it runs in, and the store:
   TOML file below `fixtures/sources/`.
 - An unpacked copy (`unpacked/<sha256>/`) is reached while a manifest of the
   [archive](#archive) lists a file with that SHA-256. While `OBC_DATA_ARCHIVE` names no root, a
-  root or its `manifest/` does not exist, or `manifest/` or a manifest in it cannot be read, each
-  copy is reached.
+  root or its `manifest/` does not exist, `manifest/` holds no manifest, or `manifest/` or a
+  manifest in it cannot be read, each copy is reached, and `obc data` warns and names the root.
 - A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
   digest of the files that it names (`files`) of a reached record of its source, and a step input
   whose digest is the digest of the files that it selects of a reached layer of its step: the
@@ -3510,6 +3510,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "minimum": 0,
           "type": "integer"
         },
+        "keep_copies": {
+          "description": "The unpacked copies that stay.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "keep_objects": {
           "description": "The objects that stay.",
           "format": "uint64",
@@ -3587,6 +3593,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "objects",
         "remove_bytes",
         "keep_objects",
+        "keep_copies",
         "keep_bytes",
         "partial_bytes",
         "unpacked"

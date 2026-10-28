@@ -163,7 +163,8 @@ class CaptureTest(unittest.TestCase):
                       shapely.box(east + 0.01, south, east + 0.02, north)]
         to_map = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
         projected = shapely.transform(np.array(geometries), lambda xy: np.stack(to_map.transform(xy[:, 0], xy[:, 1]), axis=-1))
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(sources, "ARCHIVE_PAGE", 2):
+        # No reserve: a test's temporary disk can have less than 4 GiB free.
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(sources, "ARCHIVE_PAGE", 2), mock.patch.object(sources, "RESERVE", 0):
             tmp = Path(tmp)
             pyogrio.raw.write(str(tmp / name), geometry=shapely.to_wkb(projected), field_data=[np.array([unnamed, *values, values[0]], object)],
                               fields=[entry["field"]], layer=entry["layer"], driver=driver, geometry_type="MultiPolygon",
@@ -285,13 +286,19 @@ class UnpackTest(unittest.TestCase):
             (work / "map.gdb").mkdir(parents=True)
             (work / "map.gdb/a").write_bytes(b"xxxx")
             (work / "map.gdb/b.part").write_bytes(b"bb")
-            with mock.patch("shutil.disk_usage", return_value=Usage(0, 0, sources.RESERVE + 5)):
+            free = lambda bytes: mock.patch("shutil.disk_usage", return_value=Usage(0, 0, sources.RESERVE + bytes))
+            with free(5):
                 self.assertRaisesRegex(RuntimeError, "needs 0.0 GiB more", sources.unpack, archive, work)
-            self.assertEqual(sources.unpack(archive, work), str(work / "map.gdb"))
+            with free(7):
+                self.assertEqual(sources.unpack(archive, work), str(work / "map.gdb"), "only the missing 6 bytes count")
             self.assertEqual((work / "map.gdb/a").read_bytes(), b"xxxx", "a member in place stays")
             self.assertEqual((work / "map.gdb/b").read_bytes(), b"bbbbbb")
             self.assertTrue((work / ".complete").is_file())
             self.assertFalse((work / "readme.html").exists())
+            (work / ".complete").unlink()
+            with mock.patch("shutil.disk_usage", return_value=Usage(0, 0, 0)):
+                sources.unpack(archive, work)
+            self.assertTrue((work / ".complete").is_file(), "a copy that lacks only `.complete` needs no space")
 
     def test_a_zip_without_one_geopackage_or_filegdb_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

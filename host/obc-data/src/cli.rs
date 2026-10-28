@@ -329,7 +329,12 @@ fn clean_text(store: &Store, plan: &CleanPlan) -> String {
     if gc.partial_bytes > 0 {
         text += &format!("  partial/: unfinished downloads and stopped steps, {}\n", bytes(gc.partial_bytes));
     }
-    text += &format!("KEEP {}, {}\n", gc::objects_text(gc.keep_objects), bytes(gc.keep_bytes));
+    let copies = match gc.keep_copies {
+        0 => String::new(),
+        1 => " and 1 unpacked copy".into(),
+        copies => format!(" and {copies} unpacked copies"),
+    };
+    text += &format!("KEEP {}{copies}, {}\n", gc::objects_text(gc.keep_objects), bytes(gc.keep_bytes));
     let kept =
         gc.kept.iter().map(|kept| vec![format!("  {}", kept.entry), bytes(kept.bytes), kept.because.join(" · ")]);
     text += &table(&kept.collect::<Vec<_>>());

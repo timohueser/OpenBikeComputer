@@ -78,6 +78,8 @@ pub struct Plan {
     pub remove_bytes: u64,
     /// The objects that stay.
     pub keep_objects: u64,
+    /// The unpacked copies that stay.
+    pub keep_copies: u64,
     /// The size of the objects and the unpacked copies that stay.
     pub keep_bytes: u64,
     /// The size of `partial/`: unfinished downloads and the work of steps that stopped. A
@@ -238,7 +240,7 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         let why = if roots.archived.is_some() { "in the archive" } else { "archive not read" };
         let entry = format!("{copies} unpacked cop{}", if copies == 1 { "y" } else { "ies" });
         plan.kept.push(Kept { entry, bytes, because: vec![why.into()] });
-        plan.keep_bytes += bytes;
+        (plan.keep_copies, plan.keep_bytes) = (copies, plan.keep_bytes + bytes);
     }
     for name in names(&store.root().join("partial"), "")? {
         let path = store.partial(&name);
@@ -628,7 +630,7 @@ mod tests {
             |plan: &Plan| plan.kept.iter().map(|k| format!("{}: {}", k.entry, k.because.join(""))).collect::<Vec<_>>();
         let unread = plan(&store, &Roots::default()).unwrap();
         assert_eq!((unread.unpacked.len(), kept(&unread)), (0, vec!["2 unpacked copies: archive not read".into()]));
-        assert_eq!(unread.keep_bytes, 6, "the kept copies count as kept");
+        assert_eq!((unread.keep_copies, unread.keep_bytes), (2, 6), "the kept copies count as kept");
         let roots = Roots { archived: Some(HashSet::from(["aa".to_string()])), ..Roots::default() };
         let plan = plan(&store, &roots).unwrap();
         assert_eq!(

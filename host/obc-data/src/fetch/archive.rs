@@ -178,6 +178,7 @@ impl Archive {
                 if !dir.is_dir() {
                     eprintln!("obc data: warning: the archive root {} does not exist: mount its drive", dir.display());
                     listing.unread = true;
+                    continue;
                 }
                 read_manifests(&dir.join("manifest"), root, &mut listing);
             }
@@ -282,15 +283,22 @@ impl Held {
 /// a warning, and none of its files serves. A `dir` that cannot be read or holds no manifest marks
 /// the listing unread, as a drive mounted in the wrong place does.
 fn read_manifests(dir: &Path, root: usize, listing: &mut Listing) {
-    let Ok(entries) = fs::read_dir(dir) else {
+    let unread = |listing: &mut Listing, why: String| {
+        eprintln!("obc data: warning: the archive manifests {}: {why}", dir.display());
         listing.unread = true;
-        return;
+    };
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => return unread(listing, error.to_string()),
     };
     let mut manifests = 0;
     for entry in entries {
-        let Ok(path) = entry.map(|entry| entry.path()) else {
-            listing.unread = true;
-            continue;
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(error) => {
+                unread(listing, error.to_string());
+                continue;
+            }
         };
         if path.extension().is_none_or(|extension| extension != "json") {
             continue;
@@ -336,7 +344,7 @@ fn read_manifests(dir: &Path, root: usize, listing: &mut Listing) {
         }
     }
     if manifests == 0 {
-        listing.unread = true;
+        unread(listing, "no manifest".into());
     }
 }
 

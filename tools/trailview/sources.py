@@ -586,7 +586,7 @@ def unpack(archive, work):
         missing = [member for member in members if not in_place(member)]
         needed = sum(member.file_size for member in missing)
         disk = next(path for path in [work, *work.parents] if path.exists())
-        if (free := shutil.disk_usage(disk).free) < needed + RESERVE:
+        if missing and (free := shutil.disk_usage(disk).free) < needed + RESERVE:
             raise RuntimeError(f"{disk} has {free / 2**30:.1f} GiB free; the copy of {Path(archive).name} needs "
                                f"{needed / 2**30:.1f} GiB more and keeps {RESERVE / 2**30:.0f} GiB free. Free space on "
                                f"that disk, or set OBC_DATA_STORE to a store on a disk with more space")
