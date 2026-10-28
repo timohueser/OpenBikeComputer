@@ -1,5 +1,12 @@
-"""Scotland: the Scottish Public Sector LiDAR, every open survey of the Remote Sensing Portal.
+"""Great Britain: each nation publishes its LiDAR separately, and Wales has no row yet.
 
+England is the Environment Agency's LIDAR Composite DTM, over Defra's WCS 2.0.1. The endpoint
+carries no survey year, so the coverage id is stable: a UUID and a name, exactly as the
+capabilities spell it. The year in the attribution is the composite release that the endpoint
+serves, and the agency asks for it verbatim. Check it against the service's metadata when the
+composite is re-released.
+
+Scotland is the Scottish Public Sector LiDAR, every open survey of the Remote Sensing Portal.
 The portal puts each survey on a public S3 bucket as its own folder of tiled GeoTIFFs in British
 National Grid, one per OS grid square: 10 km for Phases I and II, 5 km quarters for Phases III to
 VI and the Outer Hebrides, 1 km for the National LiDAR Programme, Orkney and the coast. No survey
@@ -21,7 +28,7 @@ from pathlib import Path
 from ..lattice import Refuse
 from .base import http_get
 from .cog import CogWindows
-from .protocols import projected_box
+from .protocols import Wcs20Source, projected_box
 
 # The OS grid letters: `I` is never used. A 100 km square has two of them, the 500 km square
 # first, counted from the false origin's square `S`.
@@ -110,3 +117,16 @@ SCT = SurveyListing(
         "outer-hebrides/2019/dtm/50cm", "orkney-islands-council-23/dtm",
         "coastal/coastal-2025-2026/dtm", "national-lidar-programme/dtm")),
 )
+
+ENG = Wcs20Source(
+    "gb-eng", "United Kingdom (England)", "EA LIDAR Composite DTM 1 m", 1.0,
+    "Open Government Licence v3",
+    "Ordnance Datum Newlyn",
+    url="https://environment.data.gov.uk/spatialdata/lidar-composite-digital-terrain-model-dtm-1m/wcs",
+    coverage="13787b9a-26a4-4775-8523-806d13af58fc__Lidar_Composite_Elevation_DTM_1m",
+    epsg=27700,
+    axes=("E", "N"),
+    scale=False,
+)
+
+GB = (ENG, SCT)

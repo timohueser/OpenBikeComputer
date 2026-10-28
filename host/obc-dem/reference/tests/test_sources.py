@@ -50,7 +50,7 @@ BOXES = {
     "no": (8.2925, 61.6230, 8.3325, 61.6496),
     "es": (-4.8666, 43.1888, -4.8406, 43.2062),
     "nl": (6.0079, 50.7453, 6.0339, 50.7627),
-    "uk": (-3.2227, 54.4469, -3.2007, 54.4615),
+    "gb-eng": (-3.2227, 54.4469, -3.2007, 54.4615),
     "at": (12.6829, 47.0671, 12.7049, 47.0817),
     "ca": (-73.5983, 45.4968, -73.5763, 45.5114),
     "it-bz": (10.5337, 46.5016, 10.5557, 46.5162),
@@ -284,7 +284,7 @@ class Requests(unittest.TestCase):
         """Several servers answer `ScaleAxisUndefined` however the axes are named, so those
         rows take the coverage's native step instead."""
 
-        for key in ("uk", "it-bz", "it", "pl", "sk"):
+        for key in ("gb-eng", "it-bz", "it", "pl", "sk"):
             with self.subTest(key):
                 _, values = query(ingest.SOURCES[key].url(split(key)[0]))
                 self.assertNotIn("scalesize", values)
