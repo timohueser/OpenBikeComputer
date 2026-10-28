@@ -464,7 +464,9 @@ impl Planner {
         }
         steps.extend(trailview(root, inputs, store, &on, bounds, &config.trailview, &mut wanted)?);
         if on("trailview-canopy") {
-            steps.extend(trailview_canopy(inputs, store, (bounds, &countries), &mut wanted)?);
+            let [west, south, east, north] = bounds;
+            let boxes = regions.boxes(id).unwrap_or_else(|| vec![Bbox { west, south, east, north }]);
+            steps.extend(trailview_canopy(inputs, store, (bounds, &boxes, &countries), &mut wanted)?);
         }
         let maps = [
             "basemap",
@@ -733,14 +735,14 @@ fn snow(
     ))
 }
 
-/// The canopy layer of `bounds`: the zoom 12 tiles of `forest` that the canopy models of
-/// `countries` meet, with the credits of those models and of the leaf type. None while the store
-/// lacks a manifest; then `wanted` has its fetch. A version whose scopes lack one of those tiles
-/// refuses.
+/// The canopy layer of `bounds`: the zoom 12 tiles of `forest` in `boxes`, the boxes of the region
+/// in `bounds`, that the canopy models of `countries` meet, with the credits of those models and of
+/// the leaf type. None while the store lacks a manifest; then `wanted` has its fetch. A version
+/// whose scopes lack one of those tiles refuses.
 fn trailview_canopy(
     inputs: &Inputs,
     store: &Store,
-    (bounds, countries): ([f64; 4], &[String]),
+    (bounds, boxes, countries): ([f64; 4], &[Bbox], &[String]),
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<Step>, Unplanned> {
     use crate::forest_reference::{model_tiles, models, FORMAT, ID, LEAF_TYPE};
@@ -755,8 +757,7 @@ fn trailview_canopy(
         }
         Ok(tiles)
     };
-    let [west, south, east, north] = bounds;
-    let needed = tiles(Some(&[Bbox { west, south, east, north }]), countries)?;
+    let needed = tiles(Some(boxes), countries)?;
     if needed.is_empty() {
         return Err(invalid("the layer trailview-canopy needs a canopy model: none covers the region".into()));
     }
@@ -1451,7 +1452,7 @@ mod tests {
             format: crate::forest_reference::FORMAT,
             revision: 1,
             inputs: vec![Read { source: "canopy-ch".into(), version: "2026-10-20".into(), digest: "d".into() }],
-            files: ["12/2100/1400.tif", "12/2143/1443.tif", "12/2144/1443.tif"].map(file).into(),
+            files: ["12/2100/1400.tif", "12/2143/1443.tif", "12/2144/1443.tif", "12/2145/1443.tif"].map(file).into(),
             reused: BTreeMap::new(),
             scope,
             extends,
@@ -1474,7 +1475,10 @@ mod tests {
             Some(Scope { region: name.into(), definitions: [(name.into(), text)].into() })
         };
         // Engelberg: the box meets the zoom 12 tiles 2143/1443 and 2144/1443.
-        let swiss = ([8.40, 46.81, 8.45, 46.83], &["CH".to_string()][..]);
+        let ch = &["CH".to_string()][..];
+        let boxed = |west: f64, east: f64| Bbox { west, south: 46.81, east, north: 46.83 };
+        let engelberg = [boxed(8.40, 8.45)];
+        let swiss = ([8.40, 46.81, 8.45, 46.83], &engelberg[..], ch);
         let mut inputs = Inputs::default();
         let mut wanted = Vec::new();
         let first = manifest(None, Vec::new());
@@ -1501,6 +1505,22 @@ mod tests {
         pin(&mut inputs, &manifest(region("small", 8.40, 8.42), vec![region("east", 8.42, 8.45)]));
         assert!(trailview_canopy(&inputs, &store, swiss, &mut Vec::new()).unwrap().is_some());
 
+        // A version of a union of two boxes holds the tiles 2143/1443 and 2145/1443, not the
+        // tile 2144/1443 between them: the union is accepted, a box in the gap refuses.
+        let definition = |name: &str, west: f64, east: f64| {
+            (name.to_string(), format!("name = \"{name}\"\nkind = \"box\"\nbox = [{west}, 46.81, {east}, 46.83]\n"))
+        };
+        let union = "name = \"U\"\nkind = \"union\"\nunion = [\"a\", \"b\"]\n".to_string();
+        let definitions = [definition("a", 8.36, 8.38), definition("b", 8.53, 8.55), ("u".into(), union)];
+        pin(&mut inputs, &manifest(Some(Scope { region: "u".into(), definitions: definitions.into() }), Vec::new()));
+        let parts = [boxed(8.36, 8.38), boxed(8.53, 8.55)];
+        let step = trailview_canopy(&inputs, &store, ([8.36, 46.81, 8.55, 46.83], &parts, ch), &mut Vec::new());
+        let [Input::Snapshot { files, .. }] = &step.unwrap().unwrap().inputs[..] else { panic!("one snapshot") };
+        assert_eq!(files, &["12/2143/1443.tif", "12/2145/1443.tif"]);
+        let gap = [boxed(8.45, 8.50)];
+        let refused = trailview_canopy(&inputs, &store, ([8.45, 46.81, 8.50, 46.83], &gap, ch), &mut Vec::new());
+        assert!(matches!(refused, Err(Unplanned::Invalid(_))));
+
         // A version of the format before refuses.
         pin(&mut inputs, &Manifest { format: crate::forest_reference::FORMAT - 1, ..manifest(None, Vec::new()) });
         let Err(Unplanned::Invalid(message)) = trailview_canopy(&inputs, &store, swiss, &mut Vec::new()) else {
@@ -1510,7 +1530,8 @@ mod tests {
         pin(&mut inputs, &manifest(None, Vec::new()));
 
         // A version of everything holds no tile of `canopy-global`, which the Black Forest reads.
-        let german = ([8.0, 48.0, 8.05, 48.02], &["DE".to_string()][..]);
+        let black_forest = [Bbox { west: 8.0, south: 48.0, east: 8.05, north: 48.02 }];
+        let german = ([8.0, 48.0, 8.05, 48.02], &black_forest[..], &["DE".to_string()][..]);
         assert!(matches!(trailview_canopy(&inputs, &store, german, &mut Vec::new()), Err(Unplanned::Invalid(_))));
     }
 

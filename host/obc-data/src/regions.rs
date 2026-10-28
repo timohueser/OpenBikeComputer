@@ -327,7 +327,13 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(regions.leaves("all").unwrap(), ["a", "b", "europe/germany"]);
+        let (a, b) = (
+            Bbox { west: 1.0, south: 1.0, east: 2.0, north: 2.0 },
+            Bbox { west: 3.0, south: 0.0, east: 4.0, north: 1.5 },
+        );
+        assert_eq!(regions.boxes("ab"), Some(vec![a, b]));
         assert_eq!(regions.bounds("ab"), Some(Bbox { west: 1.0, south: 0.0, east: 4.0, north: 2.0 }));
+        assert_eq!(regions.boxes("all"), None);
         assert_eq!(regions.bounds("all"), None);
     }
 
