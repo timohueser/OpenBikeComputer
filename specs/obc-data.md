@@ -1663,6 +1663,7 @@ is compact JSON with the keys of each object in byte order:
 | `scope` | `null` for every place that the source covers, or `{"region", "definitions"}` as in the [settings of a target](#settings-of-a-target) |
 | `extends` | Absent, or the scopes of the earlier versions that this version extends, oldest first: the version keeps their files outside its own `scope` |
 | `languages` | Article language codes in supported order, each once; empty for a source without articles |
+| `publish_text` | Absent, or the `publish_text` of the row in `data/sources.toml` |
 | `licence`, `attribution` | The licence and the credit of the row in `data/sources.toml` |
 | `machine`, `time` | The machine that made the version, and when the version was complete |
 | `cost` | The wall time of the last run of the version, and the peak memory of its process or, when that is more, of the largest program that it ran times the most programs that ran at once (`null` when the system does not report it) |
@@ -2021,22 +2022,18 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   choose for them come from Commons, as [Shared Wikimedia content](wikimedia-content.md#the-wiki-source)
   says.
 - A box keeps the subjects whose box meets it. A region whose leaves are all Geofabrik regions
-  reads the extract of each of their areas. An object in two extracts is one subject. Other
-  scopes, such as a union of a box and a Geofabrik region, refuse.
-- A version of a region extends the newest complete version of `wiki` in the home, in the
-  same format, and the manifest names the scopes of that version in `extends`. The cells
-  of the region are those that a reader of a leaf reads: the cells that its box or the
-  `geofabrik-poly` polygon of one of its areas touches. A run keeps the version of each polygon
-  that its first run read, as for [`terrain`](#terrain). Each cell shard of the version before
-  outside the cells of the region stays in `reused`, and the version does not write that cell.
-  `common.tar.zst` holds the facts of the version and, with their assets, the facts of the
-  common shard of the version before whose kind and key no other shard of the version holds.
-  `index.json` lists the kept shards too. A version of everything extends no version.
-- A region that reads a kept shard and a new shard can read one fact in two revisions, which
-  the compilers refuse. So each earlier version whose cells the version before holds, as
-  `reused` names them, must be wholly in the cells of the region or wholly outside them. Else the
-  prepare refuses before its first step and names that version. The fix is a region that holds
-  all of those cells, or a version of everything.
+  reads the extract of each of their areas. An object in two extracts is the object of its
+  highest version; extracts with one version give the box around their boxes. Other scopes, such
+  as a union of a box and a Geofabrik region, refuse.
+- A version of a region extends the newest complete version of `wiki` in the home, in the same
+  format, and the manifest names the scopes of that version in `extends`. The version holds each
+  shard of the version before, and each shard of its run. A shard of both holds the facts of the
+  run and the earlier facts. An earlier fact whose kind and key the catalog of the run holds takes
+  the bytes of the run, in every shard, so a fact has one form in the version. Another earlier
+  fact keeps its bytes and its asset, also its languages, but without article text when
+  `publish_text` is `false`. An earlier shard that this changes in no way stays in `reused`. So
+  `common.tar.zst` keeps earlier facts until a version of everything replaces them. A version of
+  everything extends no version.
 - The run moves the shards into the home in batches of 64, then `index.json`. A resume names the
   shards in the home to `shards`, which does not write them again.
 - With `publish_text = false`, each article in the shards is a fact with its key and the status
