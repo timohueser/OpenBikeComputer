@@ -309,6 +309,14 @@ fn earlier(job: &mut Job, format: u32) -> Result<Option<(Manifest, Value)>, Stri
         return Ok(None);
     }
     let Some(before) = job.extend(format)? else { return Ok(None) };
+    if let (Some(was), Some(now)) = (before.publish_text, job.source.publish_text) {
+        if was != now {
+            return Err(format!(
+                "wiki@{} has `publish_text = {was}` and the row has `{now}`: a version that extends it keeps its articles, so its manifest would state the text wrongly. Fix: set `publish_text = {was}`, or prepare a version of everything",
+                before.version
+            ));
+        }
+    }
     let index: Value = read_json(&job.earlier_file(&before, "index.json")?)?;
     let mut shards = index["shards"].as_array().ok_or("the index of the version before lists no shard")?.clone();
     for shard in &mut shards {
@@ -460,7 +468,7 @@ mod tests {
                 scope: Some(scope),
                 extends,
                 languages: Vec::new(),
-                publish_text: None,
+                publish_text: Some(false),
                 licence: None,
                 attribution: None,
                 machine: "test".into(),
@@ -500,6 +508,15 @@ mod tests {
         let changed = json!({"path": "cells/0300-0262.tar.zst", "sha256": "ab".repeat(32)});
         reuse_unchanged(&mut job, &before, &[entry(&colorado), changed]).unwrap();
         assert_eq!(job.reused(), &[(far.to_string(), "2026-10-01".to_string())].into());
+        drop(job);
+        // A version that would publish text over one that kept it local refuses.
+        let mut flipped = sources.clone();
+        flipped[0].publish_text = Some(true);
+        let opening = Opening { root: &root, store: &store, http: &http, sources: &flipped, home: &archive };
+        let region = scope("west", [6.0, 46.5, 7.2, 46.6]);
+        let mut job = Job::open(opening, ("wiki", "2026-10-03"), Some(region), &[], &mut run).unwrap();
+        let refused = earlier(&mut job, 1).unwrap_err();
+        assert!(refused.starts_with("wiki@2026-10-02 has `publish_text = false`"), "{refused}");
     }
 
     const SOURCES: &str = r#"

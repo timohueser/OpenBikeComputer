@@ -107,7 +107,11 @@ def write(db, work: Path, out: Path, done: dict | None = None, text: bool = True
         raise ValueError("the Wikidata import has not finished; run the import step first")
     targets = catalog.graph(db)
     db.execute("CREATE TEMP TABLE IF NOT EXISTS shard(kind TEXT, key TEXT, PRIMARY KEY(kind,key)) WITHOUT ROWID")
+    db.execute("CREATE TEMP TABLE IF NOT EXISTS earlier(kind TEXT, key TEXT, data BLOB, PRIMARY KEY(kind,key)) WITHOUT ROWID")
+    db.execute("DELETE FROM earlier")
     before = {entry["path"]: entry for entry in (keep or {}).get("before", [])}
+    for entry in before.values():
+        prefer(db, work, Path(entry["file"]))
     written = (out, done or {}, text)
     classes = [("entity", qid) for qid in catalog.classes(db, targets)]
     common = db.execute("SELECT wikidata, wikipedia FROM subjects WHERE cell=''")
@@ -133,54 +137,72 @@ def write(db, work: Path, out: Path, done: dict | None = None, text: bool = True
     write_json(out / "index.json", dict(shards=shards, counts=dict(sorted(found.items()))))
 
 
+def prefer(db, work: Path, path: Path):
+    """Record in `earlier` each fact of the earlier shard `path` that the version holds in its
+    earlier form: one that the catalog lacks, one of a newer revision than the catalog holds, and
+    one that the catalog has only as an article of a language that this run did not prepare. The
+    asset of such a `file` fact goes into `work` at its path."""
+    assets = {}
+    for member, data in unpacked(path):
+        if not member.endswith(".json"):
+            continue
+        value = json.loads(data)
+        row = db.execute("SELECT revision, data FROM facts WHERE kind=? AND key=?", (value["kind"], value["key"])).fetchone()
+        revision = value.get("revision") if isinstance(value.get("revision"), int) else 0
+        if row and revision <= row[0] and json.loads(row[1]).get("reason") != "language_not_prepared":
+            continue
+        db.execute("INSERT OR IGNORE INTO earlier VALUES(?,?,?)", (value["kind"], value["key"], data))
+        if value["kind"] == "file":
+            asset = Path(value["asset"]["path"])
+            if asset.is_absolute() or ".." in asset.parts:
+                raise ValueError(f"{path.name}: the asset path {asset} leaves the work directory")
+            if not (work / asset).is_file():
+                assets[f"content/assets/{value['asset']['sha256']}"] = work / asset
+    for member, data in unpacked(path) if assets else ():
+        if target := assets.get(member):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+
+
 def shard(db, work: Path, written: tuple, name: str, targets, keys: list[tuple[str, str]], subjects,
           before: dict | None = None) -> dict:
     """Write `keys` and the facts of `subjects` to `out/name`, unless `done` names it. The keys
     collect in a temporary table, so a shard of any size streams from the catalog.
 
     With `before`, the index entry of the earlier shard of that name with its `file`, the shard
-    also holds each earlier fact. One whose kind and key the catalog holds takes the bytes of this
-    run, so that a fact has the same bytes in every shard of the version; another keeps its bytes,
-    without article text when `text` is false, and its asset. An earlier shard that this run
-    changes in no way stays as it is: its entry is returned and nothing is written."""
+    also holds each earlier fact. A fact takes the form that `earlier` records, else the form of
+    the catalog, so it has the same bytes in every shard of the version; without `text`, no
+    article has text. An earlier shard whose members this run does not change stays as it is: its
+    entry is returned and nothing is written."""
     out, done, text = written
     db.execute("DELETE FROM shard")
     db.executemany("INSERT OR IGNORE INTO shard VALUES(?,?)", keys)
     for wikidata, wikipedia in subjects:
         db.executemany("INSERT OR IGNORE INTO shard VALUES(?,?)", needs(db, targets, wikidata, wikipedia))
-    changed = bool(db.execute("SELECT 1 FROM shard JOIN facts USING(kind, key)").fetchone())
-    kept, kept_assets = [], set()
+    held = set()
     for member, data in unpacked(Path(before["file"])) if before else ():
-        if not member.endswith(".json"):
-            continue
-        value = json.loads(data)
-        row = db.execute("SELECT data FROM facts WHERE kind=? AND key=?", (value["kind"], value["key"])).fetchone()
-        now = published(value["kind"], row[0] if row else data, text)
-        changed |= now != data
-        if row:
+        held.add(member)
+        if member.endswith(".json"):
+            value = json.loads(data)
             db.execute("INSERT OR IGNORE INTO shard VALUES(?,?)", (value["kind"], value["key"]))
-        else:
-            kept.append((f"content/{value['kind']}/{hashlib.sha256(now).hexdigest()}.json", now))
-            if value["kind"] == "file":
-                kept_assets.add(value["asset"]["sha256"])
-    if before and not changed:
-        return {key: value for key, value in before.items() if key != "file"}
-    facts = db.execute("SELECT COUNT(*) FROM shard JOIN facts USING(kind, key)").fetchone()[0] + len(kept)
-    if name in done:
-        return dict(path=name, sha256=done[name]["sha256"], bytes=done[name]["bytes"], facts=facts)
 
     def members():
         assets = set()
-        for kind, data in db.execute("SELECT kind, data FROM shard JOIN facts USING(kind, key) ORDER BY kind, key"):
+        for kind, data in db.execute("""SELECT kind, COALESCE(earlier.data, facts.data) FROM shard
+                LEFT JOIN earlier USING(kind, key) LEFT JOIN facts USING(kind, key)
+                WHERE earlier.data IS NOT NULL OR facts.data IS NOT NULL ORDER BY kind, key"""):
             data = published(kind, data, text)
             yield f"content/{kind}/{hashlib.sha256(data).hexdigest()}.json", data
             if kind == "file" and (asset := json.loads(data)["asset"])["sha256"] not in assets:
                 assets.add(asset["sha256"])
                 yield f"content/assets/{asset['sha256']}", work / asset["path"]
-        yield from kept
-        if wanted := {f"content/assets/{sha}" for sha in kept_assets - assets}:
-            yield from ((member, data) for member, data in unpacked(Path(before["file"])) if member in wanted)
 
+    names = [member for member, _ in members()]
+    if before and set(names) == held:
+        return {key: value for key, value in before.items() if key != "file"}
+    facts = sum(1 for member in names if member.endswith(".json"))
+    if name in done:
+        return dict(path=name, sha256=done[name]["sha256"], bytes=done[name]["bytes"], facts=facts)
     archive(out / name, members())
     return dict(path=name, sha256=dumps.sha(out / name), bytes=(out / name).stat().st_size, facts=facts)
 

@@ -33,19 +33,23 @@ def extract(pbfs: list[Path], out: Path, work: Path, bbox: list[float] | None = 
     only the subjects whose box meets it are kept."""
     binary, _ = probe()
     work.mkdir(parents=True, exist_ok=True)
-    found = {}
-    for pbf in pbfs:
-        for version, subject in objects(binary, pbf, work):
-            held = found.get(subject["osm"])
-            if held and held[0] == version and (boxes := [s["box"] for s in (held[1], subject) if "box" in s]):
-                subject["box"] = [min(box[0] for box in boxes), min(box[1] for box in boxes),
-                                  max(box[2] for box in boxes), max(box[3] for box in boxes)]
-            if not held or held[0] <= version:
-                found[subject["osm"]] = (version, subject)
+    if len(pbfs) == 1:
+        # One extract, such as the planet with a box, needs no map of its subjects.
+        found = (subject for _, subject in objects(binary, pbfs[0], work))
+    else:
+        held = {}
+        for pbf in pbfs:
+            for version, subject in objects(binary, pbf, work):
+                earlier = held.get(subject["osm"])
+                if earlier and earlier[0] == version and (boxes := [s["box"] for s in (earlier[1], subject) if "box" in s]):
+                    subject["box"] = [min(box[0] for box in boxes), min(box[1] for box in boxes),
+                                      max(box[2] for box in boxes), max(box[3] for box in boxes)]
+                if not earlier or earlier[0] <= version:
+                    held[subject["osm"]] = (version, subject)
+        found = (held[osm][1] for osm in sorted(held, key=lambda osm: ("nwr".index(osm[0]), int(osm[1:]))))
     partial = out.with_suffix(".partial")
     with partial.open("w") as output:
-        for osm in sorted(found, key=lambda osm: ("nwr".index(osm[0]), int(osm[1:]))):
-            subject = found[osm][1]
+        for subject in found:
             linked = "wikidata" in subject or "wikipedia" in subject
             if linked and not (bbox and not meets(subject.get("box"), bbox)):
                 output.write(json.dumps(subject, ensure_ascii=False, separators=(",", ":")) + "\n")

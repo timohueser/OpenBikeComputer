@@ -433,7 +433,7 @@ class Wiki(unittest.TestCase):
         asset, old = "ab" * 32, dict(status="present", revision=1)
         before = [
             earlier("common.tar.zst", [fact(kind="entity", key="Q2", **old), fact(kind="entity", key="Q77", **old),
-                                       fact(kind="file", key="File:Peak.jpg", status="present", asset=dict(sha256=asset)),
+                                       fact(kind="file", key="File:Peak.jpg", status="present", asset=dict(sha256=asset, path=f"assets/{asset}")),
                                        (f"content/assets/{asset}", b"jpeg"), (f"content/assets/{'cd' * 32}", b"unused")]),
             # A cell that this run does not touch, such as a region on another continent.
             earlier("cells/0293-0155.tar.zst", [fact(kind="entity", key="Q55", **old)]),
@@ -465,6 +465,34 @@ class Wiki(unittest.TestCase):
         self.assertTrue(all(len(found) == 1 for found in names.values()), "a fact has one form in the version")
         self.assertNotIn(fact(kind="entity", key="Q2", **old)[0], written["common.tar.zst"], "this run's fact wins")
         self.assertEqual(texts, [dict(kind="article", key="en:Monaco", status="missing")], "no kept text without publish_text")
+
+    @unittest.skipUnless(TOOLS, "Osmium and zstd are unavailable")
+    def test_a_second_run_keeps_every_shard_and_never_downgrades_an_earlier_fact(self):
+        self.subjects(dict(osm="n1", wikidata="Q1", box=[7.1, 47.1, 7.1, 47.1]))
+        self.wikidata()
+        first, second = self.root / "first", self.root / "second"
+        shards.write(self.db, self.work, first)
+        index = json.loads((first / "index.json").read_text())
+        before = [dict(shard, file=str(first / shard["path"])) for shard in index["shards"]]
+        shards.write(self.db, self.work, second, keep=dict(before=before))
+        self.assertEqual(json.loads((second / "index.json").read_text())["shards"], index["shards"])
+        self.assertEqual(list(second.glob("**/*.tar.zst")), [], "an unchanged shard is not written again")
+
+        # An earlier version had German articles and a newer revision of the class Q3; this run has neither.
+        def fact(**value):
+            data = json.dumps(value).encode()
+            return f"content/{value['kind']}/{dumps.hashlib.sha256(data).hexdigest()}.json", data
+
+        catalog.put(self.db, dict(kind="article", key="de:Burg", status="missing", reason="language_not_prepared"))
+        burg, newer = fact(kind="article", key="de:Burg", status="present", revision=5, html="<p>Burg</p>"), fact(kind="entity", key="Q3", status="present", revision=99)
+        shards.archive(self.root / "cell.tar.zst", [burg, newer])
+        cell = dict(path="cells/0400-0400.tar.zst", sha256="ef" * 32, bytes=9, facts=2, file=str(self.root / "cell.tar.zst"))
+        third = self.root / "third"
+        shards.write(self.db, self.work, third, keep=dict(before=[*before, cell]))
+        self.assertIn(newer[0], members(third / "common.tar.zst"), "the newer revision stays in every shard")
+        kept = {key: value for key, value in cell.items() if key != "file"}
+        self.assertIn(kept, json.loads((third / "index.json").read_text())["shards"],
+                      "the earlier cell keeps its German article and its newer class: it does not change")
 
 def members(path):
     data = subprocess.run(["zstd", "-dc", str(path)], capture_output=True, check=True).stdout
