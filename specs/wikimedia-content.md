@@ -153,10 +153,12 @@ subject in the selected coverage: an object with a `wikidata` or `wikipedia` tag
 | Path | Holds |
 | --- | --- |
 | `cells/<i>-<j>.tar.zst` | The facts of each subject whose box touches the `2^20` µdeg OBCA cell `(i, j)`; `<i>` and `<j>` have four digits or more |
-| `common.tar.zst` | The classes, and the facts of each subject without a box or whose box touches more than 16 cells |
-| `index.json` | `shards`: `path`, `sha256`, `bytes` and `facts` of each shard; `counts`: the subjects, those in `common`, those without a resolved link, the unresolved work of each kind, and the compiles of the producer that failed (`photo_compile_failures`) |
+| `common.tar.zst` | The classes, and the facts of each subject without a box or whose box touches more than 16 cells. A version that [extends](obc-data.md#wiki) another also keeps each common fact of that version that no shard of the run holds |
+| `index.json` | `shards`: `path`, `sha256`, `bytes` and `facts` of each shard; `counts`: the subjects that the run read, those in `common`, those without a resolved link, the unresolved work of each kind, and the compiles of the producer that failed (`photo_compile_failures`) |
 
-The version manifest records its coverage and article languages. Regional preparation selects
+The version manifest records the coverage and the article languages of its run. A shard that a
+version keeps from the version before keeps its bytes, and so the facts and the languages of that
+version. Regional preparation selects
 subjects from the regional OSM extract before it asks Commons. An article in an excluded
 language is a `missing` fact with `reason: "language_not_prepared"`. This means that the version
 excludes it, not that Wikipedia lacks it. It supplies no text or lead-image candidate. Subject
@@ -164,7 +166,8 @@ identity still uses the supported-language order; incomplete canonical identity 
 unresolved work.
 
 A shard is a tar under zstd. Its members are `content/<kind>/<sha256>.json`, as the shared
-content of a step names them. A fact that two shards need is in both, with the same bytes. A
+content of a step names them. A fact that two shards of one run need is in both, with the same
+bytes. A
 subject has its entity, its links, the locales of the bounded P131 traversal and the articles that
 the compilers read. A fact that the version lacks is no content. A member
 `content/assets/<sha256>` is the 500 px thumbnail of a photo that the compilers choose for a

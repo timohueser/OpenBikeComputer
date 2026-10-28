@@ -1982,9 +1982,9 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   `wikidatawiki-<day>-page.sql.gz` and `-redirect.sql.gz`, and for each selected article language
   `<lang>wiki-<day>-langlinks.sql.gz` and the Wikimedia Enterprise HTML
   `<lang>wiki-NS0-<day>-ENTERPRISE-HTML.json.tar.gz`. A preparation without a region, or with
-  a box, reads `planet-<yymmdd>.osm.pbf`. One Geofabrik area reads
+  a box, reads `planet-<yymmdd>.osm.pbf`. Each Geofabrik area of a region reads
   `<area>-<yymmdd>.osm.pbf` under the dump directory, such as `europe/dach-261009.osm.pbf`.
-  The path of the area supplies the subdirectories. This extract selects the regional subjects
+  The path of the area supplies the subdirectories. These extracts select the regional subjects
   before article selection or Commons acquisition. For a missing kind, the review discovers a
   completed upstream version through metadata only. SQL jobs must be `done`; Wikidata JSON must
   have a checksum entry. Wikipedia HTML uses the Enterprise Snapshot API. The review shows each
@@ -2020,8 +2020,23 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   with a resolved link of a node that the map takes as a summit. Only their articles are read, and only the photos that the compilers
   choose for them come from Commons, as [Shared Wikimedia content](wikimedia-content.md#the-wiki-source)
   says.
-- A box keeps the subjects whose box meets it. A Geofabrik scope accepts one area and reads
-  its extract. Other scopes refuse.
+- A box keeps the subjects whose box meets it. A region whose leaves are all Geofabrik regions
+  reads the extract of each of their areas. An object in two extracts is one subject. Other
+  scopes, such as a union of a box and a Geofabrik region, refuse.
+- A version of a region extends the newest complete version of `wiki` in the home, in the
+  same format, and the manifest names the scopes of that version in `extends`. The cells
+  of the region are those that a reader of a leaf reads: the cells that its box or the
+  `geofabrik-poly` polygon of one of its areas touches. A run keeps the version of each polygon
+  that its first run read, as for [`terrain`](#terrain). Each cell shard of the version before
+  outside the cells of the region stays in `reused`, and the version does not write that cell.
+  `common.tar.zst` holds the facts of the version and, with their assets, the facts of the
+  common shard of the version before whose kind and key no other shard of the version holds.
+  `index.json` lists the kept shards too. A version of everything extends no version.
+- A region that reads a kept shard and a new shard can read one fact in two revisions, which
+  the compilers refuse. So each earlier version whose cells the version before holds, as
+  `reused` names them, must be wholly in the cells of the region or wholly outside them. Else the
+  prepare refuses before its first step and names that version. The fix is a region that holds
+  all of those cells, or a version of everything.
 - The run moves the shards into the home in batches of 64, then `index.json`. A resume names the
   shards in the home to `shards`, which does not write them again.
 - With `publish_text = false`, each article in the shards is a fact with its key and the status
