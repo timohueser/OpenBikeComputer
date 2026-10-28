@@ -1569,9 +1569,10 @@ A version adds a region to the newest complete version of `terrain` on the targe
 the same format; `prod` takes a version of a region.
 
 - The models are the `dtm-*` rows with `redistribute = true` whose `extent` meets the box of the
-  region and, when the region names `countries`, whose key is of one of them (`dtm-de-by` is of
-  `DE`); all of them for a version of everything. A region that names no `countries` has those of its
-  leaves, and none when a leaf names none. The tiles of a model are those that meet its
+  region and, when the region names `countries`, whose key is of one of them: the first part of
+  the key is the lowercase ISO 3166-1 code, so `dtm-de-by` is of `DE`; all of them for a version
+  of everything. A region that names no `countries` has those of its leaves, and none when a leaf
+  names none. The tiles of a model are those that meet its
   `extent` and the `geofabrik-poly` polygon of one of its `areas`: the boundary of the polygon
   crosses the tile, or the polygon holds the centre of the tile. A version of a region has only
   those tiles in its boxes and in the polygons of its areas. A run keeps the version of each
