@@ -7,11 +7,11 @@
 // as the paint has it. In a junction's corner the slab follows
 // the kerb's arc from the one road's sidewalk to the other's, or narrows to the bare kerb into a road
 // without one. Farther off, the mask paints them.
-import { cornered, cornersOf, halfAt, partnersOf, type Corner } from '../terrain/corners';
-import { crossSlope, metresPerUnit, PAVING_CODE, PROFILES, RAIL, ROAD, type Line } from '../terrain/bins';
+import { cornerAt, cornersOf, halfAt, partnersOf, type Corner } from '../terrain/corners';
+import { KERB } from '../ground/rules';
+import { crossSlope, metresPerUnit, PAVING_CODE, RAIL, ROAD, walkOf, type Line } from '../terrain/bins';
 import { gridOf, LEFT, near, RIGHT, type Grid } from '../terrain/town';
 import { GROUND, mix, PAINT, rgb, station, type MeshBuilder, type Station } from './mesh';
-import type { Owns } from './node';
 
 /** The slab's height over the road and the width of its granite kerb, as KERB_M of roads.wgsl; its kerb's face reaches FOOT_M under the road, its skirt SINK_M into the drawn ground. */
 const RISE_M = 0.12, KERB_M = 0.18, FOOT_M = 0.05, SINK_M = 0.3;
@@ -19,7 +19,7 @@ const RISE_M = 0.12, KERB_M = 0.18, FOOT_M = 0.05, SINK_M = 0.3;
 const PIECE_M = 0.5, BISECTIONS = 4;
 /** No sidewalk reaches farther from its road's line. */
 const REACH_M = 10;
-const PAVED = (rgb('#000000', PAINT) | PAVING_CODE) >>> 0, GRANITE = rgb('#c3c0b8'), EDGING = rgb('#a8a59e');
+const PAVED = (rgb('#000000', PAINT) | PAVING_CODE) >>> 0, GRANITE = rgb(KERB), EDGING = rgb('#a8a59e');
 
 /** The carriageways of a tile in a grid of their segments, and per road end the end of the road it runs on into. */
 interface Roads { grid: Grid; segments: { line: Line; v: number; rank: number }[]; partner: Map<Line, [Line?, Line?]> }
@@ -43,9 +43,6 @@ function roadsOf(lines: Line[]): Roads {
     return roads;
 }
 
-/** The width of a line's sidewalks. */
-const walkOf = (line: Line) => Object.values(PROFILES)[line.profile].walk;
-
 /**
  * The station of a line's vertex v across the bisector of the segments about it, where the carriageway's
  * edges meet, also at an OSM vertex of a rounded bend; at an end that runs on into a partner, across the
@@ -55,15 +52,20 @@ function stationAt(line: Line, v: number, partner?: Line): Station {
     const n = line.z.length;
     if (!partner || (v !== 0 && v !== n - 1)) return station({ ...line, anchors: undefined }, v);
     const pn = partner.z.length, x = line.xy[2 * v], y = line.xy[2 * v + 1];
-    const w = partner.xy[0] === x && partner.xy[1] === y ? 1 : pn - 2, other = [partner.xy[2 * w], partner.xy[2 * w + 1]];
+    // A closed way runs on into itself: its start into its last segment, its end into its first.
+    const w = partner === line ? (v ? 1 : pn - 2) : partner.xy[0] === x && partner.xy[1] === y ? 1 : pn - 2, other = [partner.xy[2 * w], partner.xy[2 * w + 1]];
     const near = v ? [line.xy[2 * v - 2], line.xy[2 * v - 1]] : [line.xy[2], line.xy[3]];
     const xy = v ? [...near, x, y, ...other] : [...other, x, y, ...near];
     return { ...station({ ...line, xy, z: [0, line.z[v], 0], anchors: undefined }, 1), z: line.z[v] };
 }
 
-/** The slabs of the sidewalks of the lines whose segments' first vertex a node `owns`. */
-export function sidewalks(b: MeshBuilder, lines: Line[], owns: Owns): void {
-    const { grid, segments, partner } = roadsOf(lines);
+/**
+ * The slabs of the sidewalks inside a node's square [x0, y0, x1, y1): each run is cut where its middle leaves
+ * the square, without a face, so every node draws only what its tile's data decides, and neighbours meet
+ * on its border. A corner's arc belongs to the node that holds its first end.
+ */
+export function sidewalks(b: MeshBuilder, lines: Line[], [x0, y0, x1, y1]: number[]): void {
+    const { grid, segments, partner } = roadsOf(lines), owns = (x: number, y: number) => x >= x0 && x < x1 && y >= y0 && y < y1;
     for (const corner of cornersOf(lines)) if ((corner.walk[0] || corner.walk[1]) && owns(...corner.a)) arc(b, corner);
     lines.forEach((line, rank) => {
         if (!line.sidewalks) return;
@@ -86,12 +88,10 @@ export function sidewalks(b: MeshBuilder, lines: Line[], owns: Owns): void {
             const p = mix(at(v), at(v + 1), u), m = (side === LEFT ? 1 : -1) * (h + walk / 2);
             return [p.x + p.ax * m, p.y + p.ay * m];
         };
-        /** Whether the slab of segment v on a side lies in a junction's corner a share u along it, where the corner's arc takes it on. */
-        const inCorner = (v: number, side: number, u: number) => cornered(lines, ...middle(v, side, u));
-        /** Whether the slab of segment v on a side is open a share u along it: no corner and no carriageway there, and no sidewalk of a road that keeps a corner. */
+        /** Whether the slab of segment v on a side is open a share u along it: no junction's corner and no carriageway there, and no sidewalk of a road that keeps a corner. */
         const open = (v: number, side: number, u: number) => {
             const [x, y] = middle(v, side, u);
-            return !inCorner(v, side, u) && around(v, side).every(({ line: other, v: w, rank: order }) => {
+            return !cornerAt(lines, x, y) && around(v, side).every(({ line: other, v: w, rank: order }) => {
                 const ax = other.xy[2 * w], ay = other.xy[2 * w + 1], dx = other.xy[2 * w + 2] - ax, dy = other.xy[2 * w + 3] - ay, l2 = dx * dx + dy * dy || 1;
                 const along = ((x - ax) * dx + (y - ay) * dy) / l2, cross = (dx * (y - ay) - dy * (x - ax)) / Math.sqrt(l2) * unit;
                 const t0 = Math.min(1, Math.max(0, along)), d = Math.sqrt((x - ax - t0 * dx) ** 2 + (y - ay - t0 * dy) ** 2) * unit;
@@ -102,21 +102,34 @@ export function sidewalks(b: MeshBuilder, lines: Line[], owns: Owns): void {
         };
         // Whether the slab of segment v on a side runs on into the next segment's (step 1) or the one before's (step -1); not into another line.
         const runsOn = (v: number, side: number, step: number) => v + step >= 0 && v + step + 1 < n && !!(line.sidewalks![v + step] & side) && open(v + step, side, step > 0 ? 0 : 1);
+        // A slab's middle lies within its mitre's growth, at most 3 times its offset, of its segment.
+        const pad = (3 * (h + walk)) / unit;
         for (let v = 0; v + 1 < n; v++) {
-            if (!line.sidewalks[v] || !owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
-            const s = at(v), t = at(v + 1), length = Math.hypot(t.x - s.x, t.y - s.y) * unit;
+            const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4);
+            if (!line.sidewalks[v] || Math.min(ax, bx) - pad >= x1 || Math.max(ax, bx) + pad < x0 || Math.min(ay, by) - pad >= y1 || Math.max(ay, by) + pad < y0) continue;
+            const s = at(v), t = at(v + 1), length = Math.hypot(t.x - s.x, t.y - s.y) * unit, halves: [number, number] = [halfAt(line, v, partner), halfAt(line, v + 1, partner)];
             const pieces = Math.max(1, Math.ceil(length / PIECE_M)), centre = (k: number) => (k + 0.5) / pieces;
             for (const side of [LEFT, RIGHT]) {
                 if (!(line.sidewalks[v] & side)) continue;
+                // The share of the segment whose middle lies in the node's square: the middle runs straight along it.
+                const [m0, m1] = [middle(v, side, 0), middle(v, side, 1)];
+                let [c0, c1] = [0, 1];
+                for (const [axis, lo, hi] of [[0, x0, x1], [1, y0, y1]] as const) {
+                    const d = m1[axis] - m0[axis], [ua, ub] = [(lo - m0[axis]) / d, (hi - m0[axis]) / d];
+                    if (d) [c0, c1] = [Math.max(c0, Math.min(ua, ub)), Math.min(c1, Math.max(ua, ub))];
+                    else if (m0[axis] < lo || m0[axis] >= hi) c1 = c0;
+                }
+                if (c0 >= c1) continue;
                 // A run of open pieces ends between the centre of its last piece and of the next, where the slab
-                // stops: with a face, but where a corner's arc runs on.
+                // stops with a face; where a corner takes it on, it ends square with the corner's arc.
                 const edge = (inside: number, outside: number): [number, boolean] => {
                     for (let i = 0; i < BISECTIONS; i++) {
                         const half = (inside + outside) / 2;
                         if (open(v, side, half)) inside = half;
                         else outside = half;
                     }
-                    return [inside, !inCorner(v, side, outside)];
+                    const corner = cornerAt(lines, ...middle(v, side, outside));
+                    return corner ? [onKerb(s, t, side, halves, corner), false] : [inside, true];
                 };
                 const kept = Array.from({ length: pieces }, (_, k) => open(v, side, centre(k)));
                 for (let k = 0; k < pieces; k++) {
@@ -125,12 +138,22 @@ export function sidewalks(b: MeshBuilder, lines: Line[], owns: Owns): void {
                     while (last + 1 < pieces && kept[last + 1]) last++;
                     const [u0, face0] = k > 0 ? edge(centre(k), centre(k - 1)) : [0, !runsOn(v, side, -1)];
                     const [u1, face1] = last + 1 < pieces ? edge(centre(last), centre(last + 1)) : [1, !runsOn(v, side, 1)];
+                    if (Math.max(u0, c0) >= Math.min(u1, c1)) continue;
                     const slope = (u: number) => crossSlope(line, v, u * length, (1 - u) * length);
-                    slab(b, s, t, u0, u1, side === LEFT ? 1 : -1, [halfAt(line, v, partner), halfAt(line, v + 1, partner)], [walk, walk], [face0, face1], slope);
+                    slab(b, s, t, Math.max(u0, c0), Math.min(u1, c1), side === LEFT ? 1 : -1, halves, [walk, walk], [face0 && u0 >= c0, face1 && u1 <= c1], slope);
                 }
             }
         }
     });
+}
+
+/** The share along the kerb from station s to t, on a side, of the end of a corner's arc on it. */
+function onKerb(s: Station, t: Station, side: number, halves: [number, number], { a, b }: Corner): number {
+    const sign = side === LEFT ? 1 : -1, k0 = [s.x + s.ax * sign * halves[0], s.y + s.ay * sign * halves[0]], k1 = [t.x + t.ax * sign * halves[1], t.y + t.ay * sign * halves[1]];
+    const d = [k1[0] - k0[0], k1[1] - k0[1]], l2 = d[0] * d[0] + d[1] * d[1] || 1, share = (e: number[]) => ((e[0] - k0[0]) * d[0] + (e[1] - k0[1]) * d[1]) / l2;
+    const off = (e: number[], u: number) => Math.hypot(k0[0] + u * d[0] - e[0], k0[1] + u * d[1] - e[1]);
+    const [ua, ub] = [share(a), share(b)];
+    return Math.min(1, Math.max(0, off(a, ua) < off(b, ub) ? ua : ub));
 }
 
 /**

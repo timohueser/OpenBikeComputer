@@ -37,7 +37,8 @@ const DECIDUOUS: Record<Region['leaf'], number> = { needleleaved: 0.2, mixed: 0.
 /** Road surfaces: main, road, gravel, dirt, grass, path; a region may name its own. */
 const ROADS = ['#6b6b68', '#7a7873', '#b0a48c', '#8f7a5c', '#8c9a62', '#a39272'];
 /** A town's paving: its footways, sidewalks and walks; the granite of a kerb. */
-const PAVING = '#a9a59d', KERB = '#c3c0b8';
+const PAVING = '#a9a59d';
+export const KERB = '#c3c0b8';
 /** A slot per surface code up to the tracks, as SURFACES of bins.ts (a one-way road paints as a main road), then the kerb. */
 const ROAD_SLOTS = ROADS.length + 3;
 const ROAD_LINE = '#d6d4cc';

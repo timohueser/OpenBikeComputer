@@ -2,7 +2,7 @@
 // apart, their kerb turns from the edge of the one to the edge of the other round an arc: the stamps paint
 // its asphalt and the sidewalk round it and hold their ground, and the slabs follow it. A corner that
 // another line's band reaches into stays sharp, so its paint covers no other way or water.
-import { crossSlope, metresPerUnit, PROFILES, RAIL, ROAD, type Line } from './bins';
+import { crossSlope, metresPerUnit, PAVED_CODES, RAIL, ROAD, ROAD_CODE, walkOf, type Line } from './bins';
 import { gridOf, LEFT, near, RIGHT, type Grid } from './town';
 
 /**
@@ -14,8 +14,6 @@ import { gridOf, LEFT, near, RIGHT, type Grid } from './town';
 const FILLET_M = 5, LEAST_M = 1, TANGENT_M = 10, STRAIGHT_M = 0.3;
 /** The widest angle between two roads' ways out of a junction that makes a corner. */
 const MAX_TURN = (150 * Math.PI) / 180;
-/** The surface codes of the roads with corners, main, road and oneway, and the code of a corner between two of them. */
-const PAVED = [1, 2, 7], ROAD_CODE = 2;
 
 /** A corner: the centre of its kerb's arc and its ends on the edges of the two roads, in world units, its radius running from the one end's to the other's; at each end the kerb's height and the sidewalk's width; its surface code, and the profile and half-width of its narrower road. */
 export interface Corner { o: [number, number]; a: [number, number]; b: [number, number]; z: [number, number]; walk: [number, number]; code: number; profile: number; h: number }
@@ -69,11 +67,11 @@ export function cornersOf(lines: Line[]): Corner[] {
     return cornersIn(lines).corners;
 }
 
-/** Whether a point lies in a corner of a tile's lines. */
-export function cornered(lines: Line[], x: number, y: number): boolean {
+/** The corner of a tile's lines that a point lies in, if any. */
+export function cornerAt(lines: Line[], x: number, y: number): Corner | undefined {
     const { corners, grid } = cornersIn(lines);
-    let hit = false;
-    near(grid, x, y, x, y, 0, k => (hit ||= inCorner(corners[k], x, y)));
+    let hit: Corner | undefined;
+    near(grid, x, y, x, y, 0, k => (hit ??= inCorner(corners[k], x, y) ? corners[k] : undefined));
     return hit;
 }
 
@@ -82,7 +80,7 @@ function cornersIn(lines: Line[]): { corners: Corner[]; grid: Grid } {
     if (known) return known;
     const at = new Map<string, { line: Line; v: number }[]>();
     for (const line of lines) {
-        if (line.kind !== ROAD || !PAVED.includes(line.code)) continue;
+        if (line.kind !== ROAD || !PAVED_CODES.includes(line.code)) continue;
         for (let v = 0; v < line.z.length; v++) {
             const key = `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
             (at.get(key) ?? at.set(key, []).get(key)!).push({ line, v });
@@ -158,6 +156,8 @@ function cornerOf(p: Way, q: Way, partners: Map<Line, [Line?, Line?]>): Corner |
     const x = p.line.xy[2 * p.v], y = p.line.xy[2 * p.v + 1], unit = metresPerUnit(y);
     // The normals toward the corner, and the centre of the arc of radius r as metres from the junction.
     const np = [-p.uy, p.ux], nq = [q.uy, -q.ux], det = np[0] * nq[1] - np[1] * nq[0];
+    // Ways that overlap meet in no corner.
+    if (!det) return undefined;
     const centre = (r: number) => {
         const dp = p.line.h + r, dq = q.line.h + r;
         return [(dp * nq[1] - dq * np[1]) / det, (dq * np[0] - dp * nq[0]) / det];
@@ -189,7 +189,7 @@ function cornerOf(p: Way, q: Way, partners: Map<Line, [Line?, Line?]>): Corner |
         const l = Math.hypot(dx, dy) || 1, side = dx * n[1] - dy * n[0] > 0 ? RIGHT : LEFT, sign = side === LEFT ? 1 : -1, across = (sign * h) / unit / l;
         const at: [number, number] = [Math.round(line.xy[2 * s] + u * dx + dy * across), Math.round(line.xy[2 * s + 1] + u * dy - dx * across)];
         const z = line.z[s] + (line.z[s + 1] - line.z[s]) * u - sign * h * crossSlope(line, s, u * l * unit, (1 - u) * l * unit);
-        return [at, z, (line.sidewalks?.[s] ?? 0) & side ? Object.values(PROFILES)[line.profile].walk : 0];
+        return [at, z, (line.sidewalks?.[s] ?? 0) & side ? walkOf(line) : 0];
     };
     const [a, za, wa] = end(p, np), [b, zb, wb] = end(q, nq), narrow = p.line.h <= q.line.h ? p.line : q.line;
     return {
@@ -198,11 +198,16 @@ function cornerOf(p: Way, q: Way, partners: Map<Line, [Line?, Line?]>): Corner |
     };
 }
 
-/** The box of a corner: of its arc's centre and ends, and of the roads' corner, where the edges through its ends meet, with its reach into the roads. */
+/** The box of a corner as inCorner has it: its arc's centre, its ends moved its reach onto the roads, and where the edges through those meet. */
 export function boxOf({ o, a, b, h }: Corner): number[] {
-    const da = [o[1] - a[1], a[0] - o[0]], eb = [b[0] - o[0], b[1] - o[1]], t = ((b[0] - a[0]) * eb[0] + (b[1] - a[1]) * eb[1]) / (da[0] * eb[0] + da[1] * eb[1]);
-    const xs = [o[0], a[0], b[0], a[0] + t * da[0]], ys = [o[1], a[1], b[1], a[1] + t * da[1]], pad = h / metresPerUnit(o[1]);
-    return [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad];
+    const reach = h / metresPerUnit(o[1]), out = (end: number[]) => {
+        const e = [end[0] - o[0], end[1] - o[1]], k = 1 + reach / Math.hypot(e[0], e[1]);
+        return [o[0] + k * e[0], o[1] + k * e[1]];
+    };
+    const [pa, pb] = [out(a), out(b)], da = [o[1] - pa[1], pa[0] - o[0]], eb = [pb[0] - o[0], pb[1] - o[1]];
+    const t = ((pb[0] - pa[0]) * eb[0] + (pb[1] - pa[1]) * eb[1]) / (da[0] * eb[0] + da[1] * eb[1]);
+    const xs = [o[0], pa[0], pb[0], pa[0] + t * da[0]], ys = [o[1], pa[1], pb[1], pa[1] + t * da[1]];
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
 }
 
 /**

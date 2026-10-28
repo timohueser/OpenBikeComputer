@@ -46,8 +46,9 @@ type Surface = keyof typeof SURFACES;
 const codeOf = (surface: Surface) => Object.keys(SURFACES).indexOf(surface) + 1;
 /** The surface code of the first track, and of paving. */
 export const RAIL_CODE = codeOf('rail'), PAVING_CODE = codeOf('paving');
-/** The road surfaces that a sidewalk can run beside. */
+/** The road surfaces that a sidewalk can run beside and a junction's corner rounds, and their codes. */
 const PAVED_ROADS: Surface[] = ['main', 'road', 'oneway'];
+export const PAVED_CODES = PAVED_ROADS.map(codeOf), ROAD_CODE = codeOf('road');
 /** The path classes that a town paves where they have no `surface` tag. */
 const TOWN_PATHS = ['footway', 'pedestrian', 'cycleway', 'steps'];
 const PAVED: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3.25, tertiary: 3, unclassified: 2.5, residential: 2.5, service: 2, living_street: 2 };
@@ -154,6 +155,9 @@ export function halfWidth(tags: Record<string, string>, surface: Surface): numbe
     const half = ['main', 'oneway', 'road'].includes(surface) && PAVED[tags.highway] ? PAVED[tags.highway] : SURFACES[surface];
     return Math.min(half, PATH_HALF[tags.highway] ?? half);
 }
+
+/** The width of a line's sidewalks where it has them. */
+export const walkOf = (line: Line) => Object.values(PROFILES)[line.profile].walk;
 
 /** The width of a road's sidewalks where a building is near: a paved road of a class that has them, but for a ford. */
 export const sidewalkOf = (tags: Record<string, string>, surface: Surface) =>
@@ -341,7 +345,7 @@ function townPieces({ xy, z, anchors }: ReturnType<typeof smoothed>, town: Town)
     const out = { xy: [xy[0], xy[1]], z: [z[0]], anchors: [anchors[0]] }, sides: number[] = [];
     for (let v = 0; v + 1 < z.length; v++) {
         const [ax, ay, bx, by] = xy.slice(2 * v, 2 * v + 4), dx = bx - ax, dy = by - ay, unit = metresPerUnit(ay), count = Math.max(1, Math.ceil(Math.hypot(dx, dy) * unit / PIECE_M));
-        const pieces = Array.from({ length: count }, (_, k) => sidesNear(town, ax + dx * (k + 0.5) / count, ay + dy * (k + 0.5) / count, dx, dy, BUILT_M / unit));
+        const pieces = Array.from({ length: count }, (_, k) => sidesNear(town, ax + dx * (k + 0.5) / count, ay + dy * (k + 0.5) / count, BUILT_M / unit, xy));
         for (let k = 1; k <= count; k++) {
             if (k < count && pieces[k] === pieces[k - 1]) continue;
             sides.push(pieces[k - 1]);
@@ -406,7 +410,7 @@ function walkTo(building: Building, road: Line): Line[] {
     const { mx, my, nx, ny, d, cos, wall, v } = best, [ax, ay, bx, by] = road.xy.slice(2 * v, 2 * v + 4);
     const side = (bx - ax) * (my - ay) - (by - ay) * (mx - ax) > 0 ? RIGHT : LEFT;
     // Metres along the walk from the wall to the road's edge, past its sidewalk on this side.
-    const reach = (d * unit - road.h - ((road.sidewalks?.[v] ?? 0) & side ? Object.values(PROFILES)[road.profile].walk : 0)) / cos;
+    const reach = (d * unit - road.h - ((road.sidewalks?.[v] ?? 0) & side ? walkOf(road) : 0)) / cos;
     if (reach <= 0) return [];
     const width = reach < FORECOURT_M ? Math.min(Math.max(wall, FRONTAGE_M[0]), FRONTAGE_M[1]) : building.cars ? DRIVEWAY_M : WALK_WIDTH_M;
     building.front = [nx, ny];
@@ -686,6 +690,8 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     }
     let heights = false;
     const partners = partnersOf(lines);
+    // A record holds a line's index in 16 bits.
+    if (lines.length + walks.length > 0x10000) throw new Error(`nodeStamps: ${lines.length + walks.length} lines pass the 16-bit index`);
     [...lines, ...walks].forEach((line, id) => {
         const stamps = shows(line, gateTexel(node.level));
         if (line.kind === STREAM || (!stamps && node.level < NEAR)) return;
@@ -710,11 +716,11 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             const ends = line.abut ? [line.abut[0] ? along[v] : 1e30, line.abut[1] ? along[n - 1] - along[v + 1] : 1e30].map(f)
                 : line.gallery ? [along[v], along[n - 1] - along[v + 1]].map(f) : line.sleepers ? [line.sleepers[v], line.sleepers[v + 1]].map(f)
                     : [line.tilt?.[2 * v] ?? 0, line.tilt?.[2 * v + 1] ?? 0];
-            // The surface code in the low 4 bits, the sides with a sidewalk above it. The half-width at the
-            // start, and with the line's index the centimetres that it grows to the end, where it meets a partner's.
-            const ha = halfAt(line, v, partners), grow = Math.round(100 * (halfAt(line, v + 1, partners) - ha));
-            const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(ha), f(mx), f(my), f(nx), f(ny), id | (grow << 16),
-                ...ends]);
+            // The surface code in the low 4 bits, the sides with a sidewalk above it. Beside the line's index, in
+            // steps of 2 cm, how far its edge lies out at the start and the end, where it tapers to a partner's.
+            const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) - line.h) / 0.02))) & 0xff;
+            const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h), f(mx), f(my), f(nx), f(ny),
+                id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);
             heights ||= stamps;
         }

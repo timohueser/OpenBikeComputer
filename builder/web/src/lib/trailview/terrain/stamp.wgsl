@@ -65,7 +65,7 @@ fn ordered(h: f32) -> u32 {
 }
 
 fn distance_code(d: f32) -> f32 {
-    return clamp(0.5 + 0.5 * asinh(d / MASK_KNEE) / asinh(MASK_RANGE / MASK_KNEE), 0.0, 1.0);
+    return 0.5 + 0.5 * asinh(clamp(d, -MASK_RANGE, MASK_RANGE) / MASK_KNEE) / asinh(MASK_RANGE / MASK_KNEE);
 }
 
 // As mask_metres of features.wgsl.

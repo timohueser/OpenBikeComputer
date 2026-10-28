@@ -67,14 +67,14 @@ export function pointModels(feature: Placed, out: Build, instance: (x: number, y
 const FACE_M = 15;
 
 /** The nearest of `ways` within FACE_M of world point x, y: its line, its unit direction there and the offset to it, in world units. */
-export function nearestWay(ways: Line[], x: number, y: number): { line: Line; dx: number; dy: number; px: number; py: number } | undefined {
+export function nearestWay(ways: Line[], x: number, y: number): { line: Line; v: number; dx: number; dy: number; px: number; py: number } | undefined {
     let best = (FACE_M / metresPerUnit(y)) ** 2, way: ReturnType<typeof nearestWay>;
     for (const line of ways) for (let i = 0; i + 3 < line.xy.length; i += 2) {
         const ax = line.xy[i], ay = line.xy[i + 1], dx = line.xy[i + 2] - ax, dy = line.xy[i + 3] - ay, l = dx * dx + dy * dy;
         const t = l ? Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / l)) : 0, px = ax + t * dx - x, py = ay + t * dy - y;
         if (!l || px * px + py * py >= best) continue;
         best = px * px + py * py;
-        way = { line, dx: dx / Math.sqrt(l), dy: dy / Math.sqrt(l), px, py };
+        way = { line, v: i / 2, dx: dx / Math.sqrt(l), dy: dy / Math.sqrt(l), px, py };
     }
     return way;
 }

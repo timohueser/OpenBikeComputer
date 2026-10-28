@@ -60,18 +60,36 @@ export function near(grid: Grid, ax: number, ay: number, bx: number, by: number,
     }
 }
 
-/** The sides, LEFT and RIGHT, of a way through x, y in direction dx, dy on which a building comes within `reach` world units of the point. */
-export function sidesNear(town: Town, x: number, y: number, dx: number, dy: number, reach: number): number {
+/** The share along segment a-b of the point on it nearest to x, y. */
+export const along = (ax: number, ay: number, bx: number, by: number, x: number, y: number) =>
+    Math.min(1, Math.max(0, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2 || 1)));
+
+/**
+ * The sides, LEFT and RIGHT, of a way (a polyline in world units) through x, y on which a building comes
+ * within `reach` world units of the point: the side of the way's nearest point to the building's, among its
+ * segments within `reach` of x, y, so a building across a bend counts for its own side.
+ */
+export function sidesNear(town: Town, x: number, y: number, reach: number, way: number[]): number {
     let sides = 0;
     near(town, x, y, x, y, reach, b => {
         const ring = town.rings[b];
-        let least = reach * reach, side = 0;
+        let least = reach * reach, px = NaN, py = NaN;
         for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
-            const ax = ring[j], ay = ring[j + 1], ex = ring[i] - ax, ey = ring[i + 1] - ay;
-            const t = Math.min(1, Math.max(0, ((x - ax) * ex + (y - ay) * ey) / (ex * ex + ey * ey || 1))), px = ax + t * ex - x, py = ay + t * ey - y;
-            if (px * px + py * py > least) continue;
-            least = px * px + py * py;
-            side = dx * py - dy * px > 0 ? RIGHT : LEFT;
+            const t = along(ring[j], ring[j + 1], ring[i], ring[i + 1], x, y), qx = ring[j] + t * (ring[i] - ring[j]), qy = ring[j + 1] + t * (ring[i + 1] - ring[j + 1]);
+            if ((qx - x) ** 2 + (qy - y) ** 2 > least) continue;
+            [least, px, py] = [(qx - x) ** 2 + (qy - y) ** 2, qx, qy];
+        }
+        if (Number.isNaN(px)) return;
+        let nearest = Infinity, side = 0;
+        for (let i = 0; i + 3 < way.length; i += 2) {
+            const [ax, ay, bx, by] = [way[i], way[i + 1], way[i + 2], way[i + 3]];
+            if (Math.min(ax, bx) > x + reach || Math.max(ax, bx) < x - reach || Math.min(ay, by) > y + reach || Math.max(ay, by) < y - reach) continue;
+            const f = along(ax, ay, bx, by, x, y);
+            if ((ax + f * (bx - ax) - x) ** 2 + (ay + f * (by - ay) - y) ** 2 > reach * reach) continue;
+            const t = along(ax, ay, bx, by, px, py), qx = ax + t * (bx - ax), qy = ay + t * (by - ay), d2 = (px - qx) ** 2 + (py - qy) ** 2;
+            if (d2 >= nearest) continue;
+            nearest = d2;
+            side = (bx - ax) * (py - qy) - (by - ay) * (px - qx) > 0 ? RIGHT : LEFT;
         }
         sides |= side;
     });
