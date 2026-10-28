@@ -1,4 +1,5 @@
 import contextlib
+import fcntl
 import importlib.util
 import io
 import os
@@ -126,6 +127,7 @@ class DevCleanupTests(unittest.TestCase):
             old_rlib.parent.mkdir(parents=True)
             old_rlib.write_text("old")
             os.utime(old_rlib, (old, old))
+            (target / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55")
 
             output = io.StringIO()
             with (
@@ -167,50 +169,102 @@ class DevCleanupTests(unittest.TestCase):
                 self.assertEqual(cleanup.main(["--repo", str(repo), "--apply"]), 0)
             self.assertTrue((candidate / "active").exists())
 
-    def test_prune_cargo_target_removes_only_old_artifacts_inside_the_target(self):
+    def make_target(self, root: Path, files: dict[str, tuple[float, float]]) -> Path:
+        """A fake cargo target with old directories and files at the given (atime, mtime)."""
+        target = root.resolve()
+        for name in files:
+            (target / name).parent.mkdir(parents=True, exist_ok=True)
+            (target / name).write_text("x")
+        old = time.time() - 8 * cleanup.SECONDS_PER_DAY
+        for directory, _, _ in os.walk(target):
+            os.utime(directory, (old, old))
+        for name, times in files.items():
+            os.utime(target / name, times)
+        return target
+
+    def test_prune_cargo_target_removes_only_unused_entries_inside_the_target(self):
         with tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryDirectory() as outside:
-            target = Path(scratch)
-            old = time.time() - 8 * cleanup.SECONDS_PER_DAY
-            old_files = [
-                target / "debug" / "deps" / "libold.rlib",
-                target / "debug" / "incremental" / "crate-1" / "s-1" / "query.bin",
-                target / "wasm32-unknown-unknown" / "debug" / "build" / "pkg-1" / "out" / "gen.rs",
-            ]
-            kept = [target / "debug" / "deps" / "libnew.rlib", target / "debug" / "obc-data"]
+            now = time.time()
+            old = now - 8 * cleanup.SECONDS_PER_DAY
+            target = self.make_target(
+                Path(scratch),
+                {
+                    "debug/deps/libold.rlib": (old, old),
+                    "debug/deps/libnew.rlib": (now, now),
+                    # A reused dependency keeps its build mtime, but a read refreshes its atime.
+                    "debug/deps/libused.rlib": (now, old),
+                    "debug/obc-data": (old, old),
+                    "debug/incremental/stale-1/s-1/dep-graph.bin": (old, old),
+                    "debug/incremental/live-1/s-2/dep-graph.bin": (now, now),
+                    "debug/incremental/live-1/s-2/object.o": (old, old),
+                    "wasm32-unknown-unknown/debug/build/pkg-1/out/gen.rs": (old, old),
+                },
+            )
             outside_file = Path(outside) / "deps" / "libkeep.rlib"
-            for path in [*old_files, *kept, outside_file]:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("x")
-            for path in [*old_files, kept[1], outside_file]:
-                os.utime(path, (old, old))
-            # A reused dependency keeps its build mtime, but a read refreshes its atime.
-            used = target / "debug" / "deps" / "libused.rlib"
-            used.write_text("x")
-            os.utime(used, (time.time(), old))
-            kept.append(used)
+            outside_file.parent.mkdir()
+            outside_file.write_text("x")
+            os.utime(outside_file, (old, old))
             (target / "release").mkdir()
             (target / "release" / "deps").symlink_to(outside_file.parent, target_is_directory=True)
-            cutoff = time.time() - 7 * cleanup.SECONDS_PER_DAY
+            cutoff = now - 7 * cleanup.SECONDS_PER_DAY
+            expected = (
+                {
+                    target / "debug" / "deps": (1, 1),
+                    target / "debug" / "incremental": (1, 1),
+                    target / "wasm32-unknown-unknown" / "debug" / "build": (1, 1),
+                },
+                [],
+            )
 
-            planned = cleanup.prune_cargo_target(target, cutoff, apply=False)
-            self.assertEqual(sum(files for files, _ in planned.values()), 3)
-            self.assertTrue(all(path.exists() for path in old_files))
+            self.assertEqual(cleanup.prune_cargo_target(target, cutoff, apply=False), expected)
+            self.assertTrue((target / "debug" / "deps" / "libold.rlib").exists())
 
-            self.assertEqual(cleanup.prune_cargo_target(target, cutoff, apply=True), planned)
-            self.assertFalse(any(path.exists() for path in old_files))
-            self.assertFalse((target / "debug" / "incremental" / "crate-1").exists())
-            self.assertTrue((target / "debug" / "incremental").is_dir())
-            self.assertTrue(all(path.exists() for path in [*kept, outside_file]))
+            self.assertEqual(cleanup.prune_cargo_target(target, cutoff, apply=True), expected)
+            for gone in (
+                "debug/deps/libold.rlib",
+                "debug/incremental/stale-1",
+                "wasm32-unknown-unknown/debug/build/pkg-1",
+            ):
+                self.assertFalse((target / gone).exists(), gone)
+            for kept in (
+                "debug/deps/libnew.rlib",
+                "debug/deps/libused.rlib",
+                "debug/obc-data",
+                "debug/incremental/live-1/s-2/object.o",
+            ):
+                self.assertTrue((target / kept).exists(), kept)
+            self.assertTrue(outside_file.exists())
 
-    def test_cargo_target_refuses_root_home_and_repositories(self):
+    def test_prune_cargo_target_skips_a_profile_that_a_build_holds(self):
         with tempfile.TemporaryDirectory() as scratch:
-            repo = Path(scratch) / "repo"
-            cleanup.git(Path(scratch), "init", str(repo))
-            for value in ("/", str(Path.home()), str(repo)):
+            old = time.time() - 8 * cleanup.SECONDS_PER_DAY
+            target = self.make_target(Path(scratch), {"debug/deps/libold.rlib": (old, old)})
+            cutoff = time.time() - 7 * cleanup.SECONDS_PER_DAY
+            with open(target / "debug" / ".cargo-lock", "w") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                self.assertEqual(
+                    cleanup.prune_cargo_target(target, cutoff, apply=True), ({}, [target / "debug"])
+                )
+            self.assertTrue((target / "debug" / "deps" / "libold.rlib").exists())
+            self.assertEqual(
+                cleanup.prune_cargo_target(target, cutoff, apply=True),
+                ({target / "debug" / "deps": (1, 1)}, []),
+            )
+
+    def test_cargo_target_refuses_root_home_repositories_and_untagged_dirs(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            repo = root / "repo"
+            cleanup.git(root, "init", str(repo))
+            untagged = root / "untagged"
+            untagged.mkdir()
+            for value in ("/", str(Path.home()), str(repo), str(untagged)):
                 with self.assertRaises(cleanup.CleanupError):
                     cleanup.cargo_target(value)
+            (untagged / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55")
+            self.assertEqual(cleanup.cargo_target(str(untagged)), untagged.resolve())
             self.assertIsNone(cleanup.cargo_target(""))
-            self.assertIsNone(cleanup.cargo_target(str(Path(scratch) / "missing")))
+            self.assertIsNone(cleanup.cargo_target(str(root / "missing")))
 
 
 if __name__ == "__main__":

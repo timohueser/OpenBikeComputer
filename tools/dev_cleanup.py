@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
 from pathlib import Path
+from stat import S_ISDIR
 
 
 SECONDS_PER_DAY = 24 * 60 * 60
@@ -154,48 +157,98 @@ def cargo_target(value: str | None) -> Path | None:
         return None
     if target in (Path("/"), Path.home().resolve()) or (target / ".git").exists():
         raise CleanupError(f"refusing to prune CARGO_TARGET_DIR={target}")
+    # Cargo writes this tag; without it the globs below could match a real project folder.
+    if not (target / "CACHEDIR.TAG").is_file():
+        raise CleanupError(f"CARGO_TARGET_DIR={target} has no CACHEDIR.TAG; not a cargo target")
     return target
 
 
-def prune_cargo_target(target: Path, cutoff: float, apply: bool) -> dict[Path, tuple[int, int]]:
-    """Return {artifact dir: (files, bytes)} older than cutoff; remove them when apply is set.
+def last_use(unit: Path) -> tuple[float, int]:
+    """Return (newest use, bytes) of a file or a whole directory tree.
 
     Age is the later of atime and mtime: cargo does not rewrite a dependency that it reuses,
-    but reading it updates atime (daily under relatime). On a noatime mount an artifact in use
-    can look old; cargo rebuilds a missing artifact, so that costs one rebuild, never a wrong build.
+    but reading it updates atime (daily under relatime). A directory counts by mtime only,
+    because this walk updates its atime.
     """
-    result: dict[Path, tuple[int, int]] = {}
-    for name in CARGO_ARTIFACT_DIRS:
-        for top in sorted([*target.glob(f"*/{name}"), *target.glob(f"*/*/{name}")]):
-            # A symlink anywhere in the path could lead out of the target.
-            if not top.is_dir() or top.resolve() != top:
+    info = unit.lstat()
+    if not S_ISDIR(info.st_mode):
+        return max(info.st_atime, info.st_mtime), info.st_size
+    newest, size = info.st_mtime, 0
+    for root, dirs, files in os.walk(unit):
+        for name in dirs:
+            newest = max(newest, (Path(root) / name).lstat().st_mtime)
+        for name in files:
+            entry = (Path(root) / name).lstat()
+            newest = max(newest, entry.st_atime, entry.st_mtime)
+            size += entry.st_size
+    return newest, size
+
+
+@contextlib.contextmanager
+def build_lock(profile: Path, apply: bool) -> Iterator[bool]:
+    """Hold the lock cargo holds for a build in this profile; yield False if a build has it.
+
+    A running build only stats a dependency it judged fresh and reads it later, so a removal
+    under that build breaks it. Between builds cargo rebuilds a missing artifact.
+    A dry run takes no lock and writes nothing.
+    """
+    if not apply:
+        yield True
+        return
+    fd = os.open(profile / ".cargo-lock", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)
+
+
+def prune_cargo_target(
+    target: Path, cutoff: float, apply: bool
+) -> tuple[dict[Path, tuple[int, int]], list[Path]]:
+    """Return ({artifact dir: (entries, bytes)} unused since cutoff, busy profiles).
+
+    Each direct child of an artifact dir is one entry, aged by its newest file and removed
+    whole: a part of a rustc incremental crate dir or a build-script dir breaks the rest.
+    """
+    profiles = {
+        top.parent
+        for name in CARGO_ARTIFACT_DIRS
+        for top in [*target.glob(f"*/{name}"), *target.glob(f"*/*/{name}")]
+    }
+    pruned: dict[Path, tuple[int, int]] = {}
+    busy: list[Path] = []
+    for profile in sorted(profiles):
+        # A symlink anywhere in the path could lead out of the target.
+        if profile.resolve() != profile:
+            continue
+        with build_lock(profile, apply) as locked:
+            if not locked:
+                busy.append(profile)
                 continue
-            files = size = 0
-            # Only a directory this pass emptied goes; a new empty one may belong to a build.
-            emptied: set[Path] = set()
-            for root, dirs, names in os.walk(top, topdown=False):
-                here = Path(root)
-                changed = any(here / entry in emptied for entry in dirs)
-                for entry in names:
-                    path = here / entry
+            for name in CARGO_ARTIFACT_DIRS:
+                top = profile / name
+                if top.is_symlink() or not top.is_dir():
+                    continue
+                entries = size = 0
+                for unit in sorted(top.iterdir()):
                     try:
-                        stat = path.lstat()
-                        if max(stat.st_atime, stat.st_mtime) > cutoff:
+                        used, unit_size = last_use(unit)
+                        if used > cutoff:
                             continue
                         if apply:
-                            path.unlink()
+                            remove_path(unit)
                     except OSError:
                         continue
-                    files += 1
-                    size += stat.st_size
-                    changed = True
-                if apply and changed and here != top:
-                    with contextlib.suppress(OSError):
-                        here.rmdir()
-                        emptied.add(here)
-            if files:
-                result[top] = (files, size)
-    return result
+                    entries += 1
+                    size += unit_size
+                if entries:
+                    pruned[top] = (entries, size)
+    return pruned, busy
 
 
 def parser() -> argparse.ArgumentParser:
@@ -226,13 +279,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  REMOVE {format_size(sizes.get(path, 0)):>10}  {path}")
     target = cargo_target(os.environ.get("CARGO_TARGET_DIR"))
     cutoff = time.time() - args.days * SECONDS_PER_DAY
-    artifacts = prune_cargo_target(target, cutoff, args.apply) if target else {}
+    artifacts, busy = prune_cargo_target(target, cutoff, args.apply) if target else ({}, [])
     if target:
         print(f"cargo target={target}")
-    for path, (files, size) in artifacts.items():
-        print(f"  REMOVE {format_size(size):>10}  {files} files in {path}")
+    for path, (entries, size) in artifacts.items():
+        print(f"  REMOVE {format_size(size):>10}  {entries} entries in {path}")
+    for profile in busy:
+        print(f"  SKIP   {profile}: a cargo build holds its lock")
+    # An upper bound: a hard link outside the removed entries keeps its inode.
     reclaimable = sum(sizes.values()) + sum(size for _, size in artifacts.values())
-    print(f"Potentially reclaimable: {format_size(reclaimable)}")
+    print(f"Potentially reclaimable: up to {format_size(reclaimable)}")
 
     if not args.apply:
         print("Dry run only; pass --apply to remove the listed entries.")
