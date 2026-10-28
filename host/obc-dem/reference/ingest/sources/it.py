@@ -8,14 +8,14 @@ is lifted on one side only until Italy is covered finely, and that step shows in
 in a profile. South Tyrol is the province that closes most of it, and it publishes a plain
 WCS with no key and no attribution obligation.
 
-Piedmont, Lombardy and Aosta Valley are not here, and `README.md` records what each one
-answered: Piedmont publishes 5 m with no documented vertical datum, Lombardy asks for an
-email request, and Aosta Valley needs an Italian identity login.
+Piedmont is the 5 m LiDAR model of the ICE flights of 2009–2011, on a keyless WCS 1.0.0.
+Its WCS 2.0.1 endpoint refuses every subset as outside the coverage, so the row speaks 1.0.0.
+Lombardy asks for an email request, and Aosta Valley needs an Italian identity login.
 """
 
 from .bulk import BulkSource
 from .grid import grid_squares
-from .protocols import Wcs20Source
+from .protocols import Wcs10Source, Wcs20Source
 
 # The province publishes heights as "m s.l.m." — metres above sea level, orthometric — but
 # names no geoid model. That is enough to register: the archive wants orthometric metres,
@@ -59,6 +59,19 @@ TN = TrentoGrids(
     base="https://siatservices.provincia.tn.it/stemdata/2014_lidar_dtm_asc/",
 )
 
+# A box outside the coverage's rectangle on EPSG:32632 is answered with `NoApplicableCode`, which is
+# retried as a fault of the server, so the row's `extent` stays inside that rectangle. The heights
+# are on the Genova 1942 levelling datum, and the coverage declares its void, -99.
+PIE = Wcs10Source(
+    "it-21", "Italy, Piedmont", "DTM 5 m, ICE 2009–2011 (Regione Piemonte)", 5.0,
+    "CC BY 4.0",
+    "Italian levelling network, Genova 1942 (m s.l.m.)",
+    url="https://geomap.reteunitaria.piemonte.it/ws/taims/rp-01/taimsdtmwcs/wcs_ice_2009_2011_dtm",
+    coverage="DTM",
+    epsg=32632,
+    image_format="GEOTIFF_16",
+)
+
 # TINITALY was built mostly from the contours and spot heights of the regional topographic
 # maps, which are on the national levelling network. The WCS answers 10 m at its own step; the land
 # abroad and the sea are its declared nodata.
@@ -73,4 +86,4 @@ TINITALY = Wcs20Source(
     scale=False,
 )
 
-IT = (BZ, TN, TINITALY)
+IT = (BZ, TN, PIE, TINITALY)

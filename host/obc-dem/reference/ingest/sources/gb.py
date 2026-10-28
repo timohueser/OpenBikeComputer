@@ -1,4 +1,4 @@
-"""Great Britain: each nation publishes its LiDAR separately; Wales has no row.
+"""Great Britain: each nation publishes its LiDAR separately.
 
 England is the Environment Agency's LIDAR Composite DTM, over Defra's WCS 2.0.1. The endpoint
 carries no survey year, so the coverage id is stable: a UUID and a name, exactly as the
@@ -18,6 +18,12 @@ once per fetch. The squares are tiled, so only the box's window is read, as for 
 
 The Historic Environment Scotland surveys are left out: most of them are licensed for
 non-commercial use only. Where two surveys overlap, both reach the pooling.
+
+Wales is the Welsh Government's national LiDAR of the winters 2020–23, one COG of the whole
+nation with range reads. The row reads the Int16 copy of whole metres, 3.6 GB, and not the
+float32 copy of 48.6 GB: the Int16 values are the float32 ones rounded to the nearest metre,
+so the maximum pool, whole metres too, is the same, and the mean pool of decimetres moves by
+the mean of the rounding over a lattice pixel, which is about zero.
 """
 
 import math
@@ -27,7 +33,7 @@ from pathlib import Path
 
 from ..lattice import Refuse
 from .base import http_get
-from .cog import CogWindows
+from .cog import CogWindows, OneFile
 from .protocols import Wcs20Source, projected_box
 
 # The OS grid letters: `I` is never used. A 100 km square has two of them, the 500 km square
@@ -129,4 +135,12 @@ ENG = Wcs20Source(
     scale=False,
 )
 
-GB = (ENG, SCT)
+WLS = OneFile(
+    "gb-wls", "United Kingdom (Wales)", "Welsh Government LiDAR DTM 2020–23 1 m", 1.0,
+    "Open Government Licence v3",
+    "Ordnance Datum Newlyn",
+    base="https://dmwproductionblob.blob.core.windows.net/cogs/lidar/wales_dtm_16bit_cog.tif",
+    epsg=27700,
+)
+
+GB = (ENG, SCT, WLS)

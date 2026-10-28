@@ -110,20 +110,22 @@ only where the registry says a name is arithmetic, such as a grid square outside
 product, resolution, licence and vertical datum. Its credit and its box are `attribution` and
 `extent` of `dtm-<key>` in `data/sources.toml`.
 
-Open services, no key: `ch`, `fr`, `us`, `no`, `es`, `nl`, `gb-eng`, `gb-sct`, `at`, `ca`, `nz`,
-`pl`, `cz`, `sk`, `is`, `it`, `it-bz`, `it-tn`, and the German states `de-nw`, `de-he`, `de-bw`,
+Open services, no key: `ch`, `fr`, `us`, `no`, `es`, `nl`, `gb-eng`, `gb-sct`, `gb-wls`, `at`, `ca`,
+`nz`, `pl`, `cz`, `sk`, `si`, `is`, `it`, `it-bz`, `it-tn`, `it-21`, and the German states `de-nw`, `de-he`, `de-bw`,
 `de-mv`, `de-st`, `de-by`, `de-sn`, `de-th`, `de-ni`, `de-rp`. Germany publishes elevation per
 state, so `de-*` is a family of rows. `it` and `is` are 10 m, coarser than the lattice, so they
 reach only some of its pixels.
 
-Behind a free account: `dk`, `se`, `fi`. The machine that prepares sets the credential; each
-module names where the account is made. `au` is ordered by hand: `OBC_REFERENCE_AU_INPUT` names
+Behind a free account: `dk`, `se`, `fi`, and `pt` and `pt-20`, which share one DGT account. The
+machine that prepares sets the credential; each module names where the account is made. `au` is ordered by hand: `OBC_REFERENCE_AU_INPUT` names
 the delivery as an absolute path, and `OBC_REFERENCE_AU_DATUM` its datum.
 
-`de-sn` and `de-th` carry the Quellenvermerk their services state. One obligation the rows cannot settle by themselves:
+`de-sn` and `de-th` carry the Quellenvermerk their services state. Two obligations the rows cannot settle by themselves:
 
 - **`au` needs one answer by hand.** Some ELVIS datasets are ellipsoidal, so a fetch of `au`
   refuses until `OBC_REFERENCE_AU_DATUM` is `AHD`.
+- **`pt-20` names no height system.** Before its first prepare, fetch the tile of Pico and read
+  2351 m: an ellipsoidal model reads tens of metres higher.
 
 A fetch reads every `.tif`, `.tiff`, `.asc`, `.xyz` and `.zip` under a delivery and **writes
 nothing into it**; unpacked members go into the work directory under the digest of their bytes.

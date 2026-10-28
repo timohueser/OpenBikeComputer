@@ -76,7 +76,7 @@ ORTHOMETRIC = (
     "LN02", "LHN95", "NGF-IGN69", "NAVD88", "NN2000", "REDNAP", "NAP",
     "Ordnance Datum Newlyn", "EVRF2000", "CGVD2013", "NZVD2016", "DHHN2016", "DHHN92",
     "DVR90", "RH2000", "N2000", "AHD", "m s.l.m.", "EGM2008", "Bpv", "PL-KRON86-NH",
-    "ISH2004",
+    "ISH2004", "SVS2000", "Cascais", "Azores island heights",
 )
 
 # What an ellipsoidal height is called. It stands tens of metres from an orthometric one,
@@ -134,15 +134,15 @@ class DropAuthOnRedirect(urllib.request.HTTPRedirectHandler):
     """A redirect to another host does not carry the credential with it.
 
     urllib copies a request's headers onto the redirect it follows, so an `Authorization`
-    header follows a `Location` anywhere. A portal that redirects a download to a content
-    network would hand that network the password.
+    or a session `Cookie` header follows a `Location` anywhere. A portal that redirects a
+    download to a content network would hand that network the password or the session.
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         onward = super().redirect_request(req, fp, code, msg, headers, newurl)
         if onward is not None and host_of(newurl) != host_of(req.full_url):
             onward.headers = {name: value for name, value in onward.headers.items()
-                              if name.lower() != "authorization"}
+                              if name.lower() not in ("authorization", "cookie")}
         return onward
 
 
@@ -184,15 +184,15 @@ def with_retry(attempt, what: str, absent=()):
     raise AssertionError("unreachable")
 
 
-def http_get(url: str, headers=None, what: str | None = None) -> bytes:
-    """One response body, whole.
+def http_get(url: str, headers=None, what: str | None = None, data: bytes | None = None) -> bytes:
+    """One response body, whole; a POST of `data` when it is given.
 
     `what` is what a refusal calls this request. A keyed service reads its token out of
     the URL, so the URL is not it.
     """
 
     def once():
-        request = urllib.request.Request(url, headers=headers or {})
+        request = urllib.request.Request(url, data=data, headers=headers or {})
         with OPENER.open(request, timeout=HTTP_TIMEOUT) as response:
             return response.read()
 

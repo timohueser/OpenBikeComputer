@@ -673,9 +673,9 @@ esac
     }
 
     #[test]
-    fn a_region_of_gb_reads_the_models_of_england_and_scotland() {
+    fn a_region_of_gb_reads_the_models_of_england_scotland_and_wales() {
         let gb = ["GB".to_string()];
         let read: Vec<&str> = models(obc_data::sources::all(), None, &gb).map(key).collect();
-        assert_eq!(read, ["gb-eng", "gb-sct"]);
+        assert_eq!(read, ["gb-eng", "gb-sct", "gb-wls"]);
     }
 }

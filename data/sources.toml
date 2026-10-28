@@ -422,12 +422,12 @@ id = "dtm-es"
 kind = "data"
 group = "Elevation"
 used_by = ["device", "planner", "trailview"]
-use = "Terrain in Spain and the Canary Islands: MDT05 5 m"
+use = "Terrain in Spain, Andorra and the Canary Islands: MDT05 5 m"
 licence = "CC-BY-4.0"
 attribution = "© Instituto Geográfico Nacional"
 fetch = { kind = "dtm", url = "https://servicios.idee.es/wcs-inspire/mdt" }
 extent = [-18.2, 27.6, 4.4, 43.9]
-areas = ["europe/spain", "africa/canary-islands"]
+areas = ["europe/spain", "europe/andorra", "africa/canary-islands"]
 version = "date"
 keep = "prepared"
 redistribute = true
@@ -498,6 +498,22 @@ keep = "prepared"
 redistribute = true
 
 [[source]]
+id = "dtm-gb-wls"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Wales: Welsh Government LiDAR DTM 2020–23 1 m"
+licence = "OGL-UK-3.0"
+licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
+attribution = "Welsh Government LiDAR 2020–23. Contains public sector information licensed under the Open Government Licence v3.0."
+fetch = { kind = "dtm", url = "https://dmwproductionblob.blob.core.windows.net/cogs/lidar/wales_dtm_16bit_cog.tif" }
+extent = [-5.6, 51.3, -2.6, 53.5]
+areas = ["europe/united-kingdom/wales"]
+version = "date"
+keep = "prepared"
+redistribute = true
+
+[[source]]
 id = "dtm-is"
 kind = "data"
 group = "Elevation"
@@ -524,6 +540,23 @@ attribution = "TINITALY/1.1 © INGV, doi:10.13127/tinitaly/1.1"
 fetch = { kind = "dtm", url = "https://tinitaly.pi.ingv.it/TINItaly_1_1/wcs" }
 extent = [6.6, 35.4, 18.6, 47.1]
 areas = ["europe/italy"]
+version = "date"
+keep = "prepared"
+redistribute = true
+
+[[source]]
+id = "dtm-it-21"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Piedmont, Italy: DTM 5 m, ICE 2009–2011"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+attribution = "© Regione Piemonte"
+fetch = { kind = "dtm", url = "https://geomap.reteunitaria.piemonte.it/ws/taims/rp-01/taimsdtmwcs/wcs_ice_2009_2011_dtm" }
+# Piedmont, inside the rectangle of the coverage on EPSG:32632: the WCS refuses a box outside it.
+extent = [6.6, 44.0, 9.3, 46.47]
+areas = ["europe/italy/nord-ovest"]
 version = "date"
 keep = "prepared"
 redistribute = true
@@ -619,6 +652,43 @@ keep = "prepared"
 redistribute = true
 
 [[source]]
+id = "dtm-pt"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in mainland Portugal: LiDAR MDT 2 m"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+attribution = "© Direção-Geral do Território"
+fetch = { kind = "dtm", url = "https://cdd.dgterritorio.gov.pt/dgt-be/v1/search" }
+extent = [-9.6, 36.9, -6.1, 42.2]
+areas = ["europe/portugal"]
+hosts = ["*.dgterritorio.gov.pt"]
+version = "date"
+keep = "prepared"
+redistribute = true
+credential = { env = ["OBC_REFERENCE_PT_USER", "OBC_REFERENCE_PT_PASSWORD"], register = "https://cdd.dgterritorio.gov.pt", hint = "Make a free account of the DGT data centre, then give its e-mail address and password." }
+
+[[source]]
+id = "dtm-pt-20"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in the Azores, Portugal: LiDAR MDE 1 m"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+attribution = "© Governo dos Açores, Direção Regional do Ambiente e Ação Climática"
+fetch = { kind = "dtm", url = "https://cdd.dgterritorio.gov.pt/dgt-be/v1/search" }
+extent = [-31.5, 36.8, -24.7, 39.8]
+areas = ["europe/portugal"]
+hosts = ["*.dgterritorio.gov.pt"]
+version = "date"
+keep = "prepared"
+redistribute = true
+# The account of dtm-pt: one login of the DGT data centre serves both rows.
+credential = { env = ["OBC_REFERENCE_PT_USER", "OBC_REFERENCE_PT_PASSWORD"], register = "https://cdd.dgterritorio.gov.pt", hint = "Make a free account of the DGT data centre, then give its e-mail address and password." }
+
+[[source]]
 id = "dtm-se"
 kind = "data"
 group = "Elevation"
@@ -634,6 +704,22 @@ version = "date"
 keep = "prepared"
 redistribute = true
 credential = { env = ["OBC_REFERENCE_SE_USER", "OBC_REFERENCE_SE_PASSWORD"], register = "https://geotorget.lantmateriet.se", hint = "Apply for Markhöjdmodell Nedladdning, grid 1+ with Basic authentication, then copy the consumer user name and password." }
+
+[[source]]
+id = "dtm-si"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Slovenia: DMR1 1 m, laser scan 2011–2015"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+attribution = "Lasersko skeniranje Slovenije © ARSO, GURS"
+fetch = { kind = "dtm", url = "https://gis.arso.gov.si/lidar/dmr1/" }
+extent = [13.3, 45.4, 16.7, 46.9]
+areas = ["europe/slovenia"]
+version = "date"
+keep = "prepared"
+redistribute = true
 
 [[source]]
 id = "dtm-sk"

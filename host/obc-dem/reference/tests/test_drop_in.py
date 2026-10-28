@@ -472,7 +472,7 @@ class RedirectHandler(BaseHTTPRequestHandler):
     seen: list = []
 
     def do_GET(self):  # noqa: N802 — the name is the base class's
-        self.seen.append((self.path, self.headers.get("Authorization")))
+        self.seen.append((self.path, self.headers.get("Authorization"), self.headers.get("Cookie")))
         if self.path == "/start":
             self.send_response(302)
             self.send_header("Location", f"http://localhost:{self.server.server_port}/end")
@@ -495,14 +495,13 @@ class Redirects(unittest.TestCase):
         self.httpd = serve(self, RedirectHandler)
         self.port = self.httpd.server_address[1]
 
-    def test_a_redirect_to_another_host_drops_the_authorization(self):
+    def test_a_redirect_to_another_host_drops_the_authorization_and_the_session(self):
         """urllib copies a request's headers onto the redirect it follows, so a portal
         that sent its download to a content network would hand it the password."""
 
         body = ingest.sources.base.http_get(
             f"http://127.0.0.1:{self.port}/start",
-            headers={"Authorization": "Basic Y29uc3VtZXI6c2VjcmV0"})
+            headers={"Authorization": "Basic Y29uc3VtZXI6c2VjcmV0", "Cookie": "connect.sid=s1"})
         self.assertEqual(body, b"II*\x00")
-        self.assertEqual([path for path, _ in RedirectHandler.seen], ["/start", "/end"])
-        self.assertEqual(RedirectHandler.seen[0][1], "Basic Y29uc3VtZXI6c2VjcmV0")
-        self.assertIsNone(RedirectHandler.seen[1][1])
+        self.assertEqual(RedirectHandler.seen, [
+            ("/start", "Basic Y29uc3VtZXI6c2VjcmV0", "connect.sid=s1"), ("/end", None, None)])

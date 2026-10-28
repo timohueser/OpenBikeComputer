@@ -134,6 +134,13 @@ class CogWindows(Source):
         return path
 
 
+class OneFile(CogWindows):
+    """A whole country in one tiled GeoTIFF."""
+
+    def urls(self, bbox) -> list[tuple[str, str]]:
+        return [(Path(self.base).name, self.base)]
+
+
 class CogGrid(CogWindows):
     """COGs named after the square of a national metre grid they cover."""
 

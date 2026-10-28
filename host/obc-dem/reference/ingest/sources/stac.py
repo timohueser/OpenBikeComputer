@@ -14,26 +14,31 @@ from .base import http_get, redact
 from .bulk import BulkSource
 
 
-def stac_items(url: str):
+def stac_items(url: str, body: dict | None = None):
     """Every item a STAC answer holds, following `rel: next` to the end.
 
     Every server caps a page — LGLN's caps at 1000 — so a box that needs more squares than
     the cap comes back short, and silently, unless the pages are followed. The number of
     pages is bounded by the box. A `next` link that points back at a page already read is
     refused rather than followed for ever.
+
+    A search sent as a POST of `body` pages by a `next` link with `method: POST`, whose own
+    `body` carries the token of the next page.
     """
 
     seen = set()
     while url:
-        if url in seen:
+        sent = None if body is None else json.dumps(body, sort_keys=True)
+        if (url, sent) in seen:
             raise Refuse(f"{url}: the STAC `next` link points at a page already read")
-        seen.add(url)
-        page = json.loads(http_get(url))
+        seen.add((url, sent))
+        posted = {"data": sent.encode(), "headers": {"Content-Type": "application/json"}} if sent else {}
+        page = json.loads(http_get(url, **posted))
         if "features" not in page:
             raise Refuse(redact(f"{url}: not a STAC answer: {str(page)[:200]}"))
         yield from page["features"]
-        url = next((link["href"] for link in page.get("links", [])
-                    if link.get("rel") == "next"), None)
+        link = next((link for link in page.get("links", []) if link.get("rel") == "next"), {})
+        url, body = link.get("href"), (link.get("body") if link.get("method") == "POST" else None)
 
 
 class StacSearchSource(BulkSource):
