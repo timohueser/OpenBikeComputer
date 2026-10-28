@@ -2018,17 +2018,19 @@ in the same format.
     manifest: `<list>` names each file of a MODIS tile that the block meets with two MODIS pixels
     of margin, the most that the MODIS grid of the program reaches past the block. A day and a
     platform of a tile take the COG of the Planetary Computer, else the HDF4 granule of NSIDC. A
-    prepare refuses when no root holds the dataset, and when a tile of the list lacks a file of
-    either platform on more than 7 days in a row of a season: the nearest clear day fills such a
-    run as it fills a cloudy week, and a longer one is a gap of the source. The number is chosen.
-    The input `modis-snow` also records, for each block, season and tile, the days with a file.
-  - The `hansen-gfc` tiles at the `start` of its row that the block meets with one MODIS pixel of
+    prepare refuses when no root holds the dataset, and when a MODIS tile of the block lacks a
+    file of either platform on more than 7 days in a row of a season: the nearest clear day fills
+    such a run as it fills a cloudy week, and a longer one is a gap of the source. The number is
+    chosen. A tile that `data/archive/modis-snow.toml` names and the block meets lacks every day
+    when the dataset has no file of it; a tile that it does not name is sea or outside the
+    dataset. The checks run before the program fetches anything.
+  - The `hansen-gfc` tiles at the `start` of its row that the block meets with two MODIS pixels of
     margin, which the run fetches.
   - SCO, SCM and SCD of HR-WSI from CDSE S3, with the `credential` of `hr-wsi`: the products of
     the season that the catalogue lists for the block, in the order of their names, a window of
     each zoom 10 tile at a time. A block fails when its catalogue lists products for one season
-    and none for another, or other tiles in one season than in another: a short listing would
-    make a season MODIS only for good. An empty listing is asked once more; a block outside
+    and none for another of the seasons that it makes, as a short listing would make a season MODIS
+    only for good, and when those seasons have other tiles. An empty listing is asked once more; a block outside
     HR-WSI or at sea has no product. The programs share the 4 connections that CDSE allows a user
     through lock files in `<dir>`, and GDAL retries a refused request.
 
@@ -2037,8 +2039,8 @@ in the same format.
   files that waits for its move into the home.
 - The run moves the files into the home in batches of 64. The manifest names `hr-wsi` at the date
   of the version with the [digest](#keys) of the SHA-256 of the files that it made, `modis-snow`
-  at the version of its dataset with the digest of the SHA-256 of the files of the lists and of
-  their days, and the `hansen-gfc` version that it fetched.
+  at the version of its dataset with the digest of the SHA-256 of the files of the lists, and the
+  `hansen-gfc` version that it fetched.
 
 #### `wiki`
 
