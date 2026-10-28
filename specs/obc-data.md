@@ -818,9 +818,10 @@ outline of the region touches. The outline of a `box` region is its box; the out
 `area=<source path>`. Existing union definitions select the union of their leaves.
 
 Both products resolve the same source areas. A Geofabrik definition names its areas directly.
-For a Box, the cached index selects candidates by polygon coverage. Selection descends into
-children only when their union covers the requested part of the parent. Full `.poly` files
-must then cover the complete Box. A gap tries the parent extract before selecting bulk inputs.
+For a Box, the cached index selects candidates by polygon coverage: of the areas whose polygons
+meet the Box, each area that the others cover drops out, largest first. So neighbouring areas
+cover a sliver of the Box before their parent does. Full `.poly` files must then cover the
+complete Box. A gap tries the parent extract before selecting bulk inputs.
 An uncovered Box gives an actionable error. Country metadata does not remove required geography.
 
 Each selected area has a private `<product>/source/<area>` step. It reads the extract and full
