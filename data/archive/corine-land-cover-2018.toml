@@ -1,0 +1,7 @@
+name = "CORINE Land Cover 2018, raster 100 m, version v2020_20u1, prepackaged zip"
+sources = ["corine-land-cover"]
+coverage = "Europe"
+version = "2026-10-28"
+notes = "The owner orders the prepackaged file on land.copernicus.eu; its download link works once."
+kept = true
+clms = { dataset = "0407d497d3c44bcd93ce8fd5bf78596a", file = "3d9e2413-46ca-4f6e-abf8-b6eb429a4e48" }

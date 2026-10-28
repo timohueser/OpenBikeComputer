@@ -227,10 +227,16 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
             // One retry, as a HEAD is cheap and a failure stops the whole fetch.
             let days: Result<Vec<_>, _> = urls
                 .iter()
-                .map(|url| match archive.and_then(|archive| archive.find(url)) {
-                    Some(held) => Ok(Some(held.day)),
-                    None => {
-                        http.modified(url).or_else(|e| if http::not_found(&e) { Err(e) } else { http.modified(url) })
+                .map(|url| {
+                    match archive
+                        .and_then(|archive| archive.find(url))
+                        .filter(|held| date::parse(&held.version).is_some())
+                    {
+                        Some(held) => Ok(Some(held.version)),
+                        None => {
+                            http.modified(url)
+                                .or_else(|e| if http::not_found(&e) { Err(e) } else { http.modified(url) })
+                        }
                     }
                 })
                 .collect();
@@ -1159,13 +1165,6 @@ pub(crate) mod tests {
         std::fs::write(root.join("manifest/dataset.json"), manifest).unwrap();
     }
 
-    /// Set the modification time of `path` to noon of `day`.
-    fn modified_on(path: &Path, day: &str) {
-        let seconds = date::parse(day).unwrap() as u64 * 86_400 + 43_200;
-        let time = std::time::UNIX_EPOCH + Duration::from_secs(seconds);
-        std::fs::File::options().write(true).open(path).unwrap().set_modified(time).unwrap();
-    }
-
     #[test]
     fn the_archive_serves_a_kept_source_before_upstream() {
         let scratch = Scratch::new("archive-serves");
@@ -1174,8 +1173,7 @@ pub(crate) mod tests {
         let url = actual.replacen("http://", "https://", 1);
         let path = format!("mirror/{}", url.strip_prefix("https://").unwrap());
         let root = scratch.0.join("archive");
-        archive(&root, &[(&path, b"land")], "");
-        modified_on(&root.join(&path), "2026-10-05");
+        archive(&root, &[(&path, b"land")], r#""version": "2026-10-05", "#);
         std::fs::write(root.join("manifest/broken.json"), "{").unwrap();
         let mut land = source(&url, "date");
         let http = || Http::loopback(&actual).with_archive(&root);
@@ -1197,7 +1195,7 @@ pub(crate) mod tests {
         let snapshot = fetch(&tooling_root(), &store, &http(), &request(&land)).unwrap();
         assert_eq!(std::fs::read(root.join(&path)).unwrap(), b"land", "the copy leaves the archive file whole");
         assert_eq!(log.lock().unwrap().len(), before, "upstream is not asked, and a bad manifest only warns");
-        assert_eq!(snapshot.version, "2026-10-05", "the day of the archived file");
+        assert_eq!(snapshot.version, "2026-10-05", "the version of the dataset");
         let file = &snapshot.files[0];
         assert_eq!((file.url.as_str(), file.archive.as_deref()), (url.as_str(), Some(path.as_str())));
         assert_eq!(std::fs::read(store.object(&file.sha256)).unwrap(), b"land");
@@ -1220,8 +1218,7 @@ pub(crate) mod tests {
         let url = actual.replacen("http://", "https://", 1);
         let path = format!("mirror/{}", url.strip_prefix("https://").unwrap());
         let root = scratch.0.join("archive");
-        archive(&root, &[(&path, b"land")], "");
-        modified_on(&root.join(&path), "2026-10-20");
+        archive(&root, &[(&path, b"land")], r#""version": "2026-10-20", "#);
         let http = Http::loopback(&actual).with_archive(&root);
         for (version, scheme) in [("2026-10-10".to_string(), "date"), (sha256_hex(b"upstream"), "digest")] {
             let mut land = source(&url, scheme);
@@ -1247,7 +1244,7 @@ pub(crate) mod tests {
             .unwrap();
         assert!(made.success());
         let path = "mirror/land.copernicus.eu/api/en/products/corine-land-cover/clc2018/clc.zip";
-        let ids = r#""clms_dataset_uid": "0407d497d3c44bcd93ce8fd5bf78596a", "clms_file_id": "3d9e2413-46ca-4f6e-abf8-b6eb429a4e48", "#;
+        let ids = r#""version": "2026-10-28", "clms_dataset_uid": "0407d497d3c44bcd93ce8fd5bf78596a", "clms_file_id": "3d9e2413-46ca-4f6e-abf8-b6eb429a4e48", "#;
         archive(&root, &[(path, &std::fs::read(&zip).unwrap())], ids);
         let mut corine = crate::sources::embedded("corine-land-cover").clone();
         corine.credential =

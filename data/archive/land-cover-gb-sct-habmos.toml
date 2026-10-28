@@ -1,0 +1,9 @@
+name = "Habitat Map of Scotland (HabMoS), GeoPackage, EPSG:27700: full map, NVC cleaned, NVC cleaned mosaic"
+sources = ["land-cover-gb-sct"]
+coverage = "Scotland"
+notes = "The land-cover-gb-sct source captures the same data from https://ogc.nature.scot/geoserver/ows."
+urls = [
+  "https://gis-downloads.nature.scot/HABMOS_SCOTLAND_GPKG_27700.zip",
+  "https://gis-downloads.nature.scot/HABMOS-NVC-CLEANED_SCOTLAND_GPKG_27700.zip",
+  "https://gis-downloads.nature.scot/HABMOS-NVC-CLEANED-MOS_SCOTLAND_GPKG_27700.zip",
+]

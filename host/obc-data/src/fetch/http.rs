@@ -39,6 +39,9 @@ const ATTEMPTS: u32 = 4;
 const BODY: Duration = Duration::from_secs(15 * 60);
 /// The longest time a HEAD request or a small document may take.
 const SMALL: Duration = Duration::from_secs(15);
+/// The longest time a page of a bucket listing may take: a page of 1,000 keys of a busy service.
+/// Chosen, not measured.
+const LISTING: Duration = Duration::from_secs(120);
 /// The longest wait that a server `Retry-After` gets. A server that asks for more does not answer
 /// within the retries of one run, so the download fails sooner and the next run resumes its part.
 const RETRY_AFTER: Duration = Duration::from_secs(60);
@@ -110,6 +113,15 @@ pub struct Http {
     bearer: Option<(String, String)>,
     backoff: Duration,
     archive: Option<Archive>,
+    /// The origin, with a trailing `/`, whose requests are signed for S3, and its keys.
+    s3: Option<(String, S3Keys)>,
+}
+
+/// The keys and the region of an S3 API that signs with AWS Signature Version 4.
+pub struct S3Keys {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub region: String,
 }
 
 enum Failure {
@@ -138,7 +150,7 @@ impl Http {
                 },
             )
             .build();
-        Self { agent: config.into(), bearer: None, backoff: Duration::ZERO, archive: None }
+        Self { agent: config.into(), bearer: None, backoff: Duration::ZERO, archive: None, s3: None }
     }
 
     /// A client with the archive of `OBC_DATA_ARCHIVE`.
@@ -156,12 +168,12 @@ impl Http {
             .timeout_recv_response(Some(Duration::from_secs(60)))
             .timeout_recv_body(Some(BODY))
             .build();
-        Self { agent: config.into(), bearer: None, backoff, archive: None }
+        Self { agent: config.into(), bearer: None, backoff, archive: None, s3: None }
     }
 
     #[cfg(test)]
     pub(crate) fn with_archive(mut self, root: &Path) -> Self {
-        self.archive = Some(Archive::new(root.to_path_buf()));
+        self.archive = Some(Archive::new(vec![root.to_path_buf()]));
         self
     }
 
@@ -177,23 +189,34 @@ impl Http {
         self
     }
 
+    /// Sign the `GET` and `HEAD` requests to this HTTPS origin for S3. A URL must have its path and
+    /// query encoded as S3 needs them, and its query sorted by name.
+    pub fn with_s3(mut self, origin: &str, keys: S3Keys) -> Self {
+        self.s3 = Some((format!("{}/", origin.trim_end_matches('/')), keys));
+        self
+    }
+
     fn authorize(
         &self,
+        method: &str,
         url: &str,
-        request: ureq::RequestBuilder<ureq::typestate::WithoutBody>,
+        mut request: ureq::RequestBuilder<ureq::typestate::WithoutBody>,
     ) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
-        match &self.bearer {
-            Some((origin, token)) if url.starts_with(origin) => {
-                request.header("authorization", format!("Bearer {token}"))
-            }
-            _ => request,
+        if let Some((_, token)) = self.bearer.as_ref().filter(|(origin, _)| url.starts_with(origin.as_str())) {
+            request = request.header("authorization", format!("Bearer {token}"));
         }
+        if let Some((_, keys)) = self.s3.as_ref().filter(|(origin, _)| url.starts_with(origin.as_str())) {
+            for (name, value) in crate::r2::s3::sign_url(keys, method, url, date::now()) {
+                request = request.header(name, value);
+            }
+        }
+        request
     }
 
     /// Size and strong object identity from headers only.
     pub fn headers(&self, url: &str) -> Result<(u64, Option<String>), String> {
         let response = self
-            .authorize(url, self.agent.head(url))
+            .authorize("HEAD", url, self.agent.head(url))
             .config()
             .timeout_global(Some(SMALL))
             .build()
@@ -229,12 +252,20 @@ impl Http {
 
     /// The `Last-Modified` day of `url`, after redirects. A 404 is an error that [`not_found`] knows.
     pub fn modified(&self, url: &str) -> Result<Option<String>, String> {
-        let request = self.agent.head(url).config().timeout_global(Some(SMALL)).build();
+        Ok(self.head(url)?.1)
+    }
+
+    /// The `Content-Length` and the `Last-Modified` day of `url`, after redirects.
+    pub fn head(&self, url: &str) -> Result<(Option<u64>, Option<String>), String> {
+        // The size of the bytes as upstream stores them, as a download asks for them.
+        let request =
+            self.agent.head(url).header("accept-encoding", "identity").config().timeout_global(Some(SMALL)).build();
         let response = request.call().map_err(|e| no_answer("HEAD", url, e))?;
         if !response.status().is_success() {
             return Err(format!("HEAD {url}: HTTP {}", response.status().as_u16()));
         }
-        Ok(header(&response, "last-modified").and_then(|value| date::from_http(&value)))
+        let bytes = header(&response, "content-length").and_then(|value| value.parse().ok());
+        Ok((bytes, header(&response, "last-modified").and_then(|value| date::from_http(&value))))
     }
 
     /// Where `url` redirects to, from one HEAD request.
@@ -259,11 +290,23 @@ impl Http {
 
     /// The status and the body of a small answer, also of one that is no success.
     pub fn answer(&self, url: &str, accept: &str) -> Result<(u16, Vec<u8>), String> {
+        self.answer_within(url, accept, SMALL)
+    }
+
+    /// A page of a bucket listing, which can take longer than a small document.
+    pub fn listing(&self, url: &str) -> Result<String, String> {
+        match self.answer_within(url, "application/xml", LISTING)? {
+            (200..=299, body) => String::from_utf8(body).map_err(|e| format!("GET {url}: {e}")),
+            (status, _) => Err(format!("GET {url}: HTTP {status}")),
+        }
+    }
+
+    fn answer_within(&self, url: &str, accept: &str, timeout: Duration) -> Result<(u16, Vec<u8>), String> {
         let request = self
-            .authorize(url, self.agent.get(url))
+            .authorize("GET", url, self.agent.get(url))
             .header("accept", accept)
             .config()
-            .timeout_global(Some(SMALL))
+            .timeout_global(Some(timeout))
             .build();
         let mut response = request.call().map_err(|e| no_answer("GET", url, e))?;
         let status = response.status().as_u16();
@@ -363,7 +406,7 @@ impl Http {
             && (saved.is_some() || expect.sha256.is_some())
             && expect.etag.is_none_or(|want| saved.as_deref() == Some(want));
         // The bytes as upstream stores them: a decoded body has no ranges and another digest.
-        let mut request = self.authorize(url, self.agent.get(url)).header("accept-encoding", "identity");
+        let mut request = self.authorize("GET", url, self.agent.get(url)).header("accept-encoding", "identity");
         if let Some(etag) = expect.etag {
             request = request.header("if-match", etag);
         }

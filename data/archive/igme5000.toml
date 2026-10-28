@@ -1,0 +1,4 @@
+name = "IGME 5000, International Geological Map of Europe 1:5 000 000, shapefile"
+sources = ["igme5000"]
+coverage = "Europe"
+urls = ["https://download.bgr.de/bgr/Geologie/IGME5000/shp/IGME5000.zip"]

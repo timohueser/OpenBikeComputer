@@ -1053,7 +1053,8 @@ fetch = { kind = "capture", url = "https://mapas.igme.es/gis/rest/services/Carto
 extent = [-10, 35, 5, 44]
 version = "date"
 refresh = "manual"
-keep = "archive"
+# IGME gives the whole GEODE map only on request and against a fee, so the store keeps the captures.
+keep = "store"
 redistribute = true
 
 # The source of data/trailview/ecoregions.json; its borders are Natural Earth's.
