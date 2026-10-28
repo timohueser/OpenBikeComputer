@@ -195,7 +195,7 @@ fn splice_paces_all_waypoints_and_refuses_source_failure_after_seams() {
     let di = RouteIndex::read(&SliceSource(&detour)).unwrap();
     let (orig, det) = (Source::new(&original), Source::new(&detour));
     let (o, d) = (RouteReader::new(&oi, &orig), RouteReader::new(&di, &det));
-    let mut state = Splicer::new(Leg::Detour, 250, 1300, di.total_distance_m, true, "Paced");
+    let mut state = Splicer::new(Leg::Detour, 250, 1300, "Paced");
     let mut sink = Sink::default();
     let mut completed = None;
     for _ in 0..90 {
@@ -218,7 +218,7 @@ fn splice_paces_all_waypoints_and_refuses_source_failure_after_seams() {
         let source = Source::new(&original);
         source.fail_at.set(Some(fault));
         let orig = RouteReader::new(&oi, &source);
-        let mut state = Splicer::new(Leg::Detour, 250, 1300, di.total_distance_m, true, "Paced");
+        let mut state = Splicer::new(Leg::Detour, 250, 1300, "Paced");
         let mut sink = Sink::default();
         let failed = loop {
             match state.step(&orig, &d, &mut sink) {
