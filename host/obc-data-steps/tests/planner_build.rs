@@ -105,6 +105,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     fetched(&store, "geofabrik-index", "1", Vec::new(), "index.json", &serde_json::to_vec(&index).unwrap());
     let pbf = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/planner.osm.pbf")).unwrap();
     fetched(&store, "geofabrik-extracts", DAY, area(), &format!("{AREA}-261001.osm.pbf"), &pbf);
+    fetched(&store, "terrain-osm", DAY, area(), &format!("{AREA}-261001.osm.pbf"), &pbf);
     // The tile list names no tile: the region is sea to GLO-30, so the layers read no tile.
     fetched(&store, TILE_LIST, "1", Vec::new(), "tileList.txt", b"");
 

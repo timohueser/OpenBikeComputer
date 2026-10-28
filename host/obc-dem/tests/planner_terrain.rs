@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use obc_data::engine::Request;
-use obc_dem::step::{planner_terrain, GLO30};
+use obc_dem::step::{planner_terrain, GLO30, OSM};
 
 const STEM: &str = "Copernicus_DSM_COG_10_N46_00_E008_00_DEM";
 /// Around the Grimsel Pass, inside the one tile.
@@ -40,12 +40,11 @@ fn bake(temp: &Path, name: &str, osm: Option<&Path>) -> (Vec<u8>, Vec<u8>) {
     assert!(command.status().unwrap().success());
 
     let files = BTreeMap::from([(format!("{STEM}/{STEM}.tif"), tile)]);
-    let layers =
-        osm.map(|osm| ("planner/osm".to_string(), BTreeMap::from([("osm.pbf".to_string(), osm.to_path_buf())])));
+    let extracts = osm.map(|osm| (OSM.to_string(), BTreeMap::from([("area.osm.pbf".to_string(), osm.to_path_buf())])));
     let request = Request {
         step: "planner/terrain".into(),
-        snapshots: BTreeMap::from([(GLO30.to_string(), files)]),
-        layers: layers.into_iter().collect(),
+        snapshots: [(GLO30.to_string(), files)].into_iter().chain(extracts).collect(),
+        layers: BTreeMap::new(),
         layer_files: BTreeMap::new(),
         options: serde_json::json!({
             "bounds": BOUNDS,
