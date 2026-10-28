@@ -1,0 +1,14 @@
+{
+ "name": "Cotswold stone house",
+ "extends": "british-stone-cottage",
+ "about": "Honey-coloured limestone under a steep roof of grey stone slate, with gabled dormers and a stack at each gable: the Cotswolds.",
+ "pitch": [50, 56],
+ "verge": 0.1,
+ "dormers": true,
+ "palette": {
+  "render": ["#d6b177", "#cba66b", "#ddbd86", "#c69f63"],
+  "roof": ["#8a857a", "#7d786e", "#948e82"],
+  "plinth": "#a88d62",
+  "chimney": "#cba66b"
+ }
+}

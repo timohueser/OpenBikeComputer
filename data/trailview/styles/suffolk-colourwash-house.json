@@ -1,0 +1,16 @@
+{
+ "name": "Suffolk colourwash house",
+ "extends": "cottage",
+ "about": "Timber-framed and rendered over, washed white, cream, Suffolk pink or ochre, under a steep roof of red plain tile with a brick stack: Suffolk and north Essex.",
+ "pitch": [48, 55],
+ "eave": 0.3,
+ "verge": 0.15,
+ "chimneys": 1,
+ "palette": {
+  "render": ["#f4f1e8", "#efe2bf", "#e7b2a0", "#dc9c88", "#dcb15e", "#f4f1e8"],
+  "roof": ["#a2543a", "#954b31", "#ae5e41"],
+  "door": ["#2f3f5a", "#3f5a3a", "#2e2b29", "#6b4e36"],
+  "plinth": "#6f6a62",
+  "chimney": "#8e4431"
+ }
+}

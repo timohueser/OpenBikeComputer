@@ -1,0 +1,8 @@
+{
+ "name": "Highland dormer cottage",
+ "extends": "highland-cottage",
+ "about": "The cottage of one and a half storeys, white harled or grey granite under a steep slate roof, with two or three gabled dormers on the front: the Highlands and the north-east of Scotland.",
+ "pitch": [45, 52],
+ "storeys": 1,
+ "dormers": true
+}

@@ -19,10 +19,11 @@ struct Plants {
     above: f32,
 }
 
-// Per material code (4 to a vec4) its cover, as COVER_ORDER of ground/rules.ts, and MOOR at bit 8.
+// Per material code (4 to a vec4) its cover, as COVER_ORDER of ground/rules.ts, MOOR at bit 8, and
+// at bit 16 the share of its cover's shrubs that stand on it in 255ths.
 // Then per region REGION_WORDS vec4: its flags (MOOR_REGION), its ground plants, its shrubs.
 // A ground plant: the first of its SEEDS models; the covers that it grows on as bits, HABITAT_MOOR,
-// HABITAT_LUSH, CLUMPED; its share (bits of an f32); its heights in metres (f16 pair). A shrub: its
+// HABITAT_LUSH, CLUMPED, and the salt of its stands at bit 16; its share (bits of an f32); its heights in metres (f16 pair). A shrub: its
 // model; its elevation band (f16 pair); its weight (bits of an f32); its heights (f16 pair). A model of
 // NO_PLANT ends a list.
 struct Data {
@@ -149,7 +150,7 @@ fn ground_plants(@builtin(global_invocation_id) id: vec3u) {
         } else if (moor && (p.y & HABITAT_LUSH) != 0u) {
             grows = !heath && on;
         }
-        let share = bitcast<f32>(p.z) * select(1.0, 2.5 * smoothstep(0.55, 0.7, stand_of(u, f32(k))), (p.y & CLUMPED) != 0u);
+        let share = bitcast<f32>(p.z) * select(1.0, 2.5 * smoothstep(0.55, 0.7, stand_of(u, f32(p.y >> 16u))), (p.y & CLUMPED) != 0u);
         if (grows && plant_hash(cell, 10u + k) < share) {
             pick = p.x & 0xffffu;
             plant = p;
@@ -191,9 +192,10 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
     if ((ground.b + 1u) * REGION_WORDS > arrayLength(&data.regions)) {
         return;
     }
-    let cover = cover_of(ground.r) & 255u;
+    let material = cover_of(ground.r);
+    let cover = material & 255u;
     // Bare ground is mostly "bare or sparse vegetation": scattered shrubs, a third as dense.
-    let share = select(select(0.0, SHRUB_SHARE / 3.0, cover == COVER_BARE), SHRUB_SHARE, cover == COVER_SHRUB);
+    let share = select(select(0.0, SHRUB_SHARE / 3.0, cover == COVER_BARE), SHRUB_SHARE, cover == COVER_SHRUB) * f32((material >> 16u) & 255u) / 255.0;
     let size = grown(smoothstep(SHRUB_M, SHRUB_M - SHRUB_EDGE_M, d), plant_hash(cell, 9u));
     if (plant_hash(cell, 3u) > share || size <= 0.0) {
         return;

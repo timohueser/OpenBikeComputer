@@ -1,0 +1,13 @@
+{
+ "name": "Icelandic farmhouse",
+ "extends": "nordic-painted-house",
+ "about": "Walls of corrugated iron painted white, cream, pale yellow or red, with white window frames over a low concrete base, under a corrugated roof painted red, green or blue; the farm sheds are long and of the same iron: Iceland.",
+ "palette": {
+  "wood": ["#efeee8", "#efeee8", "#ece3c8", "#e8d48c", "#a83a2c"],
+  "roof": ["#a8392c", "#962f26", "#4f7d5a", "#3f6a8f"],
+  "shutter": ["#f4f3ee"],
+  "door": ["#3f6a8f", "#a8392c", "#4f5a52"],
+  "plinth": "#8f8d88",
+  "chimney": "#b5b2ab"
+ }
+}

@@ -1,0 +1,17 @@
+{
+ "name": "Provençal house",
+ "extends": "village-house",
+ "about": "The mas and the village house of two storeys, rendered ochre, pink, apricot or cream or of pale stone, with shutters painted blue, green, lavender or grey, under a low roof of red-orange round tile with a short overhang: Provence and the Var.",
+ "pitch": [18, 24],
+ "eave": 0.3,
+ "verge": 0.15,
+ "storeys": 2,
+ "palette": {
+  "render": ["#e0b46a", "#e6a98c", "#eebf8f", "#f1e2c2", "#ead2a4", "#d9cdb4"],
+  "roof": ["#c46a42", "#b85f3c", "#cc7448", "#b0653f"],
+  "door": ["#5e7d9a", "#5f8060", "#8a7ca0", "#6b4e36"],
+  "shutter": ["#6f93b5", "#6c9270", "#9888b0", "#9aa0a0", "#5e7d9a"],
+  "plinth": "#b9a888",
+  "chimney": "#e8d6b2"
+ }
+}

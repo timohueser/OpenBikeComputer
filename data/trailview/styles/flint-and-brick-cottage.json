@@ -1,0 +1,10 @@
+{
+ "name": "Flint and brick cottage",
+ "extends": "english-brick-cottage",
+ "about": "Panels of grey knapped flint with corners, piers and bands of red brick on the upper floors, under dark plain tile: the chalk downs of Sussex, Hampshire and the Chilterns.",
+ "timber": "frame",
+ "palette": {
+  "render": ["#7d7b76", "#8a8780", "#74726d"],
+  "wood": ["#9b4a35", "#8e4431", "#a65640"]
+ }
+}

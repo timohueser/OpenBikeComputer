@@ -14,7 +14,7 @@ export default {
   bark: ['#4e4842', '#736a60'],
   leaves: {
     winter: 'bare',
-    spring: ['#5a722e', '#86a240', '#bed070'],
+    spring: ['#576a36', '#748745', '#a1b254'],
     summer: ['#2b3d19', '#425c25', '#71813b'],
     autumn: ['#6a4e22', '#9a702e', '#c49646'],
   },

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EXTENT, type Feature } from '../stream/features';
 import { metresPerUnit } from '../terrain/bins';
-import { BARN, CHURCH, FARMHOUSE, INDUSTRIAL, OUTLINE, OUTLINE_WORDS, RECORD_WORDS, TEMPLATE, tileHouses } from './house-records';
+import { BARN, CHURCH, FARMHOUSE, GRANARY, GREENHOUSE, INDUSTRIAL, OUTLINE, OUTLINE_WORDS, RECORD_WORDS, TEMPLATE, tileHouses } from './house-records';
 
 /** A zoom 13 tile at Wengen; 8 world units per tile unit. */
 const TILE = { level: 13, x: 4276, y: 2907 };
@@ -33,34 +33,43 @@ describe('the house records of a feature tile', () => {
         expect(Math.abs(Math.sin(floats[2]))).toBeCloseTo(Math.sin(0.5), 2);
         expect(floats[3] / metres).toBeCloseTo(400, -1);
         expect(floats[4] / metres).toBeCloseTo(160, -1);
-        expect(records[7] & 7).toBe(CHURCH);
-        expect((records[7] >> 5) & 1).toBe(TEMPLATE);
+        expect(records[7] & 15).toBe(CHURCH);
+        expect((records[7] >> 6) & 1).toBe(TEMPLATE);
     });
 
     it('covers a footprint whose sides meet at right angles with rectangles that share its seed, and draws any other along its outline', () => {
         const ell = [3000, 3000, 3100, 3000, 3100, 3030, 3030, 3030, 3030, 3100, 3000, 3100];
         const { records } = tileHouses([building('barn', ell)], TILE);
         expect(records.length).toBe(2 * RECORD_WORDS);
-        expect((records[7] >> 5) & 1).toBe(TEMPLATE);
+        expect((records[7] >> 6) & 1).toBe(TEMPLATE);
         expect(records[7] >> 16).toBe(records[RECORD_WORDS + 7] >> 16);
         const floats = new Float32Array(records.buffer), metres = 8 * metresPerUnit(TILE.y * EXTENT * 8 + 3050 * 8);
         // Both arms of the L, whole: they overlap in its corner.
         expect([floats[3], floats[RECORD_WORDS + 3]].map(L => Math.round(L / metres)).sort()).toEqual([100, 100]);
         const star = [3000, 3000, 3060, 3040, 3100, 3000, 3070, 3060, 3100, 3100, 3050, 3070, 3000, 3100, 3030, 3050];
         const { records: one, outlines } = tileHouses([building('barn', star)], TILE);
-        expect((one[7] >> 5) & 1).toBe(OUTLINE);
-        expect(one[7] & 7).toBe(BARN);
+        expect((one[7] >> 6) & 1).toBe(OUTLINE);
+        expect(one[7] & 15).toBe(BARN);
         // Six vertices of wall per edge, and three per roof triangle.
         expect(outlines.length / OUTLINE_WORDS).toBe(6 * 8 + 3 * 6);
     });
 
     it('draws a building in an industrial area as a hall, and the buildings of a farmyard as its house and its barns', () => {
         const kind = (tags: Record<string, string>, side: number) =>
-            tileHouses([{ ...building('yes', rectangle(4000, 4000, side, side, 0)), tags: { building: 'yes', ...tags } }], TILE).records[7] & 7;
+            tileHouses([{ ...building('yes', rectangle(4000, 4000, side, side, 0)), tags: { building: 'yes', ...tags } }], TILE).records[7] & 15;
         // A tile unit is about 0.2 m at Wengen: 60 units square are about 150 m², 300 units about 3800 m².
         expect(kind({ landuse: 'industrial' }, 100)).toBe(INDUSTRIAL);
         expect(kind({ building: 'warehouse' }, 100)).toBe(INDUSTRIAL);
         expect(kind({ landuse: 'farmyard' }, 60)).toBe(FARMHOUSE);
         expect(kind({ landuse: 'farmyard' }, 300)).toBe(BARN);
+    });
+
+    it('raises a small granary on pillars and keeps a large one a barn; a greenhouse is a greenhouse at any size', () => {
+        const kind = (tag: string, side: number) => tileHouses([building(tag, rectangle(4000, 4000, side, side, 0))], TILE).records[7] & 15;
+        // 36 units square are about 54 m², 40 units about 67 m².
+        expect(kind('granary', 36)).toBe(GRANARY);
+        expect(kind('horreo', 40)).toBe(BARN);
+        expect(kind('greenhouse', 20)).toBe(GREENHOUSE);
+        expect(kind('greenhouse', 300)).toBe(GREENHOUSE);
     });
 });
