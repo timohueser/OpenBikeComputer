@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import fcntl
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from stat import S_ISDIR
 
 
 SECONDS_PER_DAY = 24 * 60 * 60
+UNIT_HASH = re.compile(r"[0-9a-f]{16}")
 
 
 class CleanupError(RuntimeError):
@@ -165,7 +167,8 @@ def cargo_target(value: str | None) -> Path | None:
 def last_use(entry: Path) -> tuple[float, int]:
     """Return (newest use, bytes) of a file or a whole directory tree.
 
-    Use is the later of atime and mtime: reading a file updates atime (daily under relatime).
+    Use is the later of atime and mtime: reading a file updates atime (daily under relatime,
+    so `--days` below 2 can prune a unit in use).
     A directory counts by mtime only, because this walk updates its atime.
     """
     info = entry.lstat()
@@ -182,9 +185,13 @@ def last_use(entry: Path) -> tuple[float, int]:
     return newest, size
 
 
-def unit_hash(entry: Path) -> str:
-    """`serde-<hash>`, `libserde-<hash>.rlib` and `serde-<hash>.d` share one unit hash."""
-    return entry.name.split(".", 1)[0].rpartition("-")[2]
+def unit_hash(entry: Path) -> str | None:
+    """`serde-<hash>`, `libserde-<hash>.rlib` and `serde-<hash>.d` share one unit hash.
+
+    Cargo leaves the hash out of some outputs, such as a path package's cdylib.
+    """
+    tail = entry.name.split(".", 1)[0].rpartition("-")[2]
+    return tail if UNIT_HASH.fullmatch(tail) else None
 
 
 @contextlib.contextmanager
@@ -198,7 +205,11 @@ def build_lock(lock: Path, apply: bool) -> Iterator[bool]:
     if not apply:
         yield True
         return
-    fd = os.open(lock, os.O_RDONLY)
+    try:
+        fd = os.open(lock, os.O_RDONLY)
+    except OSError:  # A concurrent `cargo clean` can remove the profile.
+        yield False
+        return
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -240,17 +251,20 @@ def prune_cargo_target(
                     continue
                 entries = size = 0
                 for entry in sorted(top.iterdir()):
+                    unit = unit_hash(entry)
                     try:
                         used, entry_size = last_use(entry)
                     except OSError:
-                        alive.add(unit_hash(entry))
+                        if unit:
+                            alive.add(unit)
                         continue
                     if name in ("build", "deps"):
-                        keep = unit_hash(entry) in alive
+                        # Cargo overwrites an output without a hash in place; it never piles up.
+                        keep = unit is None or unit in alive
                     else:
                         keep = used > cutoff
-                        if keep and name == ".fingerprint":
-                            alive.add(unit_hash(entry))
+                        if keep and unit and name == ".fingerprint":
+                            alive.add(unit)
                     if keep:
                         continue
                     if apply:
@@ -273,7 +287,12 @@ def parser() -> argparse.ArgumentParser:
         )
     )
     result.add_argument("--apply", action="store_true", help="remove eligible entries")
-    result.add_argument("--days", type=int, default=7, help="minimum inactivity age (default: 7)")
+    result.add_argument(
+        "--days",
+        type=int,
+        default=7,
+        help="minimum inactivity age (default: 7; below 2 can prune cargo units in use)",
+    )
     result.add_argument("--repo", type=Path, help=argparse.SUPPRESS)
     return result
 
@@ -299,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
     for path, (entries, size) in artifacts.items():
         print(f"  REMOVE {format_size(size):>10}  {entries} entries in {path}")
     for profile in busy:
-        print(f"  SKIP   {profile}: a cargo build holds its lock")
+        print(f"  SKIP   {profile}: cargo holds its lock")
     # An upper bound: a hard link outside the removed entries keeps its inode.
     reclaimable = sum(sizes.values()) + sum(size for _, size in artifacts.values())
     print(f"Potentially reclaimable: up to {format_size(reclaimable)}")

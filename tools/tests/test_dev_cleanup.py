@@ -127,11 +127,11 @@ class DevCleanupTests(unittest.TestCase):
                 {
                     "CACHEDIR.TAG": (old, old),
                     "debug/.cargo-lock": (old, old),
-                    "debug/.fingerprint/old-1/lib-old": (old, old),
-                    "debug/deps/libold-1.rlib": (old, old),
+                    "debug/.fingerprint/old-1111111111111111/lib-old": (old, old),
+                    "debug/deps/libold-1111111111111111.rlib": (old, old),
                 },
             )
-            old_rlib = target / "debug" / "deps" / "libold-1.rlib"
+            old_rlib = target / "debug" / "deps" / "libold-1111111111111111.rlib"
 
             output = io.StringIO()
             with (
@@ -196,29 +196,33 @@ class DevCleanupTests(unittest.TestCase):
                 {
                     "debug/.cargo-lock": (old, old),
                     # Every build reads the fingerprint but only stats the other outputs.
-                    "debug/.fingerprint/live-1/lib-live": (now, old),
-                    "debug/build/live-1/out/gen.rs": (old, old),
-                    "debug/deps/liblive-1.rmeta": (old, old),
-                    "debug/.fingerprint/stale-2/lib-stale": (old, old),
-                    "debug/build/stale-2/output": (old, old),
-                    "debug/deps/libstale-2.rlib": (old, old),
-                    "debug/deps/stale-2.d": (old, old),
+                    "debug/.fingerprint/live-1111111111111111/lib-live": (now, old),
+                    "debug/build/live-1111111111111111/out/gen.rs": (old, old),
+                    "debug/deps/liblive-1111111111111111.rmeta": (old, old),
+                    "debug/.fingerprint/stale-2222222222222222/lib-stale": (old, old),
+                    "debug/build/stale-2222222222222222/output": (old, old),
+                    "debug/deps/libstale-2222222222222222.rlib": (old, old),
+                    "debug/deps/stale-2222222222222222.d": (old, old),
                     "debug/obc-data": (old, old),
-                    "debug/incremental/stale-3/s-1/dep-graph.bin": (old, old),
-                    "debug/incremental/live-4/s-2/dep-graph.bin": (now, now),
-                    "debug/incremental/live-4/s-2/object.o": (old, old),
+                    # Cargo leaves the hash out of a path package's cdylib and overwrites it.
+                    "debug/deps/libcdy_lib.so": (old, old),
+                    "debug/deps/cdy_lib.d": (old, old),
+                    f"{wasm}/deps/cdy_lib.wasm": (old, old),
+                    "debug/incremental/stale-3333333333333333/s-1/dep-graph.bin": (old, old),
+                    "debug/incremental/live-4444444444444444/s-2/dep-graph.bin": (now, now),
+                    "debug/incremental/live-4444444444444444/s-2/object.o": (old, old),
                     f"{wasm}/.cargo-lock": (old, old),
-                    f"{wasm}/.fingerprint/w-5/lib-w": (old, old),
+                    f"{wasm}/.fingerprint/w-5555555555555555/lib-w": (old, old),
                     # A profile without `.cargo-lock` is not cargo's.
-                    "doc/.fingerprint/d-6/lib-d": (old, old),
-                    "doc/deps/libd-6.rlib": (old, old),
+                    "doc/.fingerprint/d-6666666666666666/lib-d": (old, old),
+                    "doc/deps/libd-6666666666666666.rlib": (old, old),
                 },
             )
-            outside_file = Path(outside) / "w-5" / "output"
+            outside_file = Path(outside) / "w-5555555555555555" / "output"
             outside_file.parent.mkdir()
             outside_file.write_text("x")
             os.utime(outside_file, (old, old))
-            (target / wasm / "build").symlink_to(outside_file.parent.parent, target_is_directory=True)
+            (target / wasm / "build").symlink_to(outside, target_is_directory=True)
             cutoff = now - 7 * cleanup.SECONDS_PER_DAY
             expected = (
                 {
@@ -232,25 +236,28 @@ class DevCleanupTests(unittest.TestCase):
             )
 
             self.assertEqual(cleanup.prune_cargo_target(target, cutoff, apply=False), expected)
-            self.assertTrue((target / "debug" / "deps" / "libstale-2.rlib").exists())
+            self.assertTrue((target / "debug" / "deps" / "libstale-2222222222222222.rlib").exists())
 
             self.assertEqual(cleanup.prune_cargo_target(target, cutoff, apply=True), expected)
             for gone in (
-                "debug/.fingerprint/stale-2",
-                "debug/build/stale-2",
-                "debug/deps/libstale-2.rlib",
-                "debug/deps/stale-2.d",
-                "debug/incremental/stale-3",
-                f"{wasm}/.fingerprint/w-5",
+                "debug/.fingerprint/stale-2222222222222222",
+                "debug/build/stale-2222222222222222",
+                "debug/deps/libstale-2222222222222222.rlib",
+                "debug/deps/stale-2222222222222222.d",
+                "debug/incremental/stale-3333333333333333",
+                f"{wasm}/.fingerprint/w-5555555555555555",
             ):
                 self.assertFalse((target / gone).exists(), gone)
             for kept in (
-                "debug/.fingerprint/live-1/lib-live",
-                "debug/build/live-1/out/gen.rs",
-                "debug/deps/liblive-1.rmeta",
+                "debug/.fingerprint/live-1111111111111111/lib-live",
+                "debug/build/live-1111111111111111/out/gen.rs",
+                "debug/deps/liblive-1111111111111111.rmeta",
                 "debug/obc-data",
-                "debug/incremental/live-4/s-2/object.o",
-                "doc/deps/libd-6.rlib",
+                "debug/deps/libcdy_lib.so",
+                "debug/deps/cdy_lib.d",
+                f"{wasm}/deps/cdy_lib.wasm",
+                "debug/incremental/live-4444444444444444/s-2/object.o",
+                "doc/deps/libd-6666666666666666.rlib",
             ):
                 self.assertTrue((target / kept).exists(), kept)
             self.assertTrue(outside_file.exists())
@@ -262,8 +269,8 @@ class DevCleanupTests(unittest.TestCase):
                 Path(scratch),
                 {
                     "debug/.cargo-lock": (old, old),
-                    "debug/.fingerprint/old-1/lib-old": (old, old),
-                    "debug/deps/libold-1.rlib": (old, old),
+                    "debug/.fingerprint/old-1111111111111111/lib-old": (old, old),
+                    "debug/deps/libold-1111111111111111.rlib": (old, old),
                 },
             )
             cutoff = time.time() - 7 * cleanup.SECONDS_PER_DAY
@@ -272,7 +279,7 @@ class DevCleanupTests(unittest.TestCase):
                 self.assertEqual(
                     cleanup.prune_cargo_target(target, cutoff, apply=True), ({}, [target / "debug"])
                 )
-            self.assertTrue((target / "debug" / "deps" / "libold-1.rlib").exists())
+            self.assertTrue((target / "debug" / "deps" / "libold-1111111111111111.rlib").exists())
             self.assertEqual(
                 cleanup.prune_cargo_target(target, cutoff, apply=True)[0],
                 {target / "debug" / ".fingerprint": (1, 1), target / "debug" / "deps": (1, 1)},
