@@ -2326,10 +2326,9 @@ impl App {
         }
     }
 
-    /// What the Up-ahead timeline is scoped to right now: the live category filter and the
-    /// persisted source preference. One value, so the two halves cannot reach the runtime apart.
+    /// What the Up-ahead timeline is scoped to right now: the live category filter.
     pub(crate) fn up_ahead_scope(&self) -> crate::corridor::UpAheadScope {
-        crate::corridor::UpAheadScope { filter: self.state.up_ahead_filter, source: self.settings.up_ahead_source }
+        crate::corridor::UpAheadScope { filter: self.state.up_ahead_filter }
     }
 
     /// The [`ContextMenu`](crate::screen::ContextMenu) the base screen declares. It reads the

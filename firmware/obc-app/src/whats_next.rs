@@ -810,12 +810,7 @@ mod tests {
 
     fn settle(a: &mut AheadState, map: Option<&Reader>, route: &RouteReader) {
         for _ in 0..10_000 {
-            a.prepare(
-                map,
-                Some(route),
-                UpAheadScope { filter: DEFAULT_FILTER, source: crate::settings::UpAheadSource::Both },
-                None,
-            );
+            a.prepare(map, Some(route), UpAheadScope { filter: DEFAULT_FILTER }, None);
             if !a.pending() {
                 return;
             }

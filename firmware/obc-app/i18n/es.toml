@@ -43,11 +43,6 @@ none_sub = "Sin paradas en ruta"
 none_category_sub = "Nada de este tipo"
 no_route_sub = "Carga una ruta"
 
-[up_ahead_source]
-both = "Ambos"
-waypoints = "Puntos"
-map_pois = "POI mapa"
-
 # --- Units: the `Units` enum names ---
 [units]
 metric = "Métrico"

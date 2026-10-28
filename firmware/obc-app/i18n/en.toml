@@ -59,14 +59,6 @@ none_sub = "No stops on route"
 none_category_sub = "None of this kind"
 no_route_sub = "Load a route first"
 
-# --- UpAheadSource enum labels (epic #946 U4; the Up-ahead sheet's Sources row since #1515 D4a).
-# --- Short by necessity: the value shares its row with the label at 240 px, so the ring's three
-# --- words carry the "only" the epic spells out.
-[up_ahead_source]
-both = "Both"
-waypoints = "Waypoints"
-map_pois = "Map POIs"
-
 # --- Units: the `Units` enum names ---
 [units]
 metric = "Metric"
