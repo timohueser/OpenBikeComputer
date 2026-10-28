@@ -153,7 +153,8 @@ mod tests {
     }
 
     /// A tile of the version before is a window of its mean block: tile 4812/4222 is the south row
-    /// and the third column of block 1203/1055. Each value is unique, so a flip or a shift fails.
+    /// and the third column of block 1203/1055. A pixel holds its index in the block modulo 10^6,
+    /// so a flip or a shift of the window reads other values at the samples.
     #[test]
     fn the_samples_of_a_tile_of_the_version_before_are_those_of_its_window_of_the_mean_block() {
         use tiff::encoder::{colortype::GrayI32, TiffEncoder};

@@ -155,6 +155,10 @@ in_turn() {  # JOBS COMMAND…
   while (( $(jobs -rp | wc -l) >= $1 )); do wait -n; done
   "${@:2}" &
 }
+# Waits for each job that runs; under `set -e`, the first that fails ends the script.
+drain() {
+  while [[ -n $(jobs -rp) ]]; do wait -n; done
+}
 
 # Three LiDAR blocks at a time, as the prepare runs them; each writes `10/<x>/<y>.tif`.
 _say "forest reference of $DETAIL"
@@ -164,7 +168,7 @@ while read -r block cells; do
   # shellcheck disable=SC2086 # the tiles are words
   in_turn 3 "${PY[@]}" -m tools.forest_reference fetch $cells --block "$block" --out "$OUT/forest"
 done < <(tiles forest "$DETAIL")
-wait
+drain
 
 _say "terrain reference of $DETAIL"
 while read -r block cells; do
@@ -174,7 +178,7 @@ while read -r block cells; do
   in_turn 2 "${PY[@]}" host/obc-dem/reference/ingest.py fetch $cells --block "$block" \
     --work "$OUT/reference-raw/$block" --out "$OUT/reference" --shared "$OUT/reference-shared"
 done < <(tiles terrain "$DETAIL")
-wait
+drain
 # The index of the blocks, and the mean archive of their tiles as `planner/reference` cuts it.
 python3 - "$OUT/reference" <<'EOF'
 import json, pathlib, sys

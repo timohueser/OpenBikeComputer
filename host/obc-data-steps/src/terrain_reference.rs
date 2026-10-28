@@ -694,6 +694,58 @@ esac
         assert_eq!(again, [fetch.clone(), "index-terrain over".into()]);
     }
 
+    /// `dtm-zz` has an area and a tile in block 1200/1058 too; `dtm-far` is far from the block.
+    const MORE: &str = r#"
+        [[source]]
+        id = "dtm-zz"
+        kind = "data"
+        licence = "CC0-1.0"
+        attribution = "Test"
+        fetch = { kind = "dtm", url = "https://example.org/zz" }
+        extent = [9.15, 46.2, 9.3, 46.3]
+        areas = ["europe/zz"]
+        version = "date"
+        keep = "prepared"
+        redistribute = true
+
+        [[source]]
+        id = "dtm-far"
+        kind = "data"
+        licence = "CC0-1.0"
+        attribution = "Test"
+        fetch = { kind = "dtm", url = "https://example.org/far" }
+        extent = [20.0, 60.0, 21.0, 61.0]
+        version = "date"
+        keep = "prepared"
+        redistribute = true
+    "#;
+
+    #[test]
+    fn the_review_names_the_models_of_the_blocks_of_the_boxes_with_the_polygons_of_their_areas() {
+        let fixture = Fixture::with("terrain-plan", &format!("{EAST}\n{MORE}"));
+        let (store, http) = (Store::at(fixture.temp.0.join("plan-store")), Http::new());
+        let planning = obc_data::prepared::Planning { store: &store, http: &http, sources: &fixture.sources };
+        let terrain = fixture.sources.iter().find(|source| source.id == ID).unwrap();
+        let producer = TerrainReference { ingest: script, glo30: sea };
+        // The box meets only block 1200/1058, which holds tiles of `xx`, `yy` and `zz`.
+        let plan = producer.plan(&planning, terrain, boxed(8.95, 46.30, 9.00, 46.35).as_ref(), &[]).unwrap();
+        let named: Vec<String> = plan
+            .inputs
+            .iter()
+            .map(|input| {
+                let params: Vec<String> =
+                    input.wanted.params.iter().map(|(key, value)| format!("{key}={value}")).collect();
+                [input.wanted.source.clone(), params.join(",")].join(" ").trim().to_string()
+            })
+            .collect();
+        assert_eq!(named, ["dtm-xx", "dtm-yy", "dtm-zz", "geofabrik-poly area=europe/zz"]);
+        assert_eq!(plan.files, Some(3), "the two pools of one block and the index");
+        // Without boxes, the run reads the polygons of the region: the review cannot count the files.
+        let geofabrik = "name = \"G\"\nkind = \"geofabrik\"\nareas = [\"europe/zz\"]\n".to_string();
+        let scope = Scope { region: "g".into(), definitions: [("g".to_string(), geofabrik)].into() };
+        assert_eq!(producer.plan(&planning, terrain, Some(&scope), &[]).unwrap().files, None);
+    }
+
     #[test]
     fn a_union_has_its_own_countries_else_those_of_its_parts_and_none_when_a_part_names_none() {
         let region = |text: &str| text.to_string();
