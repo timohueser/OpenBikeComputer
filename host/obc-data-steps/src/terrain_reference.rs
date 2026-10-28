@@ -12,14 +12,13 @@ use std::process::Command;
 use obc_bake::coverage::Coverage;
 use obc_data::prepared::{day, Job, Manifest, Plan, Prepared, Scope};
 use obc_data::product::Wanted;
-use obc_data::regions::{Area, Bbox};
-use obc_data::settings::Settings;
+use obc_data::regions::Bbox;
 use obc_data::sources::Source;
 use obc_dem::reference::TILE_LOG2;
 use obc_map_core::grid::CellId;
 
-use crate::device::{box_poly, POLY};
-use crate::prepared_tiles::{self, Tile};
+use crate::device::box_poly;
+use crate::prepared_tiles::{self, outline, outlines, poly, read_on_day, regions, reuse, Tile};
 
 /// The id of the prepared source.
 pub const ID: &str = "terrain";
@@ -76,7 +75,7 @@ impl Prepared for TerrainReference {
             }
             tiles.extend(inside);
             inputs.push(Wanted { source: model.id.clone(), version: None, params: Vec::new() });
-            inputs.extend(model.areas.iter().map(|area| polygon(area, None)));
+            inputs.extend(model.areas.iter().map(|area| poly(area, None)));
         }
         let inputs = inputs.into_iter().map(|wanted| (wanted, None).into()).collect();
         Ok(Plan { inputs, files: Some(2 * tiles.len() as u64 + 2) })
@@ -88,10 +87,9 @@ impl Prepared for TerrainReference {
     /// without a height, so a resume fetches neither again.
     fn prepare(&self, job: &mut Job) -> Result<(), String> {
         let previous = job.extend(self.format())?;
-        let scope = match job.scope.clone() {
-            Some(scope) => Some(scope_tiles(job, &scope)?),
-            None => None,
-        };
+        let outlines = outlines(job)?;
+        let scope: Option<BTreeSet<CellId>> =
+            outlines.map(|outlines| outlines.iter().flat_map(|outline| outline.cells(TILE_LOG2.into())).collect());
         let (boxes, countries) = area(job.scope.as_ref())?;
         // The models of each tile, in the order of `data/sources.toml`.
         let mut keys: BTreeMap<CellId, Vec<String>> = BTreeMap::new();
@@ -100,7 +98,7 @@ impl Prepared for TerrainReference {
             if !model.areas.is_empty() {
                 let mut inside = BTreeSet::new();
                 for area in &model.areas {
-                    inside.extend(area_tiles(job, area)?);
+                    inside.extend(outline(job, area)?.cells(TILE_LOG2.into()));
                 }
                 tiles.retain(|tile| inside.contains(tile));
             }
@@ -142,17 +140,7 @@ impl Prepared for TerrainReference {
             Ok(command)
         })?;
         // A tile that this version did not make is the tile of the version before.
-        if let Some(previous) = &previous {
-            let kept: Vec<String> = previous
-                .files
-                .iter()
-                .map(|file| file.path.clone())
-                .filter(|path| path.ends_with(".tif") && !digests.contains_key(path))
-                .collect();
-            for path in kept {
-                job.reuse(previous, &path)?;
-            }
-        }
+        reuse(job, previous.as_ref(), |path| path.ends_with(".tif") && !digests.contains_key(path))?;
         let marks = job.state.join("tiles");
         let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for tile in tiles.iter().filter(|tile| digests.contains_key(&tile.files[1].0)) {
@@ -191,7 +179,7 @@ impl Prepared for TerrainReference {
                 })
                 .map(|(path, digest)| (path.clone(), digest.clone()))
                 .collect();
-            job.input(&format!("dtm-{model}"), &version, read)?;
+            read_on_day(job, &format!("dtm-{model}"), read)?;
         }
         job.finish(&["index.json".into(), "mean/index.json".into()])
     }
@@ -271,10 +259,6 @@ fn link(object: &Path, path: &Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn polygon(area: &str, version: Option<String>) -> Wanted {
-    Wanted { source: POLY.into(), version, params: vec![("area".into(), area.into())] }
-}
-
 /// The archive tiles that `bbox` meets.
 fn box_tiles(bbox: &Bbox) -> Result<BTreeSet<CellId>, String> {
     Ok(Coverage::parse_poly(&box_poly(bbox))?.cells(TILE_LOG2.into()))
@@ -283,58 +267,6 @@ fn box_tiles(bbox: &Bbox) -> Result<BTreeSet<CellId>, String> {
 fn extent_tiles(source: &Source) -> Result<BTreeSet<CellId>, String> {
     let [west, south, east, north] = source.extent.ok_or_else(|| format!("`{}` has no `extent`", source.id))?;
     box_tiles(&Bbox { west, south, east, north })
-}
-
-/// The archive tiles that the Geofabrik polygon of `area` meets. The first run of a version keeps
-/// the version of each polygon in `state/polygons.json`, so its tiles stay those of the first run.
-fn area_tiles(job: &mut Job, area: &str) -> Result<BTreeSet<CellId>, String> {
-    let pins = job.state.join("polygons.json");
-    let mut versions: BTreeMap<String, String> = match fs::read(&pins) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", pins.display()))?,
-        Err(_) => BTreeMap::new(),
-    };
-    let pinned = versions.get(area).cloned();
-    let (version, files) = job.fetch(&polygon(area, pinned.clone())).map_err(|e| match pinned {
-        Some(_) => format!(
-            "{e}. Fix: the polygon version of the first run is gone: delete {}; the next run starts a new version",
-            job.state.parent().unwrap_or(&job.state).display()
-        ),
-        None => e,
-    })?;
-    if versions.insert(area.into(), version.clone()).as_ref() != Some(&version) {
-        let bytes = serde_json::to_vec(&versions).expect("versions serialize");
-        obc_data::store::write_atomic(&pins, &bytes)?;
-    }
-    let [path] = files.values().collect::<Vec<_>>()[..] else {
-        return Err(format!("a fetch of {POLY} of `{area}` gives {} files, not one", files.len()));
-    };
-    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(Coverage::parse_poly(&text)?.cells(TILE_LOG2.into()))
-}
-
-/// The regions of `scope`, and the id of its region.
-fn regions(scope: &Scope) -> Result<(obc_data::regions::Regions, String), String> {
-    let settings =
-        Settings { region: scope.region.clone(), definitions: scope.definitions.clone(), ..Settings::default() };
-    Ok((settings.regions()?, scope.region.clone()))
-}
-
-/// The archive tiles of the region of `scope`: the box or the polygons of the areas of each part.
-fn scope_tiles(job: &mut Job, scope: &Scope) -> Result<BTreeSet<CellId>, String> {
-    let (regions, id) = regions(scope)?;
-    let mut tiles = BTreeSet::new();
-    for part in regions.leaves(&id)? {
-        match &regions.get(part).expect("a part is a region").area {
-            Area::Box { bbox } => tiles.extend(box_tiles(bbox)?),
-            Area::Geofabrik { areas } => {
-                for area in areas {
-                    tiles.extend(area_tiles(job, area)?);
-                }
-            }
-            Area::Union { .. } => {}
-        }
-    }
-    Ok(tiles)
 }
 
 #[cfg(test)]

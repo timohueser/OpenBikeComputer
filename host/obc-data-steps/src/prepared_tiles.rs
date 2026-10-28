@@ -1,12 +1,20 @@
 //! The tiles of a prepared source that a program of its producer makes, one tile per run of the
-//! program: `terrain` and `forest`.
+//! program: `terrain`, `forest` and `climate`. Also what the producers share around them: the
+//! outlines of the region of a version, the files that a version keeps of the version before, and
+//! the record of what a service gave on the day of a version.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use obc_data::prepared::{Job, Program};
+use obc_bake::coverage::Coverage;
+use obc_data::prepared::{day, Job, Manifest, Program, Scope};
+use obc_data::product::Wanted;
+use obc_data::regions::{Area, Regions};
+use obc_data::settings::Settings;
+
+use crate::device::{box_poly, POLY};
 
 /// The tiles of one upload.
 const BATCH: usize = 64;
@@ -138,4 +146,78 @@ fn add(job: &mut Job, tile: &Tile, batch: &mut Vec<String>) -> Result<(), String
         job.finish(&std::mem::take(batch))?;
     }
     Ok(())
+}
+
+/// The regions of `scope`, and the id of its region.
+pub(crate) fn regions(scope: &Scope) -> Result<(Regions, String), String> {
+    let settings =
+        Settings { region: scope.region.clone(), definitions: scope.definitions.clone(), ..Settings::default() };
+    Ok((settings.regions()?, scope.region.clone()))
+}
+
+/// The fetch of the `geofabrik-poly` polygon of `area`, at `version` or the newest.
+pub(crate) fn poly(area: &str, version: Option<String>) -> Wanted {
+    Wanted { source: POLY.into(), version, params: vec![("area".into(), area.into())] }
+}
+
+/// The outline of each leaf of the region of `job`: its box, or the polygon of each of its areas;
+/// `None` for a version of everything.
+pub(crate) fn outlines(job: &mut Job) -> Result<Option<Vec<Coverage>>, String> {
+    let Some(scope) = job.scope.clone() else { return Ok(None) };
+    let (regions, id) = regions(&scope)?;
+    let mut outlines = Vec::new();
+    for leaf in regions.leaves(&id)? {
+        match &regions.get(leaf).expect("a leaf is a region").area {
+            Area::Box { bbox } => outlines.push(Coverage::parse_poly(&box_poly(bbox))?),
+            Area::Geofabrik { areas } => {
+                for area in areas {
+                    outlines.push(outline(job, area)?);
+                }
+            }
+            Area::Union { .. } => {}
+        }
+    }
+    Ok(Some(outlines))
+}
+
+/// The `geofabrik-poly` polygon of `area`. The first run of a version keeps the version of each
+/// polygon in `state/polygons.json`, so each run of the version reads the polygons of the first.
+pub(crate) fn outline(job: &mut Job, area: &str) -> Result<Coverage, String> {
+    let pins = job.state.join("polygons.json");
+    let mut versions: BTreeMap<String, String> = match fs::read(&pins) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", pins.display()))?,
+        Err(_) => BTreeMap::new(),
+    };
+    let pinned = versions.get(area).cloned();
+    let (version, files) = job.fetch(&poly(area, pinned.clone())).map_err(|e| match pinned {
+        Some(_) => format!(
+            "{e}. Fix: the polygon version of the first run is gone: delete {}; the next run starts a new version",
+            job.state.parent().unwrap_or(&job.state).display()
+        ),
+        None => e,
+    })?;
+    if versions.insert(area.into(), version.clone()).as_ref() != Some(&version) {
+        let bytes = serde_json::to_vec(&versions).expect("versions serialize");
+        obc_data::store::write_atomic(&pins, &bytes)?;
+    }
+    let [path] = files.values().collect::<Vec<_>>()[..] else {
+        return Err(format!("a fetch of {POLY} of `{area}` gives {} files, not one", files.len()));
+    };
+    Coverage::parse_poly(&fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?)
+}
+
+/// Keep each file of the version before for which `keep` holds, without an upload.
+pub(crate) fn reuse(job: &mut Job, previous: Option<&Manifest>, keep: impl Fn(&str) -> bool) -> Result<(), String> {
+    let Some(previous) = previous else { return Ok(()) };
+    for path in previous.files.iter().map(|file| &file.path).filter(|path| keep(path)) {
+        job.reuse(previous, path)?;
+    }
+    Ok(())
+}
+
+/// Record that the prepare read `files`, path to digest, of `source`: a service has no versions of
+/// its own, so the day of the version names what it gave.
+pub(crate) fn read_on_day(job: &mut Job, source: &str, files: BTreeMap<String, String>) -> Result<(), String> {
+    let version = day(&job.version).to_string();
+    job.input(source, &version, files)
 }
