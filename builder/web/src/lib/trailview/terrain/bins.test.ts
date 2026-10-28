@@ -4,11 +4,11 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, EXTENT, unitScale } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
-import { BRIDGE, CELL, CORNER, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL, RAIL_CODE, RECORD, RIVER, ROAD, RULES, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WALK, WARP_M, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, CONE_A, CONE_B, CORE_A, CORE_B, CORNER, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JOIN_A, JOIN_B, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL, RAIL_CODE, RECORD, RIVER, ROAD, RULES, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WALK, WARP_M, type Line, type Profile } from './bins';
 import { cornersOf } from './corners';
 import { LEFT, RIGHT } from './town';
 
-const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
+const shader = ['./paint-core.wgsl', './stamp-core.wgsl'].map(file => readFileSync(new URL(file, import.meta.url), 'utf8')).join('\n');
 const fixture = (z: number, x: number, y: number) =>
     decodeFeatures(new Uint8Array(gunzipSync(readFileSync(new URL(`../../../../tests/browser/trailview/fixture/features/${z}/${x}/${y}.bin`, import.meta.url)))));
 /** Trübsee: the zoom-13 tile, and the level-17 node over its middle. */
@@ -138,38 +138,53 @@ describe('the stamp data of a node', () => {
     });
 
     it('lists in the paint list of each cell of a near node its corners and every segment that paints within PAINT_M past its outer edge there', () => {
-        // Engelberg: a level-18 node of the village, with kerbed corners and the station's tracks.
-        const tile = { level: 13, x: 4287, y: 2887 }, NODE = { level: 18, x: 137190, y: 92395 }, { data } = nodeStamps(fixture(tile.level, tile.x, tile.y), tile, NODE);
-        const records = 2 + GRID * GRID + 1 + data![1], lists = records + RECORD * data![0], word = (r: number, i: number) => data![records + RECORD * r + i];
-        const real = (r: number, i: number) => new Float32Array(Uint32Array.of(word(r, i)).buffer)[0];
-        const paints = (c: number) => Array.from(data!.subarray(lists + GRID * GRID + 1 + data![lists + c], lists + GRID * GRID + 1 + data![lists + c + 1]));
-        const shift = 22 - NODE.level, cell = CELL * 2 ** shift, x0 = NODE.x * PAGE * 2 ** shift - cell, y0 = NODE.y * PAGE * 2 ** shift - cell, unit = metresPerUnit(y0);
-        const painting = [ROAD, PATH, BRIDGE, TUNNEL, RAIL, WALK];
-        for (let c = 0; c < GRID * GRID; c++) {
-            const listed = Array.from(cellOf(data!, NODE, c).entries), painted = paints(c);
-            expect(painted.filter(r => word(r, 4) === CORNER)).toEqual(listed.filter(r => word(r, 4) === CORNER));
-            expect(painted.every(r => [CORNER, ...painting].includes(word(r, 4)))).toBe(true);
-        }
-        // Points just inside the reach beside each segment and on its mitre lines, which bound its paint past a bend.
+        // Engelberg: two level-18 nodes with sharp bends and with roads that taper to a partner's width.
+        const tile = { level: 13, x: 4287, y: 2887 }, list = fixture(tile.level, tile.x, tile.y), painting = [ROAD, PATH, BRIDGE, TUNNEL, RAIL, WALK];
         let checked = 0;
-        for (let r = 0; r < data![0]; r++) {
-            if (!painting.includes(word(r, 4))) continue;
-            const [ax, ay, bx, by] = [0, 1, 2, 3].map(i => word(r, i)), taper = word(r, 13), length = Math.hypot(bx - ax, by - ay), dx = (bx - ax) / length, dy = (by - ay) / length;
-            const walk = (word(r, 5) >> 4) & 3 ? Object.values(PROFILES)[(word(r, 5) >> 16) & 0xff].walk : 0;
-            const reach = 0.99 * (real(r, 8) + Math.max(0, (taper << 8) >> 24, taper >> 24) * 0.02 + walk + RULES.PAINT_M) / unit;
-            const points = [0, 0.5, 1].flatMap(t => [1, -1].map(side => [ax + t * (bx - ax) - side * dy * reach, ay + t * (by - ay) + side * dx * reach]));
-            for (const [x, y, mx, my] of [[ax, ay, real(r, 9), real(r, 10)], [bx, by, real(r, 11), real(r, 12)]]) {
-                const k = reach / Math.max(0.1, dx * mx + dy * my);
-                points.push([x - my * k, y + mx * k], [x + my * k, y - mx * k]);
+        for (const NODE of [{ level: 18, x: 137191, y: 92390 }, { level: 18, x: 137184, y: 92389 }]) {
+            const { data } = nodeStamps(list, tile, NODE);
+            const records = 2 + GRID * GRID + 1 + data![1], lists = records + RECORD * data![0], word = (r: number, i: number) => data![records + RECORD * r + i];
+            const real = (r: number, i: number) => new Float32Array(Uint32Array.of(word(r, i)).buffer)[0];
+            const shift = 22 - NODE.level, cell = CELL * 2 ** shift, x0 = NODE.x * PAGE * 2 ** shift - cell, y0 = NODE.y * PAGE * 2 ** shift - cell;
+            const cells = Array.from({ length: GRID * GRID }, (_, c) => Array.from(cellOf(data!, NODE, c).entries, entry => entry & ~INSIDE));
+            const paints = Array.from({ length: GRID * GRID }, (_, c) => new Set(data!.subarray(lists + GRID * GRID + 1 + data![lists + c], lists + GRID * GRID + 1 + data![lists + c + 1])));
+            for (let c = 0; c < GRID * GRID; c++) {
+                expect([...paints[c]].filter(r => word(r, 4) === CORNER)).toEqual(cells[c].filter(r => word(r, 4) === CORNER));
+                expect([...paints[c]].every(r => [CORNER, ...painting].includes(word(r, 4)))).toBe(true);
             }
-            for (const [x, y] of points) {
-                const i = Math.floor((x - x0) / cell), j = Math.floor((y - y0) / cell);
-                if (i < 1 || j < 1 || i > GRID - 2 || j > GRID - 2) continue;
-                expect(paints(j * GRID + i), `record ${r} at ${x},${y}`).toContain(r);
-                checked++;
+            // As along() and paint_line() of paint-core.wgsl: the metres from a point past the outer edge of a segment's road or sidewalk.
+            const segments = Array.from({ length: data![0] }, (_, r) => {
+                const [ax, ay, bx, by] = [0, 1, 2, 3].map(i => word(r, i) | 0), length = Math.hypot(bx - ax, by - ay), taper = word(r, 13);
+                const walk = Object.values(PROFILES)[(word(r, 5) >> 16) & 0xff]?.walk ?? 0;
+                return { ax, ay, bx, by, dx: (bx - ax) / length, dy: (by - ay) / length, ma: [real(r, 9), real(r, 10)], mb: [real(r, 11), real(r, 12)], flags: (word(r, 5) >> 8) & 0xff,
+                    h: real(r, 8), ta: (taper << 8) >> 24, tb: taper >> 24, left: word(r, 5) & 16 ? walk : 0, right: word(r, 5) & 32 ? walk : 0 };
+            });
+            const outside = (r: number, px: number, py: number) => {
+                const g = segments[r], [apx, apy, bpx, bpy] = [px - g.ax, py - g.ay, px - g.bx, py - g.by], cross = g.dx * apy - g.dy * apx;
+                const da = (apx * g.ma[0] + apy * g.ma[1]) / Math.max(g.dx * g.ma[0] + g.dy * g.ma[1], 0.1), db = -(bpx * g.mb[0] + bpy * g.mb[1]) / Math.max(g.dx * g.mb[0] + g.dy * g.mb[1], 0.1);
+                const lateral = da >= 0 && db >= 0 ? Math.abs(cross) : da < 0 && db >= 0 && g.flags & (CORE_A | CONE_A) && g.flags & (CORE_A | JOIN_A) ? Math.hypot(apx, apy)
+                    : db < 0 && da >= 0 && g.flags & (CORE_B | CONE_B) && g.flags & (CORE_B | JOIN_B) ? Math.hypot(bpx, bpy) : Infinity;
+                const share = Math.min(1, Math.max(0, da / Math.max(da + db, 1e-6)));
+                return lateral * metresPerUnit(py) - g.h - (g.ta * (1 - share) + g.tb * share) * 0.02 - (cross > 0 ? g.right : g.left);
+            };
+            // Points on rings about each segment's ends, out past its outer edge, and across its middle: every segment
+            // of the cell's stamp list that paints there within PAINT_M is in the cell's paint list.
+            for (const g of segments.filter((_, r) => painting.includes(word(r, 4)))) {
+                const step = (g.h + 4) / metresPerUnit(g.ay) / 8, points: number[][] = [];
+                for (const [x, y] of [[g.ax, g.ay], [g.bx, g.by]]) for (let k = 1; k <= 8; k++) for (let a = 0; a < 24; a++) points.push([x + Math.cos(a * Math.PI / 12) * k * step, y + Math.sin(a * Math.PI / 12) * k * step]);
+                for (const t of [0.25, 0.5, 0.75]) for (let k = -8; k <= 8; k++) points.push([g.ax + t * (g.bx - g.ax) - g.dy * k * step, g.ay + t * (g.by - g.ay) + g.dx * k * step]);
+                for (const [x, y] of points) {
+                    const i = Math.floor((x - x0) / cell), j = Math.floor((y - y0) / cell);
+                    if (i < 1 || j < 1 || i > GRID - 2 || j > GRID - 2) continue;
+                    for (const r of cells[j * GRID + i]) {
+                        if (!painting.includes(word(r, 4)) || !(outside(r, x, y) <= RULES.PAINT_M)) continue;
+                        expect(paints[j * GRID + i].has(r), `record ${r} at ${x},${y}`).toBe(true);
+                        checked++;
+                    }
+                }
             }
         }
-        expect(checked).toBeGreaterThan(500);
+        expect(checked).toBeGreaterThan(10000);
     });
 });
 

@@ -63,11 +63,16 @@ const GRID_INDICES = gridIndices();
 const PROFILE_TABLE = profileTable();
 /**
  * Metres from the eye, with its height above the ground, where the road paint is exact, as EXACT_M of
- * roads.wgsl: from the stamp data of the finest drawn nodes within it, nearest first, in words and in
- * nodes at most. Up to 60° N a disk of EXACT_M meets at most 3 × 3 nodes of level 18.
+ * roads.wgsl: from the stamp data of the finest drawn nodes within it.
  */
 export const EXACT_M = 40;
-const NEAR_WORDS = 2 ** 20, NEAR_NODES = 9;
+/**
+ * The nodes of the exact paint at most: up to 60° N a node of level 18 is at least 76 m wide, so a disk
+ * of EXACT_M meets at most 3 × 3 of them.
+ */
+const NEAR_NODES = 9;
+/** Words of the exact paint's buffer, 4 MiB: a node whose data does not fit paints from the mask. */
+const NEAR_WORDS = 2 ** 20;
 
 /** What the terrain draws from: the eye, its height above the ground, and the camera. */
 export interface View {
@@ -468,22 +473,10 @@ export class Terrain {
     private writeNear(r: Resources, eye: { anchor: Anchor; above: number }, rule: Rule): boolean {
         const near = this.nodes.filter(node => node.level === rule.finest && node.level >= NEAR && this.stamps.known(node)?.data && distances(eye, node)[0] < EXACT_M)
             .sort((a, b) => distances(eye, a)[0] - distances(eye, b)[0]).slice(0, NEAR_NODES);
-        const name = near.map(key).join();
+        const name = near.map(key).sort().join();
         if (name === this.exact) return false;
         this.exact = name;
-        const head = 1 + 4 * NEAR_NODES, table: number[] = [], data: Uint32Array[] = [];
-        let words = head;
-        for (const node of near) {
-            const stamps = this.stamps.known(node)!.data!;
-            if (words + stamps.length > NEAR_WORDS) continue;
-            table.push(node.x * PAGE, node.y * PAGE, node.level, words);
-            data.push(stamps);
-            words += stamps.length;
-        }
-        const packed = new Uint32Array(words);
-        packed.set([table.length / 4, ...table]);
-        data.reduce((at, stamps) => (packed.set(stamps, at), at + stamps.length), head);
-        r.gpu.device.queue.writeBuffer(r.near, 0, packed);
+        r.gpu.device.queue.writeBuffer(r.near, 0, packNear(near.map(node => ({ node, data: this.stamps.known(node)!.data! }))));
         return true;
     }
 
@@ -965,6 +958,27 @@ function jobs(list: { page: Page; stored: number; slot: number; stamped: boolean
     const data = new ArrayBuffer(Math.max(1, list.length) * JOB_BYTES), ints = new Int32Array(data);
     list.forEach(({ page: { node: { level, x, y } }, stored, slot, stamped }, k) => ints.set([x * PAGE, y * PAGE, level, stored, slot, stamped ? 1 : 0], (JOB_BYTES / 4) * k));
     return data;
+}
+
+/**
+ * The stamp data of the exact paint's nodes, nearest first, as exact_mask of roads.wgsl reads it: their
+ * count, then NEAR_NODES entries of the first texel x and y, the level and the offset of the data, then the
+ * data. A node that does not fit in `words` is left out.
+ */
+export function packNear(near: { node: Node; data: Uint32Array }[], words = NEAR_WORDS): Uint32Array<ArrayBuffer> {
+    const table = [0], data: Uint32Array[] = [];
+    let at = 1 + 4 * NEAR_NODES;
+    for (const { node, data: stamps } of near.slice(0, NEAR_NODES)) {
+        if (at + stamps.length > words) continue;
+        table.push(node.x * PAGE, node.y * PAGE, node.level, at);
+        data.push(stamps);
+        at += stamps.length;
+    }
+    table[0] = data.length;
+    const packed = new Uint32Array(at);
+    packed.set(table);
+    data.reduce((offset, stamps) => (packed.set(stamps, offset), offset + stamps.length), 1 + 4 * NEAR_NODES);
+    return packed;
 }
 
 /** Stamp jobs as `StampJob` in stamp.wgsl, with their nodes' data packed after each other from `base`. */

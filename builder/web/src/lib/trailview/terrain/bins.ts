@@ -812,6 +812,9 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     return { data, heights };
 }
 
+/** The words of a node's stamp data that the stamp pass reads: all but the paint lists. */
+export const stampWords = (data: Uint32Array<ArrayBuffer>) => data.subarray(0, HEAD + OFFSETS + data[1] + RECORD * data[0]);
+
 /** The moves of a cell's origin that the worker tries, in world units, as a signed nibble each. */
 const NUDGES = [[0, 0], [1, 0], [0, 1], [1, 1], [2, 1], [1, 2], [-1, 2], [3, 1], [-2, 3], [3, -2], [4, 3], [-3, 4]];
 

@@ -2,7 +2,7 @@ import { EARTH_RADIUS } from '../frame/frame';
 import type { Anchor } from '../frame/space';
 import { PAGE, type PageData } from '../stream/heights';
 import { TILE_ZOOM, type TerrainSource, stopped } from '../stream/terrain';
-import { NEAR, type NodeStamps } from './bins';
+import { NEAR, stampWords, type NodeStamps } from './bins';
 import { COARSEST, distances, FINEST, key, MAP, size, type Node } from './lod';
 
 /** Tile requests in flight at most. */
@@ -278,13 +278,14 @@ export class Pages {
         });
         const missing = inputs.filter(({ near, page }) => !page?.ready && this.stored(near) !== 'no');
         for (const { near, page } of missing) if (!page) this.load(near);
-        if (missing.length || !stamps || this.busy(work, stamps.data?.length)) return;
+        const data = stamps?.data && stampWords(stamps.data);
+        if (missing.length || !stamps || this.busy(work, data?.length)) return;
         const synth = this.allocate(node, 'synth', this.range(ancestor)!, true);
         if (!synth) return;
         synth.drawn = synth.slot;
-        if (stamps.data) {
+        if (data) {
             const mode = (stamps.heights ? MODE.HEIGHTS : 0) | (holders.has(key(node)) && this.mask(synth, holders, work) ? MODE.MASK : 0);
-            if (mode) work.stamps.push({ page: synth, out: work.syntheses.length, target: synth.slot, data: stamps.data, mode });
+            if (mode) work.stamps.push({ page: synth, out: work.syntheses.length, target: synth.slot, data, mode });
         }
         work.syntheses.push({ page: synth, stored: ancestor.level });
     }
@@ -314,7 +315,7 @@ export class Pages {
     /** A mask-only job for each holder without a mask, nearest first, as the frame has room: a page synthesized while the pool was full gets its mask later. */
     private lateMasks(holders: Map<string, Node>, work: Work): void {
         for (const node of holders.values()) {
-            const page = this.pages.get(key(node)), data = this.stamps.get(node)?.data;
+            const page = this.pages.get(key(node)), stamps = this.stamps.get(node)?.data, data = stamps && stampWords(stamps);
             if (!page || !data || page.kind !== 'synth' || page.drawn === undefined || page.mask !== undefined) continue;
             if (this.busy(work, data.length) || !this.mask(page, holders, work)) return;
             work.stamps.push({ page, out: 0, target: page.slot, data, mode: MODE.MASK });
@@ -338,14 +339,15 @@ export class Pages {
             page.drawn = page.slot;
             return true;
         }
-        if (this.busy(work, stamps.data.length)) return false;
+        const data = stampWords(stamps.data);
+        if (this.busy(work, data.length)) return false;
         const copy = this.slot('stored');
         if (copy === undefined) {
             this.shortage++;
             return false;
         }
         page.copy = page.drawn = copy;
-        work.stamps.push({ page, out: work.syntheses.length + copies(work).length, target: copy, data: stamps.data, mode: MODE.HEIGHTS });
+        work.stamps.push({ page, out: work.syntheses.length + copies(work).length, target: copy, data, mode: MODE.HEIGHTS });
         return true;
     }
 

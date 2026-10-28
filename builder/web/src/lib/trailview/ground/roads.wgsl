@@ -3,11 +3,11 @@
 // it, so the filtered distance keeps the edge sharp to a pixel. Near the eye the mask's texels are
 // coarse and their bytes coarser than a pixel: the paint there is exact, from the records of the nodes.
 // look.wgsl includes it, and it reads `rule()` and `noise()` of look.wgsl: an include composes each file once.
-// The terrain's draw binds the stamp data of the finest nodes near the eye where stamp-core.wgsl reads
-// it, as terrain.ts packs it: their count, per node its first texel, its level and the offset of its
-// data, then the data.
+// The terrain's draw binds the stamp data of the finest nodes near the eye where paint-core.wgsl reads
+// it, as packNear of terrain.ts packs it: their count, per node its first texel, its level and the offset
+// of its data, then the data.
 // #include ../terrain/features.wgsl
-// #include ../terrain/stamp-core.wgsl
+// #include ../terrain/paint-core.wgsl
 // #include look.wgsl
 
 struct Road {
@@ -190,25 +190,32 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
     if (mask.edge - walk > w + 0.5) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped);
     }
-    var exact = 1.0 - smoothstep(0.75 * EXACT_M, EXACT_M, length(vec3f(s, surface.above)));
-    var near = mask;
+    let exact = 1.0 - smoothstep(0.75 * EXACT_M, EXACT_M, length(vec3f(s, surface.above)));
+    var paint = mask;
     if (exact > 0.0) {
-        near = exact_mask(s, mask);
-        exact = select(0.0, exact, near.level != 0u);
+        let near = exact_mask(s, mask);
+        if (near.level != 0u) {
+            paint = toward(mask, near, exact);
+        }
     }
-    var road = Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0);
-    if (exact < 1.0) {
-        road = paint_of(mask, ds, p, w, reach, region);
-    }
-    if (exact > 0.0) {
-        // Each paint's colour by its cover.
-        let ka = road.cover * (1.0 - exact);
-        let b = paint_of(near, ds, p, w, reach, region);
-        let kb = b.cover * exact;
-        let k = max(ka + kb, 1e-6);
-        road = Road((road.colour * ka + b.colour * kb) / k, ka + kb, (road.share * ka + b.share * kb) / k, 0.0, 0.0);
-    }
+    let road = paint_of(paint, ds, p, w, reach, region);
     return Road(road.colour, road.cover, road.share, wall, shaped);
+}
+
+// The paint of the mask moved toward the exact paint by t: the metres mix, and the surface and the axis
+// are the exact paint's once t passes a half. Sleepers mix by their fraction, which wraps.
+fn toward(mask: Mask, exact: Mask, t: f32) -> Mask {
+    var out = exact;
+    out.edge = mix(mask.edge, exact.edge, t);
+    out.across = mix(mask.across, exact.across, t);
+    out.half = mix(mask.half, exact.half, t);
+    out.walk = mix(mask.walk, exact.walk, t);
+    out.sleepers = exact.sleepers + (fract(mask.sleepers - exact.sleepers + 0.5) - 0.5) * (1.0 - t);
+    if (t < 0.5) {
+        out.kind = mask.kind;
+        out.axis = mask.axis;
+    }
+    return out;
 }
 
 // The mask at a point with the paint of the near node that holds it, exact; level 0 where no near node
