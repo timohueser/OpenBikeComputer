@@ -111,6 +111,28 @@ fn pause(url: &str, delay: Duration) -> Result<(), String> {
     }
 }
 
+/// `text` with the query of each URL in it left out: a query can sign the URL, such as a SAS token,
+/// and a log line must not show it.
+pub fn without_queries(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) =
+        rest.find("://").and_then(|at| rest[..at].rfind(char::is_whitespace).map_or(Some(0), |space| Some(space + 1)))
+    {
+        let end = rest[at..].find(char::is_whitespace).map_or(rest.len(), |end| at + end);
+        let token = &rest[at..end];
+        out.push_str(&rest[..at]);
+        match token.find('?') {
+            // A URL before a `: reason` keeps its `:`.
+            Some(query) => out.push_str(&format!("{}{}", &token[..query], if token.ends_with(':') { ":" } else { "" })),
+            None => out.push_str(token),
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The error of a request that got no answer, marked when no connection was made or it timed out.
 fn no_answer(method: &str, url: &str, error: ureq::Error) -> String {
     use ureq::Error::{ConnectProxyFailed, ConnectionFailed, HostNotFound, Io, Timeout};
@@ -124,7 +146,8 @@ fn no_answer(method: &str, url: &str, error: ureq::Error) -> String {
 
 pub struct Http {
     agent: ureq::Agent,
-    bearer: Option<(String, String)>,
+    /// Each HTTPS origin, with a trailing `/`, and the token that authorizes its requests.
+    bearer: Vec<(String, String)>,
     backoff: Duration,
     archive: Option<Archive>,
     /// The origin, with a trailing `/`, whose requests are signed for S3, and its keys.
@@ -164,7 +187,7 @@ impl Http {
                 },
             )
             .build();
-        Self { agent: config.into(), bearer: None, backoff: Duration::ZERO, archive: None, s3: None }
+        Self { agent: config.into(), bearer: Vec::new(), backoff: Duration::ZERO, archive: None, s3: None }
     }
 
     /// A client with the archive of `OBC_DATA_ARCHIVE`.
@@ -182,7 +205,7 @@ impl Http {
             .timeout_recv_response(Some(Duration::from_secs(60)))
             .timeout_recv_body(Some(BODY))
             .build();
-        Self { agent: config.into(), bearer: None, backoff, archive: None, s3: None }
+        Self { agent: config.into(), bearer: Vec::new(), backoff, archive: None, s3: None }
     }
 
     #[cfg(test)]
@@ -209,7 +232,7 @@ impl Http {
 
     /// Authorize only requests to this HTTPS origin. Redirects strip authorization by default.
     pub fn with_bearer(mut self, origin: &str, token: String) -> Self {
-        self.bearer = Some((format!("{}/", origin.trim_end_matches('/')), token));
+        self.bearer.push((format!("{}/", origin.trim_end_matches('/')), token));
         self
     }
 
@@ -226,7 +249,7 @@ impl Http {
         url: &str,
         mut request: ureq::RequestBuilder<ureq::typestate::WithoutBody>,
     ) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
-        if let Some((_, token)) = self.bearer.as_ref().filter(|(origin, _)| url.starts_with(origin.as_str())) {
+        if let Some((_, token)) = self.bearer.iter().find(|(origin, _)| url.starts_with(origin.as_str())) {
             request = request.header("authorization", format!("Bearer {token}"));
         }
         if let Some((_, keys)) = self.s3.as_ref().filter(|(origin, _)| url.starts_with(origin.as_str())) {
@@ -301,19 +324,56 @@ impl Http {
     /// A page of a bucket listing, which can take longer than a small document.
     /// It is tried again like a download after no answer and after HTTP 408, 429 and 5xx.
     pub fn listing(&self, url: &str) -> Result<String, String> {
+        self.retried("GET", url, || self.answer_within(url, "application/xml", LISTING))
+    }
+
+    /// A page of a JSON listing or an API answer, tried again as [`Http::listing`] is.
+    pub fn listing_json(&self, url: &str) -> Result<String, String> {
+        self.retried("GET", url, || self.answer_within(url, "application/json", LISTING))
+    }
+
+    /// A page of a JSON listing that a `POST` of `body` asks for, tried again as [`Http::listing`]
+    /// is.
+    pub fn post_listing(&self, url: &str, body: &[u8]) -> Result<String, String> {
+        self.retried("POST", url, || {
+            let request =
+                self.agent.post(url).header("content-type", "application/json").header("accept", "application/json");
+            let mut response = request
+                .config()
+                .timeout_global(Some(LISTING))
+                .build()
+                .send(body)
+                .map_err(|e| no_answer("POST", url, e))?;
+            let status = response.status().as_u16();
+            match response.body_mut().read_to_vec() {
+                Ok(body) => Ok((status, body)),
+                // The status of an answer that is no success says enough; a body cut short is
+                // tried again.
+                Err(_) if !(200..=299).contains(&status) => Ok((status, Vec::new())),
+                Err(e) => Err(format!("POST {url}: {e}")),
+            }
+        })
+    }
+
+    fn retried(
+        &self,
+        method: &str,
+        url: &str,
+        attempt: impl Fn() -> Result<(u16, Vec<u8>), String>,
+    ) -> Result<String, String> {
         let mut failures = 0;
         loop {
-            let why = match self.answer_within(url, "application/xml", LISTING) {
-                Ok((200..=299, body)) => return String::from_utf8(body).map_err(|e| format!("GET {url}: {e}")),
-                Ok((status @ (408 | 429 | 500..=599), _)) => format!("GET {url}: HTTP {status}"),
-                Ok((status, _)) => return Err(format!("GET {url}: HTTP {status}")),
+            let why = match attempt() {
+                Ok((200..=299, body)) => return String::from_utf8(body).map_err(|e| format!("{method} {url}: {e}")),
+                Ok((status @ (408 | 429 | 500..=599), _)) => format!("{method} {url}: HTTP {status}"),
+                Ok((status, _)) => return Err(format!("{method} {url}: HTTP {status}")),
                 Err(why) => why,
             };
             failures += 1;
             if failures == ATTEMPTS {
                 return Err(why);
             }
-            eprintln!("obc data: {why} — retrying");
+            eprintln!("obc data: {} — retrying", without_queries(&why));
             pause(url, self.backoff * 2u32.pow(failures - 1))?;
         }
     }
@@ -398,7 +458,7 @@ impl Http {
             if failures == ATTEMPTS {
                 return Err(why);
             }
-            eprintln!("obc data: {why} — retrying");
+            eprintln!("obc data: {} — retrying", without_queries(&why));
             pause(url, delay.min(RETRY_AFTER).max(self.backoff * 2u32.pow(failures - 1)))?;
         }
         let _ = fs::remove_file(validator);
@@ -522,9 +582,13 @@ impl Http {
                 let done = crate::engine::runs::bytes(current);
                 match expect.bytes.or(total) {
                     Some(whole) => {
-                        eprintln!("obc data: {url}: {done} / {} downloaded", crate::engine::runs::bytes(whole))
+                        eprintln!(
+                            "obc data: {}: {done} / {} downloaded",
+                            without_queries(url),
+                            crate::engine::runs::bytes(whole)
+                        )
                     }
-                    None => eprintln!("obc data: {url}: {done} downloaded"),
+                    None => eprintln!("obc data: {}: {done} downloaded", without_queries(url)),
                 }
                 reported = std::time::Instant::now();
             }

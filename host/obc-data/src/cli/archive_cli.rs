@@ -50,6 +50,7 @@ pub fn run(root: &Path, command: ArchiveCommand, json: bool) -> Result<(), Error
             let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
             let http = datasets::client(dataset, &home).map_err(|e| Code::Blocked.error(e))?;
             let store = Store::open()?;
+            crate::engine::runs::stop_on_signals();
             let got = datasets::get(&http, &store, dataset, &roots, chosen.as_deref())
                 .map_err(|e| Code::FetchFailed.error(e))?;
             let failure = got.errors.first().map(|first| {

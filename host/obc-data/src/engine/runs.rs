@@ -891,6 +891,12 @@ pub fn signalled() -> bool {
     SIGNALLED.load(Ordering::Relaxed)
 }
 
+/// As SIGINT: [`signalled`] holds from now on in this process.
+#[cfg(test)]
+pub(crate) fn signal() {
+    SIGNALLED.store(true, Ordering::Relaxed);
+}
+
 /// Stop the run of this process on SIGINT or SIGTERM, so that it ends as a failed run and frees
 /// what it holds. A second signal ends the process at once.
 pub fn stop_on_signals() {

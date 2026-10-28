@@ -443,8 +443,11 @@ One file for each dataset. The name of the file is the id of the dataset.
 | `version` | string | no | The version of the dataset, in the form of the `version` of its sources |
 | `urls` | array of strings | no | One file for each `https://` URL |
 | `s3` | array of tables | no | `bucket`, `prefix` and `match`. See below |
+| `stac` | array of tables | no | `search`, `sas`, `collection`, `asset`, `bbox`, `days` and `names`. See below |
+| `cmr` | array of tables | no | `provider`, `short_names`, `version`, `origin`, `bbox`, `days` and `names`. See below |
 | `kept` | boolean | no | `true`: the files of the dataset are the files under `kept/<dataset>/`, and nothing downloads |
 | `clms` | table | no | `dataset` and `file`: the prepackaged CLMS file of which the dataset holds the zip |
+| `bytes_estimate` | integer | no | The bytes that a get needs on its root, when the listing gives fewer, such as a listing without sizes |
 | `notes` | string | no | For people |
 
 An `s3` table lists each object of an S3 `ListObjectsV2` of `bucket` under `prefix`. `bucket` is
@@ -454,11 +457,28 @@ characters other than `/`. Without `match`, each object is listed. A request to
 `https://eodata.dataspace.copernicus.eu` is signed with AWS Signature Version 4, the region
 `default` and the keys of `~/.config/openbikecomputer/cdse-s3.env`.
 
+A `stac` table lists the `asset` of each item of a STAC search: a `POST` to `search` with the
+`collection`, the `bbox` `[west, south, east, north]` and the `days` `[first, last]` as RFC 3339
+times, 1000 items a page, and only the `id` and the `href` of the asset of each; a page names the
+next one with a link of `rel = "next"`, whose `body` the next `POST` sends. A `cmr` table lists the
+data file under `origin` of each granule of the NASA CMR granule search of `provider`,
+`short_names`, `version`, `bbox` and `days`, 2000 granules a page. A get lists `cmr` before `stac`,
+and tries a page again as a bucket listing. Both list only a file whose name has one of `names`, at
+its URL without the query. A download of an Azure blob of a `stac` table adds the SAS token of its
+storage account and container from `<sas>/<account>/<container>`, renewed 15 minutes before the
+`msft:expiry` of its answer. No log line, manifest or error holds a query of a URL. A download under
+the `origin` of a `cmr` table sends `EARTHDATA_TOKEN`, an Earthdata Login user token, as a Bearer
+token. A file whose name ends with `.hdf` or `.tif` enters `mirror/` only when it starts with the
+magic of HDF4 or TIFF, so a login page is no file; `verify` checks the magic too. SIGINT or
+SIGTERM stops a get after the files that it takes, and the get fails. A file that a stopped get did
+not try is not in `missing`; `listed` keeps the dataset incomplete. A file in place without a size
+or a day upstream downloads again.
+
 Each `obc data archive` command and a test of `host/obc-data` refuse a dataset that breaks a rule:
 
 - Each id of `sources` is a source of `data/sources.toml` with `keep = "archive"`. The sources
   of a dataset have the same `version` kind.
-- A dataset has `kept = true`, or else `urls`, `s3` or both.
+- A dataset has `kept = true`, or else `urls`, `s3`, `stac`, `cmr` or more of them.
 - A dataset of `release` or `commit` sources, and a kept dataset, has `version`.
 - A dataset of `digest` sources has one URL and no `s3`.
 
@@ -481,7 +501,8 @@ The version of a dataset:
 | `version` | The version of the dataset |
 | `got` | The day of the last `archive get`, `YYYY-MM-DD` in UTC |
 | `files` | Each verified file: `path` under the root, `bytes`, `sha256`, and, when upstream gives them, `modified`, its `Last-Modified` day, and `etag`, the `ETag` of a bucket listing. A file without `sha256` makes the manifest unreadable |
-| `missing` | Each listed file that the root does not hold: `path`, `bytes` when known, `error`, and for a kept file the `sha256` that the manifest recorded |
+| `missing` | Each listed file that the get tried and the root does not hold: `path`, `bytes` when known, `error`, and for a kept file the `sha256` that the manifest recorded |
+| `listed` | The files that the last get listed. The dataset is complete when each is in `files` and in place |
 | `clms_dataset_uid`, `clms_file_id` | The `dataset` and `file` of `clms` |
 
 #### Get
