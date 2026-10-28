@@ -144,30 +144,20 @@ def osm_file(path, areas):
     return written.rename(path)
 
 
-def map_image(directory, crs, bounds, classes, px_m):
-    """An `arcgis-image` capture over the bounds: the legend of its colours and one image of
-    classes(x, y) at the pixel centres in `crs`."""
-    import base64
-
-    x0, y0, x1, y1 = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform_bounds(*bounds)
-    x0, y0, x1, y1 = (math.floor(x0 / px_m) * px_m, math.floor(y0 / px_m) * px_m, math.ceil(x1 / px_m) * px_m,
-                      math.ceil(y1 / px_m) * px_m)
-    x = x0 + (np.arange(round((x1 - x0) / px_m)) + 0.5) * px_m
-    y = y1 - (np.arange(round((y1 - y0) / px_m)) + 0.5) * px_m
-    found = np.broadcast_to(classes(x[None, :], y[:, None]), (len(y), len(x)))
-    colours = {code: (i + 1, 2 * i + 1, 3 * i + 1) for i, code in enumerate(np.unique(found))}
-    rgb = np.zeros((*found.shape, 4), np.uint8)
-    for code, colour_ in colours.items():
-        rgb[found == code] = (*colour_, 255)
-    entries = []
-    for code, colour_ in colours.items():
-        out = io.BytesIO()
-        Image.new("RGB", (20, 20), colour_).save(out, "PNG")
-        entries.append({"label": f"{code}: class", "imageData": base64.b64encode(out.getvalue()).decode()})
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / "legend.json").write_text(json.dumps({"layers": [{"layerId": 1, "legend": entries}]}))
-    Image.fromarray(rgb, "RGBA").save(directory / f"{x0}_{y0}_{x1}_{y1}.png")
-    return {path.name: path for path in directory.iterdir()}
+def corine(path, bounds, classes):
+    """A CORINE raster over the bounds as upstream has it: the grid codes of classes(x, y) at the pixel
+    centres in EPSG:3035 at 100 m, int8 with no data -128."""
+    grid = {clc: int(value) for value, clc in next(entry for entry in GROUND["material"]["sources"]
+                                                   if entry["source"] == "corine-land-cover")["values"].items()}
+    x0, y0, x1, y1 = Transformer.from_crs("EPSG:4326", "EPSG:3035", always_xy=True).transform_bounds(*bounds)
+    x0, y0, x1, y1 = math.floor(x0 / 100) * 100, math.floor(y0 / 100) * 100, math.ceil(x1 / 100) * 100, math.ceil(y1 / 100) * 100
+    x = x0 + (np.arange(round((x1 - x0) / 100)) + 0.5) * 100
+    y = y1 - (np.arange(round((y1 - y0) / 100)) + 0.5) * 100
+    codes = np.vectorize(lambda clc: grid[str(clc)])(np.broadcast_to(classes(x[None, :], y[:, None]), (len(y), len(x))))
+    with rasterio.open(path, "w", driver="GTiff", width=len(x), height=len(y), count=1, dtype="int8", nodata=-128,
+                       crs="EPSG:3035", transform=Affine(100, 0, x0, 0, -100, y1)) as dst:
+        dst.write(codes.astype(np.int8), 1)
+    return {path.name: path}
 
 
 class MaterialTest(unittest.TestCase):
@@ -196,8 +186,8 @@ class MaterialTest(unittest.TestCase):
                                                     (box(mid_lon, south - 0.01, east + 0.01, mid_lat), {"natural": "grassland"})])
             # CORINE: natural grassland in the north, heath in the south, at 100 m.
             mid_y = Transformer.from_crs("EPSG:4326", "EPSG:3035", always_xy=True).transform(mid_lon, mid_lat)[1]
-            corine = map_image(root / "corine", "EPSG:3035", around, lambda x, y: np.where(y > mid_y, 321, 322), 100)
-            files = {"esa-worldcover": {"worldcover.tif": worldcover}, "sentinel-2-mosaics": mosaics, "corine-land-cover": corine}
+            clc = corine(root / "corine.tif", around, lambda x, y: np.where(y > mid_y, 321, 322))
+            files = {"esa-worldcover": {"worldcover.tif": worldcover}, "sentinel-2-mosaics": mosaics, "corine-land-cover": clc}
             bounds = [west, south, west + 0.9 * (east - west), north]
             steps = sources.chain("material", GROUND, VOCABULARY, files.get, bounds, osm)
             no_rock = lambda z, x, y: np.zeros((tiles.TILE, tiles.TILE), np.uint8)

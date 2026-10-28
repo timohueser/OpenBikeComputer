@@ -255,8 +255,7 @@ def vocabulary_problems(vocabulary):
 
 
 # The keys that each protocol of a ground source reads.
-NEEDS = {"vector": ("field",), "arcgis-features": ("field",), "wfs": ("layer", "field", "sort"),
-         "arcgis-image": ("layer", "crs", "px_m")}
+NEEDS = {"vector": ("field",), "arcgis-features": ("field",), "wfs": ("layer", "field", "sort")}
 
 
 def ground_problems(ground, ids):
@@ -295,8 +294,8 @@ def ground_problems(ground, ids):
     out += obj({"about": text, "material": lambda v, p: [], "lithology": lambda v, p: []})(ground, "")
     for layer, name, names in (("material", material, "materials"), ("lithology", lithology, "lithologies")):
         entry = needs(("source", "protocol", "combine", "legend"), obj({
-            "source": source, "protocol": one_of(*sources.PROTOCOLS), "layer": text, "field": text, "sort": text, "crs": text,
-            "px_m": positive,
+            "source": source, "protocol": one_of(*sources.PROTOCOLS), "layer": text, "field": text, "sort": text,
+            "px_m": positive, "values": entries(text),
             "combine": one_of(*sources.COMBINES), "reach_m": positive, "about": text, "legend": legend(name)}))
         spec = ground.get(layer, {})
         out += obj({"about": text, "refines": each(ids[names], listed(name)),
@@ -310,6 +309,11 @@ def ground_problems(ground, ids):
                     out.append(f"{at}: has no {key}, which the protocol {protocol} needs")
             if "reach_m" in found and protocol not in sources.VECTOR:
                 out.append(f"{at}.reach_m: only a vector source reaches")
+            if "values" in found and protocol != "raster":
+                out.append(f"{at}.values: only a raster source has values")
+            if isinstance(found.get("values"), dict):
+                out += [f"{at}.values: {said(key)} is not a byte value" for key in found["values"]
+                        if not (key.isdigit() and int(key) < 256)]
             if protocol in sources.CAPTURED and fetch.get("kind") != "capture":
                 out.append(f"{at}.protocol: {protocol} is captured, and {found['source']} is not a capture source")
     return [f"ground.json: {problem}" for problem in out]

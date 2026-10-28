@@ -21,6 +21,13 @@ const FILES: [(&str, &str, &[&str]); 2] = [
     ("~/.config/openbikecomputer/cdse-s3.env", "=", &["CDSE_S3_ACCESS_KEY", "CDSE_S3_SECRET_KEY"]),
 ];
 
+/// The files that a person saves whole, as the `hint` of their source says. No writer here
+/// writes them.
+const SAVED: [&str; 1] = [
+    // `tools/clms.py` reads the service key of the Copernicus Land Monitoring Service.
+    "~/.config/openbikecomputer/clms-key.json",
+];
+
 /// The file of a credential under the home directory, and the names of its values in the order
 /// that `obc data source credential` reads them.
 pub struct Place {
@@ -38,9 +45,14 @@ pub fn place(credential: &Credential) -> Option<Place> {
     Some(Place { file, separator, names: names.iter().map(|name| name.to_string()).collect() })
 }
 
+/// Whether a writer here writes the file of `credential`, or a person saves it whole.
+pub fn known(credential: &Credential) -> bool {
+    place(credential).is_some() || credential.file.as_deref().is_some_and(|file| SAVED.contains(&file))
+}
+
 /// The files that a `file` credential can name.
 pub fn files() -> String {
-    FILES.map(|(file, ..)| file).join(", ")
+    FILES.iter().map(|(file, ..)| *file).chain(SAVED).collect::<Vec<_>>().join(", ")
 }
 
 /// `path`, which starts with `~/`, under `home`.

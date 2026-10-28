@@ -18,7 +18,7 @@ use obc_data::ground::GroundSource;
 use obc_data::product::{version, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{geofabrik, Area, Bbox, Regions};
 use obc_data::release::{Output, Release};
-use obc_data::sources::{attribution, embedded, FetchKind};
+use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
 use obc_dem::reference::{Window, TILE_LOG2};
 use obc_dem::step::GLO30;
@@ -888,7 +888,7 @@ fn trailview(
                     "osm-planet" => layer_files("planner/osm", &["osm.pbf"]),
                     "esa-worldcover" => snapshot(inputs, store, id, tiles.clone(), wanted)?,
                     "sentinel-2-mosaics" => snapshot(inputs, store, id, mosaics.clone(), wanted)?,
-                    _ if embedded(id).fetch.kind == FetchKind::Capture => {
+                    _ if step.per_box() => {
                         let digest = ("ground".to_string(), step.capture_digest());
                         snapshot(inputs, store, id, vec![bbox.clone(), digest], wanted)?
                     }
@@ -1721,9 +1721,6 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let corine =
-            obc_data::ground::Ground::load(&root()).unwrap().entry("corine-land-cover").unwrap().capture_digest();
-        let corine = format!(r#"corine-land-cover[("bbox", "7.79,47.99,7.82,48.02"), ("ground", "{corine}")]"#);
         assert_eq!(
             read(get("planner/trailview-material")),
             [
@@ -1732,7 +1729,7 @@ mod tests {
                 r#"esa-worldcover[("tile", "N45E006")]"#,
                 r#"sentinel-2-mosaics[("bbox", "7.79,47.99,7.82,48.02"), ("year", "2025")]"#,
                 r#"planner/osm["osm.pbf"]"#,
-                corine.as_str(),
+                "corine-land-cover[]",
             ]
         );
         assert_eq!(

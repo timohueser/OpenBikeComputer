@@ -62,8 +62,8 @@ Rules:
 - Each kind of fetch but `installed` and `prepared` has a `url`, and the `url` starts with `https://`.
 - A `prepared` source has `version = "date"` and `redistribute = true`.
 - `refresh` in days needs `version = "date"`, because only a date version has an age.
-- A credential has `env` or `file`, not both. A `file` is `~/.cdsapirc` or
-  `~/.config/openbikecomputer/cdse-s3.env`.
+- A credential has `env` or `file`, not both. A `file` is `~/.cdsapirc`,
+  `~/.config/openbikecomputer/cdse-s3.env` or `~/.config/openbikecomputer/clms-key.json`.
 
 No step reads a `dtm-*` source, a national terrain model: only the producer of the prepared
 source `terrain` does, see [Prepared sources](#prepared-sources). It reads each `dtm-*` row with
@@ -362,21 +362,25 @@ producer of [`wiki`](#wiki) reads them.
 | Source | `NAME=VALUE` | Program | Packages | Query |
 | --- | --- | --- | --- | --- |
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
-| Each source of `data/trailview/ground.json` with the `protocol` `arcgis-image`, `arcgis-features` or `wfs` | `bbox`, `ground` | `tools/trailview/ground.py --source ID --fetch` | group `trailview` | `bbox=W,S,E,N&ground=DIGEST` |
+| Each source of `data/trailview/ground.json` with the `protocol` `arcgis-features` or `wfs` | `bbox`, `ground` | `tools/trailview/ground.py --source ID --fetch` | group `trailview` | `bbox=W,S,E,N&ground=DIGEST` |
 | `sentinel-2-mosaics` | `bbox`, `year` | `tools/trailview/colour.py --fetch` | group `trailview` | `bbox=W,S,E,N&year=YEAR` |
 | `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | group `planner-climate` | `bbox=W,S,E,N&first-year=YEAR` |
+| `corine-land-cover` | None | `tools/clms.py --fetch` | None | `dataset=0407d497d3c44bcd93ce8fd5bf78596a&file=3d9e2413-46ca-4f6e-abf8-b6eb429a4e48` |
 
 - `bbox` is `WEST,SOUTH,EAST,NORTH` in degrees.
 - A snow file is the window of one source raster that covers `bbox`, one pixel wider on each
   side, in the grid of the source. A season starts on 1 September. An `hr-wsi` box without a
   product gives a fetch without files.
 - An `era5-land` file is a source chunk of the ten years from `first-year`, or the orography.
-- The files of an `arcgis-image` source are `legend.json`, the legend of the map service, and
-  `W_S_E_N.png`: the images of its `layer` over `bbox` in its `crs` at its `px_m`, each at most
-  4096 pixels on a side and named by its box in whole metres.
+- The `corine-land-cover` file is `U2018_CLC2018_V2020_20u1.tif`, the CORINE Land Cover 2018
+  raster of Europe. The capture orders the prepackaged `file` of the CLMS `dataset` through the
+  [CLMS download API](https://eea.github.io/clms-api-docs/download.html), with an access token
+  that the service key of the credential signs for. It polls the order every 30 seconds for at
+  most 6 hours, downloads the zip archive of the finished order without the token, and takes the
+  file from that archive or from a zip archive in it. The archive stays in the work directory
+  until the run succeeds, so a failed run resumes without a new order.
 - `ground` is the first 12 hex digits of the SHA-256 of the canonical JSON of the keys `protocol`,
-  `layer`, `field`, `sort`, `crs` and `px_m` of the source's entry, and of its `legend` for
-  `arcgis-features`. The fetch refuses a digest that the entry does not have.
+  `layer`, `field` and `sort` of the source's entry, and of its `legend` for `arcgis-features`. The fetch refuses a digest that the entry does not have.
 - An `arcgis-features` or `wfs` file is `features-NNNNN.geojson`: a page of the features that
   meet `bbox`, in EPSG:4326 with the source's `field`. `arcgis-features` asks only for the
   features whose `field` the legend may name, pages by object id, and asks again for the ids that
@@ -386,7 +390,7 @@ producer of [`wiki`](#wiki) reads them.
   `numberMatched` features of a `hits` request. A box without a feature gives a fetch without
   files.
 - A ground capture tries a request again after a failed or cut transfer, a 5xx or 429 answer, an
-  ArcGIS error without a 4xx code, or a map image that is no PNG, 6 times in all. Another 4xx
+  ArcGIS error without a 4xx code, 6 times in all. Another 4xx
   answer or ArcGIS error fails at once. The hidden file `.positions` records the object ids or the
   `numberMatched` that the page numbers stand for; a resumed run that finds others deletes the
   pages.
@@ -411,6 +415,7 @@ values, never a value.
 | `env` | `~/.config/openbikecomputer/credentials.env` | `NAME=VALUE` |
 | `file = "~/.cdsapirc"` | `~/.cdsapirc` | `key: VALUE` |
 | `file = "~/.config/openbikecomputer/cdse-s3.env"` | that file | `CDSE_S3_ACCESS_KEY=VALUE` and `CDSE_S3_SECRET_KEY=VALUE` |
+| `file = "~/.config/openbikecomputer/clms-key.json"` | that file | None: a person saves the JSON service key whole, as the `hint` says, and the command refuses it |
 
 Each `obc data` command but `obc data ui` loads `credentials.env` when it starts, and its steps get
 the variables. A variable that the environment already sets wins. `overridden` in the output

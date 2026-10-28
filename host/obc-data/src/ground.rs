@@ -10,7 +10,7 @@ use serde_json::Value;
 
 /// The keys of an entry that change what its capture fetches; `legend` too where the capture
 /// filters by it.
-const CAPTURE_KEYS: [&str; 6] = ["protocol", "layer", "field", "sort", "crs", "px_m"];
+const CAPTURE_KEYS: [&str; 4] = ["protocol", "layer", "field", "sort"];
 
 #[derive(Debug, Deserialize)]
 pub struct Ground {
@@ -47,6 +47,11 @@ impl Ground {
 }
 
 impl GroundSource {
+    /// Whether a capture fetches the source over each box: its protocol is `arcgis-features` or `wfs`.
+    pub fn per_box(&self) -> bool {
+        matches!(self.keys.get("protocol").and_then(Value::as_str), Some("arcgis-features" | "wfs"))
+    }
+
     /// The first 12 hex digits of the SHA-256 of the keys that decide what a capture fetches. A
     /// capture request names it, so a stored capture with other keys is not read again.
     pub fn capture_digest(&self) -> String {
@@ -81,11 +86,9 @@ mod tests {
             entry(r#"{"source": "x", "protocol": "arcgis-features", "legend": {"classes": [], "match": "word"}}"#),
             "the order of a legend's keys does not change the digest"
         );
-        let image = |legend: &str| {
-            entry(&format!(
-                r#"{{"source": "x", "protocol": "arcgis-image", "legend": {{"classes": [["1", "{legend}"]]}}}}"#
-            ))
+        let wfs = |legend: &str| {
+            entry(&format!(r#"{{"source": "x", "protocol": "wfs", "legend": {{"classes": [["1", "{legend}"]]}}}}"#))
         };
-        assert_eq!(image("heath"), image("bog"), "the legend of a map image does not filter its capture");
+        assert_eq!(wfs("heath"), wfs("bog"), "the legend does not filter a WFS capture");
     }
 }
