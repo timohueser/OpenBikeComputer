@@ -5,10 +5,6 @@
  "leaf": "mixed",
  "about": "Volcanic islands in the trade wind: dark basalt and red cinder, a deep Atlantic blue, white surf on black rock, Canary pine on the mid slopes.",
  "pack": "canaries",
- "cliffs": {
-  "reach_m": 35,
-  "raise_m": 30
- },
  "look": {
   "ramps": {
    "bare": ["#6e5a4c", "#7f6a58", "#8e7a62"]

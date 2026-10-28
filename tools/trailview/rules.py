@@ -179,9 +179,6 @@ def tables(materials):
     region = obj({
         "name": text, "about": text, "ecoregion": number(1, 1e6), "extends": text, "where": listed(area),
         "leaf": one_of("needleleaved", "broadleaved", "mixed"), "pack": text,
-        "cliffs": obj({"reach_m": number(0, 1000), "raise_m": number(0, 500), "min_m": number(0, 1000)}),
-        "summits": obj({"reach_m": number(0, 5000), "max_cut_m": number(0, 1000)}),
-        "relief": obj({"radius_m": number(0, 1000), "amount": number(0, 5)}),
         "look": look,
     })
     species = obj({

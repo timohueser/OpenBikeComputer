@@ -3,9 +3,6 @@
  "about": "The root: defaults every region inherits. An ecoregion extends it; a subregion extends one and names the areas it covers in 'where', each a box [west, south, east, north] or a ring of [lon, lat]. A spot starts at the region of its spots file and steps into the subregion whose area holds it, the smallest on a tie.",
  "leaf": "mixed",
  "pack": "base",
- "cliffs": { "reach_m": 15, "raise_m": 6, "min_m": 12 },
- "summits": { "reach_m": 150, "max_cut_m": 20 },
- "relief": { "radius_m": 60, "amount": 0.5 },
  "look": {
   "snap": 0.4,
   "hazeKm": 35, "hazeHeight": 2500, "mistTop": 0,
