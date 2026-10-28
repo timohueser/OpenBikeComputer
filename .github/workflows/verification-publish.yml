@@ -15,7 +15,7 @@ concurrency:
 jobs:
   publish:
     if: github.ref == 'refs/heads/develop'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     outputs:
       source_sha: ${{ steps.publish.outputs.source_sha }}
@@ -44,7 +44,7 @@ jobs:
         run: python3 tools/verification/ops/publish.py
   confirm:
     needs: publish
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Record completed publication
         env:
