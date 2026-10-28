@@ -376,6 +376,7 @@ mod tests {
         licence = "LicenseRef-Wikimedia-per-record"
         fetch = { kind = "prepared" }
         version = "date"
+        keep = "prepared"
         redistribute = true
         publish_text = false
     "#;

@@ -209,6 +209,7 @@ mod tests {
         fetch = { kind = "capture", url = "https://example.org/vhm" }
         extent = [8.0, 46.5, 8.2, 46.6]
         version = "date"
+        keep = "prepared"
         redistribute = true
 
         [[source]]
@@ -218,6 +219,7 @@ mod tests {
         attribution = "Test"
         fetch = { kind = "prepared" }
         version = "date"
+        keep = "prepared"
         redistribute = true
     "#;
 
@@ -243,7 +245,7 @@ t="${4#12-}"; mkdir -p "$6/12/${t%-*}" && echo "$4" > "$6/12/${t%-*}/${t#*-}.tif
     #[test]
     fn the_global_model_meets_every_country_and_comes_after_the_national_ones() {
         let rows = |id: &str, extent: &str| {
-            format!("[[source]]\nid = \"{id}\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Test\"\nfetch = {{ kind = \"capture\", url = \"https://example.org\" }}\nextent = {extent}\nversion = \"date\"\nredistribute = true\n")
+            format!("[[source]]\nid = \"{id}\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Test\"\nfetch = {{ kind = \"capture\", url = \"https://example.org\" }}\nextent = {extent}\nversion = \"date\"\nkeep = \"prepared\"\nredistribute = true\n")
         };
         let text =
             [rows("canopy-global", "[-180.0, -85.0, 180.0, 85.0]"), rows("canopy-ch", "[5.9, 45.8, 10.5, 47.9]")];
@@ -265,7 +267,7 @@ t="${4#12-}"; mkdir -p "$6/12/${t%-*}" && echo "$4" > "$6/12/${t%-*}/${t#*-}.tif
         let temp = temp("forest-union");
         std::fs::create_dir_all(temp.0.join("data")).unwrap();
         // `canopy-li` lies between the two boxes.
-        let gap = "[[source]]\nid = \"canopy-li\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Test\"\nfetch = { kind = \"capture\", url = \"https://example.org\" }\nextent = [8.08, 46.5, 8.12, 46.6]\nversion = \"date\"\nredistribute = true\n";
+        let gap = "[[source]]\nid = \"canopy-li\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Test\"\nfetch = { kind = \"capture\", url = \"https://example.org\" }\nextent = [8.08, 46.5, 8.12, 46.6]\nversion = \"date\"\nkeep = \"prepared\"\nredistribute = true\n";
         std::fs::write(temp.0.join("data/sources.toml"), format!("{SOURCES}\n{gap}")).unwrap();
         let sources = Registry::load(&temp.0).unwrap().sources;
         let model = sources.iter().find(|source| source.id == "canopy-ch").unwrap();

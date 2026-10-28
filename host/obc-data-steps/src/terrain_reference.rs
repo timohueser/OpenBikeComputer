@@ -360,6 +360,7 @@ mod tests {
         fetch = { kind = "dtm", url = "https://example.org/xx" }
         extent = [8.0, 46.5, 8.2, 46.6]
         version = "date"
+        keep = "prepared"
         redistribute = true
 
         [[source]]
@@ -369,6 +370,7 @@ mod tests {
         attribution = "Test"
         fetch = { kind = "prepared" }
         version = "date"
+        keep = "prepared"
         redistribute = true
     "#;
 

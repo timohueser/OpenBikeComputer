@@ -511,7 +511,7 @@ pub(crate) mod tests {
     pub(crate) fn source(url: &str, version: &str) -> Source {
         let text = format!(
             "[[source]]\nid = \"land\"\nkind = \"data\"\nfetch = {{ kind = \"http\", url = \"https://example.org/x\" }}\n\
-             version = \"{version}\"\nrefresh = \"manual\"\nredistribute = true\n"
+             version = \"{version}\"\nrefresh = \"manual\"\nkeep = \"store\"\nredistribute = true\n"
         );
         let mut source = parse_sources(&text).unwrap().remove(0);
         source.fetch.url = Some(url.to_string());

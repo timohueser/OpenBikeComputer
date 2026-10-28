@@ -137,6 +137,7 @@ fn product_steps(
         eprintln!("obc data: planning {name}");
     }
     let (mut failure, earlier) = (None, inputs.fetch_failures.len());
+    let mut notes = Vec::new();
     let mut listed = declarations(inputs);
     // A fetch can name the next one, such as the `.poly` that gives the box of a capture.
     let mut fetched: Vec<Wanted> = Vec::new();
@@ -150,6 +151,16 @@ fn product_steps(
             let version = match fetch(wanted) {
                 Ok(version) => version,
                 Err(error) if matches!(error.code, Code::FetchFailed | Code::Blocked) => {
+                    if let Some(stored) = inputs.undue(store, wanted).map_err(|e| Code::Failed.error(e))? {
+                        let text = format!(
+                            "`{}`{}: the newer version failed ({}); this update reads {stored}",
+                            wanted.source,
+                            wanted.params.iter().map(|(name, value)| format!(" {name}={value}")).collect::<String>(),
+                            error.message
+                        );
+                        notes.push(Note { layer: name.into(), text });
+                        continue;
+                    }
                     inputs.fetch_failures.push((wanted.clone(), error.message.clone()));
                     failure = Some(error);
                     continue;
@@ -162,7 +173,10 @@ fn product_steps(
         listed = declarations(inputs);
     }
     match listed {
-        Ok(steps) => Ok(Ok(steps)),
+        Ok(mut steps) => {
+            steps.notes.extend(notes);
+            Ok(Ok(steps))
+        }
         Err(Unplanned::NeedsFetch(fetches)) => {
             if let Some(mut error) = failure {
                 // A source can be many fetches, such as one per area: the count of each source, not a line each.

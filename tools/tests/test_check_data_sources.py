@@ -39,17 +39,20 @@ class HostGuardTests(unittest.TestCase):
 
 
 class UseGuardTests(unittest.TestCase):
-    def test_a_source_names_what_reads_it_and_what_for(self):
+    def test_a_source_names_what_reads_it_what_for_and_where_it_is_kept(self):
+        use, keep = "Land cover of the basemap", "archive"
         registry = {"source": [
-            {"id": "good", "used_by": ["planner", "trailview"], "use": "Land cover of the basemap"},
-            {"id": "no-readers", "use": "Land cover of the basemap"},
-            {"id": "no-use", "used_by": ["device"]},
-            {"id": "unknown", "used_by": ["planner", "atlas"], "use": "Land cover of the basemap"},
+            {"id": "good", "used_by": ["planner", "trailview"], "use": use, "keep": keep},
+            {"id": "no-readers", "use": use, "keep": keep},
+            {"id": "no-use", "used_by": ["device"], "keep": keep},
+            {"id": "unknown", "used_by": ["planner", "atlas"], "use": use, "keep": keep},
+            {"id": "unkept", "used_by": ["planner"], "use": use, "keep": "cloud"},
         ]}
         self.assertEqual(guard.undocumented(registry), [
             "no-readers: give `used_by` and `use`",
             "no-use: give `used_by` and `use`",
             "unknown: `used_by` names `atlas`",
+            "unkept: give `keep`, one of archive, store, prepared",
         ])
 
 
