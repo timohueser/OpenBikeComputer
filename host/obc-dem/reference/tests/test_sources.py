@@ -605,6 +605,65 @@ class PortugalDataCentre(unittest.TestCase):
             with self.subTest(page[-40:]), self.assertRaises(ingest.Refuse):
                 pt_module.login_action(page, "pt login")
 
+    def sign_in(self, landed, cookies):
+        """`sign_in` against a recorded login page: the form it posted, or its refusal."""
+
+        class Response:
+            def __init__(self, body=b"", url=""):
+                self.body, self.url = body, url
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return self.body
+
+            def geturl(self):
+                return self.url
+
+        class Opener:
+            def open(opener, request, timeout=None):  # noqa: N805 — a stand-in of urllib's opener
+                if isinstance(request, str):
+                    return Response(self.FORM.encode())
+                self.sent.append((request.full_url, urllib.parse.parse_qs(request.data.decode())))
+                jar.extend(cookies)
+                return Response(url=landed)
+
+        jar = []
+        cookies = [type("Cookie", (), {"name": name, "value": value})() for name, value in cookies]
+        with unittest.mock.patch.object(pt_module, "session_opener", lambda: (Opener(), jar)), \
+                unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_PT_USER": "u@example.org",
+                                                      "OBC_REFERENCE_PT_PASSWORD": "p"}):
+            return self.source.sign_in()
+
+    def test_the_login_posts_the_form_and_keeps_the_session_cookie(self):
+        session = self.sign_in("https://cdd.dgterritorio.gov.pt/", [("KC_RESTART", "k"), ("connect.sid", "s2")])
+        self.assertEqual(session, "connect.sid=s2")
+        action, form = self.sent[0]
+        self.assertEqual(action, "https://auth.cdd.dgterritorio.gov.pt/realms/dgterritorio/login-actions/"
+                                 "authenticate?session_code=a&execution=b&client_id=aai-oidc-dgt")
+        self.assertEqual((form["username"], form["password"]), (["u@example.org"], ["p"]))
+
+    def test_a_login_that_lands_on_its_form_again_is_refused(self):
+        for landed, cookies in (("https://auth.cdd.dgterritorio.gov.pt/realms/dgterritorio/login-actions/x",
+                                 [("connect.sid", "s2")]),
+                                ("https://cdd.dgterritorio.gov.pt/", [])):
+            with self.subTest(landed), self.assertRaises(ingest.Refuse) as refusal:
+                self.sign_in(landed, cookies)
+            self.assertIn("OBC_REFERENCE_PT_USER", str(refusal.exception))
+
+    def test_a_search_over_the_sea_signs_in_nowhere_and_a_login_page_is_refused(self):
+        ingest.sources.stac.http_get = lambda url, data=None, headers=None: b'{"features": [], "links": []}'
+        with unittest.mock.patch.object(type(self.source), "sign_in", side_effect=AssertionError("signed in")):
+            self.assertEqual(self.source.fetch((-9.9, 39.0, -9.8, 39.1), Path("/nonexistent")), [])
+        ingest.sources.stac.http_get = lambda url, data=None, headers=None: b"<!DOCTYPE html><title>Sign in</title>"
+        with self.assertRaises(ingest.Refuse) as refusal:
+            self.source.files((-9.9, 39.0, -9.8, 39.1))
+        self.assertIn("not a STAC answer", str(refusal.exception))
+
     def test_a_download_that_is_the_login_page_is_refused_and_not_kept(self):
         """The CDD answers an ended session with its login page, and a cached page would be
         read as a tile by every later run."""
@@ -658,6 +717,36 @@ class RangeHandler(SimpleHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
         self.wfile.write(chunk)
+
+
+class SharedZipWindows(TempCase):
+    """Madeira's rasters are in one zip: one download a prepare, and a window of it for each tile."""
+
+    def test_the_tiles_of_a_prepare_download_the_zip_once_and_read_their_own_window(self):
+        (lo_x, lo_y, hi_x, hi_y), _ = ingest.sources.protocols.projected_box(BOX, 32632)
+        raster = self.inputs / "island.tif"
+        with rasterio.open(raster, "w", driver="GTiff", width=600, height=600, count=1, dtype="float32",
+                           crs=CRS.from_epsg(32632), nodata=-9999.0,
+                           transform=Affine(5, 0, round(lo_x) - 500, 0, -5, round(hi_y) + 500)) as dst:
+            dst.write(np.full((600, 600), 1234.0, dtype="float32"), 1)
+        served = self.inputs / "island.zip"
+        with zipfile.ZipFile(served, "w") as bundle:
+            bundle.write(raster, "island.tif")
+        source = ingest.sources.cog.SharedZip("xx", "Nowhere", "MDT 5 m", 5.0, "CC0", "EGM2008",
+                                              base=f"file://{served}", epsg=32632)
+        source.shared = self.root / "shared"
+        downloads = []
+        real = ingest.sources.cog.http_download
+        self.addCleanup(setattr, ingest.sources.cog, "http_download", real)
+        ingest.sources.cog.http_download = lambda *a, **kw: downloads.append(a) or real(*a, **kw)
+
+        for tile in ("a", "b"):
+            cut = source.fetch(BOX, self.root / tile)
+            self.assertEqual(len(cut), 1)
+            with rasterio.open(cut[0]) as src:
+                self.assertLess(src.width * src.height, 600 * 600)
+        self.assertEqual(len(downloads), 1)
+        self.assertEqual(source.fetch((6.0, 45.0, 6.001, 45.001), self.root / "c"), [])
 
 
 class RemoteWindows(TempCase):

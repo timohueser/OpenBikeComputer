@@ -2,7 +2,8 @@
 //! archive (`host/obc-dem/reference/README.md`), `16/<ti>/<tj>.tif` of the maximum and
 //! `mean/16/<ti>/<tj>.tif` of the mean, and the `index.json` of each pool. A version extends the
 //! version before: `ingest.py fetch` folds the models that meet its region into each tile of that
-//! region, and the version keeps every other tile of the version before without an upload.
+//! region, and the version keeps every other tile of the version before without an upload. Each
+//! index states the GLO-30 bias of each model (`crate::terrain_bias`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -27,9 +28,11 @@ pub const ID: &str = "terrain";
 pub struct TerrainReference {
     /// `ingest.py` of the reference archive, as a command in the repository root.
     pub ingest: fn(&Path) -> Result<Command, String>,
+    /// The GLO-30 squares that the bias of a model reads.
+    pub(crate) glo30: crate::terrain_bias::Glo30,
 }
 
-pub const TERRAIN_REFERENCE: TerrainReference = TerrainReference { ingest };
+pub const TERRAIN_REFERENCE: TerrainReference = TerrainReference { ingest, glo30: crate::terrain_bias::fetch };
 
 fn ingest(root: &Path) -> Result<Command, String> {
     let mut command = Command::new("uv");
@@ -49,7 +52,7 @@ impl Prepared for TerrainReference {
     }
 
     fn revision(&self) -> u32 {
-        1
+        2
     }
 
     fn regional(&self) -> bool {
@@ -111,8 +114,8 @@ impl Prepared for TerrainReference {
                 keys.entry(tile).or_default().push(key(model).into());
             }
         }
-        let before = |pool: &str| previous.as_ref().map(|manifest| index(job, manifest, pool)).transpose();
-        let held = before("")?.map(|index| index.contributors).unwrap_or_default();
+        let before = previous.as_ref().map(|manifest| index(job, manifest, "")).transpose()?;
+        let held = before.as_ref().map(|index| index.contributors.clone()).unwrap_or_default();
         let tiles: Vec<Tile> = keys
             .keys()
             .map(|tile| {
@@ -120,7 +123,7 @@ impl Prepared for TerrainReference {
                 let path = format!("16/{:04}/{:04}.tif", tile.i, tile.j);
                 let files =
                     vec![(format!("mean/{path}"), format!("{name}.mean.sha256")), (path, format!("{name}.sha256"))];
-                Tile { name: name.clone(), files, marks: vec![format!("{name}.keys")] }
+                Tile { name: name.clone(), files, marks: vec![format!("{name}.keys"), format!("{name}.samples")] }
             })
             .collect();
         let models: BTreeMap<String, String> =
@@ -139,6 +142,8 @@ impl Prepared for TerrainReference {
                 }
                 command.arg("--base").arg(&base).args(["--held", &sources.join(",")]);
             }
+            // The summit check of each model, once per prepare, and a file a whole region is in.
+            command.arg("--shared").arg(job.state.join("shared"));
             Ok(command)
         })?;
         // A tile that this version did not make is the tile of the version before.
@@ -159,6 +164,9 @@ impl Prepared for TerrainReference {
             let text = fs::read_to_string(marks.join(&tile.marks[0])).map_err(|e| format!("{}: {e}", tile.marks[0]))?;
             sources.insert(tile.name.replace('-', "/"), text.trim().split(',').map(String::from).collect());
         }
+        let biases = crate::terrain_bias::measure(job, (previous.as_ref(), before.as_ref()), &sources, self.glo30)?;
+        let biased = job.state.join("biases.json");
+        obc_data::store::write_atomic(&biased, &serde_json::to_vec(&biases).expect("biases serialize"))?;
         let fetched: BTreeSet<&String> = keys.values().flatten().collect();
         let fetched: Vec<&str> = fetched.into_iter().map(String::as_str).collect();
         // A model has no versions of its own: the day of the prepare names what it read.
@@ -176,7 +184,7 @@ impl Prepared for TerrainReference {
             obc_data::store::write_atomic(&held, &serde_json::to_vec(&sources).expect("keys serialize"))?;
             let mut command = (self.ingest)(job.root)?;
             command.args(["index-terrain", "--pool", pool, "--fetched", &version, "--models", &fetched.join(",")]);
-            command.arg("--digests").arg(&listed).arg("--keys").arg(&held);
+            command.arg("--digests").arg(&listed).arg("--keys").arg(&held).arg("--biases").arg(&biased);
             if let Some(previous) = &previous {
                 command.arg("--base").arg(job.earlier_file(previous, &format!("{prefix}index.json"))?);
             }
@@ -248,10 +256,15 @@ fn key(model: &Source) -> &str {
     &model.id["dtm-".len()..]
 }
 
-/// The sources of each tile of the pool `prefix` of the version before.
+/// The sources of each tile of the pool `prefix` of the version before, its best source and the
+/// facts of each source.
 #[derive(serde::Deserialize)]
-struct Index {
+pub(crate) struct Index {
     contributors: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub tiles: BTreeMap<String, String>,
+    #[serde(default)]
+    pub sources: BTreeMap<String, serde_json::Value>,
 }
 
 fn index(job: &Job, manifest: &Manifest, prefix: &str) -> Result<Index, String> {
@@ -349,6 +362,7 @@ mod tests {
     use obc_data::sources::Registry;
     use obc_data::store::Store;
     use obc_data::target::Target;
+    use obc_dem::fetch::TileId;
     use std::path::PathBuf;
 
     const SOURCES: &str = r#"
@@ -382,7 +396,7 @@ mod tests {
     /// signal stops it. `index-terrain` writes the digests that it gets unless `fail-index` exists.
     const INGEST: &str = r#"case "$1" in
 fetch)
-    echo "fetch $4 $2${10:+ over ${12}}" >> calls
+    echo "fetch $4 $2$([ "$9" = --base ] && echo " over ${12}")" >> calls
     # As `ingest.py fetch` does, it removes its `--work` when it ends, also on SIGTERM.
     trap 'rm -rf "$6"' EXIT && trap 'exit 143' TERM
     mkdir -p "$6" && touch "$6/raw.tif" && echo "$6" >> works
@@ -394,9 +408,10 @@ fetch)
     if [ -e "none-$4" ]; then touch "$8/$4.none"; exit 0; fi
     for pool in "" mean/; do mkdir -p "$8/${pool}16/${4%-*}" && echo "$pool$4 $2" > "$8/${pool}16/${4%-*}/${4#*-}.tif"; done
     echo "$2" > "$8/$4.keys"
+    yes 15000 | head -n 256 > "$8/$4.samples"
     echo "mean of $4" > "$8/$4.mean.sha256" && echo "pixels of $4" > "$8/$4.sha256" ;;
 index-terrain)
-    over=""; [ $# -gt 13 ] && over=" over"
+    over=""; [ $# -gt 15 ] && over=" over"
     echo "$1 $3$over" >> calls
     [ -e fail-index ] && exit 1
     eval "out=\${$#}"
@@ -408,6 +423,13 @@ esac
         let mut command = Command::new("sh");
         command.arg("ingest.sh");
         Ok(command)
+    }
+
+    /// GLO-30 as all sea: it logs the squares that it is asked for to `squares`.
+    fn sea(job: &mut Job, squares: &BTreeSet<TileId>) -> Result<BTreeMap<TileId, PathBuf>, String> {
+        let names: Vec<String> = squares.iter().map(|tile| tile.stem()).collect();
+        fs::write(job.root.join("squares"), names.join("\n")).map_err(|e| e.to_string())?;
+        Ok(BTreeMap::new())
     }
 
     /// A repository with [`INGEST`], a store and a target for `terrain-reference/xx@2026-10-01`.
@@ -465,7 +487,8 @@ esac
         ) -> (Result<(), String>, Vec<String>, Vec<String>, serde_json::Value) {
             let root = self.root();
             let _ = fs::remove_file(root.join("calls"));
-            let (producer, http) = (TerrainReference { ingest: script }, Http::new());
+            let _ = fs::remove_file(root.join("squares"));
+            let (producer, http) = (TerrainReference { ingest: script, glo30: sea }, Http::new());
             let mut run = Run::create(&self.store, ["source", "prepare", ID]).unwrap();
             let opening = Opening {
                 root: &root,
@@ -606,6 +629,9 @@ esac
         let fixture = Fixture::new("terrain-extend");
         let (done, _, _, _) = fixture.version("2026-10-01", None);
         done.unwrap();
+        // The model has no bias yet, so its samples ask GLO-30 for the squares under them.
+        let squares = fs::read_to_string(fixture.root().join("squares")).unwrap();
+        assert!(squares.lines().any(|square| square == "Copernicus_DSM_COG_10_N46_00_E008_00_DEM"), "{squares}");
         // A box inside the first tile.
         let (west, south, east, north) = fixture.cells[0].square();
         let inner = |a: i64, b: i64| (a + (b - a) / 4) as f64 / 1e6;

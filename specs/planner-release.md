@@ -168,9 +168,13 @@ The planner reads zooms 0 to 12; TrailView reads zoom 13 too. The heights are th
 national terrain models (`terrain`) where they hold the ground, and Copernicus
 GLO-30 elsewhere. The two meet in a seam that `host/obc-dem/src/planner.rs` defines. The national
 weight is 0 within one coverage cell (about 114 m × 78 m at 47° N) of a cell where the national
-model misses a pixel, and rises to 1 over the next 1 km. GLO-30 takes the median offset of
-national − GLO-30 there, faded out over 1 km outside the coverage. The height is continuous, also
-at a concave edge such as a national border.
+model misses a pixel, and rises to 1 over the next 1 km. GLO-30 takes the bias of a national
+model there: the median of national − GLO-30 that `index.json` of `terrain` states for the best
+model of the tile, or outside the coverage for that of the nearest full cell, faded out over
+1 km. The height is continuous, also at a concave edge such as a national border. A height reads
+the archive tiles of `terrain_bounds` and one ring of tiles around them, so it does not depend on
+the bounds of the bake. The routes read the same heights, without the OSM corrections of
+coastlines and summits.
 
 ## Canonical grid storage
 

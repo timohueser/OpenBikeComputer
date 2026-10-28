@@ -345,6 +345,16 @@ pub fn write_archive(root: &Path, key: &str, tiles: &[ArchiveTile]) {
     }
 }
 
+/// Give the source of the archive at `root`, which [`write_archive`] wrote, the GLO-30 bias
+/// `metres`.
+pub fn set_bias(root: &Path, metres: f64) {
+    let path = root.join("index.json");
+    let index = std::fs::read_to_string(&path).expect("reading index.json");
+    let index =
+        index.replace("\"licence\": \"CC0\"}", &format!("\"licence\": \"CC0\", \"glo30_bias_m\": {metres:?}}}"));
+    std::fs::write(&path, index).expect("writing index.json");
+}
+
 enum Value {
     Inline([u8; 4]),
     Blob(Vec<u8>),

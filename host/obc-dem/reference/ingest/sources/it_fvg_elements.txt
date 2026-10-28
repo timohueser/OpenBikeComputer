@@ -1,3 +1,4 @@
+# From https://irdat.regione.fvg.it/geoserver/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=IRDAT:QU_5000&outputFormat=application/json&srsName=EPSG:4326. To make it again: one line per feature, `COD_ELEMENTO` and the west, south, east and north of its polygon to 5 decimals, sorted by code.
 018131 12.70735 46.62414 12.74902 46.64915
 018132 12.70735 46.59914 12.74902 46.62415
 018133 12.66568 46.59914 12.70735 46.62414

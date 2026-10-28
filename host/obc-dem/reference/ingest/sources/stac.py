@@ -33,8 +33,12 @@ def stac_items(url: str, body: dict | None = None):
             raise Refuse(f"{url}: the STAC `next` link points at a page already read")
         seen.add((url, sent))
         posted = {"data": sent.encode(), "headers": {"Content-Type": "application/json"}} if sent else {}
-        page = json.loads(http_get(url, **posted))
-        if "features" not in page:
+        body_bytes = http_get(url, **posted)
+        try:
+            page = json.loads(body_bytes)
+        except ValueError:
+            page = body_bytes[:200].decode("utf-8", "replace")
+        if not isinstance(page, dict) or "features" not in page:
             raise Refuse(redact(f"{url}: not a STAC answer: {str(page)[:200]}"))
         yield from page["features"]
         link = next((link for link in page.get("links", []) if link.get("rel") == "next"), {})
@@ -48,15 +52,25 @@ class StacSearchSource(BulkSource):
         super().__init__(*args, **kw)
         self.search, self.asset, self.collections, self.page = search, asset, collections, page
 
-    def files(self, bbox):
+    def items(self, bbox):
+        """The items of the search for `bbox`."""
+
         query = f"{self.search}?bbox={bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}&limit={self.page}"
         if self.collections:
             query += f"&collections={self.collections}"
+        return stac_items(query)
+
+    def name_of(self, feature, href: str) -> str:
+        """What a download is called in the work directory: the file the `href` names."""
+
+        return href.rsplit("/", 1)[-1]
+
+    def files(self, bbox):
         wanted = []
-        for feature in stac_items(query):
+        for feature in self.items(bbox):
             asset = feature.get("assets", {}).get(self.asset)
             if asset is None:
                 raise Refuse(f"{self.key}: item {feature.get('id')} has no `{self.asset}` asset")
             href = asset["href"]
-            wanted.append((href.rsplit("/", 1)[-1], href))
+            wanted.append((self.name_of(feature, href), href))
         return sorted(set(wanted))

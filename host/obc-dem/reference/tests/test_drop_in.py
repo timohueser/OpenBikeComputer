@@ -11,6 +11,7 @@ import sys
 import unittest
 import urllib.error
 import urllib.parse
+import urllib.request
 import zipfile
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -494,6 +495,17 @@ class Redirects(unittest.TestCase):
         RedirectHandler.seen = []
         self.httpd = serve(self, RedirectHandler)
         self.port = self.httpd.server_address[1]
+
+    def test_a_redirect_from_https_to_http_drops_the_session_on_the_same_host(self):
+        request = urllib.request.Request("https://cdd.dgterritorio.gov.pt/dgt-be/v1/download/a",
+                                         headers={"Cookie": "connect.sid=s1", "Authorization": "Basic x"})
+        handler = ingest.sources.base.DropAuthOnRedirect()
+        onward = handler.redirect_request(request, None, 302, "Found", {},
+                                          "http://cdd.dgterritorio.gov.pt/dgt-be/v1/download/a")
+        self.assertEqual({name.lower() for name in onward.headers}, set())
+        onward = handler.redirect_request(request, None, 302, "Found", {},
+                                          "https://cdd.dgterritorio.gov.pt/dgt-be/v1/download/b")
+        self.assertEqual(onward.headers.get("Cookie"), "connect.sid=s1")
 
     def test_a_redirect_to_another_host_drops_the_authorization_and_the_session(self):
         """urllib copies a request's headers onto the redirect it follows, so a portal

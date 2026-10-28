@@ -220,7 +220,7 @@ fn enterprise(store: &Store) -> Result<Http, String> {
             value["expires_in"].as_u64().unwrap_or(3600).min(86400),
         )
     } else {
-        (get("OBC_WIKIMEDIA_ENTERPRISE_TOKEN").ok_or("missing Wikipedia archives need Wikimedia Enterprise credentials: set OBC_WIKIMEDIA_ENTERPRISE_USERNAME and OBC_WIKIMEDIA_ENTERPRISE_REFRESH_TOKEN in tools/obc.local")?, 3600)
+        (get("OBC_WIKIMEDIA_ENTERPRISE_TOKEN").ok_or("missing Wikipedia archives need Wikimedia Enterprise credentials: put OBC_WIKIMEDIA_ENTERPRISE_USERNAME and OBC_WIKIMEDIA_ENTERPRISE_REFRESH_TOKEN in ~/.config/openbikecomputer/credentials.env")?, 3600)
     };
     // Credentials must never enter manifests, reviews or run logs.
     use std::io::Write;

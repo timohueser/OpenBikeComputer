@@ -502,10 +502,10 @@ id = "dtm-gb-wls"
 kind = "data"
 group = "Elevation"
 used_by = ["device", "planner", "trailview"]
-use = "Terrain in Wales: Welsh Government LiDAR DTM 2020–23 1 m"
+use = "Terrain in Wales: Welsh Government and NRW LiDAR DTM 1 m"
 licence = "OGL-UK-3.0"
-licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
-attribution = "Welsh Government LiDAR 2020–23. Contains public sector information licensed under the Open Government Licence v3.0."
+licence_url = "https://datamap.gov.wales/maps/6969/metadata_detail"
+attribution = "LiDAR of the Welsh Government and Natural Resources Wales. Contains public sector information licensed under the Open Government Licence v3.0."
 fetch = { kind = "dtm", url = "https://dmwproductionblob.blob.core.windows.net/cogs/lidar/wales_dtm_16bit_cog.tif" }
 extent = [-5.6, 51.3, -2.6, 53.5]
 areas = ["europe/united-kingdom/wales"]
@@ -551,7 +551,7 @@ group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Piedmont, Italy: DTM 5 m, ICE 2009–2011"
 licence = "CC-BY-4.0"
-licence_url = "https://creativecommons.org/licenses/by/4.0/"
+licence_url = "https://www.geoportale.piemonte.it/geonetwork/srv/api/records/r_piemon:224de2ac-023e-441c-9ae0-ea493b217a8e"
 attribution = "© Regione Piemonte"
 fetch = { kind = "dtm", url = "https://geomap.reteunitaria.piemonte.it/ws/taims/rp-01/taimsdtmwcs/wcs_ice_2009_2011_dtm" }
 # Piedmont, inside the rectangle of the coverage on EPSG:32632: the WCS refuses a box outside it.
@@ -716,7 +716,8 @@ licence_url = "https://irig-catalogo.madeira.gov.pt/geonetwork/srv/api/records/a
 attribution = "© Direção Regional do Ordenamento do Território (DROTe), Região Autónoma da Madeira"
 obligations = "Credit DROTe and the Região Autónoma da Madeira. The record states no named licence, only that no conditions apply to access and use; read it again before a commercial use"
 fetch = { kind = "dtm", url = "https://irig-storage.madeira.gov.pt/irig-catalogo/mdt_5m.zip" }
-extent = [-17.3, 29.9, -15.8, 33.2]
+# Madeira, Porto Santo and the Desertas: the Selvagens are left out.
+extent = [-17.3, 32.35, -16.2, 33.15]
 areas = ["europe/portugal"]
 version = "date"
 keep = "prepared"
@@ -746,8 +747,8 @@ group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Slovenia: DMR1 1 m, laser scan 2011–2015"
 licence = "CC-BY-4.0"
-licence_url = "https://creativecommons.org/licenses/by/4.0/"
-attribution = "Lasersko skeniranje Slovenije © ARSO, GURS"
+licence_url = "https://www.e-prostor.gov.si/fileadmin/struktura/Preberi_me.docx"
+attribution = "Geodetska uprava Republike Slovenije in ARSO, Lasersko skeniranje Slovenije, DMR1 2011–2015"
 fetch = { kind = "dtm", url = "https://gis.arso.gov.si/lidar/dmr1/" }
 extent = [13.3, 45.4, 16.7, 46.9]
 areas = ["europe/slovenia"]

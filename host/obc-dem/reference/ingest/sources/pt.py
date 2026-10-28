@@ -6,18 +6,18 @@ so nothing here reads it; the search filters on the item's `geometry`. An asset'
 digest and no file, so a download is named after its item.
 
 A download needs a free account. The CDD has no key for programs: it signs a user in with a
-Keycloak login form and then reads a session cookie. So `fetch` signs in once, the way a browser
-does, and every download carries the cookie. The password goes only to the DGT login form, and a
-download that answers the login page instead of a GeoTIFF is refused and not kept.
+Keycloak login form and then reads a session cookie. So a `fetch` whose search finds items signs
+in once, the way a browser does, and each of its downloads carries the cookie; a fetch over the
+sea signs in nowhere. The password goes only to the DGT login form, and a download that answers
+the login page instead of a GeoTIFF is refused and not kept.
 
-The mainland heights are on Cascais. The Azores model is the regional government's; its metadata
-names no height system, and each island has its own tide gauge (EPSG:6180–6187).
+Madeira is DROTe's model of 2018/19, matched from aerial images and published keyless as one zip
+of a GeoTIFF per island group. The row takes the 5 m zip and not the 2 m one: the 2 m GeoTIFF is
+too large to hold whole once unpacked, and 5 m is still shorter than the east side of a lattice
+pixel there. Its extent holds Madeira, Porto Santo and the Desertas; the Selvagens are left out.
 
-Madeira is DROTe's model of 2018/19, matched from aerial images, keyless: one zip that holds a
-GeoTIFF per island group. The row takes the 5 m zip (114 MB) and not the 2 m one (460 MB): the 2 m GeoTIFF is
-64 959 × 171 894 float32, about 45 GB unpacked, which the tail cannot hold whole, and every tile
-of a prepare downloads the zip again. The 5 m step is shorter than the east side of a lattice
-pixel there (about 6 m), so each lattice pixel still gets a source centre.
+No model's metadata names its height system, so each row carries a summit that the prepare checks
+before it uses the model.
 """
 
 import html
@@ -28,8 +28,8 @@ import urllib.request
 from pathlib import Path
 
 from ..lattice import Refuse
-from .base import HTTP_TIMEOUT, Credential, host_of, inside, with_retry
-from .bulk import BulkSource
+from .base import HTTP_TIMEOUT, TIFF_MAGIC, Credential, host_of, inside, with_retry
+from .cog import SharedZip
 from .stac import StacSearchSource, stac_items
 
 LOGIN = "https://cdd.dgterritorio.gov.pt/auth/login"
@@ -37,7 +37,6 @@ DOMAIN = "dgterritorio.gov.pt"
 SESSION = "connect.sid"
 # Every Keycloak login form posts to its `login-actions/authenticate` endpoint.
 FORM = re.compile(r'action="([^"]*/login-actions/authenticate[^"]*)"')
-TIFF = (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")
 
 
 def login_action(page: str, what: str) -> str:
@@ -53,6 +52,13 @@ def login_action(page: str, what: str) -> str:
     return action
 
 
+def session_opener():
+    """An opener that keeps the cookies of a login, and the jar it keeps them in."""
+
+    jar = http.cookiejar.CookieJar()
+    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar)), jar
+
+
 class CddSearch(StacSearchSource):
     """The CDD's STAC search, and downloads signed in with its session cookie."""
 
@@ -60,22 +66,18 @@ class CddSearch(StacSearchSource):
         super().__init__(*args, **kw)
         self.session = None
 
-    def files(self, bbox):
-        body = {"bbox": list(bbox), "collections": [self.collections], "limit": self.page}
-        wanted = []
-        for feature in stac_items(self.search, body):
-            asset = feature.get("assets", {}).get(self.asset)
-            if asset is None:
-                raise Refuse(f"{self.key}: item {feature.get('id')} has no `{self.asset}` asset")
-            wanted.append((f"{feature['id']}.tif", asset["href"]))
-        return sorted(set(wanted))
+    def items(self, bbox):
+        return stac_items(self.search, {"bbox": list(bbox), "collections": [self.collections],
+                                        "limit": self.page})
+
+    def name_of(self, feature, href: str) -> str:
+        return f"{feature['id']}.tif"
 
     def sign_in(self) -> str:
         """The session cookie of a CDD login with the row's user and password."""
 
         what = f"{self.key} login"
-        jar = http.cookiejar.CookieJar()
-        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        opener, jar = session_opener()
 
         def page():
             with opener.open(LOGIN, timeout=HTTP_TIMEOUT) as response:
@@ -103,12 +105,15 @@ class CddSearch(StacSearchSource):
         return {"Cookie": self.session}
 
     def fetch(self, bbox, workdir) -> list[Path]:
+        wanted = self.files(bbox)
+        if not wanted:
+            return []
         self.session = self.sign_in()
-        rasters = super().fetch(bbox, workdir)
+        rasters = self.download(wanted, workdir)
         for path in rasters:
             with path.open("rb") as handle:
                 magic = handle.read(4)
-            if magic not in TIFF:
+            if magic not in TIFF_MAGIC:
                 path.unlink()
                 raise Refuse(f"{self.key} {path.name}: the download is not a GeoTIFF; the CDD "
                              "answers its login page when the session has ended")
@@ -116,46 +121,38 @@ class CddSearch(StacSearchSource):
 
 
 SEARCH = "https://cdd.dgterritorio.gov.pt/dgt-be/v1/search"
+UNVERIFIED = "orthometric, unverified until the summit check passes"
 
 PT = CddSearch(
     "pt", "Portugal (mainland)", "LiDAR MDT 2 m (DGT)", 2.0,
     "CC BY 4.0",
-    "Cascais (Cascais height, EPSG:5780)",
+    UNVERIFIED,
     credential=Credential("pt"),
     credential_hosts=(DOMAIN,),
     search=SEARCH,
     asset="data",
     collections="MDT-2m",
+    summit=(-7.6114, 40.3214, 1993),  # Torre, Serra da Estrela
 )
 
+# Each island has its own tide gauge (EPSG:6180–6187).
 AZ = CddSearch(
     "pt-20", "Portugal (Azores)", "LiDAR MDE 1 m (Governo dos Açores)", 1.0,
     "CC BY 4.0",
-    "Azores island heights, one tide gauge per island (EPSG:6180–6187)",
+    UNVERIFIED,
     credential=Credential("pt"),
     credential_hosts=(DOMAIN,),
     search=SEARCH,
     asset="data",
     collections="ACORES-MDE-1",
+    summit=(-28.3989, 38.4686, 2351),  # Pico
 )
 
-
-class OneZip(BulkSource):
-    """A region's rasters in one published zip."""
-
-    def __init__(self, *args, url, **kw):
-        super().__init__(*args, **kw)
-        self.url = url
-
-    def files(self, bbox):
-        return [(Path(self.url).name, self.url)]
-
-
-# The metadata states no height system; the heights match the summits on the tide gauges of
-# Funchal (Cais da Pontinha) and Porto Santo (Cais da Vila).
-MA = OneZip(
+MA = SharedZip(
     "pt-30", "Portugal (Madeira)", "MDT 5 m 2018/19 (DROTe, Região Autónoma da Madeira)", 5.0,
     "no conditions apply",
-    "Madeira island heights, Cais da Pontinha and Cais da Vila (EPSG:6178, EPSG:6179)",
-    url="https://irig-storage.madeira.gov.pt/irig-catalogo/mdt_5m.zip",
+    UNVERIFIED,
+    base="https://irig-storage.madeira.gov.pt/irig-catalogo/mdt_5m.zip",
+    epsg=5016,
+    summit=(-16.9428, 32.7587, 1862),  # Pico Ruivo
 )

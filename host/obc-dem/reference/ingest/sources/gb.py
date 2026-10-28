@@ -19,11 +19,11 @@ once per fetch. The squares are tiled, so only the box's window is read, as for 
 The Historic Environment Scotland surveys are left out: most of them are licensed for
 non-commercial use only. Where two surveys overlap, both reach the pooling.
 
-Wales is the Welsh Government's national LiDAR of the winters 2020–23, one COG of the whole
-nation with range reads. The row reads the Int16 copy of whole metres, 3.6 GB, and not the
-float32 copy of 48.6 GB: the Int16 values are the float32 ones rounded to the nearest metre,
-so the maximum pool, whole metres too, is the same, and the mean pool of decimetres moves by
-the mean of the rounding over a lattice pixel, which is about zero.
+Wales is the LiDAR of the Welsh Government and NRW as one COG of the whole nation, with range
+reads. The row reads the Int16 copy of whole metres and not the float32 copy: the Int16 values
+are the float32 ones rounded to the nearest metre, so the maximum pool, whole metres too, is the
+same, and the mean pool of decimetres moves by the mean of the rounding over a lattice pixel,
+which is about zero.
 """
 
 import math
@@ -136,11 +136,12 @@ ENG = Wcs20Source(
 )
 
 WLS = OneFile(
-    "gb-wls", "United Kingdom (Wales)", "Welsh Government LiDAR DTM 2020–23 1 m", 1.0,
+    "gb-wls", "United Kingdom (Wales)", "Wales LiDAR DTM 1 m (Welsh Government, NRW)", 1.0,
     "Open Government Licence v3",
     "Ordnance Datum Newlyn",
     base="https://dmwproductionblob.blob.core.windows.net/cogs/lidar/wales_dtm_16bit_cog.tif",
     epsg=27700,
+    summit=(-4.0762, 53.0685, 1085),  # Yr Wyddfa
 )
 
 GB = (ENG, SCT, WLS)
