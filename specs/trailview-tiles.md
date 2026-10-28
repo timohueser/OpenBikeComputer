@@ -146,7 +146,8 @@ The bake applies these rules to the texels of `colour`, in this order:
 
 1. A texel with a look of 3 or more takes the NDVI code 1 + round((max(v, −0.99) + 1) ÷ 2 × 254),
    2 to 255, of v = (nir − red) ÷ max(nir + red, 0.0001), from −1 to 1, of the reflectance of its
-   near-infrared and red. A texel with a look below 3 takes NDVI code 0.
+   near-infrared and red; v = −1 where nir + red is below 0.001, as such a dark texel is water or
+   deep shadow. A texel with a look below 3 takes NDVI code 0.
 2. The shadow rule, below.
 3. The snow rule: code 1 in the table.
 4. A texel whose centre is outside the region bounds takes 0 in each byte.
@@ -187,9 +188,7 @@ NDVI code of those that measured one. It is 1 where more children saw snow than 
 | Variant | Codec | Last zoom | Chroma at 47° N | NDVI at 47° N |
 | --- | --- | --- | --- | --- |
 | `webp-12` | lossy WebP, 4:2:0 | 12 | 26 m | 26 m |
-| `webp-11` | lossy WebP, 4:2:0 | 11 | 52 m | 52 m |
 | `avif-12` | AVIF, 4:2:0 | 12 | 26 m | 26 m |
-| `avif-11` | AVIF, 4:2:0 | 11 | 52 m | 52 m |
 | `avif444-12` | AVIF, 4:4:4 | 12 | 13 m | 26 m |
 
 `colour` of `[trailview]` in `data/planner.toml` selects the variant of the release.

@@ -1998,8 +1998,8 @@ of `colour` in the home, in the same format.
 - In each quarter, the program puts the bands B02, B03, B04, B08 and `observations` on the
   512 × 512 texels of each zoom 12 tile in EPSG:3857: bilinear where the texel is under 10 m, the
   mean of the pixels otherwise. The mosaic tiles go in the order of their ids, and a later tile
-  writes over an earlier one where it has a pixel. `refl` is a band ÷ 10000, from 0 to 1, and 0
-  without a pixel.
+  writes over an earlier one where it has a pixel. `refl` is a band ÷ 10000, clipped to 0 to 1,
+  and 0 without a pixel: a negative band value, as over deep water, is 0.
 
   | Plane | Value of a texel |
   | --- | --- |
