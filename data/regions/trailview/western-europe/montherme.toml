@@ -1,0 +1,6 @@
+name = "TrailView western-europe: Montherme"
+kind = "box"
+# west, south, east, north
+box = [4.37, 49.66, 5.08, 50.12]
+countries = ["FR", "BE"]
+time_zone = "Europe/Paris"

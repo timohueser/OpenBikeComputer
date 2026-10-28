@@ -1,0 +1,6 @@
+name = "TrailView english-lowlands: Weald"
+kind = "box"
+# west, south, east, north
+box = [-0.68, 50.52, 0.5, 51.48]
+countries = ["GB"]
+time_zone = "Europe/London"

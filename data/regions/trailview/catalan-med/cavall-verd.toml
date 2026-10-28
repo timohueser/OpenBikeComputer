@@ -1,0 +1,6 @@
+name = "TrailView catalan-med: Cavall Verd"
+kind = "box"
+# west, south, east, north
+box = [-0.36, 38.59, 0.1, 38.99]
+countries = ["ES"]
+time_zone = "Europe/Madrid"

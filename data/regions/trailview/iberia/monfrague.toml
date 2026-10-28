@@ -1,0 +1,6 @@
+name = "TrailView iberia: Monfrague"
+kind = "box"
+# west, south, east, north
+box = [-6.29, 39.64, -5.81, 40.01]
+countries = ["ES"]
+time_zone = "Europe/Madrid"

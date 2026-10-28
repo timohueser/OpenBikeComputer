@@ -1,0 +1,6 @@
+name = "TrailView carpathians: Javornik"
+kind = "box"
+# west, south, east, north
+box = [17.86, 49.07, 18.55, 49.52]
+countries = ["CZ", "SK"]
+time_zone = "Europe/Prague"

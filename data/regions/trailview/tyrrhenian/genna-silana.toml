@@ -1,0 +1,6 @@
+name = "TrailView tyrrhenian: Genna Silana"
+kind = "box"
+# west, south, east, north
+box = [9.28, 39.98, 9.77, 40.35]
+countries = ["IT"]
+time_zone = "Europe/Rome"

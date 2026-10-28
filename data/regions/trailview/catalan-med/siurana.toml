@@ -1,0 +1,6 @@
+name = "TrailView catalan-med: Siurana"
+kind = "box"
+# west, south, east, north
+box = [0.68, 41.07, 1.18, 41.45]
+countries = ["ES"]
+time_zone = "Europe/Madrid"

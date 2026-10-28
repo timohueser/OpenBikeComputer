@@ -1,0 +1,6 @@
+name = "TrailView iberia: Bardenas"
+kind = "box"
+# west, south, east, north
+box = [-1.76, 42.01, -1.24, 42.4]
+countries = ["ES"]
+time_zone = "Europe/Madrid"
