@@ -26,8 +26,8 @@ const EARTHDATA: &str = "EARTHDATA_TOKEN";
 const CMR: &str = "https://cmr.earthdata.nasa.gov/search/granules.json";
 /// The granules of a page of a CMR search, its largest.
 const CMR_PAGE: usize = 2000;
-/// How long a SAS token serves: the Planetary Computer gives one for about an hour.
-const SAS_LIFE: Duration = Duration::from_secs(45 * 60);
+/// How long before its expiry a SAS token is renewed: a download that starts with it has that time.
+const SAS_MARGIN: Duration = Duration::from_secs(15 * 60);
 /// Downloads at once. Chosen, not measured: the tools before this one ran 4 to 6.
 const WORKERS: usize = 4;
 /// How often a get writes the manifest while it runs.
@@ -54,6 +54,8 @@ pub struct Dataset {
     #[serde(default)]
     pub kept: bool,
     pub clms: Option<Clms>,
+    /// The bytes that a get needs on its root when the listing gives no sizes.
+    pub bytes_estimate: Option<u64>,
     pub notes: Option<String>,
     /// The `version` kind of its sources.
     #[serde(skip)]
@@ -202,10 +204,13 @@ impl Dataset {
 /// dataset is on CDSE.
 pub fn client(dataset: &Dataset, home: &Path) -> Result<Http, String> {
     let mut http = Http::new();
-    if let Some(cmr) = dataset.cmr.first() {
+    if !dataset.cmr.is_empty() {
         let token = std::env::var(EARTHDATA).ok().filter(|token| !token.is_empty());
         let fix = format!("set it with `obc data source credential {}`", dataset.sources[0]);
-        http = http.with_bearer(&cmr.origin, token.ok_or_else(|| format!("{EARTHDATA} is not set; {fix}"))?);
+        let token = token.ok_or_else(|| format!("{EARTHDATA} is not set; {fix}"))?;
+        for cmr in &dataset.cmr {
+            http = http.with_bearer(&cmr.origin, token.clone());
+        }
     }
     if !dataset.s3.iter().any(|s3| s3.bucket.starts_with(CDSE)) {
         return Ok(http);
@@ -241,6 +246,8 @@ struct Item {
     modified_at: Option<u64>,
     /// Why upstream gave nothing about the file.
     error: Option<String>,
+    /// The `sas` endpoint of the `stac` listing of the file.
+    sas: Option<String>,
 }
 
 /// The files of `dataset`: those under `kept/<dataset>/` of `root` for a kept dataset.
@@ -261,11 +268,12 @@ fn list(http: &Http, dataset: &Dataset, root: &Path) -> Result<Vec<Item>, String
     for s3 in &dataset.s3 {
         items.extend(list_s3(s3, |url| http.listing(url))?);
     }
-    for stac in &dataset.stac {
-        items.extend(list_stac(stac, |url, body| http.post_json(url, body))?);
-    }
+    // The short CMR listing first: its failure then costs no long STAC listing.
     for cmr in &dataset.cmr {
-        items.extend(list_cmr(cmr, |url| http.text(url, "application/json"))?);
+        items.extend(list_cmr(cmr, |url| http.listing_json(url))?);
+    }
+    for stac in &dataset.stac {
+        items.extend(list_stac(stac, |url, body| http.post_listing(url, body))?);
     }
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.path.clone()));
@@ -311,19 +319,21 @@ fn list_s3(s3: &S3, mut page: impl FnMut(&str) -> Result<String, String>) -> Res
 
 /// The asset of each item of the search of `stac` whose file name has one of its `names`, from the
 /// pages that `post(url, body)` gives. A page names the next one with a link of `rel = "next"`.
-fn list_stac(stac: &Stac, mut post: impl FnMut(&str, &[u8]) -> Result<Vec<u8>, String>) -> Result<Vec<Item>, String> {
+fn list_stac(stac: &Stac, mut post: impl FnMut(&str, &[u8]) -> Result<String, String>) -> Result<Vec<Item>, String> {
     let [first, last] = &stac.days;
     // The search takes RFC 3339 times; a bare date range is refused.
     let datetime = format!("{first}T00:00:00Z/{last}T23:59:59Z");
-    let mut body =
-        serde_json::json!({"collections": [stac.collection], "bbox": stac.bbox, "datetime": datetime, "limit": 1000});
+    // Only the href of the asset: a whole item is about 8 kB.
+    let fields = serde_json::json!({"include": ["id", format!("assets.{}.href", stac.asset)]});
+    let mut body = serde_json::json!({"collections": [stac.collection], "bbox": stac.bbox, "datetime": datetime, "limit": 1000, "fields": fields});
     let (mut url, mut items) = (stac.search.clone(), Vec::new());
     loop {
         let page: serde_json::Value =
-            serde_json::from_slice(&post(&url, body.to_string().as_bytes())?).map_err(|e| format!("{url}: {e}"))?;
+            serde_json::from_str(&post(&url, body.to_string().as_bytes())?).map_err(|e| format!("{url}: {e}"))?;
         let features = page["features"].as_array().ok_or_else(|| format!("{url}: a page without `features`"))?;
         let hrefs = features.iter().filter_map(|feature| feature["assets"][&stac.asset]["href"].as_str());
-        items.extend(hrefs.filter_map(|href| named(href, &stac.names)));
+        let signed = |item: Item| Item { sas: Some(stac.sas.clone()), ..item };
+        items.extend(hrefs.filter_map(|href| named(href, &stac.names)).map(signed));
         let mut links = page["links"].as_array().into_iter().flatten();
         let Some(next) = links.find(|link| link["rel"] == "next") else { return Ok(items) };
         url = next["href"].as_str().ok_or_else(|| format!("{url}: a next link without `href`"))?.to_string();
@@ -371,34 +381,36 @@ fn named(href: &str, names: &[String]) -> Option<Item> {
     Some(Item { url: Some(url.to_string()), path: archive::mirror_path(url)?, ..Item::default() })
 }
 
-/// The SAS tokens of the Azure containers of the `stac` listings of a dataset, each renewed after
-/// [`SAS_LIFE`].
+/// The SAS token of each Azure container of the `stac` listings of a dataset, renewed
+/// [`SAS_MARGIN`] before the `msft:expiry` of its answer.
 struct Sas<'a> {
     /// The text of a `GET` of a URL.
     get: &'a (dyn Fn(&str) -> Result<String, String> + Sync),
-    /// The `sas` endpoint of the first `stac` listing, if any.
-    endpoint: Option<&'a str>,
-    /// The token of each container, and until when it serves.
-    tokens: Mutex<HashMap<String, (String, Instant)>>,
+    /// The token of each `<sas>/<account>/<container>`, and until when it serves, in seconds from
+    /// 1970-01-01.
+    tokens: Mutex<HashMap<String, (String, u64)>>,
 }
 
 impl Sas<'_> {
-    /// `url` with the token of its container when it is an Azure blob and the dataset has a `stac`
-    /// listing; else `url`.
-    fn sign(&self, url: &str) -> Result<String, String> {
+    /// `url` with the token of its container from the `sas` endpoint, when it is an Azure blob of
+    /// a `stac` listing; else `url`.
+    fn sign(&self, url: &str, sas: Option<&str>) -> Result<String, String> {
         let rest = url.strip_prefix("https://").unwrap_or_default();
         let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-        let (Some(account), Some(endpoint)) = (host.strip_suffix(".blob.core.windows.net"), self.endpoint) else {
+        let (Some(account), Some(sas)) = (host.strip_suffix(".blob.core.windows.net"), sas) else {
             return Ok(url.to_string());
         };
-        let key = format!("{account}/{}", path.split('/').next().unwrap_or_default());
+        let key = format!("{sas}/{account}/{}", path.split('/').next().unwrap_or_default());
         let mut tokens = self.tokens.lock().unwrap();
-        if tokens.get(&key).is_none_or(|(_, until)| Instant::now() >= *until) {
-            let asked = format!("{endpoint}/{key}");
+        if tokens.get(&key).is_none_or(|(_, until)| date::now() >= *until) {
             let answer: serde_json::Value =
-                serde_json::from_str(&(self.get)(&asked)?).map_err(|e| format!("{asked}: {e}"))?;
-            let token = answer["token"].as_str().ok_or_else(|| format!("{asked}: an answer without `token`"))?;
-            tokens.insert(key.clone(), (token.to_string(), Instant::now() + SAS_LIFE));
+                serde_json::from_str(&(self.get)(&key)?).map_err(|e| format!("{key}: {e}"))?;
+            let token = answer["token"].as_str().ok_or_else(|| format!("{key}: an answer without `token`"))?;
+            let expiry = answer["msft:expiry"]
+                .as_str()
+                .and_then(date::seconds)
+                .ok_or_else(|| format!("{key}: an answer without `msft:expiry`"))?;
+            tokens.insert(key.clone(), (token.to_string(), expiry.saturating_sub(SAS_MARGIN.as_secs())));
         }
         Ok(format!("{url}?{}", tokens[&key].0))
     }
@@ -432,7 +444,7 @@ fn page_items(page: &str, s3: &S3) -> Result<(Vec<Item>, Option<String>), String
         let modified = modified_at.map(|seconds| date::format((seconds / 86_400) as i64));
         let etag = tag(contents, "ETag");
         let md5 = etag.as_deref().and_then(md5_of);
-        items.push(Item { url: Some(url), path, bytes, etag, md5, modified, modified_at, error: None });
+        items.push(Item { url: Some(url), path, bytes, etag, md5, modified, modified_at, error: None, sas: None });
     }
     let next = match tag(page, "IsTruncated").as_deref() {
         Some("true") => Some(tag(page, "NextContinuationToken").ok_or("a truncated page without a next token")?),
@@ -567,7 +579,9 @@ pub fn get(
     let items = list(http, dataset, fixed.as_deref().unwrap_or(Path::new("")))?;
     let root = match fixed {
         Some(root) => root,
-        None => roomy(roots, items.iter().filter_map(|item| item.bytes).sum())?,
+        None => {
+            roomy(roots, dataset.bytes_estimate.unwrap_or(0).max(items.iter().filter_map(|item| item.bytes).sum()))?
+        }
     };
     let _lock = lock(store, &dataset.id)?;
     let path = manifest_path(&root, &dataset.id);
@@ -579,9 +593,8 @@ pub fn get(
     let recorded = recorded(dataset, &old);
     let results: Mutex<Vec<Option<Result<Listed, String>>>> = Mutex::new(items.iter().map(|_| None).collect());
     let (next, done) = (AtomicUsize::new(0), AtomicUsize::new(0));
-    let text = |url: &str| http.text(url, "application/json");
-    let sas =
-        Sas { get: &text, endpoint: dataset.stac.first().map(|stac| stac.sas.as_str()), tokens: Mutex::default() };
+    let text = |url: &str| http.listing_json(url);
+    let sas = Sas { get: &text, tokens: Mutex::default() };
     let save = || {
         let manifest = assemble(dataset, &items, &results.lock().unwrap(), &old, &recorded, &root, &today);
         manifest.write(&path).map(|()| manifest)
@@ -716,8 +729,12 @@ fn take(
         md5: item.md5.as_deref(),
     };
     // The token of a signed URL stays out of an error, which the manifest keeps.
-    let signed = sas.sign(url)?;
-    let got = http.download_to(&part, &signed, &expect).map_err(|e| e.replace(&signed, url))?;
+    let signed = sas.sign(url, item.sas.as_deref())?;
+    let got = http.download_to(&part, &signed, &expect).map_err(|e| e.replace(&signed, url));
+    let got = got.and_then(|got| magic(&part, &item.path).map(|()| got));
+    let got = got.inspect_err(|_| {
+        let _ = fs::remove_file(part.with_extension("lock"));
+    })?;
     // The modification time of an archive file is the upstream `Last-Modified`.
     if let Some(seconds) = item.modified_at {
         let time = std::time::UNIX_EPOCH + Duration::from_secs(seconds);
@@ -730,6 +747,24 @@ fn take(
     let _ = fs::remove_file(part.with_extension("lock"));
     eprintln!("obc data: archive got {url}");
     Ok(listed(got.sha256, got.size))
+}
+
+/// The first bytes of a file of each kind whose kind its name tells. An answer of another kind,
+/// such as the HTML login page that a refused token gets, is no file of the dataset.
+const MAGIC: [(&str, &[&[u8]]); 2] =
+    [(".hdf", &[&[0x0e, 0x03, 0x13, 0x01]]), (".tif", &[b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"])];
+
+/// Whether `file` starts with the magic of the kind of `path`; a file of another kind passes. A
+/// file that fails is deleted.
+fn magic(file: &Path, path: &str) -> Result<(), String> {
+    let Some((_, magics)) = MAGIC.iter().find(|(end, _)| path.ends_with(end)) else { return Ok(()) };
+    let mut head = [0; 4];
+    let read = fs::File::open(file).and_then(|mut opened| std::io::Read::read_exact(&mut opened, &mut head));
+    if read.is_ok() && magics.iter().any(|magic| head == **magic) {
+        return Ok(());
+    }
+    let _ = fs::remove_file(file);
+    Err(format!("{path}: the answer is not a {} file", &path[path.rfind('.').unwrap_or(0) + 1..]))
 }
 
 /// Whether `file` has the size and the modification day that upstream gives for `item`, and
@@ -765,14 +800,13 @@ fn assemble(
         match (result, previous.get(item.path.as_str()).filter(|listed| in_place(root, listed))) {
             (Some(Ok(listed)), _) => files.push(listed.clone()),
             (_, Some(listed)) => files.push((*listed).clone()),
-            (result, None) => missing.push(Missing {
+            // A file that a stopped get did not try is not missing yet.
+            (None, None) => {}
+            (Some(Err(error)), None) => missing.push(Missing {
                 path: item.path.clone(),
                 bytes: item.bytes,
                 sha256: recorded.get(item.path.as_str()).map(|sha256| sha256.to_string()),
-                error: match result {
-                    Some(Err(error)) => error.clone(),
-                    _ => "not got yet".into(),
-                },
+                error: error.clone(),
             }),
         }
     }
@@ -834,6 +868,14 @@ pub fn verify(store: &Store, roots: &[PathBuf], id: &str) -> Result<Vec<Missing>
 fn differs(root: &Path, listed: &Listed) -> Option<String> {
     if !in_place(root, listed) {
         return Some(format!("not in place with {} bytes", listed.bytes));
+    }
+    let file = root.join(&listed.path);
+    if let Some((_, magics)) = MAGIC.iter().find(|(end, _)| listed.path.ends_with(end)) {
+        let mut head = [0; 4];
+        let read = fs::File::open(&file).and_then(|mut opened| std::io::Read::read_exact(&mut opened, &mut head));
+        if read.is_err() || !magics.iter().any(|magic| head == **magic) {
+            return Some("it does not start with the magic of its kind".into());
+        }
     }
     match store::hash_file(&root.join(&listed.path)) {
         Err(error) => Some(error),
@@ -1021,30 +1063,69 @@ mod tests {
         let mut asked = Vec::new();
         let items = list_stac(&stac, |url, body| {
             asked.push((url.to_string(), serde_json::from_slice::<serde_json::Value>(body).unwrap()));
-            Ok(pages[asked.len() - 1].to_string().into_bytes())
+            Ok(pages[asked.len() - 1].to_string())
         })
         .unwrap();
         assert_eq!(asked[0].1["datetime"], "2016-09-01T00:00:00Z/2016-09-02T23:59:59Z");
+        assert_eq!(asked[0].1["fields"]["include"], serde_json::json!(["id", "assets.NDSI_Snow_Cover.href"]));
         assert_eq!(asked[1].1, serde_json::json!({"token": "n"}), "the next page posts the body of its link");
         assert_eq!(items.len(), 2, "h21v04 is not named");
         assert_eq!(items[0].url.as_deref(), Some(blob("h18v04").as_str()));
+        assert_eq!(items[0].sas.as_deref(), Some("https://stac.example/sas"));
         assert_eq!(
             items[0].path,
             "mirror/acct.blob.core.windows.net/modis/MOD10A1.A2016245.h18v04.061.1_NDSI_Snow_Cover.tif"
         );
 
-        // A blob takes the token of its container, renewed after its life; another URL stays.
+        // A blob takes the token of its container, renewed before its expiry; another container
+        // has its own token, and another URL stays.
         let gets = AtomicUsize::new(0);
-        let get = |url: &str| {
-            assert_eq!(url, "https://stac.example/sas/acct/modis");
-            Ok(format!(r#"{{"token": "st={}"}}"#, gets.fetch_add(1, Ordering::Relaxed)))
+        let expiry = |seconds: u64| {
+            date::format((seconds / 86_400) as i64)
+                + &format!("T{:02}:{:02}:00Z", seconds / 3600 % 24, seconds / 60 % 60)
         };
-        let sas = Sas { get: &get, endpoint: Some("https://stac.example/sas"), tokens: Mutex::default() };
-        assert_eq!(sas.sign(&blob("h18v04")).unwrap(), format!("{}?st=0", blob("h18v04")));
-        assert_eq!(sas.sign(&blob("h18v05")).unwrap(), format!("{}?st=0", blob("h18v05")));
-        sas.tokens.lock().unwrap().get_mut("acct/modis").unwrap().1 = Instant::now();
-        assert_eq!(sas.sign(&blob("h18v04")).unwrap(), format!("{}?st=1", blob("h18v04")));
-        assert_eq!(sas.sign("https://other.example/a.tif").unwrap(), "https://other.example/a.tif");
+        let get = |url: &str| {
+            assert!(url.starts_with("https://stac.example/sas/acct/"), "{url}");
+            Ok(serde_json::json!({"token": format!("st={}", gets.fetch_add(1, Ordering::Relaxed)), "msft:expiry": expiry(date::now() + 3600)}).to_string())
+        };
+        let sas = Sas { get: &get, tokens: Mutex::default() };
+        let sign = |url: &str| sas.sign(url, Some("https://stac.example/sas")).unwrap();
+        let other = "https://acct.blob.core.windows.net/other/a.tif";
+        assert_eq!(sign(&blob("h18v04")), format!("{}?st=0", blob("h18v04")));
+        assert_eq!(sign(&blob("h18v05")), format!("{}?st=0", blob("h18v05")));
+        assert_eq!(sign(other), format!("{other}?st=1"), "a container has its own token");
+        sas.tokens.lock().unwrap().get_mut("https://stac.example/sas/acct/modis").unwrap().1 = date::now();
+        assert_eq!(sign(&blob("h18v04")), format!("{}?st=2", blob("h18v04")));
+        assert_eq!(sas.sign(&blob("h18v04"), None).unwrap(), blob("h18v04"), "a blob of no stac listing stays");
+        assert_eq!(sign("https://other.example/a.tif"), "https://other.example/a.tif");
+    }
+
+    #[test]
+    fn a_log_line_shows_no_query_of_a_signed_url() {
+        let line = "GET https://a.blob.core.windows.net/m/x.tif?st=1&sig=k: HTTP 503 — retrying https://b/c?sig=k now";
+        assert_eq!(
+            http::without_queries(line),
+            "GET https://a.blob.core.windows.net/m/x.tif: HTTP 503 — retrying https://b/c now"
+        );
+        assert_eq!(http::without_queries("no URL: here"), "no URL: here");
+    }
+
+    #[test]
+    fn a_file_that_does_not_start_with_the_magic_of_its_kind_does_not_enter_the_mirror() {
+        let scratch = crate::store::tests::Scratch::new("archive-magic");
+        let file = scratch.0.join("part");
+        let write = |bytes: &[u8]| std::fs::write(&file, bytes).unwrap();
+        for (path, good) in [("a.hdf", &[0x0e, 0x03, 0x13, 0x01, 0][..]), ("a.tif", b"II*\0\x08"), ("a.tif", b"MM\0+")]
+        {
+            write(good);
+            assert_eq!(magic(&file, path), Ok(()), "{path}");
+        }
+        write(b"<!DOCTYPE html><html>Earthdata Login</html>");
+        let error = magic(&file, "mirror/data.example/MOD10A1.A2025177.h18v04.061.1.hdf").unwrap_err();
+        assert!(error.ends_with("the answer is not a hdf file"), "{error}");
+        assert!(!file.exists(), "the part goes");
+        write(b"<html>");
+        assert_eq!(magic(&file, "a.json"), Ok(()), "a kind without a magic passes");
     }
 
     #[test]
@@ -1131,6 +1212,7 @@ mod tests {
             modified: Some("2022-05-09".into()),
             modified_at: date::seconds("2022-05-09T14:26:37Z"),
             error: None,
+            sas: None,
         };
         assert_eq!(items[0], expected);
         assert_eq!((items.len(), items[1].md5.as_deref()), (2, None), "a file of more parts has no MD5");
