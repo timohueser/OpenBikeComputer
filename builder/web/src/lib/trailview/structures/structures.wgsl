@@ -221,11 +221,15 @@ fn anchored(v: AnchoredIn, first: u32) -> StructureOut {
 // Rounded stones each lighter or darker, with dark joints: about 0.3 m long and 0.12 m high on a face,
 // laid flat on a top. A face maps onto the vertical plane it is nearest, so the bumps of a wall's top do
 // not shift the stones. `p` is fixed to the ground, so the stones stay when the eye moves. Where an output
-// pixel of `pixel` metres spans a stone, they fade to their mean, 0.77.
+// pixel of `pixel` metres spans a stone, they fade to their mean, 0.77; the joints keep their width, so
+// the mean holds through the fade.
 fn stones(p: vec3f, n: vec3f, pixel: f32) -> f32 {
+    if (pixel >= 0.08) {
+        return 0.77;
+    }
     let q = select(vec2f(0.4 * select(p.x, p.y, abs(n.x) > abs(n.y)), p.z), p.xy, abs(n.z) > 0.7);
     let c = voronoi(q, 0.12);
-    let stone = (0.65 + 0.6 * c.z) * mix(0.35, 1.0, smoothstep(0.0, 0.25 + pixel / 0.12, c.y));
+    let stone = (0.65 + 0.6 * c.z) * mix(0.35, 1.0, smoothstep(0.0, 0.25, c.y));
     return mix(stone, 0.77, smoothstep(0.02, 0.08, pixel));
 }
 
