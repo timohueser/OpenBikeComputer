@@ -1,7 +1,7 @@
 {
  "name": "Alps",
  "extends": "base",
- "about": "Norway spruce with silver fir in the montane forests, beech and sycamore on the outer ranges, Scots pine on the dry slopes of the inner valleys, larch and Swiss stone pine up to the treeline, mountain pine, green alder, alpenrose and dwarf juniper above it; willow thickets on the river gravel; ash, grey alder, birch, aspen, rowan and whitebeam in the valleys and on the avalanche slopes; sessile, downy and pedunculate oak, lime, hornbeam, sweet chestnut and hop hornbeam on the warm low slopes, alpine flowers and bilberry, cottongrass in the fens; Brown Swiss and Simmental cattle on the meadows and summer pastures, sheep and goats higher up, chamois and ibex on the rock; chalets, stone houses under stone or slate roofs in the southern valleys, and farmhouses with steep half-hipped roofs in Slovenia. Hawthorn stands in for the apple orchards, and mountain pine for the green alder and bank willow thickets.",
+ "about": "Norway spruce with silver fir in the montane forests, beech and sycamore on the outer ranges, Scots pine on the dry slopes of the inner valleys, larch and Swiss stone pine up to the treeline, mountain pine, green alder, alpenrose and dwarf juniper above it; willow thickets on the river gravel; ash, grey alder, birch, aspen, rowan and whitebeam in the valleys and on the avalanche slopes; sessile, downy and pedunculate oak, lime, hornbeam, sweet chestnut and hop hornbeam on the warm low slopes, alpine flowers and bilberry, heather on the dwarf-shrub heath, cottongrass in the fens; Brown Swiss and Simmental cattle on the meadows and summer pastures, sheep and goats higher up, chamois and ibex on the rock; chalets, stone houses under stone or slate roofs in the southern valleys, and farmhouses with steep half-hipped roofs in Slovenia. Hawthorn stands in for the apple orchards, and mountain pine for the green alder and bank willow thickets.",
  "trees": {
   "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [600, 2000], "weight": 5 },
   "silver-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [600, 1500], "weight": 2 },
@@ -29,7 +29,7 @@
   "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1000], "weight": 1 },
   "hop-hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1000], "weight": 1 }
  },
- "ground": {"alpine-flowers": {}, "bilberry": {}, "bog-cotton": { "on": ["wetland"] }},
+ "ground": {"alpine-flowers": {}, "bilberry": {}, "heather": {}, "bog-cotton": { "on": ["wetland"] }},
  "herds": {
   "cattle": { "model": "brown-cattle", "groups": 2, "size": [4, 15], "on": ["pasture", "grassland", "rough-grass", "wet-grassland"] },
   "simmental-cattle": { "groups": 1, "size": [3, 12], "on": ["pasture", "grassland"] },

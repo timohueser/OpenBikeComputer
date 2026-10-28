@@ -2,9 +2,9 @@
 // Vite actually emits is asserted here, against what Rollup put in the emitted
 // output rather than against source imports or a grep of them.
 //
-// One file, because Vitest isolates by file and not by test. Four builds,
-// because `web`, `web` as the deploy builds it, `production` (the dev host) and
-// `desktop` are four different build inputs.
+// One file, because Vitest isolates by file and not by test. Three builds,
+// because `web`, `production` (the dev host) and `desktop` are three different
+// module graphs.
 
 import { build } from "vite";
 import { describe, expect, it } from "vitest";
@@ -62,11 +62,11 @@ function product(mode: string, env: Record<string, string> = {}): Promise<Built>
     return next;
 }
 
-/** The static web tier as `obc web` and `npm run build:web` produce it, the same
- *  tier as `.github/workflows/deploy-site.yml` produces it, the maintainer dev
- *  host, and the Tauri app. */
-const web = () => product("web");
-const deployedWeb = () => product("web", { VITE_SITE_BASE: "../" });
+/** The static web tier as `.github/workflows/deploy-site.yml` builds it, the
+ *  maintainer dev host, and the Tauri app. `VITE_SITE_BASE` only sets the link
+ *  prefix in `lib/constants.ts`, so the deployed build stands for `npm run build:web`
+ *  too. */
+const web = () => product("web", { VITE_SITE_BASE: "../" });
 const dev = () => product("production");
 const desktop = () => product("desktop");
 
@@ -277,7 +277,7 @@ describe("deployment portability", () => {
 
     it("bakes in no absolute site URL when built the way the deploy builds it", async () => {
         // Exactly what .github/workflows/deploy-site.yml passes.
-        const files = textFiles(await deployedWeb());
+        const files = textFiles(await web());
         expect(offenders(files, "timohueser.github.io")).toEqual([]);
         expect(offenders(files, SITE_ORIGIN)).toEqual([]);
         expect(offenders(files, ROOTED_SITE_PATH)).toEqual([]);

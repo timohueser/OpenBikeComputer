@@ -1,0 +1,6 @@
+name = "TrailView iceland: North"
+kind = "box"
+# west, south, east, north
+box = [-20.26, 64.49, -18.65, 65.84]
+countries = ["IS"]
+time_zone = "Atlantic/Reykjavik"

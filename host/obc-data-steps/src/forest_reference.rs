@@ -14,7 +14,7 @@ use obc_data::sources::Source;
 use planner_router_build::grid::mercator;
 
 use crate::prepared_tiles::{self, Tile};
-use crate::terrain_reference::area;
+use crate::terrain_reference::{area, meets};
 
 /// The id of the prepared source.
 pub const ID: &str = "forest";
@@ -60,7 +60,7 @@ impl Prepared for ForestReference {
         true
     }
 
-    /// The models that meet the region, and the leaf type. The tiles of each model in the box of
+    /// The models that meet the region, and the leaf type. The tiles of each model in the boxes of
     /// the region are the files at most.
     fn plan(
         &self,
@@ -69,11 +69,11 @@ impl Prepared for ForestReference {
         scope: Option<&Scope>,
         _: &[String],
     ) -> Result<Plan, String> {
-        let (bbox, countries) = area(scope)?;
+        let (boxes, countries) = area(scope)?;
         let wanted = |id: &str| (Wanted { source: id.into(), version: None, params: Vec::new() }, None).into();
         let (mut inputs, mut tiles) = (Vec::new(), BTreeSet::new());
-        for (_, model) in models(planning.sources, bbox.as_ref(), &countries) {
-            tiles.extend(model_tiles(model, bbox.as_ref())?);
+        for (_, model) in models(planning.sources, boxes.as_deref(), &countries) {
+            tiles.extend(model_tiles(model, boxes.as_deref())?);
             inputs.push(wanted(&model.id));
         }
         if !inputs.is_empty() {
@@ -86,11 +86,11 @@ impl Prepared for ForestReference {
     /// its tile; every other tile of the version before stays.
     fn prepare(&self, job: &mut Job) -> Result<(), String> {
         let previous = job.extend(self.format())?;
-        let (bbox, countries) = area(job.scope.as_ref())?;
+        let (boxes, countries) = area(job.scope.as_ref())?;
         // The models of each tile in the order of `models`: a cell takes the first that has it.
         let mut keys: BTreeMap<(u32, u32), Vec<(String, String)>> = BTreeMap::new();
-        for (key, model) in models(job.sources(), bbox.as_ref(), &countries) {
-            for tile in model_tiles(model, bbox.as_ref())? {
+        for (key, model) in models(job.sources(), boxes.as_deref(), &countries) {
+            for tile in model_tiles(model, boxes.as_deref())? {
                 keys.entry(tile).or_default().push((key.into(), model.id.clone()));
             }
         }
@@ -139,45 +139,54 @@ impl Prepared for ForestReference {
     }
 }
 
-/// The canopy models `canopy-<key>` of `sources` that meet `bbox`, with their keys: the national
+/// The canopy models `canopy-<key>` of `sources` that meet `boxes`, with their keys: the national
 /// models, whose key is the lowercase country code, of one of `countries` when the region names
-/// some, and then the model `canopy-global` when there is a box: a version of everything reads
+/// some, and then the model `canopy-global` when there are boxes: a region without boxes reads
 /// national models only.
 pub(crate) fn models<'a>(
     sources: &'a [Source],
-    bbox: Option<&'a Bbox>,
+    boxes: Option<&'a [Bbox]>,
     countries: &'a [String],
 ) -> impl Iterator<Item = (&'a str, &'a Source)> {
-    let near = move |source: &Source| bbox.is_none_or(|b| source.meets([b.west, b.south, b.east, b.north]));
     let national = sources.iter().filter_map(move |source| {
         let key = source.id.strip_prefix("canopy-").filter(|key| *key != GLOBAL)?;
-        (near(source) && (countries.is_empty() || countries.contains(&key.to_uppercase()))).then_some((key, source))
+        (meets(source, boxes) && (countries.is_empty() || countries.contains(&key.to_uppercase())))
+            .then_some((key, source))
     });
-    let global =
-        sources.iter().filter(move |source| bbox.is_some() && source.id == format!("canopy-{GLOBAL}") && near(source));
+    let global = sources
+        .iter()
+        .filter(move |source| boxes.is_some() && source.id == format!("canopy-{GLOBAL}") && meets(source, boxes));
     national.chain(global.map(|source| (GLOBAL, source)))
 }
 
-/// The zoom 12 tiles whose inside meets the `extent` of `model` and, with a box, that box.
-pub(crate) fn model_tiles(model: &Source, bbox: Option<&Bbox>) -> Result<Vec<(u32, u32)>, String> {
+/// The zoom 12 tiles whose inside meets the `extent` of `model` and, with boxes, one of them.
+pub(crate) fn model_tiles(model: &Source, boxes: Option<&[Bbox]>) -> Result<BTreeSet<(u32, u32)>, String> {
     let [west, south, east, north] = model.extent.ok_or_else(|| format!("`{}` has no `extent`", model.id))?;
-    let mut inside = Bbox { west, south, east, north };
-    if let Some(bbox) = bbox {
-        inside = Bbox {
-            west: inside.west.max(bbox.west),
-            south: inside.south.max(bbox.south),
-            east: inside.east.min(bbox.east),
-            north: inside.north.min(bbox.north),
-        };
-        if inside.west >= inside.east || inside.south >= inside.north {
-            return Ok(Vec::new());
-        }
+    let extent = Bbox { west, south, east, north };
+    let Some(boxes) = boxes else { return Ok(box_tiles(&extent)) };
+    Ok(boxes
+        .iter()
+        .flat_map(|bbox| {
+            box_tiles(&Bbox {
+                west: extent.west.max(bbox.west),
+                south: extent.south.max(bbox.south),
+                east: extent.east.min(bbox.east),
+                north: extent.north.min(bbox.north),
+            })
+        })
+        .collect())
+}
+
+/// The zoom 12 tiles whose inside meets `inside`; none when it is empty.
+fn box_tiles(inside: &Bbox) -> BTreeSet<(u32, u32)> {
+    if inside.west >= inside.east || inside.south >= inside.north {
+        return BTreeSet::new();
     }
     let (left, top) = mercator(inside.west, inside.north, ZOOM);
     let (right, bottom) = mercator(inside.east, inside.south, ZOOM);
     let last = (1u32 << ZOOM) - 1;
     let span = |from: f64, to: f64| (from.floor() as u32).min(last)..=((to.ceil() as u32).max(1) - 1).min(last);
-    Ok(span(left, right).flat_map(|x| span(top, bottom).map(move |y| (x, y))).collect())
+    span(left, right).flat_map(|x| span(top, bottom).map(move |y| (x, y))).collect()
 }
 
 #[cfg(test)]
@@ -245,10 +254,36 @@ t="${4#12-}"; mkdir -p "$6/12/${t%-*}" && echo "$4" > "$6/12/${t%-*}/${t#*-}.tif
         let keys = |countries: &[&str]| {
             let countries: Vec<String> = countries.iter().map(|code| code.to_string()).collect();
             let bbox = Bbox { west: 7.0, south: 46.0, east: 9.0, north: 48.0 };
-            models(&sources, Some(&bbox), &countries).map(|(key, _)| key.to_string()).collect::<Vec<_>>()
+            models(&sources, Some(&[bbox]), &countries).map(|(key, _)| key.to_string()).collect::<Vec<_>>()
         };
         assert_eq!(keys(&["CH", "DE"]), ["ch", "global"]);
         assert_eq!(keys(&["DE"]), ["global"]);
+    }
+
+    #[test]
+    fn a_union_reads_the_tiles_of_each_box_and_none_between_them() {
+        let temp = temp("forest-union");
+        std::fs::create_dir_all(temp.0.join("data")).unwrap();
+        // `canopy-li` lies between the two boxes.
+        let gap = "[[source]]\nid = \"canopy-li\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Test\"\nfetch = { kind = \"capture\", url = \"https://example.org\" }\nextent = [8.08, 46.5, 8.12, 46.6]\nversion = \"date\"\nredistribute = true\n";
+        std::fs::write(temp.0.join("data/sources.toml"), format!("{SOURCES}\n{gap}")).unwrap();
+        let sources = Registry::load(&temp.0).unwrap().sources;
+        let model = sources.iter().find(|source| source.id == "canopy-ch").unwrap();
+        let boxed = |id: &str, west: f64, east: f64| {
+            (id.to_string(), format!("name = \"{id}\"\nkind = \"box\"\nbox = [{west}, 46.5, {east}, 46.6]\n"))
+        };
+        let union = "name = \"Both\"\nkind = \"union\"\nunion = [\"west\", \"east\"]\n".to_string();
+        let definitions = [boxed("west", 8.0, 8.02), boxed("east", 8.18, 8.2), ("both".into(), union)];
+        let scope = Scope { region: "both".into(), definitions: definitions.into() };
+        let (boxes, _) = area(Some(&scope)).unwrap();
+        let keys: Vec<&str> = models(&sources, boxes.as_deref(), &[]).map(|(key, _)| key).collect();
+        assert_eq!(keys, ["ch"]);
+        let tiles = model_tiles(model, boxes.as_deref()).unwrap();
+        // The extent meets three columns of zoom 12 tiles; each box meets only the outer one at its side.
+        let columns: BTreeSet<u32> = tiles.iter().map(|(x, _)| *x).collect();
+        let all: BTreeSet<u32> = model_tiles(model, None).unwrap().iter().map(|(x, _)| *x).collect();
+        assert_eq!(all.len(), 3);
+        assert_eq!(columns, [*all.first().unwrap(), *all.last().unwrap()].into());
     }
 
     #[test]
@@ -297,7 +332,7 @@ t="${4#12-}"; mkdir -p "$6/12/${t%-*}" && echo "$4" > "$6/12/${t%-*}/${t#*-}.tif
         let path = |(x, y): &(u32, u32)| format!("12/{x}/{y}.tif");
         let tiles = |west: f64, east: f64| {
             let bbox = Bbox { west, south: 46.5, east, north: 46.6 };
-            model_tiles(model, Some(&bbox)).unwrap()
+            model_tiles(model, Some(&[bbox])).unwrap().into_iter().collect::<Vec<_>>()
         };
         // 8.0–8.2 °E meets three columns of zoom 12 tiles; each half of it meets two.
         let (west, east) = (tiles(8.0, 8.1), tiles(8.1, 8.2));

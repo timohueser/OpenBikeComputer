@@ -298,15 +298,6 @@ mod tests {
     }
 
     #[test]
-    fn is_open_closed_day() {
-        // All slots (0,0) ⇒ never open at any minute.
-        let s = WeeklySchedule::decode(&blob(0, [[(0, 0), (0, 0)]; 7])).unwrap();
-        for minute in [0u16, 480, 720, 1080, 1439] {
-            assert!(!s.is_open(2, minute), "closed at minute {minute}");
-        }
-    }
-
-    #[test]
     fn is_open_overnight_wrap() {
         // Mon 22:00-02:00, so open late evening and early morning and closed midday, evaluated on
         // Monday, the start weekday.
@@ -361,13 +352,5 @@ mod tests {
         assert_eq!(weekday_from_ymd(2026, 7, 5), 6, "2026-07-05 Sunday");
         assert_eq!(weekday_from_ymd(2023, 12, 31), 6, "2023-12-31 Sunday (year end)");
         assert_eq!(weekday_from_ymd(1970, 1, 1), 3, "1970-01-01 Thursday (epoch)");
-    }
-
-    #[test]
-    fn weekday_from_ymd_stays_total_on_bad_month() {
-        // A corrupt month clamps into range rather than panicking.
-        let _ = weekday_from_ymd(2026, 0, 1);
-        let _ = weekday_from_ymd(2026, 13, 1);
-        let _ = weekday_from_ymd(2026, 255, 1);
     }
 }

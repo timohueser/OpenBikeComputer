@@ -1,0 +1,6 @@
+name = "TrailView italy-med: Sainte Agnes"
+kind = "box"
+# west, south, east, north
+box = [7.19, 43.6, 7.74, 44.0]
+countries = ["FR", "IT", "MC"]
+time_zone = "Europe/Paris"

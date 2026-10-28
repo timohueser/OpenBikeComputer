@@ -1,0 +1,6 @@
+name = "TrailView alps: Ramsau"
+kind = "box"
+# west, south, east, north
+box = [12.58, 47.39, 13.22, 47.83]
+countries = ["DE", "AT"]
+time_zone = "Europe/Berlin"

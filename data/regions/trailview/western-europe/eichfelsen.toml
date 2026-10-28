@@ -1,0 +1,6 @@
+name = "TrailView western-europe: Eichfelsen"
+kind = "box"
+# west, south, east, north
+box = [8.67, 47.83, 9.33, 48.27]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

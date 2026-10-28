@@ -1,0 +1,6 @@
+name = "TrailView apennines: Ventasso"
+kind = "box"
+# west, south, east, north
+box = [9.93, 44.13, 10.5, 44.54]
+countries = ["IT"]
+time_zone = "Europe/Rome"

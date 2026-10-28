@@ -1,0 +1,6 @@
+name = "TrailView celtic: West Cork Kerry"
+kind = "box"
+# west, south, east, north
+box = [-10.53, 51.21, -9.06, 52.24]
+countries = ["IE"]
+time_zone = "Europe/Dublin"

@@ -1,0 +1,6 @@
+name = "TrailView iberia: Penafiel"
+kind = "box"
+# west, south, east, north
+box = [-4.37, 41.4, -3.86, 41.79]
+countries = ["ES"]
+time_zone = "Europe/Madrid"

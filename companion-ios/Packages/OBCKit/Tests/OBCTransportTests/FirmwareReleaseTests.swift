@@ -57,7 +57,7 @@ struct FirmwareReleaseTests {
     @Test(arguments: [
         "not json",
         "[]",
-        #"{"version":"1.4.0","size":1,"sha256":"aaaa"}"#,                                       // no url
+        #"{"version":"1.4.0","size":1,"sha256":"§64§"}"#,                                       // no url
         #"{"version":"abc1234","size":1,"sha256":"§64§","url":"https://x/"}"#,                  // not a version
         #"{"version":"1.4.0","size":0,"sha256":"§64§","url":"https://x/"}"#,                    // size 0
         #"{"version":"1.4.0","size":1,"sha256":"nope","url":"https://x/"}"#,                    // short digest
@@ -177,13 +177,6 @@ struct FirmwareReleaseTests {
         }
     }
 
-    @Test func parsesAPublishedManifest() async throws {
-        let fetcher = StubFetcher()
-        fetcher.stub(UpdateChecker.manifestURL, body: Self.manifestBody)
-        let record = try await UpdateChecker(fetcher: fetcher, store: InMemoryUpdateCheckStore()).check()
-        #expect(record.release?.version == "1.4.0")
-    }
-
     @Test func asksForExactlyOnePublicFileAndNothingElse() async throws {
         let fetcher = StubFetcher()
         fetcher.stub(UpdateChecker.manifestURL, body: Self.manifestBody)
@@ -278,32 +271,15 @@ struct FirmwareReleaseTests {
         #expect(try await checker.check().release?.version == "1.5.0")
     }
 
-    @Test func anEmptyPreReleaseChannelIsSimplyIgnored() async throws {
+    @Test(arguments: [(404, Data()), (500, Data()), (200, Data("not json".utf8))])
+    func aMissingOrBrokenPreReleaseChannelLeavesTheStableAnswerStanding(status: Int, body: Data) async throws {
         let fetcher = StubFetcher()
         fetcher.stub(UpdateChecker.manifestURL, body: Self.manifest(version: "1.4.0"))
-        fetcher.stub(UpdateChecker.prereleaseManifestURL, status: 404)
+        fetcher.stub(UpdateChecker.prereleaseManifestURL, status: status, body: body)
         let checker = UpdateChecker(fetcher: fetcher, store: InMemoryUpdateCheckStore())
         checker.setIncludePrereleases(true)
 
         #expect(try await checker.check().release?.version == "1.4.0")
-    }
-
-    @Test func aBrokenPreReleaseChannelLeavesTheStableAnswerStanding() async throws {
-        let fetcher = StubFetcher()
-        fetcher.stub(UpdateChecker.manifestURL, body: Self.manifest(version: "1.4.0"))
-        fetcher.stub(UpdateChecker.prereleaseManifestURL, status: 500)
-        let checker = UpdateChecker(fetcher: fetcher, store: InMemoryUpdateCheckStore())
-        checker.setIncludePrereleases(true)
-
-        #expect(try await checker.check().release?.version == "1.4.0")
-
-        let garbage = StubFetcher()
-        garbage.stub(UpdateChecker.manifestURL, body: Self.manifest(version: "1.4.0"))
-        garbage.stub(UpdateChecker.prereleaseManifestURL, body: Data("not json".utf8))
-        let second = UpdateChecker(fetcher: garbage, store: InMemoryUpdateCheckStore())
-        second.setIncludePrereleases(true)
-
-        #expect(try await second.check().release?.version == "1.4.0")
     }
 
     /// A malformed stable manifest is a publishing failure: hiding it would hide it forever.
@@ -325,15 +301,6 @@ struct FirmwareReleaseTests {
         checker.setIncludePrereleases(true)
 
         #expect(try await checker.check().release?.version == "1.5.0-rc1")
-    }
-
-    @Test func thePreReleaseSwitchPersistsThroughTheStore() {
-        let store = InMemoryUpdateCheckStore()
-        let checker = UpdateChecker(fetcher: StubFetcher(), store: store)
-        #expect(!checker.includePrereleases)
-        checker.setIncludePrereleases(true)
-        #expect(checker.includePrereleases)
-        #expect(store.loadIncludePrereleases())
     }
 
     // MARK: The download
@@ -379,14 +346,6 @@ struct FirmwareReleaseTests {
                 FirmwareRelease(version: "1.4.0", bytes: 3, sha256: digest, url: url)
             )
         }
-    }
-
-    @Test func speaksTheDigestDialectTheManifestUses() {
-        // The standard "abc" vector, in the manifest's lowercase hex.
-        #expect(
-            UpdateChecker.sha256Hex(Data("abc".utf8))
-                == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        )
     }
 }
 

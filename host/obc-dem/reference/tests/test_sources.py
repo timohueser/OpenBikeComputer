@@ -13,10 +13,9 @@ import unittest.mock
 import urllib.parse
 import zipfile
 from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Thread
 
 import numpy as np
 import rasterio
@@ -37,6 +36,7 @@ from ingest.sources import sk as sk_module  # noqa: E402
 from ingest.sources.grid import grid_squares  # noqa: E402
 from ingest.sources.nz import sheets as nz_sheets  # noqa: E402
 from ingest.sources.protocols import MAX_PIXELS, request_boxes  # noqa: E402
+from http_serving import serve  # noqa: E402
 
 BOX = (6.8255, 45.9257, 6.8495, 45.9417)  # about 1.9 x 1.8 km over Chamonix
 
@@ -50,7 +50,7 @@ BOXES = {
     "no": (8.2925, 61.6230, 8.3325, 61.6496),
     "es": (-4.8666, 43.1888, -4.8406, 43.2062),
     "nl": (6.0079, 50.7453, 6.0339, 50.7627),
-    "uk": (-3.2227, 54.4469, -3.2007, 54.4615),
+    "gb-eng": (-3.2227, 54.4469, -3.2007, 54.4615),
     "at": (12.6829, 47.0671, 12.7049, 47.0817),
     "ca": (-73.5983, 45.4968, -73.5763, 45.5114),
     "it-bz": (10.5337, 46.5016, 10.5557, 46.5162),
@@ -284,7 +284,7 @@ class Requests(unittest.TestCase):
         """Several servers answer `ScaleAxisUndefined` however the axes are named, so those
         rows take the coverage's native step instead."""
 
-        for key in ("uk", "it-bz", "it", "pl", "sk"):
+        for key in ("gb-eng", "it-bz", "it", "pl", "sk"):
             with self.subTest(key):
                 _, values = query(ingest.SOURCES[key].url(split(key)[0]))
                 self.assertNotIn("scalesize", values)
@@ -317,7 +317,7 @@ class Requests(unittest.TestCase):
     def test_a_box_larger_than_the_cap_becomes_several_requests(self):
         """Half-metre LiDAR overruns every server's size cap, so the box is cut up."""
 
-        wide = (6.0, 46.0, 6.2, 46.2)  # about 15 km by 22 km
+        wide = (6.0, 46.0, 6.03, 46.03)  # about 2.3 km by 3.3 km: over the cap on both axes
         for key in ("us", "nl"):
             with self.subTest(key):
                 source = ingest.SOURCES[key]
@@ -586,10 +586,7 @@ class RemoteWindows(TempCase):
         self.served = self.root / "served"
         self.served.mkdir()
         handler = partial(RangeHandler, directory=str(self.served))
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.server_close)
-        self.addCleanup(self.httpd.shutdown)
+        self.httpd = serve(self, handler)
         self.source = ingest.sources.cog.CogGrid(
             "xx", "Nowhere", "DTM 1 m", 1.0, "CC BY 4.0", "DHHN2016",
             base=f"http://127.0.0.1:{self.httpd.server_address[1]}/",
@@ -669,10 +666,7 @@ class RemoteWindows(TempCase):
             def log_message(self, *args):
                 pass
 
-        broken = ThreadingHTTPServer(("127.0.0.1", 0), Broken)
-        Thread(target=broken.serve_forever, daemon=True).start()
-        self.addCleanup(broken.server_close)
-        self.addCleanup(broken.shutdown)
+        broken = serve(self, Broken)
         self.source.base = f"http://127.0.0.1:{broken.server_address[1]}/"
 
         real = ingest.sources.base.RETRY_DELAYS
@@ -894,10 +888,7 @@ class Registry(unittest.TestCase):
             def log_message(self, *args):
                 pass
 
-        flaky = ThreadingHTTPServer(("127.0.0.1", 0), Flaky)
-        Thread(target=flaky.serve_forever, daemon=True).start()
-        self.addCleanup(flaky.server_close)
-        self.addCleanup(flaky.shutdown)
+        flaky = serve(self, Flaky)
         real = ingest.sources.base.RETRY_DELAYS
         ingest.sources.base.RETRY_DELAYS = (0,)
         self.addCleanup(setattr, ingest.sources.base, "RETRY_DELAYS", real)

@@ -1,0 +1,6 @@
+name = "TrailView tyrrhenian: Macari"
+kind = "box"
+# west, south, east, north
+box = [12.51, 37.96, 12.96, 38.32]
+countries = ["IT"]
+time_zone = "Europe/Rome"

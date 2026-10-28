@@ -1,0 +1,6 @@
+name = "TrailView iceland: Hrafnseyrarheidi"
+kind = "box"
+# west, south, east, north
+box = [-24.19, 65.5, -22.69, 66.12]
+countries = ["IS"]
+time_zone = "Atlantic/Reykjavik"

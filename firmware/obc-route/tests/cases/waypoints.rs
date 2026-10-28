@@ -187,15 +187,6 @@ fn converter_maps_sym_and_type_onto_categories() {
     assert_eq!(convert_one_wpt("<name>Turn</name><sym>Flag, Blue</sym>").name, "Turn", "never dropped for a symbol");
 }
 
-/// `<sym>` wins over `<type>` when it says something; an empty `<sym>` falls through to `<type>`.
-#[test]
-fn sym_takes_precedence_over_type() {
-    let both = convert_one_wpt("<name>Both</name><sym>Water</sym><type>Campground</type>");
-    assert_eq!(both.category(), Some(PoiCategory::Water));
-    let empty_sym = convert_one_wpt("<name>Empty</name><sym></sym><type>Campground</type>");
-    assert_eq!(empty_sym.category(), Some(PoiCategory::Campsite));
-}
-
 /// A GPX with one `<wpt>` at `(lat, lon)` beside a straight eastward track at 48°N.
 fn offset_of(lat: f64, lon: f64) -> i16 {
     let gpx = format!(

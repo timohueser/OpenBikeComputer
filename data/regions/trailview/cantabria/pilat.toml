@@ -1,0 +1,6 @@
+name = "TrailView cantabria: Pilat"
+kind = "box"
+# west, south, east, north
+box = [-1.5, 44.38, -0.93, 44.79]
+countries = ["FR"]
+time_zone = "Europe/Paris"

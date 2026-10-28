@@ -322,7 +322,10 @@ pub fn credential(root: &Path, id: &str, json: bool) -> Result<(), Error> {
         .credential
         .as_ref()
         .ok_or_else(|| Code::Usage.error(format!("source `{id}` needs no credential")))?;
-    let place = credentials::place(credential).ok_or_else(|| Code::InvalidData.error("no writer knows the file"))?;
+    let place = credentials::place(credential).ok_or_else(|| {
+        let hint = credential.hint.as_deref().unwrap_or_default();
+        Code::Usage.error(format!("save {} by hand: {hint}", credential.describe()))
+    })?;
     let shares = |source: &&Source| source.credential.as_ref().is_some_and(|c| c.describe() == credential.describe());
     let sources = registry.sources.iter().filter(shares).map(|s| s.id.clone()).collect();
     let set = write(place, credential.file.is_none(), sources)?;

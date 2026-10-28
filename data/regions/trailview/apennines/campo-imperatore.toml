@@ -1,0 +1,6 @@
+name = "TrailView apennines: Campo Imperatore"
+kind = "box"
+# west, south, east, north
+box = [13.38, 42.21, 13.9, 42.6]
+countries = ["IT"]
+time_zone = "Europe/Rome"

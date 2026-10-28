@@ -1,0 +1,6 @@
+name = "TrailView baltic: Leba"
+kind = "box"
+# west, south, east, north
+box = [17.0, 54.5, 17.87, 55.0]
+countries = ["PL"]
+time_zone = "Europe/Warsaw"

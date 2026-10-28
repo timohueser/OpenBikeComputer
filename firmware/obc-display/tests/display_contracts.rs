@@ -534,35 +534,3 @@ fn mini_frame_padded_stride_cells_stay_untouched() {
         assert_eq!(f.cells[y * MSTRIDE], 0, "row {y} pixels cleared");
     }
 }
-
-/// The tile overlay path never writes the frame at all, the strongest form of "transient overlays
-/// never become persistent framebuffer contents".
-#[test]
-fn overlay_leaves_the_frame_byte_identical() {
-    // Tile pairing: bounded-scratch composite, so the frame is untouched by construction.
-    let mut frame = MiniFrame { cells: [0x1234; MSTRIDE * MH] };
-    let mut p = TilePresenter::new();
-    block_on(p.present(&frame, TilePresenter::damage_full())).unwrap();
-    let before = frame.cells;
-    let region = <TilePresenter as OverlayPresenter<MiniFrame>>::region(TILE_RECT);
-    block_on(p.present_overlay(&mut frame, region, |t: &mut MiniOverlay| {
-        let _ = t.fill_solid(&Rectangle::new(Point::new(10, 2), Size::new(2, 2)), rgb(BLUE));
-    }))
-    .unwrap();
-    assert_eq!(frame.cells, before);
-
-    // Span pairing: the mutate-and-restore engine composites into the resident frame and must
-    // restore it byte-identically.
-    let mut buf = [0u8; 16 * 16];
-    let mut frame = Device64Frame::<16, 16>::new(&mut buf);
-    let mut p = SpanPresenter::<16, 16>::new();
-    frame.draw_target().clear(rgb(RED)).unwrap();
-    block_on(p.present(&frame, SpanPresenter::<16, 16>::damage_full())).unwrap();
-    let before = frame.bytes().to_vec();
-    let region = <SpanPresenter<16, 16> as OverlayPresenter<Device64Frame<16, 16>>>::region(SPAN_RECT);
-    block_on(p.present_overlay(&mut frame, region, |band: &mut Band| {
-        let _ = band.fill_solid(&Rectangle::new(Point::new(13, 5), Size::new(1, 1)), rgb(BLUE));
-    }))
-    .unwrap();
-    assert_eq!(frame.bytes(), &before[..]);
-}

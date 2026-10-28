@@ -1,0 +1,6 @@
+name = "TrailView canaries: La Gomera"
+kind = "box"
+# west, south, east, north
+box = [-17.43, 27.99, -17.09, 28.3]
+countries = ["ES"]
+time_zone = "Atlantic/Canary"

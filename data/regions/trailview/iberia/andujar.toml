@@ -1,0 +1,6 @@
+name = "TrailView iberia: Andujar"
+kind = "box"
+# west, south, east, north
+box = [-4.36, 37.96, -3.91, 38.32]
+countries = ["ES"]
+time_zone = "Europe/Madrid"

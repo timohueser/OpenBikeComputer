@@ -1,0 +1,6 @@
+name = "TrailView celtic: Babeny"
+kind = "box"
+# west, south, east, north
+box = [-4.22, 50.32, -3.5, 50.79]
+countries = ["GB"]
+time_zone = "Europe/London"

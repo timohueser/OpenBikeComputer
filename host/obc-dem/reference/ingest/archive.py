@@ -21,7 +21,7 @@ MEAN = "mean"
 PRIORITY = (
     "dk", "nl", "it-tn",
     "de-nw", "de-he", "de-ni", "de-by", "de-sn", "de-th", "de-mv", "de-st", "de-rp", "de-bw",
-    "fr", "at", "no", "uk", "gb-sct", "se", "sk", "pl", "us", "ca", "nz",
+    "fr", "at", "no", "gb-eng", "gb-sct", "se", "sk", "pl", "us", "ca", "nz",
     "ch", "fi", "cz", "it-bz", "es", "au", "it", "is",
 )
 

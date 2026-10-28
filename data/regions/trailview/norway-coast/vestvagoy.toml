@@ -1,0 +1,6 @@
+name = "TrailView norway-coast: Vestvagoy"
+kind = "box"
+# west, south, east, north
+box = [12.84, 67.83, 14.56, 68.48]
+countries = ["NO"]
+time_zone = "Europe/Oslo"
