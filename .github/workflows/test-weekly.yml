@@ -33,7 +33,7 @@ jobs:
           path: .artifacts/ios-application.xcresult
           if-no-files-found: error
   trailview:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -63,7 +63,7 @@ jobs:
           path: .artifacts/web-builder/
           if-no-files-found: error
   storage:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4

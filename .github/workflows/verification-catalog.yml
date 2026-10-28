@@ -17,7 +17,7 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
       vars.OBC_VERIFICATION_URL != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # Execute importer code from the trusted default-branch workflow revision only.
       - uses: actions/checkout@v4
