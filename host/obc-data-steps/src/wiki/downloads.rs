@@ -125,7 +125,7 @@ fn discover(context: &Planning, key: &str, prefix: &str, suffix: &str, area: Opt
             info["date_modified"].as_str().and_then(|v| v.get(..10)).ok_or("snapshot has no modification date")?;
         let name = format!("{prefix}{}{suffix}", date.replace('-', ""));
         let url = format!("{url}/download");
-        let (size, etag) = client.headers(&url)?;
+        let (size, etag) = sized(&client, &url)?;
         if etag.is_none() {
             return Err("the Enterprise snapshot has no strong ETag; cannot pin this download".into());
         }
@@ -141,7 +141,7 @@ fn discover(context: &Planning, key: &str, prefix: &str, suffix: &str, area: Opt
             newest(&completed, prefix, suffix).ok_or_else(|| format!("{base}: no completed OSM archive"))?;
         let base = base.rsplit_once('/').unwrap().0;
         let url = format!("{base}/{name}");
-        let (size, etag) = http.headers(&url)?;
+        let (size, etag) = sized(http, &url)?;
         return Ok((date, name, url, size, etag));
     }
     let project = if let Some(language) = key.strip_prefix("langlinks:") {
@@ -164,7 +164,7 @@ fn discover(context: &Planning, key: &str, prefix: &str, suffix: &str, area: Opt
             if !text.lines().any(|line| line.split_whitespace().last() == Some(name.as_str())) {
                 continue;
             }
-            let (size, etag) = http.headers(&url)?;
+            let (size, etag) = sized(http, &url)?;
             return Ok((day(&date).unwrap(), name, url, size, etag));
         }
         let status = format!("{base}{date}/dumpstatus.json");
@@ -186,7 +186,7 @@ fn discover(context: &Planning, key: &str, prefix: &str, suffix: &str, area: Opt
             continue;
         }
         if let Some(size) = job["files"][&name]["size"].as_u64().filter(|n| *n > 0) {
-            let (actual, etag) = http.headers(&url)?;
+            let (actual, etag) = sized(http, &url)?;
             if actual != size {
                 return Err(format!("{url}: size differs from the completed dump metadata"));
             }
@@ -272,6 +272,12 @@ pub(super) fn acquire(context: &Planning, input: &Input) -> Result<Dump, String>
         sha256,
         area: input.wanted.params.iter().find(|(key, _)| key == "area").map(|(_, v)| v.clone()),
     })
+}
+
+/// The size and the strong `ETag` of `url`: a pinned download needs its size.
+fn sized(http: &Http, url: &str) -> Result<(u64, Option<String>), String> {
+    let head = http.head(url)?;
+    Ok((head.bytes.ok_or_else(|| format!("HEAD {url}: no Content-Length"))?, head.etag))
 }
 
 #[cfg(test)]

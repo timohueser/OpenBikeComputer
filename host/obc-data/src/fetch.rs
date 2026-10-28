@@ -227,16 +227,11 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
             // One retry, as a HEAD is cheap and a failure stops the whole fetch.
             let days: Result<Vec<_>, _> = urls
                 .iter()
-                .map(|url| {
-                    match archive
-                        .and_then(|archive| archive.find(url))
-                        .filter(|held| date::parse(&held.version).is_some())
-                    {
-                        Some(held) => Ok(Some(held.version)),
-                        None => {
-                            http.modified(url)
-                                .or_else(|e| if http::not_found(&e) { Err(e) } else { http.modified(url) })
-                        }
+                .map(|url| match archive.and_then(|archive| archive.find(url)).and_then(|held| held.day) {
+                    Some(day) => Ok(Some(day)),
+                    None => {
+                        let modified = |url| http.head(url).map(|head| head.modified);
+                        modified(url).or_else(|e| if http::not_found(&e) { Err(e) } else { modified(url) })
                     }
                 })
                 .collect();
@@ -485,7 +480,7 @@ pub(crate) mod tests {
     /// `Content-Length` that may promise more than it sends.
     pub(crate) struct Reply {
         status: u16,
-        headers: Vec<(&'static str, String)>,
+        pub(crate) headers: Vec<(&'static str, String)>,
         body: Vec<u8>,
         length: usize,
     }
@@ -933,9 +928,9 @@ pub(crate) mod tests {
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/x", closed.local_addr().unwrap());
         drop(closed);
-        assert!(http::unreachable(&quick().modified(&url).unwrap_err()));
+        assert!(http::unreachable(&quick().head(&url).unwrap_err()));
         let (url, _) = serve(|_, _| Reply { status: 500, headers: vec![], body: vec![], length: 0 });
-        let error = quick().modified(&url).unwrap_err();
+        let error = quick().head(&url).unwrap_err();
         assert!(!http::unreachable(&error) && !http::not_found(&error), "{error}");
         assert!(http::outage(&error), "a server error is an outage: {error}");
         assert!(!http::outage("GET https://h/x: HTTP 403") && !http::outage("partial/x: No space left on device"));
@@ -1150,14 +1145,20 @@ pub(crate) mod tests {
         assert!(err.contains("blocked: credential missing: ~/.obc-test-no-such-key"), "{err}");
     }
 
-    /// An archive under `root` with `files` at their paths, listed in one manifest with `extra` keys.
-    fn archive(root: &Path, files: &[(&str, &[u8])], extra: &str) {
+    /// An archive under `root` with `files` at their paths, listed in one manifest with `extra` keys,
+    /// each file with the `modified` day `day` unless it is empty.
+    fn archive(root: &Path, files: &[(&str, &[u8])], extra: &str, day: &str) {
         let listed: Vec<String> = files
             .iter()
             .map(|(path, bytes)| {
                 std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
                 std::fs::write(root.join(path), bytes).unwrap();
-                format!(r#"{{"path": "{path}", "bytes": {}, "sha256": "{}"}}"#, bytes.len(), sha256_hex(bytes))
+                let modified = if day.is_empty() { String::new() } else { format!(r#", "modified": "{day}""#) };
+                format!(
+                    r#"{{"path": "{path}", "bytes": {}, "sha256": "{}"{modified}}}"#,
+                    bytes.len(),
+                    sha256_hex(bytes)
+                )
             })
             .collect();
         std::fs::create_dir_all(root.join("manifest")).unwrap();
@@ -1173,7 +1174,7 @@ pub(crate) mod tests {
         let url = actual.replacen("http://", "https://", 1);
         let path = format!("mirror/{}", url.strip_prefix("https://").unwrap());
         let root = scratch.0.join("archive");
-        archive(&root, &[(&path, b"land")], r#""version": "2026-10-05", "#);
+        archive(&root, &[(&path, b"land")], r#""version": "2026-10-28", "#, "2026-10-05");
         std::fs::write(root.join("manifest/broken.json"), "{").unwrap();
         let mut land = source(&url, "date");
         let http = || Http::loopback(&actual).with_archive(&root);
@@ -1195,7 +1196,7 @@ pub(crate) mod tests {
         let snapshot = fetch(&tooling_root(), &store, &http(), &request(&land)).unwrap();
         assert_eq!(std::fs::read(root.join(&path)).unwrap(), b"land", "the copy leaves the archive file whole");
         assert_eq!(log.lock().unwrap().len(), before, "upstream is not asked, and a bad manifest only warns");
-        assert_eq!(snapshot.version, "2026-10-05", "the version of the dataset");
+        assert_eq!(snapshot.version, "2026-10-05", "the day of the archived file");
         let file = &snapshot.files[0];
         assert_eq!((file.url.as_str(), file.archive.as_deref()), (url.as_str(), Some(path.as_str())));
         assert_eq!(std::fs::read(store.object(&file.sha256)).unwrap(), b"land");
@@ -1218,7 +1219,7 @@ pub(crate) mod tests {
         let url = actual.replacen("http://", "https://", 1);
         let path = format!("mirror/{}", url.strip_prefix("https://").unwrap());
         let root = scratch.0.join("archive");
-        archive(&root, &[(&path, b"land")], r#""version": "2026-10-20", "#);
+        archive(&root, &[(&path, b"land")], r#""version": "2026-10-20", "#, "");
         let http = Http::loopback(&actual).with_archive(&root);
         for (version, scheme) in [("2026-10-10".to_string(), "date"), (sha256_hex(b"upstream"), "digest")] {
             let mut land = source(&url, scheme);
@@ -1245,7 +1246,7 @@ pub(crate) mod tests {
         assert!(made.success());
         let path = "mirror/land.copernicus.eu/api/en/products/corine-land-cover/clc2018/clc.zip";
         let ids = r#""version": "2026-10-28", "clms_dataset_uid": "0407d497d3c44bcd93ce8fd5bf78596a", "clms_file_id": "3d9e2413-46ca-4f6e-abf8-b6eb429a4e48", "#;
-        archive(&root, &[(path, &std::fs::read(&zip).unwrap())], ids);
+        archive(&root, &[(path, &std::fs::read(&zip).unwrap())], ids, "");
         let mut corine = crate::sources::embedded("corine-land-cover").clone();
         corine.credential =
             Some(crate::sources::Credential { file: Some("~/.obc-test-no-such-key".into()), ..Default::default() });

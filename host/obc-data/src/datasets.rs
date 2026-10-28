@@ -2,7 +2,7 @@
 //! `obc data archive` lists, gets and verifies them in a root of `OBC_DATA_ARCHIVE`. The fetchers
 //! read the archive through [`crate::fetch::archive`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,7 +16,7 @@ use crate::date;
 use crate::fetch::archive::{self, Listed, Manifest, Missing};
 use crate::fetch::http::{self, Expect, Http, S3Keys};
 use crate::sources::{Keep, Registry, VersionScheme};
-use crate::store;
+use crate::store::{self, Store};
 
 /// The CDSE S3 API: its requests are signed with the keys of [`CDSE_KEYS`].
 const CDSE: &str = "https://eodata.dataspace.copernicus.eu";
@@ -25,8 +25,6 @@ const CDSE_KEYS: &str = "~/.config/openbikecomputer/cdse-s3.env";
 const WORKERS: usize = 4;
 /// How often a get writes the manifest while it runs.
 const SAVE: Duration = Duration::from_secs(60);
-/// The tries of one page of a bucket listing.
-const TRIES: u32 = 4;
 
 /// `data/archive/<dataset>.toml`.
 #[derive(Debug, Deserialize)]
@@ -131,15 +129,17 @@ fn parse(id: &str, text: &str, registry: &Registry) -> Result<Dataset, String> {
 }
 
 impl Dataset {
-    /// The version of the dataset with `files`, got on `today`.
-    fn version_of(&self, files: &[Listed], today: &str) -> String {
+    /// The version of the dataset with `files`: `before` is the version of the manifest before,
+    /// which a date dataset keeps while no file gives a day.
+    fn version_of(&self, files: &[Listed], before: Option<&str>, today: &str) -> String {
         if let Some(version) = &self.version {
             return version.clone();
         }
-        match self.scheme {
-            Some(VersionScheme::Digest) => files.first().and_then(|file| file.sha256.clone()).unwrap_or_default(),
-            _ => files.iter().map(|file| file.modified.as_deref().unwrap_or(today)).max().unwrap_or(today).to_string(),
-        }
+        let found = match self.scheme {
+            Some(VersionScheme::Digest) => files.first().and_then(|file| file.sha256.clone()),
+            _ => files.iter().filter_map(|file| file.modified.clone()).max(),
+        };
+        found.or_else(|| before.map(str::to_string)).unwrap_or_else(|| today.to_string())
     }
 }
 
@@ -165,14 +165,17 @@ pub fn client(dataset: &Dataset, home: &Path) -> Result<Http, String> {
 }
 
 /// A file that the listing names.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 struct Item {
     /// `None` for a file of a kept dataset.
     url: Option<String>,
     /// The path under the root.
     path: String,
     bytes: Option<u64>,
+    /// The `ETag` of a bucket listing, which a download sends as `If-Match`.
     etag: Option<String>,
+    /// The MD5 that upstream gives as the `ETag` of a file of one part.
+    md5: Option<String>,
     modified: Option<String>,
     /// Why upstream gave nothing about the file.
     error: Option<String>,
@@ -187,27 +190,18 @@ fn list(http: &Http, dataset: &Dataset, root: &Path) -> Result<Vec<Item>, String
     }
     for url in &dataset.urls {
         let path = archive::mirror_path(url).ok_or_else(|| format!("`{url}` names no mirror path"))?;
-        let head = http.head(url).or_else(|e| if http::not_found(&e) { Err(e) } else { http.head(url) });
-        let ((bytes, modified), error) = match head {
-            Ok(head) => (head, None),
-            Err(error) => ((None, None), Some(error)),
-        };
-        items.push(Item { url: Some(url.clone()), path, bytes, etag: None, modified, error });
+        let item = Item { url: Some(url.clone()), path, ..Item::default() };
+        items.push(match http.head(url).or_else(|e| if http::not_found(&e) { Err(e) } else { http.head(url) }) {
+            Ok(head) => {
+                Item { bytes: head.bytes, md5: head.etag.as_deref().and_then(md5_of), modified: head.modified, ..item }
+            }
+            Err(error) => Item { error: Some(error), ..item },
+        });
     }
     for s3 in &dataset.s3 {
-        let mut token = None;
-        loop {
-            let url = listing_url(s3, token.as_deref());
-            let page = retried(|| http.listing(&url))?;
-            let (objects, next) = page_items(&page, s3).map_err(|e| format!("{url}: {e}"))?;
-            items.extend(objects);
-            match next {
-                Some(next) => token = Some(next),
-                None => break,
-            }
-        }
+        items.extend(list_s3(s3, |url| http.listing(url))?);
     }
-    let mut seen = HashSet::new();
+    let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.path.clone()));
     Ok(items)
 }
@@ -224,12 +218,24 @@ fn walk(dir: &Path, root: &Path, items: &mut Vec<Item>) -> Result<(), String> {
                 path.strip_prefix(root).ok().and_then(|path| path.to_str()).filter(|path| archive::confined(path));
             let relative = relative.ok_or_else(|| format!("{}: not a plain UTF-8 path", path.display()))?;
             let bytes = entry.metadata().map_err(|e| e.to_string())?.len();
-            let item =
-                Item { url: None, path: relative.into(), bytes: Some(bytes), etag: None, modified: None, error: None };
-            items.push(item);
+            items.push(Item { path: relative.into(), bytes: Some(bytes), ..Item::default() });
         }
     }
     Ok(())
+}
+
+/// The objects that `s3` lists, from the pages that `page` gets.
+fn list_s3(s3: &S3, mut page: impl FnMut(&str) -> Result<String, String>) -> Result<Vec<Item>, String> {
+    let (mut items, mut token) = (Vec::new(), None);
+    loop {
+        let url = listing_url(s3, token.as_deref());
+        let (objects, next) = page_items(&page(&url)?, s3).map_err(|e| format!("{url}: {e}"))?;
+        items.extend(objects);
+        match next {
+            Some(next) => token = Some(next),
+            None => return Ok(items),
+        }
+    }
 }
 
 /// The URL of a page of a `ListObjectsV2`, with its query sorted by name as a signature needs it.
@@ -251,17 +257,27 @@ fn page_items(page: &str, s3: &S3) -> Result<(Vec<Item>, Option<String>), String
             continue;
         }
         let url = format!("{}/{}", s3.bucket, crate::r2::s3::encode(&key));
-        let path = archive::mirror_path(&url).ok_or_else(|| format!("the key `{key}` names no plain path"))?;
+        let Some(path) = archive::mirror_path(&url) else {
+            eprintln!("obc data: warning: the key `{key}` names no plain path; it is left out");
+            continue;
+        };
         let bytes = Some(tag(contents, "Size").and_then(|size| size.parse().ok()).ok_or("an object without a `Size`")?);
         let modified = tag(contents, "LastModified").and_then(|time| time.get(..10).map(str::to_string));
-        let modified = modified.filter(|day| date::parse(day).is_some());
-        items.push(Item { url: Some(url), path, bytes, etag: tag(contents, "ETag"), modified, error: None });
+        let (etag, modified) = (tag(contents, "ETag"), modified.filter(|day| date::parse(day).is_some()));
+        let md5 = etag.as_deref().and_then(md5_of);
+        items.push(Item { url: Some(url), path, bytes, etag, md5, modified, error: None });
     }
     let next = match tag(page, "IsTruncated").as_deref() {
         Some("true") => Some(tag(page, "NextContinuationToken").ok_or("a truncated page without a next token")?),
         _ => None,
     };
     Ok((items, next))
+}
+
+/// The MD5 of a file of one part, which S3 and GCS give as its `ETag`.
+fn md5_of(etag: &str) -> Option<String> {
+    let hex = etag.trim_matches('"');
+    (hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then(|| hex.to_ascii_lowercase())
 }
 
 /// The text of the first element `name` of `xml`.
@@ -289,19 +305,6 @@ fn matches(pattern: &str, text: &str) -> bool {
     }
 }
 
-fn retried<T>(mut attempt: impl FnMut() -> Result<T, String>) -> Result<T, String> {
-    let mut wait = Duration::from_secs(2);
-    for _ in 1..TRIES {
-        match attempt() {
-            Ok(value) => return Ok(value),
-            Err(error) => eprintln!("obc data: {error} — retrying"),
-        }
-        std::thread::sleep(wait);
-        wait *= 2;
-    }
-    attempt()
-}
-
 fn manifest_path(root: &Path, id: &str) -> PathBuf {
     root.join("manifest").join(format!("{id}.json"))
 }
@@ -311,17 +314,24 @@ pub fn holder<'a>(roots: &'a [PathBuf], id: &str) -> Option<&'a PathBuf> {
     roots.iter().find(|root| manifest_path(root, id).is_file())
 }
 
-/// The root of a get: `chosen`, which must be a root; else the root that has the manifest; else,
-/// for a kept dataset, the root that has its files; else `None`, for the first root with room.
+/// The root of a get: `chosen`; else the root that has the manifest; else, for a kept dataset, the
+/// root that has its files; else `None`, for the first root with room. A dataset is in one root,
+/// so the get refuses while a root is not there.
 fn fixed_root(roots: &[PathBuf], dataset: &Dataset, chosen: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    if let Some(root) = roots.iter().find(|root| !root.is_dir()) {
+        return Err(format!("the archive root {} does not exist: mount its drive", root.display()));
+    }
+    let holder = holder(roots, &dataset.id);
     if let Some(chosen) = chosen {
-        let same =
-            |root: &&PathBuf| root.as_path() == chosen || fs::canonicalize(root).ok() == fs::canonicalize(chosen).ok();
-        let root =
-            roots.iter().find(same).ok_or_else(|| format!("{} is not a root of OBC_DATA_ARCHIVE", chosen.display()))?;
+        let chosen = fs::canonicalize(chosen).map_err(|e| format!("{}: {e}", chosen.display()))?;
+        let root = roots.iter().find(|root| fs::canonicalize(root).is_ok_and(|root| root == chosen));
+        let root = root.ok_or_else(|| format!("{} is not a root of OBC_DATA_ARCHIVE", chosen.display()))?;
+        if let Some(holder) = holder.filter(|holder| *holder != root) {
+            return Err(format!("{} holds `{}`: a dataset is in one root", holder.display(), dataset.id));
+        }
         return Ok(Some(root.clone()));
     }
-    if let Some(root) = holder(roots, &dataset.id) {
+    if let Some(root) = holder {
         return Ok(Some(root.clone()));
     }
     if !dataset.kept {
@@ -335,7 +345,7 @@ fn fixed_root(roots: &[PathBuf], dataset: &Dataset, chosen: Option<&Path>) -> Re
 
 /// The first root with the free space for `needed` bytes and [`store::RESERVE`] more.
 fn roomy(roots: &[PathBuf], needed: u64) -> Result<PathBuf, String> {
-    for root in roots.iter().filter(|root| root.is_dir()) {
+    for root in roots {
         if store::free_bytes(root)?.is_none_or(|(_, free)| free >= needed.saturating_add(store::RESERVE)) {
             return Ok(root.clone());
         }
@@ -346,60 +356,47 @@ fn roomy(roots: &[PathBuf], needed: u64) -> Result<PathBuf, String> {
     ))
 }
 
-/// Hold the lock of the dataset `id` in `root`: one get or verify of a dataset at a time.
-fn lock(root: &Path, id: &str) -> Result<fs::File, String> {
-    let path = root.join(".partial").join(format!("{id}.lock"));
-    fs::create_dir_all(root.join(".partial")).map_err(|e| format!("{}: {e}", path.display()))?;
-    let file = fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    file.try_lock().map_err(|_| format!("another `obc data archive` command works on `{id}` in {}", root.display()))?;
-    Ok(file)
+/// The lock of the dataset `id` in the store: one get or verify of a dataset at a time.
+fn lock(store: &Store, id: &str) -> Result<store::Lock, String> {
+    store
+        .try_lock(&format!("archive-{id}"))?
+        .ok_or_else(|| format!("another `obc data archive` command works on `{id}`"))
 }
 
-/// Read the manifest of the dataset in `root`. In a manifest of the tools before `archive get`,
-/// which has no `got`, the modification time of a file is its upstream `Last-Modified`.
-fn read_old(root: &Path, id: &str) -> Result<Manifest, String> {
-    let path = manifest_path(root, id);
-    if !path.is_file() {
-        return Ok(Manifest::default());
-    }
-    let mut manifest = Manifest::read(&path)?;
-    if manifest.got.is_none() {
-        for file in manifest.files.iter_mut().filter(|file| file.modified.is_none()) {
-            let modified = fs::metadata(root.join(&file.path)).and_then(|metadata| metadata.modified()).ok();
-            let seconds = modified.and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
-            file.modified = seconds.map(|seconds| date::format((seconds.as_secs() / 86_400) as i64));
-        }
-    }
-    Ok(manifest)
+/// What a get did.
+pub struct Got {
+    pub root: PathBuf,
+    pub manifest: Manifest,
+    /// Each file that the get could not take. A file of the manifest before stays in it.
+    pub errors: Vec<Missing>,
 }
 
-/// Get each listed file of `dataset` that its root does not hold, and write its manifest. Gives
-/// the root and the manifest; the caller fails when the manifest has missing files.
+/// Get each listed file of `dataset` that its root does not hold, and write its manifest.
 pub fn get(
     http: &Http,
+    store: &Store,
     dataset: &Dataset,
     roots: &[PathBuf],
     chosen: Option<&Path>,
-) -> Result<(PathBuf, Manifest), String> {
+) -> Result<Got, String> {
     let fixed = fixed_root(roots, dataset, chosen)?;
     let items = list(http, dataset, fixed.as_deref().unwrap_or(Path::new("")))?;
     let root = match fixed {
         Some(root) => root,
         None => roomy(roots, items.iter().filter_map(|item| item.bytes).sum())?,
     };
-    if !root.is_dir() {
-        return Err(format!("the archive root {} does not exist: mount its drive", root.display()));
-    }
-    let _lock = lock(&root, &dataset.id)?;
-    let old = read_old(&root, &dataset.id)?;
+    let _lock = lock(store, &dataset.id)?;
+    let path = manifest_path(&root, &dataset.id);
+    let old = if path.is_file() { Manifest::read(&path)? } else { Manifest::default() };
     let partial = root.join(".partial").join(&dataset.id);
     let today = date::format(date::today());
     let previous: HashMap<&str, &Listed> = old.files.iter().map(|file| (file.path.as_str(), file)).collect();
+    let missing: std::collections::HashSet<&str> = old.missing.iter().map(|file| file.path.as_str()).collect();
     let results: Mutex<Vec<Option<Result<Listed, String>>>> = Mutex::new(items.iter().map(|_| None).collect());
     let (next, done) = (AtomicUsize::new(0), AtomicUsize::new(0));
     let save = || {
         let manifest = assemble(dataset, &items, &results.lock().unwrap(), &old, &root, &today);
-        manifest.write(&manifest_path(&root, &dataset.id)).map(|()| manifest)
+        manifest.write(&path).map(|()| manifest)
     };
     std::thread::scope(|scope| {
         let workers: Vec<_> = (0..WORKERS.min(items.len()))
@@ -407,7 +404,8 @@ pub fn get(
                 scope.spawn(|| loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(item) = items.get(index) else { break };
-                    let result = take(http, &root, &partial, item, previous.get(item.path.as_str()).copied());
+                    let old = previous.get(item.path.as_str()).copied();
+                    let result = take(http, &root, &partial, item, old, missing.contains(item.path.as_str()));
                     if let Err(error) = &result {
                         eprintln!("obc data: archive {}: {}: {error}", dataset.id, item.path);
                     }
@@ -433,53 +431,98 @@ pub fn get(
             }
         }
     });
-    Ok((root.clone(), save()?))
+    let manifest = save()?;
+    let results = results.into_inner().unwrap();
+    let errors = items
+        .iter()
+        .zip(results)
+        .filter_map(|(item, result)| match result {
+            Some(Err(error)) => Some(Missing { path: item.path.clone(), bytes: item.bytes, error }),
+            _ => None,
+        })
+        .collect();
+    Ok(Got { root, manifest, errors })
 }
 
-/// The file of `item` in `root`: the file of the manifest before, `old`, when it is in place and
-/// upstream gives nothing else for it; else read in place for a kept file; else downloaded.
-fn take(http: &Http, root: &Path, partial: &Path, item: &Item, old: Option<&Listed>) -> Result<Listed, String> {
+/// Whether upstream gives for `item` what the manifest entry `old` recorded: the same size, and
+/// the same `ETag` and `Last-Modified` day where upstream gives them.
+fn unchanged(old: &Listed, item: &Item) -> bool {
+    item.bytes.is_none_or(|bytes| bytes == old.bytes)
+        && item.etag.as_ref().is_none_or(|etag| old.etag.as_ref() == Some(etag))
+        && item.modified.as_ref().is_none_or(|day| old.modified.as_ref() == Some(day))
+}
+
+/// The file of `item` in `root`:
+/// - the entry `old` of the manifest, when its file is in place and upstream did not change it;
+/// - for a kept file, read in place;
+/// - a file on disk that the manifest does not give as missing, whose size and modification day
+///   are the `Content-Length` and the `Last-Modified` day of upstream, read in place once;
+/// - else downloaded.
+fn take(
+    http: &Http,
+    root: &Path,
+    partial: &Path,
+    item: &Item,
+    old: Option<&Listed>,
+    missing: bool,
+) -> Result<Listed, String> {
     let file = root.join(&item.path);
-    let same = |a: &Option<String>, b: &Option<String>| a.is_none() || b.is_none() || a == b;
-    let unchanged = |old: &Listed| {
-        item.bytes.is_none_or(|bytes| bytes == old.bytes)
-            && same(&old.etag, &item.etag)
-            && same(&old.modified, &item.modified)
-            && old
-                .md5
-                .as_ref()
-                .zip(item.etag.as_ref())
-                .is_none_or(|(md5, etag)| etag.contains('-') || etag.trim_matches('"') == md5)
-    };
-    if let Some(old) = old.filter(|old| in_place(root, old) && (item.error.is_some() || unchanged(old))) {
-        let modified = old.modified.clone().or_else(|| item.modified.clone());
-        return Ok(Listed { modified, etag: old.etag.clone().or_else(|| item.etag.clone()), md5: None, ..old.clone() });
+    if let Some(old) = old.filter(|old| in_place(root, old) && unchanged(old, item)) {
+        return Ok(old.clone());
     }
     if let Some(error) = &item.error {
         return Err(error.clone());
     }
+    let listed = |sha256, bytes| Listed {
+        path: item.path.clone(),
+        bytes,
+        sha256: Some(sha256),
+        modified: item.modified.clone(),
+        etag: item.etag.clone(),
+    };
     let Some(url) = &item.url else {
         let (sha256, bytes) = store::hash_file(&file)?;
-        return Ok(Listed {
-            path: item.path.clone(),
-            bytes,
-            sha256: Some(sha256),
-            modified: None,
-            etag: None,
-            md5: None,
-        });
+        return Ok(listed(sha256, bytes));
     };
+    if !missing && upstream_size_and_day(&file, item) {
+        let (sha256, md5, bytes) = store::digests(&file)?;
+        if item.md5.as_ref().is_none_or(|want| *want == md5) {
+            return Ok(listed(sha256, bytes));
+        }
+        eprintln!("obc data: {}: the MD5 is {md5}, not the one of upstream; downloading it again", file.display());
+    }
     let part = partial.join(http::key(url));
-    let expect =
-        Expect { sha256: None, modified_by: item.modified.as_deref(), etag: item.etag.as_deref(), bytes: item.bytes };
+    let expect = Expect {
+        sha256: None,
+        modified_by: item.modified.as_deref(),
+        etag: item.etag.as_deref(),
+        bytes: item.bytes,
+        md5: item.md5.as_deref(),
+    };
     let got = http.download_to(&part, url, &expect)?;
+    // The modification time of an archive file is the upstream `Last-Modified`.
+    if let Some(day) = item.modified.as_deref().and_then(date::parse) {
+        let time = std::time::UNIX_EPOCH + Duration::from_secs(day as u64 * 86_400);
+        let opened = fs::File::options().write(true).open(&part);
+        opened.and_then(|part| part.set_modified(time)).map_err(|e| format!("{}: {e}", part.display()))?;
+    }
     let parent = file.parent().ok_or("a mirror path has a directory")?;
     fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     fs::rename(&part, &file).map_err(|e| format!("{}: {e}", file.display()))?;
     let _ = fs::remove_file(part.with_extension("lock"));
     eprintln!("obc data: archive got {url}");
-    let (modified, etag) = (item.modified.clone(), item.etag.clone());
-    Ok(Listed { path: item.path.clone(), bytes: got.size, sha256: Some(got.sha256), modified, etag, md5: None })
+    Ok(listed(got.sha256, got.size))
+}
+
+/// Whether `file` has the size and the modification day that upstream gives for `item`, and
+/// upstream gives at least one of them.
+fn upstream_size_and_day(file: &Path, item: &Item) -> bool {
+    let Some(metadata) = fs::metadata(file).ok().filter(|metadata| metadata.is_file()) else { return false };
+    let seconds = metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
+    let day = seconds.map(|seconds| date::format((seconds.as_secs() / 86_400) as i64));
+    (item.bytes.is_some() || item.modified.is_some())
+        && item.bytes.is_none_or(|bytes| bytes == metadata.len())
+        && item.modified.as_ref().is_none_or(|modified| day.as_ref() == Some(modified))
 }
 
 /// Whether the file of `listed` is in `root` with its listed size.
@@ -487,8 +530,8 @@ fn in_place(root: &Path, listed: &Listed) -> bool {
     fs::metadata(root.join(&listed.path)).is_ok_and(|metadata| metadata.is_file() && metadata.len() == listed.bytes)
 }
 
-/// The manifest of the files got so far. A file that is not done yet, or that the listing no
-/// longer names, keeps its entry of the manifest before while it is in place.
+/// The manifest of the files got so far. A file that is not done yet, or that the get could not
+/// take, keeps its entry of the manifest before while that file is in place.
 fn assemble(
     dataset: &Dataset,
     items: &[Item],
@@ -499,29 +542,25 @@ fn assemble(
 ) -> Manifest {
     let previous: HashMap<&str, &Listed> = old.files.iter().map(|file| (file.path.as_str(), file)).collect();
     let (mut files, mut missing) = (Vec::new(), Vec::new());
-    let mut miss = |item: &Item, error: &str| {
-        missing.push(Missing { path: item.path.clone(), bytes: item.bytes, error: error.to_string() })
-    };
     for (item, result) in items.iter().zip(results) {
-        match result {
-            Some(Ok(listed)) => files.push(listed.clone()),
-            Some(Err(error)) => miss(item, error),
-            None => match previous.get(item.path.as_str()).filter(|listed| in_place(root, listed)) {
-                Some(listed) => files.push(Listed { md5: None, ..(*listed).clone() }),
-                None => miss(item, "not got yet"),
-            },
+        match (result, previous.get(item.path.as_str()).filter(|listed| in_place(root, listed))) {
+            (Some(Ok(listed)), _) => files.push(listed.clone()),
+            (_, Some(listed)) => files.push((*listed).clone()),
+            (Some(Err(error)), None) => {
+                missing.push(Missing { path: item.path.clone(), bytes: item.bytes, error: error.clone() })
+            }
+            (None, None) => {
+                missing.push(Missing { path: item.path.clone(), bytes: item.bytes, error: "not got yet".into() })
+            }
         }
     }
-    let named: HashSet<&str> = items.iter().map(|item| item.path.as_str()).collect();
-    let kept = old.files.iter().filter(|file| !named.contains(file.path.as_str()) && in_place(root, file));
-    files.extend(kept.map(|file| Listed { md5: None, ..file.clone() }));
     Manifest {
         dataset: dataset.id.clone(),
         sources: dataset.sources.clone(),
         name: dataset.name.clone(),
         coverage: dataset.coverage.clone(),
         notes: dataset.notes.clone(),
-        version: Some(dataset.version_of(&files, today)),
+        version: Some(dataset.version_of(&files, old.version.as_deref(), today)),
         got: Some(today.to_string()),
         files,
         missing,
@@ -532,9 +571,9 @@ fn assemble(
 
 /// Read each file of the manifest of the dataset `id` and compare its size and SHA-256. A file
 /// that differs moves to `missing`. Gives the files that differ.
-pub fn verify(roots: &[PathBuf], id: &str) -> Result<Vec<Missing>, String> {
+pub fn verify(store: &Store, roots: &[PathBuf], id: &str) -> Result<Vec<Missing>, String> {
     let root = holder(roots, id).ok_or_else(|| format!("no root of OBC_DATA_ARCHIVE has manifest/{id}.json"))?;
-    let _lock = lock(root, id)?;
+    let _lock = lock(store, id)?;
     let path = manifest_path(root, id);
     let mut manifest = Manifest::read(&path)?;
     let (mut bad, mut reported, count) = (Vec::new(), Instant::now(), manifest.files.len());
@@ -578,7 +617,7 @@ fn differs(root: &Path, listed: &Listed) -> Option<String> {
 pub struct ArchiveStatus {
     /// The roots of `OBC_DATA_ARCHIVE`, in order.
     pub roots: Vec<ArchiveRoot>,
-    /// Each dataset of `data/archive/`, then each manifest without a definition.
+    /// Each dataset of `data/archive/`.
     pub datasets: Vec<ArchiveDataset>,
     /// The sources with `keep = "archive"` that no dataset has.
     pub unarchived: Vec<String>,
@@ -595,7 +634,6 @@ pub struct ArchiveRoot {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ArchiveDataset {
     pub dataset: String,
-    pub name: String,
     /// Ids of `data/sources.toml`.
     pub sources: Vec<String>,
     pub coverage: String,
@@ -609,12 +647,8 @@ pub struct ArchiveDataset {
     pub got: Option<String>,
     /// The files that the last get listed.
     pub listed: usize,
-    /// The listed files that are in the root.
-    pub present: usize,
     /// The files of the manifest that are in the root with their size: they serve.
     pub verified: usize,
-    /// The listed files that are not in the root.
-    pub missing: usize,
     /// The bytes of the verified files.
     pub bytes: u64,
 }
@@ -628,34 +662,22 @@ pub enum DatasetState {
     Incomplete,
     /// No root has the manifest.
     Absent,
-    /// The manifest cannot be read, or has no valid `version`.
+    /// The manifest cannot be read, or has no `version`: no file of it serves.
     Unreadable,
-    /// A manifest that no file of `data/archive/` defines.
-    Undefined,
 }
 
-/// The status of each dataset of `datasets` and of each manifest without a definition.
+/// The status of each dataset of `datasets`.
 pub fn status(datasets: &[Dataset], registry: &Registry, roots: &[PathBuf]) -> ArchiveStatus {
     let free =
         |root: &PathBuf| root.is_dir().then(|| store::free_bytes(root).ok().flatten().map(|(_, free)| free)).flatten();
-    let roots_status =
-        roots.iter().map(|root| ArchiveRoot { path: root.display().to_string(), free_bytes: free(root) });
-    let defined: HashSet<&str> = datasets.iter().map(|dataset| dataset.id.as_str()).collect();
-    let mut undefined: Vec<String> = roots
-        .iter()
-        .flat_map(|root| fs::read_dir(root.join("manifest")).into_iter().flatten().flatten())
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "json"))
-        .filter_map(|path| path.file_stem().and_then(|stem| stem.to_str()).map(str::to_string))
-        .filter(|id| !defined.contains(id.as_str()))
-        .collect();
-    undefined.sort();
-    undefined.dedup();
-    let rows = datasets.iter().map(|dataset| row(&dataset.id, Some(dataset), registry, roots));
-    let named: HashSet<&str> = datasets.iter().flat_map(|dataset| dataset.sources.iter().map(String::as_str)).collect();
+    let named: std::collections::HashSet<&str> =
+        datasets.iter().flat_map(|dataset| dataset.sources.iter().map(String::as_str)).collect();
     ArchiveStatus {
-        roots: roots_status.collect(),
-        datasets: rows.chain(undefined.iter().map(|id| row(id, None, registry, roots))).collect(),
+        roots: roots
+            .iter()
+            .map(|root| ArchiveRoot { path: root.display().to_string(), free_bytes: free(root) })
+            .collect(),
+        datasets: datasets.iter().map(|dataset| row(dataset, roots)).collect(),
         unarchived: registry
             .sources
             .iter()
@@ -665,77 +687,48 @@ pub fn status(datasets: &[Dataset], registry: &Registry, roots: &[PathBuf]) -> A
     }
 }
 
-/// The status of the dataset `id`, with its definition when it has one.
-pub fn row(id: &str, dataset: Option<&Dataset>, registry: &Registry, roots: &[PathBuf]) -> ArchiveDataset {
-    let root = holder(roots, id);
+/// The status of `dataset`.
+pub fn row(dataset: &Dataset, roots: &[PathBuf]) -> ArchiveDataset {
+    let root = holder(roots, &dataset.id);
     let mut row = ArchiveDataset {
-        dataset: id.to_string(),
-        name: dataset.map(|dataset| dataset.name.clone()).unwrap_or_default(),
-        sources: dataset.map(|dataset| dataset.sources.clone()).unwrap_or_default(),
-        coverage: dataset.map(|dataset| dataset.coverage.clone()).unwrap_or_default(),
+        dataset: dataset.id.clone(),
+        sources: dataset.sources.clone(),
+        coverage: dataset.coverage.clone(),
         root: root.map(|root| root.display().to_string()),
         state: DatasetState::Absent,
         error: None,
         version: None,
         got: None,
         listed: 0,
-        present: 0,
         verified: 0,
-        missing: 0,
         bytes: 0,
     };
     let Some(root) = root else { return row };
-    let manifest = match Manifest::read(&manifest_path(root, id)) {
+    let manifest = match Manifest::read(&manifest_path(root, &dataset.id)) {
+        Ok(Manifest { version: None, .. }) => Err("no `version`".to_string()),
+        read => read,
+    };
+    let manifest = match manifest {
         Ok(manifest) => manifest,
         Err(error) => {
             (row.state, row.error) = (DatasetState::Unreadable, Some(error));
             return row;
         }
     };
-    if dataset.is_none() {
-        (row.name, row.sources, row.coverage) = (manifest.name, manifest.sources, manifest.coverage);
+    for file in manifest.files.iter().filter(|file| in_place(root, file)) {
+        (row.verified, row.bytes) = (row.verified + 1, row.bytes + file.bytes);
     }
-    let size = |path: &str| fs::metadata(root.join(path)).ok().filter(|metadata| metadata.is_file()).map(|m| m.len());
-    for file in &manifest.files {
-        match size(&file.path) {
-            Some(bytes) if bytes == file.bytes => {
-                (row.verified, row.present, row.bytes) = (row.verified + 1, row.present + 1, row.bytes + bytes)
-            }
-            Some(_) => row.present += 1,
-            None => {}
-        }
-    }
-    row.present += manifest.missing.iter().filter(|missing| size(&missing.path).is_some()).count();
     row.listed = manifest.files.len() + manifest.missing.len();
-    row.missing = row.listed - row.present;
     (row.version, row.got) = (manifest.version, manifest.got);
-    let source = dataset.and_then(|dataset| registry.sources.iter().find(|source| source.id == dataset.sources[0]));
-    let given = dataset.and_then(|dataset| dataset.version.as_ref());
-    let invalid = match (&row.version, source) {
-        (None, _) => Some("no `version`".to_string()),
-        (Some(version), _) if given.is_some_and(|given| given != version) => Some(format!(
-            "the version is `{version}`, but data/archive/{id}.toml gives `{}`",
-            given.map_or("", String::as_str)
-        )),
-        (Some(version), Some(source)) => crate::fetch::check_version(source, version).err(),
-        (Some(_), None) => None,
-    };
-    row.state = match (dataset, invalid) {
-        (None, _) => DatasetState::Undefined,
-        (Some(_), Some(error)) => {
-            row.error = Some(error);
-            DatasetState::Unreadable
-        }
-        _ if row.listed > 0 && row.verified == row.listed => DatasetState::Complete,
-        _ => DatasetState::Incomplete,
-    };
+    row.state =
+        if row.listed > 0 && row.verified == row.listed { DatasetState::Complete } else { DatasetState::Incomplete };
     row
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fetch::tests::{quick, serve, whole};
+    use crate::fetch::tests::{not_found, serve, whole};
     use crate::store::tests::Scratch;
 
     fn repository() -> PathBuf {
@@ -762,95 +755,159 @@ mod tests {
     }
 
     #[test]
-    fn a_page_of_a_listing_gives_the_matching_objects_and_the_next_token() {
-        let s3 =
-            S3 { bucket: "https://bucket.example".into(), prefix: "t/".into(), pattern: Some("*/*_DEM.tif".into()) };
-        let object = |key: &str| {
-            format!("<Contents><Key>{key}</Key><LastModified>2022-05-09T14:26:37.000Z</LastModified><ETag>&quot;ab&quot;</ETag><Size>7</Size></Contents>")
+    fn a_listing_follows_its_pages_and_gives_the_matching_objects() {
+        let s3 = S3 {
+            bucket: "https://eodata.dataspace.copernicus.eu/eodata".into(),
+            prefix: "t/".into(),
+            pattern: Some("*/*_DEM.tif".into()),
         };
-        let page = format!(
+        let object = |key: &str, etag: &str| {
+            format!("<Contents><Key>{key}</Key><LastModified>2022-05-09T14:26:37.000Z</LastModified><ETag>&quot;{etag}&quot;</ETag><Size>7</Size></Contents>")
+        };
+        let md5 = "0123456789abcdef0123456789abcdef";
+        let first = format!(
             "<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>n/x=</NextContinuationToken>{}{}{}</ListBucketResult>",
-            object("t/A_DEM/A_DEM.tif"),
-            object("t/A_DEM/AUXFILES/A_EDM_DEM.tif"),
-            object("t/A_DEM/"),
+            object("t/A_DEM/A_DEM.tif", md5),
+            object("t/A_DEM/AUXFILES/A_EDM_DEM.tif", md5),
+            object("t/A_DEM/", md5),
         );
-        let (items, next) = page_items(&page, &s3).unwrap();
+        let second = format!(
+            "<ListBucketResult><IsTruncated>false</IsTruncated>{}</ListBucketResult>",
+            object("t/B_DEM/B_DEM.tif", "ab-2")
+        );
+        let mut asked = Vec::new();
+        let items = list_s3(&s3, |url| {
+            asked.push(url.to_string());
+            Ok(if asked.len() == 1 { first.clone() } else { second.clone() })
+        })
+        .unwrap();
+        // The path style of CDSE lists at the bucket path, without a `/` before the query.
+        let base = "https://eodata.dataspace.copernicus.eu/eodata?";
+        assert_eq!(
+            asked,
+            [
+                format!("{base}list-type=2&prefix=t%2F"),
+                format!("{base}continuation-token=n%2Fx%3D&list-type=2&prefix=t%2F")
+            ]
+        );
         let expected = Item {
-            url: Some("https://bucket.example/t/A_DEM/A_DEM.tif".into()),
-            path: "mirror/bucket.example/t/A_DEM/A_DEM.tif".into(),
+            url: Some("https://eodata.dataspace.copernicus.eu/eodata/t/A_DEM/A_DEM.tif".into()),
+            path: "mirror/eodata.dataspace.copernicus.eu/eodata/t/A_DEM/A_DEM.tif".into(),
             bytes: Some(7),
-            etag: Some("\"ab\"".into()),
+            etag: Some(format!("\"{md5}\"")),
+            md5: Some(md5.into()),
             modified: Some("2022-05-09".into()),
             error: None,
         };
-        assert_eq!((items, next.as_deref()), (vec![expected], Some("n/x=")));
-        assert_eq!(
-            listing_url(&s3, Some("n/x=")),
-            "https://bucket.example/?continuation-token=n%2Fx%3D&list-type=2&prefix=t%2F"
-        );
+        assert_eq!(items[0], expected);
+        assert_eq!((items.len(), items[1].md5.as_deref()), (2, None), "a file of more parts has no MD5");
+        let virtual_host = S3 { bucket: "https://bucket.example".into(), prefix: String::new(), pattern: None };
+        assert_eq!(listing_url(&virtual_host, None), "https://bucket.example/?list-type=2&prefix=");
     }
 
     #[test]
-    fn a_get_takes_over_the_old_manifest_downloads_a_changed_file_and_verify_drops_a_bad_one() {
+    fn an_entry_stays_only_while_upstream_gives_the_same_size_etag_and_day() {
+        let old = Listed {
+            path: "p".into(),
+            bytes: 4,
+            sha256: None,
+            modified: Some("2026-10-05".into()),
+            etag: Some("\"a\"".into()),
+        };
+        let item =
+            Item { bytes: Some(4), etag: Some("\"a\"".into()), modified: Some("2026-10-05".into()), ..Item::default() };
+        assert!(unchanged(&old, &item));
+        assert!(unchanged(&old, &Item::default()), "upstream gives nothing to compare");
+        let newer = Item { modified: Some("2026-10-06".into()), ..Item::default() };
+        let larger = Item { bytes: Some(5), ..Item::default() };
+        let other = Item { etag: Some("\"b\"".into()), ..Item::default() };
+        for changed in [newer, larger, other] {
+            assert!(!unchanged(&old, &changed), "{changed:?}");
+        }
+        let undated = Listed { modified: None, ..old };
+        assert!(!unchanged(&undated, &item), "an entry without a day is no proof");
+    }
+
+    #[test]
+    fn a_get_downloads_reuses_keeps_an_entry_that_fails_and_reads_a_file_of_upstream_size_and_day() {
         let scratch = Scratch::new("datasets-get");
-        let (actual, log) = serve(|_, _| whole(b"land"));
+        // Requests 0 to 2 see the file of 5 October, the later ones that of 6 October; the GET of
+        // request 4 fails.
+        let (actual, log) = serve(|index, _| match index {
+            4 => not_found(),
+            _ => {
+                let mut reply = whole(b"land");
+                if index > 2 {
+                    reply.headers.retain(|(name, _)| *name != "Last-Modified");
+                    reply.headers.push(("Last-Modified", "Tue, 06 Oct 2026 03:43:59 GMT".into()));
+                }
+                reply
+            }
+        });
         let url = actual.replacen("http://", "https://", 1);
         let registry = Registry::load(&repository()).unwrap();
         let text = format!("name = \"x\"\nsources = [\"land-polygons\"]\ncoverage = \"World\"\nurls = [\"{url}\"]\n");
         let dataset = parse("x", &text, &registry).unwrap();
         let root = scratch.0.join("archive");
+        std::fs::create_dir_all(&root).unwrap();
+        let (roots, store) = (vec![root.clone()], Store::at(scratch.0.join("store")));
         let path = archive::mirror_path(&url).unwrap();
-        std::fs::create_dir_all(root.join(&path).parent().unwrap()).unwrap();
-        std::fs::create_dir_all(root.join("manifest")).unwrap();
-        std::fs::write(root.join(&path), b"land").unwrap();
-        // A manifest of the old tools, whose file has the upstream `Last-Modified` as its time.
-        let old = format!(
-            r#"{{"version": "file mtime", "files": [{{"path": "{path}", "bytes": 4, "sha256": "{}"}}]}}"#,
-            store::sha256_hex(b"land")
-        );
-        std::fs::write(root.join("manifest/x.json"), old).unwrap();
-        let noon =
-            std::time::UNIX_EPOCH + Duration::from_secs(date::parse("2026-10-05").unwrap() as u64 * 86_400 + 43_200);
-        std::fs::File::options().write(true).open(root.join(&path)).unwrap().set_modified(noon).unwrap();
-        let roots = vec![root.clone()];
-
-        let (_, manifest) = get(&Http::loopback(&actual), &dataset, &roots, None).unwrap();
+        let http = Http::loopback(&actual);
         let requests = || log.lock().unwrap().len();
-        assert_eq!(requests(), 1, "only the HEAD: the old file is the upstream file");
+        let day = |got: &Got| got.manifest.files[0].modified.clone().unwrap();
+
+        let got = get(&http, &store, &dataset, &roots, None).unwrap();
         assert_eq!(
-            (manifest.version.as_deref(), manifest.files[0].modified.as_deref()),
-            (Some("2026-10-05"), Some("2026-10-05"))
+            (requests(), day(&got), got.manifest.version.as_deref()),
+            (2, "2026-10-05".into(), Some("2026-10-05"))
         );
-        assert_eq!(row("x", Some(&dataset), &registry, &roots).state, DatasetState::Complete);
+        get(&http, &store, &dataset, &roots, None).unwrap();
+        assert_eq!(requests(), 3, "only the HEAD: upstream did not change the file");
+
+        let got = get(&http, &store, &dataset, &roots, None).unwrap();
+        assert_eq!((requests(), got.errors.len()), (5, 1), "upstream is newer, and its download fails");
+        assert_eq!(day(&got), "2026-10-05", "the intact file of the manifest before stays");
 
         std::fs::write(root.join(&path), b"lane").unwrap();
-        let bad = verify(&roots, "x").unwrap();
-        assert_eq!(bad.len(), 1, "{bad:?}");
-        let state = row("x", Some(&dataset), &registry, &roots);
-        assert_eq!((state.state, state.present, state.verified), (DatasetState::Incomplete, 1, 0));
-        let (_, manifest) = get(&Http::loopback(&actual), &dataset, &roots, None).unwrap();
+        assert_eq!(verify(&store, &roots, "x").unwrap().len(), 1);
+        assert_eq!(row(&dataset, &roots).state, DatasetState::Incomplete);
+        let got = get(&http, &store, &dataset, &roots, None).unwrap();
         assert_eq!(std::fs::read(root.join(&path)).unwrap(), b"land", "the get downloads the bad file again");
-        assert_eq!((manifest.files.len(), manifest.missing.len(), requests()), (1, 0, 3));
-        assert!(verify(&roots, "x").unwrap().is_empty());
+        assert_eq!((requests(), day(&got), got.errors.len()), (7, "2026-10-06".into(), 0));
+
+        std::fs::remove_file(root.join("manifest/x.json")).unwrap();
+        let got = get(&http, &store, &dataset, &roots, None).unwrap();
+        assert_eq!(
+            (requests(), got.manifest.files.len()),
+            (8, 1),
+            "the file of upstream size and day is read in place"
+        );
+        assert!(verify(&store, &roots, "x").unwrap().is_empty());
     }
 
     #[test]
-    fn a_kept_dataset_lists_the_files_under_its_folder_without_a_request() {
+    fn a_kept_dataset_lists_the_files_under_its_folder_and_a_dataset_stays_in_its_root() {
         let scratch = Scratch::new("datasets-kept");
-        let root = scratch.0.join("archive");
+        let (first, root) = (scratch.0.join("first"), scratch.0.join("archive"));
+        std::fs::create_dir_all(&first).unwrap();
         std::fs::create_dir_all(root.join("kept/x/a")).unwrap();
         std::fs::write(root.join("kept/x/a/1.tif"), b"one").unwrap();
         let registry = Registry::load(&repository()).unwrap();
         let text = "name = \"x\"\nsources = [\"corine-land-cover\"]\ncoverage = \"Europe\"\nversion = \"2026-10-28\"\nkept = true\n";
         let dataset = parse("x", text, &registry).unwrap();
-        let roots = vec![scratch.0.join("absent"), root.clone()];
-        let (chosen, manifest) = get(&quick(), &dataset, &roots, None).unwrap();
-        assert_eq!(chosen, root, "the root that has kept/x/");
-        let listed = &manifest.files[0];
+        let (roots, store) = (vec![first.clone(), root.clone()], Store::at(scratch.0.join("store")));
+        let http = Http::with_backoff(Duration::ZERO);
+        let got = get(&http, &store, &dataset, &roots, None).unwrap();
+        assert_eq!(got.root, root, "the root that has kept/x/");
+        let listed = &got.manifest.files[0];
         assert_eq!((listed.path.as_str(), listed.sha256.clone()), ("kept/x/a/1.tif", Some(store::sha256_hex(b"one"))));
-        assert_eq!(manifest.version.as_deref(), Some("2026-10-28"));
-        let status = status(std::slice::from_ref(&dataset), &registry, &roots);
-        assert_eq!(status.roots[0].free_bytes, None, "a root that does not exist");
-        assert_eq!(status.datasets[0].state, DatasetState::Complete);
+        assert_eq!(got.manifest.version.as_deref(), Some("2026-10-28"));
+        let err = get(&http, &store, &dataset, &roots, Some(&first)).map(|_| ()).unwrap_err();
+        assert!(err.contains("a dataset is in one root"), "{err}");
+        let gone = vec![scratch.0.join("unmounted"), root.clone()];
+        let err = get(&http, &store, &dataset, &gone, None).map(|_| ()).unwrap_err();
+        assert!(err.contains("mount its drive"), "{err}");
+        let status = status(std::slice::from_ref(&dataset), &registry, &gone);
+        assert_eq!((status.roots[0].free_bytes, status.datasets[0].state), (None, DatasetState::Complete));
     }
 }

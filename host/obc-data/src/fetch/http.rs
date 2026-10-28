@@ -22,6 +22,18 @@ pub struct Expect<'a> {
     pub modified_by: Option<&'a str>,
     pub etag: Option<&'a str>,
     pub bytes: Option<u64>,
+    /// The MD5 of the bytes, in lowercase hex, as upstream publishes it.
+    pub md5: Option<&'a str>,
+}
+
+/// What a `HEAD` request tells about a file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Head {
+    pub bytes: Option<u64>,
+    /// A strong `ETag`.
+    pub etag: Option<String>,
+    /// The `Last-Modified` day.
+    pub modified: Option<String>,
 }
 
 #[derive(Debug)]
@@ -213,23 +225,21 @@ impl Http {
         request
     }
 
-    /// Size and strong object identity from headers only.
-    pub fn headers(&self, url: &str) -> Result<(u64, Option<String>), String> {
-        let response = self
-            .authorize("HEAD", url, self.agent.head(url))
-            .config()
-            .timeout_global(Some(SMALL))
-            .build()
-            .call()
-            .map_err(|e| no_answer("HEAD", url, e))?;
+    /// What a `HEAD` request of `url` tells, after redirects. A 404 is an error that [`not_found`]
+    /// knows.
+    pub fn head(&self, url: &str) -> Result<Head, String> {
+        // The size of the bytes as upstream stores them, as a download asks for them.
+        let request = self.authorize("HEAD", url, self.agent.head(url)).header("accept-encoding", "identity");
+        let response =
+            request.config().timeout_global(Some(SMALL)).build().call().map_err(|e| no_answer("HEAD", url, e))?;
         if !response.status().is_success() {
             return Err(format!("HEAD {url}: HTTP {}", response.status().as_u16()));
         }
-        let bytes = header(&response, "content-length")
-            .and_then(|v| v.parse().ok())
-            .ok_or_else(|| format!("HEAD {url}: no Content-Length"))?;
-        let etag = header(&response, "etag").filter(|v| !v.starts_with("W/"));
-        Ok((bytes, etag))
+        Ok(Head {
+            bytes: header(&response, "content-length").and_then(|value| value.parse().ok()),
+            etag: header(&response, "etag").filter(|value| !value.starts_with("W/")),
+            modified: header(&response, "last-modified").and_then(|value| date::from_http(&value)),
+        })
     }
 
     /// A small JSON POST. Errors omit the response body, which can contain credentials.
@@ -248,24 +258,6 @@ impl Http {
             return Err(format!("POST {url}: HTTP {}", response.status().as_u16()));
         }
         response.body_mut().read_to_vec().map_err(|_| format!("POST {url}: invalid response"))
-    }
-
-    /// The `Last-Modified` day of `url`, after redirects. A 404 is an error that [`not_found`] knows.
-    pub fn modified(&self, url: &str) -> Result<Option<String>, String> {
-        Ok(self.head(url)?.1)
-    }
-
-    /// The `Content-Length` and the `Last-Modified` day of `url`, after redirects.
-    pub fn head(&self, url: &str) -> Result<(Option<u64>, Option<String>), String> {
-        // The size of the bytes as upstream stores them, as a download asks for them.
-        let request =
-            self.agent.head(url).header("accept-encoding", "identity").config().timeout_global(Some(SMALL)).build();
-        let response = request.call().map_err(|e| no_answer("HEAD", url, e))?;
-        if !response.status().is_success() {
-            return Err(format!("HEAD {url}: HTTP {}", response.status().as_u16()));
-        }
-        let bytes = header(&response, "content-length").and_then(|value| value.parse().ok());
-        Ok((bytes, header(&response, "last-modified").and_then(|value| date::from_http(&value))))
     }
 
     /// Where `url` redirects to, from one HEAD request.
@@ -294,10 +286,22 @@ impl Http {
     }
 
     /// A page of a bucket listing, which can take longer than a small document.
+    /// It is tried again like a download after no answer and after HTTP 408, 429 and 5xx.
     pub fn listing(&self, url: &str) -> Result<String, String> {
-        match self.answer_within(url, "application/xml", LISTING)? {
-            (200..=299, body) => String::from_utf8(body).map_err(|e| format!("GET {url}: {e}")),
-            (status, _) => Err(format!("GET {url}: HTTP {status}")),
+        let mut failures = 0;
+        loop {
+            let why = match self.answer_within(url, "application/xml", LISTING) {
+                Ok((200..=299, body)) => return String::from_utf8(body).map_err(|e| format!("GET {url}: {e}")),
+                Ok((status @ (408 | 429 | 500..=599), _)) => format!("GET {url}: HTTP {status}"),
+                Ok((status, _)) => return Err(format!("GET {url}: HTTP {status}")),
+                Err(why) => why,
+            };
+            failures += 1;
+            if failures == ATTEMPTS {
+                return Err(why);
+            }
+            eprintln!("obc data: {why} — retrying");
+            pause(url, self.backoff * 2u32.pow(failures - 1))?;
         }
     }
 
@@ -385,7 +389,17 @@ impl Http {
             pause(url, delay.min(RETRY_AFTER).max(self.backoff * 2u32.pow(failures - 1)))?;
         }
         let _ = fs::remove_file(validator);
-        let (sha256, size) = store::hash_file(part)?;
+        let (sha256, size) = match expect.md5 {
+            Some(want) => {
+                let (sha256, md5, size) = store::digests(part)?;
+                if md5 != want {
+                    let _ = fs::remove_file(part);
+                    return Err(format!("{url}: the MD5 is {md5}, not {want}"));
+                }
+                (sha256, size)
+            }
+            None => store::hash_file(part)?,
+        };
         if let Some(want) = expect.sha256.filter(|want| *want != sha256) {
             let _ = fs::remove_file(part);
             return Err(format!("{url}: the SHA-256 is {sha256}, not {want}"));

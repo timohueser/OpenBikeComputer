@@ -456,8 +456,7 @@ mod tests {
             secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into(),
             region: "us-east-1".into(),
         };
-        // Split, so that tools/check_data_sources.py does not take the host of the example for a fetch.
-        let url = concat!("https:", "//examplebucket.s3.amazonaws.com/?max-keys=2&prefix=J");
+        let url = "https://examplebucket.s3.amazonaws.com/?max-keys=2&prefix=J";
         let headers = sign_url(&keys, "GET", url, 1_369_353_600);
         assert_eq!(headers[1], ("x-amz-date".to_string(), "20130524T000000Z".to_string()));
         assert_eq!(

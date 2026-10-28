@@ -33,8 +33,7 @@ pub fn roots() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// `manifest/<dataset>.json`, as `crate::datasets` writes it. Old manifests without `version`
-/// still parse, so that `archive get` can take their files over.
+/// `manifest/<dataset>.json`, as `crate::datasets` writes it.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Manifest {
     #[serde(default)]
@@ -75,9 +74,6 @@ pub struct Listed {
     /// The upstream `ETag`, with its quotes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
-    /// The upstream MD5 of a manifest of the old tools; `etag` replaces it.
-    #[serde(default, skip_serializing)]
-    pub md5: Option<String>,
 }
 
 /// A listed file that the root does not hold.
@@ -120,7 +116,7 @@ struct Entry {
     root: usize,
     bytes: u64,
     sha256: Option<String>,
-    version: Arc<str>,
+    day: Option<Arc<str>>,
 }
 
 /// A listed file that the archive holds.
@@ -130,8 +126,9 @@ pub struct Held {
     pub file: PathBuf,
     /// Lowercase hex.
     pub sha256: Option<String>,
-    /// The version of its dataset.
-    pub version: String,
+    /// The upstream `Last-Modified` day of the file, or else the version of its dataset when that
+    /// is a day.
+    pub day: Option<String>,
 }
 
 impl Archive {
@@ -159,6 +156,9 @@ impl Archive {
         self.listing.get_or_init(|| {
             let mut listing = Listing::default();
             for (root, dir) in self.roots.iter().enumerate() {
+                if !dir.is_dir() {
+                    eprintln!("obc data: warning: the archive root {} does not exist: mount its drive", dir.display());
+                }
                 read_manifests(&dir.join("manifest"), root, &mut listing);
             }
             listing
@@ -177,7 +177,12 @@ impl Archive {
             );
             return None;
         }
-        Some(Held { path: path.to_string(), file, sha256: entry.sha256.clone(), version: entry.version.to_string() })
+        Some(Held {
+            path: path.to_string(),
+            file,
+            sha256: entry.sha256.clone(),
+            day: entry.day.as_deref().map(str::to_string),
+        })
     }
 }
 
@@ -204,16 +209,16 @@ impl Held {
     }
 
     /// Copy the file into the store, as a download of `url` that meets `expect` would. `None` when
-    /// it is another version: other bytes than `expect.sha256`, or, without that, a dataset
-    /// version that is no day on or before `expect.modified_by`. A copy, never a link, so that the
-    /// store and the archive stay apart.
+    /// it is another version: other bytes than `expect.sha256`, or, without that, no day of the
+    /// file on or before `expect.modified_by`. A copy, never a link, so that the store and the
+    /// archive stay apart.
     pub fn import(&self, store: &Store, url: &str, expect: &Expect) -> Result<Option<Downloaded>, String> {
-        let after = |by: &str| date::parse(&self.version).is_none() || self.version.as_str() > by;
+        let after = |by: &str| self.day.as_deref().is_none_or(|day| day > by);
         if let Some(by) = expect.modified_by.filter(|by| expect.sha256.is_none() && after(by)) {
             eprintln!(
-                "obc data: archive file {} has the version {}, not {by} or earlier",
+                "obc data: archive file {} changed on {}, after the version {by}",
                 self.file.display(),
-                self.version
+                self.day.as_deref().unwrap_or("an unknown day")
             );
             return Ok(None);
         }
@@ -271,7 +276,9 @@ fn read_manifests(dir: &Path, root: usize, listing: &mut Listing) {
                 continue;
             }
         };
-        let version: Arc<str> = manifest.version.unwrap_or_default().into();
+        // A file without its own day takes the version of a date dataset.
+        let version: Option<Arc<str>> =
+            manifest.version.filter(|version| date::parse(version).is_some()).map(Into::into);
         let (mut files, listed) = (Vec::new(), manifest.files.len());
         for file in manifest.files {
             if !confined(&file.path) {
@@ -291,7 +298,8 @@ fn read_manifests(dir: &Path, root: usize, listing: &mut Listing) {
         }
         for file in files {
             let sha256 = file.sha256.map(|sha256| sha256.to_ascii_lowercase());
-            let entry = Entry { root, bytes: file.bytes, sha256, version: version.clone() };
+            let day = file.modified.map(Into::into).or_else(|| version.clone());
+            let entry = Entry { root, bytes: file.bytes, sha256, day };
             listing.files.entry(file.path).or_insert(entry);
         }
     }
@@ -317,14 +325,15 @@ mod tests {
         }
         std::fs::write(scratch.0.join("outside.zip"), b"z").unwrap();
         let outside = r#"{"path": "../outside.zip", "bytes": 1}"#;
-        let x = r#"{"path": "mirror/example.org/x", "bytes": 1, "sha256": "AB"}"#;
+        let x = r#"{"path": "mirror/example.org/x", "bytes": 1, "sha256": "AB", "modified": "2026-10-05"}"#;
         let manifest = format!(r#"{{"version": "v1", "files": [{outside}, {x}]}}"#);
         std::fs::write(first.join("manifest/x.json"), manifest).unwrap();
         let clms =
             format!(r#"{{"version": "v1", "clms_dataset_uid": "d", "clms_file_id": "f", "files": [{outside}]}}"#);
         std::fs::write(first.join("manifest/clms.json"), clms).unwrap();
         let y = r#"{"path": "mirror/example.org/x", "bytes": 2}, {"path": "mirror/example.org/y", "bytes": 2}"#;
-        std::fs::write(second.join("manifest/x.json"), format!(r#"{{"version": "v2", "files": [{y}]}}"#)).unwrap();
+        std::fs::write(second.join("manifest/x.json"), format!(r#"{{"version": "2026-10-02", "files": [{y}]}}"#))
+            .unwrap();
         std::fs::write(second.join("mirror/example.org/y"), b"yy").unwrap();
         std::fs::write(
             second.join("manifest/old.json"),
@@ -335,9 +344,17 @@ mod tests {
 
         let archive = Archive::new(vec![first, second.clone()]);
         let held = archive.find("https://example.org/x").unwrap();
-        assert_eq!((held.sha256.as_deref(), held.version.as_str()), (Some("ab"), "v1"), "the first root serves");
+        assert_eq!(
+            (held.sha256.as_deref(), held.day.as_deref()),
+            (Some("ab"), Some("2026-10-05")),
+            "the first root serves"
+        );
         let held = archive.find("https://example.org/y").unwrap();
-        assert_eq!((held.file, held.version.as_str()), (second.join("mirror/example.org/y"), "v2"));
+        assert_eq!(
+            (held.file, held.day.as_deref()),
+            (second.join("mirror/example.org/y"), Some("2026-10-02")),
+            "the day of the dataset"
+        );
         assert!(archive.find("https://example.org/z").is_none(), "a manifest without `version` never serves");
         for url in ["http://example.org/x", "https://example.org/x?a=1", "https://example.org/y/../x"] {
             assert!(archive.find(url).is_none(), "{url}");

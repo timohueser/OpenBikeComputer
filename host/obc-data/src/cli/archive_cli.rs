@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 use clap::Subcommand;
 
 use super::{print_json, registry, Code, Error};
-use crate::datasets::{self, ArchiveDataset, ArchiveStatus};
+use crate::datasets::{self, ArchiveDataset, ArchiveStatus, Dataset};
 use crate::engine::runs::bytes;
 use crate::fetch::archive;
+use crate::store::Store;
 
 #[derive(Subcommand)]
 pub enum ArchiveCommand {
@@ -30,7 +31,6 @@ pub fn run(root: &Path, command: ArchiveCommand, json: bool) -> Result<(), Error
     let registry = registry(root)?;
     let datasets = datasets::load(root, &registry).map_err(|e| Code::InvalidData.error(e))?;
     let roots = archive::roots();
-    let defined = |id: &str| datasets.iter().find(|dataset| dataset.id == id);
     if !matches!(command, ArchiveCommand::Status) && roots.is_empty() {
         return Err(Code::Usage
             .error("OBC_DATA_ARCHIVE names no root")
@@ -46,18 +46,18 @@ pub fn run(root: &Path, command: ArchiveCommand, json: bool) -> Result<(), Error
             return Ok(());
         }
         ArchiveCommand::Get { dataset: id, root: chosen } => {
-            let dataset =
-                defined(&id).ok_or_else(|| Code::Usage.error(format!("no dataset `{id}` in data/archive/")))?;
+            let dataset = defined(&datasets, &id)?;
             let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
             let http = datasets::client(dataset, &home).map_err(|e| Code::Blocked.error(e))?;
-            let (_, manifest) =
-                datasets::get(&http, dataset, &roots, chosen.as_deref()).map_err(|e| Code::FetchFailed.error(e))?;
-            let failure = manifest.missing.first().map(|first| {
+            let store = Store::open()?;
+            let got = datasets::get(&http, &store, dataset, &roots, chosen.as_deref())
+                .map_err(|e| Code::FetchFailed.error(e))?;
+            let failure = got.errors.first().map(|first| {
                 Code::FetchFailed
                     .error(format!(
-                        "{} of {} files of `{id}` are missing; the first, {}: {}",
-                        manifest.missing.len(),
-                        manifest.files.len() + manifest.missing.len(),
+                        "{} of {} files of `{id}` failed; the first, {}: {}",
+                        got.errors.len(),
+                        got.manifest.files.len() + got.manifest.missing.len(),
                         first.path,
                         first.error
                     ))
@@ -66,7 +66,8 @@ pub fn run(root: &Path, command: ArchiveCommand, json: bool) -> Result<(), Error
             (id, failure)
         }
         ArchiveCommand::Verify { dataset: id } => {
-            let bad = datasets::verify(&roots, &id).map_err(|e| Code::Failed.error(e))?;
+            defined(&datasets, &id)?;
+            let bad = datasets::verify(&Store::open()?, &roots, &id).map_err(|e| Code::Failed.error(e))?;
             let failure = bad.first().map(|first| {
                 Code::VerifyFailed
                     .error(format!(
@@ -83,12 +84,19 @@ pub fn run(root: &Path, command: ArchiveCommand, json: bool) -> Result<(), Error
     if let Some(failure) = failure {
         return Err(failure);
     }
-    let row = datasets::row(&id, defined(&id), &registry, &roots);
+    let row = datasets::row(defined(&datasets, &id)?, &roots);
     if json {
         return print_json(&row);
     }
     println!("{}", line(&row));
     Ok(())
+}
+
+fn defined<'a>(datasets: &'a [Dataset], id: &str) -> Result<&'a Dataset, Error> {
+    datasets
+        .iter()
+        .find(|dataset| dataset.id == id)
+        .ok_or_else(|| Code::Usage.error(format!("no dataset `{id}` in data/archive/")))
 }
 
 fn print_status(status: &ArchiveStatus) {
@@ -113,11 +121,10 @@ fn line(row: &ArchiveDataset) -> String {
     let state =
         serde_json::to_value(row.state).ok().and_then(|value| value.as_str().map(str::to_string)).unwrap_or_default();
     let mut line = format!(
-        "{:<34} {state:<10} {}/{} files, {} missing, {}, version {}",
+        "{:<34} {state:<10} {}/{} files, {}, version {}",
         row.dataset,
         row.verified,
         row.listed,
-        row.missing,
         bytes(row.bytes),
         row.version.as_deref().unwrap_or("-")
     );

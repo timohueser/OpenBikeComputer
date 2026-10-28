@@ -15,6 +15,8 @@ serde = { version = "1", features = ["derive"] }
 # The child process of a Rust step parses the floats of its options exactly, as the key reads them.
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.11"
+# The MD5 that S3 and GCS publish as the ETag of a file of one part: `obc data archive get` checks it.
+md-5 = "0.11"
 toml = "0.9"
 ureq = "3"
 # `obc data serve`: the files of a target and the API of its planner releases.
