@@ -31,8 +31,9 @@ holds a tile to it.
   root, where `(ti, tj) = ((lat − ORIGIN) >> 16, (lon − ORIGIN) >> 16)`.
 - **Value**: `int16` little-endian orthometric metres, the **maximum** of every source pixel centre
   inside the lattice square. A square that no centre reaches and that lies between four centres
-  with a height has their bilinear height (`fill_gaps`). `−32768` is the only nodata. Single band, `PixelIsArea`, EPSG:4326,
-  deflate, 256 × 256 internal tiles. The GeoTIFF stores rows north-up.
+  with a height has their bilinear height (`fill_gaps`). `−32768` is the only nodata. Single
+  band, `PixelIsArea`, EPSG:4326, deflate, 256 × 256 internal tiles. The GeoTIFF stores rows
+  north-up.
 - **Mean** (prepared versions only): the **mean** of the same centres in `int32` decimetres, or
   the same bilinear height, nodata `−2^31`, predictor 2, in `mean/`.
 - **Transform** must be exactly the lattice (`a = 2^6 / 1e6`, `e = −2^6 / 1e6`, origin on lattice

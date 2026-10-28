@@ -160,6 +160,8 @@ def fill_gaps(maximum, total, count, raster, window: Window):
     bilinear height. The arrays are in the shape of `window`, north-up, and change in place."""
 
     values, transform, src_crs = raster
+    if min(values.shape) < 2:  # a sliver of one row or column has no four centres around a point
+        return
     rows, cols = np.nonzero(count == 0)
     lat = (GRID_ORIGIN + (window.row0 + window.rows - 1 - rows) * STEP + STEP // 2) / DEGREE
     lon = (GRID_ORIGIN + (window.col0 + cols) * STEP + STEP // 2) / DEGREE

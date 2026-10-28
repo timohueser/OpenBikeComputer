@@ -1650,8 +1650,10 @@ the same format; `prod` takes a version of a region.
   the gaps. Each lattice pixel that no centre of a model reaches and that lies between four of its
   centres with a height takes their bilinear height. A model whose step is longer than the east
   side of a lattice pixel in the tile asks for the tile with two of its steps of margin. So a
-  model coarser than the lattice fills its footprint; a finer model gives a centre to each pixel
-  of its footprint, and the fill writes nothing. The program writes `16/<ti:04>/<tj:04>.tif` and `mean/16/<ti:04>/<tj:04>.tif`, then
+  model coarser than the lattice fills its footprint. A finer model whose step is longer than half
+  the east side can leave a pixel without a centre next to a void, and the fill gives that pixel
+  the bilinear height. On a tile of `es` (5 m) and one of `ch` (2 m), the fill writes no pixel. A
+  raster of one row or one column fills nothing. The program writes `16/<ti:04>/<tj:04>.tif` and `mean/16/<ti:04>/<tj:04>.tif`, then
   `<ti:04>-<tj:04>.keys`, the sources of the tile best first, and `<ti:04>-<tj:04>.samples`, the
   bias samples of the mean: the decimetres of the 16 × 16 pixels whose row and column are 32
   modulo 64, row by row from the south, `-` where the tile has no height. Then it writes
@@ -1668,15 +1670,17 @@ the same format; `prod` takes a version of a region.
   GLO-30 is bilinear at the sample, from the squares of `copernicus-glo-30` that
   `copernicus-glo-30-tiles` names; a land square that the fetch does not give is an error. A
   sample in a square that the list does not name is at sea and does not count, and the run logs
-  how many. A model with fewer than 1024 samples with GLO-30, those of four full tiles, has no
-  bias, so a test version of one tile does not fix it; a later version measures it again. A model
+  how many. A model with fewer than 1024 samples with GLO-30 has no bias, and a later version
+  measures it again. The number is chosen: the samples of four full tiles, so that a test version
+  of one tile does not fix the bias of a model. A model
   keeps the bias of the version before, so a region added later does not change it. A version
   that extends no version, such as the first version of a format, measures every model over all
   its tiles. The heights of a tile are thus the same in each bake of one version of `terrain`.
-- A version of revision 1 states no bias. The plan of `planner/reference` refuses it and names
-  the fix: a prepare of a small box inside a region that the version holds extends it and
-  measures each model without a bias, such as
-  `obc data source prepare terrain --box 8.30,46.80,8.32,46.81 --to TARGET --dry-run`.
+- The plan of `planner/reference` reads `mean/index.json` (a fetch of a prepared version with the
+  param `file` gives that file too). It refuses a version that states no bias of the best model
+  of a tile that it reads, and names the fix: a prepare of a box of about four tiles in the
+  middle of the `extent` of that model extends the version and measures it, such as
+  `obc data source prepare terrain --box 8.10,46.75,8.30,46.95 --to TARGET --dry-run` for `ch`.
 - Last, `ingest.py index-terrain` writes `index.json` and `mean/index.json`: the index of the
   version before with each tile that the run made, its SHA-256 and its `contributors`, and the
   facts of each model that the run read with `fetched`, the date of the version. The facts of a

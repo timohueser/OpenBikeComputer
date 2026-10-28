@@ -345,6 +345,18 @@ class Pool(ArchiveCase):
         self.assertLess(float(np.abs(mean[filled] / 10.0 - plane(x[filled], y[filled])).max()), 0.06)
 
 
+    def test_a_raster_of_one_row_or_column_pools_its_centres_and_fills_nothing(self):
+        """A box clipped to the extent of a model can give a sliver of one source row."""
+
+        for shape in ((1, 10), (10, 1)):
+            with self.subTest(shape=shape):
+                raster = source_raster(self.root / "sliver.tif", np.full(shape, 1234.0, dtype="float32"),
+                                       transform=grid(step=20.0))
+                ti, tj, _, _ = archive_pixel(grid(step=20.0), 0, 0)
+                maximum, _ = ingest.pool_tile([raster], ingest.SOURCES["ch"], ti, tj)
+                self.assertEqual(int((maximum == 1234).sum()), 10)
+                self.assertEqual(int((maximum != ingest.NODATA).sum()), 10)
+
     def test_only_a_model_with_a_step_longer_than_the_east_side_of_a_pixel_is_coarse(self):
         """Such a model is fetched with a margin: `it` and `is` at 10 m, and not `es` at 5 m, whose
         country is south of the latitude where the east side of a pixel is 5 m."""

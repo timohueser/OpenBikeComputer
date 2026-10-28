@@ -39,9 +39,8 @@ pub type Sample = (i64, i64, f64);
 /// test version of one tile does not fix the bias of a model.
 pub const MIN_SAMPLES: usize = 4 * (TILE_PIXELS / SAMPLES) * (TILE_PIXELS / SAMPLES);
 /// How a version of `terrain` without the bias of a model gets it.
-pub const BIAS_FIX: &str = "a prepare of a small box inside a region that the version holds extends the version and \
-     measures the bias of each model that has none, such as: obc data source prepare terrain --box \
-     8.30,46.80,8.32,46.81 --to TARGET --dry-run";
+pub const BIAS_FIX: &str = "a prepare of a box of about four tiles inside the extent of the model extends the \
+     version and measures it: obc data source prepare terrain --box W,S,E,N --to TARGET --dry-run";
 
 /// The width of each ramp of the seam in metres. A canopy step of 20 m between the archive and
 /// GLO-30 ramps over it at 2 %, which the relief does not show as an edge.

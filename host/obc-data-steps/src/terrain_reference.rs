@@ -24,8 +24,6 @@ use crate::prepared_tiles::{self, Tile};
 
 /// The id of the prepared source.
 pub const ID: &str = "terrain";
-/// The first revision whose versions state the GLO-30 bias of their models.
-pub const BIASED: u32 = 2;
 
 pub struct TerrainReference {
     /// `ingest.py` of the reference archive, as a command in the repository root.
@@ -54,7 +52,7 @@ impl Prepared for TerrainReference {
     }
 
     fn revision(&self) -> u32 {
-        BIASED
+        2
     }
 
     fn regional(&self) -> bool {
