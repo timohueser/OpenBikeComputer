@@ -332,35 +332,6 @@ setting_enum! {
 }
 
 setting_enum! {
-    /// Which sources feed the Up-ahead timeline.
-    pub enum UpAheadSource {
-        /// Custom waypoints and route-corridor map POIs.
-        Both = 0, key Msg::UpAheadSourceBoth;
-        /// The rider's own GPX waypoints only. The corridor query is never armed under this value,
-        /// so the map `Reader` is never built for it either.
-        WaypointsOnly = 1, key Msg::UpAheadSourceWaypoints;
-        /// Route-corridor map POIs only. The waypoint plan leaves the timeline entirely; it stays
-        /// on the map and in the stats panel.
-        MapPoisOnly = 2, key Msg::UpAheadSourceMapPois;
-    }
-    default Both;
-}
-
-impl UpAheadSource {
-    #[inline]
-    pub const fn shows_waypoints(self) -> bool {
-        matches!(self, UpAheadSource::Both | UpAheadSource::WaypointsOnly)
-    }
-
-    /// Whether route-corridor map POIs feed the list. Also the arming answer: `false` means no
-    /// [`CorridorKey`](crate::corridor::CorridorKey) is ever declared, so the query never runs.
-    #[inline]
-    pub const fn shows_pois(self) -> bool {
-        matches!(self, UpAheadSource::Both | UpAheadSource::MapPoisOnly)
-    }
-}
-
-setting_enum! {
     /// How long the UI sits idle before it navigates itself back to where it belongs: the Home root
     /// when not tracking a ride, the Map when a ride is running. The Power settings screen picks it.
     ///
@@ -510,8 +481,9 @@ settings_table! {
         /// One slot per quantity; an empty slot is "no sensor saved". Written by the Sensors screen
         /// on pair and forget; the board's central manager reconnects to a present slot's address
         /// whenever the radio is on.
-        saved_sensors: [SavedSensor; SENSOR_SLOTS] = [SavedSensor::EMPTY; SENSOR_SLOTS], since(19);
-        up_ahead_source: UpAheadSource = UpAheadSource::Both, since(19);
+        saved_sensors: [SavedSensor; SENSOR_SLOTS] = [SavedSensor::EMPTY; SENSOR_SLOTS], since(19), reserved(1);
+        // Byte 110 is retired: v19..=26 stored the Up-ahead source choice there, which nothing
+        // read. v27 writes a zero and every version ignores it on decode.
         /// Draw the map's terrain layer, today the contour lines. Off drops every terrain-layer
         /// style from the renderer's collect pass, so the geometry is never decoded — but contours
         /// share cells with everything else, so off neither shrinks the map on the card nor avoids a
@@ -568,7 +540,7 @@ settings_table! {
 /// The in-memory footprint, pinned. [`Settings`] is copied whole into the live `App`, the board's
 /// Config cache and the `.rodata` [`DEFAULT`](Settings::DEFAULT) image, so a field that widens the
 /// struct widens every one of those.
-const _: () = assert!(core::mem::size_of::<Settings>() == 126, "Settings grew — was that deliberate?");
+const _: () = assert!(core::mem::size_of::<Settings>() == 124, "Settings grew — was that deliberate?");
 
 impl Settings {
     /// A factory-fresh device: the defaults, with setup at its first step. Hosts boot it when the
@@ -601,7 +573,7 @@ impl Settings {
     }
 }
 
-pub const VERSION: u8 = 26;
+pub const VERSION: u8 = 27;
 
 /// The oldest layout [`decode`] accepts. An older blob resets to [`Settings::FACTORY`].
 pub const MIN_SUPPORTED: u8 = 19;
@@ -641,7 +613,7 @@ const _: () = {
     assert!(off::waypoint_mode == 84, "waypoint_mode moved");
     assert!(off::language == 85, "language moved");
     assert!(off::saved_sensors == 86, "saved_sensors moved");
-    assert!(off::up_ahead_source == 110, "up_ahead_source moved");
+    // Byte 110 is `saved_sensors`' `reserved(1)`; `map_contours` below pins that it holds.
     assert!(off::map_contours == 111, "map_contours moved");
     assert!(off::brightness == 112, "brightness moved");
     assert!(off::find_hide_closed == 113);
@@ -676,7 +648,6 @@ mod tests {
         assert_eq!(d.waypoint_mode, WaypointMode::default());
         assert_eq!(d.language, Language::default());
         assert_eq!(d.saved_sensors, [SavedSensor::default(); SENSOR_SLOTS]);
-        assert_eq!(d.up_ahead_source, UpAheadSource::default());
         assert_eq!(d.find_results, FindResults::default());
         assert_eq!(d.theme, Theme::default());
         assert_eq!(d.sound, SoundLevel::default());
@@ -691,7 +662,7 @@ mod tests {
         assert!(stat_fields.push(crate::stat_fields::StatField::Clock));
         Settings {
             units: Units::Imperial,
-            local_offset_known: false,
+            local_offset_known: true,
             clock: DateTime { year: 2026, month: 6, day: 29, hour: 14, minute: 40 },
             utc_offset_min: 120,
             fix_interval_s: 5,
@@ -717,7 +688,6 @@ mod tests {
                 SavedSensor::EMPTY,
                 SavedSensor::saved(0, [6, 5, 4, 3, 2, 1]),
             ],
-            up_ahead_source: UpAheadSource::MapPoisOnly,
             find_hide_closed: false,
             find_results: FindResults::Six,
             theme: Theme::Dark,
@@ -738,39 +708,71 @@ mod tests {
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     }
 
-    /// The v26 blob, byte for byte, as released devices store it in RRAM. A failure means the
-    /// stored format changed: bump [`VERSION`] instead of editing these bytes.
+    /// The v26 blobs, byte for byte, as released devices store them in RRAM. They stay as decode
+    /// fixtures: a device that updates from v26 keeps its settings.
+    #[rustfmt::skip]
+    const V26_FACTORY: [u8; ENCODED_LEN] = [
+        0x1a, 0x00, 0x00, 0xe9, 0x07, 0x01, 0x01, 0x0c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x06, 0x00,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+        0x01, 0x01, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0x04, 0x01, 0x01, 0x01, 0x01, 0x01, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0x4b, 0x73,
+    ];
+    #[rustfmt::skip]
+    const V26_EVERY_FIELD_SET: [u8; ENCODED_LEN] = [
+        0x1a, 0x01, 0x01, 0xea, 0x07, 0x06, 0x1d, 0x0e, 0x28, 0x78, 0x00, 0x05, 0x00, 0x01, 0x06, 0x01,
+        0x02, 0x03, 0x04, 0x05, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x0a, 0x54, 0x69,
+        0x6d, 0x6f, 0x27, 0x73, 0x20, 0x4f, 0x42, 0x43, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0x03, 0x00, 0x00, 0x03, 0x02, 0x01, 0x01, 0x01, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x02, 0x00,
+        0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x01, 0xb9, 0xfa, 0x00, 0x01, 0x01, 0x01, 0xcd, 0xa9,
+    ];
+
+    /// The current blobs, byte for byte. A failure means the stored format changed: bump
+    /// [`VERSION`] instead of editing these bytes.
     #[test]
-    fn the_v26_blobs_are_pinned_byte_for_byte() {
+    fn the_v27_blobs_are_pinned_byte_for_byte() {
         #[rustfmt::skip]
         const FACTORY: [u8; ENCODED_LEN] = [
-            0x1a, 0x00, 0x00, 0xe9, 0x07, 0x01, 0x01, 0x0c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x06, 0x00,
+            0x1b, 0x00, 0x00, 0xe9, 0x07, 0x01, 0x01, 0x0c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x06, 0x00,
             0x01, 0x02, 0x03, 0x04, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
             0x01, 0x01, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
-            0x04, 0x01, 0x01, 0x01, 0x01, 0x01, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0x4b, 0x73,
+            0x04, 0x01, 0x01, 0x01, 0x01, 0x01, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0x35, 0x33,
         ];
         #[rustfmt::skip]
         const EVERY_FIELD_SET: [u8; ENCODED_LEN] = [
-            0x1a, 0x01, 0x01, 0xea, 0x07, 0x06, 0x1d, 0x0e, 0x28, 0x78, 0x00, 0x05, 0x00, 0x01, 0x06, 0x01,
+            0x1b, 0x01, 0x01, 0xea, 0x07, 0x06, 0x1d, 0x0e, 0x28, 0x78, 0x00, 0x05, 0x00, 0x01, 0x06, 0x01,
             0x02, 0x03, 0x04, 0x05, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x0a, 0x54, 0x69,
             0x6d, 0x6f, 0x27, 0x73, 0x20, 0x4f, 0x42, 0x43, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
             0x03, 0x00, 0x00, 0x03, 0x02, 0x01, 0x01, 0x01, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x02, 0x00,
-            0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x01, 0xb9, 0xfa, 0x00, 0x01, 0x01, 0x01, 0xcd, 0xa9,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00, 0x00,
+            0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x01, 0xb9, 0xfa, 0x00, 0x01, 0x01, 0x01, 0xda, 0xa9,
         ];
-        let every_field_set = Settings { local_offset_known: true, ..every_field_set() };
         for (what, value, golden) in
-            [("factory", Settings::FACTORY, FACTORY), ("every field set", every_field_set, EVERY_FIELD_SET)]
+            [("factory", Settings::FACTORY, FACTORY), ("every field set", every_field_set(), EVERY_FIELD_SET)]
         {
             assert_eq!(encode(&value), golden, "{what} encodes to its pinned bytes");
             assert_eq!(decode(&golden), Some(value), "{what} pinned bytes decode back");
         }
+    }
+
+    /// A v26 blob decodes to the same settings, and its retired byte 110 is ignored.
+    #[test]
+    fn a_v26_blob_decodes_and_ignores_the_retired_byte() {
+        assert_eq!(V26_EVERY_FIELD_SET[110], 2, "the fixture stores a non-zero retired byte");
+        assert_eq!(decode(&V26_FACTORY), Some(Settings::FACTORY));
+        assert_eq!(decode(&V26_EVERY_FIELD_SET), Some(every_field_set()));
     }
 
     /// One row per decode-time clamp: a stored value out of its range reads back as exactly this.
@@ -860,7 +862,7 @@ mod tests {
     #[test]
     fn every_declared_field_round_trips_and_keeps_its_ble_split() {
         let base = Settings::DEFAULT;
-        let other = Settings { local_offset_known: true, ..every_field_set() };
+        let other = every_field_set();
         assert_eq!(decode(&encode(&other)), Some(other), "every field round-trips through the codec");
 
         let mut adopted = base;
@@ -935,26 +937,12 @@ mod tests {
         check!(Units);
         check!(ClimbMode);
         check!(WaypointMode);
-        check!(UpAheadSource);
         check!(FindResults);
         check!(Theme);
         check!(SoundLevel);
         check!(IdleReturn);
 
         check!(Language);
-    }
-
-    /// The ring cycles Both → Waypoints → Map POIs → Both, and exactly one value asks for no
-    /// corridor query at all.
-    #[test]
-    fn up_ahead_source_cycles_and_scopes_the_two_sources() {
-        assert_eq!(UpAheadSource::Both.cycled(), UpAheadSource::WaypointsOnly);
-        assert_eq!(UpAheadSource::WaypointsOnly.cycled(), UpAheadSource::MapPoisOnly);
-        assert_eq!(UpAheadSource::MapPoisOnly.cycled(), UpAheadSource::Both, "the ring wraps");
-
-        assert!(UpAheadSource::Both.shows_waypoints() && UpAheadSource::Both.shows_pois());
-        assert!(UpAheadSource::WaypointsOnly.shows_waypoints() && !UpAheadSource::WaypointsOnly.shows_pois());
-        assert!(!UpAheadSource::MapPoisOnly.shows_waypoints() && UpAheadSource::MapPoisOnly.shows_pois());
     }
 
     #[test]
@@ -1020,8 +1008,8 @@ mod tests {
         assert_eq!(decode(&below), None, "a version below the supported floor is rejected");
     }
 
-    /// A miniature settings table for tail-defaulting, which the real table cannot exercise: it
-    /// has exactly one supported version, so nothing in it is ever defaulted. Four rows across
+    /// A miniature settings table for what the real table cannot exercise: its versions straddle
+    /// a 16-byte write line, so the encoded length really is version-relative. Four rows across
     /// three versions, with hand-written blobs and hand-written expectations.
     mod mini {
         #![allow(dead_code)] // generated for every table, not exercised here

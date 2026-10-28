@@ -35,8 +35,8 @@ use crate::input::Gesture;
 use crate::navigator::RouteState;
 use crate::screen::quick_drawer::{brightness_percent, BRIGHTNESS_LEVELS, BRIGHTNESS_MAX};
 use crate::settings::{
-    ClimbMode, IdleReturn, Language, SoundLevel, Theme, Units, UpAheadSource, WaypointMode, STAT_CYCLE_MAX,
-    STAT_CYCLE_MIN, UTC_OFFSET_MAX, UTC_OFFSET_MIN, UTC_OFFSET_STEP,
+    ClimbMode, IdleReturn, Language, SoundLevel, Theme, Units, WaypointMode, STAT_CYCLE_MAX, STAT_CYCLE_MIN,
+    UTC_OFFSET_MAX, UTC_OFFSET_MIN, UTC_OFFSET_STEP,
 };
 use crate::{AppState, Msg, Settings};
 
@@ -105,10 +105,6 @@ pub enum ContextValue {
     /// Everything every time, and a value that is reset on entry is not a preference. It sits in
     /// the app plane because the sheet that edits it is above the screen that reads it.
     UpAheadFilter,
-    /// Which sources feed the Up-ahead timeline. The commit writes
-    /// [`Settings::up_ahead_source`](crate::Settings), and [`App`](crate::App)'s one `==` diff over
-    /// `Settings` arms the save.
-    UpAheadSource,
     FindResults,
 
     /// The current [`BikeType`](crate::settings::BikeType). The route-plan sheet, the Ride settings
@@ -142,7 +138,6 @@ impl ContextValue {
         match self {
             // "Everything" plus the six categories.
             ContextValue::UpAheadFilter => 1 + crate::whats_next::SERVICES.len() as u8,
-            ContextValue::UpAheadSource => UpAheadSource::COUNT as u8,
             ContextValue::FindResults => crate::settings::FindResults::COUNT as u8,
 
             ContextValue::BikeProfile => crate::settings::BikeType::ALL.len() as u8,
@@ -182,7 +177,6 @@ impl ContextValue {
         let s = f.settings;
         match self {
             ContextValue::UpAheadFilter => filter_choice(f.state.up_ahead_filter),
-            ContextValue::UpAheadSource => s.up_ahead_source as u8,
             ContextValue::FindResults => s.find_results as u8,
 
             ContextValue::BikeProfile => s.bike_type as u8,
@@ -228,9 +222,6 @@ impl ContextValue {
         match self {
             ContextValue::UpAheadFilter => cx.state.up_ahead_filter = choice_filter(ordinal),
             ContextValue::FindResults => s.find_results = crate::settings::FindResults::from_byte(ordinal),
-            ContextValue::UpAheadSource => {
-                s.up_ahead_source = UpAheadSource::ALL[(ordinal as usize).min(UpAheadSource::COUNT - 1)]
-            }
 
             ContextValue::BikeProfile => s.bike_type = crate::settings::BikeType::from_u8(ordinal).unwrap_or_default(),
 
@@ -261,9 +252,6 @@ impl ContextValue {
                 Some(cat) => rx.t(super::poi_menu::category_msg(cat)),
                 None => rx.t(Msg::UpAheadEverything),
             },
-            ContextValue::UpAheadSource => {
-                UpAheadSource::ALL[(ordinal as usize).min(UpAheadSource::COUNT - 1)].name(lang)
-            }
 
             ContextValue::BikeProfile => {
                 crate::settings::bike_type_name(crate::settings::BikeType::from_u8(ordinal).unwrap_or_default(), lang)
@@ -1346,7 +1334,6 @@ mod tests {
         assert_eq!(d.staged, 0, "…and forward off the last wraps home");
 
         assert_eq!(ContextValue::UpAheadFilter.count(), 8);
-        assert_eq!(ContextValue::UpAheadSource.count(), UpAheadSource::COUNT as u8);
         for ordinal in 0..ContextValue::UpAheadFilter.count() {
             assert_eq!(filter_choice(choice_filter(ordinal)), ordinal, "ordinal {ordinal} round-trips");
         }
@@ -1474,7 +1461,6 @@ mod tests {
                 Some(cat) => t(super::super::poi_menu::category_msg(cat), lang),
                 None => t(Msg::UpAheadEverything, lang),
             },
-            ContextValue::UpAheadSource => UpAheadSource::ALL[ordinal as usize].name(lang),
             ContextValue::FindResults => crate::settings::FindResults::from_byte(ordinal).name(),
             ContextValue::IdleReturn => IdleReturn::from_byte(ordinal).name(lang),
             ContextValue::Theme => Theme::from_byte(ordinal).name(lang),
