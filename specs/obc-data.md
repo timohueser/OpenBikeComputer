@@ -469,9 +469,10 @@ storage account and container from `<sas>/<account>/<container>`, renewed 15 min
 `msft:expiry` of its answer. No log line, manifest or error holds a query of a URL. A download under
 the `origin` of a `cmr` table sends `EARTHDATA_TOKEN`, an Earthdata Login user token, as a Bearer
 token. A file whose name ends with `.hdf` or `.tif` enters `mirror/` only when it starts with the
-magic of HDF4 or TIFF, so a login page is no file; `verify` checks the magic too. A file that a
-stopped get did not try is not in `missing`, and a file in place without a size or a day upstream
-downloads again.
+magic of HDF4 or TIFF, so a login page is no file; `verify` checks the magic too. SIGINT or
+SIGTERM stops a get after the files that it takes, and the get fails. A file that a stopped get did
+not try is not in `missing`; `listed` keeps the dataset incomplete. A file in place without a size
+or a day upstream downloads again.
 
 Each `obc data archive` command and a test of `host/obc-data` refuse a dataset that breaks a rule:
 
@@ -500,7 +501,8 @@ The version of a dataset:
 | `version` | The version of the dataset |
 | `got` | The day of the last `archive get`, `YYYY-MM-DD` in UTC |
 | `files` | Each verified file: `path` under the root, `bytes`, `sha256`, and, when upstream gives them, `modified`, its `Last-Modified` day, and `etag`, the `ETag` of a bucket listing. A file without `sha256` makes the manifest unreadable |
-| `missing` | Each listed file that the root does not hold: `path`, `bytes` when known, `error`, and for a kept file the `sha256` that the manifest recorded |
+| `missing` | Each listed file that the get tried and the root does not hold: `path`, `bytes` when known, `error`, and for a kept file the `sha256` that the manifest recorded |
+| `listed` | The files that the last get listed. The dataset is complete when each is in `files` and in place |
 | `clms_dataset_uid`, `clms_file_id` | The `dataset` and `file` of `clms` |
 
 #### Get
