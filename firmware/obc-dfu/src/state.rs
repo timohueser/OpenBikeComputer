@@ -173,7 +173,7 @@ pub enum OutcomeKind {
     /// The staged image failed verification before the app slot was erased; the old app is intact.
     StageRejected,
     /// The bootloader gave up on an `Armed` card it could not read and booted the intact app.
-    /// Nothing in this crate writes it yet.
+    /// [`abandon_arm`](crate::engine::abandon_arm) writes it.
     ArmAbandoned,
 }
 
