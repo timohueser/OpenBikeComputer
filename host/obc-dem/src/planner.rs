@@ -181,11 +181,9 @@ impl Terrain {
     }
 
     /// The terrain with GLO-30 shaped by the coastlines, cliffs and summits of OSM, whose credit is
-    /// `credit`. A feature where the archive holds the ground alone has no effect, and is left out.
+    /// `credit`.
     pub fn shaped(self, (lines, peaks): Features, credit: &str) -> Self {
-        let udeg = |degrees: f64| (degrees * 1e6).round() as i32;
-        let keep = |[lat, lon]: [f64; 2]| self.seam.depth(udeg(lat), udeg(lon)) < FEATHER_M + READ_M;
-        let shapes = Shapes::new(lines, peaks, keep);
+        let shapes = Shapes::new(lines, peaks);
         let shapes_credit = (!shapes.is_empty()).then(|| credit.to_string());
         Self { shapes, shapes_credit, ..self }
     }
