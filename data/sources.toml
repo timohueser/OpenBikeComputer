@@ -562,6 +562,23 @@ keep = "prepared"
 redistribute = true
 
 [[source]]
+id = "dtm-it-36"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Friuli Venezia Giulia, Italy: DTM 1 m, LiDAR 2006–2010"
+licence = "LicenseRef-IODL-2.0"
+licence_url = "https://www.regione.fvg.it/rafvg/cms/RAFVG/ambiente-territorio/conoscere-ambiente-territorio/FOGLIA4/"
+attribution = "Regione Autonoma Friuli Venezia Giulia"
+obligations = "Credit the region; the Italian Open Data Licence 2.0 asks for attribution only"
+fetch = { kind = "dtm", url = "https://irdat.regione.fvg.it/cartogdownload/DTM_PCR/1M/6708/" }
+extent = [12.2, 45.5, 14.0, 46.7]
+areas = ["europe/italy/nord-est"]
+version = "date"
+keep = "prepared"
+redistribute = true
+
+[[source]]
 id = "dtm-it-bz"
 kind = "data"
 group = "Elevation"
@@ -687,6 +704,24 @@ keep = "prepared"
 redistribute = true
 # The account of dtm-pt: one login of the DGT data centre serves both rows.
 credential = { env = ["OBC_REFERENCE_PT_USER", "OBC_REFERENCE_PT_PASSWORD"], register = "https://cdd.dgterritorio.gov.pt", hint = "Make a free account of the DGT data centre, then give its e-mail address and password." }
+
+[[source]]
+id = "dtm-pt-30"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Madeira, Portugal: MDT 5 m 2018/19, used while the project is non-commercial"
+licence = "LicenseRef-DROTe-no-conditions"
+licence_url = "https://irig-catalogo.madeira.gov.pt/geonetwork/srv/api/records/abba9a83-cb1c-4d2c-ad1d-ccb592247754"
+attribution = "© Direção Regional do Ordenamento do Território (DROTe), Região Autónoma da Madeira"
+obligations = "Credit DROTe and the Região Autónoma da Madeira. The record states no named licence, only that no conditions apply to access and use; read it again before a commercial use"
+fetch = { kind = "dtm", url = "https://irig-storage.madeira.gov.pt/irig-catalogo/mdt_5m.zip" }
+# Madeira, Porto Santo and the Desertas: the Selvagens are left out.
+extent = [-17.3, 32.35, -16.2, 33.15]
+areas = ["europe/portugal"]
+version = "date"
+keep = "prepared"
+redistribute = true
 
 [[source]]
 id = "dtm-se"

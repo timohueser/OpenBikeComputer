@@ -24,7 +24,7 @@ PRIORITY = (
     "dk", "nl", "it-tn",
     "de-nw", "de-he", "de-ni", "de-by", "de-sn", "de-th", "de-mv", "de-st", "de-rp", "de-bw",
     "fr", "at", "no", "gb-eng", "gb-wls", "gb-sct", "se", "sk", "si", "pl", "us", "ca", "nz",
-    "pt-20", "ch", "pt", "fi", "cz", "it-bz", "it-21", "es", "au", "it", "is",
+    "it-36", "pt-20", "ch", "pt", "fi", "cz", "it-bz", "it-21", "pt-30", "es", "au", "it", "is",
 )
 
 def priority_rank(key: str) -> int:

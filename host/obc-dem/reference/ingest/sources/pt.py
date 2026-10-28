@@ -11,8 +11,15 @@ in once, the way a browser does, and each of its downloads carries the cookie; a
 sea signs in nowhere. The password goes only to the DGT login form, and a download that answers
 the login page instead of a GeoTIFF is refused and not kept.
 
-Neither model's metadata names its height system, so each row carries a summit that the prepare
-checks before it uses the model.
+Madeira is DROTe's model of 2018/19, matched from aerial images and published keyless as one zip
+of a GeoTIFF per island group. The row takes the 5 m zip and not the 2 m one: the 2 m GeoTIFF is
+too large to hold whole once unpacked, and 5 m is still shorter than the east side of a lattice
+pixel there. Its extent holds Madeira, Porto Santo and the Desertas; the Selvagens are left out.
+The rasters declare -32768 as nodata, and parts of the sea hold -999, below the plausible range, so
+the tail drops both and the row needs no `void`.
+
+No model's metadata names its height system, so each row carries a summit that the prepare checks
+before it uses the model.
 """
 
 import html
@@ -24,6 +31,7 @@ from pathlib import Path
 
 from ..lattice import Refuse
 from .base import HTTP_TIMEOUT, TIFF_MAGIC, Credential, host_of, inside, with_retry
+from .cog import SharedZip
 from .stac import StacSearchSource, stac_items
 
 LOGIN = "https://cdd.dgterritorio.gov.pt/auth/login"
@@ -140,4 +148,13 @@ AZ = CddSearch(
     collections="ACORES-MDE-1",
     # Wikidata Q928681.
     summit=("Pico", -28.39917, 38.46861, 2351),
+)
+
+MA = SharedZip(
+    "pt-30", "Portugal (Madeira)", "MDT 5 m 2018/19 (DROTe, Região Autónoma da Madeira)", 5.0,
+    "no conditions apply",
+    None,
+    base="https://irig-storage.madeira.gov.pt/irig-catalogo/mdt_5m.zip",
+    epsg=5016,
+    summit=("Pico Ruivo", -16.9428, 32.7587, 1862),
 )

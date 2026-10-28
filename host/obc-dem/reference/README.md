@@ -118,7 +118,7 @@ product, resolution, licence and vertical datum. Its credit and its box are `att
 `extent` of `dtm-<key>` in `data/sources.toml`.
 
 Open services, no key: `ch`, `fr`, `us`, `no`, `es`, `nl`, `gb-eng`, `gb-sct`, `gb-wls`, `at`, `ca`,
-`nz`, `pl`, `cz`, `sk`, `si`, `is`, `it`, `it-bz`, `it-tn`, `it-21`, and the German states `de-nw`, `de-he`, `de-bw`,
+`nz`, `pl`, `cz`, `sk`, `si`, `is`, `it`, `it-bz`, `it-tn`, `it-21`, `it-36`, `pt-30`, and the German states `de-nw`, `de-he`, `de-bw`,
 `de-mv`, `de-st`, `de-by`, `de-sn`, `de-th`, `de-ni`, `de-rp`. Germany publishes elevation per
 state, so `de-*` is a family of rows. `it` and `is` are 10 m, coarser than the lattice: their
 centres reach only some of its pixels, and `fill_gaps` gives the others the bilinear height of

@@ -11,8 +11,16 @@ WCS with no key and no attribution obligation.
 
 Piedmont is the 5 m LiDAR model of the ICE flights of 2009–2011, on a keyless WCS 1.0.0.
 Its WCS 2.0.1 endpoint refuses every subset as outside the coverage, so the row speaks 1.0.0.
+Friuli Venezia Giulia is the 1 m LiDAR model of the regional civil protection, 2006–2010, one
+zip per element of the 1:5000 regional map. An element code is the IGM sheet, the section and the
+element, not arithmetic, so `it_fvg_elements.txt` is the index: one line per element with its box
+in degrees. Its first line says where it comes from and how to make it again.
+
 Lombardy asks for an email request, and Aosta Valley needs an Italian identity login.
 """
+
+from functools import cache
+from pathlib import Path
 
 from .bulk import BulkSource
 from .grid import grid_squares
@@ -74,6 +82,46 @@ PIE = Wcs10Source(
     summit=("Monviso", 7.0904, 44.6675, 3841),
 )
 
+ELEMENTS = Path(__file__).with_name("it_fvg_elements.txt")
+
+
+@cache
+def elements() -> tuple[tuple[str, float, float, float, float], ...]:
+    """Every element of the 1:5000 map: its code, then west, south, east and north in degrees."""
+
+    lines = ELEMENTS.read_text(encoding="utf-8").splitlines()
+    return tuple((code, *map(float, box)) for code, *box in
+                 (line.split() for line in lines if not line.startswith("#")))
+
+
+class FvgElements(BulkSource):
+    """One zip of four ESRI ASCII quadrants per element of the 1:5000 map."""
+
+    # An element of the map that the survey did not fly has no zip.
+    skip_missing = True
+
+    def __init__(self, *args, base, **kw):
+        super().__init__(*args, **kw)
+        self.base = base
+
+    def files(self, bbox):
+        west, south, east, north = bbox
+        return [(name, self.base + name)
+                for code, w, s, e, n in elements() if w < east and e > west and s < north and n > south
+                for name in (f"DTM01_PCR_{code}_RDN2008_TM33.zip",)]
+
+
+# The quadrants carry no `.prj`; they are on RDN2008 / TM33, and -9999.9 is their declared void.
+# The record names no height system, so the summit check stands for it.
+FVG = FvgElements(
+    "it-36", "Italy, Friuli Venezia Giulia", "DTM 1 m, LiDAR 2006–2010 (Protezione Civile FVG)", 1.0,
+    "IODL 2.0",
+    None,
+    grid_epsg=6708,
+    base="https://irdat.regione.fvg.it/cartogdownload/DTM_PCR/1M/6708/",
+    summit=("Monte Canin", 13.4404, 46.3593, 2587),
+)
+
 # TINITALY was built mostly from the contours and spot heights of the regional topographic
 # maps, which are on the national levelling network. The WCS answers 10 m at its own step; the land
 # abroad and the sea are its declared nodata.
@@ -88,4 +136,4 @@ TINITALY = Wcs20Source(
     scale=False,
 )
 
-IT = (BZ, TN, PIE, TINITALY)
+IT = (BZ, TN, PIE, FVG, TINITALY)

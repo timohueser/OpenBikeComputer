@@ -362,6 +362,16 @@ class NamedGrids(unittest.TestCase):
         self.assertEqual((ingest.sources.si.blocks()[425, 138], ingest.sources.si.blocks()[426, 138]), (37, 36))
         self.assertEqual(source.files((13.30, 45.40, 13.31, 45.41)), [])
 
+    def test_a_friulian_box_names_the_zip_of_each_map_element_it_meets(self):
+        """Monte Canin is in element 050023; a box on the corner of four elements needs four."""
+
+        source = ingest.SOURCES["it-36"]
+        self.assertEqual(source.files((13.4400, 46.3590, 13.4410, 46.3600)),
+                         [("DTM01_PCR_050023_RDN2008_TM33.zip",
+                           "https://irdat.regione.fvg.it/cartogdownload/DTM_PCR/1M/6708/DTM01_PCR_050023_RDN2008_TM33.zip")])
+        self.assertEqual(len(source.files((13.4570, 46.3740, 13.4580, 46.3750))), 4)
+        self.assertEqual(source.files((12.0, 45.0, 12.1, 45.1)), [])
+
     def test_a_two_kilometre_grid_only_names_even_squares(self):
         """Saxony publishes 2 km squares, so an odd kilometre is not a file."""
 
@@ -707,6 +717,47 @@ class RangeHandler(SimpleHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
         self.wfile.write(chunk)
+
+
+class SharedZipWindows(TempCase):
+    """Madeira's rasters are in one zip: one download a prepare, and a window of it for each tile."""
+
+    def test_the_tiles_of_a_prepare_download_the_zip_once_and_read_their_own_window(self):
+        (lo_x, lo_y, hi_x, hi_y), _ = ingest.sources.protocols.projected_box(BOX, 32632)
+        raster = self.inputs / "island.tif"
+        with rasterio.open(raster, "w", driver="GTiff", width=600, height=600, count=1, dtype="float32",
+                           crs=CRS.from_epsg(32632), nodata=-9999.0,
+                           transform=Affine(5, 0, round(lo_x) - 500, 0, -5, round(hi_y) + 500)) as dst:
+            dst.write(np.full((600, 600), 1234.0, dtype="float32"), 1)
+        served = self.inputs / "island.zip"
+        with zipfile.ZipFile(served, "w") as bundle:
+            bundle.write(raster, "island.tif")
+        source = ingest.sources.cog.SharedZip("xx", "Nowhere", "MDT 5 m", 5.0, "CC0", "EGM2008",
+                                              base=f"file://{served}", epsg=32632)
+        source.shared = self.root / "shared"
+        downloads = []
+        real = ingest.sources.cog.http_download
+        self.addCleanup(setattr, ingest.sources.cog, "http_download", real)
+        ingest.sources.cog.http_download = lambda *a, **kw: downloads.append(a) or real(*a, **kw)
+
+        for tile in ("a", "b"):
+            cut = source.fetch(BOX, self.root / tile)
+            self.assertEqual(len(cut), 1)
+            with rasterio.open(cut[0]) as src:
+                self.assertLess(src.width * src.height, 600 * 600)
+        self.assertEqual(len(downloads), 1)
+        self.assertEqual(source.fetch((6.0, 45.0, 6.001, 45.001), self.root / "c"), [])
+
+    def test_a_download_that_is_not_a_zip_is_refused_and_deleted(self):
+        served = self.inputs / "island.zip"
+        served.write_bytes(b"<!DOCTYPE html><title>Maintenance</title>")
+        source = ingest.sources.cog.SharedZip("xx", "Nowhere", "MDT 5 m", 5.0, "CC0", "EGM2008",
+                                              base=f"file://{served}", epsg=32632)
+        source.shared = self.root / "shared"
+        with self.assertRaises(ingest.Refuse) as refusal:
+            source.fetch(BOX, self.root / "a")
+        self.assertIn("not a zip", str(refusal.exception))
+        self.assertFalse((self.root / "shared" / "xx" / "island.zip").exists())
 
 
 class RemoteWindows(TempCase):
