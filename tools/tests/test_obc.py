@@ -113,3 +113,27 @@ class ObcTests(unittest.TestCase):
                                             capture_output=True, text=True, check=True)
                     self.assertEqual(json.loads(result.stdout),
                                      [str(root), str(root / "tools"), str(caller), args])
+
+    def test_obc_init_names_a_secret_in_obc_local_and_never_prints_it(self):
+        source = Path(__file__).parents[1]
+        cases = {
+            "secret": ("OBC_MAP=a.obcm\n  export OBC_R2_SECRET_ACCESS_KEY='do $not; print'\n", "OBC_R2_SECRET_ACCESS_KEY"),
+            "no secret": ("OBC_MAP=a.obcm\nOBC_R2_BUCKET=maps\n", None),
+        }
+        for case, (text, name) in cases.items():
+            with self.subTest(case), tempfile.TemporaryDirectory(prefix="obc secrets ") as directory:
+                root = Path(directory)
+                (root / "tools").mkdir()
+                shutil.copyfile(source / "obc-dev.sh", root / "tools/obc-dev.sh")
+                (root / "tools/obc.local").write_text(text)
+                script = 'source tools/obc-dev.sh; obc_init; echo "$OBC_MAP"'
+                env = {**os.environ, "OBC_ROOT": str(root), "OBC_TOOLS": str(root / "tools")}
+                result = subprocess.run(["bash", "-euo", "pipefail", "-c", script], cwd=root, env=env,
+                                        capture_output=True, text=True, check=True)
+                self.assertEqual(result.stdout, "a.obcm\n")
+                if name:
+                    self.assertIn(name, result.stderr)
+                    self.assertNotIn("not;", result.stderr)
+                    self.assertNotIn("print", result.stderr)
+                else:
+                    self.assertEqual(result.stderr, "")

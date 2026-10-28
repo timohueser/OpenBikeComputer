@@ -129,6 +129,34 @@ fn bake_then_publish_is_the_whole_loop() {
 }
 
 #[test]
+fn publish_to_r2_reads_the_credentials_file_and_the_environment_wins() {
+    let dir = scratch("credentials");
+    let (home, file, shell) = (dir.join("home"), dir.join("file-bucket"), dir.join("shell-bucket"));
+    for path in [home.join(".config/openbikecomputer"), file.clone(), shell.clone()] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let credentials = format!("OBC_R2_LOCAL_DIR={}\n", file.display());
+    std::fs::write(home.join(".config/openbikecomputer/credentials.env"), credentials).unwrap();
+    let publish = |bucket: Option<&Path>| {
+        let mut cmd = obc_bake();
+        for (name, _) in std::env::vars_os().filter(|(name, _)| name.to_string_lossy().starts_with("OBC_R2_")) {
+            cmd.env_remove(name);
+        }
+        if let Some(bucket) = bucket {
+            cmd.env("OBC_R2_LOCAL_DIR", bucket);
+        }
+        let args = ["publish", "no-tree", "--base-url", "https://maps.example", "--target", "r2"];
+        let out = cmd.env("HOME", &home).args(args).output().expect("run publish");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+    let log = publish(None);
+    assert!(log.contains(&format!("local directory {}", file.display())), "{log}");
+    let log = publish(Some(&shell));
+    assert!(log.contains(&format!("local directory {}", shell.display())), "{log}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_region_outside_the_curated_list_is_refused() {
     let out = obc_bake().args(["bake", "--out", "/tmp/nope", "europe/france"]).output().expect("run");
     assert!(!out.status.success());
