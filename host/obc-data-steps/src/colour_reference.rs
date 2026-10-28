@@ -27,8 +27,8 @@ const ZOOM: u32 = 10;
 /// CDSE S3 allows 4 connections per user, and a program opens one.
 const RUNNING: usize = 4;
 /// The windows of a block at most: 265 kB/km² of the Central Swiss capture of `sentinel-2-mosaics`
-/// over a block at the equator, 1530 km².
-const WINDOW_BYTES: u64 = 410_000_000;
+/// over twice a block at the equator, 2 × 1530 km², as a block can span mosaic tiles that overlap.
+const WINDOW_BYTES: u64 = 820_000_000;
 /// The largest file of a block of the Central Swiss and Kerry captures, with a margin.
 const FILE_BYTES: u64 = 40_000_000;
 
@@ -99,7 +99,7 @@ impl Prepared for ColourReference {
         let digests = prepared_tiles::make(job, &tiles, RUNNING, |job, name| {
             let mut command = (self.tool)(job.root)?;
             command.args(["prepare", "--block", name, "--year", &year.to_string(), "--work"]);
-            command.arg(job.state.join("windows").join(name)).arg("--out").arg(&job.work);
+            command.arg(job.state.join("windows").join(year.to_string()).join(name)).arg("--out").arg(&job.work);
             Ok(command)
         })?;
         reuse(job, previous.as_ref(), |path| !digests.contains_key(path))?;
@@ -164,11 +164,14 @@ mod tests {
         redistribute = true
     "#;
 
-    /// The tool as a script: the file of a block holds its block, and so does its mark.
+    /// The tool as a script: the file of a block holds its block, and so does its mark; block 537-360
+    /// has no data. `running` holds the programs that run, and `most` how many ran at once.
     const TOOL: &str = r#"block=$3; year=$5; out=$9
 x=${block%-*}; y=${block#*-}
-mkdir -p "$out/$year/$x" && echo "$block" > "$out/$year/$x/$y.pmtiles" && echo "$block" > "$out/$block.sha256"
-echo "$block" >> made
+mkdir -p running "$out/$year/$x" && touch "running/$block" && ls running | wc -l >> most && sleep 0.3
+if [ "$block" = 537-360 ]; then : > "$out/$year/$x/$y.pmtiles"; else echo "$block" > "$out/$year/$x/$y.pmtiles"; fi
+echo "$block" > "$out/$block.sha256"
+echo "$block" >> made; rm "running/$block"
 "#;
 
     fn script(_: &Path) -> Result<Command, String> {
@@ -178,7 +181,11 @@ echo "$block" >> made
     }
 
     fn scope(id: &str, west: f64, east: f64) -> Scope {
-        let text = format!("name = \"{id}\"\nkind = \"box\"\nbox = [{west}, 46.9, {east}, 47.0]\n");
+        boxed(id, [west, 46.9, east, 47.0])
+    }
+
+    fn boxed(id: &str, [west, south, east, north]: [f64; 4]) -> Scope {
+        let text = format!("name = \"{id}\"\nkind = \"box\"\nbox = [{west}, {south}, {east}, {north}]\n");
         Scope { region: id.into(), definitions: [(id.into(), text)].into() }
     }
 
@@ -229,6 +236,15 @@ echo "$block" >> made
         assert_eq!(second.reused.keys().cloned().collect::<BTreeSet<_>>(), of(&[(534, 360)]));
         assert_eq!(second.extends, [first.scope]);
         assert_eq!(std::fs::read_to_string(root.join("made")).unwrap(), "534-360\n535-360\n", "a block is made once");
+
+        // Six blocks, at most four programs at once; a block without data keeps its empty file.
+        let third = version("2026-10-03", boxed("six", [8.5, 46.6, 9.4, 47.0]));
+        let most = std::fs::read_to_string(root.join("most")).unwrap();
+        let most = most.lines().map(|count| count.trim().parse::<usize>().unwrap()).max().unwrap();
+        assert!((2..=RUNNING).contains(&most), "{most} programs at once");
+        let empty = third.files.iter().find(|file| file.path == path(year, (537, 360))).unwrap();
+        assert_eq!(empty.size, 0);
+        assert_eq!(paths(&third).len(), 2 + 6);
 
         let planning = obc_data::prepared::Planning { store: &store, http: &http, sources: &sources };
         let refused = producer.plan(&planning, &sources[0], None, &[]).err().unwrap();

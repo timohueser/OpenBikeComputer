@@ -10,6 +10,7 @@ year, over CDSE S3 with the keys of `tools/planner_snow.py`.
 import argparse
 import hashlib
 import io
+import os
 import re
 import shutil
 import sys
@@ -28,6 +29,9 @@ BANDS = ("B02", "B03", "B04", "B08", "observations")
 BLOCK_ZOOM, ZOOM = 10, 12
 # A look count of `colour` stops here, so MIN_OBSERVATIONS can be 1 to LOOKS.
 LOOKS = 15
+# Darker than this in red plus near-infrared reflectance, a texel is water or deep shadow, as most
+# reflectance there is noise or clipped below 0: its NDVI is −1.
+DARK_NDVI = 0.001
 # A pixel with fewer valid looks in its quarter falls back to the palette.
 MIN_OBSERVATIONS = 3
 # `trailview_format` of the colour archives, which the readers check.
@@ -43,8 +47,7 @@ BOTTOM_ZOOM = 9
 # Variant: codec, last zoom and chroma subsampling. 4:2:0 halves the chroma resolution of the texels:
 # at zoom 12 the texels are 13 m at 47° N, and the chroma and the NDVI 26 m.
 VARIANTS = {
-    "webp-12": ("webp", 12, "4:2:0"), "webp-11": ("webp", 11, "4:2:0"),
-    "avif-12": ("avif", 12, "4:2:0"), "avif-11": ("avif", 11, "4:2:0"), "avif444-12": ("avif", 12, "4:4:4"),
+    "webp-12": ("webp", 12, "4:2:0"), "avif-12": ("avif", 12, "4:2:0"), "avif444-12": ("avif", 12, "4:4:4"),
 }
 # Pillow's default WebP quality is 80; AVIF uses the same number.
 QUALITY = 80
@@ -114,7 +117,7 @@ def seen(rgbn, looks):
     for q in range(1, 5):
         refl = (rgbn[q - 1] / 255.0) ** 2.2
         red, nir = refl[..., 0], refl[..., 3]
-        ndvi_ = np.clip((nir - red) / np.maximum(nir + red, 1e-4), -1.0, 1.0)
+        ndvi_ = np.where(nir + red < DARK_NDVI, -1.0, np.clip((nir - red) / np.maximum(nir + red, 1e-4), -1.0, 1.0))
         out[q] = (np.moveaxis(refl[..., :3], -1, 0), ndvi_, looks[..., q - 1] >= MIN_OBSERVATIONS)
     return out
 
@@ -212,10 +215,14 @@ def lossless_texels(image):
 
 
 def quarters(prepared, z, x, y):
-    """The four quarters of tile z/x/y, zoom 12 or finer, RGBA8 after the look minimum, the shadow rule and
-    the snow rule. A finer texel is the zoom 12 texel that holds its centre."""
+    """The four quarters of tile z/x/y, zoom 12 or finer, RGBA8 after the look minimum, the NDVI, the shadow
+    rule and the snow rule. A finer texel is the zoom 12 texel that holds its centre."""
     levels = z - ZOOM
-    clean = snow_free(texels(seen(*prepared.tile(x >> levels, y >> levels))))
+    key = (prepared, x >> levels, y >> levels)
+    # A thread keeps the last zoom 12 tile, which the finer tiles under it read in turn.
+    if getattr(_readers, "last", (None,))[0] != key:
+        _readers.last = key, snow_free(texels(seen(*prepared.tile(key[1], key[2]))))
+    clean = _readers.last[1]
     size, mask = tiles.TILE >> levels, (1 << levels) - 1
     rows, cols = slice((y & mask) * size, ((y & mask) + 1) * size), slice((x & mask) * size, ((x & mask) + 1) * size)
     return {q: t[rows, cols].repeat(1 << levels, axis=0).repeat(1 << levels, axis=1) for q, t in clean.items()}
@@ -289,13 +296,16 @@ def encoder(variant):
     return encode
 
 
+def masked(prepared, bounds, z, x, y):
+    """The quarters (4, H, W, 4) of tile z/x/y of the archives: 0 where a texel centre is outside the bounds."""
+    out = np.stack([q for _, q in sorted(quarters(prepared, z, x, y).items())])
+    out[:, ~tiles.inside(bounds, z, x, y)] = 0
+    return out
+
+
 def bake(prepared, bounds, variant, output, metadata):
     """Write the archives of `variant` in `output`; return their bytes per archive and zoom."""
-    def stack(z, x, y):
-        out = np.stack([q for _, q in sorted(quarters(prepared, z, x, y).items())])
-        out[:, ~tiles.inside(bounds, z, x, y)] = 0
-        return out
-
+    stack = lambda z, x, y: masked(prepared, bounds, z, x, y)
     return tiles.pyramid(bounds, range(BOTTOM_ZOOM, VARIANTS[variant][1] + 1), stack, average, encoder(variant), output,
                          {**metadata, "trailview_format": FORMAT})
 
@@ -336,6 +346,8 @@ def fetch(bounds, year, out):
     from .. import planner_snow
 
     planner_snow.cdse_credentials()
+    # A transient 5xx of CDSE S3 must not end a run of days.
+    os.environ.update(GDAL_HTTP_MAX_RETRY="8", GDAL_HTTP_RETRY_DELAY="3")
     for item, bands in items(bounds, year).items():
         (out / item).mkdir(parents=True, exist_ok=True)
         for path in bands.values():
