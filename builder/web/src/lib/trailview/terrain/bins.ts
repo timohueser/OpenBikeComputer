@@ -195,10 +195,10 @@ export interface Building { rings: number[][]; outer: boolean[]; cars: boolean; 
 export interface Shapes { lines: Line[]; lakes: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; walks: Line[] }
 
 /**
- * The numbers of stamp-core.wgsl that the gates of a line and the shore samples of the audit use.
- * bins.test.ts holds them equal to the shader's.
+ * The numbers of stamp-core.wgsl that the gates of a line, the shore samples of the audit and the paint
+ * lists use. bins.test.ts holds them equal to the shader's.
  */
-export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678, SHORE_CELLS: 1.5, PORTAL_CELLS: 2 } as const;
+export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678, SHORE_CELLS: 1.5, PORTAL_CELLS: 2, PAINT_M: 1 } as const;
 /** As MASK_RANGE of stamp.wgsl: the mask reads a road this far past its edge. */
 const MASK_RANGE_M = 12.75;
 
@@ -653,7 +653,9 @@ export interface NodeStamps {
 /**
  * The stamp data of a node from the features of its feature tile. Every primitive goes to each cell
  * that it can act on, so the shader sees every primitive that can reach a texel. A cell keeps the
- * order of stamp-core.wgsl: a lake's edges before its marker, a line's segments together.
+ * order of stamp-core.wgsl: a lake's edges before its marker, a line's segments together. A near node
+ * ends with the paint lists for the exact paint near the eye: per cell its corners and the segments whose
+ * outer edge lies within PAINT_M of a point of the cell, in the same order.
  */
 export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps {
     const { lines, lakes, pads, areas, buildings, walks } = features(list, tile);
@@ -663,6 +665,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     const units = 1.02 / metresPerUnit(y0 < UNITS / 2 ? y0 - span : y0 + 2 * span);
     const records: number[][] = [];
     const cells: number[][][] = Array.from({ length: 3 }, () => Array.from({ length: GRID * GRID }, () => []));
+    const paints: number[][] | undefined = node.level >= NEAR ? Array.from({ length: GRID * GRID }, () => []) : undefined;
     /** The cells within `metres` of a box. */
     const within = (box: number[], metres: number) => {
         const reach = metres * units, out: number[] = [];
@@ -687,7 +690,10 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
         if (!touched.length) continue;
         // The sidewalks' widths in decimetres share a word; the slopes fill the words about the second end.
         const at = record([...o, ...a, CORNER, code | (profile << 16), f(z[0]), f(z[1]), Math.round(10 * walk[0]) | (Math.round(10 * walk[1]) << 8), f(grad[0][0]), ...b, f(h), f(grad[0][1]), f(grad[1][0]), f(grad[1][1])]);
-        for (const c of touched) cells[2][c].push(at);
+        for (const c of touched) {
+            cells[2][c].push(at);
+            paints?.[c].push(at);
+        }
     }
     let heights = false;
     const partners = partnersOf(lines);
@@ -724,6 +730,12 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
                 id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);
             heights ||= stamps;
+            if (!paints || line.kind === RIVER) continue;
+            // Inside the mitre quad the paint measures across the segment's line: on the outer side of a
+            // bend it reaches past the end by the mitre's lean.
+            const dx = bx - ax, dy = by - ay, length = Math.hypot(dx, dy) || 1, lean = Math.max(0.1, Math.min(dx * mx + dy * my, dx * nx + dy * ny) / length);
+            const half = Math.max(line.h, halfAt(line, v, partners), halfAt(line, v + 1, partners)) + (line.sidewalks?.[v] ? walkOf(line) : 0);
+            for (const c of within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], (half + RULES.PAINT_M) / lean)) paints[c].push(at);
         }
     });
     // Per lake, pad and area near the node, its edges in each cell that they reach.
@@ -776,8 +788,8 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     }
     if (!records.length || (!heights && node.level < NEAR)) return { data: null, heights: false };
     const entries = cells[0].map((_, c) => [...cells[0][c], ...cells[1][c], ...cells[2][c]]);
-    const count = entries.reduce((sum, list) => sum + list.length, 0);
-    const data = new Uint32Array(HEAD + OFFSETS + count + RECORD * records.length);
+    const count = entries.reduce((sum, list) => sum + list.length, 0), painted = paints?.reduce((sum, list) => sum + list.length, 0);
+    const data = new Uint32Array(HEAD + OFFSETS + count + RECORD * records.length + (painted === undefined ? 0 : OFFSETS + painted));
     data[0] = records.length;
     data[1] = count;
     let at = HEAD + OFFSETS;
@@ -788,6 +800,15 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     });
     data[HEAD + GRID * GRID] = count;
     records.forEach((words, r) => data.set(words.map(w => w >>> 0), HEAD + OFFSETS + count + RECORD * r));
+    // The paint lists as the cells: GRID² + 1 offsets, then the entries.
+    const lists = HEAD + OFFSETS + count + RECORD * records.length;
+    at = lists + OFFSETS;
+    paints?.forEach((list, c) => {
+        data[lists + c] = at - lists - OFFSETS;
+        data.set(list, at);
+        at += list.length;
+    });
+    if (painted !== undefined) data[lists + GRID * GRID] = painted;
     return { data, heights };
 }
 

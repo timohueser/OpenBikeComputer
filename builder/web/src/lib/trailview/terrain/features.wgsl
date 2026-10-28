@@ -104,18 +104,26 @@ fn texel_metres(level: u32, row: i32) -> f32 {
     return 2.0 * 3.14159265 * 6371000.0 / 1073741824.0 / cosh(3.14159265 * (1.0 - f32(row << shift) / 536870912.0)) * f32(1 << shift);
 }
 
-// The metres from the middle of a texel's road.
-fn across_metres(texel: vec4f) -> f32 {
-    let track = (u32(round(texel.w * 255.0)) & 15u) >= RAIL_CODE;
-    return (texel.z - 0.5) * 2.0 * select(MASK_M, TRACK_M, track);
+// The metres from the middle of a road of a surface code that the mask holds, either side.
+fn across_range(code: u32) -> f32 {
+    return select(MASK_M, TRACK_M, code >= RAIL_CODE);
 }
 
-// The half-width of the road that a texel's distances belong to; a track's from its code, as `across`
-// stops at ±TRACK_M.
+// The metres from the middle of a texel's road.
+fn across_metres(texel: vec4f) -> f32 {
+    return (texel.z - 0.5) * 2.0 * across_range(u32(round(texel.w * 255.0)) & 15u);
+}
+
+// The half-width of the road that a texel's distances belong to.
 fn half_width(texel: vec4f) -> f32 {
-    let code = u32(round(texel.w * 255.0)) & 15u;
+    return road_half(u32(round(texel.w * 255.0)) & 15u, across_metres(texel), mask_metres(texel.x));
+}
+
+// The half-width of a road of a surface code from a point's metres from its middle and to its edge; a
+// track's from its code, as `across` stops at ±TRACK_M.
+fn road_half(code: u32, across: f32, edge: f32) -> f32 {
     let track = select(RAIL_HALF_M, NARROW_HALF_M, ((code - RAIL_CODE) & 1u) == 1u);
-    return select(abs(across_metres(texel)) - mask_metres(texel.x), track, code >= RAIL_CODE);
+    return select(abs(across) - edge, track, code >= RAIL_CODE);
 }
 
 // The mask at a point, from the finest page at or above `top` that has a mask: the shapes and the

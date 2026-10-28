@@ -61,6 +61,13 @@ const STRIP = 8;
 const GRID_INDICES = gridIndices();
 /** The road and path profiles, as stamp-core.wgsl reads them. */
 const PROFILE_TABLE = profileTable();
+/**
+ * Metres from the eye, with its height above the ground, where the road paint is exact, as EXACT_M of
+ * roads.wgsl: from the stamp data of the finest drawn nodes within it, nearest first, in words and in
+ * nodes at most. Up to 60° N a disk of EXACT_M meets at most 3 × 3 nodes of level 18.
+ */
+export const EXACT_M = 40;
+const NEAR_WORDS = 2 ** 20, NEAR_NODES = 9;
 
 /** What the terrain draws from: the eye, its height above the ground, and the camera. */
 export interface View {
@@ -116,6 +123,8 @@ interface Resources extends Pipelines {
     snaps: GPUTexture;
     stampJobs: GPUBuffer;
     stampData: GPUBuffer;
+    /** The stamp data of the exact paint's nodes, as road_at reads it. */
+    near: GPUBuffer;
     profiles: GPUBuffer;
     surface: GPUBuffer;
     map: GPUBuffer;
@@ -166,6 +175,8 @@ export class Terrain {
     private resources?: Resources;
     private readonly bounds: [number, number, number, number];
     private nodes: Node[] = [];
+    /** The nodes of the exact paint, by name, as `near` holds them. */
+    private exact = '';
     /** The first drawn nodes that hold a tunnel's portal: they draw with its hole. */
     private holed = 0;
     /** The first drawn nodes, with the holed ones, that draw the detail of the look (DETAIL of look.wgsl). */
@@ -307,6 +318,7 @@ export class Terrain {
      */
     async attach(gpu: Gpu, frameUniform: GPUBuffer): Promise<void> {
         this.resources = undefined;
+        this.exact = '';
         this.pages.lost();
         const { device } = gpu, pages = this.pages.capacity.stored + this.pages.capacity.synth;
         const layers = Math.ceil(pages / LAYER_PAGES), side = PAGE * Math.sqrt(LAYER_PAGES);
@@ -328,6 +340,7 @@ export class Terrain {
             masks: buffer('features', (1 + pages) * 4, storage),
             stampJobs: buffer('compute', ARRIVALS * STAMP_JOB_BYTES, storage),
             stampData: buffer('compute', STAMP_WORDS * 4, storage),
+            near: buffer('features', NEAR_WORDS * 4, storage),
             profiles: buffer('compute', PROFILE_TABLE.byteLength, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
             surface: buffer('terrain', SURFACE_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
             map: buffer('terrain', (FINEST + 1) * MAP * MAP * 4, storage),
@@ -362,7 +375,7 @@ export class Terrain {
             featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps)]),
             emptyGroup: group(L.empty, []),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, device.createSampler()]),
-            meshGroup: group(L.mesh, [{ buffer: frameUniform }, { buffer: r.nodes }, { buffer: r.holes }]),
+            meshGroup: group(L.mesh, [{ buffer: frameUniform }, { buffer: r.near }, { buffer: r.holes }, { buffer: r.nodes }, { buffer: r.profiles }]),
             synthGroup: group(L.job, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }]),
             quantizeGroup: group(L.quantize, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.codes }, { buffer: r.scales }]),
             probeGroup: group(L.probe, [{ buffer: r.points }, { buffer: r.probed }]),
@@ -448,6 +461,30 @@ export class Terrain {
         const level = { anchor, above: 0 }, pages = [...work.uploads, ...work.syntheses, ...work.stamps.filter(({ mode }) => mode & MODE.HEIGHTS)];
         this.reshaped = structures ? 0 : Math.min(Infinity, ...pages.map(({ page }) => distances(level, page.node)[0]));
         this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || structures || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length);
+        this.newContent = this.writeNear(r, eye, rule) || this.newContent;
+    }
+
+    /** Writes the stamp data of the exact paint's nodes when they change; true then. */
+    private writeNear(r: Resources, eye: { anchor: Anchor; above: number }, rule: Rule): boolean {
+        const near = this.nodes.filter(node => node.level === rule.finest && node.level >= NEAR && this.stamps.known(node)?.data && distances(eye, node)[0] < EXACT_M)
+            .sort((a, b) => distances(eye, a)[0] - distances(eye, b)[0]).slice(0, NEAR_NODES);
+        const name = near.map(key).join();
+        if (name === this.exact) return false;
+        this.exact = name;
+        const head = 1 + 4 * NEAR_NODES, table: number[] = [], data: Uint32Array[] = [];
+        let words = head;
+        for (const node of near) {
+            const stamps = this.stamps.known(node)!.data!;
+            if (words + stamps.length > NEAR_WORDS) continue;
+            table.push(node.x * PAGE, node.y * PAGE, node.level, words);
+            data.push(stamps);
+            words += stamps.length;
+        }
+        const packed = new Uint32Array(words);
+        packed.set([table.length / 4, ...table]);
+        data.reduce((at, stamps) => (packed.set(stamps, at), at + stamps.length), head);
+        r.gpu.device.queue.writeBuffer(r.near, 0, packed);
+        return true;
     }
 
     /**
@@ -818,7 +855,9 @@ function terrainLayouts({ device }: Gpu) {
         device.createBindGroupLayout({ entries: entries.map(([visibility, entry], binding) => ({ binding, visibility, ...entry })) });
     const read: GPUBufferBindingLayout = { type: 'read-only-storage' }, write: GPUBufferBindingLayout = { type: 'storage' }, C = GPUShaderStage.COMPUTE;
     return {
-        mesh: layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.VERTEX, { buffer: read }], [GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: read }]]),
+        // The frame, the exact paint's stamp data, the holes, the nodes and the profiles.
+        mesh: layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.FRAGMENT, { buffer: read }],
+            [GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: read }], [GPUShaderStage.VERTEX, { buffer: read }], [GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }]]),
         job: layout([[C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
         quantize: layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
         probe: layout([[C, { buffer: read }], [C, { buffer: write }]]),

@@ -103,12 +103,13 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         }
         // A cut or a fill face of a road, where the look draws a retaining wall if it is steep.
         let faced = known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M));
-        let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
-        let surface = select(0u, s.surface, s.road < MASK_RANGE);
-        let across = clamp(s.across / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
-        let walk = round(s.walk / WALK_STEP_M) / 255.0;
+        let paint = s.paint;
+        let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, paint.ford && paint.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
+        let surface = select(0u, paint.surface, paint.road < MASK_RANGE);
+        let across = clamp(paint.across / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
+        let walk = round(paint.walk / WALK_STEP_M) / 255.0;
         textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
-            vec4f(distance_code(s.road), select(walk, fract(s.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));
+            vec4f(distance_code(paint.road), select(walk, fract(paint.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));
     }
 }
 

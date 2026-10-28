@@ -1,8 +1,13 @@
 // The paint of roads and paths over the ground, from the feature mask: a port of `roadSurface` and the
 // road section of `groundOn` of the prototype. The mask's distance to the road edge is linear across
-// it, so the filtered distance keeps the edge sharp to a pixel. look.wgsl includes it, and it reads
-// `rule()` and `noise()` of look.wgsl: an include composes each file once.
+// it, so the filtered distance keeps the edge sharp to a pixel. Near the eye the mask's texels are
+// coarse and their bytes coarser than a pixel: the paint there is exact, from the records of the nodes.
+// look.wgsl includes it, and it reads `rule()` and `noise()` of look.wgsl: an include composes each file once.
+// The terrain's draw binds the stamp data of the finest nodes near the eye where stamp-core.wgsl reads
+// it, as terrain.ts packs it: their count, per node its first texel, its level and the offset of its
+// data, then the data.
 // #include ../terrain/features.wgsl
+// #include ../terrain/stamp-core.wgsl
 // #include look.wgsl
 
 struct Road {
@@ -32,6 +37,9 @@ const KERB_FACE_M: f32 = 0.06;
 const KERB_SHADOW_M: f32 = 0.35;
 // Paving lies in square slabs of SLAB_M; their joints show only near the eye.
 const SLAB_M: f32 = 0.6;
+// As EXACT_M of terrain.ts: metres from the eye, with its height, where the paint is exact. It fades to the
+// mask's over the outer quarter.
+const EXACT_M: f32 = 40.0;
 
 // The tracks, from RAIL_CODE on as SURFACES of bins.ts: standard and narrow gauge, each without and with
 // a rack. A track painted where nothing counts its sleepers, on a deck or in a bore, takes NO_SLEEPERS
@@ -166,7 +174,6 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0);
     }
     let code = mask.kind.x;
-    let paved = code <= 2u || code == 7u || code == PAVING_CODE;
     // The paint and the road's cut and fill reach past its sidewalk on this side.
     let walk = mask.walk;
     // A wall stands under a road's or a track's paint, never under paving: a footway's or a forecourt's.
@@ -177,13 +184,79 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
         let out = mask_at(s + mask.away * (WALL_M + walk - mask.edge), mask.level, false);
         wall *= out.face;
     }
-    var edge = mask.edge;
     let half = max(mask.half, 0.05);
     let shaped_m = select(SHAPED_M, PATH_SHAPED_M, half < PATH_HALF_M);
-    let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, edge - walk));
-    if (edge - walk > w + 0.5) {
+    let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, mask.edge - walk));
+    if (mask.edge - walk > w + 0.5) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped);
     }
+    var exact = 1.0 - smoothstep(0.75 * EXACT_M, EXACT_M, length(vec3f(s, surface.above)));
+    var near = mask;
+    if (exact > 0.0) {
+        near = exact_mask(s, mask);
+        exact = select(0.0, exact, near.level != 0u);
+    }
+    var road = Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0);
+    if (exact < 1.0) {
+        road = paint_of(mask, ds, p, w, reach, region);
+    }
+    if (exact > 0.0) {
+        // Each paint's colour by its cover.
+        let ka = road.cover * (1.0 - exact);
+        let b = paint_of(near, ds, p, w, reach, region);
+        let kb = b.cover * exact;
+        let k = max(ka + kb, 1e-6);
+        road = Road((road.colour * ka + b.colour * kb) / k, ka + kb, (road.share * ka + b.share * kb) / k, 0.0, 0.0);
+    }
+    return Road(road.colour, road.cover, road.share, wall, shaped);
+}
+
+// The mask at a point with the paint of the near node that holds it, exact; level 0 where no near node
+// holds the point, or where its paint lists do not tell what paints it.
+fn exact_mask(s: vec2f, mask: Mask) -> Mask {
+    var out = mask;
+    out.level = 0u;
+    let u = units_of(s);
+    let whole = vec2i(floor(u));
+    let p = surface.anchor + whole;
+    let f = u - vec2f(whole);
+    for (var i = 0u; i < stamp_data[0]; i++) {
+        let node = 1u + 4u * i;
+        let level = stamp_data[node + 2u];
+        let first = vec2i(i32(stamp_data[node]), i32(stamp_data[node + 1u]));
+        if (any(p >> vec2u(30u - level) != first >> vec2u(8u))) {
+            continue;
+        }
+        let paint = paint_at(level, first, stamp_data[node + 3u], p, f);
+        if (paint.rank > PAINT_M) {
+            break;
+        }
+        let code = paint.surface;
+        out.level = level;
+        out.edge = paint.road;
+        out.kind.x = code;
+        out.across = clamp(paint.across, -across_range(code), across_range(code));
+        out.half = road_half(code, out.across, paint.road);
+        out.sleepers = paint.sleepers;
+        out.walk = select(paint.walk, 0.0, code >= RAIL_CODE);
+        // Across the record's segment, or out from a corner's centre; world rows run along -y of LOD space.
+        let r = paint.record;
+        let ab = vec2f(point(r + 2u) - point(r));
+        let axis = select(vec2f(-ab.y, ab.x), vec2f(p - point(r)) + f, word(r + 4u) == CORNER) * vec2f(1.0, -1.0);
+        out.axis = select(vec2f(0.0), normalize(axis), dot(axis, axis) > 0.0);
+        break;
+    }
+    return out;
+}
+
+// The paint of a road from the mask at a point, as road_at has it: its colour, its cover and the share of
+// the ground that shows through.
+fn paint_of(mask: Mask, ds: mat2x2f, p: vec2f, w: f32, reach: f32, region: u32) -> Road {
+    let code = mask.kind.x;
+    let paved = code <= 2u || code == 7u || code == PAVING_CODE;
+    let walk = mask.walk;
+    var edge = mask.edge;
+    let half = max(mask.half, 0.05);
     let across = abs(mask.across);
     // The pixel's span across the road: far off, a pixel is long along the view and narrow across it,
     // so the lines of a road that runs away from the eye stay sharp.
@@ -201,5 +274,5 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
     }
     let thin = max(0.0, 0.5 * cross_w - half);
     let cover = (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
-    return Road(surface.rgb, cover, surface.w, wall, shaped);
+    return Road(surface.rgb, cover, surface.w, 0.0, 0.0);
 }

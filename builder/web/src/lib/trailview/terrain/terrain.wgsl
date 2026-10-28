@@ -26,7 +26,8 @@ struct Node {
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
-@group(0) @binding(1) var<storage, read> nodes: array<Node>;
+// Bindings 1 and 4 hold the stamp data of the near nodes and the profiles, which road_at reads.
+@group(0) @binding(3) var<storage, read> nodes: array<Node>;
 // The boxes of the tunnels' portals near the eye: x the count; then per box its words, as portal-box.wgsl reads them.
 @group(0) @binding(2) var<storage, read> holes: array<vec4f>;
 

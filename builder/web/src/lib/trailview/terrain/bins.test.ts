@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, EXTENT, unitScale } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
-import { BRIDGE, CELL, CORNER, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WALK, WARP_M, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, CORNER, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL, RAIL_CODE, RECORD, RIVER, ROAD, RULES, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WALK, WARP_M, type Line, type Profile } from './bins';
 import { cornersOf } from './corners';
 import { LEFT, RIGHT } from './town';
 
@@ -135,6 +135,41 @@ describe('the stamp data of a node', () => {
             }
         }
         expect(seen.size).toBe(2);
+    });
+
+    it('lists in the paint list of each cell of a near node its corners and every segment that paints within PAINT_M past its outer edge there', () => {
+        // Engelberg: a level-18 node of the village, with kerbed corners and the station's tracks.
+        const tile = { level: 13, x: 4287, y: 2887 }, NODE = { level: 18, x: 137190, y: 92395 }, { data } = nodeStamps(fixture(tile.level, tile.x, tile.y), tile, NODE);
+        const records = 2 + GRID * GRID + 1 + data![1], lists = records + RECORD * data![0], word = (r: number, i: number) => data![records + RECORD * r + i];
+        const real = (r: number, i: number) => new Float32Array(Uint32Array.of(word(r, i)).buffer)[0];
+        const paints = (c: number) => Array.from(data!.subarray(lists + GRID * GRID + 1 + data![lists + c], lists + GRID * GRID + 1 + data![lists + c + 1]));
+        const shift = 22 - NODE.level, cell = CELL * 2 ** shift, x0 = NODE.x * PAGE * 2 ** shift - cell, y0 = NODE.y * PAGE * 2 ** shift - cell, unit = metresPerUnit(y0);
+        const painting = [ROAD, PATH, BRIDGE, TUNNEL, RAIL, WALK];
+        for (let c = 0; c < GRID * GRID; c++) {
+            const listed = Array.from(cellOf(data!, NODE, c).entries), painted = paints(c);
+            expect(painted.filter(r => word(r, 4) === CORNER)).toEqual(listed.filter(r => word(r, 4) === CORNER));
+            expect(painted.every(r => [CORNER, ...painting].includes(word(r, 4)))).toBe(true);
+        }
+        // Points just inside the reach beside each segment and on its mitre lines, which bound its paint past a bend.
+        let checked = 0;
+        for (let r = 0; r < data![0]; r++) {
+            if (!painting.includes(word(r, 4))) continue;
+            const [ax, ay, bx, by] = [0, 1, 2, 3].map(i => word(r, i)), taper = word(r, 13), length = Math.hypot(bx - ax, by - ay), dx = (bx - ax) / length, dy = (by - ay) / length;
+            const walk = (word(r, 5) >> 4) & 3 ? Object.values(PROFILES)[(word(r, 5) >> 16) & 0xff].walk : 0;
+            const reach = 0.99 * (real(r, 8) + Math.max(0, (taper << 8) >> 24, taper >> 24) * 0.02 + walk + RULES.PAINT_M) / unit;
+            const points = [0, 0.5, 1].flatMap(t => [1, -1].map(side => [ax + t * (bx - ax) - side * dy * reach, ay + t * (by - ay) + side * dx * reach]));
+            for (const [x, y, mx, my] of [[ax, ay, real(r, 9), real(r, 10)], [bx, by, real(r, 11), real(r, 12)]]) {
+                const k = reach / Math.max(0.1, dx * mx + dy * my);
+                points.push([x - my * k, y + mx * k], [x + my * k, y - mx * k]);
+            }
+            for (const [x, y] of points) {
+                const i = Math.floor((x - x0) / cell), j = Math.floor((y - y0) / cell);
+                if (i < 1 || j < 1 || i > GRID - 2 || j > GRID - 2) continue;
+                expect(paints(j * GRID + i), `record ${r} at ${x},${y}`).toContain(r);
+                checked++;
+            }
+        }
+        expect(checked).toBeGreaterThan(500);
     });
 });
 
