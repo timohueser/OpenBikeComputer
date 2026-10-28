@@ -1,8 +1,8 @@
 // The structures: the meshes of mesh.ts and the anchored meshes of anchored.ts, drawn before the terrain
 // as opaque flat faces in their vertex colours. A vertex stands at its height from the bake, or on the
 // drawn surface (plain_height), or hangs from an anchor. A road face takes the road paint of the ground,
-// a stone face the colour of the rock under it. The light and the haze are those of the ground, from the
-// look in group 2.
+// a stone face the colour of the rock under it, laid in stones. The light and the haze are those of the
+// ground, from the look in group 2.
 // #include ../terrain/drawn-mesh.wgsl
 // #include ../terrain/portal-box.wgsl
 // #include ../ground/look.wgsl
@@ -218,6 +218,21 @@ fn anchored(v: AnchoredIn, first: u32) -> StructureOut {
     return out;
 }
 
+// Rounded stones each lighter or darker, with dark joints: about 0.3 m long and 0.12 m high on a face,
+// laid flat on a top. A face maps onto the vertical plane it is nearest, so the bumps of a wall's top do
+// not shift the stones. `p` is fixed to the ground, so the stones stay when the eye moves. Where an output
+// pixel of `pixel` metres spans a stone, they fade to their mean, 0.77; the joints keep their width, so
+// the mean holds through the fade.
+fn stones(p: vec3f, n: vec3f, pixel: f32) -> f32 {
+    if (pixel >= 0.08) {
+        return 0.77;
+    }
+    let q = select(vec2f(0.4 * select(p.x, p.y, abs(n.x) > abs(n.y)), p.z), p.xy, abs(n.z) > 0.7);
+    let c = voronoi(q, 0.12);
+    let stone = (0.65 + 0.6 * c.z) * mix(0.35, 1.0, smoothstep(0.0, 0.25, c.y));
+    return mix(stone, 0.77, smoothstep(0.02, 0.08, pixel));
+}
+
 @fragment
 fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     var n = normalize(cross(dpdx(in.relative), dpdy(in.relative)));
@@ -234,7 +249,7 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     if ((flags & STONE_FACE) != 0u) {
         let su = lod_space(in.u);
         let cell = cell_at(su, u32(ceil(lod(su))));
-        albedo *= rule(cell.b, slot_lithologies() + i32(cell.g)).rgb / ROCK_GREY;
+        albedo *= rule(cell.b, slot_lithologies() + i32(cell.g)).rgb / ROCK_GREY * stones(vec3f(look.place.xy + in.relative.xy, in.altitude), n, w * look.screen.z);
     }
     // A cable narrower than its ribbon covers a share of it: the dither of that share resolves over the jittered frames.
     if ((flags & CABLE_EDGE) != 0u && hash(in.clip.xy + look.screen.xy * 4096.0) > in.road.x) {
