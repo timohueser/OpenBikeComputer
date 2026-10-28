@@ -186,17 +186,32 @@ fn read_manifests(dir: &Path) -> Listing {
                 continue;
             }
         };
-        if let (Some(dataset), Some(file), [zip]) =
-            (manifest.clms_dataset_uid, manifest.clms_file_id, manifest.files.as_slice())
+        let (mut files, listed) = (Vec::new(), manifest.files.len());
+        for mut file in manifest.files {
+            if !confined(&file.path) {
+                eprintln!(
+                    "obc data: warning: archive manifest {}: `{}` is not under the archive",
+                    path.display(),
+                    file.path
+                );
+                continue;
+            }
+            file.sha256 = file.sha256.map(|sha256| sha256.to_ascii_lowercase());
+            files.push(file);
+        }
+        if let (Some(dataset), Some(file), [zip], 1) =
+            (manifest.clms_dataset_uid, manifest.clms_file_id, &files[..], listed)
         {
             listing.clms.insert((dataset, file), zip.path.clone());
         }
-        for mut file in manifest.files {
-            file.sha256 = file.sha256.map(|sha256| sha256.to_ascii_lowercase());
-            listing.files.insert(file.path.clone(), file);
-        }
+        listing.files.extend(files.into_iter().map(|file| (file.path.clone(), file)));
     }
     listing
+}
+
+/// Whether `path` is relative and has no empty, `.` or `..` segment, so that it stays under the root.
+fn confined(path: &str) -> bool {
+    !path.starts_with('/') && path.split('/').all(|segment| !matches!(segment, "" | "." | ".."))
 }
 
 #[cfg(test)]
@@ -206,15 +221,22 @@ mod tests {
     #[test]
     fn only_a_plain_https_url_finds_its_file() {
         let scratch = crate::store::tests::Scratch::new("archive-find");
-        std::fs::create_dir_all(scratch.0.join("mirror/example.org")).unwrap();
-        std::fs::create_dir_all(scratch.0.join("manifest")).unwrap();
-        std::fs::write(scratch.0.join("mirror/example.org/x"), b"x").unwrap();
-        let manifest = r#"{"files": [{"path": "mirror/example.org/x", "bytes": 1, "sha256": "AB"}]}"#;
-        std::fs::write(scratch.0.join("manifest/x.json"), manifest).unwrap();
-        let archive = Archive::new(scratch.0.clone());
+        let root = scratch.0.join("archive");
+        std::fs::create_dir_all(root.join("mirror/example.org")).unwrap();
+        std::fs::create_dir_all(root.join("manifest")).unwrap();
+        std::fs::write(root.join("mirror/example.org/x"), b"x").unwrap();
+        std::fs::write(scratch.0.join("outside.zip"), b"z").unwrap();
+        let outside = r#"{"path": "../outside.zip", "bytes": 1}"#;
+        let manifest =
+            format!(r#"{{"files": [{outside}, {{"path": "mirror/example.org/x", "bytes": 1, "sha256": "AB"}}]}}"#);
+        std::fs::write(root.join("manifest/x.json"), manifest).unwrap();
+        let clms = format!(r#"{{"clms_dataset_uid": "d", "clms_file_id": "f", "files": [{outside}]}}"#);
+        std::fs::write(root.join("manifest/clms.json"), clms).unwrap();
+        let archive = Archive::new(root);
         assert_eq!(archive.find("https://example.org/x").unwrap().sha256.as_deref(), Some("ab"));
         for url in ["http://example.org/x", "https://example.org/x?a=1", "https://example.org/y/../x"] {
             assert!(archive.find(url).is_none(), "{url}");
         }
+        assert!(archive.clms("d", "f").is_none(), "a manifest path outside the archive never serves");
     }
 }

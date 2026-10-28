@@ -141,11 +141,13 @@ impl Http {
         Self { agent: config.into(), bearer: None, backoff: Duration::ZERO, archive: None }
     }
 
+    /// A client with the archive of `OBC_DATA_ARCHIVE`.
     pub fn new() -> Self {
-        Self::with_backoff(Duration::from_secs(2))
+        Self { archive: Archive::from_env(), ..Self::with_backoff(Duration::from_secs(2)) }
     }
 
-    /// The first retry waits `backoff`; each later one waits twice as long as the one before.
+    /// The first retry waits `backoff`; each later one waits twice as long as the one before. No
+    /// archive.
     pub fn with_backoff(backoff: Duration) -> Self {
         let config = ureq::Agent::config_builder()
             .http_status_as_error(false)
@@ -154,7 +156,7 @@ impl Http {
             .timeout_recv_response(Some(Duration::from_secs(60)))
             .timeout_recv_body(Some(BODY))
             .build();
-        Self { agent: config.into(), bearer: None, backoff, archive: Archive::from_env() }
+        Self { agent: config.into(), bearer: None, backoff, archive: None }
     }
 
     #[cfg(test)]
