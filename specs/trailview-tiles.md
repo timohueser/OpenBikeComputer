@@ -229,7 +229,6 @@ ruleset with a problem.
 | `ids` | Each region id as `[region, place]`: per region by name, `"*"` and then each country or subdivision that a value by place of the region names, by code. The index is the region id |
 | `regions` | The files of `regions/` by name |
 | `packs`, `styles` | The files of `packs/` and `styles/` by name |
-| `overlays` | The files of `overlays/` by region name |
 
 The bundle keeps each file as it is, without `about` and `where`. The engine resolves a region id
 with these rules:
@@ -244,10 +243,6 @@ with these rules:
   blotches, each form in the order of the names; the order of keys means nothing.
 - A list of ground (`on` and `off` of a ground plant, `on` of a herd and of a look's patch) names
   covers, materials by id, and the `tags` of materials in `materials.json` as `#tag`.
-
-An overlay holds more look keys of a region, as `{"look": {…}}`. The engine merges the overlays
-of the chain of a region over its look, root first, with the same merge. The key table
-`OVERLAY_LOOK` of `rules.py` lists the keys that an overlay may set.
 
 ## Canopy
 

@@ -6,14 +6,6 @@
  ],
  "about": "North and west of the Highland Boundary Fault: tawny moor and dark crags over glens and lochs, birch and pine low down, a low grey Atlantic sky.",
  "pack": "north-atlantic.highlands",
- "cliffs": {
-  "reach_m": 35,
-  "raise_m": 30
- },
- "relief": {
-  "radius_m": 60,
-  "amount": 0.7
- },
  "look": {
   "bare_luma": [0.064, 0.081, 0.083, 0.078],
   "ramps": {
