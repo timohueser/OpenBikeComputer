@@ -132,6 +132,9 @@ pub enum Mode {
     RevisionSpaceExhausted,
     SequenceSpaceExhausted,
     CatalogUnreadable,
+    /// The last catalog gate write or barrier failed and can have published. Only handles that are
+    /// already open still read, until the next mount.
+    RemountRequired,
     Unformatted,
     CardTooSmall,
 }
@@ -145,6 +148,9 @@ pub enum StoreError {
     Invalid,
     Media,
     ReadOnly,
+    /// A store table or object is in use now: every reservation row or hold row is taken, or the
+    /// active journey uses the route. Retry later.
+    Busy,
 }
 ```
 
@@ -290,7 +296,8 @@ carry the same value (§3.8). That is why there is no session identifier in this
 | `0x08` | `FORMAT` | replaces the entire card with an empty store, then reboots |
 | `0x09` | `ARCHIVE_RIDE` | persists exact client archive possession for the synced indicator |
 
-An unknown opcode is `unsupported`. There is no generic forwarding path.
+An unknown opcode is `unsupported` with detail `opcode 1`. Its error response carries opcode `LIST`
+(`0x01`), because the unknown value names no operation to echo. There is no generic forwarding path.
 
 The device MUST serve at most one `PUT` or `GET` at a time. A second one is refused `busy` with
 detail `transfer` (§3.9). BLE and USB are byte-identical adapters over that one transfer engine
@@ -543,11 +550,13 @@ There is no diagnostic text.
 Code `0` is invalid and is treated as a malformed body. A receiver reads a code it does not know as a
 failure it cannot classify; it never treats an unknown code as success.
 
-`busy` has **two** details. `transfer 1` is the one-at-a-time rule of §3.2: another `PUT` or `GET`
-is live, and its `RequestId` is the context. `holds 2` is the store's open-object table being full —
-every row taken by a reader that has not closed yet — which names no request and carries no context.
-Neither is `invalidRequest`: the request is well formed and would succeed against the same device a
-moment later.
+`busy` has **three** answers. `transfer 1` is the one-at-a-time rule of §3.2: another `PUT` or
+`GET` is live, and its `RequestId` is the context. `holds 2` is only for a `GET` whose `open` finds
+every row of the store's open-object table taken by a reader that has not closed yet; it names no
+request and carries no context. Detail `0` is every other `Busy` from the store (§2): a store table
+or object is in use now, for example a full reservation table or a route that the active journey
+uses. It carries no context. A client retries later. None of the three is `invalidRequest`: the
+request is well formed and can succeed against the same device a moment later.
 
 `readOnly` is the wire face of a store that cannot be written: no usable catalog, an exhausted
 revision space, or a card §5.6 step 1 classified as **not a flat store**
@@ -555,12 +564,13 @@ revision space, or a card §5.6 step 1 classified as **not a flat store**
 including the reads, because there is nothing to read; only the exhausted case still serves reads.
 `FORMAT` is the sole exception: it is the explicit destructive recovery operation in §3.10.
 
-Two of the store's read-only modes share one detail and one card too small shares another, so the
-mapping is written out rather than inferred:
+Several of the store's modes share one detail, so the mapping is written out rather than
+inferred:
 
 | `Mode` (§2) | detail |
 | :-- | :-- |
 | `CatalogUnreadable` | `catalogUnreadable 1` |
+| `RemountRequired` | `catalogUnreadable 1` — the catalog the next mount finds is not known yet |
 | `RevisionSpaceExhausted` | `revisionSpaceExhausted 2` |
 | `SequenceSpaceExhausted` | `revisionSpaceExhausted 2` — no third value is registered, and from a client's side both are this card's counters running out |
 | `Unformatted` | `unformatted 3` |
