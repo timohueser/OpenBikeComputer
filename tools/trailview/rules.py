@@ -195,7 +195,7 @@ def tables(materials):
                 "on": ground_names(materials)})
     pack = obj({
         "name": text, "about": text, "extends": text, "trees": entries(species), "ground": entries(ground),
-        "herds": entries(herd), "style": by_place(text), "houses": text, "orchard": text,
+        "herds": entries(herd), "style": by_place(text), "houses": text, "rows": each(materials["materials"], text),
     })
     style = obj({
         "name": text, "about": text, "extends": text, "pitch": listed(number(0, 80), 2), "eave": number(0, 5), "verge": number(0, 5),
@@ -243,7 +243,7 @@ def vocabulary_problems(vocabulary, models=MODELS):
     have = {path.stem for kind in ("trees", "plants") for path in (models / kind).glob("*.ts")}
     model = lambda v, p: text(v, p) or ([] if v in have else wrong(p, f"{said(v)} is no tree or plant model"))
     span = listed(positive, 2)
-    rows = obj({"model": model, "across_m": span, "along_m": span, "height_m": span, "reach_m": number(1, 4500)})
+    rows = obj({"model": model, "across_m": span, "along_m": span, "height_m": span, "reach_m": number(1, 4500), "hedge": one_of(True, False)})
     planted = [i for i, entry in enumerate(vocabulary["materials"]) if "rows" in entry]
     if len(planted) > MAX_CROPS:
         out.append(f"materials.json: {len(planted)} materials with rows, more than the {MAX_CROPS} that the plantings hold")
@@ -386,8 +386,8 @@ def chain(table, name):
 
 def model_problems(regions, packs, models=MODELS):
     """The species of each region's pack, with what it inherits: MAX_TREE_SPECIES trees and
-    MAX_PLANT_SLOTS shrubs and ground plants at most, each tree and orchard with a tree model of the
-    engine, each shrub with a tree or a plant model, each ground plant with a plant model."""
+    MAX_PLANT_SLOTS shrubs and ground plants at most, each tree with a tree model of the engine, each
+    shrub and each plant of its rows with a tree or a plant model, each ground plant with a plant model."""
     trees_have, plants_have = ({path.stem for path in (models / kind).glob("*.ts")} for kind in ("trees", "plants"))
     out = []
     for name in sorted(regions):
@@ -414,9 +414,11 @@ def model_problems(regions, packs, models=MODELS):
                 out.append(f"{file}: {'shrub' if rule.get('cover') == 'shrub' else 'tree'} {species} has no model {model}")
         out += [f"{file}: ground plant {species} has no model {rule.get('model', species)}"
                 for species, rule in tables["ground"].items() if rule.get("model", species) not in plants_have]
-        orchard = next((data["orchard"] for data in chain(packs, pack) if "orchard" in data), None)
-        if isinstance(orchard, str) and orchard not in trees_have:
-            out.append(f"{file}: orchard has no model {orchard}")
+        rows = {}
+        for data in reversed(chain(packs, pack)):
+            rows.update(data.get("rows") or {})
+        out += [f"{file}: rows {material} has no model {model}" for material, model in rows.items()
+                if isinstance(model, str) and model not in trees_have | plants_have]
     return out
 
 

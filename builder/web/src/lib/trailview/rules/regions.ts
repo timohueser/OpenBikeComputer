@@ -74,8 +74,8 @@ export interface Region {
     herds: HerdRule[];
     /** The ground plants of the region's pack: what the pack says of each, over its plant model's `ground`. */
     ground: GroundRule[];
-    /** The tree model of the pack's orchards. */
-    orchard?: string;
+    /** The model that the pack plants on each material planted in rows, by material id, over the material's own. */
+    rows: Record<string, string>;
 }
 
 /** A herd of a pack: its model, its groups per eye's circle of 400 m, its animals per group and the materials that it grazes. */
@@ -133,11 +133,12 @@ export interface HouseStyle {
 }
 
 /**
- * How a material is planted in rows (fields.wgsl): its plant, a tree or a plant model, else the tree of
- * the pack's `orchard`; the metres across its rows and along them, its plants' heights, and the metres
- * from the eye where they stand. Each field takes one value of each range.
+ * How a material is planted in rows (fields.wgsl): its plant, a tree or a plant model, which a pack's
+ * `rows` may name instead; the metres across its rows and along them, its plants' heights, the metres
+ * from the eye where they stand, and whether the plants of a row touch as a hedge. Each field takes
+ * one value of each range.
  */
-export interface Rows { model?: string; across_m: [number, number]; along_m: [number, number]; height_m: [number, number]; reach_m: number }
+export interface Rows { model?: string; across_m: [number, number]; along_m: [number, number]; height_m: [number, number]; reach_m: number; hedge?: boolean }
 
 /** The ground vocabulary of `materials.json`: a material or lithology code is its index. */
 export interface Vocabulary {
@@ -185,11 +186,11 @@ function inherited(table: Record<string, Record<string, unknown>>, name: string,
     return typeof up === 'string' ? merge(inherited(table, up, [...seen, name]), own) : own;
 }
 
-/** The tree model of a pack's orchards. */
-function orchardOf(packs: Record<string, Record<string, unknown>> | undefined, pack: unknown): string | undefined {
-    if (typeof pack !== 'string' || !packs?.[pack]) return undefined;
-    const model = inherited(packs, pack).orchard;
-    return typeof model === 'string' ? model : undefined;
+/** The models that a pack plants on the materials planted in rows, by material id. */
+function rowsOf(packs: Record<string, Record<string, unknown>> | undefined, pack: unknown): Record<string, string> {
+    if (typeof pack !== 'string' || !packs?.[pack]) return {};
+    const rows = (inherited(packs, pack).rows ?? {}) as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(rows).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
 }
 
 /** The trees, herds or ground plants of a pack by species: one that a child sets to null is dropped, a model defaults to its species. */
@@ -226,7 +227,7 @@ export function rulesOf(json: {
         const look = { ...merged, ramps, roadLine: local(merged.roadLine, place) } as Look;
         return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack, place),
             trees: entriesOf<TreeRule>(json.packs, resolved.pack, 'trees'), herds: entriesOf<HerdRule>(json.packs, resolved.pack, 'herds'),
-            ground: entriesOf<GroundRule>(json.packs, resolved.pack, 'ground'), orchard: orchardOf(json.packs, resolved.pack) };
+            ground: entriesOf<GroundRule>(json.packs, resolved.pack, 'ground'), rows: rowsOf(json.packs, resolved.pack) };
     });
     return { vocabulary: json.materials, regions, styles };
 }

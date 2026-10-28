@@ -1,12 +1,12 @@
-// The plantings: orchard and olive trees and vines on the rows of the material fields
+// The plantings: the plants of the materials planted in rows, on the rows of the material fields
 // (ground/fields.wgsl), placed on the GPU each frame with no stored position.
 //
 // One workgroup per base cell, half a field cell, laid so that each point of it looks at the same
 // 2 × 2 field cells. A cell samples which crops its ground holds, then walks the row points of each
-// crop's fields that may lie in it. A crop thins past THIN times its metres along the rows: point
-// (i, j) of a field, i along the rows and j across them, stands to that distance times 2^r, where 2^r
-// divides both i and j. So the far rows keep every 2^r-th plant of every 2^r-th row, and a plant that
-// stands far away stands near too.
+// crop's fields that may lie in it. A crop thins past THIN times the square root of the area of a
+// plant: point (i, j) of a field, i along the rows and j across them, stands to that distance times
+// 2^r, where 2^r divides both i and j. So the far rows keep every 2^r-th plant of every 2^r-th row, a
+// plant that stands far away stands near too, and a dense crop stands as many plants as a sparse one.
 // #include ../terrain/drawn-mesh.wgsl
 // #include ../ground/look.wgsl
 // #include ../instances/emit.wgsl
@@ -47,8 +47,9 @@ const ALONG: u32 = 0x20000u;
 // Units along a base cell: half a field cell.
 const BASE_SHIFT: u32 = FIELD_SHIFT - 1u;
 const BASE: i32 = FIELD / 2;
-// A crop thins past THIN times its metres along the rows, where its plants stand about half a degree apart.
-const THIN: f32 = 120.0;
+// A crop thins past THIN times the square root of the area of a plant: about π THIN² plants stand
+// unthinned about the eye, whatever the crop.
+const THIN: f32 = 30.0;
 // A plant fades out over this share of its own distance.
 const FADE: f32 = 0.1;
 // The ground of a base cell lies within SLOPE_M of its middle's, and no plant is taller than TALLEST_M.
@@ -59,6 +60,7 @@ const TALLEST_M: f32 = 12.0;
 const MOST: u32 = 8192u;
 const LANES: u32 = 256u;
 
+var<workgroup> cell_ground: f32;
 var<workgroup> found: atomic<u32>;
 var<workgroup> crops_here: u32;
 
@@ -82,21 +84,23 @@ fn plantings(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_inde
     if (nearest > window.reach) {
         return;
     }
-    let ground = units_height(middle, u32(ceil(lod(centre_s))));
-    let radius = 1.5 * half + SLOPE_M + TALLEST_M;
-    let centre = render_at(centre_s, ground + 0.5 * TALLEST_M);
-    if (!known(ground) || !visible(centre, radius) || hidden(centre, radius)) {
-        return;
-    }
-    // The crops of the cell: its ground on a 16 × 16 grid, one point per lane.
+    // One lane culls the cell: its box holds its ground within SLOPE_M of its middle's, and its plants.
     if (lane == 0u) {
+        let height = units_height(middle, u32(ceil(lod(centre_s))));
+        let radius = 1.5 * half + SLOPE_M + TALLEST_M;
+        let centre = render_at(centre_s, height + 0.5 * TALLEST_M);
+        cell_ground = select(NONE, height, known(height) && visible(centre, radius) && !hidden(centre, radius));
         atomicStore(&found, 0u);
     }
-    workgroupBarrier();
-    let sampled = finest_cell(lod_at(corner + vec2i((vec2f(f32(lane % 16u), f32(lane / 16u)) + 0.5) * f32(BASE / 16))));
-    if (sampled.r < 64u) {
-        let crop = data.crop_of[sampled.r / 4u][sampled.r % 4u];
-        if (crop < CROPS && nearest <= data.crops[crop].reach) {
+    let ground = workgroupUniformLoad(&cell_ground);
+    if (!known(ground)) {
+        return;
+    }
+    // The crops of the cell: its ground on an 8 × 8 grid.
+    if (lane < 64u) {
+        let sampled = finest_cell(lod_at(corner + vec2i((vec2f(f32(lane % 8u), f32(lane / 8u)) + 0.5) * f32(BASE / 8))));
+        let crop = data.crop_of[min(sampled.r, 63u) / 4u][min(sampled.r, 63u) % 4u];
+        if (sampled.r < 64u && crop < CROPS && nearest <= data.crops[crop].reach) {
             atomicOr(&found, 1u << crop);
         }
     }
@@ -118,7 +122,7 @@ fn plantings(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_inde
             let across = vec2f(-f.along.y, f.along.x);
             let site = field_site(cell);
             // Only every 2^level-th point stands in a cell this far, as THIN keeps them.
-            let thin = THIN * f.pitch.x;
+            let thin = THIN * sqrt(f.pitch.x * f.pitch.y);
             let stride = i32(1u << u32(clamp(floor(log2(max(nearest, 1.0) / thin)), 0.0, 16.0)));
             // The row points about the cell's square: its corners in metres from the site, along and across the rows.
             let q = vec2f(corner - site) * f.unit;
@@ -200,8 +204,10 @@ fn plant(c: u32, cell: vec2i, f: FieldRows, index: vec2i, at: vec2i, thin: f32, 
     } else if ((word & WINDWARD) != 0u) {
         yaw = 0.0;
     }
-    // Kept trees stand wider, so a thinned crop keeps its cover.
-    let width = clamp(d / thin, 1.0, 2.0);
+    // Kept trees stand wider, so a thinned crop keeps its cover; the plants of a hedge touch along it.
+    let hedge = rule(0u, slot_traits() + i32(crop.material)).z > 0.5;
+    let touch = select(1.0, f.pitch.x / (2.0 * m.spread * height), hedge);
+    let width = clamp(max(d / thin, touch), 1.0, 2.0);
     let coarse = units_height(at, BAND_LEVEL);
     emit_tree(model, s, stood.x, height, yaw, width, 0.9 + 0.2 * plant_hash(at, 5u), appear, 0.0, stood.y, plant_hash(at, 6u),
         smoothstep(0.25, 0.75, textureLoad(cache, t.xy, t.z * CACHE_PLANES, 0).a), ground_albedo(t), select(stood.x, coarse, known(coarse)));

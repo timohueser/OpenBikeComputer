@@ -25,6 +25,6 @@
   "sheep": { "groups": 2, "size": [5, 20], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
   "goat": { "groups": 2, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] }
  },
- "orchard": "hawthorn",
+ "rows": { "orchard": "hawthorn" },
  "style": "village-house"
 }

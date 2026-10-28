@@ -533,10 +533,8 @@ fn patched(albedo: vec3f, colour: vec4f, shape: vec2f, under: f32, world: vec2f,
 }
 
 // The plants of a row take ROW_SHARE of its pitch across, and darken the ground by ROW_DARK of their share.
-// Plants nearer than HEDGE_M along a row touch.
 const ROW_SHARE: f32 = 0.5;
 const ROW_DARK: f32 = 0.7;
-const HEDGE_M: f32 = 2.0;
 
 // The share of a pixel `w` rows wide about x that plants `share` of a row wide cover, a plant at each
 // whole row plus 0.5: by the integral of the rows, and their mean where a pixel spans half a row.
@@ -742,8 +740,8 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
             albedo *= 1.0 + 0.3 * blade * blades;
         }
     }
-    // Orchards, olive groves and vineyards in the rows of their fields (fields.wgsl), where a pixel can
-    // show them: darker where the plants stand than in the alleys, so the ground keeps its mean.
+    // The materials planted in rows paint the rows of their fields (fields.wgsl), where a pixel can show
+    // them: darker where the plants stand than in the alleys, so the ground keeps its mean.
     let rows = rule(region, slot_rows() + i32(g.material));
     if (rows.y > 2.0 * lateral && road.cover < 1.0) {
         let u = units_of(s);
@@ -756,8 +754,9 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         let ey = vec2f(dy.x, -dy.y) / scale;
         let w = vec2f(abs(dot(ex, f.along)) + abs(dot(ey, f.along)), abs(dot(ex, across)) + abs(dot(ey, across))) / f.pitch;
         let p = vec2f(dot(d, f.along), dot(d, across)) / f.pitch;
-        // A plant covers ROW_SHARE of the pitch across the rows and as many metres along them.
-        let lengthwise = select(min(1.0, ROW_SHARE * f.pitch.y / f.pitch.x), 1.0, f.pitch.x < HEDGE_M);
+        // A plant covers ROW_SHARE of the pitch across the rows and as many metres along them, all of a hedge.
+        let hedge = rule(region, slot_traits() + i32(g.material)).z > 0.5;
+        let lengthwise = select(min(1.0, ROW_SHARE * f.pitch.y / f.pitch.x), 1.0, hedge);
         let inside = clamp((field.edge * f.unit - HEADLAND_M) / max(footprint, 0.1) + 0.5, 0.0, 1.0);
         let planted = row_cover(p.y, ROW_SHARE, w.y) * row_cover(p.x, lengthwise, w.x) * inside;
         albedo *= 1.0 + ROW_DARK * (ROW_SHARE * lengthwise - planted) * (1.0 - road.cover);

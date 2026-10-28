@@ -19,7 +19,8 @@ interface Resources { gpu: Gpu; pipeline: GPUComputePipeline; groups: GPUBindGro
 
 /**
  * The plantings (rows.wgsl): the plants of the materials whose `rows` (materials.json) say how they are
- * planted, on the rows of the material fields, placed on the GPU each frame. A tree is a model of the
+ * planted, on the rows of the material fields, placed on the GPU each frame. A region plants the model
+ * that its pack's `rows` names for a material, else the material's own. A tree is a model of the
  * forest's (tree-models.ts), a plant one of the plants' (plants.ts).
  */
 export class Rows implements Producer {
@@ -47,7 +48,9 @@ export class Rows implements Producer {
             const index = model && model in TREES ? trees.index(model, evergreen(region, model)) : undefined;
             return index === undefined ? NO_MODEL : index | (TREES[model!].keepsHeading ? WINDWARD : 0);
         };
-        rules.regions.forEach((region, r) => crops.forEach(({ rows }, c) => (data[MODELS_AT + 4 * r + c] = word(region, rows.model ?? region.orchard))));
+        rules.regions.forEach((region, r) => crops.forEach(({ code, rows }, c) => {
+            data[MODELS_AT + 4 * r + c] = word(region, region.rows[rules.vocabulary.materials[code].id] ?? rows.model);
+        }));
         this.data = data;
         this.reach = Math.max(0, ...crops.map(({ rows }) => rows.reach_m));
     }

@@ -59,8 +59,8 @@ const lerp = (a: number[], b: number[], t: number) => a.map((v, i) => v + (b[i] 
 
 /**
  * The slots: three ramp colours per cover; a paint per material, alpha 1 where the region names one;
- * per material its traits: the share of the satellite's hue that its paint keeps, and its share of
- * ground in tussocks and low shrubs; a colour per lithology, alpha 1 where it is banded; the cliff
+ * per material its traits: the share of the satellite's hue that its paint keeps, its share of
+ * ground in tussocks and low shrubs, and 1 where its rows are hedges; a colour per lithology, alpha 1 where it is banded; the cliff
  * (alpha 1 where named), the colour of each patch (alpha its share), the terrain scalars (outcrops,
  * cos turf_deg, snow_share), the bedding normal (alpha the season's bare_luma, 0 for none) and the
  * palette snap; the sea's deep and shallow colours; per patch its size and 1 for dots; the paint of
@@ -114,7 +114,7 @@ export function packRules(regions: Region[], vocabulary: Vocabulary, season: num
         ramps(season, region).forEach((c, i) => set(i, c, 1));
         vocabulary.materials.forEach(({ id, cover, clumps, tags = [], rows }, i) => {
             set(SLOT.materials + i, ...paint(inSeason(look.materials?.[id]?.colour, season), 1));
-            set(SLOT.traits + i, [look.materials?.[id]?.satellite ?? 0, look.materials?.[id]?.clumps ?? clumps ?? 0, 0], 1);
+            set(SLOT.traits + i, [look.materials?.[id]?.satellite ?? 0, look.materials?.[id]?.clumps ?? clumps ?? 0, +!!rows?.hedge], 1);
             const patched = under.reduce((bits, codes, k) => bits | (codes.includes(i) ? 1 << k : 0), 0);
             set(SLOT.kinds + i, [COVER_ORDER.indexOf(cover as (typeof COVER_ORDER)[number]), patched, +tags.includes('rocky')], +tags.includes('rough'));
             set(SLOT.rows + i, [...(rows?.across_m ?? [0, 0]), rows?.along_m[0] ?? 0], rows?.along_m[1] ?? 0);

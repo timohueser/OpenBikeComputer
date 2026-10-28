@@ -26,6 +26,6 @@
   "chamois": null,
   "alpine-ibex": null
  },
- "orchard": "olive",
+ "rows": { "orchard": "olive" },
  "style": "village-house"
 }
