@@ -1,6 +1,7 @@
 //! `obc-dem` — the source DEM to OBCT terrain cells, deterministically.
 //!
-//! This crate owns exactly one arrow: Copernicus GLO-30 to OBCT. It knows nothing about OSM, maps,
+//! This crate owns exactly one arrow: Copernicus GLO-30 to OBCT. Of OSM it knows only the coastlines,
+//! cliffs and summits that correct GLO-30 in the planner terrain (`shape`), and nothing about maps,
 //! routes or the catalog. `obc-pack` samples the cells this writes; it never sees a GeoTIFF, which
 //! is what keeps libGEOS the last native dependency in the tree — this crate has none at all.
 //!
@@ -66,6 +67,8 @@ pub mod geotiff;
 pub mod planner;
 #[cfg(feature = "geotiff")]
 pub mod reference;
+#[cfg(all(feature = "geotiff", feature = "fetch"))]
+pub mod shape;
 #[cfg(all(feature = "geotiff", feature = "fetch"))]
 pub mod step;
 pub mod surface;
