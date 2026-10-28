@@ -246,7 +246,7 @@ pub(super) fn writable(name: &str, target: &crate::target::Target, files: bool) 
     let crate::target::Target::R2(remote) = target else { return Ok(()) };
     remote.writer().map_err(|e| {
         Code::Blocked.error(format!("target `{name}` is an R2 bucket: {e}")).fix(
-            "Set the `OBC_R2_*` variables of the bucket: `tools/obc.local` holds them on a machine that publishes.",
+            "Put the `OBC_R2_*` variables of the bucket in ~/.config/openbikecomputer/credentials.env: one `NAME=VALUE` line each, mode 0600.",
         )
     })?;
     if !files {

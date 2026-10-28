@@ -2,7 +2,8 @@
 //! archive (`host/obc-dem/reference/README.md`), `16/<ti>/<tj>.tif` of the maximum and
 //! `mean/16/<ti>/<tj>.tif` of the mean, and the `index.json` of each pool. A version extends the
 //! version before: `ingest.py fetch` folds the models that meet its region into each tile of that
-//! region, and the version keeps every other tile of the version before without an upload.
+//! region, and the version keeps every other tile of the version before without an upload. Each
+//! index states the GLO-30 bias of each model (`crate::terrain_bias`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -12,14 +13,13 @@ use std::process::Command;
 use obc_bake::coverage::Coverage;
 use obc_data::prepared::{day, Job, Manifest, Plan, Prepared, Scope};
 use obc_data::product::Wanted;
-use obc_data::regions::{Area, Bbox};
-use obc_data::settings::Settings;
+use obc_data::regions::Bbox;
 use obc_data::sources::Source;
 use obc_dem::reference::TILE_LOG2;
 use obc_map_core::grid::CellId;
 
-use crate::device::{box_poly, POLY};
-use crate::prepared_tiles::{self, Tile};
+use crate::device::box_poly;
+use crate::prepared_tiles::{self, outline, outlines, poly, read_on_day, regions, reuse, Tile};
 
 /// The id of the prepared source.
 pub const ID: &str = "terrain";
@@ -27,9 +27,11 @@ pub const ID: &str = "terrain";
 pub struct TerrainReference {
     /// `ingest.py` of the reference archive, as a command in the repository root.
     pub ingest: fn(&Path) -> Result<Command, String>,
+    /// The GLO-30 squares that the bias of a model reads.
+    pub(crate) glo30: crate::terrain_bias::Glo30,
 }
 
-pub const TERRAIN_REFERENCE: TerrainReference = TerrainReference { ingest };
+pub const TERRAIN_REFERENCE: TerrainReference = TerrainReference { ingest, glo30: crate::terrain_bias::fetch };
 
 fn ingest(root: &Path) -> Result<Command, String> {
     let mut command = Command::new("uv");
@@ -49,7 +51,7 @@ impl Prepared for TerrainReference {
     }
 
     fn revision(&self) -> u32 {
-        1
+        2
     }
 
     fn regional(&self) -> bool {
@@ -76,10 +78,10 @@ impl Prepared for TerrainReference {
             }
             tiles.extend(inside);
             inputs.push(Wanted { source: model.id.clone(), version: None, params: Vec::new() });
-            inputs.extend(model.areas.iter().map(|area| polygon(area, None)));
+            inputs.extend(model.areas.iter().map(|area| poly(area, None)));
         }
         let inputs = inputs.into_iter().map(|wanted| (wanted, None).into()).collect();
-        Ok(Plan { inputs, files: Some(2 * tiles.len() as u64 + 2) })
+        Ok(Plan { inputs, files: Some(2 * tiles.len() as u64 + 2), work_bytes: 0 })
     }
 
     /// Each tile of the region that a model has a height in: its models fetched once and folded
@@ -88,10 +90,9 @@ impl Prepared for TerrainReference {
     /// without a height, so a resume fetches neither again.
     fn prepare(&self, job: &mut Job) -> Result<(), String> {
         let previous = job.extend(self.format())?;
-        let scope = match job.scope.clone() {
-            Some(scope) => Some(scope_tiles(job, &scope)?),
-            None => None,
-        };
+        let outlines = outlines(job)?;
+        let scope: Option<BTreeSet<CellId>> =
+            outlines.map(|outlines| outlines.iter().flat_map(|outline| outline.cells(TILE_LOG2.into())).collect());
         let (boxes, countries) = area(job.scope.as_ref())?;
         // The models of each tile, in the order of `data/sources.toml`.
         let mut keys: BTreeMap<CellId, Vec<String>> = BTreeMap::new();
@@ -100,7 +101,7 @@ impl Prepared for TerrainReference {
             if !model.areas.is_empty() {
                 let mut inside = BTreeSet::new();
                 for area in &model.areas {
-                    inside.extend(area_tiles(job, area)?);
+                    inside.extend(outline(job, area)?.cells(TILE_LOG2.into()));
                 }
                 tiles.retain(|tile| inside.contains(tile));
             }
@@ -111,8 +112,8 @@ impl Prepared for TerrainReference {
                 keys.entry(tile).or_default().push(key(model).into());
             }
         }
-        let before = |pool: &str| previous.as_ref().map(|manifest| index(job, manifest, pool)).transpose();
-        let held = before("")?.map(|index| index.contributors).unwrap_or_default();
+        let before = previous.as_ref().map(|manifest| index(job, manifest, "")).transpose()?;
+        let held = before.as_ref().map(|index| index.contributors.clone()).unwrap_or_default();
         let tiles: Vec<Tile> = keys
             .keys()
             .map(|tile| {
@@ -120,7 +121,7 @@ impl Prepared for TerrainReference {
                 let path = format!("16/{:04}/{:04}.tif", tile.i, tile.j);
                 let files =
                     vec![(format!("mean/{path}"), format!("{name}.mean.sha256")), (path, format!("{name}.sha256"))];
-                Tile { name: name.clone(), files, marks: vec![format!("{name}.keys")] }
+                Tile { name: name.clone(), files, marks: vec![format!("{name}.keys"), format!("{name}.samples")] }
             })
             .collect();
         let models: BTreeMap<String, String> =
@@ -139,26 +140,21 @@ impl Prepared for TerrainReference {
                 }
                 command.arg("--base").arg(&base).args(["--held", &sources.join(",")]);
             }
+            // The summit check of each model, once per prepare, and a file a whole region is in.
+            command.arg("--shared").arg(job.state.join("shared"));
             Ok(command)
         })?;
         // A tile that this version did not make is the tile of the version before.
-        if let Some(previous) = &previous {
-            let kept: Vec<String> = previous
-                .files
-                .iter()
-                .map(|file| file.path.clone())
-                .filter(|path| path.ends_with(".tif") && !digests.contains_key(path))
-                .collect();
-            for path in kept {
-                job.reuse(previous, &path)?;
-            }
-        }
+        reuse(job, previous.as_ref(), |path| path.ends_with(".tif") && !digests.contains_key(path))?;
         let marks = job.state.join("tiles");
         let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for tile in tiles.iter().filter(|tile| digests.contains_key(&tile.files[1].0)) {
             let text = fs::read_to_string(marks.join(&tile.marks[0])).map_err(|e| format!("{}: {e}", tile.marks[0]))?;
             sources.insert(tile.name.replace('-', "/"), text.trim().split(',').map(String::from).collect());
         }
+        let biases = crate::terrain_bias::measure(job, (previous.as_ref(), before.as_ref()), &sources, self.glo30)?;
+        let biased = job.state.join("biases.json");
+        obc_data::store::write_atomic(&biased, &serde_json::to_vec(&biases).expect("biases serialize"))?;
         let fetched: BTreeSet<&String> = keys.values().flatten().collect();
         let fetched: Vec<&str> = fetched.into_iter().map(String::as_str).collect();
         // A model has no versions of its own: the day of the prepare names what it read.
@@ -176,7 +172,7 @@ impl Prepared for TerrainReference {
             obc_data::store::write_atomic(&held, &serde_json::to_vec(&sources).expect("keys serialize"))?;
             let mut command = (self.ingest)(job.root)?;
             command.args(["index-terrain", "--pool", pool, "--fetched", &version, "--models", &fetched.join(",")]);
-            command.arg("--digests").arg(&listed).arg("--keys").arg(&held);
+            command.arg("--digests").arg(&listed).arg("--keys").arg(&held).arg("--biases").arg(&biased);
             if let Some(previous) = &previous {
                 command.arg("--base").arg(job.earlier_file(previous, &format!("{prefix}index.json"))?);
             }
@@ -191,7 +187,7 @@ impl Prepared for TerrainReference {
                 })
                 .map(|(path, digest)| (path.clone(), digest.clone()))
                 .collect();
-            job.input(&format!("dtm-{model}"), &version, read)?;
+            read_on_day(job, &format!("dtm-{model}"), read)?;
         }
         job.finish(&["index.json".into(), "mean/index.json".into()])
     }
@@ -248,10 +244,15 @@ fn key(model: &Source) -> &str {
     &model.id["dtm-".len()..]
 }
 
-/// The sources of each tile of the pool `prefix` of the version before.
+/// The sources of each tile of the pool `prefix` of the version before, its best source and the
+/// facts of each source.
 #[derive(serde::Deserialize)]
-struct Index {
+pub(crate) struct Index {
     contributors: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub tiles: BTreeMap<String, String>,
+    #[serde(default)]
+    pub sources: BTreeMap<String, serde_json::Value>,
 }
 
 fn index(job: &Job, manifest: &Manifest, prefix: &str) -> Result<Index, String> {
@@ -271,10 +272,6 @@ fn link(object: &Path, path: &Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn polygon(area: &str, version: Option<String>) -> Wanted {
-    Wanted { source: POLY.into(), version, params: vec![("area".into(), area.into())] }
-}
-
 /// The archive tiles that `bbox` meets.
 fn box_tiles(bbox: &Bbox) -> Result<BTreeSet<CellId>, String> {
     Ok(Coverage::parse_poly(&box_poly(bbox))?.cells(TILE_LOG2.into()))
@@ -283,58 +280,6 @@ fn box_tiles(bbox: &Bbox) -> Result<BTreeSet<CellId>, String> {
 fn extent_tiles(source: &Source) -> Result<BTreeSet<CellId>, String> {
     let [west, south, east, north] = source.extent.ok_or_else(|| format!("`{}` has no `extent`", source.id))?;
     box_tiles(&Bbox { west, south, east, north })
-}
-
-/// The archive tiles that the Geofabrik polygon of `area` meets. The first run of a version keeps
-/// the version of each polygon in `state/polygons.json`, so its tiles stay those of the first run.
-fn area_tiles(job: &mut Job, area: &str) -> Result<BTreeSet<CellId>, String> {
-    let pins = job.state.join("polygons.json");
-    let mut versions: BTreeMap<String, String> = match fs::read(&pins) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", pins.display()))?,
-        Err(_) => BTreeMap::new(),
-    };
-    let pinned = versions.get(area).cloned();
-    let (version, files) = job.fetch(&polygon(area, pinned.clone())).map_err(|e| match pinned {
-        Some(_) => format!(
-            "{e}. Fix: the polygon version of the first run is gone: delete {}; the next run starts a new version",
-            job.state.parent().unwrap_or(&job.state).display()
-        ),
-        None => e,
-    })?;
-    if versions.insert(area.into(), version.clone()).as_ref() != Some(&version) {
-        let bytes = serde_json::to_vec(&versions).expect("versions serialize");
-        obc_data::store::write_atomic(&pins, &bytes)?;
-    }
-    let [path] = files.values().collect::<Vec<_>>()[..] else {
-        return Err(format!("a fetch of {POLY} of `{area}` gives {} files, not one", files.len()));
-    };
-    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(Coverage::parse_poly(&text)?.cells(TILE_LOG2.into()))
-}
-
-/// The regions of `scope`, and the id of its region.
-fn regions(scope: &Scope) -> Result<(obc_data::regions::Regions, String), String> {
-    let settings =
-        Settings { region: scope.region.clone(), definitions: scope.definitions.clone(), ..Settings::default() };
-    Ok((settings.regions()?, scope.region.clone()))
-}
-
-/// The archive tiles of the region of `scope`: the box or the polygons of the areas of each part.
-fn scope_tiles(job: &mut Job, scope: &Scope) -> Result<BTreeSet<CellId>, String> {
-    let (regions, id) = regions(scope)?;
-    let mut tiles = BTreeSet::new();
-    for part in regions.leaves(&id)? {
-        match &regions.get(part).expect("a part is a region").area {
-            Area::Box { bbox } => tiles.extend(box_tiles(bbox)?),
-            Area::Geofabrik { areas } => {
-                for area in areas {
-                    tiles.extend(area_tiles(job, area)?);
-                }
-            }
-            Area::Union { .. } => {}
-        }
-    }
-    Ok(tiles)
 }
 
 #[cfg(test)]
@@ -349,6 +294,7 @@ mod tests {
     use obc_data::sources::Registry;
     use obc_data::store::Store;
     use obc_data::target::Target;
+    use obc_dem::fetch::TileId;
     use std::path::PathBuf;
 
     const SOURCES: &str = r#"
@@ -382,7 +328,7 @@ mod tests {
     /// signal stops it. `index-terrain` writes the digests that it gets unless `fail-index` exists.
     const INGEST: &str = r#"case "$1" in
 fetch)
-    echo "fetch $4 $2${10:+ over ${12}}" >> calls
+    echo "fetch $4 $2$([ "$9" = --base ] && echo " over ${12}")" >> calls
     # As `ingest.py fetch` does, it removes its `--work` when it ends, also on SIGTERM.
     trap 'rm -rf "$6"' EXIT && trap 'exit 143' TERM
     mkdir -p "$6" && touch "$6/raw.tif" && echo "$6" >> works
@@ -394,9 +340,10 @@ fetch)
     if [ -e "none-$4" ]; then touch "$8/$4.none"; exit 0; fi
     for pool in "" mean/; do mkdir -p "$8/${pool}16/${4%-*}" && echo "$pool$4 $2" > "$8/${pool}16/${4%-*}/${4#*-}.tif"; done
     echo "$2" > "$8/$4.keys"
+    yes 15000 | head -n 256 > "$8/$4.samples"
     echo "mean of $4" > "$8/$4.mean.sha256" && echo "pixels of $4" > "$8/$4.sha256" ;;
 index-terrain)
-    over=""; [ $# -gt 13 ] && over=" over"
+    over=""; [ $# -gt 15 ] && over=" over"
     echo "$1 $3$over" >> calls
     [ -e fail-index ] && exit 1
     eval "out=\${$#}"
@@ -408,6 +355,13 @@ esac
         let mut command = Command::new("sh");
         command.arg("ingest.sh");
         Ok(command)
+    }
+
+    /// GLO-30 as all sea: it logs the squares that it is asked for to `squares`.
+    fn sea(job: &mut Job, squares: &BTreeSet<TileId>) -> Result<BTreeMap<TileId, PathBuf>, String> {
+        let names: Vec<String> = squares.iter().map(|tile| tile.stem()).collect();
+        fs::write(job.root.join("squares"), names.join("\n")).map_err(|e| e.to_string())?;
+        Ok(BTreeMap::new())
     }
 
     /// A repository with [`INGEST`], a store and a target for `terrain-reference/xx@2026-10-01`.
@@ -465,7 +419,8 @@ esac
         ) -> (Result<(), String>, Vec<String>, Vec<String>, serde_json::Value) {
             let root = self.root();
             let _ = fs::remove_file(root.join("calls"));
-            let (producer, http) = (TerrainReference { ingest: script }, Http::new());
+            let _ = fs::remove_file(root.join("squares"));
+            let (producer, http) = (TerrainReference { ingest: script, glo30: sea }, Http::new());
             let mut run = Run::create(&self.store, ["source", "prepare", ID]).unwrap();
             let opening = Opening {
                 root: &root,
@@ -526,13 +481,16 @@ esac
         let index = || vec!["index-terrain max".to_string(), "index-terrain mean".to_string()];
 
         let last = tiles.len() - 1;
-        // Tile 2 fails once the two tiles after the first that run beside it have started, when it
-        // is the oldest that runs, and the failure stops the tiles after it.
+        // Tiles 0 and 1 end at once and free their slots for two more tiles. Tile 2 fails once those
+        // have started, and the failure stops the tiles that run until a signal stops them.
         let started = RUNNING + 2;
         assert!(tiles.len() > started, "{tiles:?}");
         fixture.mark("none", 0, "");
         fixture.mark("fail", 2, "");
         fixture.mark("wait", 2, &started.to_string());
+        for k in 3..started {
+            fixture.mark("hold", k, "");
+        }
         let (done, calls) = fixture.prepare();
         assert!(fixture.failed_in(done, 2));
         assert_eq!(calls, fixture.fetches(0..started));
@@ -540,6 +498,9 @@ esac
         // No tile without a height is fetched, and the progress counts each tile of the version.
         for what in ["fail", "wait"] {
             fs::remove_file(fixture.root().join(format!("{what}-{}", tiles[2]))).unwrap();
+        }
+        for tile in &tiles[3..started] {
+            fs::remove_file(fixture.root().join(format!("hold-{tile}"))).unwrap();
         }
         fixture.mark("fail", last, "");
         let (done, calls) = fixture.prepare();
@@ -580,13 +541,16 @@ esac
     #[test]
     fn fetches_at_once_have_a_raw_folder_each_and_a_failure_stops_the_others_which_remove_their_folders() {
         let fixture = Fixture::new("terrain-reference-raw");
-        // Tile 0 ends only once tile 1 runs beside it. Tile 2 fails when it is the oldest that runs,
-        // and tile 3 runs until the failure stops it.
+        // Tile 0 ends only once tile 1 runs beside it, and the two free their slots for two more
+        // tiles. Tile 2 fails once those have started, and the tiles after it run until the failure
+        // stops them.
         let started = RUNNING + 2;
         fixture.mark("wait", 0, "2");
         fixture.mark("wait", 2, &started.to_string());
         fixture.mark("fail", 2, "");
-        fixture.mark("hold", 3, "");
+        for k in 3..started {
+            fixture.mark("hold", k, "");
+        }
         let (done, calls) = fixture.prepare();
         assert!(fixture.failed_in(done, 2));
         assert_eq!(calls, fixture.fetches(0..started));
@@ -602,10 +566,25 @@ esac
     }
 
     #[test]
+    fn a_tile_that_ends_frees_its_slot_while_an_older_tile_runs() {
+        let fixture = Fixture::new("terrain-reference-slots");
+        // Tile 0 ends only once one tile more than there are slots has started, so the younger
+        // tiles that end must free their slots while it runs.
+        assert!(fixture.tiles.len() > RUNNING);
+        fixture.mark("wait", 0, &(RUNNING + 1).to_string());
+        let (done, calls) = fixture.prepare();
+        done.unwrap();
+        assert!(calls.contains(&format!("fetch {} xx", fixture.tiles[RUNNING])), "{calls:?}");
+    }
+
+    #[test]
     fn a_version_folds_the_tiles_of_its_region_and_keeps_the_others_of_the_version_before() {
         let fixture = Fixture::new("terrain-extend");
         let (done, _, _, _) = fixture.version("2026-10-01", None);
         done.unwrap();
+        // The model has no bias yet, so its samples ask GLO-30 for the squares under them.
+        let squares = fs::read_to_string(fixture.root().join("squares")).unwrap();
+        assert!(squares.lines().any(|square| square == "Copernicus_DSM_COG_10_N46_00_E008_00_DEM"), "{squares}");
         // A box inside the first tile.
         let (west, south, east, north) = fixture.cells[0].square();
         let inner = |a: i64, b: i64| (a + (b - a) / 4) as f64 / 1e6;
@@ -673,9 +652,9 @@ esac
     }
 
     #[test]
-    fn a_region_of_gb_reads_the_models_of_england_and_scotland() {
+    fn a_region_of_gb_reads_the_models_of_england_scotland_and_wales() {
         let gb = ["GB".to_string()];
         let read: Vec<&str> = models(obc_data::sources::all(), None, &gb).map(key).collect();
-        assert_eq!(read, ["gb-eng", "gb-sct"]);
+        assert_eq!(read, ["gb-eng", "gb-sct", "gb-wls"]);
     }
 }

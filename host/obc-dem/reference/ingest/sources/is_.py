@@ -7,17 +7,7 @@ server that answers byte ranges, so the box's window is read out of it, as for A
 The module is `is_` because `is` is a Python keyword.
 """
 
-from pathlib import Path
-
-from .cog import CogWindows
-
-
-class OneFile(CogWindows):
-    """A whole country in one tiled GeoTIFF."""
-
-    def urls(self, bbox) -> list[tuple[str, str]]:
-        return [(Path(self.base).name, self.base)]
-
+from .cog import OneFile
 
 IS = OneFile(
     "is", "Iceland", "ÍslandsDEM v1.0 10 m", 10.0,

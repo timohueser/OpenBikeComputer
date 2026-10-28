@@ -33,7 +33,11 @@ class BulkSource(Source):
         raise NotImplementedError
 
     def fetch(self, bbox, workdir) -> list[Path]:
-        wanted = self.files(bbox)
+        return self.download(self.files(bbox), workdir)
+
+    def download(self, wanted, workdir) -> list[Path]:
+        """The rasters of the `(name, url)` files of `wanted`, downloaded and unpacked."""
+
         workdir.mkdir(parents=True, exist_ok=True)
         rasters, absent = [], 0
 

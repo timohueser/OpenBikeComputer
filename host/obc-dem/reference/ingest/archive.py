@@ -1,14 +1,16 @@
 """The archive: tiles, the priority fold, and the deliveries on disk."""
 
 import hashlib
+import math
 from pathlib import Path
 
 import numpy as np
 import rasterio
 from rasterio.warp import transform_bounds
 
-from .lattice import MEAN_NODATA, NODATA, Refuse, TILE_PX, WGS84, check_world, covering_window, tile_window
-from .pool import VOID, open_raster, pool_onto_lattice, read_source, to_decimetres, to_int16
+from .lattice import (DEGREE, MEAN_NODATA, NODATA, STEP, Refuse, TILE_PX, WGS84, Window, check_world,
+                      covering_window, tile_bounds, tile_window)
+from .pool import VOID, fill_gaps, open_raster, pool_onto_lattice, read_source, to_decimetres, to_int16
 from .sources.base import READABLE, Source, digest_of, placed, unpack
 
 
@@ -21,14 +23,49 @@ MEAN = "mean"
 PRIORITY = (
     "dk", "nl", "it-tn",
     "de-nw", "de-he", "de-ni", "de-by", "de-sn", "de-th", "de-mv", "de-st", "de-rp", "de-bw",
-    "fr", "at", "no", "gb-eng", "gb-sct", "se", "sk", "pl", "us", "ca", "nz",
-    "ch", "fi", "cz", "it-bz", "es", "au", "it", "is",
+    "fr", "at", "no", "gb-eng", "gb-wls", "gb-sct", "se", "sk", "si", "pl", "us", "ca", "nz",
+    "it-36", "pt-20", "ch", "pt", "fi", "cz", "it-bz", "it-21", "pt-30", "es", "au", "it", "is",
 )
 
 def priority_rank(key: str) -> int:
     """Lower is better. An unlisted key ranks last, so it never displaces a listed one."""
 
     return PRIORITY.index(key) if key in PRIORITY else len(PRIORITY)
+
+
+# Metres of one degree of latitude.
+METRES_PER_DEGREE = 111_320.0
+# The pixels of a tile at the rows and columns `SAMPLE` modulo `SAMPLES`, counted from the south and
+# the west: the bias samples of `obc_dem::planner::samples`.
+SAMPLE, SAMPLES = 32, 64
+
+
+def coarse(source: Source, ti: int, tj: int) -> bool:
+    """Whether the step of `source` is longer than the east side of a lattice pixel in tile `ti`,
+    `tj`, so that some lattice pixels get no source centre. Such a source is fetched `padded`."""
+
+    _, south, _, north = tile_bounds(ti, tj)
+    side = STEP / DEGREE * METRES_PER_DEGREE * math.cos(math.radians((south + north) / 2))
+    return source.resolution_m is not None and source.resolution_m > side
+
+
+def padded(box, source: Source):
+    """`box` with two source steps of margin on each side, so that each lattice pixel of the box
+    lies between four source centres."""
+
+    west, south, east, north = box
+    lat = 2 * source.resolution_m / METRES_PER_DEGREE
+    lon = lat / math.cos(math.radians((south + north) / 2))
+    return west - lon, south - lat, east + lon, north + lat
+
+
+def samples(mean) -> str:
+    """The bias samples of a north-up mean tile: decimetres, row by row from the south, with `-`
+    where the tile has no height."""
+
+    picked = mean[::-1][SAMPLE::SAMPLES, SAMPLE::SAMPLES]
+    rows = (" ".join("-" if value == MEAN_NODATA else str(int(value)) for value in row) for row in picked)
+    return "\n".join(rows) + "\n"
 
 
 def write_tile(path: Path, ti: int, tj: int, tile) -> None:
@@ -76,7 +113,9 @@ def pool_tile(rasters: list[Path], source: Source, ti: int, tj: int):
     `int32` decimetres, or `None` where no centre lands in the tile.
 
     A lattice pixel at the edge of two source rasters takes centres from both, and a mean of two
-    means is not the mean, so the tile is pooled whole, from all its rasters at once.
+    means is not the mean, so the tile is pooled whole, from all its rasters at once. Then each
+    raster that covers a pixel without a centre is read again for `fill_gaps`. A source finer than
+    the lattice gives a centre to each pixel of its footprint, so there the fill writes nothing.
     """
 
     tile = tile_window(ti, tj)
@@ -84,6 +123,7 @@ def pool_tile(rasters: list[Path], source: Source, ti: int, tj: int):
     maximum = np.full((TILE_PX, TILE_PX), VOID, dtype="float32")
     total = np.zeros((TILE_PX, TILE_PX), dtype="float64")
     count = np.zeros((TILE_PX, TILE_PX), dtype="int64")
+    covered = []
     for path in rasters:
         values, src_transform, src_crs, bounds, _ = read_source(path, source.grid_crs(), source.void)
         check_world(bounds, str(path))
@@ -99,9 +139,23 @@ def pool_tile(rasters: list[Path], source: Source, ti: int, tj: int):
         np.maximum(maximum[into], high[part], out=maximum[into])
         total[into] += sums[part]
         count[into] += counts[part]
+        covered.append((path, into))
+    for path, into in covered:
+        if (count[into] == 0).any():
+            values, src_transform, src_crs, _, _ = read_source(path, source.grid_crs(), source.void)
+            fill_gaps(maximum[into], total[into], count[into], (values, src_transform, src_crs),
+                      lattice_part(tile, into))
     if not count.any():
         return None
     return to_int16(maximum), to_decimetres(total, count)
+
+
+def lattice_part(tile: Window, into) -> Window:
+    """The lattice window of the slice `into` of the north-up array of `tile`."""
+
+    rows, cols = into
+    return Window(tile.row0 + TILE_PX - rows.stop, tile.col0 + cols.start, rows.stop - rows.start,
+                  cols.stop - cols.start)
 
 
 def opened_as(archive: Path, directory: Path) -> Path:

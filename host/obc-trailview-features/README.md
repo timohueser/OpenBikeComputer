@@ -1,7 +1,7 @@
 # TrailView features
 
 The step `planner/trailview-features` of `obc data`: the TrailView feature tiles of a region, with
-the heights of roads, paths, tracks, bridges, tunnels, rivers and lakes. The
+the heights of roads, paths, tracks, bridges, tunnels, rivers and lakes, and the sea. The
 [spec](../../specs/trailview-features.md) defines the archive and what the heights promise.
 
 `obc-data-steps` runs the step as the function `obc-trailview-features/features`. The step needs
@@ -10,11 +10,12 @@ Osmium (`osmium-tool`) on the path.
 ## Direct bake
 
 The binary bakes the archive of a box without `obc data`, with the kind table and the road classes
-of the checkout, and the terrain of a `planner-dem` MBTiles:
+of the checkout, and the terrain of a `planner-dem` MBTiles. Without `--sea`, the archive has no sea:
 
 ```sh
 cargo build --locked --release -p obc-trailview-features --bin trailview-features
-target/release/trailview-features --osm OSM.pbf --terrain TERRAIN.mbtiles --bounds W,S,E,N --output OUT.pmtiles
+target/release/trailview-features --osm OSM.pbf --terrain TERRAIN.mbtiles --bounds W,S,E,N --output OUT.pmtiles \
+  --sea water-polygons-split-3857.zip
 ```
 
 `builder/web/tests/browser/trailview/box.sh` and the engine fixture recipe use it.

@@ -27,6 +27,7 @@ and test them from their own directories. The nearest README has the surface's s
 
 - Run `obc` inside the task's checkout and check the printed root. `obc help TASK` describes a task.
 - Obtain explicit owner permission before offloading builds or working data to another machine to bypass local memory or disk limits.
+- Never print `tools/obc.local` or the files in `~/.config/openbikecomputer/`: they hold operator settings and secrets. List the names with `grep -oE '^\s*(export\s+)?[A-Za-z0-9_]+=' FILE`.
 - Do not run planner publications or deployments concurrently.
 - Publish to prod only with a review ID that the owner approved: `obc data update prod --yes --expect ID`.
 - Test the crates you changed, never the whole workspace by default:

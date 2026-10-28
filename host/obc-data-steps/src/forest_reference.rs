@@ -7,13 +7,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
-use obc_data::prepared::{day, Job, Plan, Prepared, Scope};
+use obc_data::prepared::{Job, Plan, Prepared, Scope};
 use obc_data::product::Wanted;
 use obc_data::regions::Bbox;
 use obc_data::sources::Source;
 use planner_router_build::grid::mercator;
 
-use crate::prepared_tiles::{self, Tile};
+use crate::prepared_tiles::{self, read_on_day, reuse, Tile};
 use crate::terrain_reference::{area, meets};
 
 /// The id of the prepared source.
@@ -79,7 +79,7 @@ impl Prepared for ForestReference {
         if !inputs.is_empty() {
             inputs.push(wanted(LEAF_TYPE));
         }
-        Ok(Plan { inputs, files: Some(tiles.len() as u64) })
+        Ok(Plan { inputs, files: Some(tiles.len() as u64), work_bytes: 0 })
     }
 
     /// Each tile of the region where a model has a pixel, made once and uploaded with the batch of
@@ -115,25 +115,17 @@ impl Prepared for ForestReference {
             Ok(command)
         })?;
         // A tile outside the region is the tile of the version before.
-        if let Some(previous) = &previous {
-            let region: BTreeSet<String> = tiles.iter().map(|tile| tile.files[0].0.clone()).collect();
-            let kept: Vec<String> =
-                previous.files.iter().map(|file| file.path.clone()).filter(|path| !region.contains(path)).collect();
-            for path in kept {
-                job.reuse(previous, &path)?;
-            }
-        }
-        // The services have no versions of their own: the day of the prepare names what it read.
-        let version = day(&job.version).to_string();
+        let region: BTreeSet<String> = tiles.iter().map(|tile| tile.files[0].0.clone()).collect();
+        reuse(job, previous.as_ref(), |path| !region.contains(path))?;
         let read: BTreeSet<&String> = keys.values().flatten().map(|(_, id)| id).collect();
         for model in read {
             let made = keys.iter().filter(|(_, models)| models.iter().any(|(_, id)| id == model));
             let made = made.map(|((x, y), _)| format!("12/{x}/{y}.tif"));
             let made = made.filter_map(|path| Some((path.clone(), digests.get(&path)?.clone()))).collect();
-            job.input(model, &version, made)?;
+            read_on_day(job, model, made)?;
         }
         if !digests.is_empty() {
-            job.input(LEAF_TYPE, &version, digests)?;
+            read_on_day(job, LEAF_TYPE, digests)?;
         }
         Ok(())
     }

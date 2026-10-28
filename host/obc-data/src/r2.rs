@@ -68,7 +68,9 @@ impl Account {
         let set = |name: &str| var(name).filter(|value| !value.is_empty());
         let need = |suffix: &str| {
             let name = format!("{prefix}_{suffix}");
-            set(&name).ok_or_else(|| format!("{name} is not set; tools/obc.local or the environment holds it"))
+            set(&name).ok_or_else(|| {
+                format!("{name} is not set; put it in ~/.config/openbikecomputer/credentials.env or the environment")
+            })
         };
         let bucket = need("BUCKET")?;
         let endpoint = match set(&format!("{prefix}_ENDPOINT")) {
