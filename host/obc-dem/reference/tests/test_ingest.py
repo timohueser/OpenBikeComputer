@@ -314,15 +314,32 @@ class Pool(ArchiveCase):
         self.assertEqual(int((data == 1500).sum()), 1)
         self.assertGreater(int((data == 1000).sum()), 0)
 
-    def test_a_source_coarser_than_the_step_invents_nothing(self):
-        """A 20 m source reaches the lattice pixels its centres land in, and no others."""
+    def test_a_source_coarser_than_the_step_fills_its_footprint(self):
+        """A 20 m source keeps the pixels its centres land in, and fills each other pixel between
+        its centres with their bilinear height, which on a plane is the plane. Nothing outside."""
 
-        values = np.full((10, 10), 1234.0, dtype="float32")
-        raster = source_raster(self.root / "coarse.tif", values, transform=grid(step=20.0))
-        ti, tj, _, _ = archive_pixel(grid(step=20.0), 5, 5)
-        data, _ = ingest.pool_tile([raster], ingest.SOURCES["ch"], ti, tj)
-        self.assertEqual(int((data == 1234).sum()), 100)  # one lattice pixel per source pixel centre
-        self.assertEqual(int(((data != 1234) & (data != ingest.NODATA)).sum()), 0)
+        plane = lambda x, y: 1000.0 + 0.3 * (x - EAST) - 0.2 * (y - NORTH)  # noqa: E731
+        transform = grid(step=20.0)
+        xs, ys = ingest.source_xy(transform, *np.mgrid[0:10, 0:10] + 0.5)
+        raster = source_raster(self.root / "coarse.tif", plane(xs, ys), transform=transform)
+        ti, tj, _, _ = archive_pixel(transform, 5, 5)
+        source = ingest.Source("xx", "Testland", "xx test product", 20.0, "CC0", "EGM2008")
+        maximum, mean = ingest.pool_tile([raster], source, ti, tj)
+
+        reached = np.zeros(maximum.shape, dtype=bool)
+        for row in range(10):
+            for col in range(10):
+                reached[archive_pixel(transform, row, col)[2:]] = True
+        rows, cols = np.mgrid[0:ingest.TILE_PX, 0:ingest.TILE_PX]
+        lat = (ingest.GRID_ORIGIN + ((ti + 1) * ingest.TILE_PX - 1 - rows) * ingest.STEP + ingest.STEP // 2) / 1e6
+        lon = (ingest.GRID_ORIGIN + (tj * ingest.TILE_PX + cols) * ingest.STEP + ingest.STEP // 2) / 1e6
+        x, y = (np.asarray(v).reshape(lat.shape) for v in rasterio.warp.transform(
+            ingest.WGS84, LV95, lon.ravel(), lat.ravel()))
+        between = (x > EAST + 10) & (x < EAST + 190) & (y < NORTH - 10) & (y > NORTH - 190)
+        np.testing.assert_array_equal(maximum != ingest.NODATA, between | reached)
+        filled = between & ~reached
+        self.assertGreater(int(filled.sum()), int(reached.sum()))
+        self.assertLess(float(np.abs(mean[filled] / 10.0 - plane(x[filled], y[filled])).max()), 0.06)
 
 
 class BoxService(ingest.Source):
@@ -380,7 +397,8 @@ class Fetch(ArchiveCase):
         for (ti, tj), heights in (((4812, 4223), 25 * 100), ((4812, 4224), 75 * 100)):
             tile, name = f"{ti:04}/{tj:04}", f"{ti:04}-{tj:04}"
             path = self.root / "out" / "16" / f"{tile}.tif"
-            files = [f"16/{tile}.tif", f"{name}.keys", f"{name}.mean.sha256", f"{name}.sha256", f"mean/16/{tile}.tif"]
+            files = [f"16/{tile}.tif", f"{name}.keys", f"{name}.mean.sha256", f"{name}.samples", f"{name}.sha256",
+                     f"mean/16/{tile}.tif"]
             self.assertEqual(self.fetch("ch", name), (0, files))
             self.assertEqual(service.boxes[-1], ingest.tile_bounds(ti, tj))
             self.assertEqual(tile_problems(path, ti, tj), [])
@@ -395,27 +413,34 @@ class Fetch(ArchiveCase):
         tiles = dict(digests)
 
         index, listed, keys = self.root / "index.json", self.root / "digests.json", self.root / "keys.json"
+        biases = self.root / "biases.json"
         listed.write_text(json.dumps(digests), encoding="utf-8")
         keys.write_text(json.dumps({tile: ["ch"] for tile in tiles}), encoding="utf-8")
+        biases.write_text(json.dumps({"ch": -1.25}), encoding="utf-8")
         self.assertEqual(ingest.main(["index-terrain", "--fetched", "2026-10-01", "--digests", str(listed),
-                                      "--keys", str(keys), "--models", "ch", "--out", str(index)]), 0)
+                                      "--keys", str(keys), "--models", "ch", "--biases", str(biases),
+                                      "--out", str(index)]), 0)
         index = json.loads(index.read_text(encoding="utf-8"))
         self.assertEqual((index["sha256"], index["sources"]["ch"]["fetched"]), (tiles, "2026-10-01"))
+        self.assertEqual(index["sources"]["ch"]["glo30_bias_m"], -1.25)
         self.assertEqual(index["contributors"], {tile: ["ch"] for tile in tiles})
 
-        # A next version keeps the tiles before and the facts of a model that it did not fetch.
+        # A next version keeps the tiles before and the facts of a model that it did not fetch, its
+        # bias too.
         first = sorted(tiles)[0]
         later = self.root / "later.json"
         listed.write_text(json.dumps({first: "new pixels"}), encoding="utf-8")
         keys.write_text(json.dumps({first: ["nl", "ch"]}), encoding="utf-8")
+        biases.write_text(json.dumps({"nl": 0.5}), encoding="utf-8")
         self.stand_in("nl")
         self.assertEqual(ingest.main(["index-terrain", "--base", str(self.root / "index.json"), "--fetched", "2026-10-24",
                                       "--digests", str(listed), "--keys", str(keys), "--models", "nl",
-                                      "--out", str(later)]), 0)
+                                      "--biases", str(biases), "--out", str(later)]), 0)
         later = json.loads(later.read_text(encoding="utf-8"))
         self.assertEqual(later["sha256"], {**tiles, first: "new pixels"})
         self.assertEqual((later["tiles"][first], later["contributors"][first]), ("nl", ["nl", "ch"]))
         self.assertEqual((later["sources"]["ch"]["fetched"], later["sources"]["nl"]["fetched"]), ("2026-10-01", "2026-10-24"))
+        self.assertEqual((later["sources"]["ch"]["glo30_bias_m"], later["sources"]["nl"]["glo30_bias_m"]), (-1.25, 0.5))
 
     def test_the_mean_is_beside_the_maximum_over_every_raster_of_the_tile(self):
         """A 32 µdeg source puts four centres in each lattice pixel. Cut in two between the
@@ -478,7 +503,7 @@ class Fetch(ArchiveCase):
             self.assertEqual(self.fetch("au", name)[0], 1, "the datum of the order is not confirmed")
             os.environ["OBC_REFERENCE_AU_DATUM"] = "AHD"
             path = f"16/{ti:04}/{tj:04}.tif"
-            files = [path, f"{name}.keys", f"{name}.mean.sha256", f"{name}.sha256", f"mean/{path}"]
+            files = [path, f"{name}.keys", f"{name}.mean.sha256", f"{name}.samples", f"{name}.sha256", f"mean/{path}"]
             self.assertEqual(self.fetch("au", name), (0, files))
             os.environ["OBC_REFERENCE_AU_INPUT"] = os.path.relpath(self.inputs)
             self.assertEqual(self.fetch("au", name)[0], 1, "a relative path names another directory in the step")

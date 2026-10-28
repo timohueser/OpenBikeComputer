@@ -98,16 +98,9 @@ pub fn planner_terrain(request: &Request) -> Result<(), String> {
     let bounds = bounds(&request.options)?;
     let text = |name: &str| request.options[name].as_str().ok_or(format!("option `{name}` is not a string"));
     let credit = text("attribution")?;
-    let reference = match request.layers.get("planner/reference") {
-        None => None,
-        Some(files) => {
-            let view = request.output.with_file_name("view");
-            obc_data::engine::view(files, &view)?;
-            Some(view.join("reference"))
-        }
-    };
+    let reference = reference(request)?;
     let mut terrain = crate::planner::Terrain::open(&glo30(request, bounds), credit, reference.as_deref(), bounds)?;
-    let osm: Vec<_> = request.layers.iter().filter(|(name, _)| *name != "planner/reference").collect();
+    let osm: Vec<_> = request.layers.iter().filter(|(name, _)| *name != REFERENCE).collect();
     let pbf = match osm[..] {
         [] => None,
         [(name, files)] => match files.values().collect::<Vec<_>>()[..] {
@@ -127,6 +120,17 @@ pub fn planner_terrain(request: &Request) -> Result<(), String> {
     }
     let text = bounds.map(|value| value.to_string()).join(",");
     crate::terrarium::write(&mut terrain, bounds, &text, &request.output.join("terrain.mbtiles"))
+}
+
+/// The step of the mean archive of the national models that the planner reads.
+pub const REFERENCE: &str = "planner/reference";
+
+/// The archive of the layer [`REFERENCE`] of the request, when it has the layer.
+pub fn reference(request: &Request) -> Result<Option<PathBuf>, String> {
+    let Some(files) = request.layers.get(REFERENCE) else { return Ok(None) };
+    let view = request.output.with_file_name("view");
+    obc_data::engine::view(files, &view)?;
+    Ok(Some(view.join("reference")))
 }
 
 /// The option `bounds`: `[west, south, east, north]` in degrees.

@@ -2,7 +2,8 @@
 //! archive (`host/obc-dem/reference/README.md`), `16/<ti>/<tj>.tif` of the maximum and
 //! `mean/16/<ti>/<tj>.tif` of the mean, and the `index.json` of each pool. A version extends the
 //! version before: `ingest.py fetch` folds the models that meet its region into each tile of that
-//! region, and the version keeps every other tile of the version before without an upload.
+//! region, and the version keeps every other tile of the version before without an upload. Each
+//! index states the GLO-30 bias of each model (`crate::terrain_bias`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -49,7 +50,7 @@ impl Prepared for TerrainReference {
     }
 
     fn revision(&self) -> u32 {
-        1
+        2
     }
 
     fn regional(&self) -> bool {
@@ -111,8 +112,8 @@ impl Prepared for TerrainReference {
                 keys.entry(tile).or_default().push(key(model).into());
             }
         }
-        let before = |pool: &str| previous.as_ref().map(|manifest| index(job, manifest, pool)).transpose();
-        let held = before("")?.map(|index| index.contributors).unwrap_or_default();
+        let before = previous.as_ref().map(|manifest| index(job, manifest, "")).transpose()?;
+        let held = before.as_ref().map(|index| index.contributors.clone()).unwrap_or_default();
         let tiles: Vec<Tile> = keys
             .keys()
             .map(|tile| {
@@ -120,7 +121,7 @@ impl Prepared for TerrainReference {
                 let path = format!("16/{:04}/{:04}.tif", tile.i, tile.j);
                 let files =
                     vec![(format!("mean/{path}"), format!("{name}.mean.sha256")), (path, format!("{name}.sha256"))];
-                Tile { name: name.clone(), files, marks: vec![format!("{name}.keys")] }
+                Tile { name: name.clone(), files, marks: vec![format!("{name}.keys"), format!("{name}.samples")] }
             })
             .collect();
         let models: BTreeMap<String, String> =
@@ -159,6 +160,9 @@ impl Prepared for TerrainReference {
             let text = fs::read_to_string(marks.join(&tile.marks[0])).map_err(|e| format!("{}: {e}", tile.marks[0]))?;
             sources.insert(tile.name.replace('-', "/"), text.trim().split(',').map(String::from).collect());
         }
+        let biases = crate::terrain_bias::measure(job, previous.as_ref(), before.as_ref(), &sources)?;
+        let biased = job.state.join("biases.json");
+        obc_data::store::write_atomic(&biased, &serde_json::to_vec(&biases).expect("biases serialize"))?;
         let fetched: BTreeSet<&String> = keys.values().flatten().collect();
         let fetched: Vec<&str> = fetched.into_iter().map(String::as_str).collect();
         // A model has no versions of its own: the day of the prepare names what it read.
@@ -176,7 +180,7 @@ impl Prepared for TerrainReference {
             obc_data::store::write_atomic(&held, &serde_json::to_vec(&sources).expect("keys serialize"))?;
             let mut command = (self.ingest)(job.root)?;
             command.args(["index-terrain", "--pool", pool, "--fetched", &version, "--models", &fetched.join(",")]);
-            command.arg("--digests").arg(&listed).arg("--keys").arg(&held);
+            command.arg("--digests").arg(&listed).arg("--keys").arg(&held).arg("--biases").arg(&biased);
             if let Some(previous) = &previous {
                 command.arg("--base").arg(job.earlier_file(previous, &format!("{prefix}index.json"))?);
             }
@@ -248,10 +252,15 @@ fn key(model: &Source) -> &str {
     &model.id["dtm-".len()..]
 }
 
-/// The sources of each tile of the pool `prefix` of the version before.
+/// The sources of each tile of the pool `prefix` of the version before, its best source and the
+/// facts of each source.
 #[derive(serde::Deserialize)]
-struct Index {
+pub(crate) struct Index {
     contributors: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub tiles: BTreeMap<String, String>,
+    #[serde(default)]
+    pub sources: BTreeMap<String, serde_json::Value>,
 }
 
 fn index(job: &Job, manifest: &Manifest, prefix: &str) -> Result<Index, String> {
@@ -394,9 +403,10 @@ fetch)
     if [ -e "none-$4" ]; then touch "$8/$4.none"; exit 0; fi
     for pool in "" mean/; do mkdir -p "$8/${pool}16/${4%-*}" && echo "$pool$4 $2" > "$8/${pool}16/${4%-*}/${4#*-}.tif"; done
     echo "$2" > "$8/$4.keys"
+    yes - | head -n 256 > "$8/$4.samples"
     echo "mean of $4" > "$8/$4.mean.sha256" && echo "pixels of $4" > "$8/$4.sha256" ;;
 index-terrain)
-    over=""; [ $# -gt 13 ] && over=" over"
+    over=""; [ $# -gt 15 ] && over=" over"
     echo "$1 $3$over" >> calls
     [ -e fail-index ] && exit 1
     eval "out=\${$#}"

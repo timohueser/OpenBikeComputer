@@ -20,7 +20,7 @@ use obc_data::regions::{geofabrik, Area, Bbox, Regions};
 use obc_data::release::{Output, Release};
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
-use obc_dem::reference::{Window, TILE_LOG2};
+use obc_dem::reference::TILE_LOG2;
 use obc_dem::step::GLO30;
 use obc_map_core::grid::CellId;
 use planner_router_build::grid::{mercator, tile_bounds};
@@ -40,10 +40,12 @@ pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, 
 /// The terrain of the maps and of TrailView: its format is that of the terrain tiles of
 /// `specs/planner-release.md`.
 pub static PLANNER_TERRAIN: Layer =
-    Layer { revision: 3, ..whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_FEATURES]) };
+    Layer { revision: 4, ..whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_FEATURES]) };
 /// The routing package, its grid and the route network overlays.
-pub static PLANNER_ROUTING: Layer =
-    whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER]);
+pub static PLANNER_ROUTING: Layer = Layer {
+    revision: 2,
+    ..whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
+};
 /// The search databases and the query model. Its format is the search schema of
 /// `specs/planner-release.md`.
 pub static PLANNER_SEARCH: Layer = Layer { revision: 2, ..whole("planner/search", 6, &[&SEARCH_SERVICE]) };
@@ -341,7 +343,10 @@ impl Planner {
         let routing = Step {
             layer: &PLANNER_ROUTING,
             name: "planner/routing".into(),
-            inputs: std::iter::once(Input::step(cut.name.clone())).chain(tiles(bounds, &land, &glo30)).collect(),
+            inputs: std::iter::once(Input::step(cut.name.clone()))
+                .chain(tiles(bounds, &land, &glo30))
+                .chain(reference.iter().map(|step| Input::step(&step.name)))
+                .collect(),
             options: json!({
                 "region": name,
                 "bounds": bounds,
@@ -684,19 +689,16 @@ fn snapshot(
     Ok(Input::Snapshot { source: source.into(), version, params, files: Vec::new() })
 }
 
-/// The mean tiles of `terrain` that meet `bounds`, as one archive: the step `planner/reference`.
-/// `None` when the version has no tile there.
+/// The mean tiles of `terrain` that the heights in `bounds` read, as one archive: the step
+/// `planner/reference`. `None` when the version has no tile there.
 fn reference(
     inputs: &Inputs,
     store: &Store,
-    [west, south, east, north]: [f64; 4],
+    bounds: [f64; 4],
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<Step>, Unplanned> {
-    let udeg = |degrees: f64| (degrees * 1e6) as i64;
-    let window = Window { lat_lo: udeg(south), lat_hi: udeg(north) + 1, lon_lo: udeg(west), lon_hi: udeg(east) + 1 };
     let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
-    let tiles: BTreeSet<CellId> = window.tiles().map(tile).collect();
-    // Without a layer, the read writes no note and reads no polygon.
+    let tiles: BTreeSet<CellId> = obc_dem::planner::reach(bounds).tiles().map(tile).collect();
     // Without a layer, the read writes no note and reads no polygon.
     let models = Models { tiles: &tiles, pool: "mean/", layer: None };
     let Some(read) = models.read(inputs, store, &mut BTreeMap::new(), wanted, &mut Vec::new())? else {
@@ -1296,7 +1298,7 @@ mod tests {
     }
 
     #[test]
-    fn the_terrain_reads_the_mean_tiles_of_terrain_in_its_bounds() {
+    fn the_terrain_and_the_routing_read_the_mean_tiles_of_terrain_in_their_bounds() {
         let temp = temp("planner-reference");
         let (store, mut inputs) = (store(&temp, &["2026-10-01"]), inputs(AREA, &[]));
         let paths = ["16/4825/4218.tif", "mean/16/4825/4218.tif", "mean/16/4000/4000.tif"];
@@ -1310,11 +1312,11 @@ mod tests {
             (&files[..], &reference.options["pool"]),
             (&["mean/16/4825/4218.tif".to_string(), "mean/index.json".to_string()][..], &json!("mean"))
         );
-        let terrain = steps.iter().find(|step| step.name == "planner/terrain").unwrap();
-        assert!(terrain
-            .inputs
-            .iter()
-            .any(|input| matches!(input, Input::Step { name, .. } if name == "planner/reference")));
+        for reader in ["planner/terrain", "planner/routing"] {
+            let step = steps.iter().find(|step| step.name == reader).unwrap();
+            let reads = |input: &Input| matches!(input, Input::Step { name, .. } if name == "planner/reference");
+            assert!(step.inputs.iter().any(reads), "{reader} reads the national models");
+        }
     }
 
     #[test]
