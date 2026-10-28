@@ -20,6 +20,7 @@ use crate::prepared::{self, Job, Manifest, Opening, Prepared, Scope};
 use crate::settings::Settings;
 use crate::sources::{FetchKind, Registry, Source};
 use crate::store::{sha256_hex, Store};
+use crate::target::Target;
 
 #[derive(Args)]
 pub struct PrepareArgs {
@@ -178,6 +179,7 @@ pub fn command(root: &Path, prepared: &[&dyn Prepared], args: PrepareArgs, json:
     if let Some(done) = super::api::detached(&store, work, print) {
         return done;
     }
+    prepared::warn_shadowed(http.roots(), &args.id);
     let mut review = plan(&context, &home(&http, &args.id)?, &asked, &today)?.review;
     review.args = ["source", "prepare", &args.id].map(String::from).into();
     args.region.iter().for_each(|region| review.args.extend(["--region".into(), region.clone()]));
@@ -195,7 +197,6 @@ pub fn command(root: &Path, prepared: &[&dyn Prepared], args: PrepareArgs, json:
 
 /// The archive root of the home of `id` in the archive of `http`, as [`prepared::place`] chooses it.
 pub(super) fn home(http: &Http, id: &str) -> Result<PathBuf, Error> {
-    prepared::warn_shadowed(http.roots(), id);
     prepared::place(http.roots(), id).map_err(|e| {
         Code::Blocked
             .error(format!("`{id}`: {e}; nothing changed"))
@@ -240,9 +241,7 @@ fn plan<'a>(context: &Context<'a>, home: &Path, asked: &Asked, today: &str) -> R
     let languages = producer.languages(asked.languages).map_err(|e| Code::Usage.error(e))?;
     let folder = prepared::folder(home, id);
     let listed = prepared::versions(&folder, id)?;
-    if listed.is_empty() {
-        uncopied(root, store, id)?;
-    }
+    uncopied(root, store, &folder, id)?;
     let newest = listed.iter().filter_map(|listed| prepared::order(&listed.version)).max();
     // A run never writes a file of a complete version. When the manifest of a stopped version is
     // the one of its journal, that run crashed before it listed the version: this run lists it.
@@ -265,7 +264,7 @@ fn plan<'a>(context: &Context<'a>, home: &Path, asked: &Asked, today: &str) -> R
     let plan_path = prepared::job_dir(store, id, &version).join("state/plan.json");
     let made: prepared::Plan = if !fresh && plan_path.is_file() {
         let selection = plan_path.parent().unwrap().parent().unwrap().join("selection.json");
-        let expected = prepared::selection(home, scope.as_ref(), &languages);
+        let expected = prepared::selection(home, scope.as_ref(), &languages).map_err(|e| Code::Blocked.error(e))?;
         if std::fs::read(selection).map_err(|e| e.to_string())? != expected {
             return Err(Code::Usage.error(
                 "a run for another archive root, region or language selection stopped; resume it with its original selection",
@@ -440,23 +439,24 @@ fn check(review: &PrepareReview, expect: Option<&str>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Refuse the first version of `id` while a target of `data/targets.toml` lists versions in its
-/// legacy folder `sources/<id>/`: they go into the archive first, so no version name is taken twice.
-/// It goes with `obc data source copy`.
-fn uncopied(root: &Path, store: &Store, id: &str) -> Result<(), Error> {
+/// Refuse a prepare of `id` while a target of `data/targets.toml` lists a version in its legacy
+/// folder `sources/<id>/` that the home `folder` lacks: each goes into the archive first, so a new
+/// version extends the newest one and takes no name twice. It goes with `obc data source copy`.
+fn uncopied(root: &Path, store: &Store, folder: &Target, id: &str) -> Result<(), Error> {
     for (name, target) in crate::target::load(root, store).map_err(|e| Code::InvalidData.error(e))? {
-        let listed = prepared::versions(&target.within(&format!("sources/{id}")), id).map_err(|e| {
+        let unread = |e: String| {
             Code::Blocked
                 .error(format!("`{name}` cannot be read ({e}); nothing changed"))
                 .fix(format!("Run again when `{name}` answers: it can hold versions of `{id}` to copy first."))
-        })?;
-        if !listed.is_empty() {
+        };
+        let theirs = prepared::versions(&target.within(&format!("sources/{id}")), id).map_err(unread)?;
+        if let Some(entry) = prepared::uncopied(folder, id, &theirs)? {
             return Err(Code::Blocked
                 .error(format!(
-                    "`{name}` lists {} versions of `{id}` in sources/{id}/, and the archive none; nothing changed",
-                    listed.len()
+                    "`{name}` lists {id}@{} in sources/{id}/, which the archive lacks; nothing changed",
+                    entry.version
                 ))
-                .fix(format!("Copy them first: `obc data source copy {id} --from {name}`.")));
+                .fix(format!("Copy it first: `obc data source copy {id} --from {name}`.")));
         }
     }
     Ok(())
@@ -490,6 +490,9 @@ pub(super) fn locked<T>(
 pub(super) fn prepare(context: &Context, asked: &Asked, today: &str, run: &mut Run) -> Result<Done, Error> {
     let id = asked.id;
     let home = home(context.http, id)?;
+    if let Some(warning) = prepared::shadow_warning(context.http.roots(), id) {
+        run.line(&warning)?;
+    }
     locked(context.store, (&home, id), run, |run, held| {
         run.record(&Event::Phase { phase: Phase::Prepare })?;
         let planned = plan(context, &home, asked, today)?;
@@ -1199,6 +1202,36 @@ pub(super) mod tests {
         let refused = prepare(&fixture, "2026-10-02", Asked::default()).unwrap_err();
         assert!(refused.message.contains("is in versions.json and has no manifest"), "{}", refused.message);
         assert_eq!(keys(&archive, "2026-10-01/").len(), 3, "its files stay");
+    }
+
+    #[test]
+    fn a_fetch_with_the_param_file_copies_that_file_of_the_home_into_the_store() {
+        let (fixture, archive, _) = setup("prepare-file");
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap();
+        let (root, http) = (fixture.root(), http(&fixture));
+        let sources = Registry::load(&root).unwrap().sources;
+        let source = sources.iter().find(|source| source.id == "sample").unwrap();
+        let version = Some(pinned(&archive, "2026-10-01"));
+        let params = vec![("file".to_string(), "b.txt".to_string())];
+        let request = crate::fetch::Request { refresh: false, source, version, params };
+        let snapshot = crate::fetch::fetch(&root, &fixture.store, &http, &request).unwrap();
+        let names: Vec<&str> = snapshot.files.iter().map(|file| file.name.as_str()).collect();
+        assert_eq!(names, [prepared::MANIFEST, "b.txt"]);
+        let b = &snapshot.files[1];
+        assert_eq!(b.url, "prepared/sample/2026-10-01/b.txt");
+        let held = fs::read(prepared::path(&archive, "sample").join("2026-10-01/b.txt")).unwrap();
+        assert_eq!(fs::read(fixture.store.object(&b.sha256)).unwrap(), held);
+        let elsewhere = Http::new().with_archive(&fixture.scratch.0.join("other"));
+        let refused = crate::fetch::fetch(
+            &root,
+            &fixture.store,
+            &elsewhere,
+            &crate::fetch::Request {
+                version: Some(pinned(&archive, "2026-10-01").replace("2026-10-01/", "2026-10-02/")),
+                ..request
+            },
+        );
+        assert!(prepared::absent_from_archive(&refused.unwrap_err()));
     }
 
     #[test]

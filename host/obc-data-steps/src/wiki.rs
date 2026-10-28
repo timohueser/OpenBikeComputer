@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 
 /// The directory of the dumps on the machine that prepares.
 const DUMPS: &str = "OBC_WIKI_DUMPS";
-/// The shards of one upload.
+/// The shards of one move into the home.
 const BATCH: usize = 64;
 
 pub struct Wiki {

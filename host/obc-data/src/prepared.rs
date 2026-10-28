@@ -137,6 +137,9 @@ pub(crate) fn place(roots: &[PathBuf], id: &str) -> Result<PathBuf, String> {
         return Err("OBC_DATA_ARCHIVE names no root, and a prepared version lives only in the archive".into());
     }
     crate::datasets::mounted(roots)?;
+    if let Some(root) = roots.iter().find(|root| root.to_str().is_none()) {
+        return Err(format!("the archive root {} is not UTF-8", root.display()));
+    }
     if let Some(root) = home(roots, id) {
         return Ok(root.clone());
     }
@@ -149,24 +152,46 @@ pub(crate) fn place(roots: &[PathBuf], id: &str) -> Result<PathBuf, String> {
 pub(crate) fn shadowed<'a>(roots: &'a [PathBuf], id: &str) -> Option<(&'a PathBuf, &'a PathBuf)> {
     let home = home(roots, id)?;
     let holds = |root: &&PathBuf| fs::read_dir(path(root, id)).is_ok_and(|mut entries| entries.next().is_some());
-    let later = roots.iter().skip_while(|root| *root != home).skip(1).find(holds)?;
+    let later = roots.iter().skip_while(|root| *root != home).skip(1).filter(|root| *root != home).find(holds)?;
     Some((home, later))
 }
 
-/// Warn when [`shadowed`] finds a second folder of `id`.
+/// The warning when [`shadowed`] finds a second folder of `id`.
+pub(crate) fn shadow_warning(roots: &[PathBuf], id: &str) -> Option<String> {
+    let (home, later) = shadowed(roots, id)?;
+    let (home, later) = (path(home, id), path(later, id));
+    Some(format!("warning: {} and {} both hold `{id}`; only the first serves", home.display(), later.display()))
+}
+
+/// Write the [`shadow_warning`] of `id` to standard error.
 pub(crate) fn warn_shadowed(roots: &[PathBuf], id: &str) {
-    if let Some((home, later)) = shadowed(roots, id) {
-        eprintln!(
-            "obc data: warning: {} and {} both hold `{id}`; only the first serves",
-            path(home, id).display(),
-            path(later, id).display()
-        );
+    if let Some(warning) = shadow_warning(roots, id) {
+        eprintln!("obc data: {warning}");
     }
 }
 
-/// Remove the home of `id` in `root` while it holds only the files of its lock.
+/// The first of `theirs`, the versions of a legacy folder `sources/<id>/`, that the home `folder`
+/// lacks: an entry of its `versions.json` with the same manifest SHA-256, and that manifest.
+pub(crate) fn uncopied<'a>(folder: &Target, id: &str, theirs: &'a [Version]) -> Result<Option<&'a Version>, String> {
+    let ours = versions(folder, id)?;
+    for entry in theirs {
+        let sha256 = &entry.manifest_sha256;
+        let listed = ours.iter().any(|ours| ours.version == entry.version && ours.manifest_sha256 == *sha256);
+        let held = folder.get(&format!("{}/{MANIFEST}", entry.version))?;
+        if !listed || held.is_none_or(|bytes| sha256_hex(&bytes) != *sha256) {
+            return Ok(Some(entry));
+        }
+    }
+    Ok(None)
+}
+
+/// Remove the home of `id` in `root` while its lock is free and it holds only the files of that
+/// lock: another run that took the lock keeps the home.
 pub(crate) fn unmake(root: &Path, id: &str) {
     let home = path(root, id);
+    if !matches!(crate::lock::read(&folder(root, id)), Ok(None | Some((crate::lock::LockFile::Free, _)))) {
+        return;
+    }
     let Ok(entries) = fs::read_dir(&home) else { return };
     let names: Vec<_> = entries.filter_map(|entry| entry.ok()?.file_name().into_string().ok()).collect();
     if names.iter().all(|name| [crate::lock::LOCK, ".lock"].contains(&name.as_str())) {
@@ -424,8 +449,9 @@ pub(crate) fn list(folder: &Target, id: &str, version: &str) -> Result<Version, 
 
 /// `selection.json` of a run: the archive root of the home, the scope and the languages. A resume
 /// with another root refuses, so a stopped run of a test root never resumes into another home.
-pub(crate) fn selection(root: &Path, scope: Option<&Scope>, languages: &[String]) -> Vec<u8> {
-    serde_json::to_vec(&(root, scope, languages)).expect("a selection serializes")
+pub(crate) fn selection(root: &Path, scope: Option<&Scope>, languages: &[String]) -> Result<Vec<u8>, String> {
+    let root = root.to_str().ok_or_else(|| format!("the archive root {} is not UTF-8", root.display()))?;
+    Ok(serde_json::to_vec(&(root, scope, languages)).expect("a selection serializes"))
 }
 
 /// What a resume needs on this machine: `STORE/prepared/<id>/<version>/` holds the selection of the
@@ -520,7 +546,7 @@ impl<'a> Job<'a> {
             fs::create_dir_all(dir.join(folder)).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         let selection_file = dir.join("selection.json");
-        let bytes = selection(home, scope.as_ref(), languages);
+        let bytes = selection(home, scope.as_ref(), languages)?;
         match fs::read(&selection_file) {
             Ok(held) if held == bytes => {}
             Ok(_) => {

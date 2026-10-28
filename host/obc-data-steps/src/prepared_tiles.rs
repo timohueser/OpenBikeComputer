@@ -101,7 +101,7 @@ pub fn make(
     Ok(digests)
 }
 
-/// Whether the target has the files of `tile`, or the tile has no data.
+/// Whether the home has the files of `tile`, or the tile has no data.
 fn done(job: &Job, marks: &Path, tile: &Tile) -> bool {
     tile.files.iter().all(|(path, _)| job.done(path)) || marks.join(format!("{}.none", tile.name)).exists()
 }
@@ -220,7 +220,7 @@ pub(crate) fn outline(job: &mut Job, area: &str) -> Result<Coverage, String> {
     Coverage::parse_poly(&fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?)
 }
 
-/// Keep each file of the version before for which `keep` holds, without an upload.
+/// Keep each file of the version before for which `keep` holds, without a copy.
 pub(crate) fn reuse(job: &mut Job, previous: Option<&Manifest>, keep: impl Fn(&str) -> bool) -> Result<(), String> {
     let Some(previous) = previous else { return Ok(()) };
     for path in previous.files.iter().map(|file| &file.path).filter(|path| keep(path)) {

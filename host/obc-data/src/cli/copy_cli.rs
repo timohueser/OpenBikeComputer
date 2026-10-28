@@ -81,6 +81,7 @@ pub fn command(root: &Path, args: CopyArgs, json: bool) -> Result<(), Error> {
     if let Some(done) = super::api::detached(&store, work, print) {
         return done;
     }
+    prepared::warn_shadowed(http.roots(), &args.id);
     let (plan, _) = plan(root, &store, &http, &args)?;
     if args.dry_run {
         return print_plan(&plan, json);
@@ -156,6 +157,9 @@ fn plan(root: &Path, store: &Store, http: &Http, args: &CopyArgs) -> Result<(Cop
 fn copy(root: &Path, store: &Store, http: &Http, args: &CopyArgs, run: &mut Run) -> Result<CopyPlan, Error> {
     let id = args.id.as_str();
     let home = prepare_cli::home(http, id)?;
+    if let Some(warning) = prepared::shadow_warning(http.roots(), id) {
+        run.line(&warning)?;
+    }
     let folder = prepared::folder(&home, id);
     let dir = prepared::path(&home, id);
     prepare_cli::locked(store, (&home, id), run, |run, lock| {
@@ -332,6 +336,22 @@ mod tests {
         assert_eq!(tree(&legacy), before, "the target stays");
         let again = copied(&fixture, false).unwrap();
         assert!(again.versions.iter().all(|version| version.copy.files == 0), "a second copy copies nothing");
+
+        // A copy that stopped after the first version: a prepare would extend that one.
+        let (listed, second) = (home.join("versions.json"), home.join("2026-10-02"));
+        let all = fs::read(&listed).unwrap();
+        let mut first: Vec<prepared::Version> = serde_json::from_slice(&all).unwrap();
+        first.truncate(1);
+        fs::write(&listed, serde_json::to_vec_pretty(&first).unwrap()).unwrap();
+        fs::rename(&second, home.join("aside")).unwrap();
+        let refused = prepare(&fixture, "2026-10-03", Asked::default()).unwrap_err();
+        assert!(
+            refused.message.contains("lists sample@2026-10-02 in sources/sample/, which the archive lacks"),
+            "{}",
+            refused.message
+        );
+        fs::write(&listed, &all).unwrap();
+        fs::rename(home.join("aside"), &second).unwrap();
         assert_eq!(prepare(&fixture, "2026-10-03", Asked::default()).unwrap().version, "2026-10-03");
     }
 

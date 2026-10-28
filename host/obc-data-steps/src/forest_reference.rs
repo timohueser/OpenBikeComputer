@@ -1,7 +1,7 @@
 //! The producer of `forest`: the canopy of each cell of the zoom 12 tiles at 256 px that the
 //! canopy models meet, `12/<x>/<y>.tif` (`specs/obc-data.md`). A version extends the
 //! version before: it makes each tile of its region again and keeps every other tile of the version
-//! before without an upload. `tools/forest_reference.py fetch` reduces the source rasters of one tile.
+//! before without a copy. `tools/forest_reference.py fetch` reduces the source rasters of one tile.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

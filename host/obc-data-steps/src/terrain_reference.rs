@@ -2,7 +2,7 @@
 //! archive (`host/obc-dem/reference/README.md`), `16/<ti>/<tj>.tif` of the maximum and
 //! `mean/16/<ti>/<tj>.tif` of the mean, and the `index.json` of each pool. A version extends the
 //! version before: `ingest.py fetch` folds the models that meet its region into each tile of that
-//! region, and the version keeps every other tile of the version before without an upload. Each
+//! region, and the version keeps every other tile of the version before without a copy. Each
 //! index states the GLO-30 bias of each model (`crate::terrain_bias`).
 
 use std::collections::{BTreeMap, BTreeSet};

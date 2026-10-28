@@ -26,12 +26,13 @@ pub fn mismatch(error: &str) -> bool {
     error.starts_with(MISMATCH)
 }
 
-/// The roots of `OBC_DATA_ARCHIVE`, in order and absolute, so that a run in another folder reads the
-/// same roots; none when it is unset or empty.
+/// The roots of `OBC_DATA_ARCHIVE`, in order, absolute and without a trailing `/`, so that a run in
+/// another folder reads the same roots and a review names a root one way; none when it is unset or
+/// empty.
 pub fn roots() -> Vec<PathBuf> {
     let Some(value) = std::env::var_os("OBC_DATA_ARCHIVE") else { return Vec::new() };
     let roots = std::env::split_paths(&value).filter(|root| !root.as_os_str().is_empty());
-    roots.map(|root| std::path::absolute(&root).unwrap_or(root)).collect()
+    roots.map(|root| std::path::absolute(&root).unwrap_or(root).components().collect()).collect()
 }
 
 /// `manifest/<dataset>.json`, as `crate::datasets` writes it.

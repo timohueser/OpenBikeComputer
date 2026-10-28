@@ -1672,8 +1672,9 @@ is compact JSON with the keys of each object in byte order:
    gets one in the first root with 4 GiB free. To put it in another root, a person makes the empty
    folder `prepared/<id>/` there first. A run that made the home and then refuses or fails
    removes the home again while it holds only the lock, so a refusal never fixes the root. While
-   the home lists no version and a target of `data/targets.toml` lists versions in its legacy
-   folder `sources/<id>/`, or cannot be read, the prepare refuses: [copy](#copy) them first.
+   a target of `data/targets.toml` lists a version in its legacy folder `sources/<id>/` that the
+   home lacks, with its manifest SHA-256 and that manifest, or cannot be read, the prepare
+   refuses: [copy](#copy) it first.
 2. A new version takes the first name of the day that is after each version of that day in
    `versions.json` and has no manifest in the home. A run keeps its work in
    `prepared/<id>/<version>/` of the [store](#store) of its machine. The same command
@@ -2247,7 +2248,7 @@ bytes.
 and `delete` refuse `release.json`, `lock.json`, `planner/next.json`, a pointer key, a key
 under `objects/` or `releases/`. `obc data r2 delete` refuses a key under `sources/<id>/` of a
 prepared source while the [archive](#prepared-sources) lacks a version that
-`sources/<id>/versions.json` of the bucket lists, with its manifest SHA-256. `obc bake clean-r2` refuses to run when the pointer
+`sources/<id>/versions.json` of the bucket lists, with its manifest SHA-256 and that manifest. `obc bake clean-r2` refuses to run when the pointer
 of its prefix has `release`, or is not JSON. `obc data` never writes under `reference/v1/`.
 
 ### Credentials

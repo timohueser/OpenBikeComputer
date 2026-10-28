@@ -199,8 +199,8 @@ fn refuse_owned(bucket: &Bucket, keys: &[String]) -> Result<(), String> {
 }
 
 /// Refuse a key under `sources/<id>/` of a prepared source while the home of `id` in the archive
-/// roots `roots` lacks a version that `sources/<id>/versions.json` of the bucket lists with its
-/// manifest SHA-256: the archive is then the only copy of a version that is not there yet.
+/// roots `roots` lacks a version that `sources/<id>/versions.json` of the bucket lists, or its
+/// manifest: the archive is then the only copy of a version that is not there yet.
 fn refuse_uncopied(bucket: &Bucket, keys: &[String], roots: &[PathBuf]) -> Result<(), Error> {
     let prepared = |id: &&str| {
         crate::sources::all().iter().any(|source| source.id == *id && source.fetch.kind == FetchKind::Prepared)
@@ -219,14 +219,11 @@ fn refuse_uncopied(bucket: &Bucket, keys: &[String], roots: &[PathBuf]) -> Resul
         };
         let theirs: Vec<crate::prepared::Version> = serde_json::from_slice(&bytes)
             .map_err(|e| refused(format!("sources/{id}/versions.json of the bucket: {e}")))?;
-        let ours = match crate::prepared::home(roots, id) {
-            Some(root) => crate::prepared::versions(&crate::prepared::folder(root, id), id)?,
-            None => Vec::new(),
+        let missing = match crate::prepared::home(roots, id) {
+            Some(root) => crate::prepared::uncopied(&crate::prepared::folder(root, id), id, &theirs)?,
+            None => theirs.first(),
         };
-        let copied = |entry: &crate::prepared::Version| {
-            ours.iter().any(|ours| ours.version == entry.version && ours.manifest_sha256 == entry.manifest_sha256)
-        };
-        if let Some(entry) = theirs.iter().find(|entry| !copied(entry)) {
+        if let Some(entry) = missing {
             return Err(refused(format!("the archive has no copy of {id}@{} of the bucket", entry.version)));
         }
     }
@@ -452,6 +449,15 @@ mod tests {
         put(&crate::prepared::path(&archive, "terrain"), &listed.replace("\"aa\"", "\"bb\""));
         assert!(refuse_uncopied(&bucket, &keys, std::slice::from_ref(&archive)).is_err(), "another manifest");
         put(&crate::prepared::path(&archive, "terrain"), listed);
+        assert!(refuse_uncopied(&bucket, &keys, std::slice::from_ref(&archive)).is_err(), "no manifest");
+        let (manifest, home) = (b"{}", crate::prepared::path(&archive, "terrain"));
+        put(&home, &listed.replace("\"aa\"", &format!("\"{}\"", sha256_hex(manifest))));
+        put(
+            &scratch.0.join("bucket/sources/terrain"),
+            &listed.replace("\"aa\"", &format!("\"{}\"", sha256_hex(manifest))),
+        );
+        std::fs::create_dir_all(home.join("2026-10-28")).unwrap();
+        std::fs::write(home.join("2026-10-28/manifest.json"), manifest).unwrap();
         refuse_uncopied(&bucket, &keys, &[archive]).unwrap();
         refuse_uncopied(&bucket, &keys[1..], &[]).unwrap();
     }
