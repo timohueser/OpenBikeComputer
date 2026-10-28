@@ -887,7 +887,7 @@ pub(super) mod tests {
             code,
             |_| Ok(()),
             &[],
-            Some(&machine),
+            (Some(&machine), Vec::new),
             None,
         );
         prepared.unwrap().review.layers.into_iter().map(|layer| (layer.layer, layer.text)).collect()
