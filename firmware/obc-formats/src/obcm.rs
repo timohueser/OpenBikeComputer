@@ -176,6 +176,8 @@ impl ScaledOffset {
 /// One run of [`FILLER`], long enough for any single gap a producer emits: the nav alignment run
 /// is a whole sector and a section boundary's gap is at most `U − 1`.
 pub const FILLER_RUN: [u8; 512] = [FILLER; 512];
+const _: () = assert!(FILLER_RUN.len() as u64 == 1 << OFFSET_SCALE_MAX);
+const _: () = assert!(FILLER_RUN.len() == NAV_CHUNK_SIZE);
 
 /// A file position that only moves by writing, and that knows where the next unit boundary is.
 ///
@@ -846,15 +848,6 @@ mod tests {
         assert_eq!(w.at(), 7);
         w.advance(3_000_000_000);
         assert_eq!(w.at(), 3_000_000_007, "and it is `u64` arithmetic, not a loop over a buffer");
-    }
-
-    /// The filler run must cover the longest single gap: `U − 1` at the largest scale, which is
-    /// also the alignment run.
-    #[test]
-    fn one_filler_run_covers_every_gap_the_format_can_ask_for() {
-        const _: () = assert!(FILLER_RUN.len() as u64 == 1 << OFFSET_SCALE_MAX);
-        const _: () = assert!(FILLER_RUN.len() == NAV_CHUNK_SIZE);
-        assert!(FILLER_RUN.iter().all(|&b| b == FILLER));
     }
 
     #[test]

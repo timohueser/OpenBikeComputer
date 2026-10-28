@@ -283,7 +283,6 @@ impl DfuErrorScreen {
             DfuScanError::Unreadable => Msg::DfuUnreadable,
             DfuScanError::Damaged => Msg::DfuDamaged,
             DfuScanError::TooLarge => Msg::DfuTooLarge,
-            DfuScanError::TooFragmented => Msg::DfuFragmented,
             DfuScanError::Untrusted => Msg::DfuUntrusted,
         };
         let key = match self.reason {
@@ -438,8 +437,8 @@ mod tests {
 
     #[test]
     fn error_card_dismisses() {
-        let mut scr = DfuErrorScreen::new(PERMIT, DfuScanError::TooFragmented);
-        assert_eq!(scr.reason(), DfuErrorReason::Scan(DfuScanError::TooFragmented));
+        let mut scr = DfuErrorScreen::new(PERMIT, DfuScanError::TooLarge);
+        assert_eq!(scr.reason(), DfuErrorReason::Scan(DfuScanError::TooLarge));
         let (t, _) = run(&mut |cx| scr.handle(Gesture::Back, cx));
         assert!(matches!(t, Transition::Pop));
 

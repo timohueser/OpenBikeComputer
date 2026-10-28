@@ -15,7 +15,7 @@ pub mod layout;
 pub mod sig;
 pub mod state;
 
-pub use armer::{ArmError, ArmIo, ArmTicket, ExtentsError, Rollback, ScanError, StageIo};
+pub use armer::{ArmError, ArmIo, ArmTicket, Rollback, ScanError, StageIo};
 pub use blobstage::{
     encode_stage_header, sp_geometry, validate_stage, SpImageGeometry, MAX_BLOB_LEN, SP_ID_SEMMC, STAGE_HEADER_LEN,
     STAGE_LEN, STAGE_MAGIC, STAGE_VERSION,

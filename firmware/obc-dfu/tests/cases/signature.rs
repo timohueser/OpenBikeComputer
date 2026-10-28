@@ -6,7 +6,7 @@
 //! the unsigned header decoder, transcribed from the spec text, and then installs a signed
 //! container through the real engine.
 
-use obc_dfu::armer::{scan, ExtentsError, ScanError, StageIo};
+use obc_dfu::armer::{scan, ScanError, StageIo};
 use obc_dfu::engine::IoError;
 use obc_dfu::sig::test_key;
 use obc_dfu::{
@@ -26,7 +26,7 @@ impl StageIo for Stage {
         let start = offset as usize;
         self.bytes.get(start..start + buf.len()).map(|s| buf.copy_from_slice(s)).ok_or(IoError)
     }
-    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, ExtentsError> {
+    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, IoError> {
         out[0] = Extent { start_block: 100, blocks: (self.bytes.len() as u32).div_ceil(512) };
         Ok(1)
     }

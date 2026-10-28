@@ -154,9 +154,9 @@ impl SurfaceLevel {
     }
 }
 
-/// The 85 maxima occupy170 bytes; one error byte per node fits in the same256-byte group.
+/// The 85 maxima occupy 170 bytes; one error byte per node fits in the same 256-byte group.
 /// Low nibble bounds height error in metres; high nibble bounds each derivative error in
-/// metres per source interval. Codes0 and15 mean exact and unknown, respectively.
+/// metres per source interval. Codes 0 and 15 mean exact and unknown, respectively.
 pub fn approximation_offset(bound_offset: u32) -> u32 {
     (bound_offset & !255) + 170 + (bound_offset & 255) / 2
 }

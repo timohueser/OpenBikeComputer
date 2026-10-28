@@ -566,6 +566,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_stop_ends_a_retry_wait() {
+        let (url, log) =
+            serve(|_, _| Reply { status: 503, headers: vec![("Retry-After", "3600".into())], ..not_found() });
+        let scratch = Scratch::new("stop-wait");
+        // The stop flag is process-wide; nextest runs each test in its own process.
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(300));
+            http::stop();
+        });
+        let start = std::time::Instant::now();
+        let error = quick().download_to(&scratch.0.join("file.bin"), &url, &Expect::default()).unwrap_err();
+        assert!(start.elapsed() < Duration::from_secs(5), "the wait ends at the stop: {:?}", start.elapsed());
+        assert!(error.contains("the run stopped"), "{error}");
+        assert_eq!(log.lock().unwrap().len(), 1, "the stop came during the wait after the first try");
+    }
+
+    #[test]
     fn archive_authorization_stays_on_its_configured_origin() {
         let (url, log) = serve(|_, _| whole(b"ok"));
         let origin = url.split("/data/").next().unwrap();

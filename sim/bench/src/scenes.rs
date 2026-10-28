@@ -15,9 +15,10 @@ use crate::golden::scene_values;
 pub(super) const WIDTH: u32 = obc_display::ls021::FRAME_W as u32;
 pub(super) const HEIGHT: u32 = obc_display::ls021::FRAME_H as u32;
 
-/// Timed iterations per scene (after one warm-up render that fills the chunk cache). The report is
-/// the **min** of each stage — the noise-floor estimator for a deterministic workload.
-const ITERS: usize = 10;
+/// Timed iterations per scene the bench binary runs (after one warm-up render that fills the chunk
+/// cache). The report is the **min** of each stage — the noise-floor estimator for a deterministic
+/// workload. Tests pass 1: they assert pixels and counters, never timings.
+pub(super) const ITERS: usize = 10;
 
 /// The fixed scene matrix: `(name, meters-per-pixel, heading°)`. Rides the fixture's two LODs
 /// (riding = fine, mid/overview = coarse) both north-up and rotated; the overview pair must
@@ -78,7 +79,7 @@ pub(super) struct SceneResult {
 
 /// Render one scene through the steady-state device flow: parse-once tables, one `MapCache` reused
 /// across iterations, camera at the map's bbox center. Warm-up once (fills the chunk cache), then
-/// time [`ITERS`] renders and keep the min of each stage; counters come from the last iteration and
+/// time `iters` renders and keep the min of each stage; counters come from the last iteration and
 /// the hash from the final frame.
 ///
 /// `warm == false` reports that first frame instead — one render into an empty cache, which is the
@@ -89,6 +90,7 @@ pub(super) fn run_scene(
     mpp: f32,
     heading_deg: f32,
     warm: bool,
+    iters: usize,
     clock: &StdClock,
 ) -> SceneResult {
     let src = SliceSource(map);
@@ -128,7 +130,7 @@ pub(super) fn run_scene(
 
     let (mut collect_us, mut sort_us, mut draw_us, mut total_us) = (u32::MAX, u32::MAX, u32::MAX, u64::MAX);
     let mut stats = RenderStats::default();
-    for _ in 0..ITERS {
+    for _ in 0..iters {
         let mut fb = Framebuffer565::new(&mut buf, WIDTH, HEIGHT);
         let t0 = clock.now_us();
         stats = scratch.render_timed(&mut fb, &reader, &vp, bg, RenderConfig::default(), color_fn, clock);
@@ -199,7 +201,7 @@ impl RouteOverlaySource for StaticRoute {
 /// white chevrons anchored at the chunk seam, so both `draw_route` passes land pixels in the hash.
 /// Same warm-up/min-of-[`ITERS`] shape as [`run_scene`]; the per-stage timings are the map's
 /// (the overlay shows up in `total`).
-fn run_route_scene(map: &[u8], clock: &StdClock) -> SceneResult {
+fn run_route_scene(map: &[u8], iters: usize, clock: &StdClock) -> SceneResult {
     let src = SliceSource(map);
     let tables = MapTables::parse(&src).expect("bench map must parse");
     let cache = MapCache::new();
@@ -235,7 +237,7 @@ fn run_route_scene(map: &[u8], clock: &StdClock) -> SceneResult {
 
     let (mut collect_us, mut sort_us, mut draw_us, mut total_us) = (u32::MAX, u32::MAX, u32::MAX, u64::MAX);
     let mut stats = RenderStats::default();
-    for _ in 0..ITERS {
+    for _ in 0..iters {
         let t0 = clock.now_us();
         stats = draw(&mut buf, &mut scratch);
         total_us = total_us.min(clock.now_us() - t0);
@@ -250,24 +252,24 @@ fn run_route_scene(map: &[u8], clock: &StdClock) -> SceneResult {
 /// Run the full built-in matrix over the testkit fixture, asserting the overview scenes saturate
 /// (`features_dropped > 0`) — if they don't, the fixture isn't dense enough and the drop path went
 /// unexercised, so fail loudly rather than green-light a hollow benchmark.
-pub(super) fn run_matrix() -> Vec<SceneResult> {
+pub(super) fn run_matrix(iters: usize) -> Vec<SceneResult> {
     let map = obcm_testkit::build_bench_map();
     let clock = StdClock(Instant::now());
     let mut results: Vec<SceneResult> = SCENES
         .iter()
         .map(|&(name, mpp, heading)| {
-            let r = run_scene(&map, name, mpp, heading, true, &clock);
+            let r = run_scene(&map, name, mpp, heading, true, iters, &clock);
             assert_overview_saturates(&r);
             r
         })
         .collect();
     let (cold, cold_mpp, cold_heading) = COLD_SCENE;
-    let cold = run_scene(&map, cold, cold_mpp, cold_heading, false, &clock);
+    let cold = run_scene(&map, cold, cold_mpp, cold_heading, false, iters, &clock);
     assert_overview_saturates(&cold);
     results.push(cold);
     // The route-overlay scene: the map scenes carry no route, so this eighth frame is what puts
     // `draw_route`'s stroke + chevrons under the hash tripwire.
-    results.push(run_route_scene(&map, &clock));
+    results.push(run_route_scene(&map, iters, &clock));
     results
 }
 
@@ -341,7 +343,7 @@ pub(super) fn print_table(results: &[SceneResult]) {
 /// on every repeat regardless, keeping this timing mode covered by the same determinism contract
 /// the golden file gates.
 pub(super) fn print_repeat_table(repeats: usize) {
-    let runs: Vec<Vec<SceneResult>> = (0..repeats).map(|_| run_matrix()).collect();
+    let runs: Vec<Vec<SceneResult>> = (0..repeats).map(|_| run_matrix(ITERS)).collect();
     println!("{:13} {:>8} {:>8} {:>8} {:>8}  hash", "scene", "min", "median", "max", "spread");
     for scene in 0..runs[0].len() {
         let name = &runs[0][scene].name;

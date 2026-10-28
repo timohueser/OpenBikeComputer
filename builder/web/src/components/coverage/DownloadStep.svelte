@@ -1085,7 +1085,7 @@
             // A card carries **one** map, because the device has no way to choose
             // between two. So "split it in two" is not a remedy that exists here,
             // and the only honest instruction is to cover less ground.
-            `(${formatBytes(estimate.budgetBytes)}). Reduce the coverage area.`
+            `(${formatBytes(estimate.budgetBytes)}). Reduce the map selection.`
         );
     });
 

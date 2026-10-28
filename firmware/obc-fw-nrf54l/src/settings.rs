@@ -342,7 +342,7 @@ fn encode_bond(bond: &BondInformation) -> [u8; BOND_SLOT_LEN] {
         None => buf[14] = 0,
     }
     buf[16..32].copy_from_slice(&bond.ltk.to_le_bytes());
-    let mut crc = obc_ble::Crc32::new();
+    let mut crc = obc_crc::Crc32::new();
     crc.update(&buf[..BOND_SLOT_LEN - 4]);
     buf[BOND_SLOT_LEN - 4..].copy_from_slice(&crc.finalize().to_le_bytes());
     buf
@@ -354,7 +354,7 @@ fn decode_bond(buf: &[u8; BOND_SLOT_LEN]) -> Option<BondInformation> {
     if buf[0..4] != BOND_MAGIC || buf[4] != BOND_VERSION {
         return None;
     }
-    let mut crc = obc_ble::Crc32::new();
+    let mut crc = obc_crc::Crc32::new();
     crc.update(&buf[..BOND_SLOT_LEN - 4]);
     let stored = u32::from_le_bytes([buf[60], buf[61], buf[62], buf[63]]);
     if crc.finalize() != stored {

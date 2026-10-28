@@ -19,12 +19,12 @@ pub enum StoreError {
     Invalid,
     Media,
     ReadOnly,
-    /// Try again: every hold row is taken, so there is no slot to resolve this open into. A full hold
-    /// table is a transient property of who else is reading right now, unlike
+    /// Try again: a table or object is in use now. Every reservation row or hold row is taken, or
+    /// the active journey uses the route. This is transient, unlike
     /// [`Invalid`](StoreError::Invalid), which means the request will be wrong next time too.
     ///
-    /// Wire mapping: code `9` `busy`, detail `holds 2`, and no context — a table-full open names no
-    /// live request.
+    /// Wire mapping: code `9` `busy` with no context. The detail is `holds 2` for an open with a
+    /// full hold table, and `0` otherwise.
     Busy,
 }
 

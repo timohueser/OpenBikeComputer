@@ -158,8 +158,6 @@ pub fn snapshot<D: BlockDevice>(store: &mut FlatStore<D>) -> Option<Snapshot> {
         return None;
     }
     let entries: Vec<EntryMeta> = store.entries().map(Result::unwrap).collect();
-    // The listing has no way to report a read failure, so the harness asks the store whether the
-    // iterator it just drained was complete instead of accepting a short list as the truth.
     let want = body_len(store.entry_count());
     let mut body = Vec::new();
     let mut block = [0u8; BLOCK];

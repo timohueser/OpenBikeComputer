@@ -163,10 +163,10 @@ public struct UpdateChecker: Sendable {
     public func cachedCheck() -> UpdateCheckRecord? { store.loadCheck() }
 
     /// A cached answer young enough that opening the screen needn't re-ask.
-    public func isFresh(_ record: UpdateCheckRecord, now: Date = Date()) -> Bool {
+    public static func isFresh(_ record: UpdateCheckRecord, now: Date = Date()) -> Bool {
         let age = now.timeIntervalSince(record.checkedAt)
         // A clock that moved backwards reads as stale, not as fresh forever.
-        return age >= 0 && age < Self.freshness
+        return age >= 0 && age < freshness
     }
 
     /// Also consider the pre-release channel. A developer switch, off by default.

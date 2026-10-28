@@ -31,8 +31,7 @@
 //! A pairing the board never names is never monomorphized.
 //!
 //! [`conformance`] holds the reusable, backend-agnostic checks of the mandatory invariants. Both
-//! shipping backends run the same suite, alongside a tile-grained proof pairing that keeps the
-//! contracts honest about geometry, storage and grain.
+//! shipping backends run the same suite.
 
 #[cfg(feature = "conformance")]
 pub mod conformance;

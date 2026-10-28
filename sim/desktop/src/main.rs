@@ -381,7 +381,6 @@ fn parse_dfu_error(s: &str) -> Result<obc_app::DfuScanError, String> {
         "unreadable" => Ok(obc_app::DfuScanError::Unreadable),
         "damaged" => Ok(obc_app::DfuScanError::Damaged),
         "toolarge" => Ok(obc_app::DfuScanError::TooLarge),
-        "fragmented" => Ok(obc_app::DfuScanError::TooFragmented),
         "untrusted" => Ok(obc_app::DfuScanError::Untrusted),
         other => Err(format!("--dfu error: unknown variant `{other}`")),
     }

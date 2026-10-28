@@ -336,7 +336,7 @@ public final class FirmwareUpdateModel {
         guard let updateChecker else { return }
         if let cached = updateChecker.cachedCheck() {
             apply(cached)
-            if !manual, updateChecker.isFresh(cached) { return }
+            if !manual, UpdateChecker.isFresh(cached) { return }
         }
         guard checkState != .checking else { return }
         checkState = .checking
