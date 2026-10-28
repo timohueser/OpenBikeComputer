@@ -474,6 +474,40 @@ mod tests {
         }
     }
 
+    /// Two extracts of overlapping areas share a coastline: it counts once, in either order of the
+    /// files.
+    #[test]
+    fn a_coastline_in_two_files_counts_once_in_either_order() {
+        let osmium = OsmiumRunner::default();
+        if osmium.version().is_err() {
+            assert!(std::env::var_os("CI").is_none(), "CI has Osmium");
+            eprintln!("Osmium is unavailable: the test does not run");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("obc-dem-shape-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let node = |id: u32| format!(r#"<node id="{id}" version="1" lat="51.0{id}" lon="-9.0{id}"/>"#);
+        let way = |id: u32, nodes: [u32; 2]| {
+            let refs: String = nodes.iter().map(|n| format!(r#"<nd ref="{n}"/>"#)).collect();
+            format!(r#"<way id="{id}" version="1">{refs}<tag k="natural" v="coastline"/></way>"#)
+        };
+        let pbf = |name: &str, nodes: &[u32], ways: &[(u32, [u32; 2])]| {
+            let body: String = nodes.iter().map(|&id| node(id)).chain(ways.iter().map(|&(id, n)| way(id, n))).collect();
+            let xml = dir.join(format!("{name}.osm"));
+            std::fs::write(&xml, format!(r#"<?xml version="1.0"?><osm version="0.6">{body}</osm>"#)).unwrap();
+            let pbf = dir.join(format!("{name}.osm.pbf"));
+            assert!(osmium.command().arg("cat").arg(&xml).arg("-o").arg(&pbf).status().unwrap().success());
+            pbf
+        };
+        let (a, b) =
+            (pbf("a", &[1, 2, 3], &[(1, [1, 2]), (2, [2, 3])]), pbf("b", &[2, 3, 4], &[(2, [2, 3]), (3, [3, 4])]));
+        let lines = |pbfs: [&Path; 2]| read(&osmium, &pbfs, [-9.1, 50.9, -8.9, 51.1], &dir).unwrap().0;
+        let (forward, backward) = (lines([&a, &b]), lines([&b, &a]));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(forward.len(), 3, "the shared way counts once");
+        assert_eq!(forward, backward);
+    }
+
     #[test]
     fn the_export_gives_coastlines_and_summits_with_a_height() {
         let lines = [

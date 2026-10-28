@@ -46,7 +46,8 @@ attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}-{yymmdd}.osm.pbf" }
 version = "date"
-# The extracts of `geofabrik-extracts`, fetched once: a newer extract does not bake the terrain again.
+# The extracts of `geofabrik-extracts`, kept until an operator fetches a newer one, so that the
+# weekly extract does not bake the terrain again.
 refresh = "manual"
 redistribute = true
 

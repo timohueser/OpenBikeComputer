@@ -15,8 +15,6 @@ use crate::reference::ReferenceArchive;
 
 /// The source whose tiles the step reads.
 pub const GLO30: &str = "copernicus-glo-30";
-/// The source of the OSM extracts whose coastlines and summits shape the planner terrain.
-pub const OSM: &str = "terrain-osm";
 
 /// The options name the pairing, `posting_log2` and `cell_log2`, and the cells, as `[ci, cj]`.
 /// The layer input, when the request has one, is the reference archive of the leaf below
@@ -92,15 +90,12 @@ pub fn terrain(request: &Request) -> Result<(), String> {
 /// The terrain of the planner maps. The option `bounds` is `[west, south, east, north]` in
 /// degrees, `attribution` the credit of GLO-30 and `osm_attribution` that of OSM. The layer
 /// `planner/reference`, when the request has it, is the mean archive of the national models below
-/// `reference/`; the extracts of [`OSM`], when the request has them, give the coastlines and
-/// summits that correct GLO-30. The layer is `terrain.mbtiles`: the bytes that `planner-dem` writes
-/// from the same GLO-30 tiles, archive and OSM. With OSM, the metrics name the Osmium version.
+/// `reference/`; each other layer is one OSM PBF, whose coastlines and summits correct GLO-30. The
+/// layer is `terrain.mbtiles`: the bytes that `planner-dem` writes from the same GLO-30 tiles,
+/// archive and OSM. With OSM, the metrics name the Osmium version.
 #[cfg(feature = "terrarium")]
 pub fn planner_terrain(request: &Request) -> Result<(), String> {
     let bounds = bounds(&request.options)?;
-    if let Some(name) = request.layers.keys().find(|name| *name != "planner/reference") {
-        return Err(format!("the step reads no layer `{name}`"));
-    }
     let text = |name: &str| request.options[name].as_str().ok_or(format!("option `{name}` is not a string"));
     let credit = text("attribution")?;
     let reference = match request.layers.get("planner/reference") {
@@ -112,8 +107,14 @@ pub fn planner_terrain(request: &Request) -> Result<(), String> {
         }
     };
     let mut terrain = crate::planner::Terrain::open(&glo30(request, bounds), credit, reference.as_deref(), bounds)?;
-    if let Some(files) = request.snapshots.get(OSM) {
-        let pbfs: Vec<&std::path::Path> = files.values().map(PathBuf::as_path).collect();
+    let osm = request.layers.iter().filter(|(name, _)| *name != "planner/reference");
+    let pbfs = osm
+        .map(|(name, files)| match files.values().collect::<Vec<_>>()[..] {
+            [pbf] => Ok(pbf.as_path()),
+            _ => Err(format!("`{name}` is not one OSM file")),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if !pbfs.is_empty() {
         let work = request.output.with_file_name("shapes");
         std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
         let osmium = obc_osm::OsmiumRunner::default();

@@ -21,7 +21,7 @@ use obc_data::release::{Output, Release};
 use obc_data::sources::{attribution, embedded, FetchKind};
 use obc_data::store::Store;
 use obc_dem::reference::{Window, TILE_LOG2};
-use obc_dem::step::{GLO30, OSM as TERRAIN_OSM};
+use obc_dem::step::GLO30;
 use obc_map_core::grid::CellId;
 use planner_router_build::grid::{mercator, tile_bounds};
 use serde::Deserialize;
@@ -32,6 +32,9 @@ use crate::readers::{self, DOWNLOADS_SERVICE, IOS, IOS_OFFLINE_ROUTER, ROUTER_SE
 use crate::region_sources::OSM;
 use crate::{functions, python};
 
+/// The OSM extracts whose coastlines and summits shape the terrain. Its policy is `manual`, so a
+/// newer extract of `geofabrik-extracts` does not bake the terrain again.
+const TERRAIN_OSM: &str = "terrain-osm";
 /// The offline Protomaps map, with its fonts and sprites.
 pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, &IOS]);
 /// The terrain of the maps and of TrailView: its format is that of the terrain tiles of
@@ -301,9 +304,19 @@ impl Planner {
             &["basemap.pmtiles"],
         );
         let reference = reference(inputs, store, coverage, &mut wanted)?;
+        // One step per area: a step reads each source once, and each area keeps its own version.
         let mut shapes = Vec::new();
         for source in &selection.sources {
-            shapes.push(snapshot(inputs, store, TERRAIN_OSM, vec![("area".into(), source.id.clone())], &mut wanted)?);
+            let extract = snapshot(inputs, store, TERRAIN_OSM, vec![("area".into(), source.id.clone())], &mut wanted)?;
+            shapes.push(Step {
+                layer: &OSM,
+                name: format!("planner/{TERRAIN_OSM}/{}", source.id),
+                inputs: vec![extract],
+                options: json!({"path": "osm.pbf"}),
+                outputs: vec!["osm.pbf".into()],
+                run: Run::Rust(&obc_data::engine::PASS),
+                client: Client::None,
+            });
         }
         let terrain = Step {
             layer: &PLANNER_TERRAIN,
@@ -311,7 +324,7 @@ impl Planner {
             inputs: tiles(coverage, &land, &glo30)
                 .into_iter()
                 .chain(reference.iter().map(|step| Input::step(&step.name)))
-                .chain(shapes)
+                .chain(shapes.iter().map(|step| Input::step(&step.name)))
                 .collect(),
             options: json!({"bounds": coverage, "attribution": attribution(GLO30), "osm_attribution": attribution("osm-planet")}),
             outputs: vec!["terrain.mbtiles".into()],
@@ -432,6 +445,7 @@ impl Planner {
             &["places.pmtiles"],
         );
         let mut steps = source_steps;
+        steps.extend(shapes);
         steps.extend(content.steps);
         steps.extend(reference);
         steps.extend([
@@ -566,6 +580,10 @@ impl Planner {
             client: Client::All,
         });
         prune(&mut steps, &on);
+        // Without the terrain, no step reads `terrain-osm`: its extracts are not fetched.
+        if !steps.iter().any(|step| step.name == "planner/terrain") {
+            wanted.retain(|wanted| wanted.source != TERRAIN_OSM);
+        }
         match wanted.is_empty() {
             true => {
                 let mut listed: Steps = steps.into();
@@ -1237,11 +1255,8 @@ mod tests {
             .unwrap();
         crate::device::tests::stored(&store, TERRAIN_OSM, "2026-10-02", &area, &[(name.into(), bytes.to_vec())]);
         let region = parse_region("ride", "name='Ride'\nkind='geofabrik'\nareas=['europe/test','europe/second']\ncountries=['DE']\ntime_zone='Europe/Berlin'\n").unwrap();
-        let inputs = inputs("ride", &[]);
-        let steps = Planner
-            .steps_with_tool(&root(), &inputs, &Regions::new(vec![region]).unwrap(), &store, Ok(()))
-            .unwrap()
-            .steps;
+        let (inputs, regions) = (inputs("ride", &[]), Regions::new(vec![region]).unwrap());
+        let steps = Planner.steps_with_tool(&root(), &inputs, &regions, &store, Ok(())).unwrap().steps;
         let versions = steps
             .iter()
             .filter(|step| step.name.starts_with("planner/source/"))
@@ -1256,6 +1271,14 @@ mod tests {
         let routing = steps.iter().find(|step| step.name == "planner/routing").unwrap();
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.85, 48.02]));
         assert_eq!(inputs.requests.borrow().iter().filter(|(source, _)| source == EXTRACTS).count(), 2);
+        // The terrain reads the extract of each area through a step of its own.
+        let shapes: Vec<&str> = steps
+            .iter()
+            .map(|step| step.name.as_str())
+            .filter(|name| name.starts_with("planner/terrain-osm/"))
+            .collect();
+        assert_eq!(shapes, ["planner/terrain-osm/europe/second", "planner/terrain-osm/europe/test"]);
+        assert!(terrain_keys(&store, "ride", &regions).contains_key("planner/terrain"), "the engine plans the terrain");
     }
 
     #[test]
@@ -1324,6 +1347,7 @@ mod tests {
         let names: Vec<&str> = steps.iter().map(|step| step.name.as_str()).collect();
         let layers = [
             "source/europe/test",
+            "terrain-osm/europe/test",
             "osm",
             "osm/bounds",
             "terrain",
@@ -1352,7 +1376,7 @@ mod tests {
             "catalog",
         ];
         let mut expected = layers.map(|layer| format!("planner/{layer}")).to_vec();
-        expected.splice(1..1, ["device/landmark-content".into(), "device/peak-content".into()]);
+        expected.splice(2..2, ["device/landmark-content".into(), "device/peak-content".into()]);
         assert_eq!(names, expected, "content uses the same producers as device maps");
         let intermediate: Vec<&str> =
             steps.iter().filter(|step| step.client.is_none()).map(|step| step.name.as_str()).collect();
@@ -1360,6 +1384,7 @@ mod tests {
             intermediate,
             [
                 "planner/source/europe/test",
+                "planner/terrain-osm/europe/test",
                 "device/landmark-content",
                 "device/peak-content",
                 "planner/osm",
@@ -1537,9 +1562,9 @@ mod tests {
         let layer = |name: &str| {
             let parts: Vec<&str> = name.split('/').collect();
             match parts[..] {
-                ["device" | "planner", "source", ..] | ["device", "region-osm" | "osm"] | ["planner", "osm", ..] => {
-                    "osm"
-                }
+                ["device" | "planner", "source", ..]
+                | ["device", "region-osm" | "osm"]
+                | ["planner", "osm" | "terrain-osm", ..] => "osm",
                 ["device", "reference" | "terrain", _] => "device/terrain",
                 ["device", "map", _] => "device/map",
                 ["device", "landmark-content" | "peak-content", ..] | ["device", "landmarks" | "peaks", _] => {
@@ -1654,33 +1679,55 @@ mod tests {
         }
     }
 
-    /// The terrain reads the extract of `terrain-osm`, which no refresh moves: after a newer extract
-    /// of `geofabrik-extracts`, the OSM of the planner has a new key and the terrain keeps its key.
-    #[test]
-    fn a_newer_extract_does_not_bake_the_terrain_again() {
-        let temp = temp("planner-pinned-osm");
-        let store = store(&temp, &["2026-10-01"]);
-        let keys = |store: &Store| {
-            let steps = Planner.steps(&root(), &inputs(AREA, &[]), &regions(), store).unwrap().steps;
-            let steps: Vec<Step> = steps
-                .into_iter()
-                .filter(|step| ["planner/source/europe/test", "planner/terrain"].contains(&step.name.as_str()))
-                .collect();
-            let plan = obc_data::engine::plan::plan(store, &steps).unwrap();
-            let keys: Vec<String> = plan.builds().map(|build| build.key.clone().expect("a key")).collect();
-            <[String; 2]>::try_from(keys).expect("two builds")
-        };
-        let steps = Planner.steps(&root(), &inputs(AREA, &[]), &regions(), &store).unwrap().steps;
+    /// The key of each OSM step and of the terrain in a plan of `region`. The store gets the GLO-30
+    /// tiles of the terrain, and the layers of the `terrain-osm` steps, which the key of the terrain
+    /// reads.
+    fn terrain_keys(store: &Store, region: &str, regions: &Regions) -> BTreeMap<String, String> {
+        let steps = Planner.steps_with_tool(&root(), &inputs(region, &[]), regions, store, Ok(())).unwrap().steps;
         let terrain = steps.iter().find(|step| step.name == "planner/terrain").unwrap();
         let Input::Snapshot { version, params, .. } = &terrain.inputs[0] else { panic!("the GLO-30 tiles") };
         let tiles: Vec<_> = params.iter().map(|(_, tile)| (format!("{tile}.tif"), tile.clone().into_bytes())).collect();
-        crate::device::tests::stored(&store, GLO30, version, params, &tiles);
-        let [osm, terrain] = keys(&store);
+        crate::device::tests::stored(store, GLO30, version, params, &tiles);
+        let read = |name: &str| {
+            ["planner/source/", "planner/terrain-osm/"].iter().any(|prefix| name.starts_with(prefix))
+                || name == "planner/terrain"
+        };
+        let (mut shapes, rest): (Vec<Step>, Vec<Step>) = steps
+            .into_iter()
+            .filter(|step| read(&step.name))
+            .partition(|step| step.name.starts_with("planner/terrain-osm/"));
+        let (root, http, kept) = (root(), obc_data::fetch::http::Http::new(), obc_data::engine::plan::Kept::new());
+        let context = obc_data::engine::runs::Context {
+            store,
+            root: &root,
+            sources: &[],
+            http: &http,
+            kept: &kept,
+            served: &Default::default(),
+            limits: obc_data::engine::runs::Limits::machine(),
+        };
+        let mut run = obc_data::engine::runs::Run::create(store, ["build", "test"]).unwrap();
+        run.build(&context, &shapes, &obc_data::engine::plan::plan(store, &shapes).unwrap()).unwrap();
+        run.finish(None).unwrap();
+        shapes.extend(rest);
+        let plan = obc_data::engine::plan::plan(store, &shapes).unwrap();
+        plan.builds().map(|build| (build.step.clone(), build.key.clone().expect("a key"))).collect()
+    }
+
+    /// The terrain reads `terrain-osm`, whose policy is `manual`: after a newer extract of
+    /// `geofabrik-extracts`, the OSM of the planner has a new key and the terrain keeps its key.
+    #[test]
+    fn a_newer_extract_does_not_bake_the_terrain_again() {
+        assert_eq!(embedded(TERRAIN_OSM).refresh, obc_data::sources::Refresh::Manual);
+        let temp = temp("planner-pinned-osm");
+        let store = store(&temp, &["2026-10-01"]);
+        let before = terrain_keys(&store, AREA, &regions());
         let area = [("area".to_string(), AREA.to_string())];
         crate::device::tests::extracted(&store, "2026-10-08", &area, &format!("{AREA}-2026-10-08.osm.pbf"));
-        let [newer, same] = keys(&store);
-        assert_ne!(osm, newer, "the OSM reads the newer extract");
-        assert_eq!(terrain, same, "the terrain keeps its extract");
+        let after = terrain_keys(&store, AREA, &regions());
+        let osm = "planner/source/europe/test";
+        assert_ne!(before[osm], after[osm], "the OSM reads the newer extract");
+        assert_eq!(before["planner/terrain"], after["planner/terrain"], "the terrain keeps its extract");
     }
 
     /// A box cuts its OSM to the bounds and 15 km around them, within ±180° and ±90°.
