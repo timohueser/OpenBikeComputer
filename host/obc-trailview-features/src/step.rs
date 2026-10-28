@@ -1,6 +1,6 @@
 //! The step `planner/trailview-features` of `obc data`: `trailview-features.pmtiles` of a region from
-//! the OSM of `planner/osm` and the master terrain of the grid of `planner/terrain`, by the kind
-//! table and the road classes of its options.
+//! the OSM of `planner/osm`, the master terrain of the grid of `planner/terrain` and the water
+//! polygons of `water-polygons`, by the kind table and the road classes of its options.
 
 use obc_data::engine::Request;
 
@@ -14,7 +14,12 @@ pub fn step(request: &Request) -> Result<(), String> {
     let bounds: [f64; 4] =
         serde_json::from_value(options["bounds"].clone()).map_err(|_| "option `bounds` is not four numbers")?;
     let attribution = options["attribution"].as_str().ok_or("option `attribution` is not a string")?.to_string();
-    let options = Options { kinds, bounds, attribution, classes, class_names };
+    let [sea] =
+        request.snapshots.get("water-polygons").map(|files| files.values().collect::<Vec<_>>()).unwrap_or_default()[..]
+    else {
+        return Err("`water-polygons` is not one file".into());
+    };
+    let options = Options { kinds, bounds, attribution, classes, class_names, sea: Some(sea.clone()) };
     let layer = |name: &str| request.layers.get(name).ok_or(format!("the step has no input `{name}`"));
     let [pbf] = layer("planner/osm")?.values().collect::<Vec<_>>()[..] else {
         return Err("`planner/osm` is not one file".into());
@@ -197,6 +202,19 @@ mod tests {
         1000.0 + 0.05 * (u / 32.0 - 0.5)
     }
 
+    /// The water polygons: a sea square 4000 tile units across in the east tile, clear of the buffer of
+    /// the west one.
+    fn water_polygons(path: &Path) {
+        let n = (1u64 << MAX_ZOOM) as f64;
+        let [x, y] = [(COLUMN as f64 + 26000.0 / EXTENT as f64) / n, (ROW as f64 + 12000.0 / EXTENT as f64) / n];
+        let side = 4000.0 / EXTENT as f64 / n * crate::EQUATOR_M;
+        let ring = crate::sea::tests::square((x - 0.5) * crate::EQUATOR_M, (0.5 - y) * crate::EQUATOR_M, side, true);
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        zip.start_file(crate::sea::SHAPEFILE, zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, &crate::sea::tests::shapefile(&[vec![ring]])).unwrap();
+        zip.finish().unwrap();
+    }
+
     fn table(text: &str) -> Value {
         serde_json::from_str(text).unwrap()
     }
@@ -218,9 +236,13 @@ mod tests {
         let (west, north) = location(COLUMN, ROW, 0.0, 0.0);
         let (east, south) = location(COLUMN, ROW, 2.0 * EXTENT as f64, EXTENT as f64);
         std::fs::create_dir(root.join("output")).unwrap();
+        water_polygons(&root.join("water"));
         let request = obc_data::engine::Request {
             step: "planner/trailview-features".into(),
-            snapshots: BTreeMap::new(),
+            snapshots: BTreeMap::from([(
+                "water-polygons".to_string(),
+                BTreeMap::from([("water-polygons-split-3857.zip".to_string(), root.join("water"))]),
+            )]),
             layers: BTreeMap::from([
                 ("planner/osm".to_string(), BTreeMap::from([("osm.pbf".to_string(), root.join("object"))])),
                 ("planner/terrain/grid".to_string(), grid(root)),
@@ -277,8 +299,12 @@ mod tests {
             "ruin",
         ];
         assert_eq!(kinds(left), expected);
-        assert_eq!(kinds(right), ["road"]);
+        assert_eq!(kinds(right), ["road", "sea"]);
         let find = |tile: &[Feature], kind: &str| tile.iter().find(|f| f.kind == kind).unwrap().clone();
+        // The sea lies at sea level, whatever the terrain under it.
+        let sea = find(right, "sea");
+        assert_eq!(sea.parts.iter().map(|p| (p.outer, p.xy.len())).collect::<Vec<_>>(), [(true, 4)]);
+        assert!(sea.parts[0].z.as_ref().unwrap().iter().all(|&z| z == 0.0));
         let tags =
             |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<crate::Tags>();
         // The building in the farmyard keeps its landuse; the farmyard is no feature.
@@ -319,7 +345,7 @@ mod tests {
         // Above zoom 13 a tile holds the water and the main roads only, and the river still ends on the
         // shore of the lake.
         let overview = tiles.iter().find(|(k, _)| k.0 == 11).unwrap().1;
-        assert_eq!(kinds(overview), ["lake", "main-road", "river"]);
+        assert_eq!(kinds(overview), ["lake", "main-road", "river", "sea"]);
         let (lake, river) = (find(overview, "lake"), find(overview, "river"));
         assert!(lake.parts[0].xy.contains(river.parts[0].xy.last().unwrap()));
         let metrics = table(&std::fs::read_to_string(root.join("metrics.json")).unwrap());

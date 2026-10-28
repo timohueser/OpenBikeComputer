@@ -1,6 +1,6 @@
-//! `trailview-features --osm OSM.pbf --terrain TERRAIN.mbtiles --bounds W,S,E,N --output OUT.pmtiles`:
-//! the archive of a box without `obc data`, with the kind table and the road classes of the checkout and
-//! the terrain of a `planner-dem` MBTiles. Prints the metrics.
+//! `trailview-features --osm OSM.pbf --terrain TERRAIN.mbtiles --bounds W,S,E,N --output OUT.pmtiles
+//! [--sea water-polygons-split-3857.zip]`: the archive of a box without `obc data`, with the kind table
+//! and the road classes of the checkout and the terrain of a `planner-dem` MBTiles. Prints the metrics.
 
 use std::path::{Path, PathBuf};
 
@@ -20,8 +20,7 @@ fn run() -> Result<(), String> {
         let at = args.iter().position(|a| a == name).ok_or(format!("{name} is missing"))?;
         args.get(at + 1).map(String::as_str).ok_or(format!("{name} takes a value"))
     };
-    let usage =
-        "usage: trailview-features --osm OSM.pbf --terrain TERRAIN.mbtiles --bounds W,S,E,N --output OUT.pmtiles";
+    let usage = "usage: trailview-features --osm OSM.pbf --terrain TERRAIN.mbtiles --bounds W,S,E,N --output OUT.pmtiles [--sea ZIP]";
     let (osm, terrain, bounds, output) = match (arg("--osm"), arg("--terrain"), arg("--bounds"), arg("--output")) {
         (Ok(o), Ok(t), Ok(b), Ok(out)) => (o, t, b, PathBuf::from(out)),
         _ => return Err(usage.into()),
@@ -36,6 +35,7 @@ fn run() -> Result<(), String> {
         attribution: "© OpenStreetMap contributors".into(),
         classes,
         class_names,
+        sea: arg("--sea").ok().map(PathBuf::from),
     };
     let terrain = terrain::Tiles::mbtiles(Path::new(terrain))?;
     let parent = output.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
