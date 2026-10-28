@@ -261,6 +261,13 @@ describe('a town', () => {
         expect(features([road], tile).lines[0].sidewalks).toEqual([0]);
     });
 
+    it('keeps a sidewalk out of the bed of a track beside the road', () => {
+        // A track 5 m north of the road's middle, on its left: its bed takes the left sidewalk's band.
+        const y = Math.round(4000 - 5 / metres), track = { kind: 'railway', tags: { railway: 'rail' }, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from([1000, y, 5000, y]), z: Float32Array.from([1001, 1001]) }] };
+        const line = features([road, track, house(10)], tile).lines.find(line => line.kind === ROAD)!;
+        expect(new Set(line.sidewalks)).toEqual(new Set([0, RIGHT]));
+    });
+
     it('leads a walk from a house to the sidewalk, and a forecourt from a house near it', () => {
         const [walk] = features([road, house(15)], tile).walks, unit = metresPerUnit(walk.xy[1]);
         expect(walk).toMatchObject({ kind: WALK, h: 0.6 });

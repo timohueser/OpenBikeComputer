@@ -5,7 +5,7 @@ import { DEEPEST, EXTENT, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
-import { BUILT_M, builtNear, LEFT, near, RIGHT, townOf, type Town } from './town';
+import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
 
 /** Words of a primitive record. */
 export const RECORD = 16;
@@ -229,8 +229,8 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     const lines: Line[] = [], lakes: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [];
     const area = (parts: Feature['parts']) => ({ rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
     const buildings: Building[] = list.filter(({ kind }) => kind === 'building').map(({ tags, parts }) => ({ ...area(parts), cars: CARS.includes(tags.building) }));
-    const town = townOf(buildings);
-    for (const { kind, tags, parts } of list) {
+    const town = townOf(buildings), beds = bedsOf(list, world);
+    for (const [feature, { kind, tags, parts }] of list.entries()) {
         if (kind === 'lake') {
             const level = parts[0]?.z?.[0];
             if (level === undefined || Number.isNaN(level)) continue;
@@ -251,8 +251,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         // A passage through a building is a road: the building stands over it.
         const bore = kind === 'tunnel' && tags.tunnel !== 'building_passage', path = Object.hasOwn(PATH_HALF, tags.highway);
         const bridge = !river && !bore && !GROUND.includes(tags.bridge ?? 'no'), track = isTrack(tags);
-        const surface = track ? trackSurface(tags) : surfaceOf(tags), width = parseFloat(tags.width ?? '');
-        const h = river ? (Number.isFinite(width) ? width / 2 : WATERWAYS[tags.waterway] ?? 1) : track ? SURFACES[surface] : halfWidth(tags, surface), code = river ? 0 : Object.keys(SURFACES).indexOf(surface) + 1;
+        const surface = track ? trackSurface(tags) : surfaceOf(tags), h = halfOf(kind, tags), code = river ? 0 : Object.keys(SURFACES).indexOf(surface) + 1;
         const profile = profileOf(kind === 'tunnel' || kind === 'gallery' ? (path ? 'path' : 'road') : kind, classOf(tags));
         const type = kind === 'river' ? RIVER : kind === 'stream' ? STREAM : bridge ? BRIDGE : bore ? TUNNEL : kind === 'railway' ? RAIL : kind === 'path' || path ? PATH : ROAD;
         const deck = bridge ? parseFloat(tags.deck ?? '') || DECK_M : bore ? (track ? BORE_RAIL_M : path ? BORE_PATH_M : BORE_M) : kind === 'gallery' ? (track ? ROOF_RAIL_M : path ? ROOF_PATH_M : ROOF_M) : undefined;
@@ -268,7 +267,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
             let run: number[] = [], heights: number[] = [];
             const flush = () => {
                 if (heights.length >= 2) {
-                    const [shape, sides] = sidewalk || paving ? townPieces(smoothed(run, heights), town) : [smoothed(run, heights), []];
+                    const [shape, sides] = sidewalk || paving ? townPieces(smoothed(run, heights), town, sidewalk ? clearOf(beds, feature, h, sidewalk) : undefined) : [smoothed(run, heights), []];
                     const n = shape.z.length, paved = (v: number) => paving && sides[v] !== 0;
                     for (let from = 0, to = 1; to < n; to++) {
                         if (to < n - 1 && paved(to) === paved(from)) continue;
@@ -337,15 +336,20 @@ function abutments(lines: Line[]): void {
 const PIECE_M = 8;
 
 /**
- * A rounded line with the sides of each segment that have a building within BUILT_M: of each piece of
- * about PIECE_M, as its segment's own length places them, so each tile that holds the segment decides
- * alike. A segment is cut where the sides of its pieces change; the cuts keep its shape.
+ * A rounded line with the sides of each segment that have a building within BUILT_M, and that `clear`
+ * keeps where it is given: of each piece of about PIECE_M, as its segment's own length places them, so
+ * each tile that holds the segment decides alike. A segment is cut where the sides of its pieces
+ * change; the cuts keep its shape.
  */
-function townPieces({ xy, z, anchors }: ReturnType<typeof smoothed>, town: Town): [ReturnType<typeof smoothed>, number[]] {
+function townPieces({ xy, z, anchors }: ReturnType<typeof smoothed>, town: Town, clear?: Clear): [ReturnType<typeof smoothed>, number[]] {
     const out = { xy: [xy[0], xy[1]], z: [z[0]], anchors: [anchors[0]] }, sides: number[] = [];
     for (let v = 0; v + 1 < z.length; v++) {
         const [ax, ay, bx, by] = xy.slice(2 * v, 2 * v + 4), dx = bx - ax, dy = by - ay, unit = metresPerUnit(ay), count = Math.max(1, Math.ceil(Math.hypot(dx, dy) * unit / PIECE_M));
-        const pieces = Array.from({ length: count }, (_, k) => (builtNear(town, ax + dx * (k + 0.5) / count, ay + dy * (k + 0.5) / count, BUILT_M / unit) ? LEFT | RIGHT : 0));
+        const pieces = Array.from({ length: count }, (_, k) => {
+            const x = ax + dx * (k + 0.5) / count, y = ay + dy * (k + 0.5) / count;
+            if (!builtNear(town, x, y, BUILT_M / unit)) return 0;
+            return clear ? (clear(x, y, dx, dy, LEFT) ? LEFT : 0) | (clear(x, y, dx, dy, RIGHT) ? RIGHT : 0) : LEFT | RIGHT;
+        });
         for (let k = 1; k <= count; k++) {
             if (k < count && pieces[k] === pieces[k - 1]) continue;
             sides.push(pieces[k - 1]);
@@ -355,6 +359,64 @@ function townPieces({ xy, z, anchors }: ReturnType<typeof smoothed>, town: Town)
         }
     }
     return [out, sides];
+}
+
+/**
+ * The ground beds of a tile's roads, paths, tracks and waterways: their segments in a grid, the widest
+ * half-width, the features at each vertex and each feature's vertices.
+ */
+interface Beds extends Grid { segments: { feature: number; h: number; xy: number[] }[]; widest: number; vertices: Map<string, number[]>; keys: string[][] }
+/** Whether the sidewalk on a side of a street's piece through x, y along dx, dy keeps out of the beds. */
+type Clear = (x: number, y: number, dx: number, dy: number, side: number) => boolean;
+
+/** The half-width of a line feature in metres: a waterway's, a track's bed or a road's. */
+function halfOf(kind: string, tags: Record<string, string>): number {
+    const width = parseFloat(tags.width ?? '');
+    if (kind === 'river' || kind === 'stream') return Number.isFinite(width) ? width / 2 : WATERWAYS[tags.waterway] ?? 1;
+    return isTrack(tags) ? SURFACES[trackSurface(tags)] : halfWidth(tags, surfaceOf(tags));
+}
+
+function bedsOf(list: Feature[], world: (xy: Int32Array, v: number) => number[]): Beds {
+    const segments: Beds['segments'] = [], vertices = new Map<string, number[]>(), keys: string[][] = [];
+    list.forEach(({ kind, tags, parts }, feature) => {
+        // A bridge's and a tunnel's beds are off the ground.
+        if (!['main-road', 'road', 'path', 'railway', 'river', 'stream'].includes(kind) || !GROUND.includes(tags.bridge ?? 'no')) return;
+        const h = halfOf(kind, tags);
+        keys[feature] = [];
+        for (const { xy } of parts) {
+            const points = Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v));
+            for (const [x, y] of points) {
+                const key = `${x},${y}`;
+                keys[feature].push(key);
+                (vertices.get(key) ?? vertices.set(key, []).get(key)!).push(feature);
+            }
+            for (let v = 0; v + 1 < points.length; v++) segments.push({ feature, h, xy: [...points[v], ...points[v + 1]] });
+        }
+    });
+    const boxes = segments.map(({ xy: [ax, ay, bx, by] }) => [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)]);
+    return { ...gridOf(boxes), segments, widest: Math.max(0, ...segments.map(({ h }) => h)), vertices, keys };
+}
+
+/**
+ * The sidewalk test of a street of half-width h with sidewalks `walk` metres wide: the middle of a
+ * sidewalk lies outside the bed of every other line but those that meet the street at a vertex, its side
+ * streets and level crossings, whose mouths the corners shape.
+ */
+function clearOf(beds: Beds, feature: number, h: number, walk: number): Clear {
+    const joined = new Set([feature, ...(beds.keys[feature] ?? []).flatMap(key => beds.vertices.get(key)!)]), reach = beds.widest + walk / 2;
+    return (x, y, dx, dy, side) => {
+        const unit = metresPerUnit(y), l = Math.hypot(dx, dy) * unit || 1, out = (side === LEFT ? 1 : -1) * (h + walk / 2) / l;
+        // Left of the way, whose y runs south.
+        const mx = x + dy * out, my = y - dx * out;
+        let clear = true;
+        near(beds, mx, my, mx, my, reach / unit, b => {
+            const { feature: f, h: bed, xy: [ax, ay, bx, by] } = beds.segments[b];
+            if (!clear || joined.has(f)) return;
+            const t = along(ax, ay, bx, by, mx, my);
+            clear = Math.hypot(ax + t * (bx - ax) - mx, ay + t * (by - ay) - my) * unit >= bed + walk / 2;
+        });
+        return clear;
+    };
 }
 
 /** A walk's ends: this far inside the wall, so no slit shows; widths; the gap to the road under which it is a forecourt, the least and the most of it; the shortest wall it leaves. */
