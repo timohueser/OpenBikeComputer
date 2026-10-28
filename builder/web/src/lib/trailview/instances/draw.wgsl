@@ -117,17 +117,18 @@ fn tied(colour: vec3f, tint: f32, tie: f32, ground: u32) -> vec3f {
     return mix(own, g * g * clamp(luma(colour) / 0.3, 0.5, 1.2) * tint, tie);
 }
 
-// A forest tree (a model with a crown's mean luma and no tie, on woodland that emit_tree carries) wears
-// the colour of the ground under it, which the forest's paint shows past the trees' reach (TREE_REACH_M
-// of tree-models.ts). Each point of the crown keeps its own luma against the crown's mean, so a crown
-// keeps its light tips. Its phase adds the change that it makes to the tree's own colour, at the same
-// scale, so an autumn beech turns orange near the eye; the paint shows the satellite's quarter and not
-// the phase, so the change fades out from PHASE_FROM_M to the reach. CROWN_GAIN makes a stand of lit
-// crowns, shaded sides and gaps at the reach as bright as the paint past it: measured on the Engelberg
-// box at noon in summer.
-const CROWN_GAIN: f32 = 2.0;
+// A forest tree (a model with a crown's luma and no tie, on woodland that emit_tree carries) wears the
+// colour of the ground under it, which the forest's paint shows past the trees' reach. Each point of the
+// crown keeps its own luma against the crown's luma as it shows lit (Model.luma), so a crown keeps its
+// light tips and every species shows as bright as the ground. Its phase adds the change that it makes to
+// the tree's own colour, scaled as the crown's brightness, so an autumn beech turns orange near the eye;
+// the paint shows the satellite's quarter and not the phase, so the change fades out from PHASE_FROM_M to
+// the reach. CROWN_GAIN makes a stand of lit crowns, shaded sides and gaps at the reach as bright as the
+// paint past it: measured on the Engelberg box at noon in summer.
+const CROWN_GAIN: f32 = 2.5;
 const PHASE_FROM_M: f32 = 1500.0;
-const PHASE_TO_M: f32 = 4500.0;
+// As in tree-models.ts and look.wgsl.
+const TREE_REACH_M: f32 = 4500.0;
 
 // The factor of a forest tree's crown on the ground's colour (worn), 0 for any other model.
 fn wear_of(m: Model, ground: u32) -> f32 {
@@ -141,7 +142,7 @@ fn worn(phased: vec3f, summer: vec3f, ground: u32, wear: f32, d: f32) -> vec3f {
         return phased;
     }
     let g = unpack4x8unorm(ground).rgb;
-    let change = (phased - summer) * (1.0 - smoothstep(PHASE_FROM_M, PHASE_TO_M, d));
+    let change = (phased - summer) * (1.0 - smoothstep(PHASE_FROM_M, TREE_REACH_M, d));
     return wear * max(luma(summer) * g * g + luma(g * g) * change, vec3f(0.0));
 }
 

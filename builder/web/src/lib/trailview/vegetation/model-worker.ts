@@ -17,17 +17,19 @@ const FIT = 8;
 /** A job: species to build in summer, kept green all year or not, and crowns of a species in a phase. */
 export interface ModelJob { id: number; leafy: { model: string; evergreen: boolean }[]; crowns: { model: string; phase: number }[] }
 export interface BuiltTier { position: Float32Array; normal: Float32Array; color: Float32Array; index: Uint32Array }
-/** A model's tiers, each with its trunk's vertices first, and its crown's lowest point in model units at every tier. */
-export interface BuiltModel { tiers: (BuiltTier & { trunk: number })[]; crown: number }
+/**
+ * A model's tiers, each with its trunk's vertices first, its crown's lowest point in model units at every
+ * tier, and the luma of its mean colour as it shows lit (`lit`), with the weights of `luma` in shade.wgsl.
+ */
+export interface BuiltModel { tiers: (BuiltTier & { trunk: number })[]; crown: number; luma: number }
 /** A job's answer: the models in the order of its `leafy` and its `crowns`. */
 export interface ModelAnswer { id: number; leafy?: BuiltLeafy[]; crowns?: BuiltModel[]; error?: string }
 /**
  * A species' leafy crown in summer, with per phase (winter first) the colour matrix (3 × 3, columns
  * first) of the least error that turns it into that phase's, and whether the phase needs a crown of its
- * own: a bare crown, or flecks that the season moves, which the matrix does not turn within FIT; and
- * the mean luma of its crown's vertices at tier 0, linear, with the weights of `luma` in shade.wgsl.
+ * own: a bare crown, or flecks that the season moves, which the matrix does not turn within FIT.
  */
-export interface BuiltLeafy extends BuiltModel { tones: (number[] | undefined)[]; own: boolean[]; luma: number }
+export interface BuiltLeafy extends BuiltModel { tones: (number[] | undefined)[]; own: boolean[] }
 
 self.onmessage = async ({ data: { id, leafy, crowns } }: MessageEvent<ModelJob>) => {
     try {
@@ -41,11 +43,11 @@ self.onmessage = async ({ data: { id, leafy, crowns } }: MessageEvent<ModelJob>)
                 tones[phase] = matrix;
                 own[phase] = !matrix || !fits(matrix, summer[0], near!, FIT);
             });
-            return { ...arrays(tiers(summer)), tones, own, luma: crownLuma(summer[0]) };
+            return { ...build(summer, true), tones, own };
         });
         const built = crowns.map(({ model, phase }): BuiltModel => {
             const season: Season = SEASONS[phase], grown = ([0, 1, 2] as Lod[]).map(lod => tree(model, season, lod));
-            return arrays(bareIn(model, season) ? grown : tiers(grown));
+            return build(grown, !bareIn(model, season));
         });
         self.postMessage({ id, leafy: species, crowns: built } satisfies ModelAnswer, { transfer: [...species, ...built].flatMap(m => m.tiers).flatMap(t => [t.position.buffer, t.normal.buffer, t.color.buffer, t.index.buffer]) });
     } catch (error) {
@@ -53,23 +55,15 @@ self.onmessage = async ({ data: { id, leafy, crowns } }: MessageEvent<ModelJob>)
     }
 };
 
-/** Tier 0, and tiers 1 and 2 simplified from it, each with its own trunk. */
-function tiers([near, middle, far]: Grown[]): Grown[] {
-    const want = lit(near);
-    return [near, simplified(near, middle, TRIANGLES[0], want), simplified(near, far, TRIANGLES[1], want)];
-}
-
-function crownLuma({ color, trunk }: Grown): number {
-    let sum = 0;
-    for (let v = 3 * trunk; v < color.length; v += 3) sum += 0.3 * color[v] + 0.59 * color[v + 1] + 0.11 * color[v + 2];
-    return sum / (color.length / 3 - trunk);
-}
-
-function arrays(grown: Grown[]): BuiltModel {
+/** A model of tier 0 and its tiers 1 and 2, which `simplify` makes from tier 0, each with its own trunk. */
+function build(grown: Grown[], simplify: boolean): BuiltModel {
+    const [near, middle, far] = grown, want = lit(near);
+    const tiers = simplify ? [near, simplified(near, middle, TRIANGLES[0], want), simplified(near, far, TRIANGLES[1], want)] : grown;
     return {
-        tiers: grown.map(geo => ({
+        tiers: tiers.map(geo => ({
             position: Float32Array.from(geo.position), normal: Float32Array.from(geo.normal), color: Float32Array.from(geo.color), index: Uint32Array.from(geo.index), trunk: geo.trunk,
         })),
-        crown: Math.min(...grown.map(geo => geo.crown)),
+        crown: Math.min(...tiers.map(geo => geo.crown)),
+        luma: 0.3 * want[0] + 0.59 * want[1] + 0.11 * want[2],
     };
 }
