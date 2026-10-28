@@ -34,7 +34,7 @@ CASES = [
     # Not the prototype's: the engine draws each model that a pack names, also one that a child pack inherits.
     ("packs/alps", ["trees", "norway-spruce", "model"], "no-such-tree", "regions/alps.insubric.json: pack alps.insubric: tree norway-spruce has no model no-such-tree"),
     ("packs/alps", ["ground", "bilberry", "model"], "norway-spruce", "regions/alps.json: pack alps: ground plant bilberry has no model norway-spruce"),
-    ("packs/alps", ["orchard"], "apple", "regions/alps.json: pack alps: orchard has no model apple"),
+    ("packs/alps", ["orchard"], "no-such-orchard", "regions/alps.json: pack alps: orchard has no model no-such-orchard"),
     ("packs/alps", ["style", "xx-yy"], "chalet", "regions/alps.json: xx-yy is not a place of countries.json"),
 ]
 

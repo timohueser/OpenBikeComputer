@@ -362,8 +362,12 @@ fn slots_of(s: Shape, index: u32, bottom: f32) -> Slots {
     let eave_m = select(params.styles[index].eave, 0.1, greenhouse);
     let verge = select(params.styles[index].verge, 0.1, greenhouse);
     var o: Slots;
-    // A wide hall's roof keeps a low pitch, and a style of 0° a near-flat one.
-    let t = max(min(tan(radians(s.pitch)), select(ROOF_M, GREENHOUSE_RISE_M, greenhouse) / s.half.y), 0.05);
+    // A wide hall's roof keeps a low pitch, and a style of 0° a near-flat one; a greenhouse's rise
+    // stays under its cap at any width.
+    var t = max(min(tan(radians(s.pitch)), ROOF_M / s.half.y), 0.05);
+    if (greenhouse) {
+        t = min(t, GREENHOUSE_RISE_M / s.half.y);
+    }
     let w = s.half;
     o.z[0] = bottom;
     o.z[1] = s.wall;
