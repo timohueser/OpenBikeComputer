@@ -2,7 +2,8 @@
 
 The planner climate layer reads one archive per region: `climate.pmtiles`. It
 holds rain, temperature and wind for each week of ten years. The bake is
-`tools/planner_climate.py`.
+`tools/planner_climate.py`. It reads the daily values of the prepared source
+[`climate`](obc-data.md#climate).
 
 ## Archive
 
@@ -168,17 +169,19 @@ The archive metadata is a JSON object:
 | `rain_factors` | Array of 12 numbers, January first: the calibration factor of the weekly rain of each month |
 | `wind_factor` | Number: the calibration factor of the weekly daytime wind |
 | `attribution` | Text to show with the layer |
-| `inputs` | Object: `doi`, `orography_sha256`, `chunks` |
+| `inputs` | Object: `doi`, `orography_sha256`, `files` |
 
 ## Source
 
 The source is ERA5-Land hourly data, DOI 10.24381/cds.e2161bac, licence CC BY
-4.0. The bake reads the ECMWF ARCO geo-chunked Zarr stores of ERA5-Land: `t2m`,
-`u10`, `v10` and `tp`. `tp` holds the precipitation of each hour. The bake uses
-final data only. The orography is the ERA5-Land geopotential file
-`geo_1279l4_0.1x0.1.grib2_v4_unpack.nc` with the SHA-256 in `orography_sha256`.
+4.0. The producer of `climate` reads the ECMWF ARCO geo-chunked Zarr stores of
+ERA5-Land: `t2m`, `u10`, `v10` and `tp`. `tp` holds the precipitation of each
+hour. It uses final data only: a chunk is final in a store that reaches 120
+days past the end of the chunk or, when that is earlier, past the end of the
+year that it is read for. A chunk that the store omits has no data. The orography is the ERA5-Land
+geopotential file `geo_1279l4_0.1x0.1.grib2_v4_unpack.nc` with the SHA-256 in
+`orography_sha256`.
 
-`chunks` has one SHA-256 per variable. It is the SHA-256 of one line
-`T.Y.X SHA256` for each Zarr chunk that the bake reads, sorted as text, each line
-ended by a line feed. `T.Y.X` is the Zarr chunk key and `SHA256` is the SHA-256 of
-its compressed bytes. A chunk that the store omits has the SHA-256 of no bytes.
+`files` is the SHA-256 of one line `PATH SHA256` for each file of `climate` that
+the bake reads, sorted as text, each line ended by a line feed. `SHA256` is the
+SHA-256 of the file.
