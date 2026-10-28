@@ -135,8 +135,7 @@ fn ground_plants(@builtin(global_invocation_id) id: vec3u) {
         if ((p.x & 0xffffu) == NO_PLANT) {
             break;
         }
-        let on = data.regions[region + 2u * k + 1u];
-        let grows = ground.r < 64u && ((on[ground.r >> 5u] >> (ground.r & 31u)) & 1u) == 1u;
+        let grows = holds(data.regions[region + 2u * k + 1u].xy, ground.r);
         let share = bitcast<f32>(p.z) * select(1.0, 2.5 * smoothstep(0.55, 0.7, stand_of(u, f32(p.y >> 16u))), (p.y & CLUMPED) != 0u);
         if (grows && plant_hash(cell, 10u + k) < share) {
             pick = p.x & 0xffffu;

@@ -38,6 +38,6 @@ describe('the materials of the plants', () => {
     it('give each its share of its cover\'s shrubs, all of them where it does not say', () => {
         expect(materialWord({ id: 'sand', cover: 'bare', shrubs: 0 }) >>> 16).toBe(0);
         expect(materialWord({ id: 'scrub', cover: 'shrub' }) >>> 16).toBe(255);
-        expect(materialWord({ id: 'heath', cover: 'grass', shrubs: 0.5 }) & 0xffff).toBe(2);
+        expect(materialWord({ id: 'heath', cover: 'grass', shrubs: 0.5 })).toBe(2 | (128 << 16));
     });
 });

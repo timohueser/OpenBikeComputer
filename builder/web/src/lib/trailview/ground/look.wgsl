@@ -106,6 +106,11 @@ fn rule(region: u32, slot: i32) -> vec4f {
     return textureLoad(rules, vec2i(slot, i32(region)), 0);
 }
 
+// Whether a set of materials, as `bits` of rules/regions.ts makes it, holds a material code.
+fn holds(materials: vec2u, material: u32) -> bool {
+    return ((materials[material >> 5u] >> (material & 31u)) & 1u) == 1u;
+}
+
 // The slots of ground/rules.ts, from the sizes of the vocabulary.
 fn slot_materials() -> i32 { return 33; }
 fn slot_traits() -> i32 { return 33 + i32(look.codes.y); }
@@ -164,8 +169,8 @@ fn texel_parts(cell: vec4u, t: f32, ledge: f32, barren: f32, decided: bool) -> P
     }
     parts.water = select(0.0, 1.0, cover == COVER_WATER);
     parts.tree = select(0.0, 1.0, cover == COVER_TREE);
-    let patched = u32(kinds.y + 0.5);
-    parts.patches = vec2f(f32(patched & 1u), f32(patched >> 1u));
+    let under = u32(kinds.y + 0.5);
+    parts.patches = vec2f(f32(under & 1u), f32(under >> 1u));
     parts.sward = select(1.0, 0.0, cover == COVER_BARE || cover == COVER_BUILT || cover == COVER_SNOW || cover == COVER_WATER || cover == COVER_MOSS);
     parts.bare = kinds.z;
     parts.banded = rule(own, slot_lithologies() + i32(cell.g)).a;
