@@ -442,8 +442,8 @@ fetch writes why and downloads the file. So a GLO-30 tile, which the fetch reads
 `obc data source refresh` asks upstream, not the archive.
 
 The `corine-land-cover` capture looks for the manifest with its `dataset` and `file`. When the
-archive has the zip, `tools/clms.py --archive ZIP --sha256 SHA256` checks the SHA-256 and takes the
-file from that zip as from an order.
+archive has the zip, the capture checks its SHA-256 against the manifest, and `tools/clms.py --archive
+ZIP` takes the file from that zip as from an order.
 
 ### Credentials of sources
 
