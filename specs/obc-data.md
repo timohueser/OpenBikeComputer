@@ -1993,27 +1993,33 @@ in the same format.
   block: the onset and the melt-out planes, 131,072 bytes. The rules of the archive read only the
   source pixels near a tile, so a block has the same bytes in each version that makes it.
 - For each block, `python -m tools.planner_snow prepare --block <x>-<y> --seasons <season>,…
-  --modis <list> --canopy <file>,…` writes the files of the seasons that the version lacks, one
-  season at a time. Of each season, the program reads:
+  --modis <list> --canopy <file>,… --slots <dir>` writes the files of the seasons that the version
+  lacks, one season at a time. Of each season, the program reads:
   - The MODIS files of the archive dataset `modis-snow` in place, from the root that holds its
-    manifest: `<list>` names each file of a MODIS tile that the block meets with one MODIS pixel of
-    margin. A day and a platform of a tile take the COG of the Planetary Computer, else the HDF4
-    granule of NSIDC. A prepare refuses when no root holds the dataset.
+    manifest: `<list>` names each file of a MODIS tile that the block meets with two MODIS pixels
+    of margin, the most that the MODIS grid of the program reaches past the block. A day and a
+    platform of a tile take the COG of the Planetary Computer, else the HDF4 granule of NSIDC. A
+    prepare refuses when no root holds the dataset, and when a tile of the list lacks a file of
+    either platform on more than 7 days in a row of a season: the nearest clear day fills such a
+    run as it fills a cloudy week, and a longer one is a gap of the source. The number is chosen.
+    The input `modis-snow` also records, for each block, season and tile, the days with a file.
   - The `hansen-gfc` tiles at the `start` of its row that the block meets with one MODIS pixel of
     margin, which the run fetches.
   - SCO, SCM and SCD of HR-WSI from CDSE S3, with the `credential` of `hr-wsi`: the products of
     the season that the catalogue lists for the block, in the order of their names, a window of
-    each zoom 10 tile at a time. A block whose catalogue lists products for one season and none
-    for another fails, because a short listing would make that season MODIS only. The 8 programs
-    open more connections than the 4 that CDSE allows a user; GDAL tries a refused request again.
+    each zoom 10 tile at a time. A block fails when its catalogue lists products for one season
+    and none for another, or other tiles in one season than in another: a short listing would
+    make a season MODIS only for good. An empty listing is asked once more; a block outside
+    HR-WSI or at sea has no product. The programs share the 4 connections that CDSE allows a user
+    through lock files in `<dir>`, and GDAL retries a refused request.
 
   Then it writes `<x>-<y>.<season>.sha256`, the SHA-256 of each file.
 - The review counts into the store the files of the programs that run at once, and a batch of
   files that waits for its move into the home.
 - The run moves the files into the home in batches of 64. The manifest names `hr-wsi` at the date
   of the version with the [digest](#keys) of the SHA-256 of the files that it made, `modis-snow`
-  at the version of its dataset with the digest of the SHA-256 of the files of the lists, and the
-  `hansen-gfc` version that it fetched.
+  at the version of its dataset with the digest of the SHA-256 of the files of the lists and of
+  their days, and the `hansen-gfc` version that it fetched.
 
 #### `wiki`
 
