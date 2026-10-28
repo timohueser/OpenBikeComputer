@@ -132,10 +132,17 @@ export interface HouseStyle {
     palette: Record<'render' | 'wood' | 'roof' | 'door' | 'shutter', string[]> & { plinth: string | string[]; chimney: string };
 }
 
+/**
+ * How a material is planted in rows (fields.wgsl): its plant, a tree or a plant model, else the tree of
+ * the pack's `orchard`; the metres across its rows and along them, its plants' heights, and the metres
+ * from the eye where they stand. Each field takes one value of each range.
+ */
+export interface Rows { model?: string; across_m: [number, number]; along_m: [number, number]; height_m: [number, number]; reach_m: number }
+
 /** The ground vocabulary of `materials.json`: a material or lithology code is its index. */
 export interface Vocabulary {
     /** `clumps`: the share of ground in tussocks and low shrubs, 0 by default; `shrubs`: the share of its cover's shrubs that stand on it, 1 by default. */
-    materials: { id: string; cover: string; clumps?: number; shrubs?: number; tags?: string[] }[];
+    materials: { id: string; cover: string; clumps?: number; shrubs?: number; tags?: string[]; rows?: Rows }[];
     lithologies: { id: string; hardness: number }[];
 }
 

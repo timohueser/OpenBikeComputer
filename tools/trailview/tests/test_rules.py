@@ -29,6 +29,8 @@ CASES = [
     ("regions/world", ["cliffs"], {"reach_m": 15}, "regions/world.json: cliffs: is an unknown key"),
     ("regions/world", ["leaf"], "deciduous", 'regions/world.json: leaf: "deciduous" is not one of "needleleaved", "broadleaved", "mixed"'),
     ("materials", ["materials", 9, "clumps"], 2, "materials.json: materials[9].clumps: 2 is not a number from 0 to 1"),
+    # Not the prototype's: the plantings stand a model of the engine on each material planted in rows.
+    ("materials", ["materials", 22, "rows", "model"], "no-such-vine", 'materials.json: materials[22].rows.model: "no-such-vine" is no tree or plant model'),
     ("styles/trullo", ["roof"], "dome", 'styles/trullo.json: roof: "dome" is not one of "cone", "flat"'),
     # Not the prototype's: the engine draws each model that a pack names, also one that a child pack inherits.
     ("packs/alps", ["trees", "norway-spruce", "model"], "no-such-tree", "regions/alps.insubric.json: pack alps.insubric: tree norway-spruce has no model no-such-tree"),

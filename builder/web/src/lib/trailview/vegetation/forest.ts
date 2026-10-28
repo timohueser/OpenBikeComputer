@@ -6,7 +6,7 @@ import type { Gpu } from '../gpu/device';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { Instances, VIEWS, type Producer, type Surfaces } from '../instances/instances';
-import type { Rules } from '../rules/regions';
+import { bits, type Rules } from '../rules/regions';
 import { AROUND, Canopy, CANOPY_ZOOM } from './canopy';
 import { TREE_REACH_M, type TreeModels } from './tree-models';
 
@@ -48,8 +48,8 @@ export class Forest implements Producer {
     private resources?: Resources;
     private readonly canopy: Canopy;
     private readonly species: Uint32Array<ArrayBuffer>;
-    /** The material code of orchards, or 0xffffffff for none. */
-    private readonly orchard: number;
+    /** The materials planted in rows, which stand their own trees (rows.ts), as bits. */
+    private readonly planted: [number, number];
     private window: [number, number] = [0, 0];
     private side = 0;
     /** Base cells a side of the window at the highest latitude that the view serves: the cell list's size. */
@@ -63,7 +63,7 @@ export class Forest implements Producer {
         instances.produce(this);
         this.canopy = new Canopy(config, wake, stop);
         this.most = windowSide(Math.max(Math.abs(config.bounds[1]), Math.abs(config.bounds[3])));
-        this.orchard = rules.vocabulary.materials.findIndex(material => material.id === 'orchard') >>> 0;
+        this.planted = bits(rules.vocabulary.materials.flatMap((material, code) => (material.rows ? [code] : [])));
         // tools/trailview/rules.py checks that a region has SPECIES tree species at most, each with its model.
         this.species = speciesTable(rules.regions.map(region => region.trees.filter(rule => rule.cover === 'tree').slice(0, SPECIES).flatMap(rule => {
             const model = trees.index(rule.model, rule.evergreen);
@@ -136,10 +136,10 @@ export class Forest implements Producer {
         ints.set(this.window);
         new Uint32Array(params).set([this.side, POINTS], 2);
         floats.set([this.reach, THIN_M], 4);
-        new Uint32Array(params)[6] = this.orchard;
-        floats[7] = DENSITY;
+        new Uint32Array(params).set(this.planted, 6);
         floats.set(STEMS_HA.map(n => n / 1e4), 8);
         new Uint32Array(params).set(listParts(this.most), 16);
+        floats[21] = DENSITY;
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
         for (const cells of r.cells) r.gpu.device.queue.writeBuffer(cells, 0, new Uint32Array([0, 1, 1, 0, 0, 0, 0, 0]));
     }
