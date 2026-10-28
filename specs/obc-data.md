@@ -30,7 +30,7 @@ One `[[source]]` table per source.
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `start` | string | no | The version that a step list reads while no serving release reads the source. It has the form of `version` |
 | `refresh` | integer or string | no, `"manual"` | The policy, which the settings of a target can replace: `1` through `65535` whole days, or `"manual"` |
-| `keep` | string | yes | Where the copy that a bake reads stays, so that no outage stops a bake: `archive`, the [archive](#archive) holds the whole dataset; `store`, the store keeps what each fetch took; `prepared`, R2 keeps what we make: a prepared source, a source that only a prepare reads, or our own asset. `tools/check_data_sources.py` refuses a source without it |
+| `keep` | string | yes | Where the copy that a bake reads stays, so that no outage stops a bake: `archive`, the [archive](#archive) holds the whole dataset; `store`, the store keeps what each fetch took; `prepared`, we keep what we make: the [archive](#prepared-sources) keeps a prepared source and a source that only a prepare reads, and R2 keeps our own asset. `tools/check_data_sources.py` refuses a source without it |
 | `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory. `register`: the `https://` page where a person gets it, and `hint`: what to copy there, in one line. See [Credentials of sources](#credentials-of-sources) |
 | `publish_text` | boolean | no, `true` | Only for a `prepared` source of article text: `false` keeps the text out of its versions |
@@ -49,7 +49,7 @@ One `[[source]]` table per source.
 | `github` | A GitHub release asset or source archive |
 | `by-hand` | A person orders or downloads the files at `url` |
 | `installed` | A person installs it, or another source's build brings it. It has no `url` |
-| `prepared` | `obc data source prepare` publishes its versions to a target, see [Prepared sources](#prepared-sources). It has no `url` |
+| `prepared` | `obc data source prepare` makes its versions in the archive, see [Prepared sources](#prepared-sources). It has no `url` |
 
 `fetch.url` is an `https://` URL template. `{name}` stands for a value the fetcher fills:
 `{version}` is the version, `{yymmdd}` a date version as `YYMMDD`, `{area}` a Geofabrik area, `{tile}` a
@@ -222,7 +222,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write. A collection empties it |
 | `serve/<target>/<planner id>/` | The files that the services of a planner release read while [`obc data serve`](#serve) runs them |
 | `follower/<target>/` | A store of its own with the objects of the releases that [`obc data serve`](#serve) follows, and nothing else |
-| `prepared/<target>/<id>/<version>/` | The work of a [prepare](#prepare) that is not complete: `selection.json`, `[scope, languages]` of the run; `journal.jsonl`, the files that it uploaded and the source versions that it read; and `work/`, the files that it did not upload yet |
+| `prepared/<id>/<version>/` | The work of a [prepare](#prepare) that is not complete: `selection.json`, `[scope, languages]` of the run; `journal.jsonl`, the files that it moved into the archive and the source versions that it read; and `work/`, the files that it did not move yet |
 | `locks/` | One lock file per key and per run |
 
 Rules:
@@ -336,7 +336,7 @@ version. A file that fails it is deleted.
 | `http`, `geofabrik`, `glo30`, `github` | One file per URL, as above |
 | `capture` | A program writes the files, see below |
 | `dtm`, `by-hand`, `installed` | None; the fetch fails. A `dtm-*` source is read through `terrain` |
-| `prepared` | The manifest and the files that a step names, from a target, see [Prepared sources](#prepared-sources) |
+| `prepared` | The manifest and the files that a step names, from the archive, see [Prepared sources](#prepared-sources) |
 
 A `geofabrik` URL with `{yymmdd}` names the day of the data of the extract. Without a version, the
 fetch reads the day from the `timestamp` of `<area>-updates/state.txt`; for more than one area,
@@ -412,16 +412,20 @@ producer of [`wiki`](#wiki) reads them.
 
 ### Archive
 
-The archive keeps whole datasets on drives of their own, so that no outage stops a bake.
-`OBC_DATA_ARCHIVE` names its roots, separated by `:`. Without the variable, or with an empty
-value, there is no archive. Each root is a complete archive. A dataset is wholly in one root, so a
-failed drive loses only its own datasets. Only `obc data archive` writes the archive.
+The archive keeps whole datasets and the versions of the prepared sources on drives of their
+own, so that no outage stops a bake. `OBC_DATA_ARCHIVE` names its roots, separated by `:`.
+Without the variable, or with an empty value, there is no archive. Each root is a complete
+archive. A dataset is wholly in one root, and so are the versions of a prepared source, so a failed
+drive loses only its own. A prepared version has no other copy. Only `obc data archive` writes
+`mirror/`, `manifest/` and `.partial/`, and only `obc data source prepare` and
+`obc data source copy` write `prepared/`.
 
 | Path under a root | Holds |
 | --- | --- |
 | `mirror/<host>/<path>` | The file of the URL `https://<host>/<path>` |
 | `kept/<dataset>/<path>` | A file that has no upstream URL. A person puts it there |
 | `manifest/<dataset>.json` | The [manifest](#manifest-of-a-dataset) of the dataset |
+| `prepared/<id>/` | The versions of the [prepared source](#prepared-sources) `<id>` |
 | `.partial/<dataset>/` | The unfinished downloads of `archive get`. You can delete it when no `archive get` runs |
 
 A file goes into `mirror/` only after its check: the size, the `ETag` and the MD5 that the listing
@@ -538,7 +542,8 @@ that the last get listed, the verified files and their bytes. It also names each
 
 #### Read
 
-- Only a source with `keep = "archive"` reads the archive.
+- Only a source with `keep = "archive"` reads a dataset. A prepared source reads its versions as
+  [Prepared sources](#prepared-sources) says.
 - A fetch reads the manifests of each root, in the order of `OBC_DATA_ARCHIVE`. When two roots
   list the same path, the first one serves. A root that does not exist gives a warning.
 - Only a file that a manifest lists serves: an unlisted file can still be downloading. A
@@ -1264,11 +1269,11 @@ A key is a path with `/` between its parts. No part is empty, `.` or `..`.
 | `releases/<id>.json` | The [manifest](#release-manifest) of a release. Immutable |
 | `releases/<folder>/<path>` | A file that a client finds by name. `<folder>` is the [digest](#keys) of the files of the folder, listed by `<path>`. So other files make another folder. Immutable |
 | `objects/<sha256>` | A client file of an output. Immutable |
-| `sources/<id>/…` | The lock, the list of versions and the versions of a [prepared source](#prepared-sources) |
 | `cell-catalog/catalog.json`, `planner/catalog.json` | The pointers: a copy of the object that the serving release names for the key |
 
 Only client files of outputs go to a target: an output that no client reads can derive from a
-source that we may not give to others, and a bucket is public. A step that reads such an output
+source that we may not give to others, and a bucket is public. No target holds a version of a
+[prepared source](#prepared-sources). A step that reads such an output
 of a kept layer reads it from the store of the machine.
 
 ### Release manifest
@@ -1468,6 +1473,8 @@ An update needs no file of the serving release in the store of the machine. It t
 its bakes and the checks of the products read:
 
 - A fetch comes from the store, else from upstream. The target holds no copy of a fetch.
+- A version of a prepared source comes from the store, else from the archive. A machine without
+  the archive bakes only what its store holds, as [Prepared sources](#prepared-sources) says.
 - A step that bakes and reads a file of a fetch that the serving release lists must find the same
   SHA-256 in the record of the store: before the review, and again after the fetches of the
   update, before any bake. Else nothing changes (`verify_failed`).
@@ -1562,14 +1569,13 @@ another release, it collects the target. The grace of a collection is 10 minutes
 - It deletes the keys under `objects/` and `releases/` that no kept release names, and the
   temporary files of a write that stopped: a hidden `.part` or `.tmp` file in the root, or beside a
   pointer with the name of the pointer. The pointers, `release.json` and the keys of older
-  publishers stay. Under `sources/`, it deletes only the versions of a prepared source.
-- It deletes the versions of a prepared source that [Prepared sources](#prepared-sources) names.
+  publishers stay.
 - A release that `release.json` does not name stopped serving at or before the time when the
   release that served before the switch began to serve. The first collection the grace or more
   after that time deletes it. Until then it stays, and its files too.
 - It runs while the update holds the [lock](#lock): no other run writes the target. Before each
   100 deletes, a heartbeat checks that the run still holds it.
-- On an R2 target, it lists the keys under `objects/`, `releases/` and `sources/` only, and the
+- On an R2 target, it lists the keys under `objects/` and `releases/` only, and the
   grace counts by the clock of the server: the `Date` of its answers, as `since` does.
 - It deletes each other file that no remaining manifest names, then the manifests of the releases
   that go. A collection that stops resumes at the next update that switches, from the manifests
@@ -1582,8 +1588,9 @@ stopped.
 ### Prepared sources
 
 A prepared source is a source whose versions `obc data source prepare` makes in a long job, such
-as the processing of large dumps. A version is a fixed set of files on a target. A bake reads a
-version as it reads any other source.
+as the processing of large dumps. A version is a fixed set of files in the [archive](#archive),
+and the archive is the only place that keeps it: no target holds a version. A bake reads a version
+as it reads any other source.
 
 A prepared source is a row of `data/sources.toml` with `fetch.kind = "prepared"`. The `obc data`
 binary links a producer for each name: the producer of `<name>` makes the source `<name>`. Only a source whose licence lets us give its bytes to others is
@@ -1593,17 +1600,18 @@ The name of a version is the UTC date when its first run starts, `YYYY-MM-DD`. A
 the same day adds `.2`, `.3` and so on: `2026-10-28`, `2026-10-28.2`, `2026-10-28.10`. Versions
 are in the order of the date, then of the number; a plain date is number 1.
 
-A prepared source has these keys in the folder `sources/<id>/` of a target:
+The home of a prepared source is the folder `prepared/<id>/` of the first root of
+`OBC_DATA_ARCHIVE` that has it. Each version of the source is in its home, because a version can
+keep the files of an earlier one (`reused`). The home holds:
 
-| Key | Holds |
+| Path | Holds |
 | --- | --- |
-| `sources/<id>/lock.json` | The lock of the source: one prepare at a time. It has the format of the [lock](#lock) of a target |
-| `sources/<id>/versions.json` | The complete versions, oldest first |
-| `sources/<id>/<version>/<path>` | A file of the version. Immutable |
-| `sources/<id>/<version>/manifest.json` | The manifest of the version, written last. Immutable |
+| `prepared/<id>/lock.json` | The lock of the source: one prepare or copy at a time. It has the format of the [lock](#lock) of a target |
+| `prepared/<id>/versions.json` | The complete versions, oldest first |
+| `prepared/<id>/<version>/<path>` | A file of the version. Immutable |
+| `prepared/<id>/<version>/manifest.json` | The manifest of the version, written last. Immutable |
 
-`lock.json` and `versions.json` get `Cache-Control: no-store`. A version is complete when it has
-its manifest.
+A version is complete when it has its manifest.
 
 ```json
 [
@@ -1646,7 +1654,7 @@ is compact JSON with the keys of each object in byte order:
 | `revision` | A person changes it in the change that improves the output |
 | `inputs` | Each source version that the prepare read, sorted by source and version, with the [digest](#keys) of the files that it read |
 | `files` | Sorted by `path`. A path is relative, and is not `manifest.json` |
-| `reused` | Absent, or each path of `files` that an earlier version of the same source on the target holds, with that version: the file is at `<that version>/<path>`. A version that extends the one before keeps its files without an upload |
+| `reused` | Absent, or each path of `files` that an earlier version of the same source holds, with that version: the file is at `<that version>/<path>`. A version that extends the one before keeps its files without a copy |
 | `scope` | `null` for every place that the source covers, or `{"region", "definitions"}` as in the [settings of a target](#settings-of-a-target) |
 | `extends` | Absent, or the scopes of the earlier versions that this version extends, oldest first: the version keeps their files outside its own `scope` |
 | `languages` | Article language codes in supported order, each once; empty for a source without articles |
@@ -1656,97 +1664,120 @@ is compact JSON with the keys of each object in byte order:
 
 #### Prepare
 
-`obc data source prepare ID` makes a version for a target, `prod` by default:
+`obc data source prepare ID` makes a version in the home of the source:
 
-1. A new version takes the first name of the day that is after each version of that day in
-   `versions.json` and has no manifest on the target. A run keeps its work in
-   `prepared/<target>/<id>/<version>/` of the [store](#store) of its machine. The same command
-   resumes the version: the producer does not make a file of the journal again, unless the target
-   lacks its key. A resume with another region or language selection refuses. When the manifest of a stopped version is
-   on the target and names the files of its journal, its run stopped after the manifest: the run
+1. The prepare refuses while `OBC_DATA_ARCHIVE` names no root, and while a root of it does not
+   exist, such as a drive that is not mounted: that root can be the home. A source without a home
+   gets one in the first root with 4 GiB free. To put it in another root, a person makes the empty
+   folder `prepared/<id>/` there first.
+2. A new version takes the first name of the day that is after each version of that day in
+   `versions.json` and has no manifest in the home. A run keeps its work in
+   `prepared/<id>/<version>/` of the [store](#store) of its machine. The same command
+   resumes the version: the producer does not make a file of the journal again, unless the home
+   lacks it. A resume with another region or language selection refuses. When the manifest of a stopped version is
+   in the home and names the files of its journal, its run stopped after the manifest: the run
    only adds the version to `versions.json`, and the review says `listing`. Another stopped version
-   that is not newer than the newest complete version on the target, or whose manifest is on the
-   target, is not resumed: the run starts a new version, deletes the work of the old one, and the
-   review names it in `abandoned`. So a run never writes a key of a complete version.
-2. The review names the version, the inputs with the size of their files in the store or on
+   that is not newer than the newest complete version in the home, or whose manifest is in the
+   home, is not resumed: the run starts a new version, deletes the work of the old one, and the
+   review names it in `abandoned`. So a run never writes a file of a complete version.
+3. The review names the root of the home, the version, the inputs with the size of their files in the store or on
    this machine (`unknown` lists an input whose size neither knows), the files of the version at
    most (`files`, `null` when the producer cannot tell before the run), the files
-   that earlier runs uploaded, the cost from the newest version that the target lists, only when its scope and languages match, the bytes that go into the store and to the target, the check of this machine as in the
+   that earlier runs moved into the home, the cost from the newest version in the home, only when its scope and languages match, the bytes that go into the store and into the archive, the check of this machine as in the
    [review](#review) of an update, which also refuses when the source or an input has a
-   `credential` that is not on the machine, and for each target that reads the versions of this target the
+   `credential` that is not on the machine, or when the root lacks the free space for the bytes of
+   the version and 4 GiB more, and for each target of `data/targets.toml` the
    layers of its serving release that read an older version. `--dry-run` writes it. Its id is the
-   first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the
+   first 12 hex digits of the SHA-256 of the canonical JSON of the source, the root, the
    version, the format, the revision, the scope, the languages, `publish_text` and each planned
-   input, including its archive path, URL, size and object identity. For an R2 target, the prepare
-   starts only with `--expect ID`, and asks first or needs `--yes`.
-3. A detached run, as [Runs](#runs) says, takes the lock of the source as an update takes the lock
+   input, including its archive path, URL, size and object identity. With `--expect ID`, the
+   prepare starts only when the review has that id.
+4. A detached run, as [Runs](#runs) says, takes the lock of the source as an update takes the lock
    of a target. It makes the review again under the lock, and refuses a review that is not
    `--expect`.
-4. A run of a new version deletes the folders of older versions of the source on the target that
+5. A run of a new version deletes the folders of older versions of the source in the home that
    have no manifest: no run resumes them. Before each 100 deletes, it checks that it still holds
    the lock.
-5. The producer writes each file. `terrain` and `forest` run the programs of
-   eight tiles at a time. The run uploads each file at once, records its SHA-256 in the journal
-   and deletes it from the work. No reader reads a version before its manifest, so the upload
-   replaces a key that a stopped run left with other bytes. The run shows each tile that a program makes as a step `<id>/<tile>`
+6. The producer writes each file. `terrain` and `forest` run the programs of
+   eight tiles at a time. The run moves each file into the home at once, records its SHA-256 in the journal
+   and deletes it from the work. No reader reads a version before its manifest, so the move
+   replaces a file that a stopped run left with other bytes. The run shows each tile that a program makes as a step `<id>/<tile>`
    of the layer `<id>`, with its time, CPU, peak memory and the bytes of its files, so the page
    shows its progress as it shows the steps of an update.
-6. The run checks that it still holds the lock, and that the target has each file of the journal
-   with its size. It writes the manifest only when the key is absent: a manifest that an earlier
+7. The run checks that it still holds the lock, and that the home has each file of the journal
+   with its size. It writes the manifest only when the file is absent: a manifest that an earlier
    run of the version wrote stays when it names the same files. Then a conditional write adds the
    version to `versions.json`, with the time of the manifest, and the work of the version goes.
 
-`--region` and `--box` make a version of that region only. `wiki`, `terrain` and `forest` can publish a
-regional version to `prod`; other prepared sources restrict regional versions to other targets. `obc data runs RUN --stop` stops a run, and the same command resumes
-it. `obc data unlock TARGET --source ID --from MACHINE` frees a lock that a stopped run left.
+`--region` and `--box` make a version of that region only. `obc data runs RUN --stop` stops a run, and the same command resumes
+it. `obc data unlock --source ID --from MACHINE` frees a lock that a stopped run left.
+
+A test of a producer uses a root of its own: name it first in `OBC_DATA_ARCHIVE`, and make the
+empty folder `prepared/<id>/` in it. Then the prepare and each update with that variable use the
+versions of the test root, and the other roots still serve their datasets.
 
 #### Read
 
-Two targets can have other files under one version name, such as a region on `local` and all of
-the source on `prod`. So the manifest is the identity of a version: a step reads
+The archive is the reference: each target reads the versions that the home lists. Before an update or the
+[overview](#overview) lists the steps, each prepared source (an update) or each that the steps read
+(the overview) gets a version in the
+`format` of the producer of this `obc data`: the serving version of a `manual` source, else the
+newest version of the home. So a new version makes each layer that reads an older one stale, with the cause
+`source`, in each target. When no root has the home, such as on a machine without the
+archive, a target keeps the version that it serves, and a bake from the store needs no archive.
+When the home lists no version in that format and the target serves none, the listing blocks the
+layers that read the source (`blocked`), and the fix names `OBC_DATA_ARCHIVE` and the command that
+prepares one. A product can bake a layer
+without the source instead, as `device/terrain` does without a national terrain model: then a note
+of the [review](#review) names the source and the command.
+
+A test root can have other files under the name of a version. So the manifest is the identity of a
+version: a step reads
 `<version>/<manifest sha256>`, and the record in the store, the `sources` entry of a release
 and the fetch name it. Text output shows it as `<version> (<first 12 hex digits
 of the SHA-256>)`; with `--json`, a command gives the whole version.
 
-`prod` is the reference: a target other than `prod` reads the versions that `prod` lists, and its
-own versions only while `prod` lists none in the `format` of the producer. So a version made on one
-machine for a test never hides one that every target reads. Before an update or the
-[overview](#overview) lists the steps, each prepared source (an update) or each that the steps read
-(the overview) gets a version in the
-`format` of the producer of this `obc data`: the serving version of a `manual` source, else the
-newest version of that list. So a new version makes each layer that reads an older one stale, with the cause
-`source`, in each target that knows it, and in no target that reads it already. When `prod` cannot
-be read, another target reads the versions that it knows, and a bake from the store needs no
-network. When a target knows no version in that format, the listing blocks the layers that read the
-source (`blocked`), and the fix names the command that prepares one. A product can bake a layer
-without the source instead, as `device/terrain` does without a national terrain model: then a note
-of the [review](#review) names the source and the command.
-
 A step names the files of a version that it reads; an update refuses a step that names none. The
-fetch reads the manifest of the version from the targets of `data/targets.toml`, `prod` first,
-through their public URLs, without credentials. It skips a target that it cannot read, and takes
-the first manifest with the SHA-256 of the version. It downloads only the named files that the
-store lacks, and checks the SHA-256 of each against the manifest: a file with other bytes fails the
-fetch. The record of the version in the store has the manifest and these files, and the `url` of
-each is its key.
+fetch reads the manifest of the version in the home, and refuses one with another SHA-256. It
+copies only the named files that the store lacks, never as a link, and checks the SHA-256 of each
+against the manifest: a file with other bytes fails the fetch. The record of the version in the
+store has the manifest and these files, and the `url` of each is its path under the root. When no
+root has the manifest, the fetch refuses (`blocked`), and the fix names `OBC_DATA_ARCHIVE`.
 
 #### Delete
 
-After a switch, the [collection](#collection) of a target deletes a complete version of a prepared
-source only when no kept release reads it and a kept release reads a newer version. It removes the
-version from `versions.json` first, then deletes its files, the manifest last. The newest version
-that no release reads, a version without a manifest, a version that a later version names in
-`reused`, and every key that no version holds stay.
-The store of a machine keeps the files of a version that a release of one of its targets reads,
-as [Clean](#clean) says, also after the target deleted the version.
+No command deletes a complete version: the archive is its only copy, and a release that a target
+serves or keeps for its rollback can read any version. A [collection](#collection) of a target and
+a [clean](#clean) of the store never change the archive. The store of a machine keeps the files of
+a version that a release of one of its targets reads, as [Clean](#clean) says.
+
+#### Copy
+
+`obc data source copy ID --from TARGET` copies the versions of a prepared source from the legacy
+folder `sources/<id>/` of a target into its home. That folder has the layout of the home. The
+copy only reads the target.
+
+- The home is that of a prepare, and so are its refusals. The copy is a detached [run](#runs) that
+  holds the lock of the source.
+- It takes the versions of `sources/<id>/versions.json`, oldest first. A version that the home
+  lists with the same manifest SHA-256 is copied. A version that the home lists with another one,
+  or a manifest whose SHA-256 is not that of its entry, refuses the copy before it writes a file.
+- Each file of a version that the home lacks downloads into the store, with the check of its
+  SHA-256 against the manifest, and then goes into the home as a copy. A file that the home holds
+  with another size refuses the copy; the fix deletes it. Then the copy writes the manifest, and
+  then adds the version to `versions.json`. A copy that stops resumes.
+- `--dry-run` writes the root of the home and, for each version, the files and the bytes to copy
+  and those in place, and changes nothing. The run refuses when the root or the store lacks the
+  free space for the bytes to copy and 4 GiB more.
+- The files stay in the store; a [clean](#clean) deletes those that no release reads.
 
 #### `terrain`
 
 The producer `terrain`, format 3, makes the tiles of the reference archive
 (`host/obc-dem/reference/README.md`) of the national terrain models `dtm-<key>`, in two pools: the
 maximum, which `device/terrain` reads, and under `mean/` the mean, which `planner/terrain` reads.
-A version adds a region to the newest complete version of `terrain` on the target before it, in
-the same format; `prod` takes a version of a region.
+A version adds a region to the newest complete version of `terrain` in the home, in the same
+format.
 
 - The boxes of a region are the box of each of its leaves, so a union reads no tile between its
   boxes. A region with a `geofabrik` leaf has no boxes.
@@ -1771,7 +1802,7 @@ the same format; `prod` takes a version of a region.
   tile, it writes the empty `<ti:04>-<tj:04>.none`. It asks a service only for the part of the tile
   in the `extent`, and it removes the raw rasters. The run keeps the marks of each tile until the
   version is complete, so a resume fetches no tile again that it has.
-- The run uploads the files in batches of 64, one upload each. Each tile of the version before
+- The run moves the files into the home in batches of 64. Each tile of the version before
   that the run did not make stays in `reused`.
 - Last, `ingest.py index-terrain` writes `index.json` and `mean/index.json`: the index of the
   version before with each tile that the run made, its SHA-256 and its `contributors`, and the
@@ -1787,8 +1818,7 @@ the same format; `prod` takes a version of a region.
 
 The producer `forest`, format 3, makes the forest of each cell of the zoom 12 tiles at
 256 × 256 cells, which [the canopy archive](trailview-tiles.md#canopy) packs. A version adds a
-region to the newest complete version of `forest` on the target before it, in the same format;
-`prod` takes a version of a region.
+region to the newest complete version of `forest` in the home, in the same format.
 
 - The canopy models are the `canopy-<key>` rows: one per country, whose key is the lowercase
   country code, and `canopy-global`. A version reads each national model whose `extent` meets a
@@ -1832,7 +1862,7 @@ region to the newest complete version of `forest` on the target before it, in th
   block of a tile downloads once: at each 0.5 m pixel, the newest acquisition that has it.
 - The leaf type of a cell with a height is `hrl-dominant-leaf-type` of 2024 at 4 × 4 samples per
   cell, from its tiles on CDSE S3.
-- The run uploads the tiles in batches of 64. The manifest names each model that the version
+- The run moves the tiles into the home in batches of 64. The manifest names each model that the version
   read and `hrl-dominant-leaf-type` at the date of the version, with the [digest](#keys) of the
   pixel SHA-256 of the tiles that it made.
 
@@ -1886,8 +1916,8 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   says.
 - A box keeps the subjects whose box meets it. A Geofabrik scope accepts one area and reads
   its extract. Other scopes refuse.
-- The run uploads the shards in batches of 64, then `index.json`. A resume names the shards on the
-  target to `shards`, which does not write them again.
+- The run moves the shards into the home in batches of 64, then `index.json`. A resume names the
+  shards in the home to `shards`, which does not write them again.
 - With `publish_text = false`, each article in the shards is a fact with its key and the status
   `missing`, without text, and no lead image is a photo. The review says "text published" or
   "text kept local".
@@ -2038,10 +2068,11 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --plan \| --expect ID] [--accept-format-change] [--yes] [--json]` | The [update](#update) of a target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. `--plan` makes the review in a run and changes nothing; with `--json`, it writes the run and a `null` review id. Else it starts a detached run, as [Runs](#runs) says, and writes its log until it ends: the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did. With `--json`, it writes the run and the review id |
 | `obc data rollback TARGET [--yes] [--json]` | The [rollback](#rollback) of a target. Writes the release that the target serves and its rollback |
 | `obc data router TARGET [--json]` | For an R2 target, asks the follower once, as [Router ready](#router-ready) says, for the planner release of the serving release and of the rollback. Writes each answer, and the release that `planner/next.json` names. Changes nothing. Refuses a `dir` target |
-| `obc data unlock TARGET --from MACHINE [--source ID] [--yes] [--json]` | Frees the [lock](#lock) of a target, or with `--source` the lock of a [prepared source](#prepared-sources) on it, that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
-| `obc data sources [--check-now] [--json]` | Every source with licence, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
+| `obc data unlock (TARGET \| --source ID) --from MACHINE [--yes] [--json]` | Frees the [lock](#lock) of a target, or with `--source` the lock of a [prepared source](#prepared-sources) in the archive, that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
+| `obc data sources [--check-now] [--json]` | Every source with licence, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); the versions in the local store; and for a prepared source the root of its home, its versions there and the run that holds its lock. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data source refresh ID [--json]` | Fetches upstream's newest version of a `digest` source without `start` or params, and writes `refreshed/<source>.json` of the store with the versions that the targets serve: the next update of a target that serves one of them, or none, reads it, as [Versions](#versions) says. Refuses another source. The fetch is a detached [run](#runs): a terminal follows it, and `--json` writes `{run}` and ends |
-| `obc data source prepare ID [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--to TARGET] [--dry-run \| --expect ID] [--yes] [--json]` | [Prepares](#prepared-sources) a version of a prepared source for a target, `prod` by default. `--dry-run` writes the review. Else it starts a detached run and writes its log until it ends; with `--json`, it writes the run and the review id |
+| `obc data source prepare ID [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--languages L,…] [--dry-run \| --expect ID] [--json]` | [Prepares](#prepare) a version of a prepared source in the archive. `--dry-run` writes the review. Else it starts a detached run and writes its log until it ends; with `--json`, it writes the run and the review id |
+| `obc data source copy ID --from TARGET [--dry-run] [--json]` | [Copies](#copy) the versions of a prepared source from the legacy folder `sources/<id>/` of a target into the archive. `--dry-run` writes the plan. Else it starts a detached run and writes its log until it ends; with `--json`, it writes `{run}` |
 | `obc data source credential ID [--json]` | Reads the values of the credential of a source on standard input and writes them, as [Credentials of sources](#credentials-of-sources) says. Writes the file and the names of the values |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data archive status [--json]` | The [status](#status) of the archive: each root with its free space, and each dataset with its root, version, state and files. Changes nothing |
@@ -2087,8 +2118,8 @@ addition:
   `obc data runs RUN --stop`, `obc data router TARGET`, `obc data serve TARGET --detach`, `obc data update TARGET` with settings flags and then `--dry-run`,
   `--plan` or `--expect ID` (with `--accept-format-change` and `--yes`), `obc data rollback TARGET --expect ID`
   (with `--yes`), `obc data unlock TARGET --from MACHINE --yes`, `obc data source refresh ID`, and
-  `obc data source prepare ID` with `--region`, `--box` and `--to` and then `--dry-run` or
-  `--expect ID` (with `--yes`), `obc data clean`, `obc data clean --apply --yes`, `obc data deploy`,
+  `obc data source prepare ID` with `--region`, `--box` and `--languages` and then `--dry-run` or
+  `--expect ID`, `obc data clean`, `obc data clean --apply --yes`, `obc data deploy`,
   `obc data deploy services|tiles --dry-run` and `--expect COMMIT --yes`, `obc data deploy trust
   --expect FINGERPRINT --yes`, `obc data r2 legacy
   TARGET`, and `obc data r2 legacy TARGET --delete --expect DIGEST --reason TEXT --yes`.
@@ -2113,7 +2144,7 @@ bytes.
 `obc data r2 delete`. It does not change the state of a release. Once the bucket has the
 `release.json` of `obc data`, `obc bake publish --target r2` refuses to run, and `obc data r2 put`
 and `delete` refuse `release.json`, `lock.json`, `planner/next.json`, a pointer key, a key
-under `objects/` or `releases/`, and a key under `sources/<id>/` of a prepared source. `obc bake clean-r2` refuses to run when the pointer
+under `objects/` or `releases/`. `obc bake clean-r2` refuses to run when the pointer
 of its prefix has `release`, or is not JSON. `obc data` never writes under `reference/v1/`.
 
 ### Credentials
@@ -2159,7 +2190,7 @@ Rules:
 - `legacy` lists each key under `cell-catalog/` and `planner/`, or under the one `--prefix`, that
   `obc data` does not write. It refuses while the target serves no release. It refuses
   `reference/v1` while `reference/v1/index.json` is missing or does not parse, and while the
-  `index.json` of the newest version of `terrain` on the target lacks a key of its `sources`. The digest is the
+  `index.json` of the newest version of `terrain` in the archive lacks a key of its `sources`. The digest is the
   SHA-256 of one line `<bytes>  <key>\n` per key, sorted by key. With `--delete`, it lists again,
   refuses when the digest is not `--expect`, asks, and then deletes in a detached [run](#runs): as
   `delete --legacy`, with the counts, the bytes and the digest as its plan. The run lists again
