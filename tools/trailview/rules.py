@@ -18,19 +18,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RULESET = ROOT / "data/trailview"
-FORMAT = 2
+FORMAT = 3
 
 # WorldCover's groups in the order of the prototype's ramps (`src/materials.ts`).
 COVER_ORDER = ("tree", "shrub", "grass", "crop", "built", "bare", "snow", "water", "wetland", "mangrove", "moss")
-# The covers a ground plant stands on (`src/models/library.ts`), and the seasons (`src/models/trees.ts`).
-COVERS = ("tree", "shrub", "grass", "crop", "bare", "wetland", "moss")
 SEASONS = ("winter", "spring", "summer", "autumn")
 RAMP_COVERS = (*(cover for cover in COVER_ORDER if cover != "tree"), "needle", "broad")
 PLACE = re.compile(r"^([a-z]{2}(-[a-z0-9]{1,3})?|\*)$")
-# The look keys of the engine that overlays/ may set, as a key table like LOOK's below.
-OVERLAY_LOOK = {}
 # A region id is one byte of the region tiles, and 255 is no data there.
 MAX_REGION_IDS = 255
+# A material code is 6 bits of the ground tiles (specs/trailview-tiles.md#ground).
+MAX_MATERIALS = 64
+# The patches of a region's look that the ground draws (PATCHES of ground/rules.ts).
+MAX_PATCHES = 2
 # The tree species of a region that the engine's forest holds (SPECIES of vegetation/forest.ts), its
 # ground plants and its shrubs that the plants hold (SLOTS of vegetation/plants.ts), and the engine's
 # models: one file per tree and per plant, named by its id.
@@ -98,7 +98,7 @@ def each(names, check):
 
 
 def entries(entry):
-    """Entries keyed by species, where null drops the parent's."""
+    """Entries keyed by name, such as a species, where null drops the parent's."""
     return lambda v, p: (wrong(p, f"{said(v)} is not an object") if not isinstance(v, dict)
                          else [problem for key, x in v.items() if x is not None for problem in entry(x, f"{p}.{key}")])
 
@@ -128,15 +128,29 @@ def area(v, p):
     return wrong(p, f"{said(v)} is not a box [west, south, east, north] or a ring of 3 or more [lon, lat]")
 
 
-def speckle_size(v, p):
-    """A bush's size in metres. The far nodes draw without the bushes' dots (DETAIL of ground/look.wgsl):
-    up to 3 m and 64° N, the dots fade out before them."""
-    return [] if is_number(v) and 0 <= v <= 3 else wrong(
-        p, f"{said(v)} is not a number from 0 to 3: the dots of larger bushes stop where the far nodes start")
+def ground_names(materials):
+    """A list of ground: each entry a cover, a material or "#tag" of `materials`."""
+    known = set(COVER_ORDER) | set(materials["materials"]) | {f"#{tag}" for tag in materials["tags"]}
+    return listed(lambda v, p: [] if isinstance(v, str) and v in known
+                  else wrong(p, f"{said(v)} is not a cover, a material or a #tag of materials.json"))
+
+
+def patch(v, p):
+    """A whole patch of a region's look, after its chain merged it. The far nodes draw without the dots
+    (DETAIL of ground/look.wgsl): with bushes up to 3 m and up to 64° N, the dots fade out before them.
+    Blotches have no such fade, so their fine noise, size_m across, must span two pixels where the far
+    nodes start: 2 × 0.37 m (the output pixel there that DETAIL of ground/look.wgsl names)."""
+    if missing := [key for key in ("on", "colour", "share", "size_m", "form") if key not in v]:
+        return wrong(p, f"has no {', '.join(missing)}")
+    if v["form"] == "dots" and v["size_m"] > 3:
+        return wrong(f"{p}.size_m", f"{said(v['size_m'])} is above 3: the dots of larger bushes stop where the far nodes start")
+    if v["form"] == "blotches" and v["size_m"] < 2 * 0.37:
+        return wrong(f"{p}.size_m", f"{said(v['size_m'])} is below 0.74: finer blotches shimmer before the far nodes start")
+    return []
 
 
 def tables(materials):
-    """The key tables of the region, pack and style files, which name the materials of `materials`."""
+    """The key tables of the region, pack and style files, which name the materials and tags of `materials`."""
     ramp = listed(colour, 3)
     weather = obj({
         "cover": number(0, 1), "base": number(0, 9000), "dark": number(0, 1), "sun": number(0, 2), "ambient": number(0, 2),
@@ -148,8 +162,9 @@ def tables(materials):
         "snap": number(0, 1), "hazeKm": number(1, 500), "hazeHeight": number(100, 20_000), "mistTop": number(0, 5000),
         "softness": number(0, 1), "gradient": number(0, 1),
         "ramps": each(RAMP_COVERS, lambda v, p: ramp(v, p) if isinstance(v, list) else each(SEASONS, ramp)(v, p)),
-        "moor": obj({"heather": colour, "share": number(0, 1)}),
-        "speckle": obj({"colour": colour, "share": number(0, 1), "size_m": speckle_size}),
+        "patches": entries(obj({"on": ground_names(materials), "colour": paint, "share": number(0, 1), "size_m": number(0.1, 100),
+                                "form": one_of("blotches", "dots")})),
+        "turf": one_of(*materials["materials"]),
         "materials": each(materials["materials"], obj({"colour": paint, "satellite": number(0, 1), "stones": number(0, 1),
                                                        "clumps": number(0, 1)})),
         "lithology": each(materials["lithologies"][1:], obj({"colour": colour, "banded": one_of(True)})),
@@ -164,9 +179,6 @@ def tables(materials):
     region = obj({
         "name": text, "about": text, "ecoregion": number(1, 1e6), "extends": text, "where": listed(area),
         "leaf": one_of("needleleaved", "broadleaved", "mixed"), "pack": text,
-        "cliffs": obj({"reach_m": number(0, 1000), "raise_m": number(0, 500), "min_m": number(0, 1000)}),
-        "summits": obj({"reach_m": number(0, 5000), "max_cut_m": number(0, 1000)}),
-        "relief": obj({"radius_m": number(0, 1000), "amount": number(0, 5)}),
         "look": look,
     })
     species = obj({
@@ -174,11 +186,11 @@ def tables(materials):
         "elevation": listed(number(-500, 9000), 2), "weight": positive, "evergreen": one_of(True, False),
     })
     ground = obj({
-        "model": text, "latin": text, "on": listed(one_of(*COVERS)), "height": listed(number(0, 50), 2), "share": number(0, 1),
-        "habitat": one_of("moor", "lush"), "own": one_of(True), "clumped": one_of(True, False),
+        "model": text, "latin": text, "on": ground_names(materials), "off": ground_names(materials), "height": listed(number(0, 50), 2),
+        "share": number(0, 1), "own": one_of(True), "clumped": one_of(True, False),
     })
     herd = obj({"model": text, "latin": text, "groups": number(1, 100), "size": listed(number(1, 1000), 2),
-                "on": listed(one_of(*materials["materials"]))})
+                "on": ground_names(materials)})
     pack = obj({
         "name": text, "about": text, "extends": text, "trees": entries(species), "ground": entries(ground),
         "herds": entries(herd), "style": by_place(text), "houses": text, "orchard": text,
@@ -192,7 +204,7 @@ def tables(materials):
                         "shutter": listed(colour), "plinth": lambda v, p: (listed(colour) if isinstance(v, list) else colour)(v, p),
                         "chimney": colour}),
     })
-    return region, pack, style, obj({"look": obj(OVERLAY_LOOK)})
+    return region, pack, style
 
 
 def files(root=RULESET):
@@ -220,17 +232,22 @@ def load(root=RULESET):
     return {
         "materials": vocabulary, "ground": read(root, "ground.json"), "ecoregions": read(root, "ecoregions.json")["regions"],
         "places": places["countries"] + places["subdivisions"],
-        "regions": folder("regions"), "packs": folder("packs"), "styles": folder("styles"), "overlays": folder("overlays"),
+        "regions": folder("regions"), "packs": folder("packs"), "styles": folder("styles"),
     }
 
 
 def vocabulary_problems(vocabulary):
     out = []
+    if len(vocabulary["materials"]) > MAX_MATERIALS:
+        out.append(f"materials.json: {len(vocabulary['materials'])} materials, more than the {MAX_MATERIALS} that a code of the ground tiles holds")
     for i, entry in enumerate(vocabulary["materials"]):
         if entry["cover"] not in COVER_ORDER:
             out.append(f"materials.json: materials[{i}].cover: {entry['cover']} is not one of {', '.join(COVER_ORDER)}")
         out += [f"materials.json: {problem}" for share in ("stones", "clumps", "shrubs") if share in entry
                 for problem in number(0, 1)(entry[share], f"materials[{i}].{share}")]
+        if "tags" in entry:
+            tag = lambda v, p: [] if isinstance(v, str) and re.fullmatch(r"[a-z]+(-[a-z]+)*", v) else wrong(p, f"{said(v)} is not a tag")
+            out += [f"materials.json: {problem}" for problem in listed(tag)(entry["tags"], f"materials[{i}].tags")]
     for key in ("materials", "lithologies"):
         ids = [entry["id"] for entry in vocabulary[key]]
         out += [f"materials.json: {key}[{i}].id: {id_} is also {key}[{ids.index(id_)}]" for i, id_ in enumerate(ids) if ids.index(id_) != i]
@@ -309,8 +326,10 @@ def validate(ruleset):
     vocabulary = ruleset["materials"]
     out = vocabulary_problems(vocabulary)
     ids = {key: [entry["id"] for entry in vocabulary[key]] for key in ("materials", "lithologies")}
+    ids["tags"] = {tag for entry in vocabulary["materials"] if isinstance(entry.get("tags"), list)
+                   for tag in entry["tags"] if isinstance(tag, str)}
     out += ground_problems(ruleset["ground"], ids)
-    region_check, pack_check, style_check, overlay_check = tables(ids)
+    region_check, pack_check, style_check = tables(ids)
     regions, packs, styles = ruleset["regions"], ruleset["packs"], ruleset["styles"]
     add = lambda file, problems: out.extend(f"{file}: {problem}" for problem in problems)
 
@@ -340,11 +359,8 @@ def validate(ruleset):
 
     if len(styles) > MAX_STYLES:
         out.append(f"styles/: {len(styles)} house styles, more than the {MAX_STYLES} that the engine's style table holds")
-    for name, overlay in ruleset["overlays"].items():
-        file = f"overlays/{name}.json"
-        add(file, overlay_check(overlay, "") if name in regions else [f"has no regions/{name}.json"])
     # The packs' trees and the places resolve through the chains, which must be sound first.
-    return out or model_problems(regions, packs) + place_problems(ruleset)
+    return out or model_problems(regions, packs) + patch_problems(regions) + place_problems(ruleset)
 
 
 def chain(table, name):
@@ -392,6 +408,18 @@ def model_problems(regions, packs, models=MODELS):
     return out
 
 
+def patch_problems(regions):
+    """The patches of each region with what it inherits: MAX_PATCHES at most, each whole."""
+    out = []
+    for name in sorted(regions):
+        file = f"regions/{name}.json"
+        found = {key: value for key, value in (merged(regions, name).get("look", {}).get("patches") or {}).items() if value is not None}
+        if len(found) > MAX_PATCHES:
+            out.append(f"{file}: look.patches: {len(found)} patches, more than the {MAX_PATCHES} that the ground draws")
+        out += [f"{file}: {problem}" for key, value in found.items() for problem in patch(value, f"look.patches.{key}")]
+    return out
+
+
 def merged(table, name):
     """A file with the files that it extends merged in: objects merge, anything else replaces."""
     def merge(a, b):
@@ -433,7 +461,6 @@ def bundle(ruleset):
         "regions": {name: plain(data) for name, data in ruleset["regions"].items()},
         "packs": {name: plain(data) for name, data in ruleset["packs"].items()},
         "styles": {name: plain(data) for name, data in ruleset["styles"].items()},
-        "overlays": ruleset["overlays"],
     }
     regions = {
         "format": FORMAT, "ids": ids,

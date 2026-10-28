@@ -54,7 +54,7 @@ pub static PLANNER_TRAILVIEW_FEATURES: Layer =
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
-    whole("planner/trailview-rules", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_GROUND]);
+    whole("planner/trailview-rules", 3, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_GROUND]);
 /// The TrailView ground tiles: the material, the lithology and the region in one tile. Its format is
 /// `trailview_format` of the ground archive in `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_GROUND: Layer =

@@ -1,9 +1,10 @@
+import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import type { Region, Vocabulary } from '../rules/regions';
+import { rulesOf, type Region, type Vocabulary } from '../rules/regions';
 import { linear, mosaicsAt, packRulesOn, slots } from './rules';
 
 const vocabulary: Vocabulary = {
-    materials: [{ id: 'none', cover: 'grass' }, { id: 'heath', cover: 'grass' }, { id: 'bracken', cover: 'grass' }],
+    materials: [{ id: 'none', cover: 'grass', tags: ['rough'] }, { id: 'heath', cover: 'grass', tags: ['rough', 'moor'] }, { id: 'bracken', cover: 'grass' }],
     lithologies: [{ id: 'unknown', hardness: 0.5 }, { id: 'granite', hardness: 1 }],
 };
 const region: Region = {
@@ -23,8 +24,8 @@ describe('the rules of the ground', () => {
         expect(SLOT.materials).toBe(33);
         expect(SLOT.traits).toBe(33 + 3);
         expect(SLOT.lithologies).toBe(33 + 6);
-        expect([SLOT.heather, SLOT.speckle, SLOT.terrain, SLOT.bedding, SLOT.snap].map(slot => slot - SLOT.cliff)).toEqual([1, 2, 3, 4, 5]);
-        expect([SLOT.roads, SLOT.roadLine, SLOT.kinds].map(slot => slot - SLOT.cliff)).toEqual([8, 17, 18]);
+        expect([SLOT.patches, SLOT.terrain, SLOT.bedding, SLOT.snap, SLOT.sea, SLOT.shapes, SLOT.turf, SLOT.roads].map(slot => slot - SLOT.cliff)).toEqual([1, 3, 4, 5, 6, 8, 9, 10]);
+        expect([SLOT.roadLine, SLOT.kinds].map(slot => slot - SLOT.cliff)).toEqual([19, 20]);
         expect(SLOT.hardness).toBe(SLOT.kinds + 3);
     });
 
@@ -39,10 +40,35 @@ describe('the rules of the ground', () => {
         expect(mid.slice(0, 3)).toEqual(autumn.slice(0, 3));
     });
 
-    it('marks heath as moor only in a region with heather', () => {
-        const SLOT = slots(vocabulary), moor = (look: Region['look']) => packRulesOn([{ ...region, look }], vocabulary, 180)[4 * (SLOT.kinds + 1) + 1];
-        expect(moor(region.look)).toBe(0);
-        expect(moor({ ...region.look, moor: { heather: '#5e4552', share: 0.35 } })).toBe(1);
+    it('paints the turf with the paint of the material that the region names, else not at all', () => {
+        const SLOT = slots(vocabulary), turf = (look: Region['look']) => Array.from(packRulesOn([{ ...region, look }], vocabulary, 318).subarray(4 * SLOT.turf, 4 * SLOT.turf + 4));
+        expect(turf({ ...region.look, turf: 'bracken' })).toEqual([...linear('#c86a1e').map(c => Math.fround(c)), 1]);
+        expect(turf(region.look)[3]).toBe(0);
+    });
+
+    it('draws the dots before the blotches, whatever order the keys of rules.json have', () => {
+        // rules.json sorts its keys (encoded of tools/trailview/rules.py), so fjell's heather comes before its scrub.
+        const sorted = (v: unknown): unknown => (Array.isArray(v) ? v.map(sorted)
+            : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, sorted((v as Record<string, unknown>)[k])])) : v);
+        const read = (path: string) => JSON.parse(readFileSync(new URL(`../../../../../../data/trailview/${path}`, import.meta.url), 'utf8'));
+        const regions = Object.fromEntries(readdirSync(new URL('../../../../../../data/trailview/regions', import.meta.url)).map(file => [file.replace(/\.json$/, ''), read(`regions/${file}`)]));
+        const rules = rulesOf(sorted({ format: 3, materials: read('materials.json'), ids: [['fjell', '*'], ['world', '*']], regions }) as Parameters<typeof rulesOf>[0]);
+        expect(Object.keys(rules.regions[0].look.patches ?? {})).toEqual(['heather', 'scrub']);
+        const SLOT = slots(rules.vocabulary), data = packRulesOn(rules.regions, rules.vocabulary, 226);
+        expect(Array.from(data.subarray(4 * SLOT.shapes, 4 * SLOT.shapes + 4))).toEqual([1.5, 1, 4, 0]);
+    });
+
+    it('lays the patches of a region over the materials that they name', () => {
+        const SLOT = slots(vocabulary), patches: Region['look']['patches'] = {
+            gone: null,
+            scrub: { on: ['#rough'], colour: '#8a5a30', share: 0.2, size_m: 1.5, form: 'dots' },
+            heather: { on: ['#moor'], colour: { summer: '#6a5232' }, share: 0.3, size_m: 4, form: 'blotches' },
+        };
+        const data = packRulesOn([{ ...region, look: { ...region.look, patches } }], vocabulary, 226), slot = (i: number) => Array.from(data.subarray(4 * i, 4 * i + 4));
+        // Per material: its cover, the patches over it as bits, rocky, rough.
+        expect([0, 1, 2].map(i => slot(SLOT.kinds + i))).toEqual([[2, 1, 0, 1], [2, 3, 0, 1], [2, 0, 0, 0]]);
+        expect(slot(SLOT.patches + 1)).toEqual([...linear('#6a5232').map(c => Math.fround(c)), Math.fround(0.3)]);
+        expect(slot(SLOT.shapes)).toEqual([1.5, 1, 4, 0]);
     });
 
     it("gives each material its clumps, the region's where it names them", () => {

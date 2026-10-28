@@ -18,6 +18,6 @@
    "sunny": { "cover": 0.3, "base": 1300, "dark": 0.3 }
   },
   "hazeKm": 50,
-  "speckle": { "colour": "#48532e", "share": 0.3, "size_m": 3 }
+  "patches": { "scrub": { "on": ["#rough"], "colour": "#48532e", "share": 0.3, "size_m": 3, "form": "dots" } }
  }
 }

@@ -6,7 +6,7 @@
   "hawthorn": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 250], "weight": 1 },
   "gorse": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 350], "weight": 1 }
  },
- "ground": {"heather": {}, "heather-bloom": {}},
+ "ground": {"heather": { "on": ["#moor"] }, "heather-bloom": { "on": ["#moor"] }, "grass": { "off": ["#moor"] }},
  "herds": {
   "sheep": { "groups": 10, "size": [2, 8], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath", "bog"] }
  },

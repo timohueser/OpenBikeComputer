@@ -22,8 +22,7 @@
    "bare": ["#7c7a74", "#807d76", "#7c7a6e"],
    "broad": {"summer": ["#506634", "#4a6830", "#44662c"]}
   },
-  "moor": {"heather": "#6a5232", "share": 0.3},
-  "speckle": {"colour": "#8a5a30", "share": 0.2, "size_m": 1.5},
+  "patches": { "scrub": { "on": ["#rough"], "colour": "#8a5a30", "share": 0.2, "size_m": 1.5, "form": "dots" }, "heather": { "on": ["#moor"], "colour": "#6a5232", "share": 0.3, "size_m": 4, "form": "blotches" } },
   "snap": 0.75,
   "outcrops": 0.06,
   "rock": "#72726e",

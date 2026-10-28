@@ -8,40 +8,38 @@ import { EYE, Instances, VIEWS, type ModelSpec, type Producer, type Surfaces } f
 import { f16 } from '../instances/points';
 import { TREES } from '../models/library';
 import { PLANTS } from '../models/plant-library';
-import { seasonOf, type Region, type Rules, type Season, type Vocabulary } from '../rules/regions';
+import { bits, named, seasonOf, type Region, type Rules, type Season, type Vocabulary } from '../rules/regions';
 import type { BuiltMesh, PlantJob } from './plant-worker';
 import type { TreeModels } from './tree-models';
 
 /** As plants.wgsl: the units of a cell of each grid, the reaches in metres, the list slots per region, vec4 per region and shapes per ground plant. */
 const GROUND_UNITS = 32, SHRUB_UNITS = 256, GROUND_M = 60, SHRUB_M = 500;
 export const SLOTS = 16;
-const REGION_WORDS = 1 + 2 * SLOTS, SEEDS = 3;
+const REGION_WORDS = 3 * SLOTS, SEEDS = 3;
 /** A tree model that stands as a shrub stands this tall; a plant model stands as its plant file says. */
 const SHRUB_HEIGHT_M: [number, number] = [0.8, 1.8];
 /** A plant model that stands as a shrub draws its mesh to this many metres, then its impostor. */
 const SHRUB_MESH_M = 60;
 /** How far a model takes its hue from the ground (draw.wgsl): a ground plant, and one that keeps its own colour or stands as a shrub, as the prototype's `tie`. */
 const TIE = 0.85, OWN_TIE = 0.35;
-const MOOR = ['heath', 'bog'], NONE = 0xffff;
-const HABITAT = { moor: 1 << 12, lush: 1 << 13 }, MOOR_REGION = 1;
-export const CLUMPED = 1 << 14;
+const NONE = 0xffff;
+export const CLUMPED = 1;
 
-/** A material's word of plants.wgsl: its cover, MOOR at bit 8, and its share of its cover's shrubs in 255ths at bit 16. */
-export function materialWord({ id, cover, shrubs = 1 }: Vocabulary['materials'][number]): number {
-    return Math.max(0, COVER_ORDER.indexOf(cover as (typeof COVER_ORDER)[number])) | (MOOR.includes(id) ? 256 : 0) | (Math.round(shrubs * 255) << 16);
+/** A material's word of plants.wgsl: its cover, and its share of its cover's shrubs in 255ths at bit 16. */
+export function materialWord({ cover, shrubs = 1 }: Vocabulary['materials'][number]): number {
+    return Math.max(0, COVER_ORDER.indexOf(cover as (typeof COVER_ORDER)[number])) | (Math.round(shrubs * 255) << 16);
 }
 
 /**
  * The ground plants of a region that its list holds, what the pack says of each over its plant
- * model's `ground`, with their words of plants.wgsl: the covers that each grows on, its habitat and
- * CLUMPED, and at bit 16 the salt of its stands. The salt comes from the species, so its stands stay
- * put whatever the shares of the other plants.
+ * model's `ground`, with their words of plants.wgsl: CLUMPED and at bit 16 the salt of its stands, and
+ * the bits of the materials that it grows on. The salt comes from the species, so its stands stay put
+ * whatever the shares of the other plants.
  */
-export function groundRules(region: Region) {
+export function groundRules(region: Region, vocabulary: Vocabulary) {
     return groundList(region.ground.filter(rule => rule.model in PLANTS).map(rule => ({ ...PLANTS[rule.model].ground, ...rule }))).map(rule => {
-        const on = rule.on.reduce((bits, cover) => bits | (1 << COVER_ORDER.indexOf(cover as (typeof COVER_ORDER)[number])), 0);
-        const salt = [...rule.id].reduce((h, c) => (31 * h + c.charCodeAt(0)) % 997, 7);
-        return { ...rule, word: on | (rule.habitat ? HABITAT[rule.habitat] : 0) | (rule.clumped ? CLUMPED : 0) | (salt << 16) };
+        const salt = [...rule.id].reduce((h, c) => (31 * h + c.charCodeAt(0)) % 997, 7), off = named(vocabulary, rule.off);
+        return { ...rule, word: (rule.clumped ? CLUMPED : 0) | (salt << 16), materials: bits(named(vocabulary, rule.on).filter(code => !off.includes(code))) };
     });
 }
 
@@ -93,17 +91,16 @@ export class Plants implements Producer {
         };
         rules.regions.forEach((region, r) => {
             const at = 64 + r * REGION_WORDS * 4;
-            data.fill(0, at, at + 4);
-            data[at] = region.look.moor ? MOOR_REGION : 0;
-            const ground = groundRules(region).flatMap(rule => {
+            const ground = groundRules(region, rules.vocabulary).flatMap(rule => {
                 const tie = rule.own ? OWN_TIE : TIE;
                 const first = models(Array.from({ length: SEEDS }, (_, k) => ({ model: rule.model, seed: k + 1, evergreen: false, shrub: false, tie })));
                 return first === undefined ? [] : [{ ...rule, first }];
             });
             ground.forEach((rule, k) => {
-                const w = at + 4 * (1 + k);
+                const w = at + 8 * k;
                 data.set([rule.first, rule.word, 0, f16(rule.height[0]) | (f16(rule.height[1]) << 16)], w);
                 floats[w + 2] = rule.share;
+                data.set([...rule.materials, 0, 0], w + 4);
             });
             const shrubs = region.trees.filter(rule => rule.cover === 'shrub' && (rule.model in PLANTS || rule.model in TREES)).sort((a, b) => b.weight - a.weight).slice(0, SLOTS).flatMap(rule => {
                 const plant = rule.model in PLANTS;
@@ -111,7 +108,7 @@ export class Plants implements Producer {
                 return model === undefined ? [] : [{ ...rule, index: model, height: plant ? PLANTS[rule.model].ground.height : SHRUB_HEIGHT_M }];
             });
             shrubs.forEach((rule, k) => {
-                const w = at + 4 * (1 + SLOTS + k);
+                const w = at + 4 * (2 * SLOTS + k);
                 data.set([rule.index, f16(rule.elevation[0]) | (f16(rule.elevation[1]) << 16), 0, f16(rule.height[0]) | (f16(rule.height[1]) << 16)], w);
                 floats[w + 2] = rule.weight;
             });

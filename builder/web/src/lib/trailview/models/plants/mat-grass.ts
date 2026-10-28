@@ -81,5 +81,5 @@ export default {
     name: 'Mat-grass',
     latin: 'Nardus stricta',
     build: (season, seed) => matGrass(season, random(seed)),
-    ground: { on: ['grass', 'moss'], height: [0.15, 0.3], share: 0.3, habitat: 'moor', own: true },
+    ground: { on: ['grass', 'moss'], height: [0.15, 0.3], share: 0.3, own: true },
 } satisfies Plant;
