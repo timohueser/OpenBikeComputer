@@ -32,11 +32,6 @@ DARK = 0.025
 SNOW_MARK = 1
 # The mark of a measured texel in the NDVI tile; the other marks are the codes 0 and SNOW_MARK.
 MEASURED = 2
-# Heath from the satellite: open ground that reflects as much red as green (the midpoint of 1.1 to 1.4)
-# while it grows. Mediterranean summer ground is as red, but dry: its NDVI is low and past its spring peak.
-MOOR_GREEN_RED = 1.25
-MOOR_NDVI = 0.45
-MOOR_PEAK = 0.1
 # The prototype's colour reaches 156 m texels; zoom 9 has 0.17 km texels at 47° N.
 BOTTOM_ZOOM = 9
 # Variant: codec, last zoom and chroma subsampling. 4:2:0 halves the chroma resolution of the texels:
@@ -160,16 +155,6 @@ def snow_free(quarters):
 def quarters(mosaics, transform, texel):
     """The four quarters of one tile, RGBA8 and free of snow."""
     return snow_free(texels({q: read(mosaics.get(q, []), transform, texel) for q in range(1, 5)}))
-
-
-def satellite_heath(quarters, most):
-    """Where the satellite sees heath: in summer's quarter, or spring's where summer saw nothing, the
-    ground reflects as much red as green while its NDVI is high and near the year's most."""
-    texels = np.where((quarters[3][..., 3] > 0)[..., None], quarters[3], quarters[2])
-    refl = (texels[..., :3] / 255.0) ** 2.2
-    ndvi_ = (texels[..., 3] - 1.0) / 127 - 1
-    return ((texels[..., 3] > 0) & (refl[..., 1] < MOOR_GREEN_RED * refl[..., 0]) & (ndvi_ >= MOOR_NDVI)
-            & (ndvi_ >= (most - 1.0) / 127 - 1 - MOOR_PEAK))
 
 
 def average(children):

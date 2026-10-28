@@ -51,10 +51,11 @@ def source_envelope(transform: Affine, width: int, height: int):
     return float(x.min()), float(y.min()), float(x.max()), float(y.max())
 
 
-def read_source(path: Path, crs=None):
+def read_source(path: Path, crs=None, sentinel=None):
     """One raster as float32 heights with voids marked, plus its CRS, transform and box.
 
-    `crs` is the row's grid, for a format that carries none of its own.
+    `crs` is the row's grid, for a format that carries none of its own, and `sentinel` the row's
+    undeclared void inside the plausible range.
 
     A void arrives as a declared sentinel, as a non-finite value, or undeclared. All three
     become `VOID` here, so the pooling below has one convention and no adapter has to know
@@ -77,6 +78,8 @@ def read_source(path: Path, crs=None):
         void = ~np.isfinite(values) | (values < PLAUSIBLE_M[0]) | (values > PLAUSIBLE_M[1])
         if src.nodata is not None and np.isfinite(src.nodata):
             void |= values == np.float32(src.nodata)
+        if sentinel is not None:
+            void |= values == np.float32(sentinel)
         values[void] = VOID
         envelope = source_envelope(src.transform, src.width, src.height)
         bounds = transform_bounds(src_crs, WGS84, *envelope)

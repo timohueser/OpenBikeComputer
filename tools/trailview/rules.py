@@ -4,7 +4,7 @@
     uv run --locked --group trailview python -m tools.trailview.rules     # print each problem
 
 The `obc data` step `planner/trailview-rules` (`--step`) checks the ruleset and writes `rules.json`
-for the engine, and `regions.json` and `materials.json` for the ground tiles.
+for the engine, and `regions.json`, `materials.json` and `ground.json` for the ground tiles.
 
 A region id is a region and a place: the region's own id, then one id per country or subdivision
 that a value by place in its chain names.
@@ -218,7 +218,7 @@ def load(root=RULESET):
     folder = lambda name: {path.stem: read(root, path.relative_to(root).as_posix()) for path in sorted((root / name).glob("*.json"))}
     vocabulary, places = read(root, "materials.json"), read(root, "countries.json")
     return {
-        "materials": vocabulary, "ecoregions": read(root, "ecoregions.json")["regions"],
+        "materials": vocabulary, "ground": read(root, "ground.json"), "ecoregions": read(root, "ecoregions.json")["regions"],
         "places": places["countries"] + places["subdivisions"],
         "regions": folder("regions"), "packs": folder("packs"), "styles": folder("styles"), "overlays": folder("overlays"),
     }
@@ -237,11 +237,79 @@ def vocabulary_problems(vocabulary):
     return out
 
 
+# The keys that each protocol of a ground source reads.
+NEEDS = {"vector": ("field",), "arcgis-features": ("field",), "wfs": ("layer", "field", "sort"),
+         "arcgis-image": ("layer", "crs", "px_m")}
+
+
+def ground_problems(ground, ids):
+    """The problems of `ground.json`: each source a row of data/sources.toml, read by a protocol that it
+    can be fetched for, and each name one of the vocabulary."""
+    from . import sources
+    from .. import data_registry
+
+    def source(v, p):
+        return [] if v in data_registry.SOURCES else wrong(p, f"{said(v)} is not a source of data/sources.toml")
+
+    def needs(keys, check):
+        return lambda v, p: check(v, p) + [f"{p}: has no {key}" for key in keys if isinstance(v, dict) and key not in v]
+
+    def lower(v, p):
+        return text(v, p) or ([] if v == v.lower() else wrong(p, f"{said(v)} is not lowercase, as a word matches"))
+
+    def legend(name):
+        def check(v, p):
+            match = v.get("match") if isinstance(v, dict) else None
+            native = {"tags": lambda x, q: [] if isinstance(x, dict) and x and all(isinstance(y, str) for y in x.values())
+                      else wrong(q, f"{said(x)} is not an object of tags"), "word": lower}.get(match, text)
+            pair = lambda x, q: (native(x[0], f"{q}[0]") + name(x[1], f"{q}[1]") if isinstance(x, list) and len(x) == 2
+                                 else wrong(q, f"{said(x)} is not a [native class, name] pair"))
+            qualifier = needs(("word", "within", "class"), obj({"word": lower, "within": number(0, 100), "class": name}))
+            return needs(("match", "classes"), obj({
+                "match": one_of(*sources.MATCHES), "classes": listed(pair),
+                **({"qualifier": qualifier} if match == "word" else {})}))(v, p)
+        return check
+
+    out = []
+    material, lithology = one_of(*ids["materials"]), one_of(*ids["lithologies"])
+    heath = needs(("material", "on", "green_red", "ndvi", "peak", "spring_green_red", "spring_on"), obj({
+        "source": source, "rule": one_of("satellite-heath"), "about": text, "material": material, "on": listed(material),
+        "green_red": positive, "ndvi": number(-1, 1), "peak": number(0, 2), "spring_green_red": positive, "spring_on": listed(lithology)}))
+    out += obj({"about": text, "material": lambda v, p: [], "lithology": lambda v, p: []})(ground, "")
+    for layer, name, names in (("material", material, "materials"), ("lithology", lithology, "lithologies")):
+        entry = needs(("source", "protocol", "combine", "legend"), obj({
+            "source": source, "protocol": one_of(*sources.PROTOCOLS), "layer": text, "field": text, "sort": text, "crs": text,
+            "px_m": positive,
+            "combine": one_of(*sources.COMBINES), "reach_m": positive, "about": text, "legend": legend(name),
+            "zoom": number(10, 13)}))
+        spec = ground.get(layer, {})
+        out += obj({"about": text, "refines": each(ids[names], listed(name)),
+                    "sources": lambda v, p: []})(spec, layer)
+        for i, found in enumerate(spec.get("sources", [])):
+            at = f"{layer}.sources[{i}]"
+            out += (heath if layer == "material" and "rule" in found else entry)(found, at)
+            protocol, fetch = found.get("protocol"), data_registry.SOURCES.get(found.get("source"), {}).get("fetch", {})
+            for key in NEEDS.get(protocol, ()):
+                if key not in found:
+                    out.append(f"{at}: has no {key}, which the protocol {protocol} needs")
+            zoomed = layer == "lithology" and protocol in sources.VECTOR
+            if zoomed and "zoom" not in found:
+                out.append(f"{at}: has no zoom")
+            if "zoom" in found and not zoomed:
+                out.append(f"{at}.zoom: only a vector lithology source has a zoom")
+            if "reach_m" in found and protocol not in sources.VECTOR:
+                out.append(f"{at}.reach_m: only a vector source reaches")
+            if protocol in sources.CAPTURED and fetch.get("kind") != "capture":
+                out.append(f"{at}.protocol: {protocol} is captured, and {found['source']} is not a capture source")
+    return [f"ground.json: {problem}" for problem in out]
+
+
 def validate(ruleset):
     """Every problem of the ruleset, one line each: the file, the key path and what is wrong."""
     vocabulary = ruleset["materials"]
     out = vocabulary_problems(vocabulary)
     ids = {key: [entry["id"] for entry in vocabulary[key]] for key in ("materials", "lithologies")}
+    out += ground_problems(ruleset["ground"], ids)
     region_check, pack_check, style_check, overlay_check = tables(ids)
     regions, packs, styles = ruleset["regions"], ruleset["packs"], ruleset["styles"]
     add = lambda file, problems: out.extend(f"{file}: {problem}" for problem in problems)
@@ -391,7 +459,8 @@ def step():
         raise ValueError("\n".join([*problems, f"{len(problems)} problems in data/trailview"]))
     output = Path(request["output"])
     rules, regions = bundle(ruleset)
-    for name, value in (("rules.json", rules), ("regions.json", regions), ("materials.json", ruleset["materials"])):
+    for name, value in (("rules.json", rules), ("regions.json", regions), ("materials.json", ruleset["materials"]),
+                        ("ground.json", ruleset["ground"])):
         (output / name).write_bytes(encoded(value))
     step_request.metrics(request, {"region_ids": len(rules["ids"]), "rules_bytes": (output / "rules.json").stat().st_size})
 

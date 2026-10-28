@@ -349,9 +349,10 @@ runs that interpreter directly. A package capture uses `uv run --locked --offlin
 It prepares the locked group when the capture runs. Cached captures need no Python runtime.
 The program writes each file of the request to a directory under `partial/`, and its progress to
 standard error. The store takes every file in that directory but hidden, `.part` and `.tmp` files.
-A failed run keeps the directory and writes no record. A directory of a `manual` source, or one
-older than the `refresh` of the source, is deleted before the run. The next run of the same
-request resumes from any other directory, also on a later day. In the record, the `url` of a file
+A program writes each file whole, so a failed run leaves no half file. A failed run keeps the
+directory and writes no record. A directory older than the `refresh` in days of the source is
+deleted before the run; a `manual` source keeps one version, so its directory stays. The next run
+of the same request resumes from the directory, also on a later day. In the record, the `url` of a file
 is `<fetch.url>#<query>/<path in the directory>`, with the `fetch.url` of the source whose record
 takes the file. The fetch checks every record that it adds to before it writes one. Each fetch
 takes the `NAME=VALUE` of its row, each once, and no other. A `capture` source without a row has
@@ -361,7 +362,7 @@ producer of [`wiki`](#wiki) reads them.
 | Source | `NAME=VALUE` | Program | Packages | Query |
 | --- | --- | --- | --- | --- |
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
-| `corine-land-cover` | `bbox` | `tools/trailview/ground.py --fetch-corine` | group `trailview` | `bbox=W,S,E,N` |
+| Each source of `data/trailview/ground.json` with the `protocol` `arcgis-image`, `arcgis-features` or `wfs` | `bbox`, `ground` | `tools/trailview/ground.py --source ID --fetch` | group `trailview` | `bbox=W,S,E,N&ground=DIGEST` |
 | `sentinel-2-mosaics` | `bbox`, `year` | `tools/trailview/colour.py --fetch` | group `trailview` | `bbox=W,S,E,N&year=YEAR` |
 | `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | group `planner-climate` | `bbox=W,S,E,N&first-year=YEAR` |
 
@@ -370,9 +371,25 @@ producer of [`wiki`](#wiki) reads them.
   side, in the grid of the source. A season starts on 1 September. An `hr-wsi` box without a
   product gives a fetch without files.
 - An `era5-land` file is a source chunk of the ten years from `first-year`, or the orography.
-- The `corine-land-cover` files are `legend.json`, the legend of the CLC 2018 map service, and
-  `clc-W_S_E_N.png`: its raster map images in EPSG:3035 at 100 m over `bbox`, each at most
+- The files of an `arcgis-image` source are `legend.json`, the legend of the map service, and
+  `W_S_E_N.png`: the images of its `layer` over `bbox` in its `crs` at its `px_m`, each at most
   4096 pixels on a side and named by its box in whole metres.
+- `ground` is the first 12 hex digits of the SHA-256 of the canonical JSON of the keys `protocol`,
+  `layer`, `field`, `sort`, `crs`, `px_m` and `zoom` of the source's entry, and of its `legend`
+  for `arcgis-features`. The fetch refuses a digest that the entry does not have.
+- An `arcgis-features` or `wfs` file is `features-NNNNN.geojson`: a page of the features that
+  meet `bbox`, in EPSG:4326 with the source's `field`. `arcgis-features` asks only for the
+  features whose `field` the legend may name, pages by object id, and asks again for the ids that
+  an answer lacks. It leaves out an id that the service no longer has, up to 0.1 % of the ids,
+  and fails above that. It simplifies each feature by a quarter of a texel at the equator, at the
+  source's `zoom` or else at zoom 13. `wfs` pages in the order of `sort` until the pages hold the
+  `numberMatched` features of a `hits` request. A box without a feature gives a fetch without
+  files.
+- A ground capture tries a request again after a failed or cut transfer, a 5xx or 429 answer, an
+  ArcGIS error without a 4xx code, or a map image that is no PNG, 6 times in all. Another 4xx
+  answer or ArcGIS error fails at once. The hidden file `.positions` records the object ids or the
+  `numberMatched` that the page numbers stand for; a resumed run that finds others deletes the
+  pages.
 - A `sentinel-2-mosaics` file is `<mosaic tile>/<band>.tif`: the window over `bbox`, one pixel
   wider on each side, of a band of a quarterly mosaic tile of the year, as the STAC search lists it.
 - The version is the day of the fetch, because the service answers with current data. Another
@@ -895,9 +912,9 @@ of the version of `terrain` that the target reads, and `mean/index.json`.
 | `planner/climate` | `era5-land`, `bbox=<bounds>`, `first-year=<climate.first_year>` | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10 | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md) |
 | `planner/snow` | `hr-wsi` when its `extent` meets the bounds and its fetch has files, and `modis-snow`, each `bbox=<bounds>`, `seasons=<snow.seasons>`; `hansen-gfc`, `tile=` of each 10° tile that the bounds touch | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when it reads it, `modis-snow` and `hansen-gfc`; `year`: the year of the `hr-wsi` version, which fills its `{year}`, or null | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md): HR-WSI where it has data, and MODIS elsewhere |
 | `planner/trailview-features` | `planner/osm`, `planner/terrain/grid` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 13 |
-| `planner/trailview-rules` | `data/trailview/` of the repository | `ruleset`: the digest of its JSON files by their paths in it. The step fails when the files differ | `rules.json`: [the TrailView rules](trailview-tiles.md#rules); `regions.json` and `materials.json`: the region ids, the region areas, the ecoregions, the places and the vocabulary that the ground steps read |
-| `planner/trailview-material` | `materials.json` of `planner/trailview-rules`; `osm.pbf` of `planner/osm`; `esa-worldcover`, `tile=` of each 3° tile that the bounds touch and that `esa-worldcover-grid` lists; `corine-land-cover`, `bbox=<bounds>`; `sentinel-2-mosaics`, `bbox=<bounds>`, `year=<trailview.colour_year>` | `layer`: `material`; `bounds` | `material.pmtiles`: the material bytes and the barren shares of [the ground](trailview-tiles.md#ground) |
-| `planner/trailview-lithology` | `materials.json` of `planner/trailview-rules`; `egdi-geology`, `igme5000` | `layer`: `lithology`; `bounds` | `lithology.pmtiles`: the lithology bytes |
+| `planner/trailview-rules` | `data/trailview/` of the repository | `ruleset`: the digest of its JSON files by their paths in it. The step fails when the files differ | `rules.json`: [the TrailView rules](trailview-tiles.md#rules); `regions.json`, `materials.json` and `ground.json`: the region ids, the region areas, the ecoregions, the places, the vocabulary and the ground sources that the ground steps read |
+| `planner/trailview-material` | `materials.json` and `ground.json` of `planner/trailview-rules`; `lithology.pmtiles` of `planner/trailview-lithology`; each [material source](trailview-tiles.md#ground-sources) that meets the bounds: `osm.pbf` of `planner/osm` for `osm-planet`; `esa-worldcover`, `tile=` of each 3° tile that the bounds touch and that `esa-worldcover-grid` lists; `sentinel-2-mosaics`, `bbox=<bounds>`, `year=<trailview.colour_year>`; a `capture` source with `bbox=<bounds>`, another without params | `layer`: `material`; `bounds` | `material.pmtiles`: the material bytes and the barren shares of [the ground](trailview-tiles.md#ground) |
+| `planner/trailview-lithology` | `materials.json` and `ground.json` of `planner/trailview-rules`; each lithology source that meets the bounds, as for the material | `layer`: `lithology`; `bounds` | `lithology.pmtiles`: the lithology bytes |
 | `planner/trailview-region` | `regions.json` of `planner/trailview-rules` | `layer`: `region`; `bounds` | `region.pmtiles`: the region bytes |
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region` | `layer`: `ground`; `bounds`; `attribution` of the sources of the three | `ground.pmtiles`: [the ground archive](trailview-tiles.md#ground) |
 | `planner/trailview-colour` | `sentinel-2-mosaics`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles`: [the colour archives](trailview-tiles.md#colour) |

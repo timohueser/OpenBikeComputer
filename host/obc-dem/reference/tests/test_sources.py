@@ -30,7 +30,10 @@ import ingest.sources.base  # noqa: E402
 import ingest.sources.bulk  # noqa: E402
 import ingest.sources.cog  # noqa: E402
 import ingest.sources.stac  # noqa: E402
+from ingest.sources import de as de_module  # noqa: E402
 from ingest.sources import fr as fr_module  # noqa: E402
+from ingest.sources import gb as gb_module  # noqa: E402
+from ingest.sources import sk as sk_module  # noqa: E402
 from ingest.sources.grid import grid_squares  # noqa: E402
 from ingest.sources.nz import sheets as nz_sheets  # noqa: E402
 from ingest.sources.protocols import MAX_PIXELS, request_boxes  # noqa: E402
@@ -65,6 +68,10 @@ BOXES = {
     "fi": (21.2576, 69.2995, 21.2796, 69.3141),
     "nz": (170.1310, -43.6020, 170.1530, -43.5880),
     "it-tn": (10.8620, 46.1510, 10.8840, 46.1656),
+    "it": (7.2552, 45.5094, 7.2772, 45.5254),
+    "pl": (15.7289, 50.7280, 15.7509, 50.7440),
+    "sk": (20.1232, 49.1564, 20.1452, 49.1724),
+    "cz": (15.7289, 50.7280, 15.7509, 50.7440),
 }
 
 
@@ -277,12 +284,18 @@ class Requests(unittest.TestCase):
         """Several servers answer `ScaleAxisUndefined` however the axes are named, so those
         rows take the coverage's native step instead."""
 
-        for key in ("uk", "it-bz"):
+        for key in ("uk", "it-bz", "it", "pl", "sk"):
             with self.subTest(key):
                 _, values = query(ingest.SOURCES[key].url(split(key)[0]))
                 self.assertNotIn("scalesize", values)
                 self.assertEqual(len(values["subset"]), 2)
         self.assertIn("scalesize", query(ingest.SOURCES["de-he"].url(split("de-he")[0]))[1])
+
+    def test_the_czech_request_names_a_nodata_and_3dep_does_not(self):
+        """Without one, ČÚZK answers 0 for the land abroad, which is a height."""
+
+        self.assertEqual(query(ingest.SOURCES["cz"].url(split("cz")[0]))[1]["nodata"], ["-32768"])
+        self.assertNotIn("nodata", query(ingest.SOURCES["us"].url(split("us")[0]))[1])
 
     def test_the_wcs_11_request_states_the_grid_at_the_products_own_step(self):
         """A 1.1.1 server answers a single pixel when the grid is left out of the request,
@@ -407,6 +420,78 @@ class NamedGrids(unittest.TestCase):
                              f"2014_lidar_dtm_asc/{name}")
         # A square the survey did not reach answers 404, which is a coverage edge.
         self.assertTrue(source.skip_missing)
+
+    def test_an_os_grid_reference_is_the_square_it_names(self):
+        """Scotland's file names are OS grid references at three sizes; the corners are
+        those of the published files."""
+
+        for reference, square in (("NN16", (210_000, 760_000, 10_000)),
+                                  ("NO10NE", (315_000, 705_000, 5_000)),
+                                  ("NG2004", (120_000, 804_000, 1_000)),
+                                  ("HU31", (430_000, 1_110_000, 10_000)),
+                                  ("HY1700", (317_000, 1_000_000, 1_000))):
+            with self.subTest(reference):
+                self.assertEqual(gb_module.square_of(reference), square)
+                self.assertEqual(gb_module.letters_at(square[0] + 1, square[1] + 1), reference[:2])
+        for wrong in ("NI16", "NN123", "NN16XX"):
+            with self.subTest(wrong):
+                with self.assertRaises(ingest.Refuse):
+                    gb_module.square_of(wrong)
+
+    def test_scotland_takes_the_square_of_every_survey_that_meets_the_box(self):
+        """The bucket listing is the index, page after page; a square beside the box is not
+        read."""
+
+        listings = {
+            "lidar/phase-1/dtm/27700/gridded/NN": [
+                ("lidar/phase-1/dtm/27700/gridded/NN15_1M_DTM_PHASE1.tif", "token"),
+                ("lidar/phase-1/dtm/27700/gridded/NN15NW_50CM_DTM_PHASE1.tif", None)],
+            "lidar/phase-3/dtm/27700/gridded/NN": [
+                ("lidar/phase-3/dtm/27700/gridded/NN16_1M_DTM_PHASE3.tif", None)],
+            "lidar/phase-4/dtm/27700/gridded/NN": [
+                ("lidar/phase-4/dtm/27700/gridded/NN15NE_50CM_DTM_PHASE4.tif", None)],
+            "lidar/national-lidar-programme/dtm/27700/gridded/NN": [
+                ("lidar/national-lidar-programme/dtm/27700/gridded/"
+                 "NN1458_50cm_DTM_ScotlandNationalLiDAR.tif", None)],
+        }
+        asked = []
+
+        def get(url):
+            asked.append(url)
+            query_ = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+            page = listings.get(query_["prefix"][0], [(None, None)])
+            key, token = page[1 if "continuation-token" in query_ else 0]
+            return ((f"<Key>{key}</Key>" if key else "")
+                    + (f"<NextContinuationToken>{token}</NextContinuationToken>" if token else "")).encode()
+
+        self.addCleanup(setattr, gb_module, "http_get", gb_module.http_get)
+        gb_module.http_get = get
+        source = gb_module.SurveyListing("x", "Scotland", "p", 0.5, "l", "Ordnance Datum Newlyn",
+                                         base="https://bucket/", surveys=tuple(
+                                             prefix[:-2] for prefix in listings))
+        # A box round (214 000, 758 300), in NN15, NN15NW and NN1458 but not in NN15NE or NN16.
+        box = (-5.0419, 56.6763, -5.0339, 56.6823)
+        self.assertEqual([name for name, _ in source.urls(box)],
+                         ["NN15_1M_DTM_PHASE1.tif", "NN15NW_50CM_DTM_PHASE1.tif",
+                          "NN1458_50cm_DTM_ScotlandNationalLiDAR.tif"])
+        self.assertEqual(source.urls(box)[0][1],
+                         "https://bucket/lidar/phase-1/dtm/27700/gridded/NN15_1M_DTM_PHASE1.tif")
+        self.assertEqual(len(asked), 5)  # two pages, three surveys, and nothing again
+
+    def test_rhineland_palatinates_names_come_from_its_index(self):
+        """The year in a name is only in the folder's index, and a square it does not name
+        is outside the state."""
+
+        index = b'<a href="dgm1_32_362_5510_1_rp_2023.tif">x</a> "dgm1_32_362_5510_1_rp_2023.tif"' \
+                b' "dgm1_32_363_5510_1_rp_2019.tif"'
+        self.addCleanup(setattr, de_module, "http_get", de_module.http_get)
+        de_module.http_get = lambda url: index
+        source = ingest.SOURCES["de-rp"]
+        files = source.files((7.0880, 49.7290, 7.1050, 49.7320))  # squares 362 to 363, 5510
+        self.assertEqual(files, [
+            ("dgm1_32_362_5510_1_rp_2023.tif", source.base + "dgm1_32_362_5510_1_rp_2023.tif"),
+            ("dgm1_32_363_5510_1_rp_2019.tif", source.base + "dgm1_32_363_5510_1_rp_2019.tif")])
+        self.assertEqual(source.files((6.0, 47.0, 6.01, 47.01)), [])
 
     def test_the_squares_of_a_box_are_on_the_grid_and_distinct(self):
         squares = list(grid_squares((10.97, 47.41, 11.00, 47.43), 25832, 1000))
@@ -596,6 +681,43 @@ class RemoteWindows(TempCase):
         with self.assertRaises(ingest.Refuse) as refusal:
             self.source.fetch(self.BOX, self.root / "work")
         self.assertIn("500", str(refusal.exception))
+
+
+class Slovakia(unittest.TestCase):
+    """The one service of ellipsoidal heights, and the one envelope stated northing first."""
+
+    def test_the_envelope_is_read_back_easting_first_and_one_in_label_order_is_refused(self):
+        def answer(lower, upper):
+            ingest.sources.protocols.http_get = lambda url, what=None: (
+                f'<gml:Envelope axisLabels="E N"><gml:lowerCorner>{lower}</gml:lowerCorner>'
+                f'<gml:upperCorner>{upper}</gml:upperCorner>').encode()
+
+        self.addCleanup(setattr, ingest.sources.protocols, "http_get", ingest.sources.protocols.http_get)
+        answer("5289631.0 191148.0", "5497220.0 614666.0")
+        self.assertEqual(ingest.SOURCES["sk"].describe(), (191148.0, 5289631.0, 614666.0, 5497220.0))
+        answer("191148.0 5289631.0", "614666.0 5497220.0")
+        with self.assertRaises(ingest.Refuse):
+            ingest.SOURCES["sk"].describe()
+
+    def test_the_quasigeoid_is_taken_off_every_height_and_no_void(self):
+        with TemporaryDirectory() as directory:
+            grid = Path(directory) / "geoid.tif"
+            with rasterio.open(grid, "w", driver="GTiff", width=60, height=30, count=1, dtype="float32",
+                               crs="EPSG:4937", transform=Affine(0.1, 0, 17.0, 0, -0.1, 50.5)) as dst:
+                dst.write(np.full((30, 60), 42.5, dtype="float32"), 1)
+            heights = np.full((20, 20), 2697.0, dtype="float32")
+            heights[3, 4] = -9999.0
+            with rasterio.MemoryFile() as memory:
+                with memory.open(driver="GTiff", width=20, height=20, count=1, dtype="float32",
+                                 nodata=-9999.0, crs="EPSG:3046",
+                                 transform=Affine(1, 0, 436382, 0, -1, 5446592)) as dst:
+                    dst.write(heights, 1)
+                body = sk_module.minus_geoid(memory.read(), grid)
+            with rasterio.MemoryFile(body) as memory, memory.open() as src:
+                moved = src.read(1)
+                self.assertEqual(src.nodata, -9999.0)
+        self.assertEqual(moved[3, 4], -9999.0)
+        self.assertAlmostEqual(float(moved[0, 0]), 2654.5, places=3)
 
 
 class FrenchBil(unittest.TestCase):

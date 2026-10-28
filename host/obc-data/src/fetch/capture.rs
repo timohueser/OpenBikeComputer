@@ -36,25 +36,6 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                 },
             )
         }
-        "corine-land-cover" => {
-            let [bbox] = values(request, ["bbox"])?;
-            let bbox = parse_bbox(bbox)?;
-            capture(
-                store,
-                request,
-                &format!("bbox={bbox}"),
-                &[source],
-                |_| &[0],
-                false,
-                |_, out| {
-                    let mut command = python(root, Some("trailview"))?;
-                    command
-                        .args(["-m", "tools.trailview.ground", &format!("--bounds={bbox}"), "--fetch-corine"])
-                        .arg(out);
-                    Ok(command)
-                },
-            )
-        }
         "sentinel-2-mosaics" => {
             let [bbox, year] = values(request, ["bbox", "year"])?;
             let bbox = parse_bbox(bbox)?;
@@ -98,7 +79,41 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                 },
             )
         }
-        _ => Err(format!("source `{}`: its kind of fetch has no fetcher yet", source.id)),
+        id => {
+            let ground = crate::ground::Ground::load(root)?;
+            let Some(entry) = ground.entry(id) else {
+                return Err(format!("source `{id}`: its kind of fetch has no fetcher yet"));
+            };
+            let [bbox, digest] = values(request, ["bbox", "ground"])?;
+            let bbox = parse_bbox(bbox)?;
+            if digest != entry.capture_digest() {
+                return Err(format!(
+                    "source `{id}`: `ground={digest}` is not the digest of its entry in data/trailview/ground.json, which changed since the plan"
+                ));
+            }
+            capture(
+                store,
+                request,
+                &format!("bbox={bbox}&ground={digest}"),
+                &[source],
+                |_| &[0],
+                // A national map has no feature in parts of its extent.
+                true,
+                |_, out| {
+                    let mut command = python(root, Some("trailview"))?;
+                    command.args([
+                        "-m",
+                        "tools.trailview.ground",
+                        &format!("--bounds={bbox}"),
+                        "--source",
+                        id,
+                        "--fetch",
+                    ]);
+                    command.arg(out);
+                    Ok(command)
+                },
+            )
+        }
     }
 }
 
@@ -116,9 +131,10 @@ pub(crate) fn can_fetch(store: &Store, source: &Source, version: &str) -> Result
 /// The files of `request` that `query` names: from the store, or else from the program that
 /// `command` makes. The program writes them into its second directory, and may keep downloads in
 /// its first. `owners` gives the indexes in `sources` of the sources whose records take a file,
-/// from its path. A run that fails keeps both directories, so the next run can resume, unless
-/// they are older than the `refresh` of the source or the source is manual. With `empty`, a run
-/// that writes no file gives a fetch without files; else it fails.
+/// from its path. A run that fails keeps both directories, so the next run resumes, unless they
+/// are older than the `refresh` in days of the source. The program writes each file whole, so a
+/// resumed run keeps only whole files. With `empty`, a run that writes no file gives a fetch
+/// without files; else it fails.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn capture(
     store: &Store,
@@ -162,14 +178,10 @@ pub(super) fn capture(
     }
     let staging = store.partial(&format!("capture-{key}"));
     let staging = std::path::absolute(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
-    if let Ok(modified) = fs::metadata(&staging).and_then(|m| m.modified()) {
-        // Data that old would mix with today's, so the capture starts again. Nothing bounds the age
-        // of what a failed run of a manual source kept, so it never resumes.
-        let stale = match source.refresh {
-            Refresh::Days(days) => modified.elapsed().is_ok_and(|age| age.as_secs() > u64::from(days) * 86_400),
-            Refresh::Manual => true,
-        };
-        if stale {
+    if let (Ok(modified), Refresh::Days(days)) = (fs::metadata(&staging).and_then(|m| m.modified()), source.refresh) {
+        // Data that old would mix with today's, so the capture starts again. A manual source keeps
+        // one version, so what a failed run of it kept joins the next run.
+        if modified.elapsed().is_ok_and(|age| age.as_secs() > u64::from(days) * 86_400) {
             fs::remove_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
         }
     }
@@ -181,10 +193,6 @@ pub(super) fn capture(
     eprintln!("obc data: capturing {}#{query}", source.id);
     // Standard output is the answer of `obc data`, so the program writes its progress to standard error.
     let status = command.stdout(std::io::stderr()).status();
-    if source.refresh == Refresh::Manual && !status.as_ref().is_ok_and(|status| status.success()) {
-        // A manual run never resumes, so the raw downloads of a failed one go now.
-        let _ = fs::remove_dir_all(&staging);
-    }
     let status = status.map_err(|e| format!("source `{}`: {:?}: {e}", source.id, command.get_program()))?;
     if !status.success() {
         return Err(format!("source `{}`: {:?} failed with {status}", source.id, command.get_program()));
