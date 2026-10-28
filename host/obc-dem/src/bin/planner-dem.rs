@@ -31,7 +31,7 @@ fn run(args: &[String]) -> Result<(), String> {
     if let Some(osm) = osm {
         let work = output.with_extension("work");
         std::fs::create_dir(&work).map_err(|e| format!("{}: {e}", work.display()))?;
-        let shapes = obc_dem::shape::read(&osm, &work)?;
+        let shapes = obc_dem::shape::read(&obc_osm::OsmiumRunner::default(), &osm, bounds, &work)?;
         std::fs::remove_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
         terrain = terrain.shaped(shapes, obc_data::sources::attribution("osm-planet"));
     }

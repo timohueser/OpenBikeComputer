@@ -92,10 +92,15 @@ pub fn terrain(request: &Request) -> Result<(), String> {
 /// `planner/reference`, when the request has it, is the mean archive of the national models below
 /// `reference/`; the layer `planner/osm`, when the request has it, gives the coastlines, cliffs and
 /// summits that correct GLO-30. The layer is `terrain.mbtiles`: the bytes that `planner-dem` writes
-/// from the same GLO-30 tiles, archive and OSM.
+/// from the same GLO-30 tiles, archive and OSM. With OSM, the metrics name the Osmium version.
 #[cfg(feature = "terrarium")]
 pub fn planner_terrain(request: &Request) -> Result<(), String> {
     let bounds = bounds(&request.options)?;
+    if let Some(name) =
+        request.layers.keys().find(|name| !["planner/reference", "planner/osm"].contains(&name.as_str()))
+    {
+        return Err(format!("the step reads no layer `{name}`"));
+    }
     let text = |name: &str| request.options[name].as_str().ok_or(format!("option `{name}` is not a string"));
     let credit = text("attribution")?;
     let reference = match request.layers.get("planner/reference") {
@@ -111,7 +116,11 @@ pub fn planner_terrain(request: &Request) -> Result<(), String> {
         let [pbf] = files.values().collect::<Vec<_>>()[..] else { return Err("`planner/osm` is not one file".into()) };
         let work = request.output.with_file_name("shapes");
         std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
-        terrain = terrain.shaped(crate::shape::read(pbf, &work)?, text("osm_attribution")?);
+        let osmium = obc_osm::OsmiumRunner::default();
+        terrain = terrain.shaped(crate::shape::read(&osmium, pbf, bounds, &work)?, text("osm_attribution")?);
+        let metrics = serde_json::json!({"osmium": osmium.version()?});
+        std::fs::write(&request.metrics, metrics.to_string())
+            .map_err(|e| format!("{}: {e}", request.metrics.display()))?;
     }
     let text = bounds.map(|value| value.to_string()).join(",");
     crate::terrarium::write(&mut terrain, bounds, &text, &request.output.join("terrain.mbtiles"))
