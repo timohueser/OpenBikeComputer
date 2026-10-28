@@ -1,6 +1,7 @@
 /// The rider's ordered field selection: a fixed-capacity list, and the POD persisted in
 /// [`Settings`](crate::Settings). `Copy + Eq` so a settings edit is caught by one `==`. Slots past
-/// `len` are unused padding.
+/// `len` are unused padding, always [`StatField::Speed`], so `==` and
+/// [`encode`](Self::encode) are canonical.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatFieldList {
     ids: [StatField; MAX_STAT_FIELDS],
@@ -67,6 +68,7 @@ impl StatFieldList {
             self.ids[k] = self.ids[k + 1];
         }
         self.len -= 1;
+        self.ids[self.len as usize] = StatField::Speed;
     }
 
     /// Pack into a length byte + [`MAX_STAT_FIELDS`] discriminant bytes: the fixed-width form the

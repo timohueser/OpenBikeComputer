@@ -5,9 +5,11 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use super::archive::Archive;
 use crate::date;
+use crate::sources::{Keep, Source};
 use crate::store::{self, Lock, Store};
 
 /// What a download must be.
@@ -37,6 +39,11 @@ const ATTEMPTS: u32 = 4;
 const BODY: Duration = Duration::from_secs(15 * 60);
 /// The longest time a HEAD request or a small document may take.
 const SMALL: Duration = Duration::from_secs(15);
+/// The longest wait that a server `Retry-After` gets. A server that asks for more does not answer
+/// within the retries of one run, so the download fails sooner and the next run resumes its part.
+const RETRY_AFTER: Duration = Duration::from_secs(60);
+/// How long a retry wait sleeps between checks of [`STOPPED`].
+const SLICE: Duration = Duration::from_millis(100);
 
 /// Whether an error of this module is an HTTP 404: upstream has no such file. Every status error
 /// here ends with `HTTP <status>`.
@@ -52,17 +59,38 @@ pub fn unreachable(error: &str) -> bool {
 
 const UNREACHABLE: &str = ": unreachable: ";
 
-/// Set when the run of this process stops: a download ends within one read and keeps its part.
+/// Whether an error of this module says that upstream did not serve: no connection, a timeout, or
+/// HTTP 404, 408, 429 or 5xx.
+pub fn outage(error: &str) -> bool {
+    let status = error.rsplit_once("HTTP ").and_then(|(_, status)| status.parse::<u16>().ok());
+    unreachable(error) || status.is_some_and(|status| matches!(status, 404 | 408 | 429 | 500..=599))
+}
+
+/// Set when the run of this process stops: a download ends within one read or one [`SLICE`] of a
+/// retry wait, and keeps its part.
 static STOPPED: AtomicBool = AtomicBool::new(false);
 
 pub fn stop() {
     STOPPED.store(true, Ordering::Relaxed);
 }
 
-fn stopped(url: &str) -> Result<(), Failure> {
+fn stopped(url: &str) -> Result<(), String> {
     match STOPPED.load(Ordering::Relaxed) {
-        true => Err(Failure::Final(format!("GET {url}: the run stopped; the next fetch resumes the download"))),
+        true => Err(format!("GET {url}: the run stopped; the next fetch resumes the download")),
         false => Ok(()),
+    }
+}
+
+/// Sleep for `delay`, or until the run stops.
+fn pause(url: &str, delay: Duration) -> Result<(), String> {
+    let end = Instant::now() + delay;
+    loop {
+        stopped(url)?;
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(());
+        }
+        std::thread::sleep(left.min(SLICE));
     }
 }
 
@@ -81,6 +109,7 @@ pub struct Http {
     agent: ureq::Agent,
     bearer: Option<(String, String)>,
     backoff: Duration,
+    archive: Option<Archive>,
 }
 
 enum Failure {
@@ -109,14 +138,16 @@ impl Http {
                 },
             )
             .build();
-        Self { agent: config.into(), bearer: None, backoff: Duration::ZERO }
+        Self { agent: config.into(), bearer: None, backoff: Duration::ZERO, archive: None }
     }
 
+    /// A client with the archive of `OBC_DATA_ARCHIVE`.
     pub fn new() -> Self {
-        Self::with_backoff(Duration::from_secs(2))
+        Self { archive: Archive::from_env(), ..Self::with_backoff(Duration::from_secs(2)) }
     }
 
-    /// The first retry waits `backoff`; each later one waits twice as long as the one before.
+    /// The first retry waits `backoff`; each later one waits twice as long as the one before. No
+    /// archive.
     pub fn with_backoff(backoff: Duration) -> Self {
         let config = ureq::Agent::config_builder()
             .http_status_as_error(false)
@@ -125,7 +156,19 @@ impl Http {
             .timeout_recv_response(Some(Duration::from_secs(60)))
             .timeout_recv_body(Some(BODY))
             .build();
-        Self { agent: config.into(), bearer: None, backoff }
+        Self { agent: config.into(), bearer: None, backoff, archive: None }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_archive(mut self, root: &Path) -> Self {
+        self.archive = Some(Archive::new(root.to_path_buf()));
+        self
+    }
+
+    /// The archive, for a source with `keep = "archive"`: the archive holds that dataset, so its
+    /// copy serves before upstream.
+    pub fn archive(&self, source: &Source) -> Option<&Archive> {
+        self.archive.as_ref().filter(|_| source.keep == Keep::Archive)
     }
 
     /// Authorize only requests to this HTTPS origin. Redirects strip authorization by default.
@@ -296,7 +339,7 @@ impl Http {
                 return Err(why);
             }
             eprintln!("obc data: {why} — retrying");
-            std::thread::sleep(delay.max(self.backoff * 2u32.pow(failures - 1)));
+            pause(url, delay.min(RETRY_AFTER).max(self.backoff * 2u32.pow(failures - 1)))?;
         }
         let _ = fs::remove_file(validator);
         let (sha256, size) = store::hash_file(part)?;
@@ -312,7 +355,7 @@ impl Http {
     }
 
     fn attempt(&self, url: &str, part: &Path, validator: &Path, expect: &Expect) -> Result<(), Failure> {
-        stopped(url)?;
+        stopped(url).map_err(Failure::Final)?;
         let have = fs::metadata(part).map_or(0, |metadata| metadata.len());
         let saved = fs::read_to_string(validator).ok();
         // Without a validator or a digest, nothing would tell a changed file from the rest of the old one.
@@ -330,7 +373,7 @@ impl Http {
                 request = request.header("if-range", saved);
             }
         }
-        let mut response = request.call().map_err(|e| Failure::Retry(format!("GET {url}: {e}")))?;
+        let mut response = request.call().map_err(|e| Failure::Retry(no_answer("GET", url, e)))?;
         let status = response.status().as_u16();
         if response.status().is_success()
             && expect.etag.is_some_and(|want| header(&response, "etag").as_deref() != Some(want))
@@ -396,7 +439,7 @@ impl Http {
         let (mut received, mut reported) = (0u64, std::time::Instant::now());
         let retry = |grew: bool, why: String| if append && grew { Failure::Grew(why) } else { Failure::Retry(why) };
         loop {
-            stopped(url)?;
+            stopped(url).map_err(Failure::Final)?;
             let read = reader.read(&mut buffer).map_err(|e| retry(grew, format!("GET {url}: {e}")))?;
             if read == 0 {
                 break;

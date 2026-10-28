@@ -54,5 +54,5 @@ export default {
     name: 'Bog myrtle',
     latin: 'Myrica gale',
     build: (season, seed) => bogMyrtle(season, random(seed)),
-    ground: { on: ['wetland', 'moss'], height: [0.5, 1.2], share: 0.15, own: true, clumped: true },
+    ground: { on: ['bog', 'marsh'], height: [0.5, 1.2], share: 0.15, own: true, clumped: true },
 } satisfies Plant;

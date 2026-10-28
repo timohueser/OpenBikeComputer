@@ -14,6 +14,7 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use super::setup_cli::planner_missing;
 use super::{freshness, listing, Code, Error};
 use crate::collection::{self, Collected};
 use crate::engine::changes::{self, Update};
@@ -166,7 +167,7 @@ pub fn command(
     if let Some(done) = super::api::detached(&store, work, print) {
         return done;
     }
-    let mut prepared = prepare(root, &store, &http, target, code, edit, &args.only, None, None)?;
+    let mut prepared = prepare(root, &store, &http, target, code, edit, &args.only, (None, planner_missing), None)?;
     prepared.review.args = args.args(&prepared.review);
     prepared.review.optional = optional(products);
     if args.dry_run {
@@ -203,7 +204,7 @@ fn plan(
     args: &UpdateArgs,
     run: &mut Run,
 ) -> Result<Review, Error> {
-    let mut prepared = prepare(root, store, http, target, code, edit, &args.only, None, Some(run))?;
+    let mut prepared = prepare(root, store, http, target, code, edit, &args.only, (None, planner_missing), Some(run))?;
     prepared.review.args = args.args(&prepared.review);
     prepared.review.optional = optional(code.0);
     prepared.review.services = services(root, http, target, &prepared.steps);
@@ -277,7 +278,7 @@ pub(super) struct Prepared {
 }
 
 /// Update `target` with the settings of its serving release after `edit`, when the review passes
-/// [`review::check`].
+/// [`review::check`]. The update that started `run` checked the tools of the planner steps.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update(
     root: &Path,
@@ -291,7 +292,7 @@ pub(super) fn update(
     run: &mut Run,
 ) -> Result<Updated, Error> {
     locked(store, target, run, |run, held| {
-        let prepared = prepare(root, store, http, target, code, edit, &asked.only, machine, Some(run))?;
+        let prepared = prepare(root, store, http, target, code, edit, &asked.only, (machine, Vec::new), Some(run))?;
         if !held.beat(Some(&prepared.review.id), None, crate::date::now())? {
             return Err(lost(&format!("target `{}`", target.0)));
         }
@@ -428,7 +429,8 @@ pub(super) fn lost(label: &str) -> Error {
 
 /// Read the serving release of `target`, apply `edit` to its settings, list the steps and review
 /// them. Only the fetches that a step list needs to be listed run, into the store; `run` records
-/// them. The review checks `machine`, or else this machine after the listing.
+/// them. The review checks `machine`, or else this machine after the listing, and asks
+/// `planner_missing` when it bakes planner steps.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepare(
     root: &Path,
@@ -438,7 +440,7 @@ pub(super) fn prepare(
     (products, producers): (&[&dyn Product], &[&dyn Producer]),
     edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
     only: &[String],
-    machine: Option<&MachineCheck>,
+    (machine, planner_missing): (Option<&MachineCheck>, fn() -> Vec<String>),
     mut run: Option<&mut Run>,
 ) -> Result<Prepared, Error> {
     let base = release::serving(target)?;
@@ -470,14 +472,10 @@ pub(super) fn prepare(
     }
     let requests = freshness::discover(root, products, &inputs, &regions, store, http, &sources)?;
     for (key, newer) in freshness::newer(store, http, &sources, &requests, &inputs.serving) {
-        match newer {
-            Some(version) => {
-                inputs.resolved.insert(key, version);
-            }
-            None => {
-                inputs.due.insert(key);
-            }
+        if let Some(version) = newer {
+            inputs.resolved.insert(key.clone(), version);
         }
+        inputs.due.insert(key);
     }
     // The discovery ends at the first fetch that the store lacks, which can be before a step that
     // reads a prepared source: so every prepared source gets its version.
@@ -532,6 +530,7 @@ pub(super) fn prepare(
         unheld: &update.unheld,
         downloads,
         machine: &machine,
+        planner_missing,
     });
     review.notes = listed.notes;
     Ok(Prepared { review, base, serving, settings, sources, steps: listed.steps, update })
@@ -1220,7 +1219,7 @@ pub(super) mod tests {
             (&products, &[]),
             |_| Ok(()),
             &[],
-            Some(&machine),
+            (Some(&machine), Vec::new),
             None,
         );
         prepared.unwrap().review
@@ -1348,7 +1347,7 @@ pub(super) mod tests {
             &fixture.root().join("data/sources.toml"),
             &format!(
                 "[[source]]\nid = \"head\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Head\"\n\
-                 fetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"date\"\nrefresh = 1\nredistribute = true\n"
+                 fetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"date\"\nrefresh = 1\nkeep = \"store\"\nredistribute = true\n"
             ),
         );
         fixture.fetched_version("head", "2026-01-01", "head.txt", b"head\n");
@@ -1360,6 +1359,40 @@ pub(super) mod tests {
         let moved = update_with(&fixture, &target, &http, |_| Ok(())).unwrap();
         assert_eq!(steps(&moved), ["test/upper", "test/join", "test/count"]);
         assert_eq!(read(&moved.serving), "2026-10-05", "the policy is due, and upstream names a newer day");
+    }
+
+    #[test]
+    fn a_due_source_whose_upstream_fails_reads_the_stored_version() {
+        use crate::fetch::tests::{not_found, serve};
+        let (actual, _) = serve(|_, _| not_found());
+        let actual = actual.replacen("file.bin", "head.txt", 1);
+        let fixture = fixture("update-due-offline");
+        let url = actual.replacen("http://", "https://", 1);
+        write(
+            &fixture.root().join("data/sources.toml"),
+            &format!(
+                "[[source]]\nid = \"head\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Head\"\n\
+                 fetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"date\"\nrefresh = 1\nkeep = \"store\"\nredistribute = true\n"
+            ),
+        );
+        fixture.fetched_version("head", "2026-01-01", "head.txt", b"head\n");
+        let (target, http) = (Target::Dir(fixture.scratch.0.join("local")), Http::loopback(&actual));
+        update_with(&fixture, &target, &http, region).unwrap();
+
+        let (root, products): (_, [&dyn Product; 2]) = (fixture.root(), [&Pipeline, &Counter]);
+        let machine = MachineCheck::default();
+        let code = (&products[..], &[][..]);
+        let plan = (Some(&machine), Vec::new as fn() -> Vec<String>);
+        let prepared = prepare(&root, &fixture.store, &http, ("local", &target), code, |_| Ok(()), &[], plan, None);
+        let review = prepared.unwrap().review;
+        assert!(
+            review.notes.iter().any(|note| note.text.contains("this update reads 2026-01-01")),
+            "{:?}",
+            review.notes
+        );
+        let kept = update_with(&fixture, &target, &http, |_| Ok(())).unwrap();
+        let read = Release::read(&target, &kept.serving).unwrap().versions()[&("head".to_string(), Vec::new())].clone();
+        assert_eq!(read, "2026-01-01", "the policy is due, and upstream fails");
     }
 
     #[test]
@@ -1538,7 +1571,7 @@ pub(super) mod tests {
             products,
             region,
             &[],
-            Some(&machine),
+            (Some(&machine), Vec::new),
             None,
         );
         let review = prepared.unwrap().review;
@@ -1584,7 +1617,7 @@ pub(super) mod tests {
                 (&products, &[]),
                 edit,
                 &[],
-                Some(machine),
+                (Some(machine), Vec::new),
                 None,
             );
             prepared.unwrap().review
@@ -1630,7 +1663,7 @@ pub(super) mod tests {
             &fixture.root().join("data/sources.toml"),
             &format!(
                 "[[source]]\nid = \"natural-earth\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Earth\"\n\
-                 fetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"digest\"\nredistribute = true\n"
+                 fetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"digest\"\nkeep = \"store\"\nredistribute = true\n"
             ),
         );
         write(&fixture.root().join("earth"), "");

@@ -90,17 +90,12 @@ pub fn terrain(request: &Request) -> Result<(), String> {
 /// The terrain of the planner maps. The option `bounds` is `[west, south, east, north]` in
 /// degrees, `attribution` the credit of GLO-30 and `osm_attribution` that of OSM. The layer
 /// `planner/reference`, when the request has it, is the mean archive of the national models below
-/// `reference/`; the layer `planner/osm`, when the request has it, gives the coastlines, cliffs and
-/// summits that correct GLO-30. The layer is `terrain.mbtiles`: the bytes that `planner-dem` writes
-/// from the same GLO-30 tiles, archive and OSM. With OSM, the metrics name the Osmium version.
+/// `reference/`; another layer, when the request has one, is one OSM PBF, whose coastlines and
+/// summits correct GLO-30. The layer is `terrain.mbtiles`: the bytes that `planner-dem` writes from the same GLO-30 tiles,
+/// archive and OSM. With OSM, the metrics name the Osmium version.
 #[cfg(feature = "terrarium")]
 pub fn planner_terrain(request: &Request) -> Result<(), String> {
     let bounds = bounds(&request.options)?;
-    if let Some(name) =
-        request.layers.keys().find(|name| !["planner/reference", "planner/osm"].contains(&name.as_str()))
-    {
-        return Err(format!("the step reads no layer `{name}`"));
-    }
     let text = |name: &str| request.options[name].as_str().ok_or(format!("option `{name}` is not a string"));
     let credit = text("attribution")?;
     let reference = match request.layers.get("planner/reference") {
@@ -112,8 +107,16 @@ pub fn planner_terrain(request: &Request) -> Result<(), String> {
         }
     };
     let mut terrain = crate::planner::Terrain::open(&glo30(request, bounds), credit, reference.as_deref(), bounds)?;
-    if let Some(files) = request.layers.get("planner/osm") {
-        let [pbf] = files.values().collect::<Vec<_>>()[..] else { return Err("`planner/osm` is not one file".into()) };
+    let osm: Vec<_> = request.layers.iter().filter(|(name, _)| *name != "planner/reference").collect();
+    let pbf = match osm[..] {
+        [] => None,
+        [(name, files)] => match files.values().collect::<Vec<_>>()[..] {
+            [pbf] => Some(pbf),
+            _ => return Err(format!("`{name}` is not one OSM file")),
+        },
+        _ => return Err("the request reads more than one OSM layer".into()),
+    };
+    if let Some(pbf) = pbf {
         let work = request.output.with_file_name("shapes");
         std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
         let osmium = obc_osm::OsmiumRunner::default();

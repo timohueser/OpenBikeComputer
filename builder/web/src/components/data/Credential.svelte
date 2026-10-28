@@ -44,11 +44,13 @@
             </p>
         {/if}
     {/if}
-    {#if open}
+    {#if open && (credential.hint || site)}
+        <p>{credential.hint}{#if site}{" "}<a href={credential.register} target="_blank" rel="noreferrer">Open {site}</a>{/if}</p>
+    {/if}
+    {#if !credential.fields.length}
+        <!-- A file that a person saves whole, as the hint says: the page has nothing to send. -->
+    {:else if open}
         <form onsubmit={save}>
-            {#if credential.hint || site}
-                <p>{credential.hint}{#if site}{" "}<a href={credential.register} target="_blank" rel="noreferrer">Open {site}</a>{/if}</p>
-            {/if}
             {#each credential.fields as field (field)}
                 <label>
                     <code>{field}</code>

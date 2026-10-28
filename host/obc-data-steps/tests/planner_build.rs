@@ -42,7 +42,7 @@ fn wiki(store: &Store) -> String {
         write_atomic(&file, bytes).unwrap();
         store.insert(&file, &sha256).unwrap();
         let (url, size) = (format!("https://example.org/{name}"), bytes.len() as u64);
-        FileRecord { name: name.into(), url, size, sha256, retrieved: String::new() }
+        FileRecord { name: name.into(), url, size, sha256, retrieved: String::new(), archive: None }
     };
     // An empty tar is two blocks of zeros.
     let common = record("common.tar.zst", &zstd::encode_all(&[0u8; 1024][..], 0).unwrap());
@@ -76,7 +76,7 @@ fn fetched(store: &Store, source: &str, version: &str, params: Vec<(String, Stri
     write_atomic(&file, bytes).unwrap();
     store.insert(&file, &sha256).unwrap();
     let (url, size) = (format!("https://example.org/{name}"), bytes.len() as u64);
-    let files = vec![FileRecord { name: name.into(), url, size, sha256, retrieved: String::new() }];
+    let files = vec![FileRecord { name: name.into(), url, size, sha256, retrieved: String::new(), archive: None }];
     store.put_snapshot(&Snapshot { source: source.into(), version: version.into(), files }).unwrap();
     if !params.is_empty() {
         store.put_requested(source, &Requested { version: version.into(), params, files: vec![name.into()] }).unwrap();
@@ -105,6 +105,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     fetched(&store, "geofabrik-index", "1", Vec::new(), "index.json", &serde_json::to_vec(&index).unwrap());
     let pbf = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/planner.osm.pbf")).unwrap();
     fetched(&store, "geofabrik-extracts", DAY, area(), &format!("{AREA}-261001.osm.pbf"), &pbf);
+    fetched(&store, "terrain-osm", DAY, area(), &format!("{AREA}-261001.osm.pbf"), &pbf);
     // The tile list names no tile: the region is sea to GLO-30, so the layers read no tile.
     fetched(&store, TILE_LIST, "1", Vec::new(), "tileList.txt", b"");
 
@@ -153,8 +154,14 @@ time_zone = "Europe/Berlin"
         let planned = Planner.steps(&root, inputs, &regions, &store).unwrap();
         assert!(planned.blocked.is_empty());
         let mut steps = planned.steps;
-        let rust =
-            ["planner/source/europe/test", "planner/osm", "planner/osm/bounds", "planner/terrain", "planner/routing"];
+        let rust = [
+            "planner/source/europe/test",
+            "planner/terrain-osm/europe/test",
+            "planner/osm",
+            "planner/osm/bounds",
+            "planner/terrain",
+            "planner/routing",
+        ];
         steps.retain(|step| python || rust.contains(&step.name.as_str()));
         for step in &mut steps {
             if step.name == "planner/basemap" {
@@ -188,7 +195,7 @@ time_zone = "Europe/Berlin"
 
     let built = build(&steps(false, &inputs));
     let names: Vec<&str> = built.iter().map(|built| built.receipt.step.as_str()).collect();
-    assert_eq!(names.len(), 5);
+    assert_eq!(names.len(), 6);
     for name in ["planner/osm", "planner/osm/bounds", "planner/terrain", "planner/routing"] {
         assert!(names.contains(&name), "{name} is not built");
     }

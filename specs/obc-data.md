@@ -30,6 +30,7 @@ One `[[source]]` table per source.
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `start` | string | no | The version that a step list reads while no serving release reads the source. It has the form of `version` |
 | `refresh` | integer or string | no, `"manual"` | The policy, which the settings of a target can replace: `1` through `65535` whole days, or `"manual"` |
+| `keep` | string | yes | Where the copy that a bake reads stays, so that no outage stops a bake: `archive`, the [archive](#archive) holds the whole dataset; `store`, the store keeps what each fetch took; `prepared`, R2 keeps what we make: a prepared source, a source that only a prepare reads, or our own asset. `tools/check_data_sources.py` refuses a source without it |
 | `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory. `register`: the `https://` page where a person gets it, and `hint`: what to copy there, in one line. See [Credentials of sources](#credentials-of-sources) |
 | `publish_text` | boolean | no, `true` | Only for a `prepared` source of article text: `false` keeps the text out of its versions |
@@ -60,10 +61,12 @@ Rules:
 
 - An id is listed once.
 - Each kind of fetch but `installed` and `prepared` has a `url`, and the `url` starts with `https://`.
-- A `prepared` source has `version = "date"` and `redistribute = true`.
+- A `prepared` source has `version = "date"`, `redistribute = true` and `keep = "prepared"`.
+- Data changes only on purpose: only the OSM sources, so that roads stay current, and the prepared
+  sources have a `refresh` in days. A prepared source changes when a person prepares a version.
 - `refresh` in days needs `version = "date"`, because only a date version has an age.
-- A credential has `env` or `file`, not both. A `file` is `~/.cdsapirc` or
-  `~/.config/openbikecomputer/cdse-s3.env`.
+- A credential has `env` or `file`, not both. A `file` is `~/.cdsapirc`,
+  `~/.config/openbikecomputer/cdse-s3.env` or `~/.config/openbikecomputer/clms-key.json`.
 
 No step reads a `dtm-*` source, a national terrain model: only the producer of the prepared
 source `terrain` does, see [Prepared sources](#prepared-sources). It reads each `dtm-*` row with
@@ -186,8 +189,8 @@ reads. The source has the least state of its fetches, in the order of this table
 
 | State | When |
 | --- | --- |
-| `blocked` | A `data` or `asset` source has no `licence`, or a due fetch has no successful upstream result |
-| `stale` | A date fetch is older than its `refresh`, and upstream names a later version or the fetch is a capture |
+| `blocked` | A `data` or `asset` source has no `licence` |
+| `stale` | A date fetch is older than its `refresh`, and upstream names a later version, the fetch is a capture, or the upstream check fails |
 | `unused` | The serving release reads no fetch of the source |
 | `ok` | Otherwise. A fetch without a serving version is never stale. A `manual` source and a `prepared` source are never stale by age |
 
@@ -245,7 +248,7 @@ A snapshot record is a JSON object:
 | --- | --- |
 | `source` | The source id |
 | `version` | The version, as `SOURCE@VERSION` names it |
-| `files` | One item per file: `name`, `url`, `size` in bytes, `sha256` and `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`) |
+| `files` | One item per file: `name`, `url`, `size` in bytes, `sha256`, `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`), and `archive`, the path in the [archive](#archive) of the file that gave the bytes, when the archive served them |
 
 The `name` of a file is the part of its URL that identifies it in the source. For a `dtm`
 or `capture` fetch, it is the URL after `fetch.url`, such as `#bbox=W,S,E,N/sub/a.tif`. For a URL template, it is the URL from the segment of the first
@@ -256,7 +259,7 @@ record has for another URL fails the fetch.
 A version is one or more segments joined by `/`. A segment has letters, digits, `.`, `_`, `+`
 and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` date, and a
 `digest` version is 64 lowercase hex digits. The version of a `prepared` source that a step reads
-is `<date>/<manifest sha256>`, see [Prepared sources](#prepared-sources).
+is `<version>/<manifest sha256>`, see [Prepared sources](#prepared-sources).
 
 ### Clean
 
@@ -362,31 +365,39 @@ producer of [`wiki`](#wiki) reads them.
 | Source | `NAME=VALUE` | Program | Packages | Query |
 | --- | --- | --- | --- | --- |
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
-| Each source of `data/trailview/ground.json` with the `protocol` `arcgis-image`, `arcgis-features` or `wfs` | `bbox`, `ground` | `tools/trailview/ground.py --source ID --fetch` | group `trailview` | `bbox=W,S,E,N&ground=DIGEST` |
+| Each source of `data/trailview/ground.json` with the `protocol` `arcgis-features` or `wfs` | `bbox`, `ground` | `tools/trailview/ground.py --source ID --fetch` | group `trailview` | `bbox=W,S,E,N&ground=DIGEST` |
 | `sentinel-2-mosaics` | `bbox`, `year` | `tools/trailview/colour.py --fetch` | group `trailview` | `bbox=W,S,E,N&year=YEAR` |
 | `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | group `planner-climate` | `bbox=W,S,E,N&first-year=YEAR` |
+| `corine-land-cover` | None | `tools/clms.py --fetch` | None | `dataset=0407d497d3c44bcd93ce8fd5bf78596a&file=3d9e2413-46ca-4f6e-abf8-b6eb429a4e48` |
 
 - `bbox` is `WEST,SOUTH,EAST,NORTH` in degrees.
 - A snow file is the window of one source raster that covers `bbox`, one pixel wider on each
   side, in the grid of the source. A season starts on 1 September. An `hr-wsi` box without a
   product gives a fetch without files.
 - An `era5-land` file is a source chunk of the ten years from `first-year`, or the orography.
-- The files of an `arcgis-image` source are `legend.json`, the legend of the map service, and
-  `W_S_E_N.png`: the images of its `layer` over `bbox` in its `crs` at its `px_m`, each at most
-  4096 pixels on a side and named by its box in whole metres.
+- The `corine-land-cover` file is `U2018_CLC2018_V2020_20u1.tif`, the CORINE Land Cover 2018
+  raster of Europe. The capture orders the prepackaged `file` of the CLMS `dataset` through the
+  [CLMS download API](https://eea.github.io/clms-api-docs/download.html), with an access token
+  that the service key of the credential signs for. An API call that answers with a redirect
+  fails. It polls the order every 30 seconds for at most 6 hours, downloads the zip archive of the
+  finished order from its `https://` link without the token, and takes the file from that archive
+  or from a zip archive in it. A download shorter than its `Content-Length` is tried again. A
+  complete archive stays in the work directory until the run succeeds, so a run that fails after
+  the download resumes without a new order. An archive that is not a zip is deleted, and the next
+  run orders again.
 - `ground` is the first 12 hex digits of the SHA-256 of the canonical JSON of the keys `protocol`,
-  `layer`, `field`, `sort`, `crs`, `px_m` and `zoom` of the source's entry, and of its `legend`
-  for `arcgis-features`. The fetch refuses a digest that the entry does not have.
+  `layer`, `field` and `sort` of the source's entry, and of its `legend` for `arcgis-features`.
+  The fetch refuses a digest that the entry does not have.
 - An `arcgis-features` or `wfs` file is `features-NNNNN.geojson`: a page of the features that
   meet `bbox`, in EPSG:4326 with the source's `field`. `arcgis-features` asks only for the
   features whose `field` the legend may name, pages by object id, and asks again for the ids that
   an answer lacks. It leaves out an id that the service no longer has, up to 0.1 % of the ids,
-  and fails above that. It simplifies each feature by a quarter of a texel at the equator, at the
-  source's `zoom` or else at zoom 13. `wfs` pages in the order of `sort` until the pages hold the
+  and fails above that. It simplifies each feature by a quarter of a zoom 13 texel at the
+  equator. `wfs` pages in the order of `sort` until the pages hold the
   `numberMatched` features of a `hits` request. A box without a feature gives a fetch without
   files.
 - A ground capture tries a request again after a failed or cut transfer, a 5xx or 429 answer, an
-  ArcGIS error without a 4xx code, or a map image that is no PNG, 6 times in all. Another 4xx
+  ArcGIS error without a 4xx code, 6 times in all. Another 4xx
   answer or ArcGIS error fails at once. The hidden file `.positions` records the object ids or the
   `numberMatched` that the page numbers stand for; a resumed run that finds others deletes the
   pages.
@@ -396,7 +407,43 @@ producer of [`wiki`](#wiki) reads them.
   day comes only from the store. A request that a started version of a `manual` source lacks joins
   that version, so requests over several days have one version.
 - A source with a `credential` that is not on this machine fails before the program runs, and
-  the error names the variables or the file.
+  the error names the variables or the file. A capture that the [archive](#archive) serves needs
+  no credential.
+
+### Archive
+
+The archive is the directory in `OBC_DATA_ARCHIVE`: whole datasets that we keep on a drive of
+their own, so that no outage stops a bake. Without the variable, or with an empty value, there is
+no archive. `obc data` only reads it.
+
+| Path | Holds |
+| --- | --- |
+| `mirror/<host>/<path>` | The file of the `https://<host>/<path>` URL. Its modification time is the `Last-Modified` of upstream |
+| `manifest/<dataset>.json` | A JSON object. `files` lists each file of the dataset: `path` under the archive, `bytes` and, when known, `sha256`. A prepackaged CLMS file adds `clms_dataset_uid` and `clms_file_id`, and lists its zip as the one file. Other keys, such as the licence and the date, are for people |
+
+Rules:
+
+- Only a source with `keep = "archive"` reads the archive.
+- Only a file that a manifest lists serves: an unlisted file can still be downloading. A
+  `sha256` can be in uppercase or lowercase hex.
+- A problem of the archive never stops a fetch that the store or upstream can serve. A manifest
+  that cannot be read, or a listed file of another size, gives a warning, and the file does not
+  serve. Only a file that the fetch takes, with another SHA-256 than its manifest, fails the fetch.
+- The store takes a copy of the file, never a link.
+- The record of a file keeps the upstream `url`, and its `archive` names the path in the archive.
+
+An `http`, `glo30` or `github` fetch looks for the file of each URL that the store does not have,
+before it downloads. The modification day of the archive file stands for `Last-Modified`: for a
+`date` source without a version, that day is the version, and no request goes upstream. The
+archive file serves when it is the version: its SHA-256 is that of the record of the version or of
+the `digest` version, or else it changed on or before the day of a date version. Otherwise the
+fetch writes why and downloads the file. So a GLO-30 tile, which the fetch reads at the `start`
+`2022-05-09`, serves only when its modification time is the upstream `Last-Modified`.
+`obc data source refresh` asks upstream, not the archive.
+
+The `corine-land-cover` capture looks for the manifest with its `dataset` and `file`. When the
+archive has the zip, the capture checks its SHA-256 against the manifest, and `tools/clms.py --archive
+ZIP` takes the file from that zip as from an order.
 
 ### Credentials of sources
 
@@ -411,6 +458,7 @@ values, never a value.
 | `env` | `~/.config/openbikecomputer/credentials.env` | `NAME=VALUE` |
 | `file = "~/.cdsapirc"` | `~/.cdsapirc` | `key: VALUE` |
 | `file = "~/.config/openbikecomputer/cdse-s3.env"` | that file | `CDSE_S3_ACCESS_KEY=VALUE` and `CDSE_S3_SECRET_KEY=VALUE` |
+| `file = "~/.config/openbikecomputer/clms-key.json"` | that file | None: a person saves the JSON service key whole, as the `hint` says, and the command refuses it |
 
 Each `obc data` command but `obc data ui` loads `credentials.env` when it starts, and its steps get
 the variables. A variable that the environment already sets wins. `overridden` in the output
@@ -450,7 +498,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 
 | Layer | Steps |
 | --- | --- |
-| `osm` | `device/source/<area>`, `device/region-osm`, `device/osm`, `planner/source/<area>`, `planner/osm`, `planner/osm/bounds` |
+| `osm` | `device/source/<area>`, `device/region-osm`, `device/osm`, `planner/source/<area>`, `planner/osm`, `planner/osm/bounds`, `planner/terrain-osm/<area>`, `planner/terrain-osm` |
 | `device/terrain` | `device/reference/<i>-<j>`, `device/terrain/<i>-<j>` |
 | `device/map` | `device/map/<i>-<j>` |
 | `device/landmarks` | `device/landmark-content…`, `device/peak-content…`, `device/landmarks/<i>-<j>`, `device/peaks/<i>-<j>` |
@@ -743,11 +791,16 @@ A step list gets the version of each fetch that it reads from one function
 (`obc_data::product::version`), by three rules:
 
 1. A due fetch reads the newest version upstream, and the update uses that version until it ends.
+   When the upstream of an HTTP fetch does not serve (no connection, a timeout, HTTP 404, 408, 429
+   or 5xx) or the credential is missing, the fetch reads rule 2, and a note of the
+   [review](#review) names the fetch, the error and the version that it reads. Another failure,
+   such as a failed capture program, stays an error.
 2. Otherwise the fetch reads the newest version that the machine knows: the newest of the serving
    version, the versions of the fetch in the store and the `start` of the source. The serving
-   version of a fetch without `NAME=VALUE`s, or of any fetch of a source with a `start`, is the
-   newest serving version of the source: one version names all its fetches, such as the GLO-30
-   tiles of every region, or the extract of a new area.
+   version of any fetch of a source with a `start` is the newest serving version of the source:
+   one version names all its fetches, such as the GLO-30 tiles of every region. A version of the
+   store serves a fetch without `NAME=VALUE`s only when no record of a fetch with `NAME=VALUE`s
+   names it, so a source that lost its `NAME=VALUE`s never reads an old box.
 3. Otherwise it reads the newest version upstream: the product names the fetch, and the update
    fetches it. A source whose URL needs a `NAME=VALUE`, such as the GLO-30 tiles, has no one newest
    version: a fetch of it without that value fails with `failed`, and the fix names the code of the
@@ -818,9 +871,10 @@ outline of the region touches. The outline of a `box` region is its box; the out
 `area=<source path>`. Existing union definitions select the union of their leaves.
 
 Both products resolve the same source areas. A Geofabrik definition names its areas directly.
-For a Box, the cached index selects candidates by polygon coverage. Selection descends into
-children only when their union covers the requested part of the parent. Full `.poly` files
-must then cover the complete Box. A gap tries the parent extract before selecting bulk inputs.
+For a Box, the cached index selects candidates by polygon coverage: of the areas whose polygons
+meet the Box, each area that the others cover drops out, largest first. So neighbouring areas
+cover a sliver of the Box before their parent does. Full `.poly` files must then cover the
+complete Box. A gap tries the parent extract before selecting bulk inputs.
 An uncovered Box gives an actionable error. Country metadata does not remove required geography.
 
 Each selected area has a private `<product>/source/<area>` step. It reads the extract and full
@@ -835,8 +889,10 @@ this is a union of available snapshots, not a snapshot at one common date. Confl
 at the same object type, id and version are malformed OSM inputs.
 
 The merge, the map crop, the cut and the terrain of the planner run the Osmium of `OBC_OSMIUM`, or
-else `osmium` on the `PATH`. Without it, an update blocks the device layers that need it, and the
-plan of the planner fails. Each asks to install Osmium or set `OBC_OSMIUM`. It does not download or install a tool.
+else `osmium` on the `PATH`. Without it, an update blocks the device layers that need it, the plan
+of the planner fails for more than one source area, a box or `planner/trailview-features`, and a
+build of `planner/terrain` fails. Each asks to install Osmium or set `OBC_OSMIUM`. It does not
+download or install a tool.
 
 The steps read `copernicus-glo-30` and the national terrain models of `terrain`,
 and the step list reads files such as a `.poly` and the GLO-30 tile list, each at its version (see
@@ -898,7 +954,9 @@ of the version of `terrain` that the target reads, and `mean/index.json`.
 | `planner/osm/bounds` | `planner/osm` | For a region with a box, `bbox`: west, south, east and north of the bounds of the region, widened by `osm.margin_m`, within ±180° and ±90°. For a region without a box, `path`: `osm.pbf` | `osm.pbf`: for a region with a box, the `osmium extract --strategy smart -S types=multipolygon,boundary --set-bounds --generator obc-data` of `bbox`, in which each multipolygon and each boundary that `bbox` touches is complete, and the metrics name the version (`osmium`). For a region without a box, `planner/osm` as it is: its extracts are its whole area |
 | `planner/basemap` | `planner/osm/bounds`; The selected jar of `protomaps-basemaps`; `natural-earth`, `water-polygons`, `land-polygons`, `daylight-landcover`, `qrank`, `pgf-encoding` | `bounds` of the region; `attribution` of `osm-planet`, `natural-earth` and `daylight-landcover` | `basemap.pmtiles`: the Protomaps map at zooms 0 to 14 |
 | `planner/reference` | `terrain`, without params: the mean tiles in `bounds` of `planner/terrain` and `mean/index.json`; only when the version has one of them | `source` and `tiles` as for `device/reference`, of the tiles of `bounds`; `pool`: `mean` | `reference/`: the mean archive of those tiles. A Python step with the group `terrain-reference` |
-| `planner/terrain` | The GLO-30 tiles of `bounds`; `planner/reference` when there is one; `planner/osm` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours; `attribution`: the credit of GLO-30; `osm_attribution`: the credit of `osm-planet` | `terrain.mbtiles`: the terrain tiles of [the planner release](planner-release.md#terrain-tiles), the bytes that `planner-dem` writes from the same tiles, archive and OSM. Where GLO-30 has weight, its heights follow the OSM within 300 m of `bounds` (`host/obc-dem/src/shape.rs`): the water side of `natural=coastline` is at 0 m up to 45 m from the line; within 45 m of a `natural=cliff` that passes within 45 m of a coastline, each side takes its GLO-30 ground continued straight from 45 m and 90 m, the higher side only rising and the lower only falling, the drop at most a numeric `height`, faded out where GLO-30 is steeper than slope 1 to 2; within 45 m of the top of GLO-30 within 30 m of a `natural=peak` or `natural=volcano` with a numeric `ele`, the cone of its flanks continued from 45 m and 90 m, only rising and never above `ele`. With OSM, the metrics name the Osmium version (`osmium`) |
+| `planner/terrain-osm/<area>` | `terrain-osm`, `area=<area>`, for each source area | `path`: `source.osm.pbf` | `source.osm.pbf`: the extract as it is |
+| `planner/terrain-osm` | Only for more than one source area: `source.osm.pbf` of each `planner/terrain-osm/<area>` | None | `osm.pbf`: their union, as `planner/osm` merges |
+| `planner/terrain` | The GLO-30 tiles of `bounds`; `planner/reference` when there is one; `planner/terrain-osm`, or for one source area its `planner/terrain-osm/<area>` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours; `attribution`: the credit of GLO-30; `osm_attribution`: the credit of `osm-planet` | `terrain.mbtiles`: the terrain tiles of [the planner release](planner-release.md#terrain-tiles), the bytes that `planner-dem` writes from the same tiles, archive and OSM. `terrain-osm` is the Geofabrik extract with `refresh = "manual"`: the terrain keeps the extract of each area that it read first, and a newer `geofabrik-extracts` does not build the terrain again. `obc data fetch terrain-osm area=<area>` puts a newer extract in the store, which the next update reads. Where GLO-30 has weight, its heights follow the OSM within 300 m of `bounds` (`host/obc-dem/src/shape.rs`): the water side of `natural=coastline` is at 0 m up to 45 m from the line; within 45 m of the top of GLO-30 within 30 m of a `natural=peak` or `natural=volcano` with a numeric `ele`, the cone of its flanks continued from 45 m and 90 m, only rising and never above `ele`. With OSM, the metrics name the Osmium version (`osmium`) |
 | `planner/routing` | `planner/osm/bounds`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`; `attribution` and `terrain_attribution`: the credits of OSM and GLO-30. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells: shared page packs, one manifest for each cell, `blocks.json` and `catalog.json`; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
 | `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
 | `planner/assets` | `protomaps-assets`, `tangrams-icons` | None | `assets/fonts/` and `assets/sprites/` of the assets archive; `assets/sprites/LICENSE.txt`: the MIT notice of `tangrams-icons` |
@@ -918,7 +976,7 @@ of the version of `terrain` that the target reads, and `mean/index.json`.
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region` | `layer`: `ground`; `bounds`; `attribution` of the sources of the three | `ground.pmtiles`: [the ground archive](trailview-tiles.md#ground) |
 | `planner/trailview-colour` | `sentinel-2-mosaics`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles`: [the colour archives](trailview-tiles.md#colour) |
 | `planner/trailview-snow` | `snow.pmtiles` of `planner/snow` | `bounds` | `00.pmtiles` to `45.pmtiles`: [the snow days](trailview-tiles.md#snow-days), one archive per band |
-| `planner/trailview-canopy` | The tiles of [`forest`](#forest) that the canopy models of the region meet in the bounds. A version whose scope and `extends` lack one of those tiles refuses, and so does a region that no canopy model meets | `bounds`; `attribution`: the credits of the canopy models of those tiles and of the leaf type | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
+| `planner/trailview-canopy` | The tiles of [`forest`](#forest) that the canopy models of the region meet in the boxes of the region, as `forest` defines them, or in the bounds of a region without boxes. A version whose scope and `extends` lack one of those tiles refuses, and so does a region that no canopy model meets | `bounds`; `attribution`: the credits of the canopy models of those tiles and of the leaf type | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
 `terrain`, `overlays`, `climate`, `snow`, `trailview-features`, `trailview-ground` or
@@ -1413,12 +1471,16 @@ A prepared source is a row of `data/sources.toml` with `fetch.kind = "prepared"`
 binary links a producer for each name: the producer of `<name>` makes the source `<name>`. Only a source whose licence lets us give its bytes to others is
 prepared.
 
+The name of a version is the UTC date when its first run starts, `YYYY-MM-DD`. A later version of
+the same day adds `.2`, `.3` and so on: `2026-10-28`, `2026-10-28.2`, `2026-10-28.10`. Versions
+are in the order of the date, then of the number; a plain date is number 1.
+
 A prepared source has these keys in the folder `sources/<id>/` of a target:
 
 | Key | Holds |
 | --- | --- |
 | `sources/<id>/lock.json` | The lock of the source: one prepare at a time. It has the format of the [lock](#lock) of a target |
-| `sources/<id>/versions.json` | The complete versions, sorted by version |
+| `sources/<id>/versions.json` | The complete versions, oldest first |
 | `sources/<id>/<version>/<path>` | A file of the version. Immutable |
 | `sources/<id>/<version>/manifest.json` | The manifest of the version, written last. Immutable |
 
@@ -1478,7 +1540,8 @@ is compact JSON with the keys of each object in byte order:
 
 `obc data source prepare ID` makes a version for a target, `prod` by default:
 
-1. The version is the UTC date when its first run starts. A run keeps its work in
+1. A new version takes the first name of the day that is after each version of that day in
+   `versions.json` and has no manifest on the target. A run keeps its work in
    `prepared/<target>/<id>/<version>/` of the [store](#store) of its machine. The same command
    resumes the version: the producer does not make a file of the journal again, unless the target
    lacks its key. A resume with another region or language selection refuses. When the manifest of a stopped version is
@@ -1486,8 +1549,7 @@ is compact JSON with the keys of each object in byte order:
    only adds the version to `versions.json`, and the review says `listing`. Another stopped version
    that is not newer than the newest complete version on the target, or whose manifest is on the
    target, is not resumed: the run starts a new version, deletes the work of the old one, and the
-   review names it in `abandoned`. So a run never writes a key of a complete version. A new version
-   that the target has complete refuses.
+   review names it in `abandoned`. So a run never writes a key of a complete version.
 2. The review names the version, the inputs with the size of their files in the store or on
    this machine (`unknown` lists an input whose size neither knows), the files of the version at
    most (`files`, `null` when the producer cannot tell before the run), the files
@@ -1568,15 +1630,18 @@ maximum, which `device/terrain` reads, and under `mean/` the mean, which `planne
 A version adds a region to the newest complete version of `terrain` on the target before it, in
 the same format; `prod` takes a version of a region.
 
-- The models are the `dtm-*` rows with `redistribute = true` whose `extent` meets the box of the
-  region and, when the region names `countries`, whose key is of one of them (`dtm-de-by` is of
-  `DE`); all of them for a version of everything. A region that names no `countries` has those of its
-  leaves, and none when a leaf names none. The tiles of a model are those that meet its
+- The boxes of a region are the box of each of its leaves, so a union reads no tile between its
+  boxes. A region with a `geofabrik` leaf has no boxes.
+- The models are the `dtm-*` rows with `redistribute = true` whose `extent` meets a box of the
+  region and, when the region names `countries`, whose key is of one of them: the first part of
+  the key is the lowercase ISO 3166-1 code, so `dtm-de-by` is of `DE`; all of them for a version
+  of everything. A region that names no `countries` has those of its leaves, and none when a leaf
+  names none. The tiles of a model are those that meet its
   `extent` and the `geofabrik-poly` polygon of one of its `areas`: the boundary of the polygon
   crosses the tile, or the polygon holds the centre of the tile. A version of a region has only
   those tiles in its boxes and in the polygons of its areas. A run keeps the version of each
   polygon that the first run of the version read. The review counts the two pools of the tiles of
-  each `extent` in the box of the region, and the two `index.json`.
+  each `extent` in the boxes of the region, and the two `index.json`.
 - For each tile, `host/obc-dem/reference/ingest.py fetch <keys> --tile <ti:04>-<tj:04>` pools the
   rasters of each model of the tile onto the lattice in one pass, and folds each into the tile:
   into the tile of the version before when it has one (`--base`, with `--held`, its sources), by
@@ -1608,12 +1673,12 @@ region to the newest complete version of `forest` on the target before it, in th
 `prod` takes a version of a region.
 
 - The canopy models are the `canopy-<key>` rows: one per country, whose key is the lowercase
-  country code, and `canopy-global`. A version reads each national model whose `extent` meets the
-  box of the region and, when the region names `countries`, whose country is one of them; all of
-  them for a version of everything. A region that names no `countries` has those of its leaves, as
-  for `terrain`. It reads `canopy-global` where its `extent` meets the box; a version of everything
-  reads no `canopy-global`. Its tiles are the zoom
-  12 tiles whose inside meets the `extent` of a model and the box of the region.
+  country code, and `canopy-global`. A version reads each national model whose `extent` meets a
+  box of the region, as [`terrain`](#terrain) defines the boxes, and, when the region names
+  `countries`, whose country is one of them; all of them for a version of everything. A region
+  that names no `countries` has those of its leaves, as for `terrain`. It reads `canopy-global`
+  where its `extent` meets a box; a region without boxes reads no `canopy-global`. Its tiles are
+  the zoom 12 tiles whose inside meets the `extent` of a model and a box of the region.
 - For each tile, `python -m tools.forest_reference fetch <key>,… --tile 12-<x>-<y>` writes
   `12/<x>/<y>.tif` and then `12-<x>-<y>.sha256`, the SHA-256 of its pixels. The keys are the models
   that meet the tile, the national ones in the order of `data/sources.toml` and then `global`; a
@@ -2848,6 +2913,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "FetchedFile": {
       "properties": {
+        "archive": {
+          "description": "The path in the archive (`OBC_DATA_ARCHIVE`) of the file that gave the bytes instead of `url`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "name": {
           "description": "The part of `url` that names the file within its source, unique in a record: the name a\nstep gives the file when it needs one.",
           "type": "string"
@@ -3111,6 +3183,26 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "reason"
       ],
       "type": "object"
+    },
+    "Keep": {
+      "description": "Where the copy of a source that a bake reads stays, so that no outage stops a bake.",
+      "oneOf": [
+        {
+          "const": "archive",
+          "description": "The archive (`OBC_DATA_ARCHIVE`) holds the whole dataset: a fetch reads it there first.",
+          "type": "string"
+        },
+        {
+          "const": "store",
+          "description": "The store keeps what each fetch took.",
+          "type": "string"
+        },
+        {
+          "const": "prepared",
+          "description": "R2 keeps what we make: a prepared source, a source that only a prepare reads, or our own asset.",
+          "type": "string"
+        }
+      ]
     },
     "Kept": {
       "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
@@ -3725,13 +3817,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "Note": {
       "additionalProperties": false,
-      "description": "A layer that bakes without a source that it reads where the source has a version, such as a\nprepared source that no target lists yet. It does not prevent an update.",
+      "description": "A layer that bakes without a source that it reads where the source has a version, such as a\nprepared source that no target lists yet, or that reads an older version of a due source whose\nfetch failed. It does not prevent an update.",
       "properties": {
         "layer": {
           "type": "string"
         },
         "text": {
-          "description": "What the layer bakes without, and the command that gives it.",
+          "description": "What the layer bakes without and the command that gives it, or the version that it reads.",
           "type": "string"
         }
       },
@@ -4138,7 +4230,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "version": {
-          "description": "The version that the run makes: the UTC date when its first run started.",
+          "description": "The version that the run makes: the UTC date when its first run started, with `.2`, `.3`\nand so on after the first version of that day.",
           "type": "string"
         }
       },
@@ -5286,6 +5378,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "id": {
           "type": "string"
         },
+        "keep": {
+          "$ref": "#/$defs/Keep"
+        },
         "kind": {
           "$ref": "#/$defs/Kind"
         },
@@ -5385,6 +5480,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "fetch",
         "version",
         "refresh",
+        "keep",
         "redistribute",
         "targets",
         "snapshots",
@@ -6208,7 +6304,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "Version": {
       "additionalProperties": false,
-      "description": "An entry of `versions.json`, which lists the complete versions sorted by version.",
+      "description": "An entry of `versions.json`, which lists the complete versions oldest first.",
       "properties": {
         "bytes": {
           "description": "The size of its files.",

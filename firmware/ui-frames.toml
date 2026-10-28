@@ -949,13 +949,6 @@ script = "{dfu_pre}"
 expect = "DfuError"
 args = ["--dfu", "error=toolarge"]
 
-[[frame]]
-name = "dfu-error-fragmented"
-map = "{grimsel}"
-script = "{dfu_pre}"
-expect = "DfuError"
-args = ["--dfu", "error=fragmented"]
-
 # OBCU v2 (#997): the file is intact but not signed by us — its own card, not "damaged".
 [[frame]]
 name = "dfu-error-untrusted"
@@ -2477,7 +2470,7 @@ name = "dfu-error"
 map = "{grimsel}"
 script = "{dfu_pre}"
 expect = "DfuError"
-args = ["--dfu", "error=fragmented"]
+args = ["--dfu", "error=toolarge"]
 langs = ["de", "fr", "es"]
 
 [[frame]]

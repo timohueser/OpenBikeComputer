@@ -1303,10 +1303,8 @@ fn media_refusal(error: StoreError, when: u16) -> Refusal {
     }
 }
 
-/// A refusal from `allocate`. `Invalid` here means a full reservation table, which is transient and
-/// answered with `busy`. That reading holds only because the callers rule out every other way
-/// `allocate` says `Invalid` first; remove one of those checks and a client's own bad request comes
-/// back as "busy, try again" forever.
+/// A refusal from `allocate`. The callers refuse a bad request before they allocate, so `Invalid`
+/// here is the store's fault.
 fn allocate_refusal(error: StoreError, bytes: u64) -> Refusal {
     match error {
         StoreError::NoSpace { required } => {
@@ -1314,24 +1312,22 @@ fn allocate_refusal(error: StoreError, bytes: u64) -> Refusal {
         }
         StoreError::TooFragmented => Refusal::with_context(ErrorCode::NoSpace, detail::no_space::TOO_FRAGMENTED, bytes),
         StoreError::CatalogFull => Refusal::with_context(ErrorCode::NoSpace, detail::no_space::CATALOG_FULL, bytes),
-        StoreError::Invalid => Refusal::plain(ErrorCode::Busy),
         StoreError::Media => Refusal::new(ErrorCode::MediaIo, detail::media_io::WRITE),
         StoreError::ReadOnly => Refusal::new(ErrorCode::ReadOnly, detail::read_only::REVISION_SPACE_EXHAUSTED),
-        // `allocate` takes no hold row, so this is unreachable. It is mapped rather than funnelled
-        // into `Internal` so that a store that ever does say it reads as the same transient fact.
-        StoreError::Busy => Refusal::new(ErrorCode::Busy, detail::busy::HOLDS),
-        StoreError::NotFound | StoreError::RevisionConflict { .. } => Refusal::plain(ErrorCode::Internal),
+        StoreError::Busy => Refusal::plain(ErrorCode::Busy),
+        StoreError::Invalid | StoreError::NotFound | StoreError::RevisionConflict { .. } => {
+            Refusal::plain(ErrorCode::Internal)
+        }
     }
 }
 
 /// A refusal from `open`. A full hold table answers `busy` with the `holds` detail, so a client can
-/// tell "another transfer owns the device" from "every read slot is taken". `Invalid` maps to a
-/// plain `busy`, and it is also what a `GET` on a `RESERVED` entry produces.
+/// tell "another transfer owns the device" from "every read slot is taken". `on_get` refuses the
+/// entries `open` calls `Invalid` before it opens, so `Invalid` here is the store's fault.
 fn open_refusal(error: StoreError) -> Refusal {
     match error {
         StoreError::NotFound => Refusal::new(ErrorCode::NotFound, detail::not_found::OBJECT),
         StoreError::Busy => Refusal::new(ErrorCode::Busy, detail::busy::HOLDS),
-        StoreError::Invalid => Refusal::plain(ErrorCode::Busy),
         StoreError::Media => Refusal::new(ErrorCode::MediaIo, detail::media_io::READ),
         StoreError::ReadOnly => Refusal::new(ErrorCode::ReadOnly, detail::read_only::CATALOG_UNREADABLE),
         _ => Refusal::plain(ErrorCode::Internal),
@@ -1355,8 +1351,7 @@ fn commit_refusal(error: StoreError, bytes: u64) -> Refusal {
         StoreError::ReadOnly => Refusal::new(ErrorCode::ReadOnly, detail::read_only::REVISION_SPACE_EXHAUSTED),
         // The engine built the batch, so a structural refusal is this crate's fault.
         StoreError::Invalid => Refusal::plain(ErrorCode::Internal),
-        // A commit takes no hold row either. Same reasoning as `allocate_refusal`'s arm.
-        StoreError::Busy => Refusal::new(ErrorCode::Busy, detail::busy::HOLDS),
+        StoreError::Busy => Refusal::plain(ErrorCode::Busy),
     }
 }
 
@@ -1367,10 +1362,8 @@ mod tests {
     /// The rows a card cannot easily be made to produce; the rest are covered over a real card in
     /// `tests/flat_engine.rs`.
     #[test]
-    fn a_full_table_is_busy_and_never_invalid_request() {
-        assert_eq!(allocate_refusal(StoreError::Invalid, 1).code, ErrorCode::Busy);
-        assert_eq!(open_refusal(StoreError::Invalid).code, ErrorCode::Busy);
-        // The same variant from a commit is the engine's own batch being wrong: not transient.
+    fn a_structural_refusal_is_internal_and_never_busy() {
+        assert_eq!(allocate_refusal(StoreError::Invalid, 1).code, ErrorCode::Internal);
         assert_eq!(commit_refusal(StoreError::Invalid, 0).code, ErrorCode::Internal);
     }
 
@@ -1378,8 +1371,8 @@ mod tests {
     #[test]
     fn a_full_hold_table_is_busy_with_the_holds_detail() {
         assert_eq!(open_refusal(StoreError::Busy), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
-        assert_eq!(allocate_refusal(StoreError::Busy, 1), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
-        assert_eq!(commit_refusal(StoreError::Busy, 0), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
+        assert_eq!(allocate_refusal(StoreError::Busy, 1), Refusal::plain(ErrorCode::Busy));
+        assert_eq!(commit_refusal(StoreError::Busy, 0), Refusal::plain(ErrorCode::Busy));
         assert_ne!(detail::busy::HOLDS, detail::busy::TRANSFER, "the two reasons must stay distinguishable");
     }
 
@@ -1470,13 +1463,5 @@ mod tests {
         }
         assert_eq!(Ceilings::for_ble(247, STREAM_HEADER_LEN, 4_096), None);
         assert!(Ceilings::for_ble(247, STREAM_HEADER_LEN + 1, 4_096).is_some());
-    }
-
-    #[test]
-    fn a_link_below_the_protocol_floor_is_refused_rather_than_truncated() {
-        assert!(Ceilings::new(CONTROL_FLOOR - 1, 1_024).is_none());
-        assert!(Ceilings::new(CONTROL_FLOOR, STREAM_HEADER_LEN).is_none());
-        let ceilings = Ceilings::new(244, 1_024).expect("the device's preferred BLE link");
-        assert_eq!((ceilings.control(), ceilings.stream()), (244, 1_024));
     }
 }

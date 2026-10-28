@@ -260,12 +260,12 @@ describe("direct assembler delivery", () => {
         const refusal = target.querySelector(".warn")?.textContent ?? "";
         expect(refusal).toContain("120 B of browser memory");
         expect(refusal).toContain("100 B");
-        expect(refusal).toContain("Reduce the coverage area");
+        expect(refusal).toContain("Reduce the map selection");
         expect((target.querySelector("button.primary") as HTMLButtonElement).disabled).toBe(true);
         await unmount(component);
     });
 
-    it("shows reported download and assembly progress in every worker phase", async () => {
+    it("shows download progress, then the assembly phase the worker reports", async () => {
         seams.holdAssembly = true;
         let report!: (progress: { completedCells: number; totalCells: number; receivedBytes: number; totalBytes: number }) => void;
         let finishDownload!: () => void;
@@ -292,19 +292,10 @@ describe("direct assembler delivery", () => {
             await tick();
         }
         expect(seams.workerAssemble).toBe(1);
-        for (const [phase, label, fraction] of [
-            ["open", "reading cells", 0.1],
-            ["poi", "merging places", 0.3],
-            ["nav", "stitching the road network", 0.5],
-            ["plan", "planning the file", 0.7],
-            ["write", "writing", 0.8],
-            ["verify", "checking the result", 0.9],
-        ] as const) {
-            seams.worker!.onmessage!(new MessageEvent("message", { data: { type: "progress", phase, fraction } }));
-            await tick();
-            expect(target.textContent).toContain(`assembling — ${label} · ${Math.round(fraction * 100)}%`);
-            expect(target.querySelector(".bar span")?.getAttribute("style")).toContain(`${Math.round(fraction * 100)}%`);
-        }
+        seams.worker!.onmessage!(new MessageEvent("message", { data: { type: "progress", phase: "nav", fraction: 0.25 } }));
+        await tick();
+        expect(target.textContent).toContain("assembling — stitching the road network · 25%");
+        expect(target.querySelector(".bar span")?.getAttribute("style")).toContain("25%");
         [...target.querySelectorAll("button")].find((button) => button.textContent === "Cancel")!.click();
         await unmount(component);
     });
@@ -335,14 +326,12 @@ describe("direct assembler delivery", () => {
         await unmount(component);
     });
 
-    it("admits a disk-only rebuild when cached cells make the quota projection fit", async () => {
+    it("admits a disk-only rebuild only when cached cells make the quota projection fit", async () => {
         seams.memoryRequiresDisk = true;
         seams.cellStoreWritable.mockResolvedValue(true);
-        seams.hasRoomFor.mockImplementation(async (bytes: number) => bytes <= 2_200_000_000);
-        const cells = testCellStore();
-        cells.has.mockImplementation(async (key) => key === "cached");
-        seams.openCellInventory.mockResolvedValue(cells);
-        seams.openCellStore.mockResolvedValue(cells);
+        // Between this run's disk projection with its 800 MB cell cached (2.2 GB) and with
+        // nothing cached (3 GB), so only the cache decides admission.
+        seams.hasRoomFor.mockImplementation(async (bytes: number) => bytes <= 2_500_000_000);
         seams.plan = {
             items: [
                 { band: "fine", cell: { id: "cell-1", sha256: "cached", bytes: 800_000_000 } },
@@ -362,20 +351,37 @@ describe("direct assembler delivery", () => {
                 isFinal: true,
             },
         };
+        // The rider kept map data last time, so the estimate counts cached cells from the start.
+        globalThis.localStorage.setItem("obcm.keepMapCells", "true");
+        const mountWithCells = async (cells: TestCellStore) => {
+            seams.openCellInventory.mockResolvedValue(cells);
+            seams.openCellStore.mockResolvedValue(cells);
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            const built = await mountReadyStep({ store: large });
+            const download = built.target.querySelector("button.primary") as HTMLButtonElement;
+            for (let attempt = 0; attempt < 40 && download.disabled && !built.target.querySelector(".warn"); attempt++) {
+                await new Promise<void>((resolve) => setTimeout(resolve, 20));
+                await tick();
+            }
+            return { ...built, download };
+        };
 
-        const { component, target } = await mountReadyStep({ store: large });
-        (target.querySelector('.cell-storage input[type="checkbox"]') as HTMLInputElement).click();
-        await tick();
-        await waitForReady(target);
-        expect(seams.hasRoomFor).toHaveBeenCalledWith(2_200_000_000, 0);
+        const cold = await mountWithCells(testCellStore());
+        expect(cold.target.querySelector(".warn")?.textContent ?? "").toContain("Reduce the map selection");
+        expect(cold.download.disabled).toBe(true);
+        await unmount(cold.component);
 
+        const cached = testCellStore();
+        cached.has.mockImplementation(async (key) => key === "cached");
+        const warm = await mountWithCells(cached);
+        expect(warm.target.querySelector(".warn")).toBeNull();
+        expect(warm.download.disabled).toBe(false);
         const job = new DeviceJob("map");
-        await job.run((ctx) => component.sendToDevice({} as FlatStoreClient, ctx), () => "sent");
-        expect(seams.requireDisk).toBe(true);
+        await job.run((ctx) => warm.component.sendToDevice({} as FlatStoreClient, ctx), () => "sent");
+        expect(job.phase).toBe("done");
         expect(seams.workerAssemble).toBe(1);
-        expect(cells.has).toHaveBeenCalledWith("cached", 800_000_000);
-        expect(cells.has).toHaveBeenCalledWith("missing", 200_000_000);
-        await unmount(component);
+        expect(seams.requireDisk).toBe(true);
+        await unmount(warm.component);
     });
 
     it("keeps prior assembly files when the fresh disk preflight refuses", async () => {
@@ -726,105 +732,33 @@ describe("direct assembler delivery", () => {
         expect(seams.workerTerminate).toBe(1);
     });
 
-    it("keeps run 2 blocked until a cancelled destructive clear has returned", async () => {
-        const built = await mountReadyStep();
-        let releaseClear!: () => void;
-        seams.clearCellStores.mockImplementationOnce(
-            () => new Promise<undefined>((resolve) => (releaseClear = () => resolve(undefined))),
-        );
-        const first = new DeviceJob("map");
-        const running = first.run(
-            (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
-            () => "sent",
-        );
-        for (let attempt = 0; attempt < 20 && typeof releaseClear !== "function"; attempt++) {
-            await Promise.resolve();
-            await tick();
-        }
+    /** Operation held, how to hold it, and the stale-store cleanups run 1 leaves behind. */
+    const unabortableOperations: Array<[
+        string,
+        (gate: () => Promise<undefined>, open: () => Promise<TestCellStore>) => void,
+        number,
+    ]> = [
+        ["destructive clear", (gate) => seams.clearCellStores.mockImplementationOnce(gate), 0],
+        [
+            "store open and its stale cleanup",
+            (gate, open) => seams.openCellStore.mockImplementationOnce(async () => {
+                await gate();
+                return open();
+            }),
+            1,
+        ],
+        [
+            "cell write and its cleanup",
+            (gate, open) => seams.openCellStore.mockImplementationOnce(async () => {
+                const cells = await open();
+                cells.put.mockImplementationOnce(gate);
+                return cells;
+            }),
+            1,
+        ],
+    ];
 
-        first.cancel();
-        await expectSecondRunRefused(built.component);
-        expect(first.running).toBe(true);
-        expect(built.target.textContent).not.toContain("Cancelled");
-        releaseClear();
-        await running;
-        expect(first.phase).toBe("idle");
-
-        await waitForReady(built.target);
-        seams.sendMapBlob.mockResolvedValueOnce({ objectId: 2n });
-        const second = new DeviceJob("map");
-        await expect(
-            second.run(
-                (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
-                () => "second survived",
-            ),
-        ).resolves.toMatchObject({ objectId: 2n });
-        expect(second.result).toBe("second survived");
-        await unmount(built.component);
-    });
-
-    it("keeps run 2 blocked through a cancelled store open and its stale cleanup", async () => {
-        const built = await mountReadyStep();
-        seams.cellStoreWritable.mockResolvedValue(true);
-        seams.hasRoomFor.mockResolvedValue(true);
-        let current: { alive: boolean } | null = null;
-        seams.discardCellStore.mockImplementation(async () => {
-            if (current) current.alive = false;
-        });
-        const firstStore = testCellStore();
-        let releaseOpen!: () => void;
-        seams.openCellStore.mockImplementationOnce(
-            () =>
-                new Promise((resolve) => {
-                    releaseOpen = () => {
-                        current = firstStore;
-                        resolve(firstStore);
-                    };
-                }),
-        );
-        const first = new DeviceJob("map");
-        const cancelled = first.run(
-            (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
-            () => "unreachable",
-        );
-        for (let attempt = 0; attempt < 20 && typeof releaseOpen !== "function"; attempt++) {
-            await Promise.resolve();
-            await tick();
-        }
-
-        first.cancel();
-        await expectSecondRunRefused(built.component);
-        expect(first.running).toBe(true);
-        releaseOpen();
-        await cancelled;
-        expect(firstStore.alive).toBe(false);
-        expect(seams.discardCellStore).toHaveBeenCalledOnce();
-
-        const secondStore = testCellStore();
-        seams.openCellStore.mockImplementation(async () => {
-            current = secondStore;
-            return secondStore;
-        });
-        await waitForReady(built.target);
-        let commit!: (result: { objectId: bigint }) => void;
-        seams.sendMapBlob.mockImplementationOnce(() => new Promise((resolve) => (commit = resolve)));
-        const second = new DeviceJob("map");
-        const survived = second.run(
-            (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
-            () => "second survived",
-        );
-        for (let attempt = 0; attempt < 20 && typeof commit !== "function"; attempt++) {
-            await Promise.resolve();
-            await tick();
-        }
-        expect(secondStore.alive).toBe(true);
-        expect(seams.discardCellStore).toHaveBeenCalledOnce();
-        commit({ objectId: 2n });
-        await expect(survived).resolves.toMatchObject({ objectId: 2n });
-        await unmount(built.component);
-    });
-
-    it("keeps run 2 blocked until a cancelled cell write and its cleanup have settled", async () => {
+    it.each(unabortableOperations)("keeps run 2 blocked until a cancelled %s has settled", async (_held, hold, staleCleanups) => {
         const built = await mountReadyStep();
         seams.cellStoreWritable.mockResolvedValue(true);
         seams.hasRoomFor.mockResolvedValue(true);
@@ -833,50 +767,47 @@ describe("direct assembler delivery", () => {
             totalBytes: 4,
             knownEmpty: [],
         };
-        let current: ReturnType<typeof testCellStore> | null = null;
+        const opened: TestCellStore[] = [];
+        const open = async () => {
+            const cells = testCellStore();
+            opened.push(cells);
+            return cells;
+        };
+        seams.openCellStore.mockImplementation(open);
         seams.discardCellStore.mockImplementation(async () => {
-            if (current) current.alive = false;
+            const live = opened.at(-1);
+            if (live) live.alive = false;
         });
-        const firstStore = testCellStore();
-        let releasePut!: () => void;
-        firstStore.put.mockImplementationOnce(
-            () => new Promise<undefined>((resolve) => (releasePut = () => resolve(undefined))),
-        );
-        seams.openCellStore.mockImplementation(async () => {
-            current = firstStore;
-            return firstStore;
-        });
-        seams.downloadCells.mockImplementationOnce(async (plan, options) => {
-            const item = (plan as typeof seams.plan).items[0];
-            await options.onCell(item, Uint8Array.of(1, 2, 3, 4));
-        });
+        let cellBytes = Uint8Array.of(1, 2, 3, 4);
+        // As with several download slots, an abort can settle the download while a cell write is in flight.
+        seams.downloadCells.mockImplementation((plan, options) => new Promise<void>((resolve, reject) => {
+            options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+            Promise.resolve(options.onCell((plan as typeof seams.plan).items[0], cellBytes)).then(() => resolve(), reject);
+        }));
+        let release!: () => void;
+        hold(() => new Promise<undefined>((resolve) => (release = () => resolve(undefined))), open);
         const first = new DeviceJob("map");
         const cancelled = first.run(
             (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
             () => "unreachable",
         );
-        for (let attempt = 0; attempt < 20 && typeof releasePut !== "function"; attempt++) {
+        for (let attempt = 0; attempt < 20 && typeof release !== "function"; attempt++) {
             await Promise.resolve();
             await tick();
         }
+        expect(release).toBeDefined();
 
         first.cancel();
+        // Let every part of the cancellation that does not wait for the held operation finish.
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
         await expectSecondRunRefused(built.component);
         expect(first.running).toBe(true);
-        releasePut();
+        expect(built.target.textContent).not.toContain("Cancelled");
+        release();
         await cancelled;
-        expect(firstStore.alive).toBe(false);
-        const firstCleanupCount = seams.discardCellStore.mock.calls.length;
+        expect(first.phase).toBe("idle");
 
-        const secondStore = testCellStore();
-        seams.openCellStore.mockImplementation(async () => {
-            current = secondStore;
-            return secondStore;
-        });
-        seams.downloadCells.mockImplementationOnce(async (plan, options) => {
-            const item = (plan as typeof seams.plan).items[0];
-            await options.onCell(item, Uint8Array.of(5, 6, 7, 8));
-        });
+        cellBytes = Uint8Array.of(5, 6, 7, 8);
         await waitForReady(built.target);
         let commit!: (result: { objectId: bigint }) => void;
         seams.sendMapBlob.mockImplementationOnce(() => new Promise((resolve) => (commit = resolve)));
@@ -889,11 +820,14 @@ describe("direct assembler delivery", () => {
             await Promise.resolve();
             await tick();
         }
+        const secondStore = opened.at(-1)!;
         expect(secondStore.alive).toBe(true);
         expect(secondStore.put).toHaveBeenCalledWith("digest", Uint8Array.of(5, 6, 7, 8));
-        expect(seams.discardCellStore).toHaveBeenCalledTimes(firstCleanupCount);
+        expect(opened.slice(0, -1).every((cells) => !cells.alive)).toBe(true);
+        expect(seams.discardCellStore).toHaveBeenCalledTimes(staleCleanups);
         commit({ objectId: 2n });
         await expect(survived).resolves.toMatchObject({ objectId: 2n });
+        expect(second.result).toBe("second survived");
         await unmount(built.component);
     });
 
@@ -1032,31 +966,18 @@ describe("direct assembler delivery", () => {
         await unmount(component);
     });
 
-    it("tells the rider to reduce the selection only for a quota failure", async () => {
-        seams.workerError =
-            "The browser ran out of storage while building this map. Reduce the map selection and try again.";
-        const quota = await mountReadyStep();
-        (quota.target.querySelector("button.primary") as HTMLButtonElement).click();
-        for (let attempt = 0; attempt < 40 && !quota.target.textContent?.includes("ran out of storage"); attempt++) {
-            await new Promise<void>((resolve) => setTimeout(resolve, 10));
-            await tick();
-        }
-        expect(quota.target.textContent).toContain("ran out of storage");
-        expect(quota.target.textContent).toContain("Reduce the map selection");
-        await unmount(quota.component);
-
+    it("reports an assembly failure and reopens Download map", async () => {
         seams.workerError = "the scratch handle was closed";
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-        const ordinary = await mountReadyStep();
-        (ordinary.target.querySelector("button.primary") as HTMLButtonElement).click();
-        for (let attempt = 0; attempt < 40 && !ordinary.target.textContent?.includes("scratch handle"); attempt++) {
+        const { component, target } = await mountReadyStep();
+        (target.querySelector("button.primary") as HTMLButtonElement).click();
+        for (let attempt = 0; attempt < 40 && !target.textContent?.includes("Nothing was saved"); attempt++) {
             await new Promise<void>((resolve) => setTimeout(resolve, 10));
             await tick();
         }
-        expect(ordinary.target.textContent).toContain("the scratch handle was closed");
-        expect(ordinary.target.textContent).not.toContain("ran out of storage");
-        expect(ordinary.target.textContent).not.toContain("Reduce the map selection");
-        await unmount(ordinary.component);
+        expect(target.textContent).toContain("Nothing was saved: the scratch handle was closed");
+        expect(seams.saveBlob).not.toHaveBeenCalled();
+        await waitForReady(target);
+        await unmount(component);
     });
 
     it("keeps the ordinary download path and does not delete its source early", async () => {
@@ -1064,11 +985,12 @@ describe("direct assembler delivery", () => {
         const { component, target } = await mountReadyStep();
 
         (target.querySelector("button.primary") as HTMLButtonElement).click();
-        for (let attempt = 0; attempt < 20 && !target.textContent?.includes("Map ready"); attempt++) {
+        for (let attempt = 0; attempt < 20 && !target.textContent?.includes("Downloaded OBC map.obcm"); attempt++) {
             await Promise.resolve();
             await tick();
         }
 
+        expect(target.textContent).toContain("Downloaded OBC map.obcm");
         expect(seams.saveBlob).toHaveBeenCalledOnce();
         const [blob, name] = seams.saveBlob.mock.calls[0] as [Blob, string];
         expect(blob.size).toBe(4);

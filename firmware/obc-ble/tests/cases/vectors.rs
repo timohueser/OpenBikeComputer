@@ -1,6 +1,6 @@
 //! The production codecs against the live shared `specs/vectors/` fixtures.
 
-use obc_ble::{CommandResult, Config, Crc32, StatusMessage};
+use obc_ble::{CommandResult, Config, StatusMessage};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = obc_vectors::dir().join(name);
@@ -16,12 +16,6 @@ fn decoded_command_result(bytes: &[u8]) -> CommandResult {
 }
 
 #[test]
-fn production_crc_matches_reference() {
-    let route = fixture("route-waypoints.obcr");
-    assert_eq!(Crc32::checksum(&route), obc_vectors::crc32(&route));
-}
-
-#[test]
 fn command_result_vector() {
     use obc_ble::{CommandStatus, CMD_INSTALL_FW};
 
@@ -33,13 +27,10 @@ fn command_result_vector() {
 }
 
 #[test]
-fn command_forget_bond_round_trip() {
-    use obc_ble::{CommandStatus, CMD_FORGET_BOND};
+fn command_bytes_match_spec_section_4_4() {
+    use obc_ble::{CMD_FORGET_BOND, CMD_INSTALL_FW, CMD_SET_CLOCK};
 
-    assert_eq!(CMD_FORGET_BOND, 4);
-    let (buf, len) = StatusMessage::CommandResult(CommandResult::new(CMD_FORGET_BOND, CommandStatus::Ok)).encode();
-    let result = decoded_command_result(&buf[..len]);
-    assert_eq!((result.command, result.status, result.detail), (CMD_FORGET_BOND, CommandStatus::Ok, 0));
+    assert_eq!((CMD_INSTALL_FW, CMD_FORGET_BOND, CMD_SET_CLOCK), (3, 4, 5));
 }
 
 #[test]

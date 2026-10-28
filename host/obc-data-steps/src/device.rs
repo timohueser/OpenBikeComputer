@@ -876,7 +876,14 @@ pub(crate) mod tests {
             store.insert(&file, &sha256).unwrap();
             let (url, size) = (format!("https://example.org/{name}"), bytes.len() as u64);
             if snapshot.file(&url).is_none() {
-                snapshot.files.push(FileRecord { name: name.clone(), url, size, sha256, retrieved: String::new() });
+                snapshot.files.push(FileRecord {
+                    name: name.clone(),
+                    url,
+                    size,
+                    sha256,
+                    retrieved: String::new(),
+                    archive: None,
+                });
             }
         }
         store.put_snapshot(&snapshot).unwrap();

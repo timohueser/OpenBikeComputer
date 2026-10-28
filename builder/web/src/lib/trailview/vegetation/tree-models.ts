@@ -19,7 +19,7 @@ interface Entry { index: number; own: (number | undefined)[] }
 
 /**
  * The tree models (model-worker.ts), one build per species for the forest, the shrubs and the
- * orchards. A tree draws the summer crown, which its phase on the date (phenology.ts) colours, or a
+ * plantings. A tree draws the summer crown, which its phase on the date (phenology.ts) colours, or a
  * crown of the phase's own, such as a bare one, once the workers have built it for a phase that the
  * date has; until then the summer crown in the phase's colours. A free worker takes the next build:
  * summer crowns before crowns of their own, each with the models about the eye first. Built models
@@ -152,7 +152,7 @@ export class TreeModels {
             const [model, evergreen, tie] = key.split('|'), leafy = this.leafy.get(`${model}|${evergreen}`);
             if (!leafy) continue;
             const spec = (crown: BuiltModel): ModelSpec => ({
-                tiers: crown.tiers.map((mesh, t) => ({ mesh, until: TIERS_M[t] })), impostor: { from: 2, until: TREE_REACH_M }, crown: crown.crown, tie: Number(tie), sized: TREE_SIZE_M,
+                tiers: crown.tiers.map((mesh, t) => ({ mesh, until: TIERS_M[t] })), impostor: { from: 2, until: TREE_REACH_M }, crown: crown.crown, tie: Number(tie), sized: TREE_SIZE_M, luma: crown.luma,
             });
             const own = SEASONS.map((_, phase) => {
                 if (!this.phases.has(phase) || !leafy.own[phase]) return undefined;

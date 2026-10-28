@@ -1,0 +1,6 @@
+name = "TrailView tyrrhenian: Brusje"
+kind = "box"
+# west, south, east, north
+box = [16.23, 42.99, 16.77, 43.38]
+countries = ["HR"]
+time_zone = "Europe/Zagreb"

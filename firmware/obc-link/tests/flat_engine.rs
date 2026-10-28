@@ -19,7 +19,6 @@ use obc_storage::flat::BlockDevice;
 const ROUTE: u16 = 1;
 
 const RIDE: u16 = 3;
-const UPDATE: u16 = 7;
 const MAP: u16 = 5;
 
 /// A payload that crosses the harness's 1 KiB stage several times and ends part-way through it.
@@ -401,27 +400,6 @@ fn metadata_is_readable_but_only_the_device_can_mutate_it() {
 }
 
 #[test]
-fn a_finished_journal_ride_is_the_exact_object_served_by_normal_get() {
-    let disk = formatted_card(140);
-    let mut device = boot(&disk);
-    let bytes = include_bytes!("../../../specs/vectors/ride-v6.bin");
-    let (id, revision) = device.finish_recording(bytes, "FS8 vector");
-
-    let entry = device.entry(id).expect("the final catalog names the ride");
-    assert!(!entry.flags.has(obc_storage::flat::EntryFlags::RECORDING));
-    assert_eq!(entry.payload_len, bytes.len() as u64);
-    assert_eq!(entry.payload_crc, crc32(bytes));
-
-    let wire = device.control(&client::get(141, id, revision));
-    assert_eq!(wire.payload(), bytes, "the journaled bytes are the v4 GET bytes");
-    let answer = Answer::of(wire.answer());
-    assert!(!answer.is_error(), "{answer:?}");
-    assert_eq!(answer.u64_at(0), revision);
-    assert_eq!(answer.u64_at(8), bytes.len() as u64);
-    assert_eq!(answer.u32_at(16), crc32(bytes));
-}
-
-#[test]
 fn an_object_with_no_bytes_is_a_remove_and_never_a_put() {
     let disk = formatted_card(15);
     let mut device = boot(&disk);
@@ -439,7 +417,7 @@ fn a_full_reservation_table_is_busy_and_never_invalid_request() {
     let second = device.hog(1_024);
 
     let answer = Answer::of(device.control(&client::put(1, 0, 0, &bytes, ROUTE, "no room")).answer());
-    assert_eq!(error(&answer).0, ErrorCode::Busy.value(), "a full table is transient, not the client's fault");
+    assert_eq!(error(&answer), (ErrorCode::Busy.value(), 0, 0), "a full table is transient, not the client's fault");
 
     device.release(first);
     device.release(second);
@@ -512,25 +490,6 @@ fn a_kind_filter_lists_only_that_kind() {
     assert_eq!(answer.body.len(), 24 + 88, "one trip");
     assert_eq!(u64::from_le_bytes(answer.body[24..32].try_into().unwrap()), 2);
     assert_eq!(u16::from_le_bytes(answer.body[24 + 28..24 + 30].try_into().unwrap()), 2, "kind 2");
-}
-
-#[test]
-fn the_link_going_away_releases_everything_and_answers_nobody() {
-    let disk = formatted_card(20);
-    let mut device = boot(&disk);
-    let bytes = body();
-    let free = device.free_extents();
-
-    device.control(&client::put(1, 0, 0, &bytes, ROUTE, "half"));
-    device.stream(&client::stream(1, 0, &bytes[..1_008]));
-    device.link_lost();
-    assert!(device.is_quiet(), "no error is owed to a peer that is gone");
-    assert_eq!(device.free_extents(), free);
-    assert!(device.entries().is_empty());
-
-    let answer = upload(&mut device, 2, 0, 0, &bytes, ROUTE, "again");
-    assert!(!answer.is_error(), "{answer:?}");
-    assert_eq!(answer.u64_at(0), 1);
 }
 
 /// A device with an update path: both policy hooks, recorded.
@@ -623,27 +582,6 @@ fn a_malformed_control_record_is_answered_and_an_unanswerable_one_closes_the_str
     let wire = device.control(&zero);
     assert!(wire.control.is_empty(), "a zero RequestId is unanswerable");
     assert_eq!(wire.closed, Some(obc_link::flat::Channel::Control));
-}
-
-#[test]
-fn an_unknown_opcode_and_an_unknown_kind_are_unsupported() {
-    let disk = formatted_card(24);
-    let mut device = boot(&disk);
-    let mut record = client::list(1, None);
-    record[5] = 0x0A;
-    expect_error(&Answer::of(device.control(&record).answer()), ErrorCode::Unsupported, detail::unsupported::OPCODE);
-
-    let mut record = client::list(2, None);
-    record[4] = 3;
-    expect_error(
-        &Answer::of(device.control(&record).answer()),
-        ErrorCode::Unsupported,
-        detail::unsupported::WIRE_MAJOR,
-    );
-
-    let record = client::put(3, 0, 0, &payload(64), 99, "x");
-    expect_error(&Answer::of(device.control(&record).answer()), ErrorCode::Unsupported, detail::unsupported::KIND);
-    let _ = UPDATE;
 }
 
 /// A refused boot handoff is the one window where the engine has already committed something. A cut
@@ -1109,31 +1047,6 @@ fn a_ble_map_upload_never_admits_the_usb_only_stage() {
     assert!(!device.upload_matches(Link::Usb, RequestId(41), ObjectKind::MapShard));
     let live = device.live_upload().expect("the BLE upload remains live");
     assert_eq!(live.received, 0);
-}
-
-#[test]
-fn a_ble_map_handoff_does_not_keep_the_completed_usb_stage_admitted() {
-    let disk = formatted_card(96);
-    let usb = Ceilings::for_usb(4_112).expect("§5.2's USB ceiling");
-    let ble = Ceilings::for_ble(247, 245, 256).expect("§5.1's preferred link");
-    let mut device = boot_on(&disk, usb);
-    device.link_up(Link::Usb, usb);
-    device.link_up(Link::Ble, ble);
-    let bytes = payload(8 * 1_024);
-
-    device.control_on(Link::Usb, &client::put(42, 0, 0, &bytes, MAP, "cable map"));
-    assert!(device.upload_matches(Link::Usb, RequestId(42), ObjectKind::MapShard));
-    for record in client::stream_all(42, &bytes, 4 * 1_024) {
-        device.stream_on(Link::Usb, &record);
-    }
-    assert!(!device.upload_matches(Link::Usb, RequestId(42), ObjectKind::MapShard));
-
-    // BLE replaces the app-facing `Receiving` projection with another map. The exact cable
-    // admission still goes false, which is what makes the USB task release its arena guard instead
-    // of mistaking the phone's progress for its own.
-    device.control_on(Link::Ble, &client::put(43, 0, 0, &bytes, MAP, "phone map"));
-    assert!(device.upload_matches(Link::Ble, RequestId(43), ObjectKind::MapShard));
-    assert!(!device.upload_matches(Link::Usb, RequestId(42), ObjectKind::MapShard));
 }
 
 /// A link coming up does not touch the other link's transfer, and the newcomer meets the

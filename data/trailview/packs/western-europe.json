@@ -38,7 +38,7 @@
   "fern": {},
   "bilberry": { "on": ["tree", "shrub"] },
   "bracken": { "on": ["shrub"] },
-  "heather": { "on": ["shrub", "moss"] },
+  "heather": {},
   "moor-grass": { "on": ["wetland", "moss"] },
   "common-reed": { "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true }
  },
@@ -50,6 +50,6 @@
   "sheep": { "groups": 1, "size": [10, 60], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
   "horse": { "groups": 1, "size": [1, 6], "on": ["pasture", "grassland", "arable"] }
  },
- "orchard": "hawthorn",
+ "rows": { "orchard": "hawthorn" },
  "style": { "ch": "chalet", "*": "house" }
 }

@@ -1,0 +1,6 @@
+name = "TrailView celtic: Lakes And Dales"
+kind = "box"
+# west, south, east, north
+box = [-3.35, 54.12, -1.7, 54.72]
+countries = ["GB"]
+time_zone = "Europe/London"

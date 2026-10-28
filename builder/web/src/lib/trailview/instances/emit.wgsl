@@ -33,6 +33,8 @@ struct Model {
     // 4 to 7: how far a crown vertex lies below the line of that slope through the crown's base, at most.
     sink_low: vec4f,
     sink_high: vec4f,
+    // A tree's crown: the luma of its mean colour as it shows lit, linear; 0 for a model that keeps its own colours (draw.wgsl).
+    luma: f32,
 }
 
 // One instance of a draw: its base in render space and its height in metres; its turn and width as
@@ -225,7 +227,7 @@ fn sink_at(m: Model, k: u32) -> f32 {
 
 // As `emit`, with the crown's base raised to `lift` of the height, on ground of the rise `slope` per
 // metre, which sinks it (slope_sink), the share `snow` of snow on its upward faces, and the albedo of
-// the `ground` under it for a model with a tie (draw.wgsl). The instance switches to the next tier at
+// the `ground` under it, which a model with a tie and a forest tree take (draw.wgsl). The instance switches to the next tier at
 // the share `pick` (0 to 1, stable per instance) of a tier's last share `fade`, and past its last tier
 // ends there: a still view draws each instance whole, in one tier. A `species` with phases draws the model
 // of the tree's phase on the date, by its pick and its `elevation` in metres, which a producer keeps

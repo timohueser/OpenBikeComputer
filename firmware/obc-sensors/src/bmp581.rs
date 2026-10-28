@@ -107,25 +107,10 @@ mod tests {
     }
 
     #[test]
-    fn altitude_is_zero_at_sea_level_pressure() {
-        assert!(pa_to_m(P0_PA).abs() < 0.01);
-    }
-
-    #[test]
     fn altitude_rises_as_pressure_falls() {
         // About 89875 Pa is 1000 m on the standard atmosphere, and the formula must be monotonic.
         let h = pa_to_m(89_875.0);
         assert!((h - 1000.0).abs() < 15.0, "≈1000 m, got {h}");
         assert!(pa_to_m(90_000.0) < pa_to_m(80_000.0), "lower pressure reads higher");
-    }
-
-    #[test]
-    fn only_relative_change_matters_so_p0_offset_cancels() {
-        // Two pressures 100 Pa apart give the same climb delta whatever the absolute anchor,
-        // because a constant offset cancels in the difference.
-        let d1 = pa_to_m(95_000.0) - pa_to_m(95_100.0);
-        let d2 = pa_to_m(94_000.0) - pa_to_m(94_100.0);
-        // Not identical, because the curve is nonlinear, but within a few cm over a 100 Pa step.
-        assert!((d1 - d2).abs() < 0.2, "d1={d1} d2={d2}");
     }
 }

@@ -13,8 +13,8 @@ use obc_formats::obct::GRID_ORIGIN;
 
 /// Near a degree line a height reads the squares on both sides of it: the last posts of one square
 /// and the first of the next, and the square that owns the half post past them. A dome just north
-/// of 47° N has a summit, and a sea cliff runs east just south of it, so both read GLO-30 across
-/// the line.
+/// of 47° N has a summit whose flanks read GLO-30 across the line, and a coastline runs east just
+/// south of it.
 #[test]
 fn heights_across_a_degree_line_from_the_squares_of_their_band_equal_those_from_every_square() {
     let scratch = Scratch::new("planner-band");
@@ -31,10 +31,8 @@ fn heights_across_a_degree_line_from_the_squares_of_their_band_equal_those_from_
     let bounds = [8.0, 46.5, 8.001, 47.5];
     let files = tiles_in(scratch.path(), bounds);
     assert_eq!(files.len(), 2);
-    let east = |lat: f64, coast| Line { points: vec![[lat, 7.99], [lat, 8.02]], coast, height: None };
     let open = || {
-        let features =
-            (vec![east(46.9985, true), east(46.9988, false)], vec![Peak { at: [47.0006, 8.003], ele: 2000.0 }]);
+        let features = (vec![vec![[46.9985, 7.99], [46.9985, 8.02]]], vec![Peak { at: [47.0006, 8.003], ele: 2000.0 }]);
         Terrain::open(&files, "GLO-30", None, bounds).unwrap().shaped(features, "OSM")
     };
     let mut every = open();
@@ -82,11 +80,7 @@ fn the_shapes_change_the_feather_band_and_not_the_ground_that_the_archive_holds_
     dem.write(scratch.path(), &TileId { lat: 46, lon: 8 }.stem());
     let bounds = [8.3, 46.4, 8.6, 46.6];
     let files = tiles_in(scratch.path(), bounds);
-    let coast = |lon: i32| Line {
-        points: vec![[46.4, f64::from(lon) * 1e-6], [46.6, f64::from(lon) * 1e-6]],
-        coast: true,
-        height: None,
-    };
+    let coast = |lon: i32| vec![[46.4, f64::from(lon) * 1e-6], [46.6, f64::from(lon) * 1e-6]];
     let heights = |archive: Option<&std::path::Path>, lines: Vec<Line>| {
         let mut terrain = Terrain::open(&files, "GLO-30", archive, bounds).unwrap().shaped((lines, Vec::new()), "OSM");
         terrain.load(i32::MIN..=i32::MAX).unwrap();

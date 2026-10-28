@@ -108,37 +108,6 @@ fn populate<D: BlockDevice>(store: &FlatStore<D>, routes: usize, trips: usize) {
     }
 }
 
-fn fingerprint(hash: &mut u32, value: &impl core::fmt::Debug) {
-    for byte in std::format!("{value:?}").bytes() {
-        *hash = (*hash ^ u32::from(byte)).wrapping_mul(16_777_619);
-    }
-}
-
-#[test]
-fn captured_loaders_choose_newest_decode_and_compact_masks() {
-    let disk = SparseDisk::blank(250_000, 9);
-    let store = FlatStore::initialize(&disk, StoreId([0x47; 16])).unwrap();
-    populate(&store, 76, 20);
-    let routes = current_routes(&store).unwrap();
-    assert_eq!(routes.ids.len(), 63);
-    assert_eq!(routes.ids[0], 76);
-    assert_eq!(routes.ids[1], 74);
-    assert_eq!(routes.ids[62], 13);
-    assert_eq!(routes.candidates & 7, 2);
-    assert_eq!(routes.temporary & 7, 0);
-    assert_eq!(routes.internal & 7, 7);
-    let trips = current_trips(&store).unwrap();
-    assert_eq!(trips.ids.len(), 15);
-    assert_eq!(trips.metas[0].key, 20);
-    assert_eq!(trips.metas[14].key, 5);
-    assert!(trips.metas.iter().all(|meta| meta.truncated && meta.day_routes.len() == 32));
-    assert_eq!(trips.metas[0].day_routes[0], 0x1_0000_0000);
-    let mut hash = 2_166_136_261;
-    fingerprint(&mut hash, &routes);
-    fingerprint(&mut hash, &trips);
-    assert_eq!(hash, 0xf859_b084);
-}
-
 /// A refused card read anywhere in either scan fails that scan with a media error or leaves its
 /// result whole, and every handle the scan opened is closed again.
 #[test]
@@ -170,5 +139,44 @@ fn loaders_survive_every_media_read_refusal_without_leaking_a_handle() {
         for handle in handles {
             store.close(handle);
         }
+    }
+}
+
+/// Each loader keeps the newest heads its staging holds, omits the one it cannot decode, and reports
+/// each route's flags at the index the route was returned at.
+#[test]
+fn loaders_keep_the_newest_decodable_heads_and_their_flags() {
+    let disk = SparseDisk::blank(250_000, 9);
+    let store = FlatStore::initialize(&disk, StoreId([0x47; 16])).unwrap();
+    populate(&store, 76, 20);
+
+    // 64 staging slots hold routes 13..=76, and route 75 does not decode.
+    let routes = current_routes(&store).unwrap();
+    let ids: Vec<u64> = (13..=76).rev().filter(|id| *id != 75).collect();
+    assert_eq!(routes.ids, ids);
+    let plain = RouteSummary::read(&obc_formats::io::SliceSource(include_bytes!(
+        "../../../../../specs/vectors/route-plain.obcr"
+    )))
+    .unwrap();
+    assert!(routes.summaries.len() == ids.len() && routes.summaries.iter().all(|summary| *summary == plain));
+    // `populate` gives route `id` the flags of `(id - 1) % 4`: an accepted candidate, an unaccepted
+    // candidate, a temporary route, a built day. Every one of them is internal.
+    let mask = |want: u64| -> u64 {
+        ids.iter().enumerate().filter(|(_, id)| (*id - 1) % 4 == want).map(|(index, _)| 1 << index).sum()
+    };
+    assert_eq!(routes.candidates, mask(1), "only an unaccepted candidate is offered");
+    assert_eq!(routes.temporary, mask(2));
+    assert_eq!(routes.internal, (1 << ids.len()) - 1);
+
+    // 16 staging slots hold trip keys 5..=20, and key 19 does not decode. Trip `key` is object
+    // `76 + key`, after the routes.
+    let trips = current_trips(&store).unwrap();
+    let keys: Vec<u64> = (5..=20).rev().filter(|key| *key != 19).collect();
+    assert_eq!(trips.metas.iter().map(|meta| meta.key).collect::<Vec<_>>(), keys);
+    assert_eq!(trips.ids, keys.iter().map(|key| 76 + key).collect::<Vec<_>>());
+    let days: Vec<u64> = (0..32).map(|day| 0x1_0000_0000 + day).collect();
+    for meta in &trips.metas {
+        assert_eq!((meta.name.as_str(), u64::from(meta.start_date)), ("Trip", meta.key - 1), "trip {}", meta.key);
+        assert!(meta.truncated && meta.day_routes[..] == days[..], "trip {} lost its day routes", meta.key);
     }
 }

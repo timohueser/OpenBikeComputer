@@ -24,15 +24,15 @@ struct Forest {
     // Trees stand within `reach` metres; past `thin` metres they thin.
     reach: f32,
     thin: f32,
-    // The material code of orchards, whose trees the orchards stand (orchards.ts).
-    orchard: u32,
-    // The share of the canopy's trees that stand.
-    density: f32,
+    // The materials planted in rows, which stand their own trees (rows.wgsl), as bits of their codes.
+    planted: vec2u,
     // Trees per square metre of each stems class (specs/trailview-tiles.md#canopy).
     stems: array<vec4f, 2>,
     // Per level of a cell the first entry of its part of the cell list, and the entries of the list.
     parts: vec4u,
     entries: u32,
+    // The share of the canopy's trees that stand.
+    density: f32,
 }
 
 // What the forest reads, in one buffer: the canopy's window, the points of a base cell, the species.
@@ -288,7 +288,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
         return;
     }
     // The region from the finest resident ground page, of REGION_LEVEL or finer; no data (255) or no
-    // page: no species. The orchards stand their own trees on their cells of the finest pages.
+    // page: no species. The plantings stand their own trees on their cells of the finest pages.
     let held = held_at(s, look.codes.x);
     if (held.page < 0 || held.level < REGION_LEVEL) {
         return;
@@ -296,7 +296,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
     let found = textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0);
     let region = found.b;
-    if (region >= data.choices[0] || (found.r == forest.orchard && held.level == look.codes.x)) {
+    if (region >= data.choices[0] || (holds(forest.planted, found.r) && held.level == look.codes.x)) {
         return;
     }
     // The drawn ground costs the most of a tree: it comes last, for the trees that stand.
@@ -334,7 +334,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
         return;
     }
     let yaw = 6.2831853 * unit_float(mix_bits(h + 17u));
-    // The snow and the satellite's colour (draw.wgsl) of the finest resident page of the drawn level: the
+    // The snow and the woodland's colour (draw.wgsl) of the finest resident page of the drawn level: the
     // page found above where none finer than it is resident.
     let level = u32(ceil(lod(s)));
     var drawn = held;
@@ -343,7 +343,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     }
     let snow = snow_held(drawn);
     emit_tree(model, s, stood.x - SINK_M, height, yaw, width, 0.88 + 0.24 * unit_float(mix_bits(h + 19u)), appear, lift, stood.y,
-        unit_float(mix_bits(h + 31u)), snow, albedo_held(drawn), band);
+        unit_float(mix_bits(h + 31u)), snow, woodland_held(drawn), band);
 }
 
 // The entries of a level's part of the cell list.

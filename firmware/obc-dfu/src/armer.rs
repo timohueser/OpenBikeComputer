@@ -35,16 +35,12 @@ pub enum ScanError {
     BadSignature,
     /// `image_len` exceeds [`MAX_IMAGE_LEN`], so the image can never be flashed.
     Oversize,
-    /// The object resolves to more than [`MAX_EXTENTS`] block runs. The fix is to upload it again,
-    /// which takes a fresh allocation.
-    TooFragmented { extents: u32 },
     /// A card read or the extent resolve failed; possibly transient.
     Io,
 }
 
 impl ScanError {
-    /// A short user-facing phrase. `TooFragmented` drops the count; callers that can format it
-    /// append it.
+    /// A short user-facing phrase.
     pub fn describe(&self) -> &'static str {
         match self {
             ScanError::Missing => "no update package is staged on this device",
@@ -54,19 +50,9 @@ impl ScanError {
             ScanError::Unsigned => "the update package is not signed — this device only installs signed updates",
             ScanError::BadSignature => "the update package's signature is not valid for this device",
             ScanError::Oversize => "update image is too large for this device",
-            ScanError::TooFragmented { .. } => "the update package is too fragmented — upload it again",
             ScanError::Io => "card read failed — try again",
         }
     }
-}
-
-/// Why a [`StageIo::stage_extents`] resolve failed; [`scan`] folds it into a [`ScanError`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExtentsError {
-    /// The object holds more runs than the caller's table.
-    TooFragmented { extents: u32 },
-    /// A raw block read failed, or the extents could not be described safely.
-    Io,
 }
 
 pub trait StageIo {
@@ -77,8 +63,9 @@ pub trait StageIo {
     fn read_stage(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), IoError>;
 
     /// Resolves the whole object, header included, to absolute 512-byte block runs in payload
-    /// order. Returns the run count.
-    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, ExtentsError>;
+    /// order. Returns the run count. Fails when a block read fails or the runs cannot be described
+    /// safely.
+    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, IoError>;
 }
 
 /// Reads the staged package, decodes its header, gates the size and the signature scheme, CRCs and
@@ -135,13 +122,12 @@ pub fn scan(io: &mut impl StageIo, chunk: &mut [u8], key: &PublicKey) -> Result<
     verifier.finish().map_err(|_| ScanError::BadSignature)?;
 
     let mut extents = [Extent::default(); MAX_EXTENTS];
-    let count = match io.stage_extents(&mut extents) {
-        Ok(n) => n,
-        Err(ExtentsError::TooFragmented { extents }) => return Err(ScanError::TooFragmented { extents }),
-        Err(ExtentsError::Io) => return Err(ScanError::Io),
-    };
-    StagedRef::new(header, header.image_len, header.image_crc32, &extents[..count])
-        .ok_or(ScanError::TooFragmented { extents: count as u32 })
+    let count = io.stage_extents(&mut extents).map_err(|_| ScanError::Io)?;
+    // A count past the table is a resolver bug; refuse it rather than slice past the end.
+    extents
+        .get(..count)
+        .and_then(|extents| StagedRef::new(header, header.image_len, header.image_crc32, extents))
+        .ok_or(ScanError::Io)
 }
 
 /// What the arm recorded as its rollback, so the caller can warn on the paths without one.

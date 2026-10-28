@@ -111,9 +111,11 @@ export function refusalError(refusal: Refusal, opcode: number): DeviceError {
         case ErrorCode.Busy:
             return new DeviceError(
                 "busy",
-                refusal.detail === Detail.busy.holds
-                    ? "The device is holding too many objects open. Try again in a moment."
-                    : "The device is already busy with another transfer.",
+                refusal.detail === Detail.busy.transfer
+                    ? "The device is already busy with another transfer."
+                    : refusal.detail === Detail.busy.holds
+                      ? "The device is holding too many objects open. Try again in a moment."
+                      : "The device is using that right now. Try again in a moment.",
                 { refusal },
             );
         case ErrorCode.Cancelled:

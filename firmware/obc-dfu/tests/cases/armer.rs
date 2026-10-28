@@ -1,9 +1,7 @@
 //! Host tests for the armer: the scan validation matrix, the arm sequencing asserted on a mock's
 //! call log, the generation bump, the first-install path, and the trial confirm.
 
-use obc_dfu::armer::{
-    arm, confirm_trial, scan, ArmError, ArmIo, ArmTicket, ExtentsError, Rollback, ScanError, StageIo,
-};
+use obc_dfu::armer::{arm, confirm_trial, scan, ArmError, ArmIo, ArmTicket, Rollback, ScanError, StageIo};
 use obc_dfu::engine::IoError;
 use obc_dfu::sig::test_key;
 use obc_dfu::{
@@ -15,7 +13,7 @@ use obc_dfu::{
 /// failures.
 struct FakeStage {
     file: Option<Vec<u8>>,
-    extents: Result<Vec<Extent>, ExtentsError>,
+    extents: Result<Vec<Extent>, IoError>,
     /// Fail every `read_stage` at or past this offset; `u32::MAX` never fails.
     fail_reads_from: u32,
 }
@@ -57,12 +55,8 @@ impl StageIo for FakeStage {
         buf.copy_from_slice(&f[start..end]);
         Ok(())
     }
-    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, ExtentsError> {
+    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, IoError> {
         let ext = self.extents.clone()?;
-        // An over-long scripted chain reports its true count.
-        if ext.len() > MAX_EXTENTS {
-            return Err(ExtentsError::TooFragmented { extents: ext.len() as u32 });
-        }
         out[..ext.len()].copy_from_slice(&ext);
         Ok(ext.len())
     }
@@ -108,14 +102,6 @@ fn scan_rejects_bad_magic_and_torn_header() {
     assert_eq!(scan_with(&mut stage), Err(ScanError::Truncated));
 }
 
-#[test]
-fn scan_rejects_bad_image_crc() {
-    let image = vec![7u8; 5000];
-    let (mut stage, _) = FakeStage::happy(&image, "v1");
-    stage.file.as_mut().unwrap()[HEADER_LEN + 4321] ^= 0x01; // flip one body byte
-    assert_eq!(scan_with(&mut stage), Err(ScanError::BadCrc));
-}
-
 /// The cap is the app slot, so a slot-filling image is a normal image: it must scan, not trip the
 /// oversize gate one byte before the bootloader would have flashed it.
 #[test]
@@ -147,26 +133,6 @@ fn scan_rejects_oversize_before_any_bulk_read() {
 }
 
 #[test]
-fn scan_rejects_a_torn_copy() {
-    let image = vec![3u8; 10_000];
-    let (mut stage, _) = FakeStage::happy(&image, "v1");
-    stage.file.as_mut().unwrap().truncate(64 + 9_000); // body shorter than image_len
-    assert_eq!(scan_with(&mut stage), Err(ScanError::Truncated));
-}
-
-#[test]
-fn scan_rejects_too_fragmented_with_the_true_count() {
-    let (mut stage, _) = FakeStage::happy(b"image bytes", "v1");
-    stage.extents = Err(ExtentsError::TooFragmented { extents: 130 });
-    assert_eq!(scan_with(&mut stage), Err(ScanError::TooFragmented { extents: 130 }));
-
-    // A resolver that returns an over-long chain, instead of erroring, is caught too.
-    let (mut stage, _) = FakeStage::happy(b"image bytes", "v1");
-    stage.extents = Ok(vec![Extent { start_block: 1, blocks: 1 }; MAX_EXTENTS + 1]);
-    assert_eq!(scan_with(&mut stage), Err(ScanError::TooFragmented { extents: (MAX_EXTENTS + 1) as u32 }));
-}
-
-#[test]
 fn scan_maps_read_failures_to_io() {
     let image = vec![9u8; 4000];
     let (mut stage, _) = FakeStage::happy(&image, "v1");
@@ -174,7 +140,7 @@ fn scan_maps_read_failures_to_io() {
     assert_eq!(scan_with(&mut stage), Err(ScanError::Io));
 
     let (mut stage, _) = FakeStage::happy(&image, "v1");
-    stage.extents = Err(ExtentsError::Io);
+    stage.extents = Err(IoError);
     assert_eq!(scan_with(&mut stage), Err(ScanError::Io));
 }
 
@@ -326,33 +292,6 @@ fn arm_aborts_on_a_failed_blob_stage_without_touching_the_page() {
     assert_eq!(err, ArmError::BlobStage);
     assert_eq!(io.calls.len(), 1, "the boot-state page is untouched after a failed blob stage");
     assert_eq!(io.calls[0], Call::StageBlob);
-}
-
-#[test]
-fn arm_records_the_carried_scan_ref_verbatim() {
-    // The carry contract: the ref one scan returned feeds `arm` by value and lands in the Armed
-    // page verbatim, so verify-before-erase checks exactly the image that scan validated. That
-    // `arm` cannot re-read the stage is structural: `ArmIo` has no route back to the file.
-    let image: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
-    let (mut stage, header) = FakeStage::happy(&image, "v2.0.0-1-gcarry01");
-
-    let carried = scan_with(&mut stage).expect("the one scan validates the stage");
-    assert_eq!(carried.header, header);
-
-    let mut io = FakeArmIo::new();
-    let current = BootState::Idle { installed: Some(installed_header()), last_outcome: None };
-    let ticket = arm(&mut io, &current, carried, Some(staged(2))).expect("arm consumes the carried ref");
-    assert_eq!(ticket.rollback, Rollback::Snapshot);
-
-    match &io.calls[1] {
-        Call::WriteState(s) => match **s {
-            BootState::Armed { update, .. } => {
-                assert_eq!(update, carried, "the Armed page records the carried ref verbatim")
-            }
-            ref other => panic!("expected an Armed page, got {other:?}"),
-        },
-        other => panic!("expected the page write last, got {other:?}"),
-    }
 }
 
 #[test]

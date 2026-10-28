@@ -7,7 +7,7 @@
   "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
   "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 4 }
  },
- "ground": {"heather": { "on": ["#moor"] }, "heather-bloom": { "on": ["#moor"] }, "moor-grass": { "on": ["#moor"] }, "bracken": { "off": ["#moor"] }, "bog-cotton": { "on": ["#moor"] }, "grass": { "off": ["#moor"] }},
+ "ground": {"heather": {}, "heather-bloom": {}, "moor-grass": { "on": ["#moor"] }, "bracken": { "off": ["#moor"] }, "bog-cotton": { "on": ["#moor"] }, "grass": { "off": ["#moor"] }},
  "herds": {
   "sheep": { "groups": 6, "size": [2, 8], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath", "bog"] },
   "highland-cow": { "groups": 2, "size": [2, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }

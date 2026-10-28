@@ -103,6 +103,12 @@ describe("the version dialect", () => {
         expect(compareVersions("abc1234", "1.4.0")).toBeNull();
     });
 
+    it("rejects an empty pre-release identifier", () => {
+        for (const text of ["1.0.0-", "1.0.0-.a", "1.0.0-a.", "1.0.0-a..b"]) {
+            expect(parseVersion(text), text).toBeNull();
+        }
+    });
+
     it("orders releases and their pre-releases", () => {
         expect(compareVersions("1.3.0", "1.4.0")).toBeLessThan(0);
         expect(compareVersions("1.4.1", "1.4.0")).toBeGreaterThan(0);

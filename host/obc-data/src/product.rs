@@ -10,7 +10,7 @@ use crate::engine::{snapshot_files, LayerFile, Step};
 use crate::regions::Regions;
 use crate::release::{Output, Release};
 use crate::settings::Settings;
-use crate::sources::compare_versions;
+use crate::sources::{compare_versions, FetchKind};
 use crate::store::{sorted, Store};
 
 pub trait Product: Sync {
@@ -111,12 +111,13 @@ impl BlockedLayer {
 }
 
 /// A layer that bakes without a source that it reads where the source has a version, such as a
-/// prepared source that no target lists yet. It does not prevent an update.
+/// prepared source that no target lists yet, or that reads an older version of a due source whose
+/// fetch failed. It does not prevent an update.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Note {
     pub layer: String,
-    /// What the layer bakes without, and the command that gives it.
+    /// What the layer bakes without and the command that gives it, or the version that it reads.
     pub text: String,
 }
 
@@ -155,8 +156,8 @@ pub struct Inputs {
     /// The versions that this update chose: the newer upstream version of a due fetch, and the
     /// version that a fetch of the newest version gave.
     pub resolved: Versions,
-    /// The fetches whose refresh policy is due and whose newer upstream version has no name, such
-    /// as a capture: a step list reads the newest version upstream.
+    /// The fetches whose refresh policy is due. One whose newer upstream version has no name in
+    /// `resolved`, such as a capture, reads the newest version upstream.
     pub due: BTreeSet<RequestKey>,
     /// Sources with a `manual` policy: a fetch of one of them keeps one version for all requests.
     pub manual: BTreeSet<String>,
@@ -176,6 +177,24 @@ impl Inputs {
         Wanted { version, ..wanted.clone() }
     }
 
+    /// The version that a due fetch of `wanted` whose upstream did not serve reads instead: the newest version
+    /// that this machine knows, as when the fetch is not due. `None` when the fetch is not due, is of
+    /// a prepared source, whose stored version can have another format, or no version is known.
+    pub fn undue(&mut self, store: &Store, wanted: &Wanted) -> Result<Option<String>, String> {
+        let key = (wanted.source.clone(), sorted(&wanted.params));
+        let prepared =
+            crate::sources::all().iter().any(|s| s.id == wanted.source && s.fetch.kind == FetchKind::Prepared);
+        if prepared || !self.due.contains(&key) {
+            return Ok(None);
+        }
+        let known = known(self, store, &wanted.source, &wanted.params)?;
+        if known.is_some() {
+            self.due.remove(&key);
+            self.resolved.remove(&key);
+        }
+        Ok(known)
+    }
+
     /// Record the `version` that a fetch of `wanted` gave. The first of a `manual` source is the
     /// version of the source too.
     pub fn resolve(&mut self, wanted: &Wanted, version: String) {
@@ -189,7 +208,8 @@ impl Inputs {
 /// The version of the fetch of `source` with `params` that a step list reads:
 ///
 /// 1. For a due fetch, the version that this update took upstream; before that fetch,
-///    `Err(Wanted)` names a fetch of the newest version upstream.
+///    `Err(Wanted)` names a fetch of the newest version upstream. A due fetch that fails reads rule
+///    2 ([`Inputs::undue`]).
 /// 2. Otherwise the newest version that this machine knows ([`known`]).
 /// 3. Otherwise `Err(Wanted)`: the newest version upstream.
 ///
@@ -211,9 +231,9 @@ pub fn version(
 }
 
 /// The newest of the serving version of the fetch, its versions in the store and the `start` of
-/// its source, by the order of the source's versions. The serving version of a fetch without
-/// params, or of any fetch of a source with a `start`, is the newest serving version of the source:
-/// one version names all its requests, such as the GLO-30 tiles of every region. A `commit` or a
+/// its source, by the order of the source's versions. The serving version of any fetch of a source
+/// with a `start` is the newest serving version of the source: one version names all its requests,
+/// such as the GLO-30 tiles of every region. A fetch with params never serves one without. A `commit` or a
 /// `digest` has no order: its `start`, so that a change of `data/sources.toml` moves it; else the
 /// version that `obc data source refresh` took, when the target serves a version that it moved
 /// from or none; else the serving version; else the one version in the store, when there is one.
@@ -223,13 +243,13 @@ fn known(inputs: &Inputs, store: &Store, source: &str, params: &[(String, String
     let newest = |versions: &mut dyn Iterator<Item = String>| versions.max_by(|a, b| compare_versions(a, b));
     let serving = match inputs.serving.get(&(source.to_string(), sorted(params))) {
         Some(version) => Some(version.clone()),
-        None if params.is_empty() || start.is_some() => {
+        None if start.is_some() => {
             newest(&mut inputs.serving.iter().filter(|((id, _), _)| id == source).map(|(_, version)| version.clone()))
         }
         None => None,
     };
     let stored: Vec<String> = match params {
-        [] => store.snapshots(source)?.into_iter().map(|snapshot| snapshot.version).collect(),
+        [] => store.paramless_snapshots(source)?.into_iter().map(|snapshot| snapshot.version).collect(),
         params => store.requests(source, params)?.into_iter().map(|request| request.version).collect(),
     };
     if declared.is_some_and(|source| !source.version.ordered()) {

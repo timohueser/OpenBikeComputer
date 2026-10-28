@@ -189,14 +189,8 @@ pub struct NavPvt {
     pub lon: i32,
     /// Latitude, 1e-7 degrees.
     pub lat: i32,
-    /// Height above ellipsoid, mm.
-    pub height_mm: i32,
-    /// Height above mean sea level, mm.
-    pub hmsl_mm: i32,
     /// Horizontal accuracy estimate, mm.
     pub hacc_mm: u32,
-    /// Vertical accuracy estimate, mm.
-    pub vacc_mm: u32,
     /// Ground speed (2D), mm/s.
     pub gspeed_mms: i32,
     /// Heading of motion (2D), 1e-5 degrees.
@@ -226,18 +220,11 @@ impl NavPvt {
         })
     }
 
-    /// Whether this is a usable position fix: `fixType >= 3 && gnssFixOK`. A lenient bring-up
-    /// gate; tighten with [`passes_quality`](NavPvt::passes_quality) once locks are reliable.
+    /// Whether this is a usable position fix: `fixType` 3 (3D) or 4 (GNSS + dead reckoning), and
+    /// `gnssFixOK`. Time-only (5) is not a position. It does not gate on the accuracy estimates.
     #[inline]
     pub fn is_valid_fix(&self) -> bool {
-        self.fix_type >= 3 && self.gnss_fix_ok()
-    }
-
-    /// Optional accuracy gate on top of [`is_valid_fix`](NavPvt::is_valid_fix): horizontal
-    /// accuracy and pDOP, each `None` to skip.
-    #[inline]
-    pub fn passes_quality(&self, max_hacc_mm: Option<u32>, max_pdop: Option<u16>) -> bool {
-        max_hacc_mm.is_none_or(|m| self.hacc_mm <= m) && max_pdop.is_none_or(|m| self.pdop <= m)
+        matches!(self.fix_type, 3 | 4) && self.gnss_fix_ok()
     }
 
     /// Convert to the app's [`Fix`] only for a valid fix, so a cold start never teleports the
@@ -292,10 +279,7 @@ pub fn parse_nav_pvt(p: &[u8]) -> Option<NavPvt> {
         num_sv: p[23],
         lon: le_i32(p, 24),
         lat: le_i32(p, 28),
-        height_mm: le_i32(p, 32),
-        hmsl_mm: le_i32(p, 36),
         hacc_mm: le_u32(p, 40),
-        vacc_mm: le_u32(p, 44),
         gspeed_mms: le_i32(p, 60),
         head_mot: le_i32(p, 64),
         pdop: le_u16(p, 76),
@@ -437,11 +421,12 @@ mod tests {
     }
 
     #[test]
-    fn rounds_microdegrees_to_nearest() {
-        // lat = 15 in 1e-7° → 1.5 in 1e-6°, rounds away from zero to 2; negatives symmetric.
-        assert_eq!(div_round_i32(15, 10), 2);
-        assert_eq!(div_round_i32(-15, 10), -2);
-        assert_eq!(div_round_i32(14, 10), 1);
+    fn microdegrees_round_to_nearest_with_ties_away_from_zero() {
+        // 1e-7° → 1e-6°: 1.5 → 2, -1.5 → -2, 1.4 → 1.
+        let fix = parse_nav_pvt(&nav_pvt_payload(3, 0x01, 15, -15, 0, 0)).unwrap().to_fix().unwrap();
+        assert_eq!((fix.lat, fix.lon), (2, -2));
+        let fix = parse_nav_pvt(&nav_pvt_payload(3, 0x01, 14, 0, 0, 0)).unwrap().to_fix().unwrap();
+        assert_eq!(fix.lat, 1);
     }
 
     #[test]
@@ -452,6 +437,10 @@ mod tests {
         // 3D but gnssFixOK clear (receiver says don't trust it) → also None.
         let p = nav_pvt_payload(3, 0x00, 1, 2, 0, 0);
         assert_eq!(parse_nav_pvt(&p).unwrap().to_fix(), None);
+        // Time-only (5) carries no position, even with gnssFixOK set; 3D and GNSS + dead
+        // reckoning (4) do.
+        assert!(!parse_nav_pvt(&nav_pvt_payload(5, 0x01, 1, 2, 0, 0)).unwrap().is_valid_fix());
+        assert!(parse_nav_pvt(&nav_pvt_payload(4, 0x01, 1, 2, 0, 0)).unwrap().is_valid_fix());
     }
 
     #[test]
@@ -488,15 +477,6 @@ mod tests {
 
         p[10] = 60; // a leap second is clamped so the epoch back-date never under-runs a minute
         assert_eq!(parse_nav_pvt(&p).unwrap().utc_time().unwrap().second, 59, "leap second clamped to 59");
-    }
-
-    #[test]
-    fn quality_gate_is_opt_in() {
-        let pvt = parse_nav_pvt(&nav_pvt_payload(3, 0x01, 1, 2, 0, 0)).unwrap();
-        assert!(pvt.passes_quality(None, None), "no thresholds → always passes");
-        assert!(pvt.passes_quality(Some(5000), Some(200)), "hAcc 3.2m ≤ 5m, pDOP 1.30 ≤ 2.0");
-        assert!(!pvt.passes_quality(Some(1000), None), "hAcc 3.2m > 1m rejects");
-        assert!(!pvt.passes_quality(None, Some(100)), "pDOP 1.30 > 1.0 rejects");
     }
 
     #[test]

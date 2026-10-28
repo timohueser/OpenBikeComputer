@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import type { GroundRule, Region, Vocabulary } from '../rules/regions';
-import { CLUMPED, groundList, groundRules, materialWord, SLOTS } from './plants';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Instances, ModelSpec } from '../instances/instances';
+import type { GroundRule, Region, Rules, TreeRule, Vocabulary } from '../rules/regions';
+import { CLUMPED, groundList, groundRules, materialWord, Plants, SEEDS, SLOTS } from './plants';
+import type { TreeModels } from './tree-models';
 
 const region = (ground: GroundRule[]) => ({ ground }) as unknown as Region;
 const vocabulary: Vocabulary = {
@@ -39,5 +41,23 @@ describe('the materials of the plants', () => {
         expect(materialWord({ id: 'sand', cover: 'bare', shrubs: 0 }) >>> 16).toBe(0);
         expect(materialWord({ id: 'scrub', cover: 'shrub' }) >>> 16).toBe(255);
         expect(materialWord({ id: 'heath', cover: 'grass', shrubs: 0.5 })).toBe(2 | (128 << 16));
+    });
+});
+
+describe('the plant models', () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('give a plant in rows a run of its own, the same each time, not a shrub of the same plant', () => {
+        vi.stubGlobal('Worker', class { postMessage() {} });
+        const specs: ModelSpec[] = [];
+        const instances = { produce: () => {}, add: (...added: ModelSpec[]) => specs.push(...added) - added.length };
+        const shrub: TreeRule = { model: 'grapevine', leaf: 'broadleaved', cover: 'shrub', elevation: [0, 1000], weight: 1 };
+        const rules = { vocabulary, regions: [{ ground: [], trees: [shrub] }], styles: [] } as unknown as Rules;
+        const plants = new Plants(rules, {} as TreeModels, instances as unknown as Instances, () => {}, new AbortController().signal);
+        expect(specs).toHaveLength(1);
+        const first = plants.rowModel('grapevine');
+        expect(first).toBe(1);
+        expect(plants.rowModel('grapevine')).toBe(first);
+        expect(specs).toHaveLength(1 + SEEDS);
     });
 });

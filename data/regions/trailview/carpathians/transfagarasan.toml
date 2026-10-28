@@ -1,0 +1,6 @@
+name = "TrailView carpathians: Transfagarasan"
+kind = "box"
+# west, south, east, north
+box = [24.32, 45.4, 24.91, 45.81]
+countries = ["RO"]
+time_zone = "Europe/Bucharest"

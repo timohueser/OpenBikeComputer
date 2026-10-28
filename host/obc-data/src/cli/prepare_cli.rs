@@ -77,7 +77,8 @@ pub struct PrepareReview {
     pub id: String,
     pub source: String,
     pub target: String,
-    /// The version that the run makes: the UTC date when its first run started.
+    /// The version that the run makes: the UTC date when its first run started, with `.2`, `.3`
+    /// and so on after the first version of that day.
     pub version: String,
     /// The version that a stopped run of this machine started and that this run does not resume:
     /// the target has a newer complete version. `null` when there is none.
@@ -249,7 +250,7 @@ fn plan<'a>(
     }
     let languages = producer.languages(asked.languages).map_err(|e| Code::Usage.error(e))?;
     let listed = prepared::versions(target, id)?;
-    let newest = listed.iter().map(|listed| listed.version.as_str()).max();
+    let newest = listed.iter().filter_map(|listed| prepared::order(&listed.version)).max();
     // A run never writes a key of a complete version. When the manifest of a stopped version is
     // the one of its journal, that run crashed before it listed the version: this run lists it.
     let started = prepared::started(store, name, id)?;
@@ -257,19 +258,17 @@ fn plan<'a>(
     let kept = started.as_ref().map(|started| prepared::manifest(target, id, started)).transpose()?.flatten();
     let (resumed, abandoned) = match started {
         Some(started) if kept.as_ref().is_some_and(|kept| kept.files == journaled) => (Some(started), None),
-        Some(started) if kept.is_some() || newest.is_some_and(|newest| newest >= started.as_str()) => {
+        Some(started) if kept.is_some() || newest.is_some_and(|newest| Some(newest) >= prepared::order(&started)) => {
             (None, Some(started))
         }
         started => (started, None),
     };
     let listing = kept.is_some() && abandoned.is_none();
     let fresh = resumed.is_none();
-    let version = resumed.unwrap_or_else(|| today.to_string());
-    if fresh && prepared::manifest(target, id, &version)?.is_some() {
-        return Err(Code::Usage
-            .error(format!("{id}@{version} is complete on `{name}`; nothing changed"))
-            .fix("The next version starts on the next day, by UTC."));
-    }
+    let version = match resumed {
+        Some(resumed) => resumed,
+        None => prepared::next(target, id, today, &listed)?,
+    };
     let plan_path = prepared::job_dir(store, name, id, &version).join("state/plan.json");
     let made: prepared::Plan = if !fresh && plan_path.is_file() {
         let selection = plan_path.parent().unwrap().parent().unwrap().join("selection.json");
@@ -426,7 +425,7 @@ fn stale(
             let release = update_cli::read(&name, &target, &serving.serving.id)?;
             let old = |output: &&crate::release::Output| {
                 let read = output.snapshots.get(id).and_then(|read| prepared::unpin(&read.version));
-                read.is_some_and(|(read, _)| read < version)
+                read.is_some_and(|(read, _)| prepared::order(read) < prepared::order(version))
             };
             let layers: BTreeSet<String> =
                 release.outputs.iter().filter(old).map(|output| output.layer.clone()).collect();
@@ -663,6 +662,7 @@ pub(super) mod tests {
         licence = "MIT"
         fetch = { kind = "http", url = "https://example.org/head.txt" }
         version = "release"
+        keep = "store"
         redistribute = true
 
         [[source]]
@@ -673,6 +673,7 @@ pub(super) mod tests {
         fetch = { kind = "prepared" }
         version = "date"
         refresh = 1
+        keep = "prepared"
         redistribute = true
     "#;
 
@@ -887,7 +888,7 @@ pub(super) mod tests {
             code,
             |_| Ok(()),
             &[],
-            Some(&machine),
+            (Some(&machine), Vec::new),
             None,
         );
         prepared.unwrap().review.layers.into_iter().map(|layer| (layer.layer, layer.text)).collect()
@@ -945,8 +946,25 @@ pub(super) mod tests {
             "the work is gone"
         );
         assert_eq!(lock::read(&prepared::folder(&prod, "sample")).unwrap().unwrap().0, LockFile::Free);
-        let again = prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
-        assert!(again.message.contains("complete on `prod`"), "{}", again.message);
+    }
+
+    #[test]
+    fn a_later_version_of_the_same_day_takes_the_next_ordinal_and_extends_the_one_before() {
+        let (fixture, prod, _) = setup("prepare-same-day");
+        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
+        write(&fixture.root().join("reuse-a.txt"), "");
+        write(&fixture.root().join("fail-c.txt"), "");
+        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
+        fs::remove_file(fixture.root().join("fail-c.txt")).unwrap();
+        let resumed = prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
+        assert_eq!((resumed.version.as_str(), resumed.uploaded), ("2026-10-01.2", 1), "the stopped run resumes");
+        let second = prepared::manifest(&prod, "sample", "2026-10-01.2").unwrap().unwrap();
+        assert_eq!(second.reused, [("a.txt".to_string(), "2026-10-01".to_string())].into());
+
+        assert_eq!(prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap().version, "2026-10-01.3");
+        let listed = prepared::versions(&prod, "sample").unwrap();
+        let names: Vec<&str> = listed.iter().map(|listed| listed.version.as_str()).collect();
+        assert_eq!(names, ["2026-10-01", "2026-10-01.2", "2026-10-01.3"]);
     }
 
     #[test]
@@ -1224,9 +1242,7 @@ pub(super) mod tests {
         let before = state();
 
         fs::rename(&aside, &job).unwrap();
-        let refused = prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
-        assert!(refused.message.contains("complete on `prod`"), "{}", refused.message);
-        assert_eq!(prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap().version, "2026-10-02");
+        assert_eq!(prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap().version, "2026-10-01.2");
         assert_eq!(state(), before, "the keys and the manifest of the complete version stay");
         assert!(!job.exists());
     }

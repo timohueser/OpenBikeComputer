@@ -1,5 +1,6 @@
 """Writes the TrailView fixture from a `planner-dem` MBTiles of BOX: the tiles with known heights, unknown outside BOX;
-and the tiles of a feature archive of BOX, as it is.
+and the tiles of a feature archive of BOX, as it is. Both come from one bake (box.sh): the features hold the heights
+of that terrain, zoom 13 included, and on another terrain the roads and paths float or sink by metres.
 
 uv run --locked --group planner-maps python builder/web/tests/browser/trailview/make-fixture.py TERRAIN.mbtiles FEATURES.pmtiles
 """

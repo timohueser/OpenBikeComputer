@@ -1,6 +1,6 @@
 //! `planner-dem --dem DIR [--reference DIR] [--osm FILE] --bounds W,S,E,N --output FILE`: the
 //! terrain of the planner maps as lossless Terrarium MBTiles, from the GLO-30 files in `--dem`, a
-//! reference archive and the coastlines, cliffs and summits of an OSM PBF file.
+//! reference archive and the coastlines and summits of an OSM PBF file.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

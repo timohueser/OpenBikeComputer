@@ -166,7 +166,13 @@ public struct FirmwareVersion: Equatable, Sendable {
         var pre: String?
         if let dash = rest.firstIndex(of: "-") {
             let tag = rest[rest.index(after: dash)...]
-            guard !tag.isEmpty, tag.allSatisfy(isVersionTagCharacter) else { return nil }
+            // SemVer: a dot-separated pre-release identifier is never empty.
+            guard
+                tag.allSatisfy(isVersionTagCharacter),
+                tag.split(separator: ".", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty })
+            else {
+                return nil
+            }
             pre = String(tag)
             rest = rest[..<dash]
         }

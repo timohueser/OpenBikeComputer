@@ -1,0 +1,6 @@
+name = "TrailView corsica: Mountains"
+kind = "box"
+# west, south, east, north
+box = [8.55, 41.6, 9.48, 42.49]
+countries = ["FR"]
+time_zone = "Europe/Paris"

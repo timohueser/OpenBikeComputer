@@ -1,5 +1,5 @@
 //! The route-corridor POI query's neutral parts: the category filter set, the remaining-route
-//! geometry seam, the projected result record, and the point-to-polyline projection math.
+//! geometry seam, the projected result record, and the point-to-segment projection math.
 //! [`Reader::corridor_pois`](crate::Reader::corridor_pois) drives them against the per-category
 //! POI quadtrees.
 //!
@@ -145,93 +145,27 @@ pub(crate) struct PathProjection {
     pub offset_m: f32,
 }
 
-/// Project `p` (`(lon, lat)` µdeg) onto one chunk's polyline and return its nearest projection:
-/// the perpendicular foot on whichever segment it sits closest to, as an along-route distance plus
-/// a signed lateral offset. `None` for a chunk with fewer than two points.
-///
-/// The along-route axis is accumulated from `chunk_start_m` with the same local-equirectangular
-/// segment lengths `obc-route`'s own progress walk uses, so a corridor POI and a stored waypoint
-/// at the same spot report the same distance.
+/// Project `p` (`(lon, lat)` µdeg) onto segment `a→b` with the latitude scale `cl`: the distance
+/// from `a` to the clamped perpendicular foot, plus a signed lateral offset. A point past either
+/// end measures to that endpoint.
 ///
 /// Sign convention: with east as +x and north as +y, the cross product `dx·ey − dy·ex` is positive
 /// when the point lies left of the direction of travel, and the stored `offset_m` is its negation,
 /// so positive means right.
-///
-/// Taking the nearest segment rather than the first within range is what makes a switchback yield
-/// one entry: a POI in the crook of a hairpin projects onto both legs and the closer leg wins.
-///
-/// `limit_m` bounds the answer and also prunes the walk, which is what keeps the cost sane: a
-/// chunk carries up to 256 points, so each segment first takes a four-integer µdeg-bbox test and
-/// only the survivors pay for the dot, cross and `sqrt`.
-#[cfg(test)]
-fn project_onto_chunk(pts: &[(i32, i32)], chunk_start_m: u32, p: (i32, i32), limit_m: f32) -> Option<PathProjection> {
-    if pts.len() < 2 {
-        return None;
+pub(crate) fn project_onto_segment(a: (i32, i32), b: (i32, i32), p: (i32, i32), cl: f32) -> PathProjection {
+    let (dx, dy) = delta_m(a, b, cl);
+    let (ex, ey) = delta_m(a, p, cl);
+    let len2 = dx * dx + dy * dy;
+    // A zero-length segment has no direction: measure straight to the vertex and leave the side
+    // unsigned rather than invent one from a zero cross product.
+    if len2 <= 1e-6 {
+        return PathProjection { dist_along_m: 0.0, offset_m: libm::sqrtf(ex * ex + ey * ey) };
     }
-    // One `cos_lat` for the whole chunk, taken at its first point, the convention `obc-route`'s
-    // own along-route walks use.
-    let cl = cos_lat(pts[0].1).max(1e-3);
-    project_with_scale(pts, chunk_start_m, p, limit_m, cl)
-}
-
-/// Project using the latitude scale prepared for this polyline.
-pub(crate) fn project_with_scale(
-    pts: &[(i32, i32)],
-    chunk_start_m: u32,
-    p: (i32, i32),
-    limit_m: f32,
-    cl: f32,
-) -> Option<PathProjection> {
-    // The prune window in µdeg. Saturated to `i32::MAX` for an infinite limit, so the bbox test
-    // then always passes.
-    let lat_pad = udeg_pad(limit_m);
-    let lon_pad = udeg_pad(limit_m / cl);
-    let mut s = chunk_start_m as f32;
-    let mut best: Option<(f32, PathProjection)> = None; // (|offset|, projection)
-    for w in pts.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        let (dx, dy) = delta_m(a, b, cl);
-        // A pruned segment still has to accumulate its length, because that carries the
-        // along-route axis forward.
-        let len = libm::sqrtf(dx * dx + dy * dy);
-        if !within_pad(a, b, p, lon_pad, lat_pad) {
-            s += len;
-            continue;
-        }
-        let (ex, ey) = delta_m(a, p, cl);
-        let len2 = dx * dx + dy * dy;
-        // A zero-length segment has no direction: measure straight to the vertex and leave
-        // the side unsigned rather than invent one from a zero cross product.
-        let (t, offset) = if len2 <= 1e-6 {
-            (0.0, libm::sqrtf(ex * ex + ey * ey))
-        } else {
-            let t = ((ex * dx + ey * dy) / len2).clamp(0.0, 1.0);
-            // Distance to the clamped foot, so a POI past a segment's end measures to the endpoint.
-            let (px, py) = (ex - t * dx, ey - t * dy);
-            let d = libm::sqrtf(px * px + py * py);
-            // `cross > 0` is left of travel; the stored sign is positive-is-right.
-            let cross = dx * ey - dy * ex;
-            (t, if cross > 0.0 { -d } else { d })
-        };
-        let abs = libm::fabsf(offset);
-        if abs <= limit_m && best.is_none_or(|(prev, _)| abs < prev) {
-            best = Some((abs, PathProjection { dist_along_m: s + t * len, offset_m: offset }));
-        }
-        s += len;
-    }
-    best.map(|(_, proj)| proj)
-}
-
-/// `m` ground metres as a latitude-µdeg pad, saturating, so a huge limit pads to `i32::MAX` and
-/// the bbox test always passes.
-#[inline]
-fn udeg_pad(m: f32) -> i32 {
-    let ud = m / (M_PER_DEG as f32 * 1e-6);
-    if ud >= i32::MAX as f32 {
-        i32::MAX
-    } else {
-        ud as i32
-    }
+    let t = ((ex * dx + ey * dy) / len2).clamp(0.0, 1.0);
+    let (px, py) = (ex - t * dx, ey - t * dy);
+    let d = libm::sqrtf(px * px + py * py);
+    let cross = dx * ey - dy * ex;
+    PathProjection { dist_along_m: t * libm::sqrtf(len2), offset_m: if cross > 0.0 { -d } else { d } }
 }
 
 /// Whether `p` lies inside segment `a→b`'s µdeg bbox grown by `(lon_pad, lat_pad)`: the cheap
@@ -271,72 +205,22 @@ pub(crate) fn inflate_bbox(bbox: BBox, pad_m: f32) -> BBox {
 mod tests {
     use super::*;
 
-    /// A due-east chunk at 43° N: 1000 µdeg of longitude is about 81 m, 1000 µdeg of latitude
-    /// about 111 m.
+    /// 43° N: 1000 µdeg of longitude is about 81 m, 1000 µdeg of latitude about 111 m.
     const LAT: i32 = 43_000_000;
 
-    fn chunk() -> [(i32, i32); 3] {
-        // (lon, lat) — three points marching east along a constant latitude.
-        [(7_000_000, LAT), (7_010_000, LAT), (7_020_000, LAT)]
-    }
-
-    /// Travelling east, a POI north of the line is on the rider's left, so the offset is negative,
-    /// and one south of it is on the right.
+    /// The foot lands at its distance along the segment, left of travel is negative, and a point
+    /// past the end measures to the endpoint.
     #[test]
-    fn sign_is_positive_to_the_right_of_travel() {
-        let pts = chunk();
-        let north = project_onto_chunk(&pts, 0, (7_005_000, LAT + 1_000), f32::INFINITY).unwrap();
-        let south = project_onto_chunk(&pts, 0, (7_005_000, LAT - 1_000), f32::INFINITY).unwrap();
-        assert!(north.offset_m < 0.0, "north of an eastbound line is on the left (negative)");
-        assert!(south.offset_m > 0.0, "south of an eastbound line is on the right (positive)");
-        assert!((north.offset_m + south.offset_m).abs() < 0.01, "mirrored offsets, opposite signs");
-        assert!((south.offset_m - 111.32).abs() < 0.5, "1000 µdeg of latitude ≈ 111 m");
-    }
-
-    /// The along-route distance is the chunk's cumulative start plus the walked segment length.
-    #[test]
-    fn along_distance_accumulates_from_the_chunk_start() {
-        let pts = chunk();
-        let mid = project_onto_chunk(&pts, 500, (7_015_000, LAT), f32::INFINITY).unwrap();
-        // Segment one is a full 10 000 µdeg of longitude; the projection sits halfway along two.
-        let seg = ground_dist_m_cl(pts[0], pts[1], cos_lat(LAT));
-        assert!((mid.dist_along_m - (500.0 + seg * 1.5)).abs() < 0.5, "cum start + 1.5 segments");
-        assert!(mid.offset_m.abs() < 0.01, "a point on the line has no offset");
-    }
-
-    /// A hairpin projects a POI in its crook onto both legs, and the nearest wins, so the
-    /// projection is single-valued.
-    #[test]
-    fn switchback_keeps_the_nearest_leg() {
-        // East along `LAT`, then back west along `LAT + 2000` (≈222 m apart).
-        let pts = [(7_000_000, LAT), (7_010_000, LAT), (7_010_000, LAT + 2_000), (7_000_000, LAT + 2_000)];
-        // A POI just north of the outbound leg: 200 µdeg (~22 m) up, i.e. far closer to leg 1.
-        let p = project_onto_chunk(&pts, 0, (7_005_000, LAT + 200), f32::INFINITY).unwrap();
-        assert!(p.offset_m.abs() < 25.0, "the near leg's offset, not the far leg's ~200 m");
-        assert!(p.offset_m < 0.0, "north of the eastbound leg ⇒ left");
-        let leg = ground_dist_m_cl(pts[0], pts[1], cos_lat(LAT));
-        assert!(p.dist_along_m < leg, "it lands on the first leg, not the return");
-    }
-
-    /// A single-point (or empty) chunk has no segment to project onto.
-    #[test]
-    fn degenerate_chunk_has_no_projection() {
-        assert!(project_onto_chunk(&[], 0, (7_000_000, LAT), f32::INFINITY).is_none());
-        assert!(project_onto_chunk(&[(7_000_000, LAT)], 0, (7_000_000, LAT), f32::INFINITY).is_none());
-    }
-
-    /// `limit_m` both rejects and prunes, and the pruning must not change the answer inside the
-    /// limit.
-    #[test]
-    fn the_limit_rejects_without_changing_what_it_keeps() {
-        let pts = chunk();
-        let p = (7_005_000, LAT + 1_000); // ≈111 m north of the line
-        let unbounded = project_onto_chunk(&pts, 0, p, f32::INFINITY).unwrap();
-        let bounded = project_onto_chunk(&pts, 0, p, 300.0).unwrap();
-        assert_eq!(bounded, unbounded, "the prune window doesn't perturb an in-limit projection");
-        assert!(project_onto_chunk(&pts, 0, p, 100.0).is_none(), "111 m is outside a 100 m limit");
-        // A POI far off the *end* of the polyline is measured to the endpoint and rejected too.
-        assert!(project_onto_chunk(&pts, 0, (7_100_000, LAT), 300.0).is_none());
+    fn segment_projection_is_signed_and_clamped() {
+        let (a, b) = ((7_000_000, LAT), (7_010_000, LAT));
+        let cl = cos_lat(LAT);
+        let len = ground_dist_m_cl(a, b, cl);
+        let mid = project_onto_segment(a, b, (7_005_000, LAT + 1_000), cl);
+        assert!((mid.dist_along_m - len / 2.0).abs() < 0.5);
+        assert!((mid.offset_m + 111.2).abs() < 0.5, "≈111 m north of an eastbound segment is left");
+        let past = project_onto_segment(a, b, (7_020_000, LAT), cl);
+        assert!((past.dist_along_m - len).abs() < 0.5);
+        assert!((past.offset_m - len).abs() < 0.5, "measured to the endpoint");
     }
 
     /// The category set round-trips its members and "Everything" holds all six.

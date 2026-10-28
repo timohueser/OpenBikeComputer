@@ -1,0 +1,6 @@
+name = "TrailView western-europe: Lusen"
+kind = "box"
+# west, south, east, north
+box = [13.17, 48.71, 13.84, 49.16]
+countries = ["DE", "AT", "CZ"]
+time_zone = "Europe/Berlin"

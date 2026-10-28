@@ -332,35 +332,6 @@ setting_enum! {
 }
 
 setting_enum! {
-    /// Which sources feed the Up-ahead timeline.
-    pub enum UpAheadSource {
-        /// Custom waypoints and route-corridor map POIs.
-        Both = 0, key Msg::UpAheadSourceBoth;
-        /// The rider's own GPX waypoints only. The corridor query is never armed under this value,
-        /// so the map `Reader` is never built for it either.
-        WaypointsOnly = 1, key Msg::UpAheadSourceWaypoints;
-        /// Route-corridor map POIs only. The waypoint plan leaves the timeline entirely; it stays
-        /// on the map and in the stats panel.
-        MapPoisOnly = 2, key Msg::UpAheadSourceMapPois;
-    }
-    default Both;
-}
-
-impl UpAheadSource {
-    #[inline]
-    pub const fn shows_waypoints(self) -> bool {
-        matches!(self, UpAheadSource::Both | UpAheadSource::WaypointsOnly)
-    }
-
-    /// Whether route-corridor map POIs feed the list. Also the arming answer: `false` means no
-    /// [`CorridorKey`](crate::corridor::CorridorKey) is ever declared, so the query never runs.
-    #[inline]
-    pub const fn shows_pois(self) -> bool {
-        matches!(self, UpAheadSource::Both | UpAheadSource::MapPoisOnly)
-    }
-}
-
-setting_enum! {
     /// How long the UI sits idle before it navigates itself back to where it belongs: the Home root
     /// when not tracking a ride, the Map when a ride is running. The Power settings screen picks it.
     ///
@@ -510,8 +481,9 @@ settings_table! {
         /// One slot per quantity; an empty slot is "no sensor saved". Written by the Sensors screen
         /// on pair and forget; the board's central manager reconnects to a present slot's address
         /// whenever the radio is on.
-        saved_sensors: [SavedSensor; SENSOR_SLOTS] = [SavedSensor::EMPTY; SENSOR_SLOTS], since(19);
-        up_ahead_source: UpAheadSource = UpAheadSource::Both, since(19);
+        saved_sensors: [SavedSensor; SENSOR_SLOTS] = [SavedSensor::EMPTY; SENSOR_SLOTS], since(19), reserved(1);
+        // Byte 110 is retired: v19..=26 stored the Up-ahead source choice there, which nothing
+        // read. v27 writes a zero and every version ignores it on decode.
         /// Draw the map's terrain layer, today the contour lines. Off drops every terrain-layer
         /// style from the renderer's collect pass, so the geometry is never decoded — but contours
         /// share cells with everything else, so off neither shrinks the map on the card nor avoids a
@@ -568,7 +540,7 @@ settings_table! {
 /// The in-memory footprint, pinned. [`Settings`] is copied whole into the live `App`, the board's
 /// Config cache and the `.rodata` [`DEFAULT`](Settings::DEFAULT) image, so a field that widens the
 /// struct widens every one of those.
-const _: () = assert!(core::mem::size_of::<Settings>() == 126, "Settings grew — was that deliberate?");
+const _: () = assert!(core::mem::size_of::<Settings>() == 124, "Settings grew — was that deliberate?");
 
 impl Settings {
     /// A factory-fresh device: the defaults, with setup at its first step. Hosts boot it when the
@@ -601,7 +573,7 @@ impl Settings {
     }
 }
 
-pub const VERSION: u8 = 26;
+pub const VERSION: u8 = 27;
 
 /// The oldest layout [`decode`] accepts. An older blob resets to [`Settings::FACTORY`].
 pub const MIN_SUPPORTED: u8 = 19;
@@ -641,7 +613,7 @@ const _: () = {
     assert!(off::waypoint_mode == 84, "waypoint_mode moved");
     assert!(off::language == 85, "language moved");
     assert!(off::saved_sensors == 86, "saved_sensors moved");
-    assert!(off::up_ahead_source == 110, "up_ahead_source moved");
+    // Byte 110 is `saved_sensors`' `reserved(1)`; `map_contours` below pins that it holds.
     assert!(off::map_contours == 111, "map_contours moved");
     assert!(off::brightness == 112, "brightness moved");
     assert!(off::find_hide_closed == 113);
@@ -676,14 +648,10 @@ mod tests {
         assert_eq!(d.waypoint_mode, WaypointMode::default());
         assert_eq!(d.language, Language::default());
         assert_eq!(d.saved_sensors, [SavedSensor::default(); SENSOR_SLOTS]);
-        assert_eq!(d.up_ahead_source, UpAheadSource::default());
         assert_eq!(d.find_results, FindResults::default());
         assert_eq!(d.theme, Theme::default());
         assert_eq!(d.sound, SoundLevel::default());
         assert_eq!(d.setup, SetupStep::default());
-
-        // And the whole const is its type's `Default` — the property the field list guards.
-        assert_eq!(d, Settings::default());
     }
 
     /// A settings value with every field pushed off its default. Shared by the round-trip test and
@@ -694,7 +662,7 @@ mod tests {
         assert!(stat_fields.push(crate::stat_fields::StatField::Clock));
         Settings {
             units: Units::Imperial,
-            local_offset_known: false,
+            local_offset_known: true,
             clock: DateTime { year: 2026, month: 6, day: 29, hour: 14, minute: 40 },
             utc_offset_min: 120,
             fix_interval_s: 5,
@@ -720,7 +688,6 @@ mod tests {
                 SavedSensor::EMPTY,
                 SavedSensor::saved(0, [6, 5, 4, 3, 2, 1]),
             ],
-            up_ahead_source: UpAheadSource::MapPoisOnly,
             find_hide_closed: false,
             find_results: FindResults::Six,
             theme: Theme::Dark,
@@ -741,10 +708,106 @@ mod tests {
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     }
 
+    /// The v26 blobs, byte for byte, as released devices store them in RRAM. They stay as decode
+    /// fixtures: a device that updates from v26 keeps its settings.
+    #[rustfmt::skip]
+    const V26_FACTORY: [u8; ENCODED_LEN] = [
+        0x1a, 0x00, 0x00, 0xe9, 0x07, 0x01, 0x01, 0x0c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x06, 0x00,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+        0x01, 0x01, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0x04, 0x01, 0x01, 0x01, 0x01, 0x01, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0x4b, 0x73,
+    ];
+    #[rustfmt::skip]
+    const V26_EVERY_FIELD_SET: [u8; ENCODED_LEN] = [
+        0x1a, 0x01, 0x01, 0xea, 0x07, 0x06, 0x1d, 0x0e, 0x28, 0x78, 0x00, 0x05, 0x00, 0x01, 0x06, 0x01,
+        0x02, 0x03, 0x04, 0x05, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x0a, 0x54, 0x69,
+        0x6d, 0x6f, 0x27, 0x73, 0x20, 0x4f, 0x42, 0x43, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0x03, 0x00, 0x00, 0x03, 0x02, 0x01, 0x01, 0x01, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x02, 0x00,
+        0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x01, 0xb9, 0xfa, 0x00, 0x01, 0x01, 0x01, 0xcd, 0xa9,
+    ];
+
+    /// The current blobs, byte for byte. A failure means the stored format changed: bump
+    /// [`VERSION`] instead of editing these bytes.
     #[test]
-    fn codec_round_trips() {
-        let s = every_field_set();
-        assert_eq!(decode(&encode(&s)), Some(s));
+    fn the_v27_blobs_are_pinned_byte_for_byte() {
+        #[rustfmt::skip]
+        const FACTORY: [u8; ENCODED_LEN] = [
+            0x1b, 0x00, 0x00, 0xe9, 0x07, 0x01, 0x01, 0x0c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x06, 0x00,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+            0x01, 0x01, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+            0x04, 0x01, 0x01, 0x01, 0x01, 0x01, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0x35, 0x33,
+        ];
+        #[rustfmt::skip]
+        const EVERY_FIELD_SET: [u8; ENCODED_LEN] = [
+            0x1b, 0x01, 0x01, 0xea, 0x07, 0x06, 0x1d, 0x0e, 0x28, 0x78, 0x00, 0x05, 0x00, 0x01, 0x06, 0x01,
+            0x02, 0x03, 0x04, 0x05, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x0a, 0x54, 0x69,
+            0x6d, 0x6f, 0x27, 0x73, 0x20, 0x4f, 0x42, 0x43, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+            0x03, 0x00, 0x00, 0x03, 0x02, 0x01, 0x01, 0x01, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00, 0x00,
+            0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x01, 0xb9, 0xfa, 0x00, 0x01, 0x01, 0x01, 0xda, 0xa9,
+        ];
+        for (what, value, golden) in
+            [("factory", Settings::FACTORY, FACTORY), ("every field set", every_field_set(), EVERY_FIELD_SET)]
+        {
+            assert_eq!(encode(&value), golden, "{what} encodes to its pinned bytes");
+            assert_eq!(decode(&golden), Some(value), "{what} pinned bytes decode back");
+        }
+    }
+
+    /// A v26 blob decodes to the same settings, and its retired byte 110 is ignored.
+    #[test]
+    fn a_v26_blob_decodes_and_ignores_the_retired_byte() {
+        assert_eq!(V26_EVERY_FIELD_SET[110], 2, "the fixture stores a non-zero retired byte");
+        assert_eq!(decode(&V26_FACTORY), Some(Settings::FACTORY));
+        assert_eq!(decode(&V26_EVERY_FIELD_SET), Some(every_field_set()));
+    }
+
+    /// One row per decode-time clamp: a stored value out of its range reads back as exactly this.
+    /// A poke writes a byte that no `Settings` value can hold.
+    #[test]
+    fn decode_clamps_each_out_of_range_field() {
+        type S = Settings;
+        let d = Settings::DEFAULT;
+        let at = |year, month, day| DateTime { year, month, day, hour: 12, minute: 0 };
+        let mut without_first = d.stat_fields;
+        without_first.remove(0);
+        let rows = [
+            ("brightness", S { brightness: 200, ..d }, None, S { brightness: BRIGHTNESS_MAX, ..d }),
+            ("fix interval", S { fix_interval_s: 9999, ..d }, None, S { fix_interval_s: FIX_INTERVAL_MAX, ..d }),
+            ("stat cycle", S { stat_cycle_s: 9999, ..d }, None, S { stat_cycle_s: STAT_CYCLE_MAX, ..d }),
+            ("UTC offset high", S { utc_offset_min: 2000, ..d }, None, S { utc_offset_min: UTC_OFFSET_MAX, ..d }),
+            ("UTC offset low", S { utc_offset_min: -2000, ..d }, None, S { utc_offset_min: UTC_OFFSET_MIN, ..d }),
+            ("POI category bits", S { map_poi_categories: 0xff, ..d }, None, S { map_poi_categories: 0x7f, ..d }),
+            ("month 13 day 99", S { clock: at(2025, 13, 99), ..d }, None, S { clock: at(2025, 12, 31), ..d }),
+            ("Feb 31 leap year", S { clock: at(2024, 2, 31), ..d }, None, S { clock: at(2024, 2, 29), ..d }),
+            ("Feb 31 common year", S { clock: at(2025, 2, 31), ..d }, None, S { clock: at(2025, 2, 28), ..d }),
+            ("unknown stat field", d, Some((off::stat_fields + 1, 250)), S { stat_fields: without_first, ..d }),
+        ];
+        for (what, stored, poke, expected) in rows {
+            let mut b = encode(&stored);
+            if let Some((i, byte)) = poke {
+                b[i] = byte;
+                re_stamp_crc(&mut b);
+            }
+            let got = decode(&b).expect(what);
+            // `StatFieldList`'s derived `==` also compares the padding past `len`, which `remove`
+            // leaves stale, so the selection is compared as a slice.
+            assert_eq!(got.stat_fields.as_slice(), expected.stat_fields.as_slice(), "{what}");
+            assert_eq!(S { stat_fields: expected.stat_fields, ..got }, expected, "{what}");
+        }
     }
 
     #[test]
@@ -799,7 +862,7 @@ mod tests {
     #[test]
     fn every_declared_field_round_trips_and_keeps_its_ble_split() {
         let base = Settings::DEFAULT;
-        let other = Settings { local_offset_known: true, ..every_field_set() };
+        let other = every_field_set();
         assert_eq!(decode(&encode(&other)), Some(other), "every field round-trips through the codec");
 
         let mut adopted = base;
@@ -808,17 +871,6 @@ mod tests {
         // table's own `ble_writable` markers would restate the token that generates
         // `adopt_ble_fields` and could never fail.
         Settings::assert_field_table(&base, &other, &adopted, &["units", "device_name"]);
-    }
-
-    #[test]
-    fn decode_sanitises_an_unknown_enum_byte_through_the_blob() {
-        // The `brightness` row's `range` marker is the only thing between a corrupt byte and a
-        // panel driven at a level the port never offered. It clamps up, not down: the safe
-        // direction for a light is bright.
-        let mut b = encode(&Settings { brightness: 0, ..Settings::default() });
-        b[off::brightness] = 200;
-        re_stamp_crc(&mut b);
-        assert_eq!(decode(&b).unwrap().brightness, BRIGHTNESS_MAX, "an out-of-range level clamps to the brightest");
     }
 
     #[test]
@@ -837,9 +889,8 @@ mod tests {
         assert!(decode(&b).expect("valid CRC").map_contours, "any non-zero byte reads as on");
     }
 
-    /// The saved-sensor block's decode tolerances: an absent slot ignores stray bytes, a corrupt
-    /// `addr_kind` normalises to random, and a blob below the version floor is rejected, so the
-    /// host falls back to defaults rather than upgrading in place.
+    /// The saved-sensor block's decode tolerances: an absent slot ignores stray bytes, and a corrupt
+    /// `addr_kind` normalises to random.
     #[test]
     fn saved_sensors_decode_tolerances_and_migration() {
         let s = Settings {
@@ -865,12 +916,6 @@ mod tests {
         b[off::saved_sensors + 1] = 200;
         re_stamp_crc(&mut b);
         assert_eq!(decode(&b).unwrap().saved_sensors[0].addr_kind, 1, "an out-of-range addr_kind reads as random");
-
-        // A blob below the version floor is rejected, so the host falls back to defaults.
-        let mut old = encode(&s);
-        old[0] = 10;
-        re_stamp_crc(&mut old);
-        assert_eq!(decode(&old), None, "a v10 blob is rejected → host uses defaults, sensors empty");
     }
 
     /// One table over every `setting_enum!` type: each declared byte round-trips through
@@ -892,49 +937,12 @@ mod tests {
         check!(Units);
         check!(ClimbMode);
         check!(WaypointMode);
-        check!(UpAheadSource);
         check!(FindResults);
         check!(Theme);
         check!(SoundLevel);
         check!(IdleReturn);
 
         check!(Language);
-    }
-
-    /// The ring cycles Both → Waypoints → Map POIs → Both, and exactly one value asks for no
-    /// corridor query at all.
-    #[test]
-    fn up_ahead_source_cycles_and_scopes_the_two_sources() {
-        assert_eq!(UpAheadSource::Both.cycled(), UpAheadSource::WaypointsOnly);
-        assert_eq!(UpAheadSource::WaypointsOnly.cycled(), UpAheadSource::MapPoisOnly);
-        assert_eq!(UpAheadSource::MapPoisOnly.cycled(), UpAheadSource::Both, "the ring wraps");
-
-        assert!(UpAheadSource::Both.shows_waypoints() && UpAheadSource::Both.shows_pois());
-        assert!(UpAheadSource::WaypointsOnly.shows_waypoints() && !UpAheadSource::WaypointsOnly.shows_pois());
-        assert!(!UpAheadSource::MapPoisOnly.shows_waypoints() && UpAheadSource::MapPoisOnly.shows_pois());
-    }
-
-    #[test]
-    fn local_offset_authority_round_trips_in_reserved_byte_two() {
-        let configured = Settings { local_offset_known: true, ..Settings::default() };
-        let bytes = encode(&configured);
-        assert_eq!(bytes[2], 1);
-        assert_eq!(decode(&bytes), Some(configured));
-        assert!(!decode(&encode(&Settings::default())).unwrap().local_offset_known);
-    }
-
-    #[test]
-    fn idle_return_timeout_and_stepping() {
-        assert_eq!(IdleReturn::S15.timeout_ms(), Some(15_000));
-        assert_eq!(IdleReturn::S30.timeout_ms(), Some(30_000));
-        assert_eq!(IdleReturn::M1.timeout_ms(), Some(60_000));
-        assert_eq!(IdleReturn::M5.timeout_ms(), Some(300_000));
-        assert_eq!(IdleReturn::Never.timeout_ms(), None, "Never disables the mechanism");
-
-        assert_eq!(IdleReturn::S15.stepped(1), IdleReturn::S30);
-        assert_eq!(IdleReturn::M5.stepped(1), IdleReturn::Never);
-        assert_eq!(IdleReturn::Never.stepped(1), IdleReturn::S15, "wraps past Never");
-        assert_eq!(IdleReturn::S15.stepped(-1), IdleReturn::Never, "wraps past the start");
     }
 
     #[test]
@@ -981,28 +989,6 @@ mod tests {
         assert!(decode(&b).unwrap().device_name.is_empty());
     }
 
-    /// An out-of-range cycle period is clamped on decode, and an unknown field discriminant is
-    /// dropped rather than loaded as a garbage tile.
-    #[test]
-    fn codec_sanitises_stat_tail() {
-        let mut s = Settings { stat_cycle_s: 9999, ..Settings::default() };
-        let mut b = encode(&s);
-        // Re-stamp the CRC so only the payload, not the framing, is wrong.
-        b[off::stat_fields + 1] = 250;
-        re_stamp_crc(&mut b);
-        let got = decode(&b).expect("valid CRC → Some, just sanitised");
-        assert!(got.stat_cycle_s <= STAT_CYCLE_MAX, "the cycle period is clamped into range");
-        assert_eq!(got.stat_fields.len(), s.stat_fields.len() - 1, "the unknown discriminant is dropped");
-        s.stat_fields.remove(0);
-        assert_eq!(got.stat_fields.as_slice(), s.stat_fields.as_slice());
-    }
-
-    #[test]
-    fn codec_round_trips_default() {
-        let s = Settings::default();
-        assert_eq!(decode(&encode(&s)), Some(s));
-    }
-
     /// A rejected blob decodes to `None`, never to a half-parsed value.
     #[test]
     fn codec_rejects_bad_blobs() {
@@ -1022,8 +1008,8 @@ mod tests {
         assert_eq!(decode(&below), None, "a version below the supported floor is rejected");
     }
 
-    /// A miniature settings table for tail-defaulting, which the real table cannot exercise: it
-    /// has exactly one supported version, so nothing in it is ever defaulted. Four rows across
+    /// A miniature settings table for what the real table cannot exercise: its versions straddle
+    /// a 16-byte write line, so the encoded length really is version-relative. Four rows across
     /// three versions, with hand-written blobs and hand-written expectations.
     mod mini {
         #![allow(dead_code)] // generated for every table, not exercised here
@@ -1152,138 +1138,6 @@ mod tests {
         assert_eq!(mini::decode(&mini::stamped(ancient, 3)), None, "a version below the floor is still rejected");
     }
 
-    #[test]
-    fn decode_sanitises_out_of_range_fields() {
-        let mut s = Settings::default();
-        s.clock.month = 13;
-        s.clock.day = 99;
-        s.fix_interval_s = 9999;
-        // `encode` stamps a correct CRC over the bogus-but-in-layout payload, so the blob is valid
-        // and `decode` must accept it and sanitise.
-        let b = encode(&s);
-        let got = decode(&b).expect("valid CRC → Some, just sanitised");
-        assert!((1..=12).contains(&got.clock.month));
-        assert!(got.clock.day >= 1 && got.clock.day <= 31);
-        assert!(got.fix_interval_s <= FIX_INTERVAL_MAX);
-    }
-
-    #[test]
-    fn datetime_from_unix_inverts_to_unix() {
-        for dt in [
-            DateTime { year: 1970, month: 1, day: 1, hour: 0, minute: 0 },
-            DateTime { year: 2000, month: 2, day: 29, hour: 12, minute: 34 },
-            DateTime { year: 2026, month: 7, day: 5, hour: 9, minute: 41 },
-            DateTime { year: 2038, month: 1, day: 19, hour: 3, minute: 14 },
-        ] {
-            assert_eq!(DateTime::from_unix(dt.to_unix()), dt, "round-trip {dt:?}");
-        }
-        // Seconds are dropped to the minute, not rounded.
-        let d = DateTime::from_unix(59);
-        assert_eq!((d.year, d.month, d.day, d.hour, d.minute), (1970, 1, 1, 0, 0));
-    }
-
-    #[test]
-    fn datetime_month_length_is_leap_aware() {
-        assert_eq!(DateTime::month_len(2024, 2), 29, "2024 is a leap year");
-        assert_eq!(DateTime::month_len(2025, 2), 28, "2025 is not");
-        assert_eq!(DateTime::month_len(2000, 2), 29, "div-by-400 is a leap year");
-        assert_eq!(DateTime::month_len(2100, 2), 28, "div-by-100-not-400 is not");
-
-        let mut leap = DateTime { year: 2024, month: 2, day: 31, hour: 0, minute: 0 };
-        leap.sanitize();
-        assert_eq!(leap.day, 29, "Feb 31 in a leap year re-pins to Feb 29");
-        let mut common = DateTime { year: 2025, month: 2, day: 31, hour: 0, minute: 0 };
-        common.sanitize();
-        assert_eq!(common.day, 28, "Feb 31 in a common year re-pins to Feb 28");
-    }
-
-    /// `add_minutes` carries across every boundary a live app clock advances through: minute, hour,
-    /// day, month, year, and the leap day.
-    #[test]
-    fn datetime_add_minutes_carries_across_fields() {
-        let base = DateTime { year: 2025, month: 6, day: 29, hour: 14, minute: 40 };
-        assert_eq!(base.add_minutes(5).minute, 45);
-        let h = base.add_minutes(25);
-        assert_eq!((h.hour, h.minute), (15, 5));
-        let midnight = DateTime { year: 2025, month: 6, day: 29, hour: 23, minute: 59 };
-        let d = midnight.add_minutes(1);
-        assert_eq!((d.day, d.hour, d.minute), (30, 0, 0), "23:59 + 1 rolls into the next day");
-        let m = DateTime { year: 2025, month: 6, day: 30, hour: 23, minute: 0 }.add_minutes(120);
-        assert_eq!((m.month, m.day, m.hour), (7, 1, 1), "end of June rolls into July");
-        let y = DateTime { year: 2025, month: 12, day: 31, hour: 23, minute: 59 }.add_minutes(1);
-        assert_eq!((y.year, y.month, y.day, y.hour, y.minute), (2026, 1, 1, 0, 0), "new year");
-        assert_eq!(base.add_minutes(0), base, "a zero advance changes nothing");
-    }
-
-    /// Long advances land where an independent calendar (`datetime.timedelta`) puts them — the
-    /// cases that separate a correct bulk carry from a day-at-a-time walk that loses a leap day.
-    #[test]
-    fn datetime_add_minutes_matches_reference_over_long_advances() {
-        let f = |d: DateTime| (d.year, d.month, d.day, d.hour, d.minute);
-        let a = DateTime { year: 2025, month: 1, day: 1, hour: 0, minute: 0 }.add_minutes(400 * 24 * 60);
-        assert_eq!(f(a), (2026, 2, 5, 0, 0), "400 days from 2025-01-01");
-        let b = DateTime { year: 2024, month: 2, day: 29, hour: 12, minute: 0 }.add_minutes(366 * 24 * 60);
-        assert_eq!(f(b), (2025, 3, 1, 12, 0), "366 days from the 2024 leap day");
-        let c = DateTime { year: 2025, month: 6, day: 29, hour: 14, minute: 40 }.add_minutes(1_000_000);
-        assert_eq!(f(c), (2027, 5, 25, 1, 20), "a million minutes");
-        let d = DateTime { year: 2100, month: 2, day: 28, hour: 0, minute: 0 }.add_minutes(24 * 60);
-        assert_eq!(f(d), (2100, 3, 1, 0, 0), "2100 is div-by-100-not-400: no Feb 29");
-        let e = DateTime { year: 2000, month: 2, day: 28, hour: 0, minute: 0 }.add_minutes(24 * 60);
-        assert_eq!(f(e), (2000, 2, 29, 0, 0), "2000 is div-by-400: Feb 29 exists");
-        let base = DateTime { year: 2025, month: 6, day: 29, hour: 14, minute: 40 };
-        assert_eq!(base.add_minutes(5_000).add_minutes(7_777), base.add_minutes(12_777), "split == whole");
-    }
-
-    /// February's length is taken from the year the advance lands in.
-    #[test]
-    fn datetime_add_minutes_is_leap_aware() {
-        let leap = DateTime { year: 2024, month: 2, day: 28, hour: 0, minute: 0 }.add_minutes(24 * 60);
-        assert_eq!((leap.month, leap.day), (2, 29), "2024 has a Feb 29 to land on");
-        let common = DateTime { year: 2025, month: 2, day: 28, hour: 0, minute: 0 }.add_minutes(24 * 60);
-        assert_eq!((common.month, common.day), (3, 1), "2025 skips straight to March");
-        let across = DateTime { year: 2024, month: 2, day: 27, hour: 0, minute: 0 }.add_minutes(3 * 24 * 60);
-        assert_eq!((across.month, across.day), (3, 1), "the leap day is one of the three crossed");
-    }
-
-    /// The GPS UTC-anchor to local-time conversion: a signed minute offset rolls the date in
-    /// either direction when the shift crosses midnight.
-    #[test]
-    fn datetime_with_offset_rolls_the_date_both_ways() {
-        let base = DateTime { year: 2025, month: 6, day: 29, hour: 23, minute: 30 };
-        assert_eq!(base.with_offset(0), base, "a zero offset is identity");
-        let within = base.with_offset(15);
-        assert_eq!((within.day, within.hour, within.minute), (29, 23, 45));
-        let next = base.with_offset(60);
-        assert_eq!((next.day, next.hour, next.minute), (30, 0, 30), "forward across midnight rolls the day");
-        let early = DateTime { year: 2025, month: 6, day: 29, hour: 0, minute: 30 };
-        let prev = early.with_offset(-45);
-        assert_eq!((prev.day, prev.hour, prev.minute), (28, 23, 45), "backward across midnight rolls back");
-        let month_edge = DateTime { year: 2025, month: 7, day: 1, hour: 0, minute: 0 };
-        let back = month_edge.with_offset(-60);
-        assert_eq!((back.month, back.day, back.hour), (6, 30, 23), "the borrow steps into June (30 days)");
-    }
-
-    /// The offset's hard edges: year and leap-day boundaries, and the widest real zones.
-    #[test]
-    fn datetime_with_offset_crosses_year_and_leap_boundaries() {
-        let f = |d: DateTime| (d.year, d.month, d.day, d.hour, d.minute);
-        let ny = DateTime { year: 2025, month: 1, day: 1, hour: 0, minute: 15 }.with_offset(-30);
-        assert_eq!(f(ny), (2024, 12, 31, 23, 45), "New Year's Day − 30 min is New Year's Eve");
-        let leap = DateTime { year: 2024, month: 3, day: 1, hour: 0, minute: 30 }.with_offset(-60);
-        assert_eq!(f(leap), (2024, 2, 29, 23, 30), "March 1 2024 borrows from Feb 29");
-        let common = DateTime { year: 2025, month: 3, day: 1, hour: 0, minute: 0 }.with_offset(-1);
-        assert_eq!(f(common), (2025, 2, 28, 23, 59), "March 1 2025 borrows from Feb 28");
-        let nye = DateTime { year: 2025, month: 12, day: 31, hour: 23, minute: 59 }.with_offset(1);
-        assert_eq!(f(nye), (2026, 1, 1, 0, 0), "New Year's Eve + 1 min is New Year's Day");
-        let mid = DateTime { year: 2025, month: 6, day: 29, hour: 10, minute: 0 };
-        assert_eq!(f(mid.with_offset(14 * 60)), (2025, 6, 30, 0, 0), "UTC+14 pushes into tomorrow");
-        assert_eq!(f(mid.with_offset(-12 * 60)), (2025, 6, 28, 22, 0), "UTC−12 pulls into yesterday");
-        for offset in [1i16, -1, 60, -60, 840, -720, 1439, -1439] {
-            assert_eq!(mid.with_offset(offset).with_offset(-offset), mid, "round trip at {offset}");
-            assert_eq!(ny.with_offset(offset).with_offset(-offset), ny, "round trip at {offset} from {ny:?}");
-        }
-    }
-
     /// `add_minutes` is defensive against an unsanitised stamp: a day past the month length must
     /// not underflow the unsigned day-walk.
     #[test]
@@ -1307,17 +1161,6 @@ mod tests {
         assert_eq!((plus2.clock.hour, plus2.clock.minute), (12, 0), "the stored UTC anchor itself did not move");
     }
 
-    /// `to_unix` against references computed independently with `date -u +%s`.
-    #[test]
-    fn to_unix_matches_reference_timestamps() {
-        let dt = |year, month, day, hour, minute| DateTime { year, month, day, hour, minute };
-        assert_eq!(dt(2020, 1, 1, 0, 0).to_unix(), 1_577_836_800);
-        assert_eq!(dt(2024, 2, 29, 12, 30).to_unix(), 1_709_209_800, "leap day");
-        assert_eq!(dt(2026, 7, 2, 9, 33).to_unix(), 1_782_984_780);
-        assert_eq!(dt(2026, 12, 31, 23, 59).to_unix(), 1_798_761_540, "year boundary");
-        assert_eq!(dt(2099, 12, 31, 23, 59).to_unix(), 4_102_444_740, "the top of the range fits u32");
-    }
-
     #[test]
     fn unit_conversions() {
         assert_eq!(Units::Metric.dist(10.0), 10.0);
@@ -1328,122 +1171,6 @@ mod tests {
         assert!((Units::Imperial.elev(1000.0) - 3280.84).abs() < 1e-1, "1000 m ≈ 3281 ft");
         assert_eq!(Units::Metric.cycled(), Units::Imperial);
         assert_eq!(Units::Imperial.cycled(), Units::Metric);
-    }
-
-    // The board firmware keeps a live `App` copy while the RRAM blob remains the source of truth.
-    // These tests model that store with the codec's own byte buffer and exercise the coherence
-    // operations around BLE writes and ride-loop saves.
-
-    /// A minimal stand-in for the persistent RRAM/file store: the one canonical settings blob.
-    struct FakeStore {
-        blob: [u8; ENCODED_LEN],
-    }
-    impl FakeStore {
-        fn new(s: &Settings) -> Self {
-            FakeStore { blob: encode(s) }
-        }
-        fn load(&self) -> Settings {
-            decode(&self.blob).expect("the store always holds a valid blob in these tests")
-        }
-        fn save(&mut self, s: &Settings) {
-            self.blob = encode(s);
-        }
-    }
-
-    #[test]
-    fn adopt_ble_fields_is_narrow() {
-        let mut app = Settings {
-            units: Units::Metric,
-            fix_interval_s: 7,
-            power_saver: true,
-            clock: DateTime { year: 2030, month: 3, day: 4, hour: 5, minute: 6 },
-            ..Settings::default()
-        };
-        let ble = Settings {
-            units: Units::Imperial,
-            device_name: DeviceName::from_str_lossy("Timo's OBC"),
-            // Wrong to adopt: the phone never writes these.
-            fix_interval_s: 1,
-            power_saver: false,
-            ..Settings::default()
-        };
-        app.adopt_ble_fields(&ble);
-        assert_eq!(app.units, Units::Imperial, "units are BLE-owned → adopted");
-        assert_eq!(app.device_name.as_str(), "Timo's OBC", "the name is BLE-owned → adopted");
-        assert_eq!(app.fix_interval_s, 7, "the GPS interval is device-only → untouched");
-        assert!(app.power_saver, "power-saver is device-only → untouched");
-        assert_eq!(app.clock.year, 2030, "the clock is device-only → untouched");
-    }
-
-    /// Phone to device: a BLE Config write lands, then the app runs its change-detection save.
-    /// With the reload before that save, the phone's values survive.
-    #[test]
-    fn ble_write_then_app_save_keeps_ble_values() {
-        let boot = Settings::default();
-        let mut store = FakeStore::new(&boot);
-        let mut app = boot;
-        app.fix_interval_s = 9; // a pending on-device edit
-        app.ble_enabled = false; // and a pending device-only toggle
-
-        // The phone writes units and a rename into the object-store cache and RRAM.
-        let mut objstore = store.load();
-        objstore.adopt_ble_fields(&Settings {
-            units: Units::Imperial,
-            device_name: DeviceName::from_str_lossy("Ridgeline"),
-            ..Settings::default()
-        });
-        store.save(&objstore);
-
-        // The ride loop reloads BLE fields into the app copy before its change-detection save.
-        app.adopt_ble_fields(&store.load());
-        store.save(&app);
-
-        let persisted = store.load();
-        assert_eq!(persisted.units, Units::Imperial, "the phone's units survive the app save (no clobber)");
-        assert_eq!(persisted.device_name.as_str(), "Ridgeline", "the phone's rename survives too");
-        assert_eq!(persisted.fix_interval_s, 9, "the app's own device-only edit still persists");
-        assert!(!persisted.ble_enabled, "the radio-off toggle survives the coherence path (device-only)");
-    }
-
-    /// Without the reload, the app's stale copy overwrites the phone's write. Pinned so a refactor
-    /// that drops the reload fails here.
-    #[test]
-    fn app_save_without_reload_would_clobber() {
-        let mut store = FakeStore::new(&Settings::default());
-        let app = Settings::default();
-
-        let mut objstore = store.load();
-        objstore.adopt_ble_fields(&Settings {
-            units: Units::Imperial,
-            device_name: DeviceName::from_str_lossy("Ridgeline"),
-            ..Settings::default()
-        });
-        store.save(&objstore);
-
-        // The app saves its stale copy without the reload.
-        store.save(&app);
-        let clobbered = store.load();
-        assert_eq!(clobbered.units, Units::Metric, "the bug: the app's stale metric clobbers the phone's imperial");
-        assert!(clobbered.device_name.is_empty(), "and the phone's rename is lost");
-    }
-
-    /// Device to phone: units change on-device, then a Config read must serve fresh values.
-    #[test]
-    fn app_change_then_ble_read_serves_fresh() {
-        let boot = Settings::default();
-        let mut store = FakeStore::new(&boot);
-        // The BLE object-store cache, seeded at boot.
-        let mut objstore_cache = store.load();
-        assert_eq!(objstore_cache.units, Units::Metric);
-
-        // The rider flips to imperial and the ride loop persists the app copy to RRAM.
-        let mut app = boot;
-        app.units = Units::Imperial;
-        store.save(&app);
-
-        // The object store refreshes its cache from RRAM before serving the read.
-        objstore_cache = store.load();
-        assert_eq!(objstore_cache.units, Units::Imperial, "the Config read serves the on-device change, no reboot");
     }
 }
 

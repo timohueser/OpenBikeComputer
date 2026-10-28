@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Inventory and remove old OpenBikeComputer test scratch under the system temp directory."""
+"""Inventory and remove old OpenBikeComputer test scratch and stale shared cargo artifacts."""
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
 from pathlib import Path
+from stat import S_ISDIR
 
 
 SECONDS_PER_DAY = 24 * 60 * 60
+UNIT_HASH = re.compile(r"[0-9a-f]{16}")
 
 
 class CleanupError(RuntimeError):
@@ -143,12 +149,150 @@ def temp_candidates(
     return sorted(result)
 
 
+def cargo_target(value: str | None) -> Path | None:
+    if not value:
+        return None
+    target = Path(value).resolve()
+    if not target.is_dir():
+        return None
+    if target in (Path("/"), Path.home().resolve()) or (target / ".git").exists():
+        raise CleanupError(f"refusing to prune CARGO_TARGET_DIR={target}")
+    # Cargo writes this tag; without it the globs below could match a real project folder.
+    if not (target / "CACHEDIR.TAG").is_file():
+        print(f"warning: CARGO_TARGET_DIR={target} has no CACHEDIR.TAG; not pruning it")
+        return None
+    return target
+
+
+def last_use(entry: Path) -> tuple[float, int]:
+    """Return (newest use, bytes) of a file or a whole directory tree.
+
+    Use is the later of atime and mtime: reading a file updates atime (daily under relatime,
+    so `--days` below 2 can prune a unit in use).
+    A directory counts by mtime only, because this walk updates its atime.
+    """
+    info = entry.lstat()
+    if not S_ISDIR(info.st_mode):
+        return max(info.st_atime, info.st_mtime), info.st_size
+    newest, size = info.st_mtime, 0
+    for root, dirs, files in os.walk(entry):
+        for name in dirs:
+            newest = max(newest, (Path(root) / name).lstat().st_mtime)
+        for name in files:
+            stat = (Path(root) / name).lstat()
+            newest = max(newest, stat.st_atime, stat.st_mtime)
+            size += stat.st_size
+    return newest, size
+
+
+def unit_hash(entry: Path) -> str | None:
+    """`serde-<hash>`, `libserde-<hash>.rlib` and `serde-<hash>.d` share one unit hash.
+
+    Cargo leaves the hash out of some outputs, such as a path package's cdylib.
+    """
+    tail = entry.name.split(".", 1)[0].rpartition("-")[2]
+    return tail if UNIT_HASH.fullmatch(tail) else None
+
+
+@contextlib.contextmanager
+def build_lock(lock: Path, apply: bool) -> Iterator[bool]:
+    """Hold the lock cargo holds for a build in this profile; yield False if a build has it.
+
+    A running build only stats an output it judged fresh and reads it later, so a removal
+    under that build breaks it. Between builds cargo rebuilds a missing unit.
+    A dry run takes no lock and writes nothing.
+    """
+    if not apply:
+        yield True
+        return
+    try:
+        fd = os.open(lock, os.O_RDONLY)
+    except OSError:  # A concurrent `cargo clean` can remove the profile.
+        yield False
+        return
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)
+
+
+def prune_cargo_target(
+    target: Path, cutoff: float, apply: bool
+) -> tuple[dict[Path, tuple[int, int]], list[Path]]:
+    """Return ({artifact dir: (entries, bytes)} unused since cutoff, busy profiles).
+
+    A unit's files share one hash in `.fingerprint/`, `build/` and `deps/`. Cargo reads the
+    fingerprint on every build that includes the unit but only stats the other outputs, so the
+    fingerprint dates the whole unit, and the unit goes whole: a lost part rebuilds the unit
+    and everything downstream. An incremental crate dir is dated by its newest file.
+    """
+    pruned: dict[Path, tuple[int, int]] = {}
+    busy: list[Path] = []
+    # Cargo creates `.cargo-lock` before it writes a profile; a dir without one is not a profile.
+    for lock in sorted([*target.glob("*/.cargo-lock"), *target.glob("*/*/.cargo-lock")]):
+        profile = lock.parent
+        fingerprints = profile / ".fingerprint"
+        # A symlink anywhere in the path could lead out of the target.
+        if profile.resolve() != profile or fingerprints.is_symlink() or not fingerprints.is_dir():
+            continue
+        with build_lock(lock, apply) as locked:
+            if not locked:
+                busy.append(profile)
+                continue
+            alive: set[str] = set()
+            for name in (".fingerprint", "build", "deps", "incremental"):
+                top = profile / name
+                if top.is_symlink() or not top.is_dir():
+                    continue
+                entries = size = 0
+                for entry in sorted(top.iterdir()):
+                    unit = unit_hash(entry)
+                    try:
+                        used, entry_size = last_use(entry)
+                    except OSError:
+                        if unit:
+                            alive.add(unit)
+                        continue
+                    if name in ("build", "deps"):
+                        # Cargo overwrites an output without a hash in place; it never piles up.
+                        keep = unit is None or unit in alive
+                    else:
+                        keep = used > cutoff
+                        if keep and unit and name == ".fingerprint":
+                            alive.add(unit)
+                    if keep:
+                        continue
+                    if apply:
+                        try:
+                            remove_path(entry)
+                        except OSError:
+                            continue
+                    entries += 1
+                    size += entry_size
+                if entries:
+                    pruned[top] = (entries, size)
+    return pruned, busy
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="Remove old OBC test scratch under the system temp directory (dry-run by default)."
+        description=(
+            "Remove old OBC test scratch under the system temp directory and old artifacts in "
+            "$CARGO_TARGET_DIR (dry-run by default)."
+        )
     )
-    result.add_argument("--apply", action="store_true", help="remove eligible scratch entries")
-    result.add_argument("--days", type=int, default=7, help="minimum inactivity age (default: 7)")
+    result.add_argument("--apply", action="store_true", help="remove eligible entries")
+    result.add_argument(
+        "--days",
+        type=int,
+        default=7,
+        help="minimum inactivity age (default: 7; below 2 can prune cargo units in use)",
+    )
     result.add_argument("--repo", type=Path, help=argparse.SUPPRESS)
     return result
 
@@ -166,10 +310,21 @@ def main(argv: list[str] | None = None) -> int:
     print(f"age>={args.days}d  temp={root}")
     for path in scratch:
         print(f"  REMOVE {format_size(sizes.get(path, 0)):>10}  {path}")
-    print(f"Potentially reclaimable: {format_size(sum(sizes.values()))}")
+    target = cargo_target(os.environ.get("CARGO_TARGET_DIR"))
+    cutoff = time.time() - args.days * SECONDS_PER_DAY
+    artifacts, busy = prune_cargo_target(target, cutoff, args.apply) if target else ({}, [])
+    if target:
+        print(f"cargo target={target}")
+    for path, (entries, size) in artifacts.items():
+        print(f"  REMOVE {format_size(size):>10}  {entries} entries in {path}")
+    for profile in busy:
+        print(f"  SKIP   {profile}: cargo holds its lock")
+    # An upper bound: a hard link outside the removed entries keeps its inode.
+    reclaimable = sum(sizes.values()) + sum(size for _, size in artifacts.values())
+    print(f"Potentially reclaimable: up to {format_size(reclaimable)}")
 
     if not args.apply:
-        print("Dry run only; pass --apply to remove the listed scratch entries.")
+        print("Dry run only; pass --apply to remove the listed entries.")
         return 0
 
     eligible = set(temp_candidates(time.time(), args.days, root, registered_worktrees(repo)))
@@ -178,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
             remove_path(path)
         else:
             print(f"skipped {path}: eligibility changed after planning")
-    print("Scratch cleanup applied.")
+    print("Cleanup applied.")
     return 0
 
 

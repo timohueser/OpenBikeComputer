@@ -4,6 +4,7 @@
 // a stone face the colour of the rock under it. The light and the haze are those of the ground, from the
 // look in group 2.
 // #include ../terrain/drawn-mesh.wgsl
+// #include ../terrain/portal-box.wgsl
 // #include ../ground/look.wgsl
 
 // As Frame and Node of terrain.wgsl, which share their buffers.
@@ -33,6 +34,8 @@ struct Anchor {
 @group(0) @binding(2) var<storage, read_write> anchor_out: array<f32>;
 @group(0) @binding(3) var<uniform> anchor_count: vec4u;
 @group(0) @binding(4) var<storage, read> anchor_z: array<vec2f>;
+// The boxes of the tunnels' portals near the eye, as `holes` of terrain.wgsl.
+@group(0) @binding(5) var<storage, read> portals: array<vec4f>;
 
 struct StructureIn {
     @location(0) at: vec2i,
@@ -62,6 +65,7 @@ const ROAD_FACE: u32 = 2u;
 const VOID_FACE: u32 = 4u;
 const INSIDE_FACE: u32 = 8u;
 const LAMP_FACE: u32 = 16u;
+const BORE_FACE: u32 = 128u;
 // As anchored.ts: a face in the colour of the rock under it; an edge of a cable's ribbon. An anchor that is a point.
 const STONE_FACE: u32 = 32u;
 const CABLE_EDGE: u32 = 64u;
@@ -69,18 +73,24 @@ const POINT_ANCHOR: u32 = 1u;
 const ABSOLUTE_ANCHOR: u32 = 2u;
 // The model grey that a stone face takes the rock's colour over: GREY of models/rocks.ts, squared as the albedo is.
 const ROCK_GREY: vec3f = vec3f(0.3101, 0.3189, 0.2929);
-// A cable's diameter, its least width on screen in output pixels (a render pixel at the default scale),
-// the least share of that width that it covers, so that a far lift keeps a faint line, and the metres
-// of an offset unit.
-const CABLE_M: f32 = 0.05;
+// A cable's least width on screen in output pixels (a render pixel at the default scale), the least
+// share of that width that it covers, so that a far lift keeps a faint line, and the metres of an
+// offset unit.
 const CABLE_PIXELS: f32 = 1.5;
 const CABLE_COVER: f32 = 0.4;
 const OFFSET_M: f32 = 1.0 / 256.0;
-// The light inside a tunnel: its lamps, the same everywhere.
-const TUNNEL_LIGHT: vec3f = vec3f(0.36, 0.35, 0.33);
-// The void of a portal draws past this share of the masks' reach: nearer, the terrain has its hole in
-// the box and the bore shows through.
-const VOID_REACH: f32 = 0.75;
+// The even light under a gallery's roof.
+const GALLERY_LIGHT: vec3f = vec3f(0.36, 0.35, 0.33);
+// In a bore: the light of its lamps under the crown, less on the walls and the vault, and less with the
+// distance from the eye down to DIM of it; and the daylight from a portal, which fades out DAYLIGHT_M in.
+const TUNNEL_LIGHT: vec3f = vec3f(0.5, 0.48, 0.45);
+const DIM: f32 = 0.5;
+const DIM_M: f32 = 60.0;
+const DAYLIGHT_M: f32 = 20.0;
+// The void of a portal draws where the terrain draws coarser than this level: from it on, the slope of
+// the ground up over the bore lies inside the portal's box (BOX_M of tunnels.ts), and the bore shows
+// through the terrain's hole.
+const VOID_LOD: f32 = 17.0;
 // As ROAD_RANGE_M of mesh.ts.
 const ROAD_RANGE_M: f32 = 16.0;
 
@@ -100,7 +110,7 @@ fn structure_vertex(v: StructureIn) -> StructureOut {
     p.z -= frame.curvature * dot(p.xy, p.xy);
     out.clip = frame.view_proj * vec4f(p, 1.0);
     // The crack and surface views show the terrain alone: past the near plane, the triangle clips.
-    if (frame.debug == 3u || frame.debug == 4u || ((flags & VOID_FACE) != 0u && length(p) < VOID_REACH * masks.reach)) {
+    if (frame.debug == 3u || frame.debug == 4u) {
         out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
     }
     out.u = u;
@@ -110,6 +120,21 @@ fn structure_vertex(v: StructureIn) -> StructureOut {
     out.road = v.road * ROAD_RANGE_M;
     out.sleepers = v.sleepers;
     return out;
+}
+
+// The share of daylight on a face of a bore at `u` units about the anchor and height `h`: all of it at
+// the facade of a portal, none DAYLIGHT_M from it. A face off the box's section fades out over a metre
+// more per metre from the facade, so that a bore that bends past the box keeps its light, with no step.
+fn daylight(u: vec2f, h: f32) -> f32 {
+    var light = 0.0;
+    for (var i = 0u; i < u32(portals[0].x); i++) {
+        let b = portals[2u + 3u * i];
+        let q = box_point(portals[1u + 3u * i], portals[3u + 3u * i].x, u, h);
+        let from_facade = abs(q.x);
+        let off = max(q.y - b.y, max(b.w - 1.0 - q.z, q.z - b.z));
+        light = max(light, (1.0 - smoothstep(0.0, DAYLIGHT_M, from_facade)) * (1.0 - smoothstep(0.0, 1.0 + from_facade, off)));
+    }
+    return light;
 }
 
 // The heights of the frame's anchors, one lane per end: the drawn surface there (`stand_height`), NONE
@@ -132,7 +157,7 @@ fn anchor_heights(@builtin(global_invocation_id) id: vec3u) {
 }
 
 struct AnchoredIn {
-    // Metres across, along and up in the anchor's frame, in OFFSET_M; w: the side of a cable's edge.
+    // Metres across, along and up in the anchor's frame, in OFFSET_M; w: a cable edge's diameter in mm, signed by its side.
     @location(0) offset: vec4i,
     // The anchor in the low 16 bits, t in the high 16.
     @location(1) hung: u32,
@@ -174,9 +199,11 @@ fn anchored(v: AnchoredIn, first: u32) -> StructureOut {
     if ((flags & CABLE_EDGE) != 0u) {
         // The ribbon turns to the eye and is at least CABLE_PIXELS wide; `road.x` keeps the share that the cable covers.
         let tangent = vec3f(pb - pa, z.y - z.x - 4.0 * an.sag * (1.0 - 2.0 * t));
-        let width = max(CABLE_M, CABLE_PIXELS * length(p) * frame.pixel);
-        p += normalize(cross(tangent, p)) * f32(v.offset.w) * 0.5 * width;
-        out.road = vec2f(max(CABLE_M / width, CABLE_COVER), 0.0);
+        // The edge's w is the cable's diameter in mm, its sign the side.
+        let diameter = abs(f32(v.offset.w)) * 0.001;
+        let width = max(diameter, CABLE_PIXELS * length(p) * frame.pixel);
+        p += normalize(cross(tangent, p)) * sign(f32(v.offset.w)) * 0.5 * width;
+        out.road = vec2f(max(diameter / width, CABLE_COVER), 0.0);
     }
     p.z -= frame.curvature * dot(p.xy, p.xy);
     out.clip = frame.view_proj * vec4f(p, 1.0);
@@ -213,9 +240,17 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     if ((flags & CABLE_EDGE) != 0u && hash(in.clip.xy + look.screen.xy * 4096.0) > in.road.x) {
         discard;
     }
+    // Per fragment: per vertex, a fan that the LOD crosses would collapse in part and streak.
+    if ((flags & VOID_FACE) != 0u && lod(lod_space(in.u)) >= VOID_LOD) {
+        discard;
+    }
     var lit = light_up(albedo, n, sun_share(sun_at(lod_space(in.u)), in.relative, n, LIFT_SOLID), 1.0, look.horizon.w);
     if ((flags & INSIDE_FACE) != 0u) {
-        lit = albedo * TUNNEL_LIGHT;
+        lit = albedo * GALLERY_LIGHT;
+    }
+    if ((flags & BORE_FACE) != 0u) {
+        let lamps = albedo * TUNNEL_LIGHT * (0.8 + 0.2 * n.z) * mix(DIM, 1.0, exp(-length(in.relative) / DIM_M));
+        lit = lamps + daylight(in.u, in.altitude) * light_up(albedo, n, 0.0, 1.0, look.horizon.w);
     }
     if ((flags & (VOID_FACE | LAMP_FACE)) != 0u) {
         lit = albedo;

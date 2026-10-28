@@ -1,0 +1,6 @@
+name = "TrailView pyrenees: Bonaigua"
+kind = "box"
+# west, south, east, north
+box = [0.72, 42.47, 1.25, 42.86]
+countries = ["ES", "FR"]
+time_zone = "Europe/Madrid"

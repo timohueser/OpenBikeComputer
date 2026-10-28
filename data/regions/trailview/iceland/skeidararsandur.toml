@@ -1,0 +1,6 @@
+name = "TrailView iceland: Skeidararsandur"
+kind = "box"
+# west, south, east, north
+box = [-17.82, 63.67, -16.46, 64.27]
+countries = ["IS"]
+time_zone = "Atlantic/Reykjavik"

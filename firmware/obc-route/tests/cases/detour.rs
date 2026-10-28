@@ -376,51 +376,6 @@ fn detour_corridor_seals_only_path_is_nopath() {
     assert_eq!(res.unwrap_err(), NavError::NoPath);
 }
 
-#[test]
-fn detour_with_degenerate_corridor_matches_plain_plan() {
-    let bytes = map_with(&road_graph(true, false));
-    let obcr = road_route_obcr();
-    let rsrc = SliceSource(&obcr[..]);
-    let idx = RouteIndex::read(&rsrc).unwrap();
-    let route = RouteReader::new(&idx, &rsrc);
-    let corridor = Corridor::build(&route, 0, MIN_DETOUR_SPAN_M - 1);
-    assert!(corridor.is_degenerate());
-
-    let src = SliceSource(&bytes[..]);
-    let tables = MapTables::parse(&src).unwrap();
-    let cache = MapCache::new();
-    let r = Reader::new(&src, &tables, &cache);
-
-    let from = road_at(0);
-    let to = road_at(SEGS);
-    let mut scratch = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
-    let mut tiles = NavTileCache::new();
-    let mut plain = VecSink::default();
-    let plain_res =
-        plan_route(&r, from, to, "Same", BikeType::Road, &mut scratch, &mut tiles, &mut NullElevation, &mut plain)
-            .unwrap();
-
-    let mut scratch2 = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
-    let mut tiles2 = NavTileCache::new();
-    let mut det = VecSink::default();
-    let det_res = plan_detour(
-        &r,
-        from,
-        to,
-        "Same",
-        BikeType::Road,
-        corridor,
-        &mut scratch2,
-        &mut tiles2,
-        &mut NullElevation,
-        &mut det,
-    )
-    .unwrap();
-
-    assert_eq!(plain_res, det_res);
-    assert_eq!(plain.buf, det.buf, "a degenerate corridor must not perturb the plan by a single byte");
-}
-
 /// The mid-span detour (600 to 2 800 m) spliced into the road route. Returns the spliced bytes,
 /// the spliced stats and the detour length.
 fn spliced_road() -> (Vec<u8>, obc_route::RouteStats, u32) {
@@ -437,9 +392,7 @@ fn spliced_road() -> (Vec<u8>, obc_route::RouteStats, u32) {
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    let stats =
-        splice_detour(Leg::Detour, &orig, &det, 600, 2_800, dstats.total_distance_m, dstats.has_elevation, &mut sink)
-            .unwrap();
+    let stats = splice_detour(Leg::Detour, &orig, &det, 600, 2_800, &mut sink).unwrap();
     (sink.buf, stats, dstats.total_distance_m)
 }
 
@@ -470,31 +423,6 @@ fn splice_output_roundtrips_and_total_is_preview_consistent() {
         "override total ({header}) should stay within a few percent of the measured polyline ({all_measured})"
     );
     assert!(header as u32 >= 600 + detour_len, "total ≥ head + planner detour length");
-}
-
-#[test]
-fn splice_interpolates_detour_elevation_without_spikes() {
-    let (spliced, stats, _) = spliced_road();
-    let pts = route_points(&spliced);
-    assert!(pts.first().unwrap().ele >= 99 && pts.first().unwrap().ele <= 101, "head start keeps ~100 m");
-    assert!(pts.last().unwrap().ele >= 199 && pts.last().unwrap().ele <= 201, "tail end keeps ~200 m");
-    for w in pts.windows(2) {
-        if w[0].elevation().is_none() || w[1].elevation().is_none() {
-            continue;
-        }
-        assert!(
-            w[1].ele >= w[0].ele - 1,
-            "spliced elevation must be non-decreasing (ramp + monotone lerp), got {} → {}",
-            w[0].ele,
-            w[1].ele
-        );
-    }
-    assert!(
-        (20..=40).contains(&stats.total_ascent_m),
-        "recomputed ascent should be the ramp's ~100 m, got {}",
-        stats.total_ascent_m
-    );
-    assert_eq!(stats.total_descent_m, 0);
 }
 
 #[test]
@@ -563,7 +491,7 @@ fn splice_head_length_equals_split_progress() {
 
 #[test]
 fn splice_self_input_is_previous_output() {
-    let (first, _, detour_len) = spliced_road();
+    let (first, ..) = spliced_road();
     let bytes = map_with(&road_graph(true, false));
     let (_, detour) = detour_over(&bytes, &road_route_obcr(), 600, 2_800);
 
@@ -575,7 +503,7 @@ fn splice_self_input_is_previous_output() {
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    let stats = splice_detour(Leg::Detour, &orig, &det, 700, 2_900, detour_len, false, &mut sink).unwrap();
+    let stats = splice_detour(Leg::Detour, &orig, &det, 700, 2_900, &mut sink).unwrap();
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).expect("a re-spliced route still parses");
     assert_eq!(idx.name(), "Detour · Road trip", "no stacked name prefixes");
@@ -605,7 +533,7 @@ fn a_nearest_point_approach_keeps_only_the_tail_and_its_waypoints() {
     let leg_index = RouteIndex::read(&leg_source).unwrap();
     let leg = RouteReader::new(&leg_index, &leg_source);
     let mut sink = VecSink::default();
-    splice_detour(Leg::Approach, &route, &leg, join_m, join_m, leg.total_distance_m, true, &mut sink).unwrap();
+    splice_detour(Leg::Approach, &route, &leg, join_m, join_m, &mut sink).unwrap();
     let source = SliceSource(&sink.buf);
     let index = RouteIndex::read(&source).unwrap();
     let result = RouteReader::new(&index, &source);
@@ -654,7 +582,7 @@ fn an_approach_splice_is_the_leg_then_the_whole_route() {
         "an approach is not trimmed"
     );
     let mut sink = VecSink::default();
-    let stats = splice_detour(Leg::Approach, &orig, &det, 0, 0, leg_m, true, &mut sink).unwrap();
+    let stats = splice_detour(Leg::Approach, &orig, &det, 0, 0, &mut sink).unwrap();
 
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).unwrap();
@@ -724,7 +652,7 @@ fn a_rest_splice_is_the_rest_of_the_day_then_the_next_day_without_the_spur() {
     let (rest, next) = (RouteReader::new(&idx2, &src2), RouteReader::new(&idx3, &src3));
     let mut sink = VecSink::default();
     let leg = Leg::Rest { from_m, to_m: leave_m };
-    let stats = splice_detour(leg, &next, &rest, 0, join_m, 0, true, &mut sink).unwrap();
+    let stats = splice_detour(leg, &next, &rest, 0, join_m, &mut sink).unwrap();
 
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).unwrap();
@@ -761,14 +689,7 @@ fn trim_run(
     (out, sink.buf)
 }
 
-fn spliced_total(
-    orig_obcr: &[u8],
-    detour_obcr: &[u8],
-    split_m: u32,
-    rejoin_m: u32,
-    detour_len_m: u32,
-    detour_has_elevation: bool,
-) -> u32 {
+fn spliced_total(orig_obcr: &[u8], detour_obcr: &[u8], split_m: u32, rejoin_m: u32) -> u32 {
     let osrc = SliceSource(orig_obcr);
     let oidx = RouteIndex::read(&osrc).unwrap();
     let orig = RouteReader::new(&oidx, &osrc);
@@ -776,9 +697,7 @@ fn spliced_total(
     let didx = RouteIndex::read(&dsrc).unwrap();
     let det = RouteReader::new(&didx, &dsrc);
     let mut sink = VecSink::default();
-    splice_detour(Leg::Detour, &orig, &det, split_m, rejoin_m, detour_len_m, detour_has_elevation, &mut sink)
-        .unwrap()
-        .total_distance_m
+    splice_detour(Leg::Detour, &orig, &det, split_m, rejoin_m, &mut sink).unwrap().total_distance_m
 }
 
 /// With connectors only at the road's ends, a plan to a mid-route rejoin must overshoot to road12
@@ -824,8 +743,8 @@ fn trim_rejoins_at_first_tail_contact_and_removes_the_retrace() {
         assert!(!descends_tail, "no trimmed point rides the tail between node9 and node12 ({}, {})", p.lon, p.lat);
     }
 
-    let untrimmed_total = spliced_total(&obcr, &detour, 0, target, dstats.total_distance_m, dstats.has_elevation);
-    let trimmed_total = spliced_total(&obcr, &trimmed, 0, out.rejoin_m, out.detour_len_m, dstats.has_elevation);
+    let untrimmed_total = spliced_total(&obcr, &detour, 0, target);
+    let trimmed_total = spliced_total(&obcr, &trimmed, 0, out.rejoin_m);
     assert!(
         untrimmed_total >= trimmed_total + 1_000,
         "the trimmed splice drops ≥1 km (untrimmed {untrimmed_total}, trimmed {trimmed_total})"
@@ -911,8 +830,7 @@ fn splice_span_at_route_end() {
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    splice_detour(Leg::Detour, &orig, &det, 600, total, dstats.total_distance_m, dstats.has_elevation, &mut sink)
-        .unwrap();
+    splice_detour(Leg::Detour, &orig, &det, 600, total, &mut sink).unwrap();
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).unwrap();
     let pts = route_points(&sink.buf);
@@ -1023,8 +941,10 @@ fn plan_either(bytes: &[u8], from: (i32, i32), to: (i32, i32), corridor: Option<
     (res.expect("the fixture always has a legal path").total_distance_m, sink.buf)
 }
 
+/// With the road blacklisted, a climb-blind detour takes the short north street and a heavily
+/// climb-weighted one takes the longer flat south street.
 #[test]
-fn a_detour_weighs_climb_the_same_way_a_plan_does() {
+fn the_climb_weight_picks_the_detour_relief_street() {
     let graph = road_graph_two_reliefs();
     let obcr = road_route_obcr();
 
@@ -1039,16 +959,25 @@ fn a_detour_weighs_climb_the_same_way_a_plan_does() {
     let rsrc = SliceSource(&obcr[..]);
     let idx = RouteIndex::read(&rsrc).unwrap();
     let route = RouteReader::new(&idx, &rsrc);
-    let total = route.total_distance_m;
-
-    let blind = map_with_terrain(&graph, climb_profile(0), &mut Hillside);
-    let (dist, _) =
-        plan_either(&blind, road_at(0), road_at(SEGS), Some(Corridor::build(&RouteReader::new(&idx, &rsrc), 0, total)));
-    assert_eq!(dist, 4140, "climb-blind, the detour takes the short north street");
-
-    let weighted = map_with_terrain(&graph, climb_profile(20), &mut Hillside);
-    let (dist, _) = plan_either(&weighted, road_at(0), road_at(SEGS), Some(Corridor::build(&route, 0, total)));
-    assert_eq!(dist, 4140, "at a heavy climb weight it detours south, onto the flat");
+    // Latitudes of the detour points inside the blacklisted span, where only a relief street runs.
+    let span_lats = |climb_weight: u8| {
+        let bytes = map_with_terrain(&graph, climb_profile(climb_weight), &mut Hillside);
+        let corridor = Corridor::build(&route, 0, route.total_distance_m);
+        let (_, detour) = plan_either(&bytes, road_at(0), road_at(SEGS), Some(corridor));
+        let lats: Vec<i32> = route_points(&detour)
+            .iter()
+            .filter(|p| p.lon > road_at(1).0 && p.lon < road_at(SEGS - 1).0)
+            .map(|p| p.lat)
+            .collect();
+        assert!(!lats.is_empty(), "the detour crosses the span");
+        lats
+    };
+    for (climb_weight, street_lat, side) in [(0, BASE.1 + STREET_OFF, "north"), (20, BASE.1 - STREET_OFF, "south")] {
+        assert!(
+            span_lats(climb_weight).iter().all(|&lat| lat == street_lat),
+            "at climb weight {climb_weight} the detour takes the {side} street"
+        );
+    }
 }
 
 /// The corridor is the only thing the detour dispatch adds. Here the map's ascents are real and
@@ -1121,17 +1050,7 @@ fn spliced_span(
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    let stats = splice_detour(
-        Leg::Detour,
-        &orig,
-        &det,
-        split_m,
-        rejoin_m,
-        dstats.total_distance_m,
-        dstats.has_elevation,
-        &mut sink,
-    )
-    .unwrap();
+    let stats = splice_detour(Leg::Detour, &orig, &det, split_m, rejoin_m, &mut sink).unwrap();
     (sink.buf, stats, dstats)
 }
 

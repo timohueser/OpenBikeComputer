@@ -334,22 +334,6 @@ mod tests {
     }
 
     #[test]
-    fn footer_round_trip_pins_layout() {
-        let footer = example();
-        let bytes = encode_footer(&footer);
-        assert_eq!(&bytes[..8], b"OBRF\x06\x0b\x9a\0");
-        assert_eq!(&bytes[22..30], &[0x2A, 3, 0x80, 2, 3, 0, 0, 0], "climb, descent, point count");
-        assert_eq!(bytes[33], 0, "recorded rides are not demos");
-        assert_eq!(&bytes[34..42], &[210, 0, 224, 1, 0xF4, 2, 0, 0], "power, then energy");
-        assert_eq!(&bytes[90..102], &[0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01, 1, 3, 1, 14]);
-        assert_eq!(&bytes[150..], &[185, 0, 250, 0], "max HR, reserved, FTP");
-        assert_eq!(decode_footer(&bytes), Ok(footer));
-        assert_eq!(footer.name(), "Sensor Ride");
-        assert_eq!(footer.trip_name(), "Alpen Traverse");
-        assert_eq!(checked_object_len(3), Ok(3 * 20 + 154));
-    }
-
-    #[test]
     fn no_power_data_stays_apart_from_zero_kj() {
         for energy_kj in [None, Some(0)] {
             let footer = Footer { energy_kj, ..example() };

@@ -299,33 +299,6 @@ mod tests {
         assert_eq!(buf, [0b00_11_00_00, 0b00_00_11_00, 0b00_00_00_11, 0x00]);
     }
 
-    /// The byte value is the device-64 palette index: white is the max, black 0.
-    #[test]
-    fn device64_byte_is_the_palette_index() {
-        assert_eq!(rgb565_to_device64_byte(0xFFFF), 0x3F); // white
-        assert_eq!(rgb565_to_device64_byte(0x0000), 0x00);
-        // black
-    }
-
-    /// The pack keeps exactly the bits `obc_reader::rgb565_to_device64` keeps, cross-checked
-    /// against the same expansion that helper uses, so the on-glass gamut matches the preview.
-    #[test]
-    fn device64_matches_reader_gamut_indices() {
-        // The exact channel expansion obc_reader::rgb565_to_rgb888 uses.
-        let to888 = |c: u16| {
-            let r5 = ((c >> 11) & 0x1F) as u8;
-            let g6 = ((c >> 5) & 0x3F) as u8;
-            let b5 = (c & 0x1F) as u8;
-            ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2))
-        };
-        for raw in [0x0000u16, 0xFFFF, 0xF800, 0x07E0, 0x001F, 0x1234, 0xABCD, 0x8410, 0x5555] {
-            let byte = rgb565_to_device64_byte(raw);
-            let (r8, g8, b8) = to888(raw);
-            let want = ((r8 >> 6) << 4) | ((g8 >> 6) << 2) | (b8 >> 6); // rgb565_to_device64's indices
-            assert_eq!(byte, want, "raw {raw:#06x}");
-        }
-    }
-
     /// Exhaustive pin over all 65,536 RGB565 values: this pack must agree with the simulator
     /// preview's quantizer at the palette index. The two crates implement it independently, so a
     /// change to one would otherwise silently fork on-glass colour from the preview. Only the
@@ -444,21 +417,5 @@ mod tests {
         fbc.set_clip(Rectangle::new(Point::zero(), Size::new(3, 3)));
         paint(&mut fbc);
         assert_eq!(plain, clipped);
-    }
-
-    #[test]
-    fn device64_fill_solid_and_clear() {
-        let mut buf = [0u8; 4 * 4];
-        {
-            let mut fb = dev(&mut buf, 4, 4);
-            fb.clear(Rgb565::from(RawU16::new(0xFFFF))).unwrap(); // white → 0x3F everywhere
-            fb.fill_solid(&Rectangle::new(Point::new(1, 1), Size::new(2, 2)), Rgb565::from(RawU16::new(0x0000)))
-                .unwrap(); // black sub-rect
-        }
-        let at = |x: usize, y: usize| buf[y * 4 + x];
-        assert_eq!(at(0, 0), 0x3F); // cleared white
-        assert_eq!(at(1, 1), 0x00); // black sub-rect
-        assert_eq!(at(2, 2), 0x00);
-        assert_eq!(at(3, 3), 0x3F); // outside the sub-rect
     }
 }

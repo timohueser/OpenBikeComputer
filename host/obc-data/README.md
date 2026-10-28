@@ -33,6 +33,7 @@ serves, so they need no commit.
 | `data/planner.toml` | Planner producer options |
 | `data/planner-runtime.toml` | Runtime target and publication origins |
 | `OBC_DATA_STORE` | Build store |
+| `OBC_DATA_ARCHIVE` | Archive root, see the spec section Archive; unset: no archive. A source with `keep = "archive"` reads its files there before upstream. Each file must have the upstream `Last-Modified` as its modification time |
 | `OBC_WIKI_DUMPS` | Archive cache; default: `wiki-dumps/` in the store. Existing archives and symlinks are reused |
 | `OBC_WIKIMEDIA_ENTERPRISE_USERNAME`, `OBC_WIKIMEDIA_ENTERPRISE_REFRESH_TOKEN` | Download missing Wikipedia HTML; access tokens refresh automatically |
 | `OBC_WIKIMEDIA_ENTERPRISE_TOKEN` | Access token when no refresh credential is set |
@@ -44,6 +45,7 @@ serves, so they need no commit.
 | `~/.config/openbikecomputer/credentials.env` | `env` credentials of sources; the environment wins |
 | `~/.cdsapirc` | CDS credential for a selected climate fetch |
 | `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |
+| `~/.config/openbikecomputer/clms-key.json` | CLMS service key for the CORINE fetch; save the JSON of the token whole, mode 0600 |
 
 Set a source credential on the Machine screen, or pipe it to `obc data source credential ID`.
 Keep other secrets in the host environment or ignored `tools/obc.local`, never tracked config.

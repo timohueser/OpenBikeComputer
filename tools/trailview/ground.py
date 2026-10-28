@@ -26,9 +26,8 @@ from .. import planner_geo as geo, step_pool, step_request
 # `trailview_format` of the ground archive, which the readers check.
 FORMAT = 3
 MATERIAL_ZOOM = 13
+LITHOLOGY_ZOOM = 12
 REGION_ZOOM = 10
-# The lithology's last zoom is the highest `zoom` of its sources, and at least this one.
-LITHOLOGY_ZOOM = 10
 # The material byte: the code in the low 6 bits, then the barren bit; NO_DATA alone is outside the bake.
 BARREN, NO_DATA = 0x40, 0x80
 # A region byte with no region: no ecoregion while the walk runs, and no data in a tile.
@@ -253,12 +252,11 @@ def step():
         ground = json.loads(Path(rules["ground.json"]).read_bytes())
         files = lambda source: step_request.files(request, source) if source in request["snapshots"] else None
         if layer == "lithology":
-            steps, zooms = sources.chain("lithology", ground, vocabulary, files, bounds)
-            bake, top = Lithology(steps), max([LITHOLOGY_ZOOM, *zooms])
+            bake, top = Lithology(sources.chain("lithology", ground, vocabulary, files, bounds)), LITHOLOGY_ZOOM
         else:
             from . import colour
 
-            steps, _ = sources.chain("material", ground, vocabulary, files, bounds, layers["planner/osm"]["osm.pbf"])
+            steps = sources.chain("material", ground, vocabulary, files, bounds, layers["planner/osm"]["osm.pbf"])
             rock = Coarse(layers["planner/trailview-lithology"]["lithology.pmtiles"])
             bake, top = Material(bounds, steps, colour.mosaics(files("sentinel-2-mosaics")), rock), MATERIAL_ZOOM
     bake_layer(layer, bake, top, bounds, output, {"layer": layer})

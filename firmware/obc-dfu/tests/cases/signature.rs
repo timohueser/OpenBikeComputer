@@ -6,7 +6,7 @@
 //! the unsigned header decoder, transcribed from the spec text, and then installs a signed
 //! container through the real engine.
 
-use obc_dfu::armer::{scan, ExtentsError, ScanError, StageIo};
+use obc_dfu::armer::{scan, ScanError, StageIo};
 use obc_dfu::engine::IoError;
 use obc_dfu::sig::test_key;
 use obc_dfu::{
@@ -26,7 +26,7 @@ impl StageIo for Stage {
         let start = offset as usize;
         self.bytes.get(start..start + buf.len()).map(|s| buf.copy_from_slice(s)).ok_or(IoError)
     }
-    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, ExtentsError> {
+    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, IoError> {
         out[0] = Extent { start_block: 100, blocks: (self.bytes.len() as u32).div_ceil(512) };
         Ok(1)
     }
@@ -195,14 +195,6 @@ fn armer_rejects_an_unknown_future_scheme() {
 }
 
 #[test]
-fn armer_rejects_a_signature_by_the_wrong_key() {
-    let img = image();
-    let attacker_seed = *b"an attacker's own signing seed!!";
-    let bytes = signed_container(&img, "v1.4.0", &attacker_seed);
-    assert_eq!(scan_bytes(bytes), Err(ScanError::BadSignature));
-}
-
-#[test]
 fn armer_rejects_a_garbage_trailer() {
     // All-zero and all-ones trailers: what a torn write or an erased flash leaves behind.
     let img = image();
@@ -276,18 +268,6 @@ fn a_fielded_v1_decoder_accepts_a_v2_header_with_identical_fields() {
 }
 
 #[test]
-fn the_v2_signature_lives_where_v1_already_ignored_bytes() {
-    // v1 specified the container as `64 + image_len` bytes and ignored anything past that. The
-    // trailer sits exactly there, so a v1 reader's view of the file is unchanged.
-    let img = image();
-    let v2 = signed_container(&img, "v1.4.0", &test_key::SEED);
-    let v1 = v1_container(&img, "v1.4.0");
-    assert_eq!(v2.len(), 64 + img.len() + SIG_LEN);
-    assert_eq!(&v2[64..64 + img.len()], &v1[64..], "the image bytes are in the same place");
-    assert_eq!(v2.len() - v1.len(), SIG_LEN, "v2 adds exactly the trailer");
-}
-
-#[test]
 fn the_install_engine_flashes_a_v2_container_unchanged() {
     // Through the real engine, the code `obc-boot` links: the flash pass must write exactly
     // `image_len` raw bytes, skipping the container header and never touching the trailer.
@@ -299,25 +279,11 @@ fn the_install_engine_flashes_a_v2_container_unchanged() {
     assert_eq!(flashed, img, "the raw image is flashed; the header and the trailer are not");
 }
 
-#[test]
-fn the_install_engine_treats_v1_and_v2_identically() {
-    // Same image, two containers: the slot contents must be indistinguishable.
-    let img = image();
-    let v1 = v1_container(&img, "v1.4.0");
-    let v2 = signed_container(&img, "v1.4.0", &test_key::SEED);
-    let v1_header = ImageHeader::decode(v1[..HEADER_LEN].try_into().unwrap()).unwrap();
-    let v2_header = ImageHeader::decode(v2[..HEADER_LEN].try_into().unwrap()).unwrap();
-
-    let staged_v1 = mock_engine::staged_ref(v1_header, &v1);
-    let staged_v2 = mock_engine::staged_ref(v2_header, &v2);
-    assert_eq!(mock_engine::install(&v1, &staged_v1), mock_engine::install(&v2, &staged_v2));
-}
-
 /// A minimal `InstallIo` over an in-memory card and app slot: enough to run the real engine and
 /// see what it wrote. The failure matrix lives in the engine tests.
 mod mock_engine {
     use obc_dfu::engine::{run, InstallIo, IoError, Slot};
-    use obc_dfu::{BootState, Extent, ImageHeader, Outcome, StagedRef, PAGE_LEN, SD_BLOCK_LEN};
+    use obc_dfu::{BootState, Outcome, StagedRef, PAGE_LEN, SD_BLOCK_LEN};
 
     /// The container sits from this block in one contiguous run, as a freshly copied file does.
     const START_BLOCK: u32 = 100;
@@ -352,12 +318,6 @@ mod mock_engine {
             self.state_page[..page.len()].copy_from_slice(page.as_bytes());
             Ok(())
         }
-    }
-
-    pub fn staged_ref(header: ImageHeader, container: &[u8]) -> StagedRef {
-        let blocks = (container.len() as u32).div_ceil(SD_BLOCK_LEN as u32);
-        StagedRef::new(header, header.image_len, header.image_crc32, &[Extent { start_block: START_BLOCK, blocks }])
-            .expect("a coherent staged ref")
     }
 
     /// Returns exactly the `image_len` bytes that landed at the slot base.

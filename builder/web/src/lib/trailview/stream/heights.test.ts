@@ -31,12 +31,13 @@ describe('the stored pages of a terrain tile', () => {
         expect(east).toMatchObject({ min: 812, max: 812, complete: true, offset: 812, scale: 1e-4 });
         expect(south).toBeNull();
 
-        let top = 0;
+        let top = 0, worst = 0;
         for (let j = 0; j < PAGE; j++) for (let i = 0; i < PAGE; i++) {
             const code = ramp!.texels[j * PAGE + i];
             top = Math.max(top, code);
-            expect(Math.abs(ramp!.offset + code * ramp!.scale - height(i + PAGE, j + PAGE))).toBeLessThanOrEqual(ramp!.scale / 2 + 1e-9);
+            worst = Math.max(worst, Math.abs(ramp!.offset + code * ramp!.scale - height(i + PAGE, j + PAGE)));
         }
+        expect(worst).toBeLessThanOrEqual(ramp!.scale / 2 + 1e-9);
         // The greatest height takes the last code below the unknown one.
         expect(top).toBe(UNKNOWN16 - 1);
     });

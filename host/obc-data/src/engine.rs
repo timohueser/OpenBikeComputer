@@ -937,10 +937,21 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
                 version: version.into(),
                 files: Vec::new(),
             });
-            snapshot.files.push(FileRecord { name: name.into(), url, size: bytes.len() as u64, sha256, retrieved });
+            snapshot.files.push(FileRecord {
+                name: name.into(),
+                url,
+                size: bytes.len() as u64,
+                sha256,
+                retrieved,
+                archive: None,
+            });
             self.store.put_snapshot(&snapshot).unwrap();
         }
     }
+
+    /// The Python that the repository pins. A fixture project asks for the same one, which CI
+    /// installs as the system Python.
+    pub(crate) const PYTHON: &str = include_str!("../../../.python-version");
 
     pub(crate) fn write(path: &Path, text: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();

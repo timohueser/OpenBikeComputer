@@ -29,11 +29,15 @@ CASES = [
     ("regions/world", ["cliffs"], {"reach_m": 15}, "regions/world.json: cliffs: is an unknown key"),
     ("regions/world", ["leaf"], "deciduous", 'regions/world.json: leaf: "deciduous" is not one of "needleleaved", "broadleaved", "mixed"'),
     ("materials", ["materials", 9, "clumps"], 2, "materials.json: materials[9].clumps: 2 is not a number from 0 to 1"),
+    # Not the prototype's: the plantings stand a model of the engine on each material planted in rows.
+    ("materials", ["materials", 22, "rows", "model"], "no-such-vine", 'materials.json: materials[22].rows.model: "no-such-vine" is no tree or plant model'),
+    ("materials", ["materials", 22, "rows", "along_m"], [1.5, 1.1], "materials.json: materials[22].rows.along_m: [1.5,1.1]: its first value is above its second"),
     ("styles/trullo", ["roof"], "dome", 'styles/trullo.json: roof: "dome" is not one of "cone", "flat"'),
     # Not the prototype's: the engine draws each model that a pack names, also one that a child pack inherits.
     ("packs/alps", ["trees", "norway-spruce", "model"], "no-such-tree", "regions/alps.insubric.json: pack alps.insubric: tree norway-spruce has no model no-such-tree"),
     ("packs/alps", ["ground", "bilberry", "model"], "norway-spruce", "regions/alps.json: pack alps: ground plant bilberry has no model norway-spruce"),
-    ("packs/alps", ["orchard"], "no-such-orchard", "regions/alps.json: pack alps: orchard has no model no-such-orchard"),
+    ("packs/alps", ["rows", "orchard"], "no-such-tree", "regions/alps.json: pack alps: rows orchard has no model no-such-tree"),
+    ("packs/alps", ["rows", "arable"], "almond", "packs/alps.json: rows.arable: is an unknown key"),
     ("packs/alps", ["style", "xx-yy"], "chalet", "regions/alps.json: xx-yy is not a place of countries.json"),
     ("packs/alps", ["ground", "bilberry", "on"], ["#heath"],
      'packs/alps.json: ground.bilberry.on[0]: "#heath" is not a cover, a material or a #tag of materials.json'),
@@ -49,11 +53,12 @@ CASES = [
     # Not the prototype's: a ground source is a row of data/sources.toml, and its legend names the vocabulary.
     ("ground", ["material", "sources", 3, "source"], "land-cover-xx",
      'ground.json: material.sources[3].source: "land-cover-xx" is not a source of data/sources.toml'),
+    ("ground", ["material", "sources", 3, "values", "256"], "999", 'ground.json: material.sources[3].values: "256" is not a byte value'),
+    ("ground", ["material", "sources", 3, "values", "07"], "131", 'ground.json: material.sources[3].values: "07" is not a byte value'),
+    ("ground", ["material", "sources", 2, "values"], {"1": "111"}, "ground.json: material.sources[2].values: only a raster source has values"),
     ("ground", ["lithology", "sources", 0, "legend", "classes", 0, 1], "lava",
      'ground.json: lithology.sources[0].legend.classes[0][1]: "lava" is not one of ' + ", ".join(
          f'"{entry["id"]}"' for entry in RULESET["materials"]["lithologies"])),
-    ("ground", ["lithology", "sources", 0, "zoom"], DELETE, "ground.json: lithology.sources[0]: has no zoom"),
-    ("ground", ["material", "sources", 3, "zoom"], 11, "ground.json: material.sources[3].zoom: only a vector lithology source has a zoom"),
 ]
 
 

@@ -5,13 +5,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use super::archive::Archive;
 use super::{check_version, file_name, merge, snapshot_lock, Request};
 use crate::date;
 use crate::sources::{Refresh, Source};
 use crate::store::{self, FileRecord, Snapshot, Store};
 
 /// A source of `kind = "capture"`: the program that captures it, with the `NAME=VALUE` it takes.
-pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snapshot, String> {
+/// The `archive` of a source that it keeps serves before upstream, where the program can read it.
+pub(crate) fn run(
+    root: &Path,
+    store: &Store,
+    archive: Option<&Archive>,
+    request: &Request,
+) -> Result<Snapshot, String> {
     let source = request.source;
     match source.id.as_str() {
         "modis-snow" | "hr-wsi" => {
@@ -28,6 +35,7 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                 |_| &[0],
                 // HR-WSI has no product in parts of its extent.
                 source.id == "hr-wsi",
+                None,
                 |_, out| {
                     let mut command = python(root, Some("planner-snow"))?;
                     command.args(["-m", "tools.planner_snow", "--source", kind, &format!("--bounds={bbox}")]);
@@ -49,6 +57,7 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                 &[source],
                 |_| &[0],
                 false,
+                None,
                 |_, out| {
                     let mut command = python(root, Some("trailview"))?;
                     command
@@ -71,6 +80,7 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                 &[source],
                 |_| &[0],
                 false,
+                None,
                 |_, out| {
                     let mut command = python(root, Some("planner-climate"))?;
                     command.args(["-m", "tools.planner_climate", &format!("--bounds={bbox}"), "--first-year", first]);
@@ -79,9 +89,35 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                 },
             )
         }
+        "corine-land-cover" => {
+            let [] = values(request, [])?;
+            // The dataset CLC 2018 and its prepackaged raster of Europe.
+            let (dataset, file) = ("0407d497d3c44bcd93ce8fd5bf78596a", "3d9e2413-46ca-4f6e-abf8-b6eb429a4e48");
+            let held = archive.and_then(|archive| archive.clms(dataset, file));
+            capture(
+                store,
+                request,
+                &format!("dataset={dataset}&file={file}"),
+                &[source],
+                |_| &[0],
+                false,
+                held.as_ref().map(|held| held.path.as_str()),
+                |work, out| {
+                    let mut command = python(root, None)?;
+                    command.args(["-m", "tools.clms", "--dataset", dataset, "--file", file]);
+                    command.args(["--member", "U2018_CLC2018_V2020_20u1.tif", "--work"]).arg(work);
+                    command.arg("--fetch").arg(out);
+                    if let Some(held) = &held {
+                        held.verify()?;
+                        command.arg("--archive").arg(&held.file);
+                    }
+                    Ok(command)
+                },
+            )
+        }
         id => {
             let ground = crate::ground::Ground::load(root)?;
-            let Some(entry) = ground.entry(id) else {
+            let Some(entry) = ground.entry(id).filter(|entry| entry.per_box()) else {
                 return Err(format!("source `{id}`: its kind of fetch has no fetcher yet"));
             };
             let [bbox, digest] = values(request, ["bbox", "ground"])?;
@@ -99,6 +135,7 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                 |_| &[0],
                 // A national map has no feature in parts of its extent.
                 true,
+                None,
                 |_, out| {
                     let mut command = python(root, Some("trailview"))?;
                     command.args([
@@ -134,7 +171,8 @@ pub(crate) fn can_fetch(store: &Store, source: &Source, version: &str) -> Result
 /// from its path. A run that fails keeps both directories, so the next run resumes, unless they
 /// are older than the `refresh` in days of the source. The program writes each file whole, so a
 /// resumed run keeps only whole files. With `empty`, a run that writes no file gives a fetch
-/// without files; else it fails.
+/// without files; else it fails. `archive` is the path in the archive of the file that the program
+/// reads instead of upstream: then it needs no credential, and each record names that path.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn capture(
     store: &Store,
@@ -143,6 +181,7 @@ pub(super) fn capture(
     sources: &[&Source],
     owners: impl Fn(&str) -> &'static [usize],
     empty: bool,
+    archive: Option<&str>,
     command: impl FnOnce(&Path, &Path) -> Result<Command, String>,
 ) -> Result<Snapshot, String> {
     let source = request.source;
@@ -171,7 +210,7 @@ pub(super) fn capture(
             source.id
         ));
     }
-    for source in sources {
+    for source in sources.iter().filter(|_| archive.is_none()) {
         if let Some(credential) = source.credential.as_ref().filter(|credential| !credential.present()) {
             return Err(format!("source `{}` is blocked: credential missing: {}", source.id, credential.describe()));
         }
@@ -216,6 +255,7 @@ pub(super) fn capture(
                 size,
                 sha256: sha256.clone(),
                 retrieved: date::timestamp(date::now()),
+                archive: archive.map(str::to_string),
             });
         }
     }
@@ -251,7 +291,8 @@ fn values<'a, const N: usize>(request: &'a Request, names: [&str; N]) -> Result<
         return Ok(found);
     }
     let wanted: Vec<_> = names.iter().map(|name| format!("{name}=…")).collect();
-    Err(format!("source `{}` takes {}", request.source.id, wanted.join(" ")))
+    let wanted = if wanted.is_empty() { "no NAME=VALUE".to_string() } else { wanted.join(" ") };
+    Err(format!("source `{}` takes {wanted}", request.source.id))
 }
 
 fn year(text: &str) -> bool {
@@ -335,7 +376,7 @@ mod tests {
             )
             .unwrap();
         let request = Request { refresh: false, source, version: Some(version.clone()), params };
-        let snapshot = run(&scratch.0.join("absent-checkout"), &store, &request).unwrap();
+        let snapshot = run(&scratch.0.join("absent-checkout"), &store, None, &request).unwrap();
         assert_eq!(snapshot.version, version);
         assert!(snapshot.files.is_empty());
         assert!(!scratch.0.join("absent-checkout").exists());
@@ -346,8 +387,9 @@ mod tests {
         use crate::engine::tests::write;
         let fixture = crate::engine::tests::fixture("capture-interpreter");
         let root = fixture.root();
-        write(&root.join(".python-version"), "3.12\n");
-        write(&root.join("pyproject.toml"), "[project]\nname = \"capture-fixture\"\nversion = \"0\"\nrequires-python = \">=3.12\"\ndependencies = []\n[dependency-groups]\ncapture = []\n[tool.uv]\npackage = false\ndefault-groups = []\n");
+        let pinned = crate::engine::tests::PYTHON;
+        write(&root.join(".python-version"), pinned);
+        write(&root.join("pyproject.toml"), &format!("[project]\nname = \"capture-fixture\"\nversion = \"0\"\nrequires-python = \">={}\"\ndependencies = []\n[dependency-groups]\ncapture = []\n[tool.uv]\npackage = false\ndefault-groups = []\n", pinned.trim()));
         let lock = Command::new("uv")
             .args(["lock", "--offline", "--no-python-downloads"])
             .current_dir(&root)

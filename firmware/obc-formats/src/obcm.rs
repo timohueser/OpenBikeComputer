@@ -176,6 +176,8 @@ impl ScaledOffset {
 /// One run of [`FILLER`], long enough for any single gap a producer emits: the nav alignment run
 /// is a whole sector and a section boundary's gap is at most `U − 1`.
 pub const FILLER_RUN: [u8; 512] = [FILLER; 512];
+const _: () = assert!(FILLER_RUN.len() as u64 == 1 << OFFSET_SCALE_MAX);
+const _: () = assert!(FILLER_RUN.len() == NAV_CHUNK_SIZE);
 
 /// A file position that only moves by writing, and that knows where the next unit boundary is.
 ///
@@ -704,31 +706,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn header_prefix_uses_the_authoritative_version_and_length() {
-        let mut fixture = [0u8; HEADER_LEN];
-        fixture[..4].copy_from_slice(&MAGIC);
-        fixture[4] = VERSION;
-        // The header is 71 bytes, so the style table begins at the first unit boundary past it.
-        let style = OffsetScale::DEFAULT.scaled(OffsetScale::DEFAULT.align_up(HEADER_LEN as u64).unwrap()).unwrap();
-        fixture[21..25].copy_from_slice(&style.units().to_le_bytes());
-        fixture[HEADER_OFFSET_SCALE_OFF] = OFFSET_SCALE_DEFAULT;
-        validate_header_prefix(&fixture).unwrap();
-        assert_eq!(fixture[4], 0x13, "the version byte is the hard cut, and it cuts in both directions");
-        assert_eq!(style.units(), 5);
-        assert_eq!(style.bytes(), 80);
-    }
-
-    #[test]
-    fn the_version_byte_refuses_older_and_newer_alike() {
-        let mut fixture = [0u8; HEADER_LEN];
-        fixture[..4].copy_from_slice(&MAGIC);
-        for version in [VERSION - 1, VERSION + 1] {
-            fixture[4] = version;
-            assert_eq!(validate_header_prefix(&fixture), Err(DecodeError::Version));
-        }
-    }
-
-    #[test]
     fn a_scaled_offset_resolves_only_against_its_own_files_unit() {
         let coarse = OffsetScale::new(9).unwrap();
         let fine = OffsetScale::new(0).unwrap();
@@ -802,20 +779,6 @@ mod tests {
         assert_eq!(out.len(), 96);
     }
 
-    /// A writer over a sink that keeps nothing still moves its cursor.
-    #[test]
-    fn a_discarding_sink_still_advances_the_cursor() {
-        let mut discard = |_: &[u8]| -> Result<(), core::convert::Infallible> { Ok(()) };
-        let mut w = UnitWriter::new(OffsetScale::DEFAULT, 0, &mut discard);
-        w.put(&[0u8; HEADER_LEN]).unwrap();
-        w.begin_section().unwrap();
-        w.pad(3).unwrap();
-        assert_eq!(w.at(), 83, "71 rounded to 80, then three bytes of a computed run");
-        // The alignment run is a whole sector, which one `FILLER_RUN` covers without allocating.
-        w.pad(512).unwrap();
-        assert_eq!(w.at(), 595);
-    }
-
     /// [`UnitWriter::pad`] must exceed one [`FILLER_RUN`]. No gap does today, so the loop is
     /// otherwise unreached and an off-by-one in it would sit unseen.
     #[test]
@@ -885,15 +848,6 @@ mod tests {
         assert_eq!(w.at(), 7);
         w.advance(3_000_000_000);
         assert_eq!(w.at(), 3_000_000_007, "and it is `u64` arithmetic, not a loop over a buffer");
-    }
-
-    /// The filler run must cover the longest single gap: `U − 1` at the largest scale, which is
-    /// also the alignment run.
-    #[test]
-    fn one_filler_run_covers_every_gap_the_format_can_ask_for() {
-        const _: () = assert!(FILLER_RUN.len() as u64 == 1 << OFFSET_SCALE_MAX);
-        const _: () = assert!(FILLER_RUN.len() == NAV_CHUNK_SIZE);
-        assert!(FILLER_RUN.iter().all(|&b| b == FILLER));
     }
 
     #[test]
@@ -1059,33 +1013,38 @@ mod tests {
     }
 
     #[test]
-    fn settlement_subtypes_map_to_the_settlement_category() {
-        for class in SettlementClass::ALL {
-            assert_eq!(poi_directory_category_of(class.subtype_id()), Some(SETTLEMENT_CATEGORY_ID));
-            assert_eq!(poi_category_of(class.subtype_id()), None);
+    fn only_version_19_passes_the_header_prefix() {
+        assert_eq!(HEADER_LEN, 71);
+        let mut header = [0u8; HEADER_LEN];
+        header[..4].copy_from_slice(&MAGIC);
+        for (version, expected) in [
+            (0x13, Ok(())),
+            (0x12, Err(DecodeError::Version)),
+            (0x14, Err(DecodeError::Version)),
+            (0x00, Err(DecodeError::Version)),
+            (0xFF, Err(DecodeError::Version)),
+        ] {
+            header[4] = version;
+            assert_eq!(validate_header_prefix(&header), expected, "version {version:#04x}");
         }
     }
 
     #[test]
-    fn settlement_class_round_trips_its_subtype() {
-        for class in SettlementClass::ALL {
-            assert_eq!(settlement_class_of(class.subtype_id()), Some(class));
+    fn settlement_subtypes_21_to_24_map_to_their_class_category_and_label() {
+        for (subtype_id, class, label) in [
+            (21, SettlementClass::City, "City"),
+            (22, SettlementClass::Town, "Town"),
+            (23, SettlementClass::Village, "Village"),
+            (24, SettlementClass::Hamlet, "Hamlet"),
+        ] {
+            assert_eq!(class.subtype_id(), subtype_id);
+            assert_eq!(settlement_class_of(subtype_id), Some(class));
+            assert_eq!(poi_directory_category_of(subtype_id), Some(SETTLEMENT_CATEGORY_ID));
+            assert_eq!(poi_category_of(subtype_id), None);
+            assert_eq!(poi_label_of(subtype_id), Some(label));
         }
-        assert_eq!(SettlementClass::ALL.map(SettlementClass::subtype_id), [21, 22, 23, 24]);
-    }
-
-    #[test]
-    fn a_non_settlement_subtype_has_no_settlement_class() {
         for subtype_id in [0, 1, 19, 20, 25, CHUNK_END] {
-            assert_eq!(settlement_class_of(subtype_id), None);
+            assert_eq!(settlement_class_of(subtype_id), None, "subtype {subtype_id}");
         }
-    }
-
-    #[test]
-    fn settlement_labels_name_their_class() {
-        assert_eq!(poi_label_of(SETTLEMENT_SUBTYPE_CITY), Some("City"));
-        assert_eq!(poi_label_of(SETTLEMENT_SUBTYPE_TOWN), Some("Town"));
-        assert_eq!(poi_label_of(SETTLEMENT_SUBTYPE_VILLAGE), Some("Village"));
-        assert_eq!(poi_label_of(SETTLEMENT_SUBTYPE_HAMLET), Some("Hamlet"));
     }
 }

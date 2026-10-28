@@ -1,0 +1,6 @@
+name = "TrailView western-europe: Quatre Lacs"
+kind = "box"
+# west, south, east, north
+box = [5.61, 46.41, 6.22, 46.84]
+countries = ["FR", "CH"]
+time_zone = "Europe/Paris"

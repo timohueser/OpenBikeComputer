@@ -5,6 +5,7 @@
 // #include ../terrain/drawn-height.wgsl
 // #include ../light/shadow.wgsl
 // #include roads.wgsl
+// #include fields.wgsl
 
 // Per ground node MAP × MAP entries per level about the eye, in the windows of the LOD map: the page + 1, or 0.
 @group(2) @binding(1) var<storage, read> ground_map: array<u32>;
@@ -122,6 +123,7 @@ fn slot_kerb() -> i32 { return slot_cliff() + 18; }
 fn slot_road_line() -> i32 { return slot_cliff() + 19; }
 fn slot_kinds() -> i32 { return slot_cliff() + 20; }
 fn slot_hardness() -> i32 { return slot_kinds() + i32(look.codes.y); }
+fn slot_rows() -> i32 { return slot_hardness() + i32(look.codes.z); }
 
 // The cover's ramp in the region, low NDVI to high.
 fn ramp(region: u32, cover: u32, t: f32) -> vec3f {
@@ -268,6 +270,12 @@ fn finest_texel(s: vec2f) -> vec3i {
     return vec3i(in_page(page, whole & vec2i(255)), page_layer(page));
 }
 
+// The albedo of the ground at a texel of finest_texel.
+fn ground_albedo(t: vec3i) -> vec3f {
+    let c = textureLoad(cache, t.xy, t.z * CACHE_PLANES, 0).rgb;
+    return c * c;
+}
+
 // The ground cell at a point from the finest ground pages (finest_texel), as `cell_at`; NO_CELL where
 // that page is not resident.
 fn finest_cell(s: vec2f) -> vec4u {
@@ -302,14 +310,15 @@ fn snow_held(held: Held) -> f32 {
     return smoothstep(0.25, 0.75, textureLoad(cache, in_page(held.page, whole & vec2i(255)), page_layer(held.page) * CACHE_PLANES, 0).a);
 }
 
-// The ground's albedo in a held page, from the satellite on the date; 0 where no page is resident.
-fn albedo_held(held: Held) -> vec3f {
+// The ground's albedo in a held page, from the satellite on the date; 0 where no page is resident or
+// the ground is no woodland.
+fn woodland_held(held: Held) -> vec3f {
     if (held.page < 0) {
         return vec3f(0.0);
     }
-    let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
-    let c = textureLoad(cache, in_page(held.page, whole & vec2i(255)), page_layer(held.page) * CACHE_PLANES, 0).rgb;
-    return c * c;
+    let at = in_page(held.page, (held.t.whole + vec2i(held.t.part >= vec2f(0.5))) & vec2i(255));
+    let c = textureLoad(cache, at, page_layer(held.page) * CACHE_PLANES, 0).rgb;
+    return select(vec3f(0.0), c * c, textureLoad(cache, at, page_layer(held.page) * CACHE_PLANES + 1, 0).r > 0.5);
 }
 
 // The share of the sun that the horizons of a held page let through, 1 where no page holds the point.
@@ -525,6 +534,22 @@ fn patched(albedo: vec3f, colour: vec4f, shape: vec2f, under: f32, world: vec2f,
     return mix(albedo, colour.rgb, 0.85 * dots);
 }
 
+// The plants of a row take ROW_SHARE of its pitch across, and darken the ground by ROW_DARK of their share.
+const ROW_SHARE: f32 = 0.5;
+const ROW_DARK: f32 = 0.7;
+
+// The share of a pixel `w` rows wide about x that plants `share` of a row wide cover, a plant at each
+// whole row plus 0.5: by the integral of the rows, and their mean where a pixel spans half a row.
+fn row_cover(x: f32, share: f32, w: f32) -> f32 {
+    let half = 0.5 * max(w, 1e-3);
+    let cover = (row_integral(x + half, share) - row_integral(x - half, share)) / (2.0 * half);
+    return mix(cover, share, smoothstep(0.25, 0.5, w));
+}
+
+fn row_integral(x: f32, share: f32) -> f32 {
+    return floor(x) * share + clamp(fract(x) - 0.5 + 0.5 * share, 0.0, share);
+}
+
 // Blades of grass: BLADE_WIDTH wide and BLADE_LENGTH long in metres.
 const BLADE_WIDTH: f32 = 0.025;
 const BLADE_LENGTH: f32 = 0.3;
@@ -596,8 +621,10 @@ fn ground_debug(view: u32, level: u32, s: vec2f, g: Ground) -> vec3f {
 fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f {
     let world = look.place.xy + relative.xy;
     let scale = look.screen.z;
-    let footprint = max(length(dpdx(relative.xy)), length(dpdy(relative.xy))) * scale;
-    let lateral = min(length(dpdx(relative.xy)), length(dpdy(relative.xy))) * scale;
+    let dx = dpdx(relative.xy) * scale;
+    let dy = dpdy(relative.xy) * scale;
+    let footprint = max(length(dx), length(dy));
+    let lateral = min(length(dx), length(dy));
     // The pixel's size on the surface itself: on a slope facing the eye it is far larger than its map
     // footprint, and texture finer than it shows as blotches.
     let surface_size = max(length(dpdx(relative)), length(dpdy(relative))) * scale;
@@ -714,6 +741,29 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
             }
             albedo *= 1.0 + 0.3 * blade * blades;
         }
+    }
+    // The materials planted in rows paint the rows of their fields (fields.wgsl), where a pixel can show
+    // them: darker where the plants stand than in the alleys, so the ground keeps its mean.
+    let rows = rule(region, slot_rows() + i32(g.material));
+    if (rows.y > 2.0 * lateral && road.cover < 1.0) {
+        let u = units_of(s);
+        let field = field_of(field_cells(u), u);
+        let f = field_rows(field.cell, rows);
+        let d = (u - vec2f(field_site(field.cell) - surface.anchor)) * f.unit;
+        let across = vec2f(-f.along.y, f.along.x);
+        // The render pixel's steps in world axes, y south, and its width in rows along and across.
+        let ex = vec2f(dx.x, -dx.y) / scale;
+        let ey = vec2f(dy.x, -dy.y) / scale;
+        let w = vec2f(abs(dot(ex, f.along)) + abs(dot(ey, f.along)), abs(dot(ex, across)) + abs(dot(ey, across))) / f.pitch;
+        let p = vec2f(dot(d, f.along), dot(d, across)) / f.pitch;
+        // A plant covers ROW_SHARE of the pitch across the rows and as many metres along them, all of a hedge.
+        let hedge = rule(region, slot_traits() + i32(g.material)).z > 0.5;
+        let lengthwise = select(min(1.0, ROW_SHARE * f.pitch.y / f.pitch.x), 1.0, hedge);
+        // The headland is bare, and the rows' mean where a pixel spans half a row, as the rows are.
+        let headland = clamp((field.edge * f.unit - HEADLAND_M) / max(lateral, 0.1) + 0.5, 0.0, 1.0);
+        let inside = mix(headland, 1.0, smoothstep(0.25, 0.5, max(w.x, w.y)));
+        let planted = row_cover(p.y, ROW_SHARE, w.y) * row_cover(p.x, lengthwise, w.x) * inside;
+        albedo *= 1.0 + ROW_DARK * (ROW_SHARE * lengthwise - planted) * (1.0 - road.cover);
     }
     // The patches of the region in their order: per patch its size and 1 for dots.
     let shapes = rule(region, slot_cliff() + 8);

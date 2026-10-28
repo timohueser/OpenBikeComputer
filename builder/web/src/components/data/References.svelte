@@ -34,7 +34,7 @@
     const versions = (row: SourceRow) =>
         Object.entries(row.prepared)
             .flatMap(([target, at]) => at.versions.map((version) => ({ target, ...version })))
-            .sort((a, b) => b.version.localeCompare(a.version))
+            .sort((a, b) => b.version.localeCompare(a.version, "en", { numeric: true }))
             .map((version) => ({
                 ...version,
                 where: r2(version.target) ? "On R2" : "On this computer",

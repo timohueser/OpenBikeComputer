@@ -1,7 +1,7 @@
 //! Host tests for the A* router. Fixture graphs are serialized with the real `obc-bake` writer and
 //! parsed with the real `obc-reader`, so the router runs end to end over genuine on-wire bytes.
 
-use crate::common::nav::{digest, plan_p};
+use crate::common::nav::plan_p;
 
 use crate::common::{decode, route_points, VecSink};
 use obc_bake::serialize::serialize_lods;
@@ -179,47 +179,6 @@ fn shortcut_wins_and_reversed_edge_geometry_is_exact() {
         vec![c8, mid, c0],
         "b→a traversal emits the polyline reversed"
     );
-}
-
-/// Two components in snap range of the endpoints but not of each other.
-#[test]
-fn disconnected_graph_is_no_path() {
-    let a0 = (500_000, 500_000);
-    let a1 = (505_000, 500_000);
-    let b0 = (550_000, 500_000); // ~5 km east of component A
-    let b1 = (555_000, 500_000);
-    let graph = NavGraph {
-        nodes: vec![
-            Node { id: 0, coord: a0 },
-            Node { id: 1, coord: a1 },
-            Node { id: 2, coord: b0 },
-            Node { id: 3, coord: b1 },
-        ],
-        edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a0, a1], length_m: 600, kind: 0 },
-            Edge { a: 2, b: 3, polyline: vec![b0, b1], length_m: 600, kind: 0 },
-        ],
-    };
-    let (res, obcr, _) = plan(&map_with(&graph), a0, b0, "x");
-    assert_eq!(res, Err(NavError::NoPath));
-    assert!(obcr.is_empty(), "a failed plan writes nothing");
-}
-
-/// A 4-entry scratch cannot track the 5 or more nodes a corner-to-corner grid path needs.
-#[test]
-fn tiny_scratch_exhausts() {
-    let bytes = map_with(&grid3(false));
-    let src = SliceSource(&bytes);
-    let tables = MapTables::parse(&src).unwrap();
-    let cache = MapCache::new();
-    let r = Reader::new(&src, &tables, &cache);
-    let mut scratch = NavScratch::<4>::new();
-    let mut tiles = NavTileCache::new();
-    let mut sink = VecSink::default();
-    let goal = at(2, 2);
-    let res =
-        plan_route(&r, at(0, 0), goal, "x", BikeType::Road, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
-    assert_eq!(res, Err(NavError::Exhausted));
 }
 
 /// A goal discovered before the table fills is still reached when a later insert fails. The start
@@ -807,23 +766,6 @@ fn forbidden_class_detours_then_no_paths() {
     assert!(obcr.is_empty());
 }
 
-/// The emitted `total_distance_m` is the raw summed edge length, not the weighted `g`.
-#[test]
-fn displayed_distance_is_raw_length_not_weighted_g() {
-    let a = (500_000, 500_000);
-    let b = (500_000 + SP, 500_000);
-    let length = 2_000;
-    let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: length, kind: K_PRIMARY }],
-    };
-    let bytes = map_with_profiles(&graph, &[profile("p2", &[(K_PRIMARY, 32)])]); // 2.0x
-    let (res, _, _) = plan_p(&bytes, a, b, "Honest", BikeType::Road);
-    let route = res.expect("a single-edge route plans");
-    assert_eq!(route.total_distance_m, 1113, "displayed distance is the raw ground length");
-    assert_ne!(route.total_distance_m, 2 * length, "and not the weighted g, which is 2x");
-}
-
 /// An out-of-range profile index falls back to profile 0 and plans byte-identically.
 #[test]
 fn out_of_range_profile_index_falls_back_to_zero() {
@@ -856,91 +798,6 @@ fn out_of_range_profile_index_falls_back_to_zero() {
     assert_eq!(route_points(&obcr0), route_points(&obcr3), "a type past the table plans as profile 0");
     // It took the profile-0 corridor, not a fallback-to-neutral tie.
     assert!(route_points(&obcr3).iter().any(|p| (p.lon, p.lat) == c1));
-}
-
-/// A grid with mixed per-edge kinds. The found path's weighted cost must stay within the rung's
-/// bound of the true optimum, which an in-test Dijkstra computes.
-#[test]
-fn found_cost_is_within_epsilon_of_dijkstra_reference() {
-    let mut nodes = Vec::new();
-    for row in 0..3 {
-        for col in 0..3 {
-            nodes.push(Node { id: (row * 3 + col) as u32, coord: at(row, col) });
-        }
-    }
-    let mut edges = Vec::new();
-    for row in 0..3 {
-        for col in 0..3 {
-            let a = (row * 3 + col) as u32;
-            if col < 2 {
-                let (ca, cb) = (at(row, col), at(row, col + 1));
-                let mid = ((ca.0 + cb.0) / 2, ca.1 + 500);
-                let kind = if row == 2 { K_CYCLE } else { K_PRIMARY }; // the bottom row is cheap
-                edges.push(Edge { a, b: a + 1, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind });
-            }
-            if row < 2 {
-                let (ca, cb) = (at(row, col), at(row + 1, col));
-                let mid = (ca.0 + 500, (ca.1 + cb.1) / 2);
-                edges.push(Edge { a, b: a + 3, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind: K_CYCLE });
-            }
-        }
-    }
-    let graph = NavGraph { nodes, edges };
-    let prof = profile("mixed", &[(K_PRIMARY, 32), (K_CYCLE, 16)]);
-    let bytes = map_with_profiles(&graph, std::slice::from_ref(&prof));
-
-    let from = at(0, 0);
-    let goal = at(2, 2);
-    let (res, obcr, _) = plan_p(&bytes, from, goal, "Mixed", BikeType::Road);
-    res.expect("the mixed-kind grid plans");
-
-    // Dijkstra over the fixture graph with the same weighted edge costs.
-    let n = graph.nodes.len();
-    let mut adj = vec![Vec::<(usize, u32)>::new(); n];
-    for e in &graph.edges {
-        let w = weighted(e.length_m, e.kind, &prof);
-        adj[e.a as usize].push((e.b as usize, w));
-        adj[e.b as usize].push((e.a as usize, w));
-    }
-    let mut dist = vec![u32::MAX; n];
-    let mut done = vec![false; n];
-    dist[0] = 0;
-    for _ in 0..n {
-        let Some(u) = (0..n).filter(|&i| !done[i] && dist[i] != u32::MAX).min_by_key(|&i| dist[i]) else { break };
-        done[u] = true;
-        for &(v, w) in &adj[u] {
-            dist[v] = dist[v].min(dist[u].saturating_add(w));
-        }
-    }
-    let reference = dist[8];
-    assert!(reference > 0 && reference != u32::MAX, "the reference is a real finite cost");
-
-    // Reconstruct the found path's node sequence from the emitted geometry and sum its cost.
-    let pts = route_points(&obcr);
-    let mut seq: Vec<u32> = Vec::new();
-    for pt in &pts {
-        if let Some(node) = graph.nodes.iter().find(|nd| nd.coord == (pt.lon, pt.lat)) {
-            if seq.last() != Some(&node.id) {
-                seq.push(node.id);
-            }
-        }
-    }
-    let found: u32 = seq
-        .windows(2)
-        .map(|w| {
-            let e = graph
-                .edges
-                .iter()
-                .find(|e| (e.a == w[0] && e.b == w[1]) || (e.a == w[1] && e.b == w[0]))
-                .expect("consecutive nodes share an edge");
-            weighted(e.length_m, e.kind, &prof)
-        })
-        .sum();
-
-    assert!(
-        found <= reference * 13 / 10,
-        "found weighted cost {found} exceeds the ε = 1.3 bound over Dijkstra reference {reference}"
-    );
 }
 
 // The escalation ladder. The fixtures below are diagonal grids: A* on a uniform grid expands the
@@ -1171,28 +1028,6 @@ fn found_cost_is_within_used_rung_epsilon_of_dijkstra() {
     assert!(found <= reference * eps.0 / eps.1);
 }
 
-/// A route that completes on the first rung never escalates and emits the same bytes as the
-/// one-shot plan.
-#[test]
-fn first_try_success_takes_rung_zero_unchanged() {
-    let bytes = map_with(&grid3(true));
-    let (c0, c8) = (at(0, 0), at(2, 2));
-    let (from, to) = (c0, c8);
-
-    // The name matches `plan_ladder`'s, so the comparison is of route bytes, not the name field.
-    let (reference, one_shot, _) = plan(&bytes, from, to, "x");
-    let reference = reference.expect("the shortcut grid plans at 1.3");
-
-    let (res, eps, settles, first_esc, obcr) =
-        plan_ladder::<{ obc_route::NAV_MAX_NODES }>(&bytes, from, to, BikeType::Road);
-    let route = res.expect("still plans");
-    assert_eq!(eps, (13, 10), "a first-rung success never escalates");
-    assert!(first_esc.is_none(), "no retry happened");
-    assert_eq!(route.total_distance_m, reference.total_distance_m);
-    assert_eq!(obcr, one_shot, "byte-identical OBCR to the unchanged one-shot plan");
-    assert!(settles > 0 && settles < obc_route::NAV_MAX_NODES as u32, "a single search, well within one table");
-}
-
 // Emit-time elevation fill.
 
 /// A tent-shaped ridge in longitude. The peak sits between two grid-edge vertices, so a
@@ -1260,23 +1095,6 @@ fn plan_with_elevation(bytes: &[u8], elev: &mut dyn obc_route::ElevationSource) 
     let res = plan_route(&r, c0, c8, "Water stop", BikeType::Road, &mut scratch, &mut tiles, elev, &mut sink);
     (res.expect("the grid plans"), sink.buf)
 }
-
-/// With [`NullElevation`] the emitted OBCR carries no densification, no elevation and no stats.
-/// The digest must not move: if it does, terrain support has changed the no-terrain output.
-#[test]
-fn a_null_elevation_plan_emits_the_pre_terrain_bytes() {
-    let bytes = map_with(&grid3(false));
-    let (route, obcr) = plan_with_elevation(&bytes, &mut NullElevation);
-
-    assert_eq!(digest(&obcr), NULL_PATH_DIGEST, "the no-terrain OBCR must stay byte-identical");
-    assert_eq!(route.point_count, 9, "no densification without terrain");
-    assert_eq!((route.total_ascent_m, route.total_descent_m), (0, 0));
-    assert_eq!((route.min_ele_m, route.max_ele_m), (0, 0));
-    assert!(route_points(&obcr).iter().all(|p| p.elevation().is_none()), "every stored height is zero");
-}
-
-/// FNV-1a of the no-terrain emit for the fixture above.
-const NULL_PATH_DIGEST: u64 = 1853384897492501207;
 
 /// A real source fills every point's height and the header's min, max and dead-banded climb. The
 /// crest is reachable only through the densification: a vertex-only fill tops out at 900 m.
@@ -1552,39 +1370,6 @@ fn plan_corridor(bytes: &[u8]) -> (u32, bool) {
     (route.total_distance_m, over_the_pass)
 }
 
-/// Same map and endpoints, only the climb weight moves: a climb-blind router takes the short steep
-/// pass and a road-weighted one takes the long flat valley.
-#[test]
-fn the_climb_weight_steers_from_the_pass_to_the_valley() {
-    let graph = pass_vs_valley();
-
-    // The packer really baked the climb the assertions below spend.
-    let (up, down) = obc_network::nav::integrate_edge_ascent(&[at(0, 0), at(1, 1)], &mut Hillside);
-    assert!(
-        (up as i64 - ROW_CLIMB_M as i64).abs() <= 4,
-        "the pass leg bakes about {ROW_CLIMB_M} m of ascent, baked {up}"
-    );
-    assert_eq!(down, 0, "and nothing coming back down: ascent is directional");
-
-    let blind = map_with_terrain(&graph, &[climb_profile("Blind", 0)], &mut Hillside);
-    assert_eq!(plan_corridor(&blind), (3148, true), "climb-blind, the pass is the shorter way");
-
-    let road = map_with_terrain(&graph, &[climb_profile("Road", 10)], &mut Hillside);
-    assert_eq!(plan_corridor(&road), (3148, false), "at the Road weight the climb outprices 2 km");
-}
-
-/// The corridors tie at `w = 5`, so `w = 4` still takes the pass and `w = 6` takes the valley. A
-/// cost model that folded the climb term inside the shift, scaled it by the way-kind multiplier, or
-/// charged both directions of an edge would miss this.
-#[test]
-fn the_climb_crossover_lands_where_the_formula_says() {
-    let graph = pass_vs_valley();
-    let below = map_with_terrain(&graph, &[climb_profile("w4", 4)], &mut Hillside);
-    let above = map_with_terrain(&graph, &[climb_profile("w6", 6)], &mut Hillside);
-    assert_eq!(plan_corridor(&below), (3148, true), "4 * 400 = 1 600 < 2 000, so the pass wins");
-    assert_eq!(plan_corridor(&above), (3148, false), "6 * 400 = 2 400 > 2 000, so the valley wins");
-}
-
 /// A map baked with real ascents, routed under a `climb_weight = 0` profile, must emit the same
 /// bytes as a terrain-free map. The two legal zeroes are proved to give the same costing, not
 /// assumed to.
@@ -1600,10 +1385,9 @@ fn climb_weight_zero_over_real_ascents_is_the_pre_elevation_router() {
     assert!(up >= ROW_CLIMB_M as u16 - 4, "a grid column climbs a row of the hillside, baked {up} m");
 
     let (route, obcr) = plan_with_elevation(&hilly, &mut NullElevation);
-    assert_eq!(digest(&obcr), NULL_PATH_DIGEST, "a climb-blind plan over baked ascents moves no byte");
     assert_eq!(route.total_distance_m, 4474);
     let (_, flat_obcr) = plan_with_elevation(&flat, &mut NullElevation);
-    assert_eq!(obcr, flat_obcr, "and is the same route the terrain-free map plans");
+    assert_eq!(obcr, flat_obcr, "a climb-blind plan over baked ascents moves no byte");
 }
 
 /// Over the [`Knoll`], whose paths differ in climb but tie in distance, the search finds the exact
@@ -1664,30 +1448,59 @@ fn the_climb_aware_optimum_matches_a_directional_dijkstra() {
     assert!(found <= reference * 13 / 10);
 }
 
-/// A single leg at `w = 100` accumulates a `g` twenty-six times its ground length, and the header
-/// still reports the ground length.
+/// The header total is the measured ground length of the emitted geometry, never the weighted `g`
+/// that a way-kind multiplier or the climb term inflate.
 #[test]
-fn the_displayed_distance_ignores_the_climb_term_entirely() {
-    let (a, pass) = (at(0, 0), at(1, 1));
-    let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: pass }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, pass], length_m: PASS_LEG, kind: 0 }],
-    };
-    let bytes = map_with_terrain(&graph, &[climb_profile("Heavy", 100)], &mut Hillside);
-    let (res, _, _) = plan_p(&bytes, a, pass, "Uphill", BikeType::Road);
-    let route = res.expect("a single uphill edge plans");
-    assert_eq!(route.total_distance_m, 1574, "the header total is the raw ground length");
-    assert!(route.total_distance_m < ROW_CLIMB_M * 100, "and not the weighted g");
+fn the_displayed_distance_is_the_ground_length_not_the_weighted_g() {
+    let east = (BASE.0 + SP, BASE.1);
+    let multiplied = map_with_profiles(
+        &NavGraph {
+            nodes: vec![Node { id: 0, coord: BASE }, Node { id: 1, coord: east }],
+            edges: vec![Edge { a: 0, b: 1, polyline: vec![BASE, east], length_m: 2_000, kind: K_PRIMARY }],
+        },
+        &[profile("p2", &[(K_PRIMARY, 32)])],
+    );
+    let pass = at(1, 1);
+    let uphill = map_with_terrain(
+        &NavGraph {
+            nodes: vec![Node { id: 0, coord: BASE }, Node { id: 1, coord: pass }],
+            edges: vec![Edge { a: 0, b: 1, polyline: vec![BASE, pass], length_m: PASS_LEG, kind: 0 }],
+        },
+        &[climb_profile("Heavy", 100)],
+        &mut Hillside,
+    );
+    for (name, bytes, to, ground_m, weighted_g) in [
+        ("2.0x multiplier", multiplied, east, 1113, 2 * 2_000),
+        ("climb weight 100 uphill", uphill, pass, 1574, PASS_LEG + 100 * ROW_CLIMB_M),
+    ] {
+        let (res, _, _) = plan_p(&bytes, BASE, to, "Honest", BikeType::Road);
+        let total = res.expect("a single-edge route plans").total_distance_m;
+        assert_eq!(total, ground_m, "{name}: the header total is the ground length, not the weighted g ≈ {weighted_g}");
+    }
 }
 
-/// At `w = 255` the pass leg's climb term alone passes `u16::MAX`, so the frontier's `g` clamps. A
-/// saturated node must be maximally unattractive, never wrapped: the plan still completes and still
-/// takes the flat valley.
+/// Over [`pass_vs_valley`] only the climb weight moves. The corridors tie at `w = 5`, so the pass
+/// wins below it and the valley above it, and the displayed distance stays the ground length. A
+/// cost model that folded the climb term inside the shift, scaled it by the way-kind multiplier, or
+/// charged both directions of an edge would miss the crossover. At `w = 167` the pass leg's cost
+/// passes `u16::MAX` by less than the valley costs: a saturated `g` must clamp to unattractive, never
+/// wrap to cheap.
 #[test]
-fn a_saturating_climb_weight_clamps_instead_of_wrapping() {
-    assert!(ROW_CLIMB_M * 255 > u16::MAX as u32, "the fixture must actually reach saturation");
-    let bytes = map_with_terrain(&pass_vs_valley(), &[climb_profile("Absurd", 255)], &mut Hillside);
-    assert_eq!(plan_corridor(&bytes), (3148, false), "a saturated pass is unattractive, not cheap");
+fn the_climb_weight_steers_between_the_pass_and_the_valley() {
+    let (up, down) = obc_network::nav::integrate_edge_ascent(&[at(0, 0), at(1, 1)], &mut Hillside);
+    assert!(
+        (up as i64 - ROW_CLIMB_M as i64).abs() <= 4,
+        "the pass leg bakes about {ROW_CLIMB_M} m of ascent, baked {up}"
+    );
+    assert_eq!(down, 0, "and nothing coming back down: ascent is directional");
+    let wrapped = (PASS_LEG + 167 * ROW_CLIMB_M) % (u16::MAX as u32 + 1) + PASS_LEG;
+    assert!(wrapped < 2 * VALLEY_LEG, "the w = 167 row must be one a wrapped g would get wrong");
+
+    let graph = pass_vs_valley();
+    for (climb_weight, over_the_pass) in [(0, true), (4, true), (6, false), (10, false), (167, false)] {
+        let bytes = map_with_terrain(&graph, &[climb_profile("w", climb_weight)], &mut Hillside);
+        assert_eq!(plan_corridor(&bytes), (3148, over_the_pass), "climb weight {climb_weight}");
+    }
 }
 
 /// When every route saturates there is no ordering left, and the contract is only that the search

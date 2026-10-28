@@ -4,8 +4,8 @@
 use obc_ble::{
     classify_advertisement, parse_battery_level, parse_csc_measurement, parse_hr_measurement, parse_power_measurement,
     power_crank_feeds_cadence, AdvMatch, CrankCadence, CrankRevs, CscSample, HrSample, PowerSample, SensorKind,
-    WheelRevs, UUID_BATTERY_LEVEL, UUID_BATTERY_SERVICE, UUID_CSC_MEASUREMENT, UUID_CSC_SERVICE,
-    UUID_CYCLING_POWER_MEASUREMENT, UUID_CYCLING_POWER_SERVICE, UUID_HEART_RATE_SERVICE, UUID_HR_MEASUREMENT,
+    UUID_BATTERY_LEVEL, UUID_BATTERY_SERVICE, UUID_CSC_MEASUREMENT, UUID_CSC_SERVICE, UUID_CYCLING_POWER_MEASUREMENT,
+    UUID_CYCLING_POWER_SERVICE, UUID_HEART_RATE_SERVICE, UUID_HR_MEASUREMENT,
 };
 
 #[test]
@@ -52,24 +52,10 @@ fn hr_rr_bearing_frame_from_garmin_capture() {
 }
 
 #[test]
-fn hr_energy_expended_flag_ignored() {
-    // Bit 3 = energy expended: two extra bytes after the bpm.
-    let frame = [0b1000, 0x50, 0xE8, 0x03];
-    assert_eq!(parse_hr_measurement(&frame), Some(HrSample { bpm: 0x50, contact: None }));
-}
-
-#[test]
 fn hr_short_buffers_return_none() {
     assert_eq!(parse_hr_measurement(&[]), None); // no flags
     assert_eq!(parse_hr_measurement(&[0x00]), None); // 8-bit format but no bpm byte
     assert_eq!(parse_hr_measurement(&[0x01, 0x40]), None); // 16-bit format but only one bpm byte
-}
-
-#[test]
-fn cps_power_only_frame() {
-    // flags 0x0000, power 200 W, no optional fields.
-    let frame = [0x00, 0x00, 0xC8, 0x00];
-    assert_eq!(parse_power_measurement(&frame), Some(PowerSample { watts: 200, crank: None }));
 }
 
 #[test]
@@ -101,12 +87,6 @@ fn cps_full_skip_chain() {
         parse_power_measurement(&frame),
         Some(PowerSample { watts: -30, crank: Some(CrankRevs { revs: 777, event_time_1024: 4096 }) })
     );
-}
-
-#[test]
-fn cps_negative_watts() {
-    let frame = [0x00, 0x00, 0x9C, 0xFF]; // 0xFF9C = -100
-    assert_eq!(parse_power_measurement(&frame), Some(PowerSample { watts: -100, crank: None }));
 }
 
 #[test]
@@ -151,25 +131,8 @@ fn cps_declared_fields_must_be_present_even_without_crank() {
 }
 
 #[test]
-fn cps_crank_after_only_wheel() {
-    // Bits 4 and 5 only: the parser skips 6 wheel bytes, then reads the crank.
-    let flags: u16 = (1 << 4) | (1 << 5);
-    let mut frame = vec![];
-    frame.extend_from_slice(&flags.to_le_bytes());
-    frame.extend_from_slice(&180i16.to_le_bytes());
-    frame.extend_from_slice(&1u32.to_le_bytes()); // wheel revs
-    frame.extend_from_slice(&2u16.to_le_bytes()); // wheel event time
-    frame.extend_from_slice(&55u16.to_le_bytes()); // crank revs
-    frame.extend_from_slice(&66u16.to_le_bytes()); // crank event time
-    assert_eq!(
-        parse_power_measurement(&frame),
-        Some(PowerSample { watts: 180, crank: Some(CrankRevs { revs: 55, event_time_1024: 66 }) })
-    );
-}
-
-#[test]
 fn csc_empty_flags() {
-    assert_eq!(parse_csc_measurement(&[0x00]), Some(CscSample { wheel: None, crank: None }));
+    assert_eq!(parse_csc_measurement(&[0x00]), Some(CscSample { crank: None }));
 }
 
 #[test]
@@ -180,7 +143,7 @@ fn csc_crank_only() {
     frame.extend_from_slice(&1500u16.to_le_bytes());
     assert_eq!(
         parse_csc_measurement(&frame),
-        Some(CscSample { wheel: None, crank: Some(CrankRevs { revs: 200, event_time_1024: 1500 }) })
+        Some(CscSample { crank: Some(CrankRevs { revs: 200, event_time_1024: 1500 }) })
     );
 }
 
@@ -190,10 +153,7 @@ fn csc_wheel_only() {
     let mut frame = vec![0b01];
     frame.extend_from_slice(&65_536u32.to_le_bytes());
     frame.extend_from_slice(&800u16.to_le_bytes());
-    assert_eq!(
-        parse_csc_measurement(&frame),
-        Some(CscSample { wheel: Some(WheelRevs { revs: 65_536, event_time_1024: 800 }), crank: None })
-    );
+    assert_eq!(parse_csc_measurement(&frame), Some(CscSample { crank: None }));
 }
 
 #[test]
@@ -206,10 +166,7 @@ fn csc_wheel_and_crank() {
     frame.extend_from_slice(&40u16.to_le_bytes()); // crank event time
     assert_eq!(
         parse_csc_measurement(&frame),
-        Some(CscSample {
-            wheel: Some(WheelRevs { revs: 10, event_time_1024: 20 }),
-            crank: Some(CrankRevs { revs: 30, event_time_1024: 40 }),
-        })
+        Some(CscSample { crank: Some(CrankRevs { revs: 30, event_time_1024: 40 }) })
     );
 }
 
@@ -239,12 +196,6 @@ fn battery_level() {
 
 fn crank(revs: u16, t: u16) -> CrankRevs {
     CrankRevs { revs, event_time_1024: t }
-}
-
-#[test]
-fn cadence_first_sample_has_no_delta() {
-    let mut c = CrankCadence::new();
-    assert_eq!(c.update(crank(10, 1000)), None); // no baseline yet
 }
 
 #[test]

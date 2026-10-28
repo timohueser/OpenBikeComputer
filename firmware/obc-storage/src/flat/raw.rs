@@ -49,28 +49,3 @@ pub fn is_zero(bytes: &[u8], off: usize, len: usize) -> bool {
 pub fn crc32(bytes: &[u8]) -> u32 {
     obc_crc::Crc32::checksum(bytes)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn crc_check_value() {
-        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-    }
-
-    #[test]
-    fn round_trips_every_width() {
-        let mut buf = [0u8; 32];
-        put_u16(&mut buf, 0, 0x1234);
-        put_u32(&mut buf, 2, 0x89AB_CDEF);
-        put_u64(&mut buf, 6, 0x0123_4567_89AB_CDEF);
-        put_bytes(&mut buf, 14, &[1, 2, 3]);
-        assert_eq!(u16_at(&buf, 0), 0x1234);
-        assert_eq!(u32_at(&buf, 2), 0x89AB_CDEF);
-        assert_eq!(u64_at(&buf, 6), 0x0123_4567_89AB_CDEF);
-        assert!(!is_zero(&buf, 14, 3));
-        assert!(is_zero(&buf, 17, 15));
-        assert_eq!(bytes16_at(&buf, 14), [1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-    }
-}

@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::Command;
 
 use obc_bake::coverage::Coverage;
-use obc_data::prepared::{Job, Manifest, Plan, Prepared, Scope};
+use obc_data::prepared::{day, Job, Manifest, Plan, Prepared, Scope};
 use obc_data::product::Wanted;
 use obc_data::regions::{Area, Bbox};
 use obc_data::settings::Settings;
@@ -65,13 +65,14 @@ impl Prepared for TerrainReference {
         scope: Option<&Scope>,
         _: &[String],
     ) -> Result<Plan, String> {
-        let (bbox, countries) = area(scope)?;
+        let (boxes, countries) = area(scope)?;
+        let held = boxes.as_deref().map(|boxes| boxes.iter().map(box_tiles).collect::<Result<Vec<_>, _>>());
+        let held = held.transpose()?;
         let (mut inputs, mut tiles) = (Vec::new(), BTreeSet::new());
-        for model in models(planning.sources, bbox.as_ref(), &countries) {
+        for model in models(planning.sources, boxes.as_deref(), &countries) {
             let mut inside = extent_tiles(model)?;
-            if let Some(bbox) = &bbox {
-                let held = box_tiles(bbox)?;
-                inside.retain(|tile| held.contains(tile));
+            if let Some(held) = &held {
+                inside.retain(|tile| held.iter().any(|tiles| tiles.contains(tile)));
             }
             tiles.extend(inside);
             inputs.push(Wanted { source: model.id.clone(), version: None, params: Vec::new() });
@@ -91,10 +92,10 @@ impl Prepared for TerrainReference {
             Some(scope) => Some(scope_tiles(job, &scope)?),
             None => None,
         };
-        let (bbox, countries) = area(job.scope.as_ref())?;
+        let (boxes, countries) = area(job.scope.as_ref())?;
         // The models of each tile, in the order of `data/sources.toml`.
         let mut keys: BTreeMap<CellId, Vec<String>> = BTreeMap::new();
-        for model in models(job.sources(), bbox.as_ref(), &countries) {
+        for model in models(job.sources(), boxes.as_deref(), &countries) {
             let mut tiles = extent_tiles(model)?;
             if !model.areas.is_empty() {
                 let mut inside = BTreeSet::new();
@@ -160,6 +161,8 @@ impl Prepared for TerrainReference {
         }
         let fetched: BTreeSet<&String> = keys.values().flatten().collect();
         let fetched: Vec<&str> = fetched.into_iter().map(String::as_str).collect();
+        // A model has no versions of its own: the day of the prepare names what it read.
+        let version = day(&job.version).to_string();
         // Each index names each tile of its pool, with its sources and the pixel digest of its mark.
         for (pool, prefix) in [("max", ""), ("mean", "mean/")] {
             let made: BTreeMap<String, &String> = digests
@@ -172,15 +175,13 @@ impl Prepared for TerrainReference {
             let held = job.state.join("keys.json");
             obc_data::store::write_atomic(&held, &serde_json::to_vec(&sources).expect("keys serialize"))?;
             let mut command = (self.ingest)(job.root)?;
-            command.args(["index-terrain", "--pool", pool, "--fetched", &job.version, "--models", &fetched.join(",")]);
+            command.args(["index-terrain", "--pool", pool, "--fetched", &version, "--models", &fetched.join(",")]);
             command.arg("--digests").arg(&listed).arg("--keys").arg(&held);
             if let Some(previous) = &previous {
                 command.arg("--base").arg(job.earlier_file(previous, &format!("{prefix}index.json"))?);
             }
             job.program(command.arg("--out").arg(job.work.join(format!("{prefix}index.json"))))?;
         }
-        // A model has no versions of its own: the day of the prepare names what it read.
-        let version = job.version.clone();
         for model in &fetched {
             let read: BTreeMap<String, String> = digests
                 .iter()
@@ -196,14 +197,15 @@ impl Prepared for TerrainReference {
     }
 }
 
-/// The box of the region of `scope` and its countries; none for a version of everything. A region
-/// that names no countries has those of its leaves, and none when a leaf names none: that leaf reads
-/// every country. The planner reads the same list.
-pub(crate) fn area(scope: Option<&Scope>) -> Result<(Option<Bbox>, Vec<String>), String> {
+/// The box of each leaf of the region of `scope` and its countries; no boxes for a version of
+/// everything or a region with a Geofabrik leaf. A region that names no countries has those of its
+/// leaves, and none when a leaf names none: that leaf reads every country. The planner reads the
+/// same list.
+pub(crate) fn area(scope: Option<&Scope>) -> Result<(Option<Vec<Bbox>>, Vec<String>), String> {
     let Some((regions, id)) = scope.map(regions).transpose()? else { return Ok((None, Vec::new())) };
     let own = regions.get(&id).map(|region| region.countries.clone()).unwrap_or_default();
     if !own.is_empty() {
-        return Ok((regions.bounds(&id), own));
+        return Ok((regions.boxes(&id), own));
     }
     let mut countries = Vec::new();
     for leaf in regions.leaves(&id)? {
@@ -216,21 +218,27 @@ pub(crate) fn area(scope: Option<&Scope>) -> Result<(Option<Bbox>, Vec<String>),
     }
     countries.sort();
     countries.dedup();
-    Ok((regions.bounds(&id), countries))
+    Ok((regions.boxes(&id), countries))
 }
 
-/// The national models of `sources` that may be given to others, that meet `bbox`, and that are
-/// of one of `countries` when the region names some: `dtm-de-by` is of `DE`.
+/// Whether the `extent` of `source` meets one of `boxes`; always without boxes.
+pub(crate) fn meets(source: &Source, boxes: Option<&[Bbox]>) -> bool {
+    boxes.is_none_or(|boxes| boxes.iter().any(|b| source.meets([b.west, b.south, b.east, b.north])))
+}
+
+/// The national models of `sources` that may be given to others, that meet `boxes`, and that are
+/// of one of `countries` when the region names some. The first part of the key is the ISO 3166-1
+/// code of the country: `dtm-de-by` is of `DE`.
 fn models<'a>(
     sources: &'a [Source],
-    bbox: Option<&'a Bbox>,
+    boxes: Option<&'a [Bbox]>,
     countries: &'a [String],
 ) -> impl Iterator<Item = &'a Source> {
     sources.iter().filter(move |source| {
         let country = source.id.trim_start_matches("dtm-").split('-').next().unwrap_or_default().to_uppercase();
         source.id.starts_with("dtm-")
             && source.redistribute
-            && bbox.is_none_or(|b| source.meets([b.west, b.south, b.east, b.north]))
+            && meets(source, boxes)
             && (countries.is_empty() || countries.contains(&country))
     })
 }
@@ -352,6 +360,7 @@ mod tests {
         fetch = { kind = "dtm", url = "https://example.org/xx" }
         extent = [8.0, 46.5, 8.2, 46.6]
         version = "date"
+        keep = "prepared"
         redistribute = true
 
         [[source]]
@@ -361,6 +370,7 @@ mod tests {
         attribution = "Test"
         fetch = { kind = "prepared" }
         version = "date"
+        keep = "prepared"
         redistribute = true
     "#;
 
@@ -660,5 +670,12 @@ esac
         );
         let (_, countries) = area(Some(&named)).unwrap();
         assert_eq!(countries, ["CH", "AT"], "the union's own list wins, as in the planner");
+    }
+
+    #[test]
+    fn a_region_of_gb_reads_the_models_of_england_and_scotland() {
+        let gb = ["GB".to_string()];
+        let read: Vec<&str> = models(obc_data::sources::all(), None, &gb).map(key).collect();
+        assert_eq!(read, ["gb-eng", "gb-sct"]);
     }
 }

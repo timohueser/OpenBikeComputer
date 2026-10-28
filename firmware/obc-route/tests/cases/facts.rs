@@ -97,14 +97,28 @@ fn grades_use_ordered_endpoints_and_do_not_cross_missing_spans() {
     assert_eq!(std::mem::size_of::<obc_route::RoutePoint>(), 12);
 }
 
+/// Byte 0 of a waypoint provenance record: the first byte of its Original store field
+/// (OBCR §4, waypoint record offset 44).
+const PROVENANCE_ORIGINAL_STORE: usize = 0;
+/// OBCR §6 visit descriptor: Target source kind.
+const VISIT_TARGET_KIND: usize = 72;
+/// OBCR §1.1 header: Visit version. The Visit offset at 120 is 0 when no descriptor is present.
+const HEADER_VISIT_VERSION: usize = 118;
+
 #[test]
-fn malformed_optional_metadata_and_zero_length_steps_are_explicit() {
-    use obc_formats::obcr::{VisitDescriptor, WaypointProvenance};
+fn waypoint_provenance_round_trips_and_an_absent_record_is_all_zero() {
+    use obc_formats::obcr::WaypointProvenance;
     let provenance = WaypointProvenance { source: MAP, ordinal: 7 };
     assert_eq!(WaypointProvenance::decode(&provenance.encode()).unwrap(), Some(provenance));
     let mut absent = [0; 36];
-    absent[0] = 1;
-    assert!(WaypointProvenance::decode(&absent).is_err());
+    assert_eq!(WaypointProvenance::decode(&absent).unwrap(), None);
+    absent[PROVENANCE_ORIGINAL_STORE] = 1;
+    assert!(WaypointProvenance::decode(&absent).is_err(), "an absent record with a nonzero byte is malformed");
+}
+
+#[test]
+fn visit_descriptor_round_trips_and_rejects_an_unknown_target_kind() {
+    use obc_formats::obcr::VisitDescriptor;
     let descriptor = VisitDescriptor {
         original: MAP,
         original_anchors_m: [0, 2, 3],
@@ -114,14 +128,24 @@ fn malformed_optional_metadata_and_zero_length_steps_are_explicit() {
         target_lat: 0,
         target_kind: 1,
     };
-    assert_eq!(VisitDescriptor::decode(&descriptor.encode().unwrap()).unwrap(), descriptor);
-    let mut invalid = descriptor.encode().unwrap();
-    invalid[72] = 5;
-    assert!(VisitDescriptor::decode(&invalid).is_err());
-    let mut bytes = route(&[Some(0), Some(10)]);
-    bytes[118] = 1;
-    assert!(RouteIndex::read(&SliceSource(&bytes)).is_err());
+    let mut bytes = descriptor.encode().unwrap();
+    assert_eq!(VisitDescriptor::decode(&bytes).unwrap(), descriptor);
+    bytes[VISIT_TARGET_KIND] = 5;
+    assert!(VisitDescriptor::decode(&bytes).is_err(), "target kinds are 1..=4");
+}
 
+#[test]
+fn a_visit_version_without_a_descriptor_offset_is_rejected() {
+    let mut bytes = route(&[Some(0), Some(10)]);
+    assert!(RouteIndex::read(&SliceSource(&bytes)).is_ok());
+    bytes[HEADER_VISIT_VERSION] = obc_formats::obcr::VISIT_DESCRIPTOR_VERSION;
+    assert!(RouteIndex::read(&SliceSource(&bytes)).is_err());
+}
+
+/// Repeated coordinates with an elevation change are zero-length steps. The interval facts must
+/// agree with the header ascent over them.
+#[test]
+fn zero_length_gpx_steps_keep_the_facts_ascent_equal_to_the_header_ascent() {
     let gpx = br#"<gpx><trk><trkseg><trkpt lat="0" lon="0"><ele>0</ele></trkpt><trkpt lat="0" lon="0"><ele>100</ele></trkpt><trkpt lat="0" lon="0.0005"><ele>101</ele></trkpt><trkpt lat="0" lon="0.0005"><ele>200</ele></trkpt></trkseg></trk></gpx>"#;
     let mut sink = VecSink::default();
     obc_route::gpx_to_obcr(&SliceSource(gpx), "Same location", &mut sink).unwrap();
