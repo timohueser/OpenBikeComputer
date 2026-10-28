@@ -1021,6 +1021,23 @@ pub(crate) mod tests {
         assert_eq!(nothing(&Request { refresh: false, version: Some(day), ..boxed }, true).unwrap().files, []);
     }
 
+    #[test]
+    fn a_ground_capture_refuses_a_digest_that_its_entry_lacks() {
+        let scratch = Scratch::new("ground-digest");
+        let store = Store::at(scratch.0.join("store"));
+        let root = scratch.0.join("repository");
+        let mut map = located(FetchKind::Capture, "https://example.org/wfs");
+        map.id = "map".into();
+        let entry = r#"{"source": "map", "protocol": "wfs", "layer": "a", "field": "F", "sort": "id"}"#;
+        std::fs::create_dir_all(root.join("data/trailview")).unwrap();
+        let ground = format!(r#"{{"material": {{"sources": [{entry}]}}, "lithology": {{"sources": []}}}}"#);
+        std::fs::write(root.join("data/trailview/ground.json"), ground).unwrap();
+        let params = vec![("bbox".into(), "7,46,8,47".into()), ("ground".into(), "000000000000".into())];
+        let request = Request { refresh: false, source: &map, version: None, params };
+        let err = capture::run(&root, &store, &request).unwrap_err();
+        assert!(err.contains("is not the digest of its entry"), "{err}");
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_manual_capture_resumes_a_failed_run_and_joins_only_a_started_version() {
