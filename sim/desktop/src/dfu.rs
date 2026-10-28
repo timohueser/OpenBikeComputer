@@ -6,7 +6,7 @@
 //! board performs, then maps the answer into the app-native types.
 
 use obc_app::{DfuScanError, DfuScanReport};
-use obc_dfu::armer::{self, ExtentsError, ScanError, StageIo};
+use obc_dfu::armer::{self, ScanError, StageIo};
 use obc_dfu::engine::IoError;
 use obc_dfu::{Extent, ImageHeader, StagedRef, HEADER_LEN, MAX_EXTENTS};
 
@@ -81,7 +81,7 @@ impl StageIo for SliceStage {
         self.bytes.get(o..o + buf.len()).map(|s| buf.copy_from_slice(s)).ok_or(IoError)
     }
 
-    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, ExtentsError> {
+    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, IoError> {
         // One contiguous run: a package this small fits one extent of the store's card-scaled
         // geometry, which is what the board resolves it to.
         out[0] = Extent { start_block: 0, blocks: (self.bytes.len() as u32).div_ceil(512) };
@@ -114,7 +114,6 @@ fn map_scan_error(e: ScanError) -> DfuScanError {
         ScanError::Io => DfuScanError::Unreadable,
         ScanError::BadHeader | ScanError::BadCrc | ScanError::Truncated => DfuScanError::Damaged,
         ScanError::Oversize => DfuScanError::TooLarge,
-        ScanError::TooFragmented { .. } => DfuScanError::TooFragmented,
         ScanError::Unsigned | ScanError::BadSignature => DfuScanError::Untrusted,
     }
 }

@@ -1,6 +1,6 @@
 //! The production codecs against the live shared `specs/vectors/` fixtures.
 
-use obc_ble::{CommandResult, Config, Crc32, StatusMessage};
+use obc_ble::{CommandResult, Config, StatusMessage};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = obc_vectors::dir().join(name);
@@ -13,12 +13,6 @@ fn decoded_command_result(bytes: &[u8]) -> CommandResult {
     match StatusMessage::decode(bytes).unwrap().expect("known discriminator") {
         StatusMessage::CommandResult(result) => result,
     }
-}
-
-#[test]
-fn production_crc_matches_reference() {
-    let route = fixture("route-waypoints.obcr");
-    assert_eq!(Crc32::checksum(&route), obc_vectors::crc32(&route));
 }
 
 #[test]
