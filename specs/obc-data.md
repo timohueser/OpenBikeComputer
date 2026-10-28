@@ -380,12 +380,16 @@ producer of [`wiki`](#wiki) reads them.
 - An `arcgis-features` or `wfs` file is `features-NNNNN.geojson`: a page of the features that
   meet `bbox`, in EPSG:4326 with the source's `field`. `arcgis-features` asks only for the
   features whose `field` the legend may name, pages by object id, and asks again for the ids that
-  an answer lacks. It simplifies each feature by a quarter of a texel at the equator, at the
+  an answer lacks. It leaves out an id that the service no longer has, up to 0.1 % of the ids,
+  and fails above that. It simplifies each feature by a quarter of a texel at the equator, at the
   source's `zoom` or else at zoom 13. `wfs` pages in the order of `sort` until the pages hold the
   `numberMatched` features of a `hits` request. A box without a feature gives a fetch without
   files.
-- A ground capture tries a request again after a failure, a 5xx or 429 answer, or an ArcGIS
-  error, 6 times in all.
+- A ground capture tries a request again after a failed or cut transfer, a 5xx or 429 answer, an
+  ArcGIS error without a 4xx code, or a map image that is no PNG, 6 times in all. Another 4xx
+  answer or ArcGIS error fails at once. The hidden file `.positions` records the object ids or the
+  `numberMatched` that the page numbers stand for; a resumed run that finds others deletes the
+  pages.
 - A `sentinel-2-mosaics` file is `<mosaic tile>/<band>.tif`: the window over `bbox`, one pixel
   wider on each side, of a band of a quarterly mosaic tile of the year, as the STAC search lists it.
 - The version is the day of the fetch, because the service answers with current data. Another

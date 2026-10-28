@@ -66,8 +66,8 @@ A material code above 63 needs a new format. The ruleset check rejects more than
 a region id is 0 to 254; more ids need a new format, with two bytes.
 
 The material and the barren share come from the sources at zoom 13 and the region at zoom 10. The
-lithology comes from the sources at the highest `zoom` of the lithology sources that the step reads,
-and at least at zoom 10. A coarser texel takes the most common byte of its four children,
+lithology comes from the sources at the highest `zoom` of the lithology sources that name a unit in
+the bounds, and at least at zoom 10. A coarser texel takes the most common byte of its four children,
 the first in reading order on a tie. A material or region texel with no data counts only where all
 four have no data, and a missing child has no data. A coarser barren share is the rounded mean of
 the children with data. Finer than the last zoom of its layer, a lithology or region texel is the
@@ -105,7 +105,7 @@ A source of the chain has these keys:
 | `crs` | The CRS of the map images |
 | `legend` | `match` and `classes`: `[native class, name]` pairs, where a name is an id of `materials.json` |
 | `combine` | `authority` or `refine`, see below |
-| `zoom` | A lithology source only: the highest zoom that its detail fills, 10 to 13 |
+| `zoom` | A vector lithology source only, where it is required: the highest zoom that its detail fills, 10 to 13 |
 | `reach_m` | A vector source only: where it names no class, its nearest class within this reach also refines the texel |
 
 | `protocol` | Files |

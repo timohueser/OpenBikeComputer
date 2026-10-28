@@ -8,10 +8,12 @@ files of the service over a box.
 
 import base64
 import collections
+import hashlib
 import io
 import itertools
 import json
 import math
+import os
 import re
 import sys
 import tempfile
@@ -39,6 +41,8 @@ IMAGE_MAX_PX = 4096
 FEATURE_BATCH = 200
 WFS_PAGE = 5000
 TRIES = 6
+# The share of the listed ids that may vanish before an ArcGIS capture fetches them.
+VANISHED = 0.001
 # Features per read of a vector file while the step keeps its units.
 UNITS_CHUNK = 50_000
 
@@ -490,11 +494,16 @@ def fetch(source, bounds, out, zoom, ground=None):
         fetch_features(url, entry, bounds, out, tolerance, Legend(entry["legend"], collections.defaultdict(int)))
 
 
+class Refused(Exception):
+    """An answer that no try changes, as an ArcGIS error with a 4xx code."""
+
+
 def get(url, params=None, data=None, check=None, timeout=300):
-    """The body of the answer to a GET with `params`, or to a POST of the form `data`. A failed try, a
-    5xx or 429 answer or a body that `check` refuses with ValueError is tried again, TRIES in all,
-    after 2, 4, 8 … seconds."""
-    from urllib.error import HTTPError, URLError
+    """The body of the answer to a GET with `params`, or to a POST of the form `data`. A failed or cut
+    try, a 5xx or 429 answer or a body that `check` refuses with ValueError is tried again, TRIES in
+    all, after 2, 4, 8 … seconds. Another 4xx answer, or `Refused` from `check`, fails at once."""
+    import http.client
+    from urllib.error import HTTPError
     from urllib.request import Request
 
     from .. import planner_runtime as runtime
@@ -508,7 +517,7 @@ def get(url, params=None, data=None, check=None, timeout=300):
             if check:
                 check(answer)
             return answer
-        except (HTTPError, URLError, TimeoutError, ConnectionError, ValueError) as error:
+        except (OSError, http.client.HTTPException, ValueError) as error:
             final = isinstance(error, HTTPError) and error.code < 500 and error.code != 429
             if final or attempt == TRIES - 1:
                 raise
@@ -517,11 +526,30 @@ def get(url, params=None, data=None, check=None, timeout=300):
 
 
 def write(target, body):
-    """Write a file of a capture whole, so that a resumed capture skips only whole files."""
+    """Write a file of a capture whole and on disk, so that a resumed capture skips only whole files."""
     part = target.with_name(target.name + ".part")
-    part.write_bytes(body)
+    with open(part, "wb") as stream:
+        stream.write(body)
+        stream.flush()
+        os.fsync(stream.fileno())
     part.replace(target)
     print(f"{target.parent.name} {target.name}", file=sys.stderr, flush=True)
+
+
+def positions(out, meaning):
+    """Keep the pages of a resumed capture only while `meaning`, what a page number stands for, is the
+    same as when they were written; else they go."""
+    marker = out / ".positions"
+    if marker.exists() and marker.read_text() != meaning:
+        for page in out.glob("features-*.geojson"):
+            page.unlink()
+    write(marker, meaning.encode())
+
+
+def png(body):
+    """ValueError for an answer that is no PNG image, as an error page with status 200."""
+    if not body.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError(f"not a PNG image: {body[:200]!r}")
 
 
 def fetch_image(url, entry, bounds, out):
@@ -543,14 +571,16 @@ def fetch_image(url, entry, bounds, out):
                 write(target, get(f"{url}/export", {
                     "bbox": ",".join(map(str, box)), "bboxSR": epsg, "imageSR": epsg, "layers": f"show:{entry['layer']}",
                     "format": "png32", "size": f"{round((box[2] - box[0]) / px)},{round((box[3] - box[1]) / px)}",
-                    "transparent": "true", "f": "image"}))
+                    "transparent": "true", "f": "image"}, check=png))
 
 
 def arcgis(body):
-    """The JSON of an ArcGIS answer, which reports an error with status 200: ValueError then."""
+    """The JSON of an ArcGIS answer, which reports an error with status 200: `Refused` for a 4xx code,
+    as an invalid `where`, else ValueError."""
     found = json.loads(body)
     if "error" in found:
-        raise ValueError(f"ArcGIS: {found['error']}")
+        code = found["error"].get("code") if isinstance(found["error"], dict) else None
+        raise (Refused if isinstance(code, int) and 400 <= code < 500 else ValueError)(f"ArcGIS: {found['error']}")
     return found
 
 
@@ -558,13 +588,15 @@ def fetch_features(url, entry, bounds, out, tolerance, legend):
     """The features of the layer at `url` that meet the bounds and whose `field` the legend may name, as
     GeoJSON in EPSG:4326 with that field: `features-NNNNN.geojson`, FEATURE_BATCH by object id each,
     three requests at a time. A batch that lacks ids, as past the service's transfer limit, asks again
-    for those."""
+    for those. An id that the service no longer has is left out, up to VANISHED of the ids."""
     west, south, east, north = bounds
     found = arcgis(get(f"{url}/query", data={
         "where": legend.where(entry["field"]), "geometry": f"{west},{south},{east},{north}",
         "geometryType": "esriGeometryEnvelope", "inSR": 4326, "spatialRel": "esriSpatialRelIntersects",
         "returnIdsOnly": "true", "f": "json"}, check=arcgis))
     key, ids = found["objectIdFieldName"], sorted(found["objectIds"] or [])
+    positions(out, hashlib.sha256(",".join(map(str, ids)).encode()).hexdigest())
+    vanished = []
 
     def batch(i):
         target = out / f"features-{i // FEATURE_BATCH:05}.geojson"
@@ -577,13 +609,18 @@ def fetch_features(url, entry, bounds, out, tolerance, legend):
                 "geometryPrecision": 6, "maxAllowableOffset": f"{tolerance:.8f}", "f": "geojson"}, check=arcgis))["features"]
             got = {feature["properties"][key] for feature in found} & set(wanted)
             if not got:
-                raise RuntimeError(f"{url}: no feature of the ids {wanted[0]} to {wanted[-1]}")
+                vanished.extend(wanted)
+                if len(vanished) > VANISHED * len(ids):
+                    raise RuntimeError(f"{url}: {len(vanished)} of {len(ids)} ids are gone since the capture listed them")
+                break
             features += [feature for feature in found if feature["properties"][key] in got]
             wanted = [i for i in wanted if i not in got]
         write(target, json.dumps({"type": "FeatureCollection", "features": features}).encode())
 
     with ThreadPoolExecutor(3) as pool:
         list(pool.map(batch, range(0, len(ids), FEATURE_BATCH)))
+    if vanished:
+        print(f"{url}: {len(vanished)} ids are gone since the capture listed them", file=sys.stderr, flush=True)
 
 
 def fetch_wfs(url, entry, bounds, out):
@@ -593,7 +630,11 @@ def fetch_wfs(url, entry, bounds, out):
     west, south, east, north = bounds
     query = {"service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": entry["layer"],
              "bbox": f"{south},{west},{north},{east},urn:ogc:def:crs:EPSG::4326"}
-    matched = int(re.search(rb'numberMatched="(\d+)"', get(url, {**query, "resultType": "hits"}))[1])
+    hits = get(url, {**query, "resultType": "hits"})
+    if not (found := re.search(rb'numberMatched="(\d+)"', hits)):
+        raise RuntimeError(f"{url}: no numberMatched in the answer: {hits[:500]!r}")
+    matched = int(found[1])
+    positions(out, str(matched))
     for page in range(math.ceil(matched / WFS_PAGE)):
         target = out / f"features-{page:05}.geojson"
         if target.exists():

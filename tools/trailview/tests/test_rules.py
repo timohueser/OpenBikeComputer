@@ -41,6 +41,7 @@ CASES = [
      'ground.json: lithology.sources[0].legend.classes[0][1]: "lava" is not one of ' + ", ".join(
          f'"{entry["id"]}"' for entry in RULESET["materials"]["lithologies"])),
     ("ground", ["lithology", "sources", 0, "zoom"], DELETE, "ground.json: lithology.sources[0]: has no zoom"),
+    ("ground", ["material", "sources", 3, "zoom"], 11, "ground.json: material.sources[3].zoom: only a vector lithology source has a zoom"),
 ]
 
 

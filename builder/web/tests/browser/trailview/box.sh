@@ -98,9 +98,10 @@ EOF
 # Runs an `obc data` step of tools/ with a request as obc data writes it, into the empty folder
 # $OUT/step. SNAPSHOTS maps each source to a folder: its data files are the snapshot.
 step() {  # MODULE OPTIONS LAYERS SNAPSHOTS
-  rm -rf "$OUT/step" && mkdir -p "$OUT/step"
+  # As under `obc data`, a step gets its own TMPDIR, which goes when it ends.
+  rm -rf "$OUT/step" "$OUT/step-tmp" && mkdir -p "$OUT/step" "$OUT/step-tmp"
   _say "step $1"
-  python3 - "$OUT/step" "${@:2}" <<'EOF' | "${PY[@]}" -m "$1" --step
+  python3 - "$OUT/step" "${@:2}" <<'EOF' | TMPDIR="$OUT/step-tmp" "${PY[@]}" -m "$1" --step
 import json, sys
 from pathlib import Path
 output, options, layers, snapshots = sys.argv[1:]
@@ -110,6 +111,7 @@ print(json.dumps({"options": json.loads(options), "layers": json.loads(layers), 
                   "metrics": f"{output}.metrics.json",
                   "snapshots": {source: data(folder) for source, folder in json.loads(snapshots).items()}}))
 EOF
+  rm -rf "$OUT/step-tmp"
 }
 
 bounds() { echo "[$1]"; }

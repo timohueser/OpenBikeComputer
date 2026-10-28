@@ -869,7 +869,6 @@ obligations = "Contact IGME before a paid value-added service uses the map"
 fetch = { kind = "capture", url = "https://mapas.igme.es/gis/rest/services/Cartografia_Geologica/IGME_Geode_50/MapServer/8" }
 # Peninsular Spain and the Balearic Islands, without the Canary Islands, so the box stays near Spain.
 extent = [-10, 35, 5, 44]
-areas = ["europe/spain"]
 version = "date"
 refresh = "manual"
 redistribute = false

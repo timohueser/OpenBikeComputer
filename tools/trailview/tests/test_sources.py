@@ -156,6 +156,7 @@ class CaptureTest(unittest.TestCase):
         self.assertEqual(codes, sorted([L["limestone"], L["variegated-marl"]]))
 
     def test_an_arcgis_capture_filters_by_the_legend_retries_asks_again_past_the_transfer_limit_and_resumes(self):
+        import http.client
         from urllib.error import HTTPError
 
         entry, asked, calls = sources.entry_of("land-cover-ie", GROUND), [], []
@@ -166,26 +167,55 @@ class CaptureTest(unittest.TestCase):
                 raise HTTPError("https://arcgis.example.org", 502, "Bad Gateway", {}, None)
             if len(calls) == 3:
                 return b'{"error": {"code": 500, "message": "busy"}}'
+            if len(calls) == 4:
+                raise http.client.IncompleteRead(b"{")
             if "returnIdsOnly" in params:
                 self.assertIn("LOWER(LEVEL_2_VALUE) LIKE '%exposed rock%'", params["where"])
-                return json.dumps({"objectIdFieldName": "OBJECTID", "objectIds": list(range(450, 0, -1))}).encode()
+                # 999 is gone before the capture asks for it.
+                return json.dumps({"objectIdFieldName": "OBJECTID", "objectIds": [*range(450, 0, -1), 999]}).encode()
             ids = [int(i) for i in params["objectIds"].split(",")]
             asked.append(ids)
             return json.dumps({"type": "FeatureCollection", "features": [
-                {"type": "Feature", "geometry": None, "properties": {"OBJECTID": i, "LEVEL_2_VALUE": "Scrub"}} for i in ids[:150]]}).encode()
+                {"type": "Feature", "geometry": None, "properties": {"OBJECTID": i, "LEVEL_2_VALUE": "Scrub"}}
+                for i in ids[:150] if i != 999]}).encode()
 
         network, wait = playing(service)
-        with tempfile.TemporaryDirectory() as tmp, network, wait, mock.patch.object(sources, "ThreadPoolExecutor", lambda n: Serial()):
+        serial = mock.patch.object(sources, "ThreadPoolExecutor", lambda n: Serial())
+        with tempfile.TemporaryDirectory() as tmp, network, wait, serial, mock.patch.object(sources, "VANISHED", 0.01):
             out = Path(tmp)
             (out / "features-00001.geojson").write_text('{"type": "FeatureCollection", "features": []}')
             sources.fetch_features("https://arcgis.example.org/0", entry, [-9.8, 51.9, -9.6, 52.1], out, 1e-5,
                                    sources.Legend(entry["legend"], M))
             pages = {path.name: [f["properties"]["OBJECTID"] for f in json.loads(path.read_text())["features"]]
-                     for path in sorted(out.iterdir())}
+                     for path in sorted(out.glob("features-*"))}
         self.assertEqual(pages["features-00000.geojson"], list(range(1, 201)), "asked again for the ids past the limit of 150")
         self.assertEqual(pages["features-00001.geojson"], [], "the page that a failed run kept stays")
-        self.assertEqual(pages["features-00002.geojson"], list(range(401, 451)))
-        self.assertEqual([ids[0] for ids in asked], [1, 151, 401], "the kept page is not asked again")
+        self.assertEqual(pages["features-00002.geojson"], list(range(401, 451)), "without the vanished id")
+        self.assertEqual([ids[0] for ids in asked], [1, 151, 401, 999], "the kept page is not asked again")
+
+    def test_an_arcgis_error_with_a_4xx_code_fails_at_once(self):
+        calls = []
+
+        def service(params):
+            calls.append(params)
+            return b'{"error": {"code": 400, "message": "Invalid where"}}'
+
+        entry = sources.entry_of("land-cover-ie", GROUND)
+        network, wait = playing(service)
+        with tempfile.TemporaryDirectory() as tmp, network, wait, self.assertRaises(sources.Refused):
+            sources.fetch_features("https://arcgis.example.org/0", entry, [-9.8, 51.9, -9.6, 52.1], Path(tmp), 1e-5,
+                                   sources.Legend(entry["legend"], M))
+        self.assertEqual(len(calls), 1)
+
+    def test_a_resumed_capture_drops_its_pages_when_their_positions_mean_other_features(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            sources.positions(out, "ids a")
+            (out / "features-00000.geojson").write_text("{}")
+            sources.positions(out, "ids a")
+            self.assertTrue((out / "features-00000.geojson").exists())
+            sources.positions(out, "ids b")
+            self.assertFalse((out / "features-00000.geojson").exists())
 
     def test_a_wfs_capture_pages_in_a_stable_order_until_it_holds_every_matched_feature(self):
         entry, starts = sources.entry_of("land-cover-gb-sct", GROUND), []
@@ -204,7 +234,7 @@ class CaptureTest(unittest.TestCase):
         network, wait = playing(service)
         with tempfile.TemporaryDirectory() as tmp, network, wait, mock.patch.object(sources, "WFS_PAGE", 3):
             sources.fetch_wfs("https://wfs.example.org/ows", entry, [-3.3, 57.0, -3.2, 57.1], Path(tmp))
-            pages = [json.loads(path.read_text())["features"] for path in sorted(Path(tmp).iterdir())]
+            pages = [json.loads(path.read_text())["features"] for path in sorted(Path(tmp).glob("features-*"))]
         self.assertEqual([len(page) for page in pages], [3, 3, 1])
         self.assertEqual(starts, [0, 3, 3, 6])
         self.assertEqual(pages[0][0]["properties"], {"HABITAT_CODE": "F4"})
