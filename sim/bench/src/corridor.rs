@@ -190,6 +190,10 @@ fn run_corridor(
     }
 }
 
+/// Timed snapshots per warm corridor case the bench binary runs; the reported time is their mean.
+/// Tests pass 1: they assert counters, never timings.
+pub(super) const CORRIDOR_ITERS: usize = 20;
+
 /// The corridor matrix. Two different worst cases matter and both are here:
 ///
 /// - **dense** — Everything, a POI every ~25 m of corridor. The 16 slots fill in the first route
@@ -200,7 +204,7 @@ fn run_corridor(
 ///
 /// Around them, the shapes a rider actually meets: a single-category filter, and a snapshot taken
 /// mid-ride (where the chunks already behind are skipped outright).
-pub(super) fn run_corridor_matrix() -> (Vec<CorridorResult>, Vec<u8>) {
+pub(super) fn run_corridor_matrix(iters: usize) -> (Vec<CorridorResult>, Vec<u8>) {
     let obcr = corridor_route(2_000, 100); // ≈15 km, ~2000 points
     let dense = corridor_map(100, 200_000); // 600 in-corridor POIs over the route's span
     let sparse = corridor_map(4, 200_000); // 24 in-corridor POIs
@@ -208,14 +212,14 @@ pub(super) fn run_corridor_matrix() -> (Vec<CorridorResult>, Vec<u8>) {
     let water = PoiCategorySet::only(obc_reader::PoiCategory::Water);
     let results = vec![
         run_corridor("thin/all/cold", &thin, &obcr, PoiCategorySet::ALL, 0, false, 1),
-        run_corridor("thin/all/full-walk", &thin, &obcr, PoiCategorySet::ALL, 0, true, 20),
-        run_corridor("thin/water/full-walk", &thin, &obcr, water, 0, true, 20),
+        run_corridor("thin/all/full-walk", &thin, &obcr, PoiCategorySet::ALL, 0, true, iters),
+        run_corridor("thin/water/full-walk", &thin, &obcr, water, 0, true, iters),
         run_corridor("dense/all/cold", &dense, &obcr, PoiCategorySet::ALL, 0, false, 1),
-        run_corridor("dense/all/warm", &dense, &obcr, PoiCategorySet::ALL, 0, true, 20),
-        run_corridor("dense/water/warm", &dense, &obcr, water, 0, true, 20),
-        run_corridor("dense/all/mid-ride", &dense, &obcr, PoiCategorySet::ALL, 10_000, true, 20),
-        run_corridor("sparse/all/warm", &sparse, &obcr, PoiCategorySet::ALL, 0, true, 20),
-        run_corridor("sparse/water/warm", &sparse, &obcr, water, 0, true, 20),
+        run_corridor("dense/all/warm", &dense, &obcr, PoiCategorySet::ALL, 0, true, iters),
+        run_corridor("dense/water/warm", &dense, &obcr, water, 0, true, iters),
+        run_corridor("dense/all/mid-ride", &dense, &obcr, PoiCategorySet::ALL, 10_000, true, iters),
+        run_corridor("sparse/all/warm", &sparse, &obcr, PoiCategorySet::ALL, 0, true, iters),
+        run_corridor("sparse/water/warm", &sparse, &obcr, water, 0, true, iters),
     ];
     (results, obcr)
 }

@@ -3,16 +3,10 @@ name = "obc-ble"
 version = "0.1.0"
 edition = "2021"
 publish = false # device firmware support crate — not published to crates.io
-description = "Radio-free no_std codecs for the live BLE config, command/status and sensor surfaces, plus the persisted-settings CRC seam."
+description = "Radio-free no_std codecs for the live BLE config, command/status and sensor surfaces."
 
 # no_std, no alloc, no radio types. Kept a workspace member so `cargo test` exercises the shared
 # codecs on the host, exactly like obc-route / obc-reader.
-[dependencies]
-# The one exception to this crate's dependency-freedom, and only because it gives nothing up:
-# obc-crc is a leaf with no dependencies of its own (one table, one hasher). What the rule was
-# protecting — never linking the map or DFU stacks into this codec crate — still holds.
-obc-crc = { workspace = true }
-
 [dev-dependencies]
 # The shared S0 fixtures the vector tests read from ../../specs/vectors/ go through
 # obc-vectors' spec-derived builders so a drift fails on both crates at once.

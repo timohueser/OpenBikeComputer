@@ -1,9 +1,7 @@
 //! Host tests for the armer: the scan validation matrix, the arm sequencing asserted on a mock's
 //! call log, the generation bump, the first-install path, and the trial confirm.
 
-use obc_dfu::armer::{
-    arm, confirm_trial, scan, ArmError, ArmIo, ArmTicket, ExtentsError, Rollback, ScanError, StageIo,
-};
+use obc_dfu::armer::{arm, confirm_trial, scan, ArmError, ArmIo, ArmTicket, Rollback, ScanError, StageIo};
 use obc_dfu::engine::IoError;
 use obc_dfu::sig::test_key;
 use obc_dfu::{
@@ -15,7 +13,7 @@ use obc_dfu::{
 /// failures.
 struct FakeStage {
     file: Option<Vec<u8>>,
-    extents: Result<Vec<Extent>, ExtentsError>,
+    extents: Result<Vec<Extent>, IoError>,
     /// Fail every `read_stage` at or past this offset; `u32::MAX` never fails.
     fail_reads_from: u32,
 }
@@ -57,12 +55,8 @@ impl StageIo for FakeStage {
         buf.copy_from_slice(&f[start..end]);
         Ok(())
     }
-    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, ExtentsError> {
+    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, IoError> {
         let ext = self.extents.clone()?;
-        // An over-long scripted chain reports its true count.
-        if ext.len() > MAX_EXTENTS {
-            return Err(ExtentsError::TooFragmented { extents: ext.len() as u32 });
-        }
         out[..ext.len()].copy_from_slice(&ext);
         Ok(ext.len())
     }
@@ -139,18 +133,6 @@ fn scan_rejects_oversize_before_any_bulk_read() {
 }
 
 #[test]
-fn scan_rejects_too_fragmented_with_the_true_count() {
-    let (mut stage, _) = FakeStage::happy(b"image bytes", "v1");
-    stage.extents = Err(ExtentsError::TooFragmented { extents: 130 });
-    assert_eq!(scan_with(&mut stage), Err(ScanError::TooFragmented { extents: 130 }));
-
-    // A resolver that returns an over-long chain, instead of erroring, is caught too.
-    let (mut stage, _) = FakeStage::happy(b"image bytes", "v1");
-    stage.extents = Ok(vec![Extent { start_block: 1, blocks: 1 }; MAX_EXTENTS + 1]);
-    assert_eq!(scan_with(&mut stage), Err(ScanError::TooFragmented { extents: (MAX_EXTENTS + 1) as u32 }));
-}
-
-#[test]
 fn scan_maps_read_failures_to_io() {
     let image = vec![9u8; 4000];
     let (mut stage, _) = FakeStage::happy(&image, "v1");
@@ -158,7 +140,7 @@ fn scan_maps_read_failures_to_io() {
     assert_eq!(scan_with(&mut stage), Err(ScanError::Io));
 
     let (mut stage, _) = FakeStage::happy(&image, "v1");
-    stage.extents = Err(ExtentsError::Io);
+    stage.extents = Err(IoError);
     assert_eq!(scan_with(&mut stage), Err(ScanError::Io));
 }
 

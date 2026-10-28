@@ -33,16 +33,16 @@ mod tests;
 use std::{process::ExitCode, time::Instant};
 
 use cli::{parse_args, Mode};
-use corridor::{print_corridor_table, run_corridor_matrix, CorridorResult};
+use corridor::{print_corridor_table, run_corridor_matrix, CorridorResult, CORRIDOR_ITERS};
 use golden::{check_golden, golden_lines};
-use scenes::{print_repeat_table, print_table, run_matrix, run_scene, SceneResult, StdClock};
+use scenes::{print_repeat_table, print_table, run_matrix, run_scene, SceneResult, StdClock, ITERS};
 
 /// Run and print everything the golden file gates — the scene matrix and the corridor matrix — so
 /// `--check` and `--write-golden` measure and report exactly the same thing.
 fn run_gated_matrices() -> (Vec<SceneResult>, Vec<CorridorResult>) {
-    let scenes = run_matrix();
+    let scenes = run_matrix(ITERS);
     print_table(&scenes);
-    let (corridor, route) = run_corridor_matrix();
+    let (corridor, route) = run_corridor_matrix(CORRIDOR_ITERS);
     println!();
     print_corridor_table(&corridor, &route);
     (scenes, corridor)
@@ -61,9 +61,9 @@ fn main() -> ExitCode {
     };
 
     match mode {
-        Mode::Table => print_table(&run_matrix()),
+        Mode::Table => print_table(&run_matrix(ITERS)),
         Mode::Corridor => {
-            let (results, route) = run_corridor_matrix();
+            let (results, route) = run_corridor_matrix(CORRIDOR_ITERS);
             print_corridor_table(&results, &route);
         }
         Mode::Repeat(n) => print_repeat_table(n),
@@ -104,7 +104,7 @@ fn main() -> ExitCode {
                 }
             };
             let clock = StdClock(Instant::now());
-            print_table(&[run_scene(&bytes, "custom", mpp, heading, true, &clock)]);
+            print_table(&[run_scene(&bytes, "custom", mpp, heading, true, ITERS, &clock)]);
         }
     }
     ExitCode::SUCCESS

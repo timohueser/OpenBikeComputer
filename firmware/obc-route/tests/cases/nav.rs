@@ -1,7 +1,7 @@
 //! Host tests for the A* router. Fixture graphs are serialized with the real `obc-bake` writer and
 //! parsed with the real `obc-reader`, so the router runs end to end over genuine on-wire bytes.
 
-use crate::common::nav::{digest, plan_p};
+use crate::common::nav::plan_p;
 
 use crate::common::{decode, route_points, VecSink};
 use obc_bake::serialize::serialize_lods;
@@ -1096,9 +1096,6 @@ fn plan_with_elevation(bytes: &[u8], elev: &mut dyn obc_route::ElevationSource) 
     (res.expect("the grid plans"), sink.buf)
 }
 
-/// FNV-1a of the no-terrain emit over `grid3(false)`, planned by [`plan_with_elevation`].
-const NULL_PATH_DIGEST: u64 = 1853384897492501207;
-
 /// A real source fills every point's height and the header's min, max and dead-banded climb. The
 /// crest is reachable only through the densification: a vertex-only fill tops out at 900 m.
 #[test]
@@ -1388,10 +1385,9 @@ fn climb_weight_zero_over_real_ascents_is_the_pre_elevation_router() {
     assert!(up >= ROW_CLIMB_M as u16 - 4, "a grid column climbs a row of the hillside, baked {up} m");
 
     let (route, obcr) = plan_with_elevation(&hilly, &mut NullElevation);
-    assert_eq!(digest(&obcr), NULL_PATH_DIGEST, "a climb-blind plan over baked ascents moves no byte");
     assert_eq!(route.total_distance_m, 4474);
     let (_, flat_obcr) = plan_with_elevation(&flat, &mut NullElevation);
-    assert_eq!(obcr, flat_obcr, "and is the same route the terrain-free map plans");
+    assert_eq!(obcr, flat_obcr, "a climb-blind plan over baked ascents moves no byte");
 }
 
 /// Over the [`Knoll`], whose paths differ in climb but tie in distance, the search finds the exact

@@ -31,7 +31,7 @@
 use core::fmt::Write;
 
 use embassy_nrf::wdt;
-use obc_dfu::armer::{self, ArmError, ExtentsError, Rollback, ScanError, StageIo};
+use obc_dfu::armer::{self, ArmError, Rollback, ScanError, StageIo};
 use obc_dfu::{BootState, Extent, ImageHeader, StagedRef, HEADER_LEN, MAX_EXTENTS};
 use obc_formats::io::ByteSource;
 use obc_storage::flat::source::StoreSource;
@@ -177,9 +177,9 @@ fn block_extents(
     id: ObjectId,
     revision: Revision,
     out: &mut [Extent; MAX_EXTENTS],
-) -> Result<usize, ExtentsError> {
+) -> Result<usize, obc_dfu::engine::IoError> {
     let mut runs = [BlockRun::default(); MAX_RANGES];
-    let count = store.block_runs(id, revision, &mut runs).map_err(|_| ExtentsError::Io)?;
+    let count = store.block_runs(id, revision, &mut runs).map_err(|_| obc_dfu::engine::IoError)?;
     for (slot, run) in out.iter_mut().zip(&runs[..count]) {
         let narrow = u32::try_from(run.start_block).ok().zip(u32::try_from(run.blocks).ok());
         let Some((start_block, blocks)) = narrow else {
@@ -188,7 +188,7 @@ fn block_extents(
                 run.start_block,
                 run.blocks
             );
-            return Err(ExtentsError::Io);
+            return Err(obc_dfu::engine::IoError);
         };
         *slot = Extent { start_block, blocks };
     }
@@ -213,7 +213,7 @@ impl StageIo for FlatStage<'_> {
         self.source.read_at(offset.into(), buf).map_err(|_| obc_dfu::engine::IoError)
     }
 
-    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, ExtentsError> {
+    fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, obc_dfu::engine::IoError> {
         block_extents(self.store, self.id, self.revision, out)
     }
 }
@@ -316,14 +316,9 @@ async fn write_rollback(
     }
 
     let mut extents = [Extent::default(); MAX_EXTENTS];
-    let count = block_extents(store, meta.id, meta.revision, &mut extents).map_err(|e| match e {
-        ExtentsError::TooFragmented { extents } => ScanError::TooFragmented { extents },
-        ExtentsError::Io => ScanError::Io,
-    })?;
+    let count = block_extents(store, meta.id, meta.revision, &mut extents).map_err(|_| ScanError::Io)?;
     defmt::info!("dfu: rollback reserve written ({=u32} B raw image, {=usize} extent(s))", installed.image_len, count);
-    StagedRef::new(header, installed.image_len, installed.image_crc32, &extents[..count])
-        .map(Some)
-        .ok_or(ScanError::TooFragmented { extents: count as u32 })
+    StagedRef::new(header, installed.image_len, installed.image_crc32, &extents[..count]).map(Some).ok_or(ScanError::Io)
 }
 
 /// The running image as the reserve records it, or `None` when this arm gets no rollback: a first
@@ -529,7 +524,6 @@ fn map_scan_error(e: ScanError) -> obc_app::DfuScanError {
         ScanError::Io => U::Unreadable,
         ScanError::BadHeader | ScanError::BadCrc | ScanError::Truncated => U::Damaged,
         ScanError::Oversize => U::TooLarge,
-        ScanError::TooFragmented { .. } => U::TooFragmented,
         // Intact but not ours: an unsigned container, or a signature that does not verify.
         ScanError::Unsigned | ScanError::BadSignature => U::Untrusted,
     }
@@ -537,12 +531,7 @@ fn map_scan_error(e: ScanError) -> obc_app::DfuScanError {
 
 /// One typed error, phrased for the harness.
 fn report_scan_error(phase: &str, e: ScanError) {
-    match e {
-        ScanError::TooFragmented { extents } => {
-            statusf!("install failed ({phase}): {} [{extents} extents]", e.describe());
-        }
-        _ => statusf!("install failed ({phase}): {}", e.describe()),
-    }
+    statusf!("install failed ({phase}): {}", e.describe());
 }
 
 /// The trial confirm, called once by the ride loop at the health anchor (first frame presented and

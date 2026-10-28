@@ -199,14 +199,6 @@ public enum UpdateSurfacePolicy {
         }
     }
 
-    /// A cached answer young enough to decide on. The same window, and the same
-    /// clock-went-backwards rule, as ``UpdateChecker/isFresh(_:now:)``: one definition of fresh,
-    /// read here without a checker instance.
-    static func isFresh(_ record: UpdateCheckRecord, now: Date) -> Bool {
-        let age = now.timeIntervalSince(record.checkedAt)
-        return age >= 0 && age < UpdateChecker.freshness
-    }
-
     public static func decide(_ context: Context) -> UpdateSurfaceDecision {
         // 1. The toggle gates the network too, not just the notice.
         guard context.autoCheckEnabled else { return .nothing }
@@ -218,7 +210,7 @@ public enum UpdateSurfacePolicy {
         else { return .nothing }
         // 4. Answer from the cache when it's fresh; otherwise ask once, and let the caller come
         // back through here with the answer.
-        guard let cached = context.cached, isFresh(cached, now: context.now) else { return .check }
+        guard let cached = context.cached, UpdateChecker.isFresh(cached, now: context.now) else { return .check }
         // 5. Only `available` is worth saying unprompted.
         guard let release = cached.release,
               FirmwareVersion.updateStatus(running: running, latest: release.version) == .available

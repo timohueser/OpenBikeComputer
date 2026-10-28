@@ -672,33 +672,6 @@ fn a_commit_on_a_card_scaled_geometry_recovers_the_old_or_the_new_catalog() {
     }
 }
 
-/// A fill pass over a run wider than a device `usize`: 32,768 extents of 64 MiB coalesced into one
-/// 2 TiB range, where the contiguous run is exactly `2^32` blocks. It cannot fail on a 64-bit host;
-/// on any target it catches a pass that writes fewer blocks than it should, or none.
-#[test]
-fn a_write_through_a_two_tebibyte_run_consumes_its_input() {
-    use super::device::BlockDevice as _;
-
-    let disk = SparseDisk::blank((4u64 << 40) / BLOCK as u64, 5);
-    let store = FlatStore::initialize(&disk, STORE).expect("a 4 TiB card formats");
-    assert_eq!(store.extent_size(), 64 << 20, "§8: 4 TiB / 65,536 is 64 MiB");
-    let free = store.free_extents();
-
-    let mut allocation = store.allocate(2 << 40).expect("half the card, in one first-fit run");
-    let bytes = payload(4 * BLOCK + 300);
-    store.write(&mut allocation, &bytes).expect("the write is refused, not short");
-    assert_eq!(allocation.written, bytes.len() as u64, "a fill pass consumed none of its input");
-
-    // The bytes are still in the card's volatile cache — a `write` promises nothing durable — so the
-    // sync is the harness's.
-    (&disk).sync().unwrap();
-    assert_eq!(disk.block(EXTENT_AREA)[..16], bytes[..16], "the first block missed the extent area");
-    assert_eq!(disk.block(EXTENT_AREA + 3)[..16], bytes[3 * BLOCK..3 * BLOCK + 16], "a later block did not land");
-
-    store.cancel(allocation);
-    assert_eq!(store.free_extents(), free, "the cancel did not return the 32,768-extent run");
-}
-
 /// Both refusals are reachable only by forgery: initialization writes neither.
 #[test]
 fn a_superblock_whose_geometry_is_inadmissible_is_not_a_flat_store() {

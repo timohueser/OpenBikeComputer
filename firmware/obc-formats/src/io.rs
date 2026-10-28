@@ -145,41 +145,16 @@ fn checked_field<const N: usize>(bytes: &[u8], offset: usize) -> Result<&[u8; N]
     bytes.get(offset..end).ok_or(DecodeError::Bounds)?.try_into().map_err(|_| DecodeError::Bounds)
 }
 
-fn checked_field_mut<const N: usize>(bytes: &mut [u8], offset: usize) -> Result<&mut [u8; N], DecodeError> {
-    let end = offset.checked_add(N).ok_or(DecodeError::Bounds)?;
-    bytes.get_mut(offset..end).ok_or(DecodeError::Bounds)?.try_into().map_err(|_| DecodeError::Bounds)
-}
-
 /// Read a little-endian `u16`, returning [`DecodeError::Bounds`] for a short or overflowing range.
 #[inline]
 pub fn checked_rd_u16(d: &[u8], o: usize) -> Result<u16, DecodeError> {
     Ok(u16::from_le_bytes(*checked_field(d, o)?))
 }
 
-/// Read a little-endian `i32`, returning [`DecodeError::Bounds`] for a short or overflowing range.
-#[inline]
-pub fn checked_rd_i32(d: &[u8], o: usize) -> Result<i32, DecodeError> {
-    Ok(i32::from_le_bytes(*checked_field(d, o)?))
-}
-
 /// Read a little-endian `u32`, returning [`DecodeError::Bounds`] for a short or overflowing range.
 #[inline]
 pub fn checked_rd_u32(d: &[u8], o: usize) -> Result<u32, DecodeError> {
     Ok(u32::from_le_bytes(*checked_field(d, o)?))
-}
-
-/// Write a little-endian `i32`, returning [`DecodeError::Bounds`] for a short or overflowing range.
-#[inline]
-pub fn checked_put_i32(b: &mut [u8], o: usize, v: i32) -> Result<(), DecodeError> {
-    checked_field_mut::<4>(b, o)?.copy_from_slice(&v.to_le_bytes());
-    Ok(())
-}
-
-/// Write a little-endian `u32`, returning [`DecodeError::Bounds`] for a short or overflowing range.
-#[inline]
-pub fn checked_put_u32(b: &mut [u8], o: usize, v: u32) -> Result<(), DecodeError> {
-    checked_field_mut::<4>(b, o)?.copy_from_slice(&v.to_le_bytes());
-    Ok(())
 }
 
 /// Read a little-endian `i16` after caller-side validation. Panics for an invalid range; new
@@ -311,12 +286,8 @@ mod tests {
     fn checked_primitives_reject_short_and_overflowing_ranges() {
         let short = [0u8; 3];
         assert_eq!(checked_rd_u16(&short, usize::MAX), Err(DecodeError::Bounds));
-        assert_eq!(checked_rd_i32(&short, 0), Err(DecodeError::Bounds));
+        assert_eq!(checked_rd_u32(&short, 0), Err(DecodeError::Bounds));
         assert_eq!(checked_rd_u32(&short, usize::MAX), Err(DecodeError::Bounds));
-
-        let mut short = [0u8; 3];
-        assert_eq!(checked_put_i32(&mut short, 0, 1), Err(DecodeError::Bounds));
-        assert_eq!(checked_put_u32(&mut short, usize::MAX, 1), Err(DecodeError::Bounds));
     }
 
     #[test]

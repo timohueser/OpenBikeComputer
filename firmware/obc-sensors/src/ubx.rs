@@ -189,14 +189,8 @@ pub struct NavPvt {
     pub lon: i32,
     /// Latitude, 1e-7 degrees.
     pub lat: i32,
-    /// Height above ellipsoid, mm.
-    pub height_mm: i32,
-    /// Height above mean sea level, mm.
-    pub hmsl_mm: i32,
     /// Horizontal accuracy estimate, mm.
     pub hacc_mm: u32,
-    /// Vertical accuracy estimate, mm.
-    pub vacc_mm: u32,
     /// Ground speed (2D), mm/s.
     pub gspeed_mms: i32,
     /// Heading of motion (2D), 1e-5 degrees.
@@ -226,18 +220,11 @@ impl NavPvt {
         })
     }
 
-    /// Whether this is a usable position fix: `fixType >= 3 && gnssFixOK`. A lenient bring-up
-    /// gate; tighten with [`passes_quality`](NavPvt::passes_quality) once locks are reliable.
+    /// Whether this is a usable position fix: `fixType >= 3 && gnssFixOK`. It does not gate on
+    /// the accuracy estimates.
     #[inline]
     pub fn is_valid_fix(&self) -> bool {
         self.fix_type >= 3 && self.gnss_fix_ok()
-    }
-
-    /// Optional accuracy gate on top of [`is_valid_fix`](NavPvt::is_valid_fix): horizontal
-    /// accuracy and pDOP, each `None` to skip.
-    #[inline]
-    pub fn passes_quality(&self, max_hacc_mm: Option<u32>, max_pdop: Option<u16>) -> bool {
-        max_hacc_mm.is_none_or(|m| self.hacc_mm <= m) && max_pdop.is_none_or(|m| self.pdop <= m)
     }
 
     /// Convert to the app's [`Fix`] only for a valid fix, so a cold start never teleports the
@@ -292,10 +279,7 @@ pub fn parse_nav_pvt(p: &[u8]) -> Option<NavPvt> {
         num_sv: p[23],
         lon: le_i32(p, 24),
         lat: le_i32(p, 28),
-        height_mm: le_i32(p, 32),
-        hmsl_mm: le_i32(p, 36),
         hacc_mm: le_u32(p, 40),
-        vacc_mm: le_u32(p, 44),
         gspeed_mms: le_i32(p, 60),
         head_mot: le_i32(p, 64),
         pdop: le_u16(p, 76),
@@ -489,15 +473,6 @@ mod tests {
 
         p[10] = 60; // a leap second is clamped so the epoch back-date never under-runs a minute
         assert_eq!(parse_nav_pvt(&p).unwrap().utc_time().unwrap().second, 59, "leap second clamped to 59");
-    }
-
-    #[test]
-    fn quality_gate_is_opt_in() {
-        let pvt = parse_nav_pvt(&nav_pvt_payload(3, 0x01, 1, 2, 0, 0)).unwrap();
-        assert!(pvt.passes_quality(None, None), "no thresholds → always passes");
-        assert!(pvt.passes_quality(Some(5000), Some(200)), "hAcc 3.2m ≤ 5m, pDOP 1.30 ≤ 2.0");
-        assert!(!pvt.passes_quality(Some(1000), None), "hAcc 3.2m > 1m rejects");
-        assert!(!pvt.passes_quality(None, Some(100)), "pDOP 1.30 > 1.0 rejects");
     }
 
     #[test]

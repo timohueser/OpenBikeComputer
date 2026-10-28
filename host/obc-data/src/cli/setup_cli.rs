@@ -185,12 +185,9 @@ const PLANNER: [&str; 7] = ["Rust", "C compiler", "osmium-tool", "GEOS", "uv", "
 /// The tools that the planner steps need and this machine lacks.
 pub(super) fn planner_missing() -> Vec<String> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let tools = tools(&std::env::var_os("PATH").unwrap_or_default(), home.as_deref());
-    tools
-        .into_iter()
-        .filter(|tool| PLANNER.contains(&tool.name.as_str()) && tool.state != Readiness::Ready)
-        .map(|tool| tool.name)
-        .collect()
+    let specs = TOOLS.iter().filter(|spec| PLANNER.contains(&spec.name));
+    let tools = tools(specs, &std::env::var_os("PATH").unwrap_or_default(), home.as_deref());
+    tools.into_iter().filter(|tool| tool.state != Readiness::Ready).map(|tool| tool.name).collect()
 }
 
 pub fn setup(root: &Path, json: bool) -> Result<(), Error> {
@@ -198,7 +195,7 @@ pub fn setup(root: &Path, json: bool) -> Result<(), Error> {
     let free_bytes = crate::store::free_bytes(store.root())?.map(|(_, free)| free);
     let store = StoreUse { path: store.root().to_path_buf(), used_bytes: used(store.root()), free_bytes };
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let tools = tools(&std::env::var_os("PATH").unwrap_or_default(), home.as_deref());
+    let tools = tools(&TOOLS, &std::env::var_os("PATH").unwrap_or_default(), home.as_deref());
     let r2 = Bucket::from_env(Credentials::Main).is_ok();
     let mut credentials = vec![CredentialState {
         name: "R2 key (OBC_R2_*)".into(),
@@ -369,10 +366,10 @@ pub(super) fn print_set(set: &CredentialSet, json: bool) -> Result<(), Error> {
 
 /// Each tool: found on `path`, or for GEOS in `~/geos-install/bin`, where `obc doctor --install`
 /// builds it.
-fn tools(path: &OsStr, home: Option<&Path>) -> Vec<Tool> {
+fn tools<'a>(specs: impl IntoIterator<Item = &'a Spec>, path: &OsStr, home: Option<&Path>) -> Vec<Tool> {
     let mac = cfg!(target_os = "macos");
-    TOOLS
-        .iter()
+    specs
+        .into_iter()
         .map(|spec| {
             let mut dirs: Vec<PathBuf> = std::env::split_paths(path).collect();
             if spec.name == "GEOS" {
@@ -452,7 +449,7 @@ mod tests {
             std::fs::write(&file, format!("#!/bin/sh\necho '{line}'\n")).unwrap();
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let tools = tools(bin.0.as_os_str(), None);
+        let tools = tools(&TOOLS, bin.0.as_os_str(), None);
         let tool = |name: &str| {
             let tool = tools.iter().find(|tool| tool.name == name).unwrap();
             (tool.state, tool.detail.as_str())

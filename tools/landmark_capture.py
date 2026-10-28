@@ -37,7 +37,8 @@ MAX_LOCALES = 64
 USER_AGENT = "OpenBikeComputer-landmark-capture/1.0 (https://github.com/timohueser/OpenBikeComputer)"
 MAX_SOURCE = 32 * 1024 * 1024
 # What the compiler reads a pinned JSON source up to (`landmarks::MAX_JSON_SOURCE`). A batch whose
-# response passes it is asked for again in halves, so every response a capture keeps is readable.
+# response passes it is asked for again in halves until one id remains. A single id that is still
+# too large is kept as is.
 MAX_JSON_SOURCE = 16 * 1024 * 1024
 # Every tagged object contributes its own types, so the closure is wider than the policy roots
 # make it. The bound is here to stop a runaway traversal, not to size the closure.
@@ -106,7 +107,7 @@ def batches(items: list, size: int = BATCH):
         yield items[start:start + size]
 
 
-def read_source(response, media: bool, metrics=None) -> bytes:
+def read_source(response, media: bool) -> bytes:
     data = bytearray()
     start = time.monotonic()
     while len(data) <= MAX_SOURCE:
@@ -114,8 +115,6 @@ def read_source(response, media: bool, metrics=None) -> bytes:
         if not chunk:
             break
         data.extend(chunk)
-        if metrics is not None:
-            metrics["transferred_bytes"] += len(chunk)
         delay = len(data) / MEDIA_BYTES_PER_SECOND - (time.monotonic() - start)
         if media and delay > 0:
             time.sleep(delay)
@@ -127,7 +126,6 @@ class Capture:
 
     def __init__(self, root: Path, interval: float = 1 / REQUESTS_PER_SECOND):
         self.root = root
-        self.metrics = {"requests": 0, "transferred_bytes": 0}
         self.interval = interval
         self.lock = threading.Lock()
         self.stopped = False
@@ -165,14 +163,13 @@ class Capture:
             backoff = BACKOFF_SECONDS * 2 ** attempt
             outcome = {"path": path, "url": url, "retrieved_at": datetime.now(timezone.utc).isoformat()}
             try:
-                self.metrics["requests"] += 1
                 with urlopen(Request(url, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip"}), timeout=75) as response:
                     outcome["response_url"] = response.url
                     outcome["http_status"] = response.status
                     outcome["headers"] = {k: response.headers[k] for k in ("ETag", "Last-Modified", "Content-Type", "Retry-After") if k in response.headers}
                     if int(response.headers.get("Content-Length", 0)) > MAX_SOURCE:
                         raise ValueError("source exceeds 32 MiB acquisition bound")
-                    data = read_source(response, urlparse(url).hostname == "upload.wikimedia.org", self.metrics)
+                    data = read_source(response, urlparse(url).hostname == "upload.wikimedia.org")
                     if len(data) > MAX_SOURCE:
                         raise ValueError("source exceeds 32 MiB acquisition bound")
                     if response.headers.get("Content-Encoding", "").lower() == "gzip":
@@ -344,15 +341,9 @@ class LeadImage(HTMLParser):
             self.pending_filename = None
 
 
-def entity(capture: Capture, qid: str, directory: str = "entities") -> dict | None:
-    raw = capture.json(f"{directory}/{qid}.json", f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json")
-    value = raw.get("entities", {}).get(qid) if raw else None
-    if value is None and directory == "classes" and raw:
-        # EntityData follows redirects. The API also records the original ID,
-        # which is needed to keep aliases in the captured class closure.
-        redirected = capture.json(f"classes/{qid}-redirect.json", api("www.wikidata.org", action="wbgetentities", ids=qid, redirects="yes", props="claims"))
-        value = redirected.get("entities", {}).get(qid) if redirected else None
-    return value
+def entity(capture: Capture, qid: str) -> dict | None:
+    raw = capture.json(f"locales/{qid}.json", f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json")
+    return raw.get("entities", {}).get(qid) if raw else None
 
 
 class Entities:
@@ -425,51 +416,31 @@ def article(capture: Capture, qid: str, language: str, title: str) -> tuple[dict
     return record, parser.filename, "captured"
 
 
-def category_files(capture: Capture, category: str, limit: int | None = None) -> tuple[list[dict], str, list[str]]:
-    """Capture a bounded first response, or verify a retained complete category chain."""
-    key = digest(category.encode())
-    continuation, seen, pages, members = {}, set(), [], []
-    while True:
-        page = len(pages) + 1
-        path = f"categories/{key}{'' if page == 1 else f'-{page}'}.json"
-        identity = dict(path=path, continuation=continuation or None)
-        pages.append(identity)
-        url = api(
-            "commons.wikimedia.org",
-            action="query",
-            list="categorymembers",
-            cmtitle=category,
-            cmtype="file",
-            cmlimit=limit or "max",
-            **continuation,
-        )
-        outcome_path = capture.root / "outcomes" / (digest(path.encode()) + ".json")
-        if outcome_path.exists():
-            url = json.loads(outcome_path.read_text())["url"]
-        raw = capture.json(path, url)
-        if raw is None:
-            return pages, "acquisition-failed", []
-        listed = raw.get("query", {}).get("categorymembers")
-        if not isinstance(listed, list) or any(
-            not isinstance(member, dict) or not isinstance(member.get("title"), str) for member in listed
-        ):
-            return pages, "invalid-category-members", []
-        page_members = [member["title"][5:].replace("_", " ") for member in listed if member["title"].startswith("File:")]
-        if len(page_members) != len(listed):
-            return pages, "invalid-category-members", []
-        members.extend(page_members)
-        following = raw.get("continue")
-        if following is None:
-            return pages, ("captured" if members else "no-category-members"), members[:limit] if limit else members
-        if not isinstance(following, dict) or not isinstance(following.get("cmcontinue"), str) or any(not isinstance(value, str) for value in following.values()):
-            return pages, "invalid-category-continuation", []
-        if limit is not None:
-            return pages, "candidate-limit", members[:limit]
-        continuation = {name: following[name] for name in sorted(following)}
-        identity = json.dumps(continuation, sort_keys=True)
-        if identity in seen:
-            return pages, "repeated-category-continuation", []
-        seen.add(identity)
+def category_files(capture: Capture, category: str, limit: int) -> tuple[list[dict], str, list[str]]:
+    """Capture one response of at most `limit` members; more members than that is `candidate-limit`."""
+    path = f"categories/{digest(category.encode())}.json"
+    pages = [dict(path=path, continuation=None)]
+    url = api("commons.wikimedia.org", action="query", list="categorymembers", cmtitle=category, cmtype="file", cmlimit=limit)
+    outcome_path = capture.root / "outcomes" / (digest(path.encode()) + ".json")
+    if outcome_path.exists():
+        url = json.loads(outcome_path.read_text())["url"]
+    raw = capture.json(path, url)
+    if raw is None:
+        return pages, "acquisition-failed", []
+    listed = raw.get("query", {}).get("categorymembers")
+    if not isinstance(listed, list) or any(
+        not isinstance(member, dict) or not isinstance(member.get("title"), str) for member in listed
+    ):
+        return pages, "invalid-category-members", []
+    members = [member["title"][5:].replace("_", " ") for member in listed if member["title"].startswith("File:")]
+    if len(members) != len(listed):
+        return pages, "invalid-category-members", []
+    following = raw.get("continue")
+    if following is None:
+        return pages, ("captured" if members else "no-category-members"), members[:limit]
+    if not isinstance(following, dict) or not isinstance(following.get("cmcontinue"), str) or any(not isinstance(value, str) for value in following.values()):
+        return pages, "invalid-category-continuation", []
+    return pages, "candidate-limit", members[:limit]
 
 
 def image_metadata_url(filename: str) -> str:
@@ -581,7 +552,7 @@ def capture_locales(capture: Capture, value: dict) -> None:
         return {v["id"] for v in claim_values(raw, prop) if isinstance(v, dict) and re.fullmatch(QID, v.get("id", ""))}
     # Countries are fetched independently of the administrative traversal budget.
     for qid in sorted(ids(value, "P17")):
-        entity(capture, qid, "locales")
+        entity(capture, qid)
     pending, visited = ids(value, "P131"), set()
     for _ in range(MAX_LOCALE_DEPTH):
         following = set()
@@ -589,7 +560,7 @@ def capture_locales(capture: Capture, value: dict) -> None:
             if len(visited) >= MAX_LOCALES:
                 return
             visited.add(qid)
-            raw = entity(capture, qid, "locales")
+            raw = entity(capture, qid)
             if raw:
                 following.update(ids(raw, "P131"))
         pending = following

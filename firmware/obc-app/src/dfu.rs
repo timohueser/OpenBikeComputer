@@ -88,7 +88,7 @@ pub enum DfuInstallError {
 }
 
 /// Why the staging scan rejected the staged package, phrased for the app's error card. The board
-/// folds its own finer variants into these six user-facing buckets.
+/// folds its own finer variants into these five user-facing buckets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DfuScanError {
     /// No update package is staged.
@@ -99,8 +99,6 @@ pub enum DfuScanError {
     Damaged,
     /// The image is larger than the app slot can hold.
     TooLarge,
-    /// The package resolves to too many block runs to install. The fix is to upload it again.
-    TooFragmented,
     /// The package is intact but not trusted: no signature this firmware verifies, or one that does
     /// not check out. Its own bucket rather than [`Damaged`](Self::Damaged), because "corrupt" and
     /// "not ours" are different problems with different fixes.

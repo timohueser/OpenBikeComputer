@@ -54,16 +54,15 @@ pub enum StoreError {
     },
     TooFragmented,
     CatalogFull,
-    /// The seam's catch-all refusal. It is not always the client's fault: a full reservation table
-    /// lands here too, and the answer to that is `busy`, never `invalidRequest`.
+    /// The request is structurally wrong and will be wrong next time too. The engine refuses a bad
+    /// client request before it reaches the seam, so this is never `invalidRequest` or `busy`.
     Invalid,
     Media,
     ReadOnly,
-    /// Try again: every hold row is taken, so an `open` has no slot to resolve into.
+    /// Try again: a store table or object is in use now. Every reservation row or hold row is
+    /// taken, or the active journey uses the route.
     ///
-    /// It is `busy` with the `holds` detail on the wire, and distinct from
-    /// [`Invalid`](StoreError::Invalid) because the two answer opposite questions for a client's
-    /// retry policy: this request is wrong, against someone else is reading right now.
+    /// It is `busy` on the wire: detail `holds` from an `open`, detail `0` from everything else.
     Busy,
 }
 

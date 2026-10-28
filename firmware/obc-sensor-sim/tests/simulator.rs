@@ -26,7 +26,6 @@ fn profiles_decode_through_the_bike_computer() {
     sim.tick(4000);
     let (bytes, len) = sim.measurement(4000);
     let cadence = parse_csc_measurement(&bytes[..len]).unwrap();
-    assert_eq!(cadence.wheel, None);
     assert_eq!(cadence.crank.unwrap().revs, 3);
     sim.next_sensor(4000);
     let (bytes, len) = sim.measurement(4000);

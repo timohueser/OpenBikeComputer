@@ -235,7 +235,7 @@ impl Executor {
                 if self.parse_sources(app, store, g).is_err() {
                     return self.fail(NavigatorError::Store);
                 };
-                g.begin_splice(self.kind, self.progress_m, self.rejoin_m, self.length_m, self.has_elevation);
+                g.begin_splice(self.kind, self.progress_m, self.rejoin_m);
                 self.phase = Phase::Allocate(After::StartSplice);
                 None
             }

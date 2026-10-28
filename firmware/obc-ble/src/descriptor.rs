@@ -4,8 +4,6 @@ pub enum DescriptorError {
     Truncated,
     UnknownOp(u8),
     UnknownStatus(u8),
-    /// A fixed-width field decoded correctly but names a value outside the command's contract.
-    Bounds,
 }
 
 /// The result of a `command` write.
