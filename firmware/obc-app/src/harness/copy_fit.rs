@@ -214,7 +214,6 @@ fn seeds(language: Language) -> Vec<Seed> {
             DfuScanError::Unreadable,
             DfuScanError::Damaged,
             DfuScanError::TooLarge,
-            DfuScanError::TooFragmented,
             DfuScanError::Untrusted,
         ]
         .map(|e| Screen::DfuError(DfuErrorScreen::new(PERMIT, e)))

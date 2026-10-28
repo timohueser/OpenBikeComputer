@@ -4,8 +4,8 @@
 use obc_ble::{
     classify_advertisement, parse_battery_level, parse_csc_measurement, parse_hr_measurement, parse_power_measurement,
     power_crank_feeds_cadence, AdvMatch, CrankCadence, CrankRevs, CscSample, HrSample, PowerSample, SensorKind,
-    WheelRevs, UUID_BATTERY_LEVEL, UUID_BATTERY_SERVICE, UUID_CSC_MEASUREMENT, UUID_CSC_SERVICE,
-    UUID_CYCLING_POWER_MEASUREMENT, UUID_CYCLING_POWER_SERVICE, UUID_HEART_RATE_SERVICE, UUID_HR_MEASUREMENT,
+    UUID_BATTERY_LEVEL, UUID_BATTERY_SERVICE, UUID_CSC_MEASUREMENT, UUID_CSC_SERVICE, UUID_CYCLING_POWER_MEASUREMENT,
+    UUID_CYCLING_POWER_SERVICE, UUID_HEART_RATE_SERVICE, UUID_HR_MEASUREMENT,
 };
 
 #[test]
@@ -132,7 +132,7 @@ fn cps_declared_fields_must_be_present_even_without_crank() {
 
 #[test]
 fn csc_empty_flags() {
-    assert_eq!(parse_csc_measurement(&[0x00]), Some(CscSample { wheel: None, crank: None }));
+    assert_eq!(parse_csc_measurement(&[0x00]), Some(CscSample { crank: None }));
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn csc_crank_only() {
     frame.extend_from_slice(&1500u16.to_le_bytes());
     assert_eq!(
         parse_csc_measurement(&frame),
-        Some(CscSample { wheel: None, crank: Some(CrankRevs { revs: 200, event_time_1024: 1500 }) })
+        Some(CscSample { crank: Some(CrankRevs { revs: 200, event_time_1024: 1500 }) })
     );
 }
 
@@ -153,10 +153,7 @@ fn csc_wheel_only() {
     let mut frame = vec![0b01];
     frame.extend_from_slice(&65_536u32.to_le_bytes());
     frame.extend_from_slice(&800u16.to_le_bytes());
-    assert_eq!(
-        parse_csc_measurement(&frame),
-        Some(CscSample { wheel: Some(WheelRevs { revs: 65_536, event_time_1024: 800 }), crank: None })
-    );
+    assert_eq!(parse_csc_measurement(&frame), Some(CscSample { crank: None }));
 }
 
 #[test]
@@ -169,10 +166,7 @@ fn csc_wheel_and_crank() {
     frame.extend_from_slice(&40u16.to_le_bytes()); // crank event time
     assert_eq!(
         parse_csc_measurement(&frame),
-        Some(CscSample {
-            wheel: Some(WheelRevs { revs: 10, event_time_1024: 20 }),
-            crank: Some(CrankRevs { revs: 30, event_time_1024: 40 }),
-        })
+        Some(CscSample { crank: Some(CrankRevs { revs: 30, event_time_1024: 40 }) })
     );
 }
 

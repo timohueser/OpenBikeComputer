@@ -5,7 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::date;
 use crate::store::{self, Lock, Store};
@@ -37,6 +37,11 @@ const ATTEMPTS: u32 = 4;
 const BODY: Duration = Duration::from_secs(15 * 60);
 /// The longest time a HEAD request or a small document may take.
 const SMALL: Duration = Duration::from_secs(15);
+/// The longest wait that a server `Retry-After` gets. A server that asks for more does not answer
+/// within the retries of one run, so the download fails sooner and the next run resumes its part.
+const RETRY_AFTER: Duration = Duration::from_secs(60);
+/// How long a retry wait sleeps between checks of [`STOPPED`].
+const SLICE: Duration = Duration::from_millis(100);
 
 /// Whether an error of this module is an HTTP 404: upstream has no such file. Every status error
 /// here ends with `HTTP <status>`.
@@ -52,17 +57,31 @@ pub fn unreachable(error: &str) -> bool {
 
 const UNREACHABLE: &str = ": unreachable: ";
 
-/// Set when the run of this process stops: a download ends within one read and keeps its part.
+/// Set when the run of this process stops: a download ends within one read or one [`SLICE`] of a
+/// retry wait, and keeps its part.
 static STOPPED: AtomicBool = AtomicBool::new(false);
 
 pub fn stop() {
     STOPPED.store(true, Ordering::Relaxed);
 }
 
-fn stopped(url: &str) -> Result<(), Failure> {
+fn stopped(url: &str) -> Result<(), String> {
     match STOPPED.load(Ordering::Relaxed) {
-        true => Err(Failure::Final(format!("GET {url}: the run stopped; the next fetch resumes the download"))),
+        true => Err(format!("GET {url}: the run stopped; the next fetch resumes the download")),
         false => Ok(()),
+    }
+}
+
+/// Sleep for `delay`, or until the run stops.
+fn pause(url: &str, delay: Duration) -> Result<(), String> {
+    let end = Instant::now() + delay;
+    loop {
+        stopped(url)?;
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(());
+        }
+        std::thread::sleep(left.min(SLICE));
     }
 }
 
@@ -296,7 +315,7 @@ impl Http {
                 return Err(why);
             }
             eprintln!("obc data: {why} — retrying");
-            std::thread::sleep(delay.max(self.backoff * 2u32.pow(failures - 1)));
+            pause(url, delay.min(RETRY_AFTER).max(self.backoff * 2u32.pow(failures - 1)))?;
         }
         let _ = fs::remove_file(validator);
         let (sha256, size) = store::hash_file(part)?;
@@ -312,7 +331,7 @@ impl Http {
     }
 
     fn attempt(&self, url: &str, part: &Path, validator: &Path, expect: &Expect) -> Result<(), Failure> {
-        stopped(url)?;
+        stopped(url).map_err(Failure::Final)?;
         let have = fs::metadata(part).map_or(0, |metadata| metadata.len());
         let saved = fs::read_to_string(validator).ok();
         // Without a validator or a digest, nothing would tell a changed file from the rest of the old one.
@@ -396,7 +415,7 @@ impl Http {
         let (mut received, mut reported) = (0u64, std::time::Instant::now());
         let retry = |grew: bool, why: String| if append && grew { Failure::Grew(why) } else { Failure::Retry(why) };
         loop {
-            stopped(url)?;
+            stopped(url).map_err(Failure::Final)?;
             let read = reader.read(&mut buffer).map_err(|e| retry(grew, format!("GET {url}: {e}")))?;
             if read == 0 {
                 break;

@@ -12,8 +12,6 @@ default = []
 slice-by-8 = []
 
 # The smallest possible shared leaf: one table, one hasher, and — deliberately — no dependency
-# table at all. That emptiness is the point. `obc-ble` must stay free of the map and DFU stacks so
-# the phone-facing wire codec can never drag them into the link, and `obc-dfu` is `core`-only so
-# the 32 KB `obc-boot` bootloader links it cheaply; a CRC shared between the two may only exist if
-# it costs both of them nothing. A workspace member so plain `cargo test` pins the check vector on
-# the host, exactly like obc-ble / obc-dfu.
+# table at all. That emptiness is the point. `obc-dfu` is `core`-only so the 32 KB `obc-boot`
+# bootloader links it cheaply, so a CRC it shares may only exist if it costs it nothing. A workspace
+# member so plain `cargo test` pins the check vector on the host, exactly like obc-dfu.

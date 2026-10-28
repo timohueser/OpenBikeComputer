@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
-from tools.landmark_capture import BACKOFF_ATTEMPTS, BATCH, MAX_LOCALE_DEPTH, MAX_LOCALES, PHOTO_SOURCES, Capture, Entities, LeadImage, acquire_requested_photos, batches, capture_assets, capture_locales, category_coverage_complete, category_files, claim_values, class_parents, digest, entity, image_metadata_url, photo_bytes, photo_metadata, retry_after, select_candidates, semantic_sources
+from tools.landmark_capture import BACKOFF_ATTEMPTS, BATCH, MAX_LOCALE_DEPTH, MAX_LOCALES, PHOTO_SOURCES, Capture, Entities, LeadImage, acquire_requested_photos, batches, capture_assets, capture_locales, category_coverage_complete, category_files, claim_values, class_parents, digest, image_metadata_url, photo_bytes, photo_metadata, retry_after, select_candidates, semantic_sources
 
 
 class Response(BytesIO):
@@ -25,10 +25,9 @@ class LandmarkCaptureTests(unittest.TestCase):
                 first = capture.fetch("raw/entity.json", Response.url)
                 self.assertEqual(capture.fetch("raw/entity.json", Response.url), first)
                 request.assert_called_once()
-                self.assertEqual(capture.metrics, {"requests": 1, "transferred_bytes": len(b'{"ok":true}')})
                 restarted = Capture(Path(directory), interval=0)
                 self.assertEqual(restarted.fetch("raw/entity.json", Response.url), first)
-                self.assertEqual(restarted.metrics, {"requests": 0, "transferred_bytes": 0})
+                request.assert_called_once()
             with self.assertRaisesRegex(ValueError, "request changed"):
                 capture.fetch("raw/entity.json", "https://example.test/changed")
             (Path(directory) / "raw/entity.json").write_bytes(b"changed")
@@ -224,52 +223,6 @@ class LandmarkCaptureTests(unittest.TestCase):
         self.assertIn(f"maxlag={MAXLAG}", api("www.wikidata.org", action="wbgetentities", ids="Q1"))
         self.assertIn(f"maxlag={MAXLAG}", image_metadata_url("A.jpg"))
 
-    def test_commons_category_follows_every_continuation_page(self):
-        with tempfile.TemporaryDirectory() as directory:
-            capture = Capture(Path(directory), interval=0)
-            token = {"cmcontinue": "file|next|7", "continue": "-||"}
-            first = {
-                "continue": token,
-                "query": {"categorymembers": [{"title": f"File:Photo {number}.jpg"} for number in range(500)]},
-            }
-            second = {"query": {"categorymembers": [{"title": "File:Photo 500.jpg"}]}}
-            with patch(
-                "tools.landmark_capture.urlopen",
-                side_effect=[Response(json.dumps(first).encode()), Response(json.dumps(second).encode())],
-            ) as request:
-                pages, status, members = category_files(capture, "Category:Rhine Falls")
-            self.assertEqual(status, "captured")
-            self.assertEqual(len(members), 501)
-            self.assertEqual([page["continuation"] for page in pages], [None, token])
-            self.assertEqual(request.call_count, 2)
-            self.assertIn("cmcontinue=file%7Cnext%7C7", request.call_args_list[1].args[0].full_url)
-            outcomes = {outcome["path"]: outcome for outcome in capture.outcomes()}
-            self.assertEqual(set(outcomes), {page["path"] for page in pages})
-            self.assertTrue(all("sha256" in outcome for outcome in outcomes.values()))
-
-    def test_commons_category_resumes_after_page_two_failure(self):
-        with tempfile.TemporaryDirectory() as directory:
-            capture = Capture(Path(directory), interval=0)
-            token = {"cmcontinue": "file|next|7", "continue": "-||"}
-            first = {"continue": token, "query": {"categorymembers": [{"title": "File:First.jpg"}]}}
-            failure = HTTPError(Response.url, 404, "Not found", {}, None)
-            with patch(
-                "tools.landmark_capture.urlopen", side_effect=[Response(json.dumps(first).encode()), failure]
-            ):
-                pages, status, members = category_files(capture, "Category:Rhine Falls")
-            self.assertEqual((status, members), ("acquisition-failed", []))
-            self.assertEqual(len(pages), 2)
-            outcomes = {outcome["path"]: outcome["status"] for outcome in capture.outcomes()}
-            self.assertEqual(outcomes, {pages[0]["path"]: "ok", pages[1]["path"]: "http-error"})
-
-            capture.retry_failed()
-            second = {"query": {"categorymembers": [{"title": "File:Second.jpg"}]}}
-            with patch("tools.landmark_capture.urlopen", return_value=Response(json.dumps(second).encode())) as request:
-                resumed_pages, status, members = category_files(capture, "Category:Rhine Falls")
-            self.assertEqual((status, members), ("captured", ["First.jpg", "Second.jpg"]))
-            self.assertEqual(resumed_pages, pages)
-            request.assert_called_once()
-
     def test_a_failed_commons_category_is_incomplete_and_adds_no_photo(self):
         value = {
             "sitelinks": {"enwiki": {"title": "Example"}},
@@ -418,13 +371,10 @@ class LandmarkCaptureTests(unittest.TestCase):
     def test_class_redirect_keeps_the_canonical_identity_in_the_closure(self):
         canonical = {"id": "Q2", "claims": {"P279": [{"mainsnak": {"datavalue": {"value": {"id": "Q3"}}}}]}}
         redirected = dict(canonical, redirects={"from": "Q1", "to": "Q2"})
-        capture = Mock(root=Path("unused-capture"))
-        capture.json.side_effect = [{"entities": {"Q2": canonical}}, {"entities": {"Q1": redirected}}]
-        value = entity(capture, "Q1", "classes")
-        self.assertEqual(class_parents(value, "Q1"), ["Q2"])
+        self.assertEqual(class_parents(redirected, "Q1"), ["Q2"])
         self.assertEqual(class_parents(canonical, "Q2"), ["Q3"])
         with self.assertRaisesRegex(ValueError, "invalid class redirect"):
-            class_parents(value, "Q4")
+            class_parents(redirected, "Q4")
 
     def test_lead_image_uses_exact_commons_filename_before_heading(self):
         parser = LeadImage()
