@@ -17,6 +17,7 @@ and a file small enough to fetch whole.
 
 import fcntl
 import urllib.request
+import zipfile
 from pathlib import Path
 
 import rasterio
@@ -158,7 +159,12 @@ class SharedZip(CogWindows):
             if not listed.exists():
                 name = Path(self.base).name
                 archive = http_download(self.base, folder / name, what=f"{self.key} {name}")
-                rasters = unpack(archive, folder / "unpacked", RASTER_SUFFIXES)
+                try:
+                    rasters = unpack(archive, folder / "unpacked", RASTER_SUFFIXES)
+                except zipfile.BadZipFile as error:
+                    # Deleted, so that a resume downloads it again.
+                    archive.unlink()
+                    raise Refuse(f"{self.key} {name}: the download is not a zip ({error})") from error
                 listed.write_text("".join(f"{path}\n" for path in rasters), encoding="utf-8")
         self.rasters = [Path(line) for line in listed.read_text(encoding="utf-8").splitlines()]
         return super().fetch(bbox, workdir)

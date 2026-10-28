@@ -748,6 +748,17 @@ class SharedZipWindows(TempCase):
         self.assertEqual(len(downloads), 1)
         self.assertEqual(source.fetch((6.0, 45.0, 6.001, 45.001), self.root / "c"), [])
 
+    def test_a_download_that_is_not_a_zip_is_refused_and_deleted(self):
+        served = self.inputs / "island.zip"
+        served.write_bytes(b"<!DOCTYPE html><title>Maintenance</title>")
+        source = ingest.sources.cog.SharedZip("xx", "Nowhere", "MDT 5 m", 5.0, "CC0", "EGM2008",
+                                              base=f"file://{served}", epsg=32632)
+        source.shared = self.root / "shared"
+        with self.assertRaises(ingest.Refuse) as refusal:
+            source.fetch(BOX, self.root / "a")
+        self.assertIn("not a zip", str(refusal.exception))
+        self.assertFalse((self.root / "shared" / "xx" / "island.zip").exists())
+
 
 class RemoteWindows(TempCase):
     """Austria's squares are 7.7 GB each, so the box's window is read and nothing else.

@@ -116,10 +116,10 @@ class FvgElements(BulkSource):
 FVG = FvgElements(
     "it-36", "Italy, Friuli Venezia Giulia", "DTM 1 m, LiDAR 2006–2010 (Protezione Civile FVG)", 1.0,
     "IODL 2.0",
-    "orthometric, unverified until the summit check passes",
+    None,
     grid_epsg=6708,
     base="https://irdat.regione.fvg.it/cartogdownload/DTM_PCR/1M/6708/",
-    summit=(13.4404, 46.3593, 2587),  # Monte Canin
+    summit=("Monte Canin", 13.4404, 46.3593, 2587),
 )
 
 # TINITALY was built mostly from the contours and spot heights of the regional topographic
