@@ -47,7 +47,7 @@ pub struct Peak {
     pub ele: f64,
 }
 
-/// The coastlines and summits of OSM files.
+/// The coastlines and summits of an OSM file.
 pub type Features = (Vec<Line>, Vec<Peak>);
 
 #[derive(Default)]
@@ -306,23 +306,9 @@ fn split(points: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
 pub const CLIP_M: f64 = 300.0;
 const _: () = assert!(PEAK_REACH_M + SNAP_M < CLIP_M && COAST_REACH_M < CLIP_M);
 
-/// The features of the OSM PBF files `pbfs` within [`CLIP_M`] of `bounds` (west, south, east, north
-/// in degrees), by `osmium`. The filtered files go to `work`. A coastline that two files share,
-/// where their areas overlap, counts once, so that it joins as one line; the order of the files
-/// does not matter.
-pub fn read(osmium: &OsmiumRunner, pbfs: &[&Path], bounds: [f64; 4], work: &Path) -> Result<Features, String> {
-    let (mut lines, mut peaks) = (Vec::new(), Vec::new());
-    for pbf in pbfs {
-        let (more, summits) = read_one(osmium, pbf, bounds, work)?;
-        lines.extend(more);
-        peaks.extend(summits);
-    }
-    lines.sort_by_cached_key(|line| line.iter().map(|point| point.map(f64::to_bits)).collect::<Vec<_>>());
-    lines.dedup();
-    Ok((lines, peaks))
-}
-
-fn read_one(osmium: &OsmiumRunner, pbf: &Path, bounds: [f64; 4], work: &Path) -> Result<Features, String> {
+/// The features of the OSM PBF file `pbf` within [`CLIP_M`] of `bounds` (west, south, east, north
+/// in degrees), by `osmium`. The filtered files go to `work`.
+pub fn read(osmium: &OsmiumRunner, pbf: &Path, bounds: [f64; 4], work: &Path) -> Result<Features, String> {
     let (filtered, clipped) = (work.join("shapes.osm.pbf"), work.join("clipped.osm.pbf"));
     let run = |args: &[&dyn AsRef<std::ffi::OsStr>]| {
         let out =
@@ -472,40 +458,6 @@ mod tests {
         for x in [0.0, 10.0, 30.0] {
             assert!(height(&summit(0.0, 990.0), x, 0.0, dome) <= 990.0_f64.max(dome(x, 0.0)), "above the ele at {x}");
         }
-    }
-
-    /// Two extracts of overlapping areas share a coastline: it counts once, in either order of the
-    /// files.
-    #[test]
-    fn a_coastline_in_two_files_counts_once_in_either_order() {
-        let osmium = OsmiumRunner::default();
-        if osmium.version().is_err() {
-            assert!(std::env::var_os("CI").is_none(), "CI has Osmium");
-            eprintln!("Osmium is unavailable: the test does not run");
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!("obc-dem-shape-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let node = |id: u32| format!(r#"<node id="{id}" version="1" lat="51.0{id}" lon="-9.0{id}"/>"#);
-        let way = |id: u32, nodes: [u32; 2]| {
-            let refs: String = nodes.iter().map(|n| format!(r#"<nd ref="{n}"/>"#)).collect();
-            format!(r#"<way id="{id}" version="1">{refs}<tag k="natural" v="coastline"/></way>"#)
-        };
-        let pbf = |name: &str, nodes: &[u32], ways: &[(u32, [u32; 2])]| {
-            let body: String = nodes.iter().map(|&id| node(id)).chain(ways.iter().map(|&(id, n)| way(id, n))).collect();
-            let xml = dir.join(format!("{name}.osm"));
-            std::fs::write(&xml, format!(r#"<?xml version="1.0"?><osm version="0.6">{body}</osm>"#)).unwrap();
-            let pbf = dir.join(format!("{name}.osm.pbf"));
-            assert!(osmium.command().arg("cat").arg(&xml).arg("-o").arg(&pbf).status().unwrap().success());
-            pbf
-        };
-        let (a, b) =
-            (pbf("a", &[1, 2, 3], &[(1, [1, 2]), (2, [2, 3])]), pbf("b", &[2, 3, 4], &[(2, [2, 3]), (3, [3, 4])]));
-        let lines = |pbfs: [&Path; 2]| read(&osmium, &pbfs, [-9.1, 50.9, -8.9, 51.1], &dir).unwrap().0;
-        let (forward, backward) = (lines([&a, &b]), lines([&b, &a]));
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(forward.len(), 3, "the shared way counts once");
-        assert_eq!(forward, backward);
     }
 
     #[test]

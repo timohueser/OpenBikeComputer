@@ -90,8 +90,8 @@ pub fn terrain(request: &Request) -> Result<(), String> {
 /// The terrain of the planner maps. The option `bounds` is `[west, south, east, north]` in
 /// degrees, `attribution` the credit of GLO-30 and `osm_attribution` that of OSM. The layer
 /// `planner/reference`, when the request has it, is the mean archive of the national models below
-/// `reference/`; each other layer is one OSM PBF, whose coastlines and summits correct GLO-30. The
-/// layer is `terrain.mbtiles`: the bytes that `planner-dem` writes from the same GLO-30 tiles,
+/// `reference/`; another layer, when the request has one, is one OSM PBF, whose coastlines and
+/// summits correct GLO-30. The layer is `terrain.mbtiles`: the bytes that `planner-dem` writes from the same GLO-30 tiles,
 /// archive and OSM. With OSM, the metrics name the Osmium version.
 #[cfg(feature = "terrarium")]
 pub fn planner_terrain(request: &Request) -> Result<(), String> {
@@ -107,18 +107,20 @@ pub fn planner_terrain(request: &Request) -> Result<(), String> {
         }
     };
     let mut terrain = crate::planner::Terrain::open(&glo30(request, bounds), credit, reference.as_deref(), bounds)?;
-    let osm = request.layers.iter().filter(|(name, _)| *name != "planner/reference");
-    let pbfs = osm
-        .map(|(name, files)| match files.values().collect::<Vec<_>>()[..] {
-            [pbf] => Ok(pbf.as_path()),
-            _ => Err(format!("`{name}` is not one OSM file")),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if !pbfs.is_empty() {
+    let osm: Vec<_> = request.layers.iter().filter(|(name, _)| *name != "planner/reference").collect();
+    let pbf = match osm[..] {
+        [] => None,
+        [(name, files)] => match files.values().collect::<Vec<_>>()[..] {
+            [pbf] => Some(pbf),
+            _ => return Err(format!("`{name}` is not one OSM file")),
+        },
+        _ => return Err("the request reads more than one OSM layer".into()),
+    };
+    if let Some(pbf) = pbf {
         let work = request.output.with_file_name("shapes");
         std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
         let osmium = obc_osm::OsmiumRunner::default();
-        terrain = terrain.shaped(crate::shape::read(&osmium, &pbfs, bounds, &work)?, text("osm_attribution")?);
+        terrain = terrain.shaped(crate::shape::read(&osmium, pbf, bounds, &work)?, text("osm_attribution")?);
         let metrics = serde_json::json!({"osmium": osmium.version()?});
         std::fs::write(&request.metrics, metrics.to_string())
             .map_err(|e| format!("{}: {e}", request.metrics.display()))?;
