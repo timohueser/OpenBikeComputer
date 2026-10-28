@@ -1,7 +1,8 @@
 """The capture of a prepackaged file of the Copernicus Land Monitoring Service (CLMS), as
 specs/obc-data.md (Fetch) says: the service key signs a grant for an access token, the token
 orders the file, and the finished order links a zip archive. The program takes
-one member of that archive, which can also be inside a zip archive in it.
+one member of that archive, which can also be inside a zip archive in it. A zip of the file from
+the archive drive (`--archive`) replaces the order, and needs no key.
 
 Standard library only. No key, grant or token goes to argv, a URL, a log or an error.
 """
@@ -206,13 +207,18 @@ def extract(archive, member, target, work):
     return False
 
 
-def fetch(dataset, file, member, work, out, key=KEY):
-    """The member of the archive of the prepackaged file into `out`. A downloaded archive stays in
-    `work`, so a run that fails after the download resumes without a new order."""
-    target, archive = out / member, work / "order.zip"
+def fetch(dataset, file, member, work, out, key=KEY, kept=None, sha256=None):
+    """The member of the archive of the prepackaged file into `out`: of the zip `kept`, whose SHA-256
+    is `sha256`, or else of an order. A downloaded archive stays in `work`, so a run that fails after
+    the download resumes without a new order."""
+    target, archive = out / member, kept or work / "order.zip"
     if target.exists():
         return
-    if not archive.exists():
+    if kept:
+        with open(kept, "rb") as f:
+            if sha256 and hashlib.file_digest(f, "sha256").hexdigest() != sha256:
+                raise RuntimeError(f"{kept}: the SHA-256 is not {sha256}")
+    elif not archive.exists():
         url = order(Session(json.loads(key.expanduser().read_text())), dataset, file)
         # Without the token: the link names the order itself.
         call(Request(url), lambda response: whole(archive, response, length(response.headers)))
@@ -220,7 +226,8 @@ def fetch(dataset, file, member, work, out, key=KEY):
         found = extract(archive, member, target, work)
     except zipfile.BadZipFile:
         # The next run downloads it again.
-        archive.unlink()
+        if not kept:
+            archive.unlink()
         raise
     if not found:
         raise RuntimeError(f"no archive of the order of {file} has {member}")
@@ -233,8 +240,10 @@ def main(argv=None):
     parser.add_argument("--member", required=True, help="the name of the file to take from the archive")
     parser.add_argument("--work", type=Path, required=True, help="the directory that keeps the archive")
     parser.add_argument("--fetch", type=Path, required=True, help="the directory of the captured file")
+    parser.add_argument("--archive", type=Path, help="the zip of the file on the archive drive, instead of an order")
+    parser.add_argument("--sha256", help="the SHA-256 of the zip of --archive")
     args = parser.parse_args(argv)
-    fetch(args.dataset, args.file, args.member, args.work, args.fetch)
+    fetch(args.dataset, args.file, args.member, args.work, args.fetch, kept=args.archive, sha256=args.sha256)
 
 
 if __name__ == "__main__":

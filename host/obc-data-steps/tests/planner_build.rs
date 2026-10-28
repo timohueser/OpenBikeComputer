@@ -42,7 +42,7 @@ fn wiki(store: &Store) -> String {
         write_atomic(&file, bytes).unwrap();
         store.insert(&file, &sha256).unwrap();
         let (url, size) = (format!("https://example.org/{name}"), bytes.len() as u64);
-        FileRecord { name: name.into(), url, size, sha256, retrieved: String::new() }
+        FileRecord { name: name.into(), url, size, sha256, retrieved: String::new(), archive: None }
     };
     // An empty tar is two blocks of zeros.
     let common = record("common.tar.zst", &zstd::encode_all(&[0u8; 1024][..], 0).unwrap());
@@ -76,7 +76,7 @@ fn fetched(store: &Store, source: &str, version: &str, params: Vec<(String, Stri
     write_atomic(&file, bytes).unwrap();
     store.insert(&file, &sha256).unwrap();
     let (url, size) = (format!("https://example.org/{name}"), bytes.len() as u64);
-    let files = vec![FileRecord { name: name.into(), url, size, sha256, retrieved: String::new() }];
+    let files = vec![FileRecord { name: name.into(), url, size, sha256, retrieved: String::new(), archive: None }];
     store.put_snapshot(&Snapshot { source: source.into(), version: version.into(), files }).unwrap();
     if !params.is_empty() {
         store.put_requested(source, &Requested { version: version.into(), params, files: vec![name.into()] }).unwrap();

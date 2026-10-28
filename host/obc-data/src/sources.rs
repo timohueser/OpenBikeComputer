@@ -168,15 +168,15 @@ impl std::fmt::Display for Refresh {
     }
 }
 
-/// Where the kept copy of a source is, so that no outage stops a bake.
+/// Where the copy of a source that a bake reads stays, so that no outage stops a bake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Keep {
-    /// The whole dataset, on the archive drive.
+    /// The archive (`OBC_DATA_ARCHIVE`) holds the whole dataset: a fetch reads it there first.
     Archive,
-    /// What each fetch took, in the store only.
+    /// The store keeps what each fetch took.
     Store,
-    /// An artifact that we make and keep on R2. Only such an artifact reads the source.
+    /// R2 keeps what we make: a prepared source, a source that only a prepare reads, or our own asset.
     Prepared,
 }
 

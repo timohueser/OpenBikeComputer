@@ -35,6 +35,9 @@ pub struct FileRecord {
     pub sha256: String,
     /// `YYYY-MM-DDTHH:MM:SSZ`
     pub retrieved: String,
+    /// The path in the archive (`OBC_DATA_ARCHIVE`) of the file that gave the bytes instead of `url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<String>,
 }
 
 impl Snapshot {

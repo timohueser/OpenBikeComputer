@@ -182,7 +182,8 @@ impl Inputs {
     /// a prepared source, whose stored version can have another format, or no version is known.
     pub fn undue(&mut self, store: &Store, wanted: &Wanted) -> Result<Option<String>, String> {
         let key = (wanted.source.clone(), sorted(&wanted.params));
-        let prepared = crate::sources::all().iter().any(|s| s.id == wanted.source && s.fetch.kind == FetchKind::Prepared);
+        let prepared =
+            crate::sources::all().iter().any(|s| s.id == wanted.source && s.fetch.kind == FetchKind::Prepared);
         if prepared || !self.due.contains(&key) {
             return Ok(None);
         }

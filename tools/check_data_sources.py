@@ -9,8 +9,8 @@ new download from a host that a source already declares (api.github.com, for one
 and reserved example domains are not checked. A host built at run time (`https://{site}/…`)
 cannot be checked; a placeholder in front of a fixed domain counts as `*.domain`.
 
-Each source names what reads it in `used_by`, from `USED_BY`, what for in `use`, and where its kept
-copy is in `keep`, from `KEEP`.
+Each source names what reads it in `used_by`, from `USED_BY`, what for in `use`, and its `keep`,
+from `KEEP`.
 """
 
 from __future__ import annotations

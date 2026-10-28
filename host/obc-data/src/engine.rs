@@ -937,7 +937,14 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
                 version: version.into(),
                 files: Vec::new(),
             });
-            snapshot.files.push(FileRecord { name: name.into(), url, size: bytes.len() as u64, sha256, retrieved });
+            snapshot.files.push(FileRecord {
+                name: name.into(),
+                url,
+                size: bytes.len() as u64,
+                sha256,
+                retrieved,
+                archive: None,
+            });
             self.store.put_snapshot(&snapshot).unwrap();
         }
     }

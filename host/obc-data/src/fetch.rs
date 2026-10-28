@@ -1,6 +1,7 @@
 //! Fetchers: the only code that uses the network. A fetch puts the files of one source version in
 //! the store and records them in the snapshot of that version.
 
+pub mod archive;
 pub mod capture;
 pub mod http;
 pub mod osm;
@@ -12,6 +13,7 @@ pub use tools::basemap_jar;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use self::archive::Held;
 use self::http::{Expect, Http};
 use crate::date;
 use crate::sources::{FetchKind, Registry, Source, VersionScheme, WIKI_INPUTS};
@@ -76,7 +78,7 @@ fn fetch_files(
         FetchKind::Capture if WIKI_INPUTS.contains(&source.id.as_str()) => {
             Err(format!("source `{}` is read through `wiki`", source.id))
         }
-        FetchKind::Capture => capture::run(root, store, request),
+        FetchKind::Capture => capture::run(root, store, http.archive(source), request),
         FetchKind::Dtm | FetchKind::ByHand => Err(format!(
             "source `{}`: a person downloads it from {}",
             source.id,
@@ -217,14 +219,23 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
     if source.version == VersionScheme::Digest && urls.len() > 1 {
         return Err(format!("source `{}`: a digest version names one file", source.id));
     }
+    // A refresh asks upstream for its newest version.
+    let held = match http.archive(source).filter(|_| !request.refresh) {
+        Some(archive) => urls.iter().map(|url| archive.find(url)).collect::<Result<Vec<_>, _>>()?,
+        None => urls.iter().map(|_| None).collect(),
+    };
     // The day of the newest file names a date version, so a file already in the store needs no download.
     let version = match &request.version {
         None if source.version == VersionScheme::Date => {
             // One retry, as a HEAD is cheap and a failure stops the whole fetch.
             let days: Result<Vec<_>, _> = urls
                 .iter()
-                .map(|url| {
-                    http.modified(url).or_else(|e| if http::not_found(&e) { Err(e) } else { http.modified(url) })
+                .zip(&held)
+                .map(|(url, held)| match held {
+                    Some(held) => Ok(Some(held.day.clone())),
+                    None => {
+                        http.modified(url).or_else(|e| if http::not_found(&e) { Err(e) } else { http.modified(url) })
+                    }
                 })
                 .collect();
             Some(
@@ -240,20 +251,22 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
     let modified_by = version.as_deref().filter(|_| source.version == VersionScheme::Date && !named);
     let files = urls
         .iter()
-        .map(|url| get(store, http, source, version.as_deref(), url, only_a_name, modified_by))
+        .zip(&held)
+        .map(|(url, held)| get(store, http, source, version.as_deref(), (url, held.as_ref()), only_a_name, modified_by))
         .collect::<Result<Vec<_>, _>>()?;
     let version = version.unwrap_or_else(|| files[0].sha256.clone());
     Ok(Snapshot { source: source.id.clone(), version, files })
 }
 
 /// The file at `url` of `version`: from the store when the record of the version has it, or else
-/// downloaded and added to that record. `pinned_only` refuses a file that no record pins.
+/// from the archive when it `held` that version, or else downloaded; then added to that record.
+/// `pinned_only` refuses a file that no record pins.
 fn get(
     store: &Store,
     http: &Http,
     source: &Source,
     version: Option<&str>,
-    url: &str,
+    (url, held): (&str, Option<&Held>),
     pinned_only: bool,
     modified_by: Option<&str>,
 ) -> Result<FileRecord, String> {
@@ -279,14 +292,27 @@ fn get(
         modified_by,
         ..Expect::default()
     };
-    eprintln!("obc data: fetching {url}");
-    let got = http.download(store, url, &expect)?;
+    let archived = match held {
+        Some(held) => held.import(store, url, &expect)?.map(|got| (got, held.path.clone())),
+        None => None,
+    };
+    let (got, archive) = match archived {
+        Some((got, path)) => {
+            eprintln!("obc data: took {url} from the archive");
+            (got, Some(path))
+        }
+        None => {
+            eprintln!("obc data: fetching {url}");
+            (http.download(store, url, &expect)?, None)
+        }
+    };
     let file = FileRecord {
         name: file_name(source, version, url),
         url: url.to_string(),
         size: got.size,
         sha256: got.sha256,
         retrieved: date::timestamp(date::now()),
+        archive,
     };
     record(store, &source.id, version.unwrap_or(&file.sha256), std::slice::from_ref(&file))?;
     Ok(file)
@@ -832,6 +858,7 @@ pub(crate) mod tests {
             size: 1,
             sha256: sha256.into(),
             retrieved: String::new(),
+            archive: None,
         };
         record(&store, "land", "v1", &[file("https://h/1/a.tif", "aa")]).unwrap();
         let err = record(&store, "land", "v1", &[file("https://h/2/a.tif", "aa")]).unwrap_err();
@@ -947,6 +974,7 @@ pub(crate) mod tests {
             size: 1,
             sha256: sha256_hex(b"other"),
             retrieved: date::timestamp(date::now()),
+            archive: None,
         };
         let held = Snapshot { source: "sea".into(), version: version.clone(), files: vec![old] };
         store.put_snapshot(&held).unwrap();
@@ -958,6 +986,7 @@ pub(crate) mod tests {
             &[&land, &sea],
             |_| &[0, 1],
             false,
+            None,
             |_, out| {
                 let mut command = std::process::Command::new("sh");
                 command.args(["-c", "echo r > \"$1/recipe.json\"", "sh"]).arg(out);
@@ -988,7 +1017,7 @@ pub(crate) mod tests {
         };
         let today = Request { refresh: false, source: &land, version: None, params: vec![] };
         let run = |request: &Request, script: &'static str| {
-            capture::capture(&store, request, "q=1", &sources, owner, false, move |work, out| {
+            capture::capture(&store, request, "q=1", &sources, owner, false, None, move |work, out| {
                 let mut command = std::process::Command::new("sh");
                 command.args(["-c", script, "sh"]).arg(work).arg(out);
                 Ok(command)
@@ -1026,7 +1055,7 @@ pub(crate) mod tests {
         let boxed =
             Request { refresh: false, source: &land, version: None, params: vec![("bbox".into(), "1,2,3,4".into())] };
         let nothing = |request: &Request, empty| {
-            capture::capture(&store, request, "q=2", &sources, owner, empty, |_, _| {
+            capture::capture(&store, request, "q=2", &sources, owner, empty, None, |_, _| {
                 Ok(std::process::Command::new("true"))
             })
         };
@@ -1051,7 +1080,7 @@ pub(crate) mod tests {
         std::fs::write(root.join("data/trailview/ground.json"), ground).unwrap();
         let params = vec![("bbox".into(), "7,46,8,47".into()), ("ground".into(), "000000000000".into())];
         let request = Request { refresh: false, source: &map, version: None, params };
-        let err = capture::run(&root, &store, &request).unwrap_err();
+        let err = capture::run(&root, &store, None, &request).unwrap_err();
         assert!(err.contains("is not the digest of its entry"), "{err}");
     }
 
@@ -1070,6 +1099,7 @@ pub(crate) mod tests {
                 &[&model],
                 |_| &[0],
                 true,
+                None,
                 |work, out| {
                     let mut command = std::process::Command::new("sh");
                     command.args(["-c", script, "sh"]).arg(work).arg(out);
@@ -1113,6 +1143,83 @@ pub(crate) mod tests {
         let good = params(&[("first-year", "2015"), ("bbox", "7.6,47.9,8.0,48.1")]);
         let err = fetch(&tooling_root(), &store, &quick(), &request(good)).unwrap_err();
         assert!(err.contains("blocked: credential missing: ~/.obc-test-no-such-key"), "{err}");
+    }
+
+    /// An archive under `root` with `files` at their paths, listed in one manifest with `extra` keys.
+    fn archive(root: &Path, files: &[(&str, &[u8])], extra: &str) {
+        let listed: Vec<String> = files
+            .iter()
+            .map(|(path, bytes)| {
+                std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+                std::fs::write(root.join(path), bytes).unwrap();
+                format!(r#"{{"path": "{path}", "bytes": {}, "sha256": "{}"}}"#, bytes.len(), sha256_hex(bytes))
+            })
+            .collect();
+        std::fs::create_dir_all(root.join("manifest")).unwrap();
+        let manifest = format!(r#"{{{extra}"files": [{}]}}"#, listed.join(", "));
+        std::fs::write(root.join("manifest/dataset.json"), manifest).unwrap();
+    }
+
+    #[test]
+    fn the_archive_serves_a_kept_source_before_upstream() {
+        let scratch = Scratch::new("archive-serves");
+        let store = Store::at(scratch.0.join("store"));
+        let (actual, log) = serve(|_, _| not_found());
+        let url = actual.replacen("http://", "https://", 1);
+        let path = format!("mirror/{}", url.strip_prefix("https://").unwrap());
+        archive(&scratch.0.join("archive"), &[(&path, b"land")], "");
+        let mut land = source(&url, "date");
+        let http = Http::loopback(&actual).with_archive(&scratch.0.join("archive"));
+        fn request(source: &Source) -> Request<'_> {
+            Request { refresh: false, source, version: None, params: vec![] }
+        }
+
+        let err = fetch(&tooling_root(), &store, &http, &request(&land)).unwrap_err();
+        assert!(err.ends_with("HTTP 404"), "only a source with `keep = \"archive\"` reads the archive: {err}");
+        land.keep = crate::sources::Keep::Archive;
+        let before = log.lock().unwrap().len();
+        let snapshot = fetch(&tooling_root(), &store, &http, &request(&land)).unwrap();
+        assert_eq!(log.lock().unwrap().len(), before, "upstream is not asked");
+        assert_eq!(snapshot.version, date::format(date::today()), "the day of the archived file");
+        let file = &snapshot.files[0];
+        assert_eq!((file.url.as_str(), file.archive.as_deref()), (url.as_str(), Some(path.as_str())));
+        assert_eq!(std::fs::read(store.object(&file.sha256)).unwrap(), b"land");
+
+        // The import links the file into the store, which makes it read-only.
+        std::fs::remove_file(scratch.0.join("archive").join(&path)).unwrap();
+        std::fs::write(scratch.0.join("archive").join(&path), b"lane").unwrap();
+        let err = fetch(&tooling_root(), &Store::at(scratch.0.join("other")), &http, &request(&land)).unwrap_err();
+        assert!(err.contains("but its manifest lists"), "{err}");
+    }
+
+    #[test]
+    fn a_corine_capture_takes_the_archived_zip_without_the_key() {
+        let scratch = Scratch::new("archive-corine");
+        let root = scratch.0.join("archive");
+        let zip = scratch.0.join("clc.zip");
+        let python = crate::engine::python_executable(&tooling_root()).unwrap();
+        let made = std::process::Command::new(python)
+            .args(["-I", "-c", "import sys, zipfile; zipfile.ZipFile(sys.argv[1], 'w').writestr('clc/DATA/U2018_CLC2018_V2020_20u1.tif', b'raster')"])
+            .arg(&zip)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let path = "mirror/land.copernicus.eu/api/en/products/corine-land-cover/clc2018/clc.zip";
+        let ids = r#""clms_dataset_uid": "0407d497d3c44bcd93ce8fd5bf78596a", "clms_file_id": "3d9e2413-46ca-4f6e-abf8-b6eb429a4e48", "#;
+        archive(&root, &[(path, &std::fs::read(&zip).unwrap())], ids);
+        let mut corine = crate::sources::embedded("corine-land-cover").clone();
+        corine.credential =
+            Some(crate::sources::Credential { file: Some("~/.obc-test-no-such-key".into()), ..Default::default() });
+        let request = Request { refresh: false, source: &corine, version: None, params: vec![] };
+        let store = Store::at(scratch.0.join("store"));
+
+        let err = fetch(&tooling_root(), &store, &quick(), &request).unwrap_err();
+        assert!(err.contains("credential missing"), "{err}");
+        let snapshot = fetch(&tooling_root(), &store, &quick().with_archive(&root), &request).unwrap();
+        let file = &snapshot.files[0];
+        assert!(file.url.ends_with("/U2018_CLC2018_V2020_20u1.tif"), "{}", file.url);
+        assert_eq!(file.archive.as_deref(), Some(path));
+        assert_eq!(std::fs::read(store.object(&file.sha256)).unwrap(), b"raster");
     }
 
     fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {

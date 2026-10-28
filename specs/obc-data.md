@@ -30,6 +30,7 @@ One `[[source]]` table per source.
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `start` | string | no | The version that a step list reads while no serving release reads the source. It has the form of `version` |
 | `refresh` | integer or string | no, `"manual"` | The policy, which the settings of a target can replace: `1` through `65535` whole days, or `"manual"` |
+| `keep` | string | yes | Where the copy that a bake reads stays, so that no outage stops a bake: `archive`, the [archive](#archive) holds the whole dataset; `store`, the store keeps what each fetch took; `prepared`, R2 keeps what we make: a prepared source, a source that only a prepare reads, or our own asset. `tools/check_data_sources.py` refuses a source without it |
 | `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory. `register`: the `https://` page where a person gets it, and `hint`: what to copy there, in one line. See [Credentials of sources](#credentials-of-sources) |
 | `publish_text` | boolean | no, `true` | Only for a `prepared` source of article text: `false` keeps the text out of its versions |
@@ -60,7 +61,9 @@ Rules:
 
 - An id is listed once.
 - Each kind of fetch but `installed` and `prepared` has a `url`, and the `url` starts with `https://`.
-- A `prepared` source has `version = "date"` and `redistribute = true`.
+- A `prepared` source has `version = "date"`, `redistribute = true` and `keep = "prepared"`.
+- Data changes only on purpose: only the OSM sources, so that roads stay current, and the prepared
+  sources have a `refresh` in days. A prepared source changes when a person prepares a version.
 - `refresh` in days needs `version = "date"`, because only a date version has an age.
 - A credential has `env` or `file`, not both. A `file` is `~/.cdsapirc`,
   `~/.config/openbikecomputer/cdse-s3.env` or `~/.config/openbikecomputer/clms-key.json`.
@@ -186,8 +189,8 @@ reads. The source has the least state of its fetches, in the order of this table
 
 | State | When |
 | --- | --- |
-| `blocked` | A `data` or `asset` source has no `licence`, or a due fetch has no successful upstream result |
-| `stale` | A date fetch is older than its `refresh`, and upstream names a later version or the fetch is a capture |
+| `blocked` | A `data` or `asset` source has no `licence` |
+| `stale` | A date fetch is older than its `refresh`, and upstream names a later version, the fetch is a capture, or the upstream check fails |
 | `unused` | The serving release reads no fetch of the source |
 | `ok` | Otherwise. A fetch without a serving version is never stale. A `manual` source and a `prepared` source are never stale by age |
 
@@ -245,7 +248,7 @@ A snapshot record is a JSON object:
 | --- | --- |
 | `source` | The source id |
 | `version` | The version, as `SOURCE@VERSION` names it |
-| `files` | One item per file: `name`, `url`, `size` in bytes, `sha256` and `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`) |
+| `files` | One item per file: `name`, `url`, `size` in bytes, `sha256`, `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`), and `archive`, the path in the [archive](#archive) of the file that gave the bytes, when the archive served them |
 
 The `name` of a file is the part of its URL that identifies it in the source. For a `dtm`
 or `capture` fetch, it is the URL after `fetch.url`, such as `#bbox=W,S,E,N/sub/a.tif`. For a URL template, it is the URL from the segment of the first
@@ -404,7 +407,39 @@ producer of [`wiki`](#wiki) reads them.
   day comes only from the store. A request that a started version of a `manual` source lacks joins
   that version, so requests over several days have one version.
 - A source with a `credential` that is not on this machine fails before the program runs, and
-  the error names the variables or the file.
+  the error names the variables or the file. A capture that the [archive](#archive) serves needs
+  no credential.
+
+### Archive
+
+The archive is the directory in `OBC_DATA_ARCHIVE`: whole datasets that we keep on a drive of
+their own, so that no outage stops a bake. Without the variable, or with an empty value, there is
+no archive. `obc data` only reads it.
+
+| Path | Holds |
+| --- | --- |
+| `mirror/<host>/<path>` | The file of the `https://<host>/<path>` URL |
+| `manifest/<dataset>.json` | A JSON object. `files` lists each file of the dataset: `path` under the archive, `bytes` and, when known, `sha256`. A prepackaged CLMS file adds `clms_dataset_uid` and `clms_file_id`, and lists its zip as the one file. Other keys, such as the licence and the date, are for people |
+
+Rules:
+
+- Only a source with `keep = "archive"` reads the archive.
+- Only a file that a manifest lists serves: an unlisted file can still be downloading. A listed
+  file of another size, or with another SHA-256 than its manifest, fails the fetch.
+- The store takes a file with a hard link when the archive and the store share a file system, else
+  with a copy. A hard link makes the archive file read-only, as an object is.
+- The record of a file keeps the upstream `url`, and its `archive` names the path in the archive.
+
+An `http`, `geofabrik`, `glo30` or `github` fetch looks for the file of each URL before it
+downloads. The day on which the archive file changed last stands for `Last-Modified`: for a
+`date` source without a version, that day is the version, and no request goes upstream. The
+archive file serves when it is the version: its SHA-256 is that of the record of the version or of
+the `digest` version, or else it changed on or before the day of a date version. Otherwise the
+fetch downloads the file. `obc data source refresh` asks upstream, not the archive.
+
+The `corine-land-cover` capture looks for the manifest with its `dataset` and `file`. When the
+archive has the zip, `tools/clms.py --archive ZIP --sha256 SHA256` checks the SHA-256 and takes the
+file from that zip as from an order.
 
 ### Credentials of sources
 
@@ -752,6 +787,8 @@ A step list gets the version of each fetch that it reads from one function
 (`obc_data::product::version`), by three rules:
 
 1. A due fetch reads the newest version upstream, and the update uses that version until it ends.
+   When that fetch fails, the fetch reads rule 2, and a note of the [review](#review) names the
+   fetch, the error and the version that it reads.
 2. Otherwise the fetch reads the newest version that the machine knows: the newest of the serving
    version, the versions of the fetch in the store and the `start` of the source. The serving
    version of a fetch without `NAME=VALUE`s, or of any fetch of a source with a `start`, is the
@@ -2865,6 +2902,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "FetchedFile": {
       "properties": {
+        "archive": {
+          "description": "The path in the archive (`OBC_DATA_ARCHIVE`) of the file that gave the bytes instead of `url`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "name": {
           "description": "The part of `url` that names the file within its source, unique in a record: the name a\nstep gives the file when it needs one.",
           "type": "string"
@@ -3128,6 +3172,26 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "reason"
       ],
       "type": "object"
+    },
+    "Keep": {
+      "description": "Where the copy of a source that a bake reads stays, so that no outage stops a bake.",
+      "oneOf": [
+        {
+          "const": "archive",
+          "description": "The archive (`OBC_DATA_ARCHIVE`) holds the whole dataset: a fetch reads it there first.",
+          "type": "string"
+        },
+        {
+          "const": "store",
+          "description": "The store keeps what each fetch took.",
+          "type": "string"
+        },
+        {
+          "const": "prepared",
+          "description": "R2 keeps what we make: a prepared source, a source that only a prepare reads, or our own asset.",
+          "type": "string"
+        }
+      ]
     },
     "Kept": {
       "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
@@ -3742,13 +3806,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "Note": {
       "additionalProperties": false,
-      "description": "A layer that bakes without a source that it reads where the source has a version, such as a\nprepared source that no target lists yet. It does not prevent an update.",
+      "description": "A layer that bakes without a source that it reads where the source has a version, such as a\nprepared source that no target lists yet, or that reads an older version of a due source whose\nfetch failed. It does not prevent an update.",
       "properties": {
         "layer": {
           "type": "string"
         },
         "text": {
-          "description": "What the layer bakes without, and the command that gives it.",
+          "description": "What the layer bakes without and the command that gives it, or the version that it reads.",
           "type": "string"
         }
       },
@@ -5303,6 +5367,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "id": {
           "type": "string"
         },
+        "keep": {
+          "$ref": "#/$defs/Keep"
+        },
         "kind": {
           "$ref": "#/$defs/Kind"
         },
@@ -5402,6 +5469,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "fetch",
         "version",
         "refresh",
+        "keep",
         "redistribute",
         "targets",
         "snapshots",

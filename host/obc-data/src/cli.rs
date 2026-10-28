@@ -710,6 +710,7 @@ pub(crate) mod tests {
                 size,
                 sha256: "aa".into(),
                 retrieved: retrieved.into(),
+                archive: None,
             };
             let mut snapshot = store.snapshot("poly", version).unwrap().unwrap_or(Snapshot {
                 source: "poly".into(),

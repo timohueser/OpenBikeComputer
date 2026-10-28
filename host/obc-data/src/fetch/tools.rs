@@ -60,7 +60,7 @@ pub(super) fn basemap(root: &Path, store: &Store, http: &Http, request: &Request
         }
         let (sha256, size) = hash_file(&jar)?;
         store.insert(&jar, &sha256)?;
-        let file = FileRecord { name, url, size, sha256, retrieved: date::timestamp(date::now()) };
+        let file = FileRecord { name, url, size, sha256, retrieved: date::timestamp(date::now()), archive: None };
         record(store, &archive.source, version, &[file])?;
         store.snapshot(&archive.source, version)?.ok_or("basemap snapshot disappeared".into())
     })();
@@ -97,6 +97,7 @@ mod tests {
                 size: bytes.len() as u64,
                 sha256,
                 retrieved: String::new(),
+                archive: None,
             });
         }
         let snapshot = Snapshot { source: source.id.clone(), version: version.into(), files };

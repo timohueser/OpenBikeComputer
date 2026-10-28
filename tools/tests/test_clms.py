@@ -2,6 +2,7 @@
 from the archive, without the token outside the API."""
 
 import base64
+import hashlib
 import http.server
 import io
 import json
@@ -178,6 +179,20 @@ class ClmsTest(unittest.TestCase):
             with self.assertRaises(zipfile.BadZipFile):
                 clms.fetch("dataset", "file", "clc.tif", work, out, Path(scratch, "absent-key.json"))
             self.assertFalse((work / "order.zip").exists())
+
+    def test_a_kept_zip_replaces_the_order_without_a_key_when_its_sha256_matches(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            work, out, kept = Path(scratch, "work"), Path(scratch, "out"), Path(scratch, "kept.zip")
+            work.mkdir(), out.mkdir()
+            with zipfile.ZipFile(kept, "w") as z:
+                z.writestr("clc/DATA/clc.tif", b"raster")
+            key = Path(scratch, "absent-key.json")
+            with self.assertRaisesRegex(RuntimeError, "the SHA-256 is not"):
+                clms.fetch("dataset", "file", "clc.tif", work, out, key, kept, "0" * 64)
+            sha256 = hashlib.sha256(kept.read_bytes()).hexdigest()
+            clms.fetch("dataset", "file", "clc.tif", work, out, key, kept, sha256)
+            self.assertEqual((out / "clc.tif").read_bytes(), b"raster")
+            self.assertTrue(kept.exists())
 
 
 if __name__ == "__main__":

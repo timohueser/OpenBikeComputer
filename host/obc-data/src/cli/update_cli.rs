@@ -1385,7 +1385,11 @@ pub(super) mod tests {
         let plan = (Some(&machine), Vec::new as fn() -> Vec<String>);
         let prepared = prepare(&root, &fixture.store, &http, ("local", &target), code, |_| Ok(()), &[], plan, None);
         let review = prepared.unwrap().review;
-        assert!(review.notes.iter().any(|note| note.text.contains("this update reads 2026-01-01")), "{:?}", review.notes);
+        assert!(
+            review.notes.iter().any(|note| note.text.contains("this update reads 2026-01-01")),
+            "{:?}",
+            review.notes
+        );
         let kept = update_with(&fixture, &target, &http, |_| Ok(())).unwrap();
         let read = Release::read(&target, &kept.serving).unwrap().versions()[&("head".to_string(), Vec::new())].clone();
         assert_eq!(read, "2026-01-01", "the policy is due, and upstream fails");

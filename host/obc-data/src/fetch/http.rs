@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use super::archive::Archive;
 use crate::date;
+use crate::sources::{Keep, Source};
 use crate::store::{self, Lock, Store};
 
 /// What a download must be.
@@ -100,6 +102,7 @@ pub struct Http {
     agent: ureq::Agent,
     bearer: Option<(String, String)>,
     backoff: Duration,
+    archive: Option<Archive>,
 }
 
 enum Failure {
@@ -128,7 +131,7 @@ impl Http {
                 },
             )
             .build();
-        Self { agent: config.into(), bearer: None, backoff: Duration::ZERO }
+        Self { agent: config.into(), bearer: None, backoff: Duration::ZERO, archive: None }
     }
 
     pub fn new() -> Self {
@@ -144,7 +147,19 @@ impl Http {
             .timeout_recv_response(Some(Duration::from_secs(60)))
             .timeout_recv_body(Some(BODY))
             .build();
-        Self { agent: config.into(), bearer: None, backoff }
+        Self { agent: config.into(), bearer: None, backoff, archive: Archive::from_env() }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_archive(mut self, root: &Path) -> Self {
+        self.archive = Some(Archive::new(root.to_path_buf()));
+        self
+    }
+
+    /// The archive, for a source with `keep = "archive"`: the archive holds that dataset, so its
+    /// copy serves before upstream.
+    pub fn archive(&self, source: &Source) -> Option<&Archive> {
+        self.archive.as_ref().filter(|_| source.keep == Keep::Archive)
     }
 
     /// Authorize only requests to this HTTPS origin. Redirects strip authorization by default.
