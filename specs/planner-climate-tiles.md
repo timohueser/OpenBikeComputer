@@ -169,7 +169,7 @@ The archive metadata is a JSON object:
 | `rain_factors` | Array of 12 numbers, January first: the calibration factor of the weekly rain of each month |
 | `wind_factor` | Number: the calibration factor of the weekly daytime wind |
 | `attribution` | Text to show with the layer |
-| `inputs` | Object: `doi`, `orography_sha256`, `files` |
+| `inputs` | Object: `doi`, `orography_sha256`, and `climate`: the version of `climate` that the bake read, `<version>/<manifest SHA-256>` |
 
 ## Source
 
@@ -181,7 +181,3 @@ days past the end of the chunk or, when that is earlier, past the end of the
 year that it is read for. A chunk that the store omits has no data. The orography is the ERA5-Land
 geopotential file `geo_1279l4_0.1x0.1.grib2_v4_unpack.nc` with the SHA-256 in
 `orography_sha256`.
-
-`files` is the SHA-256 of one line `PATH SHA256` for each file of `climate` that
-the bake reads, sorted as text, each line ended by a line feed. `SHA256` is the
-SHA-256 of the file.

@@ -965,7 +965,7 @@ of the version of `terrain` that the target reads, and `mean/index.json`.
 | `planner/search/records` | `planner/search/dump` | None | `pois.jsonl.zst` and `addresses.jsonl.zst`: the records of the dump with a POI and with an address |
 | `planner/search/pois`, `planner/search/addresses` | `planner/search/records`; POIs also read the selected `device/landmark-content*` and `device/peak-content*` outputs | `component` (`pois` or `addresses`); `region`, `bounds` and `countries` as for `planner/routing`; `time_zone` of the region; `attribution` of `osm-planet` | `<component>/<region>.sqlite`: the search database of the component, schema 6. The key holds no SQLite version: another Python patch release can give other database bytes. The metrics name the version as `sqlite` |
 | `planner/places` | `planner/search/pois` | None | `places.pmtiles`: the rider places of the POI database, at zoom 11 |
-| `planner/climate` | The files of [`climate`](#climate) of the blocks of the outline of the region, as `climate` defines the blocks of a region: the orography and the ten years from `climate.first_year`. A version that lacks one of them refuses | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10 | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md). A cell of a block that the step does not read is missing |
+| `planner/climate` | The files of [`climate`](#climate) of the blocks of the outline of the region, as `climate` defines the blocks of a region: the orography and the ten years from `climate.first_year`. A version that lacks one of them refuses | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10; `climate`: the version that it reads | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md). A cell of a block that the step does not read is missing |
 | `planner/snow` | `hr-wsi` when its `extent` meets the bounds and its fetch has files, and `modis-snow`, each `bbox=<bounds>`, `seasons=<snow.seasons>`; `hansen-gfc`, `tile=` of each 10° tile that the bounds touch | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when it reads it, `modis-snow` and `hansen-gfc`; `year`: the year of the `hr-wsi` version, which fills its `{year}`, or null | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md): HR-WSI where it has data, and MODIS elsewhere |
 | `planner/trailview-features` | `planner/osm`, `planner/terrain/grid` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 13 |
 | `planner/trailview-rules` | `data/trailview/` of the repository | `ruleset`: the digest of its JSON files by their paths in it. The step fails when the files differ | `rules.json`: [the TrailView rules](trailview-tiles.md#rules); `regions.json`, `materials.json` and `ground.json`: the region ids, the region areas, the ecoregions, the places, the vocabulary and the ground sources that the ground steps read |
@@ -1552,7 +1552,7 @@ is compact JSON with the keys of each object in byte order:
 2. The review names the version, the inputs with the size of their files in the store or on
    this machine (`unknown` lists an input whose size neither knows), the files of the version at
    most (`files`, `null` when the producer cannot tell before the run), the files
-   that earlier runs uploaded, the cost from the newest version that the target lists, only when its scope and languages match, the bytes that go into the store and to the target, the check of this machine as in the
+   that earlier runs uploaded, the cost from the newest version that the target lists, only when its scope and languages match, the bytes that go into the store, with the disk that the producer says its programs take, and to the target, the check of this machine as in the
    [review](#review) of an update, which also refuses when the source or an input has a
    `credential` that is not on the machine, and for each target that reads the versions of this target the
    layers of its serving release that read an older version. `--dry-run` writes it. Its id is the
@@ -1731,9 +1731,11 @@ it, in the same format; `prod` takes a version of a region.
   with x = 37 or y = 28 holds fewer cells. A block has the size of a zoom 6 climate tile, but it is
   not a tile of the archive.
 - The blocks of a region are those that a box or a `geofabrik-poly` polygon of a leaf of the
-  region meets, after the block grows by 0.3° on each side: the bake of a box reads the cells
-  that touch it and two more cells for the lapse rates. A run keeps the version of each polygon
-  that its first run read, as for [`terrain`](#terrain). A version of everything has every block.
+  region meets, after the block grows by 0.2° on each side: the blocks of the cells that overlap
+  the outline and of the two cells around each, which the bake of a box reads for the lapse
+  rates. A run keeps the version of each polygon that its first run read, as for
+  [`terrain`](#terrain). A version of everything has every block. A region within 0.3° of the
+  antimeridian refuses: its bake would read cells on both sides.
 - The years are the ten years from `climate.first_year` of [`data/planner.toml`](#dataplannertoml).
   For each block of its region, a version holds `orography/<x>/<y>.gz` and `<year>/<x>/<y>.gz` of
   each year, also for a block without land. A file that the version before holds stays in
@@ -1741,10 +1743,16 @@ it, in the same format; `prod` takes a version of a region.
   region or a new year adds files, and a new format makes each file again. The manifest names the
   scopes of the version before in `extends`.
 - For each block, `python -m tools.planner_climate prepare --block <x>-<y> --years <year>,…`
-  writes the files that the version lacks: with `--orography` also the orography. It reads the
-  chunks of the block with the `credential` of `era5-land`, final data only, as the
-  [climate archive](planner-climate-tiles.md#source) says, and keeps no chunk. Then it writes
-  `<x>-<y>.orography.sha256` and `<x>-<y>.<year>.sha256`, the SHA-256 of each file.
+  writes the files that the version lacks: with `--orography DIR` also the orography, from the
+  orography file that the first program downloads into `DIR` of the run. It reads the chunks of
+  the block with the `credential` of `era5-land`, final data only, as the
+  [climate archive](planner-climate-tiles.md#source) says, at most 2 at once, so the 8 programs
+  open at most 16 connections to the stores. It tries a request again after a 429 or 5xx answer
+  or a network error, for about 35 minutes with longer waits. Then it writes
+  `<x>-<y>.orography.sha256` and `<x>-<y>.<year>.sha256`, the SHA-256 of each file, and deletes
+  its chunks; a block that fails keeps them for the next run.
+- The review counts into the store the chunks and the files of the programs that run at once, and
+  a batch of files that waits for its upload.
 - A file is gzip, with no name and time 0, of planes in the order of the table. A plane has one
   value per cell for each of its indexes. For each index, from 0 in order, the cells of the block
   follow in row order: the north row first, the west cell first. A value is little-endian. A
