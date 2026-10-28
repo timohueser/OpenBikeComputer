@@ -378,7 +378,7 @@ export class Terrain {
     async attachParts(frames: GPUBuffer[]): Promise<void> {
         const r = this.resources!;
         await Promise.all([
-            this.water.attach(r.gpu, frames[0], r.nodes), this.structures.attach(r.gpu, frames),
+            this.water.attach(r.gpu, frames[0], r.nodes), this.structures.attach(r.gpu, frames, r.holes),
             r.gpu.once(holedPipeline).then(pipeline => void (r.holedMesh = pipeline)),
         ]);
     }
@@ -818,7 +818,7 @@ function terrainLayouts({ device }: Gpu) {
         device.createBindGroupLayout({ entries: entries.map(([visibility, entry], binding) => ({ binding, visibility, ...entry })) });
     const read: GPUBufferBindingLayout = { type: 'read-only-storage' }, write: GPUBufferBindingLayout = { type: 'storage' }, C = GPUShaderStage.COMPUTE;
     return {
-        mesh: layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.VERTEX, { buffer: read }], [GPUShaderStage.VERTEX, { buffer: read }]]),
+        mesh: layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.VERTEX, { buffer: read }], [GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: read }]]),
         job: layout([[C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
         quantize: layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
         probe: layout([[C, { buffer: read }], [C, { buffer: write }]]),
@@ -855,7 +855,7 @@ function meshPipeline(gpu: Gpu, detail: boolean, holes = false): Promise<GPURend
         label: holes ? 'terrain with holes' : detail ? 'terrain' : 'far terrain',
         layout: device.createPipelineLayout({ bindGroupLayouts: [L.mesh, shared.surface, shared.ground, shared.features] }),
         vertex: { module, entryPoint: 'vertex_main', constants: { HOLES: holes ? 1 : 0 } },
-        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { DETAIL: detail ? 1 : 0 } },
+        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { DETAIL: detail ? 1 : 0, HOLES: holes ? 1 : 0 } },
         // The far nodes cull back faces: no snap moves their vertices, so no triangle turns over, and a
         // ray from an eye above them meets a front face first. The other nodes draw both faces:
         // the eye can be under the near mesh for some frames, and its underside then hides what is behind.
@@ -912,7 +912,7 @@ function holes(lists: Float64Array[], anchor: Anchor): Float32Array<ArrayBuffer>
         const name = `${list[i]},${list[i + 1]}`;
         if (seen.has(name)) continue;
         seen.add(name);
-        out.set([list[i] - anchor.whole[0] - anchor.part[0], list[i + 1] - anchor.whole[1] - anchor.part[1], ...list.subarray(i + 2, i + BOX)], 4 + 12 * n++);
+        out.set([list[i] - anchor.whole[0], list[i + 1] - anchor.whole[1], ...list.subarray(i + 2, i + BOX)], 4 + 12 * n++);
     }
     out[0] = n;
     return out;

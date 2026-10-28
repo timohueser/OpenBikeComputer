@@ -114,8 +114,8 @@ export class Structures {
         return (this.resources?.structures.dropped ?? 0) + (this.resources?.anchored.dropped ?? 0) + this.unanchored;
     }
 
-    /** `frames` are the frame uniforms of the eye's view and of the sun's (light/shadow.ts). */
-    async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[]): Promise<void> {
+    /** `frames` are the frame uniforms of the eye's view and of the sun's (light/shadow.ts); `portals` the terrain's boxes of the tunnels' portals. */
+    async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[], portals: GPUBuffer): Promise<void> {
         this.resources = undefined;
         const { device } = gpu, { layout, empty, computeLayout, pipelines: [pipeline, anchoredPipeline, heightsPipeline, structureCaster, anchoredCaster] } = await gpu.once(structurePipelines);
         const anchors = gpu.buffer('kinds', ANCHORS * ANCHOR_WORDS * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
@@ -125,7 +125,7 @@ export class Structures {
             new Pool(device, gpu.buffer(label, vertexBytes, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), gpu.buffer(label, indexBytes, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST), stride);
         this.drawn = [];
         this.fresh = true;
-        const frameGroup = (frame: GPUBuffer) => device.createBindGroup({ layout, entries: [[0, frame], [1, anchors], [4, heights]].map(([binding, buffer]) => ({ binding: binding as number, resource: { buffer: buffer as GPUBuffer } })) });
+        const frameGroup = (frame: GPUBuffer) => device.createBindGroup({ layout, entries: [[0, frame], [1, anchors], [4, heights], [5, portals]].map(([binding, buffer]) => ({ binding: binding as number, resource: { buffer: buffer as GPUBuffer } })) });
         this.resources = {
             device, pipeline, anchoredPipeline, casters: [structureCaster, anchoredCaster], heightsPipeline, anchors, count,
             group: frameGroup(frame), sunGroup: frameGroup(sunFrame),
@@ -271,7 +271,7 @@ async function structurePipelines(gpu: Gpu) {
     // The heights are written in the compute's group and read in the draw's.
     const layout = device.createBindGroupLayout({ entries: [
         { binding: 0, visibility: VF, buffer: { type: 'uniform' } }, { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
-        { binding: 4, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 4, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } }, { binding: 5, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
     ] });
     const empty = device.createBindGroupLayout({ entries: [] }), computeLayout = device.createBindGroupLayout({ entries: [
         { binding: 0, visibility: C, buffer: { type: 'uniform' } }, { binding: 1, visibility: C, buffer: { type: 'read-only-storage' } },
