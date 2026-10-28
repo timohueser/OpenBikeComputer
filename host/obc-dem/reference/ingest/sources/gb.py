@@ -1,4 +1,4 @@
-"""Great Britain: each nation publishes its LiDAR separately, and Wales has no row yet.
+"""Great Britain: each nation publishes its LiDAR separately; Wales has no row.
 
 England is the Environment Agency's LIDAR Composite DTM, over Defra's WCS 2.0.1. The endpoint
 carries no survey year, so the coverage id is stable: a UUID and a name, exactly as the
