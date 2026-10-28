@@ -177,7 +177,7 @@ impl Inputs {
         Wanted { version, ..wanted.clone() }
     }
 
-    /// The version that a due fetch of `wanted` whose fetch failed reads instead: the newest version
+    /// The version that a due fetch of `wanted` whose upstream did not serve reads instead: the newest version
     /// that this machine knows, as when the fetch is not due. `None` when the fetch is not due, is of
     /// a prepared source, whose stored version can have another format, or no version is known.
     pub fn undue(&mut self, store: &Store, wanted: &Wanted) -> Result<Option<String>, String> {

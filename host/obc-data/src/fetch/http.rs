@@ -59,6 +59,13 @@ pub fn unreachable(error: &str) -> bool {
 
 const UNREACHABLE: &str = ": unreachable: ";
 
+/// Whether an error of this module says that upstream did not serve: no connection, a timeout, or
+/// HTTP 404, 408, 429 or 5xx.
+pub fn outage(error: &str) -> bool {
+    let status = error.rsplit_once("HTTP ").and_then(|(_, status)| status.parse::<u16>().ok());
+    unreachable(error) || status.is_some_and(|status| matches!(status, 404 | 408 | 429 | 500..=599))
+}
+
 /// Set when the run of this process stops: a download ends within one read or one [`SLICE`] of a
 /// retry wait, and keeps its part.
 static STOPPED: AtomicBool = AtomicBool::new(false);

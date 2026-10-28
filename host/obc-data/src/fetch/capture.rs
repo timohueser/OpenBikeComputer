@@ -93,7 +93,7 @@ pub(crate) fn run(
             let [] = values(request, [])?;
             // The dataset CLC 2018 and its prepackaged raster of Europe.
             let (dataset, file) = ("0407d497d3c44bcd93ce8fd5bf78596a", "3d9e2413-46ca-4f6e-abf8-b6eb429a4e48");
-            let held = archive.map(|archive| archive.clms(dataset, file)).transpose()?.flatten();
+            let held = archive.and_then(|archive| archive.clms(dataset, file));
             capture(
                 store,
                 request,

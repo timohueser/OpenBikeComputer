@@ -13,7 +13,7 @@ pub use tools::basemap_jar;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use self::archive::Held;
+use self::archive::Archive;
 use self::http::{Expect, Http};
 use crate::date;
 use crate::sources::{FetchKind, Registry, Source, VersionScheme, WIKI_INPUTS};
@@ -220,19 +220,15 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
         return Err(format!("source `{}`: a digest version names one file", source.id));
     }
     // A refresh asks upstream for its newest version.
-    let held = match http.archive(source).filter(|_| !request.refresh) {
-        Some(archive) => urls.iter().map(|url| archive.find(url)).collect::<Result<Vec<_>, _>>()?,
-        None => urls.iter().map(|_| None).collect(),
-    };
+    let archive = http.archive(source).filter(|_| !request.refresh);
     // The day of the newest file names a date version, so a file already in the store needs no download.
     let version = match &request.version {
         None if source.version == VersionScheme::Date => {
             // One retry, as a HEAD is cheap and a failure stops the whole fetch.
             let days: Result<Vec<_>, _> = urls
                 .iter()
-                .zip(&held)
-                .map(|(url, held)| match held {
-                    Some(held) => Ok(Some(held.day.clone())),
+                .map(|url| match archive.and_then(|archive| archive.find(url)) {
+                    Some(held) => Ok(Some(held.day)),
                     None => {
                         http.modified(url).or_else(|e| if http::not_found(&e) { Err(e) } else { http.modified(url) })
                     }
@@ -251,22 +247,23 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
     let modified_by = version.as_deref().filter(|_| source.version == VersionScheme::Date && !named);
     let files = urls
         .iter()
-        .zip(&held)
-        .map(|(url, held)| get(store, http, source, version.as_deref(), (url, held.as_ref()), only_a_name, modified_by))
+        .map(|url| get(store, http, archive, source, version.as_deref(), url, only_a_name, modified_by))
         .collect::<Result<Vec<_>, _>>()?;
     let version = version.unwrap_or_else(|| files[0].sha256.clone());
     Ok(Snapshot { source: source.id.clone(), version, files })
 }
 
 /// The file at `url` of `version`: from the store when the record of the version has it, or else
-/// from the archive when it `held` that version, or else downloaded; then added to that record.
+/// from the `archive` when it holds that version, or else downloaded; then added to that record.
 /// `pinned_only` refuses a file that no record pins.
+#[allow(clippy::too_many_arguments)]
 fn get(
     store: &Store,
     http: &Http,
+    archive: Option<&Archive>,
     source: &Source,
     version: Option<&str>,
-    (url, held): (&str, Option<&Held>),
+    url: &str,
     pinned_only: bool,
     modified_by: Option<&str>,
 ) -> Result<FileRecord, String> {
@@ -292,8 +289,8 @@ fn get(
         modified_by,
         ..Expect::default()
     };
-    let archived = match held {
-        Some(held) => held.import(store, url, &expect)?.map(|got| (got, held.path.clone())),
+    let archived = match archive.and_then(|archive| archive.find(url)) {
+        Some(held) => held.import(store, url, &expect)?.map(|got| (got, held.path)),
         None => None,
     };
     let (got, archive) = match archived {
@@ -934,6 +931,8 @@ pub(crate) mod tests {
         let (url, _) = serve(|_, _| Reply { status: 500, headers: vec![], body: vec![], length: 0 });
         let error = quick().modified(&url).unwrap_err();
         assert!(!http::unreachable(&error) && !http::not_found(&error), "{error}");
+        assert!(http::outage(&error), "a server error is an outage: {error}");
+        assert!(!http::outage("GET https://h/x: HTTP 403") && !http::outage("partial/x: No space left on device"));
     }
 
     /// The dated file of the newest day can come after its `state.txt`. Offline, the newest stored
@@ -1160,6 +1159,13 @@ pub(crate) mod tests {
         std::fs::write(root.join("manifest/dataset.json"), manifest).unwrap();
     }
 
+    /// Set the modification time of `path` to noon of `day`.
+    fn modified_on(path: &Path, day: &str) {
+        let seconds = date::parse(day).unwrap() as u64 * 86_400 + 43_200;
+        let time = std::time::UNIX_EPOCH + Duration::from_secs(seconds);
+        std::fs::File::options().write(true).open(path).unwrap().set_modified(time).unwrap();
+    }
+
     #[test]
     fn the_archive_serves_a_kept_source_before_upstream() {
         let scratch = Scratch::new("archive-serves");
@@ -1167,29 +1173,60 @@ pub(crate) mod tests {
         let (actual, log) = serve(|_, _| not_found());
         let url = actual.replacen("http://", "https://", 1);
         let path = format!("mirror/{}", url.strip_prefix("https://").unwrap());
-        archive(&scratch.0.join("archive"), &[(&path, b"land")], "");
+        let root = scratch.0.join("archive");
+        archive(&root, &[(&path, b"land")], "");
+        modified_on(&root.join(&path), "2026-10-05");
+        std::fs::write(root.join("manifest/broken.json"), "{").unwrap();
         let mut land = source(&url, "date");
-        let http = Http::loopback(&actual).with_archive(&scratch.0.join("archive"));
+        let http = || Http::loopback(&actual).with_archive(&root);
         fn request(source: &Source) -> Request<'_> {
             Request { refresh: false, source, version: None, params: vec![] }
         }
 
-        let err = fetch(&tooling_root(), &store, &http, &request(&land)).unwrap_err();
+        let err = fetch(&tooling_root(), &store, &http(), &request(&land)).unwrap_err();
         assert!(err.ends_with("HTTP 404"), "only a source with `keep = \"archive\"` reads the archive: {err}");
         land.keep = crate::sources::Keep::Archive;
+        let refresh = Request { refresh: true, ..request(&land) };
+        let err = fetch(&tooling_root(), &store, &http(), &refresh).unwrap_err();
+        assert!(err.ends_with("HTTP 404"), "a refresh asks upstream: {err}");
         let before = log.lock().unwrap().len();
-        let snapshot = fetch(&tooling_root(), &store, &http, &request(&land)).unwrap();
-        assert_eq!(log.lock().unwrap().len(), before, "upstream is not asked");
-        assert_eq!(snapshot.version, date::format(date::today()), "the day of the archived file");
+        let snapshot = fetch(&tooling_root(), &store, &http(), &request(&land)).unwrap();
+        assert_eq!(log.lock().unwrap().len(), before, "upstream is not asked, and a bad manifest only warns");
+        assert_eq!(snapshot.version, "2026-10-05", "the day of the archived file");
         let file = &snapshot.files[0];
         assert_eq!((file.url.as_str(), file.archive.as_deref()), (url.as_str(), Some(path.as_str())));
         assert_eq!(std::fs::read(store.object(&file.sha256)).unwrap(), b"land");
+        assert!(!std::fs::metadata(root.join(&path)).unwrap().permissions().readonly(), "a copy, not a link");
 
-        // The import links the file into the store, which makes it read-only.
-        std::fs::remove_file(scratch.0.join("archive").join(&path)).unwrap();
-        std::fs::write(scratch.0.join("archive").join(&path), b"lane").unwrap();
-        let err = fetch(&tooling_root(), &Store::at(scratch.0.join("other")), &http, &request(&land)).unwrap_err();
-        assert!(err.contains("but its manifest lists"), "{err}");
+        std::fs::write(root.join(&path), b"lane").unwrap();
+        let err = fetch(&tooling_root(), &Store::at(scratch.0.join("other")), &http(), &request(&land)).unwrap_err();
+        assert!(archive::mismatch(&err), "{err}");
+        let stored = Request { version: Some("2026-10-05".into()), ..request(&land) };
+        fetch(&tooling_root(), &store, &http(), &stored).expect("the store serves before the archive");
+        std::fs::write(root.join(&path), b"longer").unwrap();
+        let err = fetch(&tooling_root(), &Store::at(scratch.0.join("third")), &http(), &request(&land)).unwrap_err();
+        assert!(err.ends_with("HTTP 404"), "a file of another size only warns: {err}");
+    }
+
+    #[test]
+    fn an_archive_file_of_another_version_is_not_served() {
+        let scratch = Scratch::new("archive-version");
+        let (actual, _) = serve(|_, _| whole(b"upstream"));
+        let url = actual.replacen("http://", "https://", 1);
+        let path = format!("mirror/{}", url.strip_prefix("https://").unwrap());
+        let root = scratch.0.join("archive");
+        archive(&root, &[(&path, b"land")], "");
+        modified_on(&root.join(&path), "2026-10-20");
+        let http = Http::loopback(&actual).with_archive(&root);
+        for (version, scheme) in [("2026-10-10".to_string(), "date"), (sha256_hex(b"upstream"), "digest")] {
+            let mut land = source(&url, scheme);
+            land.keep = crate::sources::Keep::Archive;
+            let request = Request { refresh: false, source: &land, version: Some(version), params: vec![] };
+            let store = Store::at(scratch.0.join(scheme));
+            let file = fetch(&tooling_root(), &store, &http, &request).unwrap().files.remove(0);
+            assert_eq!(file.archive, None, "{scheme}: newer than the version, or other bytes");
+            assert_eq!(std::fs::read(store.object(&file.sha256)).unwrap(), b"upstream");
+        }
     }
 
     #[test]

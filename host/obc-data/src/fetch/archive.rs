@@ -1,7 +1,10 @@
 //! The archive in `OBC_DATA_ARCHIVE`: whole datasets on a drive of their own. Each file is at
-//! `mirror/<host>/<path>` of its `https://` URL. A JSON manifest under `manifest/` lists each file
-//! by that path with its size in `bytes` and, when known, its `sha256`. The archive serves only a
-//! listed file of the listed size: an unlisted file can be one that is still downloading.
+//! `mirror/<host>/<path>` of its `https://` URL, with the `Last-Modified` of upstream as its
+//! modification time. A JSON manifest under `manifest/` lists each file by that path with its size
+//! in `bytes` and, when known, its `sha256`. The archive serves only a listed file of the listed
+//! size: an unlisted file can be one that is still downloading. A problem of the archive is a
+//! warning and no file, so that it never stops a fetch that upstream or the store can serve; only
+//! a file whose bytes are not those of its manifest fails the fetch.
 
 use std::collections::HashMap;
 use std::fs;
@@ -14,10 +17,18 @@ use super::http::{self, Downloaded, Expect};
 use crate::date;
 use crate::store::{self, Store};
 
+/// The start of the error of a file whose bytes are not those of its manifest.
+const MISMATCH: &str = "archive file ";
+
+/// Whether a fetch error is of an archive file whose bytes are not those of its manifest.
+pub fn mismatch(error: &str) -> bool {
+    error.starts_with(MISMATCH)
+}
+
 pub struct Archive {
     root: PathBuf,
     /// Read from the manifests at the first lookup.
-    listing: OnceLock<Result<Listing, String>>,
+    listing: OnceLock<Listing>,
 }
 
 #[derive(Default)]
@@ -47,6 +58,7 @@ pub struct Held {
     /// The path under the root, as the manifest lists it.
     pub path: String,
     pub file: PathBuf,
+    /// Lowercase hex.
     pub sha256: Option<String>,
     /// The day the file was last modified, `YYYY-MM-DD`.
     pub day: String,
@@ -63,72 +75,71 @@ impl Archive {
     }
 
     /// The file of an `https://` URL without a query, a fragment or a `.` or `..` segment.
-    pub fn find(&self, url: &str) -> Result<Option<Held>, String> {
-        let Some(rest) = url.strip_prefix("https://").filter(|rest| !rest.contains(['?', '#'])) else {
-            return Ok(None);
-        };
+    pub fn find(&self, url: &str) -> Option<Held> {
+        let rest = url.strip_prefix("https://").filter(|rest| !rest.contains(['?', '#']))?;
         if rest.split('/').any(|segment| segment.is_empty() || segment == "." || segment == "..") {
-            return Ok(None);
+            return None;
         }
         self.held(&format!("mirror/{rest}"))
     }
 
     /// The zip of the prepackaged `file` of the CLMS `dataset`: a manifest names both with
     /// `clms_dataset_uid` and `clms_file_id`, and lists the zip as its one file.
-    pub fn clms(&self, dataset: &str, file: &str) -> Result<Option<Held>, String> {
-        match self.listing()?.clms.get(&(dataset.to_string(), file.to_string())) {
-            Some(path) => self.held(path),
-            None => Ok(None),
-        }
+    pub fn clms(&self, dataset: &str, file: &str) -> Option<Held> {
+        self.held(self.listing().clms.get(&(dataset.to_string(), file.to_string()))?)
     }
 
-    fn listing(&self) -> Result<&Listing, String> {
-        self.listing.get_or_init(|| read_manifests(&self.root.join("manifest"))).as_ref().map_err(Clone::clone)
+    fn listing(&self) -> &Listing {
+        self.listing.get_or_init(|| read_manifests(&self.root.join("manifest")))
     }
 
-    fn held(&self, path: &str) -> Result<Option<Held>, String> {
-        let Some(listed) = self.listing()?.files.get(path) else { return Ok(None) };
+    fn held(&self, path: &str) -> Option<Held> {
+        let listed = self.listing().files.get(path)?;
         let file = self.root.join(path);
-        let Some(metadata) = fs::metadata(&file).ok().filter(|metadata| metadata.is_file()) else { return Ok(None) };
+        let metadata = fs::metadata(&file).ok().filter(|metadata| metadata.is_file())?;
         if metadata.len() != listed.bytes {
-            return Err(format!(
-                "{}: {} bytes, but its manifest lists {}",
-                file.display(),
-                metadata.len(),
-                listed.bytes
-            ));
+            let (size, bytes) = (metadata.len(), listed.bytes);
+            eprintln!(
+                "obc data: warning: archive file {} has {size} bytes, but its manifest lists {bytes}",
+                file.display()
+            );
+            return None;
         }
-        let modified = metadata.modified().map_err(|e| format!("{}: {e}", file.display()))?;
-        let seconds = modified.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs());
+        let seconds = metadata.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
         let day = date::format((seconds / 86_400) as i64);
-        Ok(Some(Held { path: path.to_string(), file, sha256: listed.sha256.clone(), day }))
+        Some(Held { path: path.to_string(), file, sha256: listed.sha256.clone(), day })
     }
 }
 
 impl Held {
-    /// Put the file into the store, as a download of `url` that meets `expect` would. `None` when it
-    /// is another version: other bytes than `expect.sha256`, or, without that, modified after
-    /// `expect.modified_by`. Other bytes than the manifest's are an error.
+    /// Copy the file into the store, as a download of `url` that meets `expect` would. `None` when
+    /// it is another version: other bytes than `expect.sha256`, or, without that, modified after
+    /// `expect.modified_by`. A copy, never a link, so that the store and the archive stay apart.
     pub fn import(&self, store: &Store, url: &str, expect: &Expect) -> Result<Option<Downloaded>, String> {
-        if expect.sha256.is_none() && expect.modified_by.is_some_and(|by| self.day.as_str() > by) {
+        if let Some(by) = expect.modified_by.filter(|by| expect.sha256.is_none() && self.day.as_str() > *by) {
+            eprintln!("obc data: archive file {} is newer than version {by}: {}", self.file.display(), self.day);
             return Ok(None);
         }
         let part = store.partial(&format!("{}.archive", http::key(url)));
         let parent = part.parent().ok_or("the partial path has no parent")?;
         fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-        let _ = fs::remove_file(&part);
-        // A hard link costs no space when the store and the archive share a file system.
-        if fs::hard_link(&self.file, &part).is_err() {
-            let size = fs::metadata(&self.file).map_err(|e| format!("{}: {e}", self.file.display()))?.len();
-            store::check_free(&part, size)?;
-            fs::copy(&self.file, &part).map_err(|e| format!("{}: {e}", self.file.display()))?;
+        let size = fs::metadata(&self.file).map_err(|e| format!("{}: {e}", self.file.display()))?.len();
+        store::check_free(&part, size)?;
+        if let Err(error) = fs::copy(&self.file, &part) {
+            eprintln!("obc data: warning: archive file {}: {error}", self.file.display());
+            let _ = fs::remove_file(&part);
+            return Ok(None);
         }
         let (sha256, size) = store::hash_file(&part)?;
         if let Some(want) = self.sha256.as_deref().filter(|want| *want != sha256) {
             let _ = fs::remove_file(&part);
-            return Err(format!("{}: the SHA-256 is {sha256}, but its manifest lists {want}", self.file.display()));
+            return Err(format!(
+                "{MISMATCH}{}: the SHA-256 is {sha256}, but its manifest lists {want}",
+                self.file.display()
+            ));
         }
-        if expect.sha256.is_some_and(|want| want != sha256) {
+        if let Some(want) = expect.sha256.filter(|want| *want != sha256) {
+            eprintln!("obc data: archive file {} is not the version with the SHA-256 {want}", self.file.display());
             let _ = fs::remove_file(&part);
             return Ok(None);
         }
@@ -137,24 +148,52 @@ impl Held {
     }
 }
 
-/// The files of every `*.json` manifest in `dir`. A manifest that cannot be read fails every
-/// lookup, so a bad manifest never passes unseen.
-fn read_manifests(dir: &Path) -> Result<Listing, String> {
+/// The files of every `*.json` manifest in `dir`. A manifest that cannot be read is a warning, and
+/// none of its files serves.
+fn read_manifests(dir: &Path) -> Listing {
     let mut listing = Listing::default();
-    let Ok(entries) = fs::read_dir(dir) else { return Ok(listing) };
-    for entry in entries {
-        let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+    let Ok(entries) = fs::read_dir(dir) else { return listing };
+    for path in entries.flatten().map(|entry| entry.path()) {
         if path.extension().is_none_or(|extension| extension != "json") {
             continue;
         }
-        let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let manifest: Manifest = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let read = fs::read_to_string(&path).map_err(|e| e.to_string());
+        let manifest = match read.and_then(|text| serde_json::from_str::<Manifest>(&text).map_err(|e| e.to_string())) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                eprintln!("obc data: warning: archive manifest {}: {error}", path.display());
+                continue;
+            }
+        };
         if let (Some(dataset), Some(file), [zip]) =
             (manifest.clms_dataset_uid, manifest.clms_file_id, manifest.files.as_slice())
         {
             listing.clms.insert((dataset, file), zip.path.clone());
         }
-        listing.files.extend(manifest.files.into_iter().map(|file| (file.path.clone(), file)));
+        for mut file in manifest.files {
+            file.sha256 = file.sha256.map(|sha256| sha256.to_ascii_lowercase());
+            listing.files.insert(file.path.clone(), file);
+        }
     }
-    Ok(listing)
+    listing
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_plain_https_url_finds_its_file() {
+        let scratch = crate::store::tests::Scratch::new("archive-find");
+        std::fs::create_dir_all(scratch.0.join("mirror/example.org")).unwrap();
+        std::fs::create_dir_all(scratch.0.join("manifest")).unwrap();
+        std::fs::write(scratch.0.join("mirror/example.org/x"), b"x").unwrap();
+        let manifest = r#"{"files": [{"path": "mirror/example.org/x", "bytes": 1, "sha256": "AB"}]}"#;
+        std::fs::write(scratch.0.join("manifest/x.json"), manifest).unwrap();
+        let archive = Archive::new(scratch.0.clone());
+        assert_eq!(archive.find("https://example.org/x").unwrap().sha256.as_deref(), Some("ab"));
+        for url in ["http://example.org/x", "https://example.org/x?a=1", "https://example.org/y/../x"] {
+            assert!(archive.find(url).is_none(), "{url}");
+        }
+    }
 }

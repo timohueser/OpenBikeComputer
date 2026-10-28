@@ -418,24 +418,28 @@ no archive. `obc data` only reads it.
 
 | Path | Holds |
 | --- | --- |
-| `mirror/<host>/<path>` | The file of the `https://<host>/<path>` URL |
+| `mirror/<host>/<path>` | The file of the `https://<host>/<path>` URL. Its modification time is the `Last-Modified` of upstream |
 | `manifest/<dataset>.json` | A JSON object. `files` lists each file of the dataset: `path` under the archive, `bytes` and, when known, `sha256`. A prepackaged CLMS file adds `clms_dataset_uid` and `clms_file_id`, and lists its zip as the one file. Other keys, such as the licence and the date, are for people |
 
 Rules:
 
 - Only a source with `keep = "archive"` reads the archive.
-- Only a file that a manifest lists serves: an unlisted file can still be downloading. A listed
-  file of another size, or with another SHA-256 than its manifest, fails the fetch.
-- The store takes a file with a hard link when the archive and the store share a file system, else
-  with a copy. A hard link makes the archive file read-only, as an object is.
+- Only a file that a manifest lists serves: an unlisted file can still be downloading. A
+  `sha256` can be in uppercase or lowercase hex.
+- A problem of the archive never stops a fetch that the store or upstream can serve. A manifest
+  that cannot be read, or a listed file of another size, gives a warning, and the file does not
+  serve. Only a file that the fetch takes, with another SHA-256 than its manifest, fails the fetch.
+- The store takes a copy of the file, never a link.
 - The record of a file keeps the upstream `url`, and its `archive` names the path in the archive.
 
-An `http`, `geofabrik`, `glo30` or `github` fetch looks for the file of each URL before it
-downloads. The day on which the archive file changed last stands for `Last-Modified`: for a
+An `http`, `glo30` or `github` fetch looks for the file of each URL that the store does not have,
+before it downloads. The modification day of the archive file stands for `Last-Modified`: for a
 `date` source without a version, that day is the version, and no request goes upstream. The
 archive file serves when it is the version: its SHA-256 is that of the record of the version or of
 the `digest` version, or else it changed on or before the day of a date version. Otherwise the
-fetch downloads the file. `obc data source refresh` asks upstream, not the archive.
+fetch writes why and downloads the file. So a GLO-30 tile, which the fetch reads at the `start`
+`2022-05-09`, serves only when its modification time is the upstream `Last-Modified`.
+`obc data source refresh` asks upstream, not the archive.
 
 The `corine-land-cover` capture looks for the manifest with its `dataset` and `file`. When the
 archive has the zip, `tools/clms.py --archive ZIP --sha256 SHA256` checks the SHA-256 and takes the
@@ -787,8 +791,9 @@ A step list gets the version of each fetch that it reads from one function
 (`obc_data::product::version`), by three rules:
 
 1. A due fetch reads the newest version upstream, and the update uses that version until it ends.
-   When that fetch fails, the fetch reads rule 2, and a note of the [review](#review) names the
-   fetch, the error and the version that it reads.
+   When upstream does not serve (no connection, a timeout, HTTP 404, 408, 429 or 5xx) or the
+   credential is missing, the fetch reads rule 2, and a note of the [review](#review) names the
+   fetch, the error and the version that it reads. Another failure stays an error.
 2. Otherwise the fetch reads the newest version that the machine knows: the newest of the serving
    version, the versions of the fetch in the store and the `start` of the source. The serving
    version of a fetch without `NAME=VALUE`s, or of any fetch of a source with a `start`, is the

@@ -151,7 +151,12 @@ fn product_steps(
             let version = match fetch(wanted) {
                 Ok(version) => version,
                 Err(error) if matches!(error.code, Code::FetchFailed | Code::Blocked) => {
-                    if let Some(stored) = inputs.undue(store, wanted).map_err(|e| Code::Failed.error(e))? {
+                    // Only an upstream that does not serve: another failure, such as a full disk,
+                    // stays an error.
+                    let outage = error.code == Code::Blocked || crate::fetch::http::outage(&error.message);
+                    let stored =
+                        if outage { inputs.undue(store, wanted).map_err(|e| Code::Failed.error(e))? } else { None };
+                    if let Some(stored) = stored {
                         let text = format!(
                             "`{}`{}: the newer version failed ({}); this update reads {stored}",
                             wanted.source,
