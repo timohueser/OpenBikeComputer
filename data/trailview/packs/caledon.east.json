@@ -4,9 +4,6 @@
  "about": "The caledon pack on the heather moor: the moor plants grow on heath and bog, and the other plants off them.",
  "ground": {
   "grass": { "off": ["#moor"] },
-  "heather": { "on": ["#moor"] },
-  "heather-bloom": { "on": ["#moor"] },
-  "crowberry": { "on": ["#moor"] },
   "woolly-fringe-moss": { "on": ["#moor"] },
   "moor-grass": { "on": ["#moor"] },
   "bog-cotton": { "on": ["#moor"] },
