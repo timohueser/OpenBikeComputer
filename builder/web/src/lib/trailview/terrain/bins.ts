@@ -170,7 +170,7 @@ export interface Shapes { lines: Line[]; lakes: Lake[]; areas: Omit<Lake, 'level
  * The numbers of stamp-core.wgsl that the gates of a line and the shore samples of the audit use.
  * bins.test.ts holds them equal to the shader's.
  */
-export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678, SHORE_CELLS: 1.5 } as const;
+export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678, SHORE_CELLS: 1.5, PORTAL_CELLS: 2 } as const;
 /** As MASK_RANGE of stamp.wgsl: the mask reads a road this far past its edge. */
 const MASK_RANGE_M = 12.75;
 
