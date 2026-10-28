@@ -14,7 +14,7 @@ concurrency:
 jobs:
   deploy:
     if: github.ref == 'refs/heads/develop'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: verification
     steps:
       - uses: actions/checkout@v4
