@@ -1,6 +1,6 @@
 """The capture of a prepackaged file of the Copernicus Land Monitoring Service (CLMS), as
-https://eea.github.io/clms-api-docs/ describes it: the service key signs a grant for an access
-token, the token orders the file, and the finished order links a zip archive. The program takes
+specs/obc-data.md (Fetch) says: the service key signs a grant for an access token, the token
+orders the file, and the finished order links a zip archive. The program takes
 one member of that archive, which can also be inside a zip archive in it.
 
 Standard library only. No key, grant or token goes to argv, a URL, a log or an error.
