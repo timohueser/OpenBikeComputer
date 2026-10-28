@@ -179,6 +179,16 @@ class ClmsTest(unittest.TestCase):
                 clms.fetch("dataset", "file", "clc.tif", work, out, Path(scratch, "absent-key.json"))
             self.assertFalse((work / "order.zip").exists())
 
+    def test_a_kept_zip_replaces_the_order_without_a_key(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            work, out, kept = Path(scratch, "work"), Path(scratch, "out"), Path(scratch, "kept.zip")
+            work.mkdir(), out.mkdir()
+            with zipfile.ZipFile(kept, "w") as z:
+                z.writestr("clc/DATA/clc.tif", b"raster")
+            clms.fetch("dataset", "file", "clc.tif", work, out, Path(scratch, "absent-key.json"), kept)
+            self.assertEqual((out / "clc.tif").read_bytes(), b"raster")
+            self.assertTrue(kept.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

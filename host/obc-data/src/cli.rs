@@ -352,10 +352,17 @@ fn parse_params(params: &[String]) -> Result<Vec<(String, String)>, Error> {
         .collect()
 }
 
-/// A fetch that fails while the credential of its source is not on this machine is blocked.
+/// A fetch that fails while the credential of its source is not on this machine is blocked. An
+/// archive file with other bytes than its manifest is data to correct, not a download to retry.
 fn fetched(source: &Source, result: Result<Snapshot, String>) -> Result<Snapshot, Error> {
     let blocked = source.credential.as_ref().is_some_and(|credential| !credential.present());
-    result.map_err(|e| if blocked { Code::Blocked } else { Code::FetchFailed }.error(e))
+    result.map_err(|e| {
+        if crate::fetch::archive::mismatch(&e) {
+            let fix = "Replace the archive file, or correct its manifest, then run again.".into();
+            return Error { fix, ..Code::InvalidData.error(e) };
+        }
+        if blocked { Code::Blocked } else { Code::FetchFailed }.error(e)
+    })
 }
 
 /// The requested files of a snapshot.
@@ -710,6 +717,7 @@ pub(crate) mod tests {
                 size,
                 sha256: "aa".into(),
                 retrieved: retrieved.into(),
+                archive: None,
             };
             let mut snapshot = store.snapshot("poly", version).unwrap().unwrap_or(Snapshot {
                 source: "poly".into(),

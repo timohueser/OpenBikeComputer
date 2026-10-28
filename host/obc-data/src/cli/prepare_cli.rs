@@ -662,6 +662,7 @@ pub(super) mod tests {
         licence = "MIT"
         fetch = { kind = "http", url = "https://example.org/head.txt" }
         version = "release"
+        keep = "store"
         redistribute = true
 
         [[source]]
@@ -672,6 +673,7 @@ pub(super) mod tests {
         fetch = { kind = "prepared" }
         version = "date"
         refresh = 1
+        keep = "prepared"
         redistribute = true
     "#;
 

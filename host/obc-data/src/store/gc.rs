@@ -408,6 +408,7 @@ mod tests {
                 size: bytes.len() as u64,
                 sha256: object(store, bytes),
                 retrieved: format!("{day}T00:00:00Z"),
+                archive: None,
             })
             .collect();
         store.put_snapshot(&Snapshot { source: source.into(), version: version.into(), files }).unwrap();

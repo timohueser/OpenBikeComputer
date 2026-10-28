@@ -168,6 +168,18 @@ impl std::fmt::Display for Refresh {
     }
 }
 
+/// Where the copy of a source that a bake reads stays, so that no outage stops a bake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Keep {
+    /// The archive (`OBC_DATA_ARCHIVE`) holds the whole dataset: a fetch reads it there first.
+    Archive,
+    /// The store keeps what each fetch took.
+    Store,
+    /// R2 keeps what we make: a prepared source, a source that only a prepare reads, or our own asset.
+    Prepared,
+}
+
 /// What a fetch needs before upstream answers: environment variables, or a file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -246,6 +258,7 @@ pub struct Source {
     pub start: Option<String>,
     #[serde(default)]
     pub refresh: Refresh,
+    pub keep: Keep,
     pub redistribute: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<Credential>,
@@ -273,6 +286,9 @@ impl Source {
         }
         if prepared && (!self.redistribute || self.version != VersionScheme::Date) {
             return fail("a prepared source has `redistribute = true` and `version = \"date\"`");
+        }
+        if prepared && self.keep != Keep::Prepared {
+            return fail("a prepared source has `keep = \"prepared\"`");
         }
         if self.publish_text.is_some() && !prepared {
             return fail("only a prepared source has `publish_text`");
@@ -458,7 +474,8 @@ pub struct Status {
 
 /// The state of `source` at `today`, from `serving`, the version that the serving release reads,
 /// the newest upstream version, its policy and its licence. Credentials gate selected fetches. The
-/// serving version is stale when its policy is due and upstream has a newer version.
+/// serving version is stale when its policy is due and upstream has a newer version, or upstream
+/// is unknown.
 pub fn status(source: &Source, serving: Option<&str>, upstream: &Upstream, today: i64) -> Status {
     let age_days =
         serving.filter(|_| source.version == VersionScheme::Date).and_then(date::parse).map(|day| today - day);
@@ -474,11 +491,12 @@ pub fn status(source: &Source, serving: Option<&str>, upstream: &Upstream, today
                 }
                 Upstream::Newest(_) => (State::Ok, None),
                 Upstream::Capture => (State::Stale, Some(format!("{age} d > {max} d, capture due"))),
+                // An update tries the newest version, and reads the stored one when that fails.
                 Upstream::CannotCheck => {
-                    (State::Blocked, Some(format!("{age} d > {max} d, upstream unknown: it cannot be checked")))
+                    (State::Stale, Some(format!("{age} d > {max} d, upstream unknown: it cannot be checked")))
                 }
                 Upstream::Failed(_) => {
-                    (State::Blocked, Some(format!("{age} d > {max} d, upstream unknown: the check failed")))
+                    (State::Stale, Some(format!("{age} d > {max} d, upstream unknown: the check failed")))
                 }
             },
             _ => (State::Ok, None),
@@ -499,6 +517,7 @@ mod tests {
         fetch = { kind = "http", url = "https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf" }
         version = "date"
         refresh = 7
+        keep = "store"
         redistribute = true
     "#;
 
@@ -515,7 +534,9 @@ mod tests {
     #[test]
     fn a_prepared_source_gives_its_bytes_to_others() {
         let url = "fetch = { kind = \"http\", url = \"https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf\" }";
-        let prepared = OSM.replace("id = \"osm\"", "id = \"terrain\"").replace(url, "fetch = { kind = \"prepared\" }");
+        let stored = OSM.replace("id = \"osm\"", "id = \"terrain\"").replace(url, "fetch = { kind = \"prepared\" }");
+        assert!(parse_sources(&stored).unwrap_err().contains("`keep = \"prepared\"`"));
+        let prepared = stored.replace("keep = \"store\"", "keep = \"prepared\"");
         parse_sources(&prepared).unwrap();
         assert!(parse_sources(&OSM.replace("id = \"osm\"", "id = \"osm/x\"")).unwrap_err().contains("kebab-case"));
         let private = prepared.replace("redistribute = true", "redistribute = false");
@@ -583,7 +604,7 @@ mod tests {
         let failed = status(&osm(), Some("2024-01-02"), &Upstream::Failed("offline".into()), today);
         assert_eq!(
             (failed.state, failed.reason.as_deref()),
-            (State::Blocked, Some("8 d > 7 d, upstream unknown: the check failed"))
+            (State::Stale, Some("8 d > 7 d, upstream unknown: the check failed"))
         );
         let same = Upstream::Newest("2024-01-02".into());
         assert_eq!(status(&osm(), Some("2024-01-02"), &same, today).state, State::Ok);
@@ -622,5 +643,15 @@ mod tests {
         let registry = Registry::load(&root).unwrap();
         assert!(registry.sources.iter().any(|s| s.id == "osm-planet"));
         assert_eq!(embedded("osm-planet"), registry.sources.iter().find(|s| s.id == "osm-planet").unwrap());
+    }
+
+    /// Data changes only on purpose. The OSM sources refresh by age, so that roads stay current; a
+    /// prepared source moves when a person prepares a newer version.
+    #[test]
+    fn only_osm_and_prepared_sources_refresh_by_age() {
+        let osm = ["osm-planet", "geofabrik-extracts", "geofabrik-index", "geofabrik-poly"];
+        for source in all().iter().filter(|source| matches!(source.refresh, Refresh::Days(_))) {
+            assert!(osm.contains(&source.id.as_str()) || source.fetch.kind == FetchKind::Prepared, "{}", source.id);
+        }
     }
 }

@@ -44,7 +44,7 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
     let name = format!("{STEM}/{STEM}.tif");
     let url = format!("https://copernicus-dem-30m.s3.amazonaws.com/{name}");
     let retrieved = "2026-09-14T21:39:44Z".into();
-    let file = FileRecord { name: name.clone(), url, size, sha256, retrieved };
+    let file = FileRecord { name: name.clone(), url, size, sha256, retrieved, archive: None };
     store.put_snapshot(&Snapshot { source: GLO30.into(), version: VERSION.into(), files: vec![file] }).unwrap();
     let requested =
         Requested { version: VERSION.into(), params: vec![("tile".into(), STEM.into())], files: vec![name] };
@@ -55,7 +55,7 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
     let (sha256, size) = hash_file(&list).unwrap();
     store.insert(&list, &sha256).unwrap();
     let url = "https://copernicus-dem-30m.s3.amazonaws.com/tileList.txt".into();
-    let file = FileRecord { name: "tileList.txt".into(), url, size, sha256, retrieved: String::new() };
+    let file = FileRecord { name: "tileList.txt".into(), url, size, sha256, retrieved: String::new(), archive: None };
     store.put_snapshot(&Snapshot { source: TILE_LIST.into(), version: VERSION.into(), files: vec![file] }).unwrap();
     let Area::Box { bbox } = parse_region("grimsel-east", REGION).unwrap().area else { unreachable!() };
     let index = serde_json::json!({"type":"FeatureCollection", "features":[{"type":"Feature",
@@ -92,6 +92,7 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
             size,
             sha256,
             retrieved: String::new(),
+            archive: None,
         };
         let snapshot = store.snapshot(source, VERSION).unwrap();
         let mut files = snapshot.map_or_else(Vec::new, |snapshot| snapshot.files);

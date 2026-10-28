@@ -958,6 +958,7 @@ pub(crate) fn fetch(
         size,
         sha256,
         retrieved: retrieved.clone(),
+        archive: None,
     };
     if !store.object(sha256).is_file() {
         let part = store.partial(&format!("{sha256}.{}.manifest", std::process::id()));

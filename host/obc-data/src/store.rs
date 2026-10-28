@@ -35,6 +35,9 @@ pub struct FileRecord {
     pub sha256: String,
     /// `YYYY-MM-DDTHH:MM:SSZ`
     pub retrieved: String,
+    /// The path in the archive (`OBC_DATA_ARCHIVE`) of the file that gave the bytes instead of `url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<String>,
 }
 
 impl Snapshot {
@@ -287,6 +290,18 @@ impl Store {
             }
         }
         Ok(snapshots)
+    }
+
+    /// The snapshot records of `source` that a fetch without params made: no record of a fetch with
+    /// params names their version, so a source that lost its params never reads an older box.
+    pub fn paramless_snapshots(&self, source: &str) -> Result<Vec<Snapshot>, String> {
+        let boxed: std::collections::BTreeSet<String> = self
+            .requests_of(source)?
+            .into_iter()
+            .filter(|request| !request.params.is_empty())
+            .map(|request| request.version)
+            .collect();
+        Ok(self.snapshots(source)?.into_iter().filter(|snapshot| !boxed.contains(&snapshot.version)).collect())
     }
 
     pub fn put_snapshot(&self, snapshot: &Snapshot) -> Result<(), String> {

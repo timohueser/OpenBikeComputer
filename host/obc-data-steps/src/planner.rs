@@ -1245,6 +1245,7 @@ mod tests {
             size: bytes.len() as u64,
             sha256,
             retrieved: String::new(),
+            archive: None,
         }];
         store
             .put_snapshot(&obc_data::store::Snapshot { source: EXTRACTS.into(), version: "2026-10-02".into(), files })
