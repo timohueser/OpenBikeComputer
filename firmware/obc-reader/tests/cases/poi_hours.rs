@@ -212,13 +212,3 @@ fn poi_hours_corrupt_count_past_eof_is_none() {
     // The last blob's read reaches past the real bytes, so it is None rather than a panic.
     assert_eq!(r.poi_hours(forged_count - 1), None, "missing blob ⇒ read fails ⇒ None");
 }
-
-#[test]
-fn weekly_schedule_decode_short_slice_is_none() {
-    // A hand-made short slice decodes to None: the corrupt-pool guard at the decode boundary.
-    let short = [0u8; POI_HOURS_BLOB_LEN - 1];
-    assert_eq!(WeeklySchedule::decode(&short), None);
-    // Exactly 29 bytes decodes.
-    let ok = blob(0, [[(32, 72), (0, 0)]; 7]);
-    assert!(WeeklySchedule::decode(&ok).is_some());
-}

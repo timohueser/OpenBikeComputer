@@ -1,7 +1,8 @@
-name: Set up the RISC-V GCC
+name: Set up the board C toolchains
 description: >
-  The rv32emc GNU toolchain that the board's build.rs needs for the FLPR blob. CI and the release
-  workflow both use this action, so a shipped image is built by the compiler CI tested. The xPack
+  The rv32emc GNU toolchain that the board's build.rs needs for the FLPR blob, and a libclang that
+  matches the clang on PATH for the radio bindings. CI and the release workflow both use this
+  action, so a shipped image is built by the compiler CI tested. The xPack
   tarball comes from GitHub's release CDN, SHA-256-verified, and is cached after the first run;
   the apt package is not used because the runner's Ubuntu mirror stalls on it.
 
@@ -39,3 +40,14 @@ runs:
     - name: Put the RISC-V GCC on PATH
       shell: bash
       run: echo "$HOME/xpack-riscv-none-elf-gcc-${{ inputs.version }}/bin" >> "$GITHUB_PATH"
+
+    # nrf-mpsl-sys bindgen loads the newest libclang but adds the builtin headers of the `clang` on
+    # PATH. When the two versions differ, stdint.h defines no types.
+    - name: Use the libclang of the clang on PATH
+      shell: bash
+      run: |
+        if clang=$(command -v clang); then
+          lib="$(dirname "$(readlink -f "$clang")")/../lib"
+          echo "LIBCLANG_PATH=$(cd "$lib" && pwd)" >> "$GITHUB_ENV"
+          clang --version | head -1
+        fi

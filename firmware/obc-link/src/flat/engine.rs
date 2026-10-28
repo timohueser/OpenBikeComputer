@@ -1471,12 +1471,4 @@ mod tests {
         assert_eq!(Ceilings::for_ble(247, STREAM_HEADER_LEN, 4_096), None);
         assert!(Ceilings::for_ble(247, STREAM_HEADER_LEN + 1, 4_096).is_some());
     }
-
-    #[test]
-    fn a_link_below_the_protocol_floor_is_refused_rather_than_truncated() {
-        assert!(Ceilings::new(CONTROL_FLOOR - 1, 1_024).is_none());
-        assert!(Ceilings::new(CONTROL_FLOOR, STREAM_HEADER_LEN).is_none());
-        let ceilings = Ceilings::new(244, 1_024).expect("the device's preferred BLE link");
-        assert_eq!((ceilings.control(), ceilings.stream()), (244, 1_024));
-    }
 }

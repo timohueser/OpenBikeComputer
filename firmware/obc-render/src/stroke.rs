@@ -770,11 +770,13 @@ mod tests {
             Ok(())
         }
         fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
-            let on = color == BinaryColor::On;
-            for dy in 0..area.size.height as i32 {
-                for dx in 0..area.size.width as i32 {
-                    self.set(area.top_left.x + dx, area.top_left.y + dy, on);
-                }
+            let on = (color == BinaryColor::On) as u8;
+            let x0 = area.top_left.x.clamp(0, GW);
+            let x1 = (area.top_left.x + area.size.width as i32).clamp(0, GW);
+            let y0 = area.top_left.y.clamp(0, GH);
+            let y1 = (area.top_left.y + area.size.height as i32).clamp(0, GH);
+            for y in y0..y1 {
+                self.px[(y * GW + x0) as usize..(y * GW + x1) as usize].fill(on);
             }
             Ok(())
         }

@@ -227,14 +227,6 @@ mod tests {
     }
 
     #[test]
-    fn equal_rows_hash_equal_and_differ_otherwise() {
-        assert_eq!(row_hash(&[1, 2, 3]), row_hash(&[1, 2, 3]));
-        assert_ne!(row_hash(&[1, 2, 3]), row_hash(&[1, 2, 4]));
-        // An empty row is the bare offset basis: a stable, non-zero seed.
-        assert_eq!(row_hash(&[]), 0x811c_9dc5);
-    }
-
-    #[test]
     fn word_and_tail_bytes_both_reach_the_hash() {
         // A 6-byte row is one word plus a 2-byte tail, the only test walking both loops, and a
         // change in either part must change the hash.

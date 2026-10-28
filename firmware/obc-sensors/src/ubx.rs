@@ -437,11 +437,12 @@ mod tests {
     }
 
     #[test]
-    fn rounds_microdegrees_to_nearest() {
-        // lat = 15 in 1e-7° → 1.5 in 1e-6°, rounds away from zero to 2; negatives symmetric.
-        assert_eq!(div_round_i32(15, 10), 2);
-        assert_eq!(div_round_i32(-15, 10), -2);
-        assert_eq!(div_round_i32(14, 10), 1);
+    fn microdegrees_round_to_nearest_with_ties_away_from_zero() {
+        // 1e-7° → 1e-6°: 1.5 → 2, -1.5 → -2, 1.4 → 1.
+        let fix = parse_nav_pvt(&nav_pvt_payload(3, 0x01, 15, -15, 0, 0)).unwrap().to_fix().unwrap();
+        assert_eq!((fix.lat, fix.lon), (2, -2));
+        let fix = parse_nav_pvt(&nav_pvt_payload(3, 0x01, 14, 0, 0, 0)).unwrap().to_fix().unwrap();
+        assert_eq!(fix.lat, 1);
     }
 
     #[test]
