@@ -21,6 +21,13 @@ use crate::store::{self, Store};
 /// The CDSE S3 API: its requests are signed with the keys of [`CDSE_KEYS`].
 const CDSE: &str = "https://eodata.dataspace.copernicus.eu";
 const CDSE_KEYS: &str = "~/.config/openbikecomputer/cdse-s3.env";
+/// The variable of the Earthdata Login user token of a `cmr` listing.
+const EARTHDATA: &str = "EARTHDATA_TOKEN";
+const CMR: &str = "https://cmr.earthdata.nasa.gov/search/granules.json";
+/// The granules of a page of a CMR search, its largest.
+const CMR_PAGE: usize = 2000;
+/// How long a SAS token serves: the Planetary Computer gives one for about an hour.
+const SAS_LIFE: Duration = Duration::from_secs(45 * 60);
 /// Downloads at once. Chosen, not measured: the tools before this one ran 4 to 6.
 const WORKERS: usize = 4;
 /// How often a get writes the manifest while it runs.
@@ -41,6 +48,10 @@ pub struct Dataset {
     #[serde(default)]
     pub s3: Vec<S3>,
     #[serde(default)]
+    pub stac: Vec<Stac>,
+    #[serde(default)]
+    pub cmr: Vec<Cmr>,
+    #[serde(default)]
     pub kept: bool,
     pub clms: Option<Clms>,
     pub notes: Option<String>,
@@ -59,6 +70,40 @@ pub struct S3 {
     /// A pattern for the key after `prefix`, in which `*` stands for characters other than `/`.
     #[serde(rename = "match")]
     pub pattern: Option<String>,
+}
+
+/// One asset of each item of a STAC search, such as the Planetary Computer, whose files a SAS
+/// token of their container signs.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Stac {
+    /// The `search` endpoint of the API.
+    pub search: String,
+    /// The endpoint that gives the token of a storage account and container:
+    /// `<sas>/<account>/<container>`.
+    pub sas: String,
+    pub collection: String,
+    pub asset: String,
+    /// `[west, south, east, north]` of the search.
+    pub bbox: [f64; 4],
+    /// The first and the last day, `YYYY-MM-DD`.
+    pub days: [String; 2],
+    /// Parts of a file name: the dataset holds a file whose name has one of them.
+    pub names: Vec<String>,
+}
+
+/// The granules of a NASA CMR search, downloaded with the Earthdata token of [`EARTHDATA`].
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cmr {
+    pub provider: String,
+    pub short_names: Vec<String>,
+    pub version: String,
+    /// The `https://` origin of the files, which the token authorizes.
+    pub origin: String,
+    pub bbox: [f64; 4],
+    pub days: [String; 2],
+    pub names: Vec<String>,
 }
 
 /// A prepackaged file of the CLMS download API.
@@ -117,8 +162,10 @@ fn parse(id: &str, text: &str, registry: &Registry) -> Result<Dataset, String> {
             crate::fetch::check_version(source, version)?;
         }
     }
-    if dataset.kept == (!dataset.urls.is_empty() || !dataset.s3.is_empty()) {
-        return Err("give `kept = true`, or else `urls`, `s3` or both".into());
+    let listed =
+        !dataset.urls.is_empty() || !dataset.s3.is_empty() || !dataset.stac.is_empty() || !dataset.cmr.is_empty();
+    if dataset.kept == listed {
+        return Err("give `kept = true`, or else `urls`, `s3`, `stac` or `cmr`".into());
     }
     let named = dataset.kept || matches!(dataset.scheme, Some(VersionScheme::Release | VersionScheme::Commit));
     if named && dataset.version.is_none() {
@@ -154,7 +201,12 @@ impl Dataset {
 /// The client of a get of `dataset`: with the CDSE S3 keys under `home` when a bucket of the
 /// dataset is on CDSE.
 pub fn client(dataset: &Dataset, home: &Path) -> Result<Http, String> {
-    let http = Http::new();
+    let mut http = Http::new();
+    if let Some(cmr) = dataset.cmr.first() {
+        let token = std::env::var(EARTHDATA).ok().filter(|token| !token.is_empty());
+        let fix = format!("set it with `obc data source credential {}`", dataset.sources[0]);
+        http = http.with_bearer(&cmr.origin, token.ok_or_else(|| format!("{EARTHDATA} is not set; {fix}"))?);
+    }
     if !dataset.s3.iter().any(|s3| s3.bucket.starts_with(CDSE)) {
         return Ok(http);
     }
@@ -209,6 +261,12 @@ fn list(http: &Http, dataset: &Dataset, root: &Path) -> Result<Vec<Item>, String
     for s3 in &dataset.s3 {
         items.extend(list_s3(s3, |url| http.listing(url))?);
     }
+    for stac in &dataset.stac {
+        items.extend(list_stac(stac, |url, body| http.post_json(url, body))?);
+    }
+    for cmr in &dataset.cmr {
+        items.extend(list_cmr(cmr, |url| http.text(url, "application/json"))?);
+    }
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.path.clone()));
     Ok(items)
@@ -248,6 +306,101 @@ fn list_s3(s3: &S3, mut page: impl FnMut(&str) -> Result<String, String>) -> Res
             Some(next) => token = Some(next),
             None => return Ok(items),
         }
+    }
+}
+
+/// The asset of each item of the search of `stac` whose file name has one of its `names`, from the
+/// pages that `post(url, body)` gives. A page names the next one with a link of `rel = "next"`.
+fn list_stac(stac: &Stac, mut post: impl FnMut(&str, &[u8]) -> Result<Vec<u8>, String>) -> Result<Vec<Item>, String> {
+    let [first, last] = &stac.days;
+    // The search takes RFC 3339 times; a bare date range is refused.
+    let datetime = format!("{first}T00:00:00Z/{last}T23:59:59Z");
+    let mut body =
+        serde_json::json!({"collections": [stac.collection], "bbox": stac.bbox, "datetime": datetime, "limit": 1000});
+    let (mut url, mut items) = (stac.search.clone(), Vec::new());
+    loop {
+        let page: serde_json::Value =
+            serde_json::from_slice(&post(&url, body.to_string().as_bytes())?).map_err(|e| format!("{url}: {e}"))?;
+        let features = page["features"].as_array().ok_or_else(|| format!("{url}: a page without `features`"))?;
+        let hrefs = features.iter().filter_map(|feature| feature["assets"][&stac.asset]["href"].as_str());
+        items.extend(hrefs.filter_map(|href| named(href, &stac.names)));
+        let mut links = page["links"].as_array().into_iter().flatten();
+        let Some(next) = links.find(|link| link["rel"] == "next") else { return Ok(items) };
+        url = next["href"].as_str().ok_or_else(|| format!("{url}: a next link without `href`"))?.to_string();
+        body = next["body"].clone();
+    }
+}
+
+/// The data file of each granule of the search of `cmr` whose name has one of its `names`, from
+/// the pages that `get(url)` gives.
+fn list_cmr(cmr: &Cmr, mut get: impl FnMut(&str) -> Result<String, String>) -> Result<Vec<Item>, String> {
+    let [west, south, east, north] = cmr.bbox;
+    let [first, last] = &cmr.days;
+    let names: String = cmr.short_names.iter().map(|name| format!("&short_name={name}")).collect();
+    let query = format!(
+        "provider={}&version={}{names}&bounding_box={west},{south},{east},{north}&temporal={first}T00:00:00Z,{last}T23:59:59Z",
+        cmr.provider, cmr.version
+    );
+    let mut items = Vec::new();
+    for page in 1.. {
+        let url = format!("{CMR}?{query}&page_size={CMR_PAGE}&page_num={page}");
+        let feed: serde_json::Value = serde_json::from_str(&get(&url)?).map_err(|e| format!("{url}: {e}"))?;
+        let entries = feed["feed"]["entry"].as_array().ok_or_else(|| format!("{url}: a page without `entry`"))?;
+        for entry in entries {
+            let mut links = entry["links"].as_array().into_iter().flatten();
+            let data = links.find(|link| {
+                link["rel"].as_str().is_some_and(|rel| rel.ends_with("/data#"))
+                    && link["href"].as_str().is_some_and(|href| href.starts_with(&cmr.origin))
+            });
+            items.extend(data.and_then(|link| named(link["href"].as_str()?, &cmr.names)));
+        }
+        if entries.len() < CMR_PAGE {
+            break;
+        }
+    }
+    Ok(items)
+}
+
+/// The item of the file at `href`, without its query, when its name has one of `names`.
+fn named(href: &str, names: &[String]) -> Option<Item> {
+    let url = href.split(['?', '#']).next().unwrap_or(href);
+    let name = url.rsplit('/').next().unwrap_or_default();
+    if !names.iter().any(|part| name.contains(part.as_str())) {
+        return None;
+    }
+    Some(Item { url: Some(url.to_string()), path: archive::mirror_path(url)?, ..Item::default() })
+}
+
+/// The SAS tokens of the Azure containers of the `stac` listings of a dataset, each renewed after
+/// [`SAS_LIFE`].
+struct Sas<'a> {
+    /// The text of a `GET` of a URL.
+    get: &'a (dyn Fn(&str) -> Result<String, String> + Sync),
+    /// The `sas` endpoint of the first `stac` listing, if any.
+    endpoint: Option<&'a str>,
+    /// The token of each container, and until when it serves.
+    tokens: Mutex<HashMap<String, (String, Instant)>>,
+}
+
+impl Sas<'_> {
+    /// `url` with the token of its container when it is an Azure blob and the dataset has a `stac`
+    /// listing; else `url`.
+    fn sign(&self, url: &str) -> Result<String, String> {
+        let rest = url.strip_prefix("https://").unwrap_or_default();
+        let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let (Some(account), Some(endpoint)) = (host.strip_suffix(".blob.core.windows.net"), self.endpoint) else {
+            return Ok(url.to_string());
+        };
+        let key = format!("{account}/{}", path.split('/').next().unwrap_or_default());
+        let mut tokens = self.tokens.lock().unwrap();
+        if tokens.get(&key).is_none_or(|(_, until)| Instant::now() >= *until) {
+            let asked = format!("{endpoint}/{key}");
+            let answer: serde_json::Value =
+                serde_json::from_str(&(self.get)(&asked)?).map_err(|e| format!("{asked}: {e}"))?;
+            let token = answer["token"].as_str().ok_or_else(|| format!("{asked}: an answer without `token`"))?;
+            tokens.insert(key.clone(), (token.to_string(), Instant::now() + SAS_LIFE));
+        }
+        Ok(format!("{url}?{}", tokens[&key].0))
     }
 }
 
@@ -426,6 +579,9 @@ pub fn get(
     let recorded = recorded(dataset, &old);
     let results: Mutex<Vec<Option<Result<Listed, String>>>> = Mutex::new(items.iter().map(|_| None).collect());
     let (next, done) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    let text = |url: &str| http.text(url, "application/json");
+    let sas =
+        Sas { get: &text, endpoint: dataset.stac.first().map(|stac| stac.sas.as_str()), tokens: Mutex::default() };
     let save = || {
         let manifest = assemble(dataset, &items, &results.lock().unwrap(), &old, &recorded, &root, &today);
         manifest.write(&path).map(|()| manifest)
@@ -438,7 +594,7 @@ pub fn get(
                     let Some(item) = items.get(index) else { break };
                     let old = previous.get(item.path.as_str()).copied();
                     let recorded = recorded.get(item.path.as_str()).copied();
-                    let result = take(http, &root, &partial, item, old, recorded);
+                    let result = take((http, &sas), &root, &partial, item, old, recorded);
                     if let Err(error) = &result {
                         eprintln!("obc data: archive {}: {}: {error}", dataset.id, item.path);
                     }
@@ -514,7 +670,7 @@ fn with_lost_kept_files(dataset: &Dataset, mut items: Vec<Item>, old: &Manifest)
 ///   `Last-Modified` day of upstream, read in place once;
 /// - else downloaded.
 fn take(
-    http: &Http,
+    (http, sas): (&Http, &Sas),
     root: &Path,
     partial: &Path,
     item: &Item,
@@ -559,7 +715,9 @@ fn take(
         bytes: item.bytes,
         md5: item.md5.as_deref(),
     };
-    let got = http.download_to(&part, url, &expect)?;
+    // The token of a signed URL stays out of an error, which the manifest keeps.
+    let signed = sas.sign(url)?;
+    let got = http.download_to(&part, &signed, &expect).map_err(|e| e.replace(&signed, url))?;
     // The modification time of an archive file is the upstream `Last-Modified`.
     if let Some(seconds) = item.modified_at {
         let time = std::time::UNIX_EPOCH + Duration::from_secs(seconds);
@@ -838,6 +996,94 @@ mod tests {
         let broken = [Ok(dir.join("a.toml")), Err(std::io::Error::other("bad entry"))];
         let err = toml_paths(dir, broken.into_iter()).unwrap_err();
         assert!(err.contains("bad entry"), "{err}");
+    }
+
+    #[test]
+    fn a_stac_search_follows_its_next_links_and_keeps_the_named_assets_without_their_query() {
+        let stac = Stac {
+            search: "https://stac.example/search".into(),
+            sas: "https://stac.example/sas".into(),
+            collection: "modis-10A1-061".into(),
+            asset: "NDSI_Snow_Cover".into(),
+            bbox: [-10.0, 35.0, 30.0, 70.0],
+            days: ["2016-09-01".into(), "2016-09-02".into()],
+            names: vec![".h18v04.".into()],
+        };
+        let blob = |tile: &str| {
+            format!("https://acct.blob.core.windows.net/modis/MOD10A1.A2016245.{tile}.061.1_NDSI_Snow_Cover.tif")
+        };
+        let feature = |tile: &str| serde_json::json!({"assets": {"NDSI_Snow_Cover": {"href": blob(tile)}}});
+        let pages = [
+            serde_json::json!({"features": [feature("h18v04"), feature("h21v04")],
+                               "links": [{"rel": "next", "href": "https://stac.example/search", "body": {"token": "n"}}]}),
+            serde_json::json!({"features": [feature("h18v04")], "links": []}),
+        ];
+        let mut asked = Vec::new();
+        let items = list_stac(&stac, |url, body| {
+            asked.push((url.to_string(), serde_json::from_slice::<serde_json::Value>(body).unwrap()));
+            Ok(pages[asked.len() - 1].to_string().into_bytes())
+        })
+        .unwrap();
+        assert_eq!(asked[0].1["datetime"], "2016-09-01T00:00:00Z/2016-09-02T23:59:59Z");
+        assert_eq!(asked[1].1, serde_json::json!({"token": "n"}), "the next page posts the body of its link");
+        assert_eq!(items.len(), 2, "h21v04 is not named");
+        assert_eq!(items[0].url.as_deref(), Some(blob("h18v04").as_str()));
+        assert_eq!(
+            items[0].path,
+            "mirror/acct.blob.core.windows.net/modis/MOD10A1.A2016245.h18v04.061.1_NDSI_Snow_Cover.tif"
+        );
+
+        // A blob takes the token of its container, renewed after its life; another URL stays.
+        let gets = AtomicUsize::new(0);
+        let get = |url: &str| {
+            assert_eq!(url, "https://stac.example/sas/acct/modis");
+            Ok(format!(r#"{{"token": "st={}"}}"#, gets.fetch_add(1, Ordering::Relaxed)))
+        };
+        let sas = Sas { get: &get, endpoint: Some("https://stac.example/sas"), tokens: Mutex::default() };
+        assert_eq!(sas.sign(&blob("h18v04")).unwrap(), format!("{}?st=0", blob("h18v04")));
+        assert_eq!(sas.sign(&blob("h18v05")).unwrap(), format!("{}?st=0", blob("h18v05")));
+        sas.tokens.lock().unwrap().get_mut("acct/modis").unwrap().1 = Instant::now();
+        assert_eq!(sas.sign(&blob("h18v04")).unwrap(), format!("{}?st=1", blob("h18v04")));
+        assert_eq!(sas.sign("https://other.example/a.tif").unwrap(), "https://other.example/a.tif");
+    }
+
+    #[test]
+    fn a_cmr_search_takes_the_data_file_of_the_origin_until_a_short_page() {
+        let cmr = Cmr {
+            provider: "NSIDC_CPRD".into(),
+            short_names: vec!["MOD10A1".into(), "MYD10A1".into()],
+            version: "61".into(),
+            origin: "https://data.example".into(),
+            bbox: [-10.0, 35.0, 30.0, 70.0],
+            days: ["2025-06-26".into(), "2025-08-31".into()],
+            names: vec![".h18v04.".into()],
+        };
+        let granule = |name: &str| {
+            serde_json::json!({"links": [
+                {"rel": "ns/fedsearch/1.1/data#", "href": format!("s3://bucket/{name}")},
+                {"rel": "ns/fedsearch/1.1/data#", "href": format!("https://data.example/{name}")},
+                {"rel": "ns/fedsearch/1.1/browse#", "href": format!("https://data.example/{name}.jpg")},
+            ]})
+        };
+        let mut full: Vec<_> = (0..CMR_PAGE).map(|_| granule("MOD10A1.A2025177.h19v04.061.1.hdf")).collect();
+        full[0] = granule("MOD10A1.A2025177.h18v04.061.1.hdf");
+        let pages = [full, vec![granule("MYD10A1.A2025177.h18v04.061.1.hdf")]];
+        let mut asked = Vec::new();
+        let items = list_cmr(&cmr, |url| {
+            asked.push(url.to_string());
+            Ok(serde_json::json!({"feed": {"entry": pages[asked.len() - 1]}}).to_string())
+        })
+        .unwrap();
+        assert_eq!(asked.len(), 2);
+        assert!(asked[1].ends_with("&short_name=MOD10A1&short_name=MYD10A1&bounding_box=-10,35,30,70&temporal=2025-06-26T00:00:00Z,2025-08-31T23:59:59Z&page_size=2000&page_num=2"), "{}", asked[1]);
+        let paths: Vec<_> = items.iter().map(|item| item.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "mirror/data.example/MOD10A1.A2025177.h18v04.061.1.hdf",
+                "mirror/data.example/MYD10A1.A2025177.h18v04.061.1.hdf"
+            ]
+        );
     }
 
     #[test]
