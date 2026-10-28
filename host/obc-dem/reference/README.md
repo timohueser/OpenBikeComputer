@@ -80,7 +80,8 @@ the others' pixels in its gaps.
 Refused by name: a box at the antimeridian or outside the world box, a scaled band, an ESRI ASCII
 or XYZ grid whose row names no `grid_epsg`, and a vertical datum `ORTHOMETRIC` in `sources/base.py` does
 not recognise, unless the row has a `summit`. A row's `summit` is checked once per prepare before
-the model is used: a model more than 10 m from it is refused. An ellipsoidal product must be converted to orthometric first; only the `sk`
+the model is used: a model whose highest height within about 1 km is more than 10 m from it is
+refused. An ellipsoidal product must be converted to orthometric first; only the `sk`
 adapter does, with its agency's quasigeoid.
 
 Memory is one source raster plus the tile. A **monolithic** raster, such as a

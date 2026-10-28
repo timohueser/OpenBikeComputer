@@ -27,8 +27,8 @@ import rasterio
 
 from .archive import (MEAN, coarse, fold_tiles, local_rasters, padded, pool_tile, priority_rank, samples,
                       tile_digest, write_tile)
-from .lattice import (MEAN_NODATA, NODATA, TILE_PX, Refuse, check_world, covering_window, pixel_index, tile_bounds,
-                      tile_path, tile_window, udeg_floor)
+from .lattice import (MEAN_NODATA, NODATA, TILE_PX, Refuse, check_world, covering_window, tile_bounds, tile_path,
+                      tile_window)
 from .sources import SOURCES, ManualSource
 
 
@@ -53,9 +53,7 @@ def command_fetch(args) -> int:
     tiles of one prepare share: the summit check of each model, and a file that a whole region is
     published in.
 
-    The models are folded best first by `PRIORITY`, whatever order they come in: a model fills only
-    the gaps of the better ones, so a worse one folded first would keep pixels that a better one
-    folded later cannot take back when a third, better than both, is already held.
+    The models are folded in the order of `fold_order`, whatever order they come in.
     """
 
     def stop(*_):
@@ -80,7 +78,7 @@ def command_fetch(args) -> int:
                     folded[root] = src.read(1)
     try:
         fetched = False
-        for key in sorted(args.source.split(","), key=priority_rank):
+        for key in fold_order(args.source.split(","), held):
             pooled = pool_model(registered(key), ti, tj, work / key, shared)
             if pooled is None:
                 continue
@@ -107,6 +105,23 @@ def command_fetch(args) -> int:
     return 0
 
 
+def fold_order(keys, held: set[str]) -> list[str]:
+    """The order to fold the new models `keys` into a tile whose version before holds `held`.
+
+    `fold_tiles` lets a model overwrite only where it beats every source already held, else it fills
+    gaps. So the models that beat every source of the version before come first, worst first, and
+    each overwrites the one before it; then the others, best first, fill the gaps. A source of the
+    version before that beats a new model still keeps its pixels: the tile does not record which
+    source each pixel came from.
+    """
+
+    def beats(key):
+        return all(priority_rank(key) < priority_rank(other) for other in held - {key})
+
+    first = sorted((key for key in keys if beats(key)), key=priority_rank, reverse=True)
+    return first + sorted((key for key in keys if not beats(key)), key=priority_rank)
+
+
 def pool_model(source, ti: int, tj: int, work: Path, shared: Path):
     """The maximum and the mean of `source` in tile `ti`, `tj`, or `None` where it has no height."""
 
@@ -122,8 +137,9 @@ def pool_model(source, ti: int, tj: int, work: Path, shared: Path):
 # stands 20 m to 60 m above the ellipsoid over Europe and its islands, so an ellipsoidal or wrongly
 # referenced model misses by more; a 5 m model reads a sharp summit a few metres low.
 SUMMIT_TOLERANCE_M = 10.0
-# The half side of the box read around a summit, in degrees: about 300 m.
-SUMMIT_BOX = 0.003
+# The half side of the box read around a summit, in degrees: about 1 km of latitude. Each summit
+# of a row is the highest point within it, so a coordinate a few hundred metres off still finds it.
+SUMMIT_BOX = 0.01
 
 
 def check_summit(source, shared: Path) -> None:
@@ -142,25 +158,33 @@ def check_summit(source, shared: Path) -> None:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if passed.exists():
             return
-        lon, lat, metres = source.summit
-        ti, tj = (pixel_index(udeg_floor(value)) // TILE_PX for value in (lat, lon))
-        west, south, east, north = tile_bounds(ti, tj)
-        box = (max(west, lon - SUMMIT_BOX), max(south, lat - SUMMIT_BOX),
-               min(east, lon + SUMMIT_BOX), min(north, lat + SUMMIT_BOX))
+        name, lon, lat, metres = source.summit
+        box = (lon - SUMMIT_BOX, lat - SUMMIT_BOX, lon + SUMMIT_BOX, lat + SUMMIT_BOX)
+        near = covering_window(box)
         work = checks / source.key
+        heights = []
         try:
-            pooled = pool_tile(rasters(source, box, work), source, ti, tj)
+            found = rasters(source, box, work)
+            for ti in range(near.row0 // TILE_PX, (near.row0 + near.rows - 1) // TILE_PX + 1):
+                for tj in range(near.col0 // TILE_PX, (near.col0 + near.cols - 1) // TILE_PX + 1):
+                    pooled = pool_tile(found, source, ti, tj)
+                    if pooled is None:
+                        continue
+                    tile, top = tile_window(ti, tj), (ti + 1) * TILE_PX
+                    rows = slice(max(0, top - near.row0 - near.rows), max(0, top - near.row0))
+                    cols = slice(max(0, near.col0 - tile.col0), max(0, near.col0 + near.cols - tile.col0))
+                    part = pooled[0][rows, cols]
+                    heights.extend(part[part != NODATA].tolist())
         finally:
             shutil.rmtree(work, ignore_errors=True)
-        tile, near = tile_window(ti, tj), covering_window(box)
-        top = tile.row0 + TILE_PX
-        part = np.s_[top - near.row0 - near.rows:top - near.row0, near.col0 - tile.col0:near.col0 - tile.col0 + near.cols]
-        held = pooled[0][part][pooled[0][part] != NODATA] if pooled is not None else np.array([])
-        highest = int(held.max()) if held.size else None
-        if highest is None or abs(highest - metres) > SUMMIT_TOLERANCE_M:
-            raise Refuse(f"{source.key}: the summit at {lat}, {lon} is {metres} m, and the model reads "
-                         f"{highest if highest is not None else 'no height'} there; its heights are not "
-                         f"the orthometric metres of `{source.vertical_datum}`")
+        if not heights:
+            raise Refuse(f"{source.key}: the model has no height within {SUMMIT_BOX}° of {name} ({lat}, "
+                         f"{lon}); the row's summit or its extent is wrong")
+        highest = max(heights)
+        if abs(highest - metres) > SUMMIT_TOLERANCE_M:
+            raise Refuse(f"{source.key}: {name} is {metres} m, and the highest height of the model within "
+                         f"{SUMMIT_BOX}° of it is {highest} m; its heights are not the orthometric metres "
+                         f"of `{source.vertical_datum}`")
         passed.touch()
 
 

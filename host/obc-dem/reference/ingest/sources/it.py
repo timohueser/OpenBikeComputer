@@ -71,7 +71,7 @@ PIE = Wcs10Source(
     coverage="DTM",
     epsg=32632,
     image_format="GEOTIFF_16",
-    summit=(7.0904, 44.6675, 3841),  # Monviso
+    summit=("Monviso", 7.0904, 44.6675, 3841),
 )
 
 # TINITALY was built mostly from the contours and spot heights of the regional topographic

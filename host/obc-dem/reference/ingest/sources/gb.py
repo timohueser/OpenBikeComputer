@@ -141,7 +141,7 @@ WLS = OneFile(
     "Ordnance Datum Newlyn",
     base="https://dmwproductionblob.blob.core.windows.net/cogs/lidar/wales_dtm_16bit_cog.tif",
     epsg=27700,
-    summit=(-4.0762, 53.0685, 1085),  # Yr Wyddfa
+    summit=("Yr Wyddfa", -4.0762, 53.0685, 1085),
 )
 
 GB = (ENG, SCT, WLS)
