@@ -1,0 +1,4 @@
+name = "OSM water polygons, split, EPSG:3857"
+sources = ["water-polygons"]
+coverage = "World"
+urls = ["https://osmdata.openstreetmap.de/download/water-polygons-split-3857.zip"]

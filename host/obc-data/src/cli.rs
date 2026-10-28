@@ -2,6 +2,7 @@
 //! fetch sources into the store, and show runs. Without a command, it shows every target.
 
 mod api;
+mod archive_cli;
 mod deploy_cli;
 mod freshness;
 mod listing;
@@ -93,6 +94,11 @@ enum Command {
         target: String,
         /// NAME=VALUE for each `{name}` in the URL of the source, such as `tile=…` or `area=…`.
         params: Vec<String>,
+    },
+    /// The datasets of the archive in OBC_DATA_ARCHIVE: their state, and their get and verify.
+    Archive {
+        #[command(subcommand)]
+        command: archive_cli::ArchiveCommand,
     },
     /// The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name
     /// holds QUERY. Nothing is fetched.
@@ -188,6 +194,7 @@ fn run(cli: Cli, products: &[&dyn Product], prepared: &[&dyn Prepared], ui: Opti
             let snapshot = crate::fetch::fetch(&root()?, &store, &Http::new(), &request);
             print_snapshot(&store, &fetched(source, snapshot)?, json)
         }
+        Command::Archive { command } => archive_cli::run(&root()?, command, json),
         Command::Areas { query } => print_areas(&root()?, &query, json),
         Command::Serve(args) => serve_cli::command(&root()?, args, json),
         Command::Runs(runs) => runs_cli::run(runs, json),

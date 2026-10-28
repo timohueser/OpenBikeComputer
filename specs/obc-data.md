@@ -411,34 +411,156 @@ producer of [`wiki`](#wiki) reads them. `era5-land` has none: only the producer 
 
 ### Archive
 
-The archive is the directory in `OBC_DATA_ARCHIVE`: whole datasets that we keep on a drive of
-their own, so that no outage stops a bake. Without the variable, or with an empty value, there is
-no archive. `obc data` only reads it.
+The archive keeps whole datasets on drives of their own, so that no outage stops a bake.
+`OBC_DATA_ARCHIVE` names its roots, separated by `:`. Without the variable, or with an empty
+value, there is no archive. Each root is a complete archive. A dataset is wholly in one root, so a
+failed drive loses only its own datasets. Only `obc data archive` writes the archive.
 
-| Path | Holds |
+| Path under a root | Holds |
 | --- | --- |
-| `mirror/<host>/<path>` | The file of the `https://<host>/<path>` URL. Its modification time is the `Last-Modified` of upstream |
-| `manifest/<dataset>.json` | A JSON object. `files` lists each file of the dataset: `path` under the archive, `bytes` and, when known, `sha256`. A prepackaged CLMS file adds `clms_dataset_uid` and `clms_file_id`, and lists its zip as the one file. Other keys, such as the licence and the date, are for people |
+| `mirror/<host>/<path>` | The file of the URL `https://<host>/<path>` |
+| `kept/<dataset>/<path>` | A file that has no upstream URL. A person puts it there |
+| `manifest/<dataset>.json` | The [manifest](#manifest-of-a-dataset) of the dataset |
+| `.partial/<dataset>/` | The unfinished downloads of `archive get`. You can delete it when no `archive get` runs |
 
-Rules:
+A file goes into `mirror/` only after its check: the size, the `ETag` and the MD5 that the listing
+gives, and a `Last-Modified` day that is not after the one of the listing. The modification time of
+a file in `mirror/` is the `Last-Modified` time of upstream.
+
+#### `data/archive/<dataset>.toml`
+
+One file for each dataset. The name of the file is the id of the dataset.
+
+| Key | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `name` | string | yes | What the dataset holds, in one line |
+| `sources` | array of strings | yes | The ids of the sources in `data/sources.toml` that read the dataset |
+| `coverage` | string | yes | Where the dataset has data, in words, such as `World` or `Europe` |
+| `version` | string | no | The version of the dataset, in the form of the `version` of its sources |
+| `urls` | array of strings | no | One file for each `https://` URL |
+| `s3` | array of tables | no | `bucket`, `prefix` and `match`. See below |
+| `kept` | boolean | no | `true`: the files of the dataset are the files under `kept/<dataset>/`, and nothing downloads |
+| `clms` | table | no | `dataset` and `file`: the prepackaged CLMS file of which the dataset holds the zip |
+| `notes` | string | no | For people |
+
+An `s3` table lists each object of an S3 `ListObjectsV2` of `bucket` under `prefix`. `bucket` is
+the `https://` URL of the bucket, in path style or in virtual-host style, and the URL of an object
+is `<bucket>/<key>`. `match` is a pattern for the key after `prefix`, in which `*` stands for
+characters other than `/`. Without `match`, each object is listed. A request to
+`https://eodata.dataspace.copernicus.eu` is signed with AWS Signature Version 4, the region
+`default` and the keys of `~/.config/openbikecomputer/cdse-s3.env`.
+
+Each `obc data archive` command and a test of `host/obc-data` refuse a dataset that breaks a rule:
+
+- Each id of `sources` is a source of `data/sources.toml` with `keep = "archive"`. The sources
+  of a dataset have the same `version` kind.
+- A dataset has `kept = true`, or else `urls`, `s3` or both.
+- A dataset of `release` or `commit` sources, and a kept dataset, has `version`.
+- A dataset of `digest` sources has one URL and no `s3`.
+
+The version of a dataset:
+
+| `version` of its sources | Version of the dataset |
+| --- | --- |
+| `date` | `version`, or else the latest `Last-Modified` day of its files. While no file has one, the version of the manifest before, or else the day of the first `archive get` |
+| `release`, `commit` | `version` |
+| `digest` | The SHA-256 of its one file |
+
+#### Manifest of a dataset
+
+`manifest/<dataset>.json` is a JSON object:
+
+| Key | Holds |
+| --- | --- |
+| `dataset` | The id of the dataset |
+| `sources`, `name`, `coverage`, `notes` | As the definition has them |
+| `version` | The version of the dataset |
+| `got` | The day of the last `archive get`, `YYYY-MM-DD` in UTC |
+| `files` | Each verified file: `path` under the root, `bytes`, `sha256`, and, when upstream gives them, `modified`, its `Last-Modified` day, and `etag`, the `ETag` of a bucket listing. A file without `sha256` makes the manifest unreadable |
+| `missing` | Each listed file that the root does not hold: `path`, `bytes` when known, `error`, and for a kept file the `sha256` that the manifest recorded |
+| `clms_dataset_uid`, `clms_file_id` | The `dataset` and `file` of `clms` |
+
+#### Get
+
+`obc data archive get DATASET [--root PATH]` puts the dataset into one root:
+
+- The get refuses while a root of `OBC_DATA_ARCHIVE` does not exist, such as a drive that is not
+  mounted: that root can hold the dataset.
+- The root is `--root`, which must be a root of `OBC_DATA_ARCHIVE` and refuses while another root
+  has the manifest of the dataset. Else it is the root that has the manifest, or else the
+  `.partial/<dataset>/` of a get that stopped before it wrote one. Else, for a kept
+  dataset, the first root that has `kept/<dataset>/`; for another dataset, the first root that has
+  the free space for the listed bytes and 4 GiB more.
+- The listing: for each URL, a `HEAD` request for its `Content-Length` and `Last-Modified`;
+  for each `s3` table, the pages of the bucket listing, with the size, the `ETag` and the
+  `LastModified` of each object, each page with the retries of [Fetch](#fetch). A page that fails
+  fails the get, and the manifest stays as it was. A key that names no plain path is left out with
+  a warning. For a kept dataset, each file under `kept/<dataset>/`; a folder there that cannot be
+  read fails the get. The listing is the list of the files of the dataset: a file that upstream
+  removes leaves the manifest.
+- A file of the manifest that is in place with its `bytes` stays without a download when upstream
+  gives its size, its `ETag` and its `Last-Modified` day, as far as upstream gives them. Only a
+  bucket listing gives the `ETag`: the `ETag` of a `HEAD` can differ from one request to the next
+  and from that of a `GET`.
+- A file on disk with the `Content-Length` and the `Last-Modified` day of upstream as its size and
+  modification day is read in place once.
+- Each other file downloads into `.partial/<dataset>/` with the retries and the resume of
+  [Fetch](#fetch), four files at a time, and goes into `mirror/` after its check. An `ETag` of 32
+  hex digits in a bucket listing, which S3 and GCS give for a file of one part, is its MD5.
+- A kept file has no other source, so a get never gives it other bytes than the `sha256` that the
+  manifest records in `files` or `missing`. A new kept file is read in place for its SHA-256. To
+  replace a kept file, a person puts the new file in place and removes its entry from the
+  manifest.
+- A file that the get cannot take keeps its entry of the manifest before while that file is in
+  place; else it is in `missing`. The get fails when a file failed.
+- The get writes the manifest each minute and at the end, so a stopped get keeps the files that
+  it has. The next get resumes. Only one get or verify of a dataset runs at a time.
+
+#### Verify
+
+`obc data archive verify DATASET` reads each file of the manifest and compares its size and
+SHA-256 with the manifest. A file that differs, or is not in place, moves from `files` to
+`missing`, and then does not serve. A mirrored file that differs moves to
+`.partial/<dataset>/rejected/`, and the next `archive get` downloads it again. A kept file stays in
+place. The verify fails when a file differs or is not in place.
+
+#### Status
+
+`obc data archive status` gives each root with its free space, and each dataset of
+`data/archive/`: its sources, coverage, root, state, version, the day of the last get, the files
+that the last get listed, the verified files and their bytes. It also names each source with
+`keep = "archive"` that no dataset has. It reads only the manifests and the sizes of the files.
+
+| State | When |
+| --- | --- |
+| `complete` | Each listed file is verified |
+| `incomplete` | A listed file is missing, or the last get listed no file |
+| `absent` | No root has the manifest |
+| `unreadable` | The manifest cannot be read, has a file without `sha256`, or has no `version`: no file of it serves |
+
+#### Read
 
 - Only a source with `keep = "archive"` reads the archive.
+- A fetch reads the manifests of each root, in the order of `OBC_DATA_ARCHIVE`. When two roots
+  list the same path, the first one serves. A root that does not exist gives a warning.
 - Only a file that a manifest lists serves: an unlisted file can still be downloading. A
   `sha256` can be in uppercase or lowercase hex.
 - A problem of the archive never stops a fetch that the store or upstream can serve. A manifest
-  that cannot be read, or a listed file of another size, gives a warning, and the file does not
-  serve. Only a file that the fetch takes, with another SHA-256 than its manifest, fails the fetch.
+  that cannot be read or has no `version`, or a listed file of another size, gives a warning, and
+  the file does not serve. Only a file that the fetch takes, with another SHA-256 than its
+  manifest, fails the fetch.
 - The store takes a copy of the file, never a link.
-- The record of a file keeps the upstream `url`, and its `archive` names the path in the archive.
+- The record of a file keeps the upstream `url`, and its `archive` names the path under the root.
 
 An `http`, `glo30` or `github` fetch looks for the file of each URL that the store does not have,
-before it downloads. The modification day of the archive file stands for `Last-Modified`: for a
-`date` source without a version, that day is the version, and no request goes upstream. The
-archive file serves when it is the version: its SHA-256 is that of the record of the version or of
-the `digest` version, or else it changed on or before the day of a date version. Otherwise the
-fetch writes why and downloads the file. So a GLO-30 tile, which the fetch reads at the `start`
-`2022-05-09`, serves only when its modification time is the upstream `Last-Modified`.
-`obc data source refresh` asks upstream, not the archive.
+before it downloads. The day of a file stands for `Last-Modified`: its `modified`, or else the
+version of its dataset when that is a day. For a `date` source without a version, the latest day of
+its files is the version. Only a URL that the archive has no day for gets a `HEAD` request upstream,
+so a fetch offline needs a day in the archive for each of its URLs. The archive file serves when it is the
+version: its SHA-256 is that of the record of the version or of the `digest` version, or else its
+day is on or before the day of a date version. Otherwise the fetch writes why and downloads the
+file. So a GLO-30 tile, which the fetch reads at the `start` `2022-05-09`, serves only when its day
+is `2022-05-09` or earlier. `obc data source refresh` asks upstream, not the archive.
 
 The `corine-land-cover` capture looks for the manifest with its `dataset` and `file`. When the
 archive has the zip, the capture checks its SHA-256 against the manifest, and `tools/clms.py --archive
@@ -2017,6 +2139,9 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data source prepare ID [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--to TARGET] [--dry-run \| --expect ID] [--yes] [--json]` | [Prepares](#prepared-sources) a version of a prepared source for a target, `prod` by default. `--dry-run` writes the review. Else it starts a detached run and writes its log until it ends; with `--json`, it writes the run and the review id |
 | `obc data source credential ID [--json]` | Reads the values of the credential of a source on standard input and writes them, as [Credentials of sources](#credentials-of-sources) says. Writes the file and the names of the values |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
+| `obc data archive status [--json]` | The [status](#status) of the archive: each root with its free space, and each dataset with its root, version, state and files. Changes nothing |
+| `obc data archive get DATASET [--root PATH] [--json]` | [Gets](#get) the files of the dataset that its root does not hold, and writes its manifest. Writes the status of the dataset |
+| `obc data archive verify DATASET [--json]` | [Verifies](#verify) each file of the manifest of the dataset. Writes the status of the dataset |
 | `obc data areas [QUERY] [--json]` | The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name holds `QUERY`. Fetches nothing |
 | `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the size of `partial/`. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
 | `obc data runs [--json]` | Every run in the store, newest first: id, arguments, state, time, and the size of its fetches and of the layers that it built |
@@ -2199,6 +2324,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `source prepare` | `Started` |
 | `source prepare --dry-run` | `PrepareReview` |
 | `fetch` | `Fetched` |
+| `archive status` | `ArchiveStatus` |
+| `archive get`, `archive verify` | `ArchiveDataset` |
 | `areas` | `Areas` |
 | `clean`, `clean --apply` | `CleanPlan` |
 | `serve`, when it listens | `Listening` |
@@ -2263,6 +2390,139 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "release",
         "reason"
+      ],
+      "type": "object"
+    },
+    "ArchiveDataset": {
+      "description": "A dataset of the archive.",
+      "properties": {
+        "bytes": {
+          "description": "The bytes of the verified files.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "coverage": {
+          "type": "string"
+        },
+        "dataset": {
+          "type": "string"
+        },
+        "error": {
+          "description": "Why the manifest is `unreadable`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "got": {
+          "description": "The day of the last `archive get`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "listed": {
+          "description": "The files that the last get listed.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "root": {
+          "description": "The root that has its manifest.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sources": {
+          "description": "Ids of `data/sources.toml`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "state": {
+          "$ref": "#/$defs/DatasetState"
+        },
+        "verified": {
+          "description": "The files of the manifest that are in the root with their size: they serve.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "dataset",
+        "sources",
+        "coverage",
+        "root",
+        "state",
+        "error",
+        "version",
+        "got",
+        "listed",
+        "verified",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "ArchiveRoot": {
+      "properties": {
+        "free_bytes": {
+          "description": "`null` when the root does not exist.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "free_bytes"
+      ],
+      "type": "object"
+    },
+    "ArchiveStatus": {
+      "description": "The output of `obc data archive status`.",
+      "properties": {
+        "datasets": {
+          "description": "Each dataset of `data/archive/`.",
+          "items": {
+            "$ref": "#/$defs/ArchiveDataset"
+          },
+          "type": "array"
+        },
+        "roots": {
+          "description": "The roots of `OBC_DATA_ARCHIVE`, in order.",
+          "items": {
+            "$ref": "#/$defs/ArchiveRoot"
+          },
+          "type": "array"
+        },
+        "unarchived": {
+          "description": "The sources with `keep = \"archive\"` that no dataset has.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "roots",
+        "datasets",
+        "unarchived"
       ],
       "type": "object"
     },
@@ -2738,6 +2998,30 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "hint"
       ],
       "type": "object"
+    },
+    "DatasetState": {
+      "oneOf": [
+        {
+          "const": "complete",
+          "description": "Each listed file is verified.",
+          "type": "string"
+        },
+        {
+          "const": "incomplete",
+          "description": "A listed file is missing.",
+          "type": "string"
+        },
+        {
+          "const": "absent",
+          "description": "No root has the manifest.",
+          "type": "string"
+        },
+        {
+          "const": "unreadable",
+          "description": "The manifest cannot be read, or has no `version`: no file of it serves.",
+          "type": "string"
+        }
+      ]
     },
     "DeployPlan": {
       "description": "What `deploy WHAT --dry-run` writes.",

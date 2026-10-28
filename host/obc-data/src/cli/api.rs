@@ -321,6 +321,8 @@ mod tests {
             schema("`source prepare`", generator.subschema_for::<update_cli::Started>()),
             schema("`source prepare --dry-run`", generator.subschema_for::<prepare_cli::PrepareReview>()),
             schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),
+            schema("`archive status`", generator.subschema_for::<crate::datasets::ArchiveStatus>()),
+            schema("`archive get`, `archive verify`", generator.subschema_for::<crate::datasets::ArchiveDataset>()),
             schema("`areas`", generator.subschema_for::<crate::cli::Areas>()),
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
             schema("`serve`, when it listens", generator.subschema_for::<serve_cli::Listening>()),
