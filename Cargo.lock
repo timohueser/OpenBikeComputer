@@ -3722,6 +3722,7 @@ dependencies = [
  "obc-elevation",
  "obc-fixtures",
  "obc-formats",
+ "obc-osm",
  "rayon",
  "rusqlite",
  "serde_json",

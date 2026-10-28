@@ -36,7 +36,8 @@ use crate::{functions, python};
 pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, &IOS]);
 /// The terrain of the maps and of TrailView: its format is that of the terrain tiles of
 /// `specs/planner-release.md`.
-pub static PLANNER_TERRAIN: Layer = whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_FEATURES]);
+pub static PLANNER_TERRAIN: Layer =
+    Layer { revision: 2, ..whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_FEATURES]) };
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer =
     whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER]);
@@ -183,7 +184,7 @@ impl Product for Planner {
 }
 
 impl Planner {
-    /// Its steps. `osmium` says whether Osmium runs here: more than one source area and a box need it.
+    /// Its steps. `osmium` says whether Osmium runs here: the terrain reads the OSM with it.
     pub fn steps_with_tool(
         &self,
         root: &Path,
@@ -192,6 +193,7 @@ impl Planner {
         store: &Store,
         osmium: Result<(), String>,
     ) -> Result<Steps, Unplanned> {
+        osmium.map_err(Unplanned::Invalid)?;
         let config: Config = toml::from_str(include_str!("../../../data/planner.toml"))
             .map_err(|e| Unplanned::Failed(format!("data/planner.toml: {e}")))?;
         let origins = catalog::publication(root).map_err(Unplanned::Failed)?;
@@ -255,7 +257,6 @@ impl Planner {
                 client: Client::None,
             }
         } else {
-            osmium.clone().map_err(Unplanned::Invalid)?;
             crate::region_sources::combined("planner/osm", &source_steps)
         };
         // The TrailView steps read `planner/osm`: they look past the bounds. A region without a box
@@ -264,10 +265,7 @@ impl Planner {
         let boxed =
             leaves.iter().any(|leaf| regions.get(leaf).is_some_and(|leaf| matches!(leaf.area, Area::Box { .. })));
         let (run, options) = match boxed {
-            true => {
-                osmium.clone().map_err(Unplanned::Invalid)?;
-                (&functions::CUT, json!({"bbox": around(bounds, config.osm.margin_m)}))
-            }
+            true => (&functions::CUT, json!({"bbox": around(bounds, config.osm.margin_m)})),
             false => (&obc_data::engine::PASS, json!({"path": "osm.pbf"})),
         };
         let cut = Step {
@@ -305,8 +303,9 @@ impl Planner {
             inputs: tiles(coverage, &land, &glo30)
                 .into_iter()
                 .chain(reference.iter().map(|step| Input::step(&step.name)))
+                .chain([Input::step(osm.name.clone())])
                 .collect(),
-            options: json!({"bounds": coverage, "attribution": attribution(GLO30)}),
+            options: json!({"bounds": coverage, "attribution": attribution(GLO30), "osm_attribution": attribution("osm-planet")}),
             outputs: vec!["terrain.mbtiles".into()],
             run: Run::Rust(&functions::PLANNER_TERRAIN),
             client: Client::All,
@@ -448,7 +447,6 @@ impl Planner {
             steps.push(snow(inputs, store, bounds, config.snow.seasons, &mut wanted)?);
         }
         if on("trailview-features") {
-            osmium.map_err(Unplanned::Invalid)?;
             let kinds: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/kinds.json"))
                 .map_err(|e| Unplanned::Failed(format!("data/trailview/kinds.json: {e}")))?;
             let roads: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/roads.json"))
@@ -1631,17 +1629,16 @@ mod tests {
         assert_eq!(stale, expected);
     }
 
+    /// The terrain reads the coastlines, cliffs and summits of `planner/osm` with Osmium.
     #[test]
-    fn a_box_and_trailview_features_need_osmium_in_the_plan() {
+    fn the_terrain_reads_the_osm_and_needs_osmium_in_the_plan() {
         let temp = temp("planner-osmium");
         let store = store(&temp, &["2026-10-01"]);
-        let plan = |region: &str, layers: &[&str]| {
-            Planner.steps_with_tool(&root(), &inputs(region, layers), &regions(), &store, Err("no osmium".into()))
-        };
-        assert!(plan(AREA, &[]).is_ok(), "one source area needs no Osmium");
-        for plan in [plan(AREA, &["trailview-features"]), plan("boxed", &[])] {
-            assert!(matches!(plan, Err(Unplanned::Invalid(reason)) if reason == "no osmium"));
-        }
+        let plan = Planner.steps_with_tool(&root(), &inputs(AREA, &[]), &regions(), &store, Err("no osmium".into()));
+        assert!(matches!(plan, Err(Unplanned::Invalid(reason)) if reason == "no osmium"));
+        let plan = Planner.steps_with_tool(&root(), &inputs(AREA, &[]), &regions(), &store, Ok(())).unwrap();
+        let terrain = plan.steps.iter().find(|step| step.name == "planner/terrain").unwrap();
+        assert!(terrain.inputs.iter().any(|input| matches!(input, Input::Step { name, .. } if name == "planner/osm")));
     }
 
     /// A box cuts its OSM to the bounds and 15 km around them, within ±180° and ±90°.
