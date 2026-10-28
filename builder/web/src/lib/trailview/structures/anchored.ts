@@ -10,7 +10,7 @@ import { metresPerUnit } from '../terrain/bins';
 export const ANCHOR_WORDS = 8;
 /** Anchor flags: the anchor is a point, and its far end only gives the heading; its heights are above sea level, not over the drawn surface. */
 export const POINT = 1, ABSOLUTE = 2;
-/** Words of a vertex, as `AnchoredIn` in structures.wgsl: the offset in 1/OFFSET_SCALE m (sint16x4, w the side of a cable), the anchor and t (uint16 each), the colour and flags (unorm8x4). */
+/** Words of a vertex, as `AnchoredIn` in structures.wgsl: the offset in 1/OFFSET_SCALE m (sint16x4, w of a cable edge its diameter in mm, signed by its side), the anchor and t (uint16 each), the colour and flags (unorm8x4). */
 export const ANCHORED_VERTEX = 4;
 export const OFFSET_SCALE = 256;
 /** Vertex flags, after those of mesh.ts: the face takes the colour of the rock under it, tinted; the vertex is an edge of a cable's ribbon. */
@@ -47,7 +47,7 @@ export class AnchoredBuilder {
         return this.span([x, y], [x + HEADING * Math.cos(yaw), y - HEADING * Math.sin(yaw)], 0, 0, 0, POINT);
     }
 
-    /** A vertex t along an anchor, at offset x, y, z metres in its frame, `w` the side of a cable's edge. */
+    /** A vertex t along an anchor, at offset x, y, z metres in its frame; `w` of a cable's edge is its diameter in mm, its sign the side. */
     vertex(anchor: number, t: number, [x, y, z]: [number, number, number], colour: number, w = 0): number {
         const q = (v: number) => Math.max(-32768, Math.min(32767, Math.round(v * OFFSET_SCALE))) & 0xffff;
         this.words.push((q(x) | (q(y) << 16)) >>> 0, (q(z) | ((w & 0xffff) << 16)) >>> 0, (anchor | (Math.round(Math.min(1, Math.max(0, t)) * 65535) << 16)) >>> 0, colour >>> 0);
@@ -71,13 +71,13 @@ export class AnchoredBuilder {
         });
     }
 
-    /** A cable along a span, `across` metres to the right of it: a ribbon that the vertex shader turns to the eye and widens to a pixel. */
-    cable(anchor: number, across: number, colour: number): void {
+    /** A cable of `diameter` metres along a span, `across` metres to the right of it: a ribbon that the vertex shader turns to the eye and widens to a pixel. */
+    cable(anchor: number, across: number, colour: number, diameter = 0.05): void {
         const w = this.anchorWords.slice(anchor * ANCHOR_WORDS, anchor * ANCHOR_WORDS + 4);
         const segments = Math.max(1, Math.ceil(metresBetween([w[0], w[1]], [w[2], w[3]]) / PIECE_M));
         let last: number[] = [];
         for (let k = 0; k <= segments; k++) {
-            const edge = [-1, 1].map(w => this.vertex(anchor, k / segments, [across, 0, 0], (colour | (CABLE << 24)) >>> 0, w));
+            const edge = [-1, 1].map(side => this.vertex(anchor, k / segments, [across, 0, 0], (colour | (CABLE << 24)) >>> 0, side * Math.round(diameter * 1000)));
             if (last.length) {
                 this.triangle(last[0], last[1], edge[1]);
                 this.triangle(last[0], edge[1], edge[0]);

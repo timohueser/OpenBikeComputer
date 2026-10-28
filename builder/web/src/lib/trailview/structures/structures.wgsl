@@ -73,10 +73,9 @@ const POINT_ANCHOR: u32 = 1u;
 const ABSOLUTE_ANCHOR: u32 = 2u;
 // The model grey that a stone face takes the rock's colour over: GREY of models/rocks.ts, squared as the albedo is.
 const ROCK_GREY: vec3f = vec3f(0.3101, 0.3189, 0.2929);
-// A cable's diameter, its least width on screen in output pixels (a render pixel at the default scale),
-// the least share of that width that it covers, so that a far lift keeps a faint line, and the metres
-// of an offset unit.
-const CABLE_M: f32 = 0.05;
+// A cable's least width on screen in output pixels (a render pixel at the default scale), the least
+// share of that width that it covers, so that a far lift keeps a faint line, and the metres of an
+// offset unit.
 const CABLE_PIXELS: f32 = 1.5;
 const CABLE_COVER: f32 = 0.4;
 const OFFSET_M: f32 = 1.0 / 256.0;
@@ -158,7 +157,7 @@ fn anchor_heights(@builtin(global_invocation_id) id: vec3u) {
 }
 
 struct AnchoredIn {
-    // Metres across, along and up in the anchor's frame, in OFFSET_M; w: the side of a cable's edge.
+    // Metres across, along and up in the anchor's frame, in OFFSET_M; w: a cable edge's diameter in mm, signed by its side.
     @location(0) offset: vec4i,
     // The anchor in the low 16 bits, t in the high 16.
     @location(1) hung: u32,
@@ -200,9 +199,11 @@ fn anchored(v: AnchoredIn, first: u32) -> StructureOut {
     if ((flags & CABLE_EDGE) != 0u) {
         // The ribbon turns to the eye and is at least CABLE_PIXELS wide; `road.x` keeps the share that the cable covers.
         let tangent = vec3f(pb - pa, z.y - z.x - 4.0 * an.sag * (1.0 - 2.0 * t));
-        let width = max(CABLE_M, CABLE_PIXELS * length(p) * frame.pixel);
-        p += normalize(cross(tangent, p)) * f32(v.offset.w) * 0.5 * width;
-        out.road = vec2f(max(CABLE_M / width, CABLE_COVER), 0.0);
+        // The edge's w is the cable's diameter in mm, its sign the side.
+        let diameter = abs(f32(v.offset.w)) * 0.001;
+        let width = max(diameter, CABLE_PIXELS * length(p) * frame.pixel);
+        p += normalize(cross(tangent, p)) * sign(f32(v.offset.w)) * 0.5 * width;
+        out.road = vec2f(max(diameter / width, CABLE_COVER), 0.0);
     }
     p.z -= frame.curvature * dot(p.xy, p.xy);
     out.clip = frame.view_proj * vec4f(p, 1.0);

@@ -11,7 +11,7 @@
   "overlays": "https://tiles.test/overlays.json",
   "terrain": "https://tiles.test/terrain/{z}/{x}/{y}.webp",
   "attribution": "No map data",
-  "terrain_attribution": "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved",
+  "terrain_attribution": "© swisstopo (Open data, attribution required); produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved",
   "glyphs": "https://tiles.test/fonts/{fontstack}/{range}.pbf",
   "sprites": "https://tiles.test/sprites",
   "routing": "https://api.test/routing",
