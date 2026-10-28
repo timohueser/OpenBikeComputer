@@ -989,6 +989,29 @@ class BulkArchives(unittest.TestCase):
             rasters = source.fetch((0, 0, 1, 1), Path(directory) / "work")
             self.assertEqual([path.name for path in rasters], ["tile.tif"])
 
+    def test_a_download_shorter_than_its_content_length_is_refused_and_not_kept(self):
+        class Short(SimpleHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                self.wfile.write(b"x" * 40)
+                self.close_connection = True
+
+            def log_message(self, *args):
+                pass
+
+        real = ingest.sources.base.RETRY_DELAYS
+        ingest.sources.base.RETRY_DELAYS = ()
+        self.addCleanup(setattr, ingest.sources.base, "RETRY_DELAYS", real)
+        server = serve(self, Short)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "state.zip"
+            with self.assertRaises(ingest.Refuse) as refusal:
+                ingest.sources.base.http_download(f"http://127.0.0.1:{server.server_address[1]}/z", path)
+            self.assertIn("40 of the 100 bytes", str(refusal.exception))
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
     def test_an_archive_with_no_raster_says_so(self):
         with TemporaryDirectory() as directory:
             archive = self.bundle(directory, {"readme.txt": b"licence only"})
