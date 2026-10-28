@@ -471,6 +471,13 @@ mod tests {
     }
 
     #[test]
+    fn remove_leaves_canonical_padding() {
+        let mut l = list(&[StatField::Speed, StatField::AvgSpeed, StatField::DistDone]);
+        l.remove(0);
+        assert_eq!(l, list(&[StatField::AvgSpeed, StatField::DistDone]));
+    }
+
+    #[test]
     fn move_single_steps_by_one() {
         let mut l = list(&[StatField::Speed, StatField::AvgSpeed, StatField::DistDone]);
         let ni = l.move_item(0, 1);
