@@ -1,8 +1,8 @@
 name = "TrailView tune boxes"
 kind = "union"
-# `obc data source prepare terrain --region trailview/all` makes one version of every box. An update
-# and a prepare of `forest` read the one box around all of them, from the Canaries to the North Cape:
-# give them each region instead.
+# `obc data source prepare terrain|forest --region trailview/all` makes one version of every box. An
+# update reads the one box around all of them, from the Canaries to the North Cape: give it each
+# region instead.
 union = [
   "trailview/alps/cogne",
   "trailview/alps/evolene",

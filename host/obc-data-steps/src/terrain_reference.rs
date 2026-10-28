@@ -65,13 +65,14 @@ impl Prepared for TerrainReference {
         scope: Option<&Scope>,
         _: &[String],
     ) -> Result<Plan, String> {
-        let (bbox, countries) = area(scope)?;
+        let (boxes, countries) = area(scope)?;
+        let held = boxes.as_deref().map(|boxes| boxes.iter().map(box_tiles).collect::<Result<Vec<_>, _>>());
+        let held = held.transpose()?;
         let (mut inputs, mut tiles) = (Vec::new(), BTreeSet::new());
-        for model in models(planning.sources, bbox.as_ref(), &countries) {
+        for model in models(planning.sources, boxes.as_deref(), &countries) {
             let mut inside = extent_tiles(model)?;
-            if let Some(bbox) = &bbox {
-                let held = box_tiles(bbox)?;
-                inside.retain(|tile| held.contains(tile));
+            if let Some(held) = &held {
+                inside.retain(|tile| held.iter().any(|tiles| tiles.contains(tile)));
             }
             tiles.extend(inside);
             inputs.push(Wanted { source: model.id.clone(), version: None, params: Vec::new() });
@@ -91,10 +92,10 @@ impl Prepared for TerrainReference {
             Some(scope) => Some(scope_tiles(job, &scope)?),
             None => None,
         };
-        let (bbox, countries) = area(job.scope.as_ref())?;
+        let (boxes, countries) = area(job.scope.as_ref())?;
         // The models of each tile, in the order of `data/sources.toml`.
         let mut keys: BTreeMap<CellId, Vec<String>> = BTreeMap::new();
-        for model in models(job.sources(), bbox.as_ref(), &countries) {
+        for model in models(job.sources(), boxes.as_deref(), &countries) {
             let mut tiles = extent_tiles(model)?;
             if !model.areas.is_empty() {
                 let mut inside = BTreeSet::new();
@@ -196,14 +197,15 @@ impl Prepared for TerrainReference {
     }
 }
 
-/// The box of the region of `scope` and its countries; none for a version of everything. A region
-/// that names no countries has those of its leaves, and none when a leaf names none: that leaf reads
-/// every country. The planner reads the same list.
-pub(crate) fn area(scope: Option<&Scope>) -> Result<(Option<Bbox>, Vec<String>), String> {
+/// The box of each leaf of the region of `scope` and its countries; no boxes for a version of
+/// everything or a region with a Geofabrik leaf. A region that names no countries has those of its
+/// leaves, and none when a leaf names none: that leaf reads every country. The planner reads the
+/// same list.
+pub(crate) fn area(scope: Option<&Scope>) -> Result<(Option<Vec<Bbox>>, Vec<String>), String> {
     let Some((regions, id)) = scope.map(regions).transpose()? else { return Ok((None, Vec::new())) };
     let own = regions.get(&id).map(|region| region.countries.clone()).unwrap_or_default();
     if !own.is_empty() {
-        return Ok((regions.bounds(&id), own));
+        return Ok((regions.boxes(&id), own));
     }
     let mut countries = Vec::new();
     for leaf in regions.leaves(&id)? {
@@ -216,22 +218,27 @@ pub(crate) fn area(scope: Option<&Scope>) -> Result<(Option<Bbox>, Vec<String>),
     }
     countries.sort();
     countries.dedup();
-    Ok((regions.bounds(&id), countries))
+    Ok((regions.boxes(&id), countries))
 }
 
-/// The national models of `sources` that may be given to others, that meet `bbox`, and that are
+/// Whether the `extent` of `source` meets one of `boxes`; always without boxes.
+pub(crate) fn meets(source: &Source, boxes: Option<&[Bbox]>) -> bool {
+    boxes.is_none_or(|boxes| boxes.iter().any(|b| source.meets([b.west, b.south, b.east, b.north])))
+}
+
+/// The national models of `sources` that may be given to others, that meet `boxes`, and that are
 /// of one of `countries` when the region names some. The first part of the key is the ISO 3166-1
 /// code of the country: `dtm-de-by` is of `DE`.
 fn models<'a>(
     sources: &'a [Source],
-    bbox: Option<&'a Bbox>,
+    boxes: Option<&'a [Bbox]>,
     countries: &'a [String],
 ) -> impl Iterator<Item = &'a Source> {
     sources.iter().filter(move |source| {
         let country = source.id.trim_start_matches("dtm-").split('-').next().unwrap_or_default().to_uppercase();
         source.id.starts_with("dtm-")
             && source.redistribute
-            && bbox.is_none_or(|b| source.meets([b.west, b.south, b.east, b.north]))
+            && meets(source, boxes)
             && (countries.is_empty() || countries.contains(&country))
     })
 }

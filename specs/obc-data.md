@@ -923,7 +923,7 @@ of the version of `terrain` that the target reads, and `mean/index.json`.
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region` | `layer`: `ground`; `bounds`; `attribution` of the sources of the three | `ground.pmtiles`: [the ground archive](trailview-tiles.md#ground) |
 | `planner/trailview-colour` | `sentinel-2-mosaics`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles`: [the colour archives](trailview-tiles.md#colour) |
 | `planner/trailview-snow` | `snow.pmtiles` of `planner/snow` | `bounds` | `00.pmtiles` to `45.pmtiles`: [the snow days](trailview-tiles.md#snow-days), one archive per band |
-| `planner/trailview-canopy` | The tiles of [`forest`](#forest) that the canopy models of the region meet in the bounds. A version whose scope and `extends` lack one of those tiles refuses, and so does a region that no canopy model meets | `bounds`; `attribution`: the credits of the canopy models of those tiles and of the leaf type | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
+| `planner/trailview-canopy` | The tiles of [`forest`](#forest) that the canopy models of the region meet in the boxes of the region, as `forest` defines them, or in the bounds of a region without boxes. A version whose scope and `extends` lack one of those tiles refuses, and so does a region that no canopy model meets | `bounds`; `attribution`: the credits of the canopy models of those tiles and of the leaf type | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
 `terrain`, `overlays`, `climate`, `snow`, `trailview-features`, `trailview-ground` or
@@ -1573,7 +1573,9 @@ maximum, which `device/terrain` reads, and under `mean/` the mean, which `planne
 A version adds a region to the newest complete version of `terrain` on the target before it, in
 the same format; `prod` takes a version of a region.
 
-- The models are the `dtm-*` rows with `redistribute = true` whose `extent` meets the box of the
+- The boxes of a region are the box of each of its leaves, so a union reads no tile between its
+  boxes. A region with a `geofabrik` leaf has no boxes.
+- The models are the `dtm-*` rows with `redistribute = true` whose `extent` meets a box of the
   region and, when the region names `countries`, whose key is of one of them: the first part of
   the key is the lowercase ISO 3166-1 code, so `dtm-de-by` is of `DE`; all of them for a version
   of everything. A region that names no `countries` has those of its leaves, and none when a leaf
@@ -1582,7 +1584,7 @@ the same format; `prod` takes a version of a region.
   crosses the tile, or the polygon holds the centre of the tile. A version of a region has only
   those tiles in its boxes and in the polygons of its areas. A run keeps the version of each
   polygon that the first run of the version read. The review counts the two pools of the tiles of
-  each `extent` in the box of the region, and the two `index.json`.
+  each `extent` in the boxes of the region, and the two `index.json`.
 - For each tile, `host/obc-dem/reference/ingest.py fetch <keys> --tile <ti:04>-<tj:04>` pools the
   rasters of each model of the tile onto the lattice in one pass, and folds each into the tile:
   into the tile of the version before when it has one (`--base`, with `--held`, its sources), by
@@ -1614,12 +1616,12 @@ region to the newest complete version of `forest` on the target before it, in th
 `prod` takes a version of a region.
 
 - The canopy models are the `canopy-<key>` rows: one per country, whose key is the lowercase
-  country code, and `canopy-global`. A version reads each national model whose `extent` meets the
-  box of the region and, when the region names `countries`, whose country is one of them; all of
-  them for a version of everything. A region that names no `countries` has those of its leaves, as
-  for `terrain`. It reads `canopy-global` where its `extent` meets the box; a version of everything
-  reads no `canopy-global`. Its tiles are the zoom
-  12 tiles whose inside meets the `extent` of a model and the box of the region.
+  country code, and `canopy-global`. A version reads each national model whose `extent` meets a
+  box of the region, as [`terrain`](#terrain) defines the boxes, and, when the region names
+  `countries`, whose country is one of them; all of them for a version of everything. A region
+  that names no `countries` has those of its leaves, as for `terrain`. It reads `canopy-global`
+  where its `extent` meets a box; a region without boxes reads no `canopy-global`. Its tiles are
+  the zoom 12 tiles whose inside meets the `extent` of a model and a box of the region.
 - For each tile, `python -m tools.forest_reference fetch <key>,… --tile 12-<x>-<y>` writes
   `12/<x>/<y>.tif` and then `12-<x>-<y>.sha256`, the SHA-256 of its pixels. The keys are the models
   that meet the tile, the national ones in the order of `data/sources.toml` and then `global`; a
