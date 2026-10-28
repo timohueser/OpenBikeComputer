@@ -25,7 +25,7 @@
   "fern": {},
   "moor-grass": {},
   "bog-cotton": {},
-  "bog-myrtle": { "model": "alpenrose", "latin": "Myrica gale", "on": ["bog", "marsh"], "height": [0.5, 1.2], "share": 0.15, "clumped": true },
+  "bog-myrtle": {},
   "foxglove": { "model": "alpine-flowers", "latin": "Digitalis purpurea", "on": ["grass", "shrub"], "height": [0.8, 1.5], "share": 0.03, "clumped": true },
   "lyme-grass": { "model": "esparto", "latin": "Leymus arenarius", "on": ["bare"], "height": [0.5, 1.0], "share": 0.03, "clumped": true }
  },

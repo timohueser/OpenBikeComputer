@@ -1,7 +1,7 @@
 {
  "name": "Eastern Highlands",
  "extends": "caledon",
- "about": "The caledon pack on the heather moor: the moor plants grow on heath and bog, and the other plants off them.",
+ "about": "The caledon pack on the heather moor: the moor plants grow on heath and bog, crowberry also on the moss of the summits, and the other plants off them.",
  "ground": {
   "grass": { "off": ["#moor"] },
   "woolly-fringe-moss": { "on": ["#moor"] },

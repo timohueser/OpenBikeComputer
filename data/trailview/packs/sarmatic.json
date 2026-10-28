@@ -1,7 +1,7 @@
 {
  "name": "Sarmatic mixed forests",
  "extends": "base",
- "about": "Norway spruce and Scots pine with silver and downy birch, aspen and grey alder; pedunculate oak, small-leaved lime, Norway maple and ash on the richer moraine; black alder in the wet hollows, rowan, hazel, juniper on the dry pastures and grey willow by the ditches; bilberry, lingonberry and heather under the pines, fern and bracken, reed on the lake shores, bog cotton on the raised bogs and fireweed on the clearings; dairy cattle, a few sheep and horses; red wooden farms in Scandinavia, log and plank houses in the Baltic states, Belarus and Russia.",
+ "about": "Norway spruce and Scots pine with silver and downy birch, aspen and grey alder; pedunculate oak, small-leaved lime, Norway maple and ash on the richer moraine; black alder in the wet hollows, rowan, hazel, juniper on the dry pastures and grey willow by the ditches; bilberry and lingonberry under the pines, heather on the heaths and the raised bogs, fern and bracken, reed on the lake shores, bog cotton on the raised bogs and fireweed on the clearings; dairy cattle, a few sheep and horses; red wooden farms in Scandinavia, log and plank houses in the Baltic states, Belarus and Russia.",
  "trees": {
   "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 600], "weight": 5 },
   "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 600], "weight": 5 },
