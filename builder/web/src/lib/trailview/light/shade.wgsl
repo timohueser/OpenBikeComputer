@@ -39,6 +39,9 @@ struct Look {
     // xyz: toward the sun, which the sky's glow follows also while the moon is the light. w: the warm
     // glow about a low sun.
     sky_sun: vec4f,
+    // rgb: the deep colour of the sea of the regions about the eye, so that all the sea in view has one
+    // colour. w: unused.
+    sea: vec4f,
 }
 
 @group(2) @binding(0) var<uniform> look: Look;

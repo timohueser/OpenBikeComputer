@@ -143,6 +143,8 @@ export function weatherLight(light: Light, weather: Weather): Light {
 export interface EyeLook {
     hazeKm: number; hazeHeight: number; mistTop: number; softness: number; gradient: number;
     shadow: Rgb; light: Rgb; saturation: number; weather: Weather;
+    /** The deep colour of the sea, in linear light. */
+    sea: Rgb;
 }
 
 /** The look at the eye: the looks of the regions about it, blended by their weights, which sum to 1. */
@@ -154,6 +156,7 @@ export function eyeLook(regions: Region[], weights: Map<number, number>, preset:
             hazeKm: look.hazeKm, hazeHeight: look.hazeHeight, mistTop: look.mistTop, softness: look.softness, gradient: look.gradient,
             shadow: look.grade.shadow, light: look.grade.light, saturation: look.grade.saturation,
             weather: { ...keys, towers: keys.towers ?? 0, zenith: linear(keys.zenith), horizon: linear(keys.horizon) },
+            sea: linear(look.sea.deep),
         };
         out = added(out, own, w);
     }

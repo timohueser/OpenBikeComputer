@@ -13,14 +13,16 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
+use obc_bake::coverage::Coverage;
 use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Reader, Run, Shape, Step};
 use obc_data::ground::GroundSource;
+use obc_data::prepared::Manifest;
 use obc_data::product::{version, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{geofabrik, Area, Bbox, Regions};
 use obc_data::release::{Output, Release};
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
-use obc_dem::reference::{Window, TILE_LOG2};
+use obc_dem::reference::TILE_LOG2;
 use obc_dem::step::GLO30;
 use obc_map_core::grid::CellId;
 use planner_router_build::grid::{mercator, tile_bounds};
@@ -40,10 +42,12 @@ pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, 
 /// The terrain of the maps and of TrailView: its format is that of the terrain tiles of
 /// `specs/planner-release.md`.
 pub static PLANNER_TERRAIN: Layer =
-    Layer { revision: 3, ..whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_FEATURES]) };
+    Layer { revision: 4, ..whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_FEATURES]) };
 /// The routing package, its grid and the route network overlays.
-pub static PLANNER_ROUTING: Layer =
-    whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER]);
+pub static PLANNER_ROUTING: Layer = Layer {
+    revision: 2,
+    ..whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
+};
 /// The search databases and the query model. Its format is the search schema of
 /// `specs/planner-release.md`.
 pub static PLANNER_SEARCH: Layer = Layer { revision: 2, ..whole("planner/search", 6, &[&SEARCH_SERVICE]) };
@@ -53,7 +57,7 @@ pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER])
 pub static PLANNER_SNOW: Layer = Layer { revision: 2, ..whole("planner/snow", 1, &[&WEB_PLANNER]) };
 /// Its format is `features_format` of `specs/trailview-features.md`.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 6, ..whole("planner/trailview-features", 2, &[&WEB_PLANNER]) };
+    Layer { revision: 7, ..whole("planner/trailview-features", 2, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
@@ -136,6 +140,15 @@ struct Routing {
 
 pub(crate) mod catalog;
 
+fn config() -> Result<Config, String> {
+    toml::from_str(include_str!("../../../data/planner.toml")).map_err(|e| format!("data/planner.toml: {e}"))
+}
+
+/// `climate.first_year` of `data/planner.toml`: the first of the ten years that the climate layer reads.
+pub fn climate_first_year() -> Result<u16, String> {
+    Ok(config()?.climate.first_year)
+}
+
 pub struct Planner;
 
 impl Product for Planner {
@@ -197,8 +210,7 @@ impl Planner {
         store: &Store,
         osmium: Result<(), String>,
     ) -> Result<Steps, Unplanned> {
-        let config: Config = toml::from_str(include_str!("../../../data/planner.toml"))
-            .map_err(|e| Unplanned::Failed(format!("data/planner.toml: {e}")))?;
+        let config = config().map_err(Unplanned::Failed)?;
         let origins = catalog::publication(root).map_err(Unplanned::Failed)?;
         let id = &inputs.settings.region;
         let region = regions.get(id).ok_or_else(|| Unplanned::Failed(format!("no region `{id}`")))?;
@@ -246,7 +258,6 @@ impl Planner {
             .ok_or_else(|| Unplanned::Failed("cannot union planner region coverage".into()))?;
         let (west, south, east, north) = requested.bbox();
         let bounds = [west, south, east, north].map(|udeg| udeg as f64 / 1e6);
-        let bbox = ("bbox".to_string(), bounds.map(|degrees| degrees.to_string()).join(","));
         let coverage = zoom_10_neighbourhood(bounds);
         let source_steps = crate::region_sources::inputs("planner", &selection);
         let osm = if selection.sources.len() == 1 {
@@ -341,7 +352,10 @@ impl Planner {
         let routing = Step {
             layer: &PLANNER_ROUTING,
             name: "planner/routing".into(),
-            inputs: std::iter::once(Input::step(cut.name.clone())).chain(tiles(bounds, &land, &glo30)).collect(),
+            inputs: std::iter::once(Input::step(cut.name.clone()))
+                .chain(tiles(bounds, &land, &glo30))
+                .chain(reference.iter().map(|step| Input::step(&step.name)))
+                .collect(),
             options: json!({
                 "region": name,
                 "bounds": bounds,
@@ -458,17 +472,7 @@ impl Planner {
             basemap,
         ]);
         if on("climate") {
-            let first_year = config.climate.first_year;
-            let params = vec![bbox, ("first-year".to_string(), first_year.to_string())];
-            steps.push(python(
-                &PLANNER_CLIMATE,
-                "planner/climate",
-                vec![snapshot(inputs, store, "era5-land", params, &mut wanted)?],
-                // `{year}` is the year after the ten years.
-                json!({"bounds": bounds, "first_year": first_year, "attribution": attribution("era5-land")}),
-                ("tools.planner_climate", Some("planner-climate")),
-                &["climate.pmtiles"],
-            ));
+            steps.extend(climate(inputs, store, (bounds, &requested), config.climate.first_year, &mut wanted)?);
         }
         if on("snow") {
             steps.push(snow(inputs, store, bounds, config.snow.seasons, &mut wanted)?);
@@ -479,11 +483,13 @@ impl Planner {
                 .map_err(|e| Unplanned::Failed(format!("data/trailview/kinds.json: {e}")))?;
             let roads: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/roads.json"))
                 .map_err(|e| Unplanned::Failed(format!("data/trailview/roads.json: {e}")))?;
-            // The heights of roads, rivers and lakes come from the master terrain, by the class rules of the roads.
+            // The heights of roads, rivers and lakes come from the master terrain, by the class rules of the
+            // roads; the sea, which OSM maps only as coastlines, from the water polygons.
+            let sea = snapshot(inputs, store, "water-polygons", Vec::new(), &mut wanted)?;
             steps.push(Step {
                 layer: &PLANNER_TRAILVIEW_FEATURES,
                 name: "planner/trailview-features".into(),
-                inputs: vec![Input::step("planner/osm"), Input::step("planner/terrain/grid")],
+                inputs: vec![Input::step("planner/osm"), Input::step("planner/terrain/grid"), sea],
                 options: json!({"bounds": bounds, "kinds": kinds, "roads": roads, "attribution": attribution("osm-planet")}),
                 outputs: vec!["trailview-features.pmtiles".into()],
                 run: Run::Rust(&functions::TRAILVIEW_FEATURES),
@@ -684,24 +690,40 @@ fn snapshot(
     Ok(Input::Snapshot { source: source.into(), version, params, files: Vec::new() })
 }
 
-/// The mean tiles of `terrain` that meet `bounds`, as one archive: the step `planner/reference`.
-/// `None` when the version has no tile there.
+/// The mean tiles of `terrain` that the heights in `bounds` read, as one archive: the step
+/// `planner/reference`. `None` when the version has no tile there.
 fn reference(
     inputs: &Inputs,
     store: &Store,
-    [west, south, east, north]: [f64; 4],
+    bounds: [f64; 4],
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<Step>, Unplanned> {
-    let udeg = |degrees: f64| (degrees * 1e6) as i64;
-    let window = Window { lat_lo: udeg(south), lat_hi: udeg(north) + 1, lon_lo: udeg(west), lon_hi: udeg(east) + 1 };
     let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
-    let tiles: BTreeSet<CellId> = window.tiles().map(tile).collect();
-    // Without a layer, the read writes no note and reads no polygon.
+    let tiles: BTreeSet<CellId> = obc_dem::planner::reach(bounds).tiles().map(tile).collect();
     // Without a layer, the read writes no note and reads no polygon.
     let models = Models { tiles: &tiles, pool: "mean/", layer: None };
     let Some(read) = models.read(inputs, store, &mut BTreeMap::new(), wanted, &mut Vec::new())? else {
         return Ok(None);
     };
+    let Input::Snapshot { version, files, .. } = &read else { unreachable!("the models are a snapshot input") };
+    let held = files.iter().filter_map(|file| file.strip_prefix("mean/16/")?.strip_suffix(".tif"));
+    let Some(unbiased) = unbiased(store, version, held, wanted)? else { return Ok(None) };
+    if let Some(key) = unbiased {
+        let id = crate::terrain_reference::ID;
+        let example = obc_data::sources::all().iter().find(|source| source.id == format!("dtm-{key}"));
+        let example = example.and_then(|source| source.extent).map_or("W,S,E,N".to_string(), |[w, s, e, n]| {
+            // About four tiles around the middle of the extent: enough samples to measure.
+            let (lat, lon) = ((s + n) / 2.0, (w + e) / 2.0);
+            [(lon - 0.1).max(w), (lat - 0.1).max(s), (lon + 0.1).min(e), (lat + 0.1).min(n)]
+                .map(|degrees| format!("{degrees:.2}"))
+                .join(",")
+        });
+        return Err(invalid(format!(
+            "{id}@{version} states no GLO-30 bias of `{key}`, the best model of a tile of the planner terrain. Fix: a \
+             prepare of a small box inside the extent of dtm-{key} extends the version and measures it: obc data \
+             source prepare {id} --box {example} --to TARGET --dry-run"
+        )));
+    }
     let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}/{:04}", tile.i, tile.j)).collect();
     Ok(Some(Step {
         client: Client::None,
@@ -714,6 +736,30 @@ fn reference(
             &["reference"],
         )
     }))
+}
+
+/// The first best model of the tiles `held` that `mean/index.json` of `version` of `terrain` states
+/// no bias of, as `Some(None)` when it states each one. `None` while the store lacks the index; then
+/// `wanted` has its fetch.
+fn unbiased<'a>(
+    store: &Store,
+    version: &str,
+    held: impl Iterator<Item = &'a str>,
+    wanted: &mut Vec<Wanted>,
+) -> Result<Option<Option<String>>, Unplanned> {
+    let id = crate::terrain_reference::ID;
+    let params = vec![("file".to_string(), "mean/index.json".to_string())];
+    let Some(files) = snapshot_files(store, id, version, &params, &[]).map_err(Unplanned::Failed)? else {
+        wanted.push(Wanted { source: id.into(), version: Some(version.into()), params });
+        return Ok(None);
+    };
+    let path = &files["mean/index.json"];
+    let bytes = std::fs::read(path).map_err(|e| Unplanned::Failed(format!("{}: {e}", path.display())))?;
+    let index: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| Unplanned::Failed(format!("{id}@{version} mean/index.json: {e}")))?;
+    let biased = |key: &str| index["sources"][key]["glo30_bias_m"].is_number();
+    let mut best = held.filter_map(|tile| index["tiles"][tile].as_str());
+    Ok(Some(best.find(|key| !biased(key)).map(String::from)))
 }
 
 /// The GLO-30 tiles of `bounds` that the tile list names, as an input. A square that it does not
@@ -767,6 +813,64 @@ fn snow(
     ))
 }
 
+/// The files among `needed` of the version of the prepared source `id` that the target reads, with
+/// that version. None while the store lacks its manifest; then `wanted` has its fetch. A version of
+/// another format than `format`, or one whose `covered` paths lack one of `needed`, refuses.
+fn prepared(
+    inputs: &Inputs,
+    store: &Store,
+    (id, format): (&str, u32),
+    needed: &BTreeSet<String>,
+    covered: impl Fn(&Manifest) -> Result<BTreeSet<String>, Unplanned>,
+    wanted: &mut Vec<Wanted>,
+) -> Result<Option<(String, Vec<String>)>, Unplanned> {
+    let pinned = match version(inputs, store, id, &[]).map_err(Unplanned::Failed)? {
+        Ok(pinned) => pinned,
+        Err(fetch) => {
+            wanted.push(fetch);
+            return Ok(None);
+        }
+    };
+    let Some(manifest) = crate::device::manifest(store, id, &pinned, wanted)? else { return Ok(None) };
+    let fix = format!("Fix: obc data source prepare {id} --region {}", inputs.settings.region);
+    if manifest.format != format {
+        let held = manifest.format;
+        return Err(invalid(format!("{id}@{} is of format {held}, not {format}. {fix}", manifest.version)));
+    }
+    if !needed.is_subset(&covered(&manifest)?) {
+        let region = &inputs.settings.region;
+        return Err(invalid(format!("{id}@{} does not cover all of the region `{region}`. {fix}", manifest.version)));
+    }
+    let files = manifest.files.into_iter().map(|file| file.path).filter(|path| needed.contains(path)).collect();
+    Ok(Some((pinned, files)))
+}
+
+/// The climate layer of the region of `outline`: the files of `climate` of its blocks for the ten
+/// years from `first_year`. None while the store lacks the manifest; then `wanted` has its fetch.
+fn climate(
+    inputs: &Inputs,
+    store: &Store,
+    (bounds, outline): ([f64; 4], &Coverage),
+    first_year: u16,
+    wanted: &mut Vec<Wanted>,
+) -> Result<Option<Step>, Unplanned> {
+    use crate::climate_reference::{blocks, files, FORMAT, ID};
+    let needed = files(&blocks(outline).map_err(Unplanned::Failed)?, first_year);
+    let held = |manifest: &Manifest| Ok(manifest.files.iter().map(|file| file.path.clone()).collect());
+    let Some((pinned, files)) = prepared(inputs, store, (ID, FORMAT), &needed, held, wanted)? else { return Ok(None) };
+    // `{year}` of the credit is the year after the ten years; the archive names the version that it read.
+    let options =
+        json!({"bounds": bounds, "first_year": first_year, "attribution": attribution("era5-land"), "climate": pinned});
+    Ok(Some(python(
+        &PLANNER_CLIMATE,
+        "planner/climate",
+        vec![Input::Snapshot { source: ID.into(), version: pinned, params: Vec::new(), files }],
+        options,
+        ("tools.planner_climate", Some("planner-climate")),
+        &["climate.pmtiles"],
+    )))
+}
+
 /// The canopy layer of `bounds`: the zoom 12 tiles of `forest` in `boxes`, the boxes of the region
 /// in `bounds`, that the canopy models of `countries` meet, with the credits of those models and of
 /// the leaf type. None while the store lacks a manifest; then `wanted` has its fetch. A version
@@ -793,35 +897,19 @@ fn trailview_canopy(
     if needed.is_empty() {
         return Err(invalid("the layer trailview-canopy needs a canopy model: none covers the region".into()));
     }
-    let pinned = match version(inputs, store, ID, &[]).map_err(Unplanned::Failed)? {
-        Ok(pinned) => pinned,
-        Err(fetch) => {
-            wanted.push(fetch);
-            return Ok(None);
-        }
-    };
-    let Some(manifest) = crate::device::manifest(store, ID, &pinned, wanted)? else { return Ok(None) };
-    let region = &inputs.settings.region;
-    if manifest.format != FORMAT {
-        return Err(invalid(format!(
-            "{ID}@{} is of format {}, not {FORMAT}. Fix: obc data source prepare {ID} --region {region}",
-            manifest.version, manifest.format
-        )));
-    }
     // A version holds each tile with a pixel in its scope and in the scopes that it extends.
-    let mut covered = BTreeSet::new();
-    for scope in manifest.extends.iter().chain([&manifest.scope]) {
-        let (boxes, countries) = crate::terrain_reference::area(scope.as_ref()).map_err(Unplanned::Failed)?;
-        covered.extend(tiles(boxes.as_deref(), &countries)?.into_keys());
-    }
-    if needed.keys().any(|tile| !covered.contains(tile)) {
-        return Err(invalid(format!(
-            "{ID}@{} does not cover all of the region `{region}`. Fix: obc data source prepare {ID} --region {region}",
-            manifest.version
-        )));
-    }
-    let files: Vec<String> =
-        manifest.files.iter().map(|file| file.path.clone()).filter(|path| needed.contains_key(path)).collect();
+    let covered = |manifest: &Manifest| {
+        let mut covered = BTreeSet::new();
+        for scope in manifest.extends.iter().chain([&manifest.scope]) {
+            let (boxes, countries) = crate::terrain_reference::area(scope.as_ref()).map_err(Unplanned::Failed)?;
+            covered.extend(tiles(boxes.as_deref(), &countries)?.into_keys());
+        }
+        Ok(covered)
+    };
+    let paths = needed.keys().cloned().collect();
+    let Some((pinned, files)) = prepared(inputs, store, (ID, FORMAT), &paths, covered, wanted)? else {
+        return Ok(None);
+    };
     if files.is_empty() {
         return Err(invalid("the region has no canopy: switch the layer trailview-canopy off".into()));
     }
@@ -1119,11 +1207,12 @@ mod tests {
     use super::*;
     use crate::device::tests::{fetched, root, temp, Temp};
     use crate::device::{Device, EXTRACTS};
+    use obc_data::prepared::MANIFEST;
     use obc_data::settings::Settings;
 
     const AREA: &str = "europe/test";
     const OPTIONAL_SOURCES: [&str; 8] = [
-        "era5-land",
+        "climate",
         "hr-wsi",
         "modis-snow",
         "esa-worldcover",
@@ -1199,12 +1288,83 @@ mod tests {
         // The box of the region touches the WorldCover squares N45E006 and N48E006; the second is sea here.
         let grid = r#"{"features": [{"properties": {"ll_tile": "N45E006"}}, {"properties": {"ll_tile": "N45E003"}}]}"#;
         fetched(&store, WORLDCOVER_GRID, "v200", &[], &[("esa_worldcover_grid.geojson".into(), grid.into())]);
+        // The climate of the box: the files of block 19, 21.
+        let climate = climate_manifest(crate::climate_reference::FORMAT, &[(19, 21)], &[]);
+        fetched(
+            &store,
+            "climate",
+            "2026-10-01",
+            &[],
+            &[(MANIFEST.into(), String::from_utf8(climate.canonical()).unwrap())],
+        );
         for day in days {
             crate::device::tests::extracted(&store, day, &area, &format!("{AREA}-{day}.osm.pbf"));
             let pbf = include_bytes!("../tests/data/planner.osm.pbf").to_vec();
             crate::device::tests::stored(&store, TERRAIN_OSM, day, &area, &[(format!("{AREA}-{day}.osm.pbf"), pbf)]);
         }
         store
+    }
+
+    /// A manifest of `climate` in `format` with the files of `blocks` of the ten years from 2016,
+    /// except `without`.
+    fn climate_manifest(format: u32, blocks: &[(u32, u32)], without: &[&str]) -> Manifest {
+        let paths = crate::climate_reference::files(&blocks.iter().copied().collect(), 2016);
+        let file = |path: String| LayerFile { sha256: obc_data::store::sha256_hex(path.as_bytes()), path, size: 1 };
+        Manifest {
+            source: "climate".into(),
+            version: "2026-10-01".into(),
+            format,
+            revision: 1,
+            inputs: Vec::new(),
+            files: paths.into_iter().filter(|path| !without.contains(&path.as_str())).map(file).collect(),
+            reused: BTreeMap::new(),
+            scope: None,
+            extends: Vec::new(),
+            languages: Vec::new(),
+            licence: None,
+            attribution: None,
+            machine: "test".into(),
+            time: "2026-10-01T00:00:00Z".into(),
+            cost: obc_data::prepared::Cost { wall_ms: 0, peak_rss_bytes: None },
+        }
+    }
+
+    #[test]
+    fn the_climate_reads_the_files_of_the_blocks_of_the_region_and_refuses_a_version_that_lacks_one() {
+        use obc_data::store::sha256_hex;
+
+        let temp = temp("planner-climate-files");
+        let store = Store::at(temp.0.join("store"));
+        let mut inputs = Inputs::default();
+        let mut pin = |manifest: &Manifest| {
+            let bytes = manifest.canonical();
+            let pinned = format!("2026-10-01/{}", sha256_hex(&bytes));
+            inputs.resolved.insert(("climate".into(), Vec::new()), pinned.clone());
+            fetched(&store, "climate", &pinned, &[], &[(MANIFEST.into(), String::from_utf8(bytes).unwrap())]);
+            (inputs.clone(), pinned)
+        };
+        // A box 0.1° from the north edge of block 19, 21 also reads block 19, 22.
+        let bounds = [8.0, 50.5, 8.1, 50.6];
+        let outline =
+            Coverage::parse_poly(&crate::device::box_poly(&Bbox { west: 8.0, south: 50.5, east: 8.1, north: 50.6 }))
+                .unwrap();
+        let read = |inputs: &Inputs| climate(inputs, &store, (bounds, &outline), 2016, &mut Vec::new());
+
+        let format = crate::climate_reference::FORMAT;
+        let (inputs, pinned) = pin(&climate_manifest(format, &[(19, 21), (19, 22), (20, 21)], &[]));
+        let step = read(&inputs).unwrap().unwrap();
+        let [Input::Snapshot { source, version, files, .. }] = &step.inputs[..] else { panic!("one snapshot") };
+        assert_eq!((source.as_str(), version), ("climate", &pinned));
+        let both = crate::climate_reference::files(&[(19, 21), (19, 22)].into(), 2016);
+        assert_eq!(files, &both.into_iter().collect::<Vec<_>>());
+        assert_eq!(step.options["first_year"], 2016);
+
+        let (inputs, _) = pin(&climate_manifest(format, &[(19, 21), (19, 22)], &["2025/19/22.gz"]));
+        let Err(Unplanned::Invalid(message)) = read(&inputs) else { panic!("a version without a year refuses") };
+        assert!(message.contains("does not cover") && message.contains("obc data source prepare climate"), "{message}");
+        let (inputs, _) = pin(&climate_manifest(format + 1, &[(19, 21), (19, 22)], &[]));
+        let Err(Unplanned::Invalid(message)) = read(&inputs) else { panic!("another format refuses") };
+        assert!(message.contains("is of format"), "{message}");
     }
 
     fn tiles(input: &Input) -> Vec<&str> {
@@ -1296,13 +1456,11 @@ mod tests {
     }
 
     #[test]
-    fn the_terrain_reads_the_mean_tiles_of_terrain_in_its_bounds() {
+    fn the_terrain_and_the_routing_read_the_mean_tiles_of_terrain_in_their_bounds() {
         let temp = temp("planner-reference");
         let (store, mut inputs) = (store(&temp, &["2026-10-01"]), inputs(AREA, &[]));
         let paths = ["16/4825/4218.tif", "mean/16/4825/4218.tif", "mean/16/4000/4000.tif"];
-        let (pinned, manifest) = crate::device::tests::terrain_version(&mut inputs, &paths);
-        let manifest = [(obc_data::prepared::MANIFEST.to_string(), manifest)];
-        crate::device::tests::stored(&store, "terrain", &pinned, &[], &manifest);
+        terrain_with_bias(&store, &mut inputs, &paths, Some(-1.5));
         let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
         let reference = steps.iter().find(|step| step.name == "planner/reference").unwrap();
         let [Input::Snapshot { files, .. }] = &reference.inputs[..] else { panic!("one model") };
@@ -1310,11 +1468,41 @@ mod tests {
             (&files[..], &reference.options["pool"]),
             (&["mean/16/4825/4218.tif".to_string(), "mean/index.json".to_string()][..], &json!("mean"))
         );
-        let terrain = steps.iter().find(|step| step.name == "planner/terrain").unwrap();
-        assert!(terrain
-            .inputs
+        for reader in ["planner/terrain", "planner/routing"] {
+            let step = steps.iter().find(|step| step.name == reader).unwrap();
+            let reads = |input: &Input| matches!(input, Input::Step { name, .. } if name == "planner/reference");
+            assert!(step.inputs.iter().any(reads), "{reader} reads the national models");
+        }
+    }
+
+    /// A version of `terrain` with `paths` and a `mean/index.json` whose tiles are of `ch`, with the
+    /// bias `bias`.
+    fn terrain_with_bias(store: &Store, inputs: &mut Inputs, paths: &[&str], bias: Option<f64>) {
+        let (pinned, manifest) = crate::device::tests::terrain_version(inputs, paths);
+        let manifest = [(obc_data::prepared::MANIFEST.to_string(), manifest)];
+        crate::device::tests::stored(store, "terrain", &pinned, &[], &manifest);
+        let tiles: BTreeMap<&str, &str> = paths
             .iter()
-            .any(|input| matches!(input, Input::Step { name, .. } if name == "planner/reference")));
+            .filter_map(|path| Some((path.strip_prefix("mean/16/")?.strip_suffix(".tif")?, "ch")))
+            .collect();
+        let ch = bias.map_or(json!({}), |bias| json!({"glo30_bias_m": bias}));
+        let index = json!({"tiles": tiles, "sources": {"ch": ch}}).to_string();
+        let params = [("file".to_string(), "mean/index.json".to_string())];
+        crate::device::tests::stored(store, "terrain", &pinned, &params, &[("mean/index.json".into(), index.into())]);
+    }
+
+    /// The plan refuses a version of `terrain` without the bias of the best model of a tile that the
+    /// planner reads, and names a box inside the extent of that model.
+    #[test]
+    fn a_version_of_terrain_without_a_bias_is_refused_in_the_plan() {
+        let temp = temp("planner-unbiased");
+        let (store, mut inputs) = (store(&temp, &["2026-10-01"]), inputs(AREA, &[]));
+        terrain_with_bias(&store, &mut inputs, &["mean/16/4825/4218.tif"], None);
+        let Err(Unplanned::Invalid(error)) = Planner.steps(&root(), &inputs, &regions(), &store) else {
+            panic!("the plan reads a version without a bias")
+        };
+        assert!(error.contains("no GLO-30 bias of `ch`"), "{error}");
+        assert!(error.ends_with("--box 8.10,46.75,8.30,46.95 --to TARGET --dry-run"), "{error}");
     }
 
     #[test]
@@ -1489,7 +1677,7 @@ mod tests {
 
     #[test]
     fn the_canopy_reads_the_tiles_of_the_region_and_refuses_a_version_whose_scopes_lack_one() {
-        use obc_data::prepared::{Cost, Manifest, Read, Scope, MANIFEST};
+        use obc_data::prepared::{Cost, Read, Scope};
         use obc_data::store::sha256_hex;
 
         let temp = temp("planner-canopy");

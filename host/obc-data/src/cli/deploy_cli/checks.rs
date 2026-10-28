@@ -61,8 +61,8 @@ pub fn publish() -> Vec<Check> {
         Err(e) => Check::failed(
             "R2 key",
             e,
-            "Put the OBC_R2_* variables of the bucket in tools/obc.local of this checkout, then start \
-             `obc data ui` again.",
+            "Put the OBC_R2_* variables of the bucket in ~/.config/openbikecomputer/credentials.env: one \
+             NAME=VALUE line each, mode 0600. Then check again.",
             Vec::new(),
         ),
     }];

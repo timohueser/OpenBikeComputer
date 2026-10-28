@@ -154,7 +154,7 @@ impl ReferenceTile {
     }
 
     /// Decode and validate the tile at `path`, which must be the tile the id names.
-    fn open(path: &Path, ti: u32, tj: u32, pool: Pool) -> Result<ReferenceTile, String> {
+    pub fn open(path: &Path, ti: u32, tj: u32, pool: Pool) -> Result<ReferenceTile, String> {
         let name = || path.display().to_string();
         let file = File::open(path).map_err(|e| format!("{}: {e}", name()))?;
         // The `tiff` crate's default limits allow a 256 MiB decoding buffer; a tile is 2 MiB, so the
@@ -283,6 +283,8 @@ pub struct ReferenceArchive {
     tiles: BTreeMap<(u32, u32), IndexedTile>,
     /// Every source the index declares, sorted by key.
     credits: Vec<SourceCredit>,
+    /// The `glo30_bias_m` of each source that states one.
+    biases: BTreeMap<String, f64>,
 }
 
 /// What an archive holds for one tile id.
@@ -335,6 +337,9 @@ impl ReferenceArchive {
         let listed = index.get("contributors").and_then(serde_json::Value::as_object);
         let digests = index.get("sha256").and_then(serde_json::Value::as_object);
         let credits = read_credits(&index, &name)?;
+        let sources = index["sources"].as_object().into_iter().flatten();
+        let biases =
+            sources.filter_map(|(key, entry)| Some((key.clone(), entry.get("glo30_bias_m")?.as_f64()?))).collect();
 
         let mut held = BTreeMap::new();
         for (id, best) in tiles {
@@ -362,7 +367,7 @@ impl ReferenceArchive {
             }
             held.insert(key, IndexedTile { sources, sha256: sha256.to_string() });
         }
-        Ok(ReferenceArchive { root: root.to_path_buf(), pool, tiles: held, credits })
+        Ok(ReferenceArchive { root: root.to_path_buf(), pool, tiles: held, credits, biases })
     }
 
     pub fn pool(&self) -> Pool {
@@ -381,6 +386,13 @@ impl ReferenceArchive {
     /// Every source this archive declares, sorted by key — the credits a map derived from it owes.
     pub fn credits(&self) -> &[SourceCredit] {
         &self.credits
+    }
+
+    /// The best source of tile `(ti, tj)` and its `glo30_bias_m`, `None` where the index states
+    /// none: the bias of GLO-30 next to the tile.
+    pub fn bias(&self, ti: u32, tj: u32) -> Option<(&str, Option<f64>)> {
+        let best = self.tiles.get(&(ti, tj))?.sources.first()?;
+        Some((best, self.biases.get(best).copied()))
     }
 
     /// The pixel digests the index states for the tiles of `window` this root holds, in the window's

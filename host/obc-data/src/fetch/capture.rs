@@ -67,28 +67,6 @@ pub(crate) fn run(
                 },
             )
         }
-        "era5-land" => {
-            let [bbox, first] = values(request, ["bbox", "first-year"])?;
-            let bbox = parse_bbox(bbox)?;
-            if !year(first) {
-                return Err(format!("`first-year={first}` is not a year"));
-            }
-            capture(
-                store,
-                request,
-                &format!("bbox={bbox}&first-year={first}"),
-                &[source],
-                |_| &[0],
-                false,
-                None,
-                |_, out| {
-                    let mut command = python(root, Some("planner-climate"))?;
-                    command.args(["-m", "tools.planner_climate", &format!("--bounds={bbox}"), "--first-year", first]);
-                    command.arg("--fetch").arg(out);
-                    Ok(command)
-                },
-            )
-        }
         "corine-land-cover" => {
             let [] = values(request, [])?;
             // The dataset CLC 2018 and its prepackaged raster of Europe.

@@ -191,14 +191,17 @@ export interface Line {
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
 /** A building: whether it holds cars, and the outward unit direction of the wall that its walk leaves, in world units. */
 export interface Building { rings: number[][]; outer: boolean[]; cars: boolean; front?: [number, number] }
-/** The shapes of a tile: lines and lakes with heights, the river areas, which lie on the drawn surface, the pads under the platforms, the buildings and the walks to them. */
-export interface Shapes { lines: Line[]; lakes: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; walks: Line[] }
+/**
+ * The shapes of a tile: lines and lakes with heights, the sea, which shapes no terrain, the river areas,
+ * which lie on the drawn surface, the pads under the platforms, the buildings and the walks to them.
+ */
+export interface Shapes { lines: Line[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; walks: Line[] }
 
 /**
- * The numbers of stamp-core.wgsl that the gates of a line and the shore samples of the audit use.
- * bins.test.ts holds them equal to the shader's.
+ * The numbers of stamp-core.wgsl that the gates of a line, the shore samples of the audit and the edges
+ * of the water mesh use. bins.test.ts holds them equal to the shader's.
  */
-export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678, SHORE_CELLS: 1.5, PORTAL_CELLS: 2 } as const;
+export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678, SHORE_CELLS: 1.5, PORTAL_CELLS: 2, LIFT_M: 0.03, LIFT: 0.02 } as const;
 /** As MASK_RANGE of stamp.wgsl: the mask reads a road this far past its edge. */
 const MASK_RANGE_M = 12.75;
 
@@ -215,7 +218,7 @@ export function shows({ kind, h, profile }: Line, texel: number): boolean {
 /** The shapes of each decoded tile, made once: the stamps and the water of each of its nodes read them. */
 const shapes = new WeakMap<Feature[], Shapes & { tile: string }>();
 
-/** The roads, paths, rivers and lakes of a tile that have heights, its river areas and its buildings, in world units. */
+/** The roads, paths, rivers, lakes and sea of a tile that have heights, its river areas and its buildings, in world units. */
 export function features(list: Feature[], tile: Node): Shapes {
     const name = `${tile.level}/${tile.x}/${tile.y}`;
     let known = shapes.get(list);
@@ -226,15 +229,15 @@ export function features(list: Feature[], tile: Node): Shapes {
 function shapesOf(list: Feature[], tile: Node): Shapes {
     const scale = unitScale(tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
     const world = (xy: Int32Array, v: number) => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
-    const lines: Line[] = [], lakes: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [];
+    const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [];
     const area = (parts: Feature['parts']) => ({ rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
     const buildings: Building[] = list.filter(({ kind }) => kind === 'building').map(({ tags, parts }) => ({ ...area(parts), cars: CARS.includes(tags.building) }));
     const town = townOf(buildings), beds = bedsOf(list, world);
     for (const [feature, { kind, tags, parts }] of list.entries()) {
-        if (kind === 'lake') {
+        if (kind === 'lake' || kind === 'sea') {
             const level = parts[0]?.z?.[0];
             if (level === undefined || Number.isNaN(level)) continue;
-            lakes.push({ level, ...area(parts) });
+            (kind === 'lake' ? lakes : seas).push({ level, ...area(parts) });
             continue;
         }
         if (kind === 'river-area') {
@@ -296,7 +299,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     }
     junctionPlanes(lines);
     abutments(lines);
-    return { lines, lakes, areas, pads, buildings, walks: walks(lines, buildings, town) };
+    return { lines, lakes, seas, areas, pads, buildings, walks: walks(lines, buildings, town) };
 }
 
 /**
