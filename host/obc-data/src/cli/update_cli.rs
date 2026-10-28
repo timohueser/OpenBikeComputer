@@ -14,6 +14,7 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use super::setup_cli::planner_missing;
 use super::{freshness, listing, Code, Error};
 use crate::collection::{self, Collected};
 use crate::engine::changes::{self, Update};
@@ -166,7 +167,7 @@ pub fn command(
     if let Some(done) = super::api::detached(&store, work, print) {
         return done;
     }
-    let mut prepared = prepare(root, &store, &http, target, code, edit, &args.only, None, None)?;
+    let mut prepared = prepare(root, &store, &http, target, code, edit, &args.only, (None, planner_missing), None)?;
     prepared.review.args = args.args(&prepared.review);
     prepared.review.optional = optional(products);
     if args.dry_run {
@@ -203,7 +204,7 @@ fn plan(
     args: &UpdateArgs,
     run: &mut Run,
 ) -> Result<Review, Error> {
-    let mut prepared = prepare(root, store, http, target, code, edit, &args.only, None, Some(run))?;
+    let mut prepared = prepare(root, store, http, target, code, edit, &args.only, (None, planner_missing), Some(run))?;
     prepared.review.args = args.args(&prepared.review);
     prepared.review.optional = optional(code.0);
     prepared.review.services = services(root, http, target, &prepared.steps);
@@ -277,7 +278,7 @@ pub(super) struct Prepared {
 }
 
 /// Update `target` with the settings of its serving release after `edit`, when the review passes
-/// [`review::check`].
+/// [`review::check`]. The update that started `run` checked the tools of the planner steps.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update(
     root: &Path,
@@ -291,7 +292,7 @@ pub(super) fn update(
     run: &mut Run,
 ) -> Result<Updated, Error> {
     locked(store, target, run, |run, held| {
-        let prepared = prepare(root, store, http, target, code, edit, &asked.only, machine, Some(run))?;
+        let prepared = prepare(root, store, http, target, code, edit, &asked.only, (machine, Vec::new), Some(run))?;
         if !held.beat(Some(&prepared.review.id), None, crate::date::now())? {
             return Err(lost(&format!("target `{}`", target.0)));
         }
@@ -428,7 +429,8 @@ pub(super) fn lost(label: &str) -> Error {
 
 /// Read the serving release of `target`, apply `edit` to its settings, list the steps and review
 /// them. Only the fetches that a step list needs to be listed run, into the store; `run` records
-/// them. The review checks `machine`, or else this machine after the listing.
+/// them. The review checks `machine`, or else this machine after the listing, and asks
+/// `planner_missing` when it bakes planner steps.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepare(
     root: &Path,
@@ -438,7 +440,7 @@ pub(super) fn prepare(
     (products, producers): (&[&dyn Product], &[&dyn Producer]),
     edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
     only: &[String],
-    machine: Option<&MachineCheck>,
+    (machine, planner_missing): (Option<&MachineCheck>, fn() -> Vec<String>),
     mut run: Option<&mut Run>,
 ) -> Result<Prepared, Error> {
     let base = release::serving(target)?;
@@ -532,6 +534,7 @@ pub(super) fn prepare(
         unheld: &update.unheld,
         downloads,
         machine: &machine,
+        planner_missing,
     });
     review.notes = listed.notes;
     Ok(Prepared { review, base, serving, settings, sources, steps: listed.steps, update })
@@ -1220,7 +1223,7 @@ pub(super) mod tests {
             (&products, &[]),
             |_| Ok(()),
             &[],
-            Some(&machine),
+            (Some(&machine), Vec::new),
             None,
         );
         prepared.unwrap().review
@@ -1538,7 +1541,7 @@ pub(super) mod tests {
             products,
             region,
             &[],
-            Some(&machine),
+            (Some(&machine), Vec::new),
             None,
         );
         let review = prepared.unwrap().review;
@@ -1584,7 +1587,7 @@ pub(super) mod tests {
                 (&products, &[]),
                 edit,
                 &[],
-                Some(machine),
+                (Some(machine), Vec::new),
                 None,
             );
             prepared.unwrap().review

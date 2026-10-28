@@ -151,21 +151,13 @@ pub struct MachineCheck {
     pub store_free_bytes: Option<u64>,
     /// Why this machine cannot do the update; empty when it can, or cannot tell.
     pub refusals: Vec<String>,
-    /// The tools that the planner steps need and this machine lacks, as `obc data setup` names them.
-    #[serde(skip)]
-    pub planner_missing: Vec<String>,
 }
 
 impl MachineCheck {
     /// This machine: its memory, and the free bytes of the disk of `store`.
     pub fn this(store: &Store) -> Result<Self, String> {
         let free = crate::store::free_bytes(store.root())?.map(|(_, free)| free);
-        Ok(MachineCheck {
-            memory_bytes: crate::engine::runs::memory(),
-            store_free_bytes: free,
-            refusals: Vec::new(),
-            planner_missing: crate::cli::setup_cli::planner_missing(),
-        })
+        Ok(MachineCheck { memory_bytes: crate::engine::runs::memory(), store_free_bytes: free, refusals: Vec::new() })
     }
 }
 
@@ -204,6 +196,9 @@ pub struct Parts<'a> {
     pub unheld: &'a BTreeSet<String>,
     pub downloads: Downloads,
     pub machine: &'a MachineCheck,
+    /// The tools that the planner steps need and the machine lacks, as `obc data setup` names them.
+    /// The review asks only when it bakes planner steps: the probe starts each tool.
+    pub planner_missing: fn() -> Vec<String>,
 }
 
 /// The review of an update from `parts`.
@@ -222,6 +217,7 @@ pub fn review(parts: Parts) -> Review {
         unheld,
         downloads,
         machine,
+        planner_missing,
     } = parts;
     let outputs = serving.iter().flat_map(|release| &release.outputs);
     let baked: Vec<&Step> = steps.iter().filter(|step| !kept.contains_key(&step.name)).collect();
@@ -380,7 +376,7 @@ pub fn review(parts: Parts) -> Review {
     }
     let mut machine = machine.clone();
     let planner = bakes.iter().any(|build| build.step.starts_with("planner/"));
-    machine.refusals = refusals(&machine, (&bakes, planner), cost.store_bytes);
+    machine.refusals = refusals(&machine, (&bakes, planner.then(planner_missing)), cost.store_bytes);
 
     let changes_settings = serving.is_some_and(|serving| serving.settings != *settings);
     let switches = !changes.is_empty() || changes_settings;
@@ -417,15 +413,17 @@ pub fn review(parts: Parts) -> Review {
     }
 }
 
-/// Why `machine` cannot bake `bakes` and write `store_bytes`; with `planner`, also bake planner
-/// steps.
-fn refusals(machine: &MachineCheck, (bakes, planner): (&[Build], bool), store_bytes: u64) -> Vec<String> {
+/// Why `machine` cannot bake `bakes` and write `store_bytes`; with `planner_missing`, the tools
+/// that it lacks for planner steps, also bake those.
+fn refusals(
+    machine: &MachineCheck,
+    (bakes, planner_missing): (&[Build], Option<Vec<String>>),
+    store_bytes: u64,
+) -> Vec<String> {
     let mut refusals = Vec::new();
-    if planner && !machine.planner_missing.is_empty() {
-        refusals.push(format!(
-            "the planner steps need {}; `obc data setup` shows how to install them",
-            machine.planner_missing.join(", ")
-        ));
+    if let Some(missing) = planner_missing.filter(|missing| !missing.is_empty()) {
+        refusals
+            .push(format!("the planner steps need {}; `obc data setup` shows how to install them", missing.join(", ")));
     }
     if let Some(memory) = machine.memory_bytes {
         for (build, estimate) in bakes.iter().filter_map(|build| Some(build).zip(build.estimate)) {
@@ -621,10 +619,9 @@ mod tests {
 
     #[test]
     fn a_machine_without_a_planner_tool_cannot_bake_planner_steps() {
-        let machine =
-            MachineCheck { planner_missing: vec!["Java 21+".into(), "Maven".into()], ..MachineCheck::default() };
-        let refused = refusals(&machine, (&[], true), 0);
+        let machine = MachineCheck::default();
+        let refused = refusals(&machine, (&[], Some(vec!["Java 21+".into(), "Maven".into()])), 0);
         assert_eq!(refused, ["the planner steps need Java 21+, Maven; `obc data setup` shows how to install them"]);
-        assert!(refusals(&machine, (&[], false), 0).is_empty(), "an update without planner steps");
+        assert!(refusals(&machine, (&[], None), 0).is_empty(), "an update without planner steps");
     }
 }
