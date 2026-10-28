@@ -183,7 +183,7 @@ pub struct Read {
     pub digest: String,
 }
 
-/// An entry of `versions.json`, which lists the complete versions sorted by version.
+/// An entry of `versions.json`, which lists the complete versions oldest first.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Version {
@@ -239,7 +239,7 @@ fn edit_versions(folder: &Target, edit: impl Fn(&mut Vec<Version>)) -> Result<()
         };
         let before = versions.clone();
         edit(&mut versions);
-        versions.sort_by(|a, b| a.version.cmp(&b.version));
+        versions.sort_by_key(|entry| order(&entry.version));
         if read.is_some() && versions == before {
             return Ok(());
         }
@@ -257,8 +257,8 @@ fn pinned(listed: &Version) -> String {
     format!("{}/{}", listed.version, listed.manifest_sha256)
 }
 
-/// A version as text shows it: a prepared version as `<date> (<first 12 hex digits of its manifest
-/// SHA-256>)`. JSON gives the whole version.
+/// A version as text shows it: a prepared version as `<version> (<first 12 hex digits of its
+/// manifest SHA-256>)`. JSON gives the whole version.
 pub fn show(version: &str) -> String {
     match unpin(version) {
         Some((name, sha256)) => format!("{name} ({})", &sha256[..12]),
@@ -268,9 +268,37 @@ pub fn show(version: &str) -> String {
 
 /// The name and the manifest SHA-256 of the version `pinned` that a step reads.
 pub(crate) fn unpin(pinned: &str) -> Option<(&str, &str)> {
-    pinned
-        .split_once('/')
-        .filter(|(name, sha256)| crate::date::parse(name).is_some() && crate::release::is_sha256(sha256))
+    pinned.split_once('/').filter(|(name, sha256)| order(name).is_some() && crate::release::is_sha256(sha256))
+}
+
+/// The place of the version `name` in time, `None` when it is not the name of a version. The first
+/// version of a UTC day is `YYYY-MM-DD`; each later one of that day adds `.2`, `.3` and so on.
+pub(crate) fn order(name: &str) -> Option<(i64, u32)> {
+    let (day, ordinal) = match name.split_once('.') {
+        None => (name, 1),
+        Some((day, ordinal)) => (day, ordinal.parse().ok().filter(|n: &u32| *n >= 2 && n.to_string() == ordinal)?),
+    };
+    Some((crate::date::parse(day)?, ordinal))
+}
+
+/// The day of the version `name`, `YYYY-MM-DD`.
+pub fn day(name: &str) -> &str {
+    name.split_once('.').map_or(name, |(day, _)| day)
+}
+
+/// The version that a new run on the UTC day `today` makes: the first name of that day after each
+/// version of that day that `listed` names, without a manifest on `target`.
+pub(crate) fn next(target: &Target, id: &str, today: &str, listed: &[Version]) -> Result<String, String> {
+    let date = crate::date::parse(today).ok_or_else(|| format!("{today} is not a date"))?;
+    let after = listed.iter().filter_map(|entry| order(&entry.version)).filter(|(of, _)| *of == date);
+    let mut ordinal = after.map(|(_, ordinal)| ordinal + 1).max().unwrap_or(1);
+    loop {
+        let name = if ordinal == 1 { today.to_string() } else { format!("{today}.{ordinal}") };
+        if manifest(target, id, &name)?.is_none() {
+            return Ok(name);
+        }
+        ordinal += 1;
+    }
 }
 
 /// Make `manifest` the manifest of its version on `target`, after a check that the target has each
@@ -348,7 +376,7 @@ pub(crate) fn started(store: &Store, target: &str, id: &str) -> Result<Option<St
         Err(e) => return Err(format!("{}: {e}", dir.display())),
     };
     let names = entries.filter_map(|entry| entry.ok()?.file_name().into_string().ok());
-    Ok(names.filter(|name| crate::date::parse(name).is_some()).max())
+    Ok(names.filter(|name| order(name).is_some()).max_by_key(|name| order(name)))
 }
 
 /// A line of the journal of a run.
@@ -584,8 +612,9 @@ impl<'a> Job<'a> {
             }
             None => Vec::new(),
         };
-        let before = listed.iter().filter(|entry| entry.format == format && entry.version < self.version);
-        let Some(entry) = before.max_by(|a, b| a.version.cmp(&b.version)) else { return Ok(None) };
+        let before =
+            listed.iter().filter(|entry| entry.format == format && order(&entry.version) < order(&self.version));
+        let Some(entry) = before.max_by_key(|entry| order(&entry.version)) else { return Ok(None) };
         let key = format!("{}/{MANIFEST}", entry.version);
         let bytes = self.folder.get(&key)?.ok_or_else(|| format!("sources/{}/{key} is gone", self.id))?;
         let manifest = Manifest::parse(&self.id, &entry.version, &bytes)?;
@@ -862,13 +891,13 @@ pub(crate) fn resolve(
         }
         // A serving version that no list names stays, as on a machine without network.
         let serving = serving.filter(|serving| listed.iter().find(|entry| pinned(entry) == *serving).is_none_or(fits));
-        let newest = listed.iter().filter(|entry| fits(entry)).max_by(|a, b| a.version.cmp(&b.version)).map(pinned);
-        let date = |pinned: &String| unpin(pinned).map(|(version, _)| version.to_string());
+        let newest = listed.iter().filter(|entry| fits(entry)).max_by_key(|entry| order(&entry.version)).map(pinned);
+        let place = |pinned: &String| unpin(pinned).and_then(|(version, _)| order(version));
         let manual = source.refresh == Refresh::Manual && inputs.serving.contains_key(&key);
         let chosen = match (newest, serving) {
             // A `manual` source keeps its serving version, unless that is of another format.
             (_, serving) if manual => serving,
-            (Some(newest), Some(serving)) if date(&serving) > date(&newest) => Some(serving),
+            (Some(newest), Some(serving)) if place(&serving) > place(&newest) => Some(serving),
             (newest, serving) => newest.or(serving),
         };
         match chosen {
@@ -895,10 +924,10 @@ pub(crate) fn fetch(
 ) -> Result<Snapshot, String> {
     let id = &request.source.id;
     let Some(pinned) = request.version.as_deref() else {
-        return Err(format!("`{id}` is prepared: name its version, `{id}@<date>/<manifest sha256>`"));
+        return Err(format!("`{id}` is prepared: name its version, `{id}@<version>/<manifest sha256>`"));
     };
     let (version, sha256) =
-        unpin(pinned).ok_or_else(|| format!("`{pinned}` is not a version of `{id}`: <date>/<manifest sha256>"))?;
+        unpin(pinned).ok_or_else(|| format!("`{pinned}` is not a version of `{id}`: <version>/<manifest sha256>"))?;
     let mut targets: Vec<(String, Target)> = crate::target::load(root, store)?.into_iter().collect();
     targets.sort_by_key(|(name, _)| name.as_str() != PROD);
     let key = format!("{version}/{MANIFEST}");
@@ -976,7 +1005,7 @@ pub(crate) fn incomplete(target: &Target, id: &str, version: &str) -> Result<Vec
     let older = |key: &str| {
         let Some((name, _)) = key[prefix.len()..].split_once('/') else { return false };
         let complete = keys.contains(format!("{prefix}{name}/{MANIFEST}").as_str());
-        crate::date::parse(name).is_some() && name < version && !complete
+        order(name).is_some() && order(name) < order(version) && !complete
     };
     Ok(listed.iter().filter(|listed| older(&listed.key)).map(|listed| listed.key.clone()).collect())
 }
@@ -1006,19 +1035,23 @@ pub(crate) fn obsolete<'a>(
             .filter(|(source, _)| *source == id)
             .map(|(_, read)| unpin(&read.version).map_or(read.version.as_str(), |(version, _)| version))
             .collect();
-        let Some(newest) = read.last() else { continue };
+        let Some(newest) = read.iter().filter_map(|version| order(version)).max() else { continue };
         let prefix = format!("sources/{id}/");
         let mut versions: BTreeMap<&str, Vec<&Listed>> = BTreeMap::new();
         for (key, file) in listed.range(prefix.clone()..).take_while(|(key, _)| key.starts_with(&prefix)) {
             let Some((version, _)) = key[prefix.len()..].split_once('/') else { continue };
-            if crate::date::parse(version).is_some() {
+            if order(version).is_some() {
                 versions.entry(version).or_default().push(file);
             }
         }
         for (version, mut keys) in versions {
             let manifest = format!("{prefix}{version}/{MANIFEST}");
             let holds = reused.contains(&(id.to_string(), version.to_string()));
-            if version >= *newest || read.contains(version) || holds || !keys.iter().any(|file| file.key == manifest) {
+            if order(version) >= Some(newest)
+                || read.contains(version)
+                || holds
+                || !keys.iter().any(|file| file.key == manifest)
+            {
                 continue;
             }
             keys.sort_by_key(|file| file.key == manifest);
@@ -1045,4 +1078,22 @@ pub(crate) fn reused(target: &Target, listed: &BTreeMap<String, Listed>) -> Resu
 /// Remove `versions` of `id` from `versions.json` on `target`, so no reader takes one.
 pub(crate) fn unlist(target: &Target, id: &str, versions: &[&str]) -> Result<(), String> {
     edit_versions(&folder(target, id), |listed| listed.retain(|entry| !versions.contains(&entry.version.as_str())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn versions_of_one_day_follow_their_ordinal_and_a_plain_date_stays_a_version() {
+        let names = ["2026-10-28", "2026-10-28.2", "2026-10-28.10", "2026-10-29"];
+        let places: Vec<_> = names.iter().map(|name| order(name).unwrap()).collect();
+        assert!(places.windows(2).all(|pair| pair[0] < pair[1]), "{places:?}");
+        for name in ["2026-10-28.1", "2026-10-28.02", "2026-10-28.+2", "2026-10-28.", "2026-02-30"] {
+            assert_eq!(order(name), None, "{name}");
+        }
+        let sha256 = "0".repeat(64);
+        assert_eq!(unpin(&format!("2026-10-28/{sha256}")), Some(("2026-10-28", sha256.as_str())));
+        assert_eq!(unpin(&format!("2026-10-28.2/{sha256}")), Some(("2026-10-28.2", sha256.as_str())));
+    }
 }
