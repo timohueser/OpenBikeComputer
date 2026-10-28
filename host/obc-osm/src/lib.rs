@@ -144,6 +144,11 @@ impl OsmiumRunner {
         }
     }
 
+    /// A command of this Osmium, for a run that the methods here do not cover.
+    pub fn command(&self) -> Command {
+        Command::new(&self.binary)
+    }
+
     /// The first line of `osmium --version`.
     pub fn version(&self) -> Result<String, String> {
         let out = Command::new(&self.binary).arg("--version").output();

@@ -60,7 +60,8 @@ const lerp = (a: number[], b: number[], t: number) => a.map((v, i) => v + (b[i] 
 
 /**
  * The slots: three ramp colours per cover; a paint per material, alpha 1 where the region names one;
- * per material the share of the satellite's hue that its paint keeps; a colour per lithology, alpha
+ * per material its traits: the share of the satellite's hue that its paint keeps, and its share of
+ * ground in tussocks and low shrubs; a colour per lithology, alpha
  * 1 where it is banded; the cliff (alpha 1 where named), the heather (alpha its share), the speckle
  * (alpha its share), the terrain scalars (outcrops, cos turf_deg, snow_share; alpha the speckle
  * size), the bedding normal (alpha the season's bare_luma, 0 for none) and the palette snap; the
@@ -70,10 +71,10 @@ const lerp = (a: number[], b: number[], t: number) => a.map((v, i) => v + (b[i] 
  */
 export function slots(vocabulary: Vocabulary) {
     const materials = 3 * COVER_ORDER.length, m = vocabulary.materials.length, l = vocabulary.lithologies.length;
-    const satellite = materials + m, lithologies = satellite + m, cliff = lithologies + l, roads = cliff + 8;
+    const traits = materials + m, lithologies = traits + m, cliff = lithologies + l, roads = cliff + 8;
     const kinds = roads + ROAD_SLOTS + 1, hardness = kinds + m;
     return {
-        materials, satellite, lithologies, cliff, heather: cliff + 1, speckle: cliff + 2, terrain: cliff + 3, bedding: cliff + 4, snap: cliff + 5,
+        materials, traits, lithologies, cliff, heather: cliff + 1, speckle: cliff + 2, terrain: cliff + 3, bedding: cliff + 4, snap: cliff + 5,
         sea: cliff + 6, roads, roadLine: roads + ROAD_SLOTS, kinds, hardness, count: hardness + l,
     };
 }
@@ -101,7 +102,7 @@ export function packRules(regions: Region[], vocabulary: Vocabulary, season: num
             const yearly = look.materials?.[id]?.colour;
             const paint = typeof yearly === 'string' ? yearly : yearly?.[SEASONS[season]];
             set(SLOT.materials + i, linear(paint ?? '#000000'), paint ? 1 : 0);
-            set(SLOT.satellite + i, [look.materials?.[id]?.satellite ?? 0, 0, 0], 1);
+            set(SLOT.traits + i, [look.materials?.[id]?.satellite ?? 0, look.materials?.[id]?.clumps ?? vocabulary.materials[i].clumps ?? 0, 0], 1);
             const cover = COVER_ORDER.indexOf(vocabulary.materials[i].cover as (typeof COVER_ORDER)[number]);
             const open = OPEN.includes(vocabulary.materials[i].cover) && id !== 'pasture';
             set(SLOT.kinds + i, [cover, +(MOOR.includes(id) && !!look.moor), +ROCKY.includes(id)], +open);

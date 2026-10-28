@@ -1,0 +1,6 @@
+{
+ "name": "Carpathian log house",
+ "extends": "log-house",
+ "about": "The log house of the Carpathians, whose wooden churches of dark shingle carry onion domes on the tower and the nave: Hutsul, Lemko and Bucovina.",
+ "spire": "domes"
+}

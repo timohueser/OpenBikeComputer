@@ -1,5 +1,5 @@
-"""The ground tiles hold the bytes of specs/trailview-tiles.md: the archive, the material chain on a
-georeferenced tile and the region walk."""
+"""The ground tiles hold the bytes of specs/trailview-tiles.md: the archive, the material chain of
+ground.json on a georeferenced tile and the region walk."""
 
 import io
 import json
@@ -18,9 +18,10 @@ from pmtiles.reader import MmapSource, Reader
 from pyproj import Transformer
 
 from tools import planner_geo as geo
-from tools.trailview import colour, ground, tiles
+from tools.trailview import colour, ground, sources, tiles
 
-VOCABULARY = ground.Vocabulary(json.loads(Path("data/trailview/materials.json").read_text()))
+VOCABULARY = sources.Vocabulary(json.loads(Path("data/trailview/materials.json").read_text()))
+GROUND = json.loads(Path("data/trailview/ground.json").read_text())
 M = VOCABULARY.material
 # A tile of zoom 13 over Engelberg, and one of zoom 10 around it.
 Z, X, Y = 13, *map(int, geo.mercator(8.40, 46.82, 13))
@@ -125,78 +126,88 @@ def raster(path, bounds, values, dtype="int16", nodata=-32768):
     return path
 
 
+def osm_file(path, areas):
+    """An OSM file of closed ways, each [(lon, lat)] corners with its tags, named as a store object,
+    with no extension that names its format."""
+    import osmium
+
+    written = path.with_name("areas.osm.pbf")
+    with osmium.SimpleWriter(str(written)) as writer:
+        node = 0
+        for way, (corners, tags) in enumerate(areas, 1):
+            ids = []
+            for location in corners:
+                node += 1
+                writer.add_node(osmium.osm.mutable.Node(id=node, location=location))
+                ids.append(node)
+            writer.add_way(osmium.osm.mutable.Way(id=way, nodes=ids + ids[:1], tags=tags))
+    return written.rename(path)
+
+
+def map_image(directory, crs, bounds, classes, px_m):
+    """An `arcgis-image` capture over the bounds: the legend of its colours and one image of
+    classes(x, y) at the pixel centres in `crs`."""
+    import base64
+
+    x0, y0, x1, y1 = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform_bounds(*bounds)
+    x0, y0, x1, y1 = (math.floor(x0 / px_m) * px_m, math.floor(y0 / px_m) * px_m, math.ceil(x1 / px_m) * px_m,
+                      math.ceil(y1 / px_m) * px_m)
+    x = x0 + (np.arange(round((x1 - x0) / px_m)) + 0.5) * px_m
+    y = y1 - (np.arange(round((y1 - y0) / px_m)) + 0.5) * px_m
+    found = np.broadcast_to(classes(x[None, :], y[:, None]), (len(y), len(x)))
+    colours = {code: (i + 1, 2 * i + 1, 3 * i + 1) for i, code in enumerate(np.unique(found))}
+    rgb = np.zeros((*found.shape, 4), np.uint8)
+    for code, colour_ in colours.items():
+        rgb[found == code] = (*colour_, 255)
+    entries = []
+    for code, colour_ in colours.items():
+        out = io.BytesIO()
+        Image.new("RGB", (20, 20), colour_).save(out, "PNG")
+        entries.append({"label": f"{code}: class", "imageData": base64.b64encode(out.getvalue()).decode()})
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "legend.json").write_text(json.dumps({"layers": [{"layerId": 1, "legend": entries}]}))
+    Image.fromarray(rgb, "RGBA").save(directory / f"{x0}_{y0}_{x1}_{y1}.png")
+    return {path.name: path for path in directory.iterdir()}
+
+
 class MaterialTest(unittest.TestCase):
-    def test_each_source_refines_only_what_it_names_more_precisely_and_outside_is_no_data(self):
+    def test_each_source_of_the_chain_refines_only_what_it_names_more_precisely_and_outside_is_no_data(self):
         west, south, east, north = geo.tile_bounds(Z, X, Y)
         mid_lon, mid_lat = (west + east) / 2, (south + north) / 2
         around = [west - 0.01, south - 0.01, east + 0.01, north + 0.01]
         north_half, east_half = lambda lat, lon: lat > mid_lat, lambda lat, lon: lon > mid_lon
         with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
             # WorldCover: forest in the west half, grassland in the east half.
-            worldcover = raster(Path(tmp) / "worldcover.tif", around, lambda lat, lon: np.where(east_half(lat, lon), 30, 10), "uint8", 0)
+            worldcover = raster(root / "worldcover.tif", around, lambda lat, lon: np.where(east_half(lat, lon), 30, 10), "uint8", 0)
             # Sentinel-2, the same in each quarter: forest in the west; in the north-east as red as green
             # with an NDVI of 0.6, which is heath; in the south-east bare, with an NDVI of 0.05.
             band = {"B02": (300, 400, 1400), "B03": (500, 650, 1500), "B04": (300, 600, 1500), "B08": (3000, 2500, 1650),
                     "observations": (10, 10, 10)}
-            files = {}
+            mosaics = {}
             for q in range(1, 5):
                 for name, (forest, heath, bare) in band.items():
                     item = f"Sentinel-2_mosaic_2025_Q{q}_TEST_0_0"
-                    files[f"{item}/{name}.tif"] = raster(Path(tmp) / item / f"{name}.tif", around, lambda lat, lon: np.where(
+                    mosaics[f"{item}/{name}.tif"] = raster(root / item / f"{name}.tif", around, lambda lat, lon: np.where(
                         east_half(lat, lon), np.where(north_half(lat, lon), heath, bare), forest))
             # OSM: a needleleaved forest over the north half and natural grassland over the south-east.
+            box = lambda w, s, e, n: [(w, s), (e, s), (e, n), (w, n)]
+            osm = osm_file(root / "7b0bf1524a29", [(box(west - 0.01, mid_lat, east + 0.01, north + 0.01), {"landuse": "forest", "leaf_type": "needleleaved"}),
+                                                    (box(mid_lon, south - 0.01, east + 0.01, mid_lat), {"natural": "grassland"})])
             # CORINE: natural grassland in the north, heath in the south, at 100 m.
-            forests = [(box_m(west - 1, mid_lat, east + 1, north + 1), M["needleleaf-forest"])]
-            areas = [(box_m(mid_lon, south - 1, east + 1, mid_lat), M["rough-grass"])]
-            to_laea = Transformer.from_crs("EPSG:4326", "EPSG:3035", always_xy=True)
-            x0, y0, x1, y1 = to_laea.transform_bounds(*around)
-            corine = np.full((math.ceil((y1 - y0) / 100), math.ceil((x1 - x0) / 100)), M["heath"], np.uint8)
-            corine[: round((y1 - to_laea.transform(mid_lon, mid_lat)[1]) / 100)] = M["rough-grass"]
+            mid_y = Transformer.from_crs("EPSG:4326", "EPSG:3035", always_xy=True).transform(mid_lon, mid_lat)[1]
+            corine = map_image(root / "corine", "EPSG:3035", around, lambda x, y: np.where(y > mid_y, 321, 322), 100)
+            files = {"esa-worldcover": {"worldcover.tif": worldcover}, "sentinel-2-mosaics": mosaics, "corine-land-cover": corine}
             bounds = [west, south, west + 0.9 * (east - west), north]
-            material = ground.Material(VOCABULARY, bounds, [worldcover], [(corine, Affine(100, 0, x0, 0, -100, y1))], forests, areas,
-                                       colour.mosaics(files))
-            texels = material(Z, X, Y)
+            steps, _ = sources.chain("material", GROUND, VOCABULARY, files.get, bounds, osm)
+            no_rock = lambda z, x, y: np.zeros((tiles.TILE, tiles.TILE), np.uint8)
+            texels = ground.Material(bounds, steps, colour.mosaics(mosaics), no_rock)(Z, X, Y)
         n, w, s, e = 100, 100, 412, 300
         self.assertEqual(texels[n, w].tolist(), [M["needleleaf-forest"], 0])
         self.assertEqual(texels[s, w, 0], M["forest"], "heath does not name a forest more precisely")
         self.assertEqual(texels[n, e, 0], M["heath"], "the satellite's heath; natural grassland refines only grassland")
         self.assertEqual(texels[s, e].tolist(), [M["rough-grass"] | ground.BARREN, 255])
         self.assertEqual(texels[s, -1].tolist(), [ground.NO_DATA, 0])
-
-
-class LithologyTest(unittest.TestCase):
-    def setUp(self):
-        import pyogrio
-        import zipfile
-
-        self.temporary = tempfile.TemporaryDirectory()
-        root = Path(self.temporary.name)
-        z, x, y = 10, *map(int, geo.mercator(8.40, 46.82, 10))
-        self.bounds = geo.tile_bounds(z, x, y)
-        x0, y0, x1, y1 = Transformer.from_crs("EPSG:4326", "EPSG:3034", always_xy=True).transform_bounds(*self.bounds)
-        layer = ground.IGME5000[0]
-        (root / "shp").mkdir()
-        pyogrio.raw.write(root / "shp" / f"{layer}.shp", geometry=shapely.to_wkb([shapely.box(x0, y0, x1, y1)]),
-                          field_data=[np.array(["dolomite/dolostone"], object)], fields=["Portr_Petr"], crs="EPSG:3034",
-                          geometry_type="Polygon", driver="ESRI Shapefile")
-        # A store object has no extension.
-        self.archive = root / "33e6f843"
-        with zipfile.ZipFile(self.archive, "w") as archive:
-            for path in sorted((root / "shp").iterdir()):
-                archive.write(path, f"europe/data/{path.name}")
-
-    def tearDown(self):
-        self.temporary.cleanup()
-
-    def test_igme_5000_is_read_in_its_archive_and_a_term_with_a_slash_names_its_rock(self):
-        import pyogrio
-
-        with tempfile.TemporaryDirectory() as empty, mock.patch.object(tempfile, "tempdir", empty):
-            path = ground.igme_shapefile({"IGME5000.zip": self.archive})
-            self.assertEqual(list(Path(empty).iterdir()), [])
-        self.assertEqual(pyogrio.read_info(path)["features"], 1)
-        units, = ground.lithology_units([path], [ground.IGME5000], self.bounds, VOCABULARY)
-        self.assertEqual([code for _, code in units], [VOCABULARY.lithology["dolomite"]])
 
 
 class RegionTest(unittest.TestCase):
@@ -237,23 +248,6 @@ class RegionTest(unittest.TestCase):
         self.assertEqual(region[256, column(west + 7 * km)], 2)
         self.assertEqual(region[256, column(west + 12 * km)], 1, "outside every place, nearest to Switzerland")
         self.assertEqual(region[256, column(west + 25 * km)], 0, "France, which the region does not name")
-
-
-class OsmAreasTest(unittest.TestCase):
-    def test_a_forest_of_a_store_object_is_read(self):
-        import osmium
-
-        with tempfile.TemporaryDirectory() as directory:
-            pbf = Path(directory) / "forest.osm.pbf"
-            with osmium.SimpleWriter(str(pbf)) as writer:
-                corners = [(8.0, 47.0), (8.01, 47.0), (8.01, 47.01), (8.0, 47.01)]
-                for node, location in enumerate(corners, 1):
-                    writer.add_node(osmium.osm.mutable.Node(id=node, location=location))
-                tags = {"landuse": "forest", "leaf_type": "needleleaved"}
-                writer.add_way(osmium.osm.mutable.Way(id=1, nodes=[1, 2, 3, 4, 1], tags=tags))
-            # The store names an object by its digest, with no extension that names its format.
-            forests, _ = ground.osm_areas(pbf.rename(Path(directory) / "7b0bf1524a29"), VOCABULARY)
-        self.assertEqual(len(forests), 1)
 
 
 if __name__ == "__main__":

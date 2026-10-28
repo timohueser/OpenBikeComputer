@@ -8,7 +8,7 @@ import { EYE, Instances, VIEWS, type ModelSpec, type Producer, type Surfaces } f
 import { f16 } from '../instances/points';
 import { TREES } from '../models/library';
 import { PLANTS } from '../models/plant-library';
-import { seasonOf, type Rules, type Season } from '../rules/regions';
+import { seasonOf, type Region, type Rules, type Season, type Vocabulary } from '../rules/regions';
 import type { BuiltMesh, PlantJob } from './plant-worker';
 import type { TreeModels } from './tree-models';
 
@@ -23,7 +23,27 @@ const SHRUB_MESH_M = 60;
 /** How far a model takes its hue from the ground (draw.wgsl): a ground plant, and one that keeps its own colour or stands as a shrub, as the prototype's `tie`. */
 const TIE = 0.85, OWN_TIE = 0.35;
 const MOOR = ['heath', 'bog'], NONE = 0xffff;
-const HABITAT = { moor: 1 << 12, lush: 1 << 13 }, CLUMPED = 1 << 14, MOOR_REGION = 1;
+const HABITAT = { moor: 1 << 12, lush: 1 << 13 }, MOOR_REGION = 1;
+export const CLUMPED = 1 << 14;
+
+/** A material's word of plants.wgsl: its cover, MOOR at bit 8, and its share of its cover's shrubs in 255ths at bit 16. */
+export function materialWord({ id, cover, shrubs = 1 }: Vocabulary['materials'][number]): number {
+    return Math.max(0, COVER_ORDER.indexOf(cover as (typeof COVER_ORDER)[number])) | (MOOR.includes(id) ? 256 : 0) | (Math.round(shrubs * 255) << 16);
+}
+
+/**
+ * The ground plants of a region that its list holds, what the pack says of each over its plant
+ * model's `ground`, with their words of plants.wgsl: the covers that each grows on, its habitat and
+ * CLUMPED, and at bit 16 the salt of its stands. The salt comes from the species, so its stands stay
+ * put whatever the shares of the other plants.
+ */
+export function groundRules(region: Region) {
+    return groundList(region.ground.filter(rule => rule.model in PLANTS).map(rule => ({ ...PLANTS[rule.model].ground, ...rule }))).map(rule => {
+        const on = rule.on.reduce((bits, cover) => bits | (1 << COVER_ORDER.indexOf(cover as (typeof COVER_ORDER)[number])), 0);
+        const salt = [...rule.id].reduce((h, c) => (31 * h + c.charCodeAt(0)) % 997, 7);
+        return { ...rule, word: on | (rule.habitat ? HABITAT[rule.habitat] : 0) | (rule.clumped ? CLUMPED : 0) | (salt << 16) };
+    });
+}
 
 interface Resources { gpu: Gpu; ground: GPUComputePipeline; shrubs: GPUComputePipeline; groups: GPUBindGroup[]; params: GPUBuffer }
 
@@ -61,7 +81,7 @@ export class Plants implements Producer {
         instances.produce(this);
         const { materials } = rules.vocabulary;
         const data = new Uint32Array(64 + rules.regions.length * REGION_WORDS * 4).fill(NONE), floats = new Float32Array(data.buffer);
-        materials.forEach(({ id, cover }, code) => (data[code] = Math.max(0, COVER_ORDER.indexOf(cover as (typeof COVER_ORDER)[number])) | (MOOR.includes(id) ? 256 : 0)));
+        materials.forEach((material, code) => (data[code] = materialWord(material)));
         // The first of a run of models, one per entry.
         const models = (entries: Model[]) => {
             const at = this.list.findIndex(m => m.model === entries[0].model && m.shrub === entries[0].shrub && m.evergreen === entries[0].evergreen && m.tie === entries[0].tie);
@@ -75,15 +95,14 @@ export class Plants implements Producer {
             const at = 64 + r * REGION_WORDS * 4;
             data.fill(0, at, at + 4);
             data[at] = region.look.moor ? MOOR_REGION : 0;
-            const ground = groundList(region.ground.filter(rule => rule.model in PLANTS).map(rule => ({ ...PLANTS[rule.model].ground, ...rule }))).flatMap(rule => {
+            const ground = groundRules(region).flatMap(rule => {
                 const tie = rule.own ? OWN_TIE : TIE;
                 const first = models(Array.from({ length: SEEDS }, (_, k) => ({ model: rule.model, seed: k + 1, evergreen: false, shrub: false, tie })));
                 return first === undefined ? [] : [{ ...rule, first }];
             });
             ground.forEach((rule, k) => {
-                const on = rule.on.reduce((bits, cover) => bits | (1 << COVER_ORDER.indexOf(cover as (typeof COVER_ORDER)[number])), 0);
                 const w = at + 4 * (1 + k);
-                data.set([rule.first, on | (rule.habitat ? HABITAT[rule.habitat] : 0) | (rule.clumped ? CLUMPED : 0), 0, f16(rule.height[0]) | (f16(rule.height[1]) << 16)], w);
+                data.set([rule.first, rule.word, 0, f16(rule.height[0]) | (f16(rule.height[1]) << 16)], w);
                 floats[w + 2] = rule.share;
             });
             const shrubs = region.trees.filter(rule => rule.cover === 'shrub' && (rule.model in PLANTS || rule.model in TREES)).sort((a, b) => b.weight - a.weight).slice(0, SLOTS).flatMap(rule => {

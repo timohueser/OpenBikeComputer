@@ -29,11 +29,21 @@ CASES = [
     ("regions/world", ["leaf"], "deciduous", 'regions/world.json: leaf: "deciduous" is not one of "needleleaved", "broadleaved", "mixed"'),
     ("overlays", ["atlantis"], {"look": {}}, "overlays/atlantis.json: has no regions/atlantis.json"),
     ("overlays", ["alps"], {"look": {"banks": "#000000"}}, "overlays/alps.json: look.banks: is an unknown key"),
+    ("materials", ["materials", 9, "clumps"], 2, "materials.json: materials[9].clumps: 2 is not a number from 0 to 1"),
+    ("styles/trullo", ["roof"], "dome", 'styles/trullo.json: roof: "dome" is not one of "cone", "flat"'),
     # Not the prototype's: the engine draws each model that a pack names, also one that a child pack inherits.
-    ("packs/alps", ["trees", "norway-spruce", "model"], "monkey-puzzle", "regions/alps.insubric.json: pack alps.insubric: tree norway-spruce has no model monkey-puzzle"),
+    ("packs/alps", ["trees", "norway-spruce", "model"], "no-such-tree", "regions/alps.insubric.json: pack alps.insubric: tree norway-spruce has no model no-such-tree"),
     ("packs/alps", ["ground", "bilberry", "model"], "norway-spruce", "regions/alps.json: pack alps: ground plant bilberry has no model norway-spruce"),
-    ("packs/alps", ["orchard"], "apple", "regions/alps.json: pack alps: orchard has no model apple"),
+    ("packs/alps", ["orchard"], "no-such-orchard", "regions/alps.json: pack alps: orchard has no model no-such-orchard"),
     ("packs/alps", ["style", "xx-yy"], "chalet", "regions/alps.json: xx-yy is not a place of countries.json"),
+    # Not the prototype's: a ground source is a row of data/sources.toml, and its legend names the vocabulary.
+    ("ground", ["material", "sources", 3, "source"], "land-cover-xx",
+     'ground.json: material.sources[3].source: "land-cover-xx" is not a source of data/sources.toml'),
+    ("ground", ["lithology", "sources", 0, "legend", "classes", 0, 1], "lava",
+     'ground.json: lithology.sources[0].legend.classes[0][1]: "lava" is not one of ' + ", ".join(
+         f'"{entry["id"]}"' for entry in RULESET["materials"]["lithologies"])),
+    ("ground", ["lithology", "sources", 0, "zoom"], DELETE, "ground.json: lithology.sources[0]: has no zoom"),
+    ("ground", ["material", "sources", 3, "zoom"], 11, "ground.json: material.sources[3].zoom: only a vector lithology source has a zoom"),
 ]
 
 
@@ -52,7 +62,7 @@ def edited(file, path, value):
 
 
 class RulesetTest(unittest.TestCase):
-    def test_the_snapshot_has_no_problems(self):
+    def test_the_ruleset_has_no_problems(self):
         self.assertEqual(rules.validate(RULESET), [])
 
     def test_each_bad_case_of_the_prototype_check_is_a_problem(self):
@@ -74,10 +84,17 @@ class RulesetTest(unittest.TestCase):
         trees = ruleset["packs"]["alps"]["trees"]
         spruce = {**trees["norway-spruce"], "model": "norway-spruce"}
         trees.update({f"spruce-{i}": spruce for i in range(rules.MAX_TREE_SPECIES)})
-        trees["swiss-stone-pine"] = {**spruce, "model": "swiss-stone-pine"}
+        trees["no-such-tree"] = {**spruce, "model": "no-such-tree"}
         problems = rules.validate(ruleset)
         self.assertTrue(any(p.startswith("regions/alps.json: pack alps has ") and p.endswith("more than the 32 that the forest holds") for p in problems), problems)
-        self.assertIn("regions/alps.json: pack alps: tree swiss-stone-pine has no model swiss-stone-pine", problems)
+        self.assertIn("regions/alps.json: pack alps: tree no-such-tree has no model no-such-tree", problems)
+
+    def test_more_house_styles_than_the_style_table_holds_is_a_problem(self):
+        ruleset = copy.deepcopy(RULESET)
+        ruleset["styles"].update({f"cottage-{i}": ruleset["styles"]["cottage"] for i in range(rules.MAX_STYLES - len(ruleset["styles"]))})
+        self.assertEqual([p for p in rules.validate(ruleset) if p.startswith("styles/: ")], [])
+        ruleset["styles"]["cottage-last"] = ruleset["styles"]["cottage"]
+        self.assertIn("styles/: 64 house styles, more than the 63 that the engine's style table holds", rules.validate(ruleset))
 
     def test_a_pack_with_more_shrubs_or_ground_plants_than_the_plants_hold_is_a_problem(self):
         ruleset = copy.deepcopy(RULESET)

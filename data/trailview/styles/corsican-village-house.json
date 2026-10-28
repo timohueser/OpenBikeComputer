@@ -1,0 +1,14 @@
+{
+ "name": "Corsican village house",
+ "extends": "ligurian-house",
+ "about": "Tall and narrow, standing close together: grey granite rubble or render in cream, ochre or salmon, with shutters painted grey-green or brown, under a low roof of orange curved tile or grey schist slabs: the villages of Corsica.",
+ "storeys": 3,
+ "palette": {
+  "render": ["#958c80", "#9e958a", "#8a8278", "#968e84", "#efe3c6", "#dfb46e", "#e3a587"],
+  "roof": ["#c0643e", "#b55b3a", "#c86e45", "#6f6d69", "#7a7772"],
+  "door": ["#5a4030", "#6b4e36", "#4f5a52"],
+  "shutter": ["#7d8f80", "#6f8475", "#6b4e36", "#5a4030"],
+  "plinth": "#77736c",
+  "chimney": "#958c80"
+ }
+}

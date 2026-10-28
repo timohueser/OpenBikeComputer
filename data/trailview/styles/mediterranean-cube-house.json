@@ -1,0 +1,15 @@
+{
+ "name": "Mediterranean cube house",
+ "extends": "whitewashed-house",
+ "about": "Whitewashed cubes, some in pale limestone ochre, with a flat roof behind a low parapet, and small windows with green or blue shutters: Malta, the towns of Apulia, Níjar, the Canaries and the Aegean.",
+ "roof": "flat",
+ "windows": 0.75,
+ "palette": {
+  "render": ["#f7f6f1", "#f4f3ed", "#f7f6f1", "#f1efe8", "#e9dcc0", "#e2d2b0"],
+  "roof": ["#d8d2c4", "#cfc8b8", "#e0dbd0"],
+  "door": ["#3f6caa", "#4f8a6a", "#2f6e8e", "#5a4030"],
+  "shutter": ["#3f6caa", "#4f8a6a", "#2f6e8e", "#5a8f5a"],
+  "plinth": "#c8beaa",
+  "chimney": "#f4f3ed"
+ }
+}

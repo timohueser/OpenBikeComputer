@@ -21,7 +21,7 @@ describe('the rules of the ground', () => {
     it('lays out the slots that look.wgsl reads', () => {
         const SLOT = slots(vocabulary);
         expect(SLOT.materials).toBe(33);
-        expect(SLOT.satellite).toBe(33 + 3);
+        expect(SLOT.traits).toBe(33 + 3);
         expect(SLOT.lithologies).toBe(33 + 6);
         expect([SLOT.heather, SLOT.speckle, SLOT.terrain, SLOT.bedding, SLOT.snap].map(slot => slot - SLOT.cliff)).toEqual([1, 2, 3, 4, 5]);
         expect([SLOT.roads, SLOT.roadLine, SLOT.kinds].map(slot => slot - SLOT.cliff)).toEqual([8, 17, 18]);
@@ -43,5 +43,13 @@ describe('the rules of the ground', () => {
         const SLOT = slots(vocabulary), moor = (look: Region['look']) => packRulesOn([{ ...region, look }], vocabulary, 180)[4 * (SLOT.kinds + 1) + 1];
         expect(moor(region.look)).toBe(0);
         expect(moor({ ...region.look, moor: { heather: '#5e4552', share: 0.35 } })).toBe(1);
+    });
+
+    it("gives each material its clumps, the region's where it names them", () => {
+        const SLOT = slots(vocabulary), clumps = (look: Region['look'], v = vocabulary) => packRulesOn([{ ...region, look }], v, 180)[4 * (SLOT.traits + 1) + 1];
+        expect(clumps(region.look)).toBe(0);
+        const rough = { ...vocabulary, materials: vocabulary.materials.map(m => (m.id === 'heath' ? { ...m, clumps: 0.75 } : m)) };
+        expect(clumps(region.look, rough)).toBe(0.75);
+        expect(clumps({ ...region.look, materials: { heath: { clumps: 0.25 } } }, rough)).toBe(0.25);
     });
 });

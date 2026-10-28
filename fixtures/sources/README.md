@@ -10,5 +10,8 @@ shipping payloads and test-owned protocol vectors stay with their owners.
 [Route import](route-import/README.md) holds the captured planner exports, each with its
 provenance, its licence and the duplicate a test holds identical to it.
 
+[TrailView ground](trailview-ground/README.md) holds one captured answer of the service of each
+national ground map, with its request and its licence.
+
 [Ride Assistant](ride-assistant/README.md) holds the source manifests, regional boundaries, and
 the GPS replays with their clock and UTC-offset stamps.

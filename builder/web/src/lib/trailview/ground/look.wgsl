@@ -84,6 +84,7 @@ struct Ground {
     coarse_open: f32,
     region: u32,
     lithology: u32,
+    material: u32,
 }
 
 // Dave Hoskins' hash.
@@ -107,7 +108,7 @@ fn rule(region: u32, slot: i32) -> vec4f {
 
 // The slots of ground/rules.ts, from the sizes of the vocabulary.
 fn slot_materials() -> i32 { return 33; }
-fn slot_satellite() -> i32 { return 33 + i32(look.codes.z); }
+fn slot_traits() -> i32 { return 33 + i32(look.codes.z); }
 fn slot_lithologies() -> i32 { return 33 + 2 * i32(look.codes.z); }
 fn slot_cliff() -> i32 { return slot_lithologies() + i32(look.codes.w); }
 fn slot_roads() -> i32 { return slot_cliff() + 8; }
@@ -191,7 +192,7 @@ fn albedo_of(parts: Parts, region: u32, material: u32, sat: vec4f, barren: f32) 
             albedo *= mix(1.0, clamp(luma(pow(sat.rgb, vec3f(2.2))) / bare_luma, 0.6, 1.6), barren);
         }
         // The paint keeps its material's share of the satellite's hue, at its own brightness.
-        let keep = select(0.0, rule(region, slot_satellite() + i32(material)).x, parts.paint.a > 0.0);
+        let keep = select(0.0, rule(region, slot_traits() + i32(material)).x, parts.paint.a > 0.0);
         if (keep > 0.0) {
             painted = mix(painted, shown * (luma(painted) / max(luma(shown), 1e-4)), keep);
         }
@@ -467,6 +468,7 @@ fn ground_at(level: u32, s: vec2f, world: vec2f, footprint: f32, sloped: bool) -
     let cell = textureLoad(cells, in_page(page, vec2i(floor(texel + 0.5))), page_layer(page), 0);
     g.region = cell.b;
     g.lithology = cell.g;
+    g.material = cell.r;
     return g;
 }
 
@@ -609,19 +611,67 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     let slope = n.z;
     // The ground is mottled at every scale a pixel can show: patches tens of metres across, tussocks
     // and bare patches, and near the eye the sward's blades. Each scale fades to its mean once a pixel spans it.
-    var mottle = 0.0;
+    let r = length(relative.xy);
+    // The share of the sward in tussocks and low shrubs that its material gives. Within about 50 m the
+    // plant models stand instead.
+    var clumped = 0.0;
+    if (g.blades > 0.0 && r > 25.0 && road.cover < 1.0) {
+        clumped = rule(region, slot_traits() + i32(g.material)).y * g.blades * (1.0 - road.cover) * smoothstep(25.0, 50.0, r);
+    }
+    var n15 = 0.5;
+    var n25 = 0.5;
+    var n08 = 0.5;
     if (footprint < 16.0) {
-        mottle = 0.14 * (noise(world / 15.0) - 0.5) * (1.0 - smoothstep(4.0, 16.0, footprint));
+        n15 = noise(world / 15.0);
+    }
+    if (footprint < select(2.0, 6.0, clumped > 0.0)) {
+        n25 = noise(world / 2.5);
     }
     if (footprint < 2.0) {
-        mottle += (0.22 * noise(world / 2.5) + 0.12 * noise(world / 0.8) - 0.17) * (1.0 - smoothstep(0.3, 2.0, footprint));
+        n08 = noise(world / 0.8);
     }
+    let mottle = 0.14 * (n15 - 0.5) * (1.0 - smoothstep(4.0, 16.0, footprint)) + (0.22 * n25 + 0.12 * n08 - 0.17) * (1.0 - smoothstep(0.3, 2.0, footprint));
     var albedo = g.albedo * (1.0 + mottle);
+    // Tussocks and low shrubs, more in some stretches about 60 m across than in others: tufts about 1 m,
+    // shrubs about 3 m and thickets about 15 m across on the mottle's highs, and bushes 1 to 5 m long,
+    // each darker and more olive than the sward. Each fades to its mean once a pixel spans it. The ground
+    // between them is lighter, so the sward keeps its mean colour.
+    if (clumped > 0.0) {
+        clumped = min(clumped * (0.5 + noise(world / 60.0 + 23.0)), 0.75);
+        // Value noise lies above this on about `clumped` of the ground.
+        let above = 0.5 + (0.5 - clumped) / 1.65;
+        let tuft = mix(smoothstep(above, above + 0.06, n08), clumped, smoothstep(0.3, 1.0, footprint));
+        let shrub = mix(smoothstep(above + 0.04, above + 0.1, n25), 0.85 * clumped, smoothstep(1.5, 6.0, footprint));
+        let thicket = mix(smoothstep(above + 0.08, above + 0.14, n15), 0.7 * clumped, smoothstep(4.0, 16.0, footprint));
+        // A bush covers 0.1 of its cell on average, and stands in about 0.6 × clumped of the cells.
+        let area = 0.06 * clumped;
+        var bush = area;
+        if (DETAIL && footprint < 2.5) {
+            // At most one bush in each 8 m cell, its middle inside its cell, so no neighbour is read. The
+            // cells are turned and warped by the mottle's noise, so the bushes lie off any grid with ragged
+            // outlines; the 15 m noise gathers them in groups. A bush is longer along the contour.
+            let turn = mat2x2f(0.8, 0.6, -0.6, 0.8);
+            let q = turn * world + 6.0 * (n15 - 0.5) * vec2f(1.0, 0.6) + 3.0 * (n25 - 0.5) * vec2f(-0.5, 1.0);
+            let cell = floor(q / 8.0);
+            let h = hash(cell + 41.0);
+            let fade = smoothstep(0.5, 2.5, footprint);
+            bush = area * fade;
+            if (fract(h * 3.71) < 1.2 * clumped * smoothstep(0.35, 0.65, n15)) {
+                let d = q - (cell + 0.3 + 0.4 * fract(h * vec2f(7.13, 13.7))) * 8.0;
+                let size = fract(h * 31.3);
+                let radius = (0.5 + 1.9 * size * size) * (0.75 + 0.5 * n08);
+                let along = normalize(turn * vec2f(-n.y, n.x) * 3.0 + fract(h * vec2f(5.17, 2.93)) - 0.5);
+                let dist = length(vec2f(dot(d, along) / (1.0 + 0.6 * fract(h * 11.3)), dot(d, vec2f(-along.y, along.x))));
+                bush = mix((0.75 + 0.5 * fract(h * 17.9)) * (1.0 - smoothstep(radius - 0.3, radius + 0.3, dist)), area, fade);
+            }
+        }
+        let dark = min(0.45 * tuft + 0.45 * shrub + 0.35 * thicket, 0.85);
+        albedo *= mix(vec3f(1.0), vec3f(0.42, 0.5, 0.35), dark) * mix(1.0, 0.45, bush) / ((1.0 - 0.56 * clumped) * (1.0 - 0.55 * area));
+    }
     // Blades: rows of strokes fixed to the ground, so they stay in place when the eye moves. A pixel
     // takes the rows of the one or two of 32 directions nearest its line from the eye, so a blade
     // stands upright on the screen. Only near the eye, on ground it looks along: a bank that faces it
     // would stretch them tall.
-    let r = length(relative.xy);
     if (DETAIL && r < 45.0) {
         let blades = (1.0 - smoothstep(0.4, 0.8, lateral / BLADE_WIDTH)) * (1.0 - smoothstep(0.25, 0.6, footprint / BLADE_LENGTH))
             * (1.0 - smoothstep(25.0, 45.0, r)) * (1.0 - smoothstep(0.45, 0.75, dot(n, normalize(-relative)))) * g.blades;

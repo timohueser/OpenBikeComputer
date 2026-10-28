@@ -1,0 +1,16 @@
+{
+ "name": "Trullo",
+ "extends": "andalusian-white-house",
+ "about": "Small whitewashed drystone houses, one cone of grey stone slabs over each room, each cone on a white drum under a white pinnacle, the cones of a house joined in a cluster: the Valle d'Itria in Apulia.",
+ "roof": "cone",
+ "pitch": [60, 66],
+ "storeys": 1,
+ "windows": 0.6,
+ "palette": {
+  "render": ["#f6f5f0", "#f2f1eb", "#f8f7f2"],
+  "roof": ["#8a8780", "#7d7a73", "#959089", "#85827a"],
+  "door": ["#5a4030", "#3f5a3a", "#3f6caa"],
+  "plinth": "#b9b4aa",
+  "chimney": "#f2f1eb"
+ }
+}

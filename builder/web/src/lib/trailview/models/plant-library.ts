@@ -19,7 +19,7 @@ export interface Ground {
     /** It keeps its own colour rather than the ground's. */
     own?: true;
     /** It grows in stands: patches a few tens of metres across. */
-    clumped?: true;
+    clumped?: boolean;
 }
 
 export interface Plant {

@@ -1,0 +1,17 @@
+{
+ "name": "Fachwerk house",
+ "extends": "basque-house",
+ "about": "A dark or ox-red timber frame on white or ochre render over a sandstone plinth, under a steep roof of red tile: Hesse, the Rhön, the Moselle and Franconia.",
+ "pitch": [48, 56],
+ "eave": 0.4,
+ "verge": 0.3,
+ "shutters": false,
+ "palette": {
+  "render": ["#f2eee4", "#efe7d4", "#e6cf9a", "#f2eee4"],
+  "wood": ["#3f2a1e", "#4a3022", "#5a3a26", "#6e2e22"],
+  "roof": ["#a8492f", "#b5553a", "#9a4630", "#7a3a2c"],
+  "door": ["#4a3022", "#3f5a3a", "#6e2e22"],
+  "plinth": "#9c6a55",
+  "chimney": "#8e4431"
+ }
+}
