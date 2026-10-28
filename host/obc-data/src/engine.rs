@@ -942,6 +942,10 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         }
     }
 
+    /// The Python that the repository pins. A fixture project asks for the same one, which CI
+    /// installs as the system Python.
+    pub(crate) const PYTHON: &str = include_str!("../../../.python-version");
+
     pub(crate) fn write(path: &Path, text: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();

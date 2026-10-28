@@ -120,7 +120,7 @@ jobs:
         run: python3 tools/prose.py --check
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version-file: .python-version
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: &python-uv-version "0.8.17"
@@ -257,6 +257,10 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      # The obc-data tests run Python steps on the system Python that .python-version names.
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: *python-uv-version
@@ -277,9 +281,6 @@ jobs:
         run: bash tools/ci/test.sh doctests
       - name: cargo test (obc-formats, default features = the device's shape)
         run: bash tools/ci/test.sh formats-default
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - name: Install Python test reporter
         run: uv sync --locked --group dev --group planner-snow --group forest-reference
       - name: firmware resource/dependency tool unit tests
@@ -404,7 +405,7 @@ jobs:
       - uses: ./.github/actions/setup-host-deps
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version-file: .python-version
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: *python-uv-version
@@ -1260,7 +1261,7 @@ jobs:
           cache-dependency-path: planner/search/package-lock.json
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version-file: .python-version
       - run: npm ci --prefix planner/search
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
