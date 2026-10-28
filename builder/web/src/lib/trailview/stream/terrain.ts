@@ -8,7 +8,7 @@ import type { PageData } from './heights';
 /** The deepest stored zoom: the planner's zooms 0 to 12, and zoom 13 where a national model holds the ground. */
 export const TILE_ZOOM = 13;
 const WORKERS = 2;
-/** Feature tile bodies kept for the terrain, the houses and the orchards, which read the same tiles. */
+/** Feature tile bodies kept for the terrain and the houses, which read the same tiles. */
 const FEATURE_BODIES = 32 * 2 ** 20;
 
 /** Where the stored terrain comes from: the body of tile z/x/y (undefined where it is absent) and its pages. */

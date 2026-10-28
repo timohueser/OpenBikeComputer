@@ -59,22 +59,22 @@ const lerp = (a: number[], b: number[], t: number) => a.map((v, i) => v + (b[i] 
 
 /**
  * The slots: three ramp colours per cover; a paint per material, alpha 1 where the region names one;
- * per material its traits: the share of the satellite's hue that its paint keeps, and its share of
- * ground in tussocks and low shrubs; a colour per lithology, alpha 1 where it is banded; the cliff
+ * per material its traits: the share of the satellite's hue that its paint keeps, its share of
+ * ground in tussocks and low shrubs, and 1 where its rows are hedges; a colour per lithology, alpha 1 where it is banded; the cliff
  * (alpha 1 where named), the colour of each patch (alpha its share), the terrain scalars (outcrops,
  * cos turf_deg, snow_share), the bedding normal (alpha the season's bare_luma, 0 for none) and the
  * palette snap; the sea's deep and shallow colours; per patch its size and 1 for dots; the paint of
  * the turf (alpha 1 where it has one); the road surfaces and the edge line of main roads. Then the
  * vocabulary: per material its cover, the patches over it as bits, rocky and rough; per lithology
- * its hardness.
+ * its hardness; per material the metres across its rows and along them (fields.wgsl), 0 where it has none.
  */
 export function slots(vocabulary: Vocabulary) {
     const materials = 3 * COVER_ORDER.length, m = vocabulary.materials.length, l = vocabulary.lithologies.length;
     const traits = materials + m, lithologies = traits + m, cliff = lithologies + l, roads = cliff + 10;
-    const kinds = roads + ROADS.length + 1, hardness = kinds + m;
+    const kinds = roads + ROADS.length + 1, hardness = kinds + m, rows = hardness + l;
     return {
         materials, traits, lithologies, cliff, patches: cliff + 1, terrain: cliff + 3, bedding: cliff + 4, snap: cliff + 5,
-        sea: cliff + 6, shapes: cliff + 8, turf: cliff + 9, roads, roadLine: roads + ROADS.length, kinds, hardness, count: hardness + l,
+        sea: cliff + 6, shapes: cliff + 8, turf: cliff + 9, roads, roadLine: roads + ROADS.length, kinds, hardness, rows, count: rows + m,
     };
 }
 
@@ -112,11 +112,12 @@ export function packRules(regions: Region[], vocabulary: Vocabulary, season: num
         const patches = patchesOf(look);
         const under = patches.map(patch => named(vocabulary, patch.on));
         ramps(season, region).forEach((c, i) => set(i, c, 1));
-        vocabulary.materials.forEach(({ id, cover, clumps, tags = [] }, i) => {
+        vocabulary.materials.forEach(({ id, cover, clumps, tags = [], rows }, i) => {
             set(SLOT.materials + i, ...paint(inSeason(look.materials?.[id]?.colour, season), 1));
-            set(SLOT.traits + i, [look.materials?.[id]?.satellite ?? 0, look.materials?.[id]?.clumps ?? clumps ?? 0, 0], 1);
+            set(SLOT.traits + i, [look.materials?.[id]?.satellite ?? 0, look.materials?.[id]?.clumps ?? clumps ?? 0, +!!rows?.hedge], 1);
             const patched = under.reduce((bits, codes, k) => bits | (codes.includes(i) ? 1 << k : 0), 0);
             set(SLOT.kinds + i, [COVER_ORDER.indexOf(cover as (typeof COVER_ORDER)[number]), patched, +tags.includes('rocky')], +tags.includes('rough'));
+            set(SLOT.rows + i, [...(rows?.across_m ?? [0, 0]), rows?.along_m[0] ?? 0], rows?.along_m[1] ?? 0);
         });
         vocabulary.lithologies.forEach(({ id, hardness }, i) => {
             const rock = look.lithology?.[id];

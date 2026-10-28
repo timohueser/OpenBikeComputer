@@ -35,6 +35,6 @@
   "cattle": { "model": "simmental-cattle", "groups": 2, "size": [3, 15], "on": ["pasture", "grassland", "arable"] },
   "horse": { "groups": 1, "size": [1, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
- "orchard": "hawthorn",
+ "rows": { "orchard": "hawthorn" },
  "style": { "ro-mm": "log-house", "pl-ma": "log-house", "sk-zi": "log-house", "sk-pv": "log-house", "ua": "log-house", "*": "house" }
 }

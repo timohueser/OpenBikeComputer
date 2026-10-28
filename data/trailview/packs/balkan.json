@@ -51,6 +51,6 @@
   "cattle": { "model": "simmental-cattle", "groups": 2, "size": [3, 12], "on": ["pasture", "grassland", "arable"] },
   "horse": { "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
- "orchard": "hawthorn",
+ "rows": { "orchard": "hawthorn" },
  "style": "village-house"
 }

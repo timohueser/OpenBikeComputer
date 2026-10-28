@@ -44,6 +44,6 @@
   "horse": { "groups": 1, "size": [3, 10], "on": ["heath", "rough-grass", "wet-grassland", "grassland"] },
   "iberian-ibex": { "model": "goat", "latin": "Capra pyrenaica", "groups": 1, "size": [3, 12], "on": ["bare-rock", "scree", "sparse"] }
  },
- "orchard": "hawthorn",
+ "rows": { "orchard": "hawthorn" },
  "style": { "es-cl": "slate-stone-house", "es-ga": "slate-stone-house", "pt-04": "slate-stone-house", "es-ex": "village-house", "es-cm": "village-house", "pt-05": "village-house", "pt-12": "village-house", "*": "stone-house" }
 }

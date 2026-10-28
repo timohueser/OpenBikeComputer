@@ -59,6 +59,15 @@ class CombineTest(unittest.TestCase):
                          [M["pasture"], M["inland-water"], M["broadleaf-forest"], M["bog"]])
 
 
+    def test_an_osm_orchard_of_berries_takes_back_a_corine_orchard_and_nothing_else(self):
+        fine = sources.refinements(GROUND["material"]["refines"], M)
+        osm = [entry for entry in GROUND["material"]["sources"] if entry.get("protocol") == "osm"][-1]
+        berries = sources.Legend(osm["legend"], M)({"landuse": "orchard", "trees": "blueberry_plants"})
+        out = np.array([M["orchard"], M["forest"], M["grassland"]], np.uint8)
+        self.assertEqual(sources.combine(out, np.full(3, berries, np.uint8), "refine", fine).tolist(),
+                         [M["arable"], M["forest"], M["grassland"]])
+
+
 class HeathTest(unittest.TestCase):
     def test_ground_that_greens_in_spring_is_heath_only_off_calcareous_rock(self):
         entry = next(entry for entry in GROUND["material"]["sources"] if entry.get("rule") == "satellite-heath")

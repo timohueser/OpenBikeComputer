@@ -15,7 +15,9 @@ import type { TreeModels } from './tree-models';
 /** As plants.wgsl: the units of a cell of each grid, the reaches in metres, the list slots per region, vec4 per region and shapes per ground plant. */
 const GROUND_UNITS = 32, SHRUB_UNITS = 256, GROUND_M = 60, SHRUB_M = 500;
 export const SLOTS = 16;
-const REGION_WORDS = 3 * SLOTS, SEEDS = 3;
+const REGION_WORDS = 3 * SLOTS;
+/** Shapes per ground plant and per plant that stands in rows, consecutive models. */
+export const SEEDS = 3;
 /** A tree model that stands as a shrub stands this tall; a plant model stands as its plant file says. */
 const SHRUB_HEIGHT_M: [number, number] = [0.8, 1.8];
 /** A plant model that stands as a shrub draws its mesh to this many metres, then its impostor. */
@@ -80,20 +82,11 @@ export class Plants implements Producer {
         const { materials } = rules.vocabulary;
         const data = new Uint32Array(64 + rules.regions.length * REGION_WORDS * 4).fill(NONE), floats = new Float32Array(data.buffer);
         materials.forEach((material, code) => (data[code] = materialWord(material)));
-        // The first of a run of models, one per entry.
-        const models = (entries: Model[]) => {
-            const at = this.list.findIndex(m => m.model === entries[0].model && m.shrub === entries[0].shrub && m.evergreen === entries[0].evergreen && m.tie === entries[0].tie);
-            if (at >= 0) return this.indexes[at];
-            const first = instances.add(...entries.map(() => ({ tiers: [] })));
-            if (first === undefined) return undefined;
-            entries.forEach((entry, k) => (this.list.push(entry), this.indexes.push(first + k)));
-            return first;
-        };
         rules.regions.forEach((region, r) => {
             const at = 64 + r * REGION_WORDS * 4;
             const ground = groundRules(region, rules.vocabulary).flatMap(rule => {
                 const tie = rule.own ? OWN_TIE : TIE;
-                const first = models(Array.from({ length: SEEDS }, (_, k) => ({ model: rule.model, seed: k + 1, evergreen: false, shrub: false, tie })));
+                const first = this.models(Array.from({ length: SEEDS }, (_, k) => ({ model: rule.model, seed: k + 1, evergreen: false, shrub: false, tie })));
                 return first === undefined ? [] : [{ ...rule, first }];
             });
             ground.forEach((rule, k) => {
@@ -104,7 +97,7 @@ export class Plants implements Producer {
             });
             const shrubs = region.trees.filter(rule => rule.cover === 'shrub' && (rule.model in PLANTS || rule.model in TREES)).sort((a, b) => b.weight - a.weight).slice(0, SLOTS).flatMap(rule => {
                 const plant = rule.model in PLANTS;
-                const model = plant ? models([{ model: rule.model, seed: 1, evergreen: !!rule.evergreen, shrub: true, tie: OWN_TIE }]) : trees.index(rule.model, rule.evergreen, OWN_TIE);
+                const model = plant ? this.models([{ model: rule.model, seed: 1, evergreen: !!rule.evergreen, shrub: true, tie: OWN_TIE }]) : trees.index(rule.model, rule.evergreen, OWN_TIE);
                 return model === undefined ? [] : [{ ...rule, index: model, height: plant ? PLANTS[rule.model].ground.height : SHRUB_HEIGHT_M }];
             });
             shrubs.forEach((rule, k) => {
@@ -126,6 +119,22 @@ export class Plants implements Producer {
 
     get idle(): boolean {
         return this.building === 0;
+    }
+
+    /** The first of SEEDS models of a plant that stands in rows (rows.ts), in its own colour; ask before the first update. */
+    rowModel(model: string): number | undefined {
+        return this.models(Array.from({ length: SEEDS }, (_, k) => ({ model, seed: k + 1, evergreen: false, shrub: true, tie: OWN_TIE })));
+    }
+
+    /** The first of a run of models, one per entry: a run that the list already holds whole, else a new one. */
+    private models(entries: Model[]): number | undefined {
+        const same = (m: Model | undefined, e: Model) => m?.model === e.model && m.seed === e.seed && m.shrub === e.shrub && m.evergreen === e.evergreen && m.tie === e.tie;
+        const at = this.list.findIndex((_, i) => entries.every((entry, k) => same(this.list[i + k], entry) && this.indexes[i + k] === this.indexes[i] + k));
+        if (at >= 0) return this.indexes[at];
+        const first = this.instances.add(...entries.map(() => ({ tiers: [] })));
+        if (first === undefined) return undefined;
+        entries.forEach((entry, k) => (this.list.push(entry), this.indexes.push(first + k)));
+        return first;
     }
 
     async attach(gpu: Gpu, { surface, features }: Surfaces): Promise<void> {

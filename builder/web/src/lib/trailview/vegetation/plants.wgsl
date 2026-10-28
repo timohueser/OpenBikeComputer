@@ -72,12 +72,6 @@ fn grown(keep: f32, h: f32) -> f32 {
     return clamp((keep * (1.0 + GROW) - h) / GROW, 0.0, 1.0);
 }
 
-// The albedo of the ground at a texel of finest_texel.
-fn ground_albedo(t: vec3i) -> vec3f {
-    let c = textureLoad(cache, t.xy, t.z * CACHE_PLANES, 0).rgb;
-    return c * c;
-}
-
 // Wavy patches 0 to 1, a few tens of metres across, other ones per salt: the prototype's patchAt.
 fn stand_of(u: vec2i, salt: f32) -> f32 {
     let p = vec2f(u & vec2i(0xfffff)) * surface.unit;
