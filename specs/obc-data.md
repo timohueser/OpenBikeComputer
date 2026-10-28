@@ -83,7 +83,7 @@ here:
 | Planner release `attribution`, routing package, search, route overlays | `osm-planet` |
 | Planner release `landcover_attribution` | `daylight-landcover`; the basemaps show it after `attribution` |
 | Planner `terrain_attribution` | `copernicus-glo-30`, after the reference models |
-| Planner climate and snow layers | `era5-land`; `hr-wsi` when the snow layer reads it, `modis-snow` and `hansen-gfc` |
+| Planner climate and snow layers | `era5-land`; `hr-wsi` when its `extent` meets the bounds, `modis-snow` and `hansen-gfc` |
 | Planner TrailView layers | The sources that each step reads, see [`planner`](#planner) |
 | Reference archive manifests | `dtm-<key>` for the national model with that key |
 
@@ -167,7 +167,7 @@ The options of the [planner layers](#planner) that are the same for each region.
 | `osm.margin_m` | number | `planner/osm/bounds` of a region with a box reaches at least this far around the region, in metres: the search puts a place in the town of a place node up to 15 km away |
 | `routing.profiles` | array of strings | The profiles of the routing package. The route catalog needs `touring`, `road`, `gravel`, `mtb` and `hiking` |
 | `climate.first_year` | integer | The first of the ten years of ERA5-Land that the climate layer reads |
-| `snow.seasons` | array of 2 integers | The first and the last season of HR-WSI and MODIS that the snow layer reads |
+| `snow.seasons` | array of 2 integers | The first and the last season of the snow layer, and of a version of [`snow`](#snow) |
 
 ### `data/machines.toml`
 
@@ -361,19 +361,16 @@ takes the file. The fetch checks every record that it adds to before it writes o
 takes the `NAME=VALUE` of its row, each once, and no other. A `capture` source without a row has
 no fetcher yet; the fetch fails. `wikidata`, `wikipedia` and `commons` have no fetcher: only the
 producer of [`wiki`](#wiki) reads them. `era5-land` has none: only the producer of
-[`climate`](#climate) reads it.
+[`climate`](#climate) reads it. `modis-snow` and `hr-wsi` have none: only the producer of
+[`snow`](#snow) reads them.
 
 | Source | `NAME=VALUE` | Program | Packages | Query |
 | --- | --- | --- | --- | --- |
-| `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
 | Each source of `data/trailview/ground.json` with the `protocol` `arcgis-features` or `wfs` | `bbox`, `ground` | `tools/trailview/ground.py --source ID --fetch` | group `trailview` | `bbox=W,S,E,N&ground=DIGEST` |
 | `sentinel-2-mosaics` | `bbox`, `year` | `tools/trailview/colour.py --fetch` | group `trailview` | `bbox=W,S,E,N&year=YEAR` |
 | `corine-land-cover` | None | `tools/clms.py --fetch` | None | `dataset=0407d497d3c44bcd93ce8fd5bf78596a&file=3d9e2413-46ca-4f6e-abf8-b6eb429a4e48` |
 
 - `bbox` is `WEST,SOUTH,EAST,NORTH` in degrees.
-- A snow file is the window of one source raster that covers `bbox`, one pixel wider on each
-  side, in the grid of the source. A season starts on 1 September. An `hr-wsi` box without a
-  product gives a fetch without files.
 - The `corine-land-cover` file is `U2018_CLC2018_V2020_20u1.tif`, the CORINE Land Cover 2018
   raster of Europe. The capture orders the prepackaged `file` of the CLMS `dataset` through the
   [CLMS download API](https://eea.github.io/clms-api-docs/download.html), with an access token
@@ -1093,7 +1090,7 @@ of the version of `terrain` that the target reads, and `mean/index.json`.
 | `planner/search/pois`, `planner/search/addresses` | `planner/search/records`; POIs also read the selected `device/landmark-content*` and `device/peak-content*` outputs | `component` (`pois` or `addresses`); `region`, `bounds` and `countries` as for `planner/routing`; `time_zone` of the region; `attribution` of `osm-planet` | `<component>/<region>.sqlite`: the search database of the component, schema 6. The key holds no SQLite version: another Python patch release can give other database bytes. The metrics name the version as `sqlite` |
 | `planner/places` | `planner/search/pois` | None | `places.pmtiles`: the rider places of the POI database, at zoom 11 |
 | `planner/climate` | The files of [`climate`](#climate) of the blocks of the outline of the region, as `climate` defines the blocks of a region: the orography and the ten years from `climate.first_year`. A version that lacks one of them refuses | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10; `climate`: the version that it reads | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md). A cell of a block that the step does not read is missing |
-| `planner/snow` | `hr-wsi` when its `extent` meets the bounds and its fetch has files, and `modis-snow`, each `bbox=<bounds>`, `seasons=<snow.seasons>`; `hansen-gfc`, `tile=` of each 10° tile that the bounds touch | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when it reads it, `modis-snow` and `hansen-gfc`; `year`: the year of the `hr-wsi` version, which fills its `{year}`, or null | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md): HR-WSI where it has data, and MODIS elsewhere |
+| `planner/snow` | The files of [`snow`](#snow) of the blocks of the outline of the region, as `snow` defines the blocks of a region, for each season of `snow.seasons`. A version that lacks one of them refuses | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when its `extent` meets the bounds, `modis-snow` and `hansen-gfc`; `year`: the year of the `snow` version, which fills the `{year}` of `hr-wsi` | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md). Its tiles of zoom 6 to 12 have the bytes of each region whose step reads their block |
 | `planner/trailview-features` | `planner/osm`, `planner/terrain/grid` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 13 |
 | `planner/trailview-rules` | `data/trailview/` of the repository | `ruleset`: the digest of its JSON files by their paths in it. The step fails when the files differ | `rules.json`: [the TrailView rules](trailview-tiles.md#rules); `regions.json`, `materials.json` and `ground.json`: the region ids, the region areas, the ecoregions, the places, the vocabulary and the ground sources that the ground steps read |
 | `planner/trailview-material` | `materials.json` and `ground.json` of `planner/trailview-rules`; `lithology.pmtiles` of `planner/trailview-lithology`; each [material source](trailview-tiles.md#ground-sources) that meets the bounds: `osm.pbf` of `planner/osm` for `osm-planet`; `esa-worldcover`, `tile=` of each 3° tile that the bounds touch and that `esa-worldcover-grid` lists; `sentinel-2-mosaics`, `bbox=<bounds>`, `year=<trailview.colour_year>`; a `capture` source with `bbox=<bounds>`, another without params | `layer`: `material`; `bounds` | `material.pmtiles`: the material bytes and the barren shares of [the ground](trailview-tiles.md#ground) |
@@ -1708,7 +1705,7 @@ is compact JSON with the keys of each object in byte order:
    have no manifest: no run resumes them. Before each 100 deletes, it checks that it still holds
    the lock. A version that `versions.json` lists and that has no manifest refuses the run: its
    manifest is lost, and the fix restores it from the backup.
-6. The producer writes each file. `terrain`, `forest` and `climate` run the programs of
+6. The producer writes each file. `terrain`, `forest`, `climate` and `snow` run the programs of
    eight tiles at a time. The run moves each file into the home at once, records its SHA-256 in the journal
    and deletes it from the work. No reader reads a version before its manifest, so the move
    replaces a file that a stopped run left with other bytes. The run shows each tile that a program makes as a step `<id>/<tile>`
@@ -1971,6 +1968,52 @@ same format.
   values as from the hourly data, so its archive has the same bytes except `inputs`.
 - The run moves the files into the home in batches of 64. The manifest names `era5-land` at the date of the
   version, with the [digest](#keys) of the SHA-256 of the files that it made.
+
+#### `snow`
+
+The producer `snow`, format 1, makes the tiles of zoom 6 to 12 of
+[the snow archive](planner-snow-tiles.md), one season at a time. `planner/snow` joins the seasons
+into the archive of a region, and `planner/trailview-snow` makes the TrailView snow days from that
+archive. A version adds blocks and seasons to the newest complete version of `snow` in the home,
+in the same format.
+
+- A block is a zoom 6 tile of Web Mercator, and holds its tiles of zoom 6 to 12. The blocks of a
+  region are those that a box or a `geofabrik-poly` polygon of a leaf of the region meets. A run
+  keeps the version of each polygon that its first run read, as for [`terrain`](#terrain). A
+  version of everything has every block.
+- The seasons are those of `snow.seasons` of [`data/planner.toml`](#dataplannertoml). For each
+  block of its region, a version holds `<season>/<x>/<y>.pmtiles` of each season, also for a
+  block without data, whose file is empty: PMTiles has no archive without a tile. A file that
+  the version before holds stays in `reused`, and the run does not make it again: the data of a
+  past season does not change. So a new region or a new season adds files, and a new format makes
+  each file again. The manifest names the scopes of the version before in `extends`.
+- A file is PMTiles v3 of the tiles of the block that the season has, as
+  [the snow archive](planner-snow-tiles.md#zoom-levels) defines them: tile type `unknown`, gzip
+  with no name and time 0, the metadata `{"season": <season>}`. The body of a tile is its season
+  block: the onset and the melt-out planes, 131,072 bytes. The rules of the archive read only the
+  source pixels near a tile, so a block has the same bytes in each version that makes it.
+- For each block, `python -m tools.planner_snow prepare --block <x>-<y> --seasons <season>,…
+  --modis <list> --canopy <file>,…` writes the files of the seasons that the version lacks, one
+  season at a time. Of each season, the program reads:
+  - The MODIS files of the archive dataset `modis-snow` in place, from the root that holds its
+    manifest: `<list>` names each file of a MODIS tile that the block meets with one MODIS pixel of
+    margin. A day and a platform of a tile take the COG of the Planetary Computer, else the HDF4
+    granule of NSIDC. A prepare refuses when no root holds the dataset.
+  - The `hansen-gfc` tiles at the `start` of its row that the block meets with one MODIS pixel of
+    margin, which the run fetches.
+  - SCO, SCM and SCD of HR-WSI from CDSE S3, with the `credential` of `hr-wsi`: the products of
+    the season that the catalogue lists for the block, in the order of their names, a window of
+    each zoom 10 tile at a time. A block whose catalogue lists products for one season and none
+    for another fails, because a short listing would make that season MODIS only. The 8 programs
+    open more connections than the 4 that CDSE allows a user; GDAL tries a refused request again.
+
+  Then it writes `<x>-<y>.<season>.sha256`, the SHA-256 of each file.
+- The review counts into the store the files of the programs that run at once, and a batch of
+  files that waits for its move into the home.
+- The run moves the files into the home in batches of 64. The manifest names `hr-wsi` at the date
+  of the version with the [digest](#keys) of the SHA-256 of the files that it made, `modis-snow`
+  at the version of its dataset with the digest of the SHA-256 of the files of the lists, and the
+  `hansen-gfc` version that it fetched.
 
 #### `wiki`
 
