@@ -97,12 +97,13 @@ The planner maps and TrailView read one pyramid of
 the ground, and GLO-30 gives it elsewhere. GLO-30 leaves the sea edge above sea level, spreads a sea
 cliff over a ramp up to 100 m wide, and rounds a summit into a dome.
 
-Where GLO-30 gives the height, the bake corrects these faults from OSM. The sea beside the
-coastline is at sea level, a mapped sea cliff becomes sheer, and a mapped summit with a height
-rises to the cone of its flanks, never above that height. Each correction uses only the mapped
-feature and the GLO-30 heights near it, so a wrong tag cannot raise a false peak. An inland cliff
-keeps its GLO-30 heights, because there GLO-30 already shows a sloping rock face. The rules are in
-[`shape.rs`](src:host/obc-dem/src/shape.rs).
+Where GLO-30 gives the height, also in the 1 km band where it blends into a national model, the
+bake corrects these faults from OSM. The sea beside the coastline is at sea level, and a mapped
+sea cliff becomes sheer, no deeper than its mapped `height`. A mapped summit with a height rises
+toward the cone of its flanks, never above that height, but only where GLO-30 has its top next to
+the summit. Each correction uses only the mapped feature and the GLO-30 heights near it, so a
+summit node on a slope or a wrong tag changes little or nothing. An inland cliff and an unmapped
+cliff keep their GLO-30 heights. The rules are in [`shape.rs`](src:host/obc-dem/src/shape.rs).
 
 ## Peak View
 
