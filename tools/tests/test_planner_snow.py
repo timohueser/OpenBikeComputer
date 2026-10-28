@@ -167,19 +167,21 @@ class BlockTest(unittest.TestCase):
 
 
 class CatalogueTest(unittest.TestCase):
-    def listing(self, products, *answers):
+    def listing(self, products, *answers, seasons=(2016, 2017)):
         files = lambda names: {season: {"SCO": [f"/vsis3/x/CLMS_WSI_SP_020m_{tile}_{season}0901P1Y_S2_V100_SCO.tif"
                                                 for tile in tiles]} for season, tiles in names.items()}
         with mock.patch.object(snow, "copernicus_files", side_effect=[files(products), *map(files, answers)]) as listed, \
                 mock.patch.object(snow.time, "sleep"):
-            return snow.hr_wsi_files((33, 22), [2016, 2017]), listed.call_count
+            return snow.hr_wsi_files((33, 22), list(seasons)), listed.call_count
 
-    def test_a_season_without_products_or_with_fewer_tiles_fails(self):
-        with self.assertRaisesRegex(SystemExit, r"no product of seasons \[2017\]"):
+    def test_a_season_without_products_or_with_other_tiles_fails(self):
+        with self.assertRaisesRegex(SystemExit, r"but none of \[2017\]; try again later"):
             self.listing({2016: ["T32UNA"]})
-        with self.assertRaisesRegex(SystemExit, r"fewer tiles in seasons \[2017\]"):
+        with self.assertRaisesRegex(SystemExit, r"tile set differs between seasons 2016 and 2017"):
             self.listing({2016: ["T32UNA", "T32TMT"], 2017: ["T32UNA"]})
         self.assertEqual(len(self.listing({2016: ["T32UNA"], 2017: ["T32UNA"]})[0]), 2)
+        # A version that adds one season compares no other.
+        self.assertEqual(len(self.listing({2016: ["T32UNA", "T32TMT"], 2017: ["T32UNA"]}, seasons=[2017])[0]), 2)
 
     def test_an_empty_listing_is_asked_once_more(self):
         files, asked = self.listing({}, {2016: ["T32UNA"], 2017: ["T32UNA"]})

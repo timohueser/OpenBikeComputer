@@ -130,6 +130,8 @@ impl Prepared for SnowReference {
             None => every(),
         };
         let (root, manifest) = modis_manifest(&(self.roots)())?;
+        let defined = defined_tiles(job.root)?;
+        let named: Vec<_> = manifest.files.iter().filter_map(|file| Some((file, modis_file(&file.path)?))).collect();
         let lists = job.state.join("modis");
         // The programs share the connections that CDSE allows a user: `CDSE_CONNECTIONS` of the tool.
         let slots = job.state.join("cdse");
@@ -141,16 +143,14 @@ impl Prepared for SnowReference {
             if lacking.is_empty() {
                 continue;
             }
+            let modis = modis_files(&named, block);
+            modis_days(block, &modis, &defined, &lacking)?;
+            let list = lists.join(format!("{name}.txt"));
+            let text: String = modis.iter().map(|(file, _)| format!("{}\n", root.join(&file.path).display())).collect();
+            obc_data::store::write_atomic(&list, text.as_bytes())?;
+            read.extend(modis.iter().map(|(file, _)| (file.path.clone(), file.sha256.clone())));
             let (_, canopy) =
                 job.fetch(&canopy(job.sources(), canopy_tiles(block_bounds(block)).into_iter().collect())?)?;
-            let modis = modis_files(&manifest, block);
-            let coverage = modis_days(block, &modis, &lacking)?;
-            let list = lists.join(format!("{name}.txt"));
-            let text: String =
-                modis.iter().map(|(file, ..)| format!("{}\n", root.join(&file.path).display())).collect();
-            obc_data::store::write_atomic(&list, text.as_bytes())?;
-            read.extend(modis.iter().map(|(file, ..)| (file.path.clone(), file.sha256.clone())));
-            read.extend(coverage);
             let seasons = lacking.iter().map(u16::to_string).collect::<Vec<_>>().join(",");
             let canopy = canopy.values().map(|file| file.display().to_string()).collect::<Vec<_>>().join(",");
             let (list, slots) = (list.display().to_string(), slots.display().to_string());
@@ -184,14 +184,30 @@ fn modis_manifest(roots: &[PathBuf]) -> Result<(PathBuf, Manifest), String> {
     Ok((root.clone(), manifest))
 }
 
-/// The MODIS files of `manifest` whose tile `block` meets, as [`modis_tiles`] says, each with its
-/// tile and day.
-fn modis_files(manifest: &Manifest, block: (u32, u32)) -> Vec<(&archive::Listed, (u32, u32), i64)> {
+/// A MODIS file of the dataset, with its tile `(h, v)` and its day from 1970-01-01.
+type Named<'a> = (&'a archive::Listed, ((u32, u32), i64));
+
+/// The files of `named`, each with its tile and day, whose tile `block` meets, as [`modis_tiles`]
+/// says.
+fn modis_files<'a>(named: &[Named<'a>], block: (u32, u32)) -> Vec<Named<'a>> {
     let (columns, rows) = modis_tiles(block);
-    let named = manifest.files.iter().filter_map(|file| Some((file, modis_file(&file.path)?)));
-    named
-        .filter(|(_, ((h, v), _))| columns.contains(h) && rows.contains(v))
-        .map(|(file, (tile, day))| (file, tile, day))
+    named.iter().filter(|(_, ((h, v), _))| columns.contains(h) && rows.contains(v)).copied().collect()
+}
+
+/// The MODIS tiles that `data/archive/modis-snow.toml` names, such as `.h18v04.`: the tiles of land
+/// of the dataset. A tile that it does not name is sea or outside the coverage of the dataset.
+fn defined_tiles(root: &Path) -> Result<BTreeSet<(u32, u32)>, String> {
+    let registry = obc_data::sources::Registry::load(root)?;
+    let datasets = obc_data::datasets::load(root, &registry)?;
+    let dataset =
+        datasets.iter().find(|dataset| dataset.id == MODIS).ok_or_else(|| format!("no data/archive/{MODIS}.toml"))?;
+    let names = dataset.stac.iter().flat_map(|stac| &stac.names).chain(dataset.cmr.iter().flat_map(|cmr| &cmr.names));
+    names
+        .map(|name| {
+            let tile = name.trim_matches('.').strip_prefix('h').and_then(|tile| tile.split_once('v'));
+            tile.and_then(|(h, v)| Some((h.parse().ok()?, v.parse().ok()?)))
+                .ok_or_else(|| format!("data/archive/{MODIS}.toml: `{name}` is not a MODIS tile such as `.h18v04.`"))
+        })
         .collect()
 }
 
@@ -217,20 +233,24 @@ fn modis_file(path: &str) -> Option<((u32, u32), i64)> {
     Some(((h.parse().ok()?, v.parse().ok()?), first + day[4..].parse::<i64>().ok()? - 1))
 }
 
-/// For each tile of `files` and each of `seasons`, the days of the season that have a file of
-/// either platform, as `days/<x>-<y>/<season>/h<h>v<v>` with `<days with a file>/<days>`. A season
-/// whose tile lacks files for more than [`MAX_GAP_DAYS`] days in a row refuses.
+/// Refuse a season of `seasons` when a MODIS tile of `block` lacks files of both platforms on
+/// more than [`MAX_GAP_DAYS`] days in a row: a tile of `files`, or a tile of `defined` that the block
+/// meets, which then lacks every day when the dataset holds none of its files.
 fn modis_days(
     block: (u32, u32),
-    files: &[(&archive::Listed, (u32, u32), i64)],
+    files: &[Named],
+    defined: &BTreeSet<(u32, u32)>,
     seasons: &[u16],
-) -> Result<BTreeMap<String, String>, String> {
+) -> Result<(), String> {
+    let (columns, rows) = modis_tiles(block);
     let mut days: BTreeMap<(u32, u32), BTreeSet<i64>> = BTreeMap::new();
-    for &(_, tile, day) in files {
+    for &(h, v) in defined.iter().filter(|(h, v)| columns.contains(h) && rows.contains(v)) {
+        days.entry((h, v)).or_default();
+    }
+    for &(_, (tile, day)) in files {
         days.entry(tile).or_default().insert(day);
     }
     let start = |season: u16| obc_data::date::parse(&format!("{season}-09-01")).expect("a date");
-    let mut coverage = BTreeMap::new();
     for (&(h, v), held) in &days {
         for &season in seasons {
             let (first, end) = (start(season), start(season + 1));
@@ -249,14 +269,9 @@ fn modis_days(
                     obc_data::date::format(from)
                 ));
             }
-            let found = held.range(first..end).count();
-            coverage.insert(
-                format!("days/{}-{}/{season}/h{h:02}v{v:02}", block.0, block.1),
-                format!("{found}/{}", end - first),
-            );
         }
     }
-    Ok(coverage)
+    Ok(())
 }
 
 /// The columns h and the rows v of the MODIS tiles that block `(x, y)` meets with two MODIS pixels
@@ -285,10 +300,11 @@ fn canopy(sources: &[Source], tiles: BTreeSet<String>) -> Result<Wanted, String>
     Ok(Wanted { source: CANOPY.into(), version: Some(version), params })
 }
 
-/// The 10° Hansen GFC tiles that `bounds` overlaps with one MODIS pixel, 1/240° of latitude, of
-/// margin: the MODIS grid of a block reaches one pixel past it. Named by their north-west corner.
+/// The 10° Hansen GFC tiles that `bounds` overlaps with two MODIS pixels, 2/240° of latitude, of
+/// margin: the MODIS grid of a block reaches up to two pixels past it. Named by their north-west
+/// corner.
 fn canopy_tiles([west, south, east, north]: [f64; 4]) -> Vec<String> {
-    let pad = 1.0 / 240.0;
+    let pad = 2.0 / 240.0;
     let widen = pad / south.abs().max(north.abs()).to_radians().cos();
     let [west, south, east, north] = [west - widen, south - pad, east + widen, north + pad];
     let lats = (south / 10.0).floor() as i32 + 1..=(north / 10.0).ceil() as i32;
@@ -382,7 +398,24 @@ mod tests {
         start = "v1"
         keep = "archive"
         redistribute = true
+
+        [[source]]
+        id = "modis-snow"
+        kind = "data"
+        licence = "CC-BY-4.0"
+        attribution = "Test"
+        fetch = { kind = "capture", url = "https://example.org/search" }
+        version = "date"
+        keep = "archive"
+        redistribute = true
     "#;
+
+    /// The tiles of the dataset `modis-snow`: the Alps, and the tile east of them.
+    const DATASET: &str = r#"name = "MODIS"
+sources = ["modis-snow"]
+coverage = "Test"
+stac = [{ search = "https://example.org/search", sas = "https://example.org/sas", collection = "c", asset = "a", bbox = [0.0, 40.0, 20.0, 50.0], days = ["2016-09-01", "2026-08-31"], names = [".h18v04.", ".h19v04."] }]
+"#;
 
     /// The tool as a script: each file of a block holds its season and block, and its mark the
     /// same; `made` gets the block, its seasons and the count of the MODIS files of its list.
@@ -460,18 +493,22 @@ echo "$block $seasons $(wc -l < "$modis")" >> made
             etag: None,
         };
         let first = date::parse("2016-09-01").unwrap();
-        let with_gap = |gap: i64| {
-            let files: Vec<_> = (first..first + 365)
-                .filter(|day| !(first + 122..first + 122 + gap).contains(day))
-                .map(|day| (listed("f"), (18, 4), day))
-                .collect();
-            let files: Vec<_> = files.iter().map(|(file, tile, day)| (file, *tile, *day)).collect();
-            modis_days((33, 22), &files, &[2016])
+        let file = listed("f");
+        let days = |gap: i64| -> Vec<_> {
+            (first..first + 365).filter(|day| !(first + 122..first + 122 + gap).contains(day)).collect()
         };
-        let coverage = with_gap(MAX_GAP_DAYS).unwrap();
-        assert_eq!(coverage["days/33-22/2016/h18v04"], format!("{}/365", 365 - MAX_GAP_DAYS));
-        let error = with_gap(MAX_GAP_DAYS + 1).unwrap_err();
+        let check = |days: &[i64], defined: &[(u32, u32)]| {
+            let files: Vec<_> = days.iter().map(|&day| (&file, ((18, 4), day))).collect();
+            modis_days((34, 22), &files, &defined.iter().copied().collect(), &[2016])
+        };
+        assert_eq!(check(&days(MAX_GAP_DAYS), &[(18, 4)]), Ok(()));
+        let error = check(&days(MAX_GAP_DAYS + 1), &[(18, 4)]).unwrap_err();
         assert!(error.contains("h18v04 for 8 days from 2017-01-01 in season 2016"), "{error}");
+        // A tile of the definition that the block meets, without any file, lacks the whole season;
+        // a tile of the definition far away does not count.
+        let error = check(&days(0), &[(18, 4), (19, 4)]).unwrap_err();
+        assert!(error.contains("h19v04 for 365 days from 2016-09-01"), "{error}");
+        assert_eq!(check(&days(0), &[(18, 4), (25, 4)]), Ok(()));
     }
 
     #[test]
@@ -481,6 +518,8 @@ echo "$block $seasons $(wc -l < "$modis")" >> made
         std::fs::create_dir_all(root.join("data")).unwrap();
         std::fs::write(root.join("data/sources.toml"), SOURCES).unwrap();
         std::fs::write(root.join("tool.sh"), TOOL).unwrap();
+        std::fs::create_dir_all(root.join("data/archive")).unwrap();
+        std::fs::write(root.join("data/archive/modis-snow.toml"), DATASET).unwrap();
         // The dataset `modis-snow`: a file of each day of the MODIS tile of the Alps, h18v04, and of
         // the one east of it, and a stray file of metadata.
         let archive = temp.0.join("archive");

@@ -589,23 +589,22 @@ def cdse_slot(directory):
 
 
 def hr_wsi_files(block, seasons):
-    """The Snow Phenology products of `block` as `copernicus_files` gives them. A listing of products of one season and
-    none of another, or of other tiles in one season than in another, fails: the catalogue gave a short page, which
-    would make a season MODIS only for good. An empty listing is asked once more, as a block outside HR-WSI or at sea
-    has none."""
+    """The Snow Phenology products of `block` as `copernicus_files` gives them. A listing with products of a season and
+    none of another of `seasons` fails, as a short page of the catalogue would make that season MODIS only for good;
+    and so does a listing whose seasons of `seasons` have other tiles. An empty listing is asked once more, as a block
+    outside HR-WSI or at sea has none."""
     edges = geo.tile_bounds(BLOCK_ZOOM, *block)
     files = copernicus_files(edges)
     if not files:
         time.sleep(10)
         files = copernicus_files(edges)
+    name = f"block {block[0]}-{block[1]}: the HR-WSI catalogue"
+    if files and (lacking := [season for season in seasons if season not in files]):
+        raise SystemExit(f"{name} lists products of seasons {sorted(files)} but none of {lacking}; try again later")
     # `CLMS_WSI_SP_020m_<tile>_<season>0901P1Y_…`: a season of a tile has one product.
-    tiles = {season: {Path(path).name.split("_")[4] for path in layers["SCO"]} for season, layers in files.items()}
-    every = set().union(*tiles.values())
-    lacking = [season for season in seasons if season not in files] if files else []
-    differ = sorted(season for season, held in tiles.items() if held != every)
-    if lacking or differ:
-        raise SystemExit(f"block {block[0]}-{block[1]}: the HR-WSI catalogue lists no product of seasons {lacking}, "
-                         f"and fewer tiles in seasons {differ}, than in the others; try again later")
+    tiles = {season: {Path(path).name.split("_")[4] for path in files[season]["SCO"]} for season in seasons if season in files}
+    if differ := [season for season in tiles if tiles[season] != tiles[min(tiles)]]:
+        raise SystemExit(f"{name}'s tile set differs between seasons {min(tiles)} and {differ[0]}")
     return files
 
 
