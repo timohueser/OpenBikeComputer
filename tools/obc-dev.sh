@@ -40,9 +40,20 @@ obc_init() {
     fi
   fi
   # `obc.local` is the operator-facing environment file. Auto-export it so values
-  # such as OBC_CATALOG_URL and the R2 credentials reach the Rust binaries and the
-  # desktop process without making every local line repeat `export`.
+  # such as OBC_CATALOG_URL reach the Rust binaries and the desktop process without
+  # making every local line repeat `export`.
+  # Secrets live in the credentials file that `obc data` also reads, never in `obc.local`:
+  # agents and tools read `obc.local`, and a printed copy would leak them.
+  local credentials="$HOME/.config/openbikecomputer/credentials.env"
+  if [[ -f "$credentials" ]]; then
+    set -a
+    source "$credentials"
+    set +a
+  fi
   if [[ -f "$local_file" ]]; then
+    local secrets
+    secrets="$(grep -oE '^[A-Z0-9_]*(TOKEN|SECRET|SECRET_ACCESS_KEY|ACCESS_KEY_ID|PASSWORD|API_KEY)=' "$local_file" | tr -d '=' | tr '\n' ' ')"
+    [[ -n "$secrets" ]] && echo "obc: $local_file holds secrets (${secrets% }); move them to $credentials" >&2
     set -a
     source "$local_file"
     set +a

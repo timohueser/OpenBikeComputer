@@ -113,3 +113,19 @@ class ObcTests(unittest.TestCase):
                                             capture_output=True, text=True, check=True)
                     self.assertEqual(json.loads(result.stdout),
                                      [str(root), str(root / "tools"), str(caller), args])
+
+    def test_secrets_come_from_the_credentials_file_and_obc_local_names_its_own(self):
+        source = Path(__file__).parents[1]
+        with tempfile.TemporaryDirectory(prefix="obc secrets ") as directory:
+            root, home = Path(directory) / "repo", Path(directory) / "home"
+            (root / "tools").mkdir(parents=True)
+            (home / ".config/openbikecomputer").mkdir(parents=True)
+            shutil.copyfile(source / "obc-dev.sh", root / "tools/obc-dev.sh")
+            (home / ".config/openbikecomputer/credentials.env").write_text("OBC_KEPT_TOKEN=from-credentials\n")
+            (root / "tools/obc.local").write_text("OBC_LEFT_TOKEN=do-not-print\nOBC_MAP=a.obcm\n")
+            script = 'source tools/obc-dev.sh; obc_init; echo "$OBC_KEPT_TOKEN $OBC_MAP"'
+            env = {**os.environ, "HOME": str(home), "OBC_ROOT": str(root), "OBC_TOOLS": str(root / "tools")}
+            result = subprocess.run(["bash", "-c", script], cwd=root, env=env, capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout.strip(), "from-credentials a.obcm")
+            self.assertIn("OBC_LEFT_TOKEN", result.stderr)
+            self.assertNotIn("do-not-print", result.stderr + result.stdout)
