@@ -228,15 +228,20 @@ impl Regions {
         Ok(())
     }
 
-    /// The box around `id` when every part of it is a box. Geofabrik coverage has
+    /// The box of each leaf of `id` when every leaf is a box. Geofabrik coverage has
     /// no box until its outline is fetched.
-    pub fn bounds(&self, id: &str) -> Option<Bbox> {
+    pub fn boxes(&self, id: &str) -> Option<Vec<Bbox>> {
         let leaves = self.leaves(id).ok()?;
         let boxes = leaves.iter().map(|leaf| match self.0.get(*leaf)?.area {
             Area::Box { bbox } => Some(bbox),
             _ => None,
         });
-        boxes.collect::<Option<Vec<_>>>()?.into_iter().reduce(Bbox::union)
+        boxes.collect()
+    }
+
+    /// The box around [`Regions::boxes`].
+    pub fn bounds(&self, id: &str) -> Option<Bbox> {
+        self.boxes(id)?.into_iter().reduce(Bbox::union)
     }
 }
 

@@ -746,17 +746,17 @@ fn trailview_canopy(
     use crate::forest_reference::{model_tiles, models, FORMAT, ID, LEAF_TYPE};
     let sources = obc_data::sources::all();
     let path = |(x, y): (u32, u32)| format!("12/{x}/{y}.tif");
-    let tiles = |bbox: Option<&Bbox>, countries: &[String]| -> Result<BTreeMap<String, Vec<String>>, Unplanned> {
+    let tiles = |boxes: Option<&[Bbox]>, countries: &[String]| -> Result<BTreeMap<String, Vec<String>>, Unplanned> {
         let mut tiles: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (_, model) in models(sources, bbox, countries) {
-            for tile in model_tiles(model, bbox).map_err(Unplanned::Failed)? {
+        for (_, model) in models(sources, boxes, countries) {
+            for tile in model_tiles(model, boxes).map_err(Unplanned::Failed)? {
                 tiles.entry(path(tile)).or_default().push(model.id.clone());
             }
         }
         Ok(tiles)
     };
     let [west, south, east, north] = bounds;
-    let needed = tiles(Some(&Bbox { west, south, east, north }), countries)?;
+    let needed = tiles(Some(&[Bbox { west, south, east, north }]), countries)?;
     if needed.is_empty() {
         return Err(invalid("the layer trailview-canopy needs a canopy model: none covers the region".into()));
     }
@@ -778,8 +778,8 @@ fn trailview_canopy(
     // A version holds each tile with a pixel in its scope and in the scopes that it extends.
     let mut covered = BTreeSet::new();
     for scope in manifest.extends.iter().chain([&manifest.scope]) {
-        let (bbox, countries) = crate::terrain_reference::area(scope.as_ref()).map_err(Unplanned::Failed)?;
-        covered.extend(tiles(bbox.as_ref(), &countries)?.into_keys());
+        let (boxes, countries) = crate::terrain_reference::area(scope.as_ref()).map_err(Unplanned::Failed)?;
+        covered.extend(tiles(boxes.as_deref(), &countries)?.into_keys());
     }
     if needed.keys().any(|tile| !covered.contains(tile)) {
         return Err(invalid(format!(
