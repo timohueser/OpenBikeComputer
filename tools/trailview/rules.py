@@ -242,7 +242,7 @@ def vocabulary_problems(vocabulary, models=MODELS):
     out = []
     have = {path.stem for kind in ("trees", "plants") for path in (models / kind).glob("*.ts")}
     model = lambda v, p: text(v, p) or ([] if v in have else wrong(p, f"{said(v)} is no tree or plant model"))
-    span = listed(positive, 2)
+    span = lambda v, p: listed(positive, 2)(v, p) or ([] if v[0] <= v[1] else wrong(p, f"{said(v)}: its first value is above its second"))
     rows = obj({"model": model, "across_m": span, "along_m": span, "height_m": span, "reach_m": number(1, 4500), "hedge": one_of(True, False)})
     planted = [i for i, entry in enumerate(vocabulary["materials"]) if "rows" in entry]
     if len(planted) > MAX_CROPS:

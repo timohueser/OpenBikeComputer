@@ -757,7 +757,9 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         // A plant covers ROW_SHARE of the pitch across the rows and as many metres along them, all of a hedge.
         let hedge = rule(region, slot_traits() + i32(g.material)).z > 0.5;
         let lengthwise = select(min(1.0, ROW_SHARE * f.pitch.y / f.pitch.x), 1.0, hedge);
-        let inside = clamp((field.edge * f.unit - HEADLAND_M) / max(footprint, 0.1) + 0.5, 0.0, 1.0);
+        // The headland is bare, and the rows' mean where a pixel spans half a row, as the rows are.
+        let headland = clamp((field.edge * f.unit - HEADLAND_M) / max(lateral, 0.1) + 0.5, 0.0, 1.0);
+        let inside = mix(headland, 1.0, smoothstep(0.25, 0.5, max(w.x, w.y)));
         let planted = row_cover(p.y, ROW_SHARE, w.y) * row_cover(p.x, lengthwise, w.x) * inside;
         albedo *= 1.0 + ROW_DARK * (ROW_SHARE * lengthwise - planted) * (1.0 - road.cover);
     }

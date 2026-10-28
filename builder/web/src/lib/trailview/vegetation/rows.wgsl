@@ -204,10 +204,12 @@ fn plant(c: u32, cell: vec2i, f: FieldRows, index: vec2i, at: vec2i, thin: f32, 
     } else if ((word & WINDWARD) != 0u) {
         yaw = 0.0;
     }
-    // Kept trees stand wider, so a thinned crop keeps its cover; the plants of a hedge touch along it.
+    // Kept plants stand wider, so a thinned crop keeps its cover; the kept plants of a hedge, about
+    // d / thin pitches apart, touch along it.
+    let kept = max(d / thin, 1.0);
     let hedge = rule(0u, slot_traits() + i32(crop.material)).z > 0.5;
-    let touch = select(1.0, f.pitch.x / (2.0 * m.spread * height), hedge);
-    let width = clamp(max(d / thin, touch), 1.0, 2.0);
+    let touch = select(1.0, kept * f.pitch.x / (2.0 * m.spread * height), hedge);
+    let width = clamp(max(kept, touch), 1.0, 2.0);
     let coarse = units_height(at, BAND_LEVEL);
     emit_tree(model, s, stood.x, height, yaw, width, 0.9 + 0.2 * plant_hash(at, 5u), appear, 0.0, stood.y, plant_hash(at, 6u),
         smoothstep(0.25, 0.75, textureLoad(cache, t.xy, t.z * CACHE_PLANES, 0).a), ground_albedo(t), select(stood.x, coarse, known(coarse)));

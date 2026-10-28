@@ -1,7 +1,7 @@
 {
   "about": "The ground sources of the TrailView material and lithology, in the order they apply: specs/trailview-tiles.md, Ground. A source is a row of data/sources.toml.",
   "material": {
-    "about": "WorldCover's 10 m keeps the structure; a 100 m map only names it. A map's heath or bog leaves the satellite's heath as it is; a map's farmland outranks it, as no heath is farmed. WorldCover sees a crop planted in rows as what grows in them; its woodland stays in a vineyard, as vines are not trees.",
+    "about": "WorldCover's 10 m keeps the structure; a 100 m map only names it. A map's heath or bog leaves the satellite's heath as it is; a map's farmland outranks it, as no heath is farmed. WorldCover sees a crop planted in rows as what grows in them; its woodland stays in a vineyard, as vines are not trees. An OSM orchard of berries, hops or tea has no trees: it names arable, which refines nothing, so the texel keeps its class.",
     "refines": {
       "needleleaf-forest": ["forest"],
       "broadleaf-forest": ["forest"],
@@ -127,6 +127,20 @@
             [{"natural": "grassland"}, "rough-grass"],
             [{"landuse": "vineyard"}, "vineyard"],
             [{"landuse": "orchard", "trees": "olive_trees"}, "olive-grove"],
+            [{"landuse": "orchard", "trees": "blueberry_plants"}, "arable"],
+            [{"landuse": "orchard", "trees": "raspberry_plants"}, "arable"],
+            [{"landuse": "orchard", "trees": "strawberry_plants"}, "arable"],
+            [{"landuse": "orchard", "trees": "blackberry_plants"}, "arable"],
+            [{"landuse": "orchard", "trees": "currant_plants"}, "arable"],
+            [{"landuse": "orchard", "trees": "gooseberry_plants"}, "arable"],
+            [{"landuse": "orchard", "trees": "hop_plants"}, "arable"],
+            [{"landuse": "orchard", "trees": "tea_plants"}, "arable"],
+            [{"landuse": "orchard", "produce": "blueberry"}, "arable"],
+            [{"landuse": "orchard", "produce": "raspberry"}, "arable"],
+            [{"landuse": "orchard", "produce": "strawberry"}, "arable"],
+            [{"landuse": "orchard", "produce": "blackberry"}, "arable"],
+            [{"landuse": "orchard", "produce": "currant"}, "arable"],
+            [{"landuse": "orchard", "produce": "gooseberry"}, "arable"],
             [{"landuse": "orchard"}, "orchard"]
           ]
         }

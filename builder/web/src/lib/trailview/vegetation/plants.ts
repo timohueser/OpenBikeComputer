@@ -126,9 +126,10 @@ export class Plants implements Producer {
         return this.models(Array.from({ length: SEEDS }, (_, k) => ({ model, seed: k + 1, evergreen: false, shrub: true, tie: OWN_TIE })));
     }
 
-    /** The first of a run of models, one per entry. */
+    /** The first of a run of models, one per entry: a run that the list already holds whole, else a new one. */
     private models(entries: Model[]): number | undefined {
-        const at = this.list.findIndex(m => m.model === entries[0].model && m.shrub === entries[0].shrub && m.evergreen === entries[0].evergreen && m.tie === entries[0].tie);
+        const same = (m: Model | undefined, e: Model) => m?.model === e.model && m.seed === e.seed && m.shrub === e.shrub && m.evergreen === e.evergreen && m.tie === e.tie;
+        const at = this.list.findIndex((_, i) => entries.every((entry, k) => same(this.list[i + k], entry) && this.indexes[i + k] === this.indexes[i] + k));
         if (at >= 0) return this.indexes[at];
         const first = this.instances.add(...entries.map(() => ({ tiers: [] })));
         if (first === undefined) return undefined;
