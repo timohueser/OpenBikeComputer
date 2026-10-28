@@ -74,7 +74,7 @@ interface Resources {
 export class Ground {
     readonly rules: Rules;
     readonly finest: number;
-    /** `codes` of the look: unused, the finest level, and the sizes of the vocabulary. */
+    /** `codes` of the look: the finest level, the sizes of the vocabulary, and 0. */
     readonly codes: [number, number, number, number];
     private resources?: Resources;
     private surfaceGroup?: GPUBindGroup;
@@ -87,7 +87,7 @@ export class Ground {
         this.rules = source?.rules ?? NEUTRAL;
         this.finest = source?.finest ?? COARSEST;
         const { materials, lithologies } = this.rules.vocabulary;
-        this.codes = [0, this.finest, materials.length, lithologies.length];
+        this.codes = [this.finest, materials.length, lithologies.length, 0];
         const world = Math.max(0, this.rules.regions.findIndex(region => region.id === 'world'));
         this.pages = new GroundPages(source, POOL, this.finest, this.rules.regions.map((region: Region) => region.look.snow_share), world, changed);
     }

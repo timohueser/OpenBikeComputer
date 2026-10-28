@@ -16,7 +16,7 @@ export interface LookInput {
     place: [number, number];
     /** The view ray of clip point (x, y) is forward + x right + y up. */
     camera: { right: number[]; up: number[]; forward: number[] };
-    /** Unused, the finest ground level, and the materials and lithologies of the vocabulary. */
+    /** The finest ground level, the materials and lithologies of the vocabulary, and 0. */
     codes: [number, number, number, number];
     debug: number;
     /** The jittered frame's sample. */

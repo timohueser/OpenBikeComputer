@@ -68,7 +68,7 @@ fn open_of(job: Job, t: vec2i) -> f32 {
 // xy the normal as 0.5 + 0.5 n, z the openness.
 fn coarse_of(job: Job, u: vec2i) -> vec3f {
     // The finest ground pages also draw the nodes finer than them, near the eye, whose LOD is higher.
-    let coarse = max(job.level, COARSEST + 2u) - select(2u, 1u, job.level == look.codes.y);
+    let coarse = max(job.level, COARSEST + 2u) - select(2u, 1u, job.level == look.codes.x);
     let n = level_normal(lod_space(vec2f(u - surface.anchor)), coarse);
     let step = WIDE << (22u - coarse);
     let coarse_open = openness(units_height(u, coarse), vec4f(units_height(u + vec2i(step, 0), coarse), units_height(u - vec2i(step, 0), coarse),

@@ -108,13 +108,13 @@ fn rule(region: u32, slot: i32) -> vec4f {
 
 // The slots of ground/rules.ts, from the sizes of the vocabulary.
 fn slot_materials() -> i32 { return 33; }
-fn slot_traits() -> i32 { return 33 + i32(look.codes.z); }
-fn slot_lithologies() -> i32 { return 33 + 2 * i32(look.codes.z); }
-fn slot_cliff() -> i32 { return slot_lithologies() + i32(look.codes.w); }
+fn slot_traits() -> i32 { return 33 + i32(look.codes.y); }
+fn slot_lithologies() -> i32 { return 33 + 2 * i32(look.codes.y); }
+fn slot_cliff() -> i32 { return slot_lithologies() + i32(look.codes.z); }
 fn slot_roads() -> i32 { return slot_cliff() + 10; }
 fn slot_road_line() -> i32 { return slot_cliff() + 16; }
 fn slot_kinds() -> i32 { return slot_cliff() + 17; }
-fn slot_hardness() -> i32 { return slot_kinds() + i32(look.codes.z); }
+fn slot_hardness() -> i32 { return slot_kinds() + i32(look.codes.y); }
 
 // The cover's ramp in the region, low NDVI to high.
 fn ramp(region: u32, cover: u32, t: f32) -> vec3f {
@@ -226,7 +226,7 @@ struct Held {
 }
 
 fn held_at(s: vec2f, level: u32) -> Held {
-    var k = min(level, look.codes.y);
+    var k = min(level, look.codes.x);
     var t = texel_of(s, k);
     var page = ground_page(k, t.whole + vec2i(t.part >= vec2f(0.5)));
     while (page < 0 && k > COARSEST) {
@@ -252,9 +252,9 @@ fn cell_at(s: vec2f, level: u32) -> vec4u {
 // where that page is not resident. What stands by it stays as finer pages replace coarser ones: a page
 // that arrives adds things but changes none.
 fn finest_texel(s: vec2f) -> vec3i {
-    let t = texel_of(s, look.codes.y);
+    let t = texel_of(s, look.codes.x);
     let whole = t.whole + vec2i(t.part >= vec2f(0.5));
-    let page = ground_page(look.codes.y, whole);
+    let page = ground_page(look.codes.x, whole);
     if (page < 0) {
         return vec3i(0, 0, -1);
     }
@@ -563,7 +563,7 @@ fn key(code: u32) -> vec3f {
 
 // The debug views of the ground, in sRGB: 5 material, 6 lithology, 7 region, 8 snow (white over blue-grey).
 fn ground_debug(view: u32, level: u32, s: vec2f, g: Ground) -> vec3f {
-    let k = min(level, look.codes.y);
+    let k = min(level, look.codes.x);
     let t = texel_of(s, k);
     let holder = t.whole + vec2i(t.part >= vec2f(0.5));
     let page = ground_page(k, holder);

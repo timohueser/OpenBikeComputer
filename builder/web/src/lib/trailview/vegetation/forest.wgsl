@@ -289,14 +289,14 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     }
     // The region from the finest resident ground page, of REGION_LEVEL or finer; no data (255) or no
     // page: no species. The orchards stand their own trees on their cells of the finest pages.
-    let held = held_at(s, look.codes.y);
+    let held = held_at(s, look.codes.x);
     if (held.page < 0 || held.level < REGION_LEVEL) {
         return;
     }
     let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
     let found = textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0);
     let region = found.b;
-    if (region >= data.choices[0] || (found.r == forest.orchard && held.level == look.codes.y)) {
+    if (region >= data.choices[0] || (found.r == forest.orchard && held.level == look.codes.x)) {
         return;
     }
     // The drawn ground costs the most of a tree: it comes last, for the trees that stand.
