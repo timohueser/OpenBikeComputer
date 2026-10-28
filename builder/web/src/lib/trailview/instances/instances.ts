@@ -16,7 +16,7 @@ const DRAWS = MODELS * TIERS;
  */
 const CAPACITY = 2 ** 17, SUN_CAPACITY = 2 ** 17;
 /** Bytes of `Instance`, `Model`, `Tally`, `Mesh` and `Params` in the WGSL, and of a vertex. */
-const INSTANCE_BYTES = 32, MODEL_BYTES = 80, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, PARAMS_BYTES = 32, VERTEX_BYTES = 16;
+const INSTANCE_BYTES = 32, MODEL_BYTES = 96, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, PARAMS_BYTES = 32, VERTEX_BYTES = 16;
 /** The phases of a tree's year, as PHASES of phenology.wgsl, and the bytes of a colour matrix (`mat3x3f`). */
 const PHASES = 4, TONE_BYTES = 48;
 /** Lanes of the sort, as LANES in sort.wgsl. */
@@ -67,6 +67,8 @@ export interface ModelSpec {
     crown?: number;
     /** How far it takes its hue from the ground under it, 0 to 1 (draw.wgsl). */
     tie?: number;
+    /** A tree's crown: the luma of its mean colour as it shows lit (lit of models/simplify.ts). A forest tree with it wears the ground's colour (draw.wgsl). */
+    luma?: number;
     /** The height in metres of an instance whose tiers end at `until`; the tiers of others end in proportion. */
     sized?: number;
     /**
@@ -563,7 +565,7 @@ export class Instances {
 
     /** Writes the models and their meshes into the pools; every impostor bakes again. */
     private upload(r: Resources): void {
-        const models = new ArrayBuffer(MODELS * MODEL_BYTES), f = new Float32Array(models);
+        const models = new ArrayBuffer(MODELS * MODEL_BYTES), f = new Float32Array(models), stride = MODEL_BYTES / 4;
         const meshes = new Int32Array(DRAWS * MESH_BYTES / 4);
         let vertex = 0, index = 0;
         const fits = (tiers: Mesh[]) => {
@@ -598,14 +600,14 @@ export class Instances {
             const placed = tiers.map(({ mesh, until }, t) => {
                 const at = putOnce(mesh, extent);
                 meshes.set([at[1], at[0], at[2], 0], (m * TIERS + t) * 4);
-                f[m * 20 + t] = until;
+                f[m * stride + t] = until;
                 return at;
             });
             if (spec.impostor) {
-                f[m * 20 + tiers.length] = spec.impostor.until;
+                f[m * stride + tiers.length] = spec.impostor.until;
                 if (this.atlas.has(m)) this.unbaked.add(m);
             }
-            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0, spec.tie ?? 0, spec.sized ?? 0, ...sinks(spec)], m * 20 + 4);
+            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0, spec.tie ?? 0, spec.sized ?? 0, ...sinks(spec), spec.luma ?? 0], m * stride + 4);
             return placed;
         });
         // A model that does not fit the pools draws nothing; the frames go on.
@@ -631,7 +633,7 @@ export class Instances {
             const coarsest = this.placed[m].at(-1);
             if (!coarsest) return;
             if (spec.impostor) coarse.set([coarsest[1], coarsest[0], coarsest[2], 0], (m * TIERS + spec.tiers.length) * 4);
-            const hull = proxy(spec.tiers.at(-1)!.mesh), at = hull && fits([hull]) ? put(hull, f[m * 20 + 4]) : coarsest;
+            const hull = proxy(spec.tiers.at(-1)!.mesh), at = hull && fits([hull]) ? put(hull, f[m * stride + 4]) : coarsest;
             for (let t = 0; t < TIERS; t++) proxies.set([at[1], at[0], at[2], 0], (m * TIERS + t) * 4);
         });
         this.casterTables = [coarse, proxies];
