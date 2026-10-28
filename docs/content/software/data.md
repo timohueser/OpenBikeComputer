@@ -35,8 +35,8 @@ rebuilds the content and what reads it; a new layer revision rebuilds outputs fr
 
 A prepared wiki version can cover one region and selected article languages. This limits photo
 acquisition to the subjects of that region. A region can join several Geofabrik areas, such as
-all of Europe. A version keeps the shards of the version before outside its region, so a Europe
-version does not drop a region on another continent. Large input archives still cover the world,
+all of Europe. A version keeps the facts of the version before and refreshes those it reads again, so a
+Europe version does not drop a region on another continent. Large input archives still cover the world,
 but preparation reads them in place and retains the selected content. The version records these
 choices so another machine can identify what it contains.
 
