@@ -93,6 +93,7 @@ fn wiki(store: &Store, dir: &Path) -> String {
         extends: Vec::new(),
         scope: None,
         languages: Vec::new(),
+        publish_text: None,
         licence: None,
         attribution: None,
         machine: "test".into(),

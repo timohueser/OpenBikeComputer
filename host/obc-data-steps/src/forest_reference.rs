@@ -301,6 +301,7 @@ t="${4#12-}"; mkdir -p "$6/12/${t%-*}" && echo "$4" > "$6/12/${t%-*}/${t#*-}.tif
                 scope: job.scope.clone(),
                 extends: job.extends().to_vec(),
                 languages: Vec::new(),
+                publish_text: None,
                 licence: None,
                 attribution: None,
                 machine: "test".into(),

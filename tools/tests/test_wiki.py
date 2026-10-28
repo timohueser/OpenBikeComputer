@@ -385,9 +385,17 @@ class Wiki(unittest.TestCase):
         values = [json.loads(line) for line in listed.read_text().splitlines()]
         self.assertEqual([(value["osm"], value.get("peak"), "box" in value) for value in values],
                          [("n1", True, True), ("w10", None, True), ("w11", None, True), ("r20", None, False)])
-        twice = self.root / "twice.ndjson"
-        subjects.extract([source, source], twice, self.root / "osm")
-        self.assertEqual(twice.read_text(), listed.read_text(), "an object in two extracts is one subject")
+        # A newer extract holds node 1 at version 2 with another link, and the bridge without its link.
+        newer = self.root / "newer.osm"
+        newer.write_text('<osm version="0.6"><node id="1" version="2" lat="47.3" lon="7.1"><tag k="wikidata" v="Q7"/></node>'
+                         '<node id="4" version="1" lat="47.15" lon="7.1"/><node id="5" version="1" lat="47.25" lon="7.1"/>'
+                         '<way id="11" version="2"><nd ref="4"/><nd ref="5"/><tag k="bridge" v="yes"/><tag k="wikipedia" v="none"/></way></osm>')
+        for order in ([source, newer], [newer, source]):
+            joined = self.root / "joined.ndjson"
+            subjects.extract(order, joined, self.root / "osm")
+            values = [json.loads(line) for line in joined.read_text().splitlines()]
+            self.assertEqual([(value["osm"], value.get("wikidata"), value.get("box")) for value in values],
+                             [("n1", "Q7", [7.1, 47.3, 7.1, 47.3]), ("w10", "Q4", values[1]["box"]), ("r20", "Q5", None)])
         boxed = self.root / "boxed.ndjson"
         subjects.extract([source], boxed, self.root / "osm", [7.0, 47.0, 7.12, 47.12])
         self.assertEqual([json.loads(line)["osm"] for line in boxed.read_text().splitlines()], ["n1"])
@@ -410,32 +418,53 @@ class Wiki(unittest.TestCase):
 
 
     @unittest.skipUnless(TOOLS, "Osmium and zstd are unavailable")
-    def test_a_version_keeps_the_cells_outside_its_region_and_the_earlier_common_facts_that_it_lacks(self):
-        self.subjects(dict(osm="n1", wikidata="Q1", box=[7.1, 47.1, 7.1, 47.1]), dict(osm="n2", wikidata="Q999", box=[8.0, 47.1, 8.0, 47.1]))
+    def test_a_version_holds_each_earlier_shard_and_a_fact_has_one_form_in_the_version(self):
+        self.subjects(dict(osm="n1", wikidata="Q1", box=[7.1, 47.1, 7.1, 47.1]))
         self.wikidata()
 
-        def fact(value):
+        def fact(**value):
             data = json.dumps(value).encode()
             return f"content/{value['kind']}/{dumps.hashlib.sha256(data).hexdigest()}.json", data
 
-        asset, old_class = "ab" * 32, fact(dict(kind="entity", key="Q2", status="present", revision=1))
-        before = self.root / "before.tar.zst"
-        shards.archive(before, [old_class, fact(dict(kind="entity", key="Q77", status="present")),
-                                fact(dict(kind="file", key="File:Peak.jpg", status="present", asset=dict(sha256=asset))),
-                                (f"content/assets/{asset}", b"jpeg"), (f"content/assets/{'cd' * 32}", b"unused")])
-        kept = dict(path="cells/0300-0263.tar.zst", sha256="ef" * 32, bytes=9, facts=2)
+        def earlier(path, members):
+            shards.archive(self.root / "before" / path, members)
+            return dict(path=path, sha256="ef" * 32, bytes=9, facts=1, file=str(self.root / "before" / path))
+
+        asset, old = "ab" * 32, dict(status="present", revision=1)
+        before = [
+            earlier("common.tar.zst", [fact(kind="entity", key="Q2", **old), fact(kind="entity", key="Q77", **old),
+                                       fact(kind="file", key="File:Peak.jpg", status="present", asset=dict(sha256=asset)),
+                                       (f"content/assets/{asset}", b"jpeg"), (f"content/assets/{'cd' * 32}", b"unused")]),
+            # A cell that this run does not touch, such as a region on another continent.
+            earlier("cells/0293-0155.tar.zst", [fact(kind="entity", key="Q55", **old)]),
+            # A cell of this run that also holds a smaller earlier region, such as Monaco under France.
+            earlier("cells/0300-0262.tar.zst", [fact(kind="entity", key="Q88", **old), fact(kind="entity", key="Q4", **old),
+                                                 fact(kind="article", key="en:Monaco", status="present", html="<p>Text</p>")]),
+            # A neighbour cell that this run does not touch, which holds a locale that this run refreshes.
+            earlier("cells/0301-0262.tar.zst", [fact(kind="entity", key="Q5", **old), fact(kind="entity", key="Q66", **old)]),
+        ]
         out = self.root / "out"
-        shards.write(self.db, self.work, out, keep=dict(cells=[kept], common=str(before)))
+        shards.write(self.db, self.work, out, text=False, keep=dict(before=before))
         index = json.loads((out / "index.json").read_text())
-        self.assertEqual([shard["path"] for shard in index["shards"]], ["common.tar.zst", "cells/0300-0262.tar.zst", kept["path"]])
-        self.assertEqual(index["shards"][2], kept)
-        self.assertFalse((out / kept["path"]).exists(), "a kept cell is not written again")
-        common = members(out / "common.tar.zst")
-        # The class Q2 of this run replaces the earlier one; only the asset of a kept file stays.
-        self.assertEqual(facts(common), {("entity", "Q2"), ("entity", "Q3"), ("entity", "Q77"), ("file", "File:Peak.jpg")})
-        self.assertNotIn(old_class[0], common)
-        self.assertEqual([data for name, data in common.items() if name.startswith("content/assets/")], [b"jpeg"])
-        self.assertEqual(index["shards"][0]["facts"], 4)
+        self.assertEqual([shard["path"] for shard in index["shards"]], [entry["path"] for entry in before])
+        self.assertEqual(index["shards"][1], {key: value for key, value in before[1].items() if key != "file"})
+        self.assertFalse((out / before[1]["path"]).exists(), "an unchanged earlier shard is not written")
+        written = {shard["path"]: members(out / shard["path"]) for shard in index["shards"] if shard["path"] != before[1]["path"]}
+        self.assertEqual(facts(written["common.tar.zst"]), {("entity", "Q2"), ("entity", "Q3"), ("entity", "Q77"), ("file", "File:Peak.jpg")})
+        self.assertEqual([data for name, data in written["common.tar.zst"].items() if "/assets/" in name], [b"jpeg"])
+        self.assertLessEqual({("entity", "Q88"), ("entity", "Q1"), ("entity", "Q4"), ("article", "en:Monaco")},
+                             facts(written["cells/0300-0262.tar.zst"]))
+        self.assertEqual(facts(written["cells/0301-0262.tar.zst"]), {("entity", "Q5"), ("entity", "Q66")})
+        names, texts = {}, []
+        for contents in written.values():
+            for name, data in contents.items():
+                if name.endswith(".json"):
+                    value = json.loads(data)
+                    names.setdefault((value["kind"], value["key"]), set()).add(name)
+                    texts += [value] if value["kind"] == "article" else []
+        self.assertTrue(all(len(found) == 1 for found in names.values()), "a fact has one form in the version")
+        self.assertNotIn(fact(kind="entity", key="Q2", **old)[0], written["common.tar.zst"], "this run's fact wins")
+        self.assertEqual(texts, [dict(kind="article", key="en:Monaco", status="missing")], "no kept text without publish_text")
 
 def members(path):
     data = subprocess.run(["zstd", "-dc", str(path)], capture_output=True, check=True).stdout

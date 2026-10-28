@@ -17,8 +17,8 @@ others are SQL tables. A path may have no suffix: the first bytes name a bz2, gz
 `candidates.jsonl` is what the landmark rule of the compilers reads, and `selected.json` lists the
 QIDs whose articles the compilers read. `articles` writes `W/imports.json`, the finished imports. `done.json` gives the `sha256` and `bytes` of each shard
 that is published already, and `counts.json` the counts of the producer for the index.
-`keep.json` gives what the version keeps of the version before: `cells`, the index entries of its
-cell shards outside the region, and `common`, the path of its common shard; see `shards.write`.
+`keep.json` gives `before`, the index entries of the shards of the version before, each with its
+local `file`: the version holds each of them, merged as `shards.shard` says.
 `requests.json` maps each subject that the compilers select to its Commons `categories`,
 `commons` and `files`; see `commons.acquire`. When Wikimedia is busy, `commons` stops and leaves
 the file `busy` in the work directory: the next call resumes. `facts` writes the facts that the

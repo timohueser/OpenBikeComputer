@@ -254,13 +254,6 @@ impl Device {
     }
 }
 
-/// The paths of the `wiki` cell shards that `coverage` touches: the shards that a reader of it reads.
-pub(crate) fn wiki_cells(coverage: &Coverage) -> impl Iterator<Item = String> {
-    let width = id_width(WIKI_CELL_LOG2);
-    let cells = coverage.cells(WIKI_CELL_LOG2).into_iter();
-    cells.map(move |cell| format!("cells/{:0width$}-{:0width$}.tar.zst", cell.i, cell.j))
-}
-
 /// The landmark and peak content of each region source: its extract, its `.poly`, and the shards
 /// of `wiki` that it needs, `common.tar.zst` and those of the cells that its polygon touches, at
 /// the version that the target reads. Without a version of `wiki`, the content layers block.
@@ -285,10 +278,12 @@ pub(crate) fn content_declarations(
         Err(_) => None,
     };
     let (mut steps, mut blocked) = (Vec::new(), Vec::new());
+    let width = id_width(WIKI_CELL_LOG2);
     for source in &selection.sources {
         let area = vec![("area".to_string(), source.id.clone())];
-        let names: Vec<String> =
-            std::iter::once("common.tar.zst".to_string()).chain(wiki_cells(&source.coverage)).collect();
+        let cells = source.coverage.cells(WIKI_CELL_LOG2).into_iter();
+        let cells = cells.map(|cell| format!("cells/{:0width$}-{:0width$}.tar.zst", cell.i, cell.j));
+        let names: Vec<String> = std::iter::once("common.tar.zst".to_string()).chain(cells).collect();
         for collection in ["landmarks", "peaks"] {
             let name = if selection.direct {
                 content_layer(collection)
@@ -791,6 +786,7 @@ pub(crate) mod tests {
             extends: Vec::new(),
             scope: None,
             languages: Vec::new(),
+            publish_text: None,
             licence: None,
             attribution: None,
             machine: "test".into(),
@@ -1298,6 +1294,7 @@ pub(crate) mod tests {
             extends: Vec::new(),
             scope: None,
             languages: Vec::new(),
+            publish_text: None,
             licence: None,
             attribution: None,
             machine: "test".into(),

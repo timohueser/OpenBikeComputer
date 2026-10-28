@@ -240,6 +240,9 @@ pub struct Manifest {
     /// of a version made before the field has none.
     #[serde(default)]
     pub languages: Vec<String>,
+    /// The `publish_text` of the row in `data/sources.toml`; absent for a row without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_text: Option<bool>,
     /// The licence and the credit of the source in `data/sources.toml`.
     pub licence: Option<String>,
     pub attribution: Option<String>,
