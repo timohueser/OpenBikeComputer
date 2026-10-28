@@ -27,7 +27,8 @@ export interface Look {
     softness: number;
     gradient: number;
     ramps: Partial<Record<string, Ramp | Partial<Record<Season, Ramp>>>>;
-    patches?: Patch[];
+    /** By name; they draw in the order of their keys, a parent's first. */
+    patches?: Partial<Record<string, Patch | null>>;
     /** The material whose paint a ledge of turf on exposed rock takes. */
     turf?: string;
     materials?: Partial<Record<string, { colour?: string | Partial<Record<Season, string>>; satellite?: number; clumps?: number }>>;
@@ -144,10 +145,13 @@ export function named(vocabulary: Vocabulary, names: readonly string[] = []): nu
         (names.some(name => name === id || name === cover || (name.startsWith('#') && tags.includes(name.slice(1)))) ? [code] : []));
 }
 
-/** Material codes as two words of bits, as the GPU reads a set of materials; a code from 64 on has no bit. */
+/** Material codes as two words of bits, as the GPU reads a set of materials. */
 export function bits(codes: number[]): [number, number] {
     const words: [number, number] = [0, 0];
-    for (const code of codes) if (code < 64) words[code >> 5] = (words[code >> 5] | (1 << (code & 31))) >>> 0;
+    for (const code of codes) {
+        if (code >= 64) throw new Error(`Material code ${code} does not fit the 6 bits of the ground tiles.`);
+        words[code >> 5] = (words[code >> 5] | (1 << (code & 31))) >>> 0;
+    }
     return words;
 }
 
@@ -193,7 +197,7 @@ export function rulesOf(json: {
     format: number; materials: Vocabulary; ids: [string, string][]; regions: Record<string, Record<string, unknown> & { extends?: string }>;
     overlays?: Record<string, { look?: Record<string, unknown> }>; packs?: Record<string, Record<string, unknown>>; styles?: Record<string, Record<string, unknown>>;
 }): Rules {
-    if (json.format !== 2) throw new Error(`rules.json has format ${json.format}, not 2.`);
+    if (json.format !== 3) throw new Error(`rules.json has format ${json.format}, not 3.`);
     const table = json.regions;
     const names = Object.keys(json.styles ?? {}).sort(), styles = names.map(name => inherited(json.styles!, name) as unknown as HouseStyle);
     const styleOf = (pack: unknown, place: string): [number, number] => {

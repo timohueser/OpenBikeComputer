@@ -45,7 +45,7 @@ export const VARIEGATED = ['#9e6252', '#ddd2bc', '#869690'];
  * cache (ground.wgsl), which filters its share of the ground between texels; the planes have two
  * channels free, and a third patch would need a fourth plane on every page.
  */
-export const PATCHES = 2;
+const PATCHES = 2;
 
 /** An sRGB hex colour in linear light. */
 export function linear(hex: string): [number, number, number] {
@@ -99,7 +99,7 @@ export function packRules(regions: Region[], vocabulary: Vocabulary, season: num
         const { look } = region;
         const set = (slot: number, rgb: number[], a: number) => data.set([...rgb, a], (row * SLOT.count + slot) * 4);
         const paint = (colour: string | undefined, a: number) => [linear(colour ?? '#000000'), colour ? a : 0] as const;
-        const patches = (look.patches ?? []).slice(0, PATCHES);
+        const patches = Object.values(look.patches ?? {}).filter(patch => !!patch).slice(0, PATCHES);
         const under = patches.map(patch => named(vocabulary, patch.on));
         ramps(season, region).forEach((c, i) => set(i, c, 1));
         vocabulary.materials.forEach(({ id, cover, clumps, tags = [] }, i) => {

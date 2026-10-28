@@ -38,9 +38,14 @@ CASES = [
     ("packs/alps", ["style", "xx-yy"], "chalet", "regions/alps.json: xx-yy is not a place of countries.json"),
     ("packs/alps", ["ground", "bilberry", "on"], ["#heath"],
      'packs/alps.json: ground.bilberry.on[0]: "#heath" is not a cover, a material or a #tag of materials.json'),
-    ("regions/fjell", ["look", "patches", 0, "size_m"], 4, "regions/fjell.json: look.patches[0].size_m: 4 is above 3: the dots of larger bushes stop where the far nodes start"),
-    ("regions/fjell", ["look", "patches"], 3 * [{"on": ["#moor"], "colour": "#6a5232", "share": 0.3, "size_m": 4, "form": "blotches"}],
-     "regions/fjell.json: look.patches: has 3 patches, more than the 2 that the ground draws"),
+    ("regions/fjell", ["look", "patches", "scrub", "size_m"], 4,
+     "regions/fjell.json: look.patches.scrub.size_m: 4 is above 3: the dots of larger bushes stop where the far nodes start"),
+    ("regions/fjell", ["look", "patches", "heather", "size_m"], 0.5, "regions/fjell.json: look.patches.heather.size_m: 0.5 is below 1: blotches finer than 1 m shimmer"),
+    ("regions/fjell", ["look", "patches", "lichen"], {"on": ["moss"], "colour": "#9a9a80", "share": 0.3, "size_m": 2, "form": "blotches"},
+     "regions/fjell.json: look.patches: 3 patches, more than the 2 that the ground draws"),
+    ("regions/italy-med", ["look", "patches", "heather"], {"colour": "#6e4f63"}, "regions/italy-med.json: look.patches.heather: has no on, share, size_m, form"),
+    ("materials", ["materials"], 65 * [{"id": "none", "cover": "grass"}],
+     "materials.json: 65 materials, more than the 64 that a code of the ground tiles holds"),
 ]
 
 

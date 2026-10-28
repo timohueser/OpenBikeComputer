@@ -17,7 +17,7 @@
    },
    "shrub": ["#7d5e48", "#86703f", "#6f7c3e"]
   },
-  "patches": [{ "on": ["#moor"], "colour": "#5a4a46", "share": 0.25, "size_m": 4, "form": "blotches" }],
+  "patches": { "heather": { "on": ["#moor"], "colour": "#5a4a46", "share": 0.25, "size_m": 4, "form": "blotches" } },
   "materials": {
    "bare-rock": { "colour": "#7a776c" },
    "scree": { "colour": "#7a776c" },

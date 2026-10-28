@@ -39,11 +39,18 @@ describe('the rules of the ground', () => {
         expect(mid.slice(0, 3)).toEqual(autumn.slice(0, 3));
     });
 
+    it('paints the turf with the paint of the material that the region names, else not at all', () => {
+        const SLOT = slots(vocabulary), turf = (look: Region['look']) => Array.from(packRulesOn([{ ...region, look }], vocabulary, 318).subarray(4 * SLOT.turf, 4 * SLOT.turf + 4));
+        expect(turf({ ...region.look, turf: 'bracken' })).toEqual([...linear('#c86a1e').map(c => Math.fround(c)), 1]);
+        expect(turf(region.look)[3]).toBe(0);
+    });
+
     it('lays the patches of a region over the materials that they name, in their order', () => {
-        const SLOT = slots(vocabulary), patches: Region['look']['patches'] = [
-            { on: ['#rough'], colour: '#8a5a30', share: 0.2, size_m: 1.5, form: 'dots' },
-            { on: ['#moor'], colour: { summer: '#6a5232' }, share: 0.3, size_m: 4, form: 'blotches' },
-        ];
+        const SLOT = slots(vocabulary), patches: Region['look']['patches'] = {
+            gone: null,
+            scrub: { on: ['#rough'], colour: '#8a5a30', share: 0.2, size_m: 1.5, form: 'dots' },
+            heather: { on: ['#moor'], colour: { summer: '#6a5232' }, share: 0.3, size_m: 4, form: 'blotches' },
+        };
         const data = packRulesOn([{ ...region, look: { ...region.look, patches } }], vocabulary, 226), slot = (i: number) => Array.from(data.subarray(4 * i, 4 * i + 4));
         // Per material: its cover, the patches over it as bits, rocky, rough.
         expect([0, 1, 2].map(i => slot(SLOT.kinds + i))).toEqual([[2, 1, 0, 1], [2, 3, 0, 1], [2, 0, 0, 0]]);

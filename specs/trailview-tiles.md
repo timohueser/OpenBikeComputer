@@ -179,7 +179,7 @@ ruleset with a problem.
 
 | Key | Value |
 | --- | --- |
-| `format` | `2` |
+| `format` | `3` |
 | `materials` | `materials.json` as it is |
 | `ids` | Each region id as `[region, place]`: per region by name, `"*"` and then each country or subdivision that a value by place of the region names, by code. The index is the region id |
 | `regions` | The files of `regions/` by name |
@@ -194,8 +194,9 @@ with these rules:
 - `look.ramps` of a cover comes whole from the nearest region of the chain that names it.
 - A value by place, `{"es-ga": …, "es": …, "*": …}`, takes the entry of the place of the region id,
   else of its country, else `"*"`. The values by place are `style` of the pack and `look.roadLine`.
-- In a pack, `trees`, `ground` and `herds` are keyed by species. A child adds or changes one, and
-  `null` drops one.
+- In a pack, `trees`, `ground` and `herds` are keyed by species, and in a look, `patches` by
+  name. A child adds or changes one, and `null` drops one. The patches draw in the order of their
+  keys, a parent's first.
 - A list of ground (`on` and `off` of a ground plant, `on` of a herd and of a look's patch) names
   covers, materials by id, and the `tags` of materials in `materials.json` as `#tag`.
 
