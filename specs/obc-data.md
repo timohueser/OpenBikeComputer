@@ -285,7 +285,8 @@ it runs in, and the store:
   TOML file below `fixtures/sources/`.
 - An unpacked copy (`unpacked/<sha256>/`) is reached while a manifest of the
   [archive](#archive) lists a file with that SHA-256. While `OBC_DATA_ARCHIVE` names no root, a
-  root does not exist or a manifest cannot be read, each copy is reached.
+  root or its `manifest/` does not exist, or `manifest/` or a manifest in it cannot be read, each
+  copy is reached.
 - A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
   digest of the files that it names (`files`) of a reached record of its source, and a step input
   whose digest is the digest of the files that it selects of a reached layer of its step: the
@@ -300,7 +301,8 @@ Then one entry for each kind of root that names objects that no reached record o
 an entry is the size of its files, and the plan gives the size of `partial/`. The collection
 takes the store lock alone, or refuses to start while a run or a fetch holds it. A run holds it
 until it finishes; a run of `serve` does not hold it. A collection deletes each snapshot record, each object and each unpacked copy that is not
-reached, and empties `partial/`. Receipts and upstream checks stay. A clean that cannot read a target
+reached, and empties `partial/`. It deletes the `.complete` of a copy first, so a stopped
+collection leaves no damaged copy that is marked whole. Receipts and upstream checks stay. A clean that cannot read a target
 deletes nothing.
 
 ## Fetch
@@ -390,8 +392,9 @@ producer of [`wiki`](#wiki) reads them. `era5-land` has none: only the producer 
   the download resumes without a new order. An archive that is not a zip is deleted, and the next
   run orders again.
 - `ground` is the first 12 hex digits of the SHA-256 of the canonical JSON of the keys `protocol`,
-  `layer`, `field` and `legend` of the source's entry. The fetch refuses a digest that the entry
-  does not have.
+  `layer` and `field` of the source's entry, and of what of its `legend` decides the features
+  that a capture keeps: `match`, the sorted native classes and the `word` of `qualifier`. A new
+  name of a class keeps the digest. The fetch refuses a digest that the entry does not have.
 - A ground file is `features-NNNNN.geojson`: a page of the features that meet `bbox` and whose
   `field` the legend may name, in EPSG:4326 with that field and 6 decimals. Each feature is
   simplified by a quarter of a zoom 13 texel at the equator. A box without a feature gives a
@@ -404,9 +407,11 @@ producer of [`wiki`](#wiki) reads them. `era5-land` has none: only the producer 
   capture reads the `layer` of the one GeoPackage or FileGDB of the zip, 5000 features to a page,
   in the order of their feature ids. It reads that file from its copy in `unpacked/<sha256>/` of
   the [store](#store), because a read in a deflated member inflates the member from its start.
-  While the copy has no `.complete`, the capture checks the SHA-256 of the zip against its
-  manifest and unpacks the file; each later box reads the copy. One capture at a time uses the
-  copy of one zip.
+  While the copy has no `.complete`, one capture at a time makes it: it checks the SHA-256 of
+  the zip against its manifest, refuses while the disk of the store cannot take the members that
+  the copy lacks and keep 4 GiB free, unpacks them, flushes them to disk and then writes
+  `.complete`. A stopped unpack resumes with the members in place. Each later box reads the
+  copy.
 - An `arcgis-features` capture tries a request again after a failed or cut transfer, a 5xx or
   429 answer, an ArcGIS error without a 4xx code, 6 times in all. Another 4xx answer or ArcGIS
   error fails at once. The hidden file `.positions` records the object ids that the page numbers
