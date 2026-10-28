@@ -174,9 +174,11 @@ struct Item {
     bytes: Option<u64>,
     /// The `ETag` of a bucket listing, which a download sends as `If-Match`.
     etag: Option<String>,
-    /// The MD5 that upstream gives as the `ETag` of a file of one part.
+    /// The MD5 that a bucket listing gives as the `ETag` of a file of one part.
     md5: Option<String>,
     modified: Option<String>,
+    /// The `Last-Modified` time, in seconds since 1970-01-01: a mirrored file gets it as its time.
+    modified_at: Option<u64>,
     /// Why upstream gave nothing about the file.
     error: Option<String>,
 }
@@ -192,9 +194,7 @@ fn list(http: &Http, dataset: &Dataset, root: &Path) -> Result<Vec<Item>, String
         let path = archive::mirror_path(url).ok_or_else(|| format!("`{url}` names no mirror path"))?;
         let item = Item { url: Some(url.clone()), path, ..Item::default() };
         items.push(match http.head(url).or_else(|e| if http::not_found(&e) { Err(e) } else { http.head(url) }) {
-            Ok(head) => {
-                Item { bytes: head.bytes, md5: head.etag.as_deref().and_then(md5_of), modified: head.modified, ..item }
-            }
+            Ok(head) => Item { bytes: head.bytes, modified: head.modified, modified_at: head.modified_at, ..item },
             Err(error) => Item { error: Some(error), ..item },
         });
     }
@@ -262,10 +262,11 @@ fn page_items(page: &str, s3: &S3) -> Result<(Vec<Item>, Option<String>), String
             continue;
         };
         let bytes = Some(tag(contents, "Size").and_then(|size| size.parse().ok()).ok_or("an object without a `Size`")?);
-        let modified = tag(contents, "LastModified").and_then(|time| time.get(..10).map(str::to_string));
-        let (etag, modified) = (tag(contents, "ETag"), modified.filter(|day| date::parse(day).is_some()));
+        let modified_at = tag(contents, "LastModified").and_then(|time| date::seconds(&time));
+        let modified = modified_at.map(|seconds| date::format((seconds / 86_400) as i64));
+        let etag = tag(contents, "ETag");
         let md5 = etag.as_deref().and_then(md5_of);
-        items.push(Item { url: Some(url), path, bytes, etag, md5, modified, error: None });
+        items.push(Item { url: Some(url), path, bytes, etag, md5, modified, modified_at, error: None });
     }
     let next = match tag(page, "IsTruncated").as_deref() {
         Some("true") => Some(tag(page, "NextContinuationToken").ok_or("a truncated page without a next token")?),
@@ -274,7 +275,7 @@ fn page_items(page: &str, s3: &S3) -> Result<(Vec<Item>, Option<String>), String
     Ok((items, next))
 }
 
-/// The MD5 of a file of one part, which S3 and GCS give as its `ETag`.
+/// The MD5 of a file of one part, which S3 and GCS give as its `ETag` in a bucket listing.
 fn md5_of(etag: &str) -> Option<String> {
     let hex = etag.trim_matches('"');
     (hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then(|| hex.to_ascii_lowercase())
@@ -319,9 +320,12 @@ pub fn holder<'a>(roots: &'a [PathBuf], id: &str) -> Option<&'a PathBuf> {
 /// so the get refuses while a root is not there.
 fn fixed_root(roots: &[PathBuf], dataset: &Dataset, chosen: Option<&Path>) -> Result<Option<PathBuf>, String> {
     if let Some(root) = roots.iter().find(|root| !root.is_dir()) {
-        return Err(format!("the archive root {} does not exist: mount its drive", root.display()));
+        let root = root.display();
+        return Err(format!("the archive root {root} does not exist: create the directory or mount its drive"));
     }
-    let holder = holder(roots, &dataset.id);
+    // A get that stopped before its first manifest leaves its partial work in its root.
+    let partial = |root: &&PathBuf| root.join(".partial").join(&dataset.id).is_dir();
+    let holder = holder(roots, &dataset.id).or_else(|| roots.iter().find(partial));
     if let Some(chosen) = chosen {
         let chosen = fs::canonicalize(chosen).map_err(|e| format!("{}: {e}", chosen.display()))?;
         let root = roots.iter().find(|root| fs::canonicalize(root).is_ok_and(|root| root == chosen));
@@ -391,11 +395,12 @@ pub fn get(
     let partial = root.join(".partial").join(&dataset.id);
     let today = date::format(date::today());
     let previous: HashMap<&str, &Listed> = old.files.iter().map(|file| (file.path.as_str(), file)).collect();
-    let missing: std::collections::HashSet<&str> = old.missing.iter().map(|file| file.path.as_str()).collect();
+    let items = with_lost_kept_files(dataset, items, &old);
+    let recorded = recorded(dataset, &old);
     let results: Mutex<Vec<Option<Result<Listed, String>>>> = Mutex::new(items.iter().map(|_| None).collect());
     let (next, done) = (AtomicUsize::new(0), AtomicUsize::new(0));
     let save = || {
-        let manifest = assemble(dataset, &items, &results.lock().unwrap(), &old, &root, &today);
+        let manifest = assemble(dataset, &items, &results.lock().unwrap(), &old, &recorded, &root, &today);
         manifest.write(&path).map(|()| manifest)
     };
     std::thread::scope(|scope| {
@@ -405,7 +410,8 @@ pub fn get(
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(item) = items.get(index) else { break };
                     let old = previous.get(item.path.as_str()).copied();
-                    let result = take(http, &root, &partial, item, old, missing.contains(item.path.as_str()));
+                    let recorded = recorded.get(item.path.as_str()).copied();
+                    let result = take(http, &root, &partial, item, old, recorded);
                     if let Err(error) = &result {
                         eprintln!("obc data: archive {}: {}: {error}", dataset.id, item.path);
                     }
@@ -437,7 +443,7 @@ pub fn get(
         .iter()
         .zip(results)
         .filter_map(|(item, result)| match result {
-            Some(Err(error)) => Some(Missing { path: item.path.clone(), bytes: item.bytes, error }),
+            Some(Err(error)) => Some(Missing { path: item.path.clone(), bytes: item.bytes, sha256: None, error }),
             _ => None,
         })
         .collect();
@@ -452,11 +458,33 @@ fn unchanged(old: &Listed, item: &Item) -> bool {
         && item.modified.as_ref().is_none_or(|day| old.modified.as_ref() == Some(day))
 }
 
+/// The recorded SHA-256 of each file of a kept dataset, of its `files` and of its `missing`.
+fn recorded<'a>(dataset: &Dataset, old: &'a Manifest) -> HashMap<&'a str, &'a str> {
+    let files = old.files.iter().filter_map(|file| Some((file.path.as_str(), file.sha256.as_deref()?)));
+    let missing = old.missing.iter().filter_map(|file| Some((file.path.as_str(), file.sha256.as_deref()?)));
+    files.chain(missing).filter(|_| dataset.kept).collect()
+}
+
+/// `items`, and for a kept dataset each file under `kept/<dataset>/` that the manifest records and
+/// the listing does not find: it stays in the manifest as missing.
+fn with_lost_kept_files(dataset: &Dataset, mut items: Vec<Item>, old: &Manifest) -> Vec<Item> {
+    let folder = format!("kept/{}/", dataset.id);
+    let found: std::collections::HashSet<String> = items.iter().map(|item| item.path.clone()).collect();
+    let paths = old.files.iter().map(|file| &file.path).chain(old.missing.iter().map(|file| &file.path));
+    let lost: Vec<Item> = paths
+        .filter(|path| dataset.kept && path.starts_with(&folder) && !found.contains(*path))
+        .map(|path| Item { path: path.clone(), error: Some("the kept file is not in place".into()), ..Item::default() })
+        .collect();
+    items.extend(lost);
+    items
+}
+
 /// The file of `item` in `root`:
 /// - the entry `old` of the manifest, when its file is in place and upstream did not change it;
-/// - for a kept file, read in place;
-/// - a file on disk that the manifest does not give as missing, whose size and modification day
-///   are the `Content-Length` and the `Last-Modified` day of upstream, read in place once;
+/// - for a kept file, the bytes of its `recorded` SHA-256, or else read in place when the manifest
+///   has no entry for it: a get never gives a kept file other bytes than the manifest records;
+/// - a file on disk whose size and modification day are the `Content-Length` and the
+///   `Last-Modified` day of upstream, read in place once;
 /// - else downloaded.
 fn take(
     http: &Http,
@@ -464,7 +492,7 @@ fn take(
     partial: &Path,
     item: &Item,
     old: Option<&Listed>,
-    missing: bool,
+    recorded: Option<&str>,
 ) -> Result<Listed, String> {
     let file = root.join(&item.path);
     if let Some(old) = old.filter(|old| in_place(root, old) && unchanged(old, item)) {
@@ -482,9 +510,14 @@ fn take(
     };
     let Some(url) = &item.url else {
         let (sha256, bytes) = store::hash_file(&file)?;
-        return Ok(listed(sha256, bytes));
+        return match recorded.filter(|want| !want.eq_ignore_ascii_case(&sha256)) {
+            Some(want) => Err(format!(
+                "the SHA-256 is {sha256}, but the manifest records {want}; to replace a kept file, remove its entry from the manifest"
+            )),
+            None => Ok(listed(sha256, bytes)),
+        };
     };
-    if !missing && upstream_size_and_day(&file, item) {
+    if upstream_size_and_day(&file, item) {
         let (sha256, md5, bytes) = store::digests(&file)?;
         if item.md5.as_ref().is_none_or(|want| *want == md5) {
             return Ok(listed(sha256, bytes));
@@ -501,8 +534,8 @@ fn take(
     };
     let got = http.download_to(&part, url, &expect)?;
     // The modification time of an archive file is the upstream `Last-Modified`.
-    if let Some(day) = item.modified.as_deref().and_then(date::parse) {
-        let time = std::time::UNIX_EPOCH + Duration::from_secs(day as u64 * 86_400);
+    if let Some(seconds) = item.modified_at {
+        let time = std::time::UNIX_EPOCH + Duration::from_secs(seconds);
         let opened = fs::File::options().write(true).open(&part);
         opened.and_then(|part| part.set_modified(time)).map_err(|e| format!("{}: {e}", part.display()))?;
     }
@@ -537,6 +570,7 @@ fn assemble(
     items: &[Item],
     results: &[Option<Result<Listed, String>>],
     old: &Manifest,
+    recorded: &HashMap<&str, &str>,
     root: &Path,
     today: &str,
 ) -> Manifest {
@@ -546,12 +580,15 @@ fn assemble(
         match (result, previous.get(item.path.as_str()).filter(|listed| in_place(root, listed))) {
             (Some(Ok(listed)), _) => files.push(listed.clone()),
             (_, Some(listed)) => files.push((*listed).clone()),
-            (Some(Err(error)), None) => {
-                missing.push(Missing { path: item.path.clone(), bytes: item.bytes, error: error.clone() })
-            }
-            (None, None) => {
-                missing.push(Missing { path: item.path.clone(), bytes: item.bytes, error: "not got yet".into() })
-            }
+            (result, None) => missing.push(Missing {
+                path: item.path.clone(),
+                bytes: item.bytes,
+                sha256: recorded.get(item.path.as_str()).map(|sha256| sha256.to_string()),
+                error: match result {
+                    Some(Err(error)) => error.clone(),
+                    _ => "not got yet".into(),
+                },
+            }),
         }
     }
     Manifest {
@@ -570,7 +607,9 @@ fn assemble(
 }
 
 /// Read each file of the manifest of the dataset `id` and compare its size and SHA-256. A file
-/// that differs moves to `missing`. Gives the files that differ.
+/// that differs moves to `missing`; a mirrored one also moves to `.partial/<id>/rejected/`, so the
+/// next get downloads it again. A kept file stays in place, as it has no other source. Gives the
+/// files that differ.
 pub fn verify(store: &Store, roots: &[PathBuf], id: &str) -> Result<Vec<Missing>, String> {
     let root = holder(roots, id).ok_or_else(|| format!("no root of OBC_DATA_ARCHIVE has manifest/{id}.json"))?;
     let _lock = lock(store, id)?;
@@ -584,12 +623,20 @@ pub fn verify(store: &Store, roots: &[PathBuf], id: &str) -> Result<Vec<Missing>
             eprintln!("obc data: archive {id}: verified {checked} of {count} files");
             reported = Instant::now();
         }
-        let error = differs(root, listed);
-        if let Some(error) = &error {
-            eprintln!("obc data: archive {id}: {}: {error}", listed.path);
-            bad.push(Missing { path: listed.path.clone(), bytes: Some(listed.bytes), error: error.clone() });
+        let Some(error) = differs(root, listed) else { return true };
+        eprintln!("obc data: archive {id}: {}: {error}", listed.path);
+        let kept = listed.path.starts_with("kept/");
+        let file = root.join(&listed.path);
+        if !kept && file.is_file() {
+            let aside = root.join(".partial").join(id).join("rejected").join(&listed.path);
+            let moved = aside.parent().map_or(Ok(()), fs::create_dir_all).and_then(|()| fs::rename(&file, &aside));
+            if let Err(e) = moved {
+                eprintln!("obc data: warning: {}: {e}", file.display());
+            }
         }
-        error.is_none()
+        let sha256 = listed.sha256.clone().filter(|_| kept);
+        bad.push(Missing { path: listed.path.clone(), bytes: Some(listed.bytes), sha256, error });
+        false
     });
     if !bad.is_empty() {
         manifest.missing.extend(bad.iter().cloned());
@@ -797,6 +844,7 @@ mod tests {
             etag: Some(format!("\"{md5}\"")),
             md5: Some(md5.into()),
             modified: Some("2022-05-09".into()),
+            modified_at: date::seconds("2022-05-09T14:26:37Z"),
             error: None,
         };
         assert_eq!(items[0], expected);
@@ -868,12 +916,17 @@ mod tests {
         assert_eq!((requests(), got.errors.len()), (5, 1), "upstream is newer, and its download fails");
         assert_eq!(day(&got), "2026-10-05", "the intact file of the manifest before stays");
 
+        // Bad bytes with the upstream size and time: only the rejection keeps the get from them.
         std::fs::write(root.join(&path), b"lane").unwrap();
+        let upstream = date::http_seconds("Tue, 06 Oct 2026 03:43:59 GMT").unwrap();
+        set_time(&root.join(&path), upstream);
         assert_eq!(verify(&store, &roots, "x").unwrap().len(), 1);
+        assert_eq!(std::fs::read(root.join(".partial/x/rejected").join(&path)).unwrap(), b"lane", "set aside");
         assert_eq!(row(&dataset, &roots).state, DatasetState::Incomplete);
         let got = get(&http, &store, &dataset, &roots, None).unwrap();
         assert_eq!(std::fs::read(root.join(&path)).unwrap(), b"land", "the get downloads the bad file again");
         assert_eq!((requests(), day(&got), got.errors.len()), (7, "2026-10-06".into(), 0));
+        assert_eq!(time(&root.join(&path)), upstream, "the exact upstream `Last-Modified`");
 
         std::fs::remove_file(root.join("manifest/x.json")).unwrap();
         let got = get(&http, &store, &dataset, &roots, None).unwrap();
@@ -883,6 +936,16 @@ mod tests {
             "the file of upstream size and day is read in place"
         );
         assert!(verify(&store, &roots, "x").unwrap().is_empty());
+    }
+
+    fn time(file: &Path) -> u64 {
+        let modified = std::fs::metadata(file).unwrap().modified().unwrap();
+        modified.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+    }
+
+    fn set_time(file: &Path, seconds: u64) {
+        let time = std::time::UNIX_EPOCH + Duration::from_secs(seconds);
+        std::fs::File::options().write(true).open(file).unwrap().set_modified(time).unwrap();
     }
 
     #[test]
@@ -902,6 +965,18 @@ mod tests {
         let listed = &got.manifest.files[0];
         assert_eq!((listed.path.as_str(), listed.sha256.clone()), ("kept/x/a/1.tif", Some(store::sha256_hex(b"one"))));
         assert_eq!(got.manifest.version.as_deref(), Some("2026-10-28"));
+
+        std::fs::write(root.join("kept/x/a/1.tif"), b"oNe").unwrap();
+        assert_eq!(verify(&store, &roots, "x").unwrap().len(), 1);
+        let got = get(&http, &store, &dataset, &roots, None).unwrap();
+        assert_eq!(
+            (got.errors.len(), got.manifest.files.len()),
+            (1, 0),
+            "a get never blesses other bytes of a kept file"
+        );
+        std::fs::write(root.join("kept/x/a/1.tif"), b"one").unwrap();
+        let got = get(&http, &store, &dataset, &roots, None).unwrap();
+        assert_eq!((got.errors.len(), got.manifest.files.len()), (0, 1), "the recorded bytes take it back");
         let err = get(&http, &store, &dataset, &roots, Some(&first)).map(|_| ()).unwrap_err();
         assert!(err.contains("a dataset is in one root"), "{err}");
         let gone = vec![scratch.0.join("unmounted"), root.clone()];

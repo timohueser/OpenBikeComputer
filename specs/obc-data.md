@@ -426,7 +426,7 @@ failed drive loses only its own datasets. Only `obc data archive` writes the arc
 
 A file goes into `mirror/` only after its check: the size, the `ETag` and the MD5 that the listing
 gives, and a `Last-Modified` day that is not after the one of the listing. The modification time of
-a file in `mirror/` is the `Last-Modified` day of upstream.
+a file in `mirror/` is the `Last-Modified` time of upstream.
 
 #### `data/archive/<dataset>.toml`
 
@@ -478,7 +478,7 @@ The version of a dataset:
 | `version` | The version of the dataset |
 | `got` | The day of the last `archive get`, `YYYY-MM-DD` in UTC |
 | `files` | Each verified file: `path` under the root, `bytes`, `sha256`, and, when upstream gives them, `modified`, its `Last-Modified` day, and `etag`, the `ETag` of a bucket listing |
-| `missing` | Each listed file that the root does not hold: `path`, `bytes` when known, and `error` |
+| `missing` | Each listed file that the root does not hold: `path`, `bytes` when known, `error`, and for a kept file the `sha256` that the manifest recorded |
 | `clms_dataset_uid`, `clms_file_id` | The `dataset` and `file` of `clms` |
 
 #### Get
@@ -488,7 +488,8 @@ The version of a dataset:
 - The get refuses while a root of `OBC_DATA_ARCHIVE` does not exist, such as a drive that is not
   mounted: that root can hold the dataset.
 - The root is `--root`, which must be a root of `OBC_DATA_ARCHIVE` and refuses while another root
-  has the manifest of the dataset. Else it is the root that has the manifest. Else, for a kept
+  has the manifest of the dataset. Else it is the root that has the manifest, or else the
+  `.partial/<dataset>/` of a get that stopped before it wrote one. Else, for a kept
   dataset, the first root that has `kept/<dataset>/`; for another dataset, the first root that has
   the free space for the listed bytes and 4 GiB more.
 - The listing: for each URL, a `HEAD` request for its `Content-Length`, `ETag` and `Last-Modified`;
@@ -499,12 +500,15 @@ The version of a dataset:
   files of the dataset: a file that upstream removes leaves the manifest.
 - A file of the manifest that is in place with its `bytes` stays without a download when upstream
   gives its size, its `ETag` and its `Last-Modified` day, as far as upstream gives them.
-- A file on disk that the manifest does not give as missing, with the `Content-Length` and the
-  `Last-Modified` day of upstream as its size and modification day, is read in place once.
+- A file on disk with the `Content-Length` and the `Last-Modified` day of upstream as its size and
+  modification day is read in place once.
 - Each other file downloads into `.partial/<dataset>/` with the retries and the resume of
   [Fetch](#fetch), four files at a time, and goes into `mirror/` after its check. An `ETag` of 32
-  hex digits, which S3 and GCS give for a file of one part, is its MD5. A file of a kept dataset
-  is read in place for its SHA-256.
+  hex digits in a bucket listing, which S3 and GCS give for a file of one part, is its MD5.
+- A kept file has no other source, so a get never gives it other bytes than the `sha256` that the
+  manifest records in `files` or `missing`. A new kept file is read in place for its SHA-256. To
+  replace a kept file, a person puts the new file in place and removes its entry from the
+  manifest.
 - A file that the get cannot take keeps its entry of the manifest before while that file is in
   place; else it is in `missing`. The get fails when a file failed.
 - The get writes the manifest each minute and at the end, so a stopped get keeps the files that
@@ -514,8 +518,9 @@ The version of a dataset:
 
 `obc data archive verify DATASET` reads each file of the manifest and compares its size and
 SHA-256 with the manifest. A file that differs, or is not in place, moves from `files` to
-`missing`. It then does not serve, and the next `archive get` downloads it again. The verify fails
-when a file differs or is not in place.
+`missing`, and then does not serve. A mirrored file that differs moves to
+`.partial/<dataset>/rejected/`, and the next `archive get` downloads it again. A kept file stays in
+place. The verify fails when a file differs or is not in place.
 
 #### Status
 

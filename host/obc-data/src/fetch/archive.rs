@@ -82,6 +82,10 @@ pub struct Missing {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bytes: Option<u64>,
+    /// The SHA-256 that the manifest recorded for a kept file: a kept file has no other source, so
+    /// only those bytes take it back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
     pub error: String,
 }
 

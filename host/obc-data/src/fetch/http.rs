@@ -34,6 +34,8 @@ pub struct Head {
     pub etag: Option<String>,
     /// The `Last-Modified` day.
     pub modified: Option<String>,
+    /// The `Last-Modified` time, in seconds since 1970-01-01.
+    pub modified_at: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -239,6 +241,7 @@ impl Http {
             bytes: header(&response, "content-length").and_then(|value| value.parse().ok()),
             etag: header(&response, "etag").filter(|value| !value.starts_with("W/")),
             modified: header(&response, "last-modified").and_then(|value| date::from_http(&value)),
+            modified_at: header(&response, "last-modified").and_then(|value| date::http_seconds(&value)),
         })
     }
 
