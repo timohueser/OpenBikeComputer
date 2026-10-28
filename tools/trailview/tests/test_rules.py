@@ -46,6 +46,14 @@ CASES = [
     ("regions/italy-med", ["look", "patches", "heather"], {"colour": "#6e4f63"}, "regions/italy-med.json: look.patches.heather: has no on, share, size_m, form"),
     ("materials", ["materials"], 65 * [{"id": "none", "cover": "grass"}],
      "materials.json: 65 materials, more than the 64 that a code of the ground tiles holds"),
+    # Not the prototype's: a ground source is a row of data/sources.toml, and its legend names the vocabulary.
+    ("ground", ["material", "sources", 3, "source"], "land-cover-xx",
+     'ground.json: material.sources[3].source: "land-cover-xx" is not a source of data/sources.toml'),
+    ("ground", ["lithology", "sources", 0, "legend", "classes", 0, 1], "lava",
+     'ground.json: lithology.sources[0].legend.classes[0][1]: "lava" is not one of ' + ", ".join(
+         f'"{entry["id"]}"' for entry in RULESET["materials"]["lithologies"])),
+    ("ground", ["lithology", "sources", 0, "zoom"], DELETE, "ground.json: lithology.sources[0]: has no zoom"),
+    ("ground", ["material", "sources", 3, "zoom"], 11, "ground.json: material.sources[3].zoom: only a vector lithology source has a zoom"),
 ]
 
 

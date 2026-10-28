@@ -98,9 +98,10 @@ EOF
 # Runs an `obc data` step of tools/ with a request as obc data writes it, into the empty folder
 # $OUT/step. SNAPSHOTS maps each source to a folder: its data files are the snapshot.
 step() {  # MODULE OPTIONS LAYERS SNAPSHOTS
-  rm -rf "$OUT/step" && mkdir -p "$OUT/step"
+  # As under `obc data`, a step gets its own TMPDIR, which goes when it ends.
+  rm -rf "$OUT/step" "$OUT/step-tmp" && mkdir -p "$OUT/step" "$OUT/step-tmp"
   _say "step $1"
-  python3 - "$OUT/step" "${@:2}" <<'EOF' | "${PY[@]}" -m "$1" --step
+  python3 - "$OUT/step" "${@:2}" <<'EOF' | TMPDIR="$OUT/step-tmp" "${PY[@]}" -m "$1" --step
 import json, sys
 from pathlib import Path
 output, options, layers, snapshots = sys.argv[1:]
@@ -110,6 +111,7 @@ print(json.dumps({"options": json.loads(options), "layers": json.loads(layers), 
                   "metrics": f"{output}.metrics.json",
                   "snapshots": {source: data(folder) for source, folder in json.loads(snapshots).items()}}))
 EOF
+  rm -rf "$OUT/step-tmp"
 }
 
 bounds() { echo "[$1]"; }
@@ -129,7 +131,7 @@ done
 mkdir -p "$OUT" "$GROUND"
 [[ -s $OUT/osm.pbf ]] || _run osmium extract --overwrite -b "$BOX" "$SRC/switzerland.osm.pbf" -o "$OUT/osm.pbf"
 if [[ ! -e $OUT/corine/.done ]]; then
-  _run "${PY[@]}" -m tools.trailview.ground --bounds "$BOX" --fetch-corine "$OUT/corine" && touch "$OUT/corine/.done"
+  _run "${PY[@]}" -m tools.trailview.ground --bounds "$BOX" --source corine-land-cover --fetch "$OUT/corine" && touch "$OUT/corine/.done"
 fi
 if [[ ! -e $OUT/sentinel-2/.done ]]; then
   _run "${PY[@]}" -m tools.trailview.colour --bounds "$BOX" --year "$YEAR" --fetch "$OUT/sentinel-2" && touch "$OUT/sentinel-2/.done"
@@ -185,18 +187,19 @@ ruleset=$("${PY[@]}" -c 'from tools.trailview.rules import digest; print(digest(
 step tools.trailview.rules "{\"ruleset\": \"$ruleset\"}" '{}' '{}'
 rm -rf "$OUT/rules" && mv "$OUT/step" "$OUT/rules"
 cp "$OUT/rules/rules.json" "$GROUND/rules.json"
-RULES="{\"planner/trailview-rules\": {\"materials.json\": \"$OUT/rules/materials.json\", \"regions.json\": \"$OUT/rules/regions.json\"},
-        \"planner/osm\": {\"osm.pbf\": \"$OUT/osm.pbf\"}}"
+RULES="{\"planner/trailview-rules\": {\"materials.json\": \"$OUT/rules/materials.json\", \"regions.json\": \"$OUT/rules/regions.json\",
+        \"ground.json\": \"$OUT/rules/ground.json\"}, \"planner/osm\": {\"osm.pbf\": \"$OUT/osm.pbf\"},
+        \"planner/trailview-lithology\": {\"lithology.pmtiles\": \"$GROUND/lithology.pmtiles\"}}"
 
-if [[ ! -s $GROUND/material.pmtiles ]]; then
-  step tools.trailview.ground "{\"layer\": \"material\", \"bounds\": $(bounds "$BOX"), \"attribution\": \"ESA WorldCover, CORINE, Copernicus Sentinel data, OpenStreetMap\"}" "$RULES" \
-    "{\"sentinel-2-mosaics\": \"$OUT/sentinel-2\", \"corine-land-cover\": \"$OUT/corine\", \"esa-worldcover\": \"$SRC/esa-worldcover\"}"
-  mv "$OUT/step/material.pmtiles" "$GROUND/"
-fi
 if [[ ! -s $GROUND/lithology.pmtiles ]]; then
   step tools.trailview.ground "{\"layer\": \"lithology\", \"bounds\": $(bounds "$BOX"), \"attribution\": \"EGDI, IGME 5000\"}" "$RULES" \
     "{\"egdi-geology\": \"$SRC/egdi-geology\", \"igme5000\": \"$SRC/igme5000\"}"
   mv "$OUT/step/lithology.pmtiles" "$GROUND/"
+fi
+if [[ ! -s $GROUND/material.pmtiles ]]; then
+  step tools.trailview.ground "{\"layer\": \"material\", \"bounds\": $(bounds "$BOX"), \"attribution\": \"ESA WorldCover, CORINE, Copernicus Sentinel data, OpenStreetMap\"}" "$RULES" \
+    "{\"sentinel-2-mosaics\": \"$OUT/sentinel-2\", \"corine-land-cover\": \"$OUT/corine\", \"esa-worldcover\": \"$SRC/esa-worldcover\"}"
+  mv "$OUT/step/material.pmtiles" "$GROUND/"
 fi
 # The region tiles follow the regions of the ruleset, so they bake each run too; they are small.
 rm -f "$GROUND/ground.pmtiles"

@@ -338,12 +338,12 @@ pub fn sorted(value: Value) -> Value {
 
 /// The steps with each one after the steps whose layers it reads.
 fn order(steps: &[Step]) -> Result<Vec<&Step>, String> {
-    let (mut names, mut layers) = (HashSet::new(), HashMap::new());
+    let (mut names, mut layers) = (HashMap::new(), HashMap::new());
     for step in steps {
         if ![step.name.as_str(), step.layer.name].iter().all(|name| name.split('/').all(crate::is_kebab)) {
             return Err(format!("step `{}`: a name is kebab-case segments joined by `/`", step.name));
         }
-        if !names.insert(step.name.as_str()) {
+        if names.insert(step.name.as_str(), step).is_some() {
             return Err(format!("step `{}` is listed twice", step.name));
         }
         if let Run::Rust(function) = &step.run {
@@ -383,8 +383,15 @@ fn order(steps: &[Step]) -> Result<Vec<&Step>, String> {
                 return Err(format!("step `{}`: client path `{path}` is not a declared output", step.name));
             }
         }
-        if let Some(name) = step.reads().find(|name| !names.contains(name)) {
+        if let Some(name) = step.reads().find(|name| !names.contains_key(name)) {
             return Err(format!("step `{}` reads the step `{name}`, which is not listed", step.name));
+        }
+        for input in &step.inputs {
+            let Input::Step { name, files } = input else { continue };
+            let declared = &names[name.as_str()].outputs;
+            if let Some(file) = files.iter().find(|file| !declared.iter().any(|output| covers(output, file))) {
+                return Err(format!("step `{}` reads {file}, which the step `{name}` does not declare", step.name));
+            }
         }
         let both = |input: &Input| matches!(input, Input::Snapshot { params, files, .. } if !params.is_empty() && !files.is_empty());
         if step.inputs.iter().any(both) {
@@ -1243,6 +1250,8 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
 
         let err = fixture.build(&steps("leaves/x.txt")).err().unwrap();
         assert!(err.contains("step `test/leaves` has no file leaves/x.txt"), "{err}");
+        let err = fixture.build(&steps("x.txt")).err().unwrap();
+        assert!(err.contains("step `test/one` reads x.txt, which the step `test/leaves` does not declare"), "{err}");
     }
 
     static NOTHING: Function = Function { name: "test/nothing", run: |_| Ok(()) };

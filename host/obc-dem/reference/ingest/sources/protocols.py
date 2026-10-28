@@ -200,11 +200,15 @@ class TiledService(Source):
 
 
 class ArcGisSource(TiledService):
-    """An ArcGIS ImageServer `exportImage`, which resamples to the size it is asked for."""
+    """An ArcGIS ImageServer `exportImage`, which resamples to the size it is asked for.
 
-    def __init__(self, *args, url, **kw):
+    `nodata` is for a service that states none: ČÚZK's answers 0 for the land abroad unless it
+    is given one, and with one it also keeps the void out of the interpolation at the border.
+    """
+
+    def __init__(self, *args, url, nodata=None, **kw):
         super().__init__(*args, **kw)
-        self.service = url
+        self.service, self.nodata = url, nodata
 
     def url(self, box) -> str:
         px, py = output_size(box, self.resolution_m, f"{self.key} {box}")
@@ -212,6 +216,7 @@ class ArcGisSource(TiledService):
             "bbox": ",".join(f"{value}" for value in box), "bboxSR": 4326, "size": f"{px},{py}",
             "imageSR": 4326, "format": "tiff", "pixelType": "F32",
             "interpolation": "RSP_BilinearInterpolation", "f": "image",
+            **({"noData": self.nodata} if self.nodata is not None else {}),
         })
         return f"{self.service}?{query}"
 
