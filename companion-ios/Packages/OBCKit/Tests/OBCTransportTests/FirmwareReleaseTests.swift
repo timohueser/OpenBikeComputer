@@ -204,15 +204,14 @@ struct FirmwareReleaseTests {
     }
 
     @Test func agesTheCachedAnswerOut() {
-        let checker = UpdateChecker(fetcher: StubFetcher(), store: InMemoryUpdateCheckStore())
         let taken = Date(timeIntervalSince1970: 1_700_000_000)
         let record = UpdateCheckRecord(release: nil, checkedAt: taken)
 
-        #expect(checker.isFresh(record, now: taken))
-        #expect(checker.isFresh(record, now: taken.addingTimeInterval(UpdateChecker.freshness - 1)))
-        #expect(!checker.isFresh(record, now: taken.addingTimeInterval(UpdateChecker.freshness)))
+        #expect(UpdateChecker.isFresh(record, now: taken))
+        #expect(UpdateChecker.isFresh(record, now: taken.addingTimeInterval(UpdateChecker.freshness - 1)))
+        #expect(!UpdateChecker.isFresh(record, now: taken.addingTimeInterval(UpdateChecker.freshness)))
         // A clock that moved backwards reads as stale, never as fresh forever.
-        #expect(!checker.isFresh(record, now: taken.addingTimeInterval(-60)))
+        #expect(!UpdateChecker.isFresh(record, now: taken.addingTimeInterval(-60)))
     }
 
     @Test func theUserDefaultsStoreRoundTripsAndToleratesGarbage() throws {

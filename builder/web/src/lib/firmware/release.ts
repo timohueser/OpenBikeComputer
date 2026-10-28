@@ -5,8 +5,9 @@
  * manifest at {@link FIRMWARE_MANIFEST_URL}. This page reads that manifest and compares it against
  * the running version; it never decides what an update *is*.
  *
- * `release.yml` emits the manifest and mirrors it to the update bucket. Before the first tag the
- * fetch can legitimately return 404 and the UI says there is nothing published yet.
+ * `release.yml` emits the manifest. `tools/verification/ops/publish.py`, run by
+ * `verification-publish.yml`, mirrors it to the update bucket. Before the first tag the fetch can
+ * legitimately return 404 and the UI says there is nothing published yet.
  *
  * The version dialect is the part with teeth. A firmware revision string comes from the device, and
  * some devices report something that is not a release version at all — a probe-flashed dev build
@@ -34,11 +35,11 @@ export interface FirmwareRelease {
  *
  * A release asset's stable download URL 302s to blob storage that sends no
  * `access-control-allow-origin` header, so a browser `fetch` for it fails — which kills the check in
- * both hosts that have a browser in them. `release.yml` therefore mirrors `manifest.json` and
- * `UPDATE.BIN` to R2 behind this domain, and GitHub Releases stays the source of truth. Nothing
- * about the trust chain moves with the bytes: the Ed25519 signature the device verifies is what says
- * an image is genuine, not the host that served it. The SHA-256 here only proves that the download
- * matches the manifest.
+ * both hosts that have a browser in them. `tools/verification/ops/publish.py` therefore mirrors
+ * `manifest.json` and `UPDATE.BIN` to R2 behind this domain, and GitHub Releases stays the source
+ * of truth. Nothing about the trust chain moves with the bytes: the Ed25519 signature the device
+ * verifies is what says an image is genuine, not the host that served it. The SHA-256 here only
+ * proves that the download matches the manifest.
  *
  * Overridable so a test never touches the network.
  */
