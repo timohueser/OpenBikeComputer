@@ -2519,7 +2519,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "overridden": {
-          "description": "The names that the environment of the command sets, for example from `tools/obc.local`:\nthe environment wins over the file, so the new value serves only once they are removed\nthere.",
+          "description": "The names that the environment of the command sets, from the shell or `tools/obc.local`:\nthe environment wins over the file, so the new value serves only once they are removed\nthere.",
           "items": {
             "type": "string"
           },

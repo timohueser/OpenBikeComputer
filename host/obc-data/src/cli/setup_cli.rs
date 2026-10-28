@@ -96,7 +96,7 @@ pub struct CredentialSet {
     pub names: Vec<String>,
     /// The sources that the credential serves; none for a credential of `deploy`.
     pub sources: Vec<String>,
-    /// The names that the environment of the command sets, for example from `tools/obc.local`:
+    /// The names that the environment of the command sets, from the shell or `tools/obc.local`:
     /// the environment wins over the file, so the new value serves only once they are removed
     /// there.
     pub overridden: Vec<String>,
@@ -255,7 +255,10 @@ pub fn setup(root: &Path, json: bool) -> Result<(), Error> {
         reason: match publish.is_empty() {
             true => "rclone and the R2 key are present.".into(),
             false if r2 => format!("Needs {}. Install it, then check again.", list(&publish)),
-            false => format!("Needs {}. Ask the owner for the key, then put it in tools/obc.local.", list(&publish)),
+            false => format!(
+                "Needs {}. Ask the owner for the key, then put it in ~/.config/openbikecomputer/credentials.env.",
+                list(&publish)
+            ),
         },
     };
     let unset = accounts.iter().filter(|(credential, _)| !credential.present()).count();
@@ -359,7 +362,10 @@ pub(super) fn print_set(set: &CredentialSet, json: bool) -> Result<(), Error> {
     let serves = if set.sources.is_empty() { String::new() } else { format!(" for {}", list(&set.sources)) };
     println!("Wrote {} to {}{serves}.", list(&set.names), set.file.display());
     if !set.overridden.is_empty() {
-        eprintln!("The environment sets {}, and it wins: remove it from tools/obc.local.", list(&set.overridden));
+        eprintln!(
+            "The environment sets {}, and it wins: remove it from the shell or tools/obc.local.",
+            list(&set.overridden)
+        );
     }
     Ok(())
 }

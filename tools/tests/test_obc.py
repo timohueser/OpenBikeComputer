@@ -114,18 +114,25 @@ class ObcTests(unittest.TestCase):
                     self.assertEqual(json.loads(result.stdout),
                                      [str(root), str(root / "tools"), str(caller), args])
 
-    def test_secrets_come_from_the_credentials_file_and_obc_local_names_its_own(self):
+    def test_obc_init_names_a_secret_in_obc_local_and_never_prints_it(self):
         source = Path(__file__).parents[1]
-        with tempfile.TemporaryDirectory(prefix="obc secrets ") as directory:
-            root, home = Path(directory) / "repo", Path(directory) / "home"
-            (root / "tools").mkdir(parents=True)
-            (home / ".config/openbikecomputer").mkdir(parents=True)
-            shutil.copyfile(source / "obc-dev.sh", root / "tools/obc-dev.sh")
-            (home / ".config/openbikecomputer/credentials.env").write_text("OBC_KEPT_TOKEN=from-credentials\n")
-            (root / "tools/obc.local").write_text("OBC_LEFT_TOKEN=do-not-print\nOBC_MAP=a.obcm\n")
-            script = 'source tools/obc-dev.sh; obc_init; echo "$OBC_KEPT_TOKEN $OBC_MAP"'
-            env = {**os.environ, "HOME": str(home), "OBC_ROOT": str(root), "OBC_TOOLS": str(root / "tools")}
-            result = subprocess.run(["bash", "-c", script], cwd=root, env=env, capture_output=True, text=True, check=True)
-            self.assertEqual(result.stdout.strip(), "from-credentials a.obcm")
-            self.assertIn("OBC_LEFT_TOKEN", result.stderr)
-            self.assertNotIn("do-not-print", result.stderr + result.stdout)
+        cases = {
+            "secret": ("OBC_MAP=a.obcm\n  export OBC_R2_SECRET_ACCESS_KEY='do $not; print'\n", "OBC_R2_SECRET_ACCESS_KEY"),
+            "no secret": ("OBC_MAP=a.obcm\nOBC_R2_BUCKET=maps\n", None),
+        }
+        for case, (text, name) in cases.items():
+            with self.subTest(case), tempfile.TemporaryDirectory(prefix="obc secrets ") as directory:
+                root = Path(directory)
+                (root / "tools").mkdir()
+                shutil.copyfile(source / "obc-dev.sh", root / "tools/obc-dev.sh")
+                (root / "tools/obc.local").write_text(text)
+                script = 'source tools/obc-dev.sh; obc_init; echo "$OBC_MAP"'
+                env = {**os.environ, "OBC_ROOT": str(root), "OBC_TOOLS": str(root / "tools")}
+                result = subprocess.run(["bash", "-euo", "pipefail", "-c", script], cwd=root, env=env,
+                                        capture_output=True, text=True, check=True)
+                self.assertEqual(result.stdout, "a.obcm\n")
+                if name:
+                    self.assertIn(name, result.stderr)
+                    self.assertNotIn("print", result.stderr)
+                else:
+                    self.assertEqual(result.stderr, "")

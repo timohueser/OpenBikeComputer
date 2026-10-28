@@ -1,6 +1,6 @@
 //! Where the credential of a source lives on this machine. An `env` credential is a line of
-//! `~/.config/openbikecomputer/credentials.env`, which `obc data` loads at start; a `file`
-//! credential is the file that its reader takes. A value never goes to argv, to a log or to the
+//! `~/.config/openbikecomputer/credentials.env`, which `obc data` and `obc bake publish` load at
+//! start; a `file` credential is the file that its reader takes. A value never goes to argv, to a log or to the
 //! output of a command.
 
 use std::collections::BTreeMap;

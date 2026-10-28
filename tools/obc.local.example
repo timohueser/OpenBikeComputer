@@ -4,7 +4,7 @@
 # Linked worktrees fall back to this file in the main checkout, so personal
 # defaults only need to be configured once. Never put a secret here: agents and
 # tools read this file. Secrets go in ~/.config/openbikecomputer/credentials.env
-# (mode 0600), which `obc` and `obc data` load.
+# (mode 0600), which `obc data` and `obc bake publish` load.
 
 # Default map for an explicit local-file `obc sim` invocation. Bare `obc sim`
 # runs the registry's `grimsel` scenario; named scenarios ignore this setting.

@@ -28,8 +28,8 @@ _run() {
 obc_init() {
   [[ -n "${OBC_ROOT:-}" ]] || { echo "obc: OBC_ROOT unset (run via the obc wrapper)" >&2; return 1; }
   local local_file="${OBC_TOOLS:-$OBC_ROOT}/obc.local"
-  # Linked worktrees share operator credentials with the main checkout. Keep the
-  # secret file in one gitignored place instead of copying it into every worktree.
+  # Linked worktrees use the `obc.local` of the main checkout, so the operator
+  # settings live in one gitignored place instead of in every worktree.
   if [[ ! -f "$local_file" ]]; then
     local common_dir common_root
     common_dir="$(git -C "$OBC_ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
@@ -42,18 +42,15 @@ obc_init() {
   # `obc.local` is the operator-facing environment file. Auto-export it so values
   # such as OBC_CATALOG_URL reach the Rust binaries and the desktop process without
   # making every local line repeat `export`.
-  # Secrets live in the credentials file that `obc data` also reads, never in `obc.local`:
-  # agents and tools read `obc.local`, and a printed copy would leak them.
-  local credentials="$HOME/.config/openbikecomputer/credentials.env"
-  if [[ -f "$credentials" ]]; then
-    set -a
-    source "$credentials"
-    set +a
-  fi
   if [[ -f "$local_file" ]]; then
+    # Agents and tools read `obc.local`, so a secret in it leaks. `obc data` and
+    # `obc bake publish` read secrets from the credentials file. `sed -n` exits 0
+    # without a match, so `set -euo pipefail` in the recipes holds.
     local secrets
-    secrets="$(grep -oE '^[A-Z0-9_]*(TOKEN|SECRET|SECRET_ACCESS_KEY|ACCESS_KEY_ID|PASSWORD|API_KEY)=' "$local_file" | tr -d '=' | tr '\n' ' ')"
-    [[ -n "$secrets" ]] && echo "obc: $local_file holds secrets (${secrets% }); move them to $credentials" >&2
+    secrets="$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z0-9_]*(TOKEN|PASSWORD|API_KEY|SECRET_KEY|SECRET_ACCESS_KEY|ACCESS_KEY_ID))=.*/\2/p' "$local_file" | tr '\n' ' ')"
+    if [[ -n "$secrets" ]]; then
+      _warn "$local_file holds secrets: ${secrets% }. Move each NAME=VALUE line to ~/.config/openbikecomputer/credentials.env (mode 0600)."
+    fi
     set -a
     source "$local_file"
     set +a

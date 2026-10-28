@@ -581,7 +581,13 @@ fn run_publish(args: &[String]) -> Result<(), String> {
     let target = flags.get("target").unwrap_or("");
     let dry_run = flags.has("dry-run") || target.is_empty();
     let store: Box<dyn ObjectStore> = match target {
-        "r2" => Box::new(R2Store::from_env()?),
+        "r2" => {
+            // The R2 key lives in the credentials file of `obc data`; a variable of the environment wins.
+            if let Some(home) = std::env::var_os("HOME") {
+                obc_data::credentials::load(Path::new(&home));
+            }
+            Box::new(R2Store::from_env()?)
+        }
         t if t.starts_with("dir:") => Box::new(DirStore::new(&t["dir:".len()..])),
         "" => Box::new(DirStore::new(".")), // unused: dry_run is on
         other => return Err(format!("unknown --target `{other}` (expected `r2` or `dir:PATH`)")),
