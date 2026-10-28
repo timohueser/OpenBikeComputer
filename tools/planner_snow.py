@@ -406,7 +406,8 @@ def modis_grid(bounds):
 
 def modis_items(bounds, start, end):
     """{date: [(platform, href)]} of the MOD10A1/MYD10A1 files from `start` to `end`."""
-    body = {"collections": ["modis-10A1-061"], "bbox": list(bounds), "datetime": f"{start}/{end}", "limit": 1000}
+    # The search takes RFC 3339 times; a bare date range is refused.
+    body = {"collections": ["modis-10A1-061"], "bbox": list(bounds), "datetime": f"{start}T00:00:00Z/{end}T23:59:59Z", "limit": 1000}
     items, page = {}, http_json(STAC, body)
     while True:
         for feature in page["features"]:
