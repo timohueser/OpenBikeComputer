@@ -1,0 +1,5 @@
+name = "ESA WorldCover 2021 tile grid, GeoJSON"
+sources = ["esa-worldcover-grid"]
+coverage = "World"
+version = "v200"
+urls = ["https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/esa_worldcover_grid.geojson"]

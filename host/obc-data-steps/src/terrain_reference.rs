@@ -2,8 +2,8 @@
 //! the reference archive (`host/obc-dem/reference/README.md`), `18/<bi>/<bj>.tif` of the maximum
 //! and `mean/18/<bi>/<bj>.tif` of the mean, and one `index.json`. A version makes each block of its
 //! region from every model with a tile in it, so the pixels of a block do not depend on the region,
-//! and keeps every other block of the version before without an upload. The index states the
-//! GLO-30 bias of each model (`crate::terrain_bias`).
+//! and keeps every other block of the version before without a copy. The index states the GLO-30
+//! bias of each model (`crate::terrain_bias`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -58,10 +58,6 @@ impl Prepared for TerrainReference {
         1
     }
 
-    fn regional(&self) -> bool {
-        true
-    }
-
     /// The models with a tile in a block that the boxes of the region meet, else those of its
     /// countries and each model whose `extent` meets one of theirs, and the polygons of their areas.
     /// The two pools of the blocks that the boxes meet, and `index.json`, are the files at most.
@@ -106,9 +102,9 @@ impl Prepared for TerrainReference {
     }
 
     /// Each block of the region: the models of each of its tiles fetched once and folded, then its
-    /// two pools uploaded with the batch of the block. `state/tiles/` keeps the pixel digests and
-    /// the tiles of a made block, or `.none` for a block without a height, so a resume fetches
-    /// neither again.
+    /// two pools moved into the home with the batch of the block. `state/tiles/` keeps the pixel
+    /// digests and the tiles of a made block, or `.none` for a block without a height, so a resume
+    /// fetches neither again.
     fn prepare(&self, job: &mut Job) -> Result<(), String> {
         let previous = job.extend(FORMAT)?;
         // The blocks that the outlines of the region meet; every block for a version of everything.
@@ -304,7 +300,6 @@ mod tests {
     use obc_data::prepared::Opening;
     use obc_data::sources::Registry;
     use obc_data::store::Store;
-    use obc_data::target::Target;
     use obc_dem::fetch::TileId;
     use std::path::PathBuf;
 
@@ -381,12 +376,12 @@ esac
         Ok(BTreeMap::new())
     }
 
-    /// A repository with [`INGEST`], a store and a target for `terrain`.
+    /// A repository with [`INGEST`], a store and an archive root for `terrain`.
     struct Fixture {
         temp: Temp,
         sources: Vec<obc_data::sources::Source>,
         store: Store,
-        target: Target,
+        archive: PathBuf,
         /// The blocks of the extent, in the order of the prepare.
         blocks: Vec<String>,
         cells: Vec<CellId>,
@@ -419,8 +414,8 @@ esac
                     .or_default()
                     .push(format!("{:04}-{:04}", tile.i, tile.j));
             }
-            let (store, target) = (Store::at(temp.0.join("store")), Target::Dir(temp.0.join("target")));
-            Fixture { temp, sources, store, target, blocks, cells, tiles }
+            let (store, archive) = (Store::at(temp.0.join("store")), temp.0.join("archive"));
+            Fixture { temp, sources, store, archive, blocks, cells, tiles }
         }
 
         fn root(&self) -> PathBuf {
@@ -428,7 +423,7 @@ esac
         }
 
         fn state(&self) -> PathBuf {
-            self.store.root().join("prepared/t/terrain/2026-10-01/state")
+            self.store.root().join("prepared/terrain/2026-10-01/state")
         }
 
         /// Write the file `<what>-<block k>` that changes what [`INGEST`] does.
@@ -443,7 +438,7 @@ esac
         }
 
         /// A run of the prepare of `version` for `scope`: its end, the calls of the script, sorted,
-        /// the reused files, complete on the target when the run ended well, and the status of the run.
+        /// the reused files, complete in the archive when the run ended well, and the status of the run.
         fn version(
             &self,
             version: &str,
@@ -454,13 +449,8 @@ esac
             let _ = fs::remove_file(root.join("squares"));
             let (producer, http) = (TerrainReference { ingest: script, glo30: sea }, Http::new());
             let mut run = Run::create(&self.store, ["source", "prepare", ID]).unwrap();
-            let opening = Opening {
-                root: &root,
-                store: &self.store,
-                http: &http,
-                sources: &self.sources,
-                target: ("t", &self.target),
-            };
+            let opening =
+                Opening { root: &root, store: &self.store, http: &http, sources: &self.sources, home: &self.archive };
             let mut reused = Vec::new();
             let done = Job::open(opening, (ID, version), scope, &[], &mut run).and_then(|mut job| {
                 producer.prepare(&mut job)?;
@@ -482,7 +472,7 @@ esac
                     time: format!("{version}T00:00:00Z"),
                     cost: obc_data::prepared::Cost { wall_ms: 0, peak_rss_bytes: None },
                 };
-                obc_data::prepared::complete(&self.target, &manifest).map(|_| ())
+                obc_data::prepared::complete(&obc_data::prepared::folder(&self.archive, ID), &manifest).map(|_| ())
             });
             let mut calls: Vec<String> =
                 fs::read_to_string(root.join("calls")).unwrap_or_default().lines().map(String::from).collect();
@@ -542,7 +532,7 @@ esac
         assert!(fixture.failed_in(done, last));
         assert_eq!(calls, fixture.fetches(2..blocks.len()));
 
-        // The blocks in `work/` are uploaded with their digests.
+        // The blocks in `work/` are moved into the home with their digests.
         fs::remove_file(fixture.root().join(format!("fail-{}", blocks[last]))).unwrap();
         fs::write(fixture.root().join("fail-index"), "").unwrap();
         let (done, calls) = fixture.prepare();
@@ -554,9 +544,8 @@ esac
         fs::write(fixture.state().join("tiles/9999-9999.sha256"), "pixels of 9999-9999\n").unwrap();
         let (done, calls) = fixture.prepare();
         done.unwrap();
-        assert_eq!(calls, ["index-terrain"], "a resume fetches no block that the target has");
-        let Target::Dir(dir) = &fixture.target else { unreachable!() };
-        let version = dir.join("sources/terrain/2026-10-01");
+        assert_eq!(calls, ["index-terrain"], "a resume fetches no block that the archive has");
+        let version = fixture.archive.join("prepared/terrain/2026-10-01");
         let index: serde_json::Value = serde_json::from_slice(&fs::read(version.join("index.json")).unwrap()).unwrap();
         let index: BTreeMap<String, Vec<String>> = serde_json::from_value(index["contributors"].clone()).unwrap();
         let tiles: Vec<String> =
@@ -659,9 +648,9 @@ esac
             .collect();
         kept.sort();
         assert_eq!(reused, kept, "every other block stays where the version before has it");
-        let Target::Dir(dir) = &fixture.target else { unreachable!() };
-        assert!(dir.join("sources/terrain/2026-10-02").join(block_file("", 4 * first.i, 4 * first.j)).is_file());
-        assert!(!dir.join("sources/terrain/2026-10-02").join(&kept[0]).exists());
+        let version = fixture.archive.join("prepared/terrain/2026-10-02");
+        assert!(version.join(block_file("", 4 * first.i, 4 * first.j)).is_file());
+        assert!(!version.join(&kept[0]).exists());
     }
 
     /// A box region in the extent of `dtm-xx`, of Germany.

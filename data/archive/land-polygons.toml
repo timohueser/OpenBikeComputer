@@ -1,0 +1,4 @@
+name = "OSM land polygons, split, EPSG:3857"
+sources = ["land-polygons"]
+coverage = "World"
+urls = ["https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip"]

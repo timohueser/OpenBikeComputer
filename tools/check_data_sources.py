@@ -3,7 +3,7 @@
 
 The registry is the one list of external data, and its licence and attribution are only as
 complete as that list. URL literals in justfile, host/, planner/, sim/, tools/, fixtures/,
-builder/server/ and builder/usb/ name a host. That host is the host of a source's `fetch.url`, one of its
+builder/server/, builder/usb/ and data/archive/ name a host. That host is the host of a source's `fetch.url`, one of its
 `hosts`, or one of the non-bake hosts in `NOT_SOURCES`. The check is per host, not per URL: a
 new download from a host that a source already declares (api.github.com, for one) passes. Tests
 and reserved example domains are not checked. A host built at run time (`https://{site}/…`)
@@ -15,8 +15,8 @@ from `KEEP`.
 
 from __future__ import annotations
 
-GOVERNS = ['justfile', 'host/**', 'planner/**', 'sim/**', 'tools/**', 'fixtures/**', 'builder/server/**', 'builder/usb/**', 'data/sources.toml']
-RULE = 'Every host that code in justfile, host/, planner/, sim/, tools/, fixtures/, builder/server/ and builder/usb/ fetches from is a source in data/sources.toml or a listed non-bake host, and each source names what reads it, what for and where its kept copy is.'
+GOVERNS = ['justfile', 'host/**', 'planner/**', 'sim/**', 'tools/**', 'fixtures/**', 'builder/server/**', 'builder/usb/**', 'data/archive/**', 'data/sources.toml']
+RULE = 'Every host that code in justfile, host/, planner/, sim/, tools/, fixtures/, builder/server/ and builder/usb/, or a dataset of data/archive/, fetches from is a source in data/sources.toml or a listed non-bake host, and each source names what reads it, what for and where its kept copy is.'
 
 import re
 import subprocess
@@ -25,7 +25,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCOPE = ("justfile", "host/", "planner/", "sim/", "tools/", "fixtures/", "builder/server/", "builder/usb/")
+SCOPE = ("justfile", "host/", "planner/", "sim/", "tools/", "fixtures/", "builder/server/", "builder/usb/", "data/archive/")
 CODE = (".rs", ".py", ".sh", ".mjs", ".js", ".ts", ".toml", "justfile")
 TEST = re.compile(r"(^|/)(tests?/|test_[^/]*\.py$|[^/]*_tests?\.(rs|py)$|tests\.rs$)")
 URL = re.compile(r"https?://((?:\{[^{}\s]*\}|[A-Za-z0-9.-])+)")
@@ -64,6 +64,8 @@ NOT_SOURCES = {
     # The deploy of the tiles Worker; no bake reads it.
     "api.cloudflare.com": "token check of `obc data deploy tiles`",
     "dash.cloudflare.com": "token creation link",
+    # The bucket of the AWS Signature Version 4 documentation, a test vector of the S3 signer.
+    "examplebucket.s3.amazonaws.com": "SigV4 documentation vector",
 }
 
 

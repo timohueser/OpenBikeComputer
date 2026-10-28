@@ -45,9 +45,10 @@ export interface SourceRow {
             }[];
         }
     >;
-    /** A prepared source, by target: its complete versions, and the run that prepares it there.
-     *  `error` says why they cannot be read. */
-    prepared: Record<string, { versions: PreparedVersion[]; lock: Holder | null; error: string | null }>;
+    /** A prepared source: the archive root of its home (`null` without one), its complete versions
+     *  there, and the run that prepares it. `error` says why they cannot be read. `null` for another
+     *  source. */
+    prepared: { root: string | null; versions: PreparedVersion[]; lock: Holder | null; error: string | null } | null;
 }
 
 export interface StoredRequest {
@@ -69,7 +70,8 @@ export interface PreparedVersion {
 export interface PrepareReview {
     id: string;
     source: string;
-    target: string;
+    /** The archive root of the home of the source. */
+    root: string;
     version: string;
     abandoned: string | null;
     scope: { region: string; definitions: Record<string, string> } | null;
@@ -79,7 +81,7 @@ export interface PrepareReview {
     files: number | null;
     /** Whether the version publishes its article text; `null` for a source without text. */
     publish_text: boolean | null;
-    cost: { wall_ms: number | null; peak_rss_bytes: number | null; store_bytes: number; upload_bytes: number | null; unknown: string[] };
+    cost: { wall_ms: number | null; peak_rss_bytes: number | null; store_bytes: number; archive_bytes: number | null; unknown: string[] };
     machine: { refusals: string[] };
     /** The layers of each target that are stale once the version is complete. */
     stale: { target: string; layers: string[]; error: string | null }[];
@@ -183,23 +185,21 @@ export function globalModelOf(id: string, rows: SourceRow[]): SourceRow | undefi
 }
 
 /** Where a reference is: what a person acts on first. */
-export type Coverage = "lock" | "preparing" | "r2" | "local" | "none";
+export type Coverage = "lock" | "preparing" | "archive" | "none";
 
 export const COVERAGE: Record<Coverage, { label: string; color: string }> = {
-    r2: { label: "On R2", color: "var(--ready)" },
-    local: { label: "On this computer only", color: "var(--stale)" },
+    archive: { label: "In the archive", color: "var(--ready)" },
     preparing: { label: "Being prepared", color: "var(--running)" },
     lock: { label: "Lock left by a stopped run", color: "var(--missing)" },
     none: { label: "Not prepared", color: "var(--ink-faint)" },
 };
 
-/** The coverage of `row` from its locks and versions; `r2` tells which targets are R2 buckets. */
-export function coverage(row: SourceRow, r2: (target: string) => boolean): Coverage {
-    const on = Object.entries(row.prepared);
-    if (on.some(([, at]) => at.lock && (at.lock.died || at.lock.stale))) return "lock";
-    if (on.some(([, at]) => at.lock)) return "preparing";
-    const held = on.filter(([, at]) => at.versions.length).map(([target]) => target);
-    return held.some(r2) ? "r2" : held.length ? "local" : "none";
+/** The coverage of `row` from its lock and versions. */
+export function coverage(row: SourceRow): Coverage {
+    const lock = row.prepared?.lock;
+    if (lock && (lock.died || lock.stale)) return "lock";
+    if (lock) return "preparing";
+    return row.prepared?.versions.length ? "archive" : "none";
 }
 
 /** The boxes of the coverage map of reference `row`: the extent of each of its `models`, not
@@ -207,16 +207,12 @@ export function coverage(row: SourceRow, r2: (target: string) => boolean): Cover
 export function coverageCells(
     row: SourceRow,
     models: SourceRow[],
-    r2: (target: string) => boolean,
     bounds: (region: string) => [number, number, number, number] | null,
 ): { box: [number, number, number, number]; state: Coverage; label: string }[] {
     const available = models.flatMap((model) => (model.extent ? [{ box: model.extent, state: "none" as Coverage, label: `${model.use ?? model.id} · ${COVERAGE.none.label}` }] : []));
-    const made = Object.entries(row.prepared).flatMap(([target, at]) =>
-        at.versions.flatMap((version) => {
-            const box = version.region ? bounds(version.region) : null;
-            const state: Coverage = r2(target) ? "r2" : "local";
-            return box ? [{ box, state, label: `${version.region} · ${COVERAGE[state].label}` }] : [];
-        }),
-    );
+    const made = (row.prepared?.versions ?? []).flatMap((version) => {
+        const box = version.region ? bounds(version.region) : null;
+        return box ? [{ box, state: "archive" as Coverage, label: `${version.region} · ${COVERAGE.archive.label}` }] : [];
+    });
     return [...available, ...new Map(made.map((cell) => [cell.label, cell])).values()];
 }

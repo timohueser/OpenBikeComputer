@@ -1168,6 +1168,8 @@ licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/v
 attribution = "Contains NatureScot information licensed under the Open Government Licence v3.0"
 obligations = "Credit the source as the attribution says"
 fetch = { kind = "capture", url = "https://ogc.nature.scot/geoserver/ows" }
+# The archive keeps the HabMoS GeoPackages of the download site.
+hosts = ["gis-downloads.nature.scot"]
 extent = [-10, 54, 0, 61]
 version = "date"
 refresh = "manual"
@@ -1189,7 +1191,8 @@ fetch = { kind = "capture", url = "https://mapas.igme.es/gis/rest/services/Carto
 extent = [-10, 35, 5, 44]
 version = "date"
 refresh = "manual"
-keep = "archive"
+# IGME gives the whole GEODE map only on request and against a fee, so the store keeps the captures.
+keep = "store"
 redistribute = true
 
 # The source of data/trailview/ecoregions.json; its borders are Natural Earth's.

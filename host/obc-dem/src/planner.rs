@@ -40,7 +40,7 @@ pub type Sample = (i64, i64, f64);
 pub const MIN_SAMPLES: usize = 4 * (TILE_PIXELS / SAMPLES) * (TILE_PIXELS / SAMPLES);
 /// How a version of `terrain` without the bias of a model gets it.
 pub const BIAS_FIX: &str = "a prepare of a box of about four tiles inside the extent of the model extends the \
-     version and measures it: obc data source prepare terrain --box W,S,E,N --to TARGET --dry-run";
+     version and measures it: obc data source prepare terrain --box W,S,E,N --dry-run";
 
 /// The width of each ramp of the seam in metres. A canopy step of 20 m between the archive and
 /// GLO-30 ramps over it at 2 %, which the relief does not show as an edge.

@@ -62,7 +62,12 @@ fn under(home: &Path, path: &str) -> PathBuf {
 
 /// The variables of the credentials file under `home`.
 pub fn env_file(home: &Path) -> BTreeMap<String, String> {
-    let text = std::fs::read_to_string(under(home, ENV_FILE)).unwrap_or_default();
+    file_values(home, ENV_FILE)
+}
+
+/// The `NAME=VALUE` lines of `file`, which starts with `~/`, under `home`; none when it is missing.
+pub fn file_values(home: &Path, file: &str) -> BTreeMap<String, String> {
+    let text = std::fs::read_to_string(under(home, file)).unwrap_or_default();
     text.lines().filter(|line| !line.trim_start().starts_with('#')).filter_map(variable).collect()
 }
 

@@ -148,7 +148,7 @@
         </div>
     </dl>
 
-    {#each review.notes as note (note.text)}<ReviewNote {note} to={target.target} region={review.settings.region} tone="stale" />{/each}
+    {#each review.notes as note (note.text)}<ReviewNote {note} region={review.settings.region} tone="stale" />{/each}
     {#each review.services as problem (problem)}<p class="missing">✗ {problem} <a href="#/{target.target}">Open the services of {target.target}</a></p>{/each}
     {#if review.machine.refusals.length}<p class="missing">{machine} cannot bake this: {review.machine.refusals.join("; ")}</p>{/if}
 
@@ -197,7 +197,7 @@
     </section>
 
     {#if formats.length}
-        <label class="gate">
+        <label class="gate warn">
             <input type="checkbox" bind:checked={accepted} />
             {list(formats.map((layer) => layer.layer))} change format: apps that read the old format get no new data until they update.
         </label>
@@ -258,12 +258,11 @@
     meter {
         display: block;
         width: 100%;
-        height: 8px;
+        height: 6px;
         margin-top: 6px;
     }
     h3 {
         margin: 0 0 8px;
-        font-size: 15px;
     }
     .num {
         text-align: right;
@@ -281,10 +280,8 @@
     }
     .gate {
         display: flex;
+        align-items: flex-start;
         gap: 12px;
         padding: 12px 16px;
-        border: 1px solid var(--stale);
-        border-radius: 8px;
-        background: #fdf3e6;
     }
 </style>

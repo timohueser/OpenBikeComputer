@@ -23,10 +23,10 @@
         display: flex;
         flex-direction: column;
         gap: 6px;
-        padding: 16px;
-        background: var(--panel);
-        border: 2px solid var(--missing);
-        border-radius: 12px;
+        padding: 14px 16px;
+        background: color-mix(in srgb, var(--missing) 7%, var(--panel));
+        border: 1px solid color-mix(in srgb, var(--missing) 45%, transparent);
+        border-radius: 8px;
         overflow-wrap: anywhere;
     }
     .message {

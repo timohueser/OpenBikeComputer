@@ -1,8 +1,9 @@
-//! Prepared sources: a long job publishes one version of a source to a target, under
-//! `sources/<id>/<version>/`, its manifest last. A bake reads a version as it reads any other
-//! source: the files that a step names, each with the SHA-256 of the manifest. The manifest is the
-//! identity of a version: a step reads `<version>/<manifest sha256>`, because two targets can have
-//! other files under one version name. `specs/obc-data.md`, "Prepared sources", gives the layout.
+//! Prepared sources: a long job makes one version of a source in its home in the archive,
+//! `prepared/<id>/<version>/` of one root of `OBC_DATA_ARCHIVE`, its manifest last. The archive is
+//! the only copy. A bake reads a version as it reads any other source: the files that a step names,
+//! each with the SHA-256 of the manifest. The manifest is the identity of a version: a step reads
+//! `<version>/<manifest sha256>`, because a test root can have other files under one version name.
+//! `specs/obc-data.md`, "Prepared sources", gives the layout.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -20,13 +21,14 @@ use crate::engine::runs::Run;
 use crate::engine::LayerFile;
 use crate::fetch::http::Http;
 use crate::product::{Inputs, RequestKey, Wanted};
-use crate::release::Release;
 use crate::sources::{FetchKind, Refresh, Source};
 use crate::store::{hash_file, sha256_hex, FileRecord, Snapshot, Store};
-use crate::target::{Condition, Listed, Target};
+use crate::target::{Condition, Target};
 
-/// The target whose versions every target knows. Another target also knows its own.
-pub(crate) const PROD: &str = "prod";
+/// The folder of an archive root that holds the home of each prepared source.
+const PREPARED: &str = "prepared";
+/// The start of the error of a fetch whose version no root holds.
+const ABSENT: &str = "no root of OBC_DATA_ARCHIVE has ";
 /// The key of the complete versions of a prepared source, in the folder of the source.
 pub(crate) const VERSIONS: &str = "versions.json";
 /// The name of the manifest in the folder of a version.
@@ -40,10 +42,6 @@ pub trait Prepared: Sync {
     fn format(&self) -> u32;
     /// A person changes it in the change that improves the output.
     fn revision(&self) -> u32;
-    /// Whether `prod` takes a version of a region: the source is made region by region.
-    fn regional(&self) -> bool {
-        false
-    }
     /// Plan the inputs with metadata requests only; never download an archive here.
     fn plan(
         &self,
@@ -116,9 +114,95 @@ pub(crate) fn producer<'a>(prepared: &[&'a dyn Prepared], id: &str) -> Option<&'
     prepared.iter().copied().find(|producer| producer.name() == id)
 }
 
-/// The folder of the source `id` on `target`, as a target: its lock, its versions and their files.
-pub(crate) fn folder(target: &Target, id: &str) -> Target {
-    target.within(&format!("sources/{id}"))
+/// The home of the source `id` in the archive root `root`, as a target: its lock, its versions and
+/// their files.
+pub fn folder(root: &Path, id: &str) -> Target {
+    Target::Dir(path(root, id))
+}
+
+/// The path of the home of `id` in the archive root `root`.
+pub(crate) fn path(root: &Path, id: &str) -> PathBuf {
+    root.join(PREPARED).join(id)
+}
+
+/// The root of the home of `id`: the first of `roots` that has `prepared/<id>/`.
+pub(crate) fn home<'a>(roots: &'a [PathBuf], id: &str) -> Option<&'a PathBuf> {
+    roots.iter().find(|root| path(root, id).is_dir())
+}
+
+/// The root that a prepare or a copy of `id` writes: its home, else the first root with
+/// [`crate::store::RESERVE`] free. Refused without a root, and while a root does not exist.
+pub(crate) fn place(roots: &[PathBuf], id: &str) -> Result<PathBuf, String> {
+    if roots.is_empty() {
+        return Err("OBC_DATA_ARCHIVE names no root, and a prepared version lives only in the archive".into());
+    }
+    crate::datasets::mounted(roots)?;
+    if let Some(root) = roots.iter().find(|root| root.to_str().is_none()) {
+        return Err(format!("the archive root {} is not UTF-8", root.display()));
+    }
+    if let Some(root) = home(roots, id) {
+        return Ok(root.clone());
+    }
+    let roomy = roots.iter().find(|root| crate::store::check_free(root, 0).is_ok());
+    roomy.cloned().ok_or_else(|| "no root of OBC_DATA_ARCHIVE has 4 GiB free".into())
+}
+
+/// The home of `id` and a later root whose folder `prepared/<id>/` holds files too: the later one
+/// does not serve. A test root named first does this on purpose.
+pub(crate) fn shadowed<'a>(roots: &'a [PathBuf], id: &str) -> Option<(&'a PathBuf, &'a PathBuf)> {
+    let home = home(roots, id)?;
+    let holds = |root: &&PathBuf| fs::read_dir(path(root, id)).is_ok_and(|mut entries| entries.next().is_some());
+    let later = roots.iter().skip_while(|root| *root != home).skip(1).filter(|root| *root != home).find(holds)?;
+    Some((home, later))
+}
+
+/// The warning when [`shadowed`] finds a second folder of `id`.
+pub(crate) fn shadow_warning(roots: &[PathBuf], id: &str) -> Option<String> {
+    let (home, later) = shadowed(roots, id)?;
+    let (home, later) = (path(home, id), path(later, id));
+    Some(format!("warning: {} and {} both hold `{id}`; only the first serves", home.display(), later.display()))
+}
+
+/// Write the [`shadow_warning`] of `id` to standard error.
+pub(crate) fn warn_shadowed(roots: &[PathBuf], id: &str) {
+    if let Some(warning) = shadow_warning(roots, id) {
+        eprintln!("obc data: {warning}");
+    }
+}
+
+/// The first of `theirs`, the versions of a legacy folder `sources/<id>/`, that the home `folder`
+/// lacks: an entry of its `versions.json` with the same manifest SHA-256, and that manifest.
+pub(crate) fn uncopied<'a>(folder: &Target, id: &str, theirs: &'a [Version]) -> Result<Option<&'a Version>, String> {
+    let ours = versions(folder, id)?;
+    for entry in theirs {
+        let sha256 = &entry.manifest_sha256;
+        let listed = ours.iter().any(|ours| ours.version == entry.version && ours.manifest_sha256 == *sha256);
+        let held = folder.get(&format!("{}/{MANIFEST}", entry.version))?;
+        if !listed || held.is_none_or(|bytes| sha256_hex(&bytes) != *sha256) {
+            return Ok(Some(entry));
+        }
+    }
+    Ok(None)
+}
+
+/// Remove the home of `id` in `root` while its lock is free and it holds only the files of that
+/// lock: another run that took the lock keeps the home.
+pub(crate) fn unmake(root: &Path, id: &str) {
+    let home = path(root, id);
+    if !matches!(crate::lock::read(&folder(root, id)), Ok(None | Some((crate::lock::LockFile::Free, _)))) {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(&home) else { return };
+    let names: Vec<_> = entries.filter_map(|entry| entry.ok()?.file_name().into_string().ok()).collect();
+    if names.iter().all(|name| [crate::lock::LOCK, ".lock"].contains(&name.as_str())) {
+        names.iter().for_each(|name| drop(fs::remove_file(home.join(name))));
+        let _ = fs::remove_dir(&home);
+    }
+}
+
+/// Whether a fetch error is of a version that no root of the archive holds.
+pub(crate) fn absent_from_archive(error: &str) -> bool {
+    error.starts_with(ABSENT)
 }
 
 /// The part of the world that a version covers, as the settings of a target name a region.
@@ -130,7 +214,7 @@ pub struct Scope {
     pub definitions: BTreeMap<String, String>,
 }
 
-/// `sources/<id>/<version>/manifest.json`: compact JSON with the keys of each object in byte order.
+/// `prepared/<id>/<version>/manifest.json`: compact JSON with the keys of each object in byte order.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -142,7 +226,7 @@ pub struct Manifest {
     pub inputs: Vec<Read>,
     /// Sorted by path.
     pub files: Vec<LayerFile>,
-    /// The files that an earlier version of the same target holds, by path: the version keeps them
+    /// The files that an earlier version of the same source holds, by path: the version keeps them
     /// under `<that version>/<path>`, not under its own folder.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub reused: BTreeMap<String, String>,
@@ -210,25 +294,25 @@ impl Manifest {
         serde_json::to_vec(&crate::engine::sorted(value)).expect("JSON values serialize")
     }
 
-    fn parse(id: &str, version: &str, bytes: &[u8]) -> Result<Manifest, String> {
+    pub(crate) fn parse(id: &str, version: &str, bytes: &[u8]) -> Result<Manifest, String> {
         let manifest: Manifest =
-            serde_json::from_slice(bytes).map_err(|e| format!("sources/{id}/{version}/{MANIFEST}: {e}"))?;
+            serde_json::from_slice(bytes).map_err(|e| format!("{id}/{version}/{MANIFEST}: {e}"))?;
         if (manifest.source.as_str(), manifest.version.as_str()) != (id, version) {
-            return Err(format!("sources/{id}/{version}/{MANIFEST} is the manifest of another version"));
+            return Err(format!("{id}/{version}/{MANIFEST} is the manifest of another version"));
         }
         Ok(manifest)
     }
 }
 
-/// The complete versions of `id` on `target`.
-pub(crate) fn versions(target: &Target, id: &str) -> Result<Vec<Version>, String> {
-    let Some(bytes) = folder(target, id).get(VERSIONS)? else { return Ok(Vec::new()) };
-    serde_json::from_slice(&bytes).map_err(|e| format!("sources/{id}/{VERSIONS}: {e}"))
+/// The complete versions of the source `id` whose folder is `folder`.
+pub(crate) fn versions(folder: &Target, id: &str) -> Result<Vec<Version>, String> {
+    let Some(bytes) = folder.get(VERSIONS)? else { return Ok(Vec::new()) };
+    serde_json::from_slice(&bytes).map_err(|e| format!("{id}/{VERSIONS}: {e}"))
 }
 
-/// The manifest of `id@version` on `target`; `None` while the version is not complete.
-pub(crate) fn manifest(target: &Target, id: &str, version: &str) -> Result<Option<Manifest>, String> {
-    let bytes = folder(target, id).get(&format!("{version}/{MANIFEST}"))?;
+/// The manifest of `id@version` in `folder`; `None` while the version is not complete.
+pub(crate) fn manifest(folder: &Target, id: &str, version: &str) -> Result<Option<Manifest>, String> {
+    let bytes = folder.get(&format!("{version}/{MANIFEST}"))?;
     bytes.map(|bytes| Manifest::parse(id, version, &bytes)).transpose()
 }
 
@@ -291,36 +375,36 @@ pub fn day(name: &str) -> &str {
 }
 
 /// The version that a new run on the UTC day `today` makes: the first name of that day after each
-/// version of that day that `listed` names, without a manifest on `target`.
-pub(crate) fn next(target: &Target, id: &str, today: &str, listed: &[Version]) -> Result<String, String> {
+/// version of that day that `listed` names, without a manifest in `folder`.
+pub(crate) fn next(folder: &Target, id: &str, today: &str, listed: &[Version]) -> Result<String, String> {
     let date = crate::date::parse(today).ok_or_else(|| format!("{today} is not a date"))?;
     let after = listed.iter().filter_map(|entry| order(&entry.version)).filter(|(of, _)| *of == date);
     let mut ordinal = after.map(|(_, ordinal)| ordinal + 1).max().unwrap_or(1);
     loop {
         let name = if ordinal == 1 { today.to_string() } else { format!("{today}.{ordinal}") };
-        if manifest(target, id, &name)?.is_none() {
+        if manifest(folder, id, &name)?.is_none() {
             return Ok(name);
         }
         ordinal += 1;
     }
 }
 
-/// Make `manifest` the manifest of its version on `target`, after a check that the target has each
+/// Make `manifest` the manifest of its version in `folder`, after a check that the folder has each
 /// of its files with its size, then [`list`] the version. A manifest that an earlier run of the
 /// version wrote stays when it names the same files.
-pub fn complete(target: &Target, manifest: &Manifest) -> Result<Version, String> {
+pub fn complete(folder: &Target, manifest: &Manifest) -> Result<Version, String> {
     let (id, version) = (&manifest.source, &manifest.version);
-    let (folder, key) = (folder(target, id), format!("{version}/{MANIFEST}"));
-    if let Some(missing) = absent_kept(&folder, version, &manifest.files, &manifest.reused)?.first() {
-        return Err(format!("sources/{id}/{missing} is not on the target; no manifest is written"));
+    let key = format!("{version}/{MANIFEST}");
+    if let Some(missing) = absent_kept(folder, version, &manifest.files, &manifest.reused)?.first() {
+        return Err(format!("{id}/{missing} is not in the archive; no manifest is written"));
     }
     if folder.put(&key, &manifest.canonical(), &Condition::Absent)?.is_none() {
-        let kept = self::manifest(target, id, version)?.ok_or_else(|| format!("sources/{id}/{key} came and went"))?;
+        let kept = self::manifest(folder, id, version)?.ok_or_else(|| format!("{id}/{key} came and went"))?;
         if kept.files != manifest.files {
-            return Err(format!("sources/{id}/{key} names other files than this run made"));
+            return Err(format!("{id}/{key} names other files than this run made"));
         }
     }
-    list(target, id, version)
+    list(folder, id, version)
 }
 
 /// The keys `<version>/<path>` of `files` that the source folder `folder` lacks or holds with
@@ -342,11 +426,10 @@ fn absent_kept(
     folder.missing(&sizes)
 }
 
-/// Add the complete version `id@version` of `target` to its `versions.json`, from its manifest.
-pub(crate) fn list(target: &Target, id: &str, version: &str) -> Result<Version, String> {
-    let folder = folder(target, id);
+/// Add the complete version `id@version` of `folder` to its `versions.json`, from its manifest.
+pub(crate) fn list(folder: &Target, id: &str, version: &str) -> Result<Version, String> {
     let key = format!("{version}/{MANIFEST}");
-    let bytes = folder.get(&key)?.ok_or_else(|| format!("sources/{id}/{key} is gone"))?;
+    let bytes = folder.get(&key)?.ok_or_else(|| format!("{id}/{key} is gone"))?;
     let manifest = Manifest::parse(id, version, &bytes)?;
     let entry = Version {
         version: version.into(),
@@ -356,7 +439,7 @@ pub(crate) fn list(target: &Target, id: &str, version: &str) -> Result<Version, 
         time: manifest.time,
         region: manifest.scope.map(|scope| scope.region),
     };
-    edit_versions(&folder, |versions| {
+    edit_versions(folder, |versions| {
         if !versions.iter().any(|listed| listed.version == entry.version) {
             versions.push(entry.clone());
         }
@@ -364,16 +447,23 @@ pub(crate) fn list(target: &Target, id: &str, version: &str) -> Result<Version, 
     Ok(entry)
 }
 
-/// What a resume needs on this machine: `STORE/prepared/<target>/<id>/<version>/` holds the selection
-/// of the run, its journal, `work/` and `state/`.
-pub(crate) fn job_dir(store: &Store, target: &str, id: &str, version: &str) -> PathBuf {
-    store.root().join("prepared").join(target).join(id).join(version)
+/// `selection.json` of a run: the archive root of the home, the scope and the languages. A resume
+/// with another root refuses, so a stopped run of a test root never resumes into another home.
+pub(crate) fn selection(root: &Path, scope: Option<&Scope>, languages: &[String]) -> Result<Vec<u8>, String> {
+    let root = root.to_str().ok_or_else(|| format!("the archive root {} is not UTF-8", root.display()))?;
+    Ok(serde_json::to_vec(&(root, scope, languages)).expect("a selection serializes"))
 }
 
-/// The version of `id` for `target` that a run of this machine started and did not complete; the
-/// newest one when there are more.
-pub(crate) fn started(store: &Store, target: &str, id: &str) -> Result<Option<String>, String> {
-    let dir = store.root().join("prepared").join(target).join(id);
+/// What a resume needs on this machine: `STORE/prepared/<id>/<version>/` holds the selection of the
+/// run, its journal, `work/` and `state/`.
+pub(crate) fn job_dir(store: &Store, id: &str, version: &str) -> PathBuf {
+    store.root().join(PREPARED).join(id).join(version)
+}
+
+/// The version of `id` that a run of this machine started and did not complete; the newest one
+/// when there are more.
+pub(crate) fn started(store: &Store, id: &str) -> Result<Option<String>, String> {
+    let dir = store.root().join(PREPARED).join(id);
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -387,7 +477,7 @@ pub(crate) fn started(store: &Store, target: &str, id: &str) -> Result<Option<St
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Entry {
-    /// A file that is on the target.
+    /// A file that is in the home.
     File(LayerFile),
     /// A file of the earlier version `version` that this version keeps.
     Reused { file: LayerFile, version: String },
@@ -395,7 +485,7 @@ enum Entry {
     Input { source: String, version: String, files: BTreeMap<String, String> },
 }
 
-/// What a producer works with: one version of one source for one target.
+/// What a producer works with: one version of one source in its home.
 pub struct Job<'a> {
     pub id: String,
     pub version: String,
@@ -422,7 +512,7 @@ pub struct Job<'a> {
     reused: BTreeMap<String, String>,
     extends: Vec<Option<Scope>>,
     inputs: BTreeMap<(String, String), BTreeMap<String, String>>,
-    /// The files that this run uploaded.
+    /// The files that this run moved into the home.
     pub(crate) uploaded: u64,
     /// The programs that run now, and the most that ran at once.
     programs: (Arc<AtomicU64>, AtomicU64),
@@ -434,8 +524,8 @@ pub struct Opening<'a> {
     pub store: &'a Store,
     pub http: &'a Http,
     pub sources: &'a [Source],
-    /// The target, with its name.
-    pub target: (&'a str, &'a Target),
+    /// The archive root of the home of the source.
+    pub home: &'a Path,
 }
 
 impl<'a> Job<'a> {
@@ -448,20 +538,20 @@ impl<'a> Job<'a> {
         languages: &[String],
         run: &'a mut Run,
     ) -> Result<Job<'a>, String> {
-        let Opening { root, store, http, sources, target: (name, target) } = opening;
+        let Opening { root, store, http, sources, home } = opening;
         let source = sources.iter().find(|source| source.id == id);
         let source = source.ok_or_else(|| format!("no source `{id}` in data/sources.toml"))?;
-        let dir = job_dir(store, name, id, version);
+        let dir = job_dir(store, id, version);
         for folder in ["work", "state"] {
             fs::create_dir_all(dir.join(folder)).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         let selection_file = dir.join("selection.json");
-        let bytes = serde_json::to_vec(&(&scope, languages)).expect("a selection serializes");
+        let bytes = selection(home, scope.as_ref(), languages)?;
         match fs::read(&selection_file) {
             Ok(held) if held == bytes => {}
             Ok(_) => {
                 return Err(format!(
-                    "a run of {id}@{version} for another region or language selection stopped; resume it with its selection, or delete {}",
+                    "a run of {id}@{version} for another archive root, region or language selection stopped; resume it with its selection, or delete {}",
                     dir.display()
                 ))
             }
@@ -480,7 +570,7 @@ impl<'a> Job<'a> {
             store,
             http,
             sources,
-            folder: folder(target, id),
+            folder: folder(home, id),
             run,
             journal: dir.join("journal.jsonl"),
             files: BTreeMap::new(),
@@ -536,12 +626,12 @@ impl<'a> Job<'a> {
         Ok(())
     }
 
-    /// Whether `path` is on the target: a resume does not make it again.
+    /// Whether `path` is in the home: a resume does not make it again.
     pub fn done(&self, path: &str) -> bool {
         self.files.contains_key(path)
     }
 
-    /// The files that are on the target, by path.
+    /// The files that are in the home, by path.
     pub fn files(&self) -> impl Iterator<Item = &LayerFile> {
         self.files.values()
     }
@@ -607,20 +697,18 @@ impl<'a> Job<'a> {
         &self.extends
     }
 
-    /// The newest complete version of the source on the target before this one, in `format`: the
+    /// The newest complete version of the source in the home before this one, in `format`: the
     /// version that this one extends, so its manifest names the scopes of that version.
     pub fn extend(&mut self, format: u32) -> Result<Option<Manifest>, String> {
         let listed: Vec<Version> = match self.folder.get(VERSIONS)? {
-            Some(bytes) => {
-                serde_json::from_slice(&bytes).map_err(|e| format!("sources/{}/{VERSIONS}: {e}", self.id))?
-            }
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}/{VERSIONS}: {e}", self.id))?,
             None => Vec::new(),
         };
         let before =
             listed.iter().filter(|entry| entry.format == format && order(&entry.version) < order(&self.version));
         let Some(entry) = before.max_by_key(|entry| order(&entry.version)) else { return Ok(None) };
         let key = format!("{}/{MANIFEST}", entry.version);
-        let bytes = self.folder.get(&key)?.ok_or_else(|| format!("sources/{}/{key} is gone", self.id))?;
+        let bytes = self.folder.get(&key)?.ok_or_else(|| format!("{}/{key} is gone", self.id))?;
         let manifest = Manifest::parse(&self.id, &entry.version, &bytes)?;
         self.extends = manifest.extends.iter().cloned().chain([manifest.scope.clone()]).collect();
         Ok(Some(manifest))
@@ -630,15 +718,8 @@ impl<'a> Job<'a> {
     pub fn earlier_file(&self, manifest: &Manifest, path: &str) -> Result<PathBuf, String> {
         let file = manifest.files.iter().find(|file| file.path == path);
         let file = file.ok_or_else(|| format!("{}@{} has no file {path}", self.id, manifest.version))?;
-        let object = self.store.object(&file.sha256);
-        if !object.is_file() {
-            let origin = manifest.reused.get(path).unwrap_or(&manifest.version);
-            self.folder
-                .download(&format!("{origin}/{path}"), &file.sha256, self.store)
-                .map_err(|e| format!("sources/{}/{e}", self.id))?
-                .ok_or_else(|| format!("the target has no sources/{}/{origin}/{path}", self.id))?;
-        }
-        Ok(object)
+        let origin = manifest.reused.get(path).unwrap_or(&manifest.version);
+        take(&self.folder, (&self.id, &format!("{origin}/{path}")), &file.sha256, self.store)
     }
 
     /// Keep the file `path` of the earlier version `manifest` in this version, without an upload.
@@ -715,8 +796,7 @@ impl<'a> Job<'a> {
         crate::engine::peak_rss(self.programs.1.load(Ordering::Relaxed).max(1))
     }
 
-    /// Upload the files `paths` of `work` to the target in one call, record each, and delete them
-    /// from `work`.
+    /// Move the files `paths` of `work` into the home, record each, and delete them from `work`.
     pub fn finish(&mut self, paths: &[String]) -> Result<(), String> {
         self.run.check_stop(self.store)?;
         let mut files = Vec::new();
@@ -728,7 +808,7 @@ impl<'a> Job<'a> {
             let file = self.work.join(path);
             let (sha256, size) = hash_file(&file)?;
             if let Some(done) = self.files.get(path).filter(|done| done.sha256 != sha256) {
-                return Err(format!("{path} has other bytes than the {} bytes that a run uploaded", done.size));
+                return Err(format!("{path} has other bytes than the {} bytes that a run moved", done.size));
             }
             files.push((file, LayerFile { path: path.clone(), size, sha256 }));
         }
@@ -846,16 +926,16 @@ impl Drop for Program {
     }
 }
 
-/// Delete what this machine keeps of the run of `id@version` for `target`: the target has it all.
-pub(crate) fn forget(store: &Store, target: &str, id: &str, version: &str) -> Result<(), String> {
-    let dir = job_dir(store, target, id, version);
+/// Delete what this machine keeps of the run of `id@version`: the home has it all.
+pub(crate) fn forget(store: &Store, id: &str, version: &str) -> Result<(), String> {
+    let dir = job_dir(store, id, version);
     fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))
 }
 
 /// The files of `id@version` that the journal of its run on this machine names, sorted by path: a
-/// resume does not upload them again.
-pub(crate) fn journaled(store: &Store, target: &str, id: &str, version: &str) -> Vec<LayerFile> {
-    let journal = job_dir(store, target, id, version).join("journal.jsonl");
+/// resume does not move them again.
+pub(crate) fn journaled(store: &Store, id: &str, version: &str) -> Vec<LayerFile> {
+    let journal = job_dir(store, id, version).join("journal.jsonl");
     let text = fs::read_to_string(journal).unwrap_or_default();
     let mut files = BTreeMap::new();
     for entry in text.lines().filter_map(|line| serde_json::from_str::<Entry>(line).ok()) {
@@ -866,41 +946,35 @@ pub(crate) fn journaled(store: &Store, target: &str, id: &str, version: &str) ->
     files.into_values().collect()
 }
 
-/// Give `inputs` the version of each prepared source of `read`, the fetches that the steps of the
-/// target `name` read, in the format of its producer: the serving version of a `manual` source,
-/// else the newest version that `prod` lists, or, while `prod` lists none, that the target lists.
-/// A source without one is due, and the listing blocks it.
+/// Give `inputs` the version of each prepared source of `read`, the fetches that the steps read, in
+/// the format of its producer: the serving version of a `manual` source, else the newest version
+/// of its home in the archive roots `roots`. A source without one is due, and the listing blocks it.
 pub(crate) fn resolve(
-    root: &Path,
-    store: &Store,
-    (name, target): (&str, &Target),
+    roots: &[PathBuf],
     (sources, read, producers): (&[Source], &BTreeSet<RequestKey>, &[&dyn Prepared]),
     inputs: &mut Inputs,
 ) -> Result<(), String> {
     let prepared = sources.iter().filter(|source| source.fetch.kind == FetchKind::Prepared);
-    let prepared: Vec<&Source> = prepared.filter(|source| read.iter().any(|(id, _)| *id == source.id)).collect();
-    if prepared.is_empty() {
-        return Ok(());
-    }
-    let prod = match name {
-        PROD => None,
-        _ => crate::target::load(root, store)?.remove(PROD),
-    };
-    for source in prepared {
+    for source in prepared.filter(|source| read.iter().any(|(id, _)| *id == source.id)) {
         let key = (source.id.clone(), Vec::new());
         let serving = inputs.serving.get(&key).cloned();
         let format = producer(producers, &source.id).map(|producer| producer.format());
         let fits = |entry: &Version| format.is_none_or(|format| entry.format == format);
-        let mut listed = versions(target, &source.id)?;
-        // `prod` is the reference: its versions win. The target's own count only while `prod` has
-        // none, so a version made for a test on this machine never hides one that every target reads.
-        match prod.as_ref().map(|prod| versions(prod, &source.id)) {
-            Some(Ok(theirs)) if theirs.iter().any(fits) => listed = theirs,
-            Some(Ok(_)) | None => {}
-            // A bake from the store needs no network.
-            Some(Err(e)) => eprintln!("obc data: `{PROD}` cannot be read ({e}); `{name}` reads the versions it knows"),
-        }
-        // A serving version that no list names stays, as on a machine without network.
+        warn_shadowed(roots, &source.id);
+        let listed = match home(roots, &source.id) {
+            Some(root) => versions(&folder(root, &source.id), &source.id)?,
+            // A bake from the store needs no archive.
+            None => {
+                if serving.is_some() {
+                    eprintln!(
+                        "obc data: no root of OBC_DATA_ARCHIVE has {PREPARED}/{}/: the target keeps the version that it serves",
+                        source.id
+                    );
+                }
+                Vec::new()
+            }
+        };
+        // A serving version that the home does not list stays, as on a machine without the archive.
         let serving = serving.filter(|serving| listed.iter().find(|entry| pinned(entry) == *serving).is_none_or(fits));
         let newest = listed.iter().filter(|entry| fits(entry)).max_by_key(|entry| order(&entry.version)).map(pinned);
         let place = |pinned: &String| unpin(pinned).and_then(|(version, _)| order(version));
@@ -923,12 +997,34 @@ pub(crate) fn resolve(
     Ok(())
 }
 
+/// Give `store` a copy, never a link, of the file `key` of the home `folder` of `id`, which must
+/// have the SHA-256 `sha256`, and give its object.
+fn take(folder: &Target, (id, key): (&str, &str), sha256: &str, store: &Store) -> Result<PathBuf, String> {
+    let object = store.object(sha256);
+    if object.is_file() {
+        return Ok(object);
+    }
+    let Target::Dir(dir) = folder else { return Err(format!("{id} has no home in the archive")) };
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let part =
+        store.partial(&format!("{sha256}.{}.{}.prepared", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let parent = part.parent().expect("a partial file has a folder");
+    fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    fs::copy(dir.join(key), &part).map_err(|e| format!("{id}/{key}: {e}"))?;
+    let (held, _) = hash_file(&part)?;
+    if held != sha256 {
+        let _ = fs::remove_file(&part);
+        return Err(format!("{id}/{key} holds bytes with the SHA-256 {held}, not {sha256}"));
+    }
+    store.insert(&part, sha256)
+}
+
 /// Give `store` the manifest of the version of `request`, `<version>/<manifest sha256>`, and the
-/// files that `names` names, from the first target of `data/targets.toml` whose manifest of the
-/// version has that SHA-256, [`PROD`] first. A target that cannot be read is skipped. Each file must
-/// have the SHA-256 that the manifest gives. No target needs a credential.
+/// files that `names` names, from the first of the archive roots `roots` whose home of the source
+/// has a manifest of the version with that SHA-256. Each file must have the SHA-256 that the
+/// manifest gives.
 pub(crate) fn fetch(
-    root: &Path,
+    roots: &[PathBuf],
     store: &Store,
     request: &crate::fetch::Request,
     names: &[String],
@@ -939,33 +1035,21 @@ pub(crate) fn fetch(
     };
     let (version, sha256) =
         unpin(pinned).ok_or_else(|| format!("`{pinned}` is not a version of `{id}`: <version>/<manifest sha256>"))?;
-    let mut targets: Vec<(String, Target)> = crate::target::load(root, store)?.into_iter().collect();
-    targets.sort_by_key(|(name, _)| name.as_str() != PROD);
     let key = format!("{version}/{MANIFEST}");
-    let (mut found, mut unread) = (None, Vec::new());
-    for (name, target) in targets {
-        let folder = folder(&target, id);
-        match folder.get_public(&key) {
-            Ok(Some(bytes)) if sha256_hex(&bytes) == sha256 => {
-                found = Some((folder, bytes));
-                break;
-            }
-            Ok(_) => {}
-            Err(e) => unread.push(format!("`{name}` ({e})")),
+    let mut found = None;
+    for root in roots {
+        let folder = folder(root, id);
+        if let Some(bytes) = folder.get(&key)?.filter(|bytes| sha256_hex(bytes) == sha256) {
+            found = Some((folder, bytes));
+            break;
         }
     }
-    let (folder, bytes) = found.ok_or_else(|| {
-        let unread = match unread.is_empty() {
-            true => String::new(),
-            false => format!("; these targets cannot be read: {}", unread.join(", ")),
-        };
-        format!("no target of data/targets.toml has {id}@{pinned}{unread}")
-    })?;
+    let (folder, bytes) = found.ok_or_else(|| format!("{ABSENT}{id}@{}", show(pinned)))?;
     let manifest = Manifest::parse(id, version, &bytes)?;
     let retrieved = crate::date::timestamp(crate::date::now());
-    let record = |name: &str, size: u64, sha256: String| FileRecord {
+    let record = |name: &str, origin: &str, size: u64, sha256: String| FileRecord {
         name: name.into(),
-        url: format!("sources/{id}/{version}/{name}"),
+        url: format!("{PREPARED}/{id}/{origin}/{name}"),
         size,
         sha256,
         retrieved: retrieved.clone(),
@@ -976,18 +1060,13 @@ pub(crate) fn fetch(
         crate::store::write_atomic(&part, &bytes)?;
         store.insert(&part, sha256)?;
     }
-    let mut records = vec![record(MANIFEST, bytes.len() as u64, sha256.into())];
+    let mut records = vec![record(MANIFEST, version, bytes.len() as u64, sha256.into())];
     for name in names.iter().filter(|name| *name != MANIFEST) {
         let file = manifest.files.iter().find(|file| &file.path == name);
         let file = file.ok_or_else(|| format!("{id}@{version} has no file {name}"))?;
-        if !store.object(&file.sha256).is_file() {
-            let origin = manifest.reused.get(name).map_or(version, String::as_str);
-            let downloaded = folder.download(&format!("{origin}/{name}"), &file.sha256, store);
-            downloaded
-                .map_err(|e| format!("sources/{id}/{e}"))?
-                .ok_or_else(|| format!("the target has no sources/{id}/{version}/{name}"))?;
-        }
-        records.push(record(name, file.size, file.sha256.clone()));
+        let origin = manifest.reused.get(name).map_or(version, String::as_str);
+        take(&folder, (id, &format!("{origin}/{name}")), &file.sha256, store)?;
+        records.push(record(name, origin, file.size, file.sha256.clone()));
     }
     crate::fetch::record(store, id, pinned, &records)?;
     Ok(Snapshot { source: id.clone(), version: pinned.into(), files: records })
@@ -1008,88 +1087,26 @@ pub(crate) fn named(steps: &[crate::engine::Step], sources: &[Source]) -> Result
     Ok(())
 }
 
-/// The keys of the versions of `id` on `target` before `version` that have no manifest: a stopped
-/// run left them, and no run of this machine resumes them.
-pub(crate) fn incomplete(target: &Target, id: &str, version: &str) -> Result<Vec<String>, String> {
-    let listed = target.list_under(&format!("sources/{id}"))?;
-    let prefix = format!("sources/{id}/");
+/// The keys of `folder`, the home of the source `id`, of the versions before `version` that have no
+/// manifest: a stopped run left them, and no run of this machine resumes them. Refused when
+/// `versions.json` lists such a version: it was complete, and its manifest went.
+pub(crate) fn incomplete(folder: &Target, id: &str, version: &str) -> Result<Vec<String>, String> {
+    let listed = folder.list()?;
     let keys: BTreeSet<&str> = listed.iter().map(|listed| listed.key.as_str()).collect();
+    for entry in versions(folder, id)? {
+        if !keys.contains(format!("{}/{MANIFEST}", entry.version).as_str()) {
+            return Err(format!(
+                "{id}@{} is in {VERSIONS} and has no manifest; nothing changed. Restore {id}/{}/{MANIFEST} from the backup of the archive",
+                entry.version, entry.version
+            ));
+        }
+    }
     let older = |key: &str| {
-        let Some((name, _)) = key[prefix.len()..].split_once('/') else { return false };
-        let complete = keys.contains(format!("{prefix}{name}/{MANIFEST}").as_str());
+        let Some((name, _)) = key.split_once('/') else { return false };
+        let complete = keys.contains(format!("{name}/{MANIFEST}").as_str());
         order(name).is_some() && order(name) < order(version) && !complete
     };
     Ok(listed.iter().filter(|listed| older(&listed.key)).map(|listed| listed.key.clone()).collect())
-}
-
-/// A complete version on a target that a collection deletes.
-pub(crate) struct Obsolete<'a> {
-    pub id: String,
-    pub version: String,
-    /// Its keys, the manifest last.
-    pub keys: Vec<&'a Listed>,
-}
-
-/// The complete versions of prepared sources in `listed`, the keys of a target, that no release of
-/// `kept` reads while one reads a newer version of the source. The newest version that no release
-/// reads, a version without a manifest, and a version of `reused` stay. A prepared source is a
-/// folder `sources/<id>/` with `versions.json`.
-pub(crate) fn obsolete<'a>(
-    listed: &'a BTreeMap<String, Listed>,
-    kept: &[Release],
-    reused: &BTreeSet<(String, String)>,
-) -> Vec<Obsolete<'a>> {
-    let ids = listed.keys().filter_map(|key| key.strip_prefix("sources/")?.strip_suffix(&format!("/{VERSIONS}")));
-    let mut obsolete = Vec::new();
-    for id in ids {
-        let reads = kept.iter().flat_map(|release| &release.outputs).flat_map(|output| &output.snapshots);
-        let read: BTreeSet<&str> = reads
-            .filter(|(source, _)| *source == id)
-            .map(|(_, read)| unpin(&read.version).map_or(read.version.as_str(), |(version, _)| version))
-            .collect();
-        let Some(newest) = read.iter().filter_map(|version| order(version)).max() else { continue };
-        let prefix = format!("sources/{id}/");
-        let mut versions: BTreeMap<&str, Vec<&Listed>> = BTreeMap::new();
-        for (key, file) in listed.range(prefix.clone()..).take_while(|(key, _)| key.starts_with(&prefix)) {
-            let Some((version, _)) = key[prefix.len()..].split_once('/') else { continue };
-            if order(version).is_some() {
-                versions.entry(version).or_default().push(file);
-            }
-        }
-        for (version, mut keys) in versions {
-            let manifest = format!("{prefix}{version}/{MANIFEST}");
-            let holds = reused.contains(&(id.to_string(), version.to_string()));
-            if order(version) >= Some(newest)
-                || read.contains(version)
-                || holds
-                || !keys.iter().any(|file| file.key == manifest)
-            {
-                continue;
-            }
-            keys.sort_by_key(|file| file.key == manifest);
-            obsolete.push(Obsolete { id: id.into(), version: version.into(), keys });
-        }
-    }
-    obsolete
-}
-
-/// Each `(id, version)` on `target` whose folder holds a file that a later version reuses: a
-/// collection keeps that version.
-pub(crate) fn reused(target: &Target, listed: &BTreeMap<String, Listed>) -> Result<BTreeSet<(String, String)>, String> {
-    let ids = listed.keys().filter_map(|key| key.strip_prefix("sources/")?.strip_suffix(&format!("/{VERSIONS}")));
-    let mut held = BTreeSet::new();
-    for id in ids {
-        for entry in versions(target, id)? {
-            let Some(manifest) = manifest(target, id, &entry.version)? else { continue };
-            held.extend(manifest.reused.into_values().map(|version| (id.to_string(), version)));
-        }
-    }
-    Ok(held)
-}
-
-/// Remove `versions` of `id` from `versions.json` on `target`, so no reader takes one.
-pub(crate) fn unlist(target: &Target, id: &str, versions: &[&str]) -> Result<(), String> {
-    edit_versions(&folder(target, id), |listed| listed.retain(|entry| !versions.contains(&entry.version.as_str())))
 }
 
 #[cfg(test)]

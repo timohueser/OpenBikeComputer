@@ -188,7 +188,7 @@ impl Target {
                 Ok(found) => {
                     return Err(format!(
                         "{key} holds {} bytes, not {size}: a write of it broke, and a key is immutable. Fix: \
-                         delete {key} from the target, then run the command again",
+                         delete {key}, then run the command again",
                         found.len()
                     ))
                 }
@@ -261,10 +261,10 @@ impl Target {
 }
 
 impl Target {
-    /// Give each key of `files` the bytes of its file, also when it holds other bytes: only for keys
-    /// that no reader reads yet. rclone replaces an object of another checksum.
+    /// Give each key of a dir target the bytes of its file of `files`, also when it holds other
+    /// bytes: only for keys that no reader reads yet.
     pub fn replace(&self, files: &[(PathBuf, String)]) -> Result<(), String> {
-        let Target::Dir(dir) = self else { return self.upload(files) };
+        let Target::Dir(dir) = self else { return Err("only a dir target replaces a key".into()) };
         for (file, key) in files {
             crate::r2::check_key(key)?;
             let path = dir.join(key);
@@ -362,7 +362,7 @@ impl Target {
     }
 
     /// Every file of a dir target, also a hidden one, sorted by key. Of an R2 target, the keys under
-    /// `objects/`, `releases/` and `sources/`: a collection deletes no other key there.
+    /// `objects/` and `releases/`: a collection deletes no other key there.
     pub fn list(&self) -> Result<Vec<Listed>, String> {
         let dir = match self {
             Target::Dir(dir) => dir,
@@ -450,11 +450,11 @@ fn r2_missing(remote: &r2::Remote, files: &[(String, u64)]) -> Result<Vec<String
     Ok(missing)
 }
 
-/// The keys of the R2 target `remote` under `objects/`, `releases/` and `sources/`, sorted.
+/// The keys of the R2 target `remote` under `objects/` and `releases/`, sorted.
 fn r2_list(remote: &r2::Remote) -> Result<Vec<Listed>, String> {
     let bucket = remote.writer()?.bucket()?;
     let mut listed = Vec::new();
-    for folder in ["objects", "releases", "sources"] {
+    for folder in ["objects", "releases"] {
         let objects = bucket.list(folder)?;
         listed.extend(objects.into_iter().map(|object| Listed { key: object.key, size: object.bytes }));
     }

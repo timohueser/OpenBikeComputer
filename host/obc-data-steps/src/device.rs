@@ -292,7 +292,7 @@ pub(crate) fn content_declarations(
             };
             let Some((version, paths)) = &shards else {
                 let reason =
-                    format!("no target lists a version of `{WIKI}`. Fix: Run `obc data source prepare {WIKI}`.");
+                    format!("the archive lists no version of `{WIKI}`. Fix: Run `obc data source prepare {WIKI}`.");
                 blocked.push(BlockedLayer::new(name, &DEVICE_LANDMARKS, reason));
                 continue;
             };
@@ -1165,7 +1165,7 @@ pub(crate) mod tests {
         let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
         let blocked: Vec<(&str, &str)> =
             listed.blocked.iter().map(|blocked| (blocked.step.as_str(), blocked.reason.as_str())).collect();
-        let reason = "no target lists a version of `wiki`. Fix: Run `obc data source prepare wiki`.";
+        let reason = "the archive lists no version of `wiki`. Fix: Run `obc data source prepare wiki`.";
         assert_eq!(&blocked[..2], [("device/landmark-content", reason), ("device/peak-content", reason)]);
         assert_eq!(blocked[2].0, catalog::LAYER);
         assert!(!listed.steps.iter().any(|step| step.name.starts_with("device/landmarks/")));
