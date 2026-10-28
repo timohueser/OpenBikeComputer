@@ -47,6 +47,6 @@
         border-radius: 999px;
     }
     .watch {
-        border: 2px solid var(--ink);
+        border: 1px solid var(--ink-faint);
     }
 </style>

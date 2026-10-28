@@ -64,7 +64,7 @@ it("shows each reference with the areas of its versions over its models and the 
         await vi.waitFor(() => expect(text()).toContain("This computer cannot be read"));
         expect([...document.querySelectorAll("section h2")].map((h2) => h2.textContent)).toEqual(["Wiki", "Terrain", "Forest", "Climate"]);
         const legend = (at: Element) => [...at.querySelectorAll(".legend li")].map((li) => li.textContent);
-        const action = (at: Element) => at.querySelector<HTMLAnchorElement>("a.act")!;
+        const action = (at: Element) => at.querySelector<HTMLAnchorElement>("a.button")!;
         const terrain = section("Terrain");
         expect(legend(terrain)).toEqual(["On R2", "National model, no version here yet"]);
         expect(terrain.textContent).toContain("2026-08-20 · 5.0 GB · On R2 · Central Switzerland");
