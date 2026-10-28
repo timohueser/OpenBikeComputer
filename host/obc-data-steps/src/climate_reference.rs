@@ -84,6 +84,10 @@ impl Prepared for ClimateReference {
         let mut inputs = vec![(Wanted { source: INPUT.into(), version: None, params: Vec::new() }, None).into()];
         let mut held = Some(BTreeSet::new());
         let outlines = match scope {
+            None => {
+                held = Some(every());
+                Vec::new()
+            }
             Some(scope) => {
                 let (regions, id) = regions(scope)?;
                 let mut outlines = Vec::new();
@@ -99,7 +103,6 @@ impl Prepared for ClimateReference {
                 }
                 outlines
             }
-            None => vec![world()?],
         };
         if let Some(held) = &mut held {
             for outline in &outlines {
@@ -119,10 +122,16 @@ impl Prepared for ClimateReference {
     fn prepare(&self, job: &mut Job) -> Result<(), String> {
         let previous = job.extend(FORMAT)?;
         let held: BTreeSet<&str> = previous.iter().flat_map(|manifest| &manifest.files).map(|f| &f.path[..]).collect();
-        let mut region = BTreeSet::new();
-        for outline in outlines(job)?.map_or_else(|| world().map(|world| vec![world]), Ok)? {
-            region.extend(blocks(&outline)?);
-        }
+        let region = match outlines(job)? {
+            Some(outlines) => {
+                let mut region = BTreeSet::new();
+                for outline in &outlines {
+                    region.extend(blocks(outline)?);
+                }
+                region
+            }
+            None => every(),
+        };
         let first_year = crate::planner::climate_first_year()?;
         let mut tiles = Vec::new();
         // The arguments of the program of each block.
@@ -222,9 +231,10 @@ fn path(name: impl std::fmt::Display, (x, y): (u32, u32)) -> String {
     format!("{name}/{x}/{y}.gz")
 }
 
-/// The outline of every place, for a version of everything.
-fn world() -> Result<Coverage, String> {
-    Coverage::parse_poly(&box_poly(&Bbox { west: -180.0, south: -90.0, east: 180.0, north: 90.0 }))
+/// Every block, for a version of everything.
+fn every() -> BTreeSet<(u32, u32)> {
+    let (columns, rows) = (GRID_COLUMNS.div_ceil(COLUMNS), GRID_ROWS.div_ceil(ROWS));
+    (0..columns).flat_map(|x| (0..rows).map(move |y| (x, y))).collect()
 }
 
 #[cfg(test)]
@@ -323,8 +333,12 @@ echo "$block" >> made
         assert_eq!(second.extends, [first.scope]);
         assert_eq!(std::fs::read_to_string(root.join("made")).unwrap(), "19-21\n20-21\n", "a block is made once");
 
-        // The bake of a box near the antimeridian would read cells on both sides of it.
+        // The bake of a box near the antimeridian would read cells on both sides of it; a version
+        // of everything has every block.
         let east = Bbox { west: 179.5, south: 0.0, east: 179.8, north: 0.1 };
         assert!(blocks(&Coverage::parse_poly(&box_poly(&east)).unwrap()).is_err());
+        let planning = obc_data::prepared::Planning { store: &store, http: &http, sources: &sources };
+        let everything = producer.plan(&planning, &sources[0], None, &[]).unwrap();
+        assert_eq!(everything.files, Some(38 * 29 * (1 + u64::from(YEARS))));
     }
 }

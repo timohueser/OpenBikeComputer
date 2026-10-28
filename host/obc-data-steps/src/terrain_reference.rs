@@ -564,6 +564,18 @@ esac
     }
 
     #[test]
+    fn a_tile_that_ends_frees_its_slot_while_an_older_tile_runs() {
+        let fixture = Fixture::new("terrain-reference-slots");
+        // Tile 0 ends only once one tile more than there are slots has started, so the younger
+        // tiles that end must free their slots while it runs.
+        assert!(fixture.tiles.len() > RUNNING);
+        fixture.mark("wait", 0, &(RUNNING + 1).to_string());
+        let (done, calls) = fixture.prepare();
+        done.unwrap();
+        assert!(calls.contains(&format!("fetch {} xx", fixture.tiles[RUNNING])), "{calls:?}");
+    }
+
+    #[test]
     fn a_version_folds_the_tiles_of_its_region_and_keeps_the_others_of_the_version_before() {
         let fixture = Fixture::new("terrain-extend");
         let (done, _, _, _) = fixture.version("2026-10-01", None);

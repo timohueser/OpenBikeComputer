@@ -285,6 +285,24 @@ class BakeTest(unittest.TestCase):
         self.assertEqual((metadata["rain_factors"], metadata["wind_factor"]), (list(climate.RAIN_FACTORS), climate.WIND_FACTOR))
 
 
+class FetchTest(unittest.TestCase):
+    def test_a_cut_connection_is_tried_again_and_a_missing_chunk_is_not(self):
+        import http.client
+        import urllib.error
+
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b"chunk"
+        cut = [http.client.RemoteDisconnected("closed"), http.client.IncompleteRead(b""), ConnectionResetError(), response]
+        with mock.patch("urllib.request.urlopen", side_effect=cut) as urlopen, mock.patch("time.sleep") as sleep:
+            self.assertEqual(climate.fetch("https://arco.test/a"), b"chunk")
+        self.assertEqual((urlopen.call_count, [call.args[0] for call in sleep.call_args_list]), (4, list(climate.RETRY_SECONDS[:3])))
+        missing = urllib.error.HTTPError("https://arco.test/b", 404, "Not Found", {}, None)
+        with mock.patch("urllib.request.urlopen", side_effect=missing) as urlopen, mock.patch("time.sleep"):
+            with self.assertRaises(urllib.error.HTTPError):
+                climate.fetch("https://arco.test/b")
+        self.assertEqual(urlopen.call_count, 1)
+
+
 class OracleSource(climate.Source):
     """Chunks in which each cell tells where it is: a 2 m temperature of 273.15 K + (its Zarr row − 1790) + (its Zarr
     column − 3550) / 100, no rain and a 1 m/s north wind."""
@@ -304,20 +322,22 @@ class OracleSource(climate.Source):
 
 
 class OrientationTest(unittest.TestCase):
-    def test_each_cell_of_an_edge_block_keeps_its_place_from_the_chunks_to_the_bake(self):
-        # Block 37, 28 holds the 9 northernmost rows and the 48 easternmost columns.
+    def test_each_cell_of_two_edge_blocks_keeps_its_place_from_the_chunks_to_the_bake(self):
+        # Block 37, 28 holds the 9 northernmost rows and the 48 easternmost columns; block 36, 28 is west of it.
         block = climate.Region.block(37, 28)
         self.assertEqual((len(block.rows), len(block.cols)), (9, 48))
         geopotential = lambda region, key, cache: np.add.outer(1000.0 * region.zarr_index()[0], region.zarr_index()[1])
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(climate, "token", return_value="KEY"), \
                 mock.patch.object(climate, "Source", OracleSource), mock.patch.object(climate, "geopotential", geopotential):
             out = Path(directory, "out")
-            climate.prepare((37, 28), range(FIRST, FIRST + climate.YEARS), Path(directory, "work"), out, Path(directory))
+            for x in (36, 37):
+                climate.prepare((x, 28), range(FIRST, FIRST + climate.YEARS), Path(directory, "work"), out, Path(directory))
             files = {str(path.relative_to(out)): path for path in out.rglob("*.gz")}
-            region = climate.Region.around([175.6, 89.6, 175.9, 89.8])
+            region = climate.Region.around([175.1, 89.6, 175.3, 89.8])
             weekly, _, _, z = climate.climate(region, FIRST, files)
         rows, cols = region.zarr_index()
-        self.assertEqual((rows[[0, -1]].tolist(), cols[[0, -1]].tolist()), ([1800, 1794], [3553, 3560]))
+        # Columns 3548 to 3551 are in block 36, the others in block 37.
+        self.assertEqual((rows[[0, -1]].tolist(), cols[[0, -1]].tolist()), ([1800, 1794], [3548, 3554]))
         self.assertTrue(np.allclose(weekly["tmax"][0, 0], (rows[:, None] - 1790) + (cols[None, :] - 3550) / 100, atol=1e-4))
         self.assertTrue((z == 1000 * rows[:, None] + cols[None, :]).all())
 

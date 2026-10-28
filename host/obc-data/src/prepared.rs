@@ -806,20 +806,22 @@ impl Program {
 
     /// Whether the program ended and failed. The end keeps what the program used and when it ended.
     pub fn failed(&mut self) -> bool {
-        self.ended() && self.ended.is_some_and(|(status, ..)| !status.success())
+        self.ended().unwrap_or(false) && self.ended.is_some_and(|(status, ..)| !status.success())
     }
 
     /// Whether the program ended, without a wait. The end keeps what the program used and when it ended.
-    pub fn ended(&mut self) -> bool {
+    pub fn ended(&mut self) -> Result<bool, String> {
         if self.ended.is_none() {
             #[cfg(unix)]
-            let end = crate::engine::try_wait_pid(self.child.id()).ok().flatten();
+            let end = crate::engine::try_wait_pid(self.child.id())?;
             #[cfg(not(unix))]
-            let end = self.child.try_wait().ok().flatten().map(|status| (status, None, None));
+            let end = self.child.try_wait().map_err(|e| format!("wait for `{}`: {e}", self.name))?;
+            #[cfg(not(unix))]
+            let end = end.map(|status| (status, None, None));
             let wall = self.started.elapsed().as_millis() as u64;
             self.ended = end.map(|(status, cpu_ms, peak)| (status, cpu_ms, peak, wall));
         }
-        self.ended.is_some()
+        Ok(self.ended.is_some())
     }
 }
 

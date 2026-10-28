@@ -43,7 +43,7 @@ serves, so they need no commit.
 | `OBC_FIXTURE_R2_*` | Separate fixture bucket and credentials, with the same suffixes as production |
 | `UV_PYTHON` | Selected prepared Python interpreter |
 | `~/.config/openbikecomputer/credentials.env` | `env` credentials of sources; the environment wins |
-| `~/.cdsapirc` | CDS credential for a selected climate fetch |
+| `~/.cdsapirc` | CDS credential for a prepare of `climate` |
 | `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |
 | `~/.config/openbikecomputer/clms-key.json` | CLMS service key for the CORINE fetch; save the JSON of the token whole, mode 0600 |
 

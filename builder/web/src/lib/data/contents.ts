@@ -11,8 +11,8 @@ export interface Content {
     layers: string[];
     /** Sources that need a credential on this machine. */
     credentials: string[];
-    /** The reference that it reads, such as `forest`. A `required` reference needs a version in the
-     *  area, and a national model there when it has models; the others fall back to coarser data, `without`. */
+    /** The reference that it reads, such as `forest`. A `required` reference needs a version, and a
+     *  national model in the area when it has models; the others fall back to coarser data, `without`. */
     reference?: { source: string; required: boolean; without: string };
     /** The cards that show it; it can be on only while one of them is. */
     shownBy?: string[];

@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import gzip
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -292,7 +293,7 @@ def fetch(url, key=None):
         except urllib.error.HTTPError as error:
             if error.code < 500 and error.code != 429 or wait is None:
                 raise
-        except (urllib.error.URLError, TimeoutError):
+        except (urllib.error.URLError, http.client.HTTPException, ConnectionError, TimeoutError):
             if wait is None:
                 raise
         time.sleep(wait)

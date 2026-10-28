@@ -62,8 +62,15 @@ pub fn make(
         // frees its slot, so a short tile does not wait behind a long one.
         loop {
             let full = running.len() == RUNNING;
-            let at = running.iter_mut().position(|(_, program)| program.failed());
-            let at = at.or_else(|| running.iter_mut().position(|(_, program)| full && program.ended()));
+            let mut at = running.iter_mut().position(|(_, program)| program.failed());
+            if at.is_none() && full {
+                for (k, (_, program)) in running.iter_mut().enumerate() {
+                    if program.ended()? {
+                        at = Some(k);
+                        break;
+                    }
+                }
+            }
             match at {
                 Some(at) => {
                     let (made, program) = running.remove(at).expect("a program runs");

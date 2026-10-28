@@ -429,7 +429,6 @@ fn used(dir: &Path) -> u64 {
         .sum()
 }
 
-/// `a`, `a and b`, `a, b and c`.
 /// What the credential of `source` is for: its fetch, or the prepare that reads a source that only a
 /// prepare reads, such as `era5-land`.
 fn needed_for(source: &Source) -> String {
@@ -439,6 +438,7 @@ fn needed_for(source: &Source) -> String {
     }
 }
 
+/// `a`, `a and b`, `a, b and c`.
 fn list(items: &[String]) -> String {
     match items {
         [] => String::new(),
