@@ -7,7 +7,7 @@
 
 // Per node: the record count, the entry count, GRID² + 1 cell offsets (each with the move of the
 // cell's origin in its top byte, x then y, 8 + units), the cell entries, then RECORD
-// words per primitive. A cell lists its junctions, then per lake and pad its edges and its marker, then the
+// words per primitive. A cell lists its junctions, then per lake, sea polygon and pad its edges and its marker, then the
 // segments of the roads, paths and rivers, line by line: so no list of lakes or lines has a size limit.
 @group(0) @binding(1) var<storage, read> stamp_data: array<u32>;
 
@@ -46,6 +46,7 @@ const TUNNEL: u32 = 9u;
 const RAIL: u32 = 10u;
 const PAD: u32 = 11u;
 const AREA: u32 = 12u;
+const SEA: u32 = 13u;
 // As RAIL_CODE and SLEEPER_M of bins.ts: the surface code of the first track, and the spacing of its sleepers.
 const TRACK_CODE: u32 = 8u;
 const SLEEPER_M: f32 = 0.6;
@@ -66,13 +67,15 @@ const ROAD_CORE: u32 = 2u;
 const PORTAL_CORE: u32 = 3u;
 // A path's tread outranks the slopes of the roads beside it.
 const PATH_CORE: u32 = 4u;
-const BANKS: u32 = 5u;
+// The sea's bed yields to the cores of a pier or a quay in it, and holds against the slopes and the cover of a tunnel.
+const SEA_BED: u32 = 5u;
+const BANKS: u32 = 6u;
 // The slopes of the roads and the paths.
-const CONES: u32 = 6u;
+const CONES: u32 = 7u;
 // The ground under a deck yields to every road beside it and under it.
-const TROUGH: u32 = 7u;
-const COVER: u32 = 8u;
-const BUCKETS: u32 = 9u;
+const TROUGH: u32 = 8u;
+const COVER: u32 = 9u;
+const BUCKETS: u32 = 10u;
 
 const PI: f32 = 3.14159265;
 // As EARTH_RADIUS of frame.ts.
@@ -90,7 +93,10 @@ const JUNCTION_CAP: f32 = 15.0;
 // A lake's bed falls from its shore at SHORE_SLOPE to BED_DEPTH. On the levels that can hold it, the
 // terrain about the lake stays under a ramp that rises from the shore at SHORE_SLOPE over SHORE_CELLS
 // mesh cells, then widens until it stops binding at the buffer. So every mesh triangle across a shore
-// crosses the level at the shore, and the lake's outline is the water's edge.
+// crosses the level at the shore, and the lake's outline is the water's edge. The sea's bed falls as a
+// lake's from a shore band inside its coast, and the land beside it keeps its height: a cliff keeps its
+// face down to the coast, and a mesh triangle from low land to the bed crosses the sea level inside it.
+// The band ends its slope within the buffer, where every node sees the same coast.
 const SHORE_SLOPE: f32 = 0.5;
 const SHORE_CELLS: f32 = 1.5;
 const BED_DEPTH: f32 = 4.0;
@@ -161,6 +167,17 @@ fn path_shows(h: f32, rule: Profile, level: u32) -> bool {
 
 fn shore_band(texel: f32) -> f32 {
     return SHORE_CELLS * MESH_TEXELS * texel;
+}
+
+// Whether a level cuts the sea: on a coarser one the lift of water passes the bed's depth, and the sea,
+// at a share of that lift, lies over the terrain about sea level without a cut.
+fn sea_shows(level: u32) -> bool {
+    return water_lift(gate_texel(level)) < BED_DEPTH;
+}
+
+// How far inside its coast the sea's bed starts to slope.
+fn sea_band(texel: f32) -> f32 {
+    return clamp(reach_limit(texel) - BED_DEPTH / SHORE_SLOPE, 0.0, shore_band(texel));
 }
 
 // Whether a level holds the terrain about a lake under its ramp.
@@ -383,14 +400,19 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             out.taken = out.taken || ((entry & INSIDE) != 0u) != crossed;
             crossed = false;
             shore = INF;
-        } else if (kind == LAKE) {
+        } else if (kind == LAKE || kind == SEA) {
+            // bins.ts lists the sea's coast only where its bed slopes: farther off, `shore` may exceed the
+            // distance to the coast, and the bed is at its depth either way.
             let water = real(r + 6u);
+            let lake = kind == LAKE;
             if (((entry & INSIDE) != 0u) != crossed) {
-                hi[WATER_CORE] = min(hi[WATER_CORE], water - min(BED_DEPTH, SHORE_SLOPE * shore));
+                let bed = select(max(0.0, shore - sea_band(texel)), shore, lake);
+                let bucket = select(SEA_BED, WATER_CORE, lake);
+                hi[bucket] = min(hi[bucket], water - min(BED_DEPTH, SHORE_SLOPE * bed));
                 water_in = max(water_in, water);
                 in_lake = true;
-                out.lake = min(out.lake, -shore);
-            } else {
+                out.lake = select(out.lake, min(out.lake, -shore), lake);
+            } else if (lake) {
                 if (shore_shows(level)) {
                     hi[BANKS] = min(hi[BANKS], water + shore_cap(shore, texel));
                 }

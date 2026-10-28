@@ -50,7 +50,7 @@ export interface StampSource {
     known(node: Node): NodeStamps | undefined;
 }
 
-const NO_STAMPS: StampSource = { get: () => ({ data: null, heights: false }), known: () => ({ data: null, heights: false }) };
+const NO_STAMPS: StampSource = { get: () => ({ data: null, heights: false, mask: false }), known: () => ({ data: null, heights: false, mask: false }) };
 
 /**
  * A stamp job: its page's heights are in `out` (the synthesized base, or none for a stored page,
@@ -303,7 +303,7 @@ export class Pages {
      * page under the eye does not wait behind the near pages.
      */
     private holders(wanted: Node[], anchor: Anchor): Map<string, Node> {
-        const near = wanted.filter(node => node.level >= NEAR && this.stamps.known(node)?.data)
+        const near = wanted.filter(node => node.level >= NEAR && this.stamps.known(node)?.mask)
             .map(node => ({ node, distance: distances({ anchor, above: 0 }, node)[0] })).sort((a, b) => a.distance - b.distance);
         const reach = near.length > this.maskCapacity ? near[this.maskCapacity].distance : NO_LIMIT;
         if (reach !== this.maskReach) this.masksDirty = true;
