@@ -676,14 +676,7 @@ impl NavGuard {
     }
 
     #[inline(never)]
-    pub(crate) fn begin_splice(
-        &mut self,
-        leg: obc_route::Leg,
-        split_m: u32,
-        rejoin_m: u32,
-        _len_m: u32,
-        _has_elevation: bool,
-    ) {
+    pub(crate) fn begin_splice(&mut self, leg: obc_route::Leg, split_m: u32, rejoin_m: u32) {
         assert!(self.phase != NavPhase::Plan);
         unsafe {
             let arm = &mut *(arena_ptr() as *mut DetourArm);

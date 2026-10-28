@@ -195,7 +195,7 @@ fn splice_paces_all_waypoints_and_refuses_source_failure_after_seams() {
     let di = RouteIndex::read(&SliceSource(&detour)).unwrap();
     let (orig, det) = (Source::new(&original), Source::new(&detour));
     let (o, d) = (RouteReader::new(&oi, &orig), RouteReader::new(&di, &det));
-    let mut state = Splicer::new(Leg::Detour, 250, 1300, di.total_distance_m, true, "Paced");
+    let mut state = Splicer::new(Leg::Detour, 250, 1300, "Paced");
     let mut sink = Sink::default();
     let mut completed = None;
     for _ in 0..90 {
@@ -218,7 +218,7 @@ fn splice_paces_all_waypoints_and_refuses_source_failure_after_seams() {
         let source = Source::new(&original);
         source.fail_at.set(Some(fault));
         let orig = RouteReader::new(&oi, &source);
-        let mut state = Splicer::new(Leg::Detour, 250, 1300, di.total_distance_m, true, "Paced");
+        let mut state = Splicer::new(Leg::Detour, 250, 1300, "Paced");
         let mut sink = Sink::default();
         let failed = loop {
             match state.step(&orig, &d, &mut sink) {
@@ -248,7 +248,7 @@ fn splice_waypoints_follow_retained_geometry_and_end_at_measured_total() {
     let (oi, di) = (RouteIndex::read(&os).unwrap(), RouteIndex::read(&ds).unwrap());
     let (o, d) = (RouteReader::new(&oi, &os), RouteReader::new(&di, &ds));
     let mut sink = VecSink::default();
-    let result = obc_route::splice_detour(Leg::Detour, &o, &d, 100, 200, di.total_distance_m, true, &mut sink).unwrap();
+    let result = obc_route::splice_detour(Leg::Detour, &o, &d, 100, 200, &mut sink).unwrap();
     let output = crate::common::route_points(&sink.buf);
     let mut measured = 0.0;
     let mut distances = Vec::new();
@@ -289,17 +289,7 @@ fn incomplete_segment_seeks_and_splice_boundaries_keep_elevation_unknown() {
     let di = RouteIndex::read(&ds).unwrap();
     let d = RouteReader::new(&di, &ds);
     let mut sink = VecSink::default();
-    obc_route::splice_detour(
-        Leg::Detour,
-        &o,
-        &d,
-        556,
-        oi.chunks()[1].cum_distance_m,
-        di.total_distance_m,
-        true,
-        &mut sink,
-    )
-    .unwrap();
+    obc_route::splice_detour(Leg::Detour, &o, &d, 556, oi.chunks()[1].cum_distance_m, &mut sink).unwrap();
     let output = crate::common::route_points(&sink.buf);
     assert_eq!(output[0].elevation(), Some(10));
     assert_eq!(output[1].elevation(), None, "the clipped splice seam has no measured height");

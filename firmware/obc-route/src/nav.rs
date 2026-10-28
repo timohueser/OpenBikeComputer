@@ -532,11 +532,10 @@ pub struct NavPlanner {
     /// tells the two frontier-drain outcomes apart: set is [`NavError::Exhausted`], clear is
     /// [`NavError::NoPath`].
     table_full: bool,
-    /// Emit cursors: the staged chain length, the next hop (counting down to 1), the summed path
-    /// cost, and the seam vertex shared across hops.
+    /// Emit cursors: the staged chain length, the next hop (counting down to 1), and the seam
+    /// vertex shared across hops.
     chain_len: u16,
     hop: u16,
-    total_m: u32,
     last: Option<(i32, i32)>,
     /// Initialized with the planner; its stream starts only after the search succeeds.
     em: ObcrEmitter,
@@ -629,7 +628,6 @@ impl NavPlanner {
             core::ptr::addr_of_mut!((*slot).table_full).write(false);
             core::ptr::addr_of_mut!((*slot).chain_len).write(0);
             core::ptr::addr_of_mut!((*slot).hop).write(0);
-            core::ptr::addr_of_mut!((*slot).total_m).write(0);
             core::ptr::addr_of_mut!((*slot).last).write(None);
             core::ptr::addr_of_mut!((*slot).emit_started).write(false);
             core::ptr::addr_of_mut!((*slot).corridor).write(corridor);
@@ -659,7 +657,6 @@ impl NavPlanner {
                 table_full: _,
                 chain_len: _,
                 hop: _,
-                total_m: _,
                 last: _,
                 emit_started: _,
                 corridor: _,
@@ -1040,8 +1037,7 @@ impl NavPlanner {
     }
 
     /// Stage the found path, goal to start, in the now-dead heap array. The path length is bounded
-    /// by the tracked-node count, so it always fits. The goal's `g` is the weighted cost, so it is
-    /// not the header total; [`emit_hop`](Self::emit_hop) sums the raw `length_m` instead.
+    /// by the tracked-node count, so it always fits.
     ///
     /// Must stay `#[inline(never)]`: it keeps the step dispatcher frame thin.
     #[inline(never)]
@@ -1069,8 +1065,7 @@ impl NavPlanner {
     }
 
     /// Emit one path hop: fetch the hop's edge polyline, oriented, and push it. The seam vertex
-    /// shared with the previous hop is dropped, so the OBCR carries one continuous polyline. The
-    /// edge's raw ground `length_m` accumulates into `total_m`, the unweighted displayed distance.
+    /// shared with the previous hop is dropped, so the OBCR carries one continuous polyline.
     ///
     /// Must stay `#[inline(never)]`: this is a phase-boundary frame and must not join the step
     /// frame.
@@ -1115,40 +1110,35 @@ impl NavPlanner {
             }
             last = Some(pt);
         };
-        let length_m = if let Some((from, to)) = positions {
-            reader.nav_edge_slice_oriented(tiles, cur.edge_used, from.0, to.0, &mut push).ok_or(NavError::NoPath)?;
-            from.1.abs_diff(to.1)
+        if let Some((from, to)) = positions {
+            reader.nav_edge_slice_oriented(tiles, cur.edge_used, from, to, &mut push).ok_or(NavError::NoPath)?;
         } else {
-            reader.nav_edge_oriented(tiles, cur.edge_used, (prev.lon, prev.lat), &mut push).ok_or(NavError::NoPath)?
-        };
+            reader.nav_edge_oriented(tiles, cur.edge_used, (prev.lon, prev.lat), &mut push).ok_or(NavError::NoPath)?;
+        }
         self.last = last;
         if werr {
             return Err(NavError::NoPath);
         }
-        // Real ground meters for the displayed total.
-        self.total_m = self.total_m.saturating_add(length_m);
         Ok(())
     }
 
-    /// Resolve a real or virtual entry to its position and raw offset on `edge_id`.
-    fn edge_position(&self, edge_id: u32, node_id: u32) -> Option<(NavEdgePosition, u32)> {
+    /// Resolve a real or virtual entry to its position on `edge_id`.
+    fn edge_position(&self, edge_id: u32, node_id: u32) -> Option<NavEdgePosition> {
         if node_id == VIRTUAL_START_ID {
-            let edge = self.start_edge.filter(|edge| edge.edge_id == edge_id)?;
-            return Some((edge.position, edge.from_a_m));
+            return Some(self.start_edge.filter(|edge| edge.edge_id == edge_id)?.position);
         }
         if node_id == VIRTUAL_GOAL_ID {
-            let edge = self.goal_edge.filter(|edge| edge.edge_id == edge_id)?;
-            return Some((edge.position, edge.from_a_m));
+            return Some(self.goal_edge.filter(|edge| edge.edge_id == edge_id)?.position);
         }
         for edge in [self.start_edge, self.goal_edge].into_iter().flatten() {
             if edge.edge_id != edge_id {
                 continue;
             }
             if node_id == edge.a.id {
-                return Some((edge.a.position, 0));
+                return Some(edge.a.position);
             }
             if node_id == edge.b.id {
-                return Some((edge.b.position, edge.length_m));
+                return Some(edge.b.position);
             }
         }
         None
