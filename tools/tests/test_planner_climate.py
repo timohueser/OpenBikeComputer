@@ -224,7 +224,7 @@ class PrepareTest(unittest.TestCase):
         layout = {variable: (f"https://arco.test/{variable}", hours) for variable in climate.SOURCE}
         asked = []
         answer = lambda url, key=None: asked.append((url, key)) or chunk(url.rsplit("/", 2)[1])
-        z = np.full((climate.CHUNK_ROWS, climate.CHUNK_COLS), 9806.65, np.float32)
+        z = np.full((climate.CHUNK_ROWS, climate.CHUNK_COLS), 9806.65, np.float64)
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(climate, "token", return_value="KEY"), \
                 mock.patch.object(climate, "stores", return_value=layout), mock.patch.object(climate, "fetch", answer), \
                 mock.patch.object(climate, "geopotential", return_value=z), \
@@ -239,7 +239,7 @@ class PrepareTest(unittest.TestCase):
                 mark = (out / f"235-344.{name}.sha256").read_text().strip()
                 self.assertEqual(mark, hashlib.sha256((out / path).read_bytes()).hexdigest())
             body = gzip.decompress((out / "2016/235/344.gz").read_bytes())
-            orography = np.frombuffer(gzip.decompress((out / "orography/235/344.gz").read_bytes()), "<f4")
+            orography = np.frombuffer(gzip.decompress((out / "orography/235/344.gz").read_bytes()), "<f8")
         # Each variable has one chunk of the two years: time chunk 17, downloaded once.
         self.assertEqual(sorted(asked), [(f"https://arco.test/{v}/{v}/17.344.235", "KEY") for v in sorted(climate.SOURCE)])
         planes, sector = climate.read_block(body, 366, 32)
@@ -265,7 +265,7 @@ class BakeTest(unittest.TestCase):
                     def put(path, planes):
                         files[path] = Path(directory, path)
                         climate.write(files[path], planes)
-                    put(f"orography/{x}/{y}.gz", [(300 + 700 * rng.random(32) * climate.GRAVITY).astype(np.float32)])
+                    put(f"orography/{x}/{y}.gz", [(300 + 700 * rng.random(32) * climate.GRAVITY)])
                     for year in range(FIRST, FIRST + climate.YEARS):
                         days = (dt.date(year + 1, 1, 1) - dt.date(year, 1, 1)).days
                         put(f"{year}/{x}/{y}.gz", [

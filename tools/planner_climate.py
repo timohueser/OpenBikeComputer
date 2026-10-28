@@ -460,7 +460,8 @@ def prepare(block, years, work, out, orography=False):
     region, key, made = Region.block(x, y), token(), {}
     try:
         if orography:
-            made["orography"] = write(out / "orography" / str(x) / f"{y}.gz", [geopotential(region, key, cache=work)])
+            z = np.asarray(geopotential(region, key, cache=work), "<f8")
+            made["orography"] = write(out / "orography" / str(x) / f"{y}.gz", [z])
         for year in sorted(years):
             source = Source(final_hour(year), key, cache=work)
             made[year] = write(out / str(year) / str(x) / f"{y}.gz", block_days(region, year, source))
@@ -515,7 +516,7 @@ def climate(region, first_year, files, workers=None):
     weekly = {name: np.full((YEARS, WEEKS, *shape), np.nan) for name in WEEKLY}
     monthly = {name: np.full((12, *shape), np.nan) for name in ("tmax", "tmin")}
     rose = np.full((12, SECTORS, *shape), np.nan)
-    z = np.full(shape, np.nan, np.float32)
+    z = np.full(shape, np.nan, np.float64)
     zarr_rows, zarr_cols = region.zarr_index()
     years = range(first_year, first_year + YEARS)
     for by in np.unique(zarr_rows // BLOCK_ROWS):
@@ -534,7 +535,7 @@ def climate(region, first_year, files, workers=None):
             at = np.ix_(top - zarr_rows[rows], zarr_cols[cols] - west)
             size = (len(block.rows), len(block.cols))
             read = lambda path: gzip.decompress(Path(files[path]).read_bytes())
-            z[np.ix_(rows, cols)] = np.frombuffer(read(paths[0]), "<f4", size[0] * size[1]).reshape(size)[at]
+            z[np.ix_(rows, cols)] = np.frombuffer(read(paths[0]), "<f8", size[0] * size[1]).reshape(size)[at]
             values, sector = {name: [] for name in PLANES}, []
             for path, year in zip(paths[1:], years):
                 days = (dt.date(year + 1, 1, 1) - dt.date(year, 1, 1)).days

@@ -1760,7 +1760,7 @@ it, in the same format; `prod` takes a version of a region.
   | `wind` | float64 | day | The mean of the 10 hourly 10 m wind speeds of the day time, in m/s |
   | `sector` | uint8 | 10 × day + hour − 9 | The [sector](planner-climate-tiles.md#values), 0 to 15, of the wind at the local hour 09:00 to 18:00 |
 
-  The orography file has one plane: the geopotential of the cell in m²/s², float32, from the
+  The orography file has one plane: the geopotential of the cell in m²/s², float64, from the
   orography file of the climate archive. With these types, `planner/climate` computes the same
   values as from the hourly data, so its archive has the same bytes except `inputs`.
 - The run uploads the files in batches of 64. The manifest names `era5-land` at the date of the
