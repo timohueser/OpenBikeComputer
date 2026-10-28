@@ -143,7 +143,7 @@ def prefer(db, work: Path, path: Path):
     one that the catalog has only as an article of a language that this run did not prepare. The
     asset of such a `file` fact goes into `work` at its path."""
     assets = {}
-    for member, data in unpacked(path):
+    for member, data in unpacked(path, fact_member):
         if not member.endswith(".json"):
             continue
         value = json.loads(data)
@@ -158,7 +158,7 @@ def prefer(db, work: Path, path: Path):
                 raise ValueError(f"{path.name}: the asset path {asset} leaves the work directory")
             if not (work / asset).is_file():
                 assets[f"content/assets/{value['asset']['sha256']}"] = work / asset
-    for member, data in unpacked(path) if assets else ():
+    for member, data in unpacked(path, assets.__contains__) if assets else ():
         if target := assets.get(member):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
@@ -180,7 +180,7 @@ def shard(db, work: Path, written: tuple, name: str, targets, keys: list[tuple[s
     for wikidata, wikipedia in subjects:
         db.executemany("INSERT OR IGNORE INTO shard VALUES(?,?)", needs(db, targets, wikidata, wikipedia))
     held = set()
-    for member, data in unpacked(Path(before["file"])) if before else ():
+    for member, data in unpacked(Path(before["file"]), fact_member) if before else ():
         held.add(member)
         if member.endswith(".json"):
             value = json.loads(data)
@@ -207,13 +207,21 @@ def shard(db, work: Path, written: tuple, name: str, targets, keys: list[tuple[s
     return dict(path=name, sha256=dumps.sha(out / name), bytes=(out / name).stat().st_size, facts=facts)
 
 
-def unpacked(path: Path):
-    """The `(name, bytes)` of each file of a shard."""
+def fact_member(name: str) -> bool:
+    return name.endswith(".json")
+
+
+def unpacked(path: Path, read=lambda name: True):
+    """The `(name, bytes)` of each file of a shard; the bytes are `None` unless `read` accepts the
+    name, so a scan of the facts does not read the photos. zstd ends also when the caller stops."""
     process = subprocess.Popen(["zstd", "-q", "-dc", str(path)], stdout=subprocess.PIPE)
-    with tarfile.open(fileobj=process.stdout, mode="r|") as tar:
-        for member in tar:
-            if member.isfile():
-                yield member.name, tar.extractfile(member).read()
-    process.stdout.close()
-    if process.wait():
+    try:
+        with tarfile.open(fileobj=process.stdout, mode="r|") as tar:
+            for member in tar:
+                if member.isfile():
+                    yield member.name, tar.extractfile(member).read() if read(member.name) else None
+    finally:
+        process.stdout.close()
+        status = process.wait()
+    if status:
         raise ValueError(f"zstd could not read {path.name}")
