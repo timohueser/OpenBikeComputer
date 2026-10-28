@@ -770,10 +770,10 @@ mod tests {
 
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
-        app.post_dfu_landing(DfuLanding::Scanned(Err(DfuScanError::TooFragmented)));
+        app.post_dfu_landing(DfuLanding::Scanned(Err(DfuScanError::TooLarge)));
         match app.top_screen() {
             Screen::DfuError(e) => {
-                assert_eq!(e.reason(), crate::screen::DfuErrorReason::Scan(DfuScanError::TooFragmented))
+                assert_eq!(e.reason(), crate::screen::DfuErrorReason::Scan(DfuScanError::TooLarge))
             }
             _ => panic!("Err swaps the wait for the error card"),
         }
