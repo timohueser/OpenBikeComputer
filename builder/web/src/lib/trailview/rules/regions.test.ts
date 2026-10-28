@@ -65,6 +65,18 @@ describe('rulesOf', () => {
         expect(rules.regions[1].trees).toEqual([]);
     });
 
+    it("takes the models of a region's rows from its pack: a child changes one, keeps the others, and null drops one", () => {
+        const rules = rulesOf({
+            format: 3, materials, ids: [['alps', '*']],
+            regions: { alps: { leaf: 'needleleaved', look, pack: 'alps' } },
+            packs: {
+                base: { rows: { orchard: 'hawthorn', vineyard: 'grapevine', 'olive-grove': 'olive' } },
+                alps: { extends: 'base', rows: { orchard: 'almond', 'olive-grove': null } },
+            },
+        });
+        expect(rules.regions[0].rows).toEqual({ orchard: 'almond', vineyard: 'grapevine' });
+    });
+
     it("merges a region's patches by name: a child changes one, adds one, and null drops one", () => {
         const patch = { on: ['#moor'], colour: '#5e4552', share: 0.35, size_m: 4, form: 'blotches' };
         const rules = rulesOf({

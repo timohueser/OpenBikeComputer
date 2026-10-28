@@ -1,7 +1,7 @@
 {
   "about": "The ground sources of the TrailView material and lithology, in the order they apply: specs/trailview-tiles.md, Ground. A source is a row of data/sources.toml.",
   "material": {
-    "about": "WorldCover's 10 m keeps the structure; a 100 m map only names it. A map's heath or bog leaves the satellite's heath as it is; a map's farmland outranks it, as no heath is farmed. WorldCover sees a crop planted in rows as what grows in them; its woodland stays in a vineyard, as vines are not trees. An OSM orchard of berries, hops or tea has no trees: it names arable, which refines nothing, so the texel keeps its class.",
+    "about": "WorldCover's 10 m keeps the structure; a 100 m map only names it. A map's heath or bog leaves the satellite's heath as it is; a map's farmland outranks it, as no heath is farmed. WorldCover sees a crop planted in rows as what grows in them; its woodland stays in a vineyard, as vines are not trees. An OSM orchard of berries, hops or tea has no trees: it names arable, which refines an orchard only, such as CORINE's fruit trees and berry plantations.",
     "refines": {
       "needleleaf-forest": ["forest"],
       "broadleaf-forest": ["forest"],
@@ -14,6 +14,7 @@
       "wet-grassland": ["grassland"],
       "salt-marsh": ["marsh"],
       "rice": ["arable"],
+      "arable": ["orchard"],
       "vineyard": ["arable", "scrub", "grassland", "heath"],
       "orchard": ["arable", "forest", "scrub", "grassland", "heath"],
       "olive-grove": ["arable", "forest", "scrub", "grassland", "heath"],

@@ -195,7 +195,7 @@ def tables(materials):
                 "on": ground_names(materials)})
     pack = obj({
         "name": text, "about": text, "extends": text, "trees": entries(species), "ground": entries(ground),
-        "herds": entries(herd), "style": by_place(text), "houses": text, "rows": each(materials["materials"], text),
+        "herds": entries(herd), "style": by_place(text), "houses": text, "rows": each(materials["rows"], text),
     })
     style = obj({
         "name": text, "about": text, "extends": text, "pitch": listed(number(0, 80), 2), "eave": number(0, 5), "verge": number(0, 5),
@@ -338,6 +338,7 @@ def validate(ruleset):
     vocabulary = ruleset["materials"]
     out = vocabulary_problems(vocabulary)
     ids = {key: [entry["id"] for entry in vocabulary[key]] for key in ("materials", "lithologies")}
+    ids["rows"] = [entry["id"] for entry in vocabulary["materials"] if "rows" in entry]
     ids["tags"] = {tag for entry in vocabulary["materials"] if isinstance(entry.get("tags"), list)
                    for tag in entry["tags"] if isinstance(tag, str)}
     out += ground_problems(ruleset["ground"], ids)

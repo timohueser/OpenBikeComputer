@@ -37,6 +37,7 @@ CASES = [
     ("packs/alps", ["trees", "norway-spruce", "model"], "no-such-tree", "regions/alps.insubric.json: pack alps.insubric: tree norway-spruce has no model no-such-tree"),
     ("packs/alps", ["ground", "bilberry", "model"], "norway-spruce", "regions/alps.json: pack alps: ground plant bilberry has no model norway-spruce"),
     ("packs/alps", ["rows", "orchard"], "no-such-tree", "regions/alps.json: pack alps: rows orchard has no model no-such-tree"),
+    ("packs/alps", ["rows", "arable"], "almond", "packs/alps.json: rows.arable: is an unknown key"),
     ("packs/alps", ["style", "xx-yy"], "chalet", "regions/alps.json: xx-yy is not a place of countries.json"),
     ("packs/alps", ["ground", "bilberry", "on"], ["#heath"],
      'packs/alps.json: ground.bilberry.on[0]: "#heath" is not a cover, a material or a #tag of materials.json'),
