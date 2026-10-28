@@ -121,31 +121,31 @@ class CddSearch(StacSearchSource):
 
 
 SEARCH = "https://cdd.dgterritorio.gov.pt/dgt-be/v1/search"
-UNVERIFIED = "orthometric, unverified until the summit check passes"
 
 PT = CddSearch(
     "pt", "Portugal (mainland)", "LiDAR MDT 2 m (DGT)", 2.0,
     "CC BY 4.0",
-    UNVERIFIED,
+    None,
     credential=Credential("pt"),
     credential_hosts=(DOMAIN,),
     search=SEARCH,
     asset="data",
     collections="MDT-2m",
-    summit=(-7.6114, 40.3214, 1993),  # Torre, Serra da Estrela
+    summit=("Torre", -7.6114, 40.3214, 1993),
 )
 
 # Each island has its own tide gauge (EPSG:6180–6187).
 AZ = CddSearch(
     "pt-20", "Portugal (Azores)", "LiDAR MDE 1 m (Governo dos Açores)", 1.0,
     "CC BY 4.0",
-    UNVERIFIED,
+    None,
     credential=Credential("pt"),
     credential_hosts=(DOMAIN,),
     search=SEARCH,
     asset="data",
     collections="ACORES-MDE-1",
-    summit=(-28.3989, 38.4686, 2351),  # Pico
+    # Wikidata Q928681.
+    summit=("Pico", -28.39917, 38.46861, 2351),
 )
 
 MA = SharedZip(

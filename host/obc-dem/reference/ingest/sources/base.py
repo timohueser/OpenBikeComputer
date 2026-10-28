@@ -230,6 +230,9 @@ def http_download(url: str, path: Path, optional: bool = False, headers=None,
                     if total:
                         print(f"\r    {path.name}: {done / total:.0%} of {total / 1e6:.0f} MB",
                               end="", flush=True)
+            # A connection that closes early ends the read without an error; it is retried.
+            if total and done != total:
+                raise OSError(f"{path.name}: {done} of the {total} bytes the server announced")
         if total:
             print()
         os.replace(part, path)
@@ -417,9 +420,10 @@ class Source:
     `void` is a height inside the plausible range that the service answers for land it does
     not hold and does not declare as nodata, such as GUGiK's 0 abroad.
 
-    `summit` is `(lon, lat, metres)`, a surveyed summit that the model must read before a prepare
-    uses it: an ellipsoidal or wrongly referenced model misses it by tens of metres. A row whose
-    datum names no system of `ORTHOMETRIC` must have one.
+    `summit` is `(name, lon, lat, metres)`, a surveyed summit, the highest point within a kilometre,
+    that the model must read before a prepare uses it: an ellipsoidal or wrongly referenced model
+    misses it by tens of metres. A row with a summit may give `None` as its datum, which then says
+    where it was checked; a row without one must name a system of `ORTHOMETRIC`.
 
     `shared` is the directory that the tiles of one prepare share; the fetch command sets it.
     """
@@ -436,6 +440,9 @@ class Source:
     def __init__(self, key, country, product, resolution_m, licence, vertical_datum,
                  credential=None, credential_hosts=(), grid_epsg=None, confirm_datum=None,
                  void=None, summit=None):
+        if vertical_datum is None and summit is not None:
+            name, _, _, metres = summit
+            vertical_datum = f"orthometric, checked at {name} ({metres} m)"
         self.check_datum(key, vertical_datum, summit)
         self.check_credential(key, credential, credential_hosts)
         self.key = key

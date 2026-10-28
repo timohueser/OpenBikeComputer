@@ -61,5 +61,5 @@ SI = ArsoTiles(
     "SVS2000, orthometric (D96/TM + SVS2000)",
     grid_epsg=3794,
     base="https://gis.arso.gov.si/lidar/dmr1/",
-    summit=(13.8367, 46.3783, 2864),  # Triglav
+    summit=("Triglav", 13.8367, 46.3783, 2864),
 )

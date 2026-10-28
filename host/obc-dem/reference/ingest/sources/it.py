@@ -79,7 +79,7 @@ PIE = Wcs10Source(
     coverage="DTM",
     epsg=32632,
     image_format="GEOTIFF_16",
-    summit=(7.0904, 44.6675, 3841),  # Monviso
+    summit=("Monviso", 7.0904, 44.6675, 3841),
 )
 
 ELEMENTS = Path(__file__).with_name("it_fvg_elements.txt")
