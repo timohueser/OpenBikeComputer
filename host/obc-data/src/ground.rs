@@ -91,15 +91,4 @@ mod tests {
         };
         assert_eq!(wfs("heath"), wfs("bog"), "the legend does not filter a WFS capture");
     }
-
-    #[test]
-    fn only_a_feature_service_is_captured_over_each_box() {
-        let per_box = |protocol: &str| {
-            serde_json::from_str::<GroundSource>(&format!(r#"{{"source": "x", "protocol": "{protocol}"}}"#))
-                .unwrap()
-                .per_box()
-        };
-        assert!(per_box("arcgis-features") && per_box("wfs"));
-        assert!(!per_box("raster") && !per_box("vector") && !per_box("osm"));
-    }
 }

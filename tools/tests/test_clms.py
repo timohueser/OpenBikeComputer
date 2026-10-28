@@ -2,14 +2,17 @@
 from the archive, without the token outside the API."""
 
 import base64
+import http.server
 import io
 import json
 import tempfile
+import threading
 import unittest
 import zipfile
 from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs
+from urllib.request import Request
 
 from tools import clms
 
@@ -119,6 +122,53 @@ class ClmsTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "order 9 is Finished_nok: no space"):
                 clms.order(clms.Session(KEY), "dataset", "file")
 
+    def test_a_finished_order_without_an_https_link_fails(self):
+        for url in ("http://files.example/7.zip", None):
+            answers = iter([{"access_token": "t"}, {"TaskIds": [{"TaskID": "9"}]}, {"Status": "Finished_ok", "DownloadURL": url}])
+            with mock.patch.object(clms.API_OPENER, "open", lambda request, timeout: Answer(json.dumps(next(answers)).encode())):
+                with self.assertRaisesRegex(RuntimeError, "order 9 is finished, but links no https URL"):
+                    clms.order(clms.Session(KEY), "dataset", "file")
+
+    def test_an_api_call_fails_on_a_redirect_and_an_error_names_only_its_message(self):
+        hits = []
+
+        class Service(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                hits.append(self.path)
+                if self.path == "/moved":
+                    self.send_response(307)
+                    self.send_header("Location", "/elsewhere")
+                    self.end_headers()
+                else:
+                    body = json.dumps({"msg": "refused", "token": "secret-token"}).encode()
+                    self.send_response(400)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+            def log_message(self, *_):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Service)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            api = f"http://127.0.0.1:{server.server_port}"
+            post = lambda path: Request(api + path, data=b"{}", headers={"Authorization": "Bearer secret-token"})
+            with self.assertRaisesRegex(RuntimeError, "307"):
+                clms.call(post("/moved"), opener=clms.API_OPENER)
+            with self.assertRaises(RuntimeError) as refused:
+                clms.call(post("/bad"), opener=clms.API_OPENER)
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(hits, ["/moved", "/bad"], "the redirect target is never asked")
+        self.assertTrue(str(refused.exception).endswith("HTTP Error 400: Bad Request: refused"), str(refused.exception))
+        self.assertNotIn("secret-token", str(refused.exception))
+
+    def test_an_answer_with_a_transfer_encoding_or_a_bad_content_length_has_no_length(self):
+        self.assertEqual(clms.length({"Content-Length": "1000"}), 1000)
+        self.assertIsNone(clms.length({"Content-Length": "1000", "Transfer-Encoding": "chunked"}))
+        self.assertIsNone(clms.length({"Content-Length": "1000, 1000"}))
 
     def test_an_archive_that_is_no_zip_goes_so_the_next_run_downloads_it_again(self):
         with tempfile.TemporaryDirectory() as scratch:

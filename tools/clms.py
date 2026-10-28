@@ -96,7 +96,7 @@ def said(error):
     body could hold a grant."""
     try:
         body = json.loads(error.read()) if isinstance(error, HTTPError) else None
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.IncompleteRead):
         return ""
     fields = ("msg", "message", "error", "error_description")
     text = [str(body[field]) for field in fields if isinstance(body, dict) and field in body]
@@ -149,15 +149,25 @@ def order(session, dataset, file):
         status = session.json(f"@datarequest_status_get?TaskID={task}")
         state = status.get("Status")
         if state == "Finished_ok":
-            if not status["DownloadURL"].startswith("https://"):
-                raise RuntimeError(f"CLMS order {task} links no https URL: {status['DownloadURL']}")
-            return status["DownloadURL"]
+            url = status.get("DownloadURL")
+            if not (isinstance(url, str) and url.startswith("https://")):
+                raise RuntimeError(f"CLMS order {task} is finished, but links no https URL: {url!r}")
+            return url
         if state not in WAITING:
             raise RuntimeError(f"CLMS order {task} is {state}: {status.get('Message')}")
         if time.monotonic() > deadline:
             raise RuntimeError(f"CLMS order {task} is still {state} after {WAIT_S // 3600} h")
         print(f"CLMS order {task}: {state}", file=sys.stderr, flush=True)
         time.sleep(POLL_S)
+
+
+def length(headers):
+    """The `Content-Length` of an answer without `Transfer-Encoding`; None for none, or one that is
+    not a number."""
+    value = headers.get("Content-Length")
+    if "Transfer-Encoding" in headers or value is None or not value.strip().isdigit():
+        return None
+    return int(value)
 
 
 def whole(target, stream, size=None):
@@ -204,9 +214,8 @@ def fetch(dataset, file, member, work, out, key=KEY):
         return
     if not archive.exists():
         url = order(Session(json.loads(key.expanduser().read_text())), dataset, file)
-        length = lambda response: int(response.headers["Content-Length"]) if "Content-Length" in response.headers else None
         # Without the token: the link names the order itself.
-        call(Request(url), lambda response: whole(archive, response, length(response)))
+        call(Request(url), lambda response: whole(archive, response, length(response.headers)))
     try:
         found = extract(archive, member, target, work)
     except zipfile.BadZipFile:
