@@ -1,7 +1,8 @@
 """Italy: INGV's national TINITALY, and the alpine provinces, which publish region by region.
 
 TINITALY is the base: 10 m over the whole country, on INGV's keyless WCS. It is coarser than
-the lattice, so it reaches only some lattice pixels, and every finer model ranks above it.
+the lattice, so its centres reach only some lattice pixels and `fill_gaps` fills the others.
+Every finer model ranks above it.
 
 Alpine Italy is the border-ridge gap. A ridge along the Swiss, Austrian or French border
 is lifted on one side only until Italy is covered finely, and that step shows in the contours and

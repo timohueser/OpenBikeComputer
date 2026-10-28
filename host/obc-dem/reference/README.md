@@ -30,10 +30,12 @@ holds a tile to it.
 - **Tile**: `2^16` µdeg square = 1024 × 1024 pixels, at `16/<ti:04>/<tj:04>.tif` under the archive
   root, where `(ti, tj) = ((lat − ORIGIN) >> 16, (lon − ORIGIN) >> 16)`.
 - **Value**: `int16` little-endian orthometric metres, the **maximum** of every source pixel centre
-  inside the lattice square. `−32768` is the only nodata. Single band, `PixelIsArea`, EPSG:4326,
-  deflate, 256 × 256 internal tiles. The GeoTIFF stores rows north-up.
-- **Mean** (prepared versions only): the **mean** of the same centres in `int32` decimetres,
-  nodata `−2^31`, predictor 2, in `mean/`.
+  inside the lattice square. A square that no centre reaches and that lies between four centres
+  with a height has their bilinear height (`fill_gaps`). `−32768` is the only nodata. Single
+  band, `PixelIsArea`, EPSG:4326, deflate, 256 × 256 internal tiles. The GeoTIFF stores rows
+  north-up.
+- **Mean** (prepared versions only): the **mean** of the same centres in `int32` decimetres, or
+  the same bilinear height, nodata `−2^31`, predictor 2, in `mean/`.
 - **Transform** must be exactly the lattice (`a = 2^6 / 1e6`, `e = −2^6 / 1e6`, origin on lattice
   lines) within 1e-9 degrees. The baker does no reprojection and no resampling.
 - **`index.json`** at the archive root names every tile. A tile the index does not name is not in
@@ -42,7 +44,8 @@ holds a tile to it.
 ```json
 { "schema": 1, "step_log2": 6, "tile_log2": 16, "pool": "max",
   "sources": { "ch": { "product": "swissALTI3D 2 m", "attribution": "© swisstopo",
-                       "licence": "…", "vertical_datum": "LN02/LHN95", "fetched": "2026-09-21" } },
+                       "licence": "…", "vertical_datum": "LN02/LHN95", "fetched": "2026-09-21",
+                       "glo30_bias_m": -1.42 } },
   "tiles": { "3410/2882": "ch" },
   "contributors": { "3410/2882": ["ch", "es"] },
   "sha256": { "3410/2882": "9f86d0818…" } }
@@ -52,14 +55,16 @@ holds a tile to it.
 file, because two GDAL builds deflate the same
 heights into different bytes and the terrain bakery keys its skip decision on the digest.
 `contributors` lists every source holding a pixel in the tile, best priority first; `tiles` names
-the first of them. `index-terrain` writes it.
+the first of them. `glo30_bias_m` is the median of model − GLO-30 that the terrain prepare
+measured once (`specs/obc-data.md` §`terrain`); the planner corrects GLO-30 by the bias of the
+best source of a tile. `index-terrain` writes it.
 
 ## The code
 
 | module | what is in it |
 | --- | --- |
 | `lattice.py` | Integer microdegrees: the grid, `Window`, tile ids, and the refusals for a box the lattice cannot hold. |
-| `pool.py` | One source raster in, the lattice maximum and mean out: voids and the pooling rule. |
+| `pool.py` | One source raster in, the lattice maximum and mean out: voids, the pooling rule and the fill of a coarse source. |
 | `archive.py` | Tiles, `PRIORITY`, the per-pixel fold, the pooling of one tile, and the deliveries on disk. |
 | `sources/` | One module per country, one row per product. `base.py` is what an adapter is; `__init__.py` is the `SOURCES` registry. |
 | `cli.py` | The `fetch` and `index-terrain` steps. |
@@ -113,8 +118,9 @@ product, resolution, licence and vertical datum. Its credit and its box are `att
 Open services, no key: `ch`, `fr`, `us`, `no`, `es`, `nl`, `gb-eng`, `gb-sct`, `gb-wls`, `at`, `ca`,
 `nz`, `pl`, `cz`, `sk`, `si`, `is`, `it`, `it-bz`, `it-tn`, `it-21`, and the German states `de-nw`, `de-he`, `de-bw`,
 `de-mv`, `de-st`, `de-by`, `de-sn`, `de-th`, `de-ni`, `de-rp`. Germany publishes elevation per
-state, so `de-*` is a family of rows. `it` and `is` are 10 m, coarser than the lattice, so they
-reach only some of its pixels.
+state, so `de-*` is a family of rows. `it` and `is` are 10 m, coarser than the lattice: their
+centres reach only some of its pixels, and `fill_gaps` gives the others the bilinear height of
+the four centres around them.
 
 Behind a free account: `dk`, `se`, `fi`, and `pt` and `pt-20`, which share one DGT account. The
 machine that prepares sets the credential; each module names where the account is made. `au` is ordered by hand: `OBC_REFERENCE_AU_INPUT` names

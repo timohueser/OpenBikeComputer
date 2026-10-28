@@ -14,7 +14,7 @@ from rasterio.errors import RasterioIOError
 from rasterio.transform import Affine
 from rasterio.warp import transform_bounds
 
-from .lattice import DEGREE, MEAN_NODATA, NODATA, Refuse, SNAP, WGS84, Window, pixel_index
+from .lattice import DEGREE, GRID_ORIGIN, MEAN_NODATA, NODATA, STEP, Refuse, SNAP, WGS84, Window, pixel_index
 
 
 # Absence while pooling. Every real height is far above it, so a lattice pixel that no
@@ -124,8 +124,8 @@ def pool_onto_lattice(values, src_transform, src_crs, window: Window):
     reached, and it spread a one-pixel tower over two to four archive pixels.
 
     A centre is a point, so a rotated or sheared source needs no special case, and a source
-    coarser than the lattice simply reaches fewer lattice pixels: the pooling never invents
-    ground where no centre landed. Returns the maximum (`VOID` where no centre landed), the
+    coarser than the lattice reaches only some lattice pixels; `fill_gaps` fills the others.
+    Returns the maximum (`VOID` where no centre landed), the
     sum and the count, each in the shape of `window`, and the centres outside the window.
     """
 
@@ -152,6 +152,33 @@ def pool_onto_lattice(values, src_transform, src_crs, window: Window):
         count += np.bincount(flat, minlength=size)
     shape = (window.rows, window.cols)
     return dest.reshape(shape), total.reshape(shape), count.reshape(shape), dropped
+
+
+def fill_gaps(maximum, total, count, raster, window: Window):
+    """Fill each lattice pixel of `window` that no source centre reached and that lies between four
+    centres with a height of `raster` (values, transform, CRS): the maximum and the mean are their
+    bilinear height. The arrays are in the shape of `window`, north-up, and change in place."""
+
+    values, transform, src_crs = raster
+    if min(values.shape) < 2:  # a sliver of one row or column has no four centres around a point
+        return
+    rows, cols = np.nonzero(count == 0)
+    lat = (GRID_ORIGIN + (window.row0 + window.rows - 1 - rows) * STEP + STEP // 2) / DEGREE
+    lon = (GRID_ORIGIN + (window.col0 + cols) * STEP + STEP // 2) / DEGREE
+    x, y = Transformer.from_crs(WGS84, src_crs, always_xy=True).transform(lon, lat)
+    col, row = ~transform * (np.asarray(x), np.asarray(y))
+    col, row = col - 0.5, row - 0.5  # from the corners of the source pixels to their centres
+    c0, r0 = np.floor(col).astype("int64"), np.floor(row).astype("int64")
+    inside = (r0 >= 0) & (c0 >= 0) & (r0 + 1 < values.shape[0]) & (c0 + 1 < values.shape[1])
+    r0, c0 = np.where(inside, r0, 0), np.where(inside, c0, 0)
+    corners = [values[r0 + dr, c0 + dc].astype("float64") for dr in (0, 1) for dc in (0, 1)]
+    found = inside & np.all([corner > VOID / 2 for corner in corners], axis=0)
+    fy, fx = row - r0, col - c0
+    height = (corners[0] * (1 - fx) + corners[1] * fx) * (1 - fy) + (corners[2] * (1 - fx) + corners[3] * fx) * fy
+    rows, cols = rows[found], cols[found]
+    maximum[rows, cols] = height[found]
+    total[rows, cols] = height[found]
+    count[rows, cols] = 1
 
 
 def to_int16(values):

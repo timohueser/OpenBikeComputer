@@ -48,7 +48,7 @@ serves, so they need no commit.
 | `~/.config/openbikecomputer/clms-key.json` | CLMS service key for the CORINE fetch; save the JSON of the token whole, mode 0600 |
 
 Set a source credential on the Machine screen, or pipe it to `obc data source credential ID`.
-Keep other secrets in the host environment or ignored `tools/obc.local`, never tracked config.
+Put other secrets, such as the R2 key, in `credentials.env`, never in `tools/obc.local`.
 
 ## Daily commands
 
