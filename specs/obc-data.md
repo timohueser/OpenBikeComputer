@@ -416,13 +416,13 @@ values, never a value.
 
 | Credential | File | Lines |
 | --- | --- | --- |
-| `env` | `~/.config/openbikecomputer/credentials.env` | `NAME=VALUE` |
+| `env` | `~/.config/openbikecomputer/credentials.env` | `NAME=VALUE`; a leading `export ` and one matching pair of quotes around the value are removed |
 | `file = "~/.cdsapirc"` | `~/.cdsapirc` | `key: VALUE` |
 | `file = "~/.config/openbikecomputer/cdse-s3.env"` | that file | `CDSE_S3_ACCESS_KEY=VALUE` and `CDSE_S3_SECRET_KEY=VALUE` |
 | `file = "~/.config/openbikecomputer/clms-key.json"` | that file | None: a person saves the JSON service key whole, as the `hint` says, and the command refuses it |
 
-Each `obc data` command but `obc data ui` loads `credentials.env` when it starts, and its steps get
-the variables. A variable that the environment already sets wins. `overridden` in the output
+Each `obc data` command but `obc data ui`, and `obc bake publish --target r2`, loads
+`credentials.env` when it starts, and its steps get the variables. A variable that the environment already sets wins. `overridden` in the output
 names such variables: the new value serves only after they are removed from the environment.
 
 Each acquisition check has 15 seconds. The store keeps its answer or failure for one hour.

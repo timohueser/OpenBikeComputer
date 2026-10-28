@@ -25,9 +25,7 @@ impl Drop for Throwaway {
 }
 
 fn target() -> Option<Target> {
-    if let Some(home) = std::env::var_os("HOME") {
-        obc_data::credentials::load(std::path::Path::new(&home));
-    }
+    obc_data::credentials::load_home();
     let Some(bucket) = std::env::var("OBC_R2_BUCKET").ok().filter(|bucket| !bucket.is_empty()) else {
         eprintln!("skipped: OBC_R2_BUCKET is not set");
         return None;

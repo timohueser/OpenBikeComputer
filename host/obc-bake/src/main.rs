@@ -583,9 +583,7 @@ fn run_publish(args: &[String]) -> Result<(), String> {
     let store: Box<dyn ObjectStore> = match target {
         "r2" => {
             // The R2 key lives in the credentials file of `obc data`; a variable of the environment wins.
-            if let Some(home) = std::env::var_os("HOME") {
-                obc_data::credentials::load(Path::new(&home));
-            }
+            obc_data::credentials::load_home();
             Box::new(R2Store::from_env()?)
         }
         t if t.starts_with("dir:") => Box::new(DirStore::new(&t["dir:".len()..])),

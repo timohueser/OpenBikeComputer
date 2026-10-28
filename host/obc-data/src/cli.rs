@@ -148,8 +148,8 @@ pub fn main(products: &[&dyn Product], prepared: &[&dyn Prepared], ui: Option<Ui
     let json = cli.json;
     // Not for the page: each command that it runs loads the file, so a credential set on the page
     // serves the next command.
-    if let (false, Some(home)) = (matches!(cli.command, Some(Command::Ui)), std::env::var_os("HOME")) {
-        crate::credentials::load(Path::new(&home));
+    if !matches!(cli.command, Some(Command::Ui)) {
+        crate::credentials::load_home();
     }
     match run(cli, products, prepared, ui) {
         Ok(()) => ExitCode::SUCCESS,

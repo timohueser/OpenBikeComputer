@@ -1,7 +1,7 @@
 //! Where the credential of a source lives on this machine. An `env` credential is a line of
 //! `~/.config/openbikecomputer/credentials.env`, which `obc data` and `obc bake publish` load at
-//! start; a `file` credential is the file that its reader takes. A value never goes to argv, to a log or to the
-//! output of a command.
+//! start; a `file` credential is the file that its reader takes. A value never goes to argv, to a
+//! log or to the output of a command.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -63,8 +63,23 @@ fn under(home: &Path, path: &str) -> PathBuf {
 /// The variables of the credentials file under `home`.
 pub fn env_file(home: &Path) -> BTreeMap<String, String> {
     let text = std::fs::read_to_string(under(home, ENV_FILE)).unwrap_or_default();
-    let line = |line: &str| line.split_once('=').map(|(name, value)| (name.trim().to_string(), value.to_string()));
-    text.lines().filter(|line| !line.trim_start().starts_with('#')).filter_map(line).collect()
+    text.lines().filter(|line| !line.trim_start().starts_with('#')).filter_map(variable).collect()
+}
+
+/// The name and value of a `NAME=VALUE` line. A line moved from `tools/obc.local`, which bash
+/// sources, can start with `export ` and quote its value: both go.
+fn variable(line: &str) -> Option<(String, String)> {
+    let line = line.trim_start();
+    let (name, value) = line.strip_prefix("export ").unwrap_or(line).split_once('=')?;
+    let unquoted = ['"', '\''].into_iter().find_map(|quote| value.strip_prefix(quote)?.strip_suffix(quote));
+    Some((name.trim().to_string(), unquoted.unwrap_or(value).to_string()))
+}
+
+/// [`load`] under `$HOME`; without `HOME`, nothing.
+pub fn load_home() {
+    if let Some(home) = std::env::var_os("HOME") {
+        load(Path::new(&home));
+    }
 }
 
 /// Set each variable of the credentials file under `home` that the environment does not set: a
@@ -170,6 +185,21 @@ mod tests {
             assert!(write(&home.0, &token, values).is_err(), "{values:?}");
         }
         assert_eq!(env_file(&home.0)["OBC_TEST_TOKEN"], "fake-token-2");
+    }
+
+    #[test]
+    fn a_line_from_obc_local_loses_its_export_and_its_quotes() {
+        let lines = [
+            ("OBC_TEST_A=plain", "plain"),
+            ("export OBC_TEST_A='single quoted'", "single quoted"),
+            ("  export OBC_TEST_A=\"double\"", "double"),
+            ("OBC_TEST_A=\"mixed'", "\"mixed'"),
+            ("OBC_TEST_A=\"", "\""),
+            ("OBC_TEST_A=a\"b\"", "a\"b\""),
+        ];
+        for (line, value) in lines {
+            assert_eq!(variable(line), Some(("OBC_TEST_A".to_string(), value.to_string())), "{line}");
+        }
     }
 
     #[test]

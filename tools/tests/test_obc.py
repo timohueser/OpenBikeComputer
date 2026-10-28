@@ -133,6 +133,7 @@ class ObcTests(unittest.TestCase):
                 self.assertEqual(result.stdout, "a.obcm\n")
                 if name:
                     self.assertIn(name, result.stderr)
+                    self.assertNotIn("not;", result.stderr)
                     self.assertNotIn("print", result.stderr)
                 else:
                     self.assertEqual(result.stderr, "")
