@@ -79,7 +79,7 @@ impl Prepared for ForestReference {
         if !inputs.is_empty() {
             inputs.push(wanted(LEAF_TYPE));
         }
-        Ok(Plan { inputs, files: Some(tiles.len() as u64) })
+        Ok(Plan { inputs, files: Some(tiles.len() as u64), work_bytes: 0 })
     }
 
     /// Each tile of the region where a model has a pixel, made once and uploaded with the batch of

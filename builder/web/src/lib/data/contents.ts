@@ -2,7 +2,7 @@
 // `obc data update` that only make sense together. The bake adds what a card reads, such as the
 // terrain; `shownBy` names the cards that show it, without which it has no reader.
 import type { Bbox } from "./areas";
-import { globalModelOf, modelsOf, type SourceRow } from "./sources";
+import { globalModelOf, modelsOf, referenceOf, type SourceRow } from "./sources";
 
 export interface Content {
     id: string;
@@ -11,8 +11,8 @@ export interface Content {
     layers: string[];
     /** Sources that need a credential on this machine. */
     credentials: string[];
-    /** The reference that it reads, such as `forest`. A `required` reference needs a national model
-     *  and a version in the area; the others fall back to coarser data, `without`. */
+    /** The reference that it reads, such as `forest`. A `required` reference needs a version in the
+     *  area, and a national model there when it has models; the others fall back to coarser data, `without`. */
     reference?: { source: string; required: boolean; without: string };
     /** The cards that show it; it can be on only while one of them is. */
     shownBy?: string[];
@@ -71,7 +71,15 @@ export const CONTENTS: Content[] = [
         shownBy: ["map", "trailview"],
         with: { trailview: ["trailview-snow"] },
     },
-    { id: "climate", title: "Climate", about: "Monthly temperature and rain", layers: ["climate"], credentials: ["era5-land"], shownBy: ["map"] },
+    {
+        id: "climate",
+        title: "Climate",
+        about: "Monthly temperature and rain",
+        layers: ["climate"],
+        credentials: [],
+        reference: { source: "climate", required: true, without: "no climate" },
+        shownBy: ["map"],
+    },
 ];
 
 const title = (id: string) => CONTENTS.find((content) => content.id === id)?.title ?? id;
@@ -133,7 +141,7 @@ export function needs(content: Content, area: Bbox | null, sources: SourceRow[],
     const national = id && area ? modelsOf(id, sources).filter(({ row, country }) => row.extent && meets(row.extent, area) && (!countries.length || countries.includes(country))) : [];
     const everywhere = id && area ? globalModelOf(id, sources) : undefined;
     const models = [...national.map(({ row }) => row), ...(everywhere?.extent && meets(everywhere.extent, area!) ? [everywhere] : [])];
-    const covered = !!models.length && !!reference?.version;
+    const covered = (!!models.length || !referenceOf(id || "")?.models) && !!reference?.version;
     return { credentials, reference, models, ready: !credentials.length && (!content.reference?.required || covered) };
 }
 

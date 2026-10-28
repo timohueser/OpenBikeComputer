@@ -335,6 +335,7 @@ fn plan<'a>(
     }
     let journaled = if fresh { Vec::new() } else { journaled };
     let done = Downloads { files: journaled.len() as u64, bytes: journaled.iter().map(|file| file.size).sum() };
+    let store_bytes = store_bytes + made.work_bytes;
     let mut cost = PreparedCost { store_bytes, unknown, ..PreparedCost::default() };
     if let Some(newest) = listed.last() {
         let manifest = prepared::manifest(target, id, &newest.version)?;
@@ -706,7 +707,7 @@ pub(super) mod tests {
             _: Option<&Scope>,
             _: &[String],
         ) -> Result<prepared::Plan, String> {
-            Ok(prepared::Plan { inputs: vec![(head(), None).into()], files: Some(3) })
+            Ok(prepared::Plan { inputs: vec![(head(), None).into()], files: Some(3), work_bytes: 0 })
         }
 
         fn prepare(&self, job: &mut Job) -> Result<(), String> {

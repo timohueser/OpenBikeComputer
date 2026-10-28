@@ -15,7 +15,7 @@ use obc_data::regions::{Area, Bbox};
 use obc_data::sources::Source;
 
 use crate::device::box_poly;
-use crate::prepared_tiles::{self, outlines, poly, read_on_day, regions, reuse, Tile};
+use crate::prepared_tiles::{self, outlines, poly, read_on_day, regions, reuse, Tile, BATCH, RUNNING};
 
 /// The id of the prepared source.
 pub const ID: &str = "climate";
@@ -28,9 +28,17 @@ const ROWS: u32 = 64;
 const COLUMNS: u32 = 96;
 const GRID_ROWS: u32 = 1801;
 const GRID_COLUMNS: u32 = 3600;
-/// How far a block reaches past its cells: the bake of a box reads the cells that touch it and two
-/// more for the lapse rates.
-const MARGIN: f64 = 0.3;
+/// How far a block reaches past its cells, two cells: the bake of a box reads the cells that
+/// overlap it and two more on each side for the lapse rates.
+const MARGIN: f64 = 0.2;
+/// The nearest that a region comes to the antimeridian: there the bake would read cells on both sides.
+const ANTIMERIDIAN: f64 = 0.3;
+/// The largest chunk of the DACH capture of `era5-land` in the store.
+const CHUNK_BYTES: u64 = 2_910_000;
+/// A file of a block-year of land cells, from cached ERA5-Land chunks of Central Switzerland.
+const FILE_BYTES: u64 = 46_000_000;
+/// The chunk cache of a program at most: two time chunks of the 4 variables of the 16 × 12 chunks.
+const CACHE_BYTES: u64 = 2 * 4 * 16 * 12 * CHUNK_BYTES;
 
 pub struct ClimateReference {
     /// `tools/planner_climate.py`, as a command in the repository root.
@@ -98,7 +106,12 @@ impl Prepared for ClimateReference {
                 held.extend(blocks(outline)?);
             }
         }
-        Ok(Plan { inputs, files: held.map(|blocks| blocks.len() as u64 * (1 + u64::from(YEARS))) })
+        // The chunk caches and the files of the programs that run at once, and a batch that waits
+        // for its upload.
+        let running = held.as_ref().map_or(RUNNING, |blocks| blocks.len().min(RUNNING)) as u64;
+        let year_files = 1 + u64::from(YEARS);
+        let work_bytes = running * (CACHE_BYTES + year_files * FILE_BYTES) + BATCH as u64 * FILE_BYTES;
+        Ok(Plan { inputs, files: held.map(|blocks| blocks.len() as u64 * year_files), work_bytes })
     }
 
     /// The files of each block of the region that the version before lacks, made once and uploaded
@@ -118,13 +131,13 @@ impl Prepared for ClimateReference {
             let name = format!("{x}-{y}");
             let mut files = Vec::new();
             let (mut years, mut orography) = (Vec::new(), false);
-            if !held.contains(&format!("orography/{x}/{y}.gz")[..]) {
-                files.push((format!("orography/{x}/{y}.gz"), format!("{name}.orography.sha256")));
+            if !held.contains(&path("orography", (x, y))[..]) {
+                files.push((path("orography", (x, y)), format!("{name}.orography.sha256")));
                 orography = true;
             }
             for year in first_year..first_year + YEARS {
-                if !held.contains(&format!("{year}/{x}/{y}.gz")[..]) {
-                    files.push((format!("{year}/{x}/{y}.gz"), format!("{name}.{year}.sha256")));
+                if !held.contains(&path(year, (x, y))[..]) {
+                    files.push((path(year, (x, y)), format!("{name}.{year}.sha256")));
                     years.push(year.to_string());
                 }
             }
@@ -136,7 +149,8 @@ impl Prepared for ClimateReference {
                 named.extend(["--years".to_string(), years.join(",")]);
             }
             if orography {
-                named.push("--orography".into());
+                // The programs share one download of the orography file.
+                named.extend(["--orography".to_string(), job.state.join("orography").display().to_string()]);
             }
             args.insert(name.clone(), named);
             tiles.push(Tile { name, files, marks: Vec::new() });
@@ -155,10 +169,14 @@ impl Prepared for ClimateReference {
     }
 }
 
-/// The blocks that `outline` meets after each block grows by [`MARGIN`] on each side, as `(x, y)`.
+/// The blocks that `outline` meets after each block grows by [`MARGIN`] on each side, as `(x, y)`:
+/// the blocks of the cells that overlap the outline and of the cells two cells around them.
 pub(crate) fn blocks(outline: &Coverage) -> Result<BTreeSet<(u32, u32)>, String> {
     let (west, south, east, north) = outline.bbox();
     let degrees = |udeg: i64| udeg as f64 / 1e6;
+    if degrees(west) < -180.0 + ANTIMERIDIAN || degrees(east) > 180.0 - ANTIMERIDIAN {
+        return Err(format!("{ID} has no region within {ANTIMERIDIAN}° of the antimeridian"));
+    }
     // The block of a longitude and of a latitude, each in the grid: a block x holds the cells whose
     // Zarr column 10 (lon + 180) − 1 is 96x to 96x + 95, and a block y those whose Zarr row
     // 10 (lat + 90) is 64y to 64y + 63.
@@ -193,11 +211,15 @@ pub(crate) fn blocks(outline: &Coverage) -> Result<BTreeSet<(u32, u32)>, String>
 /// The files of `blocks` that the ten years from `first_year` need: the orography and each year.
 pub fn files(blocks: &BTreeSet<(u32, u32)>, first_year: u16) -> BTreeSet<String> {
     let years = first_year..first_year + YEARS;
-    let paths = |(x, y): (u32, u32)| {
-        std::iter::once(format!("orography/{x}/{y}.gz"))
-            .chain(years.clone().map(move |year| format!("{year}/{x}/{y}.gz")))
+    let paths = |block: (u32, u32)| {
+        std::iter::once(path("orography", block)).chain(years.clone().map(move |year| path(year, block)))
     };
     blocks.iter().copied().flat_map(paths).collect()
+}
+
+/// The path of the file `name`, `orography` or a year, of block `(x, y)`.
+fn path(name: impl std::fmt::Display, (x, y): (u32, u32)) -> String {
+    format!("{name}/{x}/{y}.gz")
 }
 
 /// The outline of every place, for a version of everything.
@@ -230,7 +252,7 @@ mod tests {
 
     /// The tool as a script: each file of a block holds its path, and its mark its year and block.
     const TOOL: &str = r#"block=$3; shift 3; years=""; orography=""
-while [ $# -gt 0 ]; do case "$1" in --years) years=$2; shift 2;; --orography) orography=1; shift;; --work) shift 2;; --out) out=$2; shift 2;; esac; done
+while [ $# -gt 0 ]; do case "$1" in --years) years=$2; shift 2;; --orography) orography=$2; shift 2;; --work) shift 2;; --out) out=$2; shift 2;; esac; done
 x=${block%-*}; y=${block#*-}
 [ -n "$orography" ] && mkdir -p "$out/orography/$x" && echo "o $block" > "$out/orography/$x/$y.gz" && echo "o $block" > "$out/$block.orography.sha256"
 for year in $(echo "$years" | tr , ' '); do mkdir -p "$out/$year/$x" && echo "$year $block" > "$out/$year/$x/$y.gz" && echo "$year $block" > "$out/$block.$year.sha256"; done
@@ -300,5 +322,9 @@ echo "$block" >> made
         assert!(second.reused.values().all(|version| version == "2026-10-01"));
         assert_eq!(second.extends, [first.scope]);
         assert_eq!(std::fs::read_to_string(root.join("made")).unwrap(), "19-21\n20-21\n", "a block is made once");
+
+        // The bake of a box near the antimeridian would read cells on both sides of it.
+        let east = Bbox { west: 179.5, south: 0.0, east: 179.8, north: 0.1 };
+        assert!(blocks(&Coverage::parse_poly(&box_poly(&east)).unwrap()).is_err());
     }
 }

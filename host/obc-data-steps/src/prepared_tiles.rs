@@ -17,7 +17,7 @@ use obc_data::settings::Settings;
 use crate::device::{box_poly, POLY};
 
 /// The tiles of one upload.
-const BATCH: usize = 64;
+pub(crate) const BATCH: usize = 64;
 /// The programs that run at once. Eight, chosen by the owner: a program waits mostly on its
 /// downloads, and one tile needs little memory.
 pub(crate) const RUNNING: usize = 8;
@@ -48,7 +48,7 @@ pub fn make(
     let steps: Vec<String> = todo.map(|tile| step(job, tile)).collect();
     job.plan_steps(&steps)?;
     let mut batch = Vec::new();
-    // Oldest first. A return drops the programs that still run, which stops them.
+    // In the order of their start. A return drops the programs that still run, which stops them.
     let mut running: VecDeque<(&Tile, Program)> = VecDeque::new();
     for (k, tile) in tiles.iter().enumerate() {
         if done(job, &marks, tile) {
@@ -58,13 +58,20 @@ pub fn make(
             add(job, tile, &mut batch)?;
             continue;
         }
-        if running.len() == RUNNING {
-            let (made, program) = running.pop_front().expect("a program runs");
-            ended(job, &marks, made, program, &mut batch)?;
-        }
-        if let Some(at) = running.iter_mut().position(|(_, program)| program.failed()) {
-            let (failed, program) = running.remove(at).expect("a program runs");
-            ended(job, &marks, failed, program, &mut batch)?;
+        // A failed program ends the run at once; with all slots taken, the first program that ends
+        // frees its slot, so a short tile does not wait behind a long one.
+        loop {
+            let full = running.len() == RUNNING;
+            let at = running.iter_mut().position(|(_, program)| program.failed());
+            let at = at.or_else(|| running.iter_mut().position(|(_, program)| full && program.ended()));
+            match at {
+                Some(at) => {
+                    let (made, program) = running.remove(at).expect("a program runs");
+                    ended(job, &marks, made, program, &mut batch)?;
+                }
+                None if full => std::thread::sleep(std::time::Duration::from_millis(20)),
+                None => break,
+            }
         }
         let label = format!("tile {}/{} {}", k + 1, tiles.len(), tile.name);
         eprintln!("{label}");

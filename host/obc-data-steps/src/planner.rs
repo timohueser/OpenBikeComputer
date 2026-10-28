@@ -811,12 +811,14 @@ fn climate(
     let needed = files(&blocks(outline).map_err(Unplanned::Failed)?, first_year);
     let held = |manifest: &Manifest| Ok(manifest.files.iter().map(|file| file.path.clone()).collect());
     let Some((pinned, files)) = prepared(inputs, store, (ID, FORMAT), &needed, held, wanted)? else { return Ok(None) };
+    // `{year}` of the credit is the year after the ten years; the archive names the version that it read.
+    let options =
+        json!({"bounds": bounds, "first_year": first_year, "attribution": attribution("era5-land"), "climate": pinned});
     Ok(Some(python(
         &PLANNER_CLIMATE,
         "planner/climate",
         vec![Input::Snapshot { source: ID.into(), version: pinned, params: Vec::new(), files }],
-        // `{year}` is the year after the ten years.
-        json!({"bounds": bounds, "first_year": first_year, "attribution": attribution("era5-land")}),
+        options,
         ("tools.planner_climate", Some("planner-climate")),
         &["climate.pmtiles"],
     )))

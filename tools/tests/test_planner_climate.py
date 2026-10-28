@@ -137,15 +137,15 @@ class LapseTest(unittest.TestCase):
 
 class GridTest(unittest.TestCase):
     def test_cells_touch_the_bounds_and_map_to_the_zarr_index(self):
-        region = climate.Region([7.45, 47.5, 10.5, 49.85], pad=0)
+        region = climate.Region.around([7.45, 47.5, 10.5, 49.85], pad=0)
         self.assertEqual((region.lat[[0, -1]].tolist(), region.lon[[0, -1]].round(6).tolist()), ([49.8, 47.5], [7.5, 10.5]))
-        corner = climate.Region([-180, 89.96, -179.96, 90], pad=0)
+        corner = climate.Region.around([-180, 89.96, -179.96, 90], pad=0)
         self.assertEqual((corner.rows.tolist(), corner.cols.tolist()), ([0], [0]))
         self.assertEqual([index.tolist() for index in corner.zarr_index()], [[1800], [3599]])
 
     def test_a_year_reads_the_time_chunks_of_its_hours_and_a_block_reads_its_own_chunks(self):
         self.assertEqual(climate.hour(dt.date(1950, 1, 2)), 0)
-        region = climate.Region([7.45, 47.5, 10.5, 49.85])
+        region = climate.Region.around([7.45, 47.5, 10.5, 49.85])
         start, end, times, spatial = climate.chunk_plan(region, FIRST)
         self.assertEqual((end - start, list(times), len(spatial)), (24 * 366 + 96, [17], 40))
         # Time chunk 18 starts on 24 May 2019.
@@ -158,7 +158,7 @@ class GridTest(unittest.TestCase):
         self.assertEqual(climate.Region.block(37, 28).zarr_index()[1][-1], 3599)
 
     def test_a_tile_holds_its_cells_in_row_order_at_the_spec_offsets(self):
-        region = climate.Region([8.0, 48.0, 8.3, 48.1], pad=0)  # rows 419–420, columns 1880–1883
+        region = climate.Region.around([8.0, 48.0, 8.3, 48.1], pad=0)  # rows 419–420, columns 1880–1883
         shape = (len(region.rows), len(region.cols))
         values = {zoom: {name: np.full((count, *shape), 1.0) for name, count in layout} for zoom, (_, _, layout) in climate.LEVELS.items()}
         values[climate.DETAIL]["tmax"][3] = np.arange(np.prod(shape)).reshape(shape)
@@ -230,7 +230,7 @@ class PrepareTest(unittest.TestCase):
                 mock.patch.object(climate, "geopotential", return_value=z), \
                 mock.patch.object(climate, "blosc", lambda data, dtype: np.frombuffer(data, dtype)):
             out, work = Path(directory, "out"), Path(directory, "work")
-            climate.prepare((235, 344), [FIRST + 1, FIRST], work, out, orography=True)
+            climate.prepare((235, 344), [FIRST + 1, FIRST], work, out, orography=Path(directory, "orography"))
             self.assertFalse(work.exists())
             files = sorted(str(path.relative_to(out)) for path in out.rglob("*") if path.is_file())
             self.assertEqual(files, ["2016/235/344.gz", "2017/235/344.gz", "235-344.2016.sha256", "235-344.2017.sha256",
@@ -258,7 +258,7 @@ class BakeTest(unittest.TestCase):
         rng = np.random.default_rng(1)
         with tempfile.TemporaryDirectory() as directory:
             files = {}
-            region = climate.Region(bounds)
+            region = climate.Region.around(bounds)
             rows, cols = region.zarr_index()
             for y in np.unique(rows // climate.BLOCK_ROWS):
                 for x in np.unique(cols // climate.BLOCK_COLS):
@@ -274,15 +274,52 @@ class BakeTest(unittest.TestCase):
                             rng.integers(0, climate.SECTORS, (days, 10, 32)).astype(np.uint8)])
             paths = [Path(directory) / f"{k}.pmtiles" for k in range(2)]
             for path in paths:
-                counts = climate.bake(bounds, FIRST, files, path, "ERA5-Land {year}")
+                counts = climate.bake(bounds, FIRST, files, path, "ERA5-Land {year}", "2026-10-01")
             self.assertEqual(paths[0].read_bytes(), paths[1].read_bytes())
             self.assertEqual(counts, {8: 1, 9: 1})
             with paths[0].open("rb") as stream:
                 reader = Reader(MmapSource(stream))
                 header, metadata = reader.header(), reader.metadata()
         self.assertEqual((header["min_zoom"], header["max_zoom"], metadata["first_year"], metadata["years"]), (8, 9, FIRST, 10))
-        self.assertEqual((sorted(metadata["inputs"]), metadata["wet_day_mm"]), (["doi", "files", "orography_sha256"], climate.WET_MM))
+        self.assertEqual((sorted(metadata["inputs"]), metadata["wet_day_mm"]), (["climate", "doi", "orography_sha256"], climate.WET_MM))
         self.assertEqual((metadata["rain_factors"], metadata["wind_factor"]), (list(climate.RAIN_FACTORS), climate.WIND_FACTOR))
+
+
+class OracleSource(climate.Source):
+    """Chunks in which each cell tells where it is: a 2 m temperature of 273.15 K + (its Zarr row − 1790) + (its Zarr
+    column − 3550) / 100, no rain and a 1 m/s north wind."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(0)
+
+    def path(self, variable, name):
+        return Path(variable, name)
+
+    def read(self, path):
+        _, y, x = map(int, path.name.split("."))
+        rows, cols = climate.CHUNK_ROWS * y + np.arange(climate.CHUNK_ROWS), climate.CHUNK_COLS * x + np.arange(climate.CHUNK_COLS)
+        value = {"t2m": 273.15 + (rows[:, None] - 1790) + (cols[None, :] - 3550) / 100, "u10": 0.0, "v10": -1.0, "tp": 0.0}
+        shape = (climate.TIME_CHUNK, climate.CHUNK_ROWS, climate.CHUNK_COLS)
+        return np.broadcast_to(np.asarray(value[path.parent.name], np.float32), shape)
+
+
+class OrientationTest(unittest.TestCase):
+    def test_each_cell_of_an_edge_block_keeps_its_place_from_the_chunks_to_the_bake(self):
+        # Block 37, 28 holds the 9 northernmost rows and the 48 easternmost columns.
+        block = climate.Region.block(37, 28)
+        self.assertEqual((len(block.rows), len(block.cols)), (9, 48))
+        geopotential = lambda region, key, cache: np.add.outer(1000.0 * region.zarr_index()[0], region.zarr_index()[1])
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(climate, "token", return_value="KEY"), \
+                mock.patch.object(climate, "Source", OracleSource), mock.patch.object(climate, "geopotential", geopotential):
+            out = Path(directory, "out")
+            climate.prepare((37, 28), range(FIRST, FIRST + climate.YEARS), Path(directory, "work"), out, Path(directory))
+            files = {str(path.relative_to(out)): path for path in out.rglob("*.gz")}
+            region = climate.Region.around([175.6, 89.6, 175.9, 89.8])
+            weekly, _, _, z = climate.climate(region, FIRST, files)
+        rows, cols = region.zarr_index()
+        self.assertEqual((rows[[0, -1]].tolist(), cols[[0, -1]].tolist()), ([1800, 1794], [3553, 3560]))
+        self.assertTrue(np.allclose(weekly["tmax"][0, 0], (rows[:, None] - 1790) + (cols[None, :] - 3550) / 100, atol=1e-4))
+        self.assertTrue((z == 1000 * rows[:, None] + cols[None, :]).all())
 
 
 if __name__ == "__main__":

@@ -78,7 +78,7 @@ impl Prepared for TerrainReference {
             inputs.extend(model.areas.iter().map(|area| poly(area, None)));
         }
         let inputs = inputs.into_iter().map(|wanted| (wanted, None).into()).collect();
-        Ok(Plan { inputs, files: Some(2 * tiles.len() as u64 + 2) })
+        Ok(Plan { inputs, files: Some(2 * tiles.len() as u64 + 2), work_bytes: 0 })
     }
 
     /// Each tile of the region that a model has a height in: its models fetched once and folded
@@ -458,13 +458,16 @@ esac
         let index = || vec!["index-terrain max".to_string(), "index-terrain mean".to_string()];
 
         let last = tiles.len() - 1;
-        // Tile 2 fails once the two tiles after the first that run beside it have started, when it
-        // is the oldest that runs, and the failure stops the tiles after it.
+        // Tiles 0 and 1 end at once and free their slots for two more tiles. Tile 2 fails once those
+        // have started, and the failure stops the tiles that run until a signal stops them.
         let started = RUNNING + 2;
         assert!(tiles.len() > started, "{tiles:?}");
         fixture.mark("none", 0, "");
         fixture.mark("fail", 2, "");
         fixture.mark("wait", 2, &started.to_string());
+        for k in 3..started {
+            fixture.mark("hold", k, "");
+        }
         let (done, calls) = fixture.prepare();
         assert!(fixture.failed_in(done, 2));
         assert_eq!(calls, fixture.fetches(0..started));
@@ -472,6 +475,9 @@ esac
         // No tile without a height is fetched, and the progress counts each tile of the version.
         for what in ["fail", "wait"] {
             fs::remove_file(fixture.root().join(format!("{what}-{}", tiles[2]))).unwrap();
+        }
+        for tile in &tiles[3..started] {
+            fs::remove_file(fixture.root().join(format!("hold-{tile}"))).unwrap();
         }
         fixture.mark("fail", last, "");
         let (done, calls) = fixture.prepare();
@@ -512,13 +518,16 @@ esac
     #[test]
     fn fetches_at_once_have_a_raw_folder_each_and_a_failure_stops_the_others_which_remove_their_folders() {
         let fixture = Fixture::new("terrain-reference-raw");
-        // Tile 0 ends only once tile 1 runs beside it. Tile 2 fails when it is the oldest that runs,
-        // and tile 3 runs until the failure stops it.
+        // Tile 0 ends only once tile 1 runs beside it, and the two free their slots for two more
+        // tiles. Tile 2 fails once those have started, and the tiles after it run until the failure
+        // stops them.
         let started = RUNNING + 2;
         fixture.mark("wait", 0, "2");
         fixture.mark("wait", 2, &started.to_string());
         fixture.mark("fail", 2, "");
-        fixture.mark("hold", 3, "");
+        for k in 3..started {
+            fixture.mark("hold", k, "");
+        }
         let (done, calls) = fixture.prepare();
         assert!(fixture.failed_in(done, 2));
         assert_eq!(calls, fixture.fetches(0..started));

@@ -73,6 +73,10 @@ pub struct Plan {
     pub inputs: Vec<Input>,
     /// The files of the version, at most; `None` when the producer cannot tell before the run.
     pub files: Option<u64>,
+    /// The disk that the run takes in the store at most besides its inputs and its files, such as
+    /// the caches of its programs.
+    #[serde(default)]
+    pub work_bytes: u64,
 }
 
 /// Services for input discovery.
@@ -802,6 +806,11 @@ impl Program {
 
     /// Whether the program ended and failed. The end keeps what the program used and when it ended.
     pub fn failed(&mut self) -> bool {
+        self.ended() && self.ended.is_some_and(|(status, ..)| !status.success())
+    }
+
+    /// Whether the program ended, without a wait. The end keeps what the program used and when it ended.
+    pub fn ended(&mut self) -> bool {
         if self.ended.is_none() {
             #[cfg(unix)]
             let end = crate::engine::try_wait_pid(self.child.id()).ok().flatten();
@@ -810,7 +819,7 @@ impl Program {
             let wall = self.started.elapsed().as_millis() as u64;
             self.ended = end.map(|(status, cpu_ms, peak)| (status, cpu_ms, peak, wall));
         }
-        self.ended.is_some_and(|(status, ..)| !status.success())
+        self.ended.is_some()
     }
 }
 
