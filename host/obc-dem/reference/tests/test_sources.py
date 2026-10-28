@@ -6,6 +6,7 @@ against a synthetic answer. The live probes are in `README.md`, with the summit 
 source was verified against.
 """
 
+import json
 import os
 import sys
 import unittest
@@ -28,10 +29,12 @@ import ingest  # noqa: E402
 import ingest.sources.base  # noqa: E402
 import ingest.sources.bulk  # noqa: E402
 import ingest.sources.cog  # noqa: E402
+import ingest.sources.si  # noqa: E402
 import ingest.sources.stac  # noqa: E402
 from ingest.sources import de as de_module  # noqa: E402
 from ingest.sources import fr as fr_module  # noqa: E402
 from ingest.sources import gb as gb_module  # noqa: E402
+from ingest.sources import pt as pt_module  # noqa: E402
 from ingest.sources import sk as sk_module  # noqa: E402
 from ingest.sources.grid import grid_squares  # noqa: E402
 from ingest.sources.nz import sheets as nz_sheets  # noqa: E402
@@ -349,6 +352,16 @@ class NamedGrids(unittest.TestCase):
                     self.assertTrue(url.startswith(source.base))
                     self.assertTrue(url.endswith(name))
 
+    def test_a_slovenian_square_is_named_in_the_folder_of_its_flight_block(self):
+        """The block is not arithmetic: Triglav's square is in `b_37`, a square 16 km east of
+        it in `b_36`, and a square at sea is not published at all."""
+
+        source = ingest.SOURCES["si"]
+        self.assertEqual(source.files((13.8360, 46.3780, 13.8370, 46.3790)),
+                         [("TM1_410_138.xyz", "https://gis.arso.gov.si/lidar/dmr1/b_37/D96TM/TM1_410_138.txt")])
+        self.assertEqual((ingest.sources.si.blocks()[425, 138], ingest.sources.si.blocks()[426, 138]), (37, 36))
+        self.assertEqual(source.files((13.30, 45.40, 13.31, 45.41)), [])
+
     def test_a_two_kilometre_grid_only_names_even_squares(self):
         """Saxony publishes 2 km squares, so an odd kilometre is not a file."""
 
@@ -533,6 +546,135 @@ class StacSearch(unittest.TestCase):
         with self.assertRaises(ingest.Refuse) as refusal:
             self.source.files((10.6, 51.75, 10.63, 51.77))
         self.assertIn("gateway timeout", str(refusal.exception))
+
+
+class PortugalDataCentre(unittest.TestCase):
+    """The DGT data centre: a search sent as a POST, and downloads behind a login session."""
+
+    #: One item of the CDD's answer, as recorded: the `bbox` is on the national grid.
+    ITEM = {"id": "MDT-2m-244374-05-2024", "bbox": [44000, 2, 0, 74000, 0, -2],
+            "assets": {"data": {"href": "https://cdd.dgterritorio.gov.pt/dgt-be/v1/download/05810f70"}},
+            "geometry": {"type": "Polygon", "coordinates": [[[-7.6153, 40.3336], [-7.6154, 40.3246],
+                                                             [-7.6036, 40.3245], [-7.6036, 40.3335]]]}}
+    #: The login form as Keycloak renders it, with its `&amp;`.
+    FORM = ('<form id="kc-form-login" onsubmit="login.disabled = true; return true;" action="https://'
+            'auth.cdd.dgterritorio.gov.pt/realms/dgterritorio/login-actions/authenticate?session_code=a'
+            '&amp;execution=b&amp;client_id=aai-oidc-dgt" method="post">')
+
+    def setUp(self):
+        self.source = ingest.SOURCES["pt"]
+        self.sent = []
+        for module, name in ((ingest.sources.stac, "http_get"), (ingest.sources.bulk, "http_download")):
+            self.addCleanup(setattr, module, name, getattr(module, name))
+
+    def test_the_search_is_a_post_that_follows_the_token_of_the_next_page(self):
+        second = dict(self.ITEM, id="MDT-2m-243374-05-2024")
+        pages = [{"features": [self.ITEM], "links": [
+                     {"rel": "next", "method": "POST", "href": "https://cdd.dgterritorio.gov.pt/dgt-be/v1/search?undefined",
+                      "body": {"bbox": [-7.62, 40.315, -7.605, 40.33], "token": "next:MDT-2m:1"}}]},
+                 {"features": [second], "links": []}]
+
+        def get(url, data=None, headers=None):
+            self.sent.append((url, json.loads(data), headers))
+            return json.dumps(pages[len(self.sent) - 1]).encode()
+
+        ingest.sources.stac.http_get = get
+        names = [name for name, _ in self.source.files((-7.62, 40.315, -7.605, 40.33))]
+        self.assertEqual(names, ["MDT-2m-243374-05-2024.tif", "MDT-2m-244374-05-2024.tif"])
+        self.assertEqual(self.sent[0][1], {"bbox": [-7.62, 40.315, -7.605, 40.33],
+                                           "collections": ["MDT-2m"], "limit": 500})
+        self.assertEqual(self.sent[0][2], {"Content-Type": "application/json"})
+        self.assertEqual(self.sent[1][1]["token"], "next:MDT-2m:1")
+
+    def test_the_password_goes_only_to_the_dgt_login_form(self):
+        self.assertEqual(pt_module.login_action(self.FORM, "pt login"),
+                         "https://auth.cdd.dgterritorio.gov.pt/realms/dgterritorio/login-actions/"
+                         "authenticate?session_code=a&execution=b&client_id=aai-oidc-dgt")
+        for page in (self.FORM.replace("auth.cdd.dgterritorio.gov.pt", "dgterritorio.gov.pt.example.com"),
+                     self.FORM.replace("https://", "http://"), "<html>maintenance</html>"):
+            with self.subTest(page[-40:]), self.assertRaises(ingest.Refuse):
+                pt_module.login_action(page, "pt login")
+
+    def sign_in(self, landed, cookies):
+        """`sign_in` against a recorded login page: the form it posted, or its refusal."""
+
+        class Response:
+            def __init__(self, body=b"", url=""):
+                self.body, self.url = body, url
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return self.body
+
+            def geturl(self):
+                return self.url
+
+        class Opener:
+            def open(opener, request, timeout=None):  # noqa: N805 — a stand-in of urllib's opener
+                if isinstance(request, str):
+                    return Response(self.FORM.encode())
+                self.sent.append((request.full_url, urllib.parse.parse_qs(request.data.decode())))
+                jar.extend(cookies)
+                return Response(url=landed)
+
+        jar = []
+        cookies = [type("Cookie", (), {"name": name, "value": value})() for name, value in cookies]
+        with unittest.mock.patch.object(pt_module, "session_opener", lambda: (Opener(), jar)), \
+                unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_PT_USER": "u@example.org",
+                                                      "OBC_REFERENCE_PT_PASSWORD": "p"}):
+            return self.source.sign_in()
+
+    def test_the_login_posts_the_form_and_keeps_the_session_cookie(self):
+        session = self.sign_in("https://cdd.dgterritorio.gov.pt/", [("KC_RESTART", "k"), ("connect.sid", "s2")])
+        self.assertEqual(session, "connect.sid=s2")
+        action, form = self.sent[0]
+        self.assertEqual(action, "https://auth.cdd.dgterritorio.gov.pt/realms/dgterritorio/login-actions/"
+                                 "authenticate?session_code=a&execution=b&client_id=aai-oidc-dgt")
+        self.assertEqual((form["username"], form["password"]), (["u@example.org"], ["p"]))
+
+    def test_a_login_that_lands_on_its_form_again_is_refused(self):
+        for landed, cookies in (("https://auth.cdd.dgterritorio.gov.pt/realms/dgterritorio/login-actions/x",
+                                 [("connect.sid", "s2")]),
+                                ("https://cdd.dgterritorio.gov.pt/", [])):
+            with self.subTest(landed), self.assertRaises(ingest.Refuse) as refusal:
+                self.sign_in(landed, cookies)
+            self.assertIn("OBC_REFERENCE_PT_USER", str(refusal.exception))
+
+    def test_a_search_over_the_sea_signs_in_nowhere_and_a_login_page_is_refused(self):
+        ingest.sources.stac.http_get = lambda url, data=None, headers=None: b'{"features": [], "links": []}'
+        with unittest.mock.patch.object(type(self.source), "sign_in", side_effect=AssertionError("signed in")):
+            self.assertEqual(self.source.fetch((-9.9, 39.0, -9.8, 39.1), Path("/nonexistent")), [])
+        ingest.sources.stac.http_get = lambda url, data=None, headers=None: b"<!DOCTYPE html><title>Sign in</title>"
+        with self.assertRaises(ingest.Refuse) as refusal:
+            self.source.files((-9.9, 39.0, -9.8, 39.1))
+        self.assertIn("not a STAC answer", str(refusal.exception))
+
+    def test_a_download_that_is_the_login_page_is_refused_and_not_kept(self):
+        """The CDD answers an ended session with its login page, and a cached page would be
+        read as a tile by every later run."""
+
+        def download(url, path, optional=False, headers=None, what=None):
+            self.sent.append(headers)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"<!DOCTYPE html><title>Sign in</title>")
+            return path
+
+        ingest.sources.bulk.http_download = download
+        with TemporaryDirectory() as directory, \
+                unittest.mock.patch.object(type(self.source), "sign_in", return_value="connect.sid=s1"), \
+                unittest.mock.patch.object(type(self.source), "files",
+                                           return_value=[("a.tif", self.ITEM["assets"]["data"]["href"])]), \
+                unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_PT_USER": "u", "OBC_REFERENCE_PT_PASSWORD": "p"}):
+            with self.assertRaises(ingest.Refuse) as refusal:
+                self.source.fetch((-7.62, 40.315, -7.605, 40.33), Path(directory))
+            self.assertIn("login page", str(refusal.exception))
+            self.assertFalse((Path(directory) / "a.tif").exists())
+        self.assertEqual(self.sent, [{"Cookie": "connect.sid=s1"}])
 
 
 class RangeHandler(SimpleHTTPRequestHandler):
@@ -846,6 +988,29 @@ class BulkArchives(unittest.TestCase):
             source.served = self.bundle(directory, {"tile.tif": b"II*\x00", "tile.xyz": b"1 2 3"})
             rasters = source.fetch((0, 0, 1, 1), Path(directory) / "work")
             self.assertEqual([path.name for path in rasters], ["tile.tif"])
+
+    def test_a_download_shorter_than_its_content_length_is_refused_and_not_kept(self):
+        class Short(SimpleHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                self.wfile.write(b"x" * 40)
+                self.close_connection = True
+
+            def log_message(self, *args):
+                pass
+
+        real = ingest.sources.base.RETRY_DELAYS
+        ingest.sources.base.RETRY_DELAYS = ()
+        self.addCleanup(setattr, ingest.sources.base, "RETRY_DELAYS", real)
+        server = serve(self, Short)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "state.zip"
+            with self.assertRaises(ingest.Refuse) as refusal:
+                ingest.sources.base.http_download(f"http://127.0.0.1:{server.server_address[1]}/z", path)
+            self.assertIn("40 of the 100 bytes", str(refusal.exception))
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_an_archive_with_no_raster_says_so(self):
         with TemporaryDirectory() as directory:

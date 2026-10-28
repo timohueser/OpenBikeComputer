@@ -23,8 +23,8 @@ MEAN = "mean"
 PRIORITY = (
     "dk", "nl", "it-tn",
     "de-nw", "de-he", "de-ni", "de-by", "de-sn", "de-th", "de-mv", "de-st", "de-rp", "de-bw",
-    "fr", "at", "no", "gb-eng", "gb-sct", "se", "sk", "pl", "us", "ca", "nz",
-    "ch", "fi", "cz", "it-bz", "es", "au", "it", "is",
+    "fr", "at", "no", "gb-eng", "gb-wls", "gb-sct", "se", "sk", "si", "pl", "us", "ca", "nz",
+    "pt-20", "ch", "pt", "fi", "cz", "it-bz", "it-21", "es", "au", "it", "is",
 )
 
 def priority_rank(key: str) -> int:

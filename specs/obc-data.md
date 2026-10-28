@@ -1646,7 +1646,14 @@ the same format; `prod` takes a version of a region.
   into the tile of the version before when it has one (`--base`, with `--held`, its sources), by
   `fold_tiles`. A model keeps the pixels where it has a height when it ranks better by `PRIORITY`
   than every other source of the tile, also over an older survey of its own; else it fills only
-  the gaps. Each lattice pixel that no centre of a model reaches and that lies between four of its
+  the gaps. So the new models that rank better than every source of the version before fold first,
+  worst first, and the others then fold best first. A source of the version before that ranks
+  better than a new model keeps its pixels where both have a height, also where it is not the best
+  source of that pixel: only a tile that records the source of each pixel removes that limit.
+  Before it uses a model whose row has a `summit`, the program pools the tiles near that summit and
+  refuses the model when the highest height within about 1 km of it is more than 10 m from the
+  surveyed height, and names a check that finds no height. `--shared`, one directory for the tiles of a
+  prepare, keeps the passed checks, so one prepare checks a model once. Each lattice pixel that no centre of a model reaches and that lies between four of its
   centres with a height takes their bilinear height. A model whose step is longer than the east
   side of a lattice pixel in the tile asks for the tile with two of its steps of margin. So a
   model coarser than the lattice fills its footprint. A finer model whose step is longer than half
