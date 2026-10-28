@@ -435,8 +435,8 @@ mod tests {
         let root = temp.0.join("repository");
         fs::create_dir_all(root.join("data")).unwrap();
         fs::write(root.join("data/sources.toml"), SOURCES).unwrap();
-        let (store, target) = (Store::at(temp.0.join("store")), Target::Dir(temp.0.join("target")));
-        let Target::Dir(dir) = &target else { unreachable!() };
+        let (store, archive) = (Store::at(temp.0.join("store")), temp.0.join("archive"));
+        let (folder, dir) = (obc_data::prepared::folder(&archive, "wiki"), archive.join("prepared/wiki"));
         let (sources, http) = (Registry::load(&root).unwrap().sources, Http::new());
         let scope = |id: &str, [west, south, east, north]: [f64; 4]| {
             let text = format!("name = \"{id}\"\nkind = \"box\"\nbox = [{west}, {south}, {east}, {north}]\n");
@@ -446,7 +446,7 @@ mod tests {
         // and 0300-0263, and keeps the cell of Colorado.
         let (far, west, east) = ("cells/0293-0155.tar.zst", "cells/0300-0262.tar.zst", "cells/0300-0263.tar.zst");
         let put = |version: &str, path: &str, bytes: &[u8]| {
-            let at = dir.join("sources/wiki").join(version).join(path);
+            let at = dir.join(version).join(path);
             fs::create_dir_all(at.parent().unwrap()).unwrap();
             fs::write(at, bytes).unwrap();
             LayerFile { path: path.into(), size: bytes.len() as u64, sha256: obc_data::store::sha256_hex(bytes) }
@@ -472,7 +472,7 @@ mod tests {
                 time: format!("{version}T00:00:00Z"),
                 cost: obc_data::prepared::Cost { wall_ms: 0, peak_rss_bytes: None },
             };
-            obc_data::prepared::complete(&target, &manifest).unwrap();
+            obc_data::prepared::complete(&folder, &manifest).unwrap();
             manifest.scope.unwrap()
         };
         let colorado = put("2026-10-01", far, b"colorado");
@@ -492,8 +492,7 @@ mod tests {
         let second = complete("2026-10-02", scope("alps", [7.0, 46.5, 8.0, 46.6]), files, vec![Some(first.clone())]);
         let keep_in = |region: Scope| {
             let mut run = Run::create(&store, ["source", "prepare", "wiki"]).unwrap();
-            let opening =
-                Opening { root: &root, store: &store, http: &http, sources: &sources, target: ("t", &target) };
+            let opening = Opening { root: &root, store: &store, http: &http, sources: &sources, home: &archive };
             let mut job = Job::open(opening, ("wiki", "2026-10-03"), Some(region.clone()), &[], &mut run).unwrap();
             let kept = keep(&mut job, 1).map(|kept| (kept, job.reused().clone(), job.extends().to_vec()));
             fs::remove_dir_all(store.root().join("prepared")).unwrap();
