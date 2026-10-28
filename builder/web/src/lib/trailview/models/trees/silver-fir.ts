@@ -16,10 +16,10 @@ export default {
   flare: 1.6,
   bark: ['#5a5852', '#8a877e'],
   needles: {
-    winter: ['#1c3028', '#2c4636', '#4c684c'],
-    spring: ['#20382c', '#32513a', '#86ac5e'],
-    summer: ['#1e3329', '#304b38', '#56744e'],
-    autumn: ['#1e3228', '#2f4a36', '#54724c'],
+    winter: ['#325145', '#4b735a', '#7ca77c'],
+    spring: ['#395d4b', '#548460', '#c8ff8e'],
+    summer: ['#355646', '#517a5d', '#8bb97f'],
+    autumn: ['#355445', '#50795a', '#88b67c'],
   },
   under: '#7e9488',
 } satisfies Tree;

@@ -18,9 +18,9 @@ export default {
   // White bands under the needles turn the crown blue-grey.
   under: '#8ea4a8',
   needles: {
-    winter: ['#1c3034', '#2e4e50', '#587874'],
-    spring: ['#1e3436', '#325656', '#90b47a'],
-    summer: ['#1e3436', '#325454', '#6a8a80'],
-    autumn: ['#1e3236', '#305252', '#64847a'],
+    winter: ['#37585e', '#55898c', '#9acec8'],
+    spring: ['#3a5e62', '#5b9696', '#cdffaf'],
+    summer: ['#3a5e62', '#5b9393', '#b7ecdb'],
+    autumn: ['#3a5b62', '#589090', '#ade2d1'],
   },
 } satisfies Tree;

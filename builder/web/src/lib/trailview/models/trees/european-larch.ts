@@ -17,7 +17,7 @@ export default {
   needles: {
     winter: 'bare',
     spring: ['#5f9447', '#8fc25e', '#c6e58d'],
-    summer: ['#4b7a3c', '#6d9e4c', '#a5c96f'],
+    summer: ['#395e2d', '#547a39', '#809d55'],
     autumn: ['#9a6a24', '#c99632', '#ecc458'],
   },
   twigs: ['#5e5048', '#7d6c60', '#9a887a'],
