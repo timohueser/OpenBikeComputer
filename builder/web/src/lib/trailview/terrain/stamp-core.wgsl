@@ -92,7 +92,9 @@ const JUNCTION_CAP: f32 = 15.0;
 // terrain about the lake stays under a ramp that rises from the shore at SHORE_SLOPE over SHORE_CELLS
 // mesh cells, then widens until it stops binding at the buffer. So every mesh triangle across a shore
 // crosses the level at the shore, and the lake's outline is the water's edge. The sea's bed falls as a
-// lake's, but the land beside it keeps its height, so a cliff keeps its face down to the coast.
+// lake's from a shore band inside its coast, and the land beside it keeps its height: a cliff keeps its
+// face down to the coast, and a mesh triangle from low land to the bed crosses the sea level inside it.
+// The band ends its slope within the buffer, where every node sees the same coast.
 const SHORE_SLOPE: f32 = 0.5;
 const SHORE_CELLS: f32 = 1.5;
 const BED_DEPTH: f32 = 4.0;
@@ -163,6 +165,17 @@ fn path_shows(h: f32, rule: Profile, level: u32) -> bool {
 
 fn shore_band(texel: f32) -> f32 {
     return SHORE_CELLS * MESH_TEXELS * texel;
+}
+
+// Whether a level cuts the sea: on a coarser one the lift of water passes the bed's depth, and the sea,
+// at a share of that lift, lies over the terrain about sea level without a cut.
+fn sea_shows(level: u32) -> bool {
+    return water_lift(gate_texel(level)) < BED_DEPTH;
+}
+
+// How far inside its coast the sea's bed starts to slope.
+fn sea_band(texel: f32) -> f32 {
+    return clamp(reach_limit(texel) - BED_DEPTH / SHORE_SLOPE, 0.0, shore_band(texel));
 }
 
 // Whether a level holds the terrain about a lake under its ramp.
@@ -387,11 +400,14 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             shore = INF;
         } else if (kind == LAKE || kind == SEA) {
             // bins.ts lists the sea's coast only where its bed slopes: farther off, `shore` may exceed the
-            // distance to the coast, and the bed is at its depth either way.
+            // distance to the coast, and the bed is at its depth either way. The sea's bed yields to the
+            // cores of a pier or a quay in it.
             let water = real(r + 6u);
             let lake = kind == LAKE;
             if (((entry & INSIDE) != 0u) != crossed) {
-                hi[WATER_CORE] = min(hi[WATER_CORE], water - min(BED_DEPTH, SHORE_SLOPE * shore));
+                let bed = select(max(0.0, shore - sea_band(texel)), shore, lake);
+                let bucket = select(BANKS, WATER_CORE, lake);
+                hi[bucket] = min(hi[bucket], water - min(BED_DEPTH, SHORE_SLOPE * bed));
                 water_in = max(water_in, water);
                 in_lake = true;
                 out.lake = select(out.lake, min(out.lake, -shore), lake);

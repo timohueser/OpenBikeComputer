@@ -46,8 +46,8 @@ struct WaterIn {
 const BODY: vec3f = vec3f(0.025, 0.098, 0.175);
 // The draw of the sea.
 override SEA_DRAW: bool = false;
-// The sea lies at this share of the lift of water over the terrain: under a harbour's lake, a river
-// area or a ribbon at a river mouth, which lie on the same sea level.
+// The sea lies at this share of the lift of water over the terrain: under a lake at sea level. A river
+// area or a ribbon in the sea lies on its bed, under it, on the levels that cut the sea.
 const SEA_LIFT: f32 = 0.5;
 // A ribbon turns white where its bed falls more steeply than FOAM_LOW along its flow, up to FOAM_MOST at FOAM_HIGH.
 const FOAM_LOW: f32 = 0.4;

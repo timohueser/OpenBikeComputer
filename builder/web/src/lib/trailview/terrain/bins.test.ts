@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, EXTENT, unitScale } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
-import { BRIDGE, CELL, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WARP_M, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, cellAt, crosses, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -21,21 +21,14 @@ function cellOf(data: Uint32Array, node: { level: number; x: number; y: number }
     return { entries, origin };
 }
 
-/** As crosses() of stamp-core.wgsl: whether the way from origin o to p crosses edge a-b, with p moved by ε(1, ε). */
-function crosses([ox, oy]: number[], [px, py]: number[], [ax, ay, bx, by]: number[]) {
-    const left = (ux: number, uy: number, wx: number, wy: number) => ux * wy > uy * wx || (ux * wy === uy * wx && (uy < 0 || (uy === 0 && ux > 0)));
-    const one = (bx - ax) * (oy - ay) - (by - ay) * (ox - ax) > 0;
-    return left(ax - ox, ay - oy, px - ox, py - oy) !== left(bx - ox, by - oy, px - ox, py - oy) && one !== left(bx - ax, by - ay, px - ax, py - ay);
-}
-
 /** The gates of stamp-core.wgsl in JavaScript: its f32 constants and the functions that the gates call, as written there. */
-function shaderGates(): Record<'road_shows' | 'path_shows', (h: number, ...rest: unknown[]) => boolean> {
+function shaderGates(): Record<'road_shows' | 'path_shows' | 'sea_shows', (h: number, ...rest: unknown[]) => boolean> {
     const constants = [...shader.matchAll(/^const (\w+): f32 = ([^;]+);/gm)].map(([, name, value]) => `const ${name} = ${value};`);
-    const functions = ['reach_limit', 'gate_texel', 'road_shows', 'path_shows'].map(name => {
+    const functions = ['reach_limit', 'gate_texel', 'road_shows', 'path_shows', 'water_lift', 'sea_shows'].map(name => {
         const [, args, body] = new RegExp(`fn ${name}\\(([^)]*)\\) -> \\w+ \\{([^}]*)\\}`).exec(shader)!;
         return `function ${name}(${args.replace(/: \w+/g, '')}) {${body.replace(/\blet\b/g, 'const').replace(/\b(max|min)\(/g, 'Math.$1(').replace(/\bf32\(/g, '(').replace(/(\d)u\b/g, '$1')}}`;
     });
-    return new Function(`${constants.join('\n')}\n${functions.join('\n')}\nreturn { road_shows, path_shows };`)();
+    return new Function(`${constants.join('\n')}\n${functions.join('\n')}\nreturn { road_shows, path_shows, sea_shows };`)();
 }
 
 const lakeNode = () => {
@@ -134,43 +127,78 @@ describe('the stamp data of a node', () => {
         expect(seen.size).toBe(2);
     });
 
-    it('holds the ground in the sea under its bed, sloping from the coast, and leaves the land and the islands as they are', () => {
-        // The western half of a level-17 node is sea, with an island of 100 tile units; the node four nodes east is land.
+    it('cuts the sea on the levels where its lift does not reach its bed, as stamp-core.wgsl gates it', () => {
+        const gates = shaderGates(), seen = new Set<boolean>();
+        for (let level = 8; level <= 18; level++) {
+            expect(seaShows(level), `level ${level}`).toBe(gates.sea_shows(level));
+            seen.add(seaShows(level));
+        }
+        expect(seen.size).toBe(2);
+    });
+
+    it('holds the ground in the sea under its bed, sloping from a shore band inside the coast, and leaves the land and the islands as they are', () => {
+        // The western half of a level-17 node is sea, with an island of 100 tile units; the node four nodes east is land, the node four west open sea.
         const NODE = { level: 17, x: TILE.x * 16 + 8, y: TILE.y * 16 + 8 }, coast = 8704, ring = (x0: number, y0: number, x1: number, y1: number) => Int32Array.from([x0, y0, x1, y0, x1, y1, x0, y1]);
         const list = [{ kind: 'sea', tags: {}, geometry: 'area' as const, parts: [
             { outer: true, xy: ring(-100, -100, coast, EXTENT + 100), z: new Float32Array(4) },
             { outer: false, xy: ring(8300, 8600, 8400, 8700), z: new Float32Array(4) },
         ] }];
-        const { data, heights } = nodeStamps(list, TILE, NODE);
-        expect(heights).toBe(true);
+        const { data, heights, mask } = nodeStamps(list, TILE, NODE);
+        expect([heights, mask]).toEqual([true, true]);
         expect(nodeStamps(list, TILE, { ...NODE, x: NODE.x + 4 }).heights).toBe(false);
-        const records = 2 + GRID * GRID + 1 + data![1], word = (r: number, i: number) => data![records + RECORD * r + i] | 0;
-        const scale = unitScale(TILE.level), shift = 22 - NODE.level, cell = CELL * 2 ** shift;
-        // As stamp_at: the upper bound that the sea puts on the ground at a point of tile units, Infinity where it holds none.
-        const bound = (tx: number, ty: number) => {
-            const p = [(TILE.x * EXTENT + tx) * scale, (TILE.y * EXTENT + ty) * scale], unit = metresPerUnit(p[1]);
-            const c = Math.floor((p[1] / 2 ** shift - NODE.y * PAGE + CELL) * 2 ** shift / cell) * GRID + Math.floor((p[0] / 2 ** shift - NODE.x * PAGE + CELL) * 2 ** shift / cell);
-            const { entries, origin } = cellOf(data!, NODE, c);
-            let crossed = false, shore = Infinity, hi = Infinity;
-            for (const entry of entries) {
-                const r = entry & ~INSIDE, kind = word(r, 4), [ax, ay, bx, by] = [0, 1, 2, 3].map(k => word(r, k));
-                if (kind === EDGE) {
-                    crossed = crossed !== crosses(origin, p, [ax, ay, bx, by]);
-                    shore = Math.min(shore, ringsDistance([[ax, ay, bx, by]], p[0], p[1]) * unit);
-                    continue;
-                }
-                if (kind === SEA && ((entry & INSIDE) !== 0) !== crossed) hi = Math.min(hi, -Math.min(RULES.BED_DEPTH, RULES.SHORE_SLOPE * shore));
-                crossed = false;
-                shore = Infinity;
-            }
-            return hi;
-        };
-        const metres = scale * metresPerUnit((TILE.y * EXTENT + 8704) * scale);
+        const open = nodeStamps(list, TILE, { ...NODE, x: NODE.x - 4 });
+        expect([open.heights, open.mask]).toEqual([true, false]);
+        const scale = unitScale(TILE.level), point = (tx: number, ty: number) => [(TILE.x * EXTENT + tx) * scale, (TILE.y * EXTENT + ty) * scale];
+        const bound = (tx: number, ty: number) => seaBound(data!, NODE, point(tx, ty));
+        // Metres per tile unit, and the shore band of the node's level.
+        const unit = metresPerUnit(point(coast, 8900)[1]), metres = scale * unit, band = RULES.SHORE_CELLS * RULES.MESH_TEXELS * unit * 2 ** (22 - NODE.level);
         expect(bound(8250, 8900)).toBe(-RULES.BED_DEPTH);
-        expect(bound(coast - 2 / metres, 8900)).toBeCloseTo(-RULES.SHORE_SLOPE * 2, 3);
+        expect(bound(coast - band / 2 / metres, 8900)).toBeCloseTo(0, 6);
+        expect(bound(coast - (band + 2) / metres, 8900)).toBeCloseTo(-RULES.SHORE_SLOPE * 2, 2);
         for (const [x, y] of [[coast + 1, 8900], [coast + 0.5 / metres, 8300], [9100, 8250], [8350, 8650], [8301, 8601]]) expect(bound(x, y), `${x}, ${y}`).toBe(Infinity);
+        // The eye stands on the sea's level, and on the ground of the land and the island.
+        expect([[8250, 8900], [9100, 8250], [8350, 8650]].map(([x, y]) => waterAt(data!, NODE, ...(point(x, y) as [number, number])))).toEqual([0, -Infinity, -Infinity]);
+        // A level whose lift passes the bed does not cut the sea.
+        const coarse = { level: 11, x: TILE.x >> 2, y: TILE.y >> 2 };
+        expect(seaShows(coarse.level)).toBe(false);
+        expect(nodeStamps(list, TILE, coarse).heights).toBe(false);
+    });
+
+    it('takes the side of the sea for every texel of a node at a tile edge from the coast inside the buffer, not from the joins of the ring past it', () => {
+        // A bay enters the tile from the east. The tile's ring joins its vertices past the buffer straight
+        // across the bay, inside the apron of the level-14 node at the tile's east edge.
+        const NODE = { level: 14, x: TILE.x * 2 + 1, y: TILE.y * 2 }, join = EXTENT + 420;
+        const list = [{ kind: 'sea', tags: {}, geometry: 'area' as const, parts: [{ outer: true, xy: Int32Array.from([16000, 4000, join, 4000, join, 12000, 16000, 12000]), z: new Float32Array(4) }] }];
+        const { data } = nodeStamps(list, TILE, NODE), scale = unitScale(TILE.level);
+        expect(metresPerUnit(TILE.y * EXTENT * scale) * scale * 420).toBeGreaterThan(RULES.BUFFER_M);
+        for (let ty = 64; ty < 8192; ty += 128) for (let tx = 8192 + 32; tx < EXTENT; tx += 128) {
+            const p = [(TILE.x * EXTENT + tx) * scale, (TILE.y * EXTENT + ty) * scale], sea = tx > 16000 && ty > 4000;
+            expect(seaBound(data!, NODE, p) < Infinity, `${tx}, ${ty}`).toBe(sea);
+            expect(waterAt(data!, NODE, p[0], p[1])).toBe(sea ? 0 : -Infinity);
+        }
     });
 });
+
+/** As stamp_at: the upper bound that the sea puts on the ground at world point p of a node, Infinity where it holds none. */
+function seaBound(data: Uint32Array, node: { level: number; x: number; y: number }, p: number[]): number {
+    const records = 2 + GRID * GRID + 1 + data[1], word = (r: number, i: number) => data[records + RECORD * r + i] | 0;
+    const unit = metresPerUnit(p[1]), texel = unit * 2 ** (22 - node.level);
+    const band = Math.min(RULES.SHORE_CELLS * RULES.MESH_TEXELS * texel, RULES.BUFFER_M - 2 * texel - 1 - RULES.BED_DEPTH / RULES.SHORE_SLOPE);
+    const { entries, origin } = cellAt(data, node, p[0], p[1]);
+    let crossed = false, shore = Infinity, hi = Infinity;
+    for (const entry of entries) {
+        const r = entry & ~INSIDE, kind = word(r, 4), [ax, ay, bx, by] = [0, 1, 2, 3].map(k => word(r, k));
+        if (kind === EDGE) {
+            crossed = crossed !== crosses(origin, p, [ax, ay, bx, by]);
+            shore = Math.min(shore, ringsDistance([[ax, ay, bx, by]], p[0], p[1]) * unit);
+            continue;
+        }
+        if (kind === SEA && ((entry & INSIDE) !== 0) !== crossed) hi = Math.min(hi, -Math.min(RULES.BED_DEPTH, RULES.SHORE_SLOPE * Math.max(0, shore - band)));
+        crossed = false;
+        shore = Infinity;
+    }
+    return hi;
+}
 
 describe('the side of a shore', () => {
     it('is the same from every origin for a point on the shore', () => {

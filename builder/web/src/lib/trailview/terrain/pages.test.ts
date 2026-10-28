@@ -75,11 +75,11 @@ describe('the page pools', () => {
         // Every node's features are known in the frame after it asks for them.
         const features: StampSource = {
             get: node => {
-                if (known.has(key(node))) return { data: null, heights: false };
+                if (known.has(key(node))) return { data: null, heights: false, mask: false };
                 if (asked.includes(key(node))) known.add(key(node));
                 else asked.push(key(node));
             },
-            known: node => (known.has(key(node)) ? { data: null, heights: false } : undefined),
+            known: node => (known.has(key(node)) ? { data: null, heights: false, mask: false } : undefined),
         };
         const pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {}, features);
         const works = await settle(pages, wanted, 300, eye);
@@ -97,7 +97,7 @@ describe('the page pools', () => {
         // A worker with 8 requests in flight: the features of a node are known 3 frames after it asks.
         let frame = 0;
         const tiles = source(), asked = new Map<string, number>();
-        const known = (node: Node) => (frame >= (asked.get(key(node)) ?? Infinity) + 3 ? { data: null, heights: false } : undefined);
+        const known = (node: Node) => (frame >= (asked.get(key(node)) ?? Infinity) + 3 ? { data: null, heights: false, mask: false } : undefined);
         const features: StampSource = {
             get: node => {
                 if (!asked.has(key(node)) && [...asked.values()].filter(at => frame < at + 3).length < 8) asked.set(key(node), frame);
@@ -203,7 +203,7 @@ describe('the stamps', () => {
     wanted.sort((a, b) => a.level - b.level);
     /** Every node has a feature near it; its stamps are known one frame after a page asks for them. */
     const stamps = (): StampSource => {
-        const asked = new Set<string>(), known = (node: Node) => (asked.has(key(node)) ? { data: new Uint32Array(8), heights: true } : undefined);
+        const asked = new Set<string>(), known = (node: Node) => (asked.has(key(node)) ? { data: new Uint32Array(8), heights: true, mask: true } : undefined);
         return { get: node => known(node) ?? void asked.add(key(node)), known };
     };
 
@@ -227,7 +227,7 @@ describe('the stamps', () => {
     it('queue no more stamp jobs in a frame than its buffers hold, of every kind', async () => {
         // The synthesized pages draw before their features are known, the stored pages wait for theirs; then every node has some.
         let known = false;
-        const get = (node: Node) => (known ? { data: new Uint32Array(8), heights: true } : node.level > 13 ? { data: null, heights: false } : undefined);
+        const get = (node: Node) => (known ? { data: new Uint32Array(8), heights: true, mask: true } : node.level > 13 ? { data: null, heights: false, mask: false } : undefined);
         const late: StampSource = { get, known: get };
         const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, late, 128);
         await settle(pages, wanted, 100);

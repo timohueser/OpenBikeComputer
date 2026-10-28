@@ -10,7 +10,7 @@ import { wgsl } from '../gpu/wgsl';
 import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { DEPTH, sceneFormat } from '../resolve/targets';
-import { featureTile, NEAR, profileTable } from './bins';
+import { featureTile, NEAR, profileTable, waterAt } from './bins';
 import { cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
@@ -509,13 +509,21 @@ export class Terrain {
             const [height, east, west, north, south] = new Float32Array(readback.getMappedRange());
             readback.unmap();
             r.readbacks.push(readback);
-            const known = (h: number) => h > -1e29, step = 2 * PROBE_STEP;
-            const slope: [number, number] = [east, west, north, south].every(known) ? [(east - west) / step, (north - south) / step] : [0, 0];
-            if (frame > this.floor && (!this.ground || frame > this.ground.frame)) this.ground = { height: known(height) ? height : NaN, slope, lonLat, frame };
+            const known = (h: number) => h > -1e29, step = 2 * PROBE_STEP, water = this.waterUnder(lonLat);
+            // The eye stands on the water of a lake or the sea, not on its bed.
+            const slope: [number, number] = [east, west, north, south].every(known) && water < height ? [(east - west) / step, (north - south) / step] : [0, 0];
+            if (frame > this.floor && (!this.ground || frame > this.ground.frame)) this.ground = { height: known(height) ? Math.max(height, water) : NaN, slope, lonLat, frame };
         }, () => {}).finally(() => {
             this.probing--;
             this.changed();
         });
+    }
+
+    /** The level of the lakes and the sea at a point in the stamps of the page that draws there; -Infinity in none. */
+    private waterUnder(lonLat: [number, number]): number {
+        const [x, y] = worldPixel(lonLat, UNITS), node = this.pages.drawing({ level: FINEST, x: Math.floor(x / size(FINEST)), y: Math.floor(y / size(FINEST)) });
+        const data = node && this.stamps.known(node)?.data;
+        return node && data ? waterAt(data, node, x, y) : -Infinity;
     }
 
     /**
