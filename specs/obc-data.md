@@ -234,9 +234,9 @@ prepared, such as a `dtm-*` row. The prepared source that reads it stands for it
 | `partial` | The archive holds some files of its dataset, or the store holds versions or requests of it |
 | `missing` | Nothing is held |
 
-The text output has one row per source, in the order and the groups of the state table, with
-the columns SOURCE, RULE, COVERS, STATUS, WHERE, SIZE and DATE, and then the state of the source
-for each target.
+The text output has one row per source in kind order, the tools under a heading of their own,
+with the columns SOURCE, RULE, COVERS, STATUS, WHERE, SIZE and DATE, and then the state of the
+source for each target.
 
 `--layer [LAYER]` gives each name of `used_by`, or LAYER only, with the `data` sources and assets
 whose `used_by` has it, but no source that only a prepare reads. A layer is `ready` when each of
