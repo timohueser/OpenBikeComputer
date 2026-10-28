@@ -1,0 +1,23 @@
+name = "MODIS MOD10A1 and MYD10A1 v061, the daily NDSI snow cover of the MODIS tiles of Europe"
+sources = ["modis-snow"]
+coverage = "Europe: the MODIS tiles of Europe without Turkey and Georgia, with the Azores, Madeira, the Canary Islands, Jan Mayen and Svalbard, seasons 2016 to 2025"
+bytes_estimate = 90_000_000_000
+notes = "The Planetary Computer COG of the NDSI_Snow_Cover band of each granule. The Planetary Computer has no file from 2025-06-26 to 2025-08-31; for those days the dataset holds the HDF4 granules of NSIDC, the distributor of the product. The snow producer takes the COG of a day, a platform and a tile, else its granule."
+stac = [{ search = "https://planetarycomputer.microsoft.com/api/stac/v1/search", sas = "https://planetarycomputer.microsoft.com/api/sas/v1/token", collection = "modis-10A1-061", asset = "NDSI_Snow_Cover", bbox = [-32.0, 27.0, 45.0, 81.0], days = ["2016-09-01", "2026-08-31"], names = [
+  ".h18v00.",
+  ".h17v01.", ".h18v01.", ".h19v01.",
+  ".h16v02.", ".h17v02.", ".h18v02.", ".h19v02.",
+  ".h17v03.", ".h18v03.", ".h19v03.", ".h20v03.",
+  ".h17v04.", ".h18v04.", ".h19v04.", ".h20v04.",
+  ".h15v05.", ".h16v05.", ".h17v05.", ".h18v05.", ".h19v05.", ".h20v05.",
+  ".h16v06.",
+] }]
+cmr = [{ provider = "NSIDC_CPRD", short_names = ["MOD10A1", "MYD10A1"], version = "61", origin = "https://data.nsidc.earthdatacloud.nasa.gov", bbox = [-32.0, 27.0, 45.0, 81.0], days = ["2025-06-26", "2025-08-31"], names = [
+  ".h18v00.",
+  ".h17v01.", ".h18v01.", ".h19v01.",
+  ".h16v02.", ".h17v02.", ".h18v02.", ".h19v02.",
+  ".h17v03.", ".h18v03.", ".h19v03.", ".h20v03.",
+  ".h17v04.", ".h18v04.", ".h19v04.", ".h20v04.",
+  ".h15v05.", ".h16v05.", ".h17v05.", ".h18v05.", ".h19v05.", ".h20v05.",
+  ".h16v06.",
+] }]

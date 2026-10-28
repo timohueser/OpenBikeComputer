@@ -31,7 +31,7 @@ async function ground(snow?: () => Promise<unknown>) {
         opens.set('snow', snow);
     }
     const opened = (await GroundSource.open({ trailview_rules: 'rules', layers } as unknown as PlannerConfig, DATE))!;
-    return () => opened.pages(5, 3, 4, [0, 1], { weight: 0, snowIndex: SNOW_INDEX, shares: [] }, 0);
+    return (z = 5, x = 3, y = 4) => opened.pages(z, x, y, [0, 1], { weight: 0, snowIndex: SNOW_INDEX, shares: [] }, 0);
 }
 
 describe('the snow days of the ground', () => {
@@ -48,6 +48,13 @@ describe('the snow days of the ground', () => {
         expect((await pages()).complete).toBe(false);
         expect((await pages()).complete).toBe(true);
         expect([snow.mock.calls.length, get.mock.calls.length]).toEqual([3, 1]);
+    });
+
+    it('reads the nearest ancestor of a missing snow tile down to zoom 7', async () => {
+        const get = vi.fn(async (z: number) => (z === 7 ? new Uint8Array(512 * 512) : undefined));
+        const pages = await ground(async () => source(get as unknown as Parameters<typeof source>[0], { trailview_format: 3 }));
+        expect((await pages(10, 600, 400)).complete).toBe(true);
+        expect(get.mock.calls.map(([z]) => z)).toEqual([10, 9, 8, 7]);
     });
 
     it('builds complete pages without snow where the release has no band', async () => {

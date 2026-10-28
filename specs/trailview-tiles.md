@@ -201,8 +201,11 @@ byte, which decodes as red, green and blue:
 | 4–7 | The seasons with data at the pixel: not 255 in the snow archive. 0 is no data |
 | 0–3 | The seasons with snow on the band's day step, as the snow archive defines it |
 
-A pixel that the snow archive has no tile for has no data. A tile where no season has data is not
-in the archive. A snow archive with more than 15 seasons needs a new format. Each archive has the
+A child of zoom 9 to 12 that the snow archive lacks takes its part of snow tile z/x/y, each pixel
+twice in each direction. Another pixel that the snow archive has no tile for has no data. A tile
+where no season has data is not in the archive. A view that lacks a tile of zoom 8 to 11 reads
+the nearest ancestor of zoom 7 or more that the archive has, as the snow archive says for its
+readers. A snow archive with more than 15 seasons needs a new format. Each archive has the
 metadata of [Archives](#archives), with `trailview_format` `3`, `archive` `snow-00` to `snow-45`,
 and:
 

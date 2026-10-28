@@ -27,10 +27,12 @@ FORMAT = 3
 DAY_STEPS = 183
 BAND_STEPS = 4
 BANDS = -(-DAY_STEPS // BAND_STEPS)
-# Snow sentinels of specs/planner-snow-tiles.md.
+# Snow sentinels of specs/planner-snow-tiles.md, and its max zoom of MODIS: a missing tile above it reads its parent.
 NO_SNOW, WHOLE_SEASON, NO_DATA = 253, 254, 255
-# The pixels of a snow tile, and the pixels a side of a snow day tile.
-AREA, SIZE = 256 * 256, 512
+MODIS_ZOOM = 8
+# The pixels a side of a snow tile and of a snow day tile, and the pixels of a snow tile.
+TILE, SIZE = 256, 512
+AREA = TILE * TILE
 # Snow day tiles per batch of the workers: the bands of a batch wait in memory.
 BATCH = 64
 
@@ -53,36 +55,47 @@ def days(body, seasons):
 
 def encode(entry):
     """The lossless WebP bodies of the bands of one snow day tile from its four snow tiles (north-west
-    first, None where the snow archive has none); none where no season has data."""
-    tile_id, bodies, seasons = entry
+    first, None where the snow archive has none) and `fill`, the snow tile that it covers when a child
+    of zoom 9 or more is missing; none where no season has data."""
+    tile_id, bodies, seasons, fill = entry
     planes, half = np.zeros((BANDS, SIZE, SIZE), np.uint8), SIZE // 2
+    if fill is not None:
+        fill = days(gzip.decompress(fill), seasons).reshape(BANDS, TILE, TILE)
     for q, body in enumerate(bodies):
+        row, col = (q >> 1) * half, (q & 1) * half
         if body is not None:
-            row, col = (q >> 1) * half, (q & 1) * half
             planes[:, row:row + half, col:col + half] = days(gzip.decompress(body), seasons).reshape(BANDS, half, half)
+        elif fill is not None:
+            part = fill[:, row // 2:(row + half) // 2, col // 2:(col + half) // 2]
+            planes[:, row:row + half, col:col + half] = part.repeat(2, 1).repeat(2, 2)
     if not planes.any():
         return tile_id, None
     return tile_id, [tiles.lossless(plane)[1] for plane in planes]
 
 
-def parents(snow_tiles, seasons):
-    """Per parent of a snow tile, in tile order, its tile id and the bodies of its four children, north-west
-    first, from the snow tiles in tile order. Tile ids follow a Hilbert curve per zoom, so the four
-    children of a parent are consecutive and the parents come in tile order."""
+def parents(snow_tiles, seasons, get):
+    """Per parent of a snow tile, in tile order, its tile id, the bodies of its four children, north-west
+    first, from the snow tiles in tile order, and the snow tile of the parent from `get(z, x, y)` when a
+    child of zoom 9 or more is missing. Tile ids follow a Hilbert curve per zoom, so the four children of a
+    parent are consecutive and the parents come in tile order."""
     from pmtiles.tile import zxy_to_tileid
 
-    parent, bodies = None, None
+    def entry():
+        fill = get(*at) if at[0] >= MODIS_ZOOM and None in bodies else None
+        return parent, bodies, seasons, fill
+
+    parent, bodies, at = None, None, None
     for (z, x, y), body in snow_tiles:
         if z == 0:
             continue
         tile_id = zxy_to_tileid(z - 1, x >> 1, y >> 1)
         if tile_id != parent:
             if parent is not None:
-                yield parent, bodies, seasons
-            parent, bodies = tile_id, [None] * 4
+                yield entry()
+            parent, bodies, at = tile_id, [None] * 4, (z - 1, x >> 1, y >> 1)
         bodies[(y & 1) << 1 | (x & 1)] = body
     if parent is not None:
-        yield parent, bodies, seasons
+        yield entry()
 
 
 def bake(snow, output, workers=None):
@@ -105,7 +118,7 @@ def bake(snow, output, workers=None):
         writers = [Writer(stream) for stream in streams]
         sizes = [0] * BANDS
         try:
-            entries = parents(all_tiles(source), seasons)
+            entries = parents(all_tiles(source), seasons, reader.get)
             pool = step_pool.pool(workers)
             try:
                 # The tiles go in batches, so the archive is never in memory, and `map` keeps the tile order of the writers.

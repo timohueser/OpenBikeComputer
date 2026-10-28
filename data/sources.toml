@@ -981,6 +981,21 @@ redistribute = true
 credential = { file = "~/.cdsapirc", register = "https://cds.climate.copernicus.eu", hint = "Make a free account, accept the ERA5-Land licence on the dataset page, then copy the personal access token of your profile." }
 
 [[source]]
+id = "snow"
+kind = "data"
+used_by = ["planner"]
+use = "Snow layer: the snow seasons of HR-WSI and MODIS"
+licence = "LicenseRef-Copernicus-CLMS AND LicenseRef-NASA-EOSDIS AND CC-BY-4.0"
+fetch = { kind = "prepared" }
+hosts = ["catalogue.dataspace.copernicus.eu", "eodata.dataspace.copernicus.eu"]
+extent = [-180.0, -85.06, 180.0, 85.06]
+version = "date"
+refresh = 365
+keep = "prepared"
+redistribute = true
+
+# Only the producer of `snow` reads it, in place in the archive.
+[[source]]
 id = "modis-snow"
 kind = "data"
 group = "Climate and snow"
@@ -991,10 +1006,13 @@ licence_url = "https://nsidc.org/data/mod10a1/versions/61"
 attribution = "MODIS MOD10A1/MYD10A1 v061, Hall & Riggs, NASA NSIDC DAAC, doi:10.5067/MODIS/MOD10A1.061, doi:10.5067/MODIS/MYD10A1.061"
 obligations = "Cite the dataset"
 fetch = { kind = "capture", url = "https://planetarycomputer.microsoft.com/api/stac/v1/search" }
+hosts = ["*.blob.core.windows.net", "cmr.earthdata.nasa.gov", "data.nsidc.earthdatacloud.nasa.gov"]
 version = "date"
-keep = "store"
+keep = "archive"
 redistribute = true
+credential = { env = ["EARTHDATA_TOKEN"], register = "https://urs.earthdata.nasa.gov/users/new", hint = "Make a free Earthdata Login account, then copy a user token from Generate Token. A token lasts 60 days." }
 
+# Only the producer of `snow` reads it.
 [[source]]
 id = "hr-wsi"
 kind = "data"
@@ -1010,7 +1028,7 @@ fetch = { kind = "capture", url = "https://catalogue.dataspace.copernicus.eu/oda
 extent = [-32, 26, 46, 72]
 hosts = ["eodata.dataspace.copernicus.eu"]
 version = "date"
-keep = "store"
+keep = "prepared"
 redistribute = true
 credential = { file = "~/.config/openbikecomputer/cdse-s3.env", register = "https://eodata-s3keysmanager.dataspace.copernicus.eu", hint = "Sign in with a free Copernicus Data Space account, add a credential, then copy its access key and secret key." }
 

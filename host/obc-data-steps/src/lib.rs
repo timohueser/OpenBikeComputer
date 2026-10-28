@@ -9,6 +9,7 @@ pub mod planner;
 mod prepared_tiles;
 mod readers;
 mod region_sources;
+pub mod snow_reference;
 mod terrain_bias;
 pub mod terrain_reference;
 pub mod ui;
@@ -28,6 +29,7 @@ pub const PREPARED: &[&dyn Prepared] = &[
     &terrain_reference::TERRAIN_REFERENCE,
     &forest_reference::FOREST_REFERENCE,
     &climate_reference::CLIMATE_REFERENCE,
+    &snow_reference::SNOW_REFERENCE,
     &wiki::WIKI,
 ];
 
