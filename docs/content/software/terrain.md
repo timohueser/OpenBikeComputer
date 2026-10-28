@@ -97,6 +97,11 @@ The planner maps and TrailView read one pyramid of
 the ground, and GLO-30 gives it elsewhere. GLO-30 leaves the sea edge above sea level, and rounds
 a summit into a dome.
 
+GLO-30 is a surface model, so it stands on the forest and the roofs. Next to a national model,
+GLO-30 takes the bias of that model: one median offset per model, which the terrain prepare
+measures once. A bake of one region and a bake of all of Europe thus give the same heights. The
+planner routes read the same heights as the maps, so the climb of a route agrees with the map.
+
 Where GLO-30 gives the height, also in the 1 km band where it blends into a national model, the
 bake corrects these faults from OSM. The sea beside the coastline is at sea level. A mapped summit
 with a height rises toward the cone of its flanks, never above that height, but only where GLO-30
