@@ -494,5 +494,7 @@ export interface CleanPlan {
         keep_objects: number;
         keep_bytes: number;
         partial_bytes: number;
+        /** The SHA-256 of the archive file and the size of each unpacked copy that goes. */
+        unpacked: [string, number][];
     };
 }

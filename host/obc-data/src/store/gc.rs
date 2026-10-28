@@ -76,8 +76,9 @@ pub struct Plan {
     pub objects: Vec<(String, u64)>,
     /// The size of `objects` and `unpacked`.
     pub remove_bytes: u64,
-    /// The objects that stay, and their size.
+    /// The objects that stay.
     pub keep_objects: u64,
+    /// The size of the objects and the unpacked copies that stay.
     pub keep_bytes: u64,
     /// The size of `partial/`: unfinished downloads and the work of steps that stopped. A
     /// collection removes it.
@@ -237,6 +238,7 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         let why = if roots.archived.is_some() { "in the archive" } else { "archive not read" };
         let entry = format!("{copies} unpacked cop{}", if copies == 1 { "y" } else { "ies" });
         plan.kept.push(Kept { entry, bytes, because: vec![why.into()] });
+        plan.keep_bytes += bytes;
     }
     for name in names(&store.root().join("partial"), "")? {
         let path = store.partial(&name);
@@ -282,6 +284,8 @@ pub fn apply(store: &Store, roots: &Roots, confirmed: &Plan) -> Result<Option<Pl
     }
     for (sha256, _) in &plan.unpacked {
         let path = store.unpacked(sha256);
+        // First, so that a stopped collection leaves no damaged copy marked whole.
+        remove(&path.join(".complete"))?;
         fs::remove_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     // No fetch or step writes there while the collection holds the store alone.
@@ -624,12 +628,14 @@ mod tests {
             |plan: &Plan| plan.kept.iter().map(|k| format!("{}: {}", k.entry, k.because.join(""))).collect::<Vec<_>>();
         let unread = plan(&store, &Roots::default()).unwrap();
         assert_eq!((unread.unpacked.len(), kept(&unread)), (0, vec!["2 unpacked copies: archive not read".into()]));
+        assert_eq!(unread.keep_bytes, 6, "the kept copies count as kept");
         let roots = Roots { archived: Some(HashSet::from(["aa".to_string()])), ..Roots::default() };
         let plan = plan(&store, &roots).unwrap();
         assert_eq!(
             (plan.unpacked.clone(), kept(&plan)),
             (vec![("bb".into(), 3)], vec!["1 unpacked copy: in the archive".into()])
         );
+        assert_eq!((plan.remove_bytes, plan.keep_bytes), (3, 3));
         apply(&store, &roots, &plan).unwrap().unwrap();
         assert!(store.unpacked("aa").is_dir() && !store.unpacked("bb").exists());
     }

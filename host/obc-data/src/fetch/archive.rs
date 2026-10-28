@@ -279,13 +279,23 @@ impl Held {
 
 /// Add the files of every `*.json` manifest in `dir` of the root with index `root`. A path that an
 /// earlier root lists stays with that root. A manifest that cannot be read or has no `version` is
-/// a warning, and none of its files serves.
+/// a warning, and none of its files serves. A `dir` that cannot be read or holds no manifest marks
+/// the listing unread, as a drive mounted in the wrong place does.
 fn read_manifests(dir: &Path, root: usize, listing: &mut Listing) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
-    for path in entries.flatten().map(|entry| entry.path()) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        listing.unread = true;
+        return;
+    };
+    let mut manifests = 0;
+    for entry in entries {
+        let Ok(path) = entry.map(|entry| entry.path()) else {
+            listing.unread = true;
+            continue;
+        };
         if path.extension().is_none_or(|extension| extension != "json") {
             continue;
         }
+        manifests += 1;
         let manifest = match Manifest::read(&path) {
             Ok(Manifest { version: None, .. }) => Err(format!("{}: no `version`", path.display())),
             read => read,
@@ -324,6 +334,9 @@ fn read_manifests(dir: &Path, root: usize, listing: &mut Listing) {
             let entry = Entry { root, bytes: file.bytes, sha256, day };
             listing.files.entry(file.path).or_insert(entry);
         }
+    }
+    if manifests == 0 {
+        listing.unread = true;
     }
 }
 
@@ -386,6 +399,11 @@ mod tests {
         }
         assert!(archive.clms("d", "f").is_none(), "a manifest path outside the archive never serves");
         assert!(archive.sha256s().is_none(), "a manifest that cannot be read can list any file");
-        assert_eq!(Archive::new(vec![first]).sha256s(), Some(HashSet::from(["ab".to_string()])));
+        assert_eq!(Archive::new(vec![first.clone()]).sha256s(), Some(HashSet::from(["ab".to_string()])));
+        let bare = scratch.0.join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        assert!(Archive::new(vec![first.clone(), bare.clone()]).sha256s().is_none(), "a root without `manifest/`");
+        std::fs::create_dir_all(bare.join("manifest")).unwrap();
+        assert!(Archive::new(vec![first, bare]).sha256s().is_none(), "a root without a manifest");
     }
 }

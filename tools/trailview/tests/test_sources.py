@@ -1,6 +1,7 @@
 """The ground sources of ground.json: the legends' matchers, the combine rules, the satellite's heath,
 the lithology chain, and one captured sample of each national map through its capture and reader."""
 
+import collections
 import io
 import json
 import math
@@ -263,6 +264,39 @@ class CaptureTest(unittest.TestCase):
             self.assertTrue((out / "features-00000.geojson").exists())
             sources.positions(out, "ids b")
             self.assertFalse((out / "features-00000.geojson").exists())
+
+
+class UnpackTest(unittest.TestCase):
+    """The copy of an archived zip: a stopped unpack resumes, and it refuses a full disk and a zip of
+    other files."""
+
+    def zip(self, tmp, members):
+        with zipfile.ZipFile(tmp / "map.zip", "w", zipfile.ZIP_DEFLATED) as z:
+            for name, body in members.items():
+                z.writestr(name, body)
+        return tmp / "map.zip"
+
+    def test_a_stopped_unpack_resumes_with_the_members_in_place_after_a_check_of_the_free_space(self):
+        Usage = collections.namedtuple("Usage", "total used free")
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            archive = self.zip(tmp, {"map.gdb/a": b"aaaa", "map.gdb/b": b"bbbbbb", "readme.html": b""})
+            work = tmp / "copy"
+            (work / "map.gdb").mkdir(parents=True)
+            (work / "map.gdb/a").write_bytes(b"xxxx")
+            (work / "map.gdb/b.part").write_bytes(b"bb")
+            with mock.patch("shutil.disk_usage", return_value=Usage(0, 0, sources.RESERVE + 5)):
+                self.assertRaisesRegex(RuntimeError, "needs 0.0 GiB more", sources.unpack, archive, work)
+            self.assertEqual(sources.unpack(archive, work), str(work / "map.gdb"))
+            self.assertEqual((work / "map.gdb/a").read_bytes(), b"xxxx", "a member in place stays")
+            self.assertEqual((work / "map.gdb/b").read_bytes(), b"bbbbbb")
+            self.assertTrue((work / ".complete").is_file())
+            self.assertFalse((work / "readme.html").exists())
+
+    def test_a_zip_without_one_geopackage_or_filegdb_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = self.zip(Path(tmp), {"a.gpkg": b"a", "b.gpkg": b"b"})
+            self.assertRaisesRegex(ValueError, "not one GeoPackage or FileGDB", sources.unpack, archive, Path(tmp) / "copy")
 
 
 class Serial:

@@ -3505,12 +3505,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "What `clean` deletes from the store, or deleted, and what stays.",
       "properties": {
         "keep_bytes": {
+          "description": "The size of the objects and the unpacked copies that stay.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "keep_objects": {
-          "description": "The objects that stay, and their size.",
+          "description": "The objects that stay.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"

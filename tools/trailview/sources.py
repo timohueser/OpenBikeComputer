@@ -37,6 +37,8 @@ CODES = 256
 FEATURE_BATCH = 200
 # Features per page of an archive capture. Chosen, not measured: a page of a national map stays in memory.
 ARCHIVE_PAGE = 5000
+# The space that an unpacked copy leaves free on the disk of the store: `RESERVE` of host/obc-data/src/store.rs.
+RESERVE = 4 << 30
 TRIES = 6
 # The share of the listed ids that may vanish before an ArcGIS capture fetches them.
 VANISHED = 0.001
@@ -580,14 +582,23 @@ def unpack(archive, work):
         tops = {member.filename.split("/")[0] for member in members}
         if len(tops) != 1 or any(".." in member.filename.split("/") for member in members):
             raise ValueError(f"{archive}: the zip holds not one GeoPackage or FileGDB but {sorted(tops)}")
-        for member in members:
+        in_place = lambda member: (work / member.filename).is_file() and (work / member.filename).stat().st_size == member.file_size
+        missing = [member for member in members if not in_place(member)]
+        needed = sum(member.file_size for member in missing)
+        disk = next(path for path in [work, *work.parents] if path.exists())
+        if (free := shutil.disk_usage(disk).free) < needed + RESERVE:
+            raise RuntimeError(f"{disk} has {free / 2**30:.1f} GiB free; the copy of {Path(archive).name} needs "
+                               f"{needed / 2**30:.1f} GiB more and keeps {RESERVE / 2**30:.0f} GiB free. Free space on "
+                               f"that disk, or set OBC_DATA_STORE to a store on a disk with more space")
+        for member in missing:
             target = work / member.filename
-            if target.exists() and target.stat().st_size == member.file_size:
-                continue
             target.parent.mkdir(parents=True, exist_ok=True)
             part = target.with_name(target.name + ".part")
             with z.open(member) as source, open(part, "wb") as stream:
                 shutil.copyfileobj(source, stream, 1 << 20)
+                stream.flush()
+                os.fsync(stream.fileno())
             part.replace(target)
+    # After every member is on disk, so a power cut leaves no damaged copy marked whole.
     write(work / ".complete", b"")
     return str(work / tops.pop())
