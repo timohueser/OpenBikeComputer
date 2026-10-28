@@ -1,0 +1,6 @@
+name = "TrailView baltic: Skaralid"
+kind = "box"
+# west, south, east, north
+box = [12.78, 55.78, 13.7, 56.3]
+countries = ["SE"]
+time_zone = "Europe/Stockholm"

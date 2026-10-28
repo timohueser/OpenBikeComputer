@@ -148,11 +148,13 @@ fn with_sources(mut graph: Graph) -> Graph {
 fn oracle(graph: &Graph, profile: &Profile, a: Position, b: Position) -> Option<u64> {
     let graph = with_sources(graph.clone());
     let none = planner_router_build::cost::Doubts::default();
-    let costing = planner_router_build::cost::Costing::new(&graph, profile, &none).unwrap();
+    search(&planner_router_build::cost::Costing::new(&graph, profile, &none).unwrap(), a, b)
+}
+fn search(costing: &planner_router_build::cost::Costing, a: Position, b: Position) -> Option<u64> {
     let prefix = costing.roads[a.road as usize].as_ref().unwrap().prefix(a.fraction).unwrap();
     let suffix = costing.roads[b.road as usize].as_ref().unwrap().prefix(b.fraction).unwrap();
     let mut best = if a.road == b.road && a.fraction <= b.fraction { Some(suffix - prefix) } else { None };
-    let mut dist = vec![u64::MAX; graph.roads.len()];
+    let mut dist = vec![u64::MAX; costing.roads.len()];
     dist[a.road as usize] = costing.roads[a.road as usize].as_ref().unwrap().total() - prefix;
     let mut heap = BinaryHeap::from([Reverse((dist[a.road as usize], a.road))]);
     while let Some(Reverse((cost, road))) = heap.pop() {
@@ -207,13 +209,15 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let coords: Vec<_> = graph.roads.iter().step_by(3).flat_map(|r| [coordinate(r, 0.2), coordinate(r, 0.8)]).collect();
+    let none = planner_router_build::cost::Doubts::default();
     for profile in &profiles {
-        for &from in &coords {
-            for &to in &coords {
-                let (starts, ends) = (snaps(&router, from, &profile.name), snaps(&router, to, &profile.name));
+        let costing = planner_router_build::cost::Costing::new(&graph, profile, &none).unwrap();
+        let snapped: Vec<_> = coords.iter().map(|&c| snaps(&router, c, &profile.name)).collect();
+        for (&from, starts) in coords.iter().zip(&snapped) {
+            for (&to, ends) in coords.iter().zip(&snapped) {
                 let expected = starts
                     .iter()
-                    .flat_map(|a| ends.iter().filter_map(|b| oracle(&graph, profile, a.position, b.position)))
+                    .flat_map(|a| ends.iter().filter_map(|b| search(&costing, a.position, b.position)))
                     .min();
                 let actual = router.route(
                     &Request {

@@ -65,9 +65,8 @@ saw snow counts as NDVI −1.
 A material code above 63 needs a new format. The ruleset check rejects more than 255 region ids, so
 a region id is 0 to 254; more ids need a new format, with two bytes.
 
-The material and the barren share come from the sources at zoom 13 and the region at zoom 10. The
-lithology comes from the sources at the highest `zoom` of the lithology sources that name a unit in
-the bounds, and at least at zoom 10. A coarser texel takes the most common byte of its four children,
+The material and the barren share come from the sources at zoom 13, the lithology at zoom 12 and
+the region at zoom 10. A coarser texel takes the most common byte of its four children,
 the first in reading order on a tie. A material or region texel with no data counts only where all
 four have no data, and a missing child has no data. A coarser barren share is the rounded mean of
 the children with data. Finer than the last zoom of its layer, a lithology or region texel is the
@@ -89,8 +88,7 @@ layer has `refines` and `sources`:
 - `refines` maps a material or lithology to the ones that it names more precisely.
 - `sources` is the chain, in the order it applies. A material texel starts as `none`, a lithology
   texel as `unknown`. A step reads each source of its chain once, and a source with an `extent` in
-  `data/sources.toml` only where the extent meets the bounds. A lithology source raises the last
-  zoom of the lithology only where it names a unit in the bounds.
+  `data/sources.toml` only where the extent meets the bounds.
 
 A source of the chain has these keys:
 
@@ -98,14 +96,13 @@ A source of the chain has these keys:
 | --- | --- |
 | `source` | The id of its row in `data/sources.toml`: its licence, credit, fetch and extent |
 | `protocol` | How the step reads its files, see below |
-| `layer` | The layer of a vector file, the type of a WFS, or the layer of a map service |
+| `layer` | The layer of a vector file, or the type of a WFS |
 | `field` | The attribute that names the class of a feature |
 | `sort` | A `wfs` source only: a unique attribute, the order of the pages of its capture |
-| `px_m` | The pixel size of a raster or of a map image, in metres |
-| `crs` | The CRS of the map images |
+| `px_m` | The pixel size of a raster, in metres |
+| `values` | A `raster` source only: the native class of each raster value, such as `"7": "131"`. A value that it does not list has no class |
 | `legend` | `match` and `classes`: `[native class, name]` pairs, where a name is an id of `materials.json` |
 | `combine` | `authority` or `refine`, see below |
-| `zoom` | A vector lithology source only, where it is required: the highest zoom that its detail fills, 10 to 13 |
 | `reach_m` | A vector source only: where it names no class, its nearest class within this reach also refines the texel |
 
 | `protocol` | Files |
@@ -113,7 +110,6 @@ A source of the chain has these keys:
 | `raster` | GeoTIFFs of class values. With `px_m`, finer than its pixels, a shore takes the majority of `inland-water` within half a pixel |
 | `vector` | A GeoPackage, a zipped Shapefile or GeoJSON, by the file name |
 | `arcgis-features`, `wfs` | The GeoJSON of its capture, see [Fetch](obc-data.md#fetch) |
-| `arcgis-image` | The map images of its capture: a class is the label of the legend swatch of its colour |
 | `osm` | The areas of `osm.pbf` of `planner/osm` |
 
 A class matches by its `match`:

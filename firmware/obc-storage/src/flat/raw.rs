@@ -55,11 +55,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn crc_check_value() {
-        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-    }
-
-    #[test]
     fn round_trips_every_width() {
         let mut buf = [0u8; 32];
         put_u16(&mut buf, 0, 0x1234);

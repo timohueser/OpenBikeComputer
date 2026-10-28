@@ -33,7 +33,7 @@ fn source(store: &Store, id: &str, extract: &str, poly_version: &str, shape: &st
 }
 
 #[test]
-fn box_descent_uses_actual_geometry_and_full_poly_gaps_fall_back_before_bulk_fetch() {
+fn a_box_cover_uses_actual_geometry_and_full_poly_gaps_fall_back_before_bulk_fetch() {
     let temporary = temp("box-source-coverage");
     let store = Store::at(temporary.0.join("store"));
     fixture_index(&store);
@@ -61,8 +61,8 @@ fn box_descent_uses_actual_geometry_and_full_poly_gaps_fall_back_before_bulk_fet
 }
 
 #[test]
-fn a_box_descends_into_both_countries_and_rejects_uncovered_ground() {
-    let temporary = temp("box-source-descent");
+fn a_box_is_covered_by_both_countries_and_rejects_uncovered_ground() {
+    let temporary = temp("box-source-countries");
     let store = Store::at(temporary.0.join("store"));
     fixture_index(&store);
     source(&store, "europe/west", "2026-01-01", "1", &poly(7.0, 8.0));
@@ -125,10 +125,42 @@ fn a_box_skips_an_aggregate_that_overlaps_its_sibling_countries() {
         .collect();
     let selected = |west: f64, east: f64| {
         let requested = Coverage::parse_poly(&poly(west, east)).unwrap();
-        select_box(&index, &shapes, &requested).unwrap().into_iter().collect::<Vec<_>>()
+        select_box(&shapes, &requested).unwrap().into_iter().collect::<Vec<_>>()
     };
     assert_eq!(selected(7.25, 7.75), ["europe/west"]);
     assert_eq!(selected(7.5, 8.5), ["europe/east", "europe/west"]);
+}
+
+/// The children of `west` stop at 8.9 °E, and `west` ends at 9 °E: a child of `east` covers that
+/// sliver of a box that also reaches into `east`.
+#[test]
+fn a_box_takes_a_neighbour_for_a_sliver_before_the_parent() {
+    let feature = |id: &str, parent: Option<&str>, [west, south, east, north]: [f64; 4]| {
+        json!({
+            "type":"Feature", "properties":{"id":id, "name":id, "parent":parent,
+                "urls":{"pbf":format!("https://download.geofabrik.de/europe/{id}-latest.osm.pbf")}},
+            "geometry":{"type":"Polygon", "coordinates":[[[west,south],[east,south],[east,north],[west,north],[west,south]]]}
+        })
+    };
+    let body = json!({"type":"FeatureCollection", "features":[
+        feature("west", None, [7.0, 47.0, 9.0, 48.0]),
+        feature("west/a", Some("west"), [7.0, 47.0, 8.0, 48.0]),
+        feature("west/b", Some("west"), [8.0, 47.0, 8.9, 48.0]),
+        feature("east", None, [8.8, 47.0, 10.0, 47.5]),
+        feature("east/c", Some("east"), [8.8, 47.0, 10.0, 47.4])
+    ]});
+    let index = geofabrik::parse(body.to_string().as_bytes()).unwrap();
+    let shapes = index
+        .iter()
+        .map(|(id, area)| (id.clone(), Coverage::parse_poly(&crate::device::catalog::poly(area)).unwrap()))
+        .collect();
+    let selected = |bbox: [f64; 4]| {
+        let requested = Coverage::parse_poly(&box_poly(&obc_data::regions::Bbox::new(bbox).unwrap())).unwrap();
+        select_box(&shapes, &requested).unwrap().into_iter().collect::<Vec<_>>()
+    };
+    assert_eq!(selected([8.5, 47.1, 9.5, 47.3]), ["europe/east/c", "europe/west/b"]);
+    // North of `east`, only the parent covers the sliver.
+    assert_eq!(selected([8.5, 47.6, 8.95, 47.9]), ["europe/west"]);
 }
 
 #[test]

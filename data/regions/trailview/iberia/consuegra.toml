@@ -1,0 +1,6 @@
+name = "TrailView iberia: Consuegra"
+kind = "box"
+# west, south, east, north
+box = [-3.84, 39.26, -3.37, 39.63]
+countries = ["ES"]
+time_zone = "Europe/Madrid"

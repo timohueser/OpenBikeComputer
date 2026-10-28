@@ -2,14 +2,12 @@
 specs/trailview-tiles.md defines it. A source is read by the reader of its protocol, its native classes
 become codes through its legend, and its combine rule joins them into the layer.
 
-`fetch` is the capture of a source whose protocol is `arcgis-image`, `arcgis-features` or `wfs`: the
-files of the service over a box.
+`fetch` is the capture of a source whose protocol is `arcgis-features` or `wfs`: the features of the
+service over a box.
 """
 
-import base64
 import collections
 import hashlib
-import io
 import itertools
 import json
 import math
@@ -28,16 +26,15 @@ import numpy as np
 from . import colour, tiles
 
 GROUND = Path(__file__).resolve().parents[2] / "data/trailview/ground.json"
-# The readers of the steps. A capture writes vector files (`arcgis-features`, `wfs`) or map images.
-PROTOCOLS = ("raster", "arcgis-image", "vector", "arcgis-features", "wfs", "osm")
-CAPTURED = ("arcgis-image", "arcgis-features", "wfs")
+# The readers of the steps. A capture writes vector files over a box.
+PROTOCOLS = ("raster", "vector", "arcgis-features", "wfs", "osm")
+CAPTURED = ("arcgis-features", "wfs")
 VECTOR = ("vector", "arcgis-features", "wfs")
 MATCHES = ("code", "prefix", "word", "tags")
 COMBINES = ("authority", "refine")
 # A code is one byte.
 CODES = 256
-# Map images at most this many pixels on a side; feature requests of this many ids or features.
-IMAGE_MAX_PX = 4096
+# Feature requests of this many ids or features.
 FEATURE_BATCH = 200
 WFS_PAGE = 5000
 TRIES = 6
@@ -157,9 +154,9 @@ class Legend:
                 return q["code"]
         return found[2] if found else 0
 
-    def table(self):
-        """The codes of the byte values 0 to 255."""
-        return np.array([self(value) for value in range(256)], np.uint8)
+    def table(self, values=None):
+        """The codes of the byte values 0 to 255, each the native class that `values` names for it."""
+        return np.array([self(value if values is None else values.get(str(value))) for value in range(256)], np.uint8)
 
     def where(self, field):
         """An ArcGIS `where` that keeps the features whose `field` may have a class."""
@@ -339,65 +336,16 @@ def raster(paths, transform, size=tiles.TILE):
 
 
 class Raster:
-    """A raster source: its legend's codes, and with `px_m`, its shores rounded."""
+    """A raster source: its legend's codes, and with `px_m`, its shores rounded. With `values`, a raster
+    value is the native class that `values` names for it."""
 
     def __init__(self, entry, files, legend, vocabulary):
-        self.paths, self.table, self.px_m, self.vocabulary = sorted(files.values()), legend.table(), entry.get("px_m"), vocabulary
+        self.paths, self.px_m, self.vocabulary = sorted(files.values()), entry.get("px_m"), vocabulary
+        self.table = legend.table(entry.get("values"))
 
     def __call__(self, tile):
         codes = self.table[raster(self.paths, tile.transform)]
         return self.vocabulary.round_shores(codes, self.px_m, tile.texel) if self.px_m else codes
-
-
-def image_legend(legend, layer):
-    """The legend of layer `layer` of an ArcGIS map service as 0xRRGGBB → class, from its swatches."""
-    from PIL import Image
-
-    colours = {}
-    for entry in next(found for found in legend["layers"] if str(found["layerId"]) == layer)["legend"]:
-        swatch = np.asarray(Image.open(io.BytesIO(base64.b64decode(entry["imageData"]))).convert("RGB"))
-        r, g, b = (int(v) for v in swatch[swatch.shape[0] // 2, swatch.shape[1] // 2])
-        colours[(r << 16) | (g << 8) | b] = entry["label"].split(":")[0].strip()
-    return colours
-
-
-def map_images(files, layer, legend):
-    """[(codes, transform)] of each map image of an `arcgis-image` capture, named by its box in whole
-    metres in the map's CRS."""
-    from affine import Affine
-    from PIL import Image as Picture
-
-    lookup = {rgb: code for rgb, value in image_legend(json.loads(files["legend.json"].read_bytes()), layer).items()
-              if (code := legend(value))}
-    images = []
-    for name, path in sorted(files.items()):
-        if not (found := re.search(r"(-?\d+)_(-?\d+)_(-?\d+)_(-?\d+)\.png$", name)):
-            continue
-        west, south, east, north = map(int, found.groups())
-        rgba = np.asarray(Picture.open(path).convert("RGBA")).astype(np.int64)
-        rgb = np.where(rgba[..., 3] > 0, (rgba[..., 0] << 16) | (rgba[..., 1] << 8) | rgba[..., 2], -1)
-        codes = np.zeros(rgb.shape, np.uint8)
-        for value, code in lookup.items():
-            codes[rgb == value] = code
-        height, width = codes.shape
-        images.append((codes, Affine((east - west) / width, 0, west, 0, -(north - south) / height, north)))
-    return images
-
-
-class Image:
-    """Map images [(codes, transform)] in `crs` on a tile, nearest."""
-
-    def __init__(self, crs, images):
-        self.crs, self.images = crs, images
-
-    def __call__(self, tile):
-        from rasterio.warp import Resampling, reproject
-
-        out = np.zeros((tiles.TILE, tiles.TILE), np.uint8)
-        for array, source in self.images:
-            reproject(array, out, src_transform=source, src_crs=self.crs, dst_transform=tile.transform, dst_crs="EPSG:3857",
-                      resampling=Resampling.nearest, src_nodata=0, dst_nodata=0, init_dest_nodata=False)
-        return out
 
 
 class Map:
@@ -438,16 +386,16 @@ class Heath:
 
 
 def chain(layer, ground, vocabulary, files, bounds, osm=None):
-    """The steps of `layer` (`material` or `lithology`) for the sources that the step reads, and the
-    zooms of those with units in the bounds. `files(source)` gives the files of a source, None for one
-    it does not read; `osm` is the OSM file. A material's authority keeps the water. The units of the
-    vector sources go to a folder of `TMPDIR`, which the engine removes when the step ends."""
+    """The steps of `layer` (`material` or `lithology`) for the sources that the step reads.
+    `files(source)` gives the files of a source, None for one it does not read; `osm` is the OSM file.
+    A material's authority keeps the water. The units of the vector sources go to a folder of
+    `TMPDIR`, which the engine removes when the step ends."""
     spec, codes = ground[layer], getattr(vocabulary, layer)
     fine, keep = refinements(spec["refines"], codes), [vocabulary.water] if layer == "material" else []
     entries = [entry for entry in spec["sources"] if (osm if entry.get("protocol") == "osm" else files(entry["source"]) is not None)]
     on_osm = [Legend(entry["legend"], codes) for entry in entries if entry.get("protocol") == "osm"]
     burnt = iter(osm_polygons(osm, on_osm) if on_osm else [])
-    steps, zooms, scratch = [], [], tempfile.mkdtemp(prefix="ground-")
+    steps, scratch = [], tempfile.mkdtemp(prefix="ground-")
     for entry in entries:
         if entry.get("rule") == "satellite-heath":
             steps.append(Heath(entry, vocabulary))
@@ -457,14 +405,10 @@ def chain(layer, ground, vocabulary, files, bounds, osm=None):
             propose = next(burnt)
         elif protocol == "raster":
             propose = Raster(entry, found, legend, vocabulary)
-        elif protocol == "arcgis-image":
-            propose = Image(entry["crs"], map_images(found, entry["layer"], legend))
         else:
             propose = Units(found, entry, bounds, legend, Path(scratch) / f"units-{len(steps)}.gpkg")
-            if "zoom" in entry and propose.count:
-                zooms.append(entry["zoom"])
         steps.append(Map(propose, entry["combine"], fine, keep, entry.get("reach_m", 0)))
-    return steps, zooms
+    return steps
 
 
 def entry_of(source, ground):
@@ -478,19 +422,17 @@ def entry_of(source, ground):
 
 def fetch(source, bounds, out, zoom, ground=None):
     """The capture of `source` over the bounds into `out`. Vector features are simplified by a quarter
-    of a texel at the equator of the source's `zoom`, else of `zoom`: less than a texel shows."""
+    of a texel at the equator of `zoom`: less than a texel shows."""
     from .. import data_registry
 
     ground = ground or json.loads(GROUND.read_text())
     entry = entry_of(source, ground)
     url = data_registry.SOURCES[source]["fetch"]["url"]
     out.mkdir(parents=True, exist_ok=True)
-    if entry["protocol"] == "arcgis-image":
-        fetch_image(url, entry, bounds, out)
-    elif entry["protocol"] == "wfs":
+    if entry["protocol"] == "wfs":
         fetch_wfs(url, entry, bounds, out)
     else:
-        tolerance = 360 / ((1 << entry.get("zoom", zoom)) * tiles.TILE) / 4
+        tolerance = 360 / ((1 << zoom) * tiles.TILE) / 4
         fetch_features(url, entry, bounds, out, tolerance, Legend(entry["legend"], collections.defaultdict(int)))
 
 
@@ -544,34 +486,6 @@ def positions(out, meaning):
         for page in out.glob("features-*.geojson"):
             page.unlink()
     write(marker, meaning.encode())
-
-
-def png(body):
-    """ValueError for an answer that is no PNG image, as an error page with status 200."""
-    if not body.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise ValueError(f"not a PNG image: {body[:200]!r}")
-
-
-def fetch_image(url, entry, bounds, out):
-    """The legend, and the map images of layer `layer` that cover the bounds in `crs` at `px_m`, at
-    most IMAGE_MAX_PX on a side, each named W_S_E_N.png by its box in whole metres."""
-    from pyproj import Transformer
-
-    (out / "legend.json").write_bytes(get(f"{url}/legend", {"f": "json"}, check=arcgis))
-    px, epsg = entry["px_m"], entry["crs"].split(":")[1]
-    west, south, east, north = Transformer.from_crs("EPSG:4326", entry["crs"], always_xy=True).transform_bounds(*bounds, densify_pts=21)
-    snap = lambda v, rounding: int(rounding(v / px) * px)
-    west, south, east, north = snap(west, math.floor), snap(south, math.floor), snap(east, math.ceil), snap(north, math.ceil)
-    step_m = int(px * IMAGE_MAX_PX)
-    for x in range(west, east, step_m):
-        for y in range(south, north, step_m):
-            box = (x, y, min(x + step_m, east), min(y + step_m, north))
-            target = out / f"{box[0]}_{box[1]}_{box[2]}_{box[3]}.png"
-            if not target.exists():
-                write(target, get(f"{url}/export", {
-                    "bbox": ",".join(map(str, box)), "bboxSR": epsg, "imageSR": epsg, "layers": f"show:{entry['layer']}",
-                    "format": "png32", "size": f"{round((box[2] - box[0]) / px)},{round((box[3] - box[1]) / px)}",
-                    "transparent": "true", "f": "image"}, check=png))
 
 
 def arcgis(body):

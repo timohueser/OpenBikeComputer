@@ -1,0 +1,6 @@
+name = "TrailView english-lowlands: Chilterns"
+kind = "box"
+# west, south, east, north
+box = [-1.94, 51.34, -0.51, 51.85]
+countries = ["GB"]
+time_zone = "Europe/London"

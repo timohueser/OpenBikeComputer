@@ -144,33 +144,31 @@ def osm_file(path, areas):
     return written.rename(path)
 
 
-def map_image(directory, crs, bounds, classes, px_m):
-    """An `arcgis-image` capture over the bounds: the legend of its colours and one image of
-    classes(x, y) at the pixel centres in `crs`."""
-    import base64
+# The 44 classes of CLC in the order of their codes; the CORINE raster stores the nth as grid code n.
+CLC = [111, 112, 121, 122, 123, 124, 131, 132, 133, 141, 142, 211, 212, 213, 221, 222, 223, 231, 241, 242, 243, 244,
+       311, 312, 313, 321, 322, 323, 324, 331, 332, 333, 334, 335, 411, 412, 421, 422, 423, 511, 512, 521, 522, 523]
 
-    x0, y0, x1, y1 = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform_bounds(*bounds)
-    x0, y0, x1, y1 = (math.floor(x0 / px_m) * px_m, math.floor(y0 / px_m) * px_m, math.ceil(x1 / px_m) * px_m,
-                      math.ceil(y1 / px_m) * px_m)
-    x = x0 + (np.arange(round((x1 - x0) / px_m)) + 0.5) * px_m
-    y = y1 - (np.arange(round((y1 - y0) / px_m)) + 0.5) * px_m
-    found = np.broadcast_to(classes(x[None, :], y[:, None]), (len(y), len(x)))
-    colours = {code: (i + 1, 2 * i + 1, 3 * i + 1) for i, code in enumerate(np.unique(found))}
-    rgb = np.zeros((*found.shape, 4), np.uint8)
-    for code, colour_ in colours.items():
-        rgb[found == code] = (*colour_, 255)
-    entries = []
-    for code, colour_ in colours.items():
-        out = io.BytesIO()
-        Image.new("RGB", (20, 20), colour_).save(out, "PNG")
-        entries.append({"label": f"{code}: class", "imageData": base64.b64encode(out.getvalue()).decode()})
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / "legend.json").write_text(json.dumps({"layers": [{"layerId": 1, "legend": entries}]}))
-    Image.fromarray(rgb, "RGBA").save(directory / f"{x0}_{y0}_{x1}_{y1}.png")
-    return {path.name: path for path in directory.iterdir()}
+
+def corine(path, bounds, classes):
+    """A CORINE raster over the bounds as upstream has it: the grid codes of classes(x, y) at the pixel
+    centres in EPSG:3035 at 100 m, int8 with no data -128."""
+    grid = {str(clc): n for n, clc in enumerate(CLC, 1)}
+    x0, y0, x1, y1 = Transformer.from_crs("EPSG:4326", "EPSG:3035", always_xy=True).transform_bounds(*bounds)
+    x0, y0, x1, y1 = math.floor(x0 / 100) * 100, math.floor(y0 / 100) * 100, math.ceil(x1 / 100) * 100, math.ceil(y1 / 100) * 100
+    x = x0 + (np.arange(round((x1 - x0) / 100)) + 0.5) * 100
+    y = y1 - (np.arange(round((y1 - y0) / 100)) + 0.5) * 100
+    codes = np.vectorize(lambda clc: grid[str(clc)])(np.broadcast_to(classes(x[None, :], y[:, None]), (len(y), len(x))))
+    with rasterio.open(path, "w", driver="GTiff", width=len(x), height=len(y), count=1, dtype="int8", nodata=-128,
+                       crs="EPSG:3035", transform=Affine(100, 0, x0, 0, -100, y1)) as dst:
+        dst.write(codes.astype(np.int8), 1)
+    return {path.name: path}
 
 
 class MaterialTest(unittest.TestCase):
+    def test_the_corine_values_are_the_clc_codes_of_the_grid_codes(self):
+        entry = next(entry for entry in GROUND["material"]["sources"] if entry["source"] == "corine-land-cover")
+        self.assertEqual(entry["values"], {str(n): str(clc) for n, clc in enumerate(CLC, 1)})
+
     def test_each_source_of_the_chain_refines_only_what_it_names_more_precisely_and_outside_is_no_data(self):
         west, south, east, north = geo.tile_bounds(Z, X, Y)
         mid_lon, mid_lat = (west + east) / 2, (south + north) / 2
@@ -196,10 +194,10 @@ class MaterialTest(unittest.TestCase):
                                                     (box(mid_lon, south - 0.01, east + 0.01, mid_lat), {"natural": "grassland"})])
             # CORINE: natural grassland in the north, heath in the south, at 100 m.
             mid_y = Transformer.from_crs("EPSG:4326", "EPSG:3035", always_xy=True).transform(mid_lon, mid_lat)[1]
-            corine = map_image(root / "corine", "EPSG:3035", around, lambda x, y: np.where(y > mid_y, 321, 322), 100)
-            files = {"esa-worldcover": {"worldcover.tif": worldcover}, "sentinel-2-mosaics": mosaics, "corine-land-cover": corine}
+            clc = corine(root / "corine.tif", around, lambda x, y: np.where(y > mid_y, 321, 322))
+            files = {"esa-worldcover": {"worldcover.tif": worldcover}, "sentinel-2-mosaics": mosaics, "corine-land-cover": clc}
             bounds = [west, south, west + 0.9 * (east - west), north]
-            steps, _ = sources.chain("material", GROUND, VOCABULARY, files.get, bounds, osm)
+            steps = sources.chain("material", GROUND, VOCABULARY, files.get, bounds, osm)
             no_rock = lambda z, x, y: np.zeros((tiles.TILE, tiles.TILE), np.uint8)
             texels = ground.Material(bounds, steps, colour.mosaics(mosaics), no_rock)(Z, X, Y)
         n, w, s, e = 100, 100, 412, 300

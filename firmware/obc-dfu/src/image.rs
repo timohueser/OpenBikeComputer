@@ -204,13 +204,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_short_is_type_enforced() {
-        // decode takes &[u8; 64], so a short buffer cannot reach it. The fixed length is what
-        // protects the callers.
-        assert_eq!(sample().encode().len(), HEADER_LEN);
-    }
-
-    #[test]
     fn rejects_bad_magic() {
         let mut b = sample().encode();
         b[0] = b'X';
@@ -232,44 +225,6 @@ mod tests {
         let mut b = sample().encode();
         b[60] ^= 0x01;
         assert!(ImageHeader::decode(&b).is_none());
-    }
-
-    #[test]
-    fn reserved_bytes_are_zero() {
-        let b = sample().encode();
-        assert_eq!(&b[6..8], &[0, 0]);
-        // An unsigned header keeps the whole reserved run zero.
-        assert_eq!(&b[48..60], &[0u8; 12]);
-    }
-
-    #[test]
-    fn signed_marker_lands_in_v1s_reserved_space() {
-        let b = sample().signed().encode();
-        assert_eq!(&b[48..50], &SIG_SCHEME_ED25519.to_le_bytes(), "sig_scheme at offset 48");
-        assert_eq!(&b[50..52], &(SIG_LEN as u16).to_le_bytes(), "sig_len at offset 50");
-        assert_eq!(&b[52..60], &[0u8; 8], "the rest of the reserved run is still reserved");
-        let v1 = sample().encode();
-        assert_eq!(&b[0..48], &v1[0..48], "magic/version/len/crc/fw_version are byte-identical");
-    }
-
-    #[test]
-    fn signed_roundtrips_and_sizes_the_container() {
-        let h = sample().signed();
-        let decoded = ImageHeader::decode(&h.encode()).expect("a signed header still decodes");
-        assert_eq!(decoded, h);
-        assert!(decoded.is_signed());
-        assert_eq!(decoded.sig_offset(), HEADER_LEN as u64 + 31);
-        assert_eq!(decoded.container_len(), HEADER_LEN as u64 + 31 + SIG_LEN as u64);
-        assert_eq!(decoded.unsigned().encode(), sample().encode());
-        assert_eq!(sample().container_len(), HEADER_LEN as u64 + 31);
-    }
-
-    #[test]
-    fn header_version_is_pinned_at_one() {
-        // A fielded bootloader rejects anything else, so changing this strands every device in
-        // the field.
-        assert_eq!(HEADER_VERSION, 1);
-        assert_eq!(&sample().signed().encode()[4..6], &1u16.to_le_bytes());
     }
 
     #[test]

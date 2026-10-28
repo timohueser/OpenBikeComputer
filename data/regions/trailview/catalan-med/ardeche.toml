@@ -1,0 +1,6 @@
+name = "TrailView catalan-med: Ardeche"
+kind = "box"
+# west, south, east, north
+box = [4.16, 44.17, 4.72, 44.58]
+countries = ["FR"]
+time_zone = "Europe/Paris"

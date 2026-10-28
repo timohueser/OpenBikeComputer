@@ -1,0 +1,6 @@
+name = "TrailView pyrenees: Mantet"
+kind = "box"
+# west, south, east, north
+box = [2.05, 42.29, 2.58, 42.68]
+countries = ["FR", "ES"]
+time_zone = "Europe/Paris"

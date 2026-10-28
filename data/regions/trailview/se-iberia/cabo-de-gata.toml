@@ -1,0 +1,6 @@
+name = "TrailView se-iberia: Cabo De Gata"
+kind = "box"
+# west, south, east, north
+box = [-2.4, 36.55, -1.83, 37.12]
+countries = ["ES"]
+time_zone = "Europe/Madrid"

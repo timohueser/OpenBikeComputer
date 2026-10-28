@@ -4,8 +4,8 @@
 [project]
 name = "openbikecomputer-tools"
 version = "0"
-# rasterio and numba need Python 3.12 or later.
-requires-python = ">=3.12"
+# .python-version pins the one Python that every tool and data step runs.
+requires-python = ">=3.14"
 dependencies = []
 
 [dependency-groups]

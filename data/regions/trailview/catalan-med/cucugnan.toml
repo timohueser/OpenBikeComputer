@@ -1,0 +1,6 @@
+name = "TrailView catalan-med: Cucugnan"
+kind = "box"
+# west, south, east, north
+box = [2.34, 42.65, 2.87, 43.04]
+countries = ["FR"]
+time_zone = "Europe/Paris"

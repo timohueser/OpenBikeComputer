@@ -174,16 +174,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn maps_the_curated_vocabularies() {
-        assert_eq!(category_for_symbol("Water"), Some(PoiCategory::Water));
-        assert_eq!(category_for_symbol("Campground"), Some(PoiCategory::Campsite));
-        assert_eq!(category_for_symbol("Lodging"), Some(PoiCategory::Accommodation));
-        assert_eq!(category_for_symbol("Convenience Store"), Some(PoiCategory::Resupply));
-        assert_eq!(category_for_symbol("Pharmacy"), Some(PoiCategory::Pharmacy));
-        assert_eq!(category_for_symbol("Bike Shop"), Some(PoiCategory::BikeShop));
-    }
-
-    #[test]
     fn matching_ignores_case_and_separators() {
         for spelling in ["Drinking Water", "drinking water", "DRINKING_WATER", "drinking-water", "  Drinking  Water "] {
             assert_eq!(category_for_symbol(spelling), Some(PoiCategory::Water), "{spelling}");

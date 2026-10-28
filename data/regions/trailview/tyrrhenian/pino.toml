@@ -1,0 +1,6 @@
+name = "TrailView tyrrhenian: Pino"
+kind = "box"
+# west, south, east, north
+box = [9.08, 42.71, 9.62, 43.1]
+countries = ["FR"]
+time_zone = "Europe/Paris"

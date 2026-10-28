@@ -1,0 +1,6 @@
+name = "TrailView cantabria: Curota"
+kind = "box"
+# west, south, east, north
+box = [-9.22, 42.43, -8.7, 42.82]
+countries = ["ES"]
+time_zone = "Europe/Madrid"

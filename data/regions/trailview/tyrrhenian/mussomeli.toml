@@ -1,0 +1,6 @@
+name = "TrailView tyrrhenian: Mussomeli"
+kind = "box"
+# west, south, east, north
+box = [13.57, 37.4, 14.01, 37.75]
+countries = ["IT"]
+time_zone = "Europe/Rome"

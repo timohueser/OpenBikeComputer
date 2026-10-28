@@ -1,0 +1,6 @@
+name = "TrailView carpathians: Wyzna"
+kind = "box"
+# west, south, east, north
+box = [22.21, 48.92, 22.89, 49.37]
+countries = ["PL", "SK", "UA"]
+time_zone = "Europe/Warsaw"

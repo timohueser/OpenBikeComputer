@@ -1,0 +1,6 @@
+name = "TrailView western-europe: Pferdskopf"
+kind = "box"
+# west, south, east, north
+box = [9.56, 50.26, 10.28, 50.72]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

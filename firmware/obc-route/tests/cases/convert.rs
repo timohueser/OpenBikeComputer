@@ -159,50 +159,43 @@ fn long_collinear_run_keeps_an_intermediate_vertex() {
     );
 }
 
-/// A single oversized segment with no intermediate raw candidate is split, so the stored Δ never
-/// wraps. `MAX_SPAN_M` only force-keeps a pending candidate and a 2-point GPX has none, so the
-/// converter densifies the span itself into `MAX_SEGMENT_UDEG` (30 000) pieces.
+/// An oversized 2-point span has no raw candidate to keep, so the converter densifies it into
+/// `MAX_SEGMENT_UDEG` (30 000) pieces, interpolating both axes and elevation. Every stored Δ then
+/// fits the int16 the reader decodes, and the endpoints round-trip exactly.
 #[test]
-fn single_oversized_segment_is_densified() {
-    let bytes = convert("Densified", &gpx(&[(48.0, 7.80, Some(100.0)), (48.0, 7.84, Some(100.0))]));
-    let src = SliceSource(&bytes);
-    let ridx = RouteIndex::read(&src).unwrap();
-    let r = RouteReader::new(&ridx, &src);
-
-    // 40_000 µdeg > 30_000 → one synthetic midpoint, so three stored vertices.
-    assert_eq!(r.point_count, 3, "the oversized span is split with one interpolated vertex");
-    let pts = decode(&r, 0);
-    assert_eq!(pts[0].lon, 7_800_000, "the anchor is stored absolutely and is correct");
-    assert_eq!(pts[1].lon, 7_820_000, "the interpolated midpoint sits halfway along the span");
-    assert_eq!(pts[2].lon, 7_840_000, "the endpoint round-trips exactly — no int16 wrap");
-    assert!(pts.iter().all(|p| p.lat == 48_000_000 && p.ele == 100), "interpolated vertices stay on the line");
-}
-
-/// A span far past one `MAX_SEGMENT_UDEG` piece splits into several, interpolating both axes and
-/// elevation. A 0.09° diagonal needs 4 pieces, so three synthetic vertices.
-#[test]
-fn oversized_diagonal_span_splits_into_several() {
-    let bytes = convert("Diagonal", &gpx(&[(48.0, 7.80, Some(100.0)), (48.09, 7.89, Some(200.0))]));
-    let src = SliceSource(&bytes);
-    let ridx = RouteIndex::read(&src).unwrap();
-    let r = RouteReader::new(&ridx, &src);
-
-    assert_eq!(r.point_count, 5, "anchor + three interpolated vertices + endpoint");
-    let pts = decode(&r, 0);
-    assert_eq!(
-        pts,
-        vec![
-            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 100, surface: 0, elevation_incomplete: false },
-            RoutePoint { lon: 7_822_500, lat: 48_022_500, ele: 125, surface: 0, elevation_incomplete: false },
-            RoutePoint { lon: 7_845_000, lat: 48_045_000, ele: 150, surface: 0, elevation_incomplete: false },
-            RoutePoint { lon: 7_867_500, lat: 48_067_500, ele: 175, surface: 0, elevation_incomplete: false },
-            RoutePoint { lon: 7_890_000, lat: 48_090_000, ele: 200, surface: 0, elevation_incomplete: false },
-        ]
-    );
-    // No stored (Δlon, Δlat) can overflow the int16 the reader decodes them as.
-    for w in pts.windows(2) {
-        assert!((w[1].lon - w[0].lon).abs() <= i16::MAX as i32, "Δlon fits int16");
-        assert!((w[1].lat - w[0].lat).abs() <= i16::MAX as i32, "Δlat fits int16");
+fn an_oversized_span_is_densified_without_int16_wrap() {
+    let p = |lon, lat, ele| RoutePoint { lon, lat, ele, surface: 0, elevation_incomplete: false };
+    for (name, raw, expected) in [
+        (
+            // 40 000 µdeg east-west: one midpoint.
+            "east-west",
+            [(48.0, 7.80, Some(100.0)), (48.0, 7.84, Some(100.0))],
+            vec![p(7_800_000, 48_000_000, 100), p(7_820_000, 48_000_000, 100), p(7_840_000, 48_000_000, 100)],
+        ),
+        (
+            // 90 000 µdeg on both axes: four pieces, three interpolated vertices.
+            "diagonal",
+            [(48.0, 7.80, Some(100.0)), (48.09, 7.89, Some(200.0))],
+            vec![
+                p(7_800_000, 48_000_000, 100),
+                p(7_822_500, 48_022_500, 125),
+                p(7_845_000, 48_045_000, 150),
+                p(7_867_500, 48_067_500, 175),
+                p(7_890_000, 48_090_000, 200),
+            ],
+        ),
+    ] {
+        let bytes = convert(name, &gpx(&raw));
+        let src = SliceSource(&bytes);
+        let ridx = RouteIndex::read(&src).unwrap();
+        let r = RouteReader::new(&ridx, &src);
+        assert_eq!(r.point_count as usize, expected.len(), "{name}");
+        let pts = decode(&r, 0);
+        assert_eq!(pts, expected, "{name}");
+        for w in pts.windows(2) {
+            assert!((w[1].lon - w[0].lon).abs() <= i16::MAX as i32, "{name}: Δlon fits int16");
+            assert!((w[1].lat - w[0].lat).abs() <= i16::MAX as i32, "{name}: Δlat fits int16");
+        }
     }
 }
 

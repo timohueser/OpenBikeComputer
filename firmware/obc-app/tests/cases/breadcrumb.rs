@@ -44,16 +44,17 @@ fn short_ride_is_all_recent_one_line() {
 #[test]
 fn straight_ride_is_drawn_exactly() {
     let mut bc = Breadcrumb::new();
-    // ~150 km dead straight. Colinear points carry zero area, so the spine never bends.
+    // ~25 km dead straight, four times both caps. Colinear points carry zero area, so the spine
+    // never bends.
     let mut input = std::vec::Vec::new();
-    for i in 0..30_000 {
+    for i in 0..5_000 {
         bc.push(i * 50, LAT0);
         input.push((i * 50, LAT0));
     }
     let out: std::vec::Vec<(i32, i32)> = bc.points().collect();
     assert!(max_deviation_m(&input, &out) <= 0.001, "a straight ride must draw straight");
     assert_eq!(bc.points().next(), Some((0, LAT0)));
-    assert_eq!(bc.points().last(), Some((29_999 * 50, LAT0)));
+    assert_eq!(bc.points().last(), Some((4_999 * 50, LAT0)));
 }
 
 #[test]
@@ -154,15 +155,34 @@ fn seg_len(a: (i32, i32), b: (i32, i32)) -> f64 {
 
 /// Worst perpendicular distance (metres) from any `input` point to the `polyline` it should lie
 /// on — the breadcrumb's shape error against the ridden path.
+///
+/// Every ride here runs east, so the polyline's longitudes never decrease. A segment is then at
+/// least its longitude gap from a point, and that gap only grows away from the segment that spans
+/// the point, so each scan stops at the first segment too far east or west to be nearer.
 fn max_deviation_m(input: &[(i32, i32)], polyline: &[(i32, i32)]) -> f64 {
+    assert!(polyline.windows(2).all(|w| w[0].0 <= w[1].0), "the rides run east");
+    let x = |i: usize| polyline[i].0 as f64;
     let mut worst = 0.0f64;
     for &(plon, plat) in input {
         let p = (plon as f64, plat as f64);
-        let mut best = f64::MAX;
-        for w in polyline.windows(2) {
-            let a = (w[0].0 as f64, w[0].1 as f64);
-            let b = (w[1].0 as f64, w[1].1 as f64);
-            best = best.min(point_segment_dist(p, a, b));
+        let dist = |j: usize| {
+            let (a, b) = (polyline[j], polyline[j + 1]);
+            point_segment_dist(p, (a.0 as f64, a.1 as f64), (b.0 as f64, b.1 as f64))
+        };
+        // The first segment whose east end reaches the point.
+        let spans = polyline[1..].partition_point(|q| q.0 < plon).min(polyline.len() - 2);
+        let mut best = dist(spans);
+        for j in (0..spans).rev() {
+            if p.0 - x(j + 1) >= best {
+                break;
+            }
+            best = best.min(dist(j));
+        }
+        for j in spans + 1..polyline.len() - 1 {
+            if x(j) - p.0 >= best {
+                break;
+            }
+            best = best.min(dist(j));
         }
         worst = worst.max(best);
     }

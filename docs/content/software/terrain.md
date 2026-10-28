@@ -94,16 +94,22 @@ Each finer model keeps its own attribution, and it must travel with the map. See
 
 The planner maps and TrailView read one pyramid of
 [terrain tiles](src:specs/planner-release.md). A national model gives the height where it holds
-the ground, and GLO-30 gives it elsewhere. GLO-30 leaves the sea edge above sea level, spreads a sea
-cliff over a ramp up to 100 m wide, and rounds a summit into a dome.
+the ground, and GLO-30 gives it elsewhere. GLO-30 leaves the sea edge above sea level, and rounds
+a summit into a dome.
 
 Where GLO-30 gives the height, also in the 1 km band where it blends into a national model, the
-bake corrects these faults from OSM. The sea beside the coastline is at sea level, and a mapped
-sea cliff becomes sheer, no deeper than its mapped `height`. A mapped summit with a height rises
-toward the cone of its flanks, never above that height, but only where GLO-30 has its top next to
-the summit. Each correction uses only the mapped feature and the GLO-30 heights near it, so a
-summit node on a slope or a wrong tag changes little or nothing. An inland cliff and an unmapped
-cliff keep their GLO-30 heights. The rules are in [`shape.rs`](src:host/obc-dem/src/shape.rs).
+bake corrects these faults from OSM. The sea beside the coastline is at sea level. A mapped summit
+with a height rises toward the cone of its flanks, never above that height, but only where GLO-30
+has its top next to the summit. Each correction uses only the mapped feature and the GLO-30 heights
+near it, so a summit node on a slope or a wrong tag changes little or nothing. A cliff keeps its
+GLO-30 heights. The rules are in [`shape.rs`](src:host/obc-dem/src/shape.rs).
+
+Coastlines and summits seldom change, and a terrain bake is slow. So the terrain reads its own copy
+of the OSM extracts, the source `terrain-osm` in [the sources](src:data/sources.toml). The weekly
+refresh does not replace this copy: a new OSM extract bakes the maps and the routes again, but not
+the terrain. The copy changes only when an operator fetches a newer extract of an area, or when a
+region gets an area that has no copy yet. The section Versions of [the data spec](src:specs/obc-data.md)
+has the rule.
 
 ## Peak View
 

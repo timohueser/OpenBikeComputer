@@ -1,0 +1,6 @@
+name = "TrailView alps: Galibier"
+kind = "box"
+# west, south, east, north
+box = [6.12, 44.86, 6.7, 45.27]
+countries = ["FR", "IT"]
+time_zone = "Europe/Paris"

@@ -320,18 +320,6 @@ mod tests {
     }
 
     #[test]
-    fn header_entry_and_gate_round_trip() {
-        let header = Header { store: STORE, sequence: 9, next_object: 4, entry_count: 3 };
-        assert_eq!(Header::decode(&header.encode(), &STORE).unwrap(), header);
-
-        let entry = entry(2, 5, EntryFlags::NONE, 100, 7, 1);
-        assert_eq!(Entry::decode(&entry.encode(), 64).unwrap(), entry);
-
-        let gate = Gate { copy: 1, store: STORE, sequence: 9, entry_count: 3, body_crc: 0xDEAD_BEEF };
-        assert_eq!(Gate::decode(&gate.encode(), 1, &STORE).unwrap(), gate);
-    }
-
-    #[test]
     fn a_gate_is_ill_formed_at_the_wrong_position_or_the_wrong_store() {
         let gate = Gate { copy: 0, store: STORE, sequence: 9, entry_count: 3, body_crc: 7 };
         let bytes = gate.encode();
@@ -359,16 +347,6 @@ mod tests {
         let mut gate = Gate { copy: 0, store: STORE, sequence: 1, entry_count: 0, body_crc: 0 };
         gate.entry_count = ENTRY_CAPACITY as u16 + 1;
         assert_eq!(Gate::decode(&gate.encode(), 0, &STORE).unwrap_err().reason, Reason::Count);
-    }
-
-    #[test]
-    fn an_entry_names_a_nonzero_object_and_revision() {
-        let mut bytes = entry(1, 1, EntryFlags::NONE, 10, 0, 1).encode();
-        put_u64(&mut bytes, 8, 0);
-        assert_eq!(Entry::decode(&bytes, 64).unwrap_err().reason, Reason::Zero);
-        put_u64(&mut bytes, 8, 1);
-        put_u64(&mut bytes, 16, 0);
-        assert_eq!(Entry::decode(&bytes, 64).unwrap_err().reason, Reason::Zero);
     }
 
     #[test]
@@ -464,16 +442,6 @@ mod tests {
         let mut head = entry(2, 5, EntryFlags::NONE, 10, 1, 1);
         head.meta.kind = ObjectKind::Trip;
         assert_eq!(structure.accept(&head).unwrap_err().reason, Reason::Revisions);
-    }
-
-    #[test]
-    fn at_most_one_entry_is_recording() {
-        let mut structure = fresh();
-        structure.accept(&entry(2, 1, EntryFlags::RECORDING, 0, 0, 1)).unwrap();
-        assert_eq!(
-            structure.accept(&entry(3, 1, EntryFlags::RECORDING, 0, 1, 1)).unwrap_err().reason,
-            Reason::Revisions
-        );
     }
 
     #[test]

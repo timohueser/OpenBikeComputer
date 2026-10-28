@@ -1,0 +1,6 @@
+name = "TrailView alps: Pregasina"
+kind = "box"
+# west, south, east, north
+box = [10.53, 45.65, 11.13, 46.07]
+countries = ["IT"]
+time_zone = "Europe/Rome"

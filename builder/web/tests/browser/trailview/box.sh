@@ -26,6 +26,7 @@ OUT=$WORK/$BOX
 GROUND=$OUT/ground
 HERE=builder/web/tests/browser/trailview
 CDSE=$HOME/.config/openbikecomputer/cdse-s3.env
+CLMS=$HOME/.config/openbikecomputer/clms-key.json
 YEAR=$(sed -n 's/^colour_year = //p' data/planner.toml)
 VARIANT=$(sed -n 's/^colour = "\(.*\)"/\1/p' data/planner.toml)
 SERVED=(--tiles "$OUT/terrain.mbtiles" --ground "$GROUND" --features "$OUT/features")
@@ -51,6 +52,10 @@ if [[ ! -f $CDSE ]]; then
 fi
 if ! grep -q '^CDSE_S3_SECRET_KEY=.' "$CDSE"; then
   _err "Sentinel-2 and the snow read CDSE S3: put the keys in $CDSE, then run again"
+  exit 1
+fi
+if [[ ! -f $CLMS && ! -s $SRC/corine/U2018_CLC2018_V2020_20u1.tif && ! -s $SRC/corine-work/order.zip ]]; then
+  _err "CORINE needs a CLMS service key: create a token under API Tokens of your land.copernicus.eu profile, save its JSON as $CLMS"
   exit 1
 fi
 
@@ -130,8 +135,12 @@ done
 
 mkdir -p "$OUT" "$GROUND"
 [[ -s $OUT/osm.pbf ]] || _run osmium extract --overwrite -b "$BOX" "$SRC/switzerland.osm.pbf" -o "$OUT/osm.pbf"
-if [[ ! -e $OUT/corine/.done ]]; then
-  _run "${PY[@]}" -m tools.trailview.ground --bounds "$BOX" --source corine-land-cover --fetch "$OUT/corine" && touch "$OUT/corine/.done"
+# The CORINE raster of Europe; the fetch row of corine-land-cover in host/obc-data/src/fetch/capture.rs.
+if [[ ! -s $SRC/corine/U2018_CLC2018_V2020_20u1.tif ]]; then
+  mkdir -p "$SRC/corine" "$SRC/corine-work"
+  _run "${PY[@]}" -m tools.clms --dataset 0407d497d3c44bcd93ce8fd5bf78596a --file 3d9e2413-46ca-4f6e-abf8-b6eb429a4e48 \
+    --member U2018_CLC2018_V2020_20u1.tif --work "$SRC/corine-work" --fetch "$SRC/corine"
+  rm -rf "$SRC/corine-work"
 fi
 if [[ ! -e $OUT/sentinel-2/.done ]]; then
   _run "${PY[@]}" -m tools.trailview.colour --bounds "$BOX" --year "$YEAR" --fetch "$OUT/sentinel-2" && touch "$OUT/sentinel-2/.done"
@@ -198,7 +207,7 @@ if [[ ! -s $GROUND/lithology.pmtiles ]]; then
 fi
 if [[ ! -s $GROUND/material.pmtiles ]]; then
   step tools.trailview.ground "{\"layer\": \"material\", \"bounds\": $(bounds "$BOX"), \"attribution\": \"ESA WorldCover, CORINE, Copernicus Sentinel data, OpenStreetMap\"}" "$RULES" \
-    "{\"sentinel-2-mosaics\": \"$OUT/sentinel-2\", \"corine-land-cover\": \"$OUT/corine\", \"esa-worldcover\": \"$SRC/esa-worldcover\"}"
+    "{\"sentinel-2-mosaics\": \"$OUT/sentinel-2\", \"corine-land-cover\": \"$SRC/corine\", \"esa-worldcover\": \"$SRC/esa-worldcover\"}"
   mv "$OUT/step/material.pmtiles" "$GROUND/"
 fi
 # The region tiles follow the regions of the ruleset, so they bake each run too; they are small.

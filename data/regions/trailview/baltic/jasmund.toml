@@ -1,0 +1,6 @@
+name = "TrailView baltic: Jasmund"
+kind = "box"
+# west, south, east, north
+box = [13.24, 54.32, 14.04, 54.82]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

@@ -1,0 +1,6 @@
+name = "TrailView iberia: Ubeda"
+kind = "box"
+# west, south, east, north
+box = [-3.59, 37.83, -3.14, 38.19]
+countries = ["ES"]
+time_zone = "Europe/Madrid"

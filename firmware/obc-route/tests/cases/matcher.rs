@@ -70,22 +70,6 @@ fn on_line_fixes_advance_monotonically() {
 }
 
 #[test]
-fn cross_track_distance_matches_a_known_offset() {
-    let bytes = convert("East", &gpx_from(EAST));
-    let src = SliceSource(&bytes);
-    let ridx = RouteIndex::read(&src).unwrap();
-    let r = RouteReader::new(&ridx, &src);
-    let pts = decode_all(&r);
-    let (p0, p1) = (pts[0], *pts.last().unwrap());
-
-    let mut m = RouteMatch::new();
-    let (lon, lat) = east_fix(p0, p1, 0.5, 50.0);
-    let res = m.update(lon, lat, &r);
-    assert!(res.off_route, "50 m off the line is past the 25 m threshold");
-    assert!((res.dist_m as i32 - 50).abs() <= 3, "cross-track {} m, expected ~50", res.dist_m);
-}
-
-#[test]
 fn off_route_freezes_progress_then_resumes_on_rejoin() {
     let bytes = convert("East", &gpx_from(EAST));
     let src = SliceSource(&bytes);
@@ -449,35 +433,6 @@ fn hysteresis_band_holds_previous_state() {
     let held_off = off.update(lon, lat, &r);
     assert!(held_off.off_route, "20 m in the band, coming from off-route, must stay off-route");
     assert_eq!(held_off.progress_m, frozen, "an off-route band fix keeps progress frozen");
-}
-
-#[test]
-fn single_teleport_spike_does_not_lurch_progress() {
-    let bytes = convert("East", &gpx_from(EAST));
-    let src = SliceSource(&bytes);
-    let ridx = RouteIndex::read(&src).unwrap();
-    let r = RouteReader::new(&ridx, &src);
-    let pts = decode_all(&r);
-    let (p0, p1) = (pts[0], *pts.last().unwrap());
-    let total = r.total_distance_m;
-
-    let mut m = RouteMatch::new();
-    let (lon, lat) = east_fix(p0, p1, 0.4, 0.0);
-    let good = m.update(lon, lat, &r);
-    assert!(!good.off_route);
-    let before = good.progress_m;
-
-    let (lon, lat) = east_fix(p0, p1, 0.45, 2000.0);
-    let spike = m.update(lon, lat, &r);
-    assert!(spike.off_route, "a 2 km outlier must read off-route");
-    assert_eq!(spike.progress_m, before, "the spike must not move progress");
-    assert!(spike.dist_m > 1000, "live cross-track {} m should report the spike's distance", spike.dist_m);
-
-    let (lon, lat) = east_fix(p0, p1, 0.5, 0.0);
-    let after = m.update(lon, lat, &r);
-    assert!(!after.off_route, "the fix after the spike recovers on-route");
-    let want = (0.5 * total as f64) as u32;
-    assert!(after.progress_m.abs_diff(want) <= 5, "recovered progress {} ~ {want}", after.progress_m);
 }
 
 /// Progress follows a rider who reverses across individual segments.

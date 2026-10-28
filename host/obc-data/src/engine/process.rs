@@ -308,7 +308,7 @@ fn measure(usage: &libc::rusage) -> (u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::tests::write;
+    use crate::engine::tests::{write, PYTHON};
     use crate::store::tests::Scratch;
 
     #[cfg(unix)]
@@ -333,16 +333,21 @@ mod tests {
     fn a_python_step_runs_the_discovered_interpreter_despite_active_and_project_environments() {
         let scratch = Scratch::new("python-interpreter");
         let root = &scratch.0;
-        write(&root.join(".python-version"), "3.12\n");
+        let version = PYTHON.trim();
+        write(&root.join(".python-version"), PYTHON);
         write(
             &root.join("pyproject.toml"),
-            "[project]\nname = \"runtime-fixture\"\nversion = \"0\"\nrequires-python = \">=3.12\"\ndependencies = []\n\
-             [tool.uv]\npackage = false\ndefault-groups = []\n",
+            &format!(
+                "[project]\nname = \"runtime-fixture\"\nversion = \"0\"\nrequires-python = \">={version}\"\n\
+                 dependencies = []\n[tool.uv]\npackage = false\ndefault-groups = []\n"
+            ),
         );
         write(
             &root.join("uv.lock"),
-            "version = 1\nrevision = 3\nrequires-python = \">=3.12\"\n[[package]]\nname = \"runtime-fixture\"\n\
-             version = \"0\"\nsource = { virtual = \".\" }\n",
+            &format!(
+                "version = 1\nrevision = 3\nrequires-python = \">={version}\"\n[[package]]\nname = \"runtime-fixture\"\n\
+                 version = \"0\"\nsource = {{ virtual = \".\" }}\n"
+            ),
         );
         let base = python_executable(root).unwrap();
         let (active, project) = (root.join("active"), root.join("project"));

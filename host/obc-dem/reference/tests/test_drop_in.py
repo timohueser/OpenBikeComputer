@@ -12,10 +12,9 @@ import unittest
 import urllib.error
 import urllib.parse
 import zipfile
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Thread
 
 import numpy as np
 import rasterio
@@ -25,6 +24,7 @@ from rasterio.transform import Affine
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import ingest  # noqa: E402
+from http_serving import serve  # noqa: E402
 
 #: What two portals deliver: a zip of GeoTIFFs and a bare ESRI ASCII grid. `corner` is the
 #: south-west corner of the synthetic tile on the source's own grid, inside the row's country.
@@ -492,10 +492,7 @@ class Redirects(unittest.TestCase):
 
     def setUp(self):
         RedirectHandler.seen = []
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
-        Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.server_close)
-        self.addCleanup(self.httpd.shutdown)
+        self.httpd = serve(self, RedirectHandler)
         self.port = self.httpd.server_address[1]
 
     def test_a_redirect_to_another_host_drops_the_authorization(self):

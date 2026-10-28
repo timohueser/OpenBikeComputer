@@ -1,0 +1,6 @@
+name = "TrailView carpathians: Ciumarna"
+kind = "box"
+# west, south, east, north
+box = [25.31, 47.53, 25.95, 47.97]
+countries = ["RO", "UA"]
+time_zone = "Europe/Bucharest"

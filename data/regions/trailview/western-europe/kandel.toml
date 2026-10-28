@@ -1,0 +1,6 @@
+name = "TrailView western-europe: Kandel"
+kind = "box"
+# west, south, east, north
+box = [7.64, 47.85, 8.34, 48.31]
+countries = ["DE", "FR"]
+time_zone = "Europe/Berlin"
