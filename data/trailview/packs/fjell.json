@@ -12,15 +12,16 @@
  },
  "ground": {
   "dwarf-birch": { "model": "garrigue", "latin": "Betula nana", "on": ["shrub", "grass", "moss"], "height": [0.2, 0.45], "share": 0.35 },
-  "crowberry": { "on": ["shrub", "moss", "bare", "grass"], "share": 0.15 },
-  "reindeer-lichen": { "model": "heather", "latin": "Cladonia rangiferina, Cladonia stellaris", "on": ["moss", "bare", "shrub"], "height": [0.05, 0.12], "share": 0.15 },
-  "mat-grass": { "share": 0.1 },
-  "moor-grass": { "share": 0.12 },
+  "crowberry": { "on": ["#moor"], "share": 0.15 },
+  "reindeer-lichen": { "model": "heather", "latin": "Cladonia rangiferina, Cladonia stellaris", "on": ["#moor"], "height": [0.05, 0.12], "share": 0.15 },
+  "mat-grass": { "on": ["#moor"], "share": 0.1 },
+  "moor-grass": { "on": ["#moor"], "share": 0.12 },
   "bilberry": { "share": 0.15 },
-  "heather": { "share": 0.06 },
-  "bog-cotton": {},
+  "heather": { "on": ["#moor"], "share": 0.06 },
+  "bog-cotton": { "on": ["#moor"] },
   "mountain-avens": { "model": "alpine-flowers", "latin": "Dryas octopetala", "on": ["grass", "moss", "bare"], "share": 0.04 },
-  "fireweed": { "model": "alpine-flowers", "latin": "Chamerion angustifolium", "on": ["grass", "shrub"], "height": [0.6, 1.2], "share": 0.03, "clumped": true }
+  "fireweed": { "model": "alpine-flowers", "latin": "Chamerion angustifolium", "on": ["grass", "shrub"], "height": [0.6, 1.2], "share": 0.03, "clumped": true },
+  "grass": { "off": ["#moor"] }
  },
  "herds": {
   "reindeer": { "model": "goat", "latin": "Rangifer tarandus", "groups": 3, "size": [3, 12], "on": ["heath", "rough-grass", "wet-grassland", "grassland", "bog"] },

@@ -1,5 +1,5 @@
 //! The producer of `forest`: the canopy of each cell of the zoom 12 tiles at 256 px that the
-//! national canopy models meet, `12/<x>/<y>.tif` (`specs/obc-data.md`). A version extends the
+//! canopy models meet, `12/<x>/<y>.tif` (`specs/obc-data.md`). A version extends the
 //! version before: it makes each tile of its region again and keeps every other tile of the version
 //! before without an upload. `tools/forest_reference.py fetch` reduces the source rasters of one tile.
 
@@ -20,6 +20,10 @@ use crate::terrain_reference::area;
 pub const ID: &str = "forest";
 
 const ZOOM: u32 = 12;
+/// The format of the tiles; a version of format 2 has no tile of `canopy-global`.
+pub(crate) const FORMAT: u32 = 3;
+/// The key of the model of every country, which a cell reads only where no national model has it.
+const GLOBAL: &str = "global";
 
 /// What the tool reads besides the model of a tile.
 pub(crate) const LEAF_TYPE: &str = "hrl-dominant-leaf-type";
@@ -45,7 +49,7 @@ impl Prepared for ForestReference {
     }
 
     fn format(&self) -> u32 {
-        2
+        FORMAT
     }
 
     fn revision(&self) -> u32 {
@@ -83,11 +87,11 @@ impl Prepared for ForestReference {
     fn prepare(&self, job: &mut Job) -> Result<(), String> {
         let previous = job.extend(self.format())?;
         let (bbox, countries) = area(job.scope.as_ref())?;
-        // The model of each tile: the first in `data/sources.toml` that meets it.
-        let mut keys: BTreeMap<(u32, u32), (String, String)> = BTreeMap::new();
+        // The models of each tile in the order of `models`: a cell takes the first that has it.
+        let mut keys: BTreeMap<(u32, u32), Vec<(String, String)>> = BTreeMap::new();
         for (key, model) in models(job.sources(), bbox.as_ref(), &countries) {
             for tile in model_tiles(model, bbox.as_ref())? {
-                keys.entry(tile).or_insert_with(|| (key.into(), model.id.clone()));
+                keys.entry(tile).or_default().push((key.into(), model.id.clone()));
             }
         }
         let name = |(x, y): &(u32, u32)| format!("12-{x}-{y}");
@@ -99,10 +103,15 @@ impl Prepared for ForestReference {
                 marks: Vec::new(),
             })
             .collect();
-        let of: BTreeMap<String, &str> = keys.iter().map(|(tile, (key, _))| (name(tile), key.as_str())).collect();
+        let of: BTreeMap<String, String> = keys
+            .iter()
+            .map(|(tile, models)| {
+                (name(tile), models.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>().join(","))
+            })
+            .collect();
         let digests = prepared_tiles::make(job, &tiles, |job, name| {
             let mut command = (self.tool)(job.root)?;
-            command.args(["fetch", of[name], "--tile", name, "--out"]).arg(&job.work);
+            command.args(["fetch", &of[name], "--tile", name, "--out"]).arg(&job.work);
             Ok(command)
         })?;
         // A tile outside the region is the tile of the version before.
@@ -116,9 +125,10 @@ impl Prepared for ForestReference {
         }
         // The services have no versions of their own: the day of the prepare names what it read.
         let version = job.version.clone();
-        let read: BTreeSet<&String> = keys.values().map(|(_, id)| id).collect();
+        let read: BTreeSet<&String> = keys.values().flatten().map(|(_, id)| id).collect();
         for model in read {
-            let made = keys.iter().filter(|(_, (_, id))| id == model).map(|((x, y), _)| format!("12/{x}/{y}.tif"));
+            let made = keys.iter().filter(|(_, models)| models.iter().any(|(_, id)| id == model));
+            let made = made.map(|((x, y), _)| format!("12/{x}/{y}.tif"));
             let made = made.filter_map(|path| Some((path.clone(), digests.get(&path)?.clone()))).collect();
             job.input(model, &version, made)?;
         }
@@ -129,18 +139,23 @@ impl Prepared for ForestReference {
     }
 }
 
-/// The canopy models `canopy-<key>` of `sources` that meet `bbox`, of one of `countries` when the
-/// region names some, with their keys: the key of a model is its lowercase country code.
+/// The canopy models `canopy-<key>` of `sources` that meet `bbox`, with their keys: the national
+/// models, whose key is the lowercase country code, of one of `countries` when the region names
+/// some, and then the model `canopy-global` when there is a box: a version of everything reads
+/// national models only.
 pub(crate) fn models<'a>(
     sources: &'a [Source],
     bbox: Option<&'a Bbox>,
     countries: &'a [String],
 ) -> impl Iterator<Item = (&'a str, &'a Source)> {
-    sources.iter().filter_map(move |source| {
-        let key = source.id.strip_prefix("canopy-")?;
-        let near = bbox.is_none_or(|b| source.meets([b.west, b.south, b.east, b.north]));
-        (near && (countries.is_empty() || countries.contains(&key.to_uppercase()))).then_some((key, source))
-    })
+    let near = move |source: &Source| bbox.is_none_or(|b| source.meets([b.west, b.south, b.east, b.north]));
+    let national = sources.iter().filter_map(move |source| {
+        let key = source.id.strip_prefix("canopy-").filter(|key| *key != GLOBAL)?;
+        (near(source) && (countries.is_empty() || countries.contains(&key.to_uppercase()))).then_some((key, source))
+    });
+    let global =
+        sources.iter().filter(move |source| bbox.is_some() && source.id == format!("canopy-{GLOBAL}") && near(source));
+    national.chain(global.map(|source| (GLOBAL, source)))
 }
 
 /// The zoom 12 tiles whose inside meets the `extent` of `model` and, with a box, that box.
@@ -214,6 +229,26 @@ t="${4#12-}"; mkdir -p "$6/12/${t%-*}" && echo "$4" > "$6/12/${t%-*}/${t#*-}.tif
         let text =
             format!("name = \"{id}\"\nkind = \"box\"\nbox = [{west}, 46.5, {east}, 46.6]\ncountries = [\"CH\"]\n");
         Scope { region: id.into(), definitions: [(id.into(), text)].into() }
+    }
+
+    #[test]
+    fn the_global_model_meets_every_country_and_comes_after_the_national_ones() {
+        let rows = |id: &str, extent: &str| {
+            format!("[[source]]\nid = \"{id}\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Test\"\nfetch = {{ kind = \"capture\", url = \"https://example.org\" }}\nextent = {extent}\nversion = \"date\"\nredistribute = true\n")
+        };
+        let text =
+            [rows("canopy-global", "[-180.0, -85.0, 180.0, 85.0]"), rows("canopy-ch", "[5.9, 45.8, 10.5, 47.9]")];
+        let temp = temp("forest-models");
+        std::fs::create_dir_all(temp.0.join("data")).unwrap();
+        std::fs::write(temp.0.join("data/sources.toml"), text.concat()).unwrap();
+        let sources = Registry::load(&temp.0).unwrap().sources;
+        let keys = |countries: &[&str]| {
+            let countries: Vec<String> = countries.iter().map(|code| code.to_string()).collect();
+            let bbox = Bbox { west: 7.0, south: 46.0, east: 9.0, north: 48.0 };
+            models(&sources, Some(&bbox), &countries).map(|(key, _)| key.to_string()).collect::<Vec<_>>()
+        };
+        assert_eq!(keys(&["CH", "DE"]), ["ch", "global"]);
+        assert_eq!(keys(&["DE"]), ["global"]);
     }
 
     #[test]

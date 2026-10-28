@@ -1,0 +1,15 @@
+{
+ "name": "Galician granite house",
+ "extends": "stone-house",
+ "about": "Grey granite rubble, some of it rendered white, with small, deep windows under a roof of orange-red tile: Galicia and northern Portugal.",
+ "pitch": [20, 28],
+ "shutters": false,
+ "windows": 0.7,
+ "palette": {
+  "render": ["#8f8b84", "#9a958c", "#85817a", "#a39e94", "#8c8880", "#f0eee8"],
+  "roof": ["#c0603c", "#b5583a", "#c96a44", "#a85434"],
+  "door": ["#5e4434", "#4d6a4a", "#3f4f6a"],
+  "plinth": "#77736c",
+  "chimney": "#8f8b84"
+ }
+}

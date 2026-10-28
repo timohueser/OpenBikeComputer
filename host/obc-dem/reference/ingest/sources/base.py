@@ -75,7 +75,8 @@ SERVER_FAULTS = (b"NoApplicableCode", b"LayerNotDefined")
 ORTHOMETRIC = (
     "LN02", "LHN95", "NGF-IGN69", "NAVD88", "NN2000", "REDNAP", "NAP",
     "Ordnance Datum Newlyn", "EVRF2000", "CGVD2013", "NZVD2016", "DHHN2016", "DHHN92",
-    "DVR90", "RH2000", "N2000", "AHD", "m s.l.m.", "EGM2008",
+    "DVR90", "RH2000", "N2000", "AHD", "m s.l.m.", "EGM2008", "Bpv", "PL-KRON86-NH",
+    "ISH2004",
 )
 
 # What an ellipsoidal height is called. It stands tens of metres from an orthometric one,
@@ -407,6 +408,9 @@ class Source:
     `grid_epsg` is the grid its ESRI ASCII files are on, because that format carries no
     CRS; and `confirm_datum` is the datum a delivery has to be confirmed as, for a portal
     that also publishes an ellipsoidal one.
+
+    `void` is a height inside the plausible range that the service answers for land it does
+    not hold and does not declare as nodata, such as GUGiK's 0 abroad.
     """
 
     #: How this kind of adapter carries a credential: `"query"` when its requests are
@@ -417,7 +421,8 @@ class Source:
     credential_style = None
 
     def __init__(self, key, country, product, resolution_m, licence, vertical_datum,
-                 credential=None, credential_hosts=(), grid_epsg=None, confirm_datum=None):
+                 credential=None, credential_hosts=(), grid_epsg=None, confirm_datum=None,
+                 void=None):
         self.check_datum(key, vertical_datum)
         self.check_credential(key, credential, credential_hosts)
         self.key = key
@@ -430,6 +435,7 @@ class Source:
         self.credential_hosts = credential_hosts
         self.grid_epsg = grid_epsg
         self.confirm_datum = confirm_datum
+        self.void = void
 
     @property
     def attribution(self) -> str:

@@ -4,7 +4,7 @@
  * `palette.ts` and the mosaic calendar of `calendar.ts`. Colours are linear RGB.
  */
 
-import { SEASONS, type Ramp, type Region, type Vocabulary } from '../rules/regions';
+import { named, SEASONS, type Patch, type Ramp, type Region, type Season, type Vocabulary } from '../rules/regions';
 
 /** WorldCover's groups in the order of the ramps; `COVER_*` in look.wgsl. */
 export const COVER_ORDER = ['tree', 'shrub', 'grass', 'crop', 'built', 'bare', 'snow', 'water', 'wetland', 'mangrove', 'moss'] as const;
@@ -40,8 +40,12 @@ const ROAD_LINE = '#d6d4cc';
 /** The bands of variegated rock, such as Keuper clays: red, gypsum white, green-grey. */
 export const VARIEGATED = ['#9e6252', '#ddd2bc', '#869690'];
 
-/** Heath and bog; exposed rock; open, unfarmed ground (pasture is cleared). */
-const MOOR = ['heath', 'bog'], ROCKY = ['bare-rock', 'scree'], OPEN = ['shrub', 'grass', 'bare', 'wetland', 'moss'];
+/**
+ * The patches of a region that the ground draws. Each takes a channel of a texel plane of the ground
+ * cache (ground.wgsl), which filters its share of the ground between texels; the planes have two
+ * channels free, and a third patch would need a fourth plane on every page.
+ */
+const PATCHES = 2;
 
 /** An sRGB hex colour in linear light. */
 export function linear(hex: string): [number, number, number] {
@@ -55,23 +59,37 @@ const lerp = (a: number[], b: number[], t: number) => a.map((v, i) => v + (b[i] 
 
 /**
  * The slots: three ramp colours per cover; a paint per material, alpha 1 where the region names one;
- * per material the share of the satellite's hue that its paint keeps; a colour per lithology, alpha
- * 1 where it is banded; the cliff (alpha 1 where named), the heather (alpha its share), the speckle
- * (alpha its share), the terrain scalars (outcrops, cos turf_deg, snow_share; alpha the speckle
- * size), the bedding normal (alpha the season's bare_luma, 0 for none) and the palette snap; the
- * sea's deep and shallow colours, the road surfaces and the edge line of main roads. Then the
- * vocabulary: per material its cover, moor (only in a region with heather, so that no other region
- * runs the heather), rocky and rough; per lithology its hardness.
+ * per material its traits: the share of the satellite's hue that its paint keeps, and its share of
+ * ground in tussocks and low shrubs; a colour per lithology, alpha 1 where it is banded; the cliff
+ * (alpha 1 where named), the colour of each patch (alpha its share), the terrain scalars (outcrops,
+ * cos turf_deg, snow_share), the bedding normal (alpha the season's bare_luma, 0 for none) and the
+ * palette snap; the sea's deep and shallow colours; per patch its size and 1 for dots; the paint of
+ * the turf (alpha 1 where it has one); the road surfaces and the edge line of main roads. Then the
+ * vocabulary: per material its cover, the patches over it as bits, rocky and rough; per lithology
+ * its hardness.
  */
 export function slots(vocabulary: Vocabulary) {
     const materials = 3 * COVER_ORDER.length, m = vocabulary.materials.length, l = vocabulary.lithologies.length;
-    const satellite = materials + m, lithologies = satellite + m, cliff = lithologies + l, roads = cliff + 8;
+    const traits = materials + m, lithologies = traits + m, cliff = lithologies + l, roads = cliff + 10;
     const kinds = roads + ROADS.length + 1, hardness = kinds + m;
     return {
-        materials, satellite, lithologies, cliff, heather: cliff + 1, speckle: cliff + 2, terrain: cliff + 3, bedding: cliff + 4, snap: cliff + 5,
-        sea: cliff + 6, roads, roadLine: roads + ROADS.length, kinds, hardness, count: hardness + l,
+        materials, traits, lithologies, cliff, patches: cliff + 1, terrain: cliff + 3, bedding: cliff + 4, snap: cliff + 5,
+        sea: cliff + 6, shapes: cliff + 8, turf: cliff + 9, roads, roadLine: roads + ROADS.length, kinds, hardness, count: hardness + l,
     };
 }
+
+/**
+ * The patches of a look in the order that they draw: dots, then blotches, each form by name. The
+ * order of keys is no rule: rules.json sorts them, and JavaScript puts keys like integers first.
+ */
+export function patchesOf(look: Region['look']): Patch[] {
+    const listed = Object.entries(look.patches ?? {}).flatMap(([name, patch]) => (patch ? [{ name, patch }] : []));
+    const rank = ({ name, patch }: (typeof listed)[number]) => `${patch.form === 'dots' ? 0 : 1}${name}`;
+    return listed.sort((a, b) => (rank(a) < rank(b) ? -1 : 1)).map(({ patch }) => patch).slice(0, PATCHES);
+}
+
+/** A colour of the year or by season, in a season. */
+const inSeason = (colour: string | Partial<Record<Season, string>> | undefined, season: number) => (typeof colour === 'string' ? colour : colour?.[SEASONS[season]]);
 
 /** The cover ramps of a season, three colours each in COVER_ORDER; woodland mixes needle and broad by the leaf. */
 export function ramps(season: number, region: Region): number[][] {
@@ -87,29 +105,30 @@ export function ramps(season: number, region: Region): number[][] {
 /** The rows of a season (0 winter to 3 autumn). */
 export function packRules(regions: Region[], vocabulary: Vocabulary, season: number): Float32Array<ArrayBuffer> {
     const SLOT = slots(vocabulary), data = new Float32Array(regions.length * SLOT.count * 4);
-    const materials = vocabulary.materials.map(material => material.id), lithologies = vocabulary.lithologies.map(lithology => lithology.id);
     regions.forEach((region, row) => {
         const { look } = region;
         const set = (slot: number, rgb: number[], a: number) => data.set([...rgb, a], (row * SLOT.count + slot) * 4);
+        const paint = (colour: string | undefined, a: number) => [linear(colour ?? '#000000'), colour ? a : 0] as const;
+        const patches = patchesOf(look);
+        const under = patches.map(patch => named(vocabulary, patch.on));
         ramps(season, region).forEach((c, i) => set(i, c, 1));
-        materials.forEach((id, i) => {
-            const yearly = look.materials?.[id]?.colour;
-            const paint = typeof yearly === 'string' ? yearly : yearly?.[SEASONS[season]];
-            set(SLOT.materials + i, linear(paint ?? '#000000'), paint ? 1 : 0);
-            set(SLOT.satellite + i, [look.materials?.[id]?.satellite ?? 0, 0, 0], 1);
-            const cover = COVER_ORDER.indexOf(vocabulary.materials[i].cover as (typeof COVER_ORDER)[number]);
-            const open = OPEN.includes(vocabulary.materials[i].cover) && id !== 'pasture';
-            set(SLOT.kinds + i, [cover, +(MOOR.includes(id) && !!look.moor), +ROCKY.includes(id)], +open);
+        vocabulary.materials.forEach(({ id, cover, clumps, tags = [] }, i) => {
+            set(SLOT.materials + i, ...paint(inSeason(look.materials?.[id]?.colour, season), 1));
+            set(SLOT.traits + i, [look.materials?.[id]?.satellite ?? 0, look.materials?.[id]?.clumps ?? clumps ?? 0, 0], 1);
+            const patched = under.reduce((bits, codes, k) => bits | (codes.includes(i) ? 1 << k : 0), 0);
+            set(SLOT.kinds + i, [COVER_ORDER.indexOf(cover as (typeof COVER_ORDER)[number]), patched, +tags.includes('rocky')], +tags.includes('rough'));
         });
-        lithologies.forEach((id, i) => {
+        vocabulary.lithologies.forEach(({ id, hardness }, i) => {
             const rock = look.lithology?.[id];
             set(SLOT.lithologies + i, linear(rock?.colour ?? look.rock), rock?.banded ? 1 : 0);
-            set(SLOT.hardness + i, [vocabulary.lithologies[i].hardness, 0, 0], 1);
+            set(SLOT.hardness + i, [hardness, 0, 0], 1);
         });
         set(SLOT.cliff, linear(look.cliff ?? '#000000'), look.cliff ? 1 : 0);
-        set(SLOT.heather, linear(look.moor?.heather ?? '#000000'), look.moor?.share ?? 0);
-        set(SLOT.speckle, linear(look.speckle?.colour ?? '#000000'), look.speckle?.share ?? 0);
-        set(SLOT.terrain, [look.outcrops, Math.cos(look.turf_deg * Math.PI / 180), look.snow_share], look.speckle?.size_m ?? 1);
+        patches.forEach((patch, k) => set(SLOT.patches + k, ...paint(inSeason(patch.colour, season), patch.share)));
+        const shape = (k: number) => [patches[k]?.size_m ?? 1, +(patches[k]?.form === 'dots')];
+        set(SLOT.shapes, [...shape(0), shape(1)[0]], shape(1)[1]);
+        set(SLOT.turf, ...paint(inSeason(look.turf ? look.materials?.[look.turf]?.colour : undefined, season), 1));
+        set(SLOT.terrain, [look.outcrops, Math.cos(look.turf_deg * Math.PI / 180), look.snow_share], 0);
         // The bedding plane's normal: up, tipped by the dip toward the dip direction, 90° right of the strike.
         const { strike, dip } = look.bedding ?? { strike: 0, dip: 0 }, toward = (strike + 90) * Math.PI / 180, tilt = dip * Math.PI / 180;
         const bare = Array.isArray(look.bare_luma) ? look.bare_luma[season] : look.bare_luma;

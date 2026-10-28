@@ -158,7 +158,7 @@ export const REFERENCES: { id: string; title: string; about: string; add: string
     {
         id: "forest",
         title: "Forest",
-        about: "Canopy height and leaf type for the Trail View forest, from the national canopy models",
+        about: "Canopy height and leaf type for the Trail View forest, from the national canopy models, else a global one",
         add: "Add an area",
         models: { prefix: "canopy-", noun: "canopy model" },
     },
@@ -170,7 +170,15 @@ export const referenceOf = (id: string) => REFERENCES.find((reference) => refere
 export function modelsOf(id: string, rows: SourceRow[]): { row: SourceRow; country: string }[] {
     const prefix = referenceOf(id)?.models?.prefix;
     if (!prefix) return [];
-    return rows.filter((row) => row.id.startsWith(prefix)).map((row) => ({ row, country: row.id.slice(prefix.length).split("-")[0].toUpperCase() }));
+    return rows
+        .filter((row) => row.id.startsWith(prefix) && row.id !== `${prefix}global`)
+        .map((row) => ({ row, country: row.id.slice(prefix.length).split("-")[0].toUpperCase() }));
+}
+
+/** The model of reference `id` in `rows` that covers every country, such as `canopy-global`. */
+export function globalModelOf(id: string, rows: SourceRow[]): SourceRow | undefined {
+    const prefix = referenceOf(id)?.models?.prefix;
+    return prefix ? rows.find((row) => row.id === `${prefix}global`) : undefined;
 }
 
 /** Where a reference is: what a person acts on first. */

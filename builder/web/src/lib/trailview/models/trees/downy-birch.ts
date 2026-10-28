@@ -18,7 +18,7 @@ export default {
   marks: ['#4a4440', 0.2],
   leaves: {
     winter: 'bare',
-    spring: ['#4e7a2c', '#7aaa42', '#b6d874'],
+    spring: ['#4a682c', '#6e8e40', '#a4bc70'],
     // Duller and darker than silver birch.
     summer: ['#354b1c', '#536b28', '#839243'],
     autumn: ['#94661a', '#c6922a', '#e8c04e'],

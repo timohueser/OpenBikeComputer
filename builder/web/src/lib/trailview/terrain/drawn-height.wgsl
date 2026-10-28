@@ -301,3 +301,8 @@ fn drawn_normal(s: vec2f) -> vec3f {
     }
     return normalize(vec3f(n, sqrt(max(1.0 - dot(n, n), 1e-4))));
 }
+
+// A normal of LOD space axes in render space, with the linear part of the cubic.
+fn render_normal(m: vec3f) -> vec3f {
+    return normalize(vec3f(m.x * vec2f(coefficient(1u), coefficient(11u)) + m.y * vec2f(coefficient(2u), coefficient(12u)), m.z));
+}

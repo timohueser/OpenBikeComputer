@@ -16,7 +16,7 @@ export interface LookInput {
     place: [number, number];
     /** The view ray of clip point (x, y) is forward + x right + y up. */
     camera: { right: number[]; up: number[]; forward: number[] };
-    /** The material code of heath, the finest ground level, and the materials and lithologies of the vocabulary. */
+    /** The finest ground level, the materials and lithologies of the vocabulary, and 0. */
     codes: [number, number, number, number];
     debug: number;
     /** The jittered frame's sample. */
@@ -31,7 +31,7 @@ export function lookUniform(input: LookInput): ArrayBuffer {
     const data = new ArrayBuffer(LOOK_BYTES), floats = new Float32Array(data), words = new Uint32Array(data);
     const { light, eye } = input;
     floats.set(input.sun, 0);
-    floats.set([...light.sunColour, 0], 4);
+    floats.set([...light.sunColour, light.rise], 4);
     floats.set([...light.ambient, light.night], 8);
     floats.set([...light.zenith, eye.softness], 12);
     floats.set([...light.horizon, eye.gradient], 16);

@@ -65,26 +65,13 @@ saw snow counts as NDVI −1.
 A material code above 63 needs a new format. The ruleset check rejects more than 255 region ids, so
 a region id is 0 to 254; more ids need a new format, with two bytes.
 
-The material and the barren share come from the sources at zoom 13, the lithology and the region
-at zoom 10. A coarser texel takes the most common byte of its four children, the first in reading
-order on a tie. A material or region texel with no data counts only where all four have no data,
-and a missing child has no data. A coarser barren share is the rounded mean of the children with
-data. At zooms 11 to 13, a lithology or region texel is the zoom 10 texel that holds its centre.
-A tile is in the archive where its material has data.
-
-The material chain refines a baseline. Each step changes a texel only where the step names the
-material more precisely: the table `REFINES` of `ground.py`.
-
-1. ESA WorldCover, its class as a material. Finer than its 10 m pixels, a shore takes the
-   majority of water within half a pixel.
-2. Sentinel-2 heath: open ground that is as red as it is green while its NDVI is high and near
-   the year's highest.
-3. OSM forests with a `leaf_type`.
-4. CORINE Land Cover.
-5. OSM natural and landuse areas, and kinds of wetland.
-
-The lithology is the rock of the unit of EGDI's 1:1 000 000 map, and of IGME 5000 where EGDI
-names no rock. A term that the tables `EGDI` and `IGME5000` of `ground.py` do not list is unknown.
+The material and the barren share come from the sources at zoom 13 and the region at zoom 10. The
+lithology comes from the sources at the highest `zoom` of the lithology sources that name a unit in
+the bounds, and at least at zoom 10. A coarser texel takes the most common byte of its four children,
+the first in reading order on a tie. A material or region texel with no data counts only where all
+four have no data, and a missing child has no data. A coarser barren share is the rounded mean of
+the children with data. Finer than the last zoom of its layer, a lithology or region texel is the
+texel of that zoom that holds its centre. A tile is in the archive where its material has data.
 
 The region is the ecoregion of `ecoregions.json` that holds the texel centre, or the nearest one
 within 25 km, else `world`. From there the texel steps into the subregion whose `where` holds it,
@@ -92,6 +79,64 @@ the smallest on a tie, until none does. The place of the texel is the subdivisio
 `countries.json` that holds its centre, else the country, else the nearest place within 5 km in the
 tile. The texel takes the id of the region and its subdivision, else of the region and its
 country, else of the region and `"*"`.
+
+### Ground sources
+
+`data/trailview/ground.json` lists the sources of the material and of the lithology. The ruleset
+step checks it and writes it as `ground.json`, which the material and lithology steps read. Each
+layer has `refines` and `sources`:
+
+- `refines` maps a material or lithology to the ones that it names more precisely.
+- `sources` is the chain, in the order it applies. A material texel starts as `none`, a lithology
+  texel as `unknown`. A step reads each source of its chain once, and a source with an `extent` in
+  `data/sources.toml` only where the extent meets the bounds. A lithology source raises the last
+  zoom of the lithology only where it names a unit in the bounds.
+
+A source of the chain has these keys:
+
+| Key | Value |
+| --- | --- |
+| `source` | The id of its row in `data/sources.toml`: its licence, credit, fetch and extent |
+| `protocol` | How the step reads its files, see below |
+| `layer` | The layer of a vector file, the type of a WFS, or the layer of a map service |
+| `field` | The attribute that names the class of a feature |
+| `sort` | A `wfs` source only: a unique attribute, the order of the pages of its capture |
+| `px_m` | The pixel size of a raster or of a map image, in metres |
+| `crs` | The CRS of the map images |
+| `legend` | `match` and `classes`: `[native class, name]` pairs, where a name is an id of `materials.json` |
+| `combine` | `authority` or `refine`, see below |
+| `zoom` | A vector lithology source only, where it is required: the highest zoom that its detail fills, 10 to 13 |
+| `reach_m` | A vector source only: where it names no class, its nearest class within this reach also refines the texel |
+
+| `protocol` | Files |
+| --- | --- |
+| `raster` | GeoTIFFs of class values. With `px_m`, finer than its pixels, a shore takes the majority of `inland-water` within half a pixel |
+| `vector` | A GeoPackage, a zipped Shapefile or GeoJSON, by the file name |
+| `arcgis-features`, `wfs` | The GeoJSON of its capture, see [Fetch](obc-data.md#fetch) |
+| `arcgis-image` | The map images of its capture: a class is the label of the legend swatch of its colour |
+| `osm` | The areas of `osm.pbf` of `planner/osm` |
+
+A class matches by its `match`:
+
+| `match` | Class |
+| --- | --- |
+| `code` | The native class equals the value, or the last part of a URI value |
+| `prefix` | The longest native class that starts the value |
+| `word` | The native class that the value holds first, ignoring case; the longest on a tie. A native class is lowercase |
+| `tags` | The first native class, an object of tags, whose tags all hold on the OSM area |
+
+A `word` legend may have a `qualifier`: `word`, `within` and `class`. Where its word follows the
+word of the found class within `within` characters, or the value holds its word and no class, the
+value names its `class`. A value without a class names nothing. `authority` takes each class that the source names, but a
+material source keeps `inland-water`. `refine` takes a class only where `refines` lists the
+texel's code for that class.
+
+The entry with `rule: satellite-heath` reads `sentinel-2-mosaics`. It makes `material` of each
+texel whose material it lists in `on`, where the summer quarter, or spring where summer saw
+nothing, measured green below `green_red` × red, an NDVI of `ndvi` or more, and an NDVI no more
+than `peak` below the year's highest. On a lithology of `spring_on`, spring also measured green
+below `spring_green_red` × red, or saw snow or nothing. The material step reads the lithology
+archive for this rule.
 
 ## Colour
 
@@ -179,27 +224,25 @@ ruleset with a problem.
 
 | Key | Value |
 | --- | --- |
-| `format` | `2` |
+| `format` | `3` |
 | `materials` | `materials.json` as it is |
 | `ids` | Each region id as `[region, place]`: per region by name, `"*"` and then each country or subdivision that a value by place of the region names, by code. The index is the region id |
 | `regions` | The files of `regions/` by name |
 | `packs`, `styles` | The files of `packs/` and `styles/` by name |
-| `overlays` | The files of `overlays/` by region name |
 
-The bundle keeps each file as it is, without `about` and `where`. The engine resolves a region as
-the prototype's `regions.ts` does:
+The bundle keeps each file as it is, without `about` and `where`. The engine resolves a region id
+with these rules:
 
 - A file inherits what it does not say from the file that it `extends`. Objects merge, and any
   other value replaces.
 - `look.ramps` of a cover comes whole from the nearest region of the chain that names it.
 - A value by place, `{"es-ga": …, "es": …, "*": …}`, takes the entry of the place of the region id,
   else of its country, else `"*"`. The values by place are `style` of the pack and `look.roadLine`.
-- In a pack, `trees`, `ground` and `herds` are keyed by species. A child adds or changes one, and
-  `null` drops one.
-
-An overlay holds the look keys of the engine that the prototype does not have, as
-`{"look": {…}}`. The engine merges the overlays of the chain of a region over its look, in the
-same way. The key table `OVERLAY_LOOK` of `rules.py` lists the keys that an overlay may set.
+- In a pack, `trees`, `ground` and `herds` are keyed by species, and in a look, `patches` by
+  name. A child adds or changes one, and `null` drops one. The patches draw dots first, then
+  blotches, each form in the order of the names; the order of keys means nothing.
+- A list of ground (`on` and `off` of a ground plant, `on` of a herd and of a look's patch) names
+  covers, materials by id, and the `tags` of materials in `materials.json` as `#tag`.
 
 ## Canopy
 

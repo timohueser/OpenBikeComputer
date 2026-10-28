@@ -78,5 +78,5 @@ export default {
     name: 'Moor grass',
     latin: 'Molinia caerulea, Trichophorum cespitosum',
     build: (season, seed) => moorGrass(season, random(seed)),
-    ground: { on: ['grass', 'shrub', 'wetland', 'moss'], height: [0.3, 0.6], share: 0.35, habitat: 'moor', own: true },
+    ground: { on: ['grass', 'shrub', 'wetland', 'moss'], height: [0.3, 0.6], share: 0.35, own: true },
 } satisfies Plant;

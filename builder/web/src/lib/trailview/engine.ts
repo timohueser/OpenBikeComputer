@@ -1,14 +1,15 @@
 import type { PlannerConfig } from '../planner/config';
 import type { Coordinate } from '../planner/geo';
-import { instantAt, solarPosition, solarTerms } from '../planner/solar';
+import { instantAt } from '../planner/solar';
 import { eyeAltitude, follow, groundOf, MIN_CLEARANCE, move, VFOV, viewProjection, type Footing, type Pose } from './frame/camera';
 import { Controls } from './frame/controls';
 import { CURVATURE, frameAt, type Frame } from './frame/frame';
 import { Gpu } from './gpu/device';
 import { PassTimes } from './gpu/timing';
 import { Ground, groundPipelines, type GroundStats } from './ground/ground';
-import { moonAt, starFrame, type Mat3 } from './light/celestial';
-import { airColour, eyeLook, lightAt, moonlit, moonShare, weatherLight, WEATHERS, type EyeLook } from './light/light';
+import { moonAt, starFrame, sunAt, type Mat3 } from './light/celestial';
+import { coronaSeed, coronaShare, drawnMoon, solarActivity, sunlightLeft } from './light/eclipse';
+import { airColour, eclipsed, eyeLook, lightAt, moonlit, moonShare, weatherLight, WEATHERS, type EyeLook } from './light/light';
 import { LOOK_BYTES, lookUniform } from './light/look';
 import { Shadow } from './light/shadow';
 import { DARK_SKY, nightSky } from './light/night';
@@ -589,9 +590,10 @@ export class TrailView {
             gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, near, lights, aspect, ndc, scale, step?.sample ?? 0));
             const { cover } = near.weather, night = lightAt(lights.sunAltitude).night;
             this.sky.write(gpu, {
-                stars: lights.stars, moon: lights.moon, moonAir: lights.moonAir, moonLight: lights.share > 0,
-                night: nightSky({ sun: lights.sunAltitude, moon: lights.moonAltitude, phase: lights.phase, sky: this.skyMagnitude, cover }),
+                stars: lights.stars, moon: lights.drawnMoon, moonRadius: lights.moonRadius, moonAir: lights.moonAir, moonLight: lights.share > 0,
+                night: nightSky({ sun: lights.sunAltitude, moon: lights.moonAltitude, phase: lights.phase, sky: this.skyMagnitude, cover, left: lights.left }),
                 moonDisk: (1 - cover) * (0.35 + 0.65 * night), pixel: [2 / width, 2 / height],
+                eclipse: [(1 - cover) * coronaShare(lights.left), 1 - lights.left, lights.activity, lights.seed],
             });
         } else this.temporal.reset();
         const encoder = gpu.device.createCommandEncoder();
@@ -734,7 +736,7 @@ export class TrailView {
         const forward = [Math.sin(h) * Math.cos(p), Math.cos(h) * Math.cos(p), Math.sin(p)], right = [Math.cos(h), -Math.sin(h), 0];
         const up = [right[1] * forward[2] - right[2] * forward[1], right[2] * forward[0] - right[0] * forward[2], right[0] * forward[1] - right[1] * forward[0]];
         return lookUniform({
-            sun: [x, y, z, bearing], skySun: lights.sun, light: weatherLight(lights.share > 0 ? moonlit(light, lights.share, lights.moonAir) : light, near.weather),
+            sun: [x, y, z, bearing], skySun: lights.sun, light: weatherLight(lights.share > 0 ? moonlit(light, lights.share, lights.moonAir) : eclipsed(light, lights.left), near.weather),
             eye: near, altitude: eye.z, place: [eye.east, eye.north],
             camera: { right: right.map(v => v * tx), up: up.map(v => v * ty), forward },
             codes: this.groundLook.codes,
@@ -750,7 +752,7 @@ export class TrailView {
      */
     private lights(): Lights {
         const { east, north } = this.pose, place = this.frame.lonLat(east, north);
-        const [hours, minutes] = this.extras.time.split(':').map(Number), minute = 60 * hours + minutes;
+        const [hours, minutes, seconds = 0] = this.extras.time.split(':').map(Number), minute = 60 * hours + minutes;
         let instant: number;
         try {
             instant = instantAt(this.extras.date, minute, TIME_ZONE);
@@ -758,22 +760,27 @@ export class TrailView {
             // The clock skips this time when it changes to summer time.
             instant = instantAt(this.extras.date, minute + 60, TIME_ZONE);
         }
+        instant += 1000 * seconds;
         // East, north and up to the frame, whose north turns from true north by the convergence.
         const c = this.convergence(east, north) * RAD, cos = Math.cos(c), sin = Math.sin(c);
         const toFrame = ([e, n, u]: number[]) => [e * cos + n * sin, n * cos - e * sin, u];
-        const { bearing, altitude } = solarPosition(place, solarTerms(instant));
-        const sun = toFrame([Math.sin(bearing) * Math.cos(altitude), Math.cos(bearing) * Math.cos(altitude), Math.sin(altitude)]);
-        const toMoon = moonAt(place, instant), moon = toFrame(toMoon);
-        const sunAltitude = altitude / RAD, moonAltitude = Math.asin(toMoon[2]) / RAD;
+        const toSun = sunAt(place, instant), toMoon = moonAt(place, instant), sun = toFrame(toSun.toward), moon = toFrame(toMoon.toward);
+        const altitude = Math.asin(toSun.toward[2]), sunAltitude = altitude / RAD, moonAltitude = Math.asin(toMoon.toward[2]) / RAD;
         const phase = Math.acos(Math.min(1, Math.max(-1, -(sun[0] * moon[0] + sun[1] * moon[1] + sun[2] * moon[2])))) / RAD;
         const share = moonShare(sunAltitude, moonAltitude, phase), weather = WEATHERS[this.extras.weather].sun;
         const turns = (b: number) => ((b / (2 * Math.PI)) % 1 + 1) % 1;
         const key = share > 0
-            ? [...moon, weather * share, turns(Math.atan2(toMoon[0], toMoon[1]))]
-            : [...sun, weather * Math.min(1, Math.max(0, (altitude + 0.05) / 0.15)), turns(bearing)];
+            ? [...moon, weather * share, turns(Math.atan2(toMoon.toward[0], toMoon.toward[1]))]
+            : [...sun, weather * Math.min(1, Math.max(0, (altitude + 0.05) / 0.15)), turns(Math.atan2(toSun.toward[0], toSun.toward[1]))];
+        // An eclipse fades as the sun sets: below the horizon the sky's light is the twilight's.
+        const left = share > 0 ? 1 : 1 - (1 - sunlightLeft(toSun, toMoon)) * Math.min(1, Math.max(0, (sunAltitude + 4) / 4));
+        const drawn = drawnMoon(toSun, toMoon);
         const m = starFrame(place, instant);
         const stars = [0, 1, 2].map(j => cos * m[j] + sin * m[3 + j]).concat([0, 1, 2].map(j => cos * m[3 + j] - sin * m[j]), m.slice(6)) as Mat3;
-        return { key, sun, sunAltitude, moon, moonAltitude, moonAir: airColour(moonAltitude), phase, share, stars };
+        return {
+            key, sun, sunAltitude, moon, moonAltitude, moonAir: airColour(moonAltitude), phase, share, stars,
+            drawnMoon: toFrame(drawn.toward), moonRadius: drawn.radius, left, activity: solarActivity(instant), seed: coronaSeed(instant),
+        };
     }
 }
 
@@ -791,6 +798,14 @@ interface Lights {
     share: number;
     /** J2000 equatorial directions to the frame, rows first. */
     stars: Mat3;
+    /** The moon as the sky draws it (light/eclipse.ts): toward it in the frame, and its half width in radians. */
+    drawnMoon: number[];
+    moonRadius: number;
+    /** The share of the sun's light that an eclipse leaves, 1 without one. */
+    left: number;
+    /** The sun's activity and the seed of an eclipse's corona (light/eclipse.ts). */
+    activity: number;
+    seed: number;
 }
 
 /** A view projection whose image moves by `ndc` in clip space. */

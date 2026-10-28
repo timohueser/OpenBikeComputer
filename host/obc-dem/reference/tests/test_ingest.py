@@ -261,6 +261,19 @@ class Pool(ArchiveCase):
                 self.assertEqual(int(data.max()), round(PLATEAU))
                 self.assertNotIn(round(TOWER), set(np.unique(data).tolist()))
 
+    def test_a_rows_undeclared_void_is_absence(self):
+        """GUGiK answers 0 for the land abroad and declares no nodata, so the row names it."""
+
+        values = plateau_with_tower()
+        values[:, :100] = 0.0
+        raster = source_raster(self.root / "source.tif", values)
+        ti, tj, _, _ = archive_pixel(grid(), TOWER_ROW, TOWER_COL)
+        for key, zeros in (("ch", True), ("pl", False)):
+            with self.subTest(key):
+                maximum, _ = ingest.pool_tile([raster], ingest.SOURCES[key], ti, tj)
+                self.assertEqual(bool((maximum == 0).any()), zeros)
+                self.assertIn(round(PLATEAU), set(np.unique(maximum).tolist()))
+
     def test_a_scaled_band_is_refused_by_name(self):
         """A band with a scale or an offset is centimetres or worse, not metres."""
 

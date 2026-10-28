@@ -50,7 +50,7 @@
 
     // The slider and the day stepper move drafts. The view takes the time at most every 100 ms, as the layer date
     // bar does, and the day at most every 300 ms: a new date rebuilds every ground page.
-    const minutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3));
+    const minutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
     let draft = $state(720);
     $effect(() => { draft = minutes(time); });
     let draftDay = $derived(date);

@@ -2,4 +2,4 @@
 import { bbq } from '../models/amenities';
 import { modelKind } from './kind';
 
-export default modelKind('bbq', bbq, 800, { light: { colour: '#ff9a4a', radius: 5 } });
+export default modelKind('bbq', bbq, 800, { light: { colour: '#ff9a4a', radius: 5, at: [0, 0, 1.1] } });

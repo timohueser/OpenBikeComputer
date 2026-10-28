@@ -14,7 +14,7 @@
 @group(2) @binding(3) var rules: texture_2d<f32>;
 @group(2) @binding(4) var filtered: sampler;
 // Per page CACHE_PLANES layers, ground.wgsl: the albedo (square root) and the snow before its edge;
-// tree, rough, moor and green; bare_from, barren, blades and banded.
+// tree, the two patches and green; bare_from, barren, blades and banded.
 @group(2) @binding(5) var cache: texture_2d_array<f32>;
 // A table of 256 × 256 hash values that repeats, for value noise in one fetch.
 @group(2) @binding(6) var noise_table: texture_2d<f32>;
@@ -31,8 +31,8 @@
 // that they take from every pixel. Such a node lies at least RANGE.least nodes of level 16 from the
 // eye (lod.ts). At 71° N on a canvas 2880 pixels tall, an output pixel there spans 0.37 m or more at
 // the screen's centre, and 0.22 m at a corner of a 16:9 frame. That is past the fade of the blades
-// (0.18 m). The dots fade at 0.1 × size_m: the 3 m that rules.py allows fade before such a node up to
-// 64° N.
+// (0.18 m). The dots of a patch fade at 0.1 × size_m: the 3 m that rules.py allows fade before such a
+// node up to 64° N. Blotches do not fade: rules.py keeps them two such pixels across.
 override DETAIL: bool = true;
 
 const COVER_TREE: u32 = 0u;
@@ -66,9 +66,9 @@ struct Ground {
     albedo: vec3f,
     snow: f32,
     tree: f32,
-    // Open, unfarmed ground; heath and bog; where the satellite sees green on ground that is not bare rock.
-    rough: f32,
-    moor: f32,
+    // The share of the ground under each patch of the region; where the satellite sees green on
+    // ground that is not bare rock.
+    patches: vec2f,
     green: f32,
     // The slope (normal z) below which the ground is bare rock; land that no quarter sees green; the
     // sward's share where it grows blades; the rock's banded share.
@@ -84,6 +84,7 @@ struct Ground {
     coarse_open: f32,
     region: u32,
     lithology: u32,
+    material: u32,
 }
 
 // Dave Hoskins' hash.
@@ -105,15 +106,21 @@ fn rule(region: u32, slot: i32) -> vec4f {
     return textureLoad(rules, vec2i(slot, i32(region)), 0);
 }
 
+// Whether a set of materials, as `bits` of rules/regions.ts makes it, holds a material code.
+// A code of 64 or more, such as the NO_CELL of a page that is not resident, is in no set.
+fn holds(materials: vec2u, material: u32) -> bool {
+    return material < 64u && ((materials[material >> 5u] >> (material & 31u)) & 1u) == 1u;
+}
+
 // The slots of ground/rules.ts, from the sizes of the vocabulary.
 fn slot_materials() -> i32 { return 33; }
-fn slot_satellite() -> i32 { return 33 + i32(look.codes.z); }
-fn slot_lithologies() -> i32 { return 33 + 2 * i32(look.codes.z); }
-fn slot_cliff() -> i32 { return slot_lithologies() + i32(look.codes.w); }
-fn slot_roads() -> i32 { return slot_cliff() + 8; }
-fn slot_road_line() -> i32 { return slot_cliff() + 14; }
-fn slot_kinds() -> i32 { return slot_cliff() + 15; }
-fn slot_hardness() -> i32 { return slot_kinds() + i32(look.codes.z); }
+fn slot_traits() -> i32 { return 33 + i32(look.codes.y); }
+fn slot_lithologies() -> i32 { return 33 + 2 * i32(look.codes.y); }
+fn slot_cliff() -> i32 { return slot_lithologies() + i32(look.codes.z); }
+fn slot_roads() -> i32 { return slot_cliff() + 10; }
+fn slot_road_line() -> i32 { return slot_cliff() + 16; }
+fn slot_kinds() -> i32 { return slot_cliff() + 17; }
+fn slot_hardness() -> i32 { return slot_kinds() + i32(look.codes.y); }
 
 // The cover's ramp in the region, low NDVI to high.
 fn ramp(region: u32, cover: u32, t: f32) -> vec3f {
@@ -127,8 +134,7 @@ struct Parts {
     paint: vec4f,
     water: f32,
     tree: f32,
-    rough: f32,
-    moor: f32,
+    patches: vec2f,
     sward: f32,
     bare: f32,
     banded: f32,
@@ -149,7 +155,7 @@ fn texel_parts(cell: vec4u, t: f32, ledge: f32, barren: f32, decided: bool) -> P
     if (open && barren > 0.0) {
         c = mix(c, ramp(own, COVER_BARE, t), barren);
     }
-    // Exposed rock where the satellite sees green is a ledge of turf: the region's heath where it paints one, else grass.
+    // Exposed rock where the satellite sees green is a ledge of turf: the region's turf paint where it has one, else grass.
     let turf = kinds.z * ledge;
     if (turf > 0.0) {
         c = mix(c, ramp(own, COVER_GRASS, t), turf);
@@ -159,13 +165,13 @@ fn texel_parts(cell: vec4u, t: f32, ledge: f32, barren: f32, decided: bool) -> P
     parts.palette = c;
     parts.paint = named.a * (1.0 - turf) * vec4f(named.rgb, 1.0);
     if (turf > 0.0) {
-        let heath = rule(own, slot_materials() + i32(look.codes.x));
-        parts.paint += heath.a * turf * vec4f(heath.rgb, 1.0);
+        let paint = rule(own, slot_cliff() + 9);
+        parts.paint += paint.a * turf * vec4f(paint.rgb, 1.0);
     }
     parts.water = select(0.0, 1.0, cover == COVER_WATER);
     parts.tree = select(0.0, 1.0, cover == COVER_TREE);
-    parts.rough = kinds.a;
-    parts.moor = kinds.y;
+    let under = u32(kinds.y + 0.5);
+    parts.patches = vec2f(f32(under & 1u), f32(under >> 1u));
     parts.sward = select(1.0, 0.0, cover == COVER_BARE || cover == COVER_BUILT || cover == COVER_SNOW || cover == COVER_WATER || cover == COVER_MOSS);
     parts.bare = kinds.z;
     parts.banded = rule(own, slot_lithologies() + i32(cell.g)).a;
@@ -190,7 +196,7 @@ fn albedo_of(parts: Parts, region: u32, material: u32, sat: vec4f, barren: f32) 
             albedo *= mix(1.0, clamp(luma(pow(sat.rgb, vec3f(2.2))) / bare_luma, 0.6, 1.6), barren);
         }
         // The paint keeps its material's share of the satellite's hue, at its own brightness.
-        let keep = select(0.0, rule(region, slot_satellite() + i32(material)).x, parts.paint.a > 0.0);
+        let keep = select(0.0, rule(region, slot_traits() + i32(material)).x, parts.paint.a > 0.0);
         if (keep > 0.0) {
             painted = mix(painted, shown * (luma(painted) / max(luma(shown), 1e-4)), keep);
         }
@@ -226,7 +232,7 @@ struct Held {
 }
 
 fn held_at(s: vec2f, level: u32) -> Held {
-    var k = min(level, look.codes.y);
+    var k = min(level, look.codes.x);
     var t = texel_of(s, k);
     var page = ground_page(k, t.whole + vec2i(t.part >= vec2f(0.5)));
     while (page < 0 && k > COARSEST) {
@@ -252,9 +258,9 @@ fn cell_at(s: vec2f, level: u32) -> vec4u {
 // where that page is not resident. What stands by it stays as finer pages replace coarser ones: a page
 // that arrives adds things but changes none.
 fn finest_texel(s: vec2f) -> vec3i {
-    let t = texel_of(s, look.codes.y);
+    let t = texel_of(s, look.codes.x);
     let whole = t.whole + vec2i(t.part >= vec2f(0.5));
-    let page = ground_page(look.codes.y, whole);
+    let page = ground_page(look.codes.x, whole);
     if (page < 0) {
         return vec3i(0, 0, -1);
     }
@@ -448,8 +454,7 @@ fn ground_at(level: u32, s: vec2f, world: vec2f, footprint: f32, sloped: bool) -
     g.albedo = planes[0].rgb * planes[0].rgb;
     g.snow = smoothstep(0.25, 0.75, planes[0].a);
     g.tree = planes[1].r;
-    g.rough = planes[1].g;
-    g.moor = planes[1].b;
+    g.patches = planes[1].gb;
     g.green = planes[1].a;
     g.bare_from = planes[2].r;
     g.barren = planes[2].g;
@@ -466,6 +471,7 @@ fn ground_at(level: u32, s: vec2f, world: vec2f, footprint: f32, sloped: bool) -
     let cell = textureLoad(cells, in_page(page, vec2i(floor(texel + 0.5))), page_layer(page), 0);
     g.region = cell.b;
     g.lithology = cell.g;
+    g.material = cell.r;
     return g;
 }
 
@@ -492,6 +498,30 @@ fn voronoi(p: vec2f, size: f32) -> vec3f {
         }
     }
     return vec3f(hash(id + 5.0), d2 - d1, hash(id + 9.0));
+}
+
+// A patch of `colour` (alpha its share) over the share `under` of the ground, `r` metres from the eye,
+// where the normal leans `north`.
+// Dots: bushes `shape.x` metres across where a pixel can show them, their share of colour beyond.
+// Else blotches about `shape.x` and 5.75 × `shape.x` metres across.
+fn patched(albedo: vec3f, colour: vec4f, shape: vec2f, under: f32, world: vec2f, north: f32, r: f32, surface_size: f32) -> vec3f {
+    if (colour.a <= 0.0 || under <= 0.0) {
+        return albedo;
+    }
+    let size = shape.x;
+    if (shape.y < 0.5) {
+        let blotches = noise(world / size) * 0.55 + noise(world / (5.75 * size)) * 0.45;
+        return mix(albedo, colour.rgb, under * smoothstep(1.0 - colour.a, 1.1 - colour.a, blotches));
+    }
+    // Slopes facing north stay moister and carry more scrub than slopes facing the sun.
+    let cover = colour.a * under * (0.6 + 0.8 * noise(world / 90.0)) * (1.0 + clamp(3.0 * north, -0.3, 0.6)) * smoothstep(40.0, 70.0, r);
+    let dotted = 1.0 - smoothstep(0.03 * size, 0.1 * size, surface_size);
+    var dots = cover;
+    if (DETAIL && dotted > 0.0) {
+        let bush = voronoi(world, size);
+        dots = mix(cover, step(bush.x, min(cover * 1.6, 1.0)) * smoothstep(0.18, 0.3, bush.y), dotted);
+    }
+    return mix(albedo, colour.rgb, 0.85 * dots);
 }
 
 // Blades of grass: BLADE_WIDTH wide and BLADE_LENGTH long in metres.
@@ -531,11 +561,6 @@ fn crag(p: vec2f, size: f32) -> vec3f {
     return vec3f(facing, abs(2.0 * noise(q * 1.4 + 7.0) - 1.0));
 }
 
-// A normal of LOD space axes in render space, with the linear part of the cubic.
-fn render_normal(m: vec3f) -> vec3f {
-    return normalize(vec3f(m.x * vec2f(coefficient(1u), coefficient(11u)) + m.y * vec2f(coefficient(2u), coefficient(12u)), m.z));
-}
-
 // A distinct colour for each code, by the golden angle round the hue circle.
 fn key(code: u32) -> vec3f {
     let h = fract(f32(code) * 0.618034);
@@ -544,7 +569,7 @@ fn key(code: u32) -> vec3f {
 
 // The debug views of the ground, in sRGB: 5 material, 6 lithology, 7 region, 8 snow (white over blue-grey).
 fn ground_debug(view: u32, level: u32, s: vec2f, g: Ground) -> vec3f {
-    let k = min(level, look.codes.y);
+    let k = min(level, look.codes.x);
     let t = texel_of(s, k);
     let holder = t.whole + vec2i(t.part >= vec2f(0.5));
     let page = ground_page(k, holder);
@@ -592,8 +617,6 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     // The masonry runs along the world axis nearer to the wall, cross-faded within about 6° of 45°. By
     // the fine normal: the coarse one that a cliff takes below does not see a road's wall.
     let east = smoothstep(-0.1, 0.1, (abs(n.y) - abs(n.x)) / (abs(n.x) + abs(n.y) + 1e-6));
-    // outcrops, cos turf_deg, snow_share, speckle size
-    let speckle_size = rule(region, slot_cliff() + 3).w;
     // A cliff spans few texels across and many metres up, so its fine slopes would streak down the
     // face; it takes its normal from coarser levels instead.
     let cliff = 1.0 - smoothstep(0.4, 0.7, n.z);
@@ -613,19 +636,67 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     let slope = n.z;
     // The ground is mottled at every scale a pixel can show: patches tens of metres across, tussocks
     // and bare patches, and near the eye the sward's blades. Each scale fades to its mean once a pixel spans it.
-    var mottle = 0.0;
+    let r = length(relative.xy);
+    // The share of the sward in tussocks and low shrubs that its material gives. Within about 50 m the
+    // plant models stand instead.
+    var clumped = 0.0;
+    if (g.blades > 0.0 && r > 25.0 && road.cover < 1.0) {
+        clumped = rule(region, slot_traits() + i32(g.material)).y * g.blades * (1.0 - road.cover) * smoothstep(25.0, 50.0, r);
+    }
+    var n15 = 0.5;
+    var n25 = 0.5;
+    var n08 = 0.5;
     if (footprint < 16.0) {
-        mottle = 0.14 * (noise(world / 15.0) - 0.5) * (1.0 - smoothstep(4.0, 16.0, footprint));
+        n15 = noise(world / 15.0);
+    }
+    if (footprint < select(2.0, 6.0, clumped > 0.0)) {
+        n25 = noise(world / 2.5);
     }
     if (footprint < 2.0) {
-        mottle += (0.22 * noise(world / 2.5) + 0.12 * noise(world / 0.8) - 0.17) * (1.0 - smoothstep(0.3, 2.0, footprint));
+        n08 = noise(world / 0.8);
     }
+    let mottle = 0.14 * (n15 - 0.5) * (1.0 - smoothstep(4.0, 16.0, footprint)) + (0.22 * n25 + 0.12 * n08 - 0.17) * (1.0 - smoothstep(0.3, 2.0, footprint));
     var albedo = g.albedo * (1.0 + mottle);
+    // Tussocks and low shrubs, more in some stretches about 60 m across than in others: tufts about 1 m,
+    // shrubs about 3 m and thickets about 15 m across on the mottle's highs, and bushes 1 to 5 m long,
+    // each darker and more olive than the sward. Each fades to its mean once a pixel spans it. The ground
+    // between them is lighter, so the sward keeps its mean colour.
+    if (clumped > 0.0) {
+        clumped = min(clumped * (0.5 + noise(world / 60.0 + 23.0)), 0.75);
+        // Value noise lies above this on about `clumped` of the ground.
+        let above = 0.5 + (0.5 - clumped) / 1.65;
+        let tuft = mix(smoothstep(above, above + 0.06, n08), clumped, smoothstep(0.3, 1.0, footprint));
+        let shrub = mix(smoothstep(above + 0.04, above + 0.1, n25), 0.85 * clumped, smoothstep(1.5, 6.0, footprint));
+        let thicket = mix(smoothstep(above + 0.08, above + 0.14, n15), 0.7 * clumped, smoothstep(4.0, 16.0, footprint));
+        // A bush covers 0.1 of its cell on average, and stands in about 0.6 × clumped of the cells.
+        let area = 0.06 * clumped;
+        var bush = area;
+        if (DETAIL && footprint < 2.5) {
+            // At most one bush in each 8 m cell, its middle inside its cell, so no neighbour is read. The
+            // cells are turned and warped by the mottle's noise, so the bushes lie off any grid with ragged
+            // outlines; the 15 m noise gathers them in groups. A bush is longer along the contour.
+            let turn = mat2x2f(0.8, 0.6, -0.6, 0.8);
+            let q = turn * world + 6.0 * (n15 - 0.5) * vec2f(1.0, 0.6) + 3.0 * (n25 - 0.5) * vec2f(-0.5, 1.0);
+            let cell = floor(q / 8.0);
+            let h = hash(cell + 41.0);
+            let fade = smoothstep(0.5, 2.5, footprint);
+            bush = area * fade;
+            if (fract(h * 3.71) < 1.2 * clumped * smoothstep(0.35, 0.65, n15)) {
+                let d = q - (cell + 0.3 + 0.4 * fract(h * vec2f(7.13, 13.7))) * 8.0;
+                let size = fract(h * 31.3);
+                let radius = (0.5 + 1.9 * size * size) * (0.75 + 0.5 * n08);
+                let along = normalize(turn * vec2f(-n.y, n.x) * 3.0 + fract(h * vec2f(5.17, 2.93)) - 0.5);
+                let dist = length(vec2f(dot(d, along) / (1.0 + 0.6 * fract(h * 11.3)), dot(d, vec2f(-along.y, along.x))));
+                bush = mix((0.75 + 0.5 * fract(h * 17.9)) * (1.0 - smoothstep(radius - 0.3, radius + 0.3, dist)), area, fade);
+            }
+        }
+        let dark = min(0.45 * tuft + 0.45 * shrub + 0.35 * thicket, 0.85);
+        albedo *= mix(vec3f(1.0), vec3f(0.42, 0.5, 0.35), dark) * mix(1.0, 0.45, bush) / ((1.0 - 0.56 * clumped) * (1.0 - 0.55 * area));
+    }
     // Blades: rows of strokes fixed to the ground, so they stay in place when the eye moves. A pixel
     // takes the rows of the one or two of 32 directions nearest its line from the eye, so a blade
     // stands upright on the screen. Only near the eye, on ground it looks along: a bank that faces it
     // would stretch them tall.
-    let r = length(relative.xy);
     if (DETAIL && r < 45.0) {
         let blades = (1.0 - smoothstep(0.4, 0.8, lateral / BLADE_WIDTH)) * (1.0 - smoothstep(0.25, 0.6, footprint / BLADE_LENGTH))
             * (1.0 - smoothstep(25.0, 45.0, r)) * (1.0 - smoothstep(0.45, 0.75, dot(n, normalize(-relative)))) * g.blades;
@@ -643,25 +714,10 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
             albedo *= 1.0 + 0.3 * blade * blades;
         }
     }
-    // Scattered bushes on open ground: dots where a pixel can show them, their share of colour beyond.
-    let speckle = rule(region, slot_cliff() + 2);
-    if (speckle.a > 0.0) {
-        // Slopes facing north stay moister and carry more scrub than slopes facing the sun.
-        let cover = speckle.a * g.rough * (0.6 + 0.8 * noise(world / 90.0)) * (1.0 + clamp(3.0 * n.y, -0.3, 0.6)) * smoothstep(40.0, 70.0, length(relative.xy));
-        let dotted = 1.0 - smoothstep(0.03 * speckle_size, 0.1 * speckle_size, surface_size);
-        var dots = cover;
-        if (DETAIL && dotted > 0.0) {
-            let bush = voronoi(world, speckle_size);
-            dots = mix(cover, step(bush.x, min(cover * 1.6, 1.0)) * smoothstep(0.18, 0.3, bush.y), dotted);
-        }
-        albedo = mix(albedo, speckle.rgb, 0.85 * dots);
-    }
-    // Heather in patches over the moor.
-    if (g.moor > 0.0) {
-        let patches = noise(world / 4.0) * 0.55 + noise(world / 23.0) * 0.45;
-        let heather = rule(region, slot_cliff() + 1);
-        albedo = mix(albedo, heather.rgb, g.moor * smoothstep(1.0 - heather.a, 1.1 - heather.a, patches));
-    }
+    // The patches of the region in their order: per patch its size and 1 for dots.
+    let shapes = rule(region, slot_cliff() + 8);
+    albedo = patched(albedo, rule(region, slot_cliff() + 1), shapes.xy, g.patches.x, world, n.y, r, surface_size);
+    albedo = patched(albedo, rule(region, slot_cliff() + 2), shapes.zw, g.patches.y, world, n.y, r, surface_size);
     albedo = mix(albedo, road.colour, road.cover * (1.0 - road.share));
     if (DETAIL && masoned > 0.0) {
         let stone = rule(region, slot_lithologies() + i32(g.lithology)).rgb;

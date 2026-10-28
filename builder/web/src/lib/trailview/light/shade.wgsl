@@ -7,7 +7,7 @@ struct Look {
     // The light that shades and shadows the scene: the sun, or the moon once the sun's light is gone.
     // xyz: toward it, in render space. w: its bearing in turns clockwise from north, as LOD space has it.
     sun: vec4f,
-    // rgb: its light. w: unused.
+    // rgb: its light. w: how high the horizon's colour reaches in the sky (light.ts `rise`).
     sun_colour: vec4f,
     // rgb: the sky light on a face that points up. w: night, 0 by day to 1.
     ambient: vec4f,
@@ -30,8 +30,7 @@ struct Look {
     right: vec4f,
     up: vec4f,
     forward: vec4f,
-    // x: the material code of heath. y: the finest ground level. z, w: the materials and the
-    // lithologies of the vocabulary.
+    // x: the finest ground level. y, z: the materials and the lithologies of the vocabulary. w: unused.
     codes: vec4u,
     // x: the debug view of terrain.wgsl. y: the jittered frame's sample, which turns the dithers. z, w: unused.
     modes: vec4u,
@@ -59,7 +58,7 @@ fn luma(c: vec3f) -> f32 {
 
 fn sky(dir: vec3f) -> vec3f {
     let up = clamp(dir.z, 0.0, 1.0);
-    let c = mix(look.horizon.rgb, look.zenith.rgb, sqrt(up));
+    let c = mix(look.horizon.rgb, look.zenith.rgb, pow(max(up, 1e-6), look.sun_colour.w));
     let toward = max(dot(normalize(dir.xy + 1e-6), normalize(look.sky_sun.xy + 1e-6)), 0.0);
     let near = max(dot(dir, look.sky_sun.xyz), 0.0);
     return c + GLOW * look.sky_sun.w * (0.35 * pow(toward, 3.0) * exp(-5.0 * up) + 0.5 * pow(near, 24.0));

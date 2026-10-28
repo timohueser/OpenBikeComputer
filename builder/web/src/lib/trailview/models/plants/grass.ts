@@ -27,5 +27,5 @@ export default {
     name: 'Grass tuft',
     latin: 'Poaceae',
     build: (season, seed) => grass(season, random(seed)),
-    ground: { on: ['grass', 'crop'], height: [0.25, 0.5], share: 1, habitat: 'lush' },
+    ground: { on: ['grass', 'crop'], height: [0.25, 0.5], share: 1 },
 } satisfies Plant;

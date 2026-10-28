@@ -391,15 +391,17 @@ triggers = ["host/obc-dem/reference/**", ".python-version", "pyproject.toml", "u
   "data/sources.toml", "tools/data_registry.py", "tools/step_request.py"]
 
 # The TrailView tools need rasterio, pyogrio and osmium, which no other suite wants, so the suite runs
-# under the locked uv group `trailview`. The tests write their own rasters and read the ruleset of
-# data/trailview/: no service and no captured fixture.
+# under the locked uv group `trailview`. The tests write their own rasters, read the ruleset of
+# data/trailview/, the engine's tree and plant models that a pack may name and the captured service
+# answers of fixtures/sources/trailview-ground/: no service.
 [[suite]]
 id = "python.trailview"
 route = "ordinary"
 command = "rm -rf .artifacts/python/trailview && uv run --locked --group trailview --group dev python -m xmlrunner discover -s tools/trailview/tests -v -o .artifacts/python/trailview"
 jobs = ["test"]
-triggers = ["tools/trailview/**", "data/trailview/**", "tools/planner_geo.py", "tools/step_pool.py", "tools/step_request.py",
-  "pyproject.toml", "uv.lock"]
+triggers = ["tools/trailview/**", "data/trailview/**", "fixtures/sources/trailview-ground/**", "tools/planner_geo.py",
+  "tools/step_pool.py", "tools/step_request.py", "tools/data_registry.py", "tools/planner_runtime.py", "data/sources.toml",
+  "builder/web/src/lib/trailview/models/trees/**", "builder/web/src/lib/trailview/models/plants/**", "pyproject.toml", "uv.lock"]
 
 [[suite]]
 id = "python.builder"

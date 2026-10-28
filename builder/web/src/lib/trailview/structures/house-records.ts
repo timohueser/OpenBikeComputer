@@ -10,7 +10,7 @@ export const RECORD_WORDS = 8;
 export const OUTLINE_WORDS = 4;
 
 /** The kinds of house, as `KINDS` in houses.wgsl. */
-export const COTTAGE = 0, HOUSE = 1, FARMHOUSE = 2, BARN = 3, BLOCK = 4, CHURCH = 5, INDUSTRIAL = 6;
+export const COTTAGE = 0, HOUSE = 1, FARMHOUSE = 2, BARN = 3, BLOCK = 4, CHURCH = 5, INDUSTRIAL = 6, GRANARY = 7, GREENHOUSE = 8;
 /** Shapes: a template of models/house.ts by its kind, or an outline mesh. */
 export const TEMPLATE = 0, OUTLINE = 1;
 /** Roofs that OSM names, as `shape_of` in houses.wgsl reads them: the style's, or a gable, a hip or a half hip. A flat roof is a flag. */
@@ -18,7 +18,11 @@ const ROOFS: Record<string, number> = { gabled: 1, hipped: 2, pyramidal: 2, 'hal
 
 /** OSM building values that draw nothing, draw as a barn or shed, as a church or as a block, from the prototype's nearfield.ts. */
 export const SKIPPED = new Set(['roof', 'ruins', 'construction', 'carport', 'storage_tank', 'bunker']);
-const SHEDS = new Set(['barn', 'farm_auxiliary', 'shed', 'garage', 'garages', 'stable', 'cowshed', 'hut', 'sty', 'greenhouse', 'boathouse']);
+const SHEDS = new Set(['barn', 'farm_auxiliary', 'shed', 'garage', 'garages', 'stable', 'cowshed', 'hut', 'sty', 'boathouse']);
+/** Granaries this small stand raised on pillars, as hórreos and stabbur do; larger ones are barns. */
+const GRANARY_M2 = 60;
+/** A greenhouse's walls in metres, as its kind in houses.wgsl. */
+const GREENHOUSE_WALL_M = 3.5;
 const CHURCHES = new Set(['church', 'chapel', 'cathedral']);
 const BLOCKS = new Set([
     'apartments', 'residential', 'hotel', 'commercial', 'retail', 'office', 'industrial', 'warehouse', 'school', 'public', 'civic',
@@ -56,6 +60,8 @@ export interface TileHouses {
 
 /** The kind of a building by its tag, its area in m² and the landuse that the bake gives it. */
 function kindOf(tag: string, area: number, landuse?: string): number {
+    if (tag === 'granary' || tag === 'horreo') return area <= GRANARY_M2 ? GRANARY : BARN;
+    if (tag === 'greenhouse') return GREENHOUSE;
     if (SHEDS.has(tag)) return BARN;
     if (CHURCHES.has(tag)) return CHURCH;
     if (tag === 'farm') return FARMHOUSE;
@@ -189,8 +195,8 @@ export function tileHouses(list: Feature[], tile: Node, owned: Node = tile): Til
         for (const piece of pieces ?? [fit]) {
             const [L, W, angle] = piece.width >= piece.depth ? [piece.width, piece.depth, fit.angle] : [piece.depth, piece.width, fit.angle + Math.PI / 2];
             const x = Math.round((left + x0 + piece.x / m) * scale), y = Math.round((top + y0 - piece.y / m) * scale);
-            records.push(x, y, f32(angle), f32(L), f32(W), f32(outline ? wall || OUTLINE_WALL_M : wall), f32(unit),
-                (kind | (roof << 3) | (+outline << 5) | (+flatRoof << 6) | (seed << 16)) >>> 0);
+            records.push(x, y, f32(angle), f32(L), f32(W), f32(outline ? wall || (kind === GREENHOUSE ? GREENHOUSE_WALL_M : OUTLINE_WALL_M) : wall), f32(unit),
+                (kind | (roof << 4) | (+outline << 6) | (+flatRoof << 7) | (seed << 16)) >>> 0);
         }
         if (!outline) continue;
         // The walls, from the bottom to the top, with the metres along the outline; then the roof.

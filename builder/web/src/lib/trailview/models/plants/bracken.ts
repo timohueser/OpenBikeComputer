@@ -106,5 +106,5 @@ export default {
     name: 'Bracken',
     latin: 'Pteridium aquilinum',
     build: (season, seed) => bracken(season, random(seed)),
-    ground: { on: ['grass', 'shrub'], height: [0.6, 1.1], share: 0.12, habitat: 'lush', own: true, clumped: true },
+    ground: { on: ['grass', 'shrub'], height: [0.6, 1.1], share: 0.12, own: true, clumped: true },
 } satisfies Plant;

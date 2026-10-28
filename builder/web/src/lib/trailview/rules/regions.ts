@@ -27,9 +27,11 @@ export interface Look {
     softness: number;
     gradient: number;
     ramps: Partial<Record<string, Ramp | Partial<Record<Season, Ramp>>>>;
-    moor?: { heather: string; share: number };
-    speckle?: { colour: string; share: number; size_m: number };
-    materials?: Partial<Record<string, { colour?: string | Partial<Record<Season, string>>; satellite?: number }>>;
+    /** By name; they draw as `patchesOf` of ground/rules.ts orders them. */
+    patches?: Partial<Record<string, Patch | null>>;
+    /** The material whose paint a ledge of turf on exposed rock takes. */
+    turf?: string;
+    materials?: Partial<Record<string, { colour?: string | Partial<Record<Season, string>>; satellite?: number; clumps?: number }>>;
     lithology?: Partial<Record<string, { colour: string; banded?: true }>>;
     outcrops: number;
     turf_deg: number;
@@ -43,6 +45,18 @@ export interface Look {
     sea: { deep: string; shallow: string };
     grade: { shadow: [number, number, number]; light: [number, number, number]; saturation: number };
     weather?: Partial<Record<Preset, Partial<WeatherKeys>>>;
+}
+
+/**
+ * A colour over a share of the ground of the materials that `on` names: blotches about `size_m` and
+ * 5.75 × `size_m` across, or dots of bushes `size_m` across.
+ */
+export interface Patch {
+    on: string[];
+    colour: string | Partial<Record<Season, string>>;
+    share: number;
+    size_m: number;
+    form: 'blotches' | 'dots';
 }
 
 export interface Region {
@@ -72,15 +86,16 @@ export interface HerdRule {
     on: string[];
 }
 
-/** A ground plant of a pack: its model, and the keys of the model's `ground` that the pack changes. */
+/** A ground plant of a pack: its species, its model, and the keys of the model's `ground` that the pack changes. */
 export interface GroundRule {
+    id: string;
     model: string;
     on?: string[];
+    off?: string[];
     height?: [number, number];
     share?: number;
-    habitat?: 'moor' | 'lush';
     own?: true;
-    clumped?: true;
+    clumped?: boolean;
 }
 
 /** A tree species of a pack: its model, leaf type, cover, elevation band in metres and weight. */
@@ -104,16 +119,40 @@ export interface HouseStyle {
     timber: 'none' | 'upper' | 'all' | 'frame';
     shutters: boolean;
     balconies?: boolean;
+    /** Gabled dormers that rise from the front wall into the roof. */
+    dormers?: boolean;
     chimneys: 0 | 1 | 2;
-    spire?: 'onion';
+    /** A church's tower top: an onion dome, else a spire; `domes`: a church of shingled wood with onion domes on its tower and nave. */
+    spire?: 'onion' | 'domes';
+    /** The windows' size as a share of the kind's; smaller windows stand farther apart. */
+    windows?: number;
     storeys?: number;
-    palette: Record<'render' | 'wood' | 'roof' | 'door' | 'shutter', string[]> & { plinth: string; chimney: string };
+    /** Instead of a pitched roof: a stone cone over each bay, or a flat roof behind a parapet. */
+    roof?: 'cone' | 'flat';
+    palette: Record<'render' | 'wood' | 'roof' | 'door' | 'shutter', string[]> & { plinth: string | string[]; chimney: string };
 }
 
 /** The ground vocabulary of `materials.json`: a material or lithology code is its index. */
 export interface Vocabulary {
-    materials: { id: string; cover: string }[];
+    /** `clumps`: the share of ground in tussocks and low shrubs, 0 by default; `shrubs`: the share of its cover's shrubs that stand on it, 1 by default. */
+    materials: { id: string; cover: string; clumps?: number; shrubs?: number; tags?: string[] }[];
     lithologies: { id: string; hardness: number }[];
+}
+
+/** The codes of the materials that a list names, each entry a cover, a material or `#tag`. */
+export function named(vocabulary: Vocabulary, names: readonly string[] = []): number[] {
+    return vocabulary.materials.flatMap(({ id, cover, tags = [] }, code) =>
+        (names.some(name => name === id || name === cover || (name.startsWith('#') && tags.includes(name.slice(1)))) ? [code] : []));
+}
+
+/** Material codes as two words of bits, as the GPU reads a set of materials. */
+export function bits(codes: number[]): [number, number] {
+    const words: [number, number] = [0, 0];
+    for (const code of codes) {
+        if (code >= 64) throw new Error(`Material code ${code} does not fit the 6 bits of the ground tiles.`);
+        words[code >> 5] = (words[code >> 5] | (1 << (code & 31))) >>> 0;
+    }
+    return words;
 }
 
 export interface Rules { vocabulary: Vocabulary; regions: Region[]; styles: HouseStyle[] }
@@ -146,19 +185,19 @@ function orchardOf(packs: Record<string, Record<string, unknown>> | undefined, p
     return typeof model === 'string' ? model : undefined;
 }
 
-/** The trees, herds or ground plants of a pack: one that a child sets to null is dropped, a model defaults to its name. */
+/** The trees, herds or ground plants of a pack by species: one that a child sets to null is dropped, a model defaults to its species. */
 function entriesOf<T extends { model: string }>(packs: Record<string, Record<string, unknown>> | undefined, pack: unknown, field: 'trees' | 'herds' | 'ground'): T[] {
     if (typeof pack !== 'string' || !packs?.[pack]) return [];
     const entries = (inherited(packs, pack)[field] ?? {}) as Record<string, Partial<T> | null>;
-    return Object.entries(entries).flatMap(([name, rule]) => (rule ? [{ ...rule, model: rule.model ?? name } as T] : []));
+    return Object.entries(entries).flatMap(([name, rule]) => (rule ? [{ ...rule, ...(field === 'ground' && { id: name }), model: rule.model ?? name } as T] : []));
 }
 
 /** The resolved regions of a `rules.json`; a chain that misses a file or loops throws. */
 export function rulesOf(json: {
     format: number; materials: Vocabulary; ids: [string, string][]; regions: Record<string, Record<string, unknown> & { extends?: string }>;
-    overlays?: Record<string, { look?: Record<string, unknown> }>; packs?: Record<string, Record<string, unknown>>; styles?: Record<string, Record<string, unknown>>;
+    packs?: Record<string, Record<string, unknown>>; styles?: Record<string, Record<string, unknown>>;
 }): Rules {
-    if (json.format !== 2) throw new Error(`rules.json has format ${json.format}, not 2.`);
+    if (json.format !== 3) throw new Error(`rules.json has format ${json.format}, not 3.`);
     const table = json.regions;
     const names = Object.keys(json.styles ?? {}).sort(), styles = names.map(name => inherited(json.styles!, name) as unknown as HouseStyle);
     const styleOf = (pack: unknown, place: string): [number, number] => {
@@ -176,8 +215,8 @@ export function rulesOf(json: {
         const resolved = files.reduce<Record<string, unknown>>((out, { extends: _, ...own }) => merge(out, own), {});
         // A cover's ramp comes whole from the nearest region that names it.
         const ramps = Object.assign({}, ...files.map(file => (file.look as Look | undefined)?.ramps));
-        const overlaid = chain.reduce((look, name) => merge(look, json.overlays?.[name]?.look ?? {}), resolved.look as Record<string, unknown>);
-        const look = { ...overlaid, ramps, roadLine: local(overlaid.roadLine, place) } as Look;
+        const merged = resolved.look as Record<string, unknown>;
+        const look = { ...merged, ramps, roadLine: local(merged.roadLine, place) } as Look;
         return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack, place),
             trees: entriesOf<TreeRule>(json.packs, resolved.pack, 'trees'), herds: entriesOf<HerdRule>(json.packs, resolved.pack, 'herds'),
             ground: entriesOf<GroundRule>(json.packs, resolved.pack, 'ground'), orchard: orchardOf(json.packs, resolved.pack) };

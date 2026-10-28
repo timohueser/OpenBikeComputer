@@ -29,7 +29,7 @@ export const FLAT = 'flat';
 const FLAT_TILE = Buffer.from('UklGRiwAAABXRUJQVlA4TB8AAAAv/8F/EAcQEREQCCT7e89QRP8z/vOf//znP//5z/8BAA==', 'base64');
 /** The `world` region of the engine's ground without a ruleset (ground.ts), as a rules.json. */
 const FLAT_RULES = {
-    format: 2, materials: { materials: [{ id: 'none', cover: 'grass' }], lithologies: [{ id: 'unknown', hardness: 0.5 }] },
+    format: 3, materials: { materials: [{ id: 'none', cover: 'grass' }], lithologies: [{ id: 'unknown', hardness: 0.5 }] },
     ids: [['world', '*']],
     regions: {
         world: { leaf: 'mixed', look: {

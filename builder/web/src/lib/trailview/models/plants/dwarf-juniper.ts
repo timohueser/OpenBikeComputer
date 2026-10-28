@@ -68,5 +68,5 @@ export default {
     name: 'Dwarf juniper',
     latin: 'Juniperus communis subsp. nana',
     build: (season, seed) => dwarfJuniper(season, seed, random(seed)),
-    ground: { on: ['shrub', 'grass', 'bare', 'moss'], height: [0.3, 0.6], share: 0.08, habitat: 'moor', own: true, clumped: true },
+    ground: { on: ['shrub', 'grass', 'bare', 'moss'], height: [0.3, 0.6], share: 0.08, own: true, clumped: true },
 } satisfies Plant;

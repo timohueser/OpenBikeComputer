@@ -30,19 +30,20 @@
   "rhododendron": { "model": "alpenrose", "latin": "Rhododendron ponticum", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 350], "weight": 1 }
  },
  "ground": {
-  "heather": {},
-  "heather-bloom": {},
-  "moor-grass": {},
-  "mat-grass": { "on": ["grass"], "height": [0.15, 0.35], "share": 0.15 },
-  "soft-rush": { "model": "moor-grass", "latin": "Juncus effusus", "on": ["grass", "wetland"], "height": [0.5, 1.0], "share": 0.012, "habitat": "lush", "clumped": true },
-  "bracken": {},
-  "bog-cotton": {},
+  "heather": { "on": ["#moor"] },
+  "heather-bloom": { "on": ["#moor"] },
+  "moor-grass": { "on": ["#moor"] },
+  "mat-grass": { "on": ["#moor"], "height": [0.15, 0.35], "share": 0.15 },
+  "soft-rush": { "model": "moor-grass", "latin": "Juncus effusus", "on": ["grass", "wetland"], "off": ["#moor"], "height": [0.5, 1.0], "share": 0.012, "clumped": true },
+  "bracken": { "off": ["#moor"] },
+  "bog-cotton": { "on": ["#moor"] },
   "bilberry": {},
   "fern": {},
   "bluebell": { "model": "alpine-flowers", "latin": "Hyacinthoides non-scripta", "on": ["tree"], "height": [0.2, 0.4], "share": 0.3, "clumped": true },
   "foxglove": { "model": "alpine-flowers", "latin": "Digitalis purpurea", "on": ["grass", "shrub"], "height": [0.8, 1.5], "share": 0.03, "clumped": true },
-  "common-reed": { "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true },
-  "marram-grass": { "model": "esparto", "latin": "Ammophila arenaria", "on": ["bare"], "height": [0.5, 1.0], "share": 0.3 }
+  "common-reed": { "on": ["wetland"], "off": ["#moor"], "height": [1.5, 2.5], "share": 0.5, "clumped": true },
+  "marram-grass": { "model": "esparto", "latin": "Ammophila arenaria", "on": ["bare"], "height": [0.5, 1.0], "share": 0.3 },
+  "grass": { "off": ["#moor"] }
  },
  "herds": {
   "sheep": { "groups": 3, "size": [5, 30], "on": ["pasture", "grassland", "arable"] },

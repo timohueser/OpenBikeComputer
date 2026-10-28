@@ -203,6 +203,20 @@ version = "date"
 redistribute = true
 
 [[source]]
+id = "dtm-cz"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Czechia: DMR 5G 2 m"
+licence = "CC-BY-4.0"
+attribution = "© ČÚZK"
+fetch = { kind = "dtm", url = "https://ags.cuzk.gov.cz/arcgis2/rest/services/dmr5g/ImageServer/exportImage" }
+extent = [12.0, 48.5, 18.9, 51.1]
+areas = ["europe/czech-republic"]
+version = "date"
+redistribute = true
+
+[[source]]
 id = "dtm-de-bw"
 kind = "data"
 group = "Elevation"
@@ -285,6 +299,22 @@ attribution = "© Geobasis NRW"
 fetch = { kind = "dtm", url = "https://www.wcs.nrw.de/geobasis/wcs_nw_dgm" }
 extent = [5.8, 50.3, 9.5, 52.6]
 areas = ["europe/germany/nordrhein-westfalen"]
+version = "date"
+redistribute = true
+
+[[source]]
+id = "dtm-de-rp"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Rhineland-Palatinate, Germany: DGM1 1 m"
+licence = "DL-DE-BY-2.0"
+# The agency asks for the year the data were obtained (Jahr des Datenbezugs), which `{year}` fills
+# from the fetch day, and for a note that the data were processed.
+attribution = "©GeoBasis-DE / LVermGeoRP{year}, dl-de/by-2-0, www.lvermgeo.rlp.de [Daten bearbeitet]"
+fetch = { kind = "dtm", url = "https://geobasis-rlp.de/data/dgm1/current/tif/" }
+extent = [6.1, 48.9, 8.6, 51.0]
+areas = ["europe/germany/rheinland-pfalz"]
 version = "date"
 redistribute = true
 
@@ -392,6 +422,51 @@ version = "date"
 redistribute = true
 
 [[source]]
+id = "dtm-gb-sct"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Scotland: Scottish Public Sector LiDAR DTM 0.5–1 m"
+licence = "OGL-UK-3.0"
+# One credit for all the surveys of the row: the attribution statement of each DTM record, in the
+# order of `surveys` in sources/gb.py.
+attribution = "Contains Scottish LiDAR: Crown copyright Scottish Government, SEPA and Scottish Water (2012); Copyright Scottish Government and SEPA (2014); Crown copyright Scottish Government, SEPA and Fugro (2020); Crown copyright Scottish Government and Fugro (2020); Crown copyright Scottish Government and Fugro (2021); Crown copyright Scottish Government and Fugro (2022); © SEPA (2019); Crown copyright Orkney Islands Council © Crown copyright and database right (2023); Crown copyright Scottish Government © Crown copyright and database right (2026); Crown copyright Scottish Government © Crown copyright and database right (2025). Open Government Licence v3"
+fetch = { kind = "dtm", url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com/lidar/" }
+extent = [-8.7, 54.6, -0.7, 60.9]
+areas = ["europe/united-kingdom/scotland"]
+version = "date"
+redistribute = true
+
+[[source]]
+id = "dtm-is"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Iceland: ÍslandsDEM v1.0 10 m"
+licence = "CC-BY-4.0"
+# ÍslandsDEM is made from ArcticDEM and Copernicus GLO-30, so their credits travel with it.
+attribution = "ÍslandsDEM v1.0 © Náttúrufræðistofnun; made from ArcticDEM, DEMs provided by the Polar Geospatial Center under NSF-OPP awards 1043681, 1559691, 1542736, 1810976, and 2129685, and from Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA"
+fetch = { kind = "dtm", url = "https://ftp.natt.is/gisdata/raster/IslandsDEMv1.0_10x10m_isn2016_zmasl.tif" }
+extent = [-24.6, 63.2, -13.4, 66.6]
+areas = ["europe/iceland"]
+version = "date"
+redistribute = true
+
+[[source]]
+id = "dtm-it"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Italy: TINITALY 1.1 10 m"
+licence = "CC-BY-4.0"
+attribution = "TINITALY/1.1 © INGV, doi:10.13127/tinitaly/1.1"
+fetch = { kind = "dtm", url = "https://tinitaly.pi.ingv.it/TINItaly_1_1/wcs" }
+extent = [6.6, 35.4, 18.6, 47.1]
+areas = ["europe/italy"]
+version = "date"
+redistribute = true
+
+[[source]]
 id = "dtm-it-bz"
 kind = "data"
 group = "Elevation"
@@ -460,6 +535,22 @@ version = "date"
 redistribute = true
 
 [[source]]
+id = "dtm-pl"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Poland: NMT 1 m"
+licence = "LicenseRef-GUGiK-free-use"
+licence_url = "https://www.geoportal.gov.pl/pl/dane/numeryczny-model-terenu-nmt/"
+obligations = "None: GUGiK states that the NMT is free of charge and free for any use"
+attribution = "Główny Urząd Geodezji i Kartografii"
+fetch = { kind = "dtm", url = "https://mapy.geoportal.gov.pl/wss/service/PZGIK/NMT/GRID1/WCS/DigitalTerrainModelFormatTIFF" }
+extent = [14.1, 49.0, 24.2, 54.9]
+areas = ["europe/poland"]
+version = "date"
+redistribute = true
+
+[[source]]
 id = "dtm-se"
 kind = "data"
 group = "Elevation"
@@ -474,6 +565,22 @@ hosts = ["*.lantmateriet.se"]
 version = "date"
 redistribute = true
 credential = { env = ["OBC_REFERENCE_SE_USER", "OBC_REFERENCE_SE_PASSWORD"], register = "https://geotorget.lantmateriet.se", hint = "Apply for Markhöjdmodell Nedladdning, grid 1+ with Basic authentication, then copy the consumer user name and password." }
+
+[[source]]
+id = "dtm-sk"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Slovakia: DMR 5.0 1 m"
+licence = "CC-BY-4.0"
+attribution = "DMR 5.0 © ÚGKK SR; quasigeoid © GKÚ Bratislava"
+fetch = { kind = "dtm", url = "https://inspirews.skgeodesy.sk/geoserver/el/wcs" }
+extent = [16.8, 47.7, 22.6, 49.7]
+areas = ["europe/slovakia"]
+# GKÚ's quasigeoid grid, which moves the service's ellipsoidal heights onto Bpv.
+hosts = ["cdn.proj.org"]
+version = "date"
+redistribute = true
 
 [[source]]
 id = "dtm-uk"
@@ -506,23 +613,23 @@ redistribute = true
 
 # ── TrailView forest ─────────────────────────────────────────────────────────
 
-# The canopy of each cell of the TrailView canopy layer, from the national canopy models
-# `canopy-<country>` and the leaf type below. A version extends the version before by a region.
+# The canopy of each cell of the TrailView canopy layer, from the canopy models `canopy-<country>`,
+# then `canopy-global`, and the leaf type below. A version extends the version before by a region.
 [[source]]
 id = "forest"
 kind = "data"
 used_by = ["trailview"]
-use = "Forest: canopy height, cover, stems and leaf type, where a country has a canopy model"
-licence = "LicenseRef-opendata-swiss-BY AND LicenseRef-Copernicus-CLMS"
+use = "Forest: canopy height, cover, stems and leaf type"
+licence = "LicenseRef-opendata-swiss-BY AND CC-BY-4.0 AND LicenseRef-Copernicus-CLMS"
 fetch = { kind = "prepared" }
-hosts = ["data.geo.admin.ch", "image.discomap.eea.europa.eu"]
+hosts = ["data.geo.admin.ch", "dataforgood-fb-data.s3.amazonaws.com", "eodata.dataspace.copernicus.eu"]
 extent = [-180.0, -90.0, 180.0, 90.0]
 version = "date"
 refresh = 365
 redistribute = true
 
-# Only the producer of `forest` reads the next two: the rasters of the first through HTTP range
-# requests, the second through the image export of its service.
+# Only the producer of `forest` reads the next three, through HTTP range requests: the first from its
+# STAC items, the second from its COG per zoom 10 tile, the third from CDSE S3.
 [[source]]
 id = "canopy-ch"
 kind = "data"
@@ -539,6 +646,23 @@ version = "date"
 refresh = "manual"
 redistribute = true
 
+# The canopy of every country, where no national model has it.
+[[source]]
+id = "canopy-global"
+kind = "data"
+group = "Land cover and imagery"
+used_by = ["trailview"]
+use = "Vegetation height where no country has a canopy model, for the forest"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+attribution = "Canopy Height Maps v2 © Meta and World Resources Institute (WRI); source imagery © Vantor"
+obligations = "Credit Meta and WRI; state modifications"
+fetch = { kind = "capture", url = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v2/global/dinov3_global_chm_v2_ml3/tiles.geojson" }
+extent = [-180.0, -85.0, 180.0, 85.0]
+version = "date"
+refresh = "manual"
+redistribute = true
+
 [[source]]
 id = "hrl-dominant-leaf-type"
 kind = "data"
@@ -547,14 +671,16 @@ used_by = ["trailview"]
 use = "Broadleaf or coniferous forest, for the forest"
 licence = "LicenseRef-Copernicus-CLMS"
 licence_url = "https://land.copernicus.eu/en/data-policy"
-attribution = "Dominant Leaf Type 2018 © European Union, Copernicus Land Monitoring Service, European Environment Agency (EEA)"
+attribution = "Dominant Leaf Type 2024 © European Union, Copernicus Land Monitoring Service, European Environment Agency (EEA)"
 obligations = "Credit the Copernicus Land Monitoring Service; state modifications"
-fetch = { kind = "capture", url = "https://image.discomap.eea.europa.eu/arcgis/rest/services/GioLandPublic/HRL_DominanteLeafType_2018/ImageServer" }
-# The box of the image service, in whole degrees.
+fetch = { kind = "capture", url = "https://stac.dataspace.copernicus.eu/v1/collections/clms_vlcc_dominant-leaf-type_europe_10m_yearly_v1/items" }
+hosts = ["eodata.dataspace.copernicus.eu"]
+# The box of the EEA39 countries that the layer covers, in whole degrees.
 extent = [-32, 27, 47, 73]
 version = "date"
 refresh = "manual"
 redistribute = true
+credential = { file = "~/.config/openbikecomputer/cdse-s3.env", register = "https://eodata-s3keysmanager.dataspace.copernicus.eu", hint = "Sign in with a free Copernicus Data Space account, add a credential, then copy its access key and secret key." }
 
 # ── Wikimedia ────────────────────────────────────────────────────────────────
 
@@ -802,6 +928,57 @@ fetch = { kind = "http", url = "https://download.bgr.de/bgr/Geologie/IGME5000/sh
 extent = [-71, 21, 100, 81]
 version = "digest"
 redistribute = true
+
+# The national maps of data/trailview/ground.json. Each box holds its map, in whole degrees.
+
+[[source]]
+id = "land-cover-ie"
+kind = "data"
+group = "Land cover and imagery"
+used_by = ["trailview"]
+use = "Land cover of Ireland, the National Land Cover Map 2018, for the TrailView material"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+attribution = "National Land Cover Map 2018 © Tailte Éireann and the Environmental Protection Agency"
+obligations = "Credit the source as the attribution says; state modifications"
+fetch = { kind = "capture", url = "https://services-eu1.arcgis.com/FH5XCsx8rYXqnjF5/arcgis/rest/services/MapGenieNationalLandCover2018ITM/FeatureServer/0" }
+extent = [-11, 51, -5, 56]
+version = "date"
+refresh = "manual"
+redistribute = true
+
+[[source]]
+id = "land-cover-gb-sct"
+kind = "data"
+group = "Land cover and imagery"
+used_by = ["trailview"]
+use = "Habitats of Scotland, the Habitat Map of Scotland, for the TrailView material"
+licence = "OGL-UK-3.0"
+licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
+attribution = "Contains NatureScot information licensed under the Open Government Licence v3.0"
+obligations = "Credit the source as the attribution says"
+fetch = { kind = "capture", url = "https://ogc.nature.scot/geoserver/ows" }
+extent = [-10, 54, 0, 61]
+version = "date"
+refresh = "manual"
+redistribute = true
+
+[[source]]
+id = "geology-es"
+kind = "data"
+group = "Land cover and imagery"
+used_by = ["trailview"]
+use = "Rock of Spain at 1:50 000, the GEODE map, for the TrailView lithology"
+licence = "LicenseRef-IGME-GEODE"
+licence_url = "https://mapas.igme.es/gis/rest/services/Cartografia_Geologica/IGME_Geode_50/MapServer/info/itemInfo?f=json"
+attribution = "GEODE 1:50 000 © IGME"
+obligations = "Contact IGME before a paid value-added service uses the map"
+fetch = { kind = "capture", url = "https://mapas.igme.es/gis/rest/services/Cartografia_Geologica/IGME_Geode_50/MapServer/8" }
+# Peninsular Spain and the Balearic Islands, without the Canary Islands, so the box stays near Spain.
+extent = [-10, 35, 5, 44]
+version = "date"
+refresh = "manual"
+redistribute = false
 
 # The source of data/trailview/ecoregions.json; its borders are Natural Earth's.
 [[source]]

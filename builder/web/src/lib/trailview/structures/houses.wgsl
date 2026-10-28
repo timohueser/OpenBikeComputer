@@ -20,7 +20,7 @@ struct House {
     wall: f32,
     // Metres per world unit at the house.
     unit: f32,
-    // The kind (3 bits), the roof that OSM names (2), the shape (1) at bit 5, a flat roof (1), a seed at bit 16.
+    // The kind (4 bits), the roof that OSM names (2), the shape (1) at bit 6, a flat roof (1), a seed at bit 16.
     bits: u32,
 }
 
@@ -63,21 +63,23 @@ struct Drawn {
     wall: f32,
     storey: f32,
     storeys: f32,
-    // The kind (3 bits), the form (2) at bit 3, the timber (2) at bit 5, shutters at bit 7, the front wall (2) at bit 8, the seed at bit 16.
+    // The kind (4 bits), the form (4) at bit 4, the timber (2) at bit 8, shutters at bit 10, the front wall (2) at bit 11, the seed at bit 16.
     bits: u32,
+    // The windows' size as a share of the kind's.
+    windows: f32,
     // The ground 1 m out from the corners of the footprint, below F: (-,-), (+,-), (+,+), (-,+) along and across, as f16 pairs.
     ground: vec2u,
     // render, wood, roof, door, shutter, plinth, chimney and balcony, in sRGB.
     colours: array<u32, 8>,
     // The slots of the template as f16 pairs: x at 0, y at Y_SLOTS, z at Z_SLOTS.
-    slots: array<u32, 18>,
+    slots: array<u32, 24>,
 }
 
 // The slots of a template, as models/house.ts names them: x, y and z in metres about the middle of
 // the footprint and above F.
 struct Slots {
-    x: array<f32, 12>,
-    y: array<f32, 8>,
+    x: array<f32, 16>,
+    y: array<f32, 16>,
     z: array<f32, 16>,
 }
 
@@ -89,16 +91,16 @@ struct Style {
     hip: f32,
     // 0 none, 1 upper, 2 all, 3 frame.
     timber: u32,
-    // SHUTTERS, BALCONIES, ONION_DOME.
+    // SHUTTERS, BALCONIES, ONION_DOME, DORMERS, WOODEN, CONE_ROOF, FLAT_ROOF.
     flags: u32,
     chimneys: u32,
     storeys: f32,
-    plinth: u32,
+    windows: f32,
     chimney: u32,
-    // The lengths of the five colour lists, 4 bits each.
+    // The lengths of the six colour lists, 4 bits each.
     counts: u32,
-    // render, wood, roof, door, shutter: four each, as 0xbbggrr.
-    colours: array<vec4u, 5>,
+    // render, wood, roof, door, shutter, plinth: four each, as 0xbbggrr.
+    colours: array<vec4u, 6>,
 }
 
 struct Params {
@@ -123,7 +125,7 @@ struct Params {
     regions: array<vec4u, 128>,
     // The tiles in view: the first record, the records and the first workgroup of `fit` and of `refit` of each.
     ranges: array<vec4u, 256>,
-    styles: array<Style, 32>,
+    styles: array<Style, 64>,
 }
 
 struct DrawOf {
@@ -147,21 +149,26 @@ struct DrawOf {
 
 const NO_DRAW: u32 = 0xffffffffu;
 // The draws: two per template.
-const DRAWS: u32 = 8u;
+const DRAWS: u32 = 18u;
 // Lanes per house, and houses per workgroup of `refit`, as in houses.ts.
 const LANES: u32 = 9u;
 const PER_GROUP: u32 = 7u;
 // The word of the drawn count, and the words before the lists.
-const COUNT: u32 = 32u;
+const COUNT: u32 = 4u * DRAWS;
 // Where the y and the z slots start in `Drawn.slots`.
-const Y_SLOTS: u32 = 12u;
-const Z_SLOTS: u32 = 20u;
-const LISTS: u32 = 36u;
+const Y_SLOTS: u32 = 16u;
+const Z_SLOTS: u32 = 32u;
+const LISTS: u32 = COUNT + 4u;
 // The templates, as TEMPLATES of models/house.ts.
 const T_GABLE: u32 = 0u;
 const T_FLAT: u32 = 1u;
 const T_SPIRE: u32 = 2u;
 const T_ONION: u32 = 3u;
+const T_DOMES: u32 = 4u;
+const T_TERRACE: u32 = 5u;
+const T_CONES: u32 = 6u;
+const T_GRANARY: u32 = 7u;
+const T_DORMERS: u32 = 8u;
 // The kinds, as house-records.ts.
 const COTTAGE: u32 = 0u;
 const HOUSE: u32 = 1u;
@@ -169,11 +176,17 @@ const BARN: u32 = 3u;
 const BLOCK: u32 = 4u;
 const CHURCH: u32 = 5u;
 const INDUSTRIAL: u32 = 6u;
+const GRANARY: u32 = 7u;
+const GREENHOUSE: u32 = 8u;
 // The style of industrial halls, the same in every region: the last of `styles`, as houses.ts writes it.
-const INDUSTRIAL_STYLE: u32 = 31u;
+const INDUSTRIAL_STYLE: u32 = 63u;
 const SHUTTERS: u32 = 1u;
 const BALCONIES: u32 = 2u;
 const ONION_DOME: u32 = 4u;
+const DORMERS: u32 = 8u;
+const WOODEN: u32 = 16u;
+const CONE_ROOF: u32 = 32u;
+const FLAT_ROOF_STYLE: u32 = 64u;
 // Materials, as models/house.ts.
 const M_WALL: u32 = 0u;
 const M_GABLE: u32 = 1u;
@@ -185,6 +198,8 @@ const M_CAP: u32 = 6u;
 const M_BALCONY: u32 = 7u;
 const M_TOWER: u32 = 8u;
 const M_FLAT: u32 = 9u;
+const M_RENDER: u32 = 10u;
+const M_GLASS: u32 = 11u;
 // The colours of `Drawn`.
 const C_RENDER: u32 = 0u;
 const C_WOOD: u32 = 1u;
@@ -205,7 +220,7 @@ struct Kind {
     opening: vec2f,
 }
 
-const KINDS = array<Kind, 7>(
+const KINDS = array<Kind, 9>(
     Kind(2.6, 1.0, vec2f(0.8, 2.2), 0.9, vec2f(0.35, 0.8)),
     Kind(2.7, 2.0, vec2f(1.0, 2.6), 1.0, vec2f(0.35, 0.8)),
     Kind(2.8, 2.0, vec2f(0.9, 2.2), 1.2, vec2f(0.35, 0.8)),
@@ -214,11 +229,29 @@ const KINDS = array<Kind, 7>(
     Kind(6.5, 1.0, vec2f(1.2, 3.6), 1.8, vec2f(0.3, 0.75)),
     // A hall: a band of wide windows under the eaves and a loading door.
     Kind(7.0, 1.0, vec2f(2.4, 6.0), 4.0, vec2f(0.62, 0.82)),
+    // A granary: a store with a slit and a small door.
+    Kind(2.2, 1.0, vec2f(0.25, 30.0), 0.7, vec2f(0.3, 0.75)),
+    // A greenhouse: walls of plastic or glass without openings.
+    Kind(3.5, 1.0, vec2f(0.0, 30.0), 0.0, vec2f(0.0, 0.0)),
 );
 
 const GLASS = vec3f(0.212, 0.259, 0.298);
 const FLAT_ROOF = vec3f(0.478, 0.463, 0.431);
 const PLINTH_M: f32 = 0.35;
+// A granary's floor stands this high on its pillars.
+const RAISED_M: f32 = 1.6;
+// Any style's greenhouse is one of these sheets of plastic or glass, with a frame across the roof every FRAME_M.
+const SHEETS = array<vec3f, 4>(vec3f(0.894, 0.906, 0.894), vec3f(0.855, 0.875, 0.863), vec3f(0.91, 0.902, 0.871), vec3f(0.827, 0.847, 0.839));
+const FRAME_M: f32 = 3.0;
+// A dormer's wall above the eaves, its front's half width, and the length of front that holds one.
+const DORMER_M: f32 = 1.4;
+const DORMER_HALF_M: f32 = 0.65;
+const DORMER_EVERY_M: f32 = 4.0;
+// The length of wall that holds one cone, and a parapet's thickness and height.
+const CONE_M: f32 = 4.5;
+const PARAPET_M: vec2f = vec2f(0.25, 0.6);
+// A greenhouse's roof rises at most this much: the shallow spans of a sea of plastic.
+const GREENHOUSE_RISE_M: f32 = 1.0;
 const BEAM_M: f32 = 0.2;
 const BALCONY_M: f32 = 0.9;
 // A roof rises at most this much above the eaves.
@@ -237,7 +270,7 @@ fn seeded(a: u32, b: u32) -> f32 {
 }
 
 fn kind_of(h: House) -> u32 {
-    return h.bits & 7u;
+    return h.bits & 15u;
 }
 
 // The kind table by a switch: an array indexed at run time would leave the registers.
@@ -249,7 +282,9 @@ fn kind_table(kind: u32) -> Kind {
         case 3u: { return KINDS[3]; }
         case 4u: { return KINDS[4]; }
         case 5u: { return KINDS[5]; }
-        default: { return KINDS[6]; }
+        case 6u: { return KINDS[6]; }
+        case 7u: { return KINDS[7]; }
+        default: { return KINDS[8]; }
     }
 }
 
@@ -274,6 +309,8 @@ struct Shape {
     shutters: bool,
     chimneys: u32,
     balconies: bool,
+    dormers: bool,
+    wooden: bool,
 }
 
 fn shape_of(h: House, index: u32) -> Shape {
@@ -284,21 +321,33 @@ fn shape_of(h: House, index: u32) -> Shape {
     let seed = h.bits >> 16u;
     let church = s.kind == CHURCH;
     let dwelling = s.kind == COTTAGE || s.kind == HOUSE;
+    // A barn and a granary are stores, plain and of boards where the style has timber.
+    let store = s.kind == BARN || s.kind == GRANARY;
+    let greenhouse = s.kind == GREENHOUSE;
+    let flags = (*style).flags;
     s.half = 0.5 * vec2f(h.length, h.width);
     // OSM's height and levels of a church describe its tower, so the nave's walls follow its width.
     s.wall = select(select(k.storey * select(k.storeys, (*style).storeys, dwelling && (*style).storeys > 0.0), h.wall, h.wall > 0.0), clamp(0.6 * h.width, 3.0, 14.0), church);
     s.storeys = max(1.0, round(s.wall / k.storey));
     s.storey = s.wall / s.storeys;
-    s.pitch = mix((*style).pitch.x, (*style).pitch.y, seeded(seed, 7u));
-    let roof = (h.bits >> 3u) & 3u;
-    s.hip = select(select(select(0.5, 1.0, roof == 2u), 0.0, roof == 1u), (*style).hip, roof == 0u);
-    s.timber = select(select((*style).timber, 2u, s.kind == BARN && (*style).timber != 0u), 0u, s.kind == BLOCK || church);
-    s.shutters = ((*style).flags & SHUTTERS) != 0u && s.kind != BARN && !church;
-    s.chimneys = select((*style).chimneys, 0u, s.kind == BARN || church);
-    s.balconies = ((*style).flags & BALCONIES) != 0u && s.kind != BARN && !church;
-    // A flat roof flattens any kind but a church, which keeps its tower.
-    let flat = ((h.bits >> 6u) & 1u) == 1u;
-    s.form = select(select(T_GABLE, T_FLAT, flat), select(T_SPIRE, T_ONION, ((*style).flags & ONION_DOME) != 0u), church);
+    s.pitch = select(mix((*style).pitch.x, (*style).pitch.y, seeded(seed, 7u)), mix(10.0, 16.0, seeded(seed, 7u)), greenhouse);
+    let roof = (h.bits >> 4u) & 3u;
+    s.hip = select(select(select(select(0.5, 1.0, roof == 2u), 0.0, roof == 1u), (*style).hip, roof == 0u), 0.0, greenhouse);
+    // A church is of masonry, or all of wood in a style of wooden churches.
+    s.wooden = church && (flags & WOODEN) != 0u;
+    s.timber = select(select(select((*style).timber, 2u, store && (*style).timber != 0u), 0u, s.kind == BLOCK || church || greenhouse), 2u, s.wooden);
+    let plain = store || church || greenhouse;
+    s.shutters = (flags & SHUTTERS) != 0u && !plain;
+    s.chimneys = select((*style).chimneys, 0u, plain);
+    s.balconies = (flags & BALCONIES) != 0u && !plain;
+    s.dormers = (flags & DORMERS) != 0u && !plain;
+    // A flat roof flattens any kind but a church, which keeps its tower; a style's own roof
+    // takes any kind but a church, a greenhouse and a granary, and a cone none of blocks and halls.
+    let flat = ((h.bits >> 7u) & 1u) == 1u;
+    let cones = (flags & CONE_ROOF) != 0u && s.kind != BLOCK && s.kind != INDUSTRIAL;
+    let own = select(select(select(select(T_GABLE, T_DORMERS, s.dormers), T_FLAT, flat), T_CONES, cones), T_TERRACE, (flags & FLAT_ROOF_STYLE) != 0u);
+    let tower = select(select(T_SPIRE, T_ONION, (flags & ONION_DOME) != 0u), T_DOMES, s.wooden);
+    s.form = select(select(select(own, T_GABLE, greenhouse), T_GRANARY, s.kind == GRANARY), tower, church);
     return s;
 }
 
@@ -309,11 +358,16 @@ fn tower_of(s: Shape) -> vec2f {
 }
 
 fn slots_of(s: Shape, index: u32, bottom: f32) -> Slots {
-    let eave_m = params.styles[index].eave;
-    let verge = params.styles[index].verge;
+    let greenhouse = s.kind == GREENHOUSE;
+    let eave_m = select(params.styles[index].eave, 0.1, greenhouse);
+    let verge = select(params.styles[index].verge, 0.1, greenhouse);
     var o: Slots;
-    // A wide hall's roof keeps a low pitch, and a style of 0° a near-flat one.
-    let t = max(min(tan(radians(s.pitch)), ROOF_M / s.half.y), 0.05);
+    // A wide hall's roof keeps a low pitch, and a style of 0° a near-flat one; a greenhouse's rise
+    // stays under its cap at any width.
+    var t = max(min(tan(radians(s.pitch)), ROOF_M / s.half.y), 0.05);
+    if (greenhouse) {
+        t = min(t, GREENHOUSE_RISE_M / s.half.y);
+    }
     let w = s.half;
     o.z[0] = bottom;
     o.z[1] = s.wall;
@@ -324,35 +378,93 @@ fn slots_of(s: Shape, index: u32, bottom: f32) -> Slots {
         o.y[2] = w.y + 0.2;
         return o;
     }
+    if (s.form == T_TERRACE) {
+        o.x[1] = w.x;
+        o.x[2] = w.x - PARAPET_M.x;
+        o.y[1] = w.y;
+        o.y[2] = w.y - PARAPET_M.x;
+        o.z[2] = s.wall + PARAPET_M.y;
+        return o;
+    }
+    if (s.form == T_CONES) {
+        // Up to three columns of cones along the house and two rows across, each over a bay: an even
+        // count leaves the middle column or row out.
+        let n = clamp(round(2.0 * w / CONE_M), vec2f(1.0), vec2f(3.0, 2.0));
+        let r = 0.96 * min(w.x / n.x, w.y / n.y);
+        let middle = vec2f(select(0.0, r, n.x != 2.0), select(0.0, r, n.y == 1.0));
+        let outer = vec2f(select(0.0, r, n.x >= 2.0), select(0.0, r, n.y == 2.0));
+        o.x[1] = w.x;
+        o.x[2] = select(2.0 * w.x / 3.0, 0.5 * w.x, n.x == 2.0);
+        o.x[3] = min(middle.x, middle.y);
+        o.x[4] = min(outer.x, middle.y);
+        o.x[5] = min(middle.x, outer.y);
+        o.x[6] = min(outer.x, outer.y);
+        o.y[1] = w.y;
+        o.y[2] = 0.5 * w.y;
+        return o;
+    }
     let eave = s.wall - eave_m * t;
     let ridge = s.wall + w.y * t;
-    if (s.form == T_GABLE) {
-        let y = w.y + eave_m;
-        let end = w.x + verge;
-        // The hipped ends rise at the roof's own pitch from the hip line to the shortened ridge.
-        let hip_z = ridge - s.hip * (ridge - eave);
-        let ridge_x = max(0.0, end - s.hip * y);
-        let top_z = min(ridge, hip_z + verge * t);
+    // The hipped ends rise at the roof's own pitch from the hip line to the shortened ridge.
+    let y = w.y + eave_m;
+    let end = w.x + verge;
+    let hip_z = ridge - s.hip * (ridge - eave);
+    let ridge_x = max(0.0, end - s.hip * y);
+    let top_z = min(ridge, hip_z + verge * t);
+    if (s.form == T_GRANARY) {
+        // The store stands on a row of pillars about every 2 m under each long wall, 35 cm square and
+        // 30 cm in from its walls: a middle one where they are odd, and up to three pairs about it.
+        let r = RAISED_M;
+        let n = clamp(round(w.x) + 1.0, 2.0, 7.0);
+        let step = (2.0 * w.x - 0.6) / (n - 1.0);
+        var pairs = array<f32, 3>(0.0, 0.0, 0.0);
+        for (var k = 0; k < 3; k++) {
+            pairs[k] = select(0.0, w.x - 0.3 - f32(k) * step, f32(k) < floor(0.5 * n));
+        }
+        let half = vec3f(select(0.0, 0.175, pairs[0] > 0.0), select(0.0, 0.175, pairs[1] > 0.0), select(0.0, 0.175, pairs[2] > 0.0));
+        o.x = array<f32, 16>(0.0, w.x, end, ridge_x, select(0.0, 0.175, n % 2.0 == 1.0), pairs[0] - half.x, pairs[0] + half.x, pairs[1] - half.y, pairs[1] + half.y,
+            pairs[2] - half.z, pairs[2] + half.z, 0.0, 0.0, 0.0, 0.0, 0.0);
+        o.y = array<f32, 16>(0.0, w.y, y, s.hip * y, (ridge - top_z) / t, w.y - 0.475, w.y - 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        o.z = array<f32, 16>(bottom, r, r + s.wall, r + eave, r + ridge, r + hip_z, r + top_z, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        return o;
+    }
+    if (s.form == T_GABLE || s.form == T_DORMERS) {
         let chimney = min(w.x - 0.6, max(0.0, ridge_x - 0.5));
         let c1 = select(0.0, 1.0, s.chimneys >= 1u);
         let c2 = select(0.0, 1.0, s.chimneys == 2u);
         let b1 = select(0.0, 1.0, s.balconies && s.storeys > 1.5);
         let b2 = select(0.0, 1.0, s.balconies && s.storeys > 2.5);
-        o.x = array<f32, 12>(0.0, w.x, end, ridge_x, chimney - 0.35 * c1, chimney + 0.35 * c1, chimney - 0.35 * c2, chimney + 0.35 * c2, 0.6 * w.x * b1, 0.6 * w.x * b2, 0.0, 0.0);
-        o.y = array<f32, 8>(0.0, w.y, y, s.hip * y, (ridge - top_z) / t, 0.275, w.y + BALCONY_M, 0.0);
-        o.z = array<f32, 16>(bottom, s.wall, eave, ridge, hip_z, top_z, ridge - 1.0, ridge - 1.0 + 2.2 * c1, ridge - 1.0 + 2.2 * c2,
-            s.storey - 0.15, s.storey - 0.15 + 1.15 * b1, 2.0 * s.storey - 0.15, 2.0 * s.storey - 0.15 + 1.15 * b2, 0.0, 0.0, 0.0);
+        // One dormer per DORMER_EVERY_M of front, three at most: one in the middle where they are odd, and a
+        // pair about it. A dormer that would reach the ridge has none.
+        let apex = s.wall + DORMER_M + DORMER_HALF_M * t;
+        let dormers = select(0.0, clamp(floor(2.0 * w.x / DORMER_EVERY_M), 1.0, 3.0), s.dormers && apex < ridge - 0.3);
+        let middle = select(0.0, 1.0, dormers == 1.0 || dormers == 3.0);
+        let pair = select(0.0, 1.0, dormers >= 2.0);
+        let front = vec3f(w.y, w.y + 0.25, w.y + 0.02);
+        o.x = array<f32, 16>(0.0, w.x, end, ridge_x, chimney - 0.35 * c1, chimney + 0.35 * c1, chimney - 0.35 * c2, chimney + 0.35 * c2, 0.6 * w.x * b1, 0.6 * w.x * b2,
+            select(2.0 * w.x / 3.0, 0.5 * w.x, dormers == 2.0), 0.0, 0.0, 0.0, 0.0, 0.0);
+        o.y = array<f32, 16>(0.0, w.y, y, s.hip * y, (ridge - top_z) / t, 0.275, w.y + BALCONY_M, front.x * middle, front.y * middle, front.z * middle,
+            front.x * pair, front.y * pair, front.z * pair, 0.0, 0.0, 0.0);
+        o.z = array<f32, 16>(bottom, s.wall, eave, ridge, hip_z, top_z, ridge - 1.0 + 2.2 * c1, ridge - 1.0 + 2.2 * c2,
+            s.storey - 0.15, s.storey - 0.15 + 1.15 * b1, 2.0 * s.storey - 0.15, 2.0 * s.storey - 0.15 + 1.15 * b2,
+            mix(s.wall, s.wall + DORMER_M, middle), mix(s.wall, apex, middle), mix(s.wall, s.wall + DORMER_M, pair), mix(s.wall, apex, pair));
         return o;
     }
     // A church: the tower at the -x end, the nave filling the rest, and a spire as steep as the roof allows or an onion dome.
     let tower = tower_of(s);
     let spire = tan(radians(clamp(1.7 * s.pitch, 40.0, 82.0)));
-    let e = select(min(0.3, 0.4 / spire), 0.3, s.form == T_ONION);
+    let e = select(min(0.3, 0.4 / spire), 0.3, s.form != T_SPIRE);
     let nave_w = -w.x + tower.x;
     let top = ridge + tower.x;
-    o.x = array<f32, 12>(0.0, nave_w, w.x, nave_w - verge, w.x + verge, -w.x, tower.y, tower.y - 0.5 * tower.x - e, tower.y + 0.5 * tower.x + e, 0.0, 0.0, 0.0);
-    o.y = array<f32, 8>(0.0, w.y, w.y + eave_m, 0.5 * tower.x, 0.5 * tower.x + e, 0.0, 0.0, 0.0);
-    o.z = array<f32, 16>(bottom, s.wall, eave, ridge, top, top - e * spire, top + 0.5 * tower.x * spire, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    // A wooden church's nave carries one cupola, or two on a nave 12 m long or more, on drums along the ridge.
+    let nave = w.x - nave_w;
+    let drum = select(0.0, min(0.7 * w.y, 3.0), s.form == T_DOMES && nave >= 6.0);
+    let two = nave >= 12.0;
+    let middle = 0.5 * (nave_w + w.x);
+    o.x = array<f32, 16>(0.0, nave_w, w.x, nave_w - verge, w.x + verge, -w.x, tower.y, tower.y - 0.5 * tower.x - e, tower.y + 0.5 * tower.x + e, 0.5 * tower.x,
+        select(middle, middle - 0.1 * nave, two), middle + 0.35 * nave, 0.5 * drum, select(0.0, 0.5 * drum, two), 0.0, 0.0);
+    o.y = array<f32, 16>(0.0, w.y, w.y + eave_m, 0.5 * tower.x, 0.5 * tower.x + e, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    o.z = array<f32, 16>(bottom, s.wall, eave, ridge, top, top - e * spire, top + 0.5 * tower.x * spire, ridge - 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     return o;
 }
 
@@ -485,7 +597,7 @@ fn fit(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) loc
     }
     let h = houses[i];
     let out = fit_of(fits_out[i]);
-    let outline = ((h.bits >> 5u) & 1u) == 1u;
+    let outline = ((h.bits >> 6u) & 1u) == 1u;
     let at = LISTS + DRAWS * params.capacity + i;
     if (outline) {
         atomicStore(&draws[at], NO_DRAW);
@@ -517,31 +629,32 @@ fn fit(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) loc
     d.wall = s.wall;
     d.storey = s.storey;
     d.storeys = s.storeys;
+    d.windows = select(params.styles[out.style].windows, 1.0, params.styles[out.style].windows <= 0.0);
     let below = out.ground;
     d.ground = vec2u(pack2x16float(below.xy), pack2x16float(below.zw));
     // The door is in the wall whose ground lies nearest the floor.
     let mids = abs(0.5 * (below + below.yzwx));
     let nearest = min(min(mids.x, mids.y), min(mids.z, mids.w));
     let front = select(select(select(3u, 2u, mids.z == nearest), 1u, mids.y == nearest), 0u, mids.x == nearest);
-    d.bits = s.kind | (s.form << 3u) | (s.timber << 5u) | (u32(s.shutters) << 7u) | (front << 8u) | (h.bits & 0xffff0000u);
+    d.bits = s.kind | (s.form << 4u) | (s.timber << 8u) | (u32(s.shutters) << 10u) | (front << 11u) | (h.bits & 0xffff0000u);
     let seed = h.bits >> 16u;
     let wood = pick(out.style, 1u, seed);
     let shutter = select(pick(out.style, 4u, seed), wood, s.timber == 3u);
+    // A greenhouse is one sheet, walls and roof; a wooden church is of its wood under shingles.
+    var sheets = SHEETS;
+    let sheet = sheets[min(u32(seeded(seed, 5u) * 4.0), 3u)];
+    let render = select(select(pick(out.style, 0u, seed), wood, s.wooden), sheet, s.kind == GREENHOUSE);
+    let roof = select(select(select(pick(out.style, 2u, seed), FLAT_ROOF, s.form == T_FLAT), wood * 0.7, s.wooden), sheet, s.kind == GREENHOUSE);
     d.colours = array<u32, 8>(
-        pack4x8unorm(vec4f(pick(out.style, 0u, seed), 1.0)), pack4x8unorm(vec4f(wood, 1.0)),
-        pack4x8unorm(vec4f(select(pick(out.style, 2u, seed), FLAT_ROOF, s.form == T_FLAT), 1.0)),
-        pack4x8unorm(vec4f(select(pick(out.style, 3u, seed), wood * 0.55, s.kind == BARN), 1.0)), pack4x8unorm(vec4f(shutter, 1.0)),
-        params.styles[out.style].plinth, params.styles[out.style].chimney, pack4x8unorm(vec4f(shutter, 1.0)));
-    let o = slots_of(s, out.style, out.bottom);
-    let x = o.x;
-    let y = o.y;
-    let z = o.z;
-    d.slots = array<u32, 18>(
-        pack2x16float(vec2f(x[0], x[1])), pack2x16float(vec2f(x[2], x[3])), pack2x16float(vec2f(x[4], x[5])),
-        pack2x16float(vec2f(x[6], x[7])), pack2x16float(vec2f(x[8], x[9])), pack2x16float(vec2f(x[10], x[11])),
-        pack2x16float(vec2f(y[0], y[1])), pack2x16float(vec2f(y[2], y[3])), pack2x16float(vec2f(y[4], y[5])), pack2x16float(vec2f(y[6], y[7])),
-        pack2x16float(vec2f(z[0], z[1])), pack2x16float(vec2f(z[2], z[3])), pack2x16float(vec2f(z[4], z[5])), pack2x16float(vec2f(z[6], z[7])),
-        pack2x16float(vec2f(z[8], z[9])), pack2x16float(vec2f(z[10], z[11])), pack2x16float(vec2f(z[12], z[13])), pack2x16float(vec2f(z[14], z[15])));
+        pack4x8unorm(vec4f(render, 1.0)), pack4x8unorm(vec4f(wood, 1.0)), pack4x8unorm(vec4f(roof, 1.0)),
+        pack4x8unorm(vec4f(select(pick(out.style, 3u, seed), wood * 0.55, s.kind == BARN || s.kind == GRANARY), 1.0)), pack4x8unorm(vec4f(shutter, 1.0)),
+        pack4x8unorm(vec4f(pick(out.style, 5u, seed), 1.0)), params.styles[out.style].chimney, pack4x8unorm(vec4f(shutter, 1.0)));
+    var o = slots_of(s, out.style, out.bottom);
+    for (var k = 0u; k < 8u; k++) {
+        d.slots[k] = pack2x16float(vec2f(o.x[2u * k], o.x[2u * k + 1u]));
+        d.slots[8u + k] = pack2x16float(vec2f(o.y[2u * k], o.y[2u * k + 1u]));
+        d.slots[16u + k] = pack2x16float(vec2f(o.z[2u * k], o.z[2u * k + 1u]));
+    }
     drawn_out[v] = d;
     atomicStore(&draws[select(LISTS + draw * params.capacity + slot, at, outline)], v);
 }
@@ -614,11 +727,12 @@ fn template_at(vertex: u32, instance: u32) -> Placed {
     local.x *= select(1.0, -1.0, (w & 0x1000u) != 0u);
     local.y *= select(1.0, -1.0, (w & 0x2000u) != 0u);
     if ((w & 0x4000u) != 0u) {
-        // A vertex of the onion dome, on its ring about the tower: radius and height as shares of the
-        // tower's half side, in hundredths and fiftieths.
-        let ring = vec2f(f32((word.y >> 16u) & 255u) / 100.0, f32(word.y >> 24u) / 50.0) * 0.5 * drawn[v].side;
+        // A ring vertex: radius and height in hundredths and fiftieths of the ring's unit slot.
+        let ring = vec2f(f32((word.y >> 16u) & 255u) / 100.0, f32(word.y >> 24u) / 50.0) * slot(v, (w >> 22u) & 15u);
         let turn = f32((w >> 26u) & 7u) * 0.25 * 3.14159265;
-        local = vec3f(local.x + ring.x * cos(turn), ring.x * sin(turn), local.z + 0.3 + ring.y);
+        local += vec3f(ring.x * cos(turn), ring.x * sin(turn), ring.y);
+    } else {
+        local.x += f32(bitcast<i32>(word.y) >> 16u) * 0.01;
     }
     local.z += f32(bitcast<i32>(word.y << 16u) >> 16u) * 0.01;
     let t = drawn[v].turn;
@@ -676,16 +790,19 @@ fn colour_of(d: Drawn, k: u32) -> vec3f {
 // `ground` below F; `w` is the size of a pixel in metres, and `first` the number of the wall's first
 // window. Windows and doors are cells of a grid, as in the prototype. Alpha: how much the cell shines at night.
 fn facade(d: Drawn, wall: u32, first: u32, u: f32, len: f32, z: f32, front: bool, ground: f32, w: f32) -> vec4f {
-    let kind = d.bits & 7u;
-    let timber = (d.bits >> 5u) & 3u;
-    let k = kind_table(kind);
+    let kind = d.bits & 15u;
+    let timber = (d.bits >> 8u) & 3u;
+    // Smaller windows stand farther apart, their sills higher and their lintels lower.
+    var k = kind_table(kind);
+    k.window *= vec2f(d.windows, 1.0 / d.windows);
+    k.opening = mix(vec2f(dot(k.opening, vec2f(0.5))), k.opening, d.windows);
     let wood = colour_of(d, C_WOOD);
     let plinth = colour_of(d, C_PLINTH);
     let n = max(1.0, floor(len / k.window.y));
     let column = clamp(floor(u / len * n), 0.0, n - 1.0);
     let centre = len * (column + 0.5) / n;
     let seed = d.bits >> 16u;
-    let lived = kind != BARN && kind != INDUSTRIAL && seeded(seed, 99u) >= DARK_HOUSES;
+    let lived = kind != BARN && kind != INDUSTRIAL && kind != GRANARY && kind != GREENHOUSE && seeded(seed, 99u) >= DARK_HOUSES;
     // Whether the window of the pixel's cell shines, and the share of its cell that it fills: far off,
     // a pixel shows one window's light at that share, so a far village is lit dots of the same light.
     let storey = clamp(floor(z / d.storey), 0.0, d.storeys - 1.0);
@@ -720,7 +837,7 @@ fn facade(d: Drawn, wall: u32, first: u32, u: f32, len: f32, z: f32, front: bool
         // A window opens where its sill stands clear of the ground: a buried storey shows its wall.
         let sill = (storey + k.opening.x) * d.storey;
         let open = z > sill && z < (storey + k.opening.y) * d.storey && sill > ground + 0.1;
-        let shutter_half = ww + select(0.0, 0.9 * ww, ((d.bits >> 7u) & 1u) == 1u);
+        let shutter_half = ww + select(0.0, 0.9 * ww, ((d.bits >> 10u) & 1u) == 1u);
         if (front && abs(u - 0.5 * len) < 0.5 * k.door && z < k.opening.y * d.storey) {
             colour = colour_of(d, C_DOOR);
         } else if (open && off < ww) {
@@ -756,7 +873,7 @@ fn house_fragment(in: HouseOut) -> @location(0) vec4f {
     var n = normalize(cross(dpdx(in.relative), dpdy(in.relative)));
     n *= -sign(dot(n, in.relative));
     let w = max(length(dpdx(in.relative)), length(dpdy(in.relative)));
-    let timber = (d.bits >> 5u) & 3u;
+    let timber = (d.bits >> 8u) & 3u;
     let x = in.local.x;
     let y = in.local.y;
     var colour = colour_of(d, C_RENDER);
@@ -778,12 +895,12 @@ fn house_fragment(in: HouseOut) -> @location(0) vec4f {
                 ground = mix(below[wall], below[(wall + 1u) % 4u], clamp(u / len, 0.0, 1.0));
             } else {
                 // An outline: its windows repeat along it.
-                let spacing = kind_table(d.bits & 7u).window.y;
+                let spacing = kind_table(d.bits & 15u).window.y / d.windows;
                 len = spacing;
                 first = u32(floor(in.along / spacing));
                 u = in.along - f32(first) * spacing;
             }
-            let painted = facade(d, wall, first, u, len, in.local.z, wall == ((d.bits >> 8u) & 3u), ground, w);
+            let painted = facade(d, wall, first, u, len, in.local.z, wall == ((d.bits >> 11u) & 3u), ground, w);
             colour = painted.rgb;
             glow = painted.a;
         }
@@ -808,6 +925,12 @@ fn house_fragment(in: HouseOut) -> @location(0) vec4f {
         case M_BALCONY: {
             colour = colour_of(d, C_BALCONY);
         }
+        case M_RENDER: {
+            colour = colour_of(d, C_RENDER);
+        }
+        case M_GLASS: {
+            colour = GLASS;
+        }
         case M_TOWER: {
             let side = d.side;
             let along = vec4f(x + d.half.x, y + 0.5 * side, -d.half.x + side - x, 0.5 * side - y);
@@ -816,6 +939,11 @@ fn house_fragment(in: HouseOut) -> @location(0) vec4f {
         default: {
             colour = FLAT_ROOF;
         }
+    }
+    if ((d.bits & 15u) == GREENHOUSE) {
+        // A darker frame runs across the roof every FRAME_M.
+        let rib = material == M_ROOF && abs(fract(x / FRAME_M + 0.5) - 0.5) * FRAME_M < 0.1;
+        colour = colour_of(d, C_RENDER) * select(1.0, 0.8, rib);
     }
     let lit = light_up(srgb(colour), n, sun_share(in.sun, in.relative, n, LIFT_SOLID), 1.0, look.horizon.w);
     // Lamplight after the haze, which would turn it blue at night: it fades with the distance instead.

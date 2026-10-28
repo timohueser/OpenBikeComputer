@@ -80,5 +80,5 @@ export default {
     name: 'Bog cotton',
     latin: 'Eriophorum angustifolium',
     build: (season, seed) => bogCotton(season, random(seed)),
-    ground: { on: ['wetland', 'moss', 'grass'], height: [0.3, 0.5], share: 0.08, habitat: 'moor', clumped: true },
+    ground: { on: ['wetland', 'moss', 'grass'], height: [0.3, 0.5], share: 0.08, clumped: true },
 } satisfies Plant;

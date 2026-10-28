@@ -20,6 +20,8 @@ export interface Light {
     ambient: Rgb;
     /** 0 by day, 1 once the sun is 12° down: colours shift to blue. */
     night: number;
+    /** How high the horizon's colour reaches: the sky turns to the zenith's colour as the sine of the altitude to this power. */
+    rise: number;
 }
 
 // Night, blue hour, alpenglow, golden hour and day. The sun keeps a red colour a few degrees below
@@ -52,7 +54,7 @@ export function lightAt(degrees: number): Light {
     const key = (name: 'sun' | 'zenith' | 'horizon' | 'ambient') => mix(linear(a[name]), linear(b[name]), t);
     return {
         sunColour: scale(key('sun'), DAYLIGHT), zenith: key('zenith'), horizon: key('horizon'),
-        glow: a.glow + (b.glow - a.glow) * t, ambient: scale(key('ambient'), DAYLIGHT), night: Math.min(Math.max((-4 - degrees) / 8, 0), 1),
+        glow: a.glow + (b.glow - a.glow) * t, ambient: scale(key('ambient'), DAYLIGHT), night: Math.min(Math.max((-4 - degrees) / 8, 0), 1), rise: 0.5,
     };
 }
 
@@ -88,6 +90,26 @@ export function moonlit(light: Light, share: number, air: Rgb): Light {
     const add = (c: Rgb, moon: Rgb) => c.map((v, i) => v + moon[i] * share) as Rgb;
     const sunColour = MOONLIGHT.map((v, i) => v * share * (1 - MOON_WARMTH + MOON_WARMTH * air[i])) as Rgb;
     return { ...light, sunColour, ambient: add(light.ambient, MOON_AMBIENT), zenith: add(light.zenith, MOON_SKY), horizon: add(light.horizon, MOON_SKY) };
+}
+
+// Totality: the sky deep blue overhead and a low ring of sunset light along the horizon from the air
+// beyond the moon's shadow, which also lights the scene; the lamps come on. Chosen, not measured.
+const TOTALITY = { zenith: linear('#1b2a50'), horizon: linear('#b47a44'), ambient: scale(linear('#3a4168'), DAYLIGHT), night: 0.4, rise: 0.2 };
+/** The eye adapts: it sees a share s of the sun's light as s^ADAPTED of it, so a partial eclipse dims little. */
+const ADAPTED = 0.15;
+
+/**
+ * The light while an eclipse leaves the share `left` of the sun's light. It dims little until the
+ * last percent; then the sky turns to the colours of totality, most of the way in the last seconds.
+ */
+export function eclipsed(light: Light, left: number): Light {
+    if (left >= 1) return light;
+    const seen = left ** ADAPTED, dusk = (1 - seen) ** 2, toward = (c: Rgb, to: Rgb) => mix(scale(c, seen), to, dusk);
+    return {
+        sunColour: scale(light.sunColour, seen), zenith: toward(light.zenith, TOTALITY.zenith), horizon: toward(light.horizon, TOTALITY.horizon),
+        ambient: toward(light.ambient, TOTALITY.ambient), glow: light.glow * seen, night: light.night + (TOTALITY.night - light.night) * dusk,
+        rise: light.rise + (TOTALITY.rise - light.rise) * dusk,
+    };
 }
 
 /** The weather presets: the cloud layer, the wet and the rain, and what they do to the light. */
