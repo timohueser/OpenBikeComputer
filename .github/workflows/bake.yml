@@ -6,7 +6,7 @@ name: Bake
 # ── READ THIS BEFORE ADDING A COUNTRY TO THE MATRIX ────────────────────────────────
 #
 # **A country-scale bake does not fit a GitHub runner, and this workflow is not where
-# the real bakes happen.** A `ubuntu-latest` runner has 4 vCPU, 16 GB of RAM and
+# the real bakes happen.** An `ubuntu-24.04` runner has 4 vCPU, 16 GB of RAM and
 # ~14 GB of usable disk. The German extract alone is 4.8 GB *before* the packer
 # allocates its node table, and the artifacts it produces are hundreds of megabytes
 # each. There is no flag that fixes that.
@@ -100,7 +100,7 @@ jobs:
   # not about the tree, and it needs the network. Making it a *required* check once a
   # catalog exists is a branch-protection toggle, not a code change.
   obcm-version-guard:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -119,7 +119,7 @@ jobs:
   bake:
     # Not on pull_request: a PR must not spend twenty minutes packing maps.
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
