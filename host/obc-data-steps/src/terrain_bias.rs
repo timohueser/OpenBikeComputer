@@ -24,31 +24,42 @@ const TILE_LIST: &str = "copernicus-glo-30-tiles";
 /// The GLO-30 file of each square of the set that is land.
 pub(crate) type Glo30 = fn(&mut Job, &BTreeSet<TileId>) -> Result<BTreeMap<TileId, PathBuf>, String>;
 
+/// A tile with a height of a block that the run made, as the mark `<bi>-<bj>.tiles` of the block
+/// names it: its sources best first, and its bias samples.
+#[derive(serde::Deserialize)]
+pub(crate) struct Made {
+    pub sources: Vec<String>,
+    samples: String,
+}
+
 /// The bias of each best model of a tile of the version that `base`, the index of the version
-/// before, does not state. `made` are the sources of each tile that the run made, best first; the
-/// mark `<ti>-<tj>.samples` of such a tile holds its samples. The other tiles are those of
-/// `previous`. A sample at sea in `glo30` does not count.
+/// before, does not state. `made` are the tiles of the blocks that the run made; the other tiles are
+/// those of `previous`, outside those blocks. A sample at sea in `glo30` does not count.
 pub(crate) fn measure(
     job: &mut Job,
     (previous, base): (Option<&Manifest>, Option<&Index>),
-    made: &BTreeMap<String, Vec<String>>,
+    made: &BTreeMap<String, Made>,
     glo30: Glo30,
 ) -> Result<BTreeMap<String, f64>, String> {
     let stated = |key: &str| base.and_then(|index| index.sources.get(key)?.get("glo30_bias_m")).is_some();
-    let mut best: BTreeMap<&str, &str> = BTreeMap::new();
-    best.extend(base.into_iter().flat_map(|index| &index.tiles).map(|(tile, key)| (tile.as_str(), key.as_str())));
-    best.extend(made.iter().filter_map(|(tile, keys)| Some((tile.as_str(), keys.first()?.as_str()))));
+    let mut best: BTreeMap<&str, (&str, Option<&Made>)> = BTreeMap::new();
+    for (tile, sources) in base.iter().flat_map(|index| &index.contributors) {
+        best.extend(sources.first().map(|key| (tile.as_str(), (key.as_str(), None))));
+    }
+    for (tile, made) in made {
+        best.extend(made.sources.first().map(|key| (tile.as_str(), (key.as_str(), Some(made)))));
+    }
     let mut points: BTreeMap<String, Vec<Sample>> = BTreeMap::new();
-    for (tile, key) in best.into_iter().filter(|(_, key)| !stated(key)) {
+    for (tile, (key, made)) in best.into_iter().filter(|(_, (key, _))| !stated(key)) {
         let (ti, tj) = tile.split_once('/').and_then(|(i, j)| Some((i.parse().ok()?, j.parse().ok()?))).ok_or(tile)?;
-        let found = match (made.contains_key(tile), previous) {
-            (true, _) => marked(job, ti, tj)?,
-            (false, Some(previous)) => {
-                let path = job.earlier_file(previous, &format!("mean/16/{tile}.tif"))?;
-                let read = ReferenceTile::open(&path, ti, tj, Pool::Mean)?;
+        let found = match (made, previous) {
+            (Some(made), _) => parse(&made.samples, ti, tj).map_err(|e| format!("the samples of tile {tile}: {e}"))?,
+            (None, Some(previous)) => {
+                let path = job.earlier_file(previous, &crate::terrain_reference::block_file("mean/", ti, tj))?;
+                let read = ReferenceTile::open_in_block(&path, ti, tj, Pool::Mean)?;
                 samples(ti, tj, |r, c| read.height(r, c).map(f64::from))
             }
-            (false, None) => unreachable!("a tile that the run did not make is of the version before"),
+            (None, None) => unreachable!("a tile that the run did not make is of the version before"),
         };
         points.entry(key.to_string()).or_default().extend(found);
     }
@@ -71,14 +82,8 @@ fn square(&(lat, lon, _): &Sample) -> TileId {
     TileId { lat: lat.div_euclid(1_000_000) as i32, lon: lon.div_euclid(1_000_000) as i32 }
 }
 
-/// The samples of the mark of tile `(ti, tj)`: the height of each sample in decimetres, row by row
-/// from the south, or `-` where it has none.
-fn marked(job: &Job, ti: u32, tj: u32) -> Result<Vec<Sample>, String> {
-    let path = job.state.join("tiles").join(format!("{ti:04}-{tj:04}.samples"));
-    let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    parse(&text, ti, tj).map_err(|e| format!("{}: {e}", path.display()))
-}
-
+/// The samples of a tile: the height of each sample in decimetres, row by row from the south, or
+/// `-` where it has none.
 fn parse(text: &str, ti: u32, tj: u32) -> Result<Vec<Sample>, String> {
     let values: Vec<Option<f64>> = text
         .split_whitespace()

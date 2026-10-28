@@ -1,8 +1,8 @@
 """The TrailView canopy tiles of a region: `trailview-canopy.pmtiles`, as `specs/trailview-tiles.md`
 defines it.
 
-The `obc data` step `planner/trailview-canopy` reads the zoom 12 tiles of the prepared source
-`forest` in its snapshot."""
+The `obc data` step `planner/trailview-canopy` reads the zoom 12 tiles out of the zoom 10 blocks of
+the prepared source `forest` in its snapshot."""
 
 import argparse
 import io
@@ -49,25 +49,31 @@ def webp(code):
     return out.getvalue()
 
 
-def bands(path):
-    """The bands of the forest tile `path`."""
+def bands(blocks, x, y):
+    """The bands of zoom 12 tile `x`, `y` from its block in `blocks` ({x, y: path} of zoom 10), or
+    None where the block is not there or knows no cell of the tile."""
     import rasterio
+    from rasterio.windows import Window
 
-    with rasterio.open(path) as tile:
-        if tile.count != 4 or tile.shape != (SIZE, SIZE):
-            raise ValueError(f"{path}: a forest tile has 4 bands of {SIZE} × {SIZE}")
-        return tile.read()
+    path = blocks.get((x >> 2, y >> 2))
+    if path is None:
+        return None
+    with rasterio.open(path) as block:
+        if block.count != 4 or block.shape != (4 * SIZE, 4 * SIZE):
+            raise ValueError(f"{path}: a forest block has 4 bands of {4 * SIZE} × {4 * SIZE}")
+        cells = block.read(window=Window(x % 4 * SIZE, y % 4 * SIZE, SIZE, SIZE))
+    return None if (cells[0] == NODATA).all() else cells
 
 
-def bake(found, bounds, attribution, output):
-    """Write `trailview-canopy.pmtiles` in the folder `output` from `found`, the forest tiles
-    ({x, y: path}), and return its tile bytes. A tile that the forest lacks stays out."""
+def bake(blocks, bounds, attribution, output):
+    """Write `trailview-canopy.pmtiles` in the folder `output` from `blocks`, the forest blocks
+    ({x, y: path} of zoom 10), and return its tile bytes. A tile that the forest lacks stays out."""
     from pmtiles.tile import TileType
 
-    if not found:
-        raise ValueError("The forest has no tile in the region: the canopy layer has no tile")
+    if not blocks:
+        raise ValueError("The forest has no block in the region: the canopy layer has no tile")
     sizes = tiles.pyramid(
-        bounds, [ZOOM], lambda z, x, y: encode(bands(found[x, y])) if (x, y) in found else None, None,
+        bounds, [ZOOM], lambda z, x, y: None if (cells := bands(blocks, x, y)) is None else encode(cells), None,
         lambda code: {"trailview-canopy": (TileType.WEBP, webp(code))}, output,
         {"canopy_format": FORMAT, "attribution": attribution})
     return sizes["trailview-canopy"][ZOOM]
@@ -76,11 +82,11 @@ def bake(found, bounds, attribution, output):
 def step():
     request = step_request.read()
     options = request["options"]
-    found = {}
+    blocks = {}
     for name, path in step_request.files(request, "forest").items():
-        x, y = map(int, re.fullmatch(r"12/(\d+)/(\d+)\.tif", name).groups())
-        found[x, y] = path
-    size = bake(found, options["bounds"], options["attribution"], Path(request["output"]))
+        x, y = map(int, re.fullmatch(r"10/(\d+)/(\d+)\.tif", name).groups())
+        blocks[x, y] = path
+    size = bake(blocks, options["bounds"], options["attribution"], Path(request["output"]))
     step_request.metrics(request, {"bytes": size, "bytes_per_km2": round(size / tiles.km2(options["bounds"]), 1)})
 
 
