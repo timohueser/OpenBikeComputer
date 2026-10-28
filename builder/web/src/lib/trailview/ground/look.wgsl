@@ -301,14 +301,15 @@ fn snow_held(held: Held) -> f32 {
     return smoothstep(0.25, 0.75, textureLoad(cache, in_page(held.page, whole & vec2i(255)), page_layer(held.page) * CACHE_PLANES, 0).a);
 }
 
-// The ground's albedo in a held page, from the satellite on the date; 0 where no page is resident.
-fn albedo_held(held: Held) -> vec3f {
+// The ground's albedo in a held page, from the satellite on the date; 0 where no page is resident or
+// the ground is no woodland.
+fn woodland_held(held: Held) -> vec3f {
     if (held.page < 0) {
         return vec3f(0.0);
     }
-    let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
-    let c = textureLoad(cache, in_page(held.page, whole & vec2i(255)), page_layer(held.page) * CACHE_PLANES, 0).rgb;
-    return c * c;
+    let at = in_page(held.page, (held.t.whole + vec2i(held.t.part >= vec2f(0.5))) & vec2i(255));
+    let c = textureLoad(cache, at, page_layer(held.page) * CACHE_PLANES, 0).rgb;
+    return select(vec3f(0.0), c * c, textureLoad(cache, at, page_layer(held.page) * CACHE_PLANES + 1, 0).r > 0.5);
 }
 
 // The share of the sun that the horizons of a held page let through, 1 where no page holds the point.

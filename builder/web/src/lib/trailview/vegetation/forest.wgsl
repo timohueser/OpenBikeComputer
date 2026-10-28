@@ -334,7 +334,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
         return;
     }
     let yaw = 6.2831853 * unit_float(mix_bits(h + 17u));
-    // The snow and the satellite's colour (draw.wgsl) of the finest resident page of the drawn level: the
+    // The snow and the woodland's colour (draw.wgsl) of the finest resident page of the drawn level: the
     // page found above where none finer than it is resident.
     let level = u32(ceil(lod(s)));
     var drawn = held;
@@ -343,7 +343,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     }
     let snow = snow_held(drawn);
     emit_tree(model, s, stood.x - SINK_M, height, yaw, width, 0.88 + 0.24 * unit_float(mix_bits(h + 19u)), appear, lift, stood.y,
-        unit_float(mix_bits(h + 31u)), snow, albedo_held(drawn), band);
+        unit_float(mix_bits(h + 31u)), snow, woodland_held(drawn), band);
 }
 
 // The entries of a level's part of the cell list.

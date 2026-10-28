@@ -33,6 +33,8 @@ struct Model {
     // 4 to 7: how far a crown vertex lies below the line of that slope through the crown's base, at most.
     sink_low: vec4f,
     sink_high: vec4f,
+    // A tree's crown in summer: the mean luma of its points, linear; 0 for a model that keeps its own colours (draw.wgsl).
+    luma: f32,
 }
 
 // One instance of a draw: its base in render space and its height in metres; its turn and width as

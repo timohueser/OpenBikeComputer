@@ -24,9 +24,10 @@ export interface ModelAnswer { id: number; leafy?: BuiltLeafy[]; crowns?: BuiltM
 /**
  * A species' leafy crown in summer, with per phase (winter first) the colour matrix (3 × 3, columns
  * first) of the least error that turns it into that phase's, and whether the phase needs a crown of its
- * own: a bare crown, or flecks that the season moves, which the matrix does not turn within FIT.
+ * own: a bare crown, or flecks that the season moves, which the matrix does not turn within FIT; and
+ * the mean luma of its crown's vertices at tier 0, linear, with the weights of `luma` in shade.wgsl.
  */
-export interface BuiltLeafy extends BuiltModel { tones: (number[] | undefined)[]; own: boolean[] }
+export interface BuiltLeafy extends BuiltModel { tones: (number[] | undefined)[]; own: boolean[]; luma: number }
 
 self.onmessage = async ({ data: { id, leafy, crowns } }: MessageEvent<ModelJob>) => {
     try {
@@ -40,7 +41,7 @@ self.onmessage = async ({ data: { id, leafy, crowns } }: MessageEvent<ModelJob>)
                 tones[phase] = matrix;
                 own[phase] = !matrix || !fits(matrix, summer[0], near!, FIT);
             });
-            return { ...arrays(tiers(summer)), tones, own };
+            return { ...arrays(tiers(summer)), tones, own, luma: crownLuma(summer[0]) };
         });
         const built = crowns.map(({ model, phase }): BuiltModel => {
             const season: Season = SEASONS[phase], grown = ([0, 1, 2] as Lod[]).map(lod => tree(model, season, lod));
@@ -56,6 +57,12 @@ self.onmessage = async ({ data: { id, leafy, crowns } }: MessageEvent<ModelJob>)
 function tiers([near, middle, far]: Grown[]): Grown[] {
     const want = lit(near);
     return [near, simplified(near, middle, TRIANGLES[0], want), simplified(near, far, TRIANGLES[1], want)];
+}
+
+function crownLuma({ color, trunk }: Grown): number {
+    let sum = 0;
+    for (let v = 3 * trunk; v < color.length; v += 3) sum += 0.3 * color[v] + 0.59 * color[v + 1] + 0.11 * color[v + 2];
+    return sum / (color.length / 3 - trunk);
 }
 
 function arrays(grown: Grown[]): BuiltModel {
