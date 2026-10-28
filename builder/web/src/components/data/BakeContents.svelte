@@ -93,7 +93,7 @@
                 {#if content.reference && bounds}
                     {@const { source, required, without } = content.reference}
                     {@const about = referenceOf(source)}
-                    {#if !needs.models.length}
+                    {#if about?.models && !needs.models.length}
                         <span class={required ? "missing" : "soft"}>
                             No {about?.models?.noun} covers this area{required ? "" : `: uses ${without}`}. Models exist for {modelled(source) || "no country yet"}.
                         </span>

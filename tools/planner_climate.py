@@ -1,10 +1,10 @@
-"""Bake the planner climate layer of one region: `climate.pmtiles`, as `specs/planner-climate-tiles.md` defines it.
+"""The planner climate layer: the daily values of the prepared source `climate`, and the archive of a region.
 
-    uv run --locked --group planner-climate python -m tools.planner_climate --bounds W,S,E,N --first-year YEAR --fetch DIR
+    uv run --locked --group planner-climate python -m tools.planner_climate prepare --block X-Y --years YEAR,… [--orography] --work DIR --out DIR
 
-The source is ERA5-Land, read from the ECMWF ARCO geo-chunked Zarr stores with the CDS personal access
-token in `~/.cdsapirc`. `--fetch` downloads only the source chunks around the region, for `obc data fetch`;
-the step bakes from them.
+`prepare` writes the files of one block of `climate` (`specs/obc-data.md`) from the ECMWF ARCO geo-chunked
+Zarr stores of ERA5-Land, with the CDS personal access token in `~/.cdsapirc`. The `obc data` step
+`planner/climate` bakes `climate.pmtiles`, as `specs/planner-climate-tiles.md` defines it, from those files.
 """
 
 import argparse
@@ -12,11 +12,13 @@ from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import gzip
 import hashlib
+import http.client
 import json
 import math
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -25,7 +27,7 @@ import urllib.request
 
 import numpy as np
 
-from . import planner_geo as geo, step_pool, step_request
+from . import step_pool, step_request
 
 YEARS = 10
 WEEKS = 52
@@ -49,6 +51,7 @@ FINAL_AFTER_DAYS = 120
 GRID_COLS, GRID_ROWS = 3600, 1801  # the native 0.1° ERA5-Land grid
 EPOCH = dt.datetime(1950, 1, 2)  # hour 0 of the Zarr time axis
 TIME_CHUNK, CHUNK_ROWS, CHUNK_COLS = 33792, 4, 8  # the Zarr chunk shape
+BLOCK_ROWS, BLOCK_COLS = 64, 96  # a block of `climate`: 16 × 12 Zarr chunks
 MARGIN_HOURS = 48  # source hours before and after the years: a local day reaches up to 12 h past its UTC day
 LAPSE_RADIUS = 2  # cells on each side of a cell in its lapse-rate regression
 # Below this relief the cells around a cell do not separate height from distance. The correction on
@@ -64,10 +67,15 @@ OROGRAPHY = ("https://confluence.ecmwf.int/download/attachments/140385202/geo_12
 GRAVITY = 9.80665
 DOI = "10.24381/cds.e2161bac"
 USER_AGENT = "OpenBikeComputer planner climate bake (https://github.com/timohueser/OpenBikeComputer)"
+# The waits before each new try of a request after a rate limit, a server error or a network error:
+# about 35 minutes in all, so a rate limit slows a prepare and does not end it.
+RETRY_SECONDS = (5, 15, 60, 180, 600, 600, 600)
+# The downloads of one `prepare` at once. Eight programs run at once: 16 connections to the stores.
+CONNECTIONS = 2
 
-# Hourly inputs in display units.
+# Hourly inputs: the temperature in K as the store holds it, so a daily extreme is exact in float32.
 HOURLY = {
-    "t2m": lambda source: source["t2m"] - 273.15,
+    "t2m": lambda source: source["t2m"],
     "tp": lambda source: np.maximum(source["tp"], 0) * 1000,  # de-accumulation leaves tiny negative values
     "speed": lambda source: np.hypot(source["u10"], source["v10"]),
 }
@@ -80,6 +88,11 @@ DAILY = {
     "wind": ("speed", range(9, 19), np.mean),
 }
 DAYTIME = DAILY["wind"][1]
+# The planes of a file of `climate` and their types, then the daytime wind sectors. These types keep each daily
+# value that the bake reads exact.
+PLANES = {"tmax": "<f4", "tmin": "<f4", "rain": "<f8", "wind": "<f8"}
+NO_SECTOR = 255
+KELVIN = 273.15
 # Stored weekly fields: the daily value and the reducer over the days of the week.
 WEEKLY = {
     "wet_days": ("rain", lambda days: (days >= WET_MM).sum(0)),
@@ -157,36 +170,45 @@ def local_days(values, offset, stamps, days):
     return values[index]
 
 
-def aggregate(source, lon, first_year):
-    """Weekly fields {name: (years, weeks, cells)} with calibrated rain and wind, the monthly means {tmax, tmin: (12, cells)} and the
-    daytime wind rose (12, sectors, cells) in percent, from hourly source values {variable: (hours, cells)}."""
-    month, week = calendar(first_year)
+def daily(source, lon, days):
+    """The daily values {tmax, tmin (K), rain, wind: (days, cells)} and the sectors (days, DAYTIME hours, cells) of the
+    daytime wind, NO_SECTOR where it is missing, from hourly source values {variable: (hours, cells)} that start
+    MARGIN_HOURS before day 0 in UTC."""
     hourly = {name: rule(source) for name, rule in HOURLY.items()}
-    offsets, days, cells = solar_offset(lon), len(month), len(lon)
-    daily = {name: np.full((days, cells), np.nan) for name in DAILY}
-    u = np.full((days, len(DAYTIME), cells), np.nan)
-    v = np.full_like(u, np.nan)
+    offsets, cells = solar_offset(lon), len(lon)
+    values = {name: np.full((days, cells), np.nan) for name in DAILY}
+    sector = np.full((days, len(DAYTIME), cells), NO_SECTOR, np.uint8)
     for offset in np.unique(offsets):
         here = offsets == offset
         for name, (variable, stamps, reducer) in DAILY.items():
-            daily[name][:, here] = reducer(local_days(hourly[variable][:, here], offset, stamps, days), axis=1)
-        u[:, :, here] = local_days(source["u10"][:, here], offset, DAYTIME, days)
-        v[:, :, here] = local_days(source["v10"][:, here], offset, DAYTIME, days)
+            values[name][:, here] = reducer(local_days(hourly[variable][:, here], offset, stamps, days), axis=1)
+        u, v = (local_days(source[name][:, here], offset, DAYTIME, days) for name in ("u10", "v10"))
+        # The direction the wind comes from, clockwise from north; sector 0 is centred on north.
+        with np.errstate(invalid="ignore"):
+            sectors = np.floor(np.degrees(np.arctan2(-u, -v)) % 360 / (360 / SECTORS) + 0.5) % SECTORS
+        sector[:, :, here] = np.where(np.isnan(sectors), NO_SECTOR, sectors).astype(np.uint8)
+    return values, sector
+
+
+def aggregate(values, sector, first_year):
+    """Weekly fields {name: (years, weeks, cells)} with calibrated rain and wind, the monthly means {tmax, tmin: (12, cells)}
+    and the daytime wind rose (12, sectors, cells) in percent, from the daily values and sectors of `daily` of the years."""
+    month, week = calendar(first_year)
+    cells = sector.shape[2]
+    values = {**values, **{name: values[name].astype(np.float64) - KELVIN for name in ("tmax", "tmin")}}
     edges = np.flatnonzero(np.diff(week, prepend=-1, append=YEARS * WEEKS))
     weekly = {}
     for name, (value, reducer) in WEEKLY.items():
-        values = daily[value]
-        weeks = [np.where(np.isnan(values[a:b]).any(0), np.nan, reducer(values[a:b])) for a, b in zip(edges[:-1], edges[1:])]
+        days = values[value]
+        weeks = [np.where(np.isnan(days[a:b]).any(0), np.nan, reducer(days[a:b])) for a, b in zip(edges[:-1], edges[1:])]
         weekly[name] = np.stack(weeks).reshape(YEARS, WEEKS, cells)
     weekly["rain"] *= np.array([RAIN_FACTORS[week_month(w) - 1] for w in range(WEEKS)])[None, :, None]
     weekly["wind"] *= WIND_FACTOR
-    monthly = {name: np.stack([daily[name][month == m].mean(0) for m in range(1, 13)]) for name in ("tmax", "tmin")}
-    # The direction the wind comes from, clockwise from north; sector 0 is centred on north.
-    sector = np.floor(np.degrees(np.arctan2(-u, -v)) % 360 / (360 / SECTORS) + 0.5).astype(int) % SECTORS
+    monthly = {name: np.stack([values[name][month == m].mean(0) for m in range(1, 13)]) for name in ("tmax", "tmin")}
     counts = np.stack([np.stack([((sector == s) & (month == m)[:, None, None]).sum((0, 1)) for s in range(SECTORS)])
                        for m in range(1, 13)]).astype(np.float64)
     rose = 100 * counts / np.maximum(counts.sum(1, keepdims=True), 1)
-    rose[:, :, np.isnan(u).any((0, 1))] = np.nan
+    rose[:, :, (sector == NO_SECTOR).any((0, 1))] = np.nan
     return weekly, monthly, rose
 
 
@@ -215,29 +237,41 @@ def lapse_rates(mean, height, lat, lon, radius=LAPSE_RADIUS):
 
 
 class Region:
-    """The grid cells that touch the bounds, padded by `pad` cells.
+    """Grid cells: `rows` and `cols`, the outer `pad` of them only for the lapse rates.
 
     Rows count from the north (row 0 at 90° N) and columns from 180° W, as the spec's cell index does.
     """
 
-    def __init__(self, bounds, pad=LAPSE_RADIUS):
+    def __init__(self, rows, cols, pad=0):
+        self.rows, self.cols, self.pad = rows, cols, pad
+        self.lat = 90 - rows / 10
+        self.lon = cols / 10 - 180
+
+    @classmethod
+    def around(cls, bounds, pad=LAPSE_RADIUS):
+        """The cells that overlap the bounds, padded by `pad` cells."""
         west, south, east, north = bounds
         edge = lambda value: round(value * 10, 6)
-        self.rows = np.arange(math.floor(edge(90 - north) - 0.5) + 1 - pad, math.ceil(edge(90 - south) + 0.5) + pad)
-        self.cols = np.arange(math.floor(edge(west + 180) - 0.5) + 1 - pad, math.ceil(edge(east + 180) + 0.5) + pad)
-        self.pad = pad
-        self.lat = 90 - self.rows / 10
-        self.lon = self.cols / 10 - 180
+        rows = np.arange(math.floor(edge(90 - north) - 0.5) + 1 - pad, math.ceil(edge(90 - south) + 0.5) + pad)
+        cols = np.arange(math.floor(edge(west + 180) - 0.5) + 1 - pad, math.ceil(edge(east + 180) + 0.5) + pad)
+        return cls(rows, cols, pad)
+
+    @classmethod
+    def block(cls, x, y):
+        """The cells of block x, y of `climate`: Zarr rows 64y to 64y + 63 and Zarr columns 96x to 96x + 95."""
+        zarr_rows = np.arange(BLOCK_ROWS * y, min(BLOCK_ROWS * (y + 1), GRID_ROWS))
+        zarr_cols = np.arange(BLOCK_COLS * x, min(BLOCK_COLS * (x + 1), GRID_COLS))
+        return cls(GRID_ROWS - 1 - zarr_rows[::-1], (zarr_cols + 1) % GRID_COLS)
 
     def zarr_index(self):
         """Row and column of each cell in the Zarr stores, which start at 90° S and 179.9° W."""
         return GRID_ROWS - 1 - self.rows, (self.cols - 1) % GRID_COLS
 
 
-def chunk_plan(region, first_year):
-    """The source hours [start, end) of the bake, the Zarr time chunks and the (row, col) chunks."""
-    start = hour(dt.date(first_year, 1, 1)) - MARGIN_HOURS
-    end = hour(dt.date(first_year + YEARS, 1, 1)) + MARGIN_HOURS
+def chunk_plan(region, year):
+    """The source hours [start, end) of `year`, the Zarr time chunks and the (row, col) chunks."""
+    start = hour(dt.date(year, 1, 1)) - MARGIN_HOURS
+    end = hour(dt.date(year + 1, 1, 1)) + MARGIN_HOURS
     rows, cols = region.zarr_index()
     spatial = sorted({(int(r) // CHUNK_ROWS, int(c) // CHUNK_COLS) for r in rows for c in cols})
     return start, end, range(start // TIME_CHUNK, (end - 1) // TIME_CHUNK + 1), spatial
@@ -252,17 +286,17 @@ def token():
 
 def fetch(url, key=None):
     headers = {"User-Agent": USER_AGENT, **({"Authorization": f"Bearer {key}"} if key else {})}
-    for attempt in range(5):
+    for wait in (*RETRY_SECONDS, None):
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=300) as response:
                 return response.read()
         except urllib.error.HTTPError as error:
-            if error.code < 500 and error.code != 429 or attempt == 4:
+            if error.code < 500 and error.code != 429 or wait is None:
                 raise
-        except (urllib.error.URLError, TimeoutError):
-            if attempt == 4:
+        except (urllib.error.URLError, http.client.HTTPException, ConnectionError, TimeoutError):
+            if wait is None:
                 raise
-        time.sleep(5 * (attempt + 1))
+        time.sleep(wait)
 
 
 def digest(path):
@@ -307,28 +341,24 @@ class Source:
     """Source chunks from the cache, downloaded when missing.
 
     A cached chunk is named `T.Y.X.HOURS.SHA256`: its Zarr key, the store's hour count when it was
-    downloaded, and the SHA-256 of its compressed bytes. It serves a bake when that hour count reaches
-    its threshold, so every hour it holds for the bake was final data. An empty file is a chunk that the
-    store omits because it has no data. The SHA-256 of the name goes into the fingerprint when `path` gives the
-    chunk, and `read` checks the bytes against it.
+    downloaded, and the SHA-256 of its compressed bytes. It serves a year when that hour count reaches
+    its threshold, so every hour it holds for the year was final data. An empty file is a chunk that the
+    store omits because it has no data. `read` checks the bytes against the SHA-256 of the name.
     """
 
     def __init__(self, final_hour, key=None, cache=None):
         self.final_hour, self.key, self.cache = final_hour, key, cache
         self.layout = None
-        self.digests = {variable: {} for variable in SOURCE}
 
     def threshold(self, name):
-        """The store hour count from which chunk `name` is final: FINAL_AFTER_DAYS past its end or past the bake."""
+        """The store hour count from which chunk `name` is final: FINAL_AFTER_DAYS past its end or past the year."""
         return min(self.final_hour, (int(name.split(".")[0]) + 1) * TIME_CHUNK + FINAL_AFTER_DAYS * 24)
 
     def path(self, variable, name):
         threshold = self.threshold(name)
         found = [path for path in (self.cache / variable).glob(f"{name}.*") if int(path.name.split(".")[3]) >= threshold]
         if found:
-            path = max(found, key=lambda path: int(path.name.split(".")[3]))
-            self.digests[variable][name] = path.name.split(".")[4]
-            return path
+            return max(found, key=lambda path: int(path.name.split(".")[3]))
         if self.key is None:
             raise ValueError(f"Source chunk {variable}/{name} is not in the cache")
         self.layout = self.layout or stores(self.key)
@@ -349,7 +379,6 @@ class Source:
         for older in (self.cache / variable).glob(f"{name}.*"):
             if older != path:
                 older.unlink()
-        self.digests[variable][name] = path.name.split(".")[4]
         return path
 
     def read(self, path):
@@ -360,107 +389,196 @@ class Source:
         shape = (TIME_CHUNK, CHUNK_ROWS, CHUNK_COLS)
         return blosc(data, "<f4").reshape(shape) if data else np.full(shape, np.nan, np.float32)
 
-    def fingerprint(self):
-        """{variable: SHA-256 of its sorted `KEY SHA256` lines}: the source chunks of the bake."""
-        return {variable: hashlib.sha256("".join(f"{name} {checksum}\n" for name, checksum in sorted(chunks.items())).encode()).hexdigest()
-                for variable, chunks in self.digests.items()}
 
-
-def orography(region, key=None, *, cache):
-    """ERA5-Land orography in metres (rows, cols)."""
+def geopotential(region, key, *, cache):
+    """The ERA5-Land geopotential in m²/s² (rows, cols): the orography times GRAVITY."""
     import h5py
+
+    import fcntl
 
     url, checksum = OROGRAPHY
     path = cache / Path(url).name
-    if not path.exists():
-        if key is None:
-            raise ValueError("ERA5-Land orography is not in the cache")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        part = path.with_name(path.name + ".part")
-        part.write_bytes(fetch(url))
-        os.replace(part, path)
+    cache.mkdir(parents=True, exist_ok=True)
+    # The programs of a prepare share the cache: the first downloads the file, the others wait for it.
+    with open(cache / ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not path.exists():
+            with tempfile.NamedTemporaryFile(dir=cache, prefix=".orography-", delete=False) as stream:
+                stream.write(fetch(url))
+            os.replace(stream.name, path)
     if digest(path) != checksum:
         path.unlink()
         raise ValueError("ERA5-Land orography does not match its pinned checksum")
     with h5py.File(path) as file:
         z = file["z"][0]
     # This file starts at 90° N and 0° E.
-    return z[region.rows][:, (region.cols + GRID_COLS // 2) % GRID_COLS] / GRAVITY
+    return z[region.rows][:, (region.cols + GRID_COLS // 2) % GRID_COLS]
 
 
-def final_hour(first_year):
-    """The store hour count from which every chunk of a bake from `first_year` is final."""
-    return hour(dt.date(first_year + YEARS, 1, 1)) + FINAL_AFTER_DAYS * 24
+def final_hour(year):
+    """The store hour count from which every chunk of `year` is final."""
+    return hour(dt.date(year + 1, 1, 1)) + FINAL_AFTER_DAYS * 24
 
 
-def download(region, first_year, source, workers=8):
-    """{(variable, name): path} of every source chunk of the bake in the cache of `source`, with its SHA-256 in the
-    fingerprint."""
-    _, _, times, spatial = chunk_plan(region, first_year)
+def download(region, year, source, workers=CONNECTIONS):
+    """{(variable, name): path} of every source chunk of `year` of `region` in the cache of `source`."""
+    _, _, times, spatial = chunk_plan(region, year)
     names = [(variable, f"{t}.{y}.{x}") for y, x in spatial for variable in SOURCE for t in times]
     with ThreadPoolExecutor(workers) as pool:
         return dict(zip(names, pool.map(lambda name: source.path(*name), names)))
 
 
-def fetch_sources(bounds, first_year, out):
-    """Download the source chunks and the orography of a bake to `out`, for `obc data fetch`."""
-    key, region = token(), Region(bounds)
-    download(region, first_year, Source(final_hour(first_year), key, cache=out))
-    orography(region, key, cache=out)
+def block_days(region, year, source):
+    """The planes of the file of `year` of the block `region`: PLANES, then the sectors."""
+    start, end, times, spatial = chunk_plan(region, year)
+    paths = download(region, year, source)
+    days = (dt.date(year + 1, 1, 1) - dt.date(year, 1, 1)).days
+    shape = (len(region.rows), len(region.cols))
+    values = {name: np.full((days, *shape), np.nan, kind) for name, kind in PLANES.items()}
+    sector = np.full((days, len(DAYTIME), *shape), NO_SECTOR, np.uint8)
+    zarr_rows, zarr_cols = region.zarr_index()
+    for y, x in spatial:
+        rows = np.flatnonzero(zarr_rows // CHUNK_ROWS == y)
+        cols = np.flatnonzero(zarr_cols // CHUNK_COLS == x)
+        hourly = {}
+        for variable in SOURCE:
+            series = np.concatenate([source.read(paths[variable, f"{t}.{y}.{x}"]) for t in times])
+            series = series[start - times[0] * TIME_CHUNK:end - times[0] * TIME_CHUNK]
+            cells = series[:, zarr_rows[rows] % CHUNK_ROWS][:, :, zarr_cols[cols] % CHUNK_COLS]
+            hourly[variable] = cells.reshape(len(series), -1).astype(np.float64)
+        lon = np.broadcast_to(region.lon[cols], (len(rows), len(cols))).ravel()
+        day_values, day_sector = daily(hourly, lon, days)
+        grid = np.ix_(rows, cols)
+        for name in values:
+            values[name][(slice(None), *grid)] = day_values[name].reshape(days, len(rows), len(cols))
+        sector[(slice(None), slice(None), *grid)] = day_sector.reshape(days, len(DAYTIME), len(rows), len(cols))
+    return [*values.values(), sector]
 
 
-# What the bake of the spatial chunks reads: its worker processes fork from it.
+def write(path, planes):
+    """Write `planes` as a file of `climate`; return its SHA-256."""
+    data = gzip.compress(b"".join(np.ascontiguousarray(plane).tobytes() for plane in planes), mtime=0)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return hashlib.sha256(data).hexdigest()
+
+
+def path(name, x, y):
+    """The path of the file `name`, `orography` or a year, of block x, y of `climate`."""
+    return f"{name}/{x}/{y}.gz"
+
+
+def prepare(block, years, work, out, orography=None):
+    """Write the files of `years` of `block` (x, y) of `climate` into `out`, with the orography directory `orography`
+    also its orography file, then the mark of each in that order: `<x>-<y>.orography.sha256` or
+    `<x>-<y>.<year>.sha256`, the SHA-256 of the file. `work` holds the source chunks; it stays when a year fails, so
+    the next run downloads no chunk again."""
+    x, y = block
+    region, key, made = Region.block(x, y), token(), {}
+    if orography:
+        z = np.asarray(geopotential(region, key, cache=orography), "<f8")
+        made["orography"] = write(out / path("orography", x, y), [z])
+    for year in sorted(years):
+        made[year] = write(out / path(year, x, y), block_days(region, year, Source(final_hour(year), key, cache=work)))
+        # A chunk that ends before the next year starts serves no later year.
+        first = chunk_plan(region, year + 1)[2][0]
+        for chunk in work.glob("*/*.*.*.*.*"):
+            if int(chunk.name.split(".")[0]) < first:
+                chunk.unlink()
+    for name, sha256 in made.items():
+        (out / f"{x}-{y}.{name}.sha256").write_text(sha256 + "\n")
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def read_block(data, days, cells):
+    """The planes of the bytes of a file of `climate` of `days` days and `cells` cells: {name: (days, cells)}, and the
+    sectors (days, DAYTIME hours, cells)."""
+    planes, offset = {}, 0
+    for name, kind in [*PLANES.items(), ("sector", "u1")]:
+        count = days * cells * (len(DAYTIME) if name == "sector" else 1)
+        planes[name] = np.frombuffer(data, kind, count, offset)
+        offset += count * np.dtype(kind).itemsize
+    if offset != len(data):
+        raise ValueError(f"A file of climate has {len(data)} bytes, not {offset}")
+    sector = planes.pop("sector").reshape(days, len(DAYTIME), cells)
+    return {name: plane.reshape(days, cells) for name, plane in planes.items()}, sector
+
+
+# What the bake of the spatial chunks of a block reads: its worker processes fork from it.
 _chunking = None
 
 
-def chunk_climate(y, x, paths):
-    """The grid rows and columns of spatial chunk (y, x) and their weekly fields, monthly means and wind rose, from
-    the cached chunks `paths` ({variable: [path of each time chunk]}), in a worker."""
-    region, first_year, source, start, end, times = _chunking
-    zarr_rows, zarr_cols = region.zarr_index()
+def chunk_climate(y, x):
+    """The rows and columns of the loaded cells in spatial chunk (y, x), and their weekly fields, monthly means and wind
+    rose, in a worker."""
+    first_year, zarr_rows, zarr_cols, values, sector = _chunking
     rows = np.flatnonzero(zarr_rows // CHUNK_ROWS == y)
     cols = np.flatnonzero(zarr_cols // CHUNK_COLS == x)
-    values = {}
-    for variable in SOURCE:
-        series = np.concatenate([source.read(path) for path in paths[variable]])
-        series = series[start - times[0] * TIME_CHUNK:end - times[0] * TIME_CHUNK]
-        cells = series[:, zarr_rows[rows] % CHUNK_ROWS][:, :, zarr_cols[cols] % CHUNK_COLS]
-        values[variable] = cells.reshape(len(series), -1).astype(np.float64)
-    lon = np.broadcast_to(region.lon[cols], (len(rows), len(cols))).ravel()
-    return rows, cols, aggregate(values, lon, first_year)
+    cells = lambda plane: plane[:, rows][:, :, cols].reshape(len(plane), -1)
+    day_sector = sector[:, :, rows][:, :, :, cols].reshape(len(sector), len(DAYTIME), -1)
+    return rows, cols, aggregate({name: cells(plane) for name, plane in values.items()}, day_sector, first_year)
 
 
-def climate(region, first_year, source, workers=None):
-    """Weekly fields, monthly mean temperatures and the wind rose over the padded region grid. The spatial chunks
+def climate(region, first_year, files, workers=None):
+    """Weekly fields, monthly mean temperatures, the wind rose and the geopotential over the padded region grid, from
+    the files of `climate` ({path: file}). A cell of a block without files is missing. The spatial chunks of a block
     bake in a `step_pool.pool` of `workers`, by default at most one per chunk; each one fills its own cells."""
     from concurrent.futures import as_completed
 
     global _chunking
-    start, end, times, spatial = chunk_plan(region, first_year)
-    paths = download(region, first_year, source)
     shape = (len(region.rows), len(region.cols))
     weekly = {name: np.full((YEARS, WEEKS, *shape), np.nan) for name in WEEKLY}
     monthly = {name: np.full((12, *shape), np.nan) for name in ("tmax", "tmin")}
     rose = np.full((12, SECTORS, *shape), np.nan)
-    _chunking = (region, first_year, source, start, end, times)
-    try:
-        pool = step_pool.pool(workers or min(step_pool.worker_count(), len(spatial)))
-        try:
-            chunks = [pool.submit(chunk_climate, y, x, {variable: [paths[variable, f"{t}.{y}.{x}"] for t in times]
-                                                        for variable in SOURCE}) for y, x in spatial]
-            for done in as_completed(chunks):
-                rows, cols, (w, m, r) = done.result()
-                grid = np.ix_(rows, cols)
-                for name in weekly:
-                    weekly[name][(slice(None), slice(None), *grid)] = w[name].reshape(YEARS, WEEKS, len(rows), len(cols))
-                for name in monthly:
-                    monthly[name][(slice(None), *grid)] = m[name].reshape(12, len(rows), len(cols))
-                rose[(slice(None), slice(None), *grid)] = r.reshape(12, SECTORS, len(rows), len(cols))
-        finally:
-            pool.shutdown(cancel_futures=True)
-    finally:
-        _chunking = None
-    return weekly, monthly, rose
+    z = np.full(shape, np.nan, np.float64)
+    zarr_rows, zarr_cols = region.zarr_index()
+    years = range(first_year, first_year + YEARS)
+    for by in np.unique(zarr_rows // BLOCK_ROWS):
+        for bx in np.unique(zarr_cols // BLOCK_COLS):
+            paths = [path("orography", bx, by), *(path(year, bx, by) for year in years)]
+            held = [name in files for name in paths]
+            # The outline of a region of Geofabrik areas does not reach every block of its bounds.
+            if not any(held):
+                continue
+            if not all(held):
+                raise ValueError(f"climate has some files of block {bx}-{by}, not all: {paths}")
+            block = Region.block(bx, by)
+            top, west = (index[0] for index in block.zarr_index())
+            rows = np.flatnonzero(zarr_rows // BLOCK_ROWS == by)
+            cols = np.flatnonzero(zarr_cols // BLOCK_COLS == bx)
+            # The cells of the region in the block, whose rows are north first.
+            at = np.ix_(top - zarr_rows[rows], zarr_cols[cols] - west)
+            size = (len(block.rows), len(block.cols))
+            read = lambda name: gzip.decompress(Path(files[name]).read_bytes())
+            z[np.ix_(rows, cols)] = np.frombuffer(read(paths[0]), "<f8", size[0] * size[1]).reshape(size)[at]
+            values, sector = {name: [] for name in PLANES}, []
+            for name, year in zip(paths[1:], years):
+                days = (dt.date(year + 1, 1, 1) - dt.date(year, 1, 1)).days
+                year_values, year_sector = read_block(read(name), days, size[0] * size[1])
+                for name, plane in year_values.items():
+                    values[name].append(plane.reshape(days, *size)[(slice(None), *at)])
+                sector.append(year_sector.reshape(days, len(DAYTIME), *size)[(slice(None), slice(None), *at)])
+            values = {name: np.concatenate(planes) for name, planes in values.items()}
+            _chunking = (first_year, zarr_rows[rows], zarr_cols[cols], values, np.concatenate(sector))
+            spatial = [(y, x) for y in np.unique(zarr_rows[rows] // CHUNK_ROWS)
+                       for x in np.unique(zarr_cols[cols] // CHUNK_COLS)]
+            try:
+                pool = step_pool.pool(workers or min(step_pool.worker_count(), len(spatial)))
+                try:
+                    for done in as_completed([pool.submit(chunk_climate, y, x) for y, x in spatial]):
+                        chunk_rows, chunk_cols, (w, m, r) = done.result()
+                        cells = (len(chunk_rows), len(chunk_cols))
+                        grid = np.ix_(rows[chunk_rows], cols[chunk_cols])
+                        for name in weekly:
+                            weekly[name][(slice(None), slice(None), *grid)] = w[name].reshape(YEARS, WEEKS, *cells)
+                        for name in monthly:
+                            monthly[name][(slice(None), *grid)] = m[name].reshape(12, *cells)
+                        rose[(slice(None), slice(None), *grid)] = r.reshape(12, SECTORS, *cells)
+                finally:
+                    pool.shutdown(cancel_futures=True)
+            finally:
+                _chunking = None
+    return weekly, monthly, rose, z
 
 
 def planes(region, first_year, weekly, monthly, rose, height):
@@ -509,15 +627,15 @@ def tiles(region, values):
     return result
 
 
-def bake(bounds, first_year, source, output, credit):
-    """Write the archive; return the tile count of each zoom. `credit` is the attribution of ERA5-Land,
-    with `{year}`."""
+def bake(bounds, first_year, files, output, credit, version):
+    """Write the archive from the files of `climate` ({path: file}) of `version`; return the tile count of each zoom.
+    `credit` is the attribution of ERA5-Land, with `{year}`."""
     from pmtiles.tile import Compression, TileType, tileid_to_zxy
     from pmtiles.writer import Writer
 
-    region = Region(bounds)
-    weekly, monthly, rose = climate(region, first_year, source)
-    archive = tiles(region, planes(region, first_year, weekly, monthly, rose, orography(region, cache=source.cache)))
+    region = Region.around(bounds)
+    weekly, monthly, rose, z = climate(region, first_year, files)
+    archive = tiles(region, planes(region, first_year, weekly, monthly, rose, z / GRAVITY))
     west, south, east, north = bounds
     e7 = lambda value: round(value * 1e7)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -534,7 +652,7 @@ def bake(bounds, first_year, source, output, credit):
                 "first_year": first_year, "years": YEARS, "source": "era5-land",
                 "attribution": credit.format(year=first_year + YEARS),
                 "wet_day_mm": WET_MM, "rain_factors": list(RAIN_FACTORS), "wind_factor": WIND_FACTOR,
-                "inputs": {"doi": DOI, "orography_sha256": OROGRAPHY[1], "chunks": source.fingerprint()},
+                "inputs": {"doi": DOI, "orography_sha256": OROGRAPHY[1], "climate": version},
             })
             stream.flush()
             os.replace(stream.name, output)
@@ -546,24 +664,27 @@ def bake(bounds, first_year, source, output, credit):
 
 
 def step():
-    """The `obc data` step `planner/climate`: `climate.pmtiles` from the source chunks and the
-    orography of the `era5-land` snapshot."""
+    """The `obc data` step `planner/climate`: `climate.pmtiles` from the files of `climate` in its snapshot."""
     request = step_request.read()
     options = request["options"]
     output = Path(request["output"])
-    cache = step_request.view(step_request.files(request, "era5-land"), output.with_name("era5-land"))
-    source = Source(final_hour(options["first_year"]), cache=cache)
-    counts = bake(options["bounds"], options["first_year"], source, output / "climate.pmtiles", options["attribution"])
+    files = step_request.files(request, "climate")
+    counts = bake(options["bounds"], options["first_year"], files, output / "climate.pmtiles", options["attribution"],
+                  options["climate"])
     step_request.metrics(request, {"tiles": {str(zoom): count for zoom, count in counts.items()}})
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--bounds", type=geo.bounds, required=True, help="west,south,east,north")
-    parser.add_argument("--first-year", type=int, required=True, help="the first of the ten years")
-    parser.add_argument("--fetch", type=Path, required=True, help="the directory of the source chunks and the orography")
+    commands = parser.add_subparsers(dest="command", required=True)
+    command = commands.add_parser("prepare", help="the files of one block of `climate`")
+    command.add_argument("--block", type=lambda text: tuple(map(int, text.split("-"))), required=True, help="X-Y")
+    command.add_argument("--years", type=lambda text: [int(year) for year in text.split(",")], default=[], help="YEAR,…")
+    command.add_argument("--orography", type=Path, help="also the orography file, from the orography file in this directory")
+    command.add_argument("--work", type=Path, required=True, help="the directory of the source chunks, removed at success")
+    command.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    fetch_sources(args.bounds, args.first_year, args.fetch)
+    prepare(args.block, args.years, args.work, args.out, args.orography)
 
 
 if __name__ == "__main__":

@@ -830,6 +830,21 @@ publish_text = true
 # ── Climate and snow ─────────────────────────────────────────────────────────
 
 [[source]]
+id = "climate"
+kind = "data"
+used_by = ["planner"]
+use = "Climate layer: daily rain, temperature and wind of ERA5-Land"
+licence = "CC-BY-4.0"
+fetch = { kind = "prepared" }
+hosts = ["arco.datastores.ecmwf.int", "confluence.ecmwf.int"]
+extent = [-180.0, -90.0, 180.0, 90.0]
+version = "date"
+refresh = 365
+keep = "prepared"
+redistribute = true
+
+# Only the producer of `climate` reads it, from the ARCO Zarr stores.
+[[source]]
 id = "era5-land"
 kind = "data"
 group = "Climate and snow"
@@ -840,7 +855,7 @@ attribution = "Contains modified Copernicus Climate Change Service information {
 fetch = { kind = "capture", url = "https://arco.datastores.ecmwf.int/cadl-arco-geo-{bucket}/arco/reanalysis_era5_land/{group}/geoChunked.zarr" }
 hosts = ["confluence.ecmwf.int"]
 version = "date"
-keep = "store"
+keep = "prepared"
 redistribute = true
 credential = { file = "~/.cdsapirc", register = "https://cds.climate.copernicus.eu", hint = "Make a free account, accept the ERA5-Land licence on the dataset page, then copy the personal access token of your profile." }
 

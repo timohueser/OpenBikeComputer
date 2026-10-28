@@ -15,7 +15,7 @@ const ENV_FILE: &str = "~/.config/openbikecomputer/credentials.env";
 /// The files that a `file` credential can name: the separator of their `NAME<separator>VALUE`
 /// lines, and the names that their reader takes.
 const FILES: [(&str, &str, &[&str]); 2] = [
-    // `tools/planner_climate.py` reads `key: TOKEN`.
+    // `tools/planner_climate.py prepare` reads `key: TOKEN`.
     ("~/.cdsapirc", ": ", &["key"]),
     // `tools/planner_snow.py` reads `NAME=VALUE`, without spaces or quotes.
     ("~/.config/openbikecomputer/cdse-s3.env", "=", &["CDSE_S3_ACCESS_KEY", "CDSE_S3_SECRET_KEY"]),

@@ -13,7 +13,7 @@ use serde::Serialize;
 use super::{find, print_json, print_table, registry, Code, Error};
 use crate::credentials;
 use crate::r2::{Bucket, Credentials};
-use crate::sources::{Credential, Registry, Source};
+use crate::sources::{Credential, FetchKind, Keep, Registry, Source};
 use crate::store::Store;
 
 /// What `setup` writes.
@@ -218,7 +218,7 @@ pub fn setup(root: &Path, json: bool) -> Result<(), Error> {
     }
     credentials.extend(accounts.iter().map(|(credential, sources)| CredentialState {
         name: credential.describe(),
-        needed_for: format!("fetch {}", sources.iter().map(|source| source.id.as_str()).collect::<Vec<_>>().join(", ")),
+        needed_for: sources.iter().copied().map(needed_for).collect::<Vec<_>>().join(", "),
         state: if credential.present() { Readiness::Ready } else { Readiness::Optional },
         set: Some(["source", "credential", &sources[0].id].map(String::from).to_vec()),
         fields: credentials::place(credential).map(|place| place.names).unwrap_or_default(),
@@ -427,6 +427,15 @@ fn used(dir: &Path) -> u64 {
             _ => 0,
         })
         .sum()
+}
+
+/// What the credential of `source` is for: its fetch, or the prepare that reads a source that only a
+/// prepare reads, such as `era5-land`.
+fn needed_for(source: &Source) -> String {
+    match source.keep == Keep::Prepared && source.fetch.kind != FetchKind::Prepared {
+        true => format!("the prepare that reads {}", source.id),
+        false => format!("fetch {}", source.id),
+    }
 }
 
 /// `a`, `a and b`, `a, b and c`.
