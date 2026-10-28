@@ -105,9 +105,10 @@ near it, so a summit node on a slope or a wrong tag changes little or nothing. A
 GLO-30 heights. The rules are in [`shape.rs`](src:host/obc-dem/src/shape.rs).
 
 Coastlines and summits seldom change, and a terrain bake is slow. So the terrain reads its own copy
-of the OSM extracts, which no refresh replaces: a new OSM extract bakes the maps and the routes
-again, but not the terrain. The source `terrain-osm` in
-[the sources](src:data/sources.toml) holds that copy.
+of the OSM extracts, the source `terrain-osm` in [the sources](src:data/sources.toml). The weekly
+refresh does not replace this copy: a new OSM extract bakes the maps and the routes again, but not
+the terrain. The copy changes only when an operator fetches a newer extract of an area, or when a
+region gets an area that has no copy yet.
 
 ## Peak View
 
