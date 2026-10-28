@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::Command;
 
 use obc_bake::coverage::Coverage;
-use obc_data::prepared::{Job, Manifest, Plan, Prepared, Scope};
+use obc_data::prepared::{day, Job, Manifest, Plan, Prepared, Scope};
 use obc_data::product::Wanted;
 use obc_data::regions::{Area, Bbox};
 use obc_data::settings::Settings;
@@ -161,6 +161,8 @@ impl Prepared for TerrainReference {
         }
         let fetched: BTreeSet<&String> = keys.values().flatten().collect();
         let fetched: Vec<&str> = fetched.into_iter().map(String::as_str).collect();
+        // A model has no versions of its own: the day of the prepare names what it read.
+        let version = day(&job.version).to_string();
         // Each index names each tile of its pool, with its sources and the pixel digest of its mark.
         for (pool, prefix) in [("max", ""), ("mean", "mean/")] {
             let made: BTreeMap<String, &String> = digests
@@ -173,15 +175,13 @@ impl Prepared for TerrainReference {
             let held = job.state.join("keys.json");
             obc_data::store::write_atomic(&held, &serde_json::to_vec(&sources).expect("keys serialize"))?;
             let mut command = (self.ingest)(job.root)?;
-            command.args(["index-terrain", "--pool", pool, "--fetched", &job.version, "--models", &fetched.join(",")]);
+            command.args(["index-terrain", "--pool", pool, "--fetched", &version, "--models", &fetched.join(",")]);
             command.arg("--digests").arg(&listed).arg("--keys").arg(&held);
             if let Some(previous) = &previous {
                 command.arg("--base").arg(job.earlier_file(previous, &format!("{prefix}index.json"))?);
             }
             job.program(command.arg("--out").arg(job.work.join(format!("{prefix}index.json"))))?;
         }
-        // A model has no versions of its own: the day of the prepare names what it read.
-        let version = job.version.clone();
         for model in &fetched {
             let read: BTreeMap<String, String> = digests
                 .iter()

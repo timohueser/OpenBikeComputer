@@ -256,7 +256,7 @@ record has for another URL fails the fetch.
 A version is one or more segments joined by `/`. A segment has letters, digits, `.`, `_`, `+`
 and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` date, and a
 `digest` version is 64 lowercase hex digits. The version of a `prepared` source that a step reads
-is `<date>/<manifest sha256>`, see [Prepared sources](#prepared-sources).
+is `<version>/<manifest sha256>`, see [Prepared sources](#prepared-sources).
 
 ### Clean
 
@@ -1427,12 +1427,16 @@ A prepared source is a row of `data/sources.toml` with `fetch.kind = "prepared"`
 binary links a producer for each name: the producer of `<name>` makes the source `<name>`. Only a source whose licence lets us give its bytes to others is
 prepared.
 
+The name of a version is the UTC date when its first run starts, `YYYY-MM-DD`. A later version of
+the same day adds `.2`, `.3` and so on: `2026-10-28`, `2026-10-28.2`, `2026-10-28.10`. Versions
+are in the order of the date, then of the number; a plain date is number 1.
+
 A prepared source has these keys in the folder `sources/<id>/` of a target:
 
 | Key | Holds |
 | --- | --- |
 | `sources/<id>/lock.json` | The lock of the source: one prepare at a time. It has the format of the [lock](#lock) of a target |
-| `sources/<id>/versions.json` | The complete versions, sorted by version |
+| `sources/<id>/versions.json` | The complete versions, oldest first |
 | `sources/<id>/<version>/<path>` | A file of the version. Immutable |
 | `sources/<id>/<version>/manifest.json` | The manifest of the version, written last. Immutable |
 
@@ -1492,7 +1496,8 @@ is compact JSON with the keys of each object in byte order:
 
 `obc data source prepare ID` makes a version for a target, `prod` by default:
 
-1. The version is the UTC date when its first run starts. A run keeps its work in
+1. A new version takes the first name of the day that is after each version of that day in
+   `versions.json` and has no manifest on the target. A run keeps its work in
    `prepared/<target>/<id>/<version>/` of the [store](#store) of its machine. The same command
    resumes the version: the producer does not make a file of the journal again, unless the target
    lacks its key. A resume with another region or language selection refuses. When the manifest of a stopped version is
@@ -1500,8 +1505,7 @@ is compact JSON with the keys of each object in byte order:
    only adds the version to `versions.json`, and the review says `listing`. Another stopped version
    that is not newer than the newest complete version on the target, or whose manifest is on the
    target, is not resumed: the run starts a new version, deletes the work of the old one, and the
-   review names it in `abandoned`. So a run never writes a key of a complete version. A new version
-   that the target has complete refuses.
+   review names it in `abandoned`. So a run never writes a key of a complete version.
 2. The review names the version, the inputs with the size of their files in the store or on
    this machine (`unknown` lists an input whose size neither knows), the files of the version at
    most (`files`, `null` when the producer cannot tell before the run), the files
@@ -4155,7 +4159,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "version": {
-          "description": "The version that the run makes: the UTC date when its first run started.",
+          "description": "The version that the run makes: the UTC date when its first run started, with `.2`, `.3`\nand so on after the first version of that day.",
           "type": "string"
         }
       },
@@ -6225,7 +6229,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "Version": {
       "additionalProperties": false,
-      "description": "An entry of `versions.json`, which lists the complete versions sorted by version.",
+      "description": "An entry of `versions.json`, which lists the complete versions oldest first.",
       "properties": {
         "bytes": {
           "description": "The size of its files.",
