@@ -86,7 +86,7 @@ impl NavGuard {
     pub fn begin_trim(&mut self, leg: obc_route::Leg, target: u32, elevation: bool) {
         self.work = Work::Trim(Box::new(Trimmer::new(leg, target, elevation)));
     }
-    pub fn begin_splice(&mut self, leg: obc_route::Leg, split: u32, rejoin: u32, _len: u32, _elevation: bool) {
+    pub fn begin_splice(&mut self, leg: obc_route::Leg, split: u32, rejoin: u32) {
         self.work = Work::Splice(Box::new(Splicer::new(leg, split, rejoin, self.original.name())));
     }
     pub fn transform(&mut self, original: &dyn ByteSource, leg: &dyn ByteSource) -> (TransformStep, usize, usize) {

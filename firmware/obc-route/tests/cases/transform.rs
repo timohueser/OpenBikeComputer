@@ -248,7 +248,7 @@ fn splice_waypoints_follow_retained_geometry_and_end_at_measured_total() {
     let (oi, di) = (RouteIndex::read(&os).unwrap(), RouteIndex::read(&ds).unwrap());
     let (o, d) = (RouteReader::new(&oi, &os), RouteReader::new(&di, &ds));
     let mut sink = VecSink::default();
-    let result = obc_route::splice_detour(Leg::Detour, &o, &d, 100, 200, di.total_distance_m, true, &mut sink).unwrap();
+    let result = obc_route::splice_detour(Leg::Detour, &o, &d, 100, 200, &mut sink).unwrap();
     let output = crate::common::route_points(&sink.buf);
     let mut measured = 0.0;
     let mut distances = Vec::new();
@@ -289,17 +289,7 @@ fn incomplete_segment_seeks_and_splice_boundaries_keep_elevation_unknown() {
     let di = RouteIndex::read(&ds).unwrap();
     let d = RouteReader::new(&di, &ds);
     let mut sink = VecSink::default();
-    obc_route::splice_detour(
-        Leg::Detour,
-        &o,
-        &d,
-        556,
-        oi.chunks()[1].cum_distance_m,
-        di.total_distance_m,
-        true,
-        &mut sink,
-    )
-    .unwrap();
+    obc_route::splice_detour(Leg::Detour, &o, &d, 556, oi.chunks()[1].cum_distance_m, &mut sink).unwrap();
     let output = crate::common::route_points(&sink.buf);
     assert_eq!(output[0].elevation(), Some(10));
     assert_eq!(output[1].elevation(), None, "the clipped splice seam has no measured height");

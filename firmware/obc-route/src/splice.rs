@@ -513,15 +513,12 @@ fn blend_ele(sampled: i16, r0: f32, r1: f32, t: f32) -> i16 {
 
 /// One-shot convenience over [`Splicer`] for the headless sim and the tests. Interactive hosts
 /// step the splicer themselves.
-#[allow(clippy::too_many_arguments)]
 pub fn splice_detour(
     leg: Leg,
     orig: &RouteReader,
     detour: &RouteReader,
     split_m: u32,
     rejoin_m: u32,
-    _detour_len_m: u32,
-    _detour_has_elevation: bool,
     sink: &mut dyn ByteSink,
 ) -> Result<RouteStats, Error> {
     let mut sp = Splicer::new(leg, split_m, rejoin_m, orig.name());
