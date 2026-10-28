@@ -42,7 +42,7 @@ describe('kinds', () => {
         const square = (x: number, y0: number, y1: number) => ({ rings: [[x - 3 * m, y + y0 * m, x + 3 * m, y + y0 * m, x + 3 * m, y + y1 * m, x - 3 * m, y + y1 * m]], outer: [true] });
         const lamps = (tags: Record<string, string>, buildings = [house]) => {
             const placed: Placement[] = [];
-            const out = { owns: () => true, place: (p: Placement) => placed.push(p), ways: [], buildings } as unknown as Build;
+            const out = { owns: () => true, place: (p: Placement) => placed.push(p), ways: [], buildings, cornered: () => false } as unknown as Build;
             lampKind(3.5).build({ tags, parts: [road] }, out);
             return placed.map(p => Math.round(p.x / m));
         };
@@ -59,7 +59,7 @@ describe('kinds', () => {
         const hall = { rings: [[x, y + 100 * m, x + 120 * m, y + 100 * m, x + 120 * m, y + m, x, y + m]], outer: [true] };
         const lamps = (buildings: unknown[]) => {
             const placed: Placement[] = [];
-            lampKind(3.5).build({ tags: { highway: 'residential' }, parts: [road] }, { owns: () => true, place: (p: Placement) => placed.push(p), ways: [], buildings } as unknown as Build);
+            lampKind(3.5).build({ tags: { highway: 'residential' }, parts: [road] }, { owns: () => true, place: (p: Placement) => placed.push(p), ways: [], buildings, cornered: () => false } as unknown as Build);
             return placed.length;
         };
         expect(lamps([house])).toBe(4);

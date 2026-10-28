@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, EXTENT, unitScale } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
-import { BRIDGE, CELL, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WARP_M, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, CORNER, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WALK, WARP_M, type Line, type Profile } from './bins';
+import { cornersOf } from './corners';
+import { LEFT, RIGHT } from './town';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -54,12 +56,13 @@ describe('the stamp data of a node', () => {
         expect(Number(/const MASK_LEVEL: u32 = (\d+)u;/.exec(readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8'))?.[1])).toBe(NEAR);
         rows.forEach((row, i) => expect(Array.from(table.subarray(PROFILE_FLOATS * i, PROFILE_FLOATS * i + fields.length))).toEqual(fields.map(field => Math.fround(row[field]))));
         // The shaders know the surfaces by their codes, and the mask holds a code in 4 bits.
-        expect(Object.keys(SURFACES)).toEqual(['main', 'road', 'gravel', 'dirt', 'grass', 'path', 'oneway', 'rail', 'narrow', 'rack', 'narrow-rack']);
+        expect(Object.keys(SURFACES)).toEqual(['main', 'road', 'gravel', 'dirt', 'grass', 'path', 'oneway', 'paving', 'rail', 'narrow', 'rack', 'narrow-rack']);
         const mask = readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8');
         expect([/const TRACK_CODE: u32 = (\d+)u;/.exec(shader)?.[1], /const RAIL_CODE: u32 = (\d+)u;/.exec(mask)?.[1]].map(Number)).toEqual([RAIL_CODE, RAIL_CODE]);
+        expect(Number(/const PAVING_CODE: u32 = (\d+)u;/.exec(mask)?.[1])).toBe(Object.keys(SURFACES).indexOf('paving') + 1);
         expect([/const SLEEPER_M: f32 = ([\d.]+);/.exec(shader)?.[1], /const SLEEPER_SPACING_M: f32 = ([\d.]+);/.exec(mask)?.[1]].map(Number)).toEqual([SLEEPER_M, SLEEPER_M]);
-        const range = /const TRACK_RANGE: f32 = ([\d.]+);/.exec(readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'))?.[1];
-        expect(Number(/const TRACK_M: f32 = ([\d.]+);/.exec(mask)?.[1])).toBe(Number(range));
+        const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'), value = (source: string, name: string) => Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(source)?.[1]);
+        expect(['TRACK_M', 'MASK_M', 'MASK_KNEE', 'WALK_STEP_M'].map(name => value(mask, name))).toEqual(['TRACK_RANGE', 'MASK_RANGE', 'MASK_KNEE', 'WALK_STEP_M'].map(name => value(stamp, name)));
         const [rail, narrow] = ['RAIL_HALF_M', 'NARROW_HALF_M'].map(name => Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(mask)?.[1]));
         expect(Object.values(SURFACES).slice(RAIL_CODE - 1)).toEqual([rail, narrow, rail, narrow]);
     });
@@ -93,10 +96,10 @@ describe('the stamp data of a node', () => {
                 const near = Math.max(ax, bx) > cx0 - reach && Math.min(ax, bx) < cx0 + cell + reach && Math.max(ay, by) > cy0 - reach && Math.min(ay, by) < cy0 + cell + reach;
                 if (near) expect(listed.has(r)).toBe(true);
             }
-            // Junctions, then each lake's edges and its marker, then the segments, each line's together.
-            const kinds = Array.from(entries, entry => word(entry & ~INSIDE, 4)).join('');
-            expect(kinds).toMatch(new RegExp(`^${JUNCTION}*(${EDGE}*${LAKE})*[${ROAD}${PATH}]*$`));
-            const lines = Array.from(entries, entry => entry & ~INSIDE).filter(r => [ROAD, PATH].includes(word(r, 4))).map(r => word(r, 13));
+            // Junctions, then each lake's edges and its marker, then the corners, the segments, each line's together, and the walks.
+            const kinds = Array.from(entries, entry => `${word(entry & ~INSIDE, 4)},`).join('');
+            expect(kinds).toMatch(new RegExp(`^(${JUNCTION},)*((${EDGE},)*${LAKE},)*(${CORNER},)*((${ROAD}|${PATH}),)*(${WALK},)*$`));
+            const lines = Array.from(entries, entry => entry & ~INSIDE).filter(r => [ROAD, PATH].includes(word(r, 4))).map(r => word(r, 13) & 0xffff);
             expect(lines.filter((id, i) => id !== lines[i - 1]).length).toBe(new Set(lines).size);
             const marker = Array.from(entries).find(entry => word(entry & ~INSIDE, 4) === LAKE);
             if (insideRings(lake.rings, origin[0], origin[1])) {
@@ -237,5 +240,49 @@ describe('a path', () => {
             expect(isPath({ profile: Object.keys(PROFILES).indexOf(highway) } as Line), highway).toBe(true);
         }
         expect(isPath({ profile: Object.keys(PROFILES).indexOf('track') } as Line)).toBe(false);
+    });
+});
+
+describe('a town', () => {
+    // A residential road runs east; a house of 10 × 8 m stands south of it, on its right, `gap` metres from its edge.
+    const tile = { level: 13, x: 4287, y: 2887 }, metres = unitScale(tile.level) * metresPerUnit((tile.y * EXTENT + 4000) * unitScale(tile.level));
+    const road = { kind: 'road', tags: { highway: 'residential' }, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from([1000, 4000, 5000, 4000]), z: Float32Array.from([1000, 1000]) }] };
+    const house = (gap: number) => {
+        const [x, y] = [3000, 4000 + (2.5 + gap) / metres], [w, d] = [10 / metres, 8 / metres];
+        return { kind: 'building', tags: { building: 'house' }, geometry: 'area' as const, parts: [{ outer: true, xy: Int32Array.from([x, y, x + w, y, x + w, y + d, x, y + d].map(Math.round)), z: null }] };
+    };
+
+    it('gives a road sidewalks on both sides where a building is near either, along the pieces within 20 m of it', () => {
+        const [line] = features([road, house(10)], tile).lines, unit = metresPerUnit(line.xy[1]);
+        expect(new Set(line.sidewalks)).toEqual(new Set([0, LEFT | RIGHT]));
+        // The house's 10 m and about 16 m before and after it, in whole pieces of 8 m.
+        const along = line.sidewalks!.reduce((sum, sides, v) => sum + (sides ? Math.hypot(line.xy[2 * v + 2] - line.xy[2 * v], line.xy[2 * v + 3] - line.xy[2 * v + 1]) * unit : 0), 0);
+        expect(Math.abs(along - 42)).toBeLessThan(8);
+        expect(features([road], tile).lines[0].sidewalks).toEqual([0]);
+    });
+
+    it('leads a walk from a house to the sidewalk, and a forecourt from a house near it', () => {
+        const [walk] = features([road, house(15)], tile).walks, unit = metresPerUnit(walk.xy[1]);
+        expect(walk).toMatchObject({ kind: WALK, h: 0.6 });
+        // From 0.5 m inside the wall to the sidewalk's outer edge, 1.5 m past the road's, within the tile unit that rounds the wall.
+        expect(Math.abs(Math.hypot(walk.xy[2] - walk.xy[0], walk.xy[3] - walk.xy[1]) * unit - (0.5 + 15 - 1.5))).toBeLessThan(metres);
+        const forecourts = features([road, house(4)], tile).walks;
+        expect(forecourts.length).toBe(1);
+        expect(forecourts[0].h).toBeCloseTo(5, 1);
+    });
+
+    it('rounds the corners of a junction with a 5 m kerb, and runs a sidewalk round one or narrows it into a road without', () => {
+        // The road runs on through a vertex where a side road leaves south, 8 m west of the house.
+        const x = Math.round(3000 - 8 / metres), line = (xy: number[], highway = 'residential') => ({ ...road, tags: { highway }, parts: [{ outer: false, xy: Int32Array.from(xy), z: Float32Array.from(xy.filter((_, i) => i % 2 === 0).map(() => 1000)) }] });
+        const walks = (highway: string) => {
+            const lines = features([line([1000, 4000, x, 4000, 5000, 4000]), line([x, 4000, x, Math.round(4000 + 30 / metres)], highway), house(10)], tile).lines;
+            const corners = cornersOf(lines), unit = metresPerUnit(corners[0].o[1]);
+            expect(corners.length).toBe(2);
+            for (const { o, a, b } of corners) for (const end of [a, b]) expect(Math.hypot(end[0] - o[0], end[1] - o[1]) * unit).toBeCloseTo(5, 1);
+            return corners.map(({ walk }) => [...walk].sort()).sort();
+        };
+        expect(walks('residential')).toEqual([[1.5, 1.5], [1.5, 1.5]]);
+        // A service road has no sidewalks.
+        expect(walks('service')).toEqual([[0, 1.5], [0, 1.5]]);
     });
 });

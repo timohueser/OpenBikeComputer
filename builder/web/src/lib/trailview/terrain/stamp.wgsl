@@ -41,10 +41,14 @@ const MASK: u32 = 4u;
 // A drawn height this close to a bound of the cones lies on their face: more than the rounding of a
 // page's 16-bit heights.
 const FACE_M: f32 = 0.02;
-// The mask holds distances of ±MASK_RANGE metres in 0.1 m steps, and a track's metres from its middle
-// within ±TRACK_RANGE, in 2.5 cm steps for its rails.
+// The mask holds the distance to a road's edge within ±MASK_RANGE metres on an asinh scale with its knee
+// at MASK_KNEE: its steps of 1.5 cm at the edge, where a kerb is 18 cm wide, grow to 0.4 m at MASK_RANGE.
+// It holds the metres from a road's middle in 0.1 m steps, and a track's within ±TRACK_RANGE in 2.5 cm
+// steps for its rails; a sidewalk's width in WALK_STEP_M.
 const MASK_RANGE: f32 = 12.75;
+const MASK_KNEE: f32 = 0.5;
 const TRACK_RANGE: f32 = 3.2;
+const WALK_STEP_M: f32 = 0.1;
 // Mask flags, as features.wgsl reads them.
 const WALL_FLAG: u32 = 1u;
 const CONFLICT_FLAG: u32 = 2u;
@@ -61,7 +65,12 @@ fn ordered(h: f32) -> u32 {
 }
 
 fn distance_code(d: f32) -> f32 {
-    return clamp(d / (2.0 * MASK_RANGE) + 0.5, 0.0, 1.0);
+    return 0.5 + 0.5 * asinh(clamp(d, -MASK_RANGE, MASK_RANGE) / MASK_KNEE) / asinh(MASK_RANGE / MASK_KNEE);
+}
+
+// As mask_metres of features.wgsl.
+fn code_distance(code: f32) -> f32 {
+    return MASK_KNEE * sinh((2.0 * code - 1.0) * asinh(MASK_RANGE / MASK_KNEE));
 }
 
 @compute @workgroup_size(8, 8)
@@ -96,15 +105,17 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         let faced = known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M));
         let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
         let surface = select(0u, s.surface, s.road < MASK_RANGE);
-        let across = select(distance_code(s.across), clamp(s.across / (2.0 * TRACK_RANGE) + 0.5, 0.0, 1.0), surface >= TRACK_CODE);
+        let across = clamp(s.across / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
+        let walk = round(s.walk / WALK_STEP_M) / 255.0;
         textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
-            vec4f(distance_code(s.road), fract(s.sleepers), across, f32(surface | (flags << 4u)) / 255.0));
+            vec4f(distance_code(s.road), select(walk, fract(s.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));
     }
 }
 
-// The move of a mesh vertex of a mask's page onto the nearest road edge, in whole units: from the
-// distance to the edge at the four texels about its corner, a quarter texel inside the road, where
-// the texels about it hold the road's height. None where a texel holds no road. A vertex on the
+// The move of a mesh vertex of a mask's page onto the outer edge of a carriageway, or of its sidewalk where
+// it has one, in whole units: from the distance to the edge at the four texels about its corner, a quarter
+// texel inside, where the texels about it hold the road's height. The ground is flat across a sidewalk, so
+// its outer edge is the ground's only crease there. None where a texel holds no road. A vertex on the
 // lower or the left edge of the page reads the four texels beside it inside the page, so that no page
 // reads another. A vertex on an edge of its node moves only along it: every border between two
 // levels lies on an edge of the coarser node, so each node draws exactly its own area.
@@ -119,17 +130,21 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
     let low = max(corner - vec2i(1), job.first);
     var d: array<f32, 4>;
     var road = true;
+    var walk = 0.0;
     for (var i = 0; i < 4; i++) {
         let texel = textureLoad(mask_in, in_layer(job.mask, low + vec2i(i % 2, i / 2)), job.mask >> 6u, 0);
-        road = road && (u32(round(texel.w * 255.0)) & 15u) != 0u;
-        d[i] = (texel.x - 0.5) * 2.0 * MASK_RANGE;
+        let surface = u32(round(texel.w * 255.0)) & 15u;
+        road = road && surface != 0u;
+        d[i] = code_distance(texel.x);
+        walk = max(walk, select(round(texel.y * 255.0) * WALK_STEP_M, 0.0, surface >= TRACK_CODE));
     }
     let shift = 22u - job.level;
     let unit = unit_metres(corner.y << shift);
     let metres = unit * f32(1 << shift);
     // The gradient of the distance per metre, and the distance at the corner.
     let g = vec2f(d[1] + d[3] - d[0] - d[2], d[2] + d[3] - d[0] - d[1]) * 0.5 / metres;
-    let at = 0.25 * (d[0] + d[1] + d[2] + d[3]) + dot(g, vec2f(corner - low - vec2i(1))) * metres;
+    let to_edge = 0.25 * (d[0] + d[1] + d[2] + d[3]) + dot(g, vec2f(corner - low - vec2i(1))) * metres;
+    let at = to_edge - walk;
     let g2 = dot(g, g);
     let reach_m = SNAP_TEXELS * metres;
     var moved = vec2i(0);
