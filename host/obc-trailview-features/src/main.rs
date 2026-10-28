@@ -35,7 +35,7 @@ fn run() -> Result<(), String> {
         attribution: "© OpenStreetMap contributors".into(),
         classes,
         class_names,
-        sea: arg("--sea").ok().map(PathBuf::from),
+        sea: args.iter().any(|a| a == "--sea").then(|| arg("--sea").map(PathBuf::from)).transpose()?,
     };
     let terrain = terrain::Tiles::mbtiles(Path::new(terrain))?;
     let parent = output.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));

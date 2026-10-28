@@ -266,8 +266,8 @@ OSM maps the sea only as `natural=coastline` lines. The bake adds the kind `sea`
 polygon of the source `water-polygons` (`water-polygons-split-3857.zip` of osmdata.openstreetmap.de)
 whose bounding box comes within one zoom-8 tile of the region. It is one area with its islands as
 holes, and each of its vertices has the height 0 m, sea level in the vertical datum of
-`planner/terrain`. The source splits the sea into pieces, and two pieces share the vertices of their
-common edge.
+`planner/terrain`. The source splits the sea into pieces that overlap by 100 m at the split lines,
+so no gap opens between them.
 
 ## Kind table
 

@@ -83,7 +83,9 @@ fn grouped(rings: Vec<Vec<[f64; 2]>>) -> Vec<Part> {
     let (outers, holes): (Vec<_>, Vec<_>) = rings.into_iter().partition(|ring| twice_area(ring) > 0.0);
     let mut parts = Vec::new();
     for (k, outer) in outers.iter().enumerate() {
-        let inside = |hole: &&Vec<[f64; 2]>| outers.iter().position(|o| contains(&[o], hole[0])) == Some(k);
+        // The source gives each record one outer ring: then each hole is its own without a test.
+        let inside =
+            |hole: &&Vec<[f64; 2]>| outers.len() == 1 || outers.iter().position(|o| contains(&[o], hole[0])) == Some(k);
         for (ring, is_outer) in [(outer, true)].into_iter().chain(holes.iter().filter(inside).map(|h| (h, false))) {
             parts.push(Part { outer: is_outer, points: ring.clone(), z: Some(vec![0.0; ring.len()]) });
         }
