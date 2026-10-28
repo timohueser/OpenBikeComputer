@@ -381,12 +381,15 @@ class Wiki(unittest.TestCase):
                           '<relation id="20" version="1"><member type="node" ref="2" role=""/><tag k="type" v="route"/><tag k="wikidata" v="Q5"/></relation>'
                           '</osm>')
         listed = self.root / "subjects.ndjson"
-        subjects.extract(source, listed, self.root / "osm")
+        subjects.extract([source], listed, self.root / "osm")
         values = [json.loads(line) for line in listed.read_text().splitlines()]
         self.assertEqual([(value["osm"], value.get("peak"), "box" in value) for value in values],
                          [("n1", True, True), ("w10", None, True), ("w11", None, True), ("r20", None, False)])
+        twice = self.root / "twice.ndjson"
+        subjects.extract([source, source], twice, self.root / "osm")
+        self.assertEqual(twice.read_text(), listed.read_text(), "an object in two extracts is one subject")
         boxed = self.root / "boxed.ndjson"
-        subjects.extract(source, boxed, self.root / "osm", [7.0, 47.0, 7.12, 47.12])
+        subjects.extract([source], boxed, self.root / "osm", [7.0, 47.0, 7.12, 47.12])
         self.assertEqual([json.loads(line)["osm"] for line in boxed.read_text().splitlines()], ["n1"])
         subjects.load(self.db, self.work, listed)
         with self.assertRaisesRegex(ValueError, "import step first"):
@@ -405,6 +408,34 @@ class Wiki(unittest.TestCase):
                                   ("entity", "Q4"), ("entity", "Q5")})
         self.assertEqual([index["counts"][name] for name in ("subjects", "subjects_in_common", "photo_compile_failures")], [4, 2, 2])
 
+
+    @unittest.skipUnless(TOOLS, "Osmium and zstd are unavailable")
+    def test_a_version_keeps_the_cells_outside_its_region_and_the_earlier_common_facts_that_it_lacks(self):
+        self.subjects(dict(osm="n1", wikidata="Q1", box=[7.1, 47.1, 7.1, 47.1]), dict(osm="n2", wikidata="Q999", box=[8.0, 47.1, 8.0, 47.1]))
+        self.wikidata()
+
+        def fact(value):
+            data = json.dumps(value).encode()
+            return f"content/{value['kind']}/{dumps.hashlib.sha256(data).hexdigest()}.json", data
+
+        asset, old_class = "ab" * 32, fact(dict(kind="entity", key="Q2", status="present", revision=1))
+        before = self.root / "before.tar.zst"
+        shards.archive(before, [old_class, fact(dict(kind="entity", key="Q77", status="present")),
+                                fact(dict(kind="file", key="File:Peak.jpg", status="present", asset=dict(sha256=asset))),
+                                (f"content/assets/{asset}", b"jpeg"), (f"content/assets/{'cd' * 32}", b"unused")])
+        kept = dict(path="cells/0300-0263.tar.zst", sha256="ef" * 32, bytes=9, facts=2)
+        out = self.root / "out"
+        shards.write(self.db, self.work, out, keep=dict(cells=[kept], common=str(before)))
+        index = json.loads((out / "index.json").read_text())
+        self.assertEqual([shard["path"] for shard in index["shards"]], ["common.tar.zst", "cells/0300-0262.tar.zst", kept["path"]])
+        self.assertEqual(index["shards"][2], kept)
+        self.assertFalse((out / kept["path"]).exists(), "a kept cell is not written again")
+        common = members(out / "common.tar.zst")
+        # The class Q2 of this run replaces the earlier one; only the asset of a kept file stays.
+        self.assertEqual(facts(common), {("entity", "Q2"), ("entity", "Q3"), ("entity", "Q77"), ("file", "File:Peak.jpg")})
+        self.assertNotIn(old_class[0], common)
+        self.assertEqual([data for name, data in common.items() if name.startswith("content/assets/")], [b"jpeg"])
+        self.assertEqual(index["shards"][0]["facts"], 4)
 
 def members(path):
     data = subprocess.run(["zstd", "-dc", str(path)], capture_output=True, check=True).stdout

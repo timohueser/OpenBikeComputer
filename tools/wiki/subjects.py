@@ -25,14 +25,19 @@ WIDTH = max(4, len(str(((2 * ORIGIN) >> CELL) - 1)))
 MAX_CELLS = 16
 
 
-def extract(pbf: Path, out: Path, work: Path, bbox: list[float] | None = None):
-    """Osmium lists the tagged objects. `osmium export` assembles ways and areas for their boxes;
-    an object that it gives no geometry, such as a route relation, has no box. With `bbox`, only
-    the subjects whose box meets it are kept."""
+def extract(pbfs: list[Path], out: Path, work: Path, bbox: list[float] | None = None):
+    """Osmium lists the tagged objects of each extract, and merges them: an object in two extracts
+    is one subject. `osmium export` assembles ways and areas for their boxes; an object that it
+    gives no geometry, such as a route relation, has no box. With `bbox`, only the subjects whose
+    box meets it are kept."""
     binary, _ = probe()
     work.mkdir(parents=True, exist_ok=True)
     filtered = work / "subjects.osm.pbf"
-    run(binary, "tags-filter", pbf, "nwr/wikidata", "nwr/wikipedia", "--overwrite", "-o", filtered)
+    parts = [work / f"subjects-{index}.osm.pbf" for index in range(len(pbfs))] if len(pbfs) > 1 else [filtered]
+    for pbf, part in zip(pbfs, parts):
+        run(binary, "tags-filter", pbf, "nwr/wikidata", "nwr/wikipedia", "--overwrite", "-o", part)
+    if len(pbfs) > 1:
+        run(binary, "merge", *parts, "--overwrite", "-o", filtered)
     boxes = {}
     for line in stream(binary, "export", filtered, "-f", "geojsonseq", "-a", "type,id", "-x", "print_record_separator=false"):
         feature = json.loads(line)

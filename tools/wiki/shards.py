@@ -4,7 +4,9 @@
 the OBCA grid. `common.tar.zst` holds the classes and the facts of every other subject. A fact
 that two shards need is in both, with the same bytes. Members are `content/<kind>/<sha256>.json`
 and `content/assets/<sha256>`, as `obc_pack::landmarks::shared` reads them. `index.json` lists
-each shard with its SHA-256 and size, and counts the subjects and the unresolved work.
+each shard with its SHA-256 and size, and counts the subjects and the unresolved work. A version
+that extends the version before keeps its cell shards outside the region, and its common facts
+that no shard of this run holds.
 """
 from __future__ import annotations
 
@@ -95,20 +97,34 @@ def archive(path: Path, members):
     partial.replace(path)
 
 
-def write(db, work: Path, out: Path, done: dict | None = None, text: bool = True, counts: dict | None = None):
+def write(db, work: Path, out: Path, done: dict | None = None, text: bool = True, counts: dict | None = None,
+          keep: dict | None = None):
     """`done` gives the SHA-256 and the size of each shard that is published already: it is not
     written again, and the index lists it. Without `text`, the shards hold no article text. `counts`
-    are the counts of the producer, which the index adds to its own."""
+    are the counts of the producer, which the index adds to its own. `keep` gives what the version
+    keeps of the version before: `cells`, the index entries of the cell shards that it does not
+    write, and `common`, the path of the common shard whose facts it adds, with their assets, when
+    no shard of this run holds their kind and key."""
     if not catalog.complete(db, "wikidata:2"):
         raise ValueError("the Wikidata import has not finished; run the import step first")
     targets = catalog.graph(db)
     db.execute("CREATE TEMP TABLE IF NOT EXISTS shard(kind TEXT, key TEXT, PRIMARY KEY(kind,key)) WITHOUT ROWID")
-    classes = [("entity", qid) for qid in catalog.classes(db, targets)]
-    common = db.execute("SELECT wikidata, wikipedia FROM subjects WHERE cell=''")
-    shards = [shard(db, work, (out, done or {}, text), "common.tar.zst", targets, classes, common)]
+    db.execute("CREATE TEMP TABLE IF NOT EXISTS written(kind TEXT, key TEXT, PRIMARY KEY(kind,key)) WITHOUT ROWID")
+    db.execute("DELETE FROM written")
+    keep = keep or {}
+    kept = {entry["path"]: entry for entry in keep.get("cells", [])}
+    written = (out, done or {}, text)
+    cells = list(kept.values())
     rows = db.execute("SELECT cell, wikidata, wikipedia FROM subjects WHERE cell!='' ORDER BY cell")
     for cell, subjects in groupby(rows, key=lambda row: row[0]):
-        shards.append(shard(db, work, (out, done or {}, text), f"cells/{cell}.tar.zst", targets, [], (row[1:] for row in subjects)))
+        if (name := f"cells/{cell}.tar.zst") not in kept:
+            cells.append(shard(db, work, written, name, targets, [], (row[1:] for row in subjects)))
+    # The common shard comes last: it adds only the earlier facts that no other shard holds.
+    classes = [("entity", qid) for qid in catalog.classes(db, targets)]
+    common = db.execute("SELECT wikidata, wikipedia FROM subjects WHERE cell=''")
+    before = Path(keep["common"]) if keep.get("common") else None
+    shards = [shard(db, work, written, "common.tar.zst", targets, classes, common, before),
+              *sorted(cells, key=lambda entry: entry["path"])]
     found = {f"unresolved_{kind}": count for kind, count in db.execute("SELECT kind, COUNT(*) FROM failures GROUP BY kind")}
     found.update(counts or {})
     found.update(subjects=db.execute("SELECT COUNT(DISTINCT osm) FROM subjects").fetchone()[0],
@@ -123,15 +139,20 @@ def write(db, work: Path, out: Path, done: dict | None = None, text: bool = True
     write_json(out / "index.json", dict(shards=shards, counts=dict(sorted(found.items()))))
 
 
-def shard(db, work: Path, written: tuple, name: str, targets, keys: list[tuple[str, str]], subjects) -> dict:
-    """Write `keys` and the facts of `subjects` to `out/name`, unless `done` names it. The keys
-    collect in a temporary table, so a shard of any size streams from the catalog."""
+def shard(db, work: Path, written: tuple, name: str, targets, keys: list[tuple[str, str]], subjects,
+          before: Path | None = None) -> dict:
+    """Write `keys` and the facts of `subjects` to `out/name`, unless `done` names it, and record
+    their keys in `written`. The keys collect in a temporary table, so a shard of any size streams
+    from the catalog. The facts of the shard `before` whose keys no shard has written follow."""
     out, done, text = written
     db.execute("DELETE FROM shard")
     db.executemany("INSERT OR IGNORE INTO shard VALUES(?,?)", keys)
     for wikidata, wikipedia in subjects:
         db.executemany("INSERT OR IGNORE INTO shard VALUES(?,?)", needs(db, targets, wikidata, wikipedia))
+    db.execute("INSERT OR IGNORE INTO written SELECT kind, key FROM shard JOIN facts USING(kind, key)")
     facts = db.execute("SELECT COUNT(*) FROM shard JOIN facts USING(kind, key)").fetchone()[0]
+    earlier = earlier_facts(db, before) if before else (set(), set())
+    facts += len(earlier[0])
     if name in done:
         return dict(path=name, sha256=done[name]["sha256"], bytes=done[name]["bytes"], facts=facts)
 
@@ -143,6 +164,35 @@ def shard(db, work: Path, written: tuple, name: str, targets, keys: list[tuple[s
             if kind == "file" and (asset := json.loads(data)["asset"])["sha256"] not in assets:
                 assets.add(asset["sha256"])
                 yield f"content/assets/{asset['sha256']}", work / asset["path"]
+        if before:
+            names = earlier[0] | {f"content/assets/{sha}" for sha in earlier[1] - assets}
+            yield from ((member, data) for member, data in unpacked(before) if member in names)
 
     archive(out / name, members())
     return dict(path=name, sha256=dumps.sha(out / name), bytes=(out / name).stat().st_size, facts=facts)
+
+
+def unpacked(path: Path):
+    """The `(name, bytes)` of each file of a shard."""
+    process = subprocess.Popen(["zstd", "-q", "-dc", str(path)], stdout=subprocess.PIPE)
+    with tarfile.open(fileobj=process.stdout, mode="r|") as tar:
+        for member in tar:
+            if member.isfile():
+                yield member.name, tar.extractfile(member).read()
+    process.stdout.close()
+    if process.wait():
+        raise ValueError(f"zstd could not read {path.name}")
+
+
+def earlier_facts(db, path: Path) -> tuple[set[str], set[str]]:
+    """The fact members of the shard `path` whose kind and key no shard of this run holds, and the
+    assets that their `file` facts name."""
+    names, assets = set(), set()
+    for name, data in unpacked(path):
+        if name.endswith(".json"):
+            value = json.loads(data)
+            if not db.execute("SELECT 1 FROM written WHERE kind=? AND key=?", (value["kind"], value["key"])).fetchone():
+                names.add(name)
+                if value["kind"] == "file":
+                    assets.add(value["asset"]["sha256"])
+    return names, assets
