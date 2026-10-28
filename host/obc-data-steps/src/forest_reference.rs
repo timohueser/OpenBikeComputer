@@ -190,16 +190,33 @@ pub(crate) fn block_models(sources: &[Source], (x, y): (u32, u32)) -> BTreeMap<(
     tiles
 }
 
-/// The blocks that `outline` meets.
+/// The blocks that `outline` meets. Only a block that a lattice cell of the boundary overlaps can
+/// hold a part of the boundary, so only such a block needs the intersection; the centre of any
+/// other block says whether it is inside.
 pub(crate) fn region(outline: &Coverage) -> Result<BTreeSet<(u32, u32)>, String> {
-    let (west, south, east, north) = outline.bbox();
     let degrees = |udeg: i64| udeg as f64 / 1e6;
-    let inside = Bbox { west: degrees(west), south: degrees(south), east: degrees(east), north: degrees(north) };
+    let bbox = |(west, south, east, north): (i64, i64, i64, i64)| Bbox {
+        west: degrees(west),
+        south: degrees(south),
+        east: degrees(east),
+        north: degrees(north),
+    };
+    let crossed: BTreeSet<(u32, u32)> = outline
+        .boundary_cells(obc_dem::reference::TILE_LOG2.into())
+        .into_iter()
+        .flat_map(|cell| tiles(&bbox(cell.square()), BLOCK_ZOOM))
+        .collect();
     let mut found = BTreeSet::new();
-    for block in tiles(&inside, BLOCK_ZOOM) {
+    for block in tiles(&bbox(outline.bbox()), BLOCK_ZOOM) {
         let [west, south, east, north] = square(BLOCK_ZOOM, block);
-        let square = Coverage::parse_poly(&box_poly(&Bbox { west, south, east, north }))?;
-        if outline.intersection(&square)?.is_some() {
+        let inside = match crossed.contains(&block) {
+            true => {
+                let square = Coverage::parse_poly(&box_poly(&Bbox { west, south, east, north }))?;
+                outline.intersection(&square)?.is_some()
+            }
+            false => outline.contains(((south + north) / 2.0 * 1e6) as i64, ((west + east) / 2.0 * 1e6) as i64),
+        };
+        if inside {
             found.insert(block);
         }
     }

@@ -62,9 +62,9 @@ impl Prepared for TerrainReference {
         true
     }
 
-    /// The models that meet the boxes of the region, else those of its countries and their
-    /// neighbours, and the polygons of their areas. The two pools of the blocks that the boxes meet,
-    /// and `index.json`, are the files at most.
+    /// The models with a tile in a block that the boxes of the region meet, else those of its
+    /// countries and each model whose `extent` meets one of theirs, and the polygons of their areas.
+    /// The two pools of the blocks that the boxes meet, and `index.json`, are the files at most.
     fn plan(
         &self,
         planning: &obc_data::prepared::Planning,
@@ -73,29 +73,36 @@ impl Prepared for TerrainReference {
         _: &[String],
     ) -> Result<Plan, String> {
         let (boxes, countries) = area(scope)?;
-        let reach: Option<Vec<[f64; 4]>> = match &boxes {
-            Some(boxes) => Some(boxes.iter().map(|b| [b.west, b.south, b.east, b.north]).collect()),
-            None if countries.is_empty() => None,
-            None => Some(
-                models(planning.sources, None)
-                    .filter(|model| countries.contains(&country(model)))
-                    .filter_map(|model| model.extent)
-                    .collect(),
-            ),
+        let met = match &boxes {
+            Some(boxes) => {
+                let mut met = BTreeSet::new();
+                for bbox in boxes {
+                    met.extend(Coverage::parse_poly(&box_poly(bbox))?.cells(BLOCK_LOG2));
+                }
+                Some(met)
+            }
+            None => None,
         };
-        let held = boxes.as_deref().map(|boxes| boxes.iter().map(box_tiles).collect::<Result<Vec<_>, _>>());
-        let held = held.transpose()?;
+        let extents: Vec<[f64; 4]> = models(planning.sources)
+            .filter(|model| countries.contains(&country(model)))
+            .filter_map(|model| model.extent)
+            .collect();
         let (mut inputs, mut blocks) = (Vec::new(), BTreeSet::new());
-        for model in models(planning.sources, reach.as_deref()) {
-            if let Some(held) = &held {
-                let inside = extent_tiles(model)?;
-                blocks.extend(inside.iter().filter(|tile| held.iter().any(|tiles| tiles.contains(tile))).map(block));
+        for model in models(planning.sources) {
+            if met.is_some() {
+                let tiles = model_tiles(model, met.as_ref())?;
+                if tiles.is_empty() {
+                    continue;
+                }
+                blocks.extend(tiles.iter().map(block));
+            } else if !countries.is_empty() && !extents.iter().any(|extent| model.meets(*extent)) {
+                continue;
             }
             inputs.push(Wanted { source: model.id.clone(), version: None, params: Vec::new() });
             inputs.extend(model.areas.iter().map(|area| poly(area, None)));
         }
         let inputs = inputs.into_iter().map(|wanted| (wanted, None).into()).collect();
-        Ok(Plan { inputs, files: held.map(|_| 2 * blocks.len() as u64 + 1), work_bytes: 0 })
+        Ok(Plan { inputs, files: met.map(|_| 2 * blocks.len() as u64 + 1), work_bytes: 0 })
     }
 
     /// Each block of the region: the models of each of its tiles fetched once and folded, then its
@@ -104,15 +111,16 @@ impl Prepared for TerrainReference {
     /// neither again.
     fn prepare(&self, job: &mut Job) -> Result<(), String> {
         let previous = job.extend(FORMAT)?;
-        let outlines = outlines(job)?;
-        let reach: Option<Vec<[f64; 4]>> = outlines.as_ref().map(|outlines| {
-            let degrees = |udeg: i64| udeg as f64 / 1e6;
-            outlines.iter().map(Coverage::bbox).map(|(w, s, e, n)| [w, s, e, n].map(degrees)).collect()
-        });
-        // The models of each tile, in the order of `data/sources.toml`.
+        // The blocks that the outlines of the region meet; every block for a version of everything.
+        let met: Option<BTreeSet<CellId>> =
+            outlines(job)?.map(|outlines| outlines.iter().flat_map(|outline| outline.cells(BLOCK_LOG2)).collect());
+        // The models of each tile of those blocks, in the order of `data/sources.toml`.
         let mut keys: BTreeMap<CellId, Vec<String>> = BTreeMap::new();
-        for model in models(job.sources(), reach.as_deref()) {
-            let mut tiles = extent_tiles(model)?;
+        for model in models(job.sources()) {
+            let mut tiles = model_tiles(model, met.as_ref())?;
+            if tiles.is_empty() {
+                continue;
+            }
             if !model.areas.is_empty() {
                 let mut inside = BTreeSet::new();
                 for area in &model.areas {
@@ -124,11 +132,7 @@ impl Prepared for TerrainReference {
                 keys.entry(tile).or_default().push(key(model).into());
             }
         }
-        let mut region: BTreeSet<CellId> = keys.keys().map(block).collect();
-        if let Some(outlines) = &outlines {
-            let met: BTreeSet<CellId> = outlines.iter().flat_map(|outline| outline.cells(BLOCK_LOG2)).collect();
-            region.retain(|block| met.contains(block));
-        }
+        let region: BTreeSet<CellId> = keys.keys().map(block).collect();
         let name = |block: &CellId| format!("{:04}-{:04}", block.i, block.j);
         let tiles: Vec<Tile> = region
             .iter()
@@ -142,7 +146,7 @@ impl Prepared for TerrainReference {
             })
             .collect();
         let mut of: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (tile, models) in keys.iter().filter(|(tile, _)| region.contains(&block(tile))) {
+        for (tile, models) in &keys {
             of.entry(name(&block(tile))).or_default().push(format!("{:04}-{:04}={}", tile.i, tile.j, models.join(",")));
         }
         let digests = prepared_tiles::make(job, &tiles, |job, name| {
@@ -168,8 +172,7 @@ impl Prepared for TerrainReference {
         }
         let before = previous.as_ref().map(|manifest| index(job, manifest)).transpose()?;
         let biases = crate::terrain_bias::measure(job, (previous.as_ref(), before.as_ref()), &made, self.glo30)?;
-        let fetched = keys.iter().filter(|(tile, _)| region.contains(&block(tile))).flat_map(|(_, keys)| keys);
-        let fetched: BTreeSet<&String> = fetched.collect();
+        let fetched: BTreeSet<&String> = keys.values().flatten().collect();
         let fetched: Vec<&str> = fetched.into_iter().map(String::as_str).collect();
         // A model has no versions of its own: the day of the prepare names what it read.
         let version = day(&job.version).to_string();
@@ -245,14 +248,24 @@ pub(crate) fn area(scope: Option<&Scope>) -> Result<(Option<Vec<Bbox>>, Vec<Stri
     Ok((regions.boxes(&id), countries))
 }
 
-/// The national models of `sources` that may be given to others and whose `extent` meets one of
-/// `reach`; all of them without `reach`.
-fn models<'a>(sources: &'a [Source], reach: Option<&'a [[f64; 4]]>) -> impl Iterator<Item = &'a Source> {
-    sources.iter().filter(move |source| {
-        source.id.starts_with("dtm-")
-            && source.redistribute
-            && reach.is_none_or(|reach| reach.iter().any(|bounds| source.meets(*bounds)))
-    })
+/// The national models of `sources` that may be given to others.
+fn models(sources: &[Source]) -> impl Iterator<Item = &Source> {
+    sources.iter().filter(|source| source.id.starts_with("dtm-") && source.redistribute)
+}
+
+/// The archive tiles that the `extent` of `model` meets in the blocks `met`; all of them without
+/// `met`.
+fn model_tiles(model: &Source, met: Option<&BTreeSet<CellId>>) -> Result<BTreeSet<CellId>, String> {
+    let [west, south, east, north] = model.extent.ok_or_else(|| format!("`{}` has no `extent`", model.id))?;
+    let extent = Coverage::parse_poly(&box_poly(&Bbox { west, south, east, north }))?;
+    let Some(met) = met else { return Ok(extent.cells(TILE_LOG2.into())) };
+    // A model far from the region costs one pass over its blocks, not over its tiles.
+    if extent.cells(BLOCK_LOG2).is_disjoint(met) {
+        return Ok(BTreeSet::new());
+    }
+    let mut tiles = extent.cells(TILE_LOG2.into());
+    tiles.retain(|tile| met.contains(&block(tile)));
+    Ok(tiles)
 }
 
 /// The country of a national model: the first part of its key is the ISO 3166-1 code, so
@@ -278,16 +291,6 @@ fn index(job: &Job, manifest: &Manifest) -> Result<Index, String> {
     let path = job.earlier_file(manifest, "index.json")?;
     serde_json::from_slice(&fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)
         .map_err(|e| format!("{}@{} index.json: {e}", job.id, manifest.version))
-}
-
-/// The archive tiles that `bbox` meets.
-fn box_tiles(bbox: &Bbox) -> Result<BTreeSet<CellId>, String> {
-    Ok(Coverage::parse_poly(&box_poly(bbox))?.cells(TILE_LOG2.into()))
-}
-
-fn extent_tiles(source: &Source) -> Result<BTreeSet<CellId>, String> {
-    let [west, south, east, north] = source.extent.ok_or_else(|| format!("`{}` has no `extent`", source.id))?;
-    box_tiles(&Bbox { west, south, east, north })
 }
 
 #[cfg(test)]
@@ -393,13 +396,18 @@ esac
 
     impl Fixture {
         fn new(name: &str) -> Fixture {
+            Fixture::with(name, "")
+        }
+
+        /// A fixture whose sources have the rows `more` too.
+        fn with(name: &str, more: &str) -> Fixture {
             let temp = temp(name);
             let root = temp.0.join("repository");
             fs::create_dir_all(root.join("data")).unwrap();
-            fs::write(root.join("data/sources.toml"), SOURCES).unwrap();
+            fs::write(root.join("data/sources.toml"), format!("{SOURCES}\n{more}")).unwrap();
             fs::write(root.join("ingest.sh"), INGEST).unwrap();
             let sources = Registry::load(&root).unwrap().sources;
-            let extent = extent_tiles(sources.iter().find(|source| source.id == "dtm-xx").unwrap()).unwrap();
+            let extent = model_tiles(sources.iter().find(|source| source.id == "dtm-xx").unwrap(), None).unwrap();
             let cells: Vec<CellId> = extent.iter().map(block).collect::<BTreeSet<_>>().into_iter().collect();
             let blocks: Vec<String> = cells.iter().map(|block| format!("{:04}-{:04}", block.i, block.j)).collect();
             assert!(blocks.len() > RUNNING + 2, "{blocks:?}");
@@ -656,6 +664,47 @@ esac
         assert!(!dir.join("sources/terrain/2026-10-02").join(&kept[0]).exists());
     }
 
+    /// A box region in the extent of `dtm-xx`, of Germany.
+    fn boxed(west: f64, south: f64, east: f64, north: f64) -> Option<Scope> {
+        let text =
+            format!("name = \"Box\"\nkind = \"box\"\nbox = [{west}, {south}, {east}, {north}]\ncountries = [\"DE\"]\n");
+        Some(Scope { region: "box".into(), definitions: [("box".to_string(), text)].into() })
+    }
+
+    /// `dtm-yy` lies east of `dtm-xx`, from 9.1° E. Block 1200/1058, 8.913° to 9.175° E and 46.147°
+    /// to 46.410° N, holds tiles of both.
+    const EAST: &str = r#"
+        [[source]]
+        id = "dtm-yy"
+        kind = "data"
+        licence = "CC0-1.0"
+        attribution = "Test"
+        fetch = { kind = "dtm", url = "https://example.org/yy" }
+        extent = [9.1, 46.0, 9.5, 46.9]
+        version = "date"
+        keep = "prepared"
+        redistribute = true
+    "#;
+
+    #[test]
+    fn a_block_reads_each_model_with_a_tile_in_it_also_one_that_misses_the_region() {
+        let fixture = Fixture::with("terrain-neighbour", EAST);
+        // The box meets only block 1200/1058 and does not reach the extent of `dtm-yy`.
+        let (done, calls, _, _) = fixture.version("2026-10-01", boxed(8.95, 46.30, 9.00, 46.35));
+        done.unwrap();
+        let [fetch, index] = &calls[..] else { panic!("{calls:?}") };
+        assert_eq!(index, "index-terrain");
+        assert!(fetch.starts_with("fetch 1200-1058 "), "{fetch}");
+        let tiles: Vec<&str> = fetch.split(' ').skip(2).collect();
+        assert!(tiles.iter().any(|tile| tile.ends_with("=xx,yy")), "a tile of both models: {fetch}");
+        assert!(tiles.iter().any(|tile| tile.ends_with("=yy")), "a tile of `dtm-yy` alone: {fetch}");
+
+        // Another region in the same block makes it again from the same models.
+        let (done, again, _, _) = fixture.version("2026-10-02", boxed(8.92, 46.20, 8.94, 46.25));
+        done.unwrap();
+        assert_eq!(again, [fetch.clone(), "index-terrain over".into()]);
+    }
+
     #[test]
     fn a_union_has_its_own_countries_else_those_of_its_parts_and_none_when_a_part_names_none() {
         let region = |text: &str| text.to_string();
@@ -684,7 +733,7 @@ esac
     #[test]
     fn the_models_of_gb_are_those_of_england_scotland_and_wales() {
         let read: Vec<&str> =
-            models(obc_data::sources::all(), None).filter(|model| country(model) == "GB").map(key).collect();
+            models(obc_data::sources::all()).filter(|model| country(model) == "GB").map(key).collect();
         assert_eq!(read, ["gb-eng", "gb-sct", "gb-wls"]);
     }
 }

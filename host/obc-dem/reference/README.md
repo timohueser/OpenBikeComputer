@@ -88,7 +88,7 @@ the model is used: a model whose highest height within about 1 km is more than 1
 refused. An ellipsoidal product must be converted to orthometric first; only the `sk`
 adapter does, with its agency's quasigeoid.
 
-Memory is one source raster plus the tile. A **monolithic** raster, such as a
+Memory is one source raster plus the two pools of a block, about 100 MB. A **monolithic** raster, such as a
 whole-state DGM of several gigabytes, is held whole: cut it up with `gdal_retile` first.
 
 ### Credentials

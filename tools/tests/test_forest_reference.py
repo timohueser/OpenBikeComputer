@@ -95,10 +95,12 @@ class BlockTest(unittest.TestCase):
                               argparse.Namespace(block="10-535-360", out=directory, tiles=["12-2144-1443=global"]))
         # The south-east tile takes `ch` where it has a pixel and `global` elsewhere; the north-west
         # tile is `global`; a tile that no argument names is unknown.
-        south_east = bands[forest.in_block(2143, 1443)]
+        # Tile x, y of block 535/360 is the internal tile (x - 4 * 535, y - 4 * 360).
+        cells = lambda x, y: bands[:, (y - 1440) * side:(y - 1439) * side, (x - 2140) * side:(x - 2139) * side]
+        south_east = cells(2143, 1443)
         self.assertEqual((south_east[0, 0, 0], south_east[0, 0, 200], south_east[3, 0, 0]), (15, 7, 60))
-        self.assertEqual(int(bands[forest.in_block(2140, 1440)][0, 5, 5]), 0)
-        self.assertTrue((bands[forest.in_block(2141, 1440)] == nodata).all())
+        self.assertEqual(int(cells(2140, 1440)[0, 5, 5]), 0)
+        self.assertTrue((cells(2141, 1440) == nodata).all())
 
 
 if __name__ == "__main__":

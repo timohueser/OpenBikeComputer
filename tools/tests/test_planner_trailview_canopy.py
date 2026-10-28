@@ -39,8 +39,9 @@ class CanopyCodeTest(unittest.TestCase):
         # Tile 2143/1443 is the south-east tile of block 535/360; its block knows no cell of 2142/1443.
         x, y = 2143, 1443
         bands = np.full((4, 1024, 1024), NODATA, np.uint16)
-        bands[forest_reference.in_block(x, y)] = 0
-        bands[forest_reference.in_block(x, y)][:, :128] = NODATA
+        # The south-east internal tile of the block: rows and columns 768 to 1023.
+        bands[:, 768:, 768:] = 0
+        bands[:, 768:896, 768:] = NODATA
         with tempfile.TemporaryDirectory() as directory:
             block = Path(directory) / "10/535/360.tif"
             forest_reference.write_block(block, 535, 360, bands)

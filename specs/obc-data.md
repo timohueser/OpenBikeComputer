@@ -1643,9 +1643,9 @@ the same format; `prod` takes a version of a region.
   Each other block of the version before stays in `reused`; the manifest names the scopes of the
   versions before in `extends`. The review counts the two pools of the blocks that the boxes of the
   region meet, and `index.json`; for a region with a `geofabrik` leaf, `files` is `null`. The review
-  names the models that meet the boxes; for a region without boxes, the models of its countries and
-  each model whose `extent` meets the `extent` of one of them, or every model when the region names
-  no countries.
+  names the models with a tile in a block that the boxes meet; for a region without boxes, the
+  models of its countries and each model whose `extent` meets the `extent` of one of them, or every
+  model when the region names no countries.
 - For each block, `host/obc-dem/reference/ingest.py fetch --block <bi:04>-<bj:04>
   <ti:04>-<tj:04>=<keys> …` pools the rasters of each model of each tile of the block onto the
   lattice in one pass, and folds the models of the tile worst first by `PRIORITY`: a model keeps

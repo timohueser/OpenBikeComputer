@@ -122,6 +122,15 @@ def tile_problems(path, ti, tj, pool="max"):
     return problems
 
 
+def window(ti, tj, bi=1203, bj=1055):
+    """Tile `ti`, `tj` in the north-up array of block `bi`, `bj`, by the formula of the spec: the
+    tile starts (4 bi + 3 - ti) x 1024 rows below the north edge and (tj - 4 bj) x 1024 columns east
+    of the west edge."""
+
+    row, col = (4 * bi + 3 - ti) * ingest.TILE_PX, (tj - 4 * bj) * ingest.TILE_PX
+    return np.s_[row:row + ingest.TILE_PX, col:col + ingest.TILE_PX]
+
+
 def block_problems(path, bi, bj, pool="max"):
     """`tile_problems` of a block of a prepared version: 4 x 4 tiles in one raster."""
 
@@ -463,14 +472,14 @@ class Fetch(ArchiveCase):
         marks = json.loads((out / "1203-1055.tiles").read_text(encoding="utf-8"))
         self.assertEqual(sorted(marks), ["4812/4222", "4812/4223"])
         for tj in (4222, 4223):
-            data = block[ingest.in_block(4812, tj)]
+            data = block[window(4812, tj)]
             self.assertEqual((int((data != ingest.NODATA).sum()), int((data == round(TOWER)).sum())), (50 * 100, 1))
             mark = marks[f"4812/{tj}"]
             self.assertEqual(mark["sources"], ["ch"])
             marked = mark["samples"].split()
             self.assertEqual(len(marked), 256)
             self.assertEqual({value for value in marked if value != "-"}, {"10000"}, "1000 m in decimetres")
-        self.assertTrue((block[ingest.in_block(4813, 4222)] == ingest.NODATA).all(), "a tile of no model")
+        self.assertTrue((block[window(4813, 4222)] == ingest.NODATA).all(), "a tile of no model")
 
         index, keys, blocks = self.root / "index.json", self.root / "keys.json", self.root / "blocks.json"
         biases = self.root / "biases.json"
@@ -617,7 +626,7 @@ class Fold(unittest.TestCase):
             self.assertEqual(ingest.main(["fetch", "4812-4223=fr,it,es,it-21", "--block", "1203-1055",
                                           "--work", str(Path(directory) / "work"), "--out", str(out)]), 0)
             with rasterio.open(ingest.block_path(out, 1203, 1055)) as src:
-                self.assertEqual(src.read(1)[ingest.in_block(4812, 4223)][0, :4].tolist(), [1, 2, 3, nodata])
+                self.assertEqual(src.read(1)[window(4812, 4223)][0, :4].tolist(), [1, 2, 3, nodata])
             marks = json.loads((out / "1203-1055.tiles").read_text(encoding="utf-8"))
             self.assertEqual(marks["4812/4223"]["sources"], ["fr", "it-21", "it"])
 
@@ -708,7 +717,7 @@ class MergeStep(ArchiveCase):
             tile = ingest.tile_path(layer, 4812, 4223)
             self.assertEqual(tile_problems(tile, 4812, 4223, pool), [])
             with rasterio.open(tile) as src:
-                self.assertTrue((src.read(1) == pixels[ingest.in_block(4812, 4223)]).all(), "the window of the tile")
+                self.assertTrue((src.read(1) == pixels[window(4812, 4223)]).all(), "the window of the tile")
             self.assertEqual((index["tiles"], index["sha256"]), ({ids[1]: "es"}, {ids[1]: ingest.tile_digest(tile)}))
             self.assertFalse(ingest.tile_path(layer, 4812, 4222).exists(), "a tile that the leaf does not read stays out")
             shutil.rmtree(self.root / "version")

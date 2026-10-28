@@ -568,6 +568,13 @@ impl Models<'_> {
         let path = |tile: &CellId| crate::terrain_reference::block_file(self.pool, tile.i, tile.j);
         let (pinned, held) = match version(inputs, store, id, &[]).map_err(Unplanned::Failed)? {
             Ok(pinned) => match manifest(store, id, &pinned, wanted)? {
+                Some(manifest) if manifest.format != crate::terrain_reference::FORMAT => {
+                    let (version, format) = (manifest.version, crate::terrain_reference::FORMAT);
+                    return Err(invalid(format!(
+                        "{id}@{version} is of format {}, not {format}. Fix: obc data source prepare {id} --region REGION",
+                        manifest.format
+                    )));
+                }
                 Some(manifest) => (Some(pinned), manifest.files.into_iter().map(|file| file.path).collect()),
                 None => return Ok(None),
             },
@@ -1320,7 +1327,7 @@ pub(crate) mod tests {
         let swiss = "terrain".to_string();
         assert_eq!(wanted, [Wanted { source: swiss.clone(), version: Some(pinned.clone()), params: Vec::new() }]);
 
-        stored(&store, &swiss, &pinned, &[], &[(MANIFEST.into(), manifest)]);
+        stored(&store, &swiss, &pinned, &[], &[(MANIFEST.into(), manifest.clone())]);
         let steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
         let reads = |leaf: &str| {
             let reference = steps.iter().find(|step| step.name == format!("device/reference/{leaf}")).unwrap();
@@ -1337,6 +1344,18 @@ pub(crate) mod tests {
         assert!(matches!(terrain.inputs.last(), Some(Input::Step { name, .. }) if *name == reference.name));
         let national = |input: &Input| matches!(input, Input::Snapshot { source, .. } if source.starts_with("dtm-"));
         assert!(!steps.iter().flat_map(|step| &step.inputs).any(national), "no step reads a national model");
+
+        // A version of another format refuses, and names the fix.
+        let mut older: Manifest = serde_json::from_slice(&manifest).unwrap();
+        older.format -= 1;
+        let bytes = older.canonical();
+        let pinned = format!("2026-10-01/{}", sha256_hex(&bytes));
+        inputs.resolved.insert((swiss.clone(), Vec::new()), pinned.clone());
+        stored(&store, &swiss, &pinned, &[], &[(MANIFEST.into(), bytes)]);
+        let Err(Unplanned::Invalid(refused)) = map_steps(&root(), &inputs, &regions, &store) else {
+            panic!("a version of format 3 refuses")
+        };
+        assert!(refused.contains("is of format 3, not 4. Fix: obc data source prepare terrain"), "{refused}");
     }
 
     #[test]

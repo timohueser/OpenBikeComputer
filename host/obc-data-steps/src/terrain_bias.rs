@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use obc_data::prepared::{Job, Manifest};
 use obc_data::product::Wanted;
@@ -55,9 +55,7 @@ pub(crate) fn measure(
         let found = match (made, previous) {
             (Some(made), _) => parse(&made.samples, ti, tj).map_err(|e| format!("the samples of tile {tile}: {e}"))?,
             (None, Some(previous)) => {
-                let path = job.earlier_file(previous, &crate::terrain_reference::block_file("mean/", ti, tj))?;
-                let read = ReferenceTile::open_in_block(&path, ti, tj, Pool::Mean)?;
-                samples(ti, tj, |r, c| read.height(r, c).map(f64::from))
+                earlier(&job.earlier_file(previous, &crate::terrain_reference::block_file("mean/", ti, tj))?, ti, tj)?
             }
             (None, None) => unreachable!("a tile that the run did not make is of the version before"),
         };
@@ -80,6 +78,12 @@ pub(crate) fn measure(
 
 fn square(&(lat, lon, _): &Sample) -> TileId {
     TileId { lat: lat.div_euclid(1_000_000) as i32, lon: lon.div_euclid(1_000_000) as i32 }
+}
+
+/// The samples of tile `(ti, tj)` in the mean block at `path` of the version before.
+fn earlier(path: &Path, ti: u32, tj: u32) -> Result<Vec<Sample>, String> {
+    let read = ReferenceTile::open_in_block(path, ti, tj, Pool::Mean)?;
+    Ok(samples(ti, tj, |r, c| read.height(r, c).map(f64::from)))
 }
 
 /// The samples of a tile: the height of each sample in decimetres, row by row from the south, or
@@ -146,5 +150,46 @@ mod tests {
         assert_eq!(find(at(0, 2)), Some(2.0));
         assert_eq!(find(at(1, 0)), Some(side as f64), "the next line is north");
         assert!(parse("1 2 3", ti, tj).is_err());
+    }
+
+    /// A tile of the version before is a window of its mean block: tile 4812/4222 is the south row
+    /// and the third column of block 1203/1055. Each value is unique, so a flip or a shift fails.
+    #[test]
+    fn the_samples_of_a_tile_of_the_version_before_are_those_of_its_window_of_the_mean_block() {
+        use tiff::encoder::{colortype::GrayI32, TiffEncoder};
+        use tiff::tags::Tag;
+
+        let side = 4 * TILE_PIXELS;
+        let value = |row: usize, col: usize| (row * side + col) as i32 % 1_000_000;
+        let mut pixels: Vec<i32> = (0..side * side).map(|k| value(k / side, k % side)).collect();
+        // The sample of row 0 and column 1 of the tile, from the south and the west, has no height.
+        let (row0, col0) = (3 * TILE_PIXELS + TILE_PIXELS - 1, 2 * TILE_PIXELS);
+        pixels[(row0 - SAMPLE) * side + col0 + SAMPLE + SAMPLES] = i32::MIN;
+        let (step, tile) = (1i64 << STEP_LOG2, 1i64 << TILE_LOG2);
+        let degrees = |udeg: i64| udeg as f64 / 1e6;
+        let temp = crate::device::tests::temp("bias-block");
+        fs::create_dir_all(&temp.0).unwrap();
+        let path = temp.0.join("block.tif");
+        let mut encoder = TiffEncoder::new(fs::File::create(&path).unwrap()).unwrap();
+        let mut image = encoder.new_image::<GrayI32>(side as u32, side as u32).unwrap();
+        let (north, west) = (i64::from(GRID_ORIGIN) + 4816 * tile, i64::from(GRID_ORIGIN) + 4220 * tile);
+        let scale = [degrees(step), degrees(step), 0.0];
+        image.encoder().write_tag(Tag::ModelPixelScaleTag, &scale[..]).unwrap();
+        let tie = [0.0, 0.0, 0.0, degrees(west), degrees(north), 0.0];
+        image.encoder().write_tag(Tag::ModelTiepointTag, &tie[..]).unwrap();
+        image.encoder().write_tag(Tag::GdalNodata, "-2147483648").unwrap();
+        image.write_data(&pixels).unwrap();
+
+        let found = earlier(&path, 4812, 4222).unwrap();
+        let side_samples = TILE_PIXELS / SAMPLES;
+        assert_eq!(found.len(), side_samples * side_samples - 1);
+        let centre = |id: i64, pixel: usize| i64::from(GRID_ORIGIN) + id * tile + pixel as i64 * step + step / 2;
+        let at =
+            |r: usize, c: usize| found.iter().find(|s| (s.0, s.1) == (centre(4812, r), centre(4222, c))).map(|s| s.2);
+        let metres = |r: usize, c: usize| f64::from(value(row0 - r, col0 + c) as f32 / 10.0);
+        assert_eq!(at(SAMPLE, SAMPLE), Some(metres(SAMPLE, SAMPLE)), "the south-west sample");
+        assert_eq!(at(SAMPLE, SAMPLE + SAMPLES), None);
+        assert_eq!(at(SAMPLE + SAMPLES, SAMPLE), Some(metres(SAMPLE + SAMPLES, SAMPLE)), "north of it");
+        assert!(earlier(&path, 4816, 4222).is_err(), "the block of another tile refuses");
     }
 }
