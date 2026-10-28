@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
-use obc_data::prepared::{Job, Plan, Prepared, Scope};
+use obc_data::prepared::{day, Job, Plan, Prepared, Scope};
 use obc_data::product::Wanted;
 use obc_data::regions::Bbox;
 use obc_data::sources::Source;
@@ -124,7 +124,7 @@ impl Prepared for ForestReference {
             }
         }
         // The services have no versions of their own: the day of the prepare names what it read.
-        let version = job.version.clone();
+        let version = day(&job.version).to_string();
         let read: BTreeSet<&String> = keys.values().flatten().map(|(_, id)| id).collect();
         for model in read {
             let made = keys.iter().filter(|(_, models)| models.iter().any(|(_, id)| id == model));
