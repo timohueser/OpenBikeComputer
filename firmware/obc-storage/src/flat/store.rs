@@ -1500,10 +1500,9 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             return Err(StoreError::NoSpace { required: bytes });
         }
         let ranges = free.first_fit(extents as u32).ok_or(StoreError::TooFragmented)?;
-        // No free row is `busy` on the wire, not `invalidRequest`. Taken before the claim, so a
-        // refusal here gives the map back nothing to undo.
+        // Taken before the claim, so a full table gives the map back nothing to undo.
         let mut rows = self.reservations.borrow_mut();
-        let slot = rows.iter().position(Option::is_none).ok_or(StoreError::Invalid)?;
+        let slot = rows.iter().position(Option::is_none).ok_or(StoreError::Busy)?;
         free.claim(&ranges).map_err(|_| StoreError::Invalid)?;
         let nonce = self.nonce.get().wrapping_add(1);
         self.nonce.set(nonce);

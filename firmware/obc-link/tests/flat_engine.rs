@@ -417,7 +417,7 @@ fn a_full_reservation_table_is_busy_and_never_invalid_request() {
     let second = device.hog(1_024);
 
     let answer = Answer::of(device.control(&client::put(1, 0, 0, &bytes, ROUTE, "no room")).answer());
-    assert_eq!(error(&answer).0, ErrorCode::Busy.value(), "a full table is transient, not the client's fault");
+    assert_eq!(error(&answer), (ErrorCode::Busy.value(), 0, 0), "a full table is transient, not the client's fault");
 
     device.release(first);
     device.release(second);
