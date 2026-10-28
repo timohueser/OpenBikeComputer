@@ -1,0 +1,6 @@
+name = "TrailView alps: Krimml"
+kind = "box"
+# west, south, east, north
+box = [11.86, 46.99, 12.49, 47.42]
+countries = ["AT", "IT"]
+time_zone = "Europe/Vienna"

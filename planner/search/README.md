@@ -10,7 +10,7 @@ need no external search service. Map tiles and routing are separate services.
 [planner README](../../builder/web/src/components/planner/README.md). Run search as below.
 
 To prepare dependencies and the query model separately, install Node 24 or later,
-Python 3.12 or later, `uv`, and the GitHub CLI. Run from the repository root:
+Python 3.14 or later, `uv`, and the GitHub CLI. Run from the repository root:
 
 ```sh
 python3 planner/search/setup.py

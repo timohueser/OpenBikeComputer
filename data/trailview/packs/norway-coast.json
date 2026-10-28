@@ -18,14 +18,14 @@
  "ground": {
   "heather": {},
   "heather-bloom": {},
-  "crowberry": { "on": ["shrub", "moss", "bare"], "share": 0.2 },
+  "crowberry": { "share": 0.2 },
   "bilberry": {},
   "lingonberry": { "model": "bilberry", "latin": "Vaccinium vitis-idaea", "on": ["tree", "shrub"], "height": [0.1, 0.25], "share": 0.15 },
   "bracken": {},
   "fern": {},
   "moor-grass": {},
   "bog-cotton": {},
-  "bog-myrtle": { "model": "alpenrose", "latin": "Myrica gale", "on": ["wetland", "moss"], "height": [0.5, 1.2], "share": 0.15, "clumped": true },
+  "bog-myrtle": {},
   "foxglove": { "model": "alpine-flowers", "latin": "Digitalis purpurea", "on": ["grass", "shrub"], "height": [0.8, 1.5], "share": 0.03, "clumped": true },
   "lyme-grass": { "model": "esparto", "latin": "Leymus arenarius", "on": ["bare"], "height": [0.5, 1.0], "share": 0.03, "clumped": true }
  },

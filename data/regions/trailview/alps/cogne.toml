@@ -1,0 +1,6 @@
+name = "TrailView alps: Cogne"
+kind = "box"
+# west, south, east, north
+box = [7.06, 45.4, 7.65, 45.82]
+countries = ["IT", "FR"]
+time_zone = "Europe/Rome"

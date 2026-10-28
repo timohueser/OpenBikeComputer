@@ -10,7 +10,8 @@ const BOX = [8.37, 46.765, 8.46, 46.83] as const;
 const [west, north] = worldPixel([BOX[0], BOX[3]], UNITS), [east, south] = worldPixel([BOX[2], BOX[1]], UNITS);
 const BOUNDS: [number, number, number, number] = [west, north, east, south];
 const anchor = anchorAt(8.415, 46.7975);
-const flat = () => pageData(new Float32Array(PAGE * PAGE).fill(1000), 1000, 1000, true);
+// One page for every decode: coding a page takes milliseconds, and Pages never writes to one.
+const FLAT = pageData(new Float32Array(PAGE * PAGE).fill(1000), 1000, 1000, true);
 
 /** Tiles of zooms 0 to `deepest`; the next zoom is absent. */
 function source(deepest = 12): TerrainSource & { fetched: string[]; decoded: number } {
@@ -23,7 +24,7 @@ function source(deepest = 12): TerrainSource & { fetched: string[]; decoded: num
         },
         decode: async () => {
             tiles.decoded++;
-            return [flat(), flat(), flat(), flat()];
+            return [FLAT, FLAT, FLAT, FLAT];
         },
     };
     return tiles;

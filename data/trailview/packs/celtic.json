@@ -30,8 +30,8 @@
   "rhododendron": { "model": "alpenrose", "latin": "Rhododendron ponticum", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 350], "weight": 1 }
  },
  "ground": {
-  "heather": { "on": ["#moor"] },
-  "heather-bloom": { "on": ["#moor"] },
+  "heather": {},
+  "heather-bloom": {},
   "moor-grass": { "on": ["#moor"] },
   "mat-grass": { "on": ["#moor"], "height": [0.15, 0.35], "share": 0.15 },
   "soft-rush": { "model": "moor-grass", "latin": "Juncus effusus", "on": ["grass", "wetland"], "off": ["#moor"], "height": [0.5, 1.0], "share": 0.012, "clumped": true },

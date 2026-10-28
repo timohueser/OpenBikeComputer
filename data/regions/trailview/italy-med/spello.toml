@@ -1,0 +1,6 @@
+name = "TrailView italy-med: Spello"
+kind = "box"
+# west, south, east, north
+box = [12.41, 42.81, 12.95, 43.2]
+countries = ["IT"]
+time_zone = "Europe/Rome"

@@ -1,0 +1,6 @@
+name = "TrailView western-europe: Zdarske Vrchy"
+kind = "box"
+# west, south, east, north
+box = [15.74, 49.42, 16.43, 49.87]
+countries = ["CZ"]
+time_zone = "Europe/Prague"

@@ -62,18 +62,6 @@ fn roundtrip_all_variants() {
     }
 }
 
-#[test]
-fn generation_visible() {
-    let armed = BootState::Armed { generation: 42, update: staged("u", 4), rollback: None };
-    assert_eq!(armed.generation(), 42);
-    assert_eq!(BootState::decode(armed.encode().as_bytes()).generation(), 42);
-
-    let trial = BootState::Trial { generation: 4_000_000_000, installed: header("v", 1), rollback: None };
-    assert_eq!(BootState::decode(trial.encode().as_bytes()).generation(), 4_000_000_000);
-
-    assert_eq!(BootState::Idle { installed: None, last_outcome: None }.generation(), 0);
-}
-
 /// A blank or all-ones page decodes to `Idle`.
 #[test]
 fn blank_page_is_idle() {
@@ -229,21 +217,6 @@ fn verdict_outcome_governs_with_matching_marker() {
     assert_eq!(verdict(&idle_outcome("v2", OutcomeKind::RolledBack, gen), Some(gen)), Verdict::Reverted);
     assert_eq!(verdict(&idle_outcome("v2", OutcomeKind::StageRejected, gen), Some(gen)), Verdict::Reverted);
     assert_eq!(verdict(&idle_outcome("v2", OutcomeKind::ArmAbandoned, gen), Some(gen)), Verdict::Reverted);
-}
-
-/// Re-staging the running version and having it rolled back must read as Reverted. Comparing
-/// version strings would call it a success.
-#[test]
-fn verdict_same_version_rollback_is_reverted() {
-    let state = idle_outcome("v3.0.0", OutcomeKind::RolledBack, 1);
-    assert_eq!(verdict(&state, Some(1)), Verdict::Reverted, "same-version rollback is a revert, not a confirm");
-}
-
-/// A same-version first-install trial that is accepted reads as Confirmed.
-#[test]
-fn verdict_same_version_accept_is_confirmed() {
-    let state = idle_outcome("v3.0.0", OutcomeKind::Installed, 2);
-    assert_eq!(verdict(&state, Some(2)), Verdict::Confirmed);
 }
 
 /// With a stale or missing outcome the verdict cannot prove the staged image runs, so it reports

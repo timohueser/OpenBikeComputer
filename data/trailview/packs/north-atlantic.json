@@ -29,7 +29,7 @@
   "bog-cotton": {},
   "bilberry": {},
   "bracken": {},
-  "bog-myrtle": { "model": "alpenrose", "latin": "Myrica gale", "on": ["wetland", "moss"], "height": [0.5, 1.2], "share": 0.15, "clumped": true },
+  "bog-myrtle": {},
   "woolly-fringe-moss": { "model": "heather", "latin": "Racomitrium lanuginosum", "on": ["moss", "bare"], "height": [0.05, 0.15], "share": 0.4 },
   "soft-rush": { "model": "moor-grass", "latin": "Juncus effusus", "on": ["grass", "wetland"], "height": [0.5, 1.0], "share": 0.15, "clumped": true },
   "yellow-iris": { "model": "moor-grass", "latin": "Iris pseudacorus", "on": ["wetland", "grass"], "height": [0.6, 1.0], "share": 0.03, "clumped": true },

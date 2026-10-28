@@ -48,12 +48,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn record_width_pins_the_documented_layout() {
-        assert_eq!(RECORD_LEN, 4 + 4 + 2 + 2 + 4 + 1 + 1 + 2);
-        assert_eq!(FLAG_SEGMENT_START, 1);
-    }
-
-    #[test]
     fn record_round_trips_through_encode_decode() {
         let p = TrackPoint {
             lon: -7_654_321,

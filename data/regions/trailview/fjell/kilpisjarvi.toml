@@ -1,0 +1,6 @@
+name = "TrailView fjell: Kilpisjarvi"
+kind = "box"
+# west, south, east, north
+box = [19.97, 68.68, 21.78, 69.33]
+countries = ["FI", "NO", "SE"]
+time_zone = "Europe/Helsinki"

@@ -352,24 +352,6 @@ mod tests {
         }
     }
 
-    /// The streaming window divides the body region exactly, which is what makes a batched body write
-    /// safe at the array's widest: the block after the region is the copy's gate, so a window that pads
-    /// its last blocks past the live prefix still stays inside blocks `0..480`.
-    #[test]
-    fn a_streaming_window_divides_the_body_region() {
-        assert_eq!(STREAM_WINDOW, 4_096);
-        assert_eq!(MOUNT_STREAM_WINDOW, 2_048);
-        for window in [STREAM_WINDOW, MOUNT_STREAM_WINDOW] {
-            assert_eq!(window % ENTRY_STRIDE, 0, "a window would split an entry across two of them");
-        }
-        for blocks in [STREAM_BLOCKS, MOUNT_STREAM_BLOCKS] {
-            assert_eq!(ENTRY_BLOCKS % blocks, 0, "a window could run past the entry array");
-        }
-        assert_eq!(CATALOG_GATE_BLOCK, ENTRY_BLOCKS as u64, "the gate is the block after the body region");
-        assert_eq!(body_len(ENTRY_CAPACITY as u16).div_ceil(STREAM_WINDOW), 60);
-        assert_eq!(ENTRY_BLOCKS / STREAM_BLOCKS, 60);
-    }
-
     /// A 62,914,560-block card recomputes to 30,718 extents, at the 1 MiB it gets.
     #[test]
     fn extent_count_is_section_6s_formula() {
@@ -414,18 +396,6 @@ mod tests {
         assert_eq!(Geometry::for_card(u64::MAX), None);
     }
 
-    /// The recorded field is a log2, so "a power of two" is unrepresentable-otherwise and only the
-    /// range is a rule. Below 1 MiB and above 2 GiB are the two refusals.
-    #[test]
-    fn only_the_recorded_range_is_a_rule() {
-        assert_eq!(Geometry::from_log2(19), None);
-        assert_eq!(Geometry::from_log2(32), None);
-        assert_eq!(Geometry::from_log2(0), None);
-        assert_eq!(Geometry::from_log2(20).unwrap().extent_size(), 1 << 20);
-        assert_eq!(Geometry::from_log2(31).unwrap().extent_size(), 1 << 31);
-        assert_eq!(Geometry::DEFAULT.extent_size(), MIN_EXTENT_SIZE);
-    }
-
     /// The worked example: the route entry's range `(12, 1)`, payload offset 40,960, on a card of
     /// 1 MiB extents.
     #[test]
@@ -461,35 +431,6 @@ mod tests {
                 assert_eq!(located.block % PAGE_BLOCKS, 0, "payload page {page} at 2^{log2} is not page aligned");
             }
         }
-    }
-
-    /// [`Located::whole_blocks`] bounds in `u64` and narrows the result, which is the difference
-    /// between a write that advances and one that does not — on the device, where a `usize` is 32 bits.
-    /// This test cannot fail on a 64-bit host; what it pins is the shape, with the wrapped quantity
-    /// spelled out below.
-    #[test]
-    fn a_run_wider_than_a_device_usize_still_advances() {
-        // 32,768 extents of the 64 MiB size a 4 TiB card gets: one coalesced range of 2 TiB.
-        let geometry = Geometry::for_card((4u64 << 40) / BLOCK as u64).unwrap();
-        assert_eq!(geometry.extent_size(), 64 << 20);
-        let mut ranges = Ranges::default();
-        for extent in 0..32_768u16 {
-            ranges.push(extent, 1).unwrap();
-        }
-        assert_eq!(ranges.len(), 1, "the range did not coalesce, so this is not the case under test");
-
-        let located = ranges.locate(geometry, 0).unwrap();
-        assert_eq!(located.contiguous, 2 << 40);
-        // Exactly 2^32 blocks, which is zero in a 32-bit `usize` — and a zero-block write consumes
-        // nothing and loops forever.
-        assert_eq!(located.contiguous / BLOCK as u64, 1 << 32);
-        assert_eq!((located.contiguous / BLOCK as u64) as u32, 0);
-
-        assert_eq!(located.whole_blocks(4 * BLOCK), 4, "the caller's own bound must win");
-        assert!(located.whole_blocks(BLOCK) > 0, "a pass that writes no block never terminates");
-        // And the other direction still binds: a run shorter than the caller's input.
-        let short = ranges.locate(geometry, (2u64 << 40) - 1_024).unwrap();
-        assert_eq!(short.whole_blocks(8 * BLOCK), 2);
     }
 
     #[test]

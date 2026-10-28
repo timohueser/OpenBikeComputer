@@ -1,6 +1,7 @@
 //! The loop the fixtures close: the files on disk are what the producer emits, the codec agrees
 //! with those bytes in both directions, and every refusal carries its stated code and detail.
 
+use std::collections::BTreeSet;
 use std::string::String;
 use std::vec::Vec;
 
@@ -45,24 +46,29 @@ fn checked_in_fixtures_match_the_producer() {
 }
 
 #[test]
-fn every_fixture_has_a_unique_name_and_a_digest_in_the_manifest() {
+fn fixture_names_are_unique_and_the_directory_holds_exactly_the_manifest_files() {
+    let root = dir();
     let all = fixtures();
-    let mut names: Vec<String> = all.iter().map(|fixture| fixture.name.clone()).collect();
-    names.sort();
-    let unique = names.len();
-    names.dedup();
-    assert_eq!(names.len(), unique, "two fixtures share a name");
-    let rendered = manifest(&all);
-    for fixture in &all {
-        assert_eq!(fixture.sha256().len(), 64);
-        assert!(rendered.contains(&fixture.sha256()), "{} is missing from the manifest", fixture.name);
+    let names: BTreeSet<&str> = all.iter().map(|fixture| fixture.name.as_str()).collect();
+    assert_eq!(names.len(), all.len(), "two fixtures share a name");
+
+    let mut on_disk = BTreeSet::new();
+    for category in std::fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().path()).filter(|path| path.is_dir()) {
+        for file in std::fs::read_dir(&category).unwrap() {
+            on_disk.insert(format!(
+                "{}/{}",
+                category.file_name().unwrap().to_str().unwrap(),
+                file.unwrap().file_name().to_str().unwrap()
+            ));
+        }
     }
-    // The suite's own size, so a category that stopped being produced is visible.
-    let count = |category: Category| all.iter().filter(|fixture| fixture.category == category).count();
-    assert_eq!(count(Category::Control), 28);
-    assert_eq!(count(Category::Stream), 4);
-    assert_eq!(count(Category::Error), 14);
-    assert_eq!(count(Category::Negative), 34);
+    let manifest = std::fs::read_to_string(root.join("manifest.json")).unwrap();
+    let listed: BTreeSet<String> = manifest
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("\"file\": \"")?.strip_suffix("\","))
+        .map(String::from)
+        .collect();
+    assert_eq!(on_disk, listed, "a fixture file is missing from the manifest, or the manifest names a missing file");
 }
 
 #[test]

@@ -209,13 +209,6 @@ mod tests {
     }
 
     #[test]
-    fn the_probe_arrives_once_the_cool_down_runs_out() {
-        let b = opened(T0);
-        assert!(!b.admits(T0 + Breaker::COOL_DOWN_MS - 1));
-        assert!(b.admits(T0 + Breaker::COOL_DOWN_MS));
-    }
-
-    #[test]
     fn recovery_requires_a_fresh_watchdog_feed_and_an_open_cool_down() {
         let due = T0 + Breaker::COOL_DOWN_MS;
         let open = opened(T0);

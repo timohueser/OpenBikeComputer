@@ -1,7 +1,7 @@
 {
  "name": "Iceland",
  "extends": "base",
- "about": "Downy birch woods with rowan and tea-leaved willow in sheltered valleys; planted Sitka spruce, lodgepole pine and Siberian larch near farms and towns; dwarf birch, woolly willow and juniper on the heaths; woolly fringe-moss on the lava; crowberry, bog bilberry, heather, arctic thyme and mountain avens on heath and gravel; lyme grass on the black sand, Nootka lupin along the roads, bog cotton in the mires; Icelandic sheep everywhere in summer, Icelandic horses and cattle by the farms; white houses with coloured corrugated-iron roofs.",
+ "about": "Downy birch woods with rowan and tea-leaved willow in sheltered valleys; planted Sitka spruce, lodgepole pine and Siberian larch near farms and towns; dwarf birch, woolly willow and juniper on the heaths; woolly fringe-moss on the lava; crowberry, bog bilberry, arctic thyme and mountain avens on heath and gravel, heather on the heath and the bogs; lyme grass on the black sand, Nootka lupin along the roads, bog cotton in the mires; Icelandic sheep everywhere in summer, Icelandic horses and cattle by the farms; white houses with coloured corrugated-iron roofs.",
  "trees": {
   "downy-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 550], "weight": 8 },
   "rowan": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },

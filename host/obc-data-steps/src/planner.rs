@@ -18,7 +18,7 @@ use obc_data::ground::GroundSource;
 use obc_data::product::{version, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{geofabrik, Area, Bbox, Regions};
 use obc_data::release::{Output, Release};
-use obc_data::sources::{attribution, embedded, FetchKind};
+use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
 use obc_dem::reference::{Window, TILE_LOG2};
 use obc_dem::step::GLO30;
@@ -32,12 +32,15 @@ use crate::readers::{self, DOWNLOADS_SERVICE, IOS, IOS_OFFLINE_ROUTER, ROUTER_SE
 use crate::region_sources::OSM;
 use crate::{functions, python};
 
+/// The OSM extracts whose coastlines and summits shape the terrain. Its policy is `manual`, so a
+/// newer extract of `geofabrik-extracts` does not bake the terrain again.
+const TERRAIN_OSM: &str = "terrain-osm";
 /// The offline Protomaps map, with its fonts and sprites.
 pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, &IOS]);
 /// The terrain of the maps and of TrailView: its format is that of the terrain tiles of
 /// `specs/planner-release.md`.
 pub static PLANNER_TERRAIN: Layer =
-    Layer { revision: 2, ..whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_FEATURES]) };
+    Layer { revision: 3, ..whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_FEATURES]) };
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer =
     whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER]);
@@ -184,7 +187,8 @@ impl Product for Planner {
 }
 
 impl Planner {
-    /// Its steps. `osmium` says whether Osmium runs here: the terrain reads the OSM with it.
+    /// Its steps. `osmium` says whether Osmium runs here: more than one source area, a box and the
+    /// TrailView features need it.
     pub fn steps_with_tool(
         &self,
         root: &Path,
@@ -193,7 +197,6 @@ impl Planner {
         store: &Store,
         osmium: Result<(), String>,
     ) -> Result<Steps, Unplanned> {
-        osmium.map_err(Unplanned::Invalid)?;
         let config: Config = toml::from_str(include_str!("../../../data/planner.toml"))
             .map_err(|e| Unplanned::Failed(format!("data/planner.toml: {e}")))?;
         let origins = catalog::publication(root).map_err(Unplanned::Failed)?;
@@ -257,6 +260,7 @@ impl Planner {
                 client: Client::None,
             }
         } else {
+            osmium.clone().map_err(Unplanned::Invalid)?;
             crate::region_sources::combined("planner/osm", &source_steps)
         };
         // The TrailView steps read `planner/osm`: they look past the bounds. A region without a box
@@ -265,7 +269,10 @@ impl Planner {
         let boxed =
             leaves.iter().any(|leaf| regions.get(leaf).is_some_and(|leaf| matches!(leaf.area, Area::Box { .. })));
         let (run, options) = match boxed {
-            true => (&functions::CUT, json!({"bbox": around(bounds, config.osm.margin_m)})),
+            true => {
+                osmium.clone().map_err(Unplanned::Invalid)?;
+                (&functions::CUT, json!({"bbox": around(bounds, config.osm.margin_m)}))
+            }
             false => (&obc_data::engine::PASS, json!({"path": "osm.pbf"})),
         };
         let cut = Step {
@@ -297,13 +304,32 @@ impl Planner {
             &["basemap.pmtiles"],
         );
         let reference = reference(inputs, store, coverage, &mut wanted)?;
+        // One step per area, so that each area keeps its own version; more than one area merge as
+        // `planner/osm` does.
+        let mut shapes = Vec::new();
+        for source in &selection.sources {
+            let extract = snapshot(inputs, store, TERRAIN_OSM, vec![("area".into(), source.id.clone())], &mut wanted)?;
+            shapes.push(Step {
+                layer: &OSM,
+                name: format!("planner/{TERRAIN_OSM}/{}", source.id),
+                inputs: vec![extract],
+                options: json!({"path": "source.osm.pbf"}),
+                outputs: vec!["source.osm.pbf".into()],
+                run: Run::Rust(&obc_data::engine::PASS),
+                client: Client::None,
+            });
+        }
+        if shapes.len() > 1 {
+            let merged = crate::region_sources::combined(&format!("planner/{TERRAIN_OSM}"), &shapes);
+            shapes.push(merged);
+        }
         let terrain = Step {
             layer: &PLANNER_TERRAIN,
             name: "planner/terrain".into(),
             inputs: tiles(coverage, &land, &glo30)
                 .into_iter()
                 .chain(reference.iter().map(|step| Input::step(&step.name)))
-                .chain([Input::step(osm.name.clone())])
+                .chain(shapes.last().map(|step| Input::step(&step.name)))
                 .collect(),
             options: json!({"bounds": coverage, "attribution": attribution(GLO30), "osm_attribution": attribution("osm-planet")}),
             outputs: vec!["terrain.mbtiles".into()],
@@ -424,6 +450,7 @@ impl Planner {
             &["places.pmtiles"],
         );
         let mut steps = source_steps;
+        steps.extend(shapes);
         steps.extend(content.steps);
         steps.extend(reference);
         steps.extend([
@@ -447,6 +474,7 @@ impl Planner {
             steps.push(snow(inputs, store, bounds, config.snow.seasons, &mut wanted)?);
         }
         if on("trailview-features") {
+            osmium.map_err(Unplanned::Invalid)?;
             let kinds: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/kinds.json"))
                 .map_err(|e| Unplanned::Failed(format!("data/trailview/kinds.json: {e}")))?;
             let roads: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/roads.json"))
@@ -464,7 +492,9 @@ impl Planner {
         }
         steps.extend(trailview(root, inputs, store, &on, bounds, &config.trailview, &mut wanted)?);
         if on("trailview-canopy") {
-            steps.extend(trailview_canopy(inputs, store, (bounds, &countries), &mut wanted)?);
+            let [west, south, east, north] = bounds;
+            let boxes = regions.boxes(id).unwrap_or_else(|| vec![Bbox { west, south, east, north }]);
+            steps.extend(trailview_canopy(inputs, store, (bounds, &boxes, &countries), &mut wanted)?);
         }
         let maps = [
             "basemap",
@@ -557,6 +587,10 @@ impl Planner {
             client: Client::All,
         });
         prune(&mut steps, &on);
+        // Without the terrain, no step reads `terrain-osm`: its extracts are not fetched.
+        if !steps.iter().any(|step| step.name == "planner/terrain") {
+            wanted.retain(|wanted| wanted.source != TERRAIN_OSM);
+        }
         match wanted.is_empty() {
             true => {
                 let mut listed: Steps = steps.into();
@@ -733,30 +767,29 @@ fn snow(
     ))
 }
 
-/// The canopy layer of `bounds`: the zoom 12 tiles of `forest` that the canopy models of
-/// `countries` meet, with the credits of those models and of the leaf type. None while the store
-/// lacks a manifest; then `wanted` has its fetch. A version whose scopes lack one of those tiles
-/// refuses.
+/// The canopy layer of `bounds`: the zoom 12 tiles of `forest` in `boxes`, the boxes of the region
+/// in `bounds`, that the canopy models of `countries` meet, with the credits of those models and of
+/// the leaf type. None while the store lacks a manifest; then `wanted` has its fetch. A version
+/// whose scopes lack one of those tiles refuses.
 fn trailview_canopy(
     inputs: &Inputs,
     store: &Store,
-    (bounds, countries): ([f64; 4], &[String]),
+    (bounds, boxes, countries): ([f64; 4], &[Bbox], &[String]),
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<Step>, Unplanned> {
     use crate::forest_reference::{model_tiles, models, FORMAT, ID, LEAF_TYPE};
     let sources = obc_data::sources::all();
     let path = |(x, y): (u32, u32)| format!("12/{x}/{y}.tif");
-    let tiles = |bbox: Option<&Bbox>, countries: &[String]| -> Result<BTreeMap<String, Vec<String>>, Unplanned> {
+    let tiles = |boxes: Option<&[Bbox]>, countries: &[String]| -> Result<BTreeMap<String, Vec<String>>, Unplanned> {
         let mut tiles: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (_, model) in models(sources, bbox, countries) {
-            for tile in model_tiles(model, bbox).map_err(Unplanned::Failed)? {
+        for (_, model) in models(sources, boxes, countries) {
+            for tile in model_tiles(model, boxes).map_err(Unplanned::Failed)? {
                 tiles.entry(path(tile)).or_default().push(model.id.clone());
             }
         }
         Ok(tiles)
     };
-    let [west, south, east, north] = bounds;
-    let needed = tiles(Some(&Bbox { west, south, east, north }), countries)?;
+    let needed = tiles(Some(boxes), countries)?;
     if needed.is_empty() {
         return Err(invalid("the layer trailview-canopy needs a canopy model: none covers the region".into()));
     }
@@ -778,8 +811,8 @@ fn trailview_canopy(
     // A version holds each tile with a pixel in its scope and in the scopes that it extends.
     let mut covered = BTreeSet::new();
     for scope in manifest.extends.iter().chain([&manifest.scope]) {
-        let (bbox, countries) = crate::terrain_reference::area(scope.as_ref()).map_err(Unplanned::Failed)?;
-        covered.extend(tiles(bbox.as_ref(), &countries)?.into_keys());
+        let (boxes, countries) = crate::terrain_reference::area(scope.as_ref()).map_err(Unplanned::Failed)?;
+        covered.extend(tiles(boxes.as_deref(), &countries)?.into_keys());
     }
     if needed.keys().any(|tile| !covered.contains(tile)) {
         return Err(invalid(format!(
@@ -888,7 +921,7 @@ fn trailview(
                     "osm-planet" => layer_files("planner/osm", &["osm.pbf"]),
                     "esa-worldcover" => snapshot(inputs, store, id, tiles.clone(), wanted)?,
                     "sentinel-2-mosaics" => snapshot(inputs, store, id, mosaics.clone(), wanted)?,
-                    _ if embedded(id).fetch.kind == FetchKind::Capture => {
+                    _ if step.per_box() => {
                         let digest = ("ground".to_string(), step.capture_digest());
                         snapshot(inputs, store, id, vec![bbox.clone(), digest], wanted)?
                     }
@@ -1151,7 +1184,7 @@ mod tests {
 
     /// A store with what the step list of `AREA` reads: its `.poly`, a box near Freiburg; the
     /// tile list, which names the two squares west of 8°; the land polygons; a version of `wiki`;
-    /// and the extract of each of `days`.
+    /// and the extract of each of `days`, of `geofabrik-extracts` and of `terrain-osm`.
     fn store(temp: &Temp, days: &[&str]) -> Store {
         let store = Store::at(temp.0.join("store"));
         crate::device::tests::with_index(&store);
@@ -1168,6 +1201,8 @@ mod tests {
         fetched(&store, WORLDCOVER_GRID, "v200", &[], &[("esa_worldcover_grid.geojson".into(), grid.into())]);
         for day in days {
             crate::device::tests::extracted(&store, day, &area, &format!("{AREA}-{day}.osm.pbf"));
+            let pbf = include_bytes!("../tests/data/planner.osm.pbf").to_vec();
+            crate::device::tests::stored(&store, TERRAIN_OSM, day, &area, &[(format!("{AREA}-{day}.osm.pbf"), pbf)]);
         }
         store
     }
@@ -1224,12 +1259,10 @@ mod tests {
                 },
             )
             .unwrap();
+        crate::device::tests::stored(&store, TERRAIN_OSM, "2026-10-02", &area, &[(name.into(), bytes.to_vec())]);
         let region = parse_region("ride", "name='Ride'\nkind='geofabrik'\nareas=['europe/test','europe/second']\ncountries=['DE']\ntime_zone='Europe/Berlin'\n").unwrap();
-        let inputs = inputs("ride", &[]);
-        let steps = Planner
-            .steps_with_tool(&root(), &inputs, &Regions::new(vec![region]).unwrap(), &store, Ok(()))
-            .unwrap()
-            .steps;
+        let (inputs, regions) = (inputs("ride", &[]), Regions::new(vec![region]).unwrap());
+        let steps = Planner.steps_with_tool(&root(), &inputs, &regions, &store, Ok(())).unwrap().steps;
         let versions = steps
             .iter()
             .filter(|step| step.name.starts_with("planner/source/"))
@@ -1244,6 +1277,21 @@ mod tests {
         let routing = steps.iter().find(|step| step.name == "planner/routing").unwrap();
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.85, 48.02]));
         assert_eq!(inputs.requests.borrow().iter().filter(|(source, _)| source == EXTRACTS).count(), 2);
+        // The terrain reads the merge of the extract of each area, each through a step of its own.
+        let step = |name: &str| steps.iter().find(|step| step.name == name).unwrap();
+        let reads = |name: &str| {
+            let names = step(name).inputs.iter().filter_map(|input| match input {
+                Input::Step { name, .. } => Some(name.as_str()),
+                Input::Snapshot { .. } => None,
+            });
+            names.collect::<Vec<_>>()
+        };
+        assert_eq!(reads("planner/terrain"), ["planner/terrain-osm"]);
+        assert_eq!(
+            reads("planner/terrain-osm"),
+            ["planner/terrain-osm/europe/second", "planner/terrain-osm/europe/test"]
+        );
+        assert!(terrain_keys(&store, "ride", &regions).contains_key("planner/terrain"), "the engine plans the terrain");
     }
 
     #[test]
@@ -1312,6 +1360,7 @@ mod tests {
         let names: Vec<&str> = steps.iter().map(|step| step.name.as_str()).collect();
         let layers = [
             "source/europe/test",
+            "terrain-osm/europe/test",
             "osm",
             "osm/bounds",
             "terrain",
@@ -1340,7 +1389,7 @@ mod tests {
             "catalog",
         ];
         let mut expected = layers.map(|layer| format!("planner/{layer}")).to_vec();
-        expected.splice(1..1, ["device/landmark-content".into(), "device/peak-content".into()]);
+        expected.splice(2..2, ["device/landmark-content".into(), "device/peak-content".into()]);
         assert_eq!(names, expected, "content uses the same producers as device maps");
         let intermediate: Vec<&str> =
             steps.iter().filter(|step| step.client.is_none()).map(|step| step.name.as_str()).collect();
@@ -1348,6 +1397,7 @@ mod tests {
             intermediate,
             [
                 "planner/source/europe/test",
+                "planner/terrain-osm/europe/test",
                 "device/landmark-content",
                 "device/peak-content",
                 "planner/osm",
@@ -1451,7 +1501,7 @@ mod tests {
             format: crate::forest_reference::FORMAT,
             revision: 1,
             inputs: vec![Read { source: "canopy-ch".into(), version: "2026-10-20".into(), digest: "d".into() }],
-            files: ["12/2100/1400.tif", "12/2143/1443.tif", "12/2144/1443.tif"].map(file).into(),
+            files: ["12/2100/1400.tif", "12/2143/1443.tif", "12/2144/1443.tif", "12/2145/1443.tif"].map(file).into(),
             reused: BTreeMap::new(),
             scope,
             extends,
@@ -1474,7 +1524,10 @@ mod tests {
             Some(Scope { region: name.into(), definitions: [(name.into(), text)].into() })
         };
         // Engelberg: the box meets the zoom 12 tiles 2143/1443 and 2144/1443.
-        let swiss = ([8.40, 46.81, 8.45, 46.83], &["CH".to_string()][..]);
+        let ch = &["CH".to_string()][..];
+        let boxed = |west: f64, east: f64| Bbox { west, south: 46.81, east, north: 46.83 };
+        let engelberg = [boxed(8.40, 8.45)];
+        let swiss = ([8.40, 46.81, 8.45, 46.83], &engelberg[..], ch);
         let mut inputs = Inputs::default();
         let mut wanted = Vec::new();
         let first = manifest(None, Vec::new());
@@ -1501,6 +1554,22 @@ mod tests {
         pin(&mut inputs, &manifest(region("small", 8.40, 8.42), vec![region("east", 8.42, 8.45)]));
         assert!(trailview_canopy(&inputs, &store, swiss, &mut Vec::new()).unwrap().is_some());
 
+        // A version of a union of two boxes holds the tiles 2143/1443 and 2145/1443, not the
+        // tile 2144/1443 between them: the union is accepted, a box in the gap refuses.
+        let definition = |name: &str, west: f64, east: f64| {
+            (name.to_string(), format!("name = \"{name}\"\nkind = \"box\"\nbox = [{west}, 46.81, {east}, 46.83]\n"))
+        };
+        let union = "name = \"U\"\nkind = \"union\"\nunion = [\"a\", \"b\"]\n".to_string();
+        let definitions = [definition("a", 8.36, 8.38), definition("b", 8.53, 8.55), ("u".into(), union)];
+        pin(&mut inputs, &manifest(Some(Scope { region: "u".into(), definitions: definitions.into() }), Vec::new()));
+        let parts = [boxed(8.36, 8.38), boxed(8.53, 8.55)];
+        let step = trailview_canopy(&inputs, &store, ([8.36, 46.81, 8.55, 46.83], &parts, ch), &mut Vec::new());
+        let [Input::Snapshot { files, .. }] = &step.unwrap().unwrap().inputs[..] else { panic!("one snapshot") };
+        assert_eq!(files, &["12/2143/1443.tif", "12/2145/1443.tif"]);
+        let gap = [boxed(8.45, 8.50)];
+        let refused = trailview_canopy(&inputs, &store, ([8.45, 46.81, 8.50, 46.83], &gap, ch), &mut Vec::new());
+        assert!(matches!(refused, Err(Unplanned::Invalid(_))));
+
         // A version of the format before refuses.
         pin(&mut inputs, &Manifest { format: crate::forest_reference::FORMAT - 1, ..manifest(None, Vec::new()) });
         let Err(Unplanned::Invalid(message)) = trailview_canopy(&inputs, &store, swiss, &mut Vec::new()) else {
@@ -1510,7 +1579,8 @@ mod tests {
         pin(&mut inputs, &manifest(None, Vec::new()));
 
         // A version of everything holds no tile of `canopy-global`, which the Black Forest reads.
-        let german = ([8.0, 48.0, 8.05, 48.02], &["DE".to_string()][..]);
+        let black_forest = [Bbox { west: 8.0, south: 48.0, east: 8.05, north: 48.02 }];
+        let german = ([8.0, 48.0, 8.05, 48.02], &black_forest[..], &["DE".to_string()][..]);
         assert!(matches!(trailview_canopy(&inputs, &store, german, &mut Vec::new()), Err(Unplanned::Invalid(_))));
     }
 
@@ -1525,9 +1595,9 @@ mod tests {
         let layer = |name: &str| {
             let parts: Vec<&str> = name.split('/').collect();
             match parts[..] {
-                ["device" | "planner", "source", ..] | ["device", "region-osm" | "osm"] | ["planner", "osm", ..] => {
-                    "osm"
-                }
+                ["device" | "planner", "source", ..]
+                | ["device", "region-osm" | "osm"]
+                | ["planner", "osm" | "terrain-osm", ..] => "osm",
                 ["device", "reference" | "terrain", _] => "device/terrain",
                 ["device", "map", _] => "device/map",
                 ["device", "landmark-content" | "peak-content", ..] | ["device", "landmarks" | "peaks", _] => {
@@ -1629,16 +1699,69 @@ mod tests {
         assert_eq!(stale, expected);
     }
 
-    /// The terrain reads the coastlines, cliffs and summits of `planner/osm` with Osmium.
     #[test]
-    fn the_terrain_reads_the_osm_and_needs_osmium_in_the_plan() {
+    fn a_box_and_trailview_features_need_osmium_in_the_plan() {
         let temp = temp("planner-osmium");
         let store = store(&temp, &["2026-10-01"]);
-        let plan = Planner.steps_with_tool(&root(), &inputs(AREA, &[]), &regions(), &store, Err("no osmium".into()));
-        assert!(matches!(plan, Err(Unplanned::Invalid(reason)) if reason == "no osmium"));
-        let plan = Planner.steps_with_tool(&root(), &inputs(AREA, &[]), &regions(), &store, Ok(())).unwrap();
-        let terrain = plan.steps.iter().find(|step| step.name == "planner/terrain").unwrap();
-        assert!(terrain.inputs.iter().any(|input| matches!(input, Input::Step { name, .. } if name == "planner/osm")));
+        let plan = |region: &str, layers: &[&str]| {
+            Planner.steps_with_tool(&root(), &inputs(region, layers), &regions(), &store, Err("no osmium".into()))
+        };
+        assert!(plan(AREA, &[]).is_ok(), "one source area needs no Osmium");
+        for plan in [plan(AREA, &["trailview-features"]), plan("boxed", &[])] {
+            assert!(matches!(plan, Err(Unplanned::Invalid(reason)) if reason == "no osmium"));
+        }
+    }
+
+    /// The key of each OSM step and of the terrain in a plan of `region`. The store gets the GLO-30
+    /// tiles of the terrain, and the layers of the `terrain-osm` steps, which the key of the terrain
+    /// reads.
+    fn terrain_keys(store: &Store, region: &str, regions: &Regions) -> BTreeMap<String, Option<String>> {
+        let steps = Planner.steps_with_tool(&root(), &inputs(region, &[]), regions, store, Ok(())).unwrap().steps;
+        let terrain = steps.iter().find(|step| step.name == "planner/terrain").unwrap();
+        let Input::Snapshot { version, params, .. } = &terrain.inputs[0] else { panic!("the GLO-30 tiles") };
+        let tiles: Vec<_> = params.iter().map(|(_, tile)| (format!("{tile}.tif"), tile.clone().into_bytes())).collect();
+        crate::device::tests::stored(store, GLO30, version, params, &tiles);
+        let read = |name: &str| {
+            ["planner/source/", "planner/terrain-osm"].iter().any(|prefix| name.starts_with(prefix))
+                || name == "planner/terrain"
+        };
+        let (mut shapes, rest): (Vec<Step>, Vec<Step>) = steps
+            .into_iter()
+            .filter(|step| read(&step.name))
+            .partition(|step| step.name.starts_with("planner/terrain-osm/"));
+        let (root, http, kept) = (root(), obc_data::fetch::http::Http::new(), obc_data::engine::plan::Kept::new());
+        let context = obc_data::engine::runs::Context {
+            store,
+            root: &root,
+            sources: &[],
+            http: &http,
+            kept: &kept,
+            served: &Default::default(),
+            limits: obc_data::engine::runs::Limits::machine(),
+        };
+        let mut run = obc_data::engine::runs::Run::create(store, ["build", "test"]).unwrap();
+        run.build(&context, &shapes, &obc_data::engine::plan::plan(store, &shapes).unwrap()).unwrap();
+        run.finish(None).unwrap();
+        shapes.extend(rest);
+        let plan = obc_data::engine::plan::plan(store, &shapes).unwrap();
+        plan.builds().map(|build| (build.step.clone(), build.key.clone())).collect()
+    }
+
+    /// The terrain reads `terrain-osm`, whose policy is `manual`: after a newer extract of
+    /// `geofabrik-extracts`, the OSM of the planner has a new key and the terrain keeps its key.
+    #[test]
+    fn a_newer_extract_does_not_bake_the_terrain_again() {
+        assert_eq!(embedded(TERRAIN_OSM).refresh, obc_data::sources::Refresh::Manual);
+        let temp = temp("planner-pinned-osm");
+        let store = store(&temp, &["2026-10-01"]);
+        let before = terrain_keys(&store, AREA, &regions());
+        let area = [("area".to_string(), AREA.to_string())];
+        crate::device::tests::extracted(&store, "2026-10-08", &area, &format!("{AREA}-2026-10-08.osm.pbf"));
+        let after = terrain_keys(&store, AREA, &regions());
+        let osm = "planner/source/europe/test";
+        assert_ne!(before[osm], after[osm], "the OSM reads the newer extract");
+        assert!(before["planner/terrain"].is_some(), "the terrain has a key");
+        assert_eq!(before["planner/terrain"], after["planner/terrain"], "the terrain keeps its extract");
     }
 
     /// A box cuts its OSM to the bounds and 15 km around them, within ±180° and ±90°.
@@ -1721,9 +1844,6 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let corine =
-            obc_data::ground::Ground::load(&root()).unwrap().entry("corine-land-cover").unwrap().capture_digest();
-        let corine = format!(r#"corine-land-cover[("bbox", "7.79,47.99,7.82,48.02"), ("ground", "{corine}")]"#);
         assert_eq!(
             read(get("planner/trailview-material")),
             [
@@ -1732,7 +1852,7 @@ mod tests {
                 r#"esa-worldcover[("tile", "N45E006")]"#,
                 r#"sentinel-2-mosaics[("bbox", "7.79,47.99,7.82,48.02"), ("year", "2025")]"#,
                 r#"planner/osm["osm.pbf"]"#,
-                corine.as_str(),
+                "corine-land-cover[]",
             ]
         );
         assert_eq!(
@@ -1783,6 +1903,30 @@ mod tests {
         assert!(
             matches!(refused, Unplanned::Invalid(reason) if reason.contains("`nowhere`, which data/sources.toml lacks"))
         );
+    }
+
+    #[test]
+    fn a_national_map_is_captured_over_the_box_and_corine_is_one_file() {
+        let temp = temp("planner-trailview-kerry");
+        let store = store(&temp, &[]);
+        let (kerry, config) = ([-9.8, 51.9, -9.6, 52.1], TrailView { colour_year: 2025, colour: "test".into() });
+        let on = |layer: &str| ["trailview-rules", "trailview-ground"].contains(&layer);
+        let mut inputs = inputs(AREA, &[]);
+        let mut wanted = Vec::new();
+        trailview(&root(), &inputs, &store, &on, kerry, &config, &mut wanted).unwrap();
+        wanted.iter().for_each(|wanted| inputs.resolve(wanted, "2026-10-01".into()));
+        let steps = trailview(&root(), &inputs, &store, &on, kerry, &config, &mut Vec::new()).unwrap();
+        let material = steps.iter().find(|step| step.name == "planner/trailview-material").unwrap();
+        let read = |id: &str| {
+            material.inputs.iter().find_map(|input| match input {
+                Input::Snapshot { source, params, .. } if source == id => Some(params.clone()),
+                _ => None,
+            })
+        };
+        let digest = obc_data::ground::Ground::load(&root()).unwrap().entry("land-cover-ie").unwrap().capture_digest();
+        let bbox = ("bbox".to_string(), "-9.8,51.9,-9.6,52.1".to_string());
+        assert_eq!(read("land-cover-ie"), Some(vec![bbox, ("ground".to_string(), digest)]));
+        assert_eq!(read("corine-land-cover"), Some(Vec::new()));
     }
 
     #[test]

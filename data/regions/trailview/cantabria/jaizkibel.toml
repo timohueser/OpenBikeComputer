@@ -1,0 +1,6 @@
+name = "TrailView cantabria: Jaizkibel"
+kind = "box"
+# west, south, east, north
+box = [-2.13, 43.15, -1.59, 43.55]
+countries = ["ES", "FR"]
+time_zone = "Europe/Madrid"

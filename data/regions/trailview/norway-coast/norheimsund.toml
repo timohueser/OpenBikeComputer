@@ -1,0 +1,6 @@
+name = "TrailView norway-coast: Norheimsund"
+kind = "box"
+# west, south, east, north
+box = [5.59, 60.09, 6.72, 60.65]
+countries = ["NO"]
+time_zone = "Europe/Oslo"

@@ -1,0 +1,6 @@
+name = "TrailView tyrrhenian: Aggius"
+kind = "box"
+# west, south, east, north
+box = [8.77, 40.77, 9.27, 41.15]
+countries = ["IT"]
+time_zone = "Europe/Rome"

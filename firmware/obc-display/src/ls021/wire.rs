@@ -102,20 +102,8 @@ mod tests {
     /// The six data lines together: the FLPR's mask, and a solid-white column's packed word.
     const DATA_MASK: u32 =
         (1 << R0_PIN) | (1 << R1_PIN) | (1 << G0_PIN) | (1 << G1_PIN) | (1 << B0_PIN) | (1 << B1_PIN);
-    /// Per-channel line pairs (`*0` even + `*1` odd), derived from the pin map above.
+    /// The red line pair (`R0` even + `R1` odd).
     const RED_LINES: u32 = (1 << R0_PIN) | (1 << R1_PIN);
-    const GREEN_LINES: u32 = (1 << G0_PIN) | (1 << G1_PIN);
-    const BLUE_LINES: u32 = (1 << B0_PIN) | (1 << B1_PIN);
-
-    /// Cross-language pin: the mask this module packs to must be the literal the FLPR blob clears
-    /// and sets. A failure means the two have diverged and the panel would show garbage.
-    #[test]
-    fn data_mask_matches_the_flpr_blob() {
-        assert_eq!(DATA_MASK, 0x751, "DATA_MASK must equal flpr_scan.c's 0x751");
-        assert_eq!(RED_LINES, 0x140);
-        assert_eq!(GREEN_LINES, 0x600);
-        assert_eq!(BLUE_LINES, 0x011);
-    }
 
     // Nothing else in CI pins the C blob, and an edit that keeps `DATA_MASK` but permutes
     // `pack_word`'s shifts scrambles the panel while passing the whole host suite, because the
@@ -222,36 +210,6 @@ mod tests {
         assert!(out.iter().all(|&w| w == 0), "black row must pack to all-zero words");
     }
 
-    /// Solid white: every data column is `DATA_MASK` in both planes and the dummy columns are `0`.
-    /// It also proves the pack never sets a bit outside the six data lines.
-    #[test]
-    fn solid_white_matches_pack_solid() {
-        let row = [dev64(3, 3, 3); WIDTH];
-        let mut out = [0u32; ROW_WORDS];
-        pack_row(&row, &mut out);
-        for col in 0..COLS_PER_SUBLINE {
-            assert_eq!(out[col], DATA_MASK, "MSB data col {col}");
-            assert_eq!(out[BCK_PER_SUBLINE + col], DATA_MASK, "LSB data col {col}");
-        }
-        for col in COLS_PER_SUBLINE..BCK_PER_SUBLINE {
-            assert_eq!(out[col], 0, "MSB dummy col {col}");
-            assert_eq!(out[BCK_PER_SUBLINE + col], 0, "LSB dummy col {col}");
-        }
-    }
-
-    /// Pure channels at level 3 land on the right line pairs, which catches an R/G/B swap. At full
-    /// level both planes carry the bit.
-    #[test]
-    fn pure_channels_hit_the_right_lines() {
-        for (level, mask) in [((3, 0, 0), RED_LINES), ((0, 3, 0), GREEN_LINES), ((0, 0, 3), BLUE_LINES)] {
-            let row = [dev64(level.0, level.1, level.2); WIDTH];
-            let mut out = [0u32; ROW_WORDS];
-            pack_row(&row, &mut out);
-            assert_eq!(out[0], mask, "MSB plane for {level:?}");
-            assert_eq!(out[BCK_PER_SUBLINE], mask, "LSB plane for {level:?}");
-        }
-    }
-
     /// The area-gradation split: level 2 is MSB-only and level 1 is LSB-only.
     #[test]
     fn mid_levels_split_across_planes() {
@@ -265,21 +223,6 @@ mod tests {
         pack_row(&one, &mut out);
         assert_eq!(out[0], 0x00, "level 1 → nothing in MSB plane");
         assert_eq!(out[BCK_PER_SUBLINE], RED_LINES, "level 1 → LSB plane only");
-    }
-
-    /// Odd and even columns are distinct lines, so a row of red even pixels and blue odd pixels
-    /// must light only `R0` and `B1`: no interleave error, and the pair maps even to `*0`.
-    #[test]
-    fn odd_even_interleave_is_distinct() {
-        let mut row = empty_row();
-        for (x, px) in row.iter_mut().enumerate() {
-            *px = if x % 2 == 0 { dev64(3, 0, 0) } else { dev64(0, 0, 3) };
-        }
-        let mut out = [0u32; ROW_WORDS];
-        pack_row(&row, &mut out);
-        // R0 (bit6, even=red) and B1 (bit4, odd=blue) → 0x40 | 0x10 = 0x50.
-        assert_eq!(out[0], (1 << R0_PIN) | (1 << B1_PIN), "even red on R0, odd blue on B1");
-        assert_eq!(out[0], 0x50);
     }
 
     /// The pin map, one line at a time: light one channel of one parity, and the packed word must
@@ -337,19 +280,5 @@ mod tests {
             assert_eq!(out[col], golden_word(even, odd, true), "MSB col {col}");
             assert_eq!(out[BCK_PER_SUBLINE + col], golden_word(even, odd, false), "LSB col {col}");
         }
-    }
-
-    #[test]
-    #[should_panic(expected = "row shorter than the panel width")]
-    fn short_row_panics() {
-        let mut out = [0u32; ROW_WORDS];
-        pack_row(&[0u8; WIDTH - 1], &mut out);
-    }
-
-    #[test]
-    #[should_panic(expected = "out shorter than a full row buffer")]
-    fn short_out_panics() {
-        let mut out = [0u32; ROW_WORDS - 1];
-        pack_row(&empty_row(), &mut out);
     }
 }

@@ -348,14 +348,15 @@ fn corrupt_service_subtypes_fail_without_partial_results() {
     }
 }
 
-/// A chunk whose 0xFF end-of-records sentinel is overwritten with a valid-looking record byte must
-/// still terminate at the chunk boundary, never reading past it.
+/// A completely full chunk has no room for the 0xFF end-of-records sentinel, so the record loop
+/// must stop at the chunk's record cap and never read the bytes behind the chunk.
 #[test]
 fn corrupt_missing_sentinel_stops_at_chunk_end() {
-    // One POI, then a 0xFF sentinel, then padding. Overwriting the sentinel's subtype byte with a
-    // valid subtype must still stop the record loop at the record cap, and the forged record has
-    // invalid metadata and is reported as an error.
-    let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "One".into(), payload: 0xFFFF }];
+    let pos = (7_500_000, 43_500_000);
+    // Eight records fill the one 512-byte leaf chunk exactly.
+    let pois: Vec<PoiSpec> = (0..8)
+        .map(|i| PoiSpec { lat: pos.1 + i * 100, lon: pos.0, subtype: 1, name: format!("P{i}"), payload: 0xFFFF })
+        .collect();
     let mut bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
     let poi_off = resolve_offset(&bytes, 32);
     let e1 = poi_off + 3;
@@ -363,15 +364,21 @@ fn corrupt_missing_sentinel_stops_at_chunk_end() {
     let node_count = u32::from_le_bytes(bytes[e1 + 5..e1 + 9].try_into().unwrap()) as usize;
     // A category's chunks begin one rounding step past its index, not flush behind it.
     let data_start = align_up(idx_off + node_count * 4);
-    // The sentinel subtype byte is at the second record slot; forge it to 1.
-    bytes[data_start + 64 + 8] = 1;
-    let src = SliceSource(&bytes);
-    let tables = MapTables::parse(&src).unwrap();
-    let cache = MapCache::new();
-    let mut out = heapless::Vec::new();
-    assert!(Reader::new(&src, &tables, &cache)
-        .nearest_pois(PoiCategory::Water, (7_500_000, 43_500_000), &mut out)
-        .is_err());
+    let chunk_end = data_start + CS;
+    // The bytes behind the chunk now look like a ninth record with a valid subtype.
+    bytes[chunk_end + 8] = 1;
+    let query = |bytes: &[u8]| {
+        let src = SliceSource(bytes);
+        let tables = MapTables::parse(&src).unwrap();
+        let cache = MapCache::new();
+        let mut out = heapless::Vec::<Poi, MAX_POI_RESULTS>::new();
+        Reader::new(&src, &tables, &cache).nearest_pois(PoiCategory::Water, pos, &mut out).map(|()| out.len())
+    };
+    assert_eq!(query(&bytes), Ok(8));
+
+    // A forged last record is still scanned, and reported as an error.
+    bytes[data_start + 7 * 64 + 8] = 99;
+    assert!(query(&bytes).is_err());
 }
 
 /// A regional summit tree must return every in-radius candidate for the app's angular selection,

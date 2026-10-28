@@ -1,0 +1,6 @@
+name = "TrailView carpathians: Kukul"
+kind = "box"
+# west, south, east, north
+box = [24.22, 48.0, 24.87, 48.44]
+countries = ["UA"]
+time_zone = "Europe/Kyiv"

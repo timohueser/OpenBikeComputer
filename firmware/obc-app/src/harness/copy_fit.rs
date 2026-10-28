@@ -21,7 +21,7 @@ use crate::screen::*;
 use crate::settings::Language;
 use crate::{Alert, App, AppState, Gesture, Settings};
 
-use super::support::{build_min_obcm, selected_place, Buf};
+use super::support::{build_min_obcm, selected_place};
 
 /// The panel, in pixels. Every screen lays out against the size the frame hands it, so the gate
 /// renders at the size the board has.
@@ -31,6 +31,26 @@ const PANEL: Size = Size::new(240, 320);
 /// either side. A line the screen centres on the panel midline is laid out across the whole panel,
 /// so it is the budget that line is wrapped to.
 const COPY_W: i32 = crate::screen::vocab::chrome::copy_w(PANEL.width as i32);
+
+/// The panel the gate draws on, which drops every pixel. The text tap records a string before its
+/// glyphs are drawn and nothing a screen draws reads the panel back, so the record is the same as
+/// on a real buffer, without the per-pixel cost of every frame in every language.
+struct Panel;
+
+impl OriginDimensions for Panel {
+    fn size(&self) -> Size {
+        PANEL
+    }
+}
+
+impl DrawTarget for Panel {
+    type Color = Rgb888;
+    type Error = core::convert::Infallible;
+
+    fn draw_iter<I: IntoIterator<Item = Pixel<Rgb888>>>(&mut self, _: I) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
 
 /// The screen no seed can build: its state holds an `obc_reader::peaks::Selection`, which only a
 /// mounted map with a peak-article section hands out, and this harness has no such map. Its draw
@@ -278,7 +298,6 @@ fn walk(
     stage(&mut app);
 
     let mut scratch = Box::new(obc_render::RenderScratch::new());
-    let mut buf = Buf::new(PANEL.width as i32, PANEL.height as i32);
     let mut drawn = Vec::new();
     let mut now = SLIDE_STEP_MS;
     for step in 0..=gestures.len() {
@@ -294,7 +313,7 @@ fn walk(
         let frame = obc_render::text_tap::record(|| {
             app.render_frame(
                 Some(&mut scratch),
-                &mut buf,
+                &mut Panel,
                 &reader,
                 None,
                 PANEL.width as f32,

@@ -81,7 +81,7 @@ pub fn resolve(
             .collect::<Result<BTreeMap<_, _>, _>>()
             .map_err(Unplanned::Failed)?;
         for requested in &boxes {
-            box_ids.extend(select_box(index, &shapes, requested).map_err(Unplanned::Invalid)?);
+            box_ids.extend(select_box(&shapes, requested).map_err(Unplanned::Invalid)?);
         }
     }
     // Index shapes only choose candidates. The full fetched polygons establish coverage.
@@ -151,38 +151,14 @@ pub fn resolve(
     }
 }
 
-fn select_box(
-    index: &BTreeMap<String, geofabrik::Area>,
-    shapes: &BTreeMap<String, Coverage>,
-    requested: &Coverage,
-) -> Result<BTreeSet<String>, String> {
-    fn descend(
-        id: &str,
-        index: &BTreeMap<String, geofabrik::Area>,
-        shapes: &BTreeMap<String, Coverage>,
-        requested: &Coverage,
-        selected: &mut BTreeSet<String>,
-    ) -> Result<(), String> {
-        let Some(part) = shapes[id].intersection(requested)? else { return Ok(()) };
-        let mut children = Vec::new();
-        for child in index.values().filter(|area| area.parent.as_deref() == Some(id)) {
-            if shapes[&child.id].intersection(&part)?.is_some() {
-                children.push(child.id.as_str());
-            }
-        }
-        let union = Coverage::union(&children.iter().map(|id| &shapes[*id]).collect::<Vec<_>>());
-        if union.as_ref().map(|union| union.covers_coverage(&part)).transpose()?.unwrap_or(false) {
-            for child in children {
-                descend(child, index, shapes, &part, selected)?;
-            }
-        } else {
-            selected.insert(id.into());
-        }
-        Ok(())
-    }
+/// The areas of `shapes` that together cover `requested`: of the areas that meet it, each area that
+/// the others cover drops out, largest first. So neighbours cover a sliver before their parent does.
+fn select_box(shapes: &BTreeMap<String, Coverage>, requested: &Coverage) -> Result<BTreeSet<String>, String> {
     let mut selected = BTreeSet::new();
-    for area in index.values().filter(|area| area.parent.is_none()) {
-        descend(&area.id, index, shapes, requested, &mut selected)?;
+    for (id, shape) in shapes {
+        if shape.intersection(requested)?.is_some() {
+            selected.insert(id.clone());
+        }
     }
     let covers = |ids: &BTreeSet<String>| -> Result<bool, String> {
         let union = Coverage::union(&ids.iter().map(|id| &shapes[id]).collect::<Vec<_>>());
@@ -191,8 +167,6 @@ fn select_box(
     if !covers(&selected)? {
         return Err("Geofabrik index does not cover the complete box; change its bounds".into());
     }
-    // Aggregates such as `europe/dach` overlap their sibling countries: drop each area that the
-    // others already cover, largest first.
     let mut largest = selected.iter().cloned().collect::<Vec<_>>();
     largest.sort_by(|a, b| shapes[b].area_km2().total_cmp(&shapes[a].area_km2()));
     for id in largest {

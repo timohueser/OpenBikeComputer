@@ -1,0 +1,6 @@
+name = "TrailView apennines: Burraia"
+kind = "box"
+# west, south, east, north
+box = [11.45, 43.67, 12.01, 44.07]
+countries = ["IT"]
+time_zone = "Europe/Rome"

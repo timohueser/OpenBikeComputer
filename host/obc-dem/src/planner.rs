@@ -11,8 +11,7 @@
 //! wherever the archive misses a pixel near a point, also at a concave edge such as a national
 //! border, and the height is continuous everywhere.
 //!
-//! Where GLO-30 has weight, [`crate::shape`] corrects it at the coastlines, sea cliffs and summits
-//! of OSM.
+//! Where GLO-30 has weight, [`crate::shape`] corrects it at the coastlines and summits of OSM.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::RangeInclusive;
@@ -180,7 +179,7 @@ impl Terrain {
         Ok(())
     }
 
-    /// The terrain with GLO-30 shaped by the coastlines, cliffs and summits of OSM, whose credit is
+    /// The terrain with GLO-30 shaped by the coastlines and summits of OSM, whose credit is
     /// `credit`.
     pub fn shaped(self, (lines, peaks): Features, credit: &str) -> Self {
         let shapes = Shapes::new(lines, peaks);
