@@ -57,7 +57,7 @@ pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER])
 pub static PLANNER_SNOW: Layer = Layer { revision: 2, ..whole("planner/snow", 1, &[&WEB_PLANNER]) };
 /// Its format is `features_format` of `specs/trailview-features.md`.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 6, ..whole("planner/trailview-features", 2, &[&WEB_PLANNER]) };
+    Layer { revision: 7, ..whole("planner/trailview-features", 2, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
@@ -483,11 +483,13 @@ impl Planner {
                 .map_err(|e| Unplanned::Failed(format!("data/trailview/kinds.json: {e}")))?;
             let roads: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/roads.json"))
                 .map_err(|e| Unplanned::Failed(format!("data/trailview/roads.json: {e}")))?;
-            // The heights of roads, rivers and lakes come from the master terrain, by the class rules of the roads.
+            // The heights of roads, rivers and lakes come from the master terrain, by the class rules of the
+            // roads; the sea, which OSM maps only as coastlines, from the water polygons.
+            let sea = snapshot(inputs, store, "water-polygons", Vec::new(), &mut wanted)?;
             steps.push(Step {
                 layer: &PLANNER_TRAILVIEW_FEATURES,
                 name: "planner/trailview-features".into(),
-                inputs: vec![Input::step("planner/osm"), Input::step("planner/terrain/grid")],
+                inputs: vec![Input::step("planner/osm"), Input::step("planner/terrain/grid"), sea],
                 options: json!({"bounds": bounds, "kinds": kinds, "roads": roads, "attribution": attribution("osm-planet")}),
                 outputs: vec!["trailview-features.pmtiles".into()],
                 run: Run::Rust(&functions::TRAILVIEW_FEATURES),
