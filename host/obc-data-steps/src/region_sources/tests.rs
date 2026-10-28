@@ -33,7 +33,7 @@ fn source(store: &Store, id: &str, extract: &str, poly_version: &str, shape: &st
 }
 
 #[test]
-fn box_descent_uses_actual_geometry_and_full_poly_gaps_fall_back_before_bulk_fetch() {
+fn a_box_cover_uses_actual_geometry_and_full_poly_gaps_fall_back_before_bulk_fetch() {
     let temporary = temp("box-source-coverage");
     let store = Store::at(temporary.0.join("store"));
     fixture_index(&store);
@@ -61,8 +61,8 @@ fn box_descent_uses_actual_geometry_and_full_poly_gaps_fall_back_before_bulk_fet
 }
 
 #[test]
-fn a_box_descends_into_both_countries_and_rejects_uncovered_ground() {
-    let temporary = temp("box-source-descent");
+fn a_box_is_covered_by_both_countries_and_rejects_uncovered_ground() {
+    let temporary = temp("box-source-countries");
     let store = Store::at(temporary.0.join("store"));
     fixture_index(&store);
     source(&store, "europe/west", "2026-01-01", "1", &poly(7.0, 8.0));
