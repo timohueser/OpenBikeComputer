@@ -47,7 +47,7 @@ const lakeNode = () => {
 };
 
 describe('the stamp data of a node', () => {
-    it('gates the lines with the numbers of stamp-core.wgsl, packs the profiles in the order of its struct, and numbers the surfaces as the shaders do', () => {
+    it('gates the lines with the numbers of stamp-core.wgsl, packs the profiles of numbers of 0 or more in the order of its struct, and numbers the surfaces as the shaders do', () => {
         for (const [name, value] of Object.entries(RULES)) expect(Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(shader)?.[1]), name).toBe(value);
         const fields = /struct Profile \{([^}]*)\}/.exec(shader)![1].match(/\w+(?=:)/g)! as (keyof Profile)[];
         const rows = Object.values(PROFILES), table = profileTable();
@@ -55,6 +55,7 @@ describe('the stamp data of a node', () => {
         expect(Number(/const WARP_M: f32 = ([\d.]+);/.exec(shader)?.[1])).toBe(WARP_M);
         expect(Number(/const MASK_LEVEL: u32 = (\d+)u;/.exec(readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8'))?.[1])).toBe(NEAR);
         rows.forEach((row, i) => expect(Array.from(table.subarray(PROFILE_FLOATS * i, PROFILE_FLOATS * i + fields.length))).toEqual(fields.map(field => Math.fround(row[field]))));
+        for (const [name, row] of Object.entries(PROFILES)) for (const field of fields) expect(row[field], `${name}.${field}`).toBeGreaterThanOrEqual(0);
         // The shaders know the surfaces by their codes, and the mask holds a code in 4 bits.
         expect(Object.keys(SURFACES)).toEqual(['main', 'road', 'gravel', 'dirt', 'grass', 'path', 'oneway', 'paving', 'rail', 'narrow', 'rack', 'narrow-rack']);
         const mask = readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8');

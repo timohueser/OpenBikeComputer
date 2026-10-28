@@ -480,6 +480,7 @@ impl Planner {
             let roads: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/roads.json"))
                 .map_err(|e| Unplanned::Failed(format!("data/trailview/roads.json: {e}")))?;
             // The heights of roads, rivers and lakes come from the master terrain, by the class rules of the roads.
+            let roads = obc_trailview_features::kinds::solver_rows(&roads);
             steps.push(Step {
                 layer: &PLANNER_TRAILVIEW_FEATURES,
                 name: "planner/trailview-features".into(),

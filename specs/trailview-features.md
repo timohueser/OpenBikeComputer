@@ -112,7 +112,9 @@ surface or of the rails, except a `via_ferrata`, which has none. The class table
 and a smoothing length. A track is a way with a `railway` of `rail`, `narrow_gauge`, `light_rail` or
 `funicular` and no `highway`. The class of a track is its `railway`, or `rack` when it has a `rack` tag
 other than `no`; the class of another way is its `highway`. The table lists the tracks first, so at a level crossing the
-road meets the track. It is part of the options of the step. The road solver:
+road meets the track. The options of the step hold the grade and the smoothing length of each class,
+in the order of the table. The other fields of the table are the stamp profile of the engine. They are
+not options of the step, so a change to them does not bake the features again. The road solver:
 
 - samples the master terrain every 2 m along each way,
 - fits a smooth height line to the samples, with weights that let a spike or a gully of the terrain

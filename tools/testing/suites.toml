@@ -213,6 +213,8 @@ triggers = [
   "tools/planner_mvt_verify.mjs",
   # bins.test.ts reads the path widths of the bake.
   "host/obc-trailview-features/src/structures.rs",
+  # bins.test.ts checks the stamp profiles of the road classes.
+  "data/trailview/roads.json",
   "builder/web/vite.config.ts",
   "host/obc-map-core/schema/config.schema.json",
   "specs/vectors/**",

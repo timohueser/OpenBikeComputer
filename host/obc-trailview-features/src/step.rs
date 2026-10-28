@@ -228,7 +228,7 @@ mod tests {
             layer_files: BTreeMap::new(),
             options: json!({"bounds": [west, south, east, north], "attribution": "© OSM",
                             "kinds": table(include_str!("../../../data/trailview/kinds.json")),
-                            "roads": table(include_str!("../../../data/trailview/roads.json"))}),
+                            "roads": kinds::solver_rows(&table(include_str!("../../../data/trailview/roads.json")))}),
             output: root.join("output"),
             metrics: root.join("metrics.json"),
             memory_bytes: Some(1 << 30),

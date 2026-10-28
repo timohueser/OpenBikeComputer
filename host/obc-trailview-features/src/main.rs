@@ -29,7 +29,8 @@ fn run() -> Result<(), String> {
     let bounds: Vec<f64> =
         bounds.split(',').map(|v| v.parse().map_err(|_| usage.to_string())).collect::<Result<_, _>>()?;
     let table = |text: &str| serde_json::from_str::<serde_json::Value>(text).map_err(|e| e.to_string());
-    let (class_names, classes) = kinds::classes(&table(include_str!("../../../data/trailview/roads.json"))?)?;
+    let (class_names, classes) =
+        kinds::classes(&kinds::solver_rows(&table(include_str!("../../../data/trailview/roads.json"))?))?;
     let options = Options {
         kinds: kinds::validate(&table(include_str!("../../../data/trailview/kinds.json"))?)?,
         bounds: bounds.try_into().map_err(|_| usage.to_string())?,
