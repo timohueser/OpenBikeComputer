@@ -41,10 +41,6 @@ pub const WAYPOINT_ELE_NONE: i16 = i16::MIN;
 /// as. `1..=6` are the OBCM `PoiCategory` wire ids; any other value reads as generic.
 pub const WAYPOINT_CATEGORY_GENERIC: u8 = 0;
 
-pub const fn is_supported_version(version: u8) -> bool {
-    version == VERSION
-}
-
 pub fn validate_header_prefix(bytes: &[u8]) -> Result<u8, DecodeError> {
     validate_prefix(bytes, MAGIC, VERSION, VERSION)
 }
@@ -78,10 +74,6 @@ mod tests {
     /// Old versions are rejected outright.
     #[test]
     fn old_versions_are_rejected() {
-        for old in 1..VERSION {
-            assert!(!is_supported_version(old));
-        }
-        assert!(is_supported_version(VERSION));
         let mut v2 = *b"OBCR\x02";
         assert_eq!(validate_header_prefix(&v2), Err(DecodeError::Version));
         v2[4] = VERSION;
