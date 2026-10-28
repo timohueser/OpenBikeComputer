@@ -19,13 +19,6 @@ pub struct CorridorKey {
     pub anchor_m: u32,
 }
 
-/// What the Up-ahead timeline is currently scoped to: the rider's live category filter (app state,
-/// reset on entry).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UpAheadScope {
-    pub filter: PoiCategorySet,
-}
-
 /// The [`App`](crate::App)-owned corridor snapshot. One buffer, shared by whatever screen is
 /// showing the Up-ahead list, and never owned by a [`Screen`](crate::screen::Screen) variant.
 pub struct CorridorScratch {

@@ -1,6 +1,6 @@
 //! A bounded, paged line over the complete accepted route. Drawing reads prepared facts only.
 
-use crate::corridor::{CorridorKey, UpAheadScope};
+use crate::corridor::CorridorKey;
 use heapless::{String, Vec};
 use obc_formats::obcm::{settlement_class_of, SettlementClass, SourceId};
 use obc_reader::{
@@ -234,9 +234,9 @@ impl AheadState {
         !self.stale
             && (self.dirty || !self.authored_done || !self.map_done || self.detail_facts_dirty || self.detail_dirty)
     }
-    pub(crate) fn request(&self, scope: UpAheadScope) -> Option<CorridorKey> {
-        (self.pending() || self.filter != scope.filter).then_some(CorridorKey {
-            filter: scope.filter,
+    pub(crate) fn request(&self, filter: PoiCategorySet) -> Option<CorridorKey> {
+        (self.pending() || self.filter != filter).then_some(CorridorKey {
+            filter,
             hours_filter: HoursFilter::All,
             anchor_m: self.anchor,
         })
@@ -334,9 +334,9 @@ impl crate::App {
     /// Advance the query without repainting an unchanged loading screen.
     pub fn prepare_ahead(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
         if self.ui.stack.iter().any(|s| matches!(s, crate::screen::Screen::WhatsNext(_))) {
-            let scope = self.up_ahead_scope();
-            self.ui.ahead.prepare(reader, route, scope, self.place_local_time());
-            self.ui.reconcile_corridor(scope);
+            let filter = self.state.up_ahead_filter;
+            self.ui.ahead.prepare(reader, route, filter, self.place_local_time());
+            self.ui.reconcile_corridor(filter);
         }
     }
 
@@ -347,7 +347,7 @@ impl crate::App {
             &mut self.ui.stack,
             crate::screen::Transition::Push(crate::screen::Screen::WhatsNext(crate::screen::WhatsNextScreen::new())),
         );
-        self.ui.reconcile_corridor(self.up_ahead_scope());
+        self.ui.reconcile_corridor(self.state.up_ahead_filter);
         self.ui.map_dirty = true;
     }
 }
@@ -471,7 +471,7 @@ impl AheadState {
         &mut self,
         reader: Option<&Reader>,
         route: Option<&RouteReader>,
-        scope: UpAheadScope,
+        filter: PoiCategorySet,
         local: Option<(u8, u16)>,
     ) {
         if self.stale {
@@ -485,8 +485,8 @@ impl AheadState {
             self.invalidate();
             return;
         }
-        if self.filter != scope.filter {
-            self.filter = scope.filter;
+        if self.filter != filter {
+            self.filter = filter;
             self.boundary = None;
             self.backwards = false;
             self.dirty = true;
@@ -810,7 +810,7 @@ mod tests {
 
     fn settle(a: &mut AheadState, map: Option<&Reader>, route: &RouteReader) {
         for _ in 0..10_000 {
-            a.prepare(map, Some(route), UpAheadScope { filter: DEFAULT_FILTER }, None);
+            a.prepare(map, Some(route), DEFAULT_FILTER, None);
             if !a.pending() {
                 return;
             }
