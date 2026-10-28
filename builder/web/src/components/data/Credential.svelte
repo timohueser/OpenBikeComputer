@@ -39,7 +39,7 @@
         <p class="ready" role="status">Saved {list(saved.names)} in <code>{saved.file}</code>.</p>
         {#if saved.overridden.length}
             <p class="missing">
-                The environment of the page also sets {list(saved.overridden)}, and the environment wins. Remove it from tools/obc.local, then
+                The environment of the page also sets {list(saved.overridden)}, and the environment wins. Remove it from the shell or tools/obc.local, then
                 start obc data ui again.
             </p>
         {/if}

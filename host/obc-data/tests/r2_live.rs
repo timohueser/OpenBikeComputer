@@ -1,9 +1,10 @@
-//! An R2 target against the bucket of `OBC_R2_*`, in a throwaway folder `test/<time>-<pid>/` of
-//! it: it never writes another key. It writes a live bucket, so it runs only when asked, and
-//! without `OBC_R2_BUCKET` it skips. On a machine that publishes, with rclone on PATH:
+//! An R2 target against the bucket of `OBC_R2_*`, from the environment or the credentials file, in
+//! a throwaway folder `test/<time>-<pid>/` of it: it never writes another key. It writes a live
+//! bucket, so it runs only when asked, and without `OBC_R2_BUCKET` it skips. On a machine that
+//! publishes, with rclone on PATH:
 //!
 //! ```sh
-//! (set -a; . tools/obc.local; set +a; cargo test -p obc-data --test r2_live -- --ignored --nocapture)
+//! cargo test -p obc-data --test r2_live -- --ignored --nocapture
 //! ```
 //!
 //! `OBC_R2_PUBLIC` names the origin that serves the bucket; the default is the one of `prod`.
@@ -24,6 +25,7 @@ impl Drop for Throwaway {
 }
 
 fn target() -> Option<Target> {
+    obc_data::credentials::load_home();
     let Some(bucket) = std::env::var("OBC_R2_BUCKET").ok().filter(|bucket| !bucket.is_empty()) else {
         eprintln!("skipped: OBC_R2_BUCKET is not set");
         return None;

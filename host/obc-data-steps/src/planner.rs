@@ -22,7 +22,7 @@ use obc_data::regions::{geofabrik, Area, Bbox, Regions};
 use obc_data::release::{Output, Release};
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
-use obc_dem::reference::{Window, TILE_LOG2};
+use obc_dem::reference::TILE_LOG2;
 use obc_dem::step::GLO30;
 use obc_map_core::grid::CellId;
 use planner_router_build::grid::{mercator, tile_bounds};
@@ -42,10 +42,12 @@ pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, 
 /// The terrain of the maps and of TrailView: its format is that of the terrain tiles of
 /// `specs/planner-release.md`.
 pub static PLANNER_TERRAIN: Layer =
-    Layer { revision: 3, ..whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_FEATURES]) };
+    Layer { revision: 4, ..whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_FEATURES]) };
 /// The routing package, its grid and the route network overlays.
-pub static PLANNER_ROUTING: Layer =
-    whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER]);
+pub static PLANNER_ROUTING: Layer = Layer {
+    revision: 2,
+    ..whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
+};
 /// The search databases and the query model. Its format is the search schema of
 /// `specs/planner-release.md`.
 pub static PLANNER_SEARCH: Layer = Layer { revision: 2, ..whole("planner/search", 6, &[&SEARCH_SERVICE]) };
@@ -350,7 +352,10 @@ impl Planner {
         let routing = Step {
             layer: &PLANNER_ROUTING,
             name: "planner/routing".into(),
-            inputs: std::iter::once(Input::step(cut.name.clone())).chain(tiles(bounds, &land, &glo30)).collect(),
+            inputs: std::iter::once(Input::step(cut.name.clone()))
+                .chain(tiles(bounds, &land, &glo30))
+                .chain(reference.iter().map(|step| Input::step(&step.name)))
+                .collect(),
             options: json!({
                 "region": name,
                 "bounds": bounds,
@@ -683,24 +688,40 @@ fn snapshot(
     Ok(Input::Snapshot { source: source.into(), version, params, files: Vec::new() })
 }
 
-/// The mean tiles of `terrain` that meet `bounds`, as one archive: the step `planner/reference`.
-/// `None` when the version has no tile there.
+/// The mean tiles of `terrain` that the heights in `bounds` read, as one archive: the step
+/// `planner/reference`. `None` when the version has no tile there.
 fn reference(
     inputs: &Inputs,
     store: &Store,
-    [west, south, east, north]: [f64; 4],
+    bounds: [f64; 4],
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<Step>, Unplanned> {
-    let udeg = |degrees: f64| (degrees * 1e6) as i64;
-    let window = Window { lat_lo: udeg(south), lat_hi: udeg(north) + 1, lon_lo: udeg(west), lon_hi: udeg(east) + 1 };
     let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
-    let tiles: BTreeSet<CellId> = window.tiles().map(tile).collect();
-    // Without a layer, the read writes no note and reads no polygon.
+    let tiles: BTreeSet<CellId> = obc_dem::planner::reach(bounds).tiles().map(tile).collect();
     // Without a layer, the read writes no note and reads no polygon.
     let models = Models { tiles: &tiles, pool: "mean/", layer: None };
     let Some(read) = models.read(inputs, store, &mut BTreeMap::new(), wanted, &mut Vec::new())? else {
         return Ok(None);
     };
+    let Input::Snapshot { version, files, .. } = &read else { unreachable!("the models are a snapshot input") };
+    let held = files.iter().filter_map(|file| file.strip_prefix("mean/16/")?.strip_suffix(".tif"));
+    let Some(unbiased) = unbiased(store, version, held, wanted)? else { return Ok(None) };
+    if let Some(key) = unbiased {
+        let id = crate::terrain_reference::ID;
+        let example = obc_data::sources::all().iter().find(|source| source.id == format!("dtm-{key}"));
+        let example = example.and_then(|source| source.extent).map_or("W,S,E,N".to_string(), |[w, s, e, n]| {
+            // About four tiles around the middle of the extent: enough samples to measure.
+            let (lat, lon) = ((s + n) / 2.0, (w + e) / 2.0);
+            [(lon - 0.1).max(w), (lat - 0.1).max(s), (lon + 0.1).min(e), (lat + 0.1).min(n)]
+                .map(|degrees| format!("{degrees:.2}"))
+                .join(",")
+        });
+        return Err(invalid(format!(
+            "{id}@{version} states no GLO-30 bias of `{key}`, the best model of a tile of the planner terrain. Fix: a \
+             prepare of a small box inside the extent of dtm-{key} extends the version and measures it: obc data \
+             source prepare {id} --box {example} --to TARGET --dry-run"
+        )));
+    }
     let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}/{:04}", tile.i, tile.j)).collect();
     Ok(Some(Step {
         client: Client::None,
@@ -713,6 +734,30 @@ fn reference(
             &["reference"],
         )
     }))
+}
+
+/// The first best model of the tiles `held` that `mean/index.json` of `version` of `terrain` states
+/// no bias of, as `Some(None)` when it states each one. `None` while the store lacks the index; then
+/// `wanted` has its fetch.
+fn unbiased<'a>(
+    store: &Store,
+    version: &str,
+    held: impl Iterator<Item = &'a str>,
+    wanted: &mut Vec<Wanted>,
+) -> Result<Option<Option<String>>, Unplanned> {
+    let id = crate::terrain_reference::ID;
+    let params = vec![("file".to_string(), "mean/index.json".to_string())];
+    let Some(files) = snapshot_files(store, id, version, &params, &[]).map_err(Unplanned::Failed)? else {
+        wanted.push(Wanted { source: id.into(), version: Some(version.into()), params });
+        return Ok(None);
+    };
+    let path = &files["mean/index.json"];
+    let bytes = std::fs::read(path).map_err(|e| Unplanned::Failed(format!("{}: {e}", path.display())))?;
+    let index: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| Unplanned::Failed(format!("{id}@{version} mean/index.json: {e}")))?;
+    let biased = |key: &str| index["sources"][key]["glo30_bias_m"].is_number();
+    let mut best = held.filter_map(|tile| index["tiles"][tile].as_str());
+    Ok(Some(best.find(|key| !biased(key)).map(String::from)))
 }
 
 /// The GLO-30 tiles of `bounds` that the tile list names, as an input. A square that it does not
@@ -1409,13 +1454,11 @@ mod tests {
     }
 
     #[test]
-    fn the_terrain_reads_the_mean_tiles_of_terrain_in_its_bounds() {
+    fn the_terrain_and_the_routing_read_the_mean_tiles_of_terrain_in_their_bounds() {
         let temp = temp("planner-reference");
         let (store, mut inputs) = (store(&temp, &["2026-10-01"]), inputs(AREA, &[]));
         let paths = ["16/4825/4218.tif", "mean/16/4825/4218.tif", "mean/16/4000/4000.tif"];
-        let (pinned, manifest) = crate::device::tests::terrain_version(&mut inputs, &paths);
-        let manifest = [(obc_data::prepared::MANIFEST.to_string(), manifest)];
-        crate::device::tests::stored(&store, "terrain", &pinned, &[], &manifest);
+        terrain_with_bias(&store, &mut inputs, &paths, Some(-1.5));
         let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
         let reference = steps.iter().find(|step| step.name == "planner/reference").unwrap();
         let [Input::Snapshot { files, .. }] = &reference.inputs[..] else { panic!("one model") };
@@ -1423,11 +1466,41 @@ mod tests {
             (&files[..], &reference.options["pool"]),
             (&["mean/16/4825/4218.tif".to_string(), "mean/index.json".to_string()][..], &json!("mean"))
         );
-        let terrain = steps.iter().find(|step| step.name == "planner/terrain").unwrap();
-        assert!(terrain
-            .inputs
+        for reader in ["planner/terrain", "planner/routing"] {
+            let step = steps.iter().find(|step| step.name == reader).unwrap();
+            let reads = |input: &Input| matches!(input, Input::Step { name, .. } if name == "planner/reference");
+            assert!(step.inputs.iter().any(reads), "{reader} reads the national models");
+        }
+    }
+
+    /// A version of `terrain` with `paths` and a `mean/index.json` whose tiles are of `ch`, with the
+    /// bias `bias`.
+    fn terrain_with_bias(store: &Store, inputs: &mut Inputs, paths: &[&str], bias: Option<f64>) {
+        let (pinned, manifest) = crate::device::tests::terrain_version(inputs, paths);
+        let manifest = [(obc_data::prepared::MANIFEST.to_string(), manifest)];
+        crate::device::tests::stored(store, "terrain", &pinned, &[], &manifest);
+        let tiles: BTreeMap<&str, &str> = paths
             .iter()
-            .any(|input| matches!(input, Input::Step { name, .. } if name == "planner/reference")));
+            .filter_map(|path| Some((path.strip_prefix("mean/16/")?.strip_suffix(".tif")?, "ch")))
+            .collect();
+        let ch = bias.map_or(json!({}), |bias| json!({"glo30_bias_m": bias}));
+        let index = json!({"tiles": tiles, "sources": {"ch": ch}}).to_string();
+        let params = [("file".to_string(), "mean/index.json".to_string())];
+        crate::device::tests::stored(store, "terrain", &pinned, &params, &[("mean/index.json".into(), index.into())]);
+    }
+
+    /// The plan refuses a version of `terrain` without the bias of the best model of a tile that the
+    /// planner reads, and names a box inside the extent of that model.
+    #[test]
+    fn a_version_of_terrain_without_a_bias_is_refused_in_the_plan() {
+        let temp = temp("planner-unbiased");
+        let (store, mut inputs) = (store(&temp, &["2026-10-01"]), inputs(AREA, &[]));
+        terrain_with_bias(&store, &mut inputs, &["mean/16/4825/4218.tif"], None);
+        let Err(Unplanned::Invalid(error)) = Planner.steps(&root(), &inputs, &regions(), &store) else {
+            panic!("the plan reads a version without a bias")
+        };
+        assert!(error.contains("no GLO-30 bias of `ch`"), "{error}");
+        assert!(error.ends_with("--box 8.10,46.75,8.30,46.95 --to TARGET --dry-run"), "{error}");
     }
 
     #[test]

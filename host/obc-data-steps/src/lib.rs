@@ -9,6 +9,7 @@ pub mod planner;
 mod prepared_tiles;
 mod readers;
 mod region_sources;
+mod terrain_bias;
 pub mod terrain_reference;
 pub mod ui;
 pub mod wiki;

@@ -85,7 +85,11 @@ fn fetch_files(
             source.fetch.url.as_deref().unwrap_or_default()
         )),
         FetchKind::Installed => Err(format!("source `{}` is installed, not fetched", source.id)),
-        FetchKind::Prepared => crate::prepared::fetch(root, store, request, names),
+        // A plan names a file that it reads as the param `file`.
+        FetchKind::Prepared => {
+            let files = request.params.iter().filter(|(name, _)| name == "file").map(|(_, path)| path.clone());
+            crate::prepared::fetch(root, store, request, &names.iter().cloned().chain(files).collect::<Vec<_>>())
+        }
     }
 }
 
