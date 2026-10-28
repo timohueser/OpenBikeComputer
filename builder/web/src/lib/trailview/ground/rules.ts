@@ -4,7 +4,7 @@
  * `palette.ts` and the mosaic calendar of `calendar.ts`. Colours are linear RGB.
  */
 
-import { named, SEASONS, type Ramp, type Region, type Season, type Vocabulary } from '../rules/regions';
+import { named, SEASONS, type Patch, type Ramp, type Region, type Season, type Vocabulary } from '../rules/regions';
 
 /** WorldCover's groups in the order of the ramps; `COVER_*` in look.wgsl. */
 export const COVER_ORDER = ['tree', 'shrub', 'grass', 'crop', 'built', 'bare', 'snow', 'water', 'wetland', 'mangrove', 'moss'] as const;
@@ -78,6 +78,16 @@ export function slots(vocabulary: Vocabulary) {
     };
 }
 
+/**
+ * The patches of a look in the order that they draw: dots, then blotches, each form by name. The
+ * order of keys is no rule: rules.json sorts them, and JavaScript puts keys like integers first.
+ */
+export function patchesOf(look: Region['look']): Patch[] {
+    const listed = Object.entries(look.patches ?? {}).flatMap(([name, patch]) => (patch ? [{ name, patch }] : []));
+    const rank = ({ name, patch }: (typeof listed)[number]) => `${patch.form === 'dots' ? 0 : 1}${name}`;
+    return listed.sort((a, b) => (rank(a) < rank(b) ? -1 : 1)).map(({ patch }) => patch).slice(0, PATCHES);
+}
+
 /** A colour of the year or by season, in a season. */
 const inSeason = (colour: string | Partial<Record<Season, string>> | undefined, season: number) => (typeof colour === 'string' ? colour : colour?.[SEASONS[season]]);
 
@@ -99,7 +109,7 @@ export function packRules(regions: Region[], vocabulary: Vocabulary, season: num
         const { look } = region;
         const set = (slot: number, rgb: number[], a: number) => data.set([...rgb, a], (row * SLOT.count + slot) * 4);
         const paint = (colour: string | undefined, a: number) => [linear(colour ?? '#000000'), colour ? a : 0] as const;
-        const patches = Object.values(look.patches ?? {}).filter(patch => !!patch).slice(0, PATCHES);
+        const patches = patchesOf(look);
         const under = patches.map(patch => named(vocabulary, patch.on));
         ramps(season, region).forEach((c, i) => set(i, c, 1));
         vocabulary.materials.forEach(({ id, cover, clumps, tags = [] }, i) => {

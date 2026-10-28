@@ -32,7 +32,7 @@
 // eye (lod.ts). At 71° N on a canvas 2880 pixels tall, an output pixel there spans 0.37 m or more at
 // the screen's centre, and 0.22 m at a corner of a 16:9 frame. That is past the fade of the blades
 // (0.18 m). The dots of a patch fade at 0.1 × size_m: the 3 m that rules.py allows fade before such a
-// node up to 64° N.
+// node up to 64° N. Blotches do not fade: rules.py keeps them two such pixels across.
 override DETAIL: bool = true;
 
 const COVER_TREE: u32 = 0u;
@@ -107,8 +107,9 @@ fn rule(region: u32, slot: i32) -> vec4f {
 }
 
 // Whether a set of materials, as `bits` of rules/regions.ts makes it, holds a material code.
+// A code of 64 or more, such as the NO_CELL of a page that is not resident, is in no set.
 fn holds(materials: vec2u, material: u32) -> bool {
-    return ((materials[material >> 5u] >> (material & 31u)) & 1u) == 1u;
+    return material < 64u && ((materials[material >> 5u] >> (material & 31u)) & 1u) == 1u;
 }
 
 // The slots of ground/rules.ts, from the sizes of the vocabulary.

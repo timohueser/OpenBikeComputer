@@ -66,4 +66,16 @@ describe('rulesOf', () => {
         expect(rules.regions[0].herds).toEqual([{ model: 'brown-cattle', groups: 2, size: [3, 12], on: ['grassland'] }]);
         expect(rules.regions[1].trees).toEqual([]);
     });
+
+    it("merges a region's patches by name: a child changes one, adds one, and null drops one", () => {
+        const patch = { on: ['#moor'], colour: '#5e4552', share: 0.35, size_m: 4, form: 'blotches' };
+        const rules = rulesOf({
+            format: 3, materials, ids: [['celtic', '*'], ['world', '*']],
+            regions: {
+                celtic: { extends: 'world', look: { patches: { heather: { colour: '#6e4f63' }, scrub: null, lichen: { ...patch, on: ['moss'] } } } },
+                world: { leaf: 'mixed', look: { ...look, patches: { heather: patch, scrub: { ...patch, form: 'dots', size_m: 2 } } } },
+            },
+        });
+        expect(rules.regions[0].look.patches).toEqual({ heather: { ...patch, colour: '#6e4f63' }, scrub: null, lichen: { ...patch, on: ['moss'] } });
+    });
 });

@@ -240,8 +240,8 @@ with these rules:
 - A value by place, `{"es-ga": …, "es": …, "*": …}`, takes the entry of the place of the region id,
   else of its country, else `"*"`. The values by place are `style` of the pack and `look.roadLine`.
 - In a pack, `trees`, `ground` and `herds` are keyed by species, and in a look, `patches` by
-  name. A child adds or changes one, and `null` drops one. The patches draw in the order of their
-  keys, a parent's first.
+  name. A child adds or changes one, and `null` drops one. The patches draw dots first, then
+  blotches, each form in the order of the names; the order of keys means nothing.
 - A list of ground (`on` and `off` of a ground plant, `on` of a herd and of a look's patch) names
   covers, materials by id, and the `tags` of materials in `materials.json` as `#tag`.
 

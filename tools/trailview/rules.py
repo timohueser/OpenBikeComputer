@@ -18,9 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RULESET = ROOT / "data/trailview"
-FORMAT = 2
-# The format of rules.json, which the engine checks (`rulesOf` of rules/regions.ts).
-RULES_FORMAT = 3
+FORMAT = 3
 
 # WorldCover's groups in the order of the prototype's ramps (`src/materials.ts`).
 COVER_ORDER = ("tree", "shrub", "grass", "crop", "built", "bare", "snow", "water", "wetland", "mangrove", "moss")
@@ -142,13 +140,14 @@ def ground_names(materials):
 def patch(v, p):
     """A whole patch of a region's look, after its chain merged it. The far nodes draw without the dots
     (DETAIL of ground/look.wgsl): with bushes up to 3 m and up to 64° N, the dots fade out before them.
-    Blotches have no such fade: blotches finer than 1 m would shimmer."""
+    Blotches have no such fade, so their fine noise, size_m across, must span two pixels where the far
+    nodes start: 2 × 0.37 m (the output pixel there that DETAIL of ground/look.wgsl names)."""
     if missing := [key for key in ("on", "colour", "share", "size_m", "form") if key not in v]:
         return wrong(p, f"has no {', '.join(missing)}")
     if v["form"] == "dots" and v["size_m"] > 3:
         return wrong(f"{p}.size_m", f"{said(v['size_m'])} is above 3: the dots of larger bushes stop where the far nodes start")
-    if v["form"] == "blotches" and v["size_m"] < 1:
-        return wrong(f"{p}.size_m", f"{said(v['size_m'])} is below 1: blotches finer than 1 m shimmer")
+    if v["form"] == "blotches" and v["size_m"] < 2 * 0.37:
+        return wrong(f"{p}.size_m", f"{said(v['size_m'])} is below 0.74: finer blotches shimmer before the far nodes start")
     return []
 
 
@@ -466,7 +465,7 @@ def bundle(ruleset):
     plain = lambda data: {key: value for key, value in data.items() if key not in ("about", "where")}
     ids = region_ids(ruleset)
     rules = {
-        "format": RULES_FORMAT, "materials": ruleset["materials"], "ids": ids,
+        "format": FORMAT, "materials": ruleset["materials"], "ids": ids,
         "regions": {name: plain(data) for name, data in ruleset["regions"].items()},
         "packs": {name: plain(data) for name, data in ruleset["packs"].items()},
         "styles": {name: plain(data) for name, data in ruleset["styles"].items()},

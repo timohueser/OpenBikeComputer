@@ -1,5 +1,6 @@
+import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import type { Region, Vocabulary } from '../rules/regions';
+import { rulesOf, type Region, type Vocabulary } from '../rules/regions';
 import { linear, mosaicsAt, packRulesOn, slots } from './rules';
 
 const vocabulary: Vocabulary = {
@@ -45,7 +46,19 @@ describe('the rules of the ground', () => {
         expect(turf(region.look)[3]).toBe(0);
     });
 
-    it('lays the patches of a region over the materials that they name, in their order', () => {
+    it('draws the dots before the blotches, whatever order the keys of rules.json have', () => {
+        // rules.json sorts its keys (encoded of tools/trailview/rules.py), so fjell's heather comes before its scrub.
+        const sorted = (v: unknown): unknown => (Array.isArray(v) ? v.map(sorted)
+            : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, sorted((v as Record<string, unknown>)[k])])) : v);
+        const read = (path: string) => JSON.parse(readFileSync(new URL(`../../../../../../data/trailview/${path}`, import.meta.url), 'utf8'));
+        const regions = Object.fromEntries(readdirSync(new URL('../../../../../../data/trailview/regions', import.meta.url)).map(file => [file.replace(/\.json$/, ''), read(`regions/${file}`)]));
+        const rules = rulesOf(sorted({ format: 3, materials: read('materials.json'), ids: [['fjell', '*'], ['world', '*']], regions }) as Parameters<typeof rulesOf>[0]);
+        expect(Object.keys(rules.regions[0].look.patches ?? {})).toEqual(['heather', 'scrub']);
+        const SLOT = slots(rules.vocabulary), data = packRulesOn(rules.regions, rules.vocabulary, 226);
+        expect(Array.from(data.subarray(4 * SLOT.shapes, 4 * SLOT.shapes + 4))).toEqual([1.5, 1, 4, 0]);
+    });
+
+    it('lays the patches of a region over the materials that they name', () => {
         const SLOT = slots(vocabulary), patches: Region['look']['patches'] = {
             gone: null,
             scrub: { on: ['#rough'], colour: '#8a5a30', share: 0.2, size_m: 1.5, form: 'dots' },

@@ -27,7 +27,7 @@ export interface Look {
     softness: number;
     gradient: number;
     ramps: Partial<Record<string, Ramp | Partial<Record<Season, Ramp>>>>;
-    /** By name; they draw in the order of their keys, a parent's first. */
+    /** By name; they draw as `patchesOf` of ground/rules.ts orders them. */
     patches?: Partial<Record<string, Patch | null>>;
     /** The material whose paint a ledge of turf on exposed rock takes. */
     turf?: string;
