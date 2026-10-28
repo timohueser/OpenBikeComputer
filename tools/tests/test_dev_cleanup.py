@@ -19,6 +19,10 @@ SPEC.loader.exec_module(cleanup)
 
 
 class DevCleanupTests(unittest.TestCase):
+    def setUp(self):
+        # Never let a test reach the developer's real shared cargo target.
+        self.enterContext(mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": ""}))
+
     def test_registered_worktrees_keeps_paths_with_newlines(self):
         output = "worktree /repo\0HEAD abc\0\0worktree /temp/obc-branch\nname\0locked active\0\0"
         with mock.patch.object(cleanup, "git") as git:
@@ -117,16 +121,26 @@ class DevCleanupTests(unittest.TestCase):
             for path in (repo / ".git", repo / "target", repo, old_scratch, unrelated):
                 os.utime(path, (old, old))
 
+            target = root / "cargo-target"
+            old_rlib = target / "debug" / "deps" / "libold.rlib"
+            old_rlib.parent.mkdir(parents=True)
+            old_rlib.write_text("old")
+            os.utime(old_rlib, (old, old))
+
             output = io.StringIO()
             with (
                 mock.patch.object(cleanup.tempfile, "gettempdir", return_value=str(root)),
+                mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target)}),
                 contextlib.redirect_stdout(output),
             ):
                 self.assertEqual(cleanup.main(["--repo", str(repo)]), 0)
                 self.assertTrue(old_scratch.exists())
+                self.assertTrue(old_rlib.exists())
                 self.assertIn(str(old_scratch), output.getvalue())
+                self.assertIn(str(old_rlib.parent), output.getvalue())
                 self.assertEqual(cleanup.main(["--repo", str(repo), "--apply"]), 0)
             self.assertFalse(old_scratch.exists())
+            self.assertFalse(old_rlib.exists())
             self.assertTrue(recent_scratch.exists())
             self.assertTrue(unrelated.exists())
             self.assertEqual(cache.read_text(), "keep")
@@ -152,6 +166,46 @@ class DevCleanupTests(unittest.TestCase):
             ):
                 self.assertEqual(cleanup.main(["--repo", str(repo), "--apply"]), 0)
             self.assertTrue((candidate / "active").exists())
+
+    def test_prune_cargo_target_removes_only_old_artifacts_inside_the_target(self):
+        with tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryDirectory() as outside:
+            target = Path(scratch)
+            old = time.time() - 8 * cleanup.SECONDS_PER_DAY
+            old_files = [
+                target / "debug" / "deps" / "libold.rlib",
+                target / "debug" / "incremental" / "crate-1" / "s-1" / "query.bin",
+                target / "wasm32-unknown-unknown" / "debug" / "build" / "pkg-1" / "out" / "gen.rs",
+            ]
+            kept = [target / "debug" / "deps" / "libnew.rlib", target / "debug" / "obc-data"]
+            outside_file = Path(outside) / "deps" / "libkeep.rlib"
+            for path in [*old_files, *kept, outside_file]:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("x")
+            for path in [*old_files, kept[1], outside_file]:
+                os.utime(path, (old, old))
+            (target / "release").mkdir()
+            (target / "release" / "deps").symlink_to(outside_file.parent, target_is_directory=True)
+            cutoff = time.time() - 7 * cleanup.SECONDS_PER_DAY
+
+            planned = cleanup.prune_cargo_target(target, cutoff, apply=False)
+            self.assertEqual(sum(files for files, _ in planned.values()), 3)
+            self.assertTrue(all(path.exists() for path in old_files))
+
+            self.assertEqual(cleanup.prune_cargo_target(target, cutoff, apply=True), planned)
+            self.assertFalse(any(path.exists() for path in old_files))
+            self.assertFalse((target / "debug" / "incremental" / "crate-1").exists())
+            self.assertTrue((target / "debug" / "incremental").is_dir())
+            self.assertTrue(all(path.exists() for path in [*kept, outside_file]))
+
+    def test_cargo_target_refuses_root_home_and_repositories(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            repo = Path(scratch) / "repo"
+            cleanup.git(Path(scratch), "init", str(repo))
+            for value in ("/", str(Path.home()), str(repo)):
+                with self.assertRaises(cleanup.CleanupError):
+                    cleanup.cargo_target(value)
+            self.assertIsNone(cleanup.cargo_target(""))
+            self.assertIsNone(cleanup.cargo_target(str(Path(scratch) / "missing")))
 
 
 if __name__ == "__main__":

@@ -49,8 +49,8 @@ and test them from their own directories. The nearest README has the surface's s
   CI or local, committed or temporary, must earn its time: take the smallest sample that answers
   the question, and do not repeat it without a reason. Before a run over 5 minutes becomes routine
   or repeats, report to the owner what it costs and why it is needed.
-- Report exact checks run and left out. `obc clean` removes old test scratch; read its dry run
-  before `--apply`.
+- Report exact checks run and left out. `obc clean` removes old test scratch and old cargo
+  artifacts in `$CARGO_TARGET_DIR`; read its dry run before `--apply`.
 
 ## How reviews work
 

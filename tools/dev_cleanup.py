@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Inventory and remove old OpenBikeComputer test scratch under the system temp directory."""
+"""Inventory and remove old OpenBikeComputer test scratch and stale shared cargo artifacts."""
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import shutil
 import subprocess
@@ -14,6 +15,8 @@ from pathlib import Path
 
 
 SECONDS_PER_DAY = 24 * 60 * 60
+# Per-profile cargo caches, as `<profile>/<name>` or `<triple>/<profile>/<name>`.
+CARGO_ARTIFACT_DIRS = ("deps", "build", ".fingerprint", "incremental")
 
 
 class CleanupError(RuntimeError):
@@ -143,11 +146,65 @@ def temp_candidates(
     return sorted(result)
 
 
+def cargo_target(value: str | None) -> Path | None:
+    if not value:
+        return None
+    target = Path(value).resolve()
+    if not target.is_dir():
+        return None
+    if target in (Path("/"), Path.home().resolve()) or (target / ".git").exists():
+        raise CleanupError(f"refusing to prune CARGO_TARGET_DIR={target}")
+    return target
+
+
+def prune_cargo_target(target: Path, cutoff: float, apply: bool) -> dict[Path, tuple[int, int]]:
+    """Return {artifact dir: (files, bytes)} older than cutoff; remove them when apply is set.
+
+    mtime is enough: cargo rebuilds or relinks any artifact that is missing, so pruning an
+    artifact that is still in use costs one rebuild and never a wrong build.
+    """
+    result: dict[Path, tuple[int, int]] = {}
+    for name in CARGO_ARTIFACT_DIRS:
+        for top in sorted([*target.glob(f"*/{name}"), *target.glob(f"*/*/{name}")]):
+            # A symlink anywhere in the path could lead out of the target.
+            if not top.is_dir() or top.resolve() != top:
+                continue
+            files = size = 0
+            # Only a directory this pass emptied goes; a new empty one may belong to a build.
+            emptied: set[Path] = set()
+            for root, dirs, names in os.walk(top, topdown=False):
+                here = Path(root)
+                changed = any(here / entry in emptied for entry in dirs)
+                for entry in names:
+                    path = here / entry
+                    try:
+                        stat = path.lstat()
+                        if stat.st_mtime > cutoff:
+                            continue
+                        if apply:
+                            path.unlink()
+                    except OSError:
+                        continue
+                    files += 1
+                    size += stat.st_size
+                    changed = True
+                if apply and changed and here != top:
+                    with contextlib.suppress(OSError):
+                        here.rmdir()
+                        emptied.add(here)
+            if files:
+                result[top] = (files, size)
+    return result
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="Remove old OBC test scratch under the system temp directory (dry-run by default)."
+        description=(
+            "Remove old OBC test scratch under the system temp directory and old artifacts in "
+            "$CARGO_TARGET_DIR (dry-run by default)."
+        )
     )
-    result.add_argument("--apply", action="store_true", help="remove eligible scratch entries")
+    result.add_argument("--apply", action="store_true", help="remove eligible entries")
     result.add_argument("--days", type=int, default=7, help="minimum inactivity age (default: 7)")
     result.add_argument("--repo", type=Path, help=argparse.SUPPRESS)
     return result
@@ -166,10 +223,18 @@ def main(argv: list[str] | None = None) -> int:
     print(f"age>={args.days}d  temp={root}")
     for path in scratch:
         print(f"  REMOVE {format_size(sizes.get(path, 0)):>10}  {path}")
-    print(f"Potentially reclaimable: {format_size(sum(sizes.values()))}")
+    target = cargo_target(os.environ.get("CARGO_TARGET_DIR"))
+    cutoff = time.time() - args.days * SECONDS_PER_DAY
+    artifacts = prune_cargo_target(target, cutoff, args.apply) if target else {}
+    if target:
+        print(f"cargo target={target}")
+    for path, (files, size) in artifacts.items():
+        print(f"  REMOVE {format_size(size):>10}  {files} files in {path}")
+    reclaimable = sum(sizes.values()) + sum(size for _, size in artifacts.values())
+    print(f"Potentially reclaimable: {format_size(reclaimable)}")
 
     if not args.apply:
-        print("Dry run only; pass --apply to remove the listed scratch entries.")
+        print("Dry run only; pass --apply to remove the listed entries.")
         return 0
 
     eligible = set(temp_candidates(time.time(), args.days, root, registered_worktrees(repo)))
@@ -178,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
             remove_path(path)
         else:
             print(f"skipped {path}: eligibility changed after planning")
-    print("Scratch cleanup applied.")
+    print("Cleanup applied.")
     return 0
 
 
