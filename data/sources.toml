@@ -929,6 +929,57 @@ extent = [-71, 21, 100, 81]
 version = "digest"
 redistribute = true
 
+# The national maps of data/trailview/ground.json. Each box holds its map, in whole degrees.
+
+[[source]]
+id = "land-cover-ie"
+kind = "data"
+group = "Land cover and imagery"
+used_by = ["trailview"]
+use = "Land cover of Ireland, the National Land Cover Map 2018, for the TrailView material"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+attribution = "National Land Cover Map 2018 © Tailte Éireann and the Environmental Protection Agency"
+obligations = "Credit the source as the attribution says; state modifications"
+fetch = { kind = "capture", url = "https://services-eu1.arcgis.com/FH5XCsx8rYXqnjF5/arcgis/rest/services/MapGenieNationalLandCover2018ITM/FeatureServer/0" }
+extent = [-11, 51, -5, 56]
+version = "date"
+refresh = "manual"
+redistribute = true
+
+[[source]]
+id = "land-cover-gb-sct"
+kind = "data"
+group = "Land cover and imagery"
+used_by = ["trailview"]
+use = "Habitats of Scotland, the Habitat Map of Scotland, for the TrailView material"
+licence = "OGL-UK-3.0"
+licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
+attribution = "Contains NatureScot information licensed under the Open Government Licence v3.0"
+obligations = "Credit the source as the attribution says"
+fetch = { kind = "capture", url = "https://ogc.nature.scot/geoserver/ows" }
+extent = [-10, 54, 0, 61]
+version = "date"
+refresh = "manual"
+redistribute = true
+
+[[source]]
+id = "geology-es"
+kind = "data"
+group = "Land cover and imagery"
+used_by = ["trailview"]
+use = "Rock of Spain at 1:50 000, the GEODE map, for the TrailView lithology"
+licence = "LicenseRef-IGME-GEODE"
+licence_url = "https://mapas.igme.es/gis/rest/services/Cartografia_Geologica/IGME_Geode_50/MapServer/info/itemInfo?f=json"
+attribution = "GEODE 1:50 000 © IGME"
+obligations = "Contact IGME before a paid value-added service uses the map"
+fetch = { kind = "capture", url = "https://mapas.igme.es/gis/rest/services/Cartografia_Geologica/IGME_Geode_50/MapServer/8" }
+# Peninsular Spain and the Balearic Islands, without the Canary Islands, so the box stays near Spain.
+extent = [-10, 35, 5, 44]
+version = "date"
+refresh = "manual"
+redistribute = false
+
 # The source of data/trailview/ecoregions.json; its borders are Natural Earth's.
 [[source]]
 id = "resolve-ecoregions"

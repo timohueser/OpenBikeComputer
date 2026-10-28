@@ -54,6 +54,7 @@
   { "id": "variegated-marl", "about": "Red, green and white beds of clay and marl, gypsum among them.", "hardness": 0.1 },
   { "id": "limestone-marl", "about": "Alternating beds of limestone and marl, flysch.", "hardness": 0.4 },
   { "id": "dolerite", "about": "Dark intrusive rock of dykes and sills: dolerite, gabbro.", "hardness": 1.0 },
-  { "id": "felsic-lava", "about": "Light lava: phonolite, trachyte, rhyolite, dacite.", "hardness": 0.9 }
+  { "id": "felsic-lava", "about": "Light lava: phonolite, trachyte, rhyolite, dacite.", "hardness": 0.9 },
+  { "id": "chalk", "about": "Chalk: soft white limestone, bare only in sea cliffs and quarries.", "hardness": 0.35 }
  ]
 }
