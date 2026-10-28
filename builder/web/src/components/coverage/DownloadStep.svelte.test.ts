@@ -260,7 +260,7 @@ describe("direct assembler delivery", () => {
         const refusal = target.querySelector(".warn")?.textContent ?? "";
         expect(refusal).toContain("120 B of browser memory");
         expect(refusal).toContain("100 B");
-        expect(refusal).toContain("Reduce the coverage area");
+        expect(refusal).toContain("Reduce the map selection");
         expect((target.querySelector("button.primary") as HTMLButtonElement).disabled).toBe(true);
         await unmount(component);
     });
@@ -367,7 +367,7 @@ describe("direct assembler delivery", () => {
         };
 
         const cold = await mountWithCells(testCellStore());
-        expect(cold.target.querySelector(".warn")?.textContent ?? "").toContain("Reduce the coverage area");
+        expect(cold.target.querySelector(".warn")?.textContent ?? "").toContain("Reduce the map selection");
         expect(cold.download.disabled).toBe(true);
         await unmount(cold.component);
 
