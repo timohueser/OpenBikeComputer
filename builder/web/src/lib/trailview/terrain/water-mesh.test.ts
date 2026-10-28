@@ -55,11 +55,15 @@ describe('the water mesh of a node', () => {
         expect(triangles.slice(lakes).every(t => t.every(v => v.half === 0))).toBe(true);
     });
 
-    it('draws a river area after the ribbons and the lakes, on the drawn surface, in triangles of 4 mesh cells at most that cover it', () => {
+    it('draws the sea after the lakes at its level, and a river area after both, on the drawn surface, in triangles of 4 mesh cells at most that cover it', () => {
         const strip = { kind: 'river-area', tags: {}, parts: [{ outer: true, xy: new Int32Array([2000, 11000, 8000, 11000, 8000, 13000, 2000, 13000]) }] };
-        const withArea = waterMesh([lake, river, strip] as Feature[], TILE, NODE)!, words = new Float32Array(withArea.vertices), ints = new Int32Array(withArea.vertices);
+        const sea = { kind: 'sea', tags: {}, parts: [{ outer: true, xy: new Int32Array([-9000, 9000, 1000, 9000, 1000, 16000, -9000, 16000]), z: new Float32Array(4) }] };
+        const withArea = waterMesh([lake, river, strip, sea] as Feature[], TILE, NODE)!, words = new Float32Array(withArea.vertices), ints = new Int32Array(withArea.vertices);
         expect(withArea.indices.slice(0, withArea.ribbons + withArea.lakes)).toEqual(mesh.indices);
-        const area = withArea.indices.slice(withArea.ribbons + withArea.lakes);
+        const seas = withArea.indices.slice(withArea.ribbons + withArea.lakes, withArea.ribbons + withArea.lakes + withArea.seas);
+        expect(seas.length).toBeGreaterThan(0);
+        for (const v of seas) expect(words[WATER_VERTEX * v + 2]).toBe(0);
+        const area = withArea.indices.slice(withArea.ribbons + withArea.lakes + withArea.seas);
         let covered = 0;
         for (let t = 0; t < area.length; t += 3) {
             const [a, b, c] = [0, 1, 2].map(k => area[t + k]);

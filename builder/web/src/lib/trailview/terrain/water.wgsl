@@ -4,8 +4,9 @@
 // at its level, a river area on the mesh without its snap (plain_height). A river or a stream is a
 // ribbon on it at its width, at least RIBBON_PIXELS wide, and fades with its share of that width. The
 // shading is the prototype's: a still body, dark from above and a mirror of the sky toward the
-// horizon, with a sun glint; white where a ribbon runs down a steep bed. The haze is that of the
-// ground, from the look in group 2; a ribbon blends in linear light.
+// horizon, with a sun glint; white where a ribbon runs down a steep bed. The sea's body is the deep
+// colour of its region's rules. The haze is that of the ground, from the look in group 2; a ribbon
+// blends in linear light.
 // #include drawn-mesh.wgsl
 // #include stamp-core.wgsl
 // #include ../ground/look.wgsl
@@ -43,6 +44,8 @@ struct WaterIn {
 
 // The body of the water in linear light.
 const BODY: vec3f = vec3f(0.025, 0.098, 0.175);
+// The draw of the sea.
+override SEA: bool = false;
 // A ribbon turns white where its bed falls more steeply than FOAM_LOW along its flow, up to FOAM_MOST at FOAM_HIGH.
 const FOAM_LOW: f32 = 0.4;
 const FOAM_HIGH: f32 = 1.0;
@@ -115,7 +118,11 @@ fn water_colour(in: WaterFragment) -> vec3f {
     let fresnel = 0.02 + 0.98 * pow(clamp(1.0 - dot(-dir, up), 0.0, 1.0), 5.0);
     let sun = sun_share(sun_at(in.lod), in.relative, vec3f(0.0, 0.0, 1.0), LIFT_GROUND);
     let lit = look.ambient.rgb + 0.8 * look.sun_colour.rgb * max(look.sun.z, 0.0) * sun;
-    let body = BODY * lit;
+    var body = BODY;
+    if (SEA) {
+        body = rule(region_at(in.lod), slot_sea()).rgb;
+    }
+    body *= lit;
     var c = mix(body * 0.55, sky(mirrored), min(0.96 * fresnel, 0.9));
     // The sun's path glints in sparks rather than a sheen.
     let glint = max(dot(mirrored, look.sun.xyz), 0.0);

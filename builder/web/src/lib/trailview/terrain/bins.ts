@@ -163,8 +163,11 @@ export interface Line {
 }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
-/** The shapes of a tile: lines and lakes with heights, the river areas, which lie on the drawn surface, the pads under the platforms, and the buildings. */
-export interface Shapes { lines: Line[]; lakes: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Omit<Lake, 'level'>[] }
+/**
+ * The shapes of a tile: lines and lakes with heights, the sea, which shapes no terrain, the river areas,
+ * which lie on the drawn surface, the pads under the platforms, and the buildings.
+ */
+export interface Shapes { lines: Line[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Omit<Lake, 'level'>[] }
 
 /**
  * The numbers of stamp-core.wgsl that the gates of a line and the shore samples of the audit use.
@@ -187,7 +190,7 @@ export function shows({ kind, h, profile }: Line, texel: number): boolean {
 /** The shapes of each decoded tile, made once: the stamps and the water of each of its nodes read them. */
 const shapes = new WeakMap<Feature[], Shapes & { tile: string }>();
 
-/** The roads, paths, rivers and lakes of a tile that have heights, its river areas and its buildings, in world units. */
+/** The roads, paths, rivers, lakes and sea of a tile that have heights, its river areas and its buildings, in world units. */
 export function features(list: Feature[], tile: Node): Shapes {
     const name = `${tile.level}/${tile.x}/${tile.y}`;
     let known = shapes.get(list);
@@ -198,13 +201,13 @@ export function features(list: Feature[], tile: Node): Shapes {
 function shapesOf(list: Feature[], tile: Node): Shapes {
     const scale = unitScale(tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
     const world = (xy: Int32Array, v: number) => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
-    const lines: Line[] = [], lakes: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [], buildings: Shapes['buildings'] = [];
+    const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [], buildings: Shapes['buildings'] = [];
     const area = (parts: Feature['parts']) => ({ rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
     for (const { kind, tags, parts } of list) {
-        if (kind === 'lake') {
+        if (kind === 'lake' || kind === 'sea') {
             const level = parts[0]?.z?.[0];
             if (level === undefined || Number.isNaN(level)) continue;
-            lakes.push({ level, ...area(parts) });
+            (kind === 'lake' ? lakes : seas).push({ level, ...area(parts) });
             continue;
         }
         if (kind === 'river-area') {
@@ -257,7 +260,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     }
     junctionPlanes(lines);
     abutments(lines);
-    return { lines, lakes, areas, pads, buildings };
+    return { lines, lakes, seas, areas, pads, buildings };
 }
 
 /**
