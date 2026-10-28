@@ -246,7 +246,8 @@ with these rules:
 the canopy height, the cover, a class of the stems per hectare and the leaf type. It holds no tree
 position: the engine places trees that match these values. The layer is the optional planner layer
 `trailview-canopy` of [obc-data.md](obc-data.md). Its bake, `tools/planner_trailview_canopy.py`,
-reads the tiles of the prepared source [`forest`](obc-data.md#forest).
+reads the zoom 12 tiles out of the blocks of the prepared source [`forest`](obc-data.md#forest),
+one window each.
 
 | Field | Value |
 | --- | --- |
@@ -258,7 +259,7 @@ reads the tiles of the prepared source [`forest`](obc-data.md#forest).
 
 Cell (column, row) of tile 12/x/y covers that cell of the 256 × 256 grid of the tile. Row 0 is the
 north edge and column 0 is the west edge. A tile that the archive does not hold is unknown: no
-`forest` lacks it. The release packs the archive in PMTiles per zoom 11 parent:
+cell of its window in `forest` is known. The release packs the archive in PMTiles per zoom 11 parent:
 `maps/tiles/trailview-canopy/<z>-<x>-<y>.pmtiles`, with the TileJSON `maps/trailview-canopy.json`.
 
 | Metadata | Value |
