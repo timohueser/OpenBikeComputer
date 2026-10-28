@@ -157,8 +157,8 @@ subject in the selected coverage: an object with a `wikidata` or `wikipedia` tag
 | `index.json` | `shards`: `path`, `sha256`, `bytes` and `facts` of each shard; `counts`: the subjects that the run read, those in `common`, those without a resolved link, the unresolved work of each kind, and the compiles of the producer that failed (`photo_compile_failures`) |
 
 The version manifest records the coverage, the article languages and `publish_text` of its run.
-An earlier fact that a version keeps keeps its languages; without published text, it keeps no
-article text. Regional preparation selects
+An earlier fact that a version keeps keeps its languages, so a run with fewer languages keeps the
+earlier articles; a newer revision is never replaced by an older one. Regional preparation selects
 subjects from the regional OSM extract before it asks Commons. An article in an excluded
 language is a `missing` fact with `reason: "language_not_prepared"`. This means that the version
 excludes it, not that Wikipedia lacks it. It supplies no text or lead-image candidate. Subject

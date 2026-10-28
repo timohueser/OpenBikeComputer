@@ -1661,7 +1661,7 @@ is compact JSON with the keys of each object in byte order:
 | `files` | Sorted by `path`. A path is relative, and is not `manifest.json` |
 | `reused` | Absent, or each path of `files` that an earlier version of the same source holds, with that version: the file is at `<that version>/<path>`. A version that extends the one before keeps its files without a copy |
 | `scope` | `null` for every place that the source covers, or `{"region", "definitions"}` as in the [settings of a target](#settings-of-a-target) |
-| `extends` | Absent, or the scopes of the earlier versions that this version extends, oldest first: the version keeps their files outside its own `scope` |
+| `extends` | Absent, or the scopes of the earlier versions that this version extends, oldest first: the version keeps their content, as its producer says. A tile producer keeps their files outside its own `scope`; [`wiki`](#wiki) rewrites their shards with one form of each fact |
 | `languages` | Article language codes in supported order, each once; empty for a source without articles |
 | `publish_text` | Absent, or the `publish_text` of the row in `data/sources.toml` |
 | `licence`, `attribution` | The licence and the credit of the row in `data/sources.toml` |
@@ -2028,12 +2028,15 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
 - A version of a region extends the newest complete version of `wiki` in the home, in the same
   format, and the manifest names the scopes of that version in `extends`. The version holds each
   shard of the version before, and each shard of its run. A shard of both holds the facts of the
-  run and the earlier facts. An earlier fact whose kind and key the catalog of the run holds takes
-  the bytes of the run, in every shard, so a fact has one form in the version. Another earlier
-  fact keeps its bytes and its asset, also its languages, but without article text when
-  `publish_text` is `false`. An earlier shard that this changes in no way stays in `reused`. So
-  `common.tar.zst` keeps earlier facts until a version of everything replaces them. A version of
-  everything extends no version.
+  run and the earlier facts. A fact has one form in every shard of the version: the form of the
+  run, unless the run lacks the fact, has an older revision of it, or has it only as an article
+  of a language that the run did not prepare. Then the fact keeps its earlier bytes and its asset,
+  also its languages. A shard writes its facts in the order of kind and key, and an earlier shard
+  whose members do not change stays in `reused`. So `common.tar.zst` keeps earlier facts until a
+  version of everything replaces them. A version of everything extends no version.
+- An extension whose row has another `publish_text` than the version before refuses before its
+  first step: the kept articles would not match the manifest. The fix is the `publish_text` of the
+  version before, or a version of everything. Without published text, no shard has article text.
 - The run moves the shards into the home in batches of 64, then `index.json`. A resume names the
   shards in the home to `shards`, which does not write them again.
 - With `publish_text = false`, each article in the shards is a fact with its key and the status
