@@ -13,7 +13,6 @@ The rules that the TrailView ground layers index and that the engine reads. The 
 | `kinds.json` | The feature kinds of `planner/trailview-features`: [specs/trailview-features.md](../../specs/trailview-features.md) |
 | `ground.json` | The ground sources of the material and the lithology, in the order they apply: [specs/trailview-tiles.md](../../specs/trailview-tiles.md#ground-sources) |
 | `roads.json` | The rules per class of road and track, from the most important down: the grade and smoothing of the road solver, the stamp profile of the engine |
-| `overlays/<region>.json` | Look keys of the engine per region, merged over the region's `look` |
 
 ## Check
 

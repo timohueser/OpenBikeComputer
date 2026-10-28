@@ -27,8 +27,6 @@ CASES = [
      'regions/alps.json: look.ramps.grass[0]: "#fff" is not a #rrggbb colour'),
     ("regions/alps", ["look", "bare_luma"], [0.1, 0.2], "regions/alps.json: look.bare_luma: [0.1,0.2] is not a list of 4"),
     ("regions/world", ["leaf"], "deciduous", 'regions/world.json: leaf: "deciduous" is not one of "needleleaved", "broadleaved", "mixed"'),
-    ("overlays", ["atlantis"], {"look": {}}, "overlays/atlantis.json: has no regions/atlantis.json"),
-    ("overlays", ["alps"], {"look": {"banks": "#000000"}}, "overlays/alps.json: look.banks: is an unknown key"),
     ("materials", ["materials", 9, "clumps"], 2, "materials.json: materials[9].clumps: 2 is not a number from 0 to 1"),
     ("styles/trullo", ["roof"], "dome", 'styles/trullo.json: roof: "dome" is not one of "cone", "flat"'),
     # Not the prototype's: the engine draws each model that a pack names, also one that a child pack inherits.

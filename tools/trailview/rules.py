@@ -25,8 +25,6 @@ COVER_ORDER = ("tree", "shrub", "grass", "crop", "built", "bare", "snow", "water
 SEASONS = ("winter", "spring", "summer", "autumn")
 RAMP_COVERS = (*(cover for cover in COVER_ORDER if cover != "tree"), "needle", "broad")
 PLACE = re.compile(r"^([a-z]{2}(-[a-z0-9]{1,3})?|\*)$")
-# The look keys of the engine that overlays/ may set, as a key table like LOOK's below.
-OVERLAY_LOOK = {}
 # A region id is one byte of the region tiles, and 255 is no data there.
 MAX_REGION_IDS = 255
 # A material code is 6 bits of the ground tiles (specs/trailview-tiles.md#ground).
@@ -209,7 +207,7 @@ def tables(materials):
                         "shutter": listed(colour), "plinth": lambda v, p: (listed(colour) if isinstance(v, list) else colour)(v, p),
                         "chimney": colour}),
     })
-    return region, pack, style, obj({"look": obj(OVERLAY_LOOK)})
+    return region, pack, style
 
 
 def files(root=RULESET):
@@ -237,7 +235,7 @@ def load(root=RULESET):
     return {
         "materials": vocabulary, "ground": read(root, "ground.json"), "ecoregions": read(root, "ecoregions.json")["regions"],
         "places": places["countries"] + places["subdivisions"],
-        "regions": folder("regions"), "packs": folder("packs"), "styles": folder("styles"), "overlays": folder("overlays"),
+        "regions": folder("regions"), "packs": folder("packs"), "styles": folder("styles"),
     }
 
 
@@ -334,7 +332,7 @@ def validate(ruleset):
     ids["tags"] = {tag for entry in vocabulary["materials"] if isinstance(entry.get("tags"), list)
                    for tag in entry["tags"] if isinstance(tag, str)}
     out += ground_problems(ruleset["ground"], ids)
-    region_check, pack_check, style_check, overlay_check = tables(ids)
+    region_check, pack_check, style_check = tables(ids)
     regions, packs, styles = ruleset["regions"], ruleset["packs"], ruleset["styles"]
     add = lambda file, problems: out.extend(f"{file}: {problem}" for problem in problems)
 
@@ -364,9 +362,6 @@ def validate(ruleset):
 
     if len(styles) > MAX_STYLES:
         out.append(f"styles/: {len(styles)} house styles, more than the {MAX_STYLES} that the engine's style table holds")
-    for name, overlay in ruleset["overlays"].items():
-        file = f"overlays/{name}.json"
-        add(file, overlay_check(overlay, "") if name in regions else [f"has no regions/{name}.json"])
     # The packs' trees and the places resolve through the chains, which must be sound first.
     return out or model_problems(regions, packs) + patch_problems(regions) + place_problems(ruleset)
 
@@ -469,7 +464,6 @@ def bundle(ruleset):
         "regions": {name: plain(data) for name, data in ruleset["regions"].items()},
         "packs": {name: plain(data) for name, data in ruleset["packs"].items()},
         "styles": {name: plain(data) for name, data in ruleset["styles"].items()},
-        "overlays": ruleset["overlays"],
     }
     regions = {
         "format": FORMAT, "ids": ids,

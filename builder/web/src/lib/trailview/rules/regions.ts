@@ -195,7 +195,7 @@ function entriesOf<T extends { model: string }>(packs: Record<string, Record<str
 /** The resolved regions of a `rules.json`; a chain that misses a file or loops throws. */
 export function rulesOf(json: {
     format: number; materials: Vocabulary; ids: [string, string][]; regions: Record<string, Record<string, unknown> & { extends?: string }>;
-    overlays?: Record<string, { look?: Record<string, unknown> }>; packs?: Record<string, Record<string, unknown>>; styles?: Record<string, Record<string, unknown>>;
+    packs?: Record<string, Record<string, unknown>>; styles?: Record<string, Record<string, unknown>>;
 }): Rules {
     if (json.format !== 3) throw new Error(`rules.json has format ${json.format}, not 3.`);
     const table = json.regions;
@@ -215,8 +215,8 @@ export function rulesOf(json: {
         const resolved = files.reduce<Record<string, unknown>>((out, { extends: _, ...own }) => merge(out, own), {});
         // A cover's ramp comes whole from the nearest region that names it.
         const ramps = Object.assign({}, ...files.map(file => (file.look as Look | undefined)?.ramps));
-        const overlaid = chain.reduce((look, name) => merge(look, json.overlays?.[name]?.look ?? {}), resolved.look as Record<string, unknown>);
-        const look = { ...overlaid, ramps, roadLine: local(overlaid.roadLine, place) } as Look;
+        const merged = resolved.look as Record<string, unknown>;
+        const look = { ...merged, ramps, roadLine: local(merged.roadLine, place) } as Look;
         return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack, place),
             trees: entriesOf<TreeRule>(json.packs, resolved.pack, 'trees'), herds: entriesOf<HerdRule>(json.packs, resolved.pack, 'herds'),
             ground: entriesOf<GroundRule>(json.packs, resolved.pack, 'ground'), orchard: orchardOf(json.packs, resolved.pack) };

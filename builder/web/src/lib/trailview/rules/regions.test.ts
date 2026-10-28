@@ -24,7 +24,6 @@ describe('rulesOf', () => {
                 'alps.insubric': { extends: 'alps', look: { roadLine: { 'it-21': '#ffffff', '*': '#d6d4cc' }, ramps: { grass: ['#333333', '#444444', '#555555'] } } },
                 world: { leaf: 'mixed', look },
             },
-            overlays: { alps: { look: { mistTop: 900 } } },
         });
         const insubric = rules.regions[1];
         expect(insubric.chain).toEqual(['world', 'alps', 'alps.insubric']);
@@ -33,7 +32,6 @@ describe('rulesOf', () => {
         expect(insubric.look.grade).toEqual({ shadow: [0, 0, 0], light: [0, 0, 0], saturation: 1.2 });
         expect(insubric.look.ramps).toEqual({ grass: ['#333333', '#444444', '#555555'], needle: { summer: ['#010101', '#020202', '#030303'] } });
         expect(insubric.look.roadLine).toBe('#d6d4cc');
-        expect(insubric.look.mistTop).toBe(900);
     });
 
     it('gives a region id the value of its place, else of its country, else "*"', () => {
