@@ -1486,8 +1486,9 @@ fn the_displayed_distance_is_the_ground_length_not_the_weighted_g() {
 /// Over [`pass_vs_valley`] only the climb weight moves. The corridors tie at `w = 5`, so the pass
 /// wins below it and the valley above it, and the displayed distance stays the ground length. A
 /// cost model that folded the climb term inside the shift, scaled it by the way-kind multiplier, or
-/// charged both directions of an edge would miss the crossover. At `w = 255` the pass leg's climb
-/// term alone passes `u16::MAX`: a saturated `g` must clamp to unattractive, never wrap to cheap.
+/// charged both directions of an edge would miss the crossover. At `w = 167` the pass leg's cost
+/// passes `u16::MAX` by less than the valley costs: a saturated `g` must clamp to unattractive, never
+/// wrap to cheap.
 #[test]
 fn the_climb_weight_steers_between_the_pass_and_the_valley() {
     let (up, down) = obc_network::nav::integrate_edge_ascent(&[at(0, 0), at(1, 1)], &mut Hillside);
@@ -1496,10 +1497,11 @@ fn the_climb_weight_steers_between_the_pass_and_the_valley() {
         "the pass leg bakes about {ROW_CLIMB_M} m of ascent, baked {up}"
     );
     assert_eq!(down, 0, "and nothing coming back down: ascent is directional");
-    assert!(ROW_CLIMB_M * 255 > u16::MAX as u32, "the w = 255 row must actually reach saturation");
+    let wrapped = (PASS_LEG + 167 * ROW_CLIMB_M) % (u16::MAX as u32 + 1) + PASS_LEG;
+    assert!(wrapped < 2 * VALLEY_LEG, "the w = 167 row must be one a wrapped g would get wrong");
 
     let graph = pass_vs_valley();
-    for (climb_weight, over_the_pass) in [(0, true), (4, true), (6, false), (10, false), (255, false)] {
+    for (climb_weight, over_the_pass) in [(0, true), (4, true), (6, false), (10, false), (167, false)] {
         let bytes = map_with_terrain(&graph, &[climb_profile("w", climb_weight)], &mut Hillside);
         assert_eq!(plan_corridor(&bytes), (3148, over_the_pass), "climb weight {climb_weight}");
     }
