@@ -314,6 +314,11 @@ mod tests {
             schema("`router`", generator.subschema_for::<router_cli::Router>()),
             schema("`unlock`", generator.subschema_for::<unlock_cli::Unlocked>()),
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
+            schema("`sources --layer`", generator.subschema_for::<crate::cli::holding::SourceLayers>()),
+            schema(
+                "`sources --region`, `sources --box`",
+                generator.subschema_for::<crate::cli::holding::RegionSources>(),
+            ),
             schema(
                 "`source refresh`, `source copy`, `serve --detach`, `deploy WHAT --expect`, `r2 legacy --delete`",
                 generator.subschema_for::<Detached>(),
