@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import TABLE from '../../../../../../data/trailview/kinds.json' with { type: 'json' };
 import { EXTENT, type Feature } from '../stream/features';
+import { ANCHOR_WORDS, metresBetween } from '../structures/anchored';
 import { OWNER, structureMeshes } from '../structures/node';
 import { KINDS } from '.';
 import { facing, type Build, type Placement } from './kind';
@@ -22,6 +23,17 @@ describe('kinds', () => {
         expect(triangles(wall(1000 - EXTENT, 300), b, 2 * b.x)).toBe(2);
         expect((triangles(wall(1000, EXTENT + 300), a, 2 * a.x) - 2) % 6).toBe(0);
         expect(triangles(wall(1000, EXTENT + 300), a, 2 * a.x + 1)).toBe(0);
+    });
+
+    it('hangs the cable of a via ferrata from bolts at most 3 m apart, in the node that owns each segment', () => {
+        // A via ferrata from the west half of a tile into its east half: one node of each.
+        const a = { level: 14, x: 8600, y: 5800 }, west = { level: OWNER, x: 2 * a.x, y: 2 * a.y };
+        const feature: Feature[] = [{ kind: 'path', tags: { highway: 'via_ferrata' }, geometry: 'line', parts: [{ outer: false, xy: new Int32Array([1000, 100, EXTENT - 1000, 100]), z: null }] }];
+        const anchors = (x: number) => (structureMeshes(feature, a, { ...west, x }).anchors?.byteLength ?? 0) / (ANCHOR_WORDS * 4);
+        const metres = metresBetween([0, a.y * 2 ** 16], [(EXTENT - 2000) * 4, a.y * 2 ** 16]);
+        // The west node hangs every span; the east node sets the bolt at the end.
+        expect(anchors(west.x)).toBe(Math.ceil(metres / 3));
+        expect(anchors(west.x + 1)).toBe(1);
     });
 
     it('stands a model along the nearest way within reach, its front toward it', () => {
