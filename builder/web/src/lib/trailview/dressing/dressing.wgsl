@@ -5,9 +5,9 @@
 // Herds: one workgroup per herd cell of HERD_SHIFT. A cell holds the groups of each herd of the region
 // at its middle, as many per area as the pack's groups per eye's circle of 400 m; a group stands where
 // its middle's material is one that the herd grazes, its animals about it on such material too.
-// Rocks: one thread per point of a grid of ROCK_SHIFT, jittered: a rock stands on rough or rocky
-// ground as the region's outcrops, the slope and the hardness of the rock under it say.
+// Rocks: one thread per point of the grid of rocks.wgsl.
 // #include ../terrain/drawn-mesh.wgsl
+// #include rocks.wgsl
 // #include ../ground/look.wgsl
 // #include ../instances/emit.wgsl
 
@@ -20,9 +20,10 @@ struct Dressing {
     // The first of the rock models: SLABS slabs, then as many boulders.
     rock_model: u32,
     unused: u32,
-    // Herds stand within x metres, rocks within y.
-    reach: vec2f,
-    unused2: vec2f,
+    // Herds stand within this many metres.
+    herd_reach: f32,
+    unused2: f32,
+    unused3: vec2f,
 }
 
 // A herd of a region, as dressing.ts writes it: its first model and coats, its groups per eye's circle,
@@ -39,9 +40,8 @@ struct Herd {
 @group(0) @binding(8) var<uniform> dressing: Dressing;
 @group(0) @binding(9) var<storage, read> herds: array<Herd>;
 
-// Units along a herd cell edge: about 420 m at 47° N; and along a rock point's cell: about 3.3 m.
+// Units along a herd cell edge: about 420 m at 47° N.
 const HERD_SHIFT: u32 = 14u;
-const ROCK_SHIFT: u32 = 7u;
 // Herds per region, groups of a herd per cell at most, and the area of an eye's circle of 400 m.
 const HERDS: u32 = 4u;
 const GROUPS: u32 = 3u;
@@ -49,16 +49,8 @@ const CIRCLE_M2: f32 = 502655.0;
 // A group of 8 spreads over SPREAD_M; nothing stands within CLEAR_M of the eye.
 const SPREAD_M: f32 = 14.0;
 const CLEAR_M: f32 = 6.0;
-// Rocks: their heights, their kinds, and the slope past which no boulder lies.
-const ROCK_HEIGHT_M: vec2f = vec2f(0.25, 1.3);
-// The ground in square metres that a rock point stands for, whatever its cell's size at the eye's
-// latitude, so rocks per square metre are the same everywhere.
-const ROCK_POINT_M2: f32 = 12.0;
-// A rock grows from nothing at the reach to its full size within 0.5 to 1 times ROCK_GROW_M of it, by
-// its hash: no ring of rocks shows where they start.
-const ROCK_GROW_M: f32 = 100.0;
+// Rocks: their kinds.
 const SLABS: u32 = 3u;
-const STEEPEST: f32 = 0.85;
 // Things keep this far off a road, a path or a track.
 const ROAD_CLEAR_M: f32 = 1.0;
 
@@ -90,7 +82,7 @@ fn herds_of(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index
             }
             let middle = corner + vec2i(vec2f(unit_float(mix_bits(h + 1u)), unit_float(mix_bits(h + 2u))) * f32(size));
             let centre = lod_space(vec2f(middle - surface.anchor));
-            if (length(centre) > dressing.reach.x || !holds(herd.grazes, finest_cell(centre).r)) {
+            if (length(centre) > dressing.herd_reach || !holds(herd.grazes, finest_cell(centre).r)) {
                 continue;
             }
             let count = u32(herd.size.x + unit_float(mix_bits(h + 3u)) * (herd.size.y - herd.size.x + 1.0));
@@ -121,11 +113,11 @@ fn rocks_of(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let point = dressing.rock_origin + vec2i(id.xy);
-    let h = mix_bits3(point.x, point.y, 77u);
-    let at = (point << vec2u(ROCK_SHIFT)) + vec2i(vec2f(unit_float(mix_bits(h + 1u)), unit_float(mix_bits(h + 2u))) * f32(1 << ROCK_SHIFT));
+    let h = rock_hash(point);
+    let at = rock_at(point, h);
     let s = lod_space(vec2f(at - surface.anchor));
     let d = length(s);
-    if (d > dressing.reach.y || d < CLEAR_M) {
+    if (d > ROCK_REACH_M || d < CLEAR_M) {
         return;
     }
     // The cheap tests first: the view on the level's ground, then the ground's rules, then the slope.
@@ -134,32 +126,27 @@ fn rocks_of(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let cell = cell_at(s, u32(ceil(lod(s))));
-    let kinds = rule(cell.b, slot_kinds() + i32(cell.r));
-    let outcrops = rule(cell.b, slot_cliff() + 3).x;
-    // Rough ground or exposed rock: kinds.a rough, kinds.z rocky.
-    if ((kinds.a == 0.0 && kinds.z == 0.0) || outcrops <= 0.0) {
-        return;
-    }
-    let hardness = rule(cell.b, slot_hardness() + i32(cell.g)).x;
-    // As the prototype's near field: hard rock breaks through even on level ground; mapped rock shows as rocks.
-    let mapped = 0.9 * kinds.z * smoothstep(0.0, 0.6, outcrops) * smoothstep(0.2, 0.6, hardness);
-    let side = f32(1 << ROCK_SHIFT) * surface.unit;
-    let pick = unit_float(mix_bits(h + 3u)) * ROCK_POINT_M2 / (0.55 * side * side);
-    if (pick > max(outcrops * (0.3 + 1.4 * hardness), mapped)) {
+    let pick = rock_pick(point, h);
+    if (pick > rock_density(cell, -1.0)) {
         return;
     }
     let n = drawn_normal(s);
     let slope = sqrt(max(1.0 - n.z * n.z, 0.0)) / max(n.z, 0.1);
-    let rocky = max(outcrops * (0.3 + 1.4 * hardness) * clamp(1.4 * slope + 0.6 * (hardness - 0.5) - 0.05, 0.0, 1.0), mapped);
-    if (slope > STEEPEST || pick > rocky || kept_off(s, ROAD_CLEAR_M)) {
+    if (pick > rock_density(cell, slope) || kept_off(s, ROAD_CLEAR_M)) {
         return;
     }
     let ground = stand_height(s, at);
     if (!known(ground)) {
         return;
     }
-    let shape = select(SLABS + mix_bits(h + 4u) % SLABS, mix_bits(h + 5u) % SLABS, unit_float(mix_bits(h + 6u)) < 0.7);
-    let grow = min((dressing.reach.y - d) / (ROCK_GROW_M * (0.5 + 0.5 * unit_float(mix_bits(h + 10u)))), 1.0);
-    let tall = grow * (ROCK_HEIGHT_M.x + pow(unit_float(mix_bits(h + 7u)), 2.0) * (ROCK_HEIGHT_M.y - ROCK_HEIGHT_M.x));
-    emit(dressing.rock_model + shape, s, ground, tall, 6.2831853 * unit_float(mix_bits(h + 8u)), 1.0, 0.85 + 0.3 * unit_float(mix_bits(h + 9u)), 1.0);
+    // The distance and the end of the instances' tier (tier_end of emit.wgsl), the same in the eye's
+    // view and the sun's. A rock under half a pixel tall shows nothing, yet takes a slot of the pool and
+    // shimmers.
+    let far = length(render_at(s, ground));
+    let tall = rock_height(h);
+    if (far > rock_end(ROCK_REACH_M * params.detail, h) || tall < 0.5 * frame.pixel * far) {
+        return;
+    }
+    let shape = select(SLABS + mix_bits(h + 4u) % SLABS, mix_bits(h + 5u) % SLABS, rock_slab(h));
+    emit(dressing.rock_model + shape, s, ground, tall, rock_yaw(h), 1.0, 0.85 + 0.3 * unit_float(mix_bits(h + 9u)), 1.0);
 }

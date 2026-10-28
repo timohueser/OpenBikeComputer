@@ -1,5 +1,5 @@
 // What a producer of instances includes: `emit` puts one instance on the drawn surface into the draw of
-// its model's tier, and the hashes of a place. A producer is a compute pass that finds its instances and
+// its model's tier, with the hashes of a place (hash.wgsl). A producer is a compute pass that finds its instances and
 // stands them on `stand_height` (drawn-mesh.wgsl); instances.ts sorts what the producers stage into one
 // list per draw. Group 0 holds bindings 0 to 6; a
 // producer's own bindings start at 8. Include it with `// #include ../instances/emit.wgsl`.
@@ -7,6 +7,7 @@
 // #include ../terrain/drawn-mesh.wgsl
 // #include ../terrain/view.wgsl
 // #include ../vegetation/phenology.wgsl
+// #include hash.wgsl
 
 // A model, as instances.ts writes it.
 struct Model {
@@ -113,20 +114,6 @@ const SINK_STEP: f32 = 0.25;
 // The terrain level whose height gives a tree its species and phase (105 m at 47° N), the same at every
 // distance. Near the eye the pools hold finer terrain pages only: there a tree takes the drawn ground.
 const BAND_LEVEL: u32 = 12u;
-// The hashes of the producers: a place's values come from whole world cells, the same at every distance.
-fn mix_bits(a: u32) -> u32 {
-    var x = a * 747796405u + 2891336453u;
-    x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
-    return (x >> 22u) ^ x;
-}
-
-fn mix_bits3(x: i32, y: i32, z: u32) -> u32 {
-    return mix_bits(u32(x) ^ mix_bits(u32(y) ^ mix_bits(z)));
-}
-
-fn unit_float(h: u32) -> f32 {
-    return f32(h >> 8u) / 16777216.0;
-}
 
 // The NDC span of a sphere in front of the eye along the clip axis `row`, `w` the clip w row: the two
 // planes through the eye that touch it, a − k·b = ±r·|A − k·B| for the rows' xyz A, B and values a, b.
