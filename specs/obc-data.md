@@ -375,12 +375,16 @@ producer of [`wiki`](#wiki) reads them.
 - The `corine-land-cover` file is `U2018_CLC2018_V2020_20u1.tif`, the CORINE Land Cover 2018
   raster of Europe. The capture orders the prepackaged `file` of the CLMS `dataset` through the
   [CLMS download API](https://eea.github.io/clms-api-docs/download.html), with an access token
-  that the service key of the credential signs for. It polls the order every 30 seconds for at
-  most 6 hours, downloads the zip archive of the finished order without the token, and takes the
-  file from that archive or from a zip archive in it. The archive stays in the work directory
-  until the run succeeds, so a failed run resumes without a new order.
+  that the service key of the credential signs for. An API call that answers with a redirect
+  fails. It polls the order every 30 seconds for at most 6 hours, downloads the zip archive of the
+  finished order from its `https://` link without the token, and takes the file from that archive
+  or from a zip archive in it. A download shorter than its `Content-Length` is tried again. A
+  complete archive stays in the work directory until the run succeeds, so a run that fails after
+  the download resumes without a new order. An archive that is not a zip is deleted, and the next
+  run orders again.
 - `ground` is the first 12 hex digits of the SHA-256 of the canonical JSON of the keys `protocol`,
-  `layer`, `field` and `sort` of the source's entry, and of its `legend` for `arcgis-features`. The fetch refuses a digest that the entry does not have.
+  `layer`, `field` and `sort` of the source's entry, and of its `legend` for `arcgis-features`.
+  The fetch refuses a digest that the entry does not have.
 - An `arcgis-features` or `wfs` file is `features-NNNNN.geojson`: a page of the features that
   meet `bbox`, in EPSG:4326 with the source's `field`. `arcgis-features` asks only for the
   features whose `field` the legend may name, pages by object id, and asks again for the ids that

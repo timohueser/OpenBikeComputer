@@ -313,7 +313,7 @@ def ground_problems(ground, ids):
                 out.append(f"{at}.values: only a raster source has values")
             if isinstance(found.get("values"), dict):
                 out += [f"{at}.values: {said(key)} is not a byte value" for key in found["values"]
-                        if not (key.isdigit() and int(key) < 256)]
+                        if not (re.fullmatch(r"0|[1-9][0-9]{0,2}", key) and int(key) < 256)]
             if protocol in sources.CAPTURED and fetch.get("kind") != "capture":
                 out.append(f"{at}.protocol: {protocol} is captured, and {found['source']} is not a capture source")
     return [f"ground.json: {problem}" for problem in out]

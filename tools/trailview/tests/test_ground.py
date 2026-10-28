@@ -144,11 +144,15 @@ def osm_file(path, areas):
     return written.rename(path)
 
 
+# The 44 classes of CLC in the order of their codes; the CORINE raster stores the nth as grid code n.
+CLC = [111, 112, 121, 122, 123, 124, 131, 132, 133, 141, 142, 211, 212, 213, 221, 222, 223, 231, 241, 242, 243, 244,
+       311, 312, 313, 321, 322, 323, 324, 331, 332, 333, 334, 335, 411, 412, 421, 422, 423, 511, 512, 521, 522, 523]
+
+
 def corine(path, bounds, classes):
     """A CORINE raster over the bounds as upstream has it: the grid codes of classes(x, y) at the pixel
     centres in EPSG:3035 at 100 m, int8 with no data -128."""
-    grid = {clc: int(value) for value, clc in next(entry for entry in GROUND["material"]["sources"]
-                                                   if entry["source"] == "corine-land-cover")["values"].items()}
+    grid = {str(clc): n for n, clc in enumerate(CLC, 1)}
     x0, y0, x1, y1 = Transformer.from_crs("EPSG:4326", "EPSG:3035", always_xy=True).transform_bounds(*bounds)
     x0, y0, x1, y1 = math.floor(x0 / 100) * 100, math.floor(y0 / 100) * 100, math.ceil(x1 / 100) * 100, math.ceil(y1 / 100) * 100
     x = x0 + (np.arange(round((x1 - x0) / 100)) + 0.5) * 100
@@ -161,6 +165,10 @@ def corine(path, bounds, classes):
 
 
 class MaterialTest(unittest.TestCase):
+    def test_the_corine_values_are_the_clc_codes_of_the_grid_codes(self):
+        entry = next(entry for entry in GROUND["material"]["sources"] if entry["source"] == "corine-land-cover")
+        self.assertEqual(entry["values"], {str(n): str(clc) for n, clc in enumerate(CLC, 1)})
+
     def test_each_source_of_the_chain_refines_only_what_it_names_more_precisely_and_outside_is_no_data(self):
         west, south, east, north = geo.tile_bounds(Z, X, Y)
         mid_lon, mid_lat = (west + east) / 2, (south + north) / 2

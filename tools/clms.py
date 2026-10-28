@@ -18,7 +18,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.error import HTTPError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 KEY = Path("~/.config/openbikecomputer/clms-key.json")
 API = "https://land.copernicus.eu/api"
@@ -79,17 +79,42 @@ def grant(key, now):
     return (signing + b"." + b64url(sign(key["private_key"], signing))).decode()
 
 
-def call(request, read=lambda response: response.read()):
+class Unredirected(HTTPRedirectHandler):
+    """Fails on a redirect, which urllib follows with the Authorization header, also to another host,
+    and after which it sends a POST as a GET."""
+
+    def redirect_request(self, *_):
+        return None
+
+
+# The opener of the calls to the API and to the token endpoint.
+API_OPENER = build_opener(Unredirected)
+
+
+def said(error):
+    """`: TEXT` of the message fields of a JSON error answer. Only these fields: another part of the
+    body could hold a grant."""
+    try:
+        body = json.loads(error.read()) if isinstance(error, HTTPError) else None
+    except (OSError, ValueError):
+        return ""
+    fields = ("msg", "message", "error", "error_description")
+    text = [str(body[field]) for field in fields if isinstance(body, dict) and field in body]
+    return f": {'; '.join(text)}" if text else ""
+
+
+def call(request, read=lambda response: response.read(), opener=None):
     """`read` of the answer to `request`, by default its body. A failed or cut transfer and a 5xx or
-    429 answer are tried again, TRIES in all; another 4xx answer fails at once."""
+    429 answer are tried again, TRIES in all; another 4xx answer, or a redirect of `opener`, fails at
+    once."""
     request.add_header("User-Agent", "OpenBikeComputer/1.0")
     for attempt in range(TRIES):
         try:
-            with urlopen(request, timeout=300) as response:
+            with (opener.open if opener else urlopen)(request, timeout=300) as response:
                 return read(response)
         except (OSError, http.client.HTTPException) as error:
             if isinstance(error, HTTPError) and error.code < 500 and error.code != 429 or attempt == TRIES - 1:
-                raise
+                raise RuntimeError(f"{request.full_url}: {error}{said(error)}") from error
             print(f"{request.full_url}: {error}; again in {2 << attempt} s", file=sys.stderr, flush=True)
             time.sleep(2 << attempt)
 
@@ -104,13 +129,13 @@ class Session:
         if self.token is None or time.monotonic() - self.since > TOKEN_S:
             form = urlencode({"grant_type": GRANT_TYPE, "assertion": grant(self.key, int(time.time()))}).encode()
             answer = call(Request(self.key["token_uri"], data=form, headers={
-                "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"}))
+                "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"}), opener=API_OPENER)
             self.token, self.since = json.loads(answer)["access_token"], time.monotonic()
         headers = {"Accept": "application/json", "Authorization": f"Bearer {self.token}"}
         if body is not None:
             headers["Content-Type"] = "application/json"
         data = None if body is None else json.dumps(body).encode()
-        return json.loads(call(Request(f"{API}/{path}", data=data, headers=headers)))
+        return json.loads(call(Request(f"{API}/{path}", data=data, headers=headers), opener=API_OPENER))
 
 
 def order(session, dataset, file):
@@ -124,6 +149,8 @@ def order(session, dataset, file):
         status = session.json(f"@datarequest_status_get?TaskID={task}")
         state = status.get("Status")
         if state == "Finished_ok":
+            if not status["DownloadURL"].startswith("https://"):
+                raise RuntimeError(f"CLMS order {task} links no https URL: {status['DownloadURL']}")
             return status["DownloadURL"]
         if state not in WAITING:
             raise RuntimeError(f"CLMS order {task} is {state}: {status.get('Message')}")
@@ -133,14 +160,18 @@ def order(session, dataset, file):
         time.sleep(POLL_S)
 
 
-def whole(target, stream):
-    """Write `stream` to `target` whole and on disk, so a resumed capture keeps only whole files."""
-    part = target.with_name(target.name + ".part")
+def whole(target, stream, size=None):
+    """Write `stream` to `target` whole and on disk, so a resumed capture keeps only whole files. A
+    stream that ends before `size` bytes raises HTTPException, which `call` tries again."""
+    part, written = target.with_name(target.name + ".part"), 0
     with open(part, "wb") as out:
         while chunk := stream.read(1 << 20):
             out.write(chunk)
+            written += len(chunk)
         out.flush()
         os.fsync(out.fileno())
+    if size is not None and written != size:
+        raise http.client.HTTPException(f"{target.name}: {written} of {size} bytes")
     part.replace(target)
     print(f"{target.name}: {target.stat().st_size} bytes", file=sys.stderr, flush=True)
 
@@ -166,16 +197,23 @@ def extract(archive, member, target, work):
 
 
 def fetch(dataset, file, member, work, out, key=KEY):
-    """The member of the archive of the prepackaged file into `out`. The archive stays in `work`,
-    so a failed run resumes without a new order."""
+    """The member of the archive of the prepackaged file into `out`. A downloaded archive stays in
+    `work`, so a run that fails after the download resumes without a new order."""
     target, archive = out / member, work / "order.zip"
     if target.exists():
         return
     if not archive.exists():
         url = order(Session(json.loads(key.expanduser().read_text())), dataset, file)
+        length = lambda response: int(response.headers["Content-Length"]) if "Content-Length" in response.headers else None
         # Without the token: the link names the order itself.
-        call(Request(url), lambda response: whole(archive, response))
-    if not extract(archive, member, target, work):
+        call(Request(url), lambda response: whole(archive, response, length(response)))
+    try:
+        found = extract(archive, member, target, work)
+    except zipfile.BadZipFile:
+        # The next run downloads it again.
+        archive.unlink()
+        raise
+    if not found:
         raise RuntimeError(f"no archive of the order of {file} has {member}")
 
 

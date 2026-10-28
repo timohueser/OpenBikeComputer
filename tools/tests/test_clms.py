@@ -50,6 +50,10 @@ KEY = {"client_id": "client", "user_id": "user", "token_uri": "https://land.cope
 
 
 class Answer(io.BytesIO):
+    def __init__(self, body, headers=None):
+        super().__init__(body)
+        self.headers = headers or {}
+
     def __enter__(self):
         return self
 
@@ -62,7 +66,7 @@ class ClmsTest(unittest.TestCase):
         signature = clms.b64url(clms.sign(KEY["private_key"], SIGNING_INPUT)).decode()
         self.assertEqual(signature, SIGNATURE)
 
-    def test_a_finished_order_gives_the_member_of_the_archive_inside_its_archive(self):
+    def test_a_finished_order_gives_the_member_of_the_archive_inside_its_archive_after_a_cut_download(self):
         inner = io.BytesIO()
         with zipfile.ZipFile(inner, "w") as z:
             z.writestr("package/DATA/clc.tif", b"raster")
@@ -82,10 +86,13 @@ class ClmsTest(unittest.TestCase):
                 return Answer(json.dumps({"ErrorTaskIds": [], "TaskIds": [{"TaskID": "42"}]}).encode())
             if "@datarequest_status_get" in url:
                 return Answer(json.dumps({"Status": next(statuses), "DownloadURL": "https://files.example/7.zip"}).encode())
-            return Answer(outer.getvalue())
+            body = outer.getvalue()
+            # The first answer ends early without an error.
+            return Answer(body[:100] if len(seen) == 5 else body, {"Content-Length": str(len(body))})
 
         with tempfile.TemporaryDirectory() as scratch, mock.patch.object(clms, "urlopen", urlopen), \
-                mock.patch.object(clms.time, "sleep"), mock.patch("sys.stderr", io.StringIO()):
+                mock.patch.object(clms.API_OPENER, "open", urlopen), mock.patch.object(clms.time, "sleep"), \
+                mock.patch("sys.stderr", io.StringIO()):
             work, out, key = Path(scratch, "work"), Path(scratch, "out"), Path(scratch, "key.json")
             work.mkdir(), out.mkdir(), key.write_text(json.dumps(KEY))
             clms.fetch("dataset", "file", "clc.tif", work, out, key)
@@ -93,8 +100,9 @@ class ClmsTest(unittest.TestCase):
             self.assertEqual((out / "clc.tif").read_bytes(), b"raster")
             clms.fetch("dataset", "file", "clc.tif", work, out, key)
 
-        token, posted, *polls, download = seen
+        token, posted, *polls, cut, download = seen
         self.assertEqual(len(polls), 2, "the second fetch finds the member and asks nothing")
+        self.assertEqual(cut.full_url, download.full_url, "a cut download is tried again")
         form = parse_qs(token.data.decode())
         self.assertEqual(form["grant_type"], [clms.GRANT_TYPE])
         claims = json.loads(base64.urlsafe_b64decode(form["assertion"][0].split(".")[1] + "=="))
@@ -107,9 +115,19 @@ class ClmsTest(unittest.TestCase):
 
     def test_a_failed_order_fails_with_its_message(self):
         answers = iter([{"access_token": "t"}, {"TaskIds": [{"TaskID": "9"}]}, {"Status": "Finished_nok", "Message": "no space"}])
-        with mock.patch.object(clms, "urlopen", lambda request, timeout: Answer(json.dumps(next(answers)).encode())):
+        with mock.patch.object(clms.API_OPENER, "open", lambda request, timeout: Answer(json.dumps(next(answers)).encode())):
             with self.assertRaisesRegex(RuntimeError, "order 9 is Finished_nok: no space"):
                 clms.order(clms.Session(KEY), "dataset", "file")
+
+
+    def test_an_archive_that_is_no_zip_goes_so_the_next_run_downloads_it_again(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            work, out = Path(scratch, "work"), Path(scratch, "out")
+            work.mkdir(), out.mkdir()
+            (work / "order.zip").write_bytes(b"not a zip")
+            with self.assertRaises(zipfile.BadZipFile):
+                clms.fetch("dataset", "file", "clc.tif", work, out, Path(scratch, "absent-key.json"))
+            self.assertFalse((work / "order.zip").exists())
 
 
 if __name__ == "__main__":

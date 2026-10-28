@@ -1783,6 +1783,30 @@ mod tests {
     }
 
     #[test]
+    fn a_national_map_is_captured_over_the_box_and_corine_is_one_file() {
+        let temp = temp("planner-trailview-kerry");
+        let store = store(&temp, &[]);
+        let (kerry, config) = ([-9.8, 51.9, -9.6, 52.1], TrailView { colour_year: 2025, colour: "test".into() });
+        let on = |layer: &str| ["trailview-rules", "trailview-ground"].contains(&layer);
+        let mut inputs = inputs(AREA, &[]);
+        let mut wanted = Vec::new();
+        trailview(&root(), &inputs, &store, &on, kerry, &config, &mut wanted).unwrap();
+        wanted.iter().for_each(|wanted| inputs.resolve(wanted, "2026-10-01".into()));
+        let steps = trailview(&root(), &inputs, &store, &on, kerry, &config, &mut Vec::new()).unwrap();
+        let material = steps.iter().find(|step| step.name == "planner/trailview-material").unwrap();
+        let read = |id: &str| {
+            material.inputs.iter().find_map(|input| match input {
+                Input::Snapshot { source, params, .. } if source == id => Some(params.clone()),
+                _ => None,
+            })
+        };
+        let digest = obc_data::ground::Ground::load(&root()).unwrap().entry("land-cover-ie").unwrap().capture_digest();
+        let bbox = ("bbox".to_string(), "-9.8,51.9,-9.6,52.1".to_string());
+        assert_eq!(read("land-cover-ie"), Some(vec![bbox, ("ground".to_string(), digest)]));
+        assert_eq!(read("corine-land-cover"), Some(Vec::new()));
+    }
+
+    #[test]
     fn trailview_snow_reads_the_snow_archive_and_each_band_has_a_grid() {
         let temp = temp("planner-trailview-snow");
         let store = store(&temp, &["2026-10-01"]);
