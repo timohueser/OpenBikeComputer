@@ -112,34 +112,114 @@ class BlendTest(unittest.TestCase):
 
 
 class BlockTest(unittest.TestCase):
-    def test_a_season_has_hr_wsi_tiles_where_it_has_data_and_modis_below_zoom_9(self):
-        # Two zoom 12 tiles of block 33, 22; HR-WSI covers the west half of the first only.
-        first, second = (2158, 1448), (2159, 1448)
-        bounds = [*snow.geo.tile_bounds(12, *first)[:2], *snow.geo.tile_bounds(12, *second)[2:]]
-        grid = snow.Grid("EPSG:4326", Affine.translation(9.6, 46.6) @ Affine.scale(0.001, -0.001), (300, 300))
-        middle = round(((snow.geo.tile_bounds(12, *first)[0] + snow.geo.tile_bounds(12, *first)[2]) / 2 - 9.6) / 0.001)
-        hr = np.full((1, 2, 300, 300), snow.NO_DATA, np.uint8)
-        hr[:, :, :, :middle] = 60
-        modis = np.full((1, 2, 300, 300), 100, np.uint8), grid
-        making = snow.Making({"SCO": ["x"]}, modis, 365, bounds, 2016)
-        with tempfile.TemporaryDirectory() as out, \
-                mock.patch.object(snow, "copernicus_season", return_value=(hr, grid)):
-            sha256 = snow.make_season((33, 22), making, Path(out))
-            path = Path(out, "2016/33/22.pmtiles")
-            tiles, metadata = read_archive(path)
-            self.assertEqual(len(sha256), 64)
-        self.assertEqual(metadata, {"season": 2016})
-        self.assertNotIn((12, *second), tiles, "a zoom 12 tile without HR-WSI is not in the season")
-        top = tiles[(12, *first)][0, 0]
-        self.assertTrue((top[:, :100] == 60).all() and (top[:, -100:] == 100).all(), "MODIS fills the tile")
-        self.assertEqual({z for z, _, _ in tiles}, set(range(6, 13)))
-        self.assertTrue((tiles[(8, 134, 90)] != snow.NO_DATA).any())
+    """A block on the production path: no bounds, the MODIS grid of the block, and HR-WSI across the seam of two
+    zoom 10 chunks, with values that vary from pixel to pixel."""
 
-    def test_a_block_whose_catalogue_lacks_a_season_fails(self):
-        with mock.patch.object(snow, "cdse_credentials"), \
-                mock.patch.object(snow, "copernicus_files", return_value={2016: {"SCO": ["x"]}}):
-            with self.assertRaisesRegex(SystemExit, r"none of \[2017\]"):
-                snow.prepare((33, 22), [2016, 2017], None, None, Path("/nonexistent"))
+    def setUp(self):
+        self.grid = snow.Grid("EPSG:4326", Affine.translation(9.7, 46.6) @ Affine.scale(0.001, -0.001), (300, 300))
+        rows, cols = np.mgrid[0:300, 0:300]
+        onset = ((rows + cols) % 150).astype(np.uint8)
+        self.hr = np.stack([onset, onset + 20])[None]
+        self.hr[:, :, :, :30] = snow.NO_DATA
+        self.modis_grid = snow.modis_grid(snow.geo.tile_bounds(6, 33, 22))
+        rows, cols = np.mgrid[0:self.modis_grid.shape[0], 0:self.modis_grid.shape[1]]
+        onset = ((3 * rows + cols) % 170).astype(np.uint8)
+        self.modis = np.stack([onset, onset + 10])[None]
+
+    def make(self, bounds):
+        west, north = 9.7, 46.6
+        meets = lambda part: part[0] < west + 0.3 and part[2] > west and part[1] < north and part[3] > north - 0.3
+        empty = np.full((1, 2, 2, 2), snow.NO_DATA, np.uint8), self.grid
+        season = lambda files, part, days: (self.hr, self.grid) if meets(part) else empty
+        making = snow.Making({"SCO": ["x"]}, (self.modis, self.modis_grid), 365, bounds, 2016, None)
+        with tempfile.TemporaryDirectory() as out, mock.patch.object(snow, "copernicus_season", side_effect=season):
+            snow.make_season((33, 22), making, Path(out))
+            return read_archive(Path(out, "2016/33/22.pmtiles"))
+
+    def test_each_tile_is_hr_wsi_where_it_has_data_and_modis_elsewhere_at_its_own_zoom(self):
+        tiles, metadata = self.make(None)
+        self.assertEqual(metadata, {"season": 2016})
+        hr = lambda z, x, y: snow.sample(self.hr, self.grid, z, x, y)
+        modis = lambda z, x, y: snow.sample(self.modis, self.modis_grid, z, x, y)
+        merged = lambda body, zxy: np.where(body == snow.NO_DATA, modis(*zxy), body)
+        twelve = {zxy for zxy in tiles if zxy[0] == 12}
+        # The HR-WSI grid spans the zoom 10 chunks 539 and 540.
+        self.assertEqual({x >> 2 for _, x, _ in twelve}, {539, 540})
+        for zxy in twelve:
+            np.testing.assert_array_equal(tiles[zxy], merged(hr(*zxy), zxy), err_msg=str(zxy))
+        for zxy in [zxy for zxy in tiles if zxy[0] == 11]:
+            below = {at: (hr(*child) if child in twelve else None) for at, child in snow.children(*zxy)}
+            np.testing.assert_array_equal(tiles[zxy], merged(snow.parent(below, 1, smoothed=True), zxy), err_msg=str(zxy))
+        # A zoom 8 tile without HR-WSI below it is the bilinear MODIS of its own zoom.
+        quiet = [zxy for zxy in tiles if zxy[0] == 8 and not any(child in tiles for _, child in snow.children(*zxy))]
+        self.assertTrue(quiet)
+        for zxy in quiet:
+            np.testing.assert_array_equal(tiles[zxy], modis(*zxy), err_msg=str(zxy))
+
+    def test_a_tile_has_the_same_bytes_under_other_bounds(self):
+        everything, _ = self.make(None)
+        some = next(zxy for zxy in everything if zxy[0] == 11)
+        boxed, _ = self.make(snow.geo.tile_bounds(*some))
+        for zxy in [some, *(child for _, child in snow.children(*some))]:
+            self.assertEqual(zxy in boxed, zxy in everything)
+            if zxy in boxed:
+                np.testing.assert_array_equal(boxed[zxy], everything[zxy], err_msg=str(zxy))
+
+
+class CatalogueTest(unittest.TestCase):
+    def listing(self, products, *answers):
+        files = lambda names: {season: {"SCO": [f"/vsis3/x/CLMS_WSI_SP_020m_{tile}_{season}0901P1Y_S2_V100_SCO.tif"
+                                                for tile in tiles]} for season, tiles in names.items()}
+        with mock.patch.object(snow, "copernicus_files", side_effect=[files(products), *map(files, answers)]) as listed, \
+                mock.patch.object(snow.time, "sleep"):
+            return snow.hr_wsi_files((33, 22), [2016, 2017]), listed.call_count
+
+    def test_a_season_without_products_or_with_fewer_tiles_fails(self):
+        with self.assertRaisesRegex(SystemExit, r"no product of seasons \[2017\]"):
+            self.listing({2016: ["T32UNA"]})
+        with self.assertRaisesRegex(SystemExit, r"fewer tiles in seasons \[2017\]"):
+            self.listing({2016: ["T32UNA", "T32TMT"], 2017: ["T32UNA"]})
+        self.assertEqual(len(self.listing({2016: ["T32UNA"], 2017: ["T32UNA"]})[0]), 2)
+
+    def test_an_empty_listing_is_asked_once_more(self):
+        files, asked = self.listing({}, {2016: ["T32UNA"], 2017: ["T32UNA"]})
+        self.assertEqual((sorted(files), asked), ([2016, 2017], 2))
+        self.assertEqual(self.listing({}, {}), ({}, 2), "a block outside HR-WSI has no product")
+
+    def test_the_programs_share_four_connections(self):
+        import threading
+        from contextlib import ExitStack
+
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as held:
+            for _ in range(snow.CDSE_CONNECTIONS):
+                held.enter_context(snow.cdse_slot(Path(directory)))
+            entered = threading.Event()
+
+            def fifth():
+                with snow.cdse_slot(Path(directory)):
+                    entered.set()
+
+            thread = threading.Thread(target=fifth)
+            thread.start()
+            self.assertFalse(entered.wait(0.5), "a fifth reader waits")
+            held.close()
+            self.assertTrue(entered.wait(5))
+            thread.join()
+
+
+class StepTest(unittest.TestCase):
+    def test_the_step_joins_the_files_of_its_snapshot_with_the_credit_of_its_year(self):
+        request = {"options": {"bounds": [8, 46, 9, 47], "seasons": [2016, 2017], "year": 2026, "attribution": "© EU {year}"},
+                   "snapshots": {"snow": {"2016/33/22.pmtiles": "/store/a", "2017/33/22.pmtiles": "/store/b"}},
+                   "output": "/out", "metrics": "/out/metrics.json"}
+        with mock.patch.object(snow.step_request, "read", return_value=request), \
+                mock.patch.object(snow.step_request, "metrics") as metrics, \
+                mock.patch.object(snow, "join", return_value=7) as join:
+            snow.step()
+        files, bounds, seasons, output, credit = join.call_args.args
+        self.assertEqual(files, {"2016/33/22.pmtiles": Path("/store/a"), "2017/33/22.pmtiles": Path("/store/b")})
+        self.assertEqual((bounds, seasons, output, credit), ([8, 46, 9, 47], [2016, 2017], Path("/out/snow.pmtiles"), "© EU 2026"))
+        self.assertEqual(metrics.call_args.args[1], {"tiles": 7})
 
 
 class JoinTest(unittest.TestCase):
@@ -172,6 +252,24 @@ class JoinTest(unittest.TestCase):
         self.assertEqual(sorted(z for z, _, _ in tiles), [0, 1, 2, 3, 4, 5, 6, 11, 12])
         self.assertEqual(count, len(tiles))
         self.assertEqual(tiles[(5, 16, 11)][:, 0, 64, 192].tolist(), [60, 50, snow.NO_DATA], "block 33, 22 is the north-east child")
+
+    def test_a_missing_tile_two_zooms_below_its_ancestor_takes_a_sixteenth_of_it(self):
+        bounds = snow.geo.tile_bounds(12, 2158, 1448)
+        ancestor = np.zeros((1, 2, 256, 256), np.uint8)
+        ancestor[:, :] = np.arange(256, dtype=np.uint8)[None, :] % 180
+        held = {(12, 2158, 1448): np.full((1, 2, 256, 256), 60, np.uint8)}
+        with tempfile.TemporaryDirectory() as directory:
+            files = {}
+            for year, tiles in {2016: held, 2017: {(10, 539, 362): ancestor}}.items():
+                path = Path(directory, f"{year}.pmtiles")
+                snow.write_archive(path, {tile_id(*zxy): snow.gzipped(body) for zxy, body in tiles.items()},
+                                   snow.geo.tile_bounds(6, 33, 22), {"season": year})
+                files[f"{year}/33/22.pmtiles"] = path
+            output = Path(directory, "snow.pmtiles")
+            snow.join(files, bounds, [2016, 2017], output, "HR-WSI")
+            tiles, _ = read_archive(output)
+        # Tile 2158, 1448 is the third column and the first row of the 4 × 4 tiles of 539, 362.
+        np.testing.assert_array_equal(tiles[(12, 2158, 1448)][1, 0, 0], ancestor[0, 0, 0, 128:192].repeat(4))
 
 
 class ModisTest(unittest.TestCase):

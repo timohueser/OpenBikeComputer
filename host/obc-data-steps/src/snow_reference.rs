@@ -35,6 +35,10 @@ const MODIS_R: f64 = 6_371_007.181;
 const MODIS_TILE_M: f64 = 1_111_950.519_766_523_3;
 const MODIS_X0: f64 = -20_015_109.355_798;
 const MODIS_Y0: f64 = 10_007_554.677_899;
+/// The most days in a row that a MODIS tile of a block may lack a file in a season. Chosen: the
+/// nearest clear day fills such a run as it fills a cloudy week; a longer run is a gap of the
+/// source, such as the 67 days of 2025 that the Planetary Computer lacks.
+const MAX_GAP_DAYS: i64 = 7;
 
 pub struct SnowReference {
     /// `tools/planner_snow.py`, as a command in the repository root.
@@ -127,6 +131,8 @@ impl Prepared for SnowReference {
         };
         let (root, manifest) = modis_manifest(&(self.roots)())?;
         let lists = job.state.join("modis");
+        // The programs share the connections that CDSE allows a user: `CDSE_CONNECTIONS` of the tool.
+        let slots = job.state.join("cdse");
         std::fs::create_dir_all(&lists).map_err(|e| format!("{}: {e}", lists.display()))?;
         let (mut tiles, mut args, mut read) = (Vec::new(), BTreeMap::new(), BTreeMap::new());
         for block in region {
@@ -137,15 +143,19 @@ impl Prepared for SnowReference {
             }
             let (_, canopy) =
                 job.fetch(&canopy(job.sources(), canopy_tiles(block_bounds(block)).into_iter().collect())?)?;
-            let modis: Vec<_> = modis_files(&manifest, block).collect();
+            let modis = modis_files(&manifest, block);
+            let coverage = modis_days(block, &modis, &lacking)?;
             let list = lists.join(format!("{name}.txt"));
-            let text: String = modis.iter().map(|file| format!("{}\n", root.join(&file.path).display())).collect();
+            let text: String =
+                modis.iter().map(|(file, ..)| format!("{}\n", root.join(&file.path).display())).collect();
             obc_data::store::write_atomic(&list, text.as_bytes())?;
-            read.extend(modis.iter().map(|file| (file.path.clone(), file.sha256.clone())));
+            read.extend(modis.iter().map(|(file, ..)| (file.path.clone(), file.sha256.clone())));
+            read.extend(coverage);
             let seasons = lacking.iter().map(u16::to_string).collect::<Vec<_>>().join(",");
             let canopy = canopy.values().map(|file| file.display().to_string()).collect::<Vec<_>>().join(",");
+            let (list, slots) = (list.display().to_string(), slots.display().to_string());
             let named =
-                ["--block", &name, "--seasons", &seasons, "--modis", &list.display().to_string(), "--canopy", &canopy];
+                ["--block", &name, "--seasons", &seasons, "--modis", &list, "--canopy", &canopy, "--slots", &slots];
             args.insert(name.clone(), named.map(String::from));
             let files =
                 lacking.iter().map(|&season| (path(season, block), format!("{name}.{season}.sha256"))).collect();
@@ -174,33 +184,96 @@ fn modis_manifest(roots: &[PathBuf]) -> Result<(PathBuf, Manifest), String> {
     Ok((root.clone(), manifest))
 }
 
-/// The files of `manifest` whose MODIS tile `block` meets with one MODIS pixel of margin; the
-/// program takes each file whose tile meets its grid.
-fn modis_files(manifest: &Manifest, block: (u32, u32)) -> impl Iterator<Item = &archive::Listed> {
+/// The MODIS files of `manifest` whose tile `block` meets, as [`modis_tiles`] says, each with its
+/// tile and day.
+fn modis_files(manifest: &Manifest, block: (u32, u32)) -> Vec<(&archive::Listed, (u32, u32), i64)> {
     let (columns, rows) = modis_tiles(block);
-    manifest.files.iter().filter(move |file| {
-        // `MOD10A1.A2016245.h18v04.061.…`: the tile is the third part of the name.
-        let name = file.path.rsplit('/').next().unwrap_or_default();
-        let tile = name.split('.').nth(2).unwrap_or_default();
-        let number = |range: std::ops::Range<usize>| tile.get(range).and_then(|text| text.parse::<u32>().ok());
-        match (tile.starts_with('h'), number(1..3), number(4..6)) {
-            (true, Some(h), Some(v)) => columns.contains(&h) && rows.contains(&v),
-            _ => false,
-        }
-    })
+    let named = manifest.files.iter().filter_map(|file| Some((file, modis_file(&file.path)?)));
+    named
+        .filter(|(_, ((h, v), _))| columns.contains(h) && rows.contains(v))
+        .map(|(file, (tile, day))| (file, tile, day))
+        .collect()
 }
 
-/// The columns h and the rows v of the MODIS tiles that block `(x, y)` meets with one MODIS pixel of
-/// margin. A sinusoidal x is widest at the latitude nearest the equator.
+/// The tile `(h, v)` and the day, from 1970-01-01, of a MODIS file at `path`: a name that
+/// `MODIS_FILE` of `tools/planner_snow.py` takes, such as
+/// `MOD10A1.A2016245.h18v04.061.2021338033043_NDSI_Snow_Cover.tif` or `MYD10A1.A2025181.h18v04.061.2025183090331.hdf`.
+fn modis_file(path: &str) -> Option<((u32, u32), i64)> {
+    let name = path.rsplit('/').next()?;
+    let [product, day, tile, collection, made, kind] = name.split('.').collect::<Vec<_>>()[..] else { return None };
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    let made = match kind {
+        "tif" => made.strip_suffix("_NDSI_Snow_Cover")?,
+        "hdf" => made,
+        _ => return None,
+    };
+    let day = day.strip_prefix('A').filter(|day| day.len() == 7 && digits(day))?;
+    let (h, v) = tile.strip_prefix('h')?.split_once('v')?;
+    if !matches!(product, "MOD10A1" | "MYD10A1") || collection != "061" || !digits(made) || h.len() != 2 || v.len() != 2
+    {
+        return None;
+    }
+    let first = obc_data::date::parse(&format!("{}-01-01", &day[..4]))?;
+    Some(((h.parse().ok()?, v.parse().ok()?), first + day[4..].parse::<i64>().ok()? - 1))
+}
+
+/// For each tile of `files` and each of `seasons`, the days of the season that have a file of
+/// either platform, as `days/<x>-<y>/<season>/h<h>v<v>` with `<days with a file>/<days>`. A season
+/// whose tile lacks files for more than [`MAX_GAP_DAYS`] days in a row refuses.
+fn modis_days(
+    block: (u32, u32),
+    files: &[(&archive::Listed, (u32, u32), i64)],
+    seasons: &[u16],
+) -> Result<BTreeMap<String, String>, String> {
+    let mut days: BTreeMap<(u32, u32), BTreeSet<i64>> = BTreeMap::new();
+    for &(_, tile, day) in files {
+        days.entry(tile).or_default().insert(day);
+    }
+    let start = |season: u16| obc_data::date::parse(&format!("{season}-09-01")).expect("a date");
+    let mut coverage = BTreeMap::new();
+    for (&(h, v), held) in &days {
+        for &season in seasons {
+            let (first, end) = (start(season), start(season + 1));
+            let (mut run, mut gap, mut from) = (0, 0, first);
+            for day in first..end {
+                run = if held.contains(&day) { 0 } else { run + 1 };
+                if run > gap {
+                    (gap, from) = (run, day + 1 - run);
+                }
+            }
+            if gap > MAX_GAP_DAYS {
+                return Err(format!(
+                    "block {}-{}: {MODIS} has no file of the MODIS tile h{h:02}v{v:02} for {gap} days from {} in season {season}. Fix: complete the dataset with obc data archive get {MODIS}",
+                    block.0,
+                    block.1,
+                    obc_data::date::format(from)
+                ));
+            }
+            let found = held.range(first..end).count();
+            coverage.insert(
+                format!("days/{}-{}/{season}/h{h:02}v{v:02}", block.0, block.1),
+                format!("{found}/{}", end - first),
+            );
+        }
+    }
+    Ok(coverage)
+}
+
+/// The columns h and the rows v of the MODIS tiles that block `(x, y)` meets with two MODIS pixels
+/// of margin, as far as the grid of the program reaches. A sinusoidal x is widest at the latitude
+/// nearest the equator and narrowest at the farthest, so its extremes are at the west and east
+/// edges, at the north, the south or the equator.
 fn modis_tiles(block: (u32, u32)) -> (RangeInclusive<u32>, RangeInclusive<u32>) {
-    let pixel = MODIS_TILE_M / 2400.0;
+    let margin = 2.0 * MODIS_TILE_M / 2400.0;
     let [west, south, east, north] = block_bounds(block);
-    let equator = 0f64.clamp(south, north);
-    let xs = [west, east].map(|lon| MODIS_R * lon.to_radians() * equator.to_radians().cos());
+    let lats = [south, north, 0f64.clamp(south, north)];
+    let xs =
+        [west, east].into_iter().flat_map(|lon| lats.map(|lat| MODIS_R * lon.to_radians() * lat.to_radians().cos()));
+    let (left, right) = xs.fold((f64::MAX, f64::MIN), |(low, high), x| (low.min(x), high.max(x)));
     let tile = |metres: f64, last: u32| ((metres / MODIS_TILE_M).floor().max(0.0) as u32).min(last);
-    let columns = tile(xs[0] - pixel - MODIS_X0, 35)..=tile(xs[1] + pixel - MODIS_X0, 35);
-    let rows = tile(MODIS_Y0 - MODIS_R * north.to_radians() - pixel, 17)
-        ..=tile(MODIS_Y0 - MODIS_R * south.to_radians() + pixel, 17);
+    let columns = tile(left - margin - MODIS_X0, 35)..=tile(right + margin - MODIS_X0, 35);
+    let rows = tile(MODIS_Y0 - MODIS_R * north.to_radians() - margin, 17)
+        ..=tile(MODIS_Y0 - MODIS_R * south.to_radians() + margin, 17);
     (columns, rows)
 }
 
@@ -280,6 +353,7 @@ fn every() -> BTreeSet<(u32, u32)> {
 mod tests {
     use super::*;
     use crate::device::tests::{fetched, temp};
+    use obc_data::date;
     use obc_data::engine::runs::Run;
     use obc_data::fetch::http::Http;
     use obc_data::prepared::{Manifest, Opening};
@@ -311,12 +385,12 @@ mod tests {
     "#;
 
     /// The tool as a script: each file of a block holds its season and block, and its mark the
-    /// same; `made` gets the block, its seasons and the MODIS files of its list.
+    /// same; `made` gets the block, its seasons and the count of the MODIS files of its list.
     const TOOL: &str = r#"block=$3; shift 3
-while [ $# -gt 0 ]; do case "$1" in --seasons) seasons=$2; shift 2;; --modis) modis=$2; shift 2;; --canopy) shift 2;; --out) out=$2; shift 2;; esac; done
+while [ $# -gt 0 ]; do case "$1" in --seasons) seasons=$2; shift 2;; --modis) modis=$2; shift 2;; --canopy|--slots) shift 2;; --out) out=$2; shift 2;; esac; done
 x=${block%-*}; y=${block#*-}
 for season in $(echo "$seasons" | tr , ' '); do mkdir -p "$out/$season/$x" && echo "$season $block" > "$out/$season/$x/$y.pmtiles" && echo "$season $block" > "$out/$block.$season.sha256"; done
-echo "$block $seasons $(xargs -n1 basename < "$modis" | tr '\n' ' ')" >> made
+echo "$block $seasons $(wc -l < "$modis")" >> made
 "#;
 
     static ARCHIVE: OnceLock<PathBuf> = OnceLock::new();
@@ -337,17 +411,93 @@ echo "$block $seasons $(xargs -n1 basename < "$modis" | tr '\n' ' ')" >> made
     }
 
     #[test]
+    fn the_modis_tiles_of_a_block_are_those_of_its_edges_with_two_pixels_of_margin() {
+        let margin = 2.0 * MODIS_TILE_M / 2400.0;
+        let tile = |metres: f64| ((metres / MODIS_TILE_M).floor().max(0.0) as u32).min(35);
+        // The blocks of Europe, each edge in 1000 steps: a sinusoidal x of an edge meridian varies
+        // with the latitude.
+        for x in 24..=41 {
+            for y in 9..=28 {
+                let [west, south, east, north] = block_bounds((x, y));
+                let (mut left, mut right) = (f64::MAX, f64::MIN);
+                for step in 0..=1000 {
+                    let lat = south + (north - south) * f64::from(step) / 1000.0;
+                    for lon in [west, east] {
+                        let metres = MODIS_R * lon.to_radians() * lat.to_radians().cos();
+                        (left, right) = (left.min(metres), right.max(metres));
+                    }
+                }
+                let columns = tile(left - margin - MODIS_X0)..=tile(right + margin - MODIS_X0);
+                assert_eq!(modis_tiles((x, y)).0, columns, "block {x}, {y}");
+            }
+        }
+        // The west edge of block 35, 20, on the Polish coast, reaches h18 at its north corner only.
+        assert_eq!(modis_tiles((35, 20)), (18..=19, 3..=3));
+    }
+
+    #[test]
+    fn a_modis_file_is_a_cog_or_a_granule_of_mod10a1_or_myd10a1() {
+        let day = date::parse("2016-09-01").unwrap();
+        let cog = "mirror/x/MOD10A1.A2016245.h18v04.061.2021338033043_NDSI_Snow_Cover.tif";
+        assert_eq!(modis_file(cog), Some(((18, 4), day)));
+        assert_eq!(modis_file("MYD10A1.A2016245.h18v04.061.2021338033043.hdf"), Some(((18, 4), day)));
+        for stray in [
+            "MOD10A1.A2016245.h18v04.061.1.hdf.xml",
+            "MOD10A2.A2016245.h18v04.061.1.hdf",
+            "MOD10A1.A2016245.h18v04.006.1.hdf",
+        ] {
+            assert_eq!(modis_file(stray), None, "{stray}");
+        }
+    }
+
+    #[test]
+    fn a_season_whose_modis_tile_lacks_more_than_a_week_of_days_refuses() {
+        let listed = |path: &str| archive::Listed {
+            path: path.into(),
+            bytes: 1,
+            sha256: path.into(),
+            modified: None,
+            etag: None,
+        };
+        let first = date::parse("2016-09-01").unwrap();
+        let with_gap = |gap: i64| {
+            let files: Vec<_> = (first..first + 365)
+                .filter(|day| !(first + 122..first + 122 + gap).contains(day))
+                .map(|day| (listed("f"), (18, 4), day))
+                .collect();
+            let files: Vec<_> = files.iter().map(|(file, tile, day)| (file, *tile, *day)).collect();
+            modis_days((33, 22), &files, &[2016])
+        };
+        let coverage = with_gap(MAX_GAP_DAYS).unwrap();
+        assert_eq!(coverage["days/33-22/2016/h18v04"], format!("{}/365", 365 - MAX_GAP_DAYS));
+        let error = with_gap(MAX_GAP_DAYS + 1).unwrap_err();
+        assert!(error.contains("h18v04 for 8 days from 2017-01-01 in season 2016"), "{error}");
+    }
+
+    #[test]
     fn a_version_makes_the_seasons_of_its_blocks_that_the_version_before_lacks() {
         let temp = temp("snow");
         let root = temp.0.join("repository");
         std::fs::create_dir_all(root.join("data")).unwrap();
         std::fs::write(root.join("data/sources.toml"), SOURCES).unwrap();
         std::fs::write(root.join("tool.sh"), TOOL).unwrap();
-        // The dataset `modis-snow`: a file of the MODIS tile of the Alps, h18v04, and one east of it.
+        // The dataset `modis-snow`: a file of each day of the MODIS tile of the Alps, h18v04, and of
+        // the one east of it, and a stray file of metadata.
         let archive = temp.0.join("archive");
-        let alps = "MOD10A1.A2016245.h18v04.061.2021338033043_NDSI_Snow_Cover.tif";
-        let listed = [alps, "MOD10A1.A2016245.h19v04.061.1.hdf"]
-            .map(|name| serde_json::json!({"path": format!("mirror/example.org/{name}"), "bytes": 1, "sha256": name}));
+        let (from, end) = (date::parse("2016-09-01").unwrap(), date::parse("2026-09-01").unwrap());
+        let mut listed = Vec::new();
+        for day in from..end {
+            let (year, start) =
+                (&date::format(day)[..4], date::parse(&format!("{}-01-01", &date::format(day)[..4])).unwrap());
+            for (tile, kind) in [("h18v04", ".1_NDSI_Snow_Cover.tif"), ("h19v04", ".1.hdf")] {
+                listed.push(format!("MOD10A1.A{year}{:03}.{tile}.061{kind}", day - start + 1));
+            }
+        }
+        listed.push("MOD10A1.A2016245.h18v04.061.1.hdf.xml".into());
+        let listed: Vec<_> = listed
+            .iter()
+            .map(|name| serde_json::json!({"path": format!("mirror/example.org/{name}"), "bytes": 1, "sha256": name}))
+            .collect();
         std::fs::create_dir_all(archive.join("manifest")).unwrap();
         let manifest = serde_json::json!({"version": "2026-10-20", "files": listed});
         std::fs::write(archive.join("manifest/modis-snow.json"), manifest.to_string()).unwrap();
@@ -398,8 +548,8 @@ echo "$block $seasons $(xargs -n1 basename < "$modis" | tr '\n' ' ')" >> made
         // Block 34, 22 also meets the MODIS tile h19v04.
         let all = seasons().unwrap().map(|season| season.to_string()).collect::<Vec<_>>().join(",");
         let made = std::fs::read_to_string(root.join("made")).unwrap();
-        let east = format!("{alps} MOD10A1.A2016245.h19v04.061.1.hdf");
-        assert_eq!(made, format!("33-22 {all} {alps} \n34-22 {all} {east} \n"), "a block is made once");
+        let days = end - from;
+        assert_eq!(made, format!("33-22 {all} {days}\n34-22 {all} {}\n", 2 * days), "a block is made once");
 
         // A version of everything has every block.
         let planning = obc_data::prepared::Planning { store: &store, http: &http, sources: &sources };

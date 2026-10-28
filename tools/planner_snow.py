@@ -16,6 +16,7 @@ The `obc data` step `planner/snow` (`--step`) joins the seasons of the blocks of
 
 import argparse
 from collections import deque, namedtuple
+import contextlib
 import datetime as dt
 import functools
 import gzip
@@ -58,6 +59,8 @@ MODIS_FILE = re.compile(r"(MOD|MYD)10A1\.A(\d{4})(\d{3})\.h(\d\d)v(\d\d)\.061\.\
 # A worker of a chunk took at most 259 MB for nine seasons of HR-WSI at 47° N (central Switzerland); it makes one
 # season. The 8 programs of a prepare run at once, so each takes few workers.
 WORKERS = 2
+# The connections to CDSE S3 that a user may hold at once. The programs of a prepare share them through lock files.
+CDSE_CONNECTIONS = 4
 
 Grid = namedtuple("Grid", "crs transform shape")
 
@@ -466,7 +469,7 @@ def copernicus_season(files, bounds, days):
 
 # What the chunks of the season that a block makes read: the workers fork from the process, so they read the MODIS
 # planes without a copy.
-Making = namedtuple("Making", "hr modis days bounds season")
+Making = namedtuple("Making", "hr modis days bounds season slots")
 _making = None
 
 
@@ -487,7 +490,10 @@ def chunk(tile):
     part = area(m.bounds, CHUNK_ZOOM, x, y) if m.bounds else geo.tile_bounds(CHUNK_ZOOM, x, y)
     if not m.hr or part is None:
         return None, tiles
-    planes = copernicus_season(m.hr, part, m.days)
+    with cdse_slot(m.slots):
+        planes = copernicus_season(m.hr, part, m.days)
+    if (planes[0] == NO_DATA).all():
+        return None, tiles
 
     def down(z, x, y):
         if m.bounds and area(m.bounds, z, x, y) is None:
@@ -561,17 +567,57 @@ def make_season(block, making, out):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def prepare(block, seasons, modis, canopy, out, bounds=None):
+@contextlib.contextmanager
+def cdse_slot(directory):
+    """Hold one of the CDSE_CONNECTIONS lock files in `directory`, waiting for a free one; no limit without one."""
+    if directory is None:
+        yield
+        return
+    import fcntl
+
+    directory.mkdir(parents=True, exist_ok=True)
+    while True:
+        for k in range(CDSE_CONNECTIONS):
+            with open(directory / f"{k}.lock", "w") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                yield
+                return
+        time.sleep(0.2)
+
+
+def hr_wsi_files(block, seasons):
+    """The Snow Phenology products of `block` as `copernicus_files` gives them. A listing of products of one season and
+    none of another, or of other tiles in one season than in another, fails: the catalogue gave a short page, which
+    would make a season MODIS only for good. An empty listing is asked once more, as a block outside HR-WSI or at sea
+    has none."""
+    edges = geo.tile_bounds(BLOCK_ZOOM, *block)
+    files = copernicus_files(edges)
+    if not files:
+        time.sleep(10)
+        files = copernicus_files(edges)
+    # `CLMS_WSI_SP_020m_<tile>_<season>0901P1Y_…`: a season of a tile has one product.
+    tiles = {season: {Path(path).name.split("_")[4] for path in layers["SCO"]} for season, layers in files.items()}
+    every = set().union(*tiles.values())
+    lacking = [season for season in seasons if season not in files] if files else []
+    differ = sorted(season for season, held in tiles.items() if held != every)
+    if lacking or differ:
+        raise SystemExit(f"block {block[0]}-{block[1]}: the HR-WSI catalogue lists no product of seasons {lacking}, "
+                         f"and fewer tiles in seasons {differ}, than in the others; try again later")
+    return files
+
+
+def prepare(block, seasons, modis, canopy, out, bounds=None, slots=None):
     """Write `<season>/<x>/<y>.pmtiles` of `block` (x, y) of `snow` into `out` for each of `seasons`, each followed by
     its mark `<x>-<y>.<season>.sha256`, the SHA-256 of the file. `modis` names the MODIS files and `canopy` the Hansen
-    GFC rasters; without `modis`, the files have HR-WSI only. `bounds` keeps only the tiles that meet them."""
+    GFC rasters; without `modis`, the files have HR-WSI only. `bounds` keeps only the tiles that meet them. `slots` is
+    the directory of the CDSE connections that the programs of a prepare share."""
     bx, by = block
     edges = geo.tile_bounds(BLOCK_ZOOM, bx, by)
     cdse_credentials()
-    files = copernicus_files(edges)
-    if files and (lacking := [season for season in seasons if season not in files]):
-        raise SystemExit(f"block {bx}-{by}: the HR-WSI catalogue lists products of seasons {sorted(files)} but none of "
-                         f"{lacking}; try again later")
+    files = hr_wsi_files(block, seasons)
     grid = modis_grid(edges) if modis is not None else None
     days = modis_files(modis, grid) if modis is not None else {}
     dense = canopy_cover(grid, canopy) > DENSE_CANOPY_PERCENT if modis is not None else None
@@ -584,7 +630,7 @@ def prepare(block, seasons, modis, canopy, out, bounds=None):
             # rasterio holds the GIL for much of a file open, so the reads need processes.
             with step_pool.pool(WORKERS) as pool:
                 planes = modis_season(days, grid, season, dense, pool), grid
-        making = Making(files.get(season, {}), planes, season_days(season), bounds, season)
+        making = Making(files.get(season, {}), planes, season_days(season), bounds, season, slots)
         mark.write_text(make_season(block, making, out) + "\n")
         print(f"block {bx}-{by}: season {season}", file=sys.stderr, flush=True)
 
@@ -682,6 +728,8 @@ def join(files, bounds, seasons, output, credit):
                 return body
 
             above(0, 0, 0)
+            if not tiles:
+                raise ValueError("The snow files of the region have no tile")
             source = "copernicus-hr-wsi" if any(tileid_to_zxy(t)[0] > MODIS_ZOOM for t in tiles) else "nasa-modis"
             write_archive(output, tiles, bounds, {
                 "first_season": seasons[0], "seasons": len(seasons), "step_days": 2, "source": source,
@@ -731,6 +779,7 @@ def main():
     command.add_argument("--seasons", type=lambda text: [int(season) for season in text.split(",")], required=True)
     command.add_argument("--modis", type=Path, required=True, help="a file that names the MODIS files, one a line")
     command.add_argument("--canopy", type=lambda text: text.split(","), required=True, help="the Hansen GFC rasters")
+    command.add_argument("--slots", type=Path, help="the lock files of the CDSE connections of the prepare")
     command.add_argument("--out", type=Path, required=True)
     command = commands.add_parser("box", help="bake the HR-WSI seasons of a box, without MODIS")
     command.add_argument("--bounds", type=geo.bounds, required=True, help="west,south,east,north")
@@ -739,7 +788,7 @@ def main():
     if args.command == "box":
         box(args.bounds, args.output)
     else:
-        prepare(args.block, args.seasons, args.modis.read_text().split(), args.canopy, args.out)
+        prepare(args.block, args.seasons, args.modis.read_text().splitlines(), args.canopy, args.out, slots=args.slots)
 
 
 if __name__ == "__main__":
