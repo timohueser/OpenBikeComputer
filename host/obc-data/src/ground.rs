@@ -8,9 +8,8 @@ use std::path::Path;
 use serde::Deserialize;
 use serde_json::Value;
 
-/// The keys of an entry that change what its capture fetches; `legend` too where the capture
-/// filters by it.
-const CAPTURE_KEYS: [&str; 4] = ["protocol", "layer", "field", "sort"];
+/// The keys of an entry that change what its capture fetches.
+const CAPTURE_KEYS: [&str; 4] = ["protocol", "layer", "field", "legend"];
 
 #[derive(Debug, Deserialize)]
 pub struct Ground {
@@ -47,19 +46,28 @@ impl Ground {
 }
 
 impl GroundSource {
-    /// Whether a capture fetches the source over each box: its protocol is `arcgis-features` or `wfs`.
+    /// Whether a capture fetches the source over each box: its protocol is `arcgis-features` or
+    /// `archive-features`.
     pub fn per_box(&self) -> bool {
-        matches!(self.keys.get("protocol").and_then(Value::as_str), Some("arcgis-features" | "wfs"))
+        matches!(self.protocol(), Some("arcgis-features" | "archive-features"))
+    }
+
+    /// Whether its capture reads the zip of the `fetch.url` of its source in the archive.
+    pub fn archived(&self) -> bool {
+        self.protocol() == Some("archive-features")
+    }
+
+    fn protocol(&self) -> Option<&str> {
+        self.keys.get("protocol").and_then(Value::as_str)
     }
 
     /// The first 12 hex digits of the SHA-256 of the keys that decide what a capture fetches. A
     /// capture request names it, so a stored capture with other keys is not read again.
     pub fn capture_digest(&self) -> String {
-        let filtered = self.keys.get("protocol").and_then(Value::as_str) == Some("arcgis-features");
         let keys: serde_json::Map<String, Value> = self
             .keys
             .iter()
-            .filter(|(key, _)| CAPTURE_KEYS.contains(&key.as_str()) || (filtered && key.as_str() == "legend"))
+            .filter(|(key, _)| CAPTURE_KEYS.contains(&key.as_str()))
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         // Nested objects keep their order where a build enables `serde_json/preserve_order`.
@@ -86,9 +94,5 @@ mod tests {
             entry(r#"{"source": "x", "protocol": "arcgis-features", "legend": {"classes": [], "match": "word"}}"#),
             "the order of a legend's keys does not change the digest"
         );
-        let wfs = |legend: &str| {
-            entry(&format!(r#"{{"source": "x", "protocol": "wfs", "legend": {{"classes": [["1", "{legend}"]]}}}}"#))
-        };
-        assert_eq!(wfs("heath"), wfs("bog"), "the legend does not filter a WFS capture");
     }
 }

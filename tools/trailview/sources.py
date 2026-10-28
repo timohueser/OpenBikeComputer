@@ -2,8 +2,8 @@
 specs/trailview-tiles.md defines it. A source is read by the reader of its protocol, its native classes
 become codes through its legend, and its combine rule joins them into the layer.
 
-`fetch` is the capture of a source whose protocol is `arcgis-features` or `wfs`: the features of the
-service over a box.
+`fetch` is the capture of a source whose protocol is `arcgis-features` or `archive-features`: the
+features of a service, or of a file of the archive, over a box.
 """
 
 import collections
@@ -12,7 +12,6 @@ import itertools
 import json
 import math
 import os
-import re
 import sys
 import tempfile
 import time
@@ -27,16 +26,17 @@ from . import colour, tiles
 
 GROUND = Path(__file__).resolve().parents[2] / "data/trailview/ground.json"
 # The readers of the steps. A capture writes vector files over a box.
-PROTOCOLS = ("raster", "vector", "arcgis-features", "wfs", "osm")
-CAPTURED = ("arcgis-features", "wfs")
-VECTOR = ("vector", "arcgis-features", "wfs")
+PROTOCOLS = ("raster", "vector", "arcgis-features", "archive-features", "osm")
+CAPTURED = ("arcgis-features", "archive-features")
+VECTOR = ("vector", *CAPTURED)
 MATCHES = ("code", "prefix", "word", "tags")
 COMBINES = ("authority", "refine")
 # A code is one byte.
 CODES = 256
 # Feature requests of this many ids or features.
 FEATURE_BATCH = 200
-WFS_PAGE = 5000
+# Features per page of an archive capture. Chosen, not measured: a page of a national map stays in memory.
+ARCHIVE_PAGE = 5000
 TRIES = 6
 # The share of the listed ids that may vanish before an ArcGIS capture fetches them.
 VANISHED = 0.001
@@ -420,19 +420,20 @@ def entry_of(source, ground):
     raise ValueError(f"{source} is no captured source of {GROUND.name}")
 
 
-def fetch(source, bounds, out, zoom, ground=None):
-    """The capture of `source` over the bounds into `out`. Vector features are simplified by a quarter
-    of a texel at the equator of `zoom`: less than a texel shows."""
+def fetch(source, bounds, out, zoom, ground=None, archive=None, work=None):
+    """The capture of `source` over the bounds into `out`; an `archive-features` source reads the zip
+    `archive` and unpacks it into `work`. Vector features are simplified by a quarter of a texel at the
+    equator of `zoom`: less than a texel shows."""
     from .. import data_registry
 
     ground = ground or json.loads(GROUND.read_text())
     entry = entry_of(source, ground)
-    url = data_registry.SOURCES[source]["fetch"]["url"]
     out.mkdir(parents=True, exist_ok=True)
-    if entry["protocol"] == "wfs":
-        fetch_wfs(url, entry, bounds, out)
+    tolerance = 360 / ((1 << zoom) * tiles.TILE) / 4
+    if entry["protocol"] == "archive-features":
+        fetch_archive(archive, work, entry, bounds, out, tolerance)
     else:
-        tolerance = 360 / ((1 << zoom) * tiles.TILE) / 4
+        url = data_registry.SOURCES[source]["fetch"]["url"]
         fetch_features(url, entry, bounds, out, tolerance, Legend(entry["legend"], collections.defaultdict(int)))
 
 
@@ -537,30 +538,51 @@ def fetch_features(url, entry, bounds, out, tolerance, legend):
         print(f"{url}: {len(vanished)} ids are gone since the capture listed them", file=sys.stderr, flush=True)
 
 
-def fetch_wfs(url, entry, bounds, out):
-    """The features of the WFS 2.0 type `layer` that meet the bounds, as GeoJSON in EPSG:4326 with only
-    the field `field`: `features-NNNNN.geojson`, WFS_PAGE each, in the order of the unique attribute
-    `sort`. The pages hold `numberMatched` features in all."""
-    west, south, east, north = bounds
-    query = {"service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": entry["layer"],
-             "bbox": f"{south},{west},{north},{east},urn:ogc:def:crs:EPSG::4326"}
-    hits = get(url, {**query, "resultType": "hits"})
-    if not (found := re.search(rb'numberMatched="(\d+)"', hits)):
-        raise RuntimeError(f"{url}: no numberMatched in the answer: {hits[:500]!r}")
-    matched = int(found[1])
-    positions(out, str(matched))
-    for page in range(math.ceil(matched / WFS_PAGE)):
-        target = out / f"features-{page:05}.geojson"
-        if target.exists():
-            continue
-        expected = min(WFS_PAGE, matched - page * WFS_PAGE)
+def fetch_archive(archive, work, entry, bounds, out, tolerance):
+    """The features of the layer `layer` of the one GeoPackage or FileGDB in the zip `archive` that meet
+    the bounds and whose `field` the legend may name, as GeoJSON in EPSG:4326 with that field, simplified
+    by `tolerance` degrees: `features-NNNNN.geojson`, ARCHIVE_PAGE each in the order of their ids. The
+    file is unpacked into `work` first: a read in a deflated member inflates it from its start."""
+    import pyogrio
+    import shapely
+    from pyproj import Transformer
 
-        def whole(body):
-            if len(json.loads(body)["features"]) != expected:
-                raise ValueError(f"page {page} has not {expected} features")
+    path, layer, field = unpack(archive, work), entry["layer"], entry["field"]
+    crs = pyogrio.read_info(path, layer=layer)["crs"]
+    box = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform_bounds(*bounds, densify_pts=21)
+    _, ids, _, (values,) = pyogrio.raw.read(path, layer=layer, columns=[field], bbox=box, read_geometry=False, return_fids=True)
+    named = Legend(entry["legend"], collections.defaultdict(lambda: 1))
+    ids = np.sort(ids[np.array([named(value) > 0 for value in values], bool)])
+    to_degrees = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    for page in out.glob("features-*.geojson"):
+        page.unlink()
+    for page, start in enumerate(range(0, len(ids), ARCHIVE_PAGE)):
+        _, _, wkb, (values,) = pyogrio.raw.read(path, layer=layer, columns=[field], fids=ids[start:start + ARCHIVE_PAGE])
+        degrees = shapely.transform(shapely.from_wkb(wkb), lambda xy: np.stack(to_degrees.transform(xy[:, 0], xy[:, 1]), axis=-1))
+        geometries = shapely.transform(shapely.simplify(degrees, tolerance), lambda xy: np.round(xy, 6))
+        write(out / f"features-{page:05}.geojson", json.dumps({"type": "FeatureCollection", "features": [
+            {"type": "Feature", "geometry": json.loads(geometry), "properties": {field: value}}
+            for geometry, value in zip(shapely.to_geojson(geometries).tolist(), values.tolist())]}).encode())
 
-        features = json.loads(get(url, {**query, "outputFormat": "application/json", "srsName": "EPSG:4326", "count": WFS_PAGE,
-                                        "startIndex": page * WFS_PAGE, "sortBy": entry["sort"]}, check=whole))["features"]
-        write(target, json.dumps({"type": "FeatureCollection", "features": [
-            {"type": "Feature", "geometry": f["geometry"], "properties": {entry["field"]: f["properties"].get(entry["field"])}}
-            for f in features]}).encode())
+
+def unpack(archive, work):
+    """The path of the one GeoPackage or FileGDB folder in the zip `archive`, unpacked into `work`. A file
+    already there with its size stays, so a resumed capture unpacks only what it lacks."""
+    import shutil
+    import zipfile
+
+    with zipfile.ZipFile(archive) as z:
+        members = [m for m in z.infolist() if not m.is_dir() and m.filename.split("/")[0].endswith((".gpkg", ".gdb"))]
+        tops = {member.filename.split("/")[0] for member in members}
+        if len(tops) != 1 or any(".." in member.filename.split("/") for member in members):
+            raise ValueError(f"{archive}: the zip holds not one GeoPackage or FileGDB but {sorted(tops)}")
+        for member in members:
+            target = work / member.filename
+            if target.exists() and target.stat().st_size == member.file_size:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            part = target.with_name(target.name + ".part")
+            with z.open(member) as source, open(part, "wb") as stream:
+                shutil.copyfileobj(source, stream, 1 << 20)
+            part.replace(target)
+    return str(work / tops.pop())

@@ -105,6 +105,8 @@ pub(crate) fn run(
                     "source `{id}`: `ground={digest}` is not the digest of its entry in data/trailview/ground.json, which changed since the plan"
                 ));
             }
+            let url = source.fetch.url.as_deref().unwrap_or_default();
+            let held = archive.filter(|_| entry.archived()).and_then(|archive| archive.find(url));
             capture(
                 store,
                 request,
@@ -113,8 +115,19 @@ pub(crate) fn run(
                 |_| &[0],
                 // A national map has no feature in parts of its extent.
                 true,
-                None,
-                |_, out| {
+                held.as_ref().map(|held| held.path.as_str()),
+                |work, out| {
+                    // Never upstream: a routine bake downloads only OSM.
+                    let held = match (entry.archived(), &held) {
+                        (true, None) => {
+                            return Err(format!(
+                                "source `{id}` reads {url} from the archive, and no root of OBC_DATA_ARCHIVE holds it: \
+                                 mount the archive drive and name its root in OBC_DATA_ARCHIVE, or get the dataset \
+                                 that `obc data archive status` names for the source"
+                            ))
+                        }
+                        (_, held) => held.as_ref(),
+                    };
                     let mut command = python(root, Some("trailview"))?;
                     command.args([
                         "-m",
@@ -125,6 +138,10 @@ pub(crate) fn run(
                         "--fetch",
                     ]);
                     command.arg(out);
+                    if let Some(held) = held {
+                        held.verify()?;
+                        command.arg("--archive").arg(&held.file).arg("--work").arg(work);
+                    }
                     Ok(command)
                 },
             )
