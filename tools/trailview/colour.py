@@ -261,6 +261,41 @@ def items(bounds, year):
         page = runtime.read_url(following)
 
 
+def subset(path, bounds, out):
+    """Write the window of raster `path` that covers `bounds`, one pixel wider on each side, to `out`.
+
+    The file keeps the name of the source file. A file whose raster misses the bounds writes nothing.
+    """
+    import math
+    import os
+
+    import rasterio
+    from rasterio.warp import transform_bounds
+    from rasterio.windows import Window, from_bounds
+
+    target = out / Path(urllib.parse.urlsplit(path).path).name
+    if target.exists():
+        return
+    with rasterio.open(path) as src:
+        window = from_bounds(*transform_bounds("EPSG:4326", src.crs, *bounds, densify_pts=100), src.transform)
+        # Rounded first: a bound on a pixel edge comes back a hair off it.
+        col, row = round(window.col_off, 6), round(window.row_off, 6)
+        left, top = math.floor(col) - 1, math.floor(row) - 1
+        right, bottom = math.ceil(round(col + window.width, 6)) + 1, math.ceil(round(row + window.height, 6)) + 1
+        left, top, right, bottom = max(left, 0), max(top, 0), min(right, src.width), min(bottom, src.height)
+        if left >= right or top >= bottom:
+            return
+        window = Window(left, top, right - left, bottom - top)
+        profile = {key: value for key, value in src.profile.items() if key not in ("blockxsize", "blockysize", "tiled")}
+        profile.update(driver="GTiff", width=window.width, height=window.height, transform=src.window_transform(window),
+                       compress="deflate")
+        data = src.read(window=window)
+    part = target.with_name(target.name + ".part")
+    with rasterio.open(part, "w", **profile) as dst:
+        dst.write(data)
+    os.replace(part, target)
+
+
 def fetch(bounds, year, out):
     """The capture of `sentinel-2-mosaics`: `<mosaic tile>/<band>.tif`, the window of each band over the
     bounds, one pixel wider on each side. CDSE S3 allows 4 connections per user."""
@@ -273,7 +308,7 @@ def fetch(bounds, year, out):
     for item in found:
         (out / item).mkdir(parents=True, exist_ok=True)
     with ThreadPoolExecutor(4) as pool:
-        list(pool.map(lambda job: planner_snow.subset(job[1], bounds, out / job[0]),
+        list(pool.map(lambda job: subset(job[1], bounds, out / job[0]),
                       [(item, path) for item, bands in found.items() for path in bands.values()]))
     print(f"sentinel-2-mosaics: {len(found)} mosaic tiles", file=sys.stderr, flush=True)
 

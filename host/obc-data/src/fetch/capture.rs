@@ -21,29 +21,6 @@ pub(crate) fn run(
 ) -> Result<Snapshot, String> {
     let source = request.source;
     match source.id.as_str() {
-        "modis-snow" | "hr-wsi" => {
-            let [bbox, seasons] = values(request, ["bbox", "seasons"])?;
-            let bbox = parse_bbox(bbox)?;
-            let years = seasons.split_once('-').filter(|(first, last)| year(first) && year(last) && first <= last);
-            let (first, last) = years.ok_or_else(|| format!("`seasons={seasons}` is not FIRST-LAST, two years"))?;
-            let kind = if source.id == "hr-wsi" { "copernicus-hr-wsi" } else { "nasa-modis" };
-            capture(
-                store,
-                request,
-                &format!("bbox={bbox}&seasons={seasons}"),
-                &[source],
-                |_| &[0],
-                // HR-WSI has no product in parts of its extent.
-                source.id == "hr-wsi",
-                None,
-                |_, out| {
-                    let mut command = python(root, Some("planner-snow"))?;
-                    command.args(["-m", "tools.planner_snow", "--source", kind, &format!("--bounds={bbox}")]);
-                    command.args(["--first-season", first, "--last-season", last, "--fetch"]).arg(out);
-                    Ok(command)
-                },
-            )
-        }
         "sentinel-2-mosaics" => {
             let [bbox, year] = values(request, ["bbox", "year"])?;
             let bbox = parse_bbox(bbox)?;
@@ -339,26 +316,6 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_retained_empty_capture_needs_no_runtime_or_checkout() {
-        let scratch = crate::store::tests::Scratch::new("capture-retained-no-runtime");
-        let store = Store::at(scratch.0.join("store"));
-        let source = crate::sources::embedded("hr-wsi");
-        let version = date::format(date::today());
-        let params = vec![("bbox".into(), "7,47,8,48".into()), ("seasons".into(), "2024-2025".into())];
-        store
-            .put_requested(
-                &source.id,
-                &store::Requested { version: version.clone(), params: params.clone(), files: Vec::new() },
-            )
-            .unwrap();
-        let request = Request { refresh: false, source, version: Some(version.clone()), params };
-        let snapshot = run(&scratch.0.join("absent-checkout"), &store, None, &request).unwrap();
-        assert_eq!(snapshot.version, version);
-        assert!(snapshot.files.is_empty());
-        assert!(!scratch.0.join("absent-checkout").exists());
-    }
 
     #[test]
     fn capture_commands_use_the_selected_interpreter_and_locked_group() {

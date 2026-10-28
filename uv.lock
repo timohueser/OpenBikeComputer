@@ -1160,6 +1160,7 @@ planner-snow = [
     { name = "numpy" },
     { name = "pillow" },
     { name = "pmtiles" },
+    { name = "pyhdf" },
     { name = "rasterio" },
 ]
 search-runtime = [
@@ -1297,6 +1298,7 @@ planner-snow = [
     { name = "numpy", specifier = "==2.5.3" },
     { name = "pillow", specifier = "==12.3.0" },
     { name = "pmtiles", specifier = "==3.8.1" },
+    { name = "pyhdf", specifier = "==0.11.7" },
     { name = "rasterio", specifier = "==1.5.2" },
 ]
 search-runtime = [
@@ -1688,6 +1690,23 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/49/2e/ced460408999b33da6b31b0021b0f37d329e202d4169aeb164493778f25b/pygments-2.21.0.tar.gz", hash = "sha256:610ca751c9bc2492b38eb9a38a7fbc93edbbb2d7182edaf34e66ae493dee5c8c", size = 5005329, upload-time = "2026-08-17T08:02:48.824Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/71/46/17f022dd3e953bf20a04a028a21ec746d942f8d2af30fa0f124fa0e6a684/pygments-2.21.0-py3-none-any.whl", hash = "sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9", size = 1250147, upload-time = "2026-08-17T08:02:44.912Z" },
+]
+
+[[package]]
+name = "pyhdf"
+version = "0.11.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2d/cf/5717eee8aed4afd493aecf111c1a459ee7569f27671df6aacf40c39599f3/pyhdf-0.11.7.tar.gz", hash = "sha256:5c015589e0d01c191f70855a016ccd8c19106aba7390c9204f3e2a1b7080d335", size = 156049, upload-time = "2026-07-11T20:04:22.993Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/99/17/b0e6731ff59fa63bee13bc08b072b117fb3e683dac5d8ec3bbde62afd04d/pyhdf-0.11.7-cp314-cp314-macosx_26_0_arm64.whl", hash = "sha256:c4e89f0b30c6d693df59443e8a4663f7aaba7287a36ea352459547f766dab885", size = 550188, upload-time = "2026-07-11T20:05:11.36Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/a3/a8c12dbfb7513ddb4114e341babb0b8ae653b4d123b770c1b71e448a7629/pyhdf-0.11.7-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:49dae23f5ce479335e002d0b72b015b2a94ddc20b6ffafb27205d3f559228dcb", size = 3328789, upload-time = "2026-07-11T20:05:12.57Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/48/4857dc344bdac277b396a2022642cb2304fd982d9d5b60083ddc5c7333dc/pyhdf-0.11.7-cp314-cp314-win_amd64.whl", hash = "sha256:7ec6ff9ce50db2c1a8d32d59c380f75b5616fc269b25e91312ef0fcddb3230d9", size = 779074, upload-time = "2026-07-11T20:05:13.896Z" },
+    { url = "https://files.pythonhosted.org/packages/37/a4/116c0ab21fddac19240960743330f264ca309a6a7319523c2e68acc0fe17/pyhdf-0.11.7-cp314-cp314t-macosx_26_0_arm64.whl", hash = "sha256:67112a27e76f65f208bc96c2d5c39c435b8e875748b68cfdd489b23b9ba3fed1", size = 550088, upload-time = "2026-07-11T20:05:14.918Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/e5/e819b205d40dae7941a39f7fc76ea13b79f35dc224593176c3240c91d248/pyhdf-0.11.7-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a8809dd2dca0e837ce0ba356a460a798819257c88a2a81816d49999740c88991", size = 3328265, upload-time = "2026-07-11T20:05:16.067Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/4d/daa8a48af8fd7133d0e63e6c90d53f2f9fb726bea6910ca4c240b34b04d2/pyhdf-0.11.7-cp314-cp314t-win_amd64.whl", hash = "sha256:287de486edd523d13b5c0a65ebac70436b83dfba4de3de1386ebe0b907438ece", size = 780809, upload-time = "2026-07-11T20:05:17.236Z" },
 ]
 
 [[package]]
@@ -2407,8 +2426,8 @@ wheels = [
 standard = [
     { name = "httptools" },
     { name = "python-dotenv" },
-    { name = "pyyaml", version = "6.0.2", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-22-openbikecomputer-tools-dev' or extra == 'group-22-openbikecomputer-tools-planner-search' or (extra == 'group-22-openbikecomputer-tools-desktop-e2e' and extra == 'group-22-openbikecomputer-tools-search-runtime' and extra == 'group-22-openbikecomputer-tools-search-training') or (extra == 'group-22-openbikecomputer-tools-desktop-e2e' and extra == 'group-22-openbikecomputer-tools-search-test' and extra == 'group-22-openbikecomputer-tools-search-training') or (extra == 'group-22-openbikecomputer-tools-desktop-e2e' and extra != 'group-22-openbikecomputer-tools-search-runtime' and extra != 'group-22-openbikecomputer-tools-search-test') or (extra != 'group-22-openbikecomputer-tools-search-runtime' and extra != 'group-22-openbikecomputer-tools-search-test' and extra != 'group-22-openbikecomputer-tools-search-training')" },
-    { name = "pyyaml", version = "6.0.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-22-openbikecomputer-tools-search-runtime' or extra == 'group-22-openbikecomputer-tools-search-test' or extra == 'group-22-openbikecomputer-tools-search-training'" },
+    { name = "pyyaml", version = "6.0.2", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-22-openbikecomputer-tools-dev' or extra == 'group-22-openbikecomputer-tools-planner-search' or (extra == 'group-22-openbikecomputer-tools-desktop-e2e' and extra == 'group-22-openbikecomputer-tools-search-training')" },
+    { name = "pyyaml", version = "6.0.3", source = { registry = "https://pypi.org/simple" }, marker = "(extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-runtime') or (extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-test') or (extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-training') or (extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-runtime') or (extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-test') or (extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-training') or (extra != 'group-22-openbikecomputer-tools-dev' and extra != 'group-22-openbikecomputer-tools-planner-search')" },
     { name = "uvloop", marker = "(platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32') or (platform_python_implementation == 'PyPy' and extra == 'group-22-openbikecomputer-tools-desktop-e2e' and extra == 'group-22-openbikecomputer-tools-search-training') or (platform_python_implementation == 'PyPy' and extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-runtime') or (platform_python_implementation == 'PyPy' and extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-test') or (platform_python_implementation == 'PyPy' and extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-training') or (platform_python_implementation == 'PyPy' and extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-runtime') or (platform_python_implementation == 'PyPy' and extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-test') or (platform_python_implementation == 'PyPy' and extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-training') or (sys_platform == 'cygwin' and extra == 'group-22-openbikecomputer-tools-desktop-e2e' and extra == 'group-22-openbikecomputer-tools-search-training') or (sys_platform == 'cygwin' and extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-runtime') or (sys_platform == 'cygwin' and extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-test') or (sys_platform == 'cygwin' and extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-training') or (sys_platform == 'cygwin' and extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-runtime') or (sys_platform == 'cygwin' and extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-test') or (sys_platform == 'cygwin' and extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-training') or (sys_platform == 'win32' and extra == 'group-22-openbikecomputer-tools-desktop-e2e' and extra == 'group-22-openbikecomputer-tools-search-training') or (sys_platform == 'win32' and extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-runtime') or (sys_platform == 'win32' and extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-test') or (sys_platform == 'win32' and extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-training') or (sys_platform == 'win32' and extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-runtime') or (sys_platform == 'win32' and extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-test') or (sys_platform == 'win32' and extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-training')" },
     { name = "watchfiles" },
     { name = "websockets" },

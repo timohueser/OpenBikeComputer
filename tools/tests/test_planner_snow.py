@@ -1,4 +1,4 @@
-"""The snow bake finds the longest snow period of each season and writes the bytes of the snow tile spec."""
+"""The snow tiles find the longest snow period of each season and write the bytes of the snow tile spec."""
 
 from pathlib import Path
 import datetime as dt
@@ -12,49 +12,57 @@ import numpy as np
 
 from tools import planner_snow as snow
 
-FIRST = 2001  # 2001/02 and 2002/03 have 365 days.
 
-
-def seasons(observations, count=1, end=None):
+def season(observations, days=365):
     """Planes of pixels fed {day: [state per pixel]}, with None for a day that is not clear."""
     pixels = len(next(iter(observations.values())))
-    state = snow.SnowSeasons(FIRST, count, (pixels,))
+    state = snow.SnowSeason(days, (pixels,))
     for day in sorted(observations):
         values = observations[day]
         state.observe(day, np.array([v is not None for v in values]), np.array([bool(v) for v in values]))
-    return state.planes(end if end is not None else state.bounds[-1])
+    return state.planes()[0]
+
+
+def tile_id(z, x, y):
+    from pmtiles.tile import zxy_to_tileid
+
+    return zxy_to_tileid(z, x, y)
+
+
+def read_archive(path):
+    """{(z, x, y): body as (seasons, 2, 256, 256)} and the metadata of an archive."""
+    from pmtiles.reader import MmapSource, Reader, all_tiles
+
+    with path.open("rb") as file:
+        reader = Reader(MmapSource(file))
+        seasons = reader.metadata().get("seasons", 1)
+        tiles = {zxy: np.frombuffer(gzip.decompress(data), np.uint8).reshape(seasons, 2, 256, 256)
+                 for zxy, data in all_tiles(MmapSource(file))}
+        return tiles, reader.metadata()
 
 
 class SeasonTest(unittest.TestCase):
     def test_gap_days_take_the_nearest_clear_day_and_the_earlier_one_on_a_tie(self):
         # Clear days 0, 9, 20 and 40: snow from day 5 (nearer to day 9) to day 30 (the tie goes to day 20).
-        planes = seasons({0: [False], 9: [True], 20: [True], 40: [False]})
-        self.assertEqual(planes[0, :, 0].tolist(), [5 // 2, 30 // 2])
+        self.assertEqual(season({0: [False], 9: [True], 20: [True], 40: [False]})[:, 0].tolist(), [5 // 2, 30 // 2])
 
     def test_the_longest_period_counts_and_the_earliest_one_on_equal_length(self):
-        planes = seasons({d: [10 <= d < 20 or 100 <= d < 150, 10 <= d < 20 or 100 <= d < 110] for d in range(365)})
-        self.assertEqual(planes[0, :, 0].tolist(), [50, 74])
-        self.assertEqual(planes[0, :, 1].tolist(), [5, 9])
+        planes = season({d: [10 <= d < 20 or 100 <= d < 150, 10 <= d < 20 or 100 <= d < 110] for d in range(365)})
+        self.assertEqual(planes[:, 0].tolist(), [50, 74])
+        self.assertEqual(planes[:, 1].tolist(), [5, 9])
 
     def test_sentinels(self):
         # Never snow, always snow, never clear, and snow up to day 364 of a 365-day season.
-        days = {d: [False, True, None, d < 364] for d in range(365)}
-        planes = seasons(days)
-        self.assertEqual(planes[0, 0].tolist(), [snow.NO_SNOW, snow.FULL, snow.NO_DATA, 0])
-        self.assertEqual(planes[0, 1].tolist(), [snow.NO_SNOW, snow.FULL, snow.NO_DATA, 363 // 2])
+        planes = season({d: [False, True, None, d < 364] for d in range(365)})
+        self.assertEqual(planes[0].tolist(), [snow.NO_SNOW, snow.FULL, snow.NO_DATA, 0])
+        self.assertEqual(planes[1].tolist(), [snow.NO_SNOW, snow.FULL, snow.NO_DATA, 363 // 2])
         self.assertEqual(snow.encode(np.array([0]), np.array([366]), 366, np.array([True])).ravel().tolist(), [snow.FULL] * 2)
         self.assertEqual(snow.encode(np.array([360]), np.array([6]), 366, np.array([True])).ravel().tolist(), [180, 182])
 
-    def test_a_period_across_a_season_boundary_counts_in_both_seasons(self):
-        planes = seasons({300: [False], 350: [True], 400: [True], 420: [False]}, count=2)
-        self.assertEqual(planes[:, :, 0].tolist(), [[326 // 2, 364 // 2], [0, (410 - 365) // 2]])
-
-    def test_a_period_still_open_where_the_source_ends_is_no_data_if_it_can_still_be_the_longest(self):
-        # The source ends on day 300. Pixel 0 melted out on day 200; pixel 1 still has snow.
-        days = {d: [50 <= d < 200, 50 <= d] for d in range(300)}
-        planes = seasons(days, end=300)
-        self.assertEqual(planes[0, :, 0].tolist(), [25, 99])
-        self.assertEqual(planes[0, :, 1].tolist(), [snow.NO_DATA] * 2)
+    def test_a_season_reads_its_own_days_only(self):
+        # Days before the first clear day and after the last one take the state of that day.
+        self.assertEqual(season({50: [True], 300: [True]})[:, 0].tolist(), [snow.FULL, snow.FULL])
+        self.assertEqual(season({50: [True], 100: [False]})[:, 0].tolist(), [0, 74 // 2])
 
 
 class BlendTest(unittest.TestCase):
@@ -93,12 +101,6 @@ class BlendTest(unittest.TestCase):
         self.assertEqual(smoothed[0, :, 100, 100].tolist(), [40, 40])
         self.assertEqual(smoothed[0, :, 0, 0].tolist(), [40, 40])
 
-    def test_the_max_zoom_has_the_pixel_size_nearest_to_the_source_resolution(self):
-        alps, equator = [9.5, 46.3, 10.3, 46.7], [0, -0.1, 1, 0.1]
-        self.assertEqual([snow.max_zoom(20, alps), snow.max_zoom(500, alps)], [12, 8])
-        # 19.1 m and 38.2 m pixels: 20 m is nearer to zoom 13 at the equator.
-        self.assertEqual(snow.max_zoom(20, equator), 13)
-
     def test_tile_rows_run_from_north_to_south(self):
         west, south, east, north = snow.geo.tile_bounds(9, 268, 179)
         rows = np.full((1, 2, 40, 40), snow.NO_SNOW, np.uint8)
@@ -109,90 +111,115 @@ class BlendTest(unittest.TestCase):
         self.assertEqual(tile[0, 0, 255, 128], snow.NO_SNOW)
 
 
-class BakeTest(unittest.TestCase):
-    def test_the_bake_reads_one_chunk_per_zoom_10_tile_and_stores_to_the_max_zoom(self):
-        from pmtiles.reader import MmapSource, all_tiles
-
-        # Two zoom-11 tiles on each side of the seam between the zoom-10 tiles 540 and 541, in one zoom-9 tile.
-        bounds = [*snow.geo.tile_bounds(11, 1081, 724)[:2], *snow.geo.tile_bounds(11, 1082, 724)[2:]]
-        west, north = 10.0, 46.6
-        grid = snow.Grid("EPSG:4326", Affine.translation(west, north) @ Affine.scale(0.001, -0.001), (300, 300))
-
-        with tempfile.TemporaryDirectory() as directory:
-            # A chunk bakes in a worker process, so each read leaves a line in a file.
-            reads = Path(directory) / "reads"
-
-            def source(chunk):
-                with reads.open("a") as file:
-                    file.write(f"{chunk}\n")
-                return np.full((2, 2, 300, 300), 60, np.uint8), grid
-
-            output = Path(directory) / "snow.pmtiles"
-            snow.bake([("copernicus-hr-wsi", source)], 2016, 2, bounds, output, "HR-WSI")
-            with output.open("rb") as file:
-                stored = {z for (z, _, _), _ in all_tiles(MmapSource(file))}
-            self.assertEqual(len(reads.read_text().splitlines()), 2)
-        self.assertEqual(max(stored), 12)
-
-    def test_a_pixel_takes_hr_wsi_where_it_has_data_and_modis_elsewhere(self):
-        from pmtiles.reader import MmapSource, all_tiles
-
-        bounds = snow.geo.tile_bounds(11, 1079, 724)
+class BlockTest(unittest.TestCase):
+    def test_a_season_has_hr_wsi_tiles_where_it_has_data_and_modis_below_zoom_9(self):
+        # Two zoom 12 tiles of block 33, 22; HR-WSI covers the west half of the first only.
+        first, second = (2158, 1448), (2159, 1448)
+        bounds = [*snow.geo.tile_bounds(12, *first)[:2], *snow.geo.tile_bounds(12, *second)[2:]]
         grid = snow.Grid("EPSG:4326", Affine.translation(9.6, 46.6) @ Affine.scale(0.001, -0.001), (300, 300))
-        # HR-WSI has the west half of the first season, west of the seam between the zoom-12 tiles 2158 and 2159.
-        seam = round((snow.geo.tile_bounds(12, 2159, 1448)[0] - 9.6) / 0.001)
-        hr = np.full((2, 2, 300, 300), snow.NO_DATA, np.uint8)
-        hr[0, :, :, :seam] = 60
-        modis = np.full((2, 2, 300, 300), 100, np.uint8)
-        sources = [("copernicus-hr-wsi", lambda chunk: (hr, grid)), ("nasa-modis", lambda chunk: (modis, grid))]
+        middle = round(((snow.geo.tile_bounds(12, *first)[0] + snow.geo.tile_bounds(12, *first)[2]) / 2 - 9.6) / 0.001)
+        hr = np.full((1, 2, 300, 300), snow.NO_DATA, np.uint8)
+        hr[:, :, :, :middle] = 60
+        modis = np.full((1, 2, 300, 300), 100, np.uint8), grid
+        making = snow.Making({"SCO": ["x"]}, modis, 365, bounds, 2016)
+        with tempfile.TemporaryDirectory() as out, \
+                mock.patch.object(snow, "copernicus_season", return_value=(hr, grid)):
+            sha256 = snow.make_season((33, 22), making, Path(out))
+            path = Path(out, "2016/33/22.pmtiles")
+            tiles, metadata = read_archive(path)
+            self.assertEqual(len(sha256), 64)
+        self.assertEqual(metadata, {"season": 2016})
+        self.assertNotIn((12, *second), tiles, "a zoom 12 tile without HR-WSI is not in the season")
+        top = tiles[(12, *first)][0, 0]
+        self.assertTrue((top[:, :100] == 60).all() and (top[:, -100:] == 100).all(), "MODIS fills the tile")
+        self.assertEqual({z for z, _, _ in tiles}, set(range(6, 13)))
+        self.assertTrue((tiles[(8, 134, 90)] != snow.NO_DATA).any())
+
+    def test_a_block_whose_catalogue_lacks_a_season_fails(self):
+        with mock.patch.object(snow, "cdse_credentials"), \
+                mock.patch.object(snow, "copernicus_files", return_value={2016: {"SCO": ["x"]}}):
+            with self.assertRaisesRegex(SystemExit, r"none of \[2017\]"):
+                snow.prepare((33, 22), [2016, 2017], None, None, Path("/nonexistent"))
+
+
+class JoinTest(unittest.TestCase):
+    def test_a_season_without_a_tile_takes_the_part_of_its_ancestor_and_zoom_0_to_5_blend_zoom_6(self):
+        # Season 2016 has the zoom 12 tile 2158, 1448; season 2017 has only its zoom 11 parent, whose
+        # north-west quarter, the part over that tile, is 30 and the rest 90.
+        bounds = snow.geo.tile_bounds(12, 2158, 1448)
+        full = lambda value: np.full((1, 2, 256, 256), value, np.uint8)
+        quarters = full(90)
+        quarters[:, :, :128, :128] = 30
+        seasons = {2016: {(12, 2158, 1448): full(60), (11, 1079, 724): full(60), (6, 33, 22): full(60)},
+                   2017: {(11, 1079, 724): quarters, (6, 33, 22): full(50)}}
         with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "snow.pmtiles"
-            snow.bake(sources, 2016, 2, bounds, output, "HR-WSI; MODIS")
-            with output.open("rb") as file:
-                top = {(x, y): np.frombuffer(gzip.decompress(data), np.uint8).reshape(2, 2, 256, 256)
-                       for (z, x, y), data in all_tiles(MmapSource(file)) if z == 12}
-        west, east = top[2158, 1448], top[2159, 1448]
-        self.assertTrue((west[0] == 60).all() and (east[0] == 100).all())
-        self.assertTrue((west[1] == 100).all(), "a season without HR-WSI is MODIS")
+            files = {}
+            for year, held in seasons.items():
+                path = Path(directory, f"{year}/33/22.pmtiles")
+                snow.write_archive(path, {tile_id(*zxy): snow.gzipped(body) for zxy, body in held.items()},
+                                   snow.geo.tile_bounds(6, 33, 22), {"season": year})
+                files[f"{year}/33/22.pmtiles"] = path
+            # The file of a season without data in the block is empty.
+            files["2018/33/22.pmtiles"] = Path(directory, "2018.pmtiles")
+            files["2018/33/22.pmtiles"].write_bytes(b"")
+            output = Path(directory, "snow.pmtiles")
+            count = snow.join(files, bounds, [2016, 2017, 2018], output, "HR-WSI")
+            tiles, metadata = read_archive(output)
+        self.assertEqual(metadata["source"], "copernicus-hr-wsi")
+        self.assertEqual((metadata["first_season"], metadata["seasons"]), (2016, 3))
+        self.assertTrue((tiles[(12, 2158, 1448)][0] == 60).all())
+        self.assertTrue((tiles[(12, 2158, 1448)][1] == 30).all(), "the quarter of the parent, each pixel doubled")
+        self.assertEqual(sorted(z for z, _, _ in tiles), [0, 1, 2, 3, 4, 5, 6, 11, 12])
+        self.assertEqual(count, len(tiles))
+        self.assertEqual(tiles[(5, 16, 11)][:, 0, 64, 192].tolist(), [60, 50, snow.NO_DATA], "block 33, 22 is the north-east child")
 
 
 class ModisTest(unittest.TestCase):
-    def test_daily_windows_take_their_place_on_the_grid_and_dense_canopy_is_no_data(self):
+    def test_a_day_takes_its_cog_else_its_granule_and_dense_canopy_is_no_data(self):
         import rasterio
+        from pyhdf.SD import SD, SDC
 
-        bounds = [8.30, 46.50, 8.34, 46.53]
-        grid = snow.modis_grid(bounds)
+        grid = snow.modis_grid([8.30, 46.50, 8.34, 46.53])
         rows, cols = grid.shape
+        size = grid.transform.a
+        h, v = round((grid.transform.c - snow.MODIS_X0) / size) // 2400, round((snow.MODIS_Y0 - grid.transform.f) / size) // 2400
 
         def raster(path, values, transform):
             with rasterio.open(path, "w", driver="GTiff", width=values.shape[1], height=values.shape[0], count=1,
                                dtype="uint8", crs=snow.SINUSOIDAL, transform=transform) as dst:
                 dst.write(values, 1)
-            return path
+            return str(path)
 
+        def granule(path, value):
+            hdf = SD(str(path), SDC.WRITE | SDC.CREATE)
+            band = hdf.create("NDSI_Snow_Cover", SDC.UINT8, (2400, 2400))
+            band[:] = np.full((2400, 2400), value, np.uint8)
+            band.endaccess()
+            hdf.end()
+            return str(path)
+
+        name = lambda platform, day, kind: f"{platform}10A1.A2016{day:03d}.h{h:02d}v{v:02d}.061.1{kind}"
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
-            # A window one column east of the grid: column 0 has no clear day.
-            window = grid.transform @ Affine.translation(1, 0)
-            snowy = raster(directory / "mod1.tif", np.full((rows, cols - 1), 50, np.uint8), window)
-            # Terra is cloud on the last day of the season; Aqua sees no snow.
-            cloud = raster(directory / "mod2.tif", np.full((rows, cols - 1), 250, np.uint8), window)
-            bare = raster(directory / "myd2.tif", np.zeros((rows, cols - 1), np.uint8), window)
-            cover = np.zeros((rows * 4, cols * 4), np.uint8)
-            cover[-4:] = 100
-            canopy = raster(directory / "canopy.tif", cover, grid.transform @ Affine.scale(0.25))
-            days = {dt.date(2016, 12, 1): [("MOD", snowy)], dt.date(2017, 8, 31): [("MOD", cloud), ("MYD", bare)]}
+            # Day 336 (1 December): a COG with snow, which wins over the bare granule of the day. Day 244
+            # (31 August 2017 is day 243): Terra is cloud in its granule, and Aqua sees no snow.
+            snowy = raster(directory / name("MOD", 336, "_NDSI_Snow_Cover.tif"), np.full((rows, cols), 50, np.uint8), grid.transform)
+            paths = [snowy, granule(directory / name("MOD", 336, ".hdf"), 0)]
+            paths += [granule(directory / f"MOD10A1.A2017243.h{h:02d}v{v:02d}.061.1.hdf", 250),
+                      granule(directory / f"MYD10A1.A2017243.h{h:02d}v{v:02d}.061.1.hdf", 0)]
+            days = snow.modis_files(paths, grid)
+            self.assertEqual(days[dt.date(2016, 12, 1)], [("MOD", snowy)])
+            dense = np.zeros(grid.shape, bool)
+            dense[-1] = True
             with snow.step_pool.pool(2) as pool:
-                planes, planes_grid = snow.modis_planes([days], bounds, 2016, 2016, [canopy], pool)
-        self.assertEqual(planes_grid, grid)
-        # Snow from day 0 to day 227, the last day nearer to the snow day 91 than to the bare day 364.
-        self.assertEqual(planes[0, :, 0, 1].tolist(), [0, 227 // 2])
-        self.assertTrue((planes[0, :, :, 0] == snow.NO_DATA).all())
+                planes = snow.modis_season(days, grid, 2016, dense, pool)
+        # Snow from day 0 to day 227: the last day nearer to the snow day 91 than to the bare day 364.
+        self.assertEqual(planes[0, :, 0, 0].tolist(), [0, 227 // 2])
         self.assertTrue((planes[0, :, -1] == snow.NO_DATA).all())
 
 
 class CopernicusTest(unittest.TestCase):
-    def test_yearly_rasters_become_consecutive_season_planes(self):
+    def test_yearly_rasters_become_season_planes(self):
         import rasterio
         from rasterio.warp import transform
 
@@ -203,92 +230,20 @@ class CopernicusTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             files = {}
             for name, values in layers.items():
-                path = Path(directory) / f"{name}.tif"
+                path = str(Path(directory) / f"{name}.tif")
                 files[name] = [path]
                 with rasterio.open(path, "w", driver="GTiff", width=4, height=1, count=1, dtype="uint16", crs="EPSG:3035",
                                    transform=Affine(20, 0, x, 0, -20, y), nodata=65535) as dst:
                     dst.write(np.array([values], np.uint16), 1)
             lon, lat = transform("EPSG:3035", "EPSG:4326", [x + 40], [y - 10])
             bounds = [lon[0] - 0.01, lat[0] - 0.01, lon[0] + 0.01, lat[0] + 0.01]
-            planes, grid = snow.copernicus_planes({2021: files, 2023: files}, bounds, range(2021, 2024))
+            planes, grid = snow.copernicus_season(files, bounds, 365)
             # A catalogue footprint can touch a chunk that the raster itself does not reach.
-            outside, _ = snow.copernicus_planes({2021: files}, [b + 0.1 for b in bounds], range(2021, 2022))
+            outside, _ = snow.copernicus_season(files, [b + 0.1 for b in bounds], 365)
         self.assertTrue((outside == snow.NO_DATA).all())
-        self.assertEqual(planes.shape[0], 3)
         col, row = ~grid.transform @ (x + 10, y - 10)
         values = planes[0, :, int(row), int(col):int(col) + 4]
         self.assertEqual(values.T.tolist(), [[15, 125], [snow.NO_SNOW] * 2, [snow.FULL] * 2, [snow.NO_DATA] * 2])
-        self.assertTrue((planes[1] == snow.NO_DATA).all())
-
-
-class StepTest(unittest.TestCase):
-    def test_the_step_reads_hr_wsi_first_only_when_the_request_has_it(self):
-        modis = "MOD10A1.A2016245.h18v04.061.2021338033043_NDSI_Snow_Cover.tif"
-        sco = "CLMS_WSI_SP_020m_T32TMT_20160901P1Y_COMB_V100_SCO.tif"
-        canopy = "Hansen_GFC-2023-v1.11_treecover2000_50N_000E.tif"
-
-        def run(snapshots, year, credit):
-            snapshots = {source: {f"#bbox=8,46,9,47/{name}": f"/store/{name}" for name in names}
-                         for source, names in snapshots.items()}
-            with tempfile.TemporaryDirectory() as directory:
-                request = {"options": {"bounds": [8, 46, 9, 47], "seasons": [2016, 2016], "year": year,
-                                       "attribution": credit},
-                           "snapshots": snapshots, "output": directory, "metrics": f"{directory}/metrics.json"}
-                with mock.patch.object(snow.step_request, "read", return_value=request), \
-                        mock.patch.object(snow, "modis_planes", return_value="modis") as modis_planes, \
-                        mock.patch.object(snow, "copernicus_planes", return_value="hr-wsi") as copernicus_planes, \
-                        mock.patch.object(snow, "bake", return_value=1) as bake:
-                    snow.step()
-                    sources, *_, credit = bake.call_args.args
-                    sources = [(name, planes(None)) for name, planes in sources]
-            self.assertEqual(modis_planes.call_args.args[0],
-                             [{dt.date(2016, 9, 1): [("MOD", Path(f"/store/{modis}"))]}])
-            self.assertEqual(modis_planes.call_args.args[4], [Path(f"/store/{canopy}")])
-            return sources, copernicus_planes.call_args, credit
-
-        sources, _, credit = run({"modis-snow": [modis], "hansen-gfc": [canopy]}, None, "MODIS; tree canopy: Hansen")
-        self.assertEqual((sources, credit), ([("nasa-modis", "modis")], "MODIS; tree canopy: Hansen"))
-        sources, hr_wsi, credit = run({"hr-wsi": [sco], "modis-snow": [modis], "hansen-gfc": [canopy]}, 2026,
-                                      "© EU {year}; MODIS")
-        self.assertEqual(sources, [("copernicus-hr-wsi", "hr-wsi"), ("nasa-modis", "modis")])
-        self.assertEqual(hr_wsi.args[0], {2016: {"SCO": [f"/store/{sco}"]}})
-        self.assertEqual(credit, "© EU 2026; MODIS")
-
-
-class FetchTest(unittest.TestCase):
-    def test_a_subset_is_the_window_of_the_bounds_one_pixel_wider(self):
-        import rasterio
-
-        values = np.arange(100 * 100, dtype=np.uint16).reshape(100, 100)
-        with tempfile.TemporaryDirectory() as directory:
-            source, out = Path(directory) / "day.tif", Path(directory) / "out"
-            out.mkdir()
-            profile = {"driver": "GTiff", "width": 100, "height": 100, "count": 1, "dtype": "uint16",
-                       "crs": "EPSG:4326", "transform": Affine(0.01, 0, 7, 0, -0.01, 48)}
-            with rasterio.open(source, "w", **profile) as dst:
-                dst.write(values, 1)
-            snow.subset(str(source), [7.2, 47.2, 7.4, 47.4], out)
-            snow.subset(str(source), [9.0, 47.2, 9.4, 47.4], out)
-            self.assertEqual([path.name for path in out.iterdir()], ["day.tif"])
-            with rasterio.open(out / "day.tif") as src:
-                self.assertEqual(src.transform, Affine(0.01, 0, 7.19, 0, -0.01, 47.41))
-                self.assertTrue((src.read(1) == values[59:81, 19:41]).all())
-
-    def test_a_file_that_the_search_lists_twice_is_written_once(self):
-        href = lambda name: f"https://pc.test/modis/{name}.tif?token=t"
-        items = {"day1": [("MOD", href("a")), ("MYD", href("b"))], "day2": [("MOD", href("a"))]}
-        with tempfile.TemporaryDirectory() as out, mock.patch.object(snow, "modis_items", return_value=items), \
-                mock.patch.object(snow, "subset") as subset:
-            snow.fetch("nasa-modis", [8.3, 46.5, 8.4, 46.6], 2023, 2023, Path(out))
-        self.assertEqual(sorted(call.args[0] for call in subset.call_args_list), [href("a"), href("b")])
-
-
-class ModisSearchTest(unittest.TestCase):
-    def test_the_search_asks_for_whole_days_as_rfc_3339_times(self):
-        asked = []
-        with mock.patch.object(snow, "http_json", side_effect=lambda url, body=None: asked.append(body) or {"features": []}):
-            snow.modis_items([-10.0, 51.0, -9.0, 52.0], dt.date(2025, 9, 1), dt.date(2026, 8, 31))
-        self.assertEqual(asked[0]["datetime"], "2025-09-01T00:00:00Z/2026-08-31T23:59:59Z")
 
 
 if __name__ == "__main__":

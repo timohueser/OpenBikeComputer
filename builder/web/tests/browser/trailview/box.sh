@@ -225,7 +225,7 @@ if [[ ! -s $GROUND/trailview-canopy.pmtiles ]]; then
   mv "$OUT/step/trailview-canopy.pmtiles" "$GROUND/"
 fi
 if [[ ! -s $GROUND/snow.pmtiles ]]; then
-  _run "${PY[@]}" -m tools.planner_snow --bounds "$BOX" --source copernicus-hr-wsi --output "$OUT/snow.tmp.pmtiles"
+  _run "${PY[@]}" -m tools.planner_snow box --bounds "$BOX" --output "$OUT/snow.tmp.pmtiles"
   mv "$OUT/snow.tmp.pmtiles" "$GROUND/snow.pmtiles"
 fi
 # The page reads the joined ground and the snow day bands.
