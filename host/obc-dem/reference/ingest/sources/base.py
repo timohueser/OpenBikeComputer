@@ -76,7 +76,7 @@ ORTHOMETRIC = (
     "LN02", "LHN95", "NGF-IGN69", "NAVD88", "NN2000", "REDNAP", "NAP",
     "Ordnance Datum Newlyn", "EVRF2000", "CGVD2013", "NZVD2016", "DHHN2016", "DHHN92",
     "DVR90", "RH2000", "N2000", "AHD", "m s.l.m.", "EGM2008", "Bpv", "PL-KRON86-NH",
-    "ISH2004", "SVS2000", "Cascais", "Azores island heights",
+    "ISH2004", "SVS2000", "Cascais", "Azores island heights", "Madeira island heights",
 )
 
 # What an ellipsoidal height is called. It stands tens of metres from an orthometric one,

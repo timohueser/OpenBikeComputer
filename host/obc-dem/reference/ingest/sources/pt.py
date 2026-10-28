@@ -12,6 +12,12 @@ download that answers the login page instead of a GeoTIFF is refused and not kep
 
 The mainland heights are on Cascais. The Azores model is the regional government's; its metadata
 names no height system, and each island has its own tide gauge (EPSG:6180–6187).
+
+Madeira is DROTe's model of 2018/19, matched from aerial images, keyless: one zip that holds a
+GeoTIFF per island group. The row takes the 5 m zip (114 MB) and not the 2 m one (460 MB): the 2 m GeoTIFF is
+64 959 × 171 894 float32, about 45 GB unpacked, which the tail cannot hold whole, and every tile
+of a prepare downloads the zip again. The 5 m step is shorter than the east side of a lattice
+pixel there (about 6 m), so each lattice pixel still gets a source centre.
 """
 
 import html
@@ -23,6 +29,7 @@ from pathlib import Path
 
 from ..lattice import Refuse
 from .base import HTTP_TIMEOUT, Credential, host_of, inside, with_retry
+from .bulk import BulkSource
 from .stac import StacSearchSource, stac_items
 
 LOGIN = "https://cdd.dgterritorio.gov.pt/auth/login"
@@ -130,4 +137,25 @@ AZ = CddSearch(
     search=SEARCH,
     asset="data",
     collections="ACORES-MDE-1",
+)
+
+
+class OneZip(BulkSource):
+    """A region's rasters in one published zip."""
+
+    def __init__(self, *args, url, **kw):
+        super().__init__(*args, **kw)
+        self.url = url
+
+    def files(self, bbox):
+        return [(Path(self.url).name, self.url)]
+
+
+# The metadata states no height system; the heights match the summits on the tide gauges of
+# Funchal (Cais da Pontinha) and Porto Santo (Cais da Vila).
+MA = OneZip(
+    "pt-30", "Portugal (Madeira)", "MDT 5 m 2018/19 (DROTe, Região Autónoma da Madeira)", 5.0,
+    "no conditions apply",
+    "Madeira island heights, Cais da Pontinha and Cais da Vila (EPSG:6178, EPSG:6179)",
+    url="https://irig-storage.madeira.gov.pt/irig-catalogo/mdt_5m.zip",
 )
