@@ -443,6 +443,8 @@ One file for each dataset. The name of the file is the id of the dataset.
 | `version` | string | no | The version of the dataset, in the form of the `version` of its sources |
 | `urls` | array of strings | no | One file for each `https://` URL |
 | `s3` | array of tables | no | `bucket`, `prefix` and `match`. See below |
+| `stac` | array of tables | no | `search`, `sas`, `collection`, `asset`, `bbox`, `days` and `names`. See below |
+| `cmr` | array of tables | no | `provider`, `short_names`, `version`, `origin`, `bbox`, `days` and `names`. See below |
 | `kept` | boolean | no | `true`: the files of the dataset are the files under `kept/<dataset>/`, and nothing downloads |
 | `clms` | table | no | `dataset` and `file`: the prepackaged CLMS file of which the dataset holds the zip |
 | `notes` | string | no | For people |
@@ -454,11 +456,21 @@ characters other than `/`. Without `match`, each object is listed. A request to
 `https://eodata.dataspace.copernicus.eu` is signed with AWS Signature Version 4, the region
 `default` and the keys of `~/.config/openbikecomputer/cdse-s3.env`.
 
+A `stac` table lists the `asset` of each item of a STAC search: a `POST` to `search` with the
+`collection`, the `bbox` `[west, south, east, north]` and the `days` `[first, last]` as RFC 3339
+times, 1000 items a page; a page names the next one with a link of `rel = "next"`, whose `body` the
+next `POST` sends. A `cmr` table lists the data file under `origin` of each granule of the NASA CMR
+granule search of `provider`, `short_names`, `version`, `bbox` and `days`, 2000 granules a page.
+Both list only a file whose name has one of `names`, at its URL without the query. A download of an
+Azure blob of a dataset with `stac` adds the SAS token of its storage account and container, from
+`<sas>/<account>/<container>`, renewed after 45 minutes; no manifest or error holds the token. A
+download under `origin` sends `EARTHDATA_TOKEN`, an Earthdata Login user token, as a Bearer token.
+
 Each `obc data archive` command and a test of `host/obc-data` refuse a dataset that breaks a rule:
 
 - Each id of `sources` is a source of `data/sources.toml` with `keep = "archive"`. The sources
   of a dataset have the same `version` kind.
-- A dataset has `kept = true`, or else `urls`, `s3` or both.
+- A dataset has `kept = true`, or else `urls`, `s3`, `stac`, `cmr` or more of them.
 - A dataset of `release` or `commit` sources, and a kept dataset, has `version`.
 - A dataset of `digest` sources has one URL and no `s3`.
 
