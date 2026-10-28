@@ -127,8 +127,8 @@ fn tied(colour: vec3f, tint: f32, tie: f32, ground: u32) -> vec3f {
 // paint past it: measured on the Engelberg box at noon in summer.
 const CROWN_GAIN: f32 = 2.5;
 const PHASE_FROM_M: f32 = 1500.0;
-// As in tree-models.ts and look.wgsl.
-const TREE_REACH_M: f32 = 4500.0;
+// The trees' reach, TREE_REACH_M of tree-models.ts and look.wgsl.
+const PHASE_REACH_M: f32 = 4500.0;
 
 // The factor of a forest tree's crown on the ground's colour (worn), 0 for any other model.
 fn wear_of(m: Model, ground: u32) -> f32 {
@@ -142,7 +142,7 @@ fn worn(phased: vec3f, summer: vec3f, ground: u32, wear: f32, d: f32) -> vec3f {
         return phased;
     }
     let g = unpack4x8unorm(ground).rgb;
-    let change = (phased - summer) * (1.0 - smoothstep(PHASE_FROM_M, TREE_REACH_M, d));
+    let change = (phased - summer) * (1.0 - smoothstep(PHASE_FROM_M, PHASE_REACH_M, d));
     return wear * max(luma(summer) * g * g + luma(g * g) * change, vec3f(0.0));
 }
 
