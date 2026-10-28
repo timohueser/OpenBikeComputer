@@ -222,6 +222,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write. A collection empties it |
 | `serve/<target>/<planner id>/` | The files that the services of a planner release read while [`obc data serve`](#serve) runs them |
 | `follower/<target>/` | A store of its own with the objects of the releases that [`obc data serve`](#serve) follows, and nothing else |
+| `unpacked/<sha256>/` | The one GeoPackage or FileGDB of the archived zip with that SHA-256, as an [`archive-features`](#fetch) capture unpacks it. `.complete` marks a whole copy. A bake from the store never reads it |
 | `prepared/<id>/<version>/` | The work of a [prepare](#prepare) that is not complete: `selection.json`, `[scope, languages]` of the run; `journal.jsonl`, the files that it moved into the archive and the source versions that it read; and `work/`, the files that it did not move yet |
 | `locks/` | One lock file per key and per run |
 
@@ -282,6 +283,9 @@ it runs in, and the store:
 - An object is reached when a reached snapshot record or a reached layer has it, or when its
   SHA-256 is a file of an output of a root release, or is in `fixtures/catalog.toml` or a JSON or
   TOML file below `fixtures/sources/`.
+- An unpacked copy (`unpacked/<sha256>/`) is reached while a manifest of the
+  [archive](#archive) lists a file with that SHA-256. While `OBC_DATA_ARCHIVE` names no root, a
+  root does not exist or a manifest cannot be read, each copy is reached.
 - A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
   digest of the files that it names (`files`) of a reached record of its source, and a step input
   whose digest is the digest of the files that it selects of a reached layer of its step: the
@@ -291,11 +295,12 @@ The plan lists what the collection deletes and what stays. What stays is one ent
 reached snapshot record, with the reasons: `served by TARGET, …`, `newest of the source`,
 `newest of a request` and `refreshed`. Then one entry for the reached layers of each step (`inputs kept`).
 Then one entry for each kind of root that names objects that no reached record or layer has:
-`release` or `fixture`. The size of
+`release` or `fixture`. Then one entry for the unpacked copies that stay: `in the archive` or
+`archive not read`. The size of
 an entry is the size of its files, and the plan gives the size of `partial/`. The collection
 takes the store lock alone, or refuses to start while a run or a fetch holds it. A run holds it
-until it finishes; a run of `serve` does not hold it. A collection deletes each snapshot record and each object that is not reached,
-and empties `partial/`. Receipts and upstream checks stay. A clean that cannot read a target
+until it finishes; a run of `serve` does not hold it. A collection deletes each snapshot record, each object and each unpacked copy that is not
+reached, and empties `partial/`. Receipts and upstream checks stay. A clean that cannot read a target
 deletes nothing.
 
 ## Fetch
@@ -396,10 +401,12 @@ producer of [`wiki`](#wiki) reads them. `era5-land` has none: only the producer 
   fails above that.
 - `archive-features` reads the zip of the `fetch.url` of the source in the [archive](#archive),
   never upstream. Without that file in the archive, the fetch fails and names the fix. The
-  capture checks the SHA-256 of the zip against its manifest. It unpacks the one GeoPackage or
-  FileGDB of the zip into its work directory, because a read in a deflated member inflates the
-  member from its start. It reads the `layer` of that file, 5000 features to a page, in the
-  order of their feature ids.
+  capture reads the `layer` of the one GeoPackage or FileGDB of the zip, 5000 features to a page,
+  in the order of their feature ids. It reads that file from its copy in `unpacked/<sha256>/` of
+  the [store](#store), because a read in a deflated member inflates the member from its start.
+  While the copy has no `.complete`, the capture checks the SHA-256 of the zip against its
+  manifest and unpacks the file; each later box reads the copy. One capture at a time uses the
+  copy of one zip.
 - An `arcgis-features` capture tries a request again after a failed or cut transfer, a 5xx or
   429 answer, an ArcGIS error without a 4xx code, 6 times in all. Another 4xx answer or ArcGIS
   error fails at once. The hidden file `.positions` records the object ids that the page numbers
