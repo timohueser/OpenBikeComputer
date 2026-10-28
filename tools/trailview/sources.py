@@ -542,7 +542,7 @@ def fetch_archive(archive, work, entry, bounds, out, tolerance):
     """The features of the layer `layer` of the one GeoPackage or FileGDB in the zip `archive` that meet
     the bounds and whose `field` the legend may name, as GeoJSON in EPSG:4326 with that field, simplified
     by `tolerance` degrees: `features-NNNNN.geojson`, ARCHIVE_PAGE each in the order of their ids. The
-    file is unpacked into `work` first: a read in a deflated member inflates it from its start."""
+    file is read from its copy in `work`: a read in a deflated member inflates it from its start."""
     import pyogrio
     import shapely
     from pyproj import Transformer
@@ -566,11 +566,15 @@ def fetch_archive(archive, work, entry, bounds, out, tolerance):
 
 
 def unpack(archive, work):
-    """The path of the one GeoPackage or FileGDB folder in the zip `archive`, unpacked into `work`. A file
-    already there with its size stays, so a resumed capture unpacks only what it lacks."""
+    """The path of the one GeoPackage or FileGDB folder in the zip `archive`, unpacked into `work` once:
+    `.complete` marks a whole copy, which every later capture reads without the zip. A file already
+    there with its size stays, so a stopped unpack resumes."""
     import shutil
     import zipfile
 
+    if (work / ".complete").is_file():
+        (top,) = [path for path in work.iterdir() if path.name.endswith((".gpkg", ".gdb"))]
+        return str(top)
     with zipfile.ZipFile(archive) as z:
         members = [m for m in z.infolist() if not m.is_dir() and m.filename.split("/")[0].endswith((".gpkg", ".gdb"))]
         tops = {member.filename.split("/")[0] for member in members}
@@ -585,4 +589,5 @@ def unpack(archive, work):
             with z.open(member) as source, open(part, "wb") as stream:
                 shutil.copyfileobj(source, stream, 1 << 20)
             part.replace(target)
+    write(work / ".complete", b"")
     return str(work / tops.pop())

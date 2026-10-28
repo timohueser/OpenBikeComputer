@@ -107,6 +107,8 @@ pub(crate) fn run(
             }
             let url = source.fetch.url.as_deref().unwrap_or_default();
             let held = archive.filter(|_| entry.archived()).and_then(|archive| archive.find(url));
+            // Held while the program runs: one capture at a time unpacks or reads a copy.
+            let mut copy_lock = None;
             capture(
                 store,
                 request,
@@ -116,7 +118,7 @@ pub(crate) fn run(
                 // A national map has no feature in parts of its extent.
                 true,
                 held.as_ref().map(|held| held.path.as_str()),
-                |work, out| {
+                |_, out| {
                     // Never upstream: a routine bake downloads only OSM.
                     let held = match (entry.archived(), &held) {
                         (true, None) => {
@@ -139,8 +141,14 @@ pub(crate) fn run(
                     ]);
                     command.arg(out);
                     if let Some(held) = held {
-                        held.verify()?;
-                        command.arg("--archive").arg(&held.file).arg("--work").arg(work);
+                        copy_lock = Some(store.lock(&format!("unpacked-{}", held.sha256))?);
+                        let copy = store.unpacked(&held.sha256);
+                        let copy = std::path::absolute(&copy).map_err(|e| format!("{}: {e}", copy.display()))?;
+                        // The copy was checked when it was made.
+                        if !copy.join(".complete").is_file() {
+                            held.verify()?;
+                        }
+                        command.arg("--archive").arg(&held.file).arg("--work").arg(copy);
                     }
                     Ok(command)
                 },

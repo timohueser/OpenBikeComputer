@@ -153,7 +153,8 @@ class CaptureTest(unittest.TestCase):
     def archived(self, source, bounds, answer, answered, unnamed, crs, name, driver):
         """The codes and pages of the capture of the bounds from the zip that the archive keeps: the
         features of a service's `answer`, whose class is in the field `answered`, after one that the
-        legend does not name, and before one outside the bounds; two features to a page."""
+        legend does not name, and before one outside the bounds; two features to a page. A second
+        capture reads the unpacked copy without the zip."""
         entry, features = sources.entry_of(source, GROUND), json.loads((CAPTURED / source / answer).read_text())["features"]
         values = [feature["properties"][answered] for feature in features]
         west, south, east, north = bounds
@@ -173,10 +174,15 @@ class CaptureTest(unittest.TestCase):
             out = tmp / "out"
             out.mkdir()
             (out / "features-00009.geojson").write_text("{}")
-            sources.fetch(source, bounds, out, 13, GROUND, archive=tmp / "map.zip", work=tmp / "work")
-            pages = [[f["properties"] for f in json.loads(page.read_text())["features"]] for page in sorted(out.glob("features-*"))]
-            self.assertEqual(pages, [[{entry["field"]: value} for value in values[i:i + 2]] for i in range(0, len(values), 2)],
+            capture = lambda: sources.fetch(source, bounds, out, 13, GROUND, archive=tmp / "map.zip", work=tmp / "work")
+            pages = lambda: [[f["properties"] for f in json.loads(page.read_text())["features"]] for page in sorted(out.glob("features-*"))]
+            capture()
+            self.assertEqual(pages(), [[{entry["field"]: value} for value in values[i:i + 2]] for i in range(0, len(values), 2)],
                              "in id order, without the feature that the legend does not name, the one outside or the old page")
+            first = pages()
+            (tmp / "map.zip").unlink()
+            capture()
+            self.assertEqual(pages(), first, "a later capture reads the unpacked copy without the zip")
             return self.units(source, bounds, out)
 
     def arcgis(self, folder):

@@ -221,13 +221,14 @@ struct CleanPlan {
 
 impl CleanPlan {
     fn is_empty(&self) -> bool {
-        self.store.snapshots.is_empty() && self.store.objects.is_empty() && self.store.partial_bytes == 0
+        let gc = &self.store;
+        gc.snapshots.is_empty() && gc.objects.is_empty() && gc.partial_bytes == 0 && gc.unpacked.is_empty()
     }
 
     /// The one question before a clean.
     fn question(&self) -> String {
         let gc = &self.store;
-        match (gc.objects.len(), gc.snapshots.len(), gc.partial_bytes) {
+        match (gc.objects.len() + gc.unpacked.len(), gc.snapshots.len(), gc.partial_bytes) {
             (0, 0, 0) => "Nothing to clean.".into(),
             (0, 1, 0) => "Remove 1 record from the local store?".into(),
             (0, records, 0) => format!("Remove {records} records from the local store?"),
@@ -272,6 +273,7 @@ fn roots(root: &Path, store: &Store) -> Result<gc::Roots, Error> {
         releases.iter().for_each(|release| roots.add_release(&name, release));
     }
     roots.refreshed = store.refreshes()?.into_iter().map(|refreshed| (refreshed.source, refreshed.to)).collect();
+    roots.archived = crate::fetch::archive::Archive::from_env().and_then(|archive| archive.sha256s());
     Ok(roots)
 }
 
@@ -319,8 +321,11 @@ fn clean_text(store: &Store, plan: &CleanPlan) -> String {
     text += &format!("REMOVE FROM {}\n", store.root().display());
     gc.snapshots.iter().for_each(|snapshot| text += &format!("  snapshot {snapshot}\n"));
     gc.objects.iter().for_each(|(sha256, size)| text += &format!("  object {sha256}  {}\n", bytes(*size)));
-    text +=
-        &format!("  {} that nothing reaches, {}\n", gc::objects_text(gc.objects.len() as u64), bytes(gc.remove_bytes));
+    let objects = gc.objects.iter().map(|(_, size)| size).sum();
+    text += &format!("  {} that nothing reaches, {}\n", gc::objects_text(gc.objects.len() as u64), bytes(objects));
+    for (sha256, size) in &gc.unpacked {
+        text += &format!("  unpacked/{sha256}: its archive file is no longer listed, {}\n", bytes(*size));
+    }
     if gc.partial_bytes > 0 {
         text += &format!("  partial/: unfinished downloads and stopped steps, {}\n", bytes(gc.partial_bytes));
     }

@@ -3543,7 +3543,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "integer"
         },
         "remove_bytes": {
-          "description": "The size of `objects`.",
+          "description": "The size of `objects` and `unpacked`.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -3552,6 +3552,25 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "`source@version` of each snapshot record that nothing reaches.",
           "items": {
             "type": "string"
+          },
+          "type": "array"
+        },
+        "unpacked": {
+          "description": "The SHA-256 and size of each unpacked copy of an archive file that the archive no longer lists.",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            ],
+            "type": "array"
           },
           "type": "array"
         }
@@ -3563,7 +3582,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "remove_bytes",
         "keep_objects",
         "keep_bytes",
-        "partial_bytes"
+        "partial_bytes",
+        "unpacked"
       ],
       "type": "object"
     },
@@ -3694,7 +3714,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
       "properties": {
         "because": {
-          "description": "`served by TARGET, …`, `newest of the source`, `newest of a request`, `refreshed`, `inputs\nkept`, `release` or `fixture`.",
+          "description": "`served by TARGET, …`, `newest of the source`, `newest of a request`, `refreshed`, `inputs\nkept`, `release`, `fixture`, `in the archive` or `archive not read`.",
           "items": {
             "type": "string"
           },
