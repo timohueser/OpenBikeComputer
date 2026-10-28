@@ -227,7 +227,7 @@ impl NavPvt {
     }
 
     /// Whether this is a usable position fix: `fixType` 3 (3D) or 4 (GNSS + dead reckoning), and
-    /// `gnssFixOK`. Time-only (5) is not a position. A lenient bring-up gate; tighten with [`passes_quality`](NavPvt::passes_quality) once locks are reliable.
+    /// `gnssFixOK`. Time-only (5) is not a position.
     #[inline]
     pub fn is_valid_fix(&self) -> bool {
         matches!(self.fix_type, 3 | 4) && self.gnss_fix_ok()
