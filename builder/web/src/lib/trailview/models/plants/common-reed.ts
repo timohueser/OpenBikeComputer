@@ -82,5 +82,5 @@ export default {
     name: 'Common reed',
     latin: 'Phragmites australis',
     build: (season, seed) => commonReed(season, random(seed)),
-    ground: { on: ['wetland'], height: [1.5, 3], share: 0.5, habitat: 'lush', own: true, clumped: true },
+    ground: { on: ['wetland'], height: [1.5, 3], share: 0.5, own: true, clumped: true },
 } satisfies Plant;

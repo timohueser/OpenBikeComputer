@@ -10,6 +10,7 @@
   "snap": 0.4,
   "hazeKm": 35, "hazeHeight": 2500, "mistTop": 0,
   "softness": 0.08, "gradient": 0.35,
+  "turf": "heath",
   "outcrops": 0, "snow_share": 0.5, "turf_deg": 42,
   "rock": "#8c877d",
   "lithology": { "chalk": { "colour": "#efece3" } },

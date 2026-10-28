@@ -19,13 +19,13 @@ struct Plants {
     above: f32,
 }
 
-// Per material code (4 to a vec4) its cover, as COVER_ORDER of ground/rules.ts, MOOR at bit 8, and
-// at bit 16 the share of its cover's shrubs that stand on it in 255ths.
-// Then per region REGION_WORDS vec4: its flags (MOOR_REGION), its ground plants, its shrubs.
-// A ground plant: the first of its SEEDS models; the covers that it grows on as bits, HABITAT_MOOR,
-// HABITAT_LUSH, CLUMPED, and the salt of its stands at bit 16; its share (bits of an f32); its heights in metres (f16 pair). A shrub: its
-// model; its elevation band (f16 pair); its weight (bits of an f32); its heights (f16 pair). A model of
-// NO_PLANT ends a list.
+// Per material code (4 to a vec4) its cover, as COVER_ORDER of ground/rules.ts, and at bit 16 the
+// share of its cover's shrubs that stand on it in 255ths.
+// Then per region REGION_WORDS vec4: its ground plants, two vec4 each, then its shrubs.
+// A ground plant: the first of its SEEDS models; CLUMPED and the salt of its stands at bit 16; its
+// share (bits of an f32); its heights in metres (f16 pair); then the materials that it grows on as bits
+// of their codes. A shrub: its model; its elevation band (f16 pair); its weight (bits of an f32); its
+// heights (f16 pair). A model of NO_PLANT ends a list.
 struct Data {
     covers: array<vec4u, 16>,
     regions: array<vec4u>,
@@ -54,12 +54,8 @@ const SHRUB_SHARE: f32 = 0.5;
 // The shapes of a ground plant, as PLANT_SEEDS of the prototype.
 const SEEDS: u32 = 3u;
 const SLOTS: u32 = 16u;
-const REGION_WORDS: u32 = 33u;
-const MOOR: u32 = 256u;
-const MOOR_REGION: u32 = 1u;
-const HABITAT_MOOR: u32 = 1u << 12u;
-const HABITAT_LUSH: u32 = 1u << 13u;
-const CLUMPED: u32 = 1u << 14u;
+const REGION_WORDS: u32 = 3u * SLOTS;
+const CLUMPED: u32 = 1u;
 const NO_PLANT: u32 = 0xffffu;
 
 fn plant_hash(cell: vec2i, salt: u32) -> f32 {
@@ -130,26 +126,16 @@ fn ground_plants(@builtin(global_invocation_id) id: vec3u) {
     if ((ground.b + 1u) * REGION_WORDS > arrayLength(&data.regions)) {
         return;
     }
-    let cover = cover_of(ground.r);
     let region = ground.b * REGION_WORDS;
-    let moor = (data.regions[region].x & MOOR_REGION) != 0u;
     // The rarer plants come first in the list, so the common one does not take every spot.
     var pick = NO_PLANT;
     var plant = vec4u(0u);
     for (var k = 0u; k < SLOTS; k++) {
-        let p = data.regions[region + 1u + k];
+        let p = data.regions[region + 2u * k];
         if ((p.x & 0xffffu) == NO_PLANT) {
             break;
         }
-        let on = (p.y & (1u << (cover & 255u))) != 0u;
-        // In a region with moor, a moor plant also grows on its heath and bog, and a lush one only off them.
-        let heath = (cover & MOOR) != 0u;
-        var grows = on;
-        if (moor && (p.y & HABITAT_MOOR) != 0u) {
-            grows = heath && (on || (cover & 255u) == COVER_GRASS);
-        } else if (moor && (p.y & HABITAT_LUSH) != 0u) {
-            grows = !heath && on;
-        }
+        let grows = holds(data.regions[region + 2u * k + 1u].xy, ground.r);
         let share = bitcast<f32>(p.z) * select(1.0, 2.5 * smoothstep(0.55, 0.7, stand_of(u, f32(p.y >> 16u))), (p.y & CLUMPED) != 0u);
         if (grows && plant_hash(cell, 10u + k) < share) {
             pick = p.x & 0xffffu;
@@ -206,7 +192,7 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     // Shrubs keep to their elevation band, where any shrub fits there; then by weight.
-    let region = ground.b * REGION_WORDS + 1u + SLOTS;
+    let region = ground.b * REGION_WORDS + 2u * SLOTS;
     var total = vec2f(0.0);
     for (var k = 0u; k < SLOTS; k++) {
         let p = data.regions[region + k];

@@ -5,7 +5,7 @@
 // Herds: one workgroup per herd cell of HERD_SHIFT. A cell holds the groups of each herd of the region
 // at its middle, as many per area as the pack's groups per eye's circle of 400 m; a group stands where
 // its middle's material is one that the herd grazes, its animals about it on such material too.
-// Rocks: one thread per point of a grid of ROCK_SHIFT, jittered: a rock stands on open or rocky
+// Rocks: one thread per point of a grid of ROCK_SHIFT, jittered: a rock stands on rough or rocky
 // ground as the region's outcrops, the slope and the hardness of the rock under it say.
 // #include ../terrain/drawn-mesh.wgsl
 // #include ../ground/look.wgsl
@@ -56,10 +56,6 @@ const STEEPEST: f32 = 0.85;
 // Things keep this far off a road, a path or a track.
 const ROAD_CLEAR_M: f32 = 1.0;
 
-fn grazes(herd: Herd, material: u32) -> bool {
-    return material < 64u && ((herd.grazes[material >> 5u] >> (material & 31u)) & 1u) == 1u;
-}
-
 var<workgroup> cell_region: u32;
 
 @compute @workgroup_size(64)
@@ -88,7 +84,7 @@ fn herds_of(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index
             }
             let middle = corner + vec2i(vec2f(unit_float(mix_bits(h + 1u)), unit_float(mix_bits(h + 2u))) * f32(size));
             let centre = lod_space(vec2f(middle - surface.anchor));
-            if (length(centre) > dressing.reach.x || !grazes(herd, finest_cell(centre).r)) {
+            if (length(centre) > dressing.reach.x || !holds(herd.grazes, finest_cell(centre).r)) {
                 continue;
             }
             let count = u32(herd.size.x + unit_float(mix_bits(h + 3u)) * (herd.size.y - herd.size.x + 1.0));
@@ -97,7 +93,7 @@ fn herds_of(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index
                 let a = mix_bits(h ^ (i * 2654435761u));
                 let at = middle + vec2i((vec2f(unit_float(mix_bits(a + 5u)), unit_float(mix_bits(a + 6u))) - 0.5) * spread);
                 let s = lod_space(vec2f(at - surface.anchor));
-                if (length(s) < CLEAR_M || !grazes(herd, finest_cell(s).r) || kept_off(s, ROAD_CLEAR_M)) {
+                if (length(s) < CLEAR_M || !holds(herd.grazes, finest_cell(s).r) || kept_off(s, ROAD_CLEAR_M)) {
                     continue;
                 }
                 let ground = stand_height(s, at);
@@ -134,7 +130,7 @@ fn rocks_of(@builtin(global_invocation_id) id: vec3u) {
     let cell = cell_at(s, u32(ceil(lod(s))));
     let kinds = rule(cell.b, slot_kinds() + i32(cell.r));
     let outcrops = rule(cell.b, slot_cliff() + 3).x;
-    // Open ground or exposed rock: kinds.a open, kinds.z rocky.
+    // Rough ground or exposed rock: kinds.a rough, kinds.z rocky.
     if ((kinds.a == 0.0 && kinds.z == 0.0) || outcrops <= 0.0) {
         return;
     }
