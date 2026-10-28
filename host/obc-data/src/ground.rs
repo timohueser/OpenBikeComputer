@@ -51,13 +51,14 @@ impl GroundSource {
     /// capture request names it, so a stored capture with other keys is not read again.
     pub fn capture_digest(&self) -> String {
         let filtered = self.keys.get("protocol").and_then(Value::as_str) == Some("arcgis-features");
-        let keys: BTreeMap<&str, &Value> = self
+        let keys: serde_json::Map<String, Value> = self
             .keys
             .iter()
             .filter(|(key, _)| CAPTURE_KEYS.contains(&key.as_str()) || (filtered && key.as_str() == "legend"))
-            .map(|(key, value)| (key.as_str(), value))
+            .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
-        let text = serde_json::to_string(&keys).expect("JSON values serialize");
+        // Nested objects keep their order where a build enables `serde_json/preserve_order`.
+        let text = serde_json::to_string(&crate::engine::sorted(Value::Object(keys))).expect("JSON values serialize");
         crate::store::sha256_hex(text.as_bytes())[..12].to_string()
     }
 }
@@ -76,6 +77,11 @@ mod tests {
             entry(r#"{"source": "x", "protocol": "arcgis-features", "field": "G", "combine": "authority"}"#)
         );
         assert_ne!(base, entry(r#"{"source": "x", "protocol": "arcgis-features", "field": "F", "zoom": 11}"#));
+        assert_eq!(
+            entry(r#"{"source": "x", "protocol": "arcgis-features", "legend": {"match": "word", "classes": []}}"#),
+            entry(r#"{"source": "x", "protocol": "arcgis-features", "legend": {"classes": [], "match": "word"}}"#),
+            "the order of a legend's keys does not change the digest"
+        );
         let image = |legend: &str| {
             entry(&format!(
                 r#"{{"source": "x", "protocol": "arcgis-image", "legend": {{"classes": [["1", "{legend}"]]}}}}"#
