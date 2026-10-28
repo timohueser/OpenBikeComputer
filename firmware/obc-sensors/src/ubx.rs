@@ -226,11 +226,11 @@ impl NavPvt {
         })
     }
 
-    /// Whether this is a usable position fix: `fixType >= 3 && gnssFixOK`. A lenient bring-up
-    /// gate; tighten with [`passes_quality`](NavPvt::passes_quality) once locks are reliable.
+    /// Whether this is a usable position fix: `fixType` 3 (3D) or 4 (GNSS + dead reckoning), and
+    /// `gnssFixOK`. Time-only (5) is not a position. A lenient bring-up gate; tighten with [`passes_quality`](NavPvt::passes_quality) once locks are reliable.
     #[inline]
     pub fn is_valid_fix(&self) -> bool {
-        self.fix_type >= 3 && self.gnss_fix_ok()
+        matches!(self.fix_type, 3 | 4) && self.gnss_fix_ok()
     }
 
     /// Optional accuracy gate on top of [`is_valid_fix`](NavPvt::is_valid_fix): horizontal
@@ -453,6 +453,10 @@ mod tests {
         // 3D but gnssFixOK clear (receiver says don't trust it) → also None.
         let p = nav_pvt_payload(3, 0x00, 1, 2, 0, 0);
         assert_eq!(parse_nav_pvt(&p).unwrap().to_fix(), None);
+        // Time-only (5) carries no position, even with gnssFixOK set; 3D and GNSS + dead
+        // reckoning (4) do.
+        assert!(!parse_nav_pvt(&nav_pvt_payload(5, 0x01, 1, 2, 0, 0)).unwrap().is_valid_fix());
+        assert!(parse_nav_pvt(&nav_pvt_payload(4, 0x01, 1, 2, 0, 0)).unwrap().is_valid_fix());
     }
 
     #[test]
