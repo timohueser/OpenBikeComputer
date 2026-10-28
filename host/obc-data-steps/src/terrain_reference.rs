@@ -19,7 +19,7 @@ use obc_dem::reference::TILE_LOG2;
 use obc_map_core::grid::CellId;
 
 use crate::device::box_poly;
-use crate::prepared_tiles::{self, outline, outlines, poly, read_on_day, regions, reuse, Tile};
+use crate::prepared_tiles::{self, outline, outlines, poly, read_on_day, regions, reuse, Tile, RUNNING};
 
 /// The id of the prepared source.
 pub const ID: &str = "terrain";
@@ -124,7 +124,7 @@ impl Prepared for TerrainReference {
         let models: BTreeMap<String, String> =
             keys.iter().map(|(tile, keys)| (format!("{:04}-{:04}", tile.i, tile.j), keys.join(","))).collect();
         let base = job.state.join("base");
-        let digests = prepared_tiles::make(job, &tiles, |job, name| {
+        let digests = prepared_tiles::make(job, &tiles, RUNNING, |job, name| {
             let mut command = (self.ingest)(job.root)?;
             // A folder per tile: `fetch` removes its `--work` at the end, and tiles run at once.
             command.args(["fetch", &models[name], "--tile", name, "--work"]).arg(job.state.join("raw").join(name));

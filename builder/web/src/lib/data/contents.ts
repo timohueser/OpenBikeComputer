@@ -50,8 +50,9 @@ export const CONTENTS: Content[] = [
         title: "Trail View",
         about: "3D ground, roads, water and colour",
         layers: ["trailview-features", "trailview-rules", "trailview-ground", "trailview-colour"],
-        credentials: ["sentinel-2-mosaics"],
+        credentials: [],
         terrain: true,
+        reference: { source: "colour", required: true, without: "no colour" },
     },
     {
         id: "trailview-canopy",

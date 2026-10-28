@@ -195,11 +195,13 @@ class MaterialTest(unittest.TestCase):
             # CORINE: natural grassland in the north, heath in the south, at 100 m.
             mid_y = Transformer.from_crs("EPSG:4326", "EPSG:3035", always_xy=True).transform(mid_lon, mid_lat)[1]
             clc = corine(root / "corine.tif", around, lambda x, y: np.where(y > mid_y, 321, 322))
-            files = {"esa-worldcover": {"worldcover.tif": worldcover}, "sentinel-2-mosaics": mosaics, "corine-land-cover": clc}
+            block = colour.block_path(2025, X10, Y10)
+            colour.write(colour.mosaics(mosaics), (X10, Y10), root / block)
+            files = {"esa-worldcover": {"worldcover.tif": worldcover}, "colour": {block: root / block}, "corine-land-cover": clc}
             bounds = [west, south, west + 0.9 * (east - west), north]
             steps = sources.chain("material", GROUND, VOCABULARY, files.get, bounds, osm)
             no_rock = lambda z, x, y: np.zeros((tiles.TILE, tiles.TILE), np.uint8)
-            texels = ground.Material(bounds, steps, colour.mosaics(mosaics), no_rock)(Z, X, Y)
+            texels = ground.Material(bounds, steps, colour.Prepared(files["colour"], 2025), no_rock)(Z, X, Y)
         n, w, s, e = 100, 100, 412, 300
         self.assertEqual(texels[n, w].tolist(), [M["needleleaf-forest"], 0])
         self.assertEqual(texels[s, w, 0], M["forest"], "heath does not name a forest more precisely")

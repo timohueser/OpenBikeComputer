@@ -44,29 +44,6 @@ pub(crate) fn run(
                 },
             )
         }
-        "sentinel-2-mosaics" => {
-            let [bbox, year] = values(request, ["bbox", "year"])?;
-            let bbox = parse_bbox(bbox)?;
-            if !self::year(year) {
-                return Err(format!("`year={year}` is not a year"));
-            }
-            capture(
-                store,
-                request,
-                &format!("bbox={bbox}&year={year}"),
-                &[source],
-                |_| &[0],
-                false,
-                None,
-                |_, out| {
-                    let mut command = python(root, Some("trailview"))?;
-                    command
-                        .args(["-m", "tools.trailview.colour", &format!("--bounds={bbox}"), "--year", year, "--fetch"])
-                        .arg(out);
-                    Ok(command)
-                },
-            )
-        }
         "corine-land-cover" => {
             let [] = values(request, [])?;
             // The dataset CLC 2018 and its prepackaged raster of Europe.
