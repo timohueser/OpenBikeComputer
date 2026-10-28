@@ -66,8 +66,8 @@ pub struct Listed {
     /// The path under the root.
     pub path: String,
     pub bytes: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sha256: Option<String>,
+    /// Required: a manifest with a file without it does not serve.
+    pub sha256: String,
     /// The upstream `Last-Modified` day.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modified: Option<String>,
@@ -119,7 +119,7 @@ struct Entry {
     /// The index of its root.
     root: usize,
     bytes: u64,
-    sha256: Option<String>,
+    sha256: String,
     day: Option<Arc<str>>,
 }
 
@@ -129,7 +129,7 @@ pub struct Held {
     pub path: String,
     pub file: PathBuf,
     /// Lowercase hex.
-    pub sha256: Option<String>,
+    pub sha256: String,
     /// The upstream `Last-Modified` day of the file, or else the version of its dataset when that
     /// is a day.
     pub day: Option<String>,
@@ -203,12 +203,13 @@ impl Held {
     }
 
     fn check(&self, sha256: &str) -> Result<(), String> {
-        match self.sha256.as_deref().filter(|want| *want != sha256) {
-            Some(want) => Err(format!(
-                "{MISMATCH}{}: the SHA-256 is {sha256}, but its manifest lists {want}",
-                self.file.display()
+        match self.sha256 == sha256 {
+            true => Ok(()),
+            false => Err(format!(
+                "{MISMATCH}{}: the SHA-256 is {sha256}, but its manifest lists {}",
+                self.file.display(),
+                self.sha256
             )),
-            None => Ok(()),
         }
     }
 
@@ -301,7 +302,7 @@ fn read_manifests(dir: &Path, root: usize, listing: &mut Listing) {
             listing.clms.entry((dataset, file)).or_insert_with(|| zip.path.clone());
         }
         for file in files {
-            let sha256 = file.sha256.map(|sha256| sha256.to_ascii_lowercase());
+            let sha256 = file.sha256.to_ascii_lowercase();
             let day = file.modified.map(Into::into).or_else(|| version.clone());
             let entry = Entry { root, bytes: file.bytes, sha256, day };
             listing.files.entry(file.path).or_insert(entry);
@@ -328,14 +329,14 @@ mod tests {
             std::fs::write(root.join("mirror/example.org/x"), bytes).unwrap();
         }
         std::fs::write(scratch.0.join("outside.zip"), b"z").unwrap();
-        let outside = r#"{"path": "../outside.zip", "bytes": 1}"#;
+        let outside = r#"{"path": "../outside.zip", "bytes": 1, "sha256": "aa"}"#;
         let x = r#"{"path": "mirror/example.org/x", "bytes": 1, "sha256": "AB", "modified": "2026-10-05"}"#;
         let manifest = format!(r#"{{"version": "v1", "files": [{outside}, {x}]}}"#);
         std::fs::write(first.join("manifest/x.json"), manifest).unwrap();
         let clms =
             format!(r#"{{"version": "v1", "clms_dataset_uid": "d", "clms_file_id": "f", "files": [{outside}]}}"#);
         std::fs::write(first.join("manifest/clms.json"), clms).unwrap();
-        let y = r#"{"path": "mirror/example.org/x", "bytes": 2}, {"path": "mirror/example.org/y", "bytes": 2}"#;
+        let y = r#"{"path": "mirror/example.org/x", "bytes": 2, "sha256": "aa"}, {"path": "mirror/example.org/y", "bytes": 2, "sha256": "aa"}"#;
         std::fs::write(second.join("manifest/x.json"), format!(r#"{{"version": "2026-10-02", "files": [{y}]}}"#))
             .unwrap();
         std::fs::write(second.join("mirror/example.org/y"), b"yy").unwrap();
@@ -345,14 +346,13 @@ mod tests {
         )
         .unwrap();
         std::fs::write(second.join("mirror/example.org/z"), b"z").unwrap();
+        let unhashed = r#"{"version": "v1", "files": [{"path": "mirror/example.org/w", "bytes": 1}]}"#;
+        std::fs::write(second.join("manifest/unhashed.json"), unhashed).unwrap();
+        std::fs::write(second.join("mirror/example.org/w"), b"w").unwrap();
 
         let archive = Archive::new(vec![first, second.clone()]);
         let held = archive.find("https://example.org/x").unwrap();
-        assert_eq!(
-            (held.sha256.as_deref(), held.day.as_deref()),
-            (Some("ab"), Some("2026-10-05")),
-            "the first root serves"
-        );
+        assert_eq!((held.sha256.as_str(), held.day.as_deref()), ("ab", Some("2026-10-05")), "the first root serves");
         let held = archive.find("https://example.org/y").unwrap();
         assert_eq!(
             (held.file, held.day.as_deref()),
@@ -360,6 +360,10 @@ mod tests {
             "the day of the dataset"
         );
         assert!(archive.find("https://example.org/z").is_none(), "a manifest without `version` never serves");
+        assert!(
+            archive.find("https://example.org/w").is_none(),
+            "a manifest with a file without `sha256` never serves"
+        );
         for url in ["http://example.org/x", "https://example.org/x?a=1", "https://example.org/y/../x"] {
             assert!(archive.find(url).is_none(), "{url}");
         }

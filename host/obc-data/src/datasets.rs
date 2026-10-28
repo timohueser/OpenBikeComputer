@@ -144,7 +144,7 @@ impl Dataset {
             return version.clone();
         }
         let found = match self.scheme {
-            Some(VersionScheme::Digest) => files.first().and_then(|file| file.sha256.clone()),
+            Some(VersionScheme::Digest) => files.first().map(|file| file.sha256.clone()),
             _ => files.iter().filter_map(|file| file.modified.clone()).max(),
         };
         found.or_else(|| before.map(str::to_string)).unwrap_or_else(|| today.to_string())
@@ -215,7 +215,12 @@ fn list(http: &Http, dataset: &Dataset, root: &Path) -> Result<Vec<Item>, String
 }
 
 fn walk(dir: &Path, root: &Path, items: &mut Vec<Item>) -> Result<(), String> {
-    let Ok(entries) = fs::read_dir(dir) else { return Ok(()) };
+    // Only a folder that is not there has no files: a folder that cannot be read fails the get.
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    };
     for entry in entries {
         let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
         let (path, kind) = (entry.path(), entry.file_type().map_err(|e| e.to_string())?);
@@ -475,7 +480,7 @@ fn unchanged(old: &Listed, item: &Item) -> bool {
 
 /// The recorded SHA-256 of each file of a kept dataset, of its `files` and of its `missing`.
 fn recorded<'a>(dataset: &Dataset, old: &'a Manifest) -> HashMap<&'a str, &'a str> {
-    let files = old.files.iter().filter_map(|file| Some((file.path.as_str(), file.sha256.as_deref()?)));
+    let files = old.files.iter().map(|file| (file.path.as_str(), file.sha256.as_str()));
     let missing = old.missing.iter().filter_map(|file| Some((file.path.as_str(), file.sha256.as_deref()?)));
     files.chain(missing).filter(|_| dataset.kept).collect()
 }
@@ -519,7 +524,7 @@ fn take(
     let listed = |sha256, bytes| Listed {
         path: item.path.clone(),
         bytes,
-        sha256: Some(sha256),
+        sha256,
         modified: item.modified.clone(),
         etag: item.etag.clone(),
     };
@@ -649,7 +654,7 @@ pub fn verify(store: &Store, roots: &[PathBuf], id: &str) -> Result<Vec<Missing>
                 eprintln!("obc data: warning: {}: {e}", file.display());
             }
         }
-        let sha256 = listed.sha256.clone().filter(|_| kept);
+        let sha256 = kept.then(|| listed.sha256.clone());
         bad.push(Missing { path: listed.path.clone(), bytes: Some(listed.bytes), sha256, error });
         false
     });
@@ -665,12 +670,12 @@ fn differs(root: &Path, listed: &Listed) -> Option<String> {
     if !in_place(root, listed) {
         return Some(format!("not in place with {} bytes", listed.bytes));
     }
-    match (store::hash_file(&root.join(&listed.path)), &listed.sha256) {
-        (Err(error), _) => Some(error),
-        (Ok((sha256, _)), Some(want)) if !want.eq_ignore_ascii_case(&sha256) => {
-            Some(format!("the SHA-256 is {sha256}, but the manifest lists {want}"))
+    match store::hash_file(&root.join(&listed.path)) {
+        Err(error) => Some(error),
+        Ok((sha256, _)) if !listed.sha256.eq_ignore_ascii_case(&sha256) => {
+            Some(format!("the SHA-256 is {sha256}, but the manifest lists {}", listed.sha256))
         }
-        _ => None,
+        Ok(_) => None,
     }
 }
 
@@ -782,6 +787,7 @@ pub fn row(dataset: &Dataset, roots: &[PathBuf]) -> ArchiveDataset {
     }
     row.listed = manifest.files.len() + manifest.missing.len();
     (row.version, row.got) = (manifest.version, manifest.got);
+    // A get that lists no file names no dataset: a wrong prefix or an empty folder.
     row.state =
         if row.listed > 0 && row.verified == row.listed { DatasetState::Complete } else { DatasetState::Incomplete };
     row
@@ -884,7 +890,7 @@ mod tests {
         let old = Listed {
             path: "p".into(),
             bytes: 4,
-            sha256: None,
+            sha256: String::new(),
             modified: Some("2026-10-05".into()),
             etag: Some("\"a\"".into()),
         };
@@ -991,7 +997,7 @@ mod tests {
         let got = get(&http, &store, &dataset, &roots, None).unwrap();
         assert_eq!(got.root, root, "the root that has kept/x/");
         let listed = &got.manifest.files[0];
-        assert_eq!((listed.path.as_str(), listed.sha256.clone()), ("kept/x/a/1.tif", Some(store::sha256_hex(b"one"))));
+        assert_eq!((listed.path.as_str(), listed.sha256.clone()), ("kept/x/a/1.tif", store::sha256_hex(b"one")));
         assert_eq!(got.manifest.version.as_deref(), Some("2026-10-28"));
 
         std::fs::write(root.join("kept/x/a/1.tif"), b"oNe").unwrap();
@@ -1012,5 +1018,27 @@ mod tests {
         assert!(err.contains("mount its drive"), "{err}");
         let status = status(std::slice::from_ref(&dataset), &registry, &gone);
         assert_eq!((status.roots[0].free_bytes, status.datasets[0].state), (None, DatasetState::Complete));
+    }
+
+    #[test]
+    fn a_kept_folder_that_cannot_be_read_fails_the_get_and_an_empty_listing_is_incomplete() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new("datasets-unreadable");
+        let root = scratch.0.join("archive");
+        let locked = root.join("kept/x/locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("1.tif"), b"one").unwrap();
+        let registry = Registry::load(&repository()).unwrap();
+        let text = "name = \"x\"\nsources = [\"corine-land-cover\"]\ncoverage = \"Europe\"\nversion = \"2026-10-28\"\nkept = true\n";
+        let dataset = parse("x", text, &registry).unwrap();
+        let (roots, store) = (vec![root.clone()], Store::at(scratch.0.join("store")));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = get(&Http::with_backoff(Duration::ZERO), &store, &dataset, &roots, None).map(|_| ());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result.unwrap_err().contains("locked"), "a folder that cannot be read is no empty folder");
+
+        std::fs::create_dir_all(root.join("manifest")).unwrap();
+        std::fs::write(root.join("manifest/x.json"), r#"{"version": "2026-10-28", "files": []}"#).unwrap();
+        assert_eq!(row(&dataset, &roots).state, DatasetState::Incomplete, "a listing without files");
     }
 }

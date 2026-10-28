@@ -476,7 +476,7 @@ The version of a dataset:
 | `sources`, `name`, `coverage`, `notes` | As the definition has them |
 | `version` | The version of the dataset |
 | `got` | The day of the last `archive get`, `YYYY-MM-DD` in UTC |
-| `files` | Each verified file: `path` under the root, `bytes`, `sha256`, and, when upstream gives them, `modified`, its `Last-Modified` day, and `etag`, the `ETag` of a bucket listing |
+| `files` | Each verified file: `path` under the root, `bytes`, `sha256`, and, when upstream gives them, `modified`, its `Last-Modified` day, and `etag`, the `ETag` of a bucket listing. A file without `sha256` makes the manifest unreadable |
 | `missing` | Each listed file that the root does not hold: `path`, `bytes` when known, `error`, and for a kept file the `sha256` that the manifest recorded |
 | `clms_dataset_uid`, `clms_file_id` | The `dataset` and `file` of `clms` |
 
@@ -491,14 +491,17 @@ The version of a dataset:
   `.partial/<dataset>/` of a get that stopped before it wrote one. Else, for a kept
   dataset, the first root that has `kept/<dataset>/`; for another dataset, the first root that has
   the free space for the listed bytes and 4 GiB more.
-- The listing: for each URL, a `HEAD` request for its `Content-Length`, `ETag` and `Last-Modified`;
+- The listing: for each URL, a `HEAD` request for its `Content-Length` and `Last-Modified`;
   for each `s3` table, the pages of the bucket listing, with the size, the `ETag` and the
   `LastModified` of each object, each page with the retries of [Fetch](#fetch). A page that fails
   fails the get, and the manifest stays as it was. A key that names no plain path is left out with
-  a warning. For a kept dataset, each file under `kept/<dataset>/`. The listing is the list of the
-  files of the dataset: a file that upstream removes leaves the manifest.
+  a warning. For a kept dataset, each file under `kept/<dataset>/`; a folder there that cannot be
+  read fails the get. The listing is the list of the files of the dataset: a file that upstream
+  removes leaves the manifest.
 - A file of the manifest that is in place with its `bytes` stays without a download when upstream
-  gives its size, its `ETag` and its `Last-Modified` day, as far as upstream gives them.
+  gives its size, its `ETag` and its `Last-Modified` day, as far as upstream gives them. Only a
+  bucket listing gives the `ETag`: the `ETag` of a `HEAD` can differ from one request to the next
+  and from that of a `GET`.
 - A file on disk with the `Content-Length` and the `Last-Modified` day of upstream as its size and
   modification day is read in place once.
 - Each other file downloads into `.partial/<dataset>/` with the retries and the resume of
@@ -531,9 +534,9 @@ that the last get listed, the verified files and their bytes. It also names each
 | State | When |
 | --- | --- |
 | `complete` | Each listed file is verified |
-| `incomplete` | A listed file is missing |
+| `incomplete` | A listed file is missing, or the last get listed no file |
 | `absent` | No root has the manifest |
-| `unreadable` | The manifest cannot be read, or has no `version`: no file of it serves |
+| `unreadable` | The manifest cannot be read, has a file without `sha256`, or has no `version`: no file of it serves |
 
 #### Read
 
@@ -552,7 +555,8 @@ that the last get listed, the verified files and their bytes. It also names each
 An `http`, `glo30` or `github` fetch looks for the file of each URL that the store does not have,
 before it downloads. The day of a file stands for `Last-Modified`: its `modified`, or else the
 version of its dataset when that is a day. For a `date` source without a version, the latest day of
-its files is the version, and no request goes upstream. The archive file serves when it is the
+its files is the version. Only a URL that the archive has no day for gets a `HEAD` request upstream,
+so a fetch offline needs a day in the archive for each of its URLs. The archive file serves when it is the
 version: its SHA-256 is that of the record of the version or of the `digest` version, or else its
 day is on or before the day of a date version. Otherwise the fetch writes why and downloads the
 file. So a GLO-30 tile, which the fetch reads at the `start` `2022-05-09`, serves only when its day
