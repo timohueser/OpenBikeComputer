@@ -51,6 +51,12 @@ const SPREAD_M: f32 = 14.0;
 const CLEAR_M: f32 = 6.0;
 // Rocks: their heights, their kinds, and the slope past which no boulder lies.
 const ROCK_HEIGHT_M: vec2f = vec2f(0.25, 1.3);
+// The ground in square metres that a rock point stands for, whatever its cell's size at the eye's
+// latitude, so rocks per square metre are the same everywhere.
+const ROCK_POINT_M2: f32 = 12.0;
+// A rock grows from nothing at the reach to its full size within 0.5 to 1 times ROCK_GROW_M of it, by
+// its hash: no ring of rocks shows where they start.
+const ROCK_GROW_M: f32 = 100.0;
 const SLABS: u32 = 3u;
 const STEEPEST: f32 = 0.85;
 // Things keep this far off a road, a path or a track.
@@ -137,7 +143,8 @@ fn rocks_of(@builtin(global_invocation_id) id: vec3u) {
     let hardness = rule(cell.b, slot_hardness() + i32(cell.g)).x;
     // As the prototype's near field: hard rock breaks through even on level ground; mapped rock shows as rocks.
     let mapped = 0.9 * kinds.z * smoothstep(0.0, 0.6, outcrops) * smoothstep(0.2, 0.6, hardness);
-    let pick = unit_float(mix_bits(h + 3u)) / 0.55;
+    let side = f32(1 << ROCK_SHIFT) * surface.unit;
+    let pick = unit_float(mix_bits(h + 3u)) * ROCK_POINT_M2 / (0.55 * side * side);
     if (pick > max(outcrops * (0.3 + 1.4 * hardness), mapped)) {
         return;
     }
@@ -152,6 +159,7 @@ fn rocks_of(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let shape = select(SLABS + mix_bits(h + 4u) % SLABS, mix_bits(h + 5u) % SLABS, unit_float(mix_bits(h + 6u)) < 0.7);
-    let tall = ROCK_HEIGHT_M.x + pow(unit_float(mix_bits(h + 7u)), 2.0) * (ROCK_HEIGHT_M.y - ROCK_HEIGHT_M.x);
+    let grow = min((dressing.reach.y - d) / (ROCK_GROW_M * (0.5 + 0.5 * unit_float(mix_bits(h + 10u)))), 1.0);
+    let tall = grow * (ROCK_HEIGHT_M.x + pow(unit_float(mix_bits(h + 7u)), 2.0) * (ROCK_HEIGHT_M.y - ROCK_HEIGHT_M.x));
     emit(dressing.rock_model + shape, s, ground, tall, 6.2831853 * unit_float(mix_bits(h + 8u)), 1.0, 0.85 + 0.3 * unit_float(mix_bits(h + 9u)), 1.0);
 }

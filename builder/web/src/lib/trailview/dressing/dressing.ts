@@ -10,7 +10,7 @@ import { rock } from '../models/rocks';
 import { bits, named, type Rules } from '../rules/regions';
 
 /** Herds stand within this many metres, rocks within this many; as HERDS and SLABS of dressing.wgsl. */
-const HERD_REACH_M = 1500, ROCK_REACH_M = 300, HERDS = 4, SLABS = 3;
+const HERD_REACH_M = 1500, ROCK_REACH_M = 400, HERDS = 4, SLABS = 3;
 /** Units along a herd cell and a rock point's cell, as HERD_SHIFT and ROCK_SHIFT of dressing.wgsl. */
 const HERD_CELL = 2 ** 14, ROCK_CELL = 2 ** 7;
 /** Words of `Herd` and bytes of `Dressing` in dressing.wgsl. */
@@ -32,7 +32,8 @@ export class Dressing implements Producer {
     constructor(rules: Rules, private readonly instances: Instances) {
         instances.produce(this);
         const spec = (model: Model, until: number) => ({ tiers: [{ mesh: geometry(model), until }] });
-        this.rockModel = instances.add(...(['slab', 'boulder'] as const).flatMap(name => Array.from({ length: SLABS }, (_, k) => spec(rock(name, k + 1), ROCK_REACH_M))));
+        // Rocks end at the reach with no fade of their tier: dressing.wgsl grows them in from it.
+        this.rockModel = instances.add(...(['slab', 'boulder'] as const).flatMap(name => Array.from({ length: SLABS }, (_, k) => ({ ...spec(rock(name, k + 1), ROCK_REACH_M), fade: 0 }))));
         const breeds = new Map<string, number>(), used = new Set(rules.regions.flatMap(region => region.herds.map(herd => herd.model)).filter(name => name in BREEDS));
         for (const name of used) {
             const first = instances.add(...BREEDS[name].coats.map((_, coat) => spec(animal(name, coat), HERD_REACH_M)));
