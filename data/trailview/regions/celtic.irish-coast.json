@@ -15,6 +15,7 @@
    "scree": { "colour": "#7a7553" },
    "heath": { "colour": "#5d5538", "satellite": 0 },
    "bog": { "colour": "#6f5f3e", "satellite": 0 },
+   "bracken": { "colour": { "winter": "#6a563e", "spring": "#695d3f", "summer": "#666c3f", "autumn": "#735a40" }, "satellite": 0.3 },
    "rough-grass": { "colour": "#6c6a4a", "satellite": 0 },
    "wet-grassland": { "colour": "#6c6a4a" },
    "pasture": { "colour": "#5c7a43", "satellite": 0 }
