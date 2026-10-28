@@ -11,9 +11,11 @@
 @group(1) @binding(2) var atlas_sampler: sampler;
 // Per model its layer of the atlas.
 @group(1) @binding(3) var<uniform> slots: array<vec4u, 64>;
-// Per model and frame the outline that holds the model in the frame and its neighbours (outlines of
-// instances.ts): its bottom and top in the frame, and its half widths there.
+// Per model and frame the outline that holds the model in the frame (outlines of instances.ts): its
+// bottom and top in the frame, and its half widths there.
 @group(1) @binding(4) var<storage, read> outlines: array<vec4f>;
+// Per layer, mip level and frame, the alpha above which a texel draws (cover of impostor-mips.wgsl).
+@group(1) @binding(5) var<storage, read> covers: array<f32>;
 
 // A crown whose base lies this share of the height up stands on a trunk that its impostor shows.
 const TRUNK_SHARE: f32 = 0.1;
@@ -27,8 +29,8 @@ struct ImpostorOut {
     @location(7) air: vec3f,
     // The point of the quad in the frame, -1 to 1.
     @location(1) corner: vec2f,
-    // The direction toward the eye in the model's frame, and its turn (cos, sin).
-    @location(2) toward: vec3f,
+    // The frame of the direction toward the eye, and the instance's turn (cos, sin).
+    @location(2) @interpolate(flat) at: vec2f,
     @location(3) @interpolate(flat) turn: vec2f,
     @location(4) @interpolate(flat) look: u32,
     @location(5) @interpolate(flat) slot: u32,
@@ -39,9 +41,8 @@ struct ImpostorOut {
     @location(9) @interpolate(flat) ground: u32,
     @location(10) @interpolate(flat) tie: f32,
     @location(11) @interpolate(flat) model: u32,
-    // How the crown wears the ground's colour (wear_of of draw.wgsl), and the distance of its centre.
-    @location(12) @interpolate(flat) wear: f32,
-    @location(13) @interpolate(flat) far: f32,
+    // The share of the satellite's colour (satellite_share of draw.wgsl).
+    @location(12) @interpolate(flat) satellite: f32,
 }
 
 @vertex
@@ -62,10 +63,9 @@ fn impostor_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> Imposto
     // A frame spans the sphere's diameter.
     let texels = FRAME_TEXELS * far * frame.pixel / (look.screen.z * 2.0 * r);
     let level = clamp(log2(max(texels, 1.0)), 0.0, ATLAS_LEVELS - 1.0);
-    // The quad holds only the part of the frame that the model covers: the outline of the frame that
-    // holds the direction, which holds its neighbours too, as the fragments pick them, and 1.5 texels of
-    // the coarser level that the sample blends about it: half a texel to the centre of the last texel
-    // that the model covers, one that the bilinear filter reaches past it.
+    // The quad holds only the part of the frame that the model covers: the outline of the frame nearest
+    // the direction, and 1.5 texels of the coarser level that the sample blends about it: half a texel
+    // to the centre of the last texel that the model covers, one that the bilinear filter reaches past it.
     let margin = exp2(ceil(level)) * 3.0 / FRAME_TEXELS;
     let at = clamp(vec2i(round(hemi_encode(toward) * (FRAMES - 1.0))), vec2i(0), vec2i(i32(FRAMES) - 1));
     let outline = outlines[model * u32(FRAMES * FRAMES) + u32(at.y * i32(FRAMES) + at.x)];
@@ -88,15 +88,14 @@ fn impostor_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> Imposto
     out.fog = haze.fog;
     out.air = haze.air;
     out.corner = corner;
-    out.toward = toward;
+    out.at = vec2f(at);
     out.turn = t;
     out.look = i.look;
     out.slot = slots[model / 4u][model % 4u];
     out.ground = i.ground;
     out.tie = m.tie;
     out.model = model;
-    out.wear = wear_of(m, i.ground);
-    out.far = far;
+    out.satellite = satellite_share(m, i.ground, far);
     out.tint = (0.75 + 0.5 * f32(i.look & 255u) / 255.0) * far_tone(m, far);
     out.level = level;
     return out;
@@ -107,13 +106,12 @@ fn impostor_fragment(in: ImpostorOut) -> @location(0) vec4f {
     if (!kept(in.clip.xy, in.look)) {
         discard;
     }
-    // The frame of the nearest direction, blended with its neighbours by a dither that the resolve averages.
-    let at = clamp(floor(hemi_encode(in.toward) * (FRAMES - 1.0) + vec2f(dither(in.clip.xy + vec2f(13.0, 59.0)), dither(in.clip.xy + vec2f(71.0, 5.0)))), vec2f(0.0), vec2f(FRAMES - 1.0));
-    let uv = (at + 0.5 + vec2f(0.5 * in.corner.x, -0.5 * in.corner.y)) / FRAMES;
+    let uv = (in.at + 0.5 + vec2f(0.5 * in.corner.x, -0.5 * in.corner.y)) / FRAMES;
     let albedo = textureSampleLevel(atlas_albedo, atlas_sampler, uv, in.slot, in.level);
-    // The cover of a coarser level is a share, which the dither keeps on average. Each instance shifts
-    // the dither by its tint, so impostors that overlap keep different texels and cover as meshes do.
-    if (albedo.a <= dither(in.clip.xy + vec2f(29.0, 43.0) + f32(in.look & 255u) * vec2f(5.0, 3.0))) {
+    // The alpha of a coarser level is a share of cover; the threshold of each level keeps the crown's.
+    let frame_at = (in.slot * u32(ATLAS_LEVELS) + u32(in.level)) * u32(FRAMES * FRAMES) + u32(in.at.y * FRAMES + in.at.x);
+    let coarser = select(frame_at, frame_at + u32(FRAMES * FRAMES), in.level < ATLAS_LEVELS - 1.0);
+    if (albedo.a <= mix(covers[frame_at], covers[coarser], fract(in.level))) {
         discard;
     }
     let normal = textureSampleLevel(atlas_normal, atlas_sampler, uv, in.slot, in.level) / albedo.a;
@@ -121,6 +119,6 @@ fn impostor_fragment(in: ImpostorOut) -> @location(0) vec4f {
     let n = normalize(vec3f(in.turn.x * local.x - in.turn.y * local.y, in.turn.y * local.x + in.turn.x * local.y, local.z));
     // The phase's colour matrix fits the crown only: the trunk's share keeps its bark.
     let colour = albedo.rgb / albedo.a;
-    let phased = mix(worn(toned(colour, in.model, in.ground), colour, in.ground, in.wear, in.far), colour, normal.a);
+    let phased = mix(satellite(toned(colour, in.model, in.ground), colour, in.ground, in.satellite), colour, normal.a);
     return vec4f(in.fog * light_up(snowed(tied(phased, in.tint, in.tie, in.ground), n.z, in.look), n, sun_of(in.ground), 1.0, look.horizon.w) + in.air, 1.0);
 }
