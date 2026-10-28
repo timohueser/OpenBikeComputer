@@ -3,10 +3,11 @@ import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import type { Mat3 } from './celestial';
+import { SUN_DISK } from './eclipse';
 import type { NightSky } from './night';
 
 /** `Night` of sky.wgsl. */
-const NIGHT_BYTES = 112;
+const NIGHT_BYTES = 128;
 /** Bytes of a star in the vertex buffer: its J2000 direction and V magnitude as floats, and its colour in bytes. */
 const STAR_BYTES = 20;
 // The files of tools/trailview/sky.py.
@@ -20,8 +21,9 @@ const TINTS: [number, number[]][] = [[-0.3, [0.68, 0.78, 1]], [0.6, [1, 0.97, 0.
 export interface SkyState {
     /** J2000 equatorial directions to render space, rows first. */
     stars: Mat3;
-    /** Toward the moon in render space. */
+    /** Toward the moon as the sky draws it in render space, and its drawn half width in radians (eclipse.ts). */
     moon: number[];
+    moonRadius: number;
     /** The colour that the air gives the moon's disk. */
     moonAir: number[];
     /** Whether the moon is the light in the sun's place. */
@@ -31,6 +33,8 @@ export interface SkyState {
     moonDisk: number;
     /** Clip space per render pixel. */
     pixel: [number, number];
+    /** `eclipse` of `Night`: the corona's share, the share of the sun's light that the moon covers, the sun's activity and the corona's seed. */
+    eclipse: [number, number, number, number];
 }
 
 interface Stars { buffer: GPUBuffer; magnitudes: Float32Array; pipeline: GPURenderPipeline }
@@ -100,8 +104,9 @@ export class Sky {
         data.set([m[0], m[3], m[6], 0, m[1], m[4], m[7], 0, m[2], m[5], m[8], 0], 0);
         data.set([...state.moon, state.moonLight ? 1 : 0], 12);
         data.set([night.limit, night.stars, night.milkyWay, state.moonDisk], 16);
-        data.set([...state.pixel, 0, 0], 20);
+        data.set([...state.pixel, SUN_DISK, state.moonRadius], 20);
         data.set([...state.moonAir, 0], 24);
+        data.set(state.eclipse, 28);
         gpu.device.queue.writeBuffer(this.uniform!, 0, data);
         const magnitudes = this.stars?.magnitudes;
         this.count = magnitudes && night.stars > 0 ? below(magnitudes, night.limit) : 0;

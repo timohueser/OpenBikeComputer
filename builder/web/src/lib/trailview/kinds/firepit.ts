@@ -2,4 +2,4 @@
 import { firepit } from '../models/amenities';
 import { modelKind } from './kind';
 
-export default modelKind('firepit', firepit, 800, { light: { colour: '#ff9a4a', radius: 6 } });
+export default modelKind('firepit', firepit, 800, { light: { colour: '#ff9a4a', radius: 6, at: [0, 0, 0.7] } });

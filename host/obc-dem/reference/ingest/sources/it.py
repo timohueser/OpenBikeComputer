@@ -1,7 +1,10 @@
-"""Italy: the alpine provinces, which publish region by region.
+"""Italy: INGV's national TINITALY, and the alpine provinces, which publish region by region.
+
+TINITALY is the base: 10 m over the whole country, on INGV's keyless WCS. It is coarser than
+the lattice, so it reaches only some lattice pixels, and every finer model ranks above it.
 
 Alpine Italy is the border-ridge gap. A ridge along the Swiss, Austrian or French border
-is lifted on one side only until Italy is covered, and that step shows in the contours and
+is lifted on one side only until Italy is covered finely, and that step shows in the contours and
 in a profile. South Tyrol is the province that closes most of it, and it publishes a plain
 WCS with no key and no attribution obligation.
 
@@ -56,4 +59,18 @@ TN = TrentoGrids(
     base="https://siatservices.provincia.tn.it/stemdata/2014_lidar_dtm_asc/",
 )
 
-IT = (BZ, TN)
+# TINITALY was built mostly from the contours and spot heights of the regional topographic
+# maps, which are on the national levelling network. The WCS answers 10 m at its own step; the land
+# abroad and the sea are its declared nodata.
+TINITALY = Wcs20Source(
+    "it", "Italy", "TINITALY 1.1 10 m (INGV)", 10.0,
+    "CC BY 4.0",
+    "Italian levelling network (m s.l.m.), from the regional topographic maps",
+    url="https://tinitaly.pi.ingv.it/TINItaly_1_1/wcs",
+    coverage="TINItaly_1_1__tinitaly_dem",
+    epsg=32632,
+    axes=("E", "N"),
+    scale=False,
+)
+
+IT = (BZ, TN, TINITALY)

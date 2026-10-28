@@ -121,6 +121,10 @@ IGME5000 = ("IGME5000_europeEPSG3034shp_geology_poly_v01", "Portr_Petr", {
 # simplified coast leaves in the sea; the search runs at FALLBACK_ZOOM, 0.4 km texels at 47° N.
 REACH_M = 25_000.0
 FALLBACK_ZOOM = 7
+# A texel outside every place takes the nearest within this reach, as a house on a coast that the
+# simplified border leaves in the sea; the search stays in the tile.
+PLACE_REACH_M = 5_000.0
+PLACE_NO_DATA = 0xFFFF
 
 
 def mercator_m(lon, lat):
@@ -438,16 +442,25 @@ def shape(rings):
 class Region:
     """The region of each texel: the ecoregion that holds it, or the nearest within REACH_M, else
     `world`; from there it steps into the subregion whose `where` holds it, the smallest on a tie,
-    until none does. Ids are indexes into the regions of `regions.json`."""
+    until none does. Then it takes the id of the region and the texel's subdivision, else its
+    country, else the region's own. Ids are indexes into the `ids` of `regions.json`."""
 
     def __init__(self, regions, bounds):
         from rasterio.features import rasterize
 
-        self.ids = {region["id"]: i for i, region in enumerate(regions["regions"])}
+        self.ids = {name: i for i, (name, place) in enumerate(regions["ids"]) if place == "*"}
+        self.placed = {}
+        for i, (name, place) in enumerate(regions["ids"]):
+            if place != "*":
+                self.placed.setdefault(self.ids[name], []).append((place, i))
         self.subregions = {}
-        for region in regions["regions"]:
+        for name, region in regions["regions"].items():
             for where in region.get("where", []):
-                self.subregions.setdefault(region.get("extends"), []).append((area_of(where), region["id"], where))
+                self.subregions.setdefault(region.get("extends"), []).append((area_of(where), name, where))
+        # Countries first, so that a subdivision burns over its country; each with its box.
+        self.places = [(place["iso"], place["rings"], (*np.min([np.min(r, axis=0) for r in place["rings"]], axis=0),
+                                                       *np.max([np.max(r, axis=0) for r in place["rings"]], axis=0)))
+                       for place in sorted(regions["places"], key=lambda place: "-" in place["iso"])]
         self.ecoregions = [(self.ids[e["short"]], polygon) for e in regions["ecoregions"] for polygon in e["polygons"]]
         # The fallback over the bounds and REACH_M around them, on whole tiles of FALLBACK_ZOOM.
         lat = max(abs(bounds[1]), abs(bounds[3]))
@@ -490,7 +503,29 @@ class Region:
                     index[inside] = self.ids[name]
                     if self.ids[name] not in queue:
                         queue.append(self.ids[name])
+        if self.placed.keys() & set(np.unique(index).tolist()):
+            index = self.placed_ids(rasterize, transform, (z, x, y), index)
         return index
+
+    def placed_ids(self, rasterize, transform, tile, index):
+        """Each texel of a region with places takes the id of its subdivision, else of its country."""
+        w, s, e, n = geo.tile_bounds(*tile)
+        pad = 2 * math.degrees(PLACE_REACH_M / 6371008.8) / math.cos(math.radians(max(abs(s), abs(n))))
+        shapes = [(shape(rings), code) for code, (_, rings, (x0, y0, x1, y1)) in enumerate(self.places)
+                  if x0 < e + pad and x1 > w - pad and y0 < n + pad and y1 > s - pad]
+        at = (rasterize(shapes, out_shape=index.shape, transform=transform, fill=PLACE_NO_DATA, dtype=np.uint16) if shapes
+              else np.full(index.shape, PLACE_NO_DATA, np.uint16))
+        at = spread(at, at == PLACE_NO_DATA, PLACE_NO_DATA, steps=round(PLACE_REACH_M / tiles.texel_m(tile[0], tile[2])))
+        iso = np.array([place for place, _, _ in self.places] + [""])
+        names = iso[np.minimum(at, len(self.places))]
+        countries = np.char.partition(names, "-")[..., 0]
+        out = index.copy()
+        for code, places in self.placed.items():
+            held = index == code
+            # Countries first, so that a subdivision wins over its country.
+            for place, i in sorted(places, key=lambda entry: "-" in entry[0]):
+                out[held & ((names == place) if "-" in place else (countries == place))] = i
+        return out
 
 
 def step():

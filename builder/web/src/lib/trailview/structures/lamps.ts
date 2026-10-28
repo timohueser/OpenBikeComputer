@@ -1,15 +1,16 @@
 // Street lamps along the roads of built-up places. The map holds few of them, and not in every region,
 // so a rule stands them: along a lit road, every SPACING_M on one side, where a building is near. A lamp
 // stands on the road's sidewalk where it has one, KERB_M behind its kerb: the town rule of the sidewalks
-// decides its side at its foot. None stands in a junction's corner, where the kerb turns off its road.
+// decides its side at its foot. None stands in a junction's corner, where the kerb turns off its road, nor
+// in a building or by its walls.
 import { facing, unitModel, type Build, type Kind, type Placed } from '../kinds/kind';
-import { streetLamp } from '../models/amenities';
-import { halfWidth, metresPerUnit, sidewalkOf, surfaceOf } from '../terrain/bins';
-import { BUILT_M, RIGHT, sidesNear, townOf } from '../terrain/town';
+import { LANTERN, streetLamp } from '../models/amenities';
+import { halfWidth, insideRings, metresPerUnit, ringsDistance, sidewalkOf, surfaceOf } from '../terrain/bins';
+import { BUILT_M, near, RIGHT, sidesNear, townOf } from '../terrain/town';
 
-/** The roads that have lamps; a lamp stands this many metres apart from the next. */
+/** The roads that have lamps; a lamp stands this many metres apart from the next, and at least CLEAR_M from a building's walls. */
 const LIT = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified', 'residential', 'living_street']);
-const SPACING_M = 32, KERB_M = 0.5, REACH_M = 600;
+const SPACING_M = 32, KERB_M = 0.5, CLEAR_M = 2, REACH_M = 600;
 
 const lamp = unitModel(streetLamp, REACH_M);
 
@@ -20,7 +21,7 @@ export function lampKind(side: number): Kind {
             if (LIT.has(feature.tags.highway) && !(feature.tags.bridge && feature.tags.bridge !== 'no')) lamps(feature, out, side);
         },
         models: { lamp: lamp.spec },
-        lights: { lamp: { colour: '#ffc98a', radius: 9 } },
+        lights: { lamp: { colour: '#ffc98a', radius: 16, at: LANTERN, housed: true } },
     };
 }
 
@@ -39,6 +40,9 @@ function lamps({ tags, parts }: Placed, out: Build, side: number): void {
                 const sides = sidesNear(town, ax + t * dx, ay + t * dy, dx, dy, BUILT_M / unit);
                 const [x, y] = spot(sidewalk && !(sides & RIGHT) ? -1 : 1);
                 if (!sides || !out.owns(x, y) || out.cornered(x, y)) continue;
+                let walled = false;
+                near(town, x, y, x, y, CLEAR_M / unit, b => (walled ||= insideRings(out.buildings[b].rings, x, y) || ringsDistance(out.buildings[b].rings, x, y) * unit < CLEAR_M));
+                if (walled) continue;
                 out.place({ x, y, yaw: facing(out.ways, x, y) ?? 0, height: lamp.height, model: 'lamp' });
             }
             done += length;

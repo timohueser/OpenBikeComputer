@@ -31,7 +31,7 @@ export function lookUniform(input: LookInput): ArrayBuffer {
     const data = new ArrayBuffer(LOOK_BYTES), floats = new Float32Array(data), words = new Uint32Array(data);
     const { light, eye } = input;
     floats.set(input.sun, 0);
-    floats.set([...light.sunColour, 0], 4);
+    floats.set([...light.sunColour, light.rise], 4);
     floats.set([...light.ambient, light.night], 8);
     floats.set([...light.zenith, eye.softness], 12);
     floats.set([...light.horizon, eye.gradient], 16);

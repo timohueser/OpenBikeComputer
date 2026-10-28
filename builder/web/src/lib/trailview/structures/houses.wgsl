@@ -120,8 +120,8 @@ struct Params {
     // The tiles in `ranges`.
     tiles: u32,
     unused2: f32,
-    // Per region: its style, and the style of its cottages and houses; two regions per entry.
-    regions: array<vec4u, 64>,
+    // Per region id: its style, and the style of its cottages and houses; two ids per entry.
+    regions: array<vec4u, 128>,
     // The tiles in view: the first record, the records and the first workgroup of `fit` and of `refit` of each.
     ranges: array<vec4u, 256>,
     styles: array<Style, 32>,
@@ -458,7 +458,7 @@ fn refit(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) l
         return;
     }
     var out = last;
-    let region = min(region_at(view.centre), 127u);
+    let region = region_at(view.centre);
     let styles_of = params.regions[region / 2u];
     let regional = select(styles_of.xy, styles_of.zw, region % 2u == 1u);
     let kind = kind_of(h);

@@ -532,11 +532,6 @@ fn crag(p: vec2f, size: f32) -> vec3f {
     return vec3f(facing, abs(2.0 * noise(q * 1.4 + 7.0) - 1.0));
 }
 
-// A normal of LOD space axes in render space, with the linear part of the cubic.
-fn render_normal(m: vec3f) -> vec3f {
-    return normalize(vec3f(m.x * vec2f(coefficient(1u), coefficient(11u)) + m.y * vec2f(coefficient(2u), coefficient(12u)), m.z));
-}
-
 // A distinct colour for each code, by the golden angle round the hue circle.
 fn key(code: u32) -> vec3f {
     let h = fract(f32(code) * 0.618034);
