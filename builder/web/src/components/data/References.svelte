@@ -56,17 +56,15 @@
         {/if}
         {#if at?.error}
             <span class="missing">The archive cannot be read: {at.error}</span>
-        {:else if !at?.root}
-            <span class="soft">No archive root on this computer has it: OBC_DATA_ARCHIVE names the roots.</span>
-        {:else if at.lock?.died}
+        {:else if at?.lock?.died}
             <span class="missing">A run on {at.lock.machine} stopped without freeing the lock. The next preparation takes it over.</span>
-        {:else if at.lock?.stale}
+        {:else if at?.lock?.stale}
             <span class="missing">No heartbeat from {at.lock.machine} since {when(at.lock.heartbeat)}: the run likely stopped.</span>
             <details class="terminal">
                 <summary>In a terminal</summary>
                 <code>{command(["unlock", "--source", row.id, "--from", at.lock.machine])}</code>
             </details>
-        {:else if at.lock}
+        {:else if at?.lock}
             <span class="running">On {at.lock.machine}, at {at.lock.phase} · <a href="#/runs/{at.lock.run}">Follow it</a></span>
         {/if}
         {#if state !== "preparing"}

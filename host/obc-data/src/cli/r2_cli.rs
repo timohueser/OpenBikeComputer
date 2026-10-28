@@ -1,6 +1,6 @@
 //! `obc data r2`: the R2 client as plumbing commands for scripts, and the legacy keys of a target.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
@@ -12,6 +12,7 @@ use crate::r2::{
     REMOVAL_LOG,
 };
 use crate::release;
+use crate::sources::FetchKind;
 use crate::store::{sha256_hex, Store};
 use crate::target::Target;
 
@@ -197,6 +198,41 @@ fn refuse_owned(bucket: &Bucket, keys: &[String]) -> Result<(), String> {
     }
 }
 
+/// Refuse a key under `sources/<id>/` of a prepared source while the home of `id` in the archive
+/// roots `roots` lacks a version that `sources/<id>/versions.json` of the bucket lists with its
+/// manifest SHA-256: the archive is then the only copy of a version that is not there yet.
+fn refuse_uncopied(bucket: &Bucket, keys: &[String], roots: &[PathBuf]) -> Result<(), Error> {
+    let prepared = |id: &&str| {
+        crate::sources::all().iter().any(|source| source.id == *id && source.fetch.kind == FetchKind::Prepared)
+    };
+    let ids: BTreeSet<&str> =
+        keys.iter().filter_map(|key| Some(key.strip_prefix("sources/")?.split_once('/')?.0)).filter(prepared).collect();
+    for id in ids {
+        let refused = |text: String| {
+            Code::Usage
+                .error(format!("{text}; nothing was deleted"))
+                .fix(format!("Copy the versions first: `obc data source copy {id} --from TARGET`."))
+        };
+        let Some(bytes) = bucket.read(&format!("sources/{id}/versions.json")).map_err(|e| Code::R2Failed.error(e))?
+        else {
+            continue;
+        };
+        let theirs: Vec<crate::prepared::Version> = serde_json::from_slice(&bytes)
+            .map_err(|e| refused(format!("sources/{id}/versions.json of the bucket: {e}")))?;
+        let ours = match crate::prepared::home(roots, id) {
+            Some(root) => crate::prepared::versions(&crate::prepared::folder(root, id), id)?,
+            None => Vec::new(),
+        };
+        let copied = |entry: &crate::prepared::Version| {
+            ours.iter().any(|ours| ours.version == entry.version && ours.manifest_sha256 == entry.manifest_sha256)
+        };
+        if let Some(entry) = theirs.iter().find(|entry| !copied(entry)) {
+            return Err(refused(format!("the archive has no copy of {id}@{} of the bucket", entry.version)));
+        }
+    }
+    Ok(())
+}
+
 /// A refusal of a key that only an update writes.
 fn owned(message: String) -> Error {
     Code::R2Failed.error(message).fix("Once a bucket has a release, only `obc data update` changes its keys.")
@@ -219,6 +255,7 @@ fn delete(
         None => keys,
     };
     refuse_owned(bucket, &keys).map_err(|e| owned(format!("{e}; nothing was deleted")))?;
+    refuse_uncopied(bucket, &keys, &crate::fetch::archive::roots())?;
     if let Some(key) = keys.iter().find(|key| legacy_key(key)).filter(|_| !allow_legacy) {
         return Err(Code::Usage
             .error(format!("{key} is a key of the legacy pipelines; nothing was deleted"))
@@ -397,6 +434,26 @@ mod tests {
         assert!(refused.message.starts_with("cell-catalog/a.obcm is a key of the legacy pipelines") && cell.exists());
         delete(&bucket, (keys().0, None, true), None, "test", true, true).unwrap();
         assert!(!cell.exists());
+    }
+
+    #[test]
+    fn a_delete_of_a_prepared_source_needs_its_versions_in_the_archive() {
+        let scratch = crate::store::tests::Scratch::new("r2-uncopied");
+        let (bucket, archive) = (Bucket::local(&scratch.0.join("bucket")), scratch.0.join("archive"));
+        let listed = r#"[{"version": "2026-10-28", "manifest_sha256": "aa", "format": 3, "bytes": 1, "time": ""}]"#;
+        let put = |dir: &Path, bytes: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("versions.json"), bytes).unwrap();
+        };
+        put(&scratch.0.join("bucket/sources/terrain"), listed);
+        let keys = ["sources/terrain/versions.json".to_string(), "sources/era5-land/a.nc".to_string()];
+        let refused = refuse_uncopied(&bucket, &keys, std::slice::from_ref(&archive)).unwrap_err();
+        assert!(refused.message.contains("no copy of terrain@2026-10-28"), "{}", refused.message);
+        put(&crate::prepared::path(&archive, "terrain"), &listed.replace("\"aa\"", "\"bb\""));
+        assert!(refuse_uncopied(&bucket, &keys, std::slice::from_ref(&archive)).is_err(), "another manifest");
+        put(&crate::prepared::path(&archive, "terrain"), listed);
+        refuse_uncopied(&bucket, &keys, &[archive]).unwrap();
+        refuse_uncopied(&bucket, &keys[1..], &[]).unwrap();
     }
 
     /// Keys of the legacy pipelines that `obc data` does not write.

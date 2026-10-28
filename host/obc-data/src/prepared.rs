@@ -140,6 +140,37 @@ pub(crate) fn place(roots: &[PathBuf], id: &str) -> Result<PathBuf, String> {
     roomy.cloned().ok_or_else(|| "no root of OBC_DATA_ARCHIVE has 4 GiB free".into())
 }
 
+/// The home of `id` and a later root whose folder `prepared/<id>/` holds files too: the later one
+/// does not serve. A test root named first does this on purpose.
+pub(crate) fn shadowed<'a>(roots: &'a [PathBuf], id: &str) -> Option<(&'a PathBuf, &'a PathBuf)> {
+    let home = home(roots, id)?;
+    let holds = |root: &&PathBuf| fs::read_dir(path(root, id)).is_ok_and(|mut entries| entries.next().is_some());
+    let later = roots.iter().skip_while(|root| *root != home).skip(1).find(holds)?;
+    Some((home, later))
+}
+
+/// Warn when [`shadowed`] finds a second folder of `id`.
+pub(crate) fn warn_shadowed(roots: &[PathBuf], id: &str) {
+    if let Some((home, later)) = shadowed(roots, id) {
+        eprintln!(
+            "obc data: warning: {} and {} both hold `{id}`; only the first serves",
+            path(home, id).display(),
+            path(later, id).display()
+        );
+    }
+}
+
+/// Remove the home of `id` in `root` while it holds only the files of its lock.
+pub(crate) fn unmake(root: &Path, id: &str) {
+    let home = path(root, id);
+    let Ok(entries) = fs::read_dir(&home) else { return };
+    let names: Vec<_> = entries.filter_map(|entry| entry.ok()?.file_name().into_string().ok()).collect();
+    if names.iter().all(|name| [crate::lock::LOCK, ".lock"].contains(&name.as_str())) {
+        names.iter().for_each(|name| drop(fs::remove_file(home.join(name))));
+        let _ = fs::remove_dir(&home);
+    }
+}
+
 /// Whether a fetch error is of a version that no root of the archive holds.
 pub(crate) fn absent_from_archive(error: &str) -> bool {
     error.starts_with(ABSENT)
@@ -387,6 +418,12 @@ pub(crate) fn list(folder: &Target, id: &str, version: &str) -> Result<Version, 
     Ok(entry)
 }
 
+/// `selection.json` of a run: the archive root of the home, the scope and the languages. A resume
+/// with another root refuses, so a stopped run of a test root never resumes into another home.
+pub(crate) fn selection(root: &Path, scope: Option<&Scope>, languages: &[String]) -> Vec<u8> {
+    serde_json::to_vec(&(root, scope, languages)).expect("a selection serializes")
+}
+
 /// What a resume needs on this machine: `STORE/prepared/<id>/<version>/` holds the selection of the
 /// run, its journal, `work/` and `state/`.
 pub(crate) fn job_dir(store: &Store, id: &str, version: &str) -> PathBuf {
@@ -479,12 +516,12 @@ impl<'a> Job<'a> {
             fs::create_dir_all(dir.join(folder)).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         let selection_file = dir.join("selection.json");
-        let bytes = serde_json::to_vec(&(&scope, languages)).expect("a selection serializes");
+        let bytes = selection(home, scope.as_ref(), languages);
         match fs::read(&selection_file) {
             Ok(held) if held == bytes => {}
             Ok(_) => {
                 return Err(format!(
-                    "a run of {id}@{version} for another region or language selection stopped; resume it with its selection, or delete {}",
+                    "a run of {id}@{version} for another archive root, region or language selection stopped; resume it with its selection, or delete {}",
                     dir.display()
                 ))
             }
@@ -886,6 +923,7 @@ pub(crate) fn resolve(
         let serving = inputs.serving.get(&key).cloned();
         let format = producer(producers, &source.id).map(|producer| producer.format());
         let fits = |entry: &Version| format.is_none_or(|format| entry.format == format);
+        warn_shadowed(roots, &source.id);
         let listed = match home(roots, &source.id) {
             Some(root) => versions(&folder(root, &source.id), &source.id)?,
             // A bake from the store needs no archive.
@@ -1012,11 +1050,20 @@ pub(crate) fn named(steps: &[crate::engine::Step], sources: &[Source]) -> Result
     Ok(())
 }
 
-/// The keys of `folder`, the home of a source, of the versions before `version` that have no
-/// manifest: a stopped run left them, and no run of this machine resumes them.
-pub(crate) fn incomplete(folder: &Target, version: &str) -> Result<Vec<String>, String> {
+/// The keys of `folder`, the home of the source `id`, of the versions before `version` that have no
+/// manifest: a stopped run left them, and no run of this machine resumes them. Refused when
+/// `versions.json` lists such a version: it was complete, and its manifest went.
+pub(crate) fn incomplete(folder: &Target, id: &str, version: &str) -> Result<Vec<String>, String> {
     let listed = folder.list()?;
     let keys: BTreeSet<&str> = listed.iter().map(|listed| listed.key.as_str()).collect();
+    for entry in versions(folder, id)? {
+        if !keys.contains(format!("{}/{MANIFEST}", entry.version).as_str()) {
+            return Err(format!(
+                "{id}@{} is in {VERSIONS} and has no manifest; nothing changed. Restore {id}/{}/{MANIFEST} from the backup of the archive",
+                entry.version, entry.version
+            ));
+        }
+    }
     let older = |key: &str| {
         let Some((name, _)) = key.split_once('/') else { return false };
         let complete = keys.contains(format!("{name}/{MANIFEST}").as_str());

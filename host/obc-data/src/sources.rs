@@ -35,7 +35,7 @@ pub enum FetchKind {
     ByHand,
     /// A person installs it, or another source's build brings it.
     Installed,
-    /// `obc data source prepare` publishes its versions to a target.
+    /// `obc data source prepare` makes its versions in the archive.
     Prepared,
 }
 

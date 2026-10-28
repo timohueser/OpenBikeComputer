@@ -188,7 +188,7 @@ impl Target {
                 Ok(found) => {
                     return Err(format!(
                         "{key} holds {} bytes, not {size}: a write of it broke, and a key is immutable. Fix: \
-                         delete {key} from the target, then run the command again",
+                         delete {key}, then run the command again",
                         found.len()
                     ))
                 }
@@ -261,10 +261,10 @@ impl Target {
 }
 
 impl Target {
-    /// Give each key of `files` the bytes of its file, also when it holds other bytes: only for keys
-    /// that no reader reads yet. rclone replaces an object of another checksum.
+    /// Give each key of a dir target the bytes of its file of `files`, also when it holds other
+    /// bytes: only for keys that no reader reads yet.
     pub fn replace(&self, files: &[(PathBuf, String)]) -> Result<(), String> {
-        let Target::Dir(dir) = self else { return self.upload(files) };
+        let Target::Dir(dir) = self else { return Err("only a dir target replaces a key".into()) };
         for (file, key) in files {
             crate::r2::check_key(key)?;
             let path = dir.join(key);

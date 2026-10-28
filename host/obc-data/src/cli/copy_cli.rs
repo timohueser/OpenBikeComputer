@@ -58,6 +58,11 @@ struct Planned {
     manifest: Vec<u8>,
     /// The keys `<version>/<path>` that the home lacks, with their SHA-256.
     missing: Vec<(String, String)>,
+    /// The keys of the version that the home holds, with their SHA-256: the run reads each again,
+    /// unless the home lists the version, whose copy checked them.
+    held: Vec<(String, String)>,
+    /// The keys `<origin>/<path>` of the files that the version reuses, with their size.
+    reused: Vec<(String, u64)>,
 }
 
 pub fn command(root: &Path, args: CopyArgs, json: bool) -> Result<(), Error> {
@@ -124,16 +129,20 @@ fn plan(root: &Path, store: &Store, http: &Http, args: &CopyArgs) -> Result<(Cop
         let lacks = folder.missing(&sizes).map_err(|e| {
             Code::Failed.error(format!("{id}/{e}")).fix("Delete that file of the home, then run the copy again.")
         })?;
-        let (mut copy, mut kept, mut missing) = (Downloads::default(), Downloads::default(), Vec::new());
+        let (mut copy, mut kept) = (Downloads::default(), Downloads::default());
+        let (mut missing, mut held) = (Vec::new(), Vec::new());
         for (file, (key, size)) in own.iter().zip(sizes) {
-            let tally = if lacks.contains(&key) { &mut copy } else { &mut kept };
+            let (tally, list) = if lacks.contains(&key) { (&mut copy, &mut missing) } else { (&mut kept, &mut held) };
             (tally.files, tally.bytes) = (tally.files + 1, tally.bytes + size);
-            if lacks.contains(&key) {
-                missing.push((key, file.sha256.clone()));
-            }
+            list.push((key, file.sha256.clone()));
         }
+        let reused = manifest.reused.iter().map(|(path, origin)| {
+            let size = manifest.files.iter().find(|file| &file.path == path).map_or(0, |file| file.size);
+            (format!("{origin}/{path}"), size)
+        });
         let shown = CopiedVersion { version: version.clone(), manifest_sha256: sha256.clone(), copy, held: kept };
-        versions.push(Planned { shown, manifest: bytes, missing });
+        let held = if listed.is_some() { Vec::new() } else { held };
+        versions.push(Planned { shown, manifest: bytes, missing, held, reused: reused.collect() });
     }
     if versions.is_empty() {
         return Err(Code::Usage.error(format!("`{}` lists no version of `{id}`; nothing changed", args.from)));
@@ -147,33 +156,84 @@ fn plan(root: &Path, store: &Store, http: &Http, args: &CopyArgs) -> Result<(Cop
 fn copy(root: &Path, store: &Store, http: &Http, args: &CopyArgs, run: &mut Run) -> Result<CopyPlan, Error> {
     let id = args.id.as_str();
     let home = prepare_cli::home(http, id)?;
-    let (label, unlock) = prepare_cli::lock_names(id);
     let folder = prepared::folder(&home, id);
-    update_cli::locked_as(store, (&label, &unlock), &folder, run, |run, held| {
+    let dir = prepared::path(&home, id);
+    prepare_cli::locked(store, (&home, id), run, |run, lock| {
         let (plan, versions) = plan(root, store, http, args)?;
         let bytes: u64 = plan.versions.iter().map(|version| version.copy.bytes).sum();
-        for disk in [home.as_path(), store.root()] {
-            crate::store::check_free(disk, bytes).map_err(|e| Code::Blocked.error(format!("{e}; nothing changed")))?;
-        }
+        // The files go into the store, then into the home.
+        let room = match one_disk(&home, store.root()) {
+            true => crate::store::check_free(&home, bytes.saturating_mul(2)),
+            false => {
+                crate::store::check_free(&home, bytes).and_then(|()| crate::store::check_free(store.root(), bytes))
+            }
+        };
+        room.map_err(|e| Code::Blocked.error(format!("{e}; nothing changed")))?;
         let target = crate::target::find(root, &args.from, store).map_err(|e| Code::Usage.error(e))?;
         let from = target.within(&format!("sources/{id}"));
-        for Planned { shown, manifest, missing } in versions {
+        let other = |key: &str| {
+            Code::Failed
+                .error(format!("{id}/{key} of the home has other bytes than its manifest; the version is not listed"))
+                .fix("Delete that file of the home, then run the copy again.")
+        };
+        for Planned { shown, manifest, missing, held, reused } in versions {
             let version = &shown.version;
             run.line(&format!("{id}@{version}: {} files, {}", shown.copy.files, runs::bytes(shown.copy.bytes)))?;
-            for (at, (key, sha256)) in missing.iter().enumerate() {
-                if at % 100 == 0 && !held.beat(None, None, crate::date::now())? {
-                    return Err(update_cli::lost(&label));
+            for (at, (key, sha256)) in missing.iter().chain(&held).enumerate() {
+                if at % 100 == 0 && !lock.beat(None, None, crate::date::now())? {
+                    return Err(update_cli::lost(&prepare_cli::lock_names(id).0));
                 }
                 run.check_stop(store)?;
+                if at >= missing.len() {
+                    // A file that an earlier run copied, or that a person put there.
+                    if crate::store::hash_file(&dir.join(key))?.0 != *sha256 {
+                        return Err(other(key));
+                    }
+                    continue;
+                }
                 let object = from.download(key, sha256, store).map_err(|e| format!("sources/{id}/{e}"))?;
                 let object = object.ok_or_else(|| format!("`{}` has no sources/{id}/{key}", args.from))?;
-                place(&object, &prepared::path(&home, id).join(key))?;
+                place(&object, &dir.join(key))?;
+            }
+            if let Some(key) = folder.missing(&reused)?.first() {
+                return Err(Code::Failed.error(format!("{id}/{key}, which {id}@{version} reuses, is not in the home")));
             }
             folder.put(&format!("{version}/{MANIFEST}"), &manifest, &Condition::Absent)?;
             prepared::list(&folder, id, version)?;
+            leftovers(&dir.join(version));
         }
         Ok(plan)
     })
+}
+
+/// Whether `a` and `b` are on one file system.
+fn one_disk(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let device = |path: &Path| path.ancestors().find_map(|path| fs::metadata(path).ok()).map(|found| found.dev());
+        device(a).is_some() && device(a) == device(b)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (a, b);
+        false
+    }
+}
+
+/// Delete the hidden `.part` files that a stopped copy left in the folder of a complete version.
+fn leftovers(folder: &Path) {
+    let mut pending = vec![folder.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let (path, name) = (entry.path(), entry.file_name().to_string_lossy().into_owned());
+            if path.is_dir() {
+                pending.push(path);
+            } else if name.starts_with('.') && name.ends_with(".part") {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
 }
 
 /// Give `path` a copy of `object`, never a link: a store object is not a file of the archive.
@@ -213,12 +273,16 @@ fn print_plan(plan: &CopyPlan, json: bool) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::cli::prepare_cli::tests::{prepare, setup};
     use crate::cli::prepare_cli::Asked;
+    use crate::engine::tests::{write, Fixture};
+    use crate::target::Target;
 
     /// Copy `sample` from the target `prod` into the archive of `fixture`.
-    fn copied(fixture: &crate::engine::tests::Fixture, dry_run: bool) -> Result<CopyPlan, Error> {
+    fn copied(fixture: &Fixture, dry_run: bool) -> Result<CopyPlan, Error> {
         let (root, http) = (fixture.root(), crate::cli::prepare_cli::tests::http(fixture));
         let args = CopyArgs { id: "sample".into(), from: "prod".into(), dry_run };
         if dry_run {
@@ -229,36 +293,93 @@ mod tests {
         crate::cli::api::finish_run(run, done)
     }
 
-    #[test]
-    fn a_copy_takes_each_version_of_a_target_into_the_home_and_refuses_another_manifest() {
-        let (fixture, archive, prod) = setup("copy");
+    /// The SHA-256 of each file of the folder `dir` by path, without the files of the lock.
+    fn tree(dir: &Path) -> BTreeMap<String, String> {
+        let listed = Target::Dir(dir.to_path_buf()).list().unwrap().into_iter().map(|listed| listed.key);
+        let kept = listed.filter(|key| !key.starts_with('.') && key != crate::lock::LOCK);
+        kept.map(|key| (key.clone(), crate::store::hash_file(&dir.join(&key)).unwrap().0)).collect()
+    }
+
+    /// Two versions of `sample` in the legacy folder of `prod`, the second with a file of the first:
+    /// the fixture, the home and that folder.
+    fn legacy(name: &str) -> (Fixture, PathBuf, PathBuf) {
+        let (fixture, archive, prod) = setup(name);
         prepare(&fixture, "2026-10-01", Asked::default()).unwrap();
-        crate::engine::tests::write(&fixture.root().join("reuse-a.txt"), "");
+        write(&fixture.root().join("reuse-a.txt"), "");
         prepare(&fixture, "2026-10-02", Asked::default()).unwrap();
-        // The legacy folder of a target has the layout of the home.
         let (home, legacy) = (prepared::path(&archive, "sample"), prod.join("sources/sample"));
         fs::create_dir_all(prod.join("sources")).unwrap();
         fs::rename(&home, &legacy).unwrap();
-        let before = crate::target::Target::Dir(legacy.clone()).list().unwrap();
+        (fixture, home, legacy)
+    }
+
+    #[test]
+    fn a_copy_takes_each_version_with_its_bytes_resumes_and_comes_before_a_prepare() {
+        let (fixture, home, legacy) = legacy("copy");
+        let refused = prepare(&fixture, "2026-10-03", Asked::default()).unwrap_err();
+        assert!(refused.fix.contains("`obc data source copy sample --from prod`"), "{}", refused.fix);
+        assert!(!home.exists(), "a refused prepare leaves no home");
+        // A copy that stopped left one file of the first version.
+        fs::create_dir_all(home.join("2026-10-01")).unwrap();
+        fs::copy(legacy.join("2026-10-01/a.txt"), home.join("2026-10-01/a.txt")).unwrap();
+        let before = tree(&legacy);
 
         let planned = copied(&fixture, true).unwrap();
-        let shown: Vec<_> = planned.versions.iter().map(|v| (v.version.as_str(), v.copy.files)).collect();
-        assert_eq!(shown, [("2026-10-01", 3), ("2026-10-02", 2)], "a reused file is copied with its version");
-        assert!(!home.exists(), "a dry run changes nothing");
+        let shown: Vec<_> = planned.versions.iter().map(|v| (v.version.as_str(), v.copy.files, v.held.files)).collect();
+        assert_eq!(shown, [("2026-10-01", 2, 1), ("2026-10-02", 2, 0)], "a reused file is copied with its version");
         copied(&fixture, false).unwrap();
-        let target = |dir: &Path| {
-            let listed = crate::target::Target::Dir(dir.to_path_buf()).list().unwrap();
-            listed.into_iter().filter(|l| !l.key.starts_with('.') && l.key != "lock.json").collect::<Vec<_>>()
-        };
-        assert_eq!(target(&home), target(&legacy), "the same files and versions.json");
-        assert_eq!(crate::target::Target::Dir(legacy.clone()).list().unwrap(), before, "the target stays");
+        assert_eq!(tree(&home), before, "the same bytes and versions.json");
+        assert_eq!(tree(&legacy), before, "the target stays");
         let again = copied(&fixture, false).unwrap();
         assert!(again.versions.iter().all(|version| version.copy.files == 0), "a second copy copies nothing");
+        assert_eq!(prepare(&fixture, "2026-10-03", Asked::default()).unwrap().version, "2026-10-03");
+    }
 
-        let listed = legacy.join("versions.json");
-        let other = fs::read_to_string(&listed).unwrap().replace(&again.versions[1].manifest_sha256, &"0".repeat(64));
-        fs::write(&listed, other).unwrap();
+    #[test]
+    fn a_copy_refuses_other_bytes_another_manifest_and_too_little_room() {
+        let (fixture, home, legacy) = legacy("copy-refuse");
+        let (a, right) = ("2026-10-01/a.txt", fs::read(legacy.join("2026-10-01/a.txt")).unwrap());
+        write(&home.join(a), "other size");
+        let refused = copied(&fixture, true).unwrap_err();
+        assert!(refused.message.contains("holds 10 bytes"), "{}", refused.message);
+        assert!(refused.fix.starts_with("Delete that file"), "{}", refused.fix);
+        let mut wrong = right.clone();
+        wrong[0] ^= 1;
+        fs::write(home.join(a), &wrong).unwrap();
+        let refused = copied(&fixture, false).unwrap_err();
+        assert!(refused.message.contains("2026-10-01/a.txt of the home has other bytes"), "{}", refused.message);
+        assert!(prepared::versions(&Target::Dir(home.clone()), "sample").unwrap().is_empty(), "nothing is listed");
+        fs::write(home.join(a), &right).unwrap();
+        copied(&fixture, false).unwrap();
+
+        let (ours, theirs) = (home.join("versions.json"), legacy.join("versions.json"));
+        let listed = fs::read_to_string(&ours).unwrap();
+        let sha256 = prepared::versions(&Target::Dir(home.clone()), "sample").unwrap()[0].manifest_sha256.clone();
+        fs::write(&ours, listed.replace(&sha256, &"0".repeat(64))).unwrap();
+        let refused = copied(&fixture, true).unwrap_err();
+        assert!(
+            refused.message.contains("the home has sample@2026-10-01 with another manifest"),
+            "{}",
+            refused.message
+        );
+        fs::write(&ours, &listed).unwrap();
+        let tampered = fs::read_to_string(&theirs).unwrap().replace(&sha256, &"0".repeat(64));
+        fs::write(&theirs, &tampered).unwrap();
         let refused = copied(&fixture, true).unwrap_err();
         assert!(refused.message.contains("is not the manifest that it lists"), "{}", refused.message);
+        fs::write(&theirs, tampered.replace(&"0".repeat(64), &sha256)).unwrap();
+
+        // A version whose file no disk holds.
+        let source = Target::Dir(legacy.clone());
+        let bytes = fs::read(legacy.join("2026-10-02/manifest.json")).unwrap();
+        let mut huge = Manifest::parse("sample", "2026-10-02", &bytes).unwrap();
+        huge.version = "2026-10-03".into();
+        huge.reused.clear();
+        huge.files = vec![crate::engine::LayerFile { path: "huge.bin".into(), size: 1 << 60, sha256: "0".repeat(64) }];
+        write(&legacy.join("2026-10-03/manifest.json"), &String::from_utf8(huge.canonical()).unwrap());
+        prepared::list(&source, "sample", "2026-10-03").unwrap();
+        let refused = copied(&fixture, false).unwrap_err();
+        assert!(refused.message.contains("nothing changed") && refused.message.contains("free"), "{}", refused.message);
+        assert!(!home.join("2026-10-03").exists());
     }
 }

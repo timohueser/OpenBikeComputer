@@ -417,8 +417,8 @@ own, so that no outage stops a bake. `OBC_DATA_ARCHIVE` names its roots, separat
 Without the variable, or with an empty value, there is no archive. Each root is a complete
 archive. A dataset is wholly in one root, and so are the versions of a prepared source, so a failed
 drive loses only its own. A prepared version has no other copy. Only `obc data archive` writes
-`mirror/`, `manifest/` and `.partial/`, and only `obc data source prepare` and
-`obc data source copy` write `prepared/`.
+`mirror/`, `manifest/` and `.partial/`, and only `obc data source prepare`,
+`obc data source copy` and `obc data unlock --source` write `prepared/`.
 
 | Path under a root | Holds |
 | --- | --- |
@@ -1602,7 +1602,9 @@ are in the order of the date, then of the number; a plain date is number 1.
 
 The home of a prepared source is the folder `prepared/<id>/` of the first root of
 `OBC_DATA_ARCHIVE` that has it. Each version of the source is in its home, because a version can
-keep the files of an earlier one (`reused`). The home holds:
+keep the files of an earlier one (`reused`). When a later root also has files in
+`prepared/<id>/`, each command that reads or writes the source warns: only the home serves. A test
+root does this on purpose. The home holds:
 
 | Path | Holds |
 | --- | --- |
@@ -1669,12 +1671,15 @@ is compact JSON with the keys of each object in byte order:
 1. The prepare refuses while `OBC_DATA_ARCHIVE` names no root, and while a root of it does not
    exist, such as a drive that is not mounted: that root can be the home. A source without a home
    gets one in the first root with 4 GiB free. To put it in another root, a person makes the empty
-   folder `prepared/<id>/` there first.
+   folder `prepared/<id>/` there first. A run that made the home and then refuses or fails
+   removes the home again while it holds only the lock, so a refusal never fixes the root. While
+   the home lists no version and a target of `data/targets.toml` lists versions in its legacy
+   folder `sources/<id>/`, or cannot be read, the prepare refuses: [copy](#copy) them first.
 2. A new version takes the first name of the day that is after each version of that day in
    `versions.json` and has no manifest in the home. A run keeps its work in
    `prepared/<id>/<version>/` of the [store](#store) of its machine. The same command
    resumes the version: the producer does not make a file of the journal again, unless the home
-   lacks it. A resume with another region or language selection refuses. When the manifest of a stopped version is
+   lacks it. A resume with another archive root, region or language selection refuses. When the manifest of a stopped version is
    in the home and names the files of its journal, its run stopped after the manifest: the run
    only adds the version to `versions.json`, and the review says `listing`. Another stopped version
    that is not newer than the newest complete version in the home, or whose manifest is in the
@@ -1683,7 +1688,7 @@ is compact JSON with the keys of each object in byte order:
 3. The review names the root of the home, the version, the inputs with the size of their files in the store or on
    this machine (`unknown` lists an input whose size neither knows), the files of the version at
    most (`files`, `null` when the producer cannot tell before the run), the files
-   that earlier runs moved into the home, the cost from the newest version in the home, only when its scope and languages match, the bytes that go into the store and into the archive, the check of this machine as in the
+   that earlier runs moved into the home, the cost from the newest version in the home, only when its scope and languages match, the bytes that go into the store and into the archive (unknown without such a version), the check of this machine as in the
    [review](#review) of an update, which also refuses when the source or an input has a
    `credential` that is not on the machine, or when the root lacks the free space for the bytes of
    the version and 4 GiB more, and for each target of `data/targets.toml` the
@@ -1697,7 +1702,8 @@ is compact JSON with the keys of each object in byte order:
    `--expect`.
 5. A run of a new version deletes the folders of older versions of the source in the home that
    have no manifest: no run resumes them. Before each 100 deletes, it checks that it still holds
-   the lock.
+   the lock. A version that `versions.json` lists and that has no manifest refuses the run: its
+   manifest is lost, and the fix restores it from the backup.
 6. The producer writes each file. `terrain` and `forest` run the programs of
    eight tiles at a time. The run moves each file into the home at once, records its SHA-256 in the journal
    and deletes it from the work. No reader reads a version before its manifest, so the move
@@ -1764,11 +1770,15 @@ copy only reads the target.
   or a manifest whose SHA-256 is not that of its entry, refuses the copy before it writes a file.
 - Each file of a version that the home lacks downloads into the store, with the check of its
   SHA-256 against the manifest, and then goes into the home as a copy. A file that the home holds
-  with another size refuses the copy; the fix deletes it. Then the copy writes the manifest, and
-  then adds the version to `versions.json`. A copy that stops resumes.
+  with another size refuses the copy; the fix deletes it. Of a version that the home does not
+  list, the run reads each file that the home held before and refuses one with another SHA-256.
+  Each file that the version reuses must be in the home. Then the copy writes the manifest, adds
+  the version to `versions.json`, and deletes the `.part` files that a stopped copy left in the
+  folder of the version. A copy that stops resumes.
 - `--dry-run` writes the root of the home and, for each version, the files and the bytes to copy
   and those in place, and changes nothing. The run refuses when the root or the store lacks the
-  free space for the bytes to copy and 4 GiB more.
+  free space for the bytes to copy and 4 GiB more; when they share a file system, it needs the
+  space twice there.
 - The files stay in the store; a [clean](#clean) deletes those that no release reads.
 
 #### `terrain`
@@ -2144,7 +2154,9 @@ bytes.
 `obc data r2 delete`. It does not change the state of a release. Once the bucket has the
 `release.json` of `obc data`, `obc bake publish --target r2` refuses to run, and `obc data r2 put`
 and `delete` refuse `release.json`, `lock.json`, `planner/next.json`, a pointer key, a key
-under `objects/` or `releases/`. `obc bake clean-r2` refuses to run when the pointer
+under `objects/` or `releases/`. `obc data r2 delete` refuses a key under `sources/<id>/` of a
+prepared source while the [archive](#prepared-sources) lacks a version that
+`sources/<id>/versions.json` of the bucket lists, with its manifest SHA-256. `obc bake clean-r2` refuses to run when the pointer
 of its prefix has `release`, or is not JSON. `obc data` never writes under `reference/v1/`.
 
 ### Credentials
@@ -3249,7 +3261,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "prepared",
-          "description": "`obc data source prepare` publishes its versions to a target.",
+          "description": "`obc data source prepare` makes its versions in the archive.",
           "type": "string"
         }
       ]
