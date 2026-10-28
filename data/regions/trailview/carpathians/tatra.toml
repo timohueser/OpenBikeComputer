@@ -1,0 +1,6 @@
+name = "TrailView carpathians: Tatra"
+kind = "box"
+# west, south, east, north
+box = [19.78, 49.05, 20.57, 49.53]
+countries = ["SK", "PL"]
+time_zone = "Europe/Bratislava"

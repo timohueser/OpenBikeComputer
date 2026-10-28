@@ -1,0 +1,6 @@
+name = "TrailView fjell: Flatruet"
+kind = "box"
+# west, south, east, north
+box = [12.03, 62.36, 13.3, 62.95]
+countries = ["SE", "NO"]
+time_zone = "Europe/Stockholm"

@@ -1,0 +1,6 @@
+name = "TrailView iberia: Monsaraz"
+kind = "box"
+# west, south, east, north
+box = [-7.61, 38.26, -7.15, 38.62]
+countries = ["PT", "ES"]
+time_zone = "Europe/Lisbon"

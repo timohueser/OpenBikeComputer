@@ -1,0 +1,6 @@
+name = "TrailView fjell: Sognefjellet"
+kind = "box"
+# west, south, east, north
+box = [7.41, 61.28, 8.6, 61.85]
+countries = ["NO"]
+time_zone = "Europe/Oslo"

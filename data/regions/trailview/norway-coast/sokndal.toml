@@ -1,0 +1,6 @@
+name = "TrailView norway-coast: Sokndal"
+kind = "box"
+# west, south, east, north
+box = [5.83, 58.08, 6.84, 58.62]
+countries = ["NO"]
+time_zone = "Europe/Oslo"

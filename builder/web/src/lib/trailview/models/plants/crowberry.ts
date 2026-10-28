@@ -83,5 +83,5 @@ export default {
     name: 'Crowberry',
     latin: 'Empetrum nigrum subsp. hermaphroditum',
     build: (season, seed) => crowberry(season, random(seed)),
-    ground: { on: ['shrub', 'moss', 'bare'], height: [0.1, 0.25], share: 0.3, own: true },
+    ground: { on: ['#moor', 'moss'], height: [0.1, 0.25], share: 0.3, own: true },
 } satisfies Plant;

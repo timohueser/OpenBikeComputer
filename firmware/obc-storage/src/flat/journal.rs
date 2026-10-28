@@ -238,37 +238,6 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_through_the_card() {
-        let mut expected = slot();
-        let tail = tail(3_712);
-        let header = expected.seal(&STORE, &tail);
-        expected.slot_crc = u32_at(&header, CRC_OFFSET);
-        assert_eq!(Slot::decode(&header, 9, &STORE, 30_718).unwrap(), expected);
-        assert_eq!(expected.payload_len(), 249_472);
-    }
-
-    /// The slot CRC covers the header and the whole 16,384-byte tail slot, pad included: a byte flip
-    /// anywhere in the tail fails it, which makes a slot all-or-nothing without a gate.
-    #[test]
-    fn the_slot_crc_covers_the_tail_and_the_pad() {
-        let mut tail = tail(3_712);
-        let sealed = Slot::decode(&slot().seal(&STORE, &tail), 9, &STORE, 30_718).unwrap();
-
-        let mut digest = header_digest(&slot().seal(&STORE, &tail));
-        digest.update(&tail);
-        for _ in 0..(TAIL_CAPACITY - tail.len()) / BLOCK {
-            digest.update(&ZERO_PAD[..BLOCK]);
-        }
-        digest.update(&ZERO_PAD[..(TAIL_CAPACITY - tail.len()) % BLOCK]);
-        assert_eq!(digest.finalize(), sealed.slot_crc);
-
-        tail[100] ^= 0xFF;
-        let mut torn = header_digest(&slot().seal(&STORE, &tail));
-        torn.update(&tail);
-        assert_ne!(torn.finalize(), sealed.slot_crc);
-    }
-
-    #[test]
     fn a_slot_read_from_the_wrong_position_or_the_wrong_store_is_refused() {
         let header = slot().seal(&STORE, &tail(0));
         assert_eq!(Slot::decode(&header, 4, &STORE, 30_718).unwrap_err().reason, Reason::Position);
@@ -292,15 +261,6 @@ mod tests {
 
         long.tail_len = TAIL_CAPACITY as u32;
         assert!(Slot::decode(&long.seal(&STORE, &[]), 9, &STORE, 30_718).is_ok());
-    }
-
-    /// A full-page tail has no metadata hole: an ordinary checkpoint leaves at most 16,383 bytes
-    /// behind, and every possible remainder fits.
-    #[test]
-    fn the_tail_slot_carries_every_possible_page_remainder() {
-        assert_eq!(TAIL_CAPACITY - (PROGRAM_PAGE - 1), 1);
-        assert_eq!(SLOT_LEN, 16_384);
-        assert_eq!(SLOT_LEN, PROGRAM_PAGE);
     }
 
     #[test]

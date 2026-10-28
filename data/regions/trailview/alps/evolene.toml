@@ -1,0 +1,6 @@
+name = "TrailView alps: Evolene"
+kind = "box"
+# west, south, east, north
+box = [7.19, 45.91, 7.79, 46.34]
+countries = ["CH", "IT"]
+time_zone = "Europe/Zurich"

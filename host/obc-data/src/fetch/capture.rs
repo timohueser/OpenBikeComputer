@@ -367,8 +367,9 @@ mod tests {
         use crate::engine::tests::write;
         let fixture = crate::engine::tests::fixture("capture-interpreter");
         let root = fixture.root();
-        write(&root.join(".python-version"), "3.12\n");
-        write(&root.join("pyproject.toml"), "[project]\nname = \"capture-fixture\"\nversion = \"0\"\nrequires-python = \">=3.12\"\ndependencies = []\n[dependency-groups]\ncapture = []\n[tool.uv]\npackage = false\ndefault-groups = []\n");
+        let pinned = crate::engine::tests::PYTHON;
+        write(&root.join(".python-version"), pinned);
+        write(&root.join("pyproject.toml"), &format!("[project]\nname = \"capture-fixture\"\nversion = \"0\"\nrequires-python = \">={}\"\ndependencies = []\n[dependency-groups]\ncapture = []\n[tool.uv]\npackage = false\ndefault-groups = []\n", pinned.trim()));
         let lock = Command::new("uv")
             .args(["lock", "--offline", "--no-python-downloads"])
             .current_dir(&root)

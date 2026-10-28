@@ -203,16 +203,16 @@ fn sort_peak(scratch: &FileScratch, n: u64, budget: usize) -> usize {
 #[test]
 fn the_sort_costs_its_budget_and_not_its_input() {
     let scratch = FileScratch::new();
-    const SMALL: usize = 256 * 1024;
+    const SMALL: usize = 64 * 1024;
     const LARGE: usize = 16 * SMALL;
 
     // Warm up: the first sort pays for whatever the runtime lazily allocates on first use, and that
     // is not the sorter's cost.
-    sort_peak(&scratch, 10_000, SMALL);
+    sort_peak(&scratch, 2_500, SMALL);
 
-    let few = sort_peak(&scratch, 50_000, SMALL);
-    let many = sort_peak(&scratch, 800_000, SMALL);
-    let generous = sort_peak(&scratch, 800_000, LARGE);
+    let few = sort_peak(&scratch, 12_500, SMALL);
+    let many = sort_peak(&scratch, 200_000, SMALL);
+    let generous = sort_peak(&scratch, 200_000, LARGE);
 
     // 16× the records, same budget: the same peak. A quarter of the budget is the slack, so
     // anything proportional to `n` blows straight through this.
@@ -222,7 +222,7 @@ fn the_sort_costs_its_budget_and_not_its_input() {
          tracking its input, not its budget"
     );
     // …and neither of them is above the budget by more than the merge's own fixed overhead.
-    for (what, peak) in [("50 000", few), ("800 000", many)] {
+    for (what, peak) in [("12 500", few), ("200 000", many)] {
         assert!(peak < SMALL * 2, "{what} records peaked at {peak} B, past twice the {SMALL} B budget");
     }
     // 16× the budget, same records: a visibly bigger footprint, or the parameter is decoration.

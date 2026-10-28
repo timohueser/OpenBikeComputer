@@ -53,6 +53,8 @@ permissions:
 # (`merge-base`, `diff`, `ls-files`) — so every checkout sets `persist-credentials: false` and the
 # token never lands in a job's .git/config.
 
+# Linux jobs name their image, never `ubuntu-latest`: the host tests resolve the image's Python
+# 3.12, and the nRF bindgen build parses the MDK headers with the image's libclang 18.
 jobs:
   # `tools/test_plan.py` is the only selector. This job runs it and publishes two outputs: the
   # per-suite plan the `ci` gate evaluates, and the list of jobs that plan requires. Every gated
@@ -61,7 +63,7 @@ jobs:
   # runs locally (just is not installed on the runners), so a developer and CI answer "which
   # jobs does this change require" with one implementation.
   selection:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       plan: ${{ steps.plan.outputs.plan }}
       jobs: ${{ steps.plan.outputs.jobs }}
@@ -108,7 +110,7 @@ jobs:
   # setup, so one job runs them all; each keeps its own step name and failure message. The
   # job is unconditional: every guard suite is required on every pull request.
   guards:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -120,7 +122,7 @@ jobs:
         run: python3 tools/prose.py --check
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version-file: .python-version
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: &python-uv-version "0.8.17"
@@ -158,7 +160,7 @@ jobs:
   fmt:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'fmt')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -189,7 +191,7 @@ jobs:
   clippy:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'clippy')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -215,7 +217,7 @@ jobs:
   test:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'test')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -257,6 +259,10 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      # The obc-data tests run Python steps on the system Python that .python-version names.
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: *python-uv-version
@@ -277,9 +283,6 @@ jobs:
         run: bash tools/ci/test.sh doctests
       - name: cargo test (obc-formats, default features = the device's shape)
         run: bash tools/ci/test.sh formats-default
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - name: Install Python test reporter
         run: uv sync --locked --group dev --group planner-snow --group forest-reference
       - name: firmware resource/dependency tool unit tests
@@ -340,7 +343,7 @@ jobs:
   ui-snapshots:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'ui-snapshots')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -387,7 +390,7 @@ jobs:
   builder-python:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'builder-python')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -404,7 +407,7 @@ jobs:
       - uses: ./.github/actions/setup-host-deps
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version-file: .python-version
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: *python-uv-version
@@ -433,7 +436,7 @@ jobs:
   embedded:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'embedded')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -562,7 +565,7 @@ jobs:
   boot:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'boot')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: firmware/obc-boot
@@ -599,7 +602,7 @@ jobs:
   device:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'device')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -624,7 +627,7 @@ jobs:
   deny:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'deny')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -671,7 +674,7 @@ jobs:
   wasm:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'wasm')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -724,7 +727,7 @@ jobs:
   wasm-bridges:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'wasm-bridges')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -762,7 +765,7 @@ jobs:
   docs:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'docs')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -987,7 +990,7 @@ jobs:
   web:
     needs: [selection, wasm-bridges]
     if: contains(fromJSON(needs.selection.outputs.jobs), 'web')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: builder/web
@@ -1058,7 +1061,7 @@ jobs:
   web-browser:
     needs: [selection, wasm-bridges]
     if: contains(fromJSON(needs.selection.outputs.jobs), 'web-browser')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1107,7 +1110,7 @@ jobs:
   desktop-frontend:
     needs: [selection, wasm-bridges]
     if: contains(fromJSON(needs.selection.outputs.jobs), 'desktop-frontend')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1146,7 +1149,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             slug: linux-x86_64
             exe: obc-desktop
           - os: macos-latest
@@ -1246,7 +1249,7 @@ jobs:
   planner-search:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'planner-search')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1260,7 +1263,7 @@ jobs:
           cache-dependency-path: planner/search/package-lock.json
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version-file: .python-version
       - run: npm ci --prefix planner/search
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
@@ -1274,7 +1277,7 @@ jobs:
   verification:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'verification')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1305,7 +1308,7 @@ jobs:
   ci:
     if: always()
     needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, desktop-frontend, desktop, verification, planner-search]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:

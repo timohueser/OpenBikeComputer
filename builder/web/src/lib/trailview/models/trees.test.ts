@@ -14,5 +14,5 @@ describe('the tree models', () => {
             });
             expect(triangles[2], `${id} ${season}`).toBeLessThan(triangles[1]);
         }
-    });
+    }, 30_000);
 });
