@@ -20,10 +20,10 @@
   "service": {"grade": 0.25, "smooth_m": 12, "tol": 0.02, "reach": 10, "least": 5, "cut": 0.85, "fill": 0.85, "tilt": 0},
   "road": {"grade": 0.2, "smooth_m": 15, "tol": 0.02, "reach": 10, "least": 5, "cut": 0.85, "fill": 0.85, "tilt": 0},
   "track": {"grade": 0.35, "smooth_m": 10, "tol": 0.02, "reach": 10, "least": 5, "cut": 0.85, "fill": 0.85, "tilt": 0},
-  "path": {"grade": null, "smooth_m": 3, "tol": 0.02, "reach": 3, "least": 0, "cut": 2.1445, "fill": 0.7002, "tilt": 0.15},
+  "path": {"grade": null, "smooth_m": 3, "tol": 0.02, "reach": 3, "least": 0, "cut": 2.1445, "fill": 0.7002, "tilt": 0.5},
   "footway": {"grade": null, "smooth_m": 3, "tol": 0.02, "reach": 3, "least": 0, "cut": 2.1445, "fill": 0.7002, "tilt": 0},
   "cycleway": {"grade": null, "smooth_m": 5, "tol": 0.02, "reach": 3, "least": 0, "cut": 2.1445, "fill": 0.7002, "tilt": 0},
-  "bridleway": {"grade": null, "smooth_m": 3, "tol": 0.02, "reach": 3, "least": 0, "cut": 2.1445, "fill": 0.7002, "tilt": 0.15},
+  "bridleway": {"grade": null, "smooth_m": 3, "tol": 0.02, "reach": 3, "least": 0, "cut": 2.1445, "fill": 0.7002, "tilt": 0.5},
   "steps": {"grade": null, "smooth_m": 2, "tol": 0.02, "reach": 3, "least": 0, "cut": 2.1445, "fill": 0.7002, "tilt": 0},
   "pedestrian": {"grade": null, "smooth_m": 5, "tol": 0.02, "reach": 3, "least": 0, "cut": 2.1445, "fill": 0.7002, "tilt": 0},
   "via_ferrata": {"grade": null, "smooth_m": 2, "tol": 0.02, "reach": 3, "least": 0, "cut": 2.1445, "fill": 0.7002, "tilt": 0}
