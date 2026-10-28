@@ -28,14 +28,6 @@ pub struct CrankRevs {
     pub event_time_1024: u16,
 }
 
-/// Parsed out of a CSC frame, but no consumer reads it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WheelRevs {
-    pub revs: u32,
-    /// Time of the last wheel event in 1/1024 s units; wraps at `u16::MAX`.
-    pub event_time_1024: u16,
-}
-
 /// One Cycling Power notification. Crank data is the only optional field this crate surfaces; it
 /// feeds the cadence quantity when no dedicated cadence sensor is saved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,10 +37,10 @@ pub struct PowerSample {
     pub crank: Option<CrankRevs>,
 }
 
-/// One CSC notification: wheel and/or crank cumulative data, each present per its flag bit.
+/// One CSC notification. Crank data is the only field this crate surfaces; the wheel data is
+/// skipped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CscSample {
-    pub wheel: Option<WheelRevs>,
     pub crank: Option<CrankRevs>,
 }
 
@@ -104,15 +96,13 @@ pub fn parse_power_measurement(data: &[u8]) -> Option<PowerSample> {
 pub fn parse_csc_measurement(data: &[u8]) -> Option<CscSample> {
     let &flags = data.first()?;
     let mut off = 1usize;
-
-    let wheel = if flags & (1 << 0) != 0 {
-        let revs = u32::from_le_bytes([*data.get(off)?, *data.get(off + 1)?, *data.get(off + 2)?, *data.get(off + 3)?]);
-        let event_time_1024 = u16::from_le_bytes([*data.get(off + 4)?, *data.get(off + 5)?]);
-        off += 6;
-        Some(WheelRevs { revs, event_time_1024 })
-    } else {
-        None
-    };
+    if flags & (1 << 0) != 0 {
+        off += 6; // wheel-rev data (u32 revs + u16 event time)
+    }
+    // A frame truncated inside the skipped wheel data is garbled, even if the crank data is not read.
+    if data.len() < off {
+        return None;
+    }
 
     let crank = if flags & (1 << 1) != 0 {
         let revs = u16::from_le_bytes([*data.get(off)?, *data.get(off + 1)?]);
@@ -122,7 +112,7 @@ pub fn parse_csc_measurement(data: &[u8]) -> Option<CscSample> {
         None
     };
 
-    Some(CscSample { wheel, crank })
+    Some(CscSample { crank })
 }
 
 /// A single `u8` percentage, clamped to 100.
