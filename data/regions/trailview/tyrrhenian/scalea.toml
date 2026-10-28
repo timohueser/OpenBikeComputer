@@ -1,0 +1,6 @@
+name = "TrailView tyrrhenian: Scalea"
+kind = "box"
+# west, south, east, north
+box = [15.55, 39.64, 16.03, 40.0]
+countries = ["IT"]
+time_zone = "Europe/Rome"

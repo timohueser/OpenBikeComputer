@@ -1,0 +1,6 @@
+name = "TrailView alps: Jasna"
+kind = "box"
+# west, south, east, north
+box = [13.48, 46.26, 14.09, 46.69]
+countries = ["SI", "AT", "IT"]
+time_zone = "Europe/Ljubljana"

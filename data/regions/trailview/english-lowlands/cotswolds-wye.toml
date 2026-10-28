@@ -1,0 +1,6 @@
+name = "TrailView english-lowlands: Cotswolds Wye"
+kind = "box"
+# west, south, east, north
+box = [-3.02, 51.6, -1.47, 52.15]
+countries = ["GB"]
+time_zone = "Europe/London"

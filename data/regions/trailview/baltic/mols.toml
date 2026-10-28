@@ -1,0 +1,6 @@
+name = "TrailView baltic: Mols"
+kind = "box"
+# west, south, east, north
+box = [10.07, 55.94, 10.99, 56.46]
+countries = ["DK"]
+time_zone = "Europe/Copenhagen"

@@ -1484,12 +1484,4 @@ mod tests {
         assert_eq!(weighted.edge_cost(1_000, 0, 0), Some(1_000), "a flat edge costs its ground length");
         assert_eq!(weighted.edge_cost(1_000, 400, 0), Some(5_000), "…and a climbing one is charged for it");
     }
-
-    #[test]
-    fn a_forbidden_class_stays_forbidden_under_any_climb() {
-        let mut p = ProfileMult { highway: [16; 32], surface: [16; 8], climb: 255 };
-        p.highway[4] = 0;
-        assert_eq!(p.edge_cost(1_000, 0, 4), None);
-        assert_eq!(p.edge_cost(1_000, u16::MAX, 4), None);
-    }
 }

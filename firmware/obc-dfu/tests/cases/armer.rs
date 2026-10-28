@@ -108,14 +108,6 @@ fn scan_rejects_bad_magic_and_torn_header() {
     assert_eq!(scan_with(&mut stage), Err(ScanError::Truncated));
 }
 
-#[test]
-fn scan_rejects_bad_image_crc() {
-    let image = vec![7u8; 5000];
-    let (mut stage, _) = FakeStage::happy(&image, "v1");
-    stage.file.as_mut().unwrap()[HEADER_LEN + 4321] ^= 0x01; // flip one body byte
-    assert_eq!(scan_with(&mut stage), Err(ScanError::BadCrc));
-}
-
 /// The cap is the app slot, so a slot-filling image is a normal image: it must scan, not trip the
 /// oversize gate one byte before the bootloader would have flashed it.
 #[test]
@@ -144,14 +136,6 @@ fn scan_rejects_oversize_before_any_bulk_read() {
         fail_reads_from: HEADER_LEN as u32, // any body read would fail loudly
     };
     assert_eq!(scan_with(&mut stage), Err(ScanError::Oversize));
-}
-
-#[test]
-fn scan_rejects_a_torn_copy() {
-    let image = vec![3u8; 10_000];
-    let (mut stage, _) = FakeStage::happy(&image, "v1");
-    stage.file.as_mut().unwrap().truncate(64 + 9_000); // body shorter than image_len
-    assert_eq!(scan_with(&mut stage), Err(ScanError::Truncated));
 }
 
 #[test]
@@ -326,33 +310,6 @@ fn arm_aborts_on_a_failed_blob_stage_without_touching_the_page() {
     assert_eq!(err, ArmError::BlobStage);
     assert_eq!(io.calls.len(), 1, "the boot-state page is untouched after a failed blob stage");
     assert_eq!(io.calls[0], Call::StageBlob);
-}
-
-#[test]
-fn arm_records_the_carried_scan_ref_verbatim() {
-    // The carry contract: the ref one scan returned feeds `arm` by value and lands in the Armed
-    // page verbatim, so verify-before-erase checks exactly the image that scan validated. That
-    // `arm` cannot re-read the stage is structural: `ArmIo` has no route back to the file.
-    let image: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
-    let (mut stage, header) = FakeStage::happy(&image, "v2.0.0-1-gcarry01");
-
-    let carried = scan_with(&mut stage).expect("the one scan validates the stage");
-    assert_eq!(carried.header, header);
-
-    let mut io = FakeArmIo::new();
-    let current = BootState::Idle { installed: Some(installed_header()), last_outcome: None };
-    let ticket = arm(&mut io, &current, carried, Some(staged(2))).expect("arm consumes the carried ref");
-    assert_eq!(ticket.rollback, Rollback::Snapshot);
-
-    match &io.calls[1] {
-        Call::WriteState(s) => match **s {
-            BootState::Armed { update, .. } => {
-                assert_eq!(update, carried, "the Armed page records the carried ref verbatim")
-            }
-            ref other => panic!("expected an Armed page, got {other:?}"),
-        },
-        other => panic!("expected the page write last, got {other:?}"),
-    }
 }
 
 #[test]

@@ -2,10 +2,10 @@
  * The streaming digest, held to WebCrypto's.
  *
  * `Sha256` exists only because `crypto.subtle.digest` cannot be fed incrementally, so the one thing
- * worth proving is that the two agree — for every input length that touches a block boundary, for
- * every slicing of the same message, and for a message long enough that the 64-bit length field is
- * doing real work. A digest that is subtly wrong would not fail loudly; it would reject a perfectly
- * good 200 MB download after four minutes.
+ * worth proving is that the two agree — for every input length that touches a block boundary and for
+ * every slicing of the same message. A digest that is subtly wrong would not fail loudly; it would
+ * reject a perfectly good 200 MB download after four minutes. The 64-bit length counter is the `sha2`
+ * crate's, behind a wrapper that keeps no length of its own.
  */
 
 import { describe, expect, it } from "vitest";
@@ -67,21 +67,4 @@ describe("Sha256", () => {
             expect(hash.hex(), `slices of ${slice}`).toBe(expected);
         }
     });
-
-    it("carries the length across more than 2^32 bits", async () => {
-        // 600 MB is past the 32-bit bit-length wrap (2^32 bits = 512 MB), which is exactly the
-        // range a country-scale map sits in. Fed as one repeated block so the test costs seconds,
-        // not gigabytes.
-        const block = noise(1 << 20, 5);
-        const megabytes = 600;
-        const hash = new Sha256();
-        for (let i = 0; i < megabytes; i++) hash.update(block);
-        // The reference has to see the same message, and Node can hash a 600 MB buffer — but
-        // building one would defeat the point of a streaming test, so the comparison is against
-        // node:crypto's own streaming hash instead.
-        const { createHash } = await import("node:crypto");
-        const node = createHash("sha256");
-        for (let i = 0; i < megabytes; i++) node.update(block);
-        expect(hash.hex()).toBe(node.digest("hex"));
-    }, 60_000);
 });

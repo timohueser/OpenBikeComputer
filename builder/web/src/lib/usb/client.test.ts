@@ -10,8 +10,9 @@
  * protocol rather than about a fake's generosity.
  */
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { expectBytes } from "../../../test-support/bytes";
 import { loadFlatDevice } from "../../../test-support/flat-device/load";
 import { Crc32 } from "./crc32";
 import { DeviceError, FlatStoreClient, blobSource, bytesSource } from "./client";
@@ -20,6 +21,7 @@ import { loopbackLink } from "./loopback";
 import { EntryFlags, ObjectKind, ObjectState, Opcode } from "./protocol";
 
 beforeAll(loadFlatDevice);
+afterEach(() => vi.useRealTimers());
 
 /** A card identity that is nothing like the default, so a test that mixes the two says so. */
 const CARD = "8f2c41d96b074ea3b1559c207de83466";
@@ -444,7 +446,7 @@ describe("CANCEL", () => {
             await expect(download).rejects.toMatchObject({ code: "cancelled" });
             expect(cancellation).toBeDefined();
             await expect(cancellation).resolves.toBe(true);
-            expect((await client.get({ objectId: 1n, revision: 0n })).bytes).toEqual(bytes);
+            expectBytes((await client.get({ objectId: 1n, revision: 0n })).bytes, bytes);
         });
     });
 
@@ -474,7 +476,7 @@ describe("CANCEL", () => {
             });
             expect(cancellation).toBeDefined();
             await expect(cancellation).resolves.toBe(false);
-            expect((await client.get({ objectId: uploaded.objectId, revision: uploaded.revision })).bytes).toEqual(bytes);
+            expectBytes((await client.get({ objectId: uploaded.objectId, revision: uploaded.revision })).bytes, bytes);
         });
     });
 
@@ -487,7 +489,7 @@ describe("CANCEL", () => {
             });
             expect(transfer).not.toBeNull();
             await expect(client.cancel(transfer!)).resolves.toBe(false);
-            expect((await client.get({ objectId: uploaded.objectId, revision: uploaded.revision })).bytes).toEqual(bytes);
+            expectBytes((await client.get({ objectId: uploaded.objectId, revision: uploaded.revision })).bytes, bytes);
         });
     });
 
@@ -526,6 +528,9 @@ describe("CANCEL", () => {
         // test above it covers it. It is a device that is still *there*: the endpoint accepts nothing
         // and answers nothing, so an unbounded `CANCEL` inside `abandon` parks forever and the
         // client's one-transfer latch is never released.
+        // The engine's deadlines run off `performance.now()` and `setTimeout`, so a fake clock
+        // crosses its cancel and request timeouts without waiting them out.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
         const rig = flatDevice({ clientTimeoutMs: 25 });
         rig.device.seed({ kind: ObjectKind.MapShard, displayName: "map", bytes: payload(200_000) });
         const abort = new AbortController();
@@ -544,13 +549,17 @@ describe("CANCEL", () => {
                 },
             },
         );
-        await expect(download).rejects.toMatchObject({ code: "aborted" });
+        const aborted = expect(download).rejects.toMatchObject({ code: "aborted" });
+        await vi.advanceTimersByTimeAsync(10_000);
+        await aborted;
 
         // The point of the test: `abandon` returned rather than parking, so the slot is free and the
         // next call reaches the wire instead of queueing behind a cancel that will never answer.
         // Against a hung device that next call fails on its own timeout — a bounded error, which is
         // the whole difference from a spinner that never resolves.
-        await expect(rig.client.listPage({})).rejects.toMatchObject({ code: "timeout" });
+        const listing = expect(rig.client.listPage({})).rejects.toMatchObject({ code: "timeout" });
+        await vi.advanceTimersByTimeAsync(10_000);
+        await listing;
         await rig.client.close();
     });
 });

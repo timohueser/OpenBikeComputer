@@ -220,7 +220,8 @@ pub(crate) fn area(scope: Option<&Scope>) -> Result<(Option<Bbox>, Vec<String>),
 }
 
 /// The national models of `sources` that may be given to others, that meet `bbox`, and that are
-/// of one of `countries` when the region names some: `dtm-de-by` is of `DE`.
+/// of one of `countries` when the region names some. The first part of the key is the ISO 3166-1
+/// code of the country: `dtm-de-by` is of `DE`.
 fn models<'a>(
     sources: &'a [Source],
     bbox: Option<&'a Bbox>,
@@ -660,5 +661,12 @@ esac
         );
         let (_, countries) = area(Some(&named)).unwrap();
         assert_eq!(countries, ["CH", "AT"], "the union's own list wins, as in the planner");
+    }
+
+    #[test]
+    fn a_region_of_gb_reads_the_models_of_england_and_scotland() {
+        let gb = ["GB".to_string()];
+        let read: Vec<&str> = models(obc_data::sources::all(), None, &gb).map(key).collect();
+        assert_eq!(read, ["gb-eng", "gb-sct"]);
     }
 }

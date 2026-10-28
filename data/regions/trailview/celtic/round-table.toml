@@ -1,0 +1,6 @@
+name = "TrailView celtic: Round Table"
+kind = "box"
+# west, south, east, north
+box = [-4.99, 53.89, -4.29, 54.39]
+countries = ["IM"]
+time_zone = "Europe/Isle_of_Man"

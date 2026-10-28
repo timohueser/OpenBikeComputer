@@ -28,6 +28,7 @@ import { loopbackLink } from "../usb/loopback";
 import type { BytePipe, DeviceLink } from "../usb/pipe";
 import { ObjectKind } from "../usb/protocol";
 import { initConvert } from "../convert/bridge";
+import { expectBytes } from "../../../test-support/bytes";
 import { loadFlatDevice } from "../../../test-support/flat-device/load";
 import { prepareRoute } from "./route";
 import { armUpdate, sendMapBlob, sendMapBytes, sendMapFile, sendRoute, stageFirmware } from "./write";
@@ -122,7 +123,7 @@ describe("map upload from a file", () => {
 
             expect(result.payloadLength).toBe(BigInt(bytes.length));
             expect(result.payloadCrc32).toBe(Crc32.of(bytes));
-            expect(device.payloadOf(result.objectId)).toEqual(bytes);
+            expectBytes(device.payloadOf(result.objectId), bytes);
             expect(device.entries[0].displayName).toBe("built-monaco");
         });
     });
@@ -137,7 +138,7 @@ describe("map upload from a file", () => {
             expect(result.objectId).toBe(1n);
             expect(result.payloadLength).toBe(BigInt(bytes.length));
             expect(result.payloadCrc32).toBe(Crc32.of(bytes));
-            expect(device.payloadOf(result.objectId)).toEqual(bytes);
+            expectBytes(device.payloadOf(result.objectId), bytes);
             expect(device.entries[0].displayName).toBe("grimsel-default");
             // `committing` is named because the wire goes quiet there: the last byte is gone and the
             // device is still landing its staging half.
@@ -228,7 +229,7 @@ describe("map upload from a file", () => {
         await withDevice({ packetSize: 4096 }, async ({ client, device }) => {
             const result = await sendMapFile(client, file, context());
             expect(result.payloadLength).toBe(BigInt(bytes.length));
-            expect(device.payloadOf(result.objectId)).toEqual(bytes);
+            expectBytes(device.payloadOf(result.objectId), bytes);
         });
     }, 30_000);
 
@@ -258,7 +259,7 @@ describe("map upload from a file", () => {
             const result = await sendMapFile(client, file, context());
             expect(result.objectId).toBe(installed.objectId);
             expect(result.revision).toBe(installed.revision + 1n);
-            expect(device.payloadOf(result.objectId)).toEqual(bytes);
+            expectBytes(device.payloadOf(result.objectId), bytes);
         });
     }, 30_000);
 

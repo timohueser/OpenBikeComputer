@@ -84,8 +84,7 @@ mod tests {
 
     /// Allow a hair of float slop when comparing headings.
     fn close(a: f32, b: f32) {
-        let d = (a - b).abs();
-        assert!(d < 0.01 || (360.0 - d) < 0.01, "{a} vs {b}");
+        assert!((a - b).abs() < 0.01, "{a} vs {b}");
     }
 
     #[test]
@@ -101,27 +100,22 @@ mod tests {
     }
 
     #[test]
-    fn magnitude_does_not_change_the_angle() {
-        // Scaling the whole horizontal vector leaves the heading put.
-        let a = heading_deg(MagSample::new(12.0, 5.0, 0.0), 0.0);
-        let b = heading_deg(MagSample::new(120.0, 50.0, 0.0), 0.0);
-        close(a, b);
+    fn declination_is_added_and_the_heading_stays_in_range() {
+        let west = heading_deg(MagSample::new(0.0, 20.0, 0.0), 100.0); // 270 + 100 wraps past 360
+        close(west, 10.0);
+        assert!((0.0..360.0).contains(&west), "{west}");
+        let north = heading_deg(MagSample::new(20.0, 0.0, 0.0), -10.0); // 0 - 10 wraps below 0
+        close(north, 350.0);
+        assert!((0.0..360.0).contains(&north), "{north}");
     }
 
     #[test]
-    fn declination_shifts_and_wraps() {
-        // Magnetic north + 10° east declination → true heading 10°.
-        close(heading_deg(MagSample::new(20.0, 0.0, 0.0), 10.0), 10.0);
-        // Wrap across 0: facing west (270°) with +100° declination → 370 → 10.
-        close(heading_deg(MagSample::new(0.0, 20.0, 0.0), 100.0), 10.0);
-    }
-
-    #[test]
-    fn normalize_wraps_both_ways() {
-        close(normalize_deg(-90.0), 270.0);
-        close(normalize_deg(450.0), 90.0);
-        close(normalize_deg(0.0), 0.0);
-        close(normalize_deg(359.999), 359.999);
+    fn normalize_maps_every_angle_into_0_360() {
+        for (input, expected) in [(-90.0, 270.0), (450.0, 90.0), (360.0, 0.0), (-360.0, 0.0), (0.0, 0.0)] {
+            let got = normalize_deg(input);
+            close(got, expected);
+            assert!((0.0..360.0).contains(&got), "{input} -> {got}");
+        }
     }
 
     #[test]

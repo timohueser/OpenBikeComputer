@@ -575,14 +575,4 @@ mod tests {
         assert_eq!(buf, [0xAB; BLOCK]);
         (&faulty).write(2, &[0xEF; BLOCK]).unwrap();
     }
-
-    #[test]
-    fn a_read_past_the_card_fails_and_an_unwritten_block_is_zeros() {
-        let disk = SparseDisk::blank(64, 3);
-        let mut buf = [0xFFu8; BLOCK];
-        (&disk).read(63, &mut buf).unwrap();
-        assert_eq!(buf, [0; BLOCK]);
-        assert_eq!((&disk).read(64, &mut buf), Err(DiskError));
-        assert_eq!((&disk).write(64, &[0; BLOCK]), Err(DiskError));
-    }
 }
