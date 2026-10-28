@@ -4,14 +4,13 @@
 // the node's stamps; water.wgsl draws it on the node's square, a river area and a ribbon on the drawn
 // surface.
 import earcut from 'earcut';
+import { CURVATURE } from '../frame/frame';
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { features, metresPerUnit, mitre, RIVER, RULES, STREAM, type Line, type Node } from './bins';
 
 /** Words of a vertex, as `WaterIn` of water.wgsl: x, y (int32 world units), level, across x and y, signed half-width. */
 export const WATER_VERTEX = 6;
-/** The longest edge: the linear drop between its ends leaves the curvature drop by at most 2 cm. */
-export const EDGE_M = 1000;
 /** A mitre grows at most this much in a sharp bend. */
 const MITRE = 3;
 /** The level of a vertex that lies on the drawn surface, as DRAPED of water.wgsl. */
@@ -37,7 +36,7 @@ export function waterMesh(list: Feature[], tile: Node, node: Node): WaterMesh | 
     const shift = 22 - node.level, side = PAGE * 2 ** shift, x0 = node.x * side, y0 = node.y * side, margin = 2 ** shift;
     const box: [number, number, number, number] = [x0 - margin, y0 - margin, x0 + side + margin, y0 + side + margin];
     // A ribbon has a pair of vertices at least every mesh cell, so that it follows the mesh that it lies on.
-    const longest = EDGE_M / metresPerUnit(y0 + side / 2), cell = RULES.MESH_TEXELS * 2 ** shift;
+    const longest = longestEdge(node), cell = RULES.MESH_TEXELS * 2 ** shift;
 
     const ribbon = (line: Line, run: number[]) => {
         const first = words.length / WATER_VERTEX;
@@ -100,6 +99,18 @@ export function waterMesh(list: Feature[], tile: Node, node: Node): WaterMesh | 
     const vertices = new ArrayBuffer(words.length * 4), floats = new Float32Array(vertices), ints = new Int32Array(vertices);
     words.forEach((word, i) => (i % WATER_VERTEX < 2 ? (ints[i] = word) : (floats[i] = word)));
     return { vertices, indices: new Uint32Array([...ribbons, ...surfaces, ...sea, ...drapes]), ribbons: ribbons.length, lakes: surfaces.length, seas: sea.length };
+}
+
+/**
+ * The longest edge of the triangles of a lake or of the sea on a node, in world units. The middle of an
+ * edge sags under the curved surface by CURVATURE × L² / 4, which stays within a quarter of the lift of
+ * water over the terrain that it meets (water_lift of stamp-core.wgsl), as the sea lies at half of it
+ * (SEA_LIFT of water.wgsl): a coarse node, with its higher lift, takes longer edges.
+ */
+export function longestEdge(node: Node): number {
+    const texel = 2 ** (22 - node.level), metres = metresPerUnit((node.y + 0.5) * PAGE * texel);
+    const lift = RULES.LIFT_M + RULES.LIFT * RULES.MESH_TEXELS * metres * texel;
+    return Math.sqrt(lift / CURVATURE) / metres;
 }
 
 /** The unit direction of segment v of a line. */

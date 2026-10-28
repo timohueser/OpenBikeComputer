@@ -21,7 +21,7 @@ const DRAPE_BIAS = 2;
  * before the terrain, so the terrain under them fails the depth test, and the water under a lake stays
  * hidden. Water on the drawn surface takes a depth bias with its slope, so that the terrain's triangles
  * between its vertices stay under it; the ribbons blend after the terrain. The sea takes the colour of
- * its region's rules.
+ * the regions about the eye.
  */
 const KINDS = ['lakes', 'seas', 'areas', 'ribbons'] as const;
 type Kind = (typeof KINDS)[number];
@@ -168,7 +168,7 @@ async function waterPipelines(gpu: Gpu): Promise<{ pipelines: Record<Kind, GPURe
     const pipeline = (kind: Kind) => device.createRenderPipelineAsync({
         label: kind, layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surface, ground, features] }),
         vertex: {
-            module, entryPoint: 'water_vertex', buffers: [{
+            module, entryPoint: 'water_vertex', constants: { SEA: kind === 'seas' ? 1 : 0 }, buffers: [{
                 arrayStride: WATER_VERTEX * 4, attributes: [
                     { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'float32' },
                     { shaderLocation: 2, offset: 12, format: 'float32x2' }, { shaderLocation: 3, offset: 20, format: 'float32' },
