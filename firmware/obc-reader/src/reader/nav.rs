@@ -652,7 +652,7 @@ impl<'a> Reader<'a> {
         from: NavEdgePosition,
         to: NavEdgePosition,
         mut emit: impl FnMut((i32, i32)),
-    ) -> Option<u32> {
+    ) -> Option<()> {
         let record = self.nav_edge_record(tiles, edge_id)?;
         if from.segment as usize + 1 >= record.point_count() || to.segment as usize + 1 >= record.point_count() {
             return None;
@@ -676,7 +676,7 @@ impl<'a> Reader<'a> {
         if to.coord != from.coord {
             emit(to.coord);
         }
-        Some(record.length_m())
+        Some(())
     }
 
     fn project_nav_edge_cached(
@@ -774,8 +774,7 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// Fetch one edge polyline oriented to begin at `start`, streaming each point through `emit`
-    /// and returning the edge's `length_m`.
+    /// Fetch one edge polyline oriented to begin at `start`, streaming each point through `emit`.
     ///
     /// Edge records run `a → b` and the router traverses them either way, so this picks the
     /// direction by matching `start` against the record's endpoints, which the packer makes
@@ -788,7 +787,7 @@ impl<'a> Reader<'a> {
         edge_id: u32,
         start: (i32, i32),
         mut emit: impl FnMut((i32, i32)),
-    ) -> Option<u32> {
+    ) -> Option<()> {
         let record = self.nav_edge_record(tiles, edge_id)?;
         let mut vertices = record.vertices();
         if record.anchor() == start {
@@ -804,7 +803,7 @@ impl<'a> Reader<'a> {
                 emit(point);
             }
         }
-        Some(record.length_m())
+        Some(())
     }
 }
 
