@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import time
+import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -147,8 +148,6 @@ def whole(target, stream):
 def extract(archive, member, target, work):
     """Write the file named `member` of the zip `archive`, or of a zip archive in it, to `target`.
     False when no archive has it."""
-    import zipfile
-
     with zipfile.ZipFile(archive) as z:
         names = z.namelist()
         for name in names:
