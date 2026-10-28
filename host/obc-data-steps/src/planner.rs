@@ -704,6 +704,14 @@ fn reference(
     let Some(read) = models.read(inputs, store, &mut BTreeMap::new(), wanted, &mut Vec::new())? else {
         return Ok(None);
     };
+    let Input::Snapshot { version, .. } = &read else { unreachable!("the models are a snapshot input") };
+    let id = crate::terrain_reference::ID;
+    if let Some(manifest) = crate::device::manifest(store, id, version, wanted)? {
+        if manifest.revision < crate::terrain_reference::BIASED {
+            let fix = obc_dem::planner::BIAS_FIX;
+            return Err(invalid(format!("{id}@{version} states no GLO-30 bias of its national models. Fix: {fix}")));
+        }
+    }
     let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}/{:04}", tile.i, tile.j)).collect();
     Ok(Some(Step {
         client: Client::None,
@@ -1317,6 +1325,22 @@ mod tests {
             let reads = |input: &Input| matches!(input, Input::Step { name, .. } if name == "planner/reference");
             assert!(step.inputs.iter().any(reads), "{reader} reads the national models");
         }
+    }
+
+    /// A version of `terrain` from before the bias is refused when the plan reads it, with the fix.
+    #[test]
+    fn a_version_of_terrain_without_a_bias_is_refused_in_the_plan() {
+        let temp = temp("planner-unbiased");
+        let (store, mut inputs) = (store(&temp, &["2026-10-01"]), inputs(AREA, &[]));
+        let (pinned, manifest) = crate::device::tests::terrain_version(&mut inputs, &["mean/16/4825/4218.tif"]);
+        let mut old: obc_data::prepared::Manifest = serde_json::from_slice(&manifest).unwrap();
+        old.revision = 1;
+        let manifest = [(obc_data::prepared::MANIFEST.to_string(), serde_json::to_vec(&old).unwrap())];
+        crate::device::tests::stored(&store, "terrain", &pinned, &[], &manifest);
+        let Err(Unplanned::Invalid(error)) = Planner.steps(&root(), &inputs, &regions(), &store) else {
+            panic!("the plan reads a version without a bias")
+        };
+        assert!(error.contains("no GLO-30 bias") && error.ends_with("--dry-run"), "{error}");
     }
 
     #[test]

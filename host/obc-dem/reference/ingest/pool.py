@@ -154,35 +154,29 @@ def pool_onto_lattice(values, src_transform, src_crs, window: Window):
     return dest.reshape(shape), total.reshape(shape), count.reshape(shape), dropped
 
 
-def fill_gaps(maximum, total, count, rasters, window: Window):
+def fill_gaps(maximum, total, count, raster, window: Window):
     """Fill each lattice pixel of `window` that no source centre reached and that lies between four
-    source centres with a height: the maximum and the mean are their bilinear height, from the
-    first of `rasters` (values, transform, CRS) that has the four. The arrays are in the shape of
-    `window`, north-up, and change in place."""
+    centres with a height of `raster` (values, transform, CRS): the maximum and the mean are their
+    bilinear height. The arrays are in the shape of `window`, north-up, and change in place."""
 
+    values, transform, src_crs = raster
     rows, cols = np.nonzero(count == 0)
     lat = (GRID_ORIGIN + (window.row0 + window.rows - 1 - rows) * STEP + STEP // 2) / DEGREE
     lon = (GRID_ORIGIN + (window.col0 + cols) * STEP + STEP // 2) / DEGREE
-    empty = np.ones(rows.size, dtype=bool)
-    for values, transform, src_crs in rasters:
-        if not empty.any():
-            break
-        x, y = Transformer.from_crs(WGS84, src_crs, always_xy=True).transform(lon[empty], lat[empty])
-        col, row = ~transform * (np.asarray(x), np.asarray(y))
-        col, row = col - 0.5, row - 0.5  # from the corners of the source pixels to their centres
-        c0, r0 = np.floor(col).astype("int64"), np.floor(row).astype("int64")
-        inside = (r0 >= 0) & (c0 >= 0) & (r0 + 1 < values.shape[0]) & (c0 + 1 < values.shape[1])
-        r0, c0 = np.where(inside, r0, 0), np.where(inside, c0, 0)
-        corners = [values[r0 + dr, c0 + dc].astype("float64") for dr in (0, 1) for dc in (0, 1)]
-        found = inside & np.all([corner > VOID / 2 for corner in corners], axis=0)
-        fy, fx = row - r0, col - c0
-        height = ((corners[0] * (1 - fx) + corners[1] * fx) * (1 - fy)
-                  + (corners[2] * (1 - fx) + corners[3] * fx) * fy)
-        at = np.flatnonzero(empty)[found]
-        maximum[rows[at], cols[at]] = height[found]
-        total[rows[at], cols[at]] = height[found]
-        count[rows[at], cols[at]] = 1
-        empty[at] = False
+    x, y = Transformer.from_crs(WGS84, src_crs, always_xy=True).transform(lon, lat)
+    col, row = ~transform * (np.asarray(x), np.asarray(y))
+    col, row = col - 0.5, row - 0.5  # from the corners of the source pixels to their centres
+    c0, r0 = np.floor(col).astype("int64"), np.floor(row).astype("int64")
+    inside = (r0 >= 0) & (c0 >= 0) & (r0 + 1 < values.shape[0]) & (c0 + 1 < values.shape[1])
+    r0, c0 = np.where(inside, r0, 0), np.where(inside, c0, 0)
+    corners = [values[r0 + dr, c0 + dc].astype("float64") for dr in (0, 1) for dc in (0, 1)]
+    found = inside & np.all([corner > VOID / 2 for corner in corners], axis=0)
+    fy, fx = row - r0, col - c0
+    height = (corners[0] * (1 - fx) + corners[1] * fx) * (1 - fy) + (corners[2] * (1 - fx) + corners[3] * fx) * fy
+    rows, cols = rows[found], cols[found]
+    maximum[rows, cols] = height[found]
+    total[rows, cols] = height[found]
+    count[rows, cols] = 1
 
 
 def to_int16(values):

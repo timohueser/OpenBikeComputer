@@ -1286,7 +1286,7 @@ pub(crate) mod tests {
             source: "terrain".into(),
             version: "2026-10-01".into(),
             format: 3,
-            revision: 1,
+            revision: crate::terrain_reference::BIASED,
             inputs: Vec::new(),
             files: paths.map(file).collect(),
             reused: BTreeMap::new(),

@@ -208,7 +208,8 @@ class Pool(ArchiveCase):
 
         Consecutive centres are two lattice pixels apart, so each source pixel gets an
         archive pixel of its own: one pixel short of 100 x 100 would mean two centres
-        collapsed onto one lattice line.
+        collapsed onto one lattice line. The pooling alone shows it; the fill then fills the
+        pixels between the centres.
         """
 
         transform, lon0, lat_top = wgs84_grid(128)
@@ -221,11 +222,13 @@ class Pool(ArchiveCase):
         lon_u = lon0 + 128 * 50 + 64
         lat_u = lat_top - 128 * 50 - 64
         self.assertEqual(lon_u % ingest.STEP, 0)
+        values, src_transform, src_crs, bounds, _ = ingest.read_source(raster)
+        window = ingest.covering_window(bounds, pad=1)
+        high, _, count, dropped = ingest.pool_onto_lattice(values, src_transform, src_crs, window)
+        self.assertEqual((int((count > 0).sum()), int(count.max()), dropped), (100 * 100, 1, 0))
+        self.assertEqual(int((high == np.float32(TOWER)).sum()), 1)
         ti, tj, r, c = at(lon_u, lat_u)
         data, _ = ingest.pool_tile([raster], ingest.SOURCES["ch"], ti, tj)
-
-        self.assertEqual(int((data != ingest.NODATA).sum()), 100 * 100)
-        self.assertEqual(int((data == round(TOWER)).sum()), 1)
         self.assertEqual(int(data[r, c]), round(TOWER))
 
     def test_a_rotated_source_loses_nothing(self):
@@ -342,6 +345,29 @@ class Pool(ArchiveCase):
         self.assertLess(float(np.abs(mean[filled] / 10.0 - plane(x[filled], y[filled])).max()), 0.06)
 
 
+    def test_only_a_model_with_a_step_longer_than_the_east_side_of_a_pixel_is_coarse(self):
+        """Such a model is fetched with a margin: `it` and `is` at 10 m, and not `es` at 5 m, whose
+        country is south of the latitude where the east side of a pixel is 5 m."""
+
+        tile = lambda lat, lon: ((int(lat * 1e6) - ingest.GRID_ORIGIN) >> 16, (int(lon * 1e6) - ingest.GRID_ORIGIN) >> 16)  # noqa: E731
+        for key, (lat, lon), coarse in (("it", (42.0, 12.5), True), ("is", (64.5, -19.0), True),
+                                        ("es", (43.5, -5.0), False), ("ch", (46.8, 8.2), False)):
+            with self.subTest(key):
+                self.assertEqual(ingest.archive.coarse(ingest.SOURCES[key], *tile(lat, lon)), coarse)
+
+    def test_the_bias_samples_are_the_mean_at_every_64th_pixel_row_by_row_from_the_south(self):
+        """An asymmetric tile, so a flipped or transposed mark fails."""
+
+        rows, cols = np.mgrid[0:ingest.TILE_PX, 0:ingest.TILE_PX]
+        mean = ((ingest.TILE_PX - 1 - rows) * 10_000 + cols).astype("int32")  # north-up: row 0 is north
+        mean[ingest.TILE_PX - 1 - 32, 96] = ingest.MEAN_NODATA
+        lines = [line.split() for line in ingest.archive.samples(mean).splitlines()]
+        self.assertEqual([len(line) for line in lines], [16] * 16)
+        self.assertEqual(lines[0][:3], [str(32 * 10_000 + 32), "-", str(32 * 10_000 + 160)])
+        self.assertEqual(lines[15][15], str(992 * 10_000 + 992))
+        self.assertEqual(lines[1][0], str(96 * 10_000 + 32))
+
+
 class BoxService(ingest.Source):
     """A service that answers a box with the columns of one EPSG:4326 raster inside it."""
 
@@ -384,17 +410,17 @@ class Fetch(ArchiveCase):
         return service
 
     def test_a_tile_holds_what_the_service_answered_for_it_and_the_raw_rasters_are_removed(self):
-        # A 128 µdeg source that straddles two tiles, with a tower in each. Its columns 0 to 24
-        # land in the west tile and 25 to 99 in the east one, one lattice pixel per centre.
-        transform, _, _ = wgs84_grid(128, col=ingest.TILE_PX - 50)
-        values = np.full((100, 100), 1000.0, dtype="float32")
-        values[50, 10] = values[50, 60] = TOWER
+        # A 32 µdeg source that straddles two tiles, with a tower in each. Its columns 0 to 99
+        # land in the west tile and 100 to 199 in the east one, four centres in a lattice pixel.
+        transform, _, _ = wgs84_grid(32, col=ingest.TILE_PX - 50)
+        values = np.full((200, 200), 1000.0, dtype="float32")
+        values[100, 20] = values[100, 140] = TOWER
         raster = source_raster(self.inputs / "wide.tif", values, transform=transform)
         with rasterio.open(raster, "r+") as dst:
             dst.crs = ingest.WGS84
         service = self.serve(BoxService(raster))
         digests = {}
-        for (ti, tj), heights in (((4812, 4223), 25 * 100), ((4812, 4224), 75 * 100)):
+        for (ti, tj), heights in (((4812, 4223), 50 * 100), ((4812, 4224), 50 * 100)):
             tile, name = f"{ti:04}/{tj:04}", f"{ti:04}-{tj:04}"
             path = self.root / "out" / "16" / f"{tile}.tif"
             files = [f"16/{tile}.tif", f"{name}.keys", f"{name}.mean.sha256", f"{name}.samples", f"{name}.sha256",
@@ -409,6 +435,9 @@ class Fetch(ArchiveCase):
             digests[tile] = (self.root / "out" / f"{name}.sha256").read_text(encoding="utf-8")
             self.assertEqual(digests[tile], ingest.tile_digest(path))
             self.assertEqual((self.root / "out" / f"{name}.keys").read_text(encoding="utf-8"), "ch")
+            marked = (self.root / "out" / f"{name}.samples").read_text(encoding="utf-8").split()
+            self.assertEqual(len(marked), 256)
+            self.assertEqual({value for value in marked if value != "-"}, {"10000"}, "1000 m in decimetres")
             self.assertFalse((self.root / "work").exists())
         tiles = dict(digests)
 

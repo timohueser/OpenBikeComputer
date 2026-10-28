@@ -24,13 +24,17 @@ use crate::prepared_tiles::{self, Tile};
 
 /// The id of the prepared source.
 pub const ID: &str = "terrain";
+/// The first revision whose versions state the GLO-30 bias of their models.
+pub const BIASED: u32 = 2;
 
 pub struct TerrainReference {
     /// `ingest.py` of the reference archive, as a command in the repository root.
     pub ingest: fn(&Path) -> Result<Command, String>,
+    /// The GLO-30 squares that the bias of a model reads.
+    pub(crate) glo30: crate::terrain_bias::Glo30,
 }
 
-pub const TERRAIN_REFERENCE: TerrainReference = TerrainReference { ingest };
+pub const TERRAIN_REFERENCE: TerrainReference = TerrainReference { ingest, glo30: crate::terrain_bias::fetch };
 
 fn ingest(root: &Path) -> Result<Command, String> {
     let mut command = Command::new("uv");
@@ -50,7 +54,7 @@ impl Prepared for TerrainReference {
     }
 
     fn revision(&self) -> u32 {
-        2
+        BIASED
     }
 
     fn regional(&self) -> bool {
@@ -160,7 +164,7 @@ impl Prepared for TerrainReference {
             let text = fs::read_to_string(marks.join(&tile.marks[0])).map_err(|e| format!("{}: {e}", tile.marks[0]))?;
             sources.insert(tile.name.replace('-', "/"), text.trim().split(',').map(String::from).collect());
         }
-        let biases = crate::terrain_bias::measure(job, previous.as_ref(), before.as_ref(), &sources)?;
+        let biases = crate::terrain_bias::measure(job, (previous.as_ref(), before.as_ref()), &sources, self.glo30)?;
         let biased = job.state.join("biases.json");
         obc_data::store::write_atomic(&biased, &serde_json::to_vec(&biases).expect("biases serialize"))?;
         let fetched: BTreeSet<&String> = keys.values().flatten().collect();
@@ -358,6 +362,7 @@ mod tests {
     use obc_data::sources::Registry;
     use obc_data::store::Store;
     use obc_data::target::Target;
+    use obc_dem::fetch::TileId;
     use std::path::PathBuf;
 
     const SOURCES: &str = r#"
@@ -403,7 +408,7 @@ fetch)
     if [ -e "none-$4" ]; then touch "$8/$4.none"; exit 0; fi
     for pool in "" mean/; do mkdir -p "$8/${pool}16/${4%-*}" && echo "$pool$4 $2" > "$8/${pool}16/${4%-*}/${4#*-}.tif"; done
     echo "$2" > "$8/$4.keys"
-    yes - | head -n 256 > "$8/$4.samples"
+    yes 15000 | head -n 256 > "$8/$4.samples"
     echo "mean of $4" > "$8/$4.mean.sha256" && echo "pixels of $4" > "$8/$4.sha256" ;;
 index-terrain)
     over=""; [ $# -gt 15 ] && over=" over"
@@ -418,6 +423,13 @@ esac
         let mut command = Command::new("sh");
         command.arg("ingest.sh");
         Ok(command)
+    }
+
+    /// GLO-30 as all sea: it logs the squares that it is asked for to `squares`.
+    fn sea(job: &mut Job, squares: &BTreeSet<TileId>) -> Result<BTreeMap<TileId, PathBuf>, String> {
+        let names: Vec<String> = squares.iter().map(|tile| tile.stem()).collect();
+        fs::write(job.root.join("squares"), names.join("\n")).map_err(|e| e.to_string())?;
+        Ok(BTreeMap::new())
     }
 
     /// A repository with [`INGEST`], a store and a target for `terrain-reference/xx@2026-10-01`.
@@ -475,7 +487,8 @@ esac
         ) -> (Result<(), String>, Vec<String>, Vec<String>, serde_json::Value) {
             let root = self.root();
             let _ = fs::remove_file(root.join("calls"));
-            let (producer, http) = (TerrainReference { ingest: script }, Http::new());
+            let _ = fs::remove_file(root.join("squares"));
+            let (producer, http) = (TerrainReference { ingest: script, glo30: sea }, Http::new());
             let mut run = Run::create(&self.store, ["source", "prepare", ID]).unwrap();
             let opening = Opening {
                 root: &root,
@@ -616,6 +629,9 @@ esac
         let fixture = Fixture::new("terrain-extend");
         let (done, _, _, _) = fixture.version("2026-10-01", None);
         done.unwrap();
+        // The model has no bias yet, so its samples ask GLO-30 for the squares under them.
+        let squares = fs::read_to_string(fixture.root().join("squares")).unwrap();
+        assert!(squares.lines().any(|square| square == "Copernicus_DSM_COG_10_N46_00_E008_00_DEM"), "{squares}");
         // A box inside the first tile.
         let (west, south, east, north) = fixture.cells[0].square();
         let inner = |a: i64, b: i64| (a + (b - a) / 4) as f64 / 1e6;

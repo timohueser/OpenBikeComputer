@@ -35,6 +35,13 @@ pub const SAMPLES: usize = 64;
 pub const SAMPLE: usize = 32;
 /// A bias sample: latitude and longitude in µdeg, and the height of the model in metres.
 pub type Sample = (i64, i64, f64);
+/// The fewest samples with GLO-30 that a bias is measured from: those of four full tiles, so that a
+/// test version of one tile does not fix the bias of a model.
+pub const MIN_SAMPLES: usize = 4 * (TILE_PIXELS / SAMPLES) * (TILE_PIXELS / SAMPLES);
+/// How a version of `terrain` without the bias of a model gets it.
+pub const BIAS_FIX: &str = "a prepare of a small box inside a region that the version holds extends the version and \
+     measures the bias of each model that has none, such as: obc data source prepare terrain --box \
+     8.30,46.80,8.32,46.81 --to TARGET --dry-run";
 
 /// The width of each ramp of the seam in metres. A canopy step of 20 m between the archive and
 /// GLO-30 ramps over it at 2 %, which the relief does not show as an edge.
@@ -305,8 +312,9 @@ pub fn blend(national: Option<f64>, glo30: Option<f64>, depth: f64, bias: f64) -
 }
 
 /// The bias of each national model: the median of model − GLO-30 in metres, to the centimetre,
-/// over its samples, with GLO-30 from the squares of `glo30`. A sample without a GLO-30 height does
-/// not count, and a model without one has bias 0. Each thread decodes one square at a time.
+/// over its samples, with GLO-30 from the squares of `glo30`, which must hold the square of each
+/// sample. A sample without a GLO-30 height does not count. A model with fewer than
+/// [`MIN_SAMPLES`] has no bias. Each thread decodes one square at a time.
 pub fn biases(
     samples: &BTreeMap<String, Vec<Sample>>,
     glo30: &[(TileId, PathBuf)],
@@ -319,8 +327,11 @@ pub fn biases(
         }
     }
     let files: BTreeMap<(i32, i32), &PathBuf> = glo30.iter().map(|(tile, path)| ((tile.lat, tile.lon), path)).collect();
-    let squares: Vec<_> =
-        by_square.into_iter().filter_map(|(square, points)| Some((files.get(&square)?, points))).collect();
+    let squares = by_square.into_iter().map(|((lat, lon), points)| match files.get(&(lat, lon)) {
+        Some(path) => Ok((*path, points)),
+        None => Err(format!("no GLO-30 square {} for {} bias samples", TileId { lat, lon }.stem(), points.len())),
+    });
+    let squares = squares.collect::<Result<Vec<_>, String>>()?;
     let differences = squares
         .into_par_iter()
         .map(|(path, points)| {
@@ -337,11 +348,18 @@ pub fn biases(
     for (key, difference) in differences.into_iter().flatten() {
         by_model.get_mut(key).expect("a model of the samples").push(difference);
     }
-    let median = |mut values: Vec<f64>| match values.len() {
-        0 => 0.0,
-        n => (*values.select_nth_unstable_by(n / 2, f64::total_cmp).1 * 100.0).round() / 100.0,
-    };
-    Ok(by_model.into_iter().map(|(key, values)| (key.to_string(), median(values))).collect())
+    let mut measured = BTreeMap::new();
+    for (key, mut values) in by_model {
+        let n = values.len();
+        if n < MIN_SAMPLES {
+            eprintln!("GLO-30 bias of `{key}`: {n} samples with GLO-30, fewer than {MIN_SAMPLES}: no bias");
+            continue;
+        }
+        let bias = (*values.select_nth_unstable_by(n / 2, f64::total_cmp).1 * 100.0).round() / 100.0;
+        eprintln!("GLO-30 bias of `{key}`: {bias:.2} m from {n} samples");
+        measured.insert(key.to_string(), bias);
+    }
+    Ok(measured)
 }
 
 /// The bias samples of archive tile `(ti, tj)`, from `height` of pixel `(r, c)`, `r` counting north.
@@ -374,8 +392,8 @@ impl Seam {
             let Some((best, bias)) = archive.bias(ti, tj) else { return Ok(None) };
             let bias = bias.ok_or_else(|| {
                 format!(
-                    "the archive index states no `glo30_bias_m` of `{best}`, the best model of tile {ti}/{tj}: \
-                     the next `obc data source prepare terrain` measures it"
+                    "the archive index states no `glo30_bias_m` of `{best}`, the best model of tile {ti}/{tj}. \
+                     Fix: {BIAS_FIX}"
                 )
             })?;
             let mut cells = vec![0u16; CELLS * CELLS];
@@ -385,10 +403,14 @@ impl Seam {
                 }
             }
             let full = cells.iter().map(|&count| count == 1 << (2 * CELL_LOG2)).collect();
-            Ok(Some(((ti, tj), Coverage { full, bias: bias as f32 })))
+            Ok(Some(((ti, tj), best, Coverage { full, bias: bias as f32 })))
         });
         let coverage = coverage.collect::<Result<Vec<_>, String>>()?;
-        Ok(Self::new(&coverage.into_iter().flatten().collect()))
+        let used: BTreeMap<&str, f32> = coverage.iter().flatten().map(|(_, best, cells)| (*best, cells.bias)).collect();
+        for (key, bias) in used {
+            eprintln!("GLO-30 bias {bias:.2} m next to `{key}`");
+        }
+        Ok(Self::new(&coverage.into_iter().flatten().map(|(tile, _, cells)| (tile, cells)).collect()))
     }
 
     /// The depths and the biases around the archive tiles of `full`.

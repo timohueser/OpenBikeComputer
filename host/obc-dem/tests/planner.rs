@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use common::{set_bias, write_archive, ArchiveTile, Scratch, SyntheticDem, PIXEL_IS_POINT};
 use obc_dem::fetch::TileId;
-use obc_dem::planner::{biases, squares, tiles_in, Recent, Terrain};
+use obc_dem::planner::{biases, squares, tiles_in, Recent, Terrain, MIN_SAMPLES};
 use obc_dem::reference::TILE_LOG2;
 use obc_dem::shape::{Line, Peak};
 use obc_formats::obct::GRID_ORIGIN;
@@ -101,11 +101,13 @@ fn the_shapes_change_the_feather_band_and_not_the_ground_that_the_archive_holds_
 }
 
 /// GLO-30 takes the bias that the index states for the best model of a tile, and the seam reads
-/// the coverage of the tiles around the bounds, so a height does not depend on the bounds of the
-/// bake. The archive holds 500 m in its west column of tiles and 480 m in the two others, GLO-30
-/// stands at 520 m, and the index states −20 m. A small bounds holds two points in the west column
-/// and the middle column only: one in the feather band of the west edge, and one 100 m east of the
-/// line between the two columns.
+/// the whole tiles that the bounds meet and the ring of tiles around them, so a height does not
+/// depend on the bounds of the bake. The archive is a block of three by three tiles, at 500 m in
+/// its west column and 480 m in the two others; GLO-30 stands at 520 m, and the index states
+/// −20 m. The small bounds meet two tiles of the middle row. Its points: one in the feather band
+/// of the west edge of the archive, one 100 m east of the line between two columns, and one 300 m
+/// south of the north edge of the tiles that the small bounds meet, where only the ring shows that
+/// the archive goes on.
 #[test]
 fn a_height_does_not_depend_on_the_bounds_of_the_bake() {
     let scratch = Scratch::new("planner-bounds");
@@ -124,12 +126,17 @@ fn a_height_does_not_depend_on_the_bounds_of_the_bake() {
     let corner = |i: u32| (i64::from(GRID_ORIGIN) + i64::from(i) * tile) as i32;
     let metres = |m: f64| (m / (0.11132 * 46.5f64.to_radians().cos())) as i32;
     let lat = corner(ti) + tile as i32 / 2;
-    let points = [corner(tj - 1) + metres(400.0), corner(tj) + metres(100.0)];
+    let north = corner(ti + 1) - (300.0 / 0.11132) as i32;
+    let points = [
+        (lat, corner(tj - 1) + metres(400.0)),
+        (lat, corner(tj) + metres(100.0)),
+        (north, corner(tj) + metres(2500.0)),
+    ];
     let dem = SyntheticDem::build(
-        f64::from(lat) * 1e-6 + 0.02,
+        f64::from(lat) * 1e-6 + 0.05,
         f64::from(corner(tj - 1)) * 1e-6 - 0.01,
         1.0 / 3600.0,
-        144,
+        360,
         450,
         PIXEL_IS_POINT,
         |_, _| 520.0,
@@ -139,29 +146,29 @@ fn a_height_does_not_depend_on_the_bounds_of_the_bake() {
         let mut terrain = Terrain::open(&tiles_in(scratch.path(), bounds), "GLO-30", Some(&archive), bounds).unwrap();
         terrain.load(i32::MIN..=i32::MAX).unwrap();
         let mut recent = Recent::default();
-        points.map(|lon| terrain.height(lat, lon, &mut recent).unwrap().unwrap())
+        points.map(|(lat, lon)| terrain.height(lat, lon, &mut recent).unwrap().unwrap())
     };
     let degrees = |udeg: i32| f64::from(udeg) * 1e-6;
-    let small =
-        heights([degrees(points[0]) - 0.001, degrees(lat) - 0.001, degrees(points[1]) + 0.001, degrees(lat) + 0.001]);
+    let small = [degrees(points[0].1), degrees(lat), degrees(points[2].1), degrees(north)];
+    let small = heights([small[0] - 0.001, small[1] - 0.001, small[2] + 0.001, small[3] + 0.001]);
     assert_eq!(small, heights([8.3, 46.4, 8.6, 46.6]), "the same heights in a small and a large bake");
     assert!((small[0] - 500.0).abs() < 0.01, "GLO-30 with the bias of the index: {} m", small[0]);
-    assert_eq!(small[1], 480.0, "the archive alone, also next to the edge of the small bounds");
+    assert_eq!(small[1..], [480.0, 480.0], "the archive alone, also next to the edge of the small bounds");
 }
 
-/// The bias of a model is the median of model − GLO-30 over its samples. A sample without a GLO-30
-/// square does not count, and a model without a sample has bias 0.
+/// The bias of a model is the median of model − GLO-30 over its samples. A model with fewer than
+/// `MIN_SAMPLES` with GLO-30 has none, and a sample in a square without GLO-30 is an error.
 #[test]
 fn the_bias_of_a_model_is_the_median_of_its_samples_less_glo30() {
     let scratch = Scratch::new("planner-biases");
     let dem = SyntheticDem::build(46.6, 8.0, 1.0 / 3600.0, 360, 360, PIXEL_IS_POINT, |_, _| 520.0);
     dem.write(scratch.path(), &TileId { lat: 46, lon: 8 }.stem());
     let glo30 = tiles_in(scratch.path(), [8.0, 46.0, 8.1, 46.6]);
-    let at = |metres: f64| (46_550_000, 8_050_000, metres);
-    let samples = BTreeMap::from([
-        ("a".to_string(), vec![at(500.0), at(497.5), at(510.0), (47_550_000, 8_050_000, 0.0)]),
-        ("b".to_string(), Vec::new()),
-    ]);
-    let expected = BTreeMap::from([("a".to_string(), -20.0), ("b".to_string(), 0.0)]);
-    assert_eq!(biases(&samples, &glo30).unwrap(), expected);
+    let at = |metres: f64, n: usize| vec![(46_550_000, 8_050_000, metres); n];
+    let a = [at(500.0, 512), at(497.5, 300), at(510.0, 300)].concat();
+    let samples = BTreeMap::from([("a".to_string(), a), ("b".to_string(), at(500.0, MIN_SAMPLES - 1))]);
+    assert_eq!(biases(&samples, &glo30).unwrap(), BTreeMap::from([("a".to_string(), -20.0)]));
+    let north = BTreeMap::from([("a".to_string(), vec![(47_550_000, 8_050_000, 500.0)])]);
+    let error = biases(&north, &glo30).unwrap_err();
+    assert!(error.contains("Copernicus_DSM_COG_10_N47_00_E008_00_DEM"), "{error}");
 }
