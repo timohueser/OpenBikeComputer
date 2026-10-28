@@ -25,7 +25,7 @@ use rayon::prelude::*;
 use crate::fetch::TileId;
 use crate::geotiff::{DemMosaic, DemTile};
 use crate::reference::{ReferenceArchive, ReferenceTile, TileLookup, Window, ORIGIN, STEP, TILE_PIXELS, TILE_UDEG};
-use crate::shape::{Features, Shapes, CLIFF_REACH_M};
+use crate::shape::{Features, Shapes, READ_M};
 
 /// The width of each ramp of the seam in metres. A canopy step of 20 m between the archive and
 /// GLO-30 ramps over it at 2 %, which the relief does not show as an edge.
@@ -50,10 +50,12 @@ pub fn tiles_in(dir: &Path, bounds: [f64; 4]) -> Vec<(TileId, PathBuf)> {
     files.filter(|(_, path)| path.is_file()).collect()
 }
 
-/// The GLO-30 squares, by latitude, whose posts a height at `lat` in microdegrees can read: its
-/// bilinear corners lie within two posts, and a square holds the posts of its own degree.
+/// The GLO-30 squares, by latitude, whose posts a height at `lat` in microdegrees can read: a
+/// shaped height reads GLO-30 up to [`READ_M`] away, its bilinear corners lie within two posts of
+/// that, and a square holds the posts of its own degree.
 pub fn squares(lat: i32) -> RangeInclusive<i32> {
     const SLACK: i32 = 10_000;
+    const _: () = assert!(READ_M / M_PER_UDEG + 2.0 * 1e6 / 3600.0 < SLACK as f64);
     (lat - SLACK).div_euclid(1_000_000)..=(lat + SLACK).div_euclid(1_000_000)
 }
 
@@ -182,7 +184,7 @@ impl Terrain {
     /// `credit`. A feature where the archive holds the ground alone has no effect, and is left out.
     pub fn shaped(self, (lines, peaks): Features, credit: &str) -> Self {
         let udeg = |degrees: f64| (degrees * 1e6).round() as i32;
-        let keep = |[lat, lon]: [f64; 2]| self.seam.depth(udeg(lat), udeg(lon)) < FEATHER_M + CLIFF_REACH_M;
+        let keep = |[lat, lon]: [f64; 2]| self.seam.depth(udeg(lat), udeg(lon)) < FEATHER_M + READ_M;
         let shapes = Shapes::new(lines, peaks, keep);
         let shapes_credit = (!shapes.is_empty()).then(|| credit.to_string());
         Self { shapes, shapes_credit, ..self }

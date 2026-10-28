@@ -8,31 +8,41 @@
 //! - A `natural=cliff` within [`CLIFF_REACH_M`] of a coastline is a sea cliff. Near it, each side
 //!   takes its own ground, continued in a straight line from [`CLIFF_REACH_M`] and twice that to the
 //!   cliff. The higher side only rises, to at most the highest GLO-30 height of its profile, and the
-//!   lower side only falls, to at least the lowest. The direction of the way does not matter. Where
-//!   GLO-30 already shows the face as steep as [`FACE_SLOPES`], it keeps its heights.
-//! - At `natural=peak` or `natural=volcano` with an `ele`, the flanks continued inward from
-//!   [`PEAK_REACH_M`] and twice that give a cone. Its top is the mean of the continued flanks, never
-//!   above `ele`, and the cone only rises. So a wrong `ele` never raises a peak above what the flanks
-//!   show, and a dome stays a dome.
+//!   lower side only falls, to at least the lowest. A numeric `height` of the way bounds the drop
+//!   across the face. The direction of the way does not matter. Where GLO-30 already shows the face
+//!   as steep as [`FACE_SLOPES`], it keeps its heights.
+//! - At `natural=peak` or `natural=volcano` with an `ele`, where GLO-30 has its top at the node, the
+//!   flanks continued inward from [`PEAK_REACH_M`] and twice that give a cone. Its top is the mean of
+//!   the continued flanks. The cone only rises and never above `ele`, so a summit node on a slope, a
+//!   wrong `ele` or a dome without a sharper top changes little or nothing.
 //!
-//! An inland cliff and a coast without a mapped cliff keep their GLO-30 heights: against LiDAR, the
-//! same rules made them worse, as GLO-30 there shows a sloping rock face or a forest edge. Where
-//! GLO-30 is a straight slope across a cliff, the continued ground is GLO-30 itself. A height is a
-//! function of the point, the features and GLO-30 alone.
+//! An inland cliff and a coast without a mapped cliff keep their GLO-30 heights. Where GLO-30 is a
+//! straight slope across a cliff, the continued ground is GLO-30 itself. The continued ground is
+//! read from single GLO-30 samples, so a tree or a roof there can lift a cliff top toward the canopy.
+//! A height is a function of the point, the features and GLO-30 alone.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::Path;
+use std::process::Stdio;
 
+use obc_osm::OsmiumRunner;
 use serde_json::Value;
 
-/// How far the ramp of a sea cliff in GLO-30 reaches from the mapped line: three posts. Chosen
-/// against the LiDAR of the chalk cliffs of East Sussex.
-pub const CLIFF_REACH_M: f64 = 90.0;
+/// How far the ramp of a sea cliff in GLO-30 reaches from the mapped line: one and a half posts.
+/// Chosen against the LiDAR of the chalk cliffs of East Sussex and of the coast of Dingle: a longer
+/// reach sharpens the chalk more, but takes the slope behind a low cliff for its top.
+pub const CLIFF_REACH_M: f64 = 45.0;
 /// How far GLO-30 rounds a summit: one and a half posts. Chosen against the LiDAR of Glen Coe and
 /// Lofoten.
 pub const PEAK_REACH_M: f64 = 45.0;
+/// How far from its node a summit may stand on the top of GLO-30: one post.
+pub const SNAP_M: f64 = 30.0;
+/// How far from a point its shaped height reads GLO-30: a summit node within the reach and the
+/// snap, a climb past the snap by a quarter post, and the flanks at twice the reach. A sea cliff
+/// reads less, three times its reach.
+pub const READ_M: f64 = PEAK_REACH_M + 2.0 * SNAP_M + 7.5 + 2.0 * PEAK_REACH_M;
+const _: () = assert!(3.0 * CLIFF_REACH_M <= READ_M);
 /// The steepest GLO-30 slope across a sea cliff: from the first, GLO-30 starts to hold the face,
 /// and from the second it holds it alone. GLO-30 shows the sloping faces of Lofoten steeper than
 /// the second, and the blurred chalk cliffs of East Sussex below the first.
@@ -49,6 +59,8 @@ pub struct Line {
     pub points: Vec<[f64; 2]>,
     /// A coastline, else a cliff.
     pub coast: bool,
+    /// The `height` of a cliff in metres: its drop across the face.
+    pub height: Option<f64>,
 }
 
 /// A mapped summit and its `ele` in metres.
@@ -100,8 +112,12 @@ impl Shapes {
     pub fn new(lines: Vec<Line>, peaks: Vec<Peak>, keep: impl Fn([f64; 2]) -> bool) -> Self {
         let (coasts, cliffs): (Vec<_>, Vec<_>) = lines.into_iter().partition(|line| line.coast);
         let coasts = join(coasts.into_iter().map(|line| line.points).collect());
-        let lines = coasts.into_iter().map(|points| Line { points, coast: true }).chain(cliffs);
-        let lines: Vec<Line> = lines.filter(|line| line.points.len() > 1).collect();
+        let lines = coasts.into_iter().map(|points| Line { points, coast: true, height: None }).chain(cliffs);
+        let lines = lines.filter(|line| line.points.len() > 1).flat_map(|line| {
+            let pieces = split(&line.points).into_iter().filter(|points| points.len() > 1);
+            pieces.map(move |points| Line { points, ..line })
+        });
+        let lines: Vec<Line> = lines.collect();
         let peaks: Vec<Peak> = peaks.into_iter().filter(|peak| keep(peak.at)).collect();
         let mut cells = BTreeMap::<(i32, i32), Cell>::new();
         let segments = |coast: bool| {
@@ -138,7 +154,7 @@ impl Shapes {
         }
         for (p, peak) in peaks.iter().enumerate() {
             let [lat, lon] = peak.at;
-            for key in cells_of([lat, lon, lat, lon], PEAK_REACH_M) {
+            for key in cells_of([lat, lon, lat, lon], PEAK_REACH_M + SNAP_M) {
                 cells.entry(key).or_default().peaks.push(p as u32);
             }
         }
@@ -150,7 +166,7 @@ impl Shapes {
     }
 
     /// The shaped height at `lat`, `lon` in degrees, from `glo30`, the GLO-30 height at a point.
-    /// It reads GLO-30 up to three times [`CLIFF_REACH_M`] away.
+    /// It reads GLO-30 up to [`READ_M`] away.
     pub fn height(&self, lat: f64, lon: f64, glo30: &impl Fn(f64, f64) -> Option<f64>) -> Option<f64> {
         let g = glo30(lat, lon)?;
         let Some(cell) = self.cells.get(&cell(lat, lon)) else { return Some(g) };
@@ -161,7 +177,7 @@ impl Shapes {
         }
         let mut h = g;
         if let Some(near) = self.nearest(&cell.cliffs, &frame) {
-            h = near.cliff(g, &sample).unwrap_or(g);
+            h = near.cliff(g, self.lines[near.line as usize].height, &sample).unwrap_or(g);
         }
         for &p in &cell.peaks {
             if let Some(cone) = cone(&self.peaks[p as usize], &frame, &sample) {
@@ -231,9 +247,30 @@ impl Shapes {
     }
 }
 
-/// The cone of `peak` at the point of `frame`, or `None` beyond [`PEAK_REACH_M`].
+/// The cone of `peak` at the point of `frame`, never above `ele`. It stands on the top of GLO-30
+/// near the node, which a climb in quarter posts finds within [`SNAP_M`]. `None` beyond
+/// [`PEAK_REACH_M`] of that top, and where the top is lower than its flanks at a third of the reach
+/// or at the reach.
 fn cone(peak: &Peak, frame: &Frame, sample: &impl Fn([f64; 2]) -> Option<f64>) -> Option<f64> {
-    let at = frame.xy(peak.at);
+    let mut at = frame.xy(peak.at);
+    if at[0].hypot(at[1]) >= PEAK_REACH_M + SNAP_M {
+        return None;
+    }
+    let mut node = sample(at)?;
+    for _ in 0..(SNAP_M / 7.5) as usize {
+        let mut best = (node, at);
+        for u in FLANKS {
+            let next = [at[0] + 7.5 * u[0], at[1] + 7.5 * u[1]];
+            let height = sample(next)?;
+            if height > best.0 {
+                best = (height, next);
+            }
+        }
+        if best.1 == at {
+            break;
+        }
+        (node, at) = best;
+    }
     let d = at[0].hypot(at[1]);
     if d >= PEAK_REACH_M {
         return None;
@@ -241,6 +278,9 @@ fn cone(peak: &Peak, frame: &Frame, sample: &impl Fn([f64; 2]) -> Option<f64>) -
     let mut sum = 0.0;
     for u in FLANKS {
         let flank = |s: f64| sample([at[0] + s * u[0], at[1] + s * u[1]]);
+        if flank(PEAK_REACH_M / 3.0)? > node || flank(PEAK_REACH_M)? > node {
+            return None;
+        }
         sum += 2.0 * flank(PEAK_REACH_M)? - flank(2.0 * PEAK_REACH_M)?;
     }
     let top = (sum / FLANKS.len() as f64).min(peak.ele);
@@ -248,7 +288,7 @@ fn cone(peak: &Peak, frame: &Frame, sample: &impl Fn([f64; 2]) -> Option<f64>) -
         return Some(top);
     }
     let rim = sample([at[0] - at[0] / d * PEAK_REACH_M, at[1] - at[1] / d * PEAK_REACH_M])?;
-    Some(top + d / PEAK_REACH_M * (rim - top))
+    Some((top + d / PEAK_REACH_M * (rim - top)).min(peak.ele))
 }
 
 /// Local metres east and north of a point.
@@ -306,14 +346,15 @@ impl Near {
     }
 
     /// The height at the point of a sea cliff whose nearest point this is, from `g`, the GLO-30
-    /// height there.
-    fn cliff(&self, g: f64, sample: &impl Fn([f64; 2]) -> Option<f64>) -> Option<f64> {
+    /// height there, and the mapped `height` of the cliff.
+    fn cliff(&self, g: f64, height: Option<f64>, sample: &impl Fn([f64; 2]) -> Option<f64>) -> Option<f64> {
         let (own, other) = (self.side(1.0, sample)?, self.side(-1.0, sample)?);
+        let drop = height.unwrap_or(f64::INFINITY);
         let sharp = match own.edge > other.edge {
-            true => g.max(own.at.min(own.highest)),
-            false => g.min(own.at.max(own.lowest)),
+            true => g.max(own.at.min(own.highest).min(other.edge + drop)),
+            false => g.min(own.at.max(own.lowest).max(other.edge - drop)),
         };
-        // The steepest GLO-30 slope across the cliff, in steps of a quarter post.
+        // The steepest GLO-30 slope across the cliff, in twelve steps of the reach on each side.
         let (step, mut steepest) = (CLIFF_REACH_M / 12.0, 0.0f64);
         let mut last = self.along(-CLIFF_REACH_M, sample)?;
         for k in -11..=12 {
@@ -344,7 +385,7 @@ fn segment_distance([a, b]: [[f64; 2]; 2], [c, d]: [[f64; 2]; 2]) -> f64 {
 }
 
 /// Lines that share end points, joined: each line extends forward and backward while another
-/// starts at its end or ends at its start.
+/// starts at its end or ends at its start. The pieces join once, in order.
 fn join(lines: Vec<Vec<[f64; 2]>>) -> Vec<Vec<[f64; 2]>> {
     let key = |point: &[f64; 2]| (point[0].to_bits(), point[1].to_bits());
     let lines: Vec<_> = lines.into_iter().filter(|line| line.len() > 1).collect();
@@ -361,41 +402,73 @@ fn join(lines: Vec<Vec<[f64; 2]>>) -> Vec<Vec<[f64; 2]>> {
             continue;
         }
         used[i] = true;
-        let mut line = lines[i].clone();
-        while let Some(&j) = starts.get(&key(&line[line.len() - 1])).filter(|&&j| !used[j]) {
+        let mut pieces = std::collections::VecDeque::from([i]);
+        while let Some(&j) = starts.get(&key(lines[*pieces.back().unwrap()].last().unwrap())).filter(|&&j| !used[j]) {
             used[j] = true;
-            line.extend_from_slice(&lines[j][1..]);
+            pieces.push_back(j);
         }
-        while let Some(&j) = ends.get(&key(&line[0])).filter(|&&j| !used[j]) {
+        while let Some(&j) = ends.get(&key(&lines[pieces[0]][0])).filter(|&&j| !used[j]) {
             used[j] = true;
-            let mut joined = lines[j].clone();
-            joined.extend_from_slice(&line[1..]);
-            line = joined;
+            pieces.push_front(j);
         }
+        let mut line = lines[pieces[0]].clone();
+        pieces.iter().skip(1).for_each(|&j| line.extend_from_slice(&lines[j][1..]));
         out.push(line);
     }
     out
 }
 
-/// The features of the OSM PBF file `pbf`, by Osmium (`OBC_OSMIUM`, else `osmium` on the path).
-/// The filtered file goes to `work`.
-pub fn read(pbf: &Path, work: &Path) -> Result<Features, String> {
-    let binary = PathBuf::from(std::env::var_os("OBC_OSMIUM").unwrap_or_else(|| "osmium".into()));
-    let filtered = work.join("shapes.osm.pbf");
-    // `-F pbf`: a store object has no file extension.
-    let out = Command::new(&binary)
-        .args(["tags-filter", "-F", "pbf", "--overwrite", "-o"])
-        .arg(&filtered)
-        .arg(pbf)
-        .args(["n/natural=peak,volcano", "w/natural=coastline,cliff"])
-        .output()
-        .map_err(|e| format!("Prepare Osmium, or set OBC_OSMIUM to its executable: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("Osmium tags-filter failed: {}", String::from_utf8_lossy(&out.stderr)));
+/// `points` with each segment split into pieces of at most four index cells on each axis, so that
+/// a long segment does not reach across many cells. A segment that spans more than 180° of
+/// longitude crosses the antimeridian, and the line breaks there.
+fn split(points: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
+    let mut lines = vec![vec![points[0]]];
+    for pair in points.windows(2) {
+        let [a, b] = [pair[0], pair[1]];
+        if (b[1] - a[1]).abs() > 180.0 {
+            lines.push(vec![b]);
+            continue;
+        }
+        let pieces = ((b[0] - a[0]).abs().max((b[1] - a[1]).abs()) / (4.0 * CELL_DEG)).ceil().max(1.0) as usize;
+        let line = lines.last_mut().expect("a line");
+        for k in 1..pieces {
+            let t = k as f64 / pieces as f64;
+            line.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+        }
+        line.push(b);
     }
-    let mut child = Command::new(&binary)
+    lines
+}
+
+/// How far past the bounds of a bake a feature can change a height: more than the reach of each
+/// rule and the GLO-30 it reads.
+pub const CLIP_M: f64 = 300.0;
+
+/// The features of the OSM PBF file `pbf` within [`CLIP_M`] of `bounds` (west, south, east, north
+/// in degrees), by `osmium`. The filtered files go to `work`.
+pub fn read(osmium: &OsmiumRunner, pbf: &Path, bounds: [f64; 4], work: &Path) -> Result<Features, String> {
+    let (filtered, clipped) = (work.join("shapes.osm.pbf"), work.join("clipped.osm.pbf"));
+    let run = |args: &[&dyn AsRef<std::ffi::OsStr>]| {
+        let out =
+            osmium.command().args(args).output().map_err(|e| format!("Prepare Osmium, or set OBC_OSMIUM: {e}"))?;
+        match out.status.success() {
+            true => Ok(()),
+            false => Err(format!("Osmium failed: {}", String::from_utf8_lossy(&out.stderr))),
+        }
+    };
+    // `-F pbf`: a store object has no file extension.
+    let filters = ["n/natural=peak,volcano", "w/natural=coastline,cliff"];
+    run(&[&"tags-filter", &"-F", &"pbf", &"--overwrite", &"-o", &filtered, &pbf, &filters[0], &filters[1]])?;
+    let [west, south, east, north] = bounds;
+    let dlat = CLIP_M / M_PER_DEG;
+    let dlon = dlat / south.abs().max(north.abs()).min(89.0).to_radians().cos();
+    let clip = [west - dlon, south - dlat, east + dlon, north + dlat].map(|v| v.to_string()).join(",");
+    run(&[&"extract", &"-b", &clip, &"--overwrite", &"-o", &clipped, &filtered])?;
+    std::fs::remove_file(&filtered).map_err(|e| format!("{}: {e}", filtered.display()))?;
+    let mut child = osmium
+        .command()
         .arg("export")
-        .arg(&filtered)
+        .arg(&clipped)
         .args(["-f", "geojsonseq", "--geometry-types", "point,linestring", "-x", "print_record_separator=false"])
         .args(["-o", "-"])
         .stdout(Stdio::piped())
@@ -404,7 +477,7 @@ pub fn read(pbf: &Path, work: &Path) -> Result<Features, String> {
     let lines = BufReader::new(child.stdout.take().expect("piped")).lines();
     let parsed = parse(lines.map(|line| line.map_err(|e| e.to_string())));
     let status = child.wait().map_err(|e| e.to_string())?;
-    std::fs::remove_file(&filtered).map_err(|e| format!("{}: {e}", filtered.display()))?;
+    std::fs::remove_file(&clipped).map_err(|e| format!("{}: {e}", clipped.display()))?;
     match (parsed, status.success()) {
         (Ok(features), true) => Ok(features),
         (Err(error), _) => Err(error),
@@ -428,22 +501,26 @@ pub fn parse(lines: impl Iterator<Item = Result<String, String>>) -> Result<Feat
         match (geometry["type"].as_str(), natural) {
             (Some("LineString"), Some(kind @ ("coastline" | "cliff"))) => {
                 let points = geometry["coordinates"].as_array().into_iter().flatten().map(point).collect();
+                let height = feature["properties"]["height"].as_str().and_then(metres);
                 if let Some(points) = points {
-                    found.push(Line { points, coast: kind == "coastline" });
+                    found.push(Line { points, coast: kind == "coastline", height: height.filter(|_| kind == "cliff") });
                 }
             }
             (Some("Point"), Some("peak" | "volcano")) => {
-                let ele = feature["properties"]["ele"].as_str().map(|ele| ele.trim().trim_end_matches('m').trim());
-                if let (Some(at), Some(Ok(ele))) = (point(&geometry["coordinates"]), ele.map(str::parse::<f64>)) {
-                    if ele.is_finite() {
-                        peaks.push(Peak { at, ele });
-                    }
+                let ele = feature["properties"]["ele"].as_str().and_then(metres);
+                if let (Some(at), Some(ele)) = (point(&geometry["coordinates"]), ele) {
+                    peaks.push(Peak { at, ele });
                 }
             }
             _ => {}
         }
     }
     Ok((found, peaks))
+}
+
+/// A tag value in metres, such as `1038.6` or `412 m`.
+fn metres(value: &str) -> Option<f64> {
+    value.trim().trim_end_matches('m').trim().parse().ok().filter(|metres: &f64| metres.is_finite())
 }
 
 #[cfg(test)]
@@ -459,7 +536,7 @@ mod tests {
     }
 
     fn line(points: &[(f64, f64)], coast: bool) -> Line {
-        Line { points: points.iter().map(|&(x, y)| at(x, y)).collect(), coast }
+        Line { points: points.iter().map(|&(x, y)| at(x, y)).collect(), coast, height: None }
     }
 
     /// The shaped height at `x`, `y` over a GLO-30 that `glo30` gives by the metres east and north.
@@ -482,7 +559,7 @@ mod tests {
         let south = line(&[(0.0, 0.0), (1000.0, 0.0), (1000.0, 1000.0)], true);
         let shapes = Shapes::new(vec![north, south], Vec::new(), |_| true);
         let glo30 = |_: f64, _: f64| 7.0;
-        for (x, y) in [(500.0, -20.0), (-20.0, 500.0), (-20.0, -20.0), (1030.0, 1030.0), (500.0, 1060.0)] {
+        for (x, y) in [(500.0, -20.0), (-20.0, 500.0), (-20.0, -20.0), (1025.0, 1025.0), (500.0, 1040.0)] {
             assert_near(height(&shapes, x, y, glo30), 0.0, &format!("the sea at {x}, {y}"));
         }
         for (x, y) in [(500.0, 20.0), (20.0, 20.0), (980.0, 980.0), (500.0, 500.0), (500.0, -200.0)] {
@@ -490,29 +567,48 @@ mod tests {
         }
     }
 
-    /// A chalk cliff 50 m high runs north 10 m inland of the coastline. GLO-30 spreads it over a
-    /// ramp of 60 m that ends at the coastline; the shapes make it sheer at the mapped line. Where GLO-30 shows the
-    /// face steep, and away from the coast, the cliff keeps GLO-30.
+    /// A cliff 30 m high runs north 10 m inland of the coastline. GLO-30 spreads it over a ramp of
+    /// 40 m that ends at the coastline; the shapes make it sheer at the mapped line, in either
+    /// direction of the way. A `height` bounds the drop. Away from the coast the cliff keeps GLO-30.
     #[test]
-    fn a_blurred_sea_cliff_becomes_sheer() {
-        let coast = line(&[(10.0, -2000.0), (10.0, 2000.0)], true);
-        let cliff = || line(&[(0.0, -2000.0), (0.0, 2000.0)], false);
-        let shapes = Shapes::new(vec![coast, cliff()], Vec::new(), |_| true);
-        let blurred = |x: f64, _: f64| 50.0 * ((10.0 - x) / 60.0).clamp(0.0, 1.0);
-        assert_near(height(&shapes, -3.0, 0.0, blurred), 50.0, "the top at the line");
-        assert_near(height(&shapes, -45.0, 0.0, blurred), 50.0, "within the ramp");
-        assert_near(height(&shapes, 5.0, 0.0, blurred), 0.0, "the foot");
-        assert_near(height(&shapes, -150.0, 0.0, blurred), 50.0, "the plateau");
-        let sharp = |x: f64, _: f64| 50.0 * ((10.0 - x) / 15.0).clamp(0.0, 1.0);
-        assert_near(height(&shapes, -3.0, 0.0, sharp), sharp(-3.0, 0.0), "GLO-30 already shows the face");
-        let inland = Shapes::new(vec![cliff()], Vec::new(), |_| true);
+    fn a_blurred_sea_cliff_becomes_sheer_in_either_direction() {
+        let coast = || line(&[(10.0, -2000.0), (10.0, 2000.0)], true);
+        let north = || line(&[(0.0, -2000.0), (0.0, 2000.0)], false);
+        let south = line(&[(0.0, 2000.0), (0.0, -2000.0)], false);
+        let blurred = |x: f64, _: f64| 30.0 * ((10.0 - x) / 40.0).clamp(0.0, 1.0);
+        for cliff in [north(), south] {
+            let shapes = Shapes::new(vec![coast(), cliff], Vec::new(), |_| true);
+            assert_near(height(&shapes, -3.0, 0.0, blurred), 30.0, "the top at the line");
+            assert_near(height(&shapes, -25.0, 0.0, blurred), 30.0, "within the ramp");
+            assert_near(height(&shapes, 5.0, 0.0, blurred), 0.0, "the foot");
+            assert_near(height(&shapes, -150.0, 0.0, blurred), 30.0, "the plateau");
+        }
+        let low = Shapes::new(vec![coast(), Line { height: Some(20.0), ..north() }], Vec::new(), |_| true);
+        assert_near(height(&low, -3.0, 0.0, blurred), 20.0, "the mapped height");
+        let inland = Shapes::new(vec![north()], Vec::new(), |_| true);
         assert_near(height(&inland, -3.0, 0.0, blurred), blurred(-3.0, 0.0), "an inland cliff");
     }
 
-    /// GLO-30 rounds a cone of slope 1 with its top at 1000 m into a dome 20 m lower. The summit
-    /// rises to the top that its flanks show, never above `ele`, and never falls.
+    /// GLO-30 that shows the face at a slope of 1.5 keeps half of the correction, and at a slope
+    /// of 3 its own heights.
     #[test]
-    fn a_summit_rises_to_its_flanks_and_never_above_its_ele() {
+    fn a_steep_face_in_glo30_fades_the_correction() {
+        let shapes = Shapes::new(
+            vec![line(&[(10.0, -2000.0), (10.0, 2000.0)], true), line(&[(0.0, -2000.0), (0.0, 2000.0)], false)],
+            Vec::new(),
+            |_| true,
+        );
+        let half = |x: f64, _: f64| 30.0 * ((10.0 - x) / 20.0).clamp(0.0, 1.0);
+        assert_near(height(&shapes, -3.0, 0.0, half), half(-3.0, 0.0) + 0.5 * (30.0 - half(-3.0, 0.0)), "half");
+        let sharp = |x: f64, _: f64| 30.0 * ((10.0 - x) / 10.0).clamp(0.0, 1.0);
+        assert_near(height(&shapes, -3.0, 0.0, sharp), sharp(-3.0, 0.0), "GLO-30 already shows the face");
+    }
+
+    /// GLO-30 rounds a cone of slope 1 with its top at 1000 m into a dome 20 m lower. A summit node
+    /// near the top rises to the top that its flanks show, never above `ele`, and never falls. A
+    /// node far down a flank changes nothing.
+    #[test]
+    fn a_summit_rises_to_its_flanks_only_at_the_top_of_glo30() {
         let dome = |x: f64, y: f64| {
             let r = x.hypot(y);
             if r > 40.0 {
@@ -521,28 +617,37 @@ mod tests {
                 980.0 - r * r / 80.0
             }
         };
-        let summit = |ele: f64| Shapes::new(Vec::new(), vec![Peak { at: at(0.0, 0.0), ele }], |_| true);
-        let top = |ele: f64| height(&summit(ele), 0.0, 0.0, dome);
+        let summit = |x: f64, ele: f64| Shapes::new(Vec::new(), vec![Peak { at: at(x, 0.0), ele }], |_| true);
+        let top = |ele: f64| height(&summit(0.0, ele), 0.0, 0.0, dome);
         assert_near(top(2000.0), 1000.0, "the continued flanks");
         assert_near(top(990.0), 990.0, "below the flanks, the ele");
         assert_near(top(950.0), 980.0, "an ele below GLO-30 changes nothing");
-        assert_near(height(&summit(2000.0), 60.0, 0.0, dome), dome(60.0, 0.0), "beyond the reach");
+        assert_near(height(&summit(0.0, 2000.0), 60.0, 0.0, dome), dome(60.0, 0.0), "beyond the reach");
+        assert!(height(&summit(20.0, 2000.0), 0.0, 0.0, dome) > 995.0, "a node beside the top");
+        let flank = summit(100.0, 2000.0);
+        for x in [0.0, 60.0, 100.0] {
+            assert_near(height(&flank, x, 0.0, dome), dome(x, 0.0), "a node down the flank");
+        }
+        for x in [0.0, 10.0, 30.0] {
+            assert!(height(&summit(0.0, 990.0), x, 0.0, dome) <= 990.0_f64.max(dome(x, 0.0)), "above the ele at {x}");
+        }
     }
 
     #[test]
     fn the_export_gives_coastlines_cliffs_and_summits_with_a_height() {
         let lines = [
             r#"{"type":"Feature","geometry":{"type":"LineString","coordinates":[[-9.1,51.0],[-9.0,51.1]]},"properties":{"natural":"coastline"}}"#,
-            r#"{"type":"Feature","geometry":{"type":"LineString","coordinates":[[-9.2,51.0],[-9.3,51.1]]},"properties":{"natural":"cliff"}}"#,
+            r#"{"type":"Feature","geometry":{"type":"LineString","coordinates":[[-9.2,51.0],[-9.3,51.1]]},"properties":{"natural":"cliff","height":"35"}}"#,
             r#"{"type":"Feature","geometry":{"type":"LineString","coordinates":[[-9.2,51.0],[-9.3,51.1]]},"properties":{"natural":"ridge"}}"#,
             r#"{"type":"Feature","geometry":{"type":"Point","coordinates":[-9.7,52.0]},"properties":{"natural":"peak","ele":"1038.6"}}"#,
             r#"{"type":"Feature","geometry":{"type":"Point","coordinates":[-9.6,52.0]},"properties":{"natural":"volcano","ele":"412 m"}}"#,
             r#"{"type":"Feature","geometry":{"type":"Point","coordinates":[-9.5,52.0]},"properties":{"natural":"peak","ele":"about 400"}}"#,
+            r#"{"type":"Feature","geometry":{"type":"Point","coordinates":[-9.5,52.0]},"properties":{"natural":"peak","ele":"1,234"}}"#,
             r#"{"type":"Feature","geometry":{"type":"Point","coordinates":[-9.4,52.0]},"properties":{"natural":"peak"}}"#,
         ];
         let (found, peaks) = parse(lines.into_iter().map(|line| Ok(line.to_string()))).unwrap();
-        let found: Vec<_> = found.iter().map(|line| (line.coast, line.points[0])).collect();
-        assert_eq!(found, [(true, [51.0, -9.1]), (false, [51.0, -9.2])]);
+        let found: Vec<_> = found.iter().map(|line| (line.coast, line.points[0], line.height)).collect();
+        assert_eq!(found, [(true, [51.0, -9.1], None), (false, [51.0, -9.2], Some(35.0))]);
         let peaks: Vec<_> = peaks.iter().map(|peak| (peak.at, peak.ele)).collect();
         assert_eq!(peaks, [([52.0, -9.7], 1038.6), ([52.0, -9.6], 412.0)]);
     }
