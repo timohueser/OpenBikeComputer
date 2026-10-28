@@ -1,0 +1,6 @@
+name = "TrailView tyrrhenian: Dingli"
+kind = "box"
+# west, south, east, north
+box = [14.18, 35.68, 14.59, 36.02]
+countries = ["MT"]
+time_zone = "Europe/Malta"

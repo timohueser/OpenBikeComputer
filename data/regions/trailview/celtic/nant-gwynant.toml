@@ -1,0 +1,6 @@
+name = "TrailView celtic: Nant Gwynant"
+kind = "box"
+# west, south, east, north
+box = [-4.4, 52.81, -3.6, 53.3]
+countries = ["GB"]
+time_zone = "Europe/London"

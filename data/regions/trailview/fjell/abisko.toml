@@ -1,0 +1,6 @@
+name = "TrailView fjell: Abisko"
+kind = "box"
+# west, south, east, north
+box = [17.87, 68.03, 19.61, 68.68]
+countries = ["SE", "NO"]
+time_zone = "Europe/Stockholm"

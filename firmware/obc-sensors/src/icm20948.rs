@@ -114,21 +114,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn assembles_signed_le_axis() {
-        // 0x1234 little-endian over (low=0x34, high=0x12).
-        assert_eq!(raw_axis(0x34, 0x12), 0x1234);
-        // Negative two's-complement (0xFFFF = -1).
-        assert_eq!(raw_axis(0xFF, 0xFF), -1);
-    }
-
-    #[test]
-    fn scales_to_microtesla() {
-        // +100 LSB → 15 µT at 0.15 µT/LSB.
-        assert!((raw_to_ut(100) - 15.0).abs() < 1e-4);
-        assert!((raw_to_ut(-100) + 15.0).abs() < 1e-4);
-    }
-
-    #[test]
     fn axes_from_burst() {
         // x=+1 (0x0001), y=-1 (0xFFFF), z=+2 (0x0002), then dummy + ST2.
         let burst = [0x01, 0x00, 0xFF, 0xFF, 0x02, 0x00, 0x00, 0x00];

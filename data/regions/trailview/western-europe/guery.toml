@@ -1,0 +1,6 @@
+name = "TrailView western-europe: Guery"
+kind = "box"
+# west, south, east, north
+box = [2.52, 45.41, 3.12, 45.83]
+countries = ["FR"]
+time_zone = "Europe/Paris"

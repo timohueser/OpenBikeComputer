@@ -1,7 +1,7 @@
 {
  "name": "Scandinavian and Russian taiga",
  "extends": "base",
- "about": "Scots pine on sand and rock, Norway spruce on moist ground, downy and silver birch, aspen, grey alder and rowan; juniper, willow and dwarf birch; bilberry, lingonberry, crowberry, heather and reindeer lichen under the trees and on the rocks; Labrador tea, bog cotton and sedge on the mires, fireweed on the clearings; dairy cattle, a few sheep and horses by the farms; wooden houses.",
+ "about": "Scots pine on sand and rock, Norway spruce on moist ground, downy and silver birch, aspen, grey alder and rowan; juniper, willow and dwarf birch; bilberry, lingonberry and crowberry under the trees, reindeer lichen on the rocks, heather on the heaths and the raised bogs; Labrador tea, bog cotton and sedge on the mires, fireweed on the clearings; dairy cattle, a few sheep and horses by the farms; wooden houses.",
  "trees": {
   "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 6 },
   "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 950], "weight": 5 },

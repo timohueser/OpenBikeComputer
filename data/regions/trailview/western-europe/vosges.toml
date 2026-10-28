@@ -1,0 +1,6 @@
+name = "TrailView western-europe: Vosges"
+kind = "box"
+# west, south, east, north
+box = [6.69, 47.68, 7.42, 48.26]
+countries = ["FR"]
+time_zone = "Europe/Paris"

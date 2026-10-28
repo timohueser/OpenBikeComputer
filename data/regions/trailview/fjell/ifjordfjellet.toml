@@ -1,0 +1,6 @@
+name = "TrailView fjell: Ifjordfjellet"
+kind = "box"
+# west, south, east, north
+box = [26.27, 70.11, 28.26, 70.79]
+countries = ["NO"]
+time_zone = "Europe/Oslo"

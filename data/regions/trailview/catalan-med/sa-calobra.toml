@@ -1,0 +1,6 @@
+name = "TrailView catalan-med: Sa Calobra"
+kind = "box"
+# west, south, east, north
+box = [2.58, 39.65, 3.05, 40.02]
+countries = ["ES"]
+time_zone = "Europe/Madrid"

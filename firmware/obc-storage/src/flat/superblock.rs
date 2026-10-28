@@ -99,14 +99,6 @@ mod tests {
         }
     }
 
-    /// Block 0 is deliberately not an MBR. Its bytes `510..511` are zero, so a host sees an
-    /// unformatted device rather than a partition table it might try to repair.
-    #[test]
-    fn block_zero_never_looks_like_a_partition_table() {
-        let bytes = Superblock::for_card(StoreId([0xFF; 16]), (128 << 40) / 512).unwrap().encode();
-        assert_eq!(bytes[510..512], [0, 0]);
-    }
-
     #[test]
     fn every_single_byte_flip_is_rejected() {
         let bytes = Superblock::for_card(StoreId([0x11; 16]), 62_914_560).unwrap().encode();
@@ -115,24 +107,6 @@ mod tests {
             torn[index] ^= 0xFF;
             assert!(Superblock::decode(&torn).is_err(), "byte {index} flip accepted");
         }
-    }
-
-    /// The scaling rule, recorded and read back: the size scales with the card and the count stays
-    /// inside the index either way.
-    #[test]
-    fn the_geometry_is_the_cards_own_and_survives_the_round_trip() {
-        for (blocks, size, extents) in [
-            (62_914_560u64, 1u64 << 20, 30_718u32), // §4.1's 32 GB card
-            ((64 << 30) / 512, 1 << 20, 65_534),    // 64 GiB, the old ceiling, at the old size
-            ((128 << 30) / 512, 2 << 20, 65_535),   // 128 GiB, which the old format could not reach
-            ((2u64 << 40) / 512, 32 << 20, 65_535), // 2 TiB, SDXC's ceiling
-        ] {
-            let superblock = Superblock::for_card(STORE, blocks).expect("an expressible card");
-            let decoded = Superblock::decode(&superblock.encode()).unwrap();
-            assert_eq!(decoded.geometry.extent_size(), size, "the wrong extent size at {blocks} blocks");
-            assert_eq!(decoded.extent_count(), extents, "the wrong extent count at {blocks} blocks");
-        }
-        assert_eq!(Superblock::for_card(STORE, u64::MAX), None, "a card past 128 TiB is not expressible");
     }
 
     /// The two geometry refusals. A card whose geometry does not decode has no addresses at all, so

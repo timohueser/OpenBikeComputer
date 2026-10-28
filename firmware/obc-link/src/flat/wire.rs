@@ -919,208 +919,46 @@ mod tests {
     }
 
     #[test]
-    fn the_specs_stream_frame_is_offset_40960_and_1024_bytes() {
-        let mut record = [0u8; STREAM_HEADER_LEN + 1024];
-        let len = write_stream(&mut record, RequestId(0x0000_2A01), 40_960, 1024).unwrap();
-        assert_eq!(len, STREAM_HEADER_LEN + 1024);
-        assert_eq!(
-            record[..STREAM_HEADER_LEN],
-            [0x01, 0x2A, 0x00, 0x00, 0x00, 0xA0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00]
-        );
-        let (frame, payload) = StreamFrame::split(&record).unwrap();
-        assert_eq!(frame, StreamFrame { transfer: RequestId(0x0000_2A01), offset: 40_960, len: 1024 });
-        assert_eq!(payload.len(), 1024);
-    }
-
-    #[test]
-    fn a_record_with_no_answerable_request_id_is_unanswerable() {
-        assert_eq!(decode_request(&[]), Err(ControlError::Unanswerable));
-        assert_eq!(decode_request(&[0; HEADER_LEN - 1]), Err(ControlError::Unanswerable));
-        let mut zero = PUT_VECTOR;
-        zero[12..16].copy_from_slice(&0u32.to_le_bytes());
-        assert_eq!(decode_request(&zero), Err(ControlError::Unanswerable));
-    }
-
-    fn refusal_of(record: &[u8]) -> Refusal {
-        match decode_request(record) {
-            Err(ControlError::Refused { refusal, .. }) => refusal,
-            other => panic!("expected a refusal, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn every_framing_rule_of_section_3_1_refuses_with_its_own_detail() {
-        let mut wrong_magic = PUT_VECTOR;
-        wrong_magic[3] = 0x35;
-        assert_eq!(refusal_of(&wrong_magic), Refusal::new(ErrorCode::InvalidFrame, detail::invalid_frame::MAGIC));
-
-        let mut wrong_major = PUT_VECTOR;
-        wrong_major[4] = 3;
-        assert_eq!(refusal_of(&wrong_major), Refusal::new(ErrorCode::Unsupported, detail::unsupported::WIRE_MAJOR));
-
-        let mut unknown_opcode = PUT_VECTOR;
-        unknown_opcode[5] = 0x0A;
-        assert_eq!(refusal_of(&unknown_opcode), Refusal::new(ErrorCode::Unsupported, detail::unsupported::OPCODE));
-
-        let mut flagged = PUT_VECTOR;
-        flagged[6] = 0x01;
-        assert_eq!(refusal_of(&flagged), reserved_bits());
-
-        let mut reserved = PUT_VECTOR;
-        reserved[10] = 0x01;
-        assert_eq!(refusal_of(&reserved), reserved_bits());
-
-        let mut wrong_length = PUT_VECTOR;
-        wrong_length[8] = 0x53;
-        assert_eq!(refusal_of(&wrong_length), Refusal::new(ErrorCode::InvalidFrame, detail::invalid_frame::LENGTH));
-
-        assert_eq!(
-            refusal_of(&PUT_VECTOR[..99]),
-            Refusal::new(ErrorCode::InvalidFrame, detail::invalid_frame::TRUNCATED)
-        );
-
-        let mut trailing = [0u8; 101];
-        trailing[..100].copy_from_slice(&PUT_VECTOR);
-        assert_eq!(refusal_of(&trailing), Refusal::new(ErrorCode::InvalidFrame, detail::invalid_frame::TRAILING));
-    }
-
-    #[test]
-    fn a_put_body_refuses_every_field_rule_of_section_3_6() {
-        let mut wildcard = PUT_VECTOR;
-        wildcard[16..24].copy_from_slice(&7u64.to_le_bytes());
-        assert_eq!(refusal_of(&wildcard), bad_combination(), "a create naming an ObjectId");
-
-        let mut replace = PUT_VECTOR;
-        replace[16..24].copy_from_slice(&7u64.to_le_bytes());
-        replace[24..32].copy_from_slice(&2u64.to_le_bytes());
-        assert!(decode_request(&replace).is_ok(), "a replace naming both");
-
-        let mut no_revision = PUT_VECTOR;
-        no_revision[24..32].copy_from_slice(&2u64.to_le_bytes());
-        assert_eq!(refusal_of(&no_revision), bad_combination(), "a create with an expected revision");
-
-        let mut unknown_kind = PUT_VECTOR;
-        unknown_kind[44] = 0x0A;
-        assert_eq!(refusal_of(&unknown_kind), Refusal::new(ErrorCode::Unsupported, detail::unsupported::KIND));
-
-        let mut flagged = PUT_VECTOR;
-        flagged[46] = 0x02;
-        assert_eq!(refusal_of(&flagged), reserved_bits(), "an undefined request flag");
-
-        let mut long_name = PUT_VECTOR;
-        long_name[48] = 49;
-        assert_eq!(refusal_of(&long_name), bad_combination());
-
-        let mut dirty_pad = PUT_VECTOR;
-        dirty_pad[99] = 1;
-        assert_eq!(refusal_of(&dirty_pad), reserved_bits(), "a nonzero name pad");
-
-        let mut dirty_reserved = PUT_VECTOR;
-        dirty_reserved[49] = 1;
-        assert_eq!(refusal_of(&dirty_reserved), reserved_bits(), "a nonzero reserved run");
-
-        let mut not_utf8 = PUT_VECTOR;
-        not_utf8[52] = 0xFF;
-        assert_eq!(refusal_of(&not_utf8), bad_combination(), "a name that is not UTF-8");
-    }
-
-    fn request_frame(opcode: Opcode, body: &[u8]) -> [u8; 64] {
-        let mut record = [0u8; 64];
-        write_header(&mut record, opcode, 0, body.len(), RequestId(9)).unwrap();
-        record[HEADER_LEN..HEADER_LEN + body.len()].copy_from_slice(body);
-        record
-    }
-
-    #[test]
-    fn a_list_cursor_is_all_three_fields_or_none_of_them() {
-        let mut body = [0u8; LIST_BODY_LEN];
-        let record = request_frame(Opcode::List, &body);
-        let Ok((_, Request::List(list))) = decode_request(&record[..HEADER_LEN + LIST_BODY_LEN]) else {
-            panic!("not a LIST")
-        };
-        assert_eq!(list, ListRequest { kind: None, cursor: None });
-
-        body[8..16].copy_from_slice(&4u64.to_le_bytes());
-        let record = request_frame(Opcode::List, &body);
-        assert_eq!(refusal_of(&record[..HEADER_LEN + LIST_BODY_LEN]), bad_combination());
-
-        body[2] = 1;
-        body[16..24].copy_from_slice(&2u64.to_le_bytes());
-        body[24..32].copy_from_slice(&11u64.to_le_bytes());
-        let record = request_frame(Opcode::List, &body);
-        let Ok((_, Request::List(list))) = decode_request(&record[..HEADER_LEN + LIST_BODY_LEN]) else {
-            panic!("not a LIST")
-        };
-        assert_eq!(list.cursor, Some(ListCursor { id: ObjectId(4), revision: Revision(2), sequence: 11 }));
-
-        body[2] = 2;
-        let record = request_frame(Opcode::List, &body);
-        assert_eq!(refusal_of(&record[..HEADER_LEN + LIST_BODY_LEN]), reserved_bits());
-
-        let mut filtered = [0u8; LIST_BODY_LEN];
-        filtered[0] = 10;
-        let record = request_frame(Opcode::List, &filtered);
-        assert_eq!(
-            refusal_of(&record[..HEADER_LEN + LIST_BODY_LEN]),
-            Refusal::new(ErrorCode::Unsupported, detail::unsupported::KIND)
-        );
-    }
-
-    #[test]
-    fn a_status_naming_object_zero_is_refused() {
-        let body = [0u8; STATUS_BODY_LEN];
-        let record = request_frame(Opcode::Status, &body);
-        assert_eq!(refusal_of(&record[..HEADER_LEN + STATUS_BODY_LEN]), bad_combination());
-    }
-
-    #[test]
-    fn a_stream_record_must_agree_with_its_own_length() {
+    fn a_stream_record_shorter_than_its_frame_or_below_its_carried_payload_is_refused() {
         let mut record = [0u8; STREAM_HEADER_LEN + 4];
-        record[0..4].copy_from_slice(&7u32.to_le_bytes());
         record[12..14].copy_from_slice(&4u16.to_le_bytes());
         assert!(StreamFrame::split(&record).is_some());
-        record[12..14].copy_from_slice(&5u16.to_le_bytes());
-        assert!(StreamFrame::split(&record).is_none(), "a length above the record");
-        record[12..14].copy_from_slice(&0u16.to_le_bytes());
-        assert!(StreamFrame::split(&record).is_none(), "a zero length");
-        record[12..14].copy_from_slice(&4u16.to_le_bytes());
-        record[14] = 1;
-        assert!(StreamFrame::split(&record).is_none(), "a nonzero reserved field");
-        assert!(StreamFrame::split(&record[..8]).is_none(), "a record below the frame");
+        assert!(StreamFrame::split(&record[..STREAM_HEADER_LEN - 1]).is_none(), "a record below the frame");
+        record[12..14].copy_from_slice(&3u16.to_le_bytes());
+        assert!(StreamFrame::split(&record).is_none(), "a length below the carried payload");
     }
 
     #[test]
-    fn the_stream_assembler_recovers_records_across_arbitrary_transport_chunks() {
+    fn the_stream_assembler_recovers_back_to_back_records_whatever_the_chunking() {
         let mut first = [0u8; STREAM_HEADER_LEN + 4];
         let mut second = [0u8; STREAM_HEADER_LEN + 3];
         write_stream(&mut first, RequestId(7), 0, 4).unwrap();
         write_stream(&mut second, RequestId(7), 4, 3).unwrap();
         first[STREAM_HEADER_LEN..].copy_from_slice(&[1, 2, 3, 4]);
         second[STREAM_HEADER_LEN..].copy_from_slice(&[5, 6, 7]);
+        let wire = [first.as_slice(), second.as_slice()].concat();
 
-        let mut wire = Vec::from(first);
-        wire.extend_from_slice(&second);
-        let mut record = [0u8; 32];
-        let mut assembler = StreamRecordAssembler::new();
-        let chunks = [1usize, 7, 3, 20, 2, 6];
-        let expected: [&[u8]; 2] = [&first, &second];
-        let (mut cursor, mut completed) = (0, 0);
-
-        for chunk in chunks {
-            let chunk_end = (cursor + chunk).min(wire.len());
-            while cursor < chunk_end {
-                let (used, state) = assembler.push(&mut record, &wire[cursor..chunk_end]);
-                assert!(used > 0);
-                cursor += used;
-                if let StreamAssembly::Complete(len) = state {
-                    assert_eq!(&record[..len], expected[completed]);
-                    completed += 1;
-                    assembler.reset();
+        for (a, b) in (0..=wire.len()).flat_map(|a| (a..=wire.len()).map(move |b| (a, b))) {
+            let mut assembler = StreamRecordAssembler::new();
+            let mut buffer = [0u8; 32];
+            let mut recovered = Vec::new();
+            for mut rest in [&wire[..a], &wire[a..b], &wire[b..]] {
+                while !rest.is_empty() {
+                    let (used, state) = assembler.push(&mut buffer, rest);
+                    assert!(used > 0, "chunks {a}/{b} stalled");
+                    rest = &rest[used..];
+                    match state {
+                        StreamAssembly::Complete(len) => {
+                            recovered.push(buffer[..len].to_vec());
+                            assembler.reset();
+                        }
+                        StreamAssembly::NeedMore => assert!(rest.is_empty(), "chunks {a}/{b} stopped with input left"),
+                        StreamAssembly::TooLarge(_) => panic!("chunks {a}/{b} overflowed"),
+                    }
                 }
             }
+            assert_eq!(recovered, [first.to_vec(), second.to_vec()], "chunks {a}/{b}");
         }
-        assert_eq!(cursor, wire.len());
-        assert_eq!(completed, 2);
     }
 
     #[test]

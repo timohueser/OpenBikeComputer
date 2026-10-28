@@ -438,16 +438,16 @@ class Heath:
 
 
 def chain(layer, ground, vocabulary, files, bounds, osm=None):
-    """The steps of `layer` (`material` or `lithology`) for the sources that the step reads, and the
-    zooms of those with units in the bounds. `files(source)` gives the files of a source, None for one
-    it does not read; `osm` is the OSM file. A material's authority keeps the water. The units of the
-    vector sources go to a folder of `TMPDIR`, which the engine removes when the step ends."""
+    """The steps of `layer` (`material` or `lithology`) for the sources that the step reads.
+    `files(source)` gives the files of a source, None for one it does not read; `osm` is the OSM file.
+    A material's authority keeps the water. The units of the vector sources go to a folder of
+    `TMPDIR`, which the engine removes when the step ends."""
     spec, codes = ground[layer], getattr(vocabulary, layer)
     fine, keep = refinements(spec["refines"], codes), [vocabulary.water] if layer == "material" else []
     entries = [entry for entry in spec["sources"] if (osm if entry.get("protocol") == "osm" else files(entry["source"]) is not None)]
     on_osm = [Legend(entry["legend"], codes) for entry in entries if entry.get("protocol") == "osm"]
     burnt = iter(osm_polygons(osm, on_osm) if on_osm else [])
-    steps, zooms, scratch = [], [], tempfile.mkdtemp(prefix="ground-")
+    steps, scratch = [], tempfile.mkdtemp(prefix="ground-")
     for entry in entries:
         if entry.get("rule") == "satellite-heath":
             steps.append(Heath(entry, vocabulary))
@@ -461,10 +461,8 @@ def chain(layer, ground, vocabulary, files, bounds, osm=None):
             propose = Image(entry["crs"], map_images(found, entry["layer"], legend))
         else:
             propose = Units(found, entry, bounds, legend, Path(scratch) / f"units-{len(steps)}.gpkg")
-            if "zoom" in entry and propose.count:
-                zooms.append(entry["zoom"])
         steps.append(Map(propose, entry["combine"], fine, keep, entry.get("reach_m", 0)))
-    return steps, zooms
+    return steps
 
 
 def entry_of(source, ground):
@@ -478,7 +476,7 @@ def entry_of(source, ground):
 
 def fetch(source, bounds, out, zoom, ground=None):
     """The capture of `source` over the bounds into `out`. Vector features are simplified by a quarter
-    of a texel at the equator of the source's `zoom`, else of `zoom`: less than a texel shows."""
+    of a texel at the equator of `zoom`: less than a texel shows."""
     from .. import data_registry
 
     ground = ground or json.loads(GROUND.read_text())
@@ -490,7 +488,7 @@ def fetch(source, bounds, out, zoom, ground=None):
     elif entry["protocol"] == "wfs":
         fetch_wfs(url, entry, bounds, out)
     else:
-        tolerance = 360 / ((1 << entry.get("zoom", zoom)) * tiles.TILE) / 4
+        tolerance = 360 / ((1 << zoom) * tiles.TILE) / 4
         fetch_features(url, entry, bounds, out, tolerance, Legend(entry["legend"], collections.defaultdict(int)))
 
 

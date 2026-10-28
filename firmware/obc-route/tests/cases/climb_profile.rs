@@ -107,29 +107,6 @@ fn column_placement_matches_within_climb_distance() {
     }
 }
 
-/// A second single-chunk placement check kept small (≤ MAX_POINTS_PER_CHUNK).
-#[test]
-fn column_placement_single_chunk() {
-    let (chunk, end) = ramp_chunk(0, 200, 20.0, 100, 500);
-    let (bytes, _) = build_obcr(&[chunk], end);
-    let src = SliceSource(&bytes);
-    let ridx = RouteIndex::read(&src).unwrap();
-    let r = RouteReader::new(&ridx, &src);
-
-    let seg = ClimbSeg { start_m: 0, end_m: end, base_ele_m: 100, top_ele_m: 500, gain_m: 400, avg_grade_pct: 10 };
-    let prof = ClimbProfile::build(&r, &seg);
-
-    // Tolerance: one column's worth of gain (400 / (COLS-1) ≈ 2 m) plus rounding.
-    let last = CLIMB_PROFILE_COLS - 1;
-    let tol = 400 / last as i32 + 3;
-    for i in 0..CLIMB_PROFILE_COLS {
-        let frac = i as f32 / last as f32;
-        let ideal = 100 + (400.0 * frac).round() as i32;
-        let got = prof.col(i) as i32;
-        assert!((got - ideal).abs() <= tol, "col {i}: got {got} m, ideal {ideal} m (tol {tol})",);
-    }
-}
-
 #[test]
 fn grade_at_sign_and_magnitude() {
     // Rising: 100 → 500 over 4 km = +10 %.

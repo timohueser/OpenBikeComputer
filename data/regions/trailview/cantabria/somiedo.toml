@@ -1,0 +1,6 @@
+name = "TrailView cantabria: Somiedo"
+kind = "box"
+# west, south, east, north
+box = [-6.48, 42.88, -5.94, 43.27]
+countries = ["ES"]
+time_zone = "Europe/Madrid"

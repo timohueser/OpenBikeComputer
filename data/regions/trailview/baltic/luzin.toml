@@ -1,0 +1,6 @@
+name = "TrailView baltic: Luzin"
+kind = "box"
+# west, south, east, north
+box = [13.03, 53.06, 13.84, 53.54]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

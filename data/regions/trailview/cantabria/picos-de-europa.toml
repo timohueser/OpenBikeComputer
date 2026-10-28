@@ -1,0 +1,6 @@
+name = "TrailView cantabria: Picos De Europa"
+kind = "box"
+# west, south, east, north
+box = [-5.26, 43.07, -4.58, 43.64]
+countries = ["ES"]
+time_zone = "Europe/Madrid"

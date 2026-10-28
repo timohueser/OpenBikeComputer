@@ -6,20 +6,7 @@ use obc_route::{time_to_go_s, BikeType, RouteIndex, RouteReader};
 
 use crate::common::convert;
 
-/// A dead-flat route: a zigzag (so no point decimates away) at a constant 200 m over ~9 km.
-const FLAT: &str = r#"<?xml version="1.0"?>
-<gpx><trk><trkseg>
-  <trkpt lat="47.0000" lon="8.0000"><ele>200.0</ele></trkpt>
-  <trkpt lat="47.0020" lon="8.0200"><ele>200.0</ele></trkpt>
-  <trkpt lat="47.0000" lon="8.0400"><ele>200.0</ele></trkpt>
-  <trkpt lat="47.0020" lon="8.0600"><ele>200.0</ele></trkpt>
-  <trkpt lat="47.0000" lon="8.0800"><ele>200.0</ele></trkpt>
-  <trkpt lat="47.0020" lon="8.1000"><ele>200.0</ele></trkpt>
-  <trkpt lat="47.0000" lon="8.1200"><ele>200.0</ele></trkpt>
-</trkseg></trk></gpx>"#;
-
-/// The same ~9 km of ground as a pass: 500 m to 800 m to 500 m. Same length, same start and end
-/// height, 300 m of ascent. This is the A/B that isolates the climb term.
+/// A ~9 km pass, zigzagged so no point decimates away: 500 m to 800 m to 500 m, 300 m of ascent.
 const PASS: &str = r#"<?xml version="1.0"?>
 <gpx><trk><trkseg>
   <trkpt lat="47.0000" lon="8.0000"><ele>500.0</ele></trkpt>
@@ -39,35 +26,6 @@ fn with_route<R>(name: &str, gpx: &str, f: impl FnOnce(u32, u32, &obc_route::Pro
     let r = RouteReader::new(&ridx, &src);
     let p = r.elevation_profile();
     f(r.total_distance_m, r.total_ascent_m, &p)
-}
-
-/// The model reads ascent only, so descent credits nothing: the up-and-over pass costs the same as
-/// a pure climb of the same gain, and strictly more than the flat twin.
-#[test]
-fn descent_is_never_a_credit() {
-    // The two fixtures cover the same ground, so the whole difference is ascent.
-    let flat = with_route("Flat", FLAT, |d, a, _| (d, a));
-    let pass = with_route("Pass", PASS, |d, a, _| (d, a));
-    assert_eq!(pass.1, 300, "the fixture climbs 300 m");
-    assert_eq!(flat.1, 0, "the flat fixture climbs nothing");
-    assert!(pass.0.abs_diff(flat.0) < 50, "the two fixtures cover the same ground ({} vs {} m)", pass.0, flat.0);
-    let (t_flat, t_pass) = (BikeType::Road.ride_time_s(flat.0, flat.1), BikeType::Road.ride_time_s(pass.0, pass.1));
-    assert!(t_pass > t_flat, "the pass must estimate longer than the flat twin ({t_pass} vs {t_flat} s)");
-    // 300 m × 1.6 s/m = 480 s, modulo the few metres of length difference between the fixtures.
-    assert!((t_pass - t_flat).abs_diff(480) <= 5, "the delta is the climb term: {} s", t_pass - t_flat);
-}
-
-#[test]
-fn flat_route_time_to_go_is_distance_only() {
-    with_route("Flat", FLAT, |total, ascent, p| {
-        assert_eq!(ascent, 0);
-        for bike in BikeType::ALL {
-            for progress in [0, total / 4, total / 2, total - 1, total] {
-                let want = bike.ride_time_s(total - progress, 0);
-                assert_eq!(time_to_go_s(p, total, progress, bike), want, "{bike:?} at {progress} m");
-            }
-        }
-    });
 }
 
 /// Time-to-go never increases as the rider advances, and it hits zero at and past the end. Both

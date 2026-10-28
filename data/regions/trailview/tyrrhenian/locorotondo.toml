@@ -1,0 +1,6 @@
+name = "TrailView tyrrhenian: Locorotondo"
+kind = "box"
+# west, south, east, north
+box = [17.08, 40.56, 17.58, 40.94]
+countries = ["IT"]
+time_zone = "Europe/Rome"

@@ -110,7 +110,7 @@ only where the registry says a name is arithmetic, such as a grid square outside
 product, resolution, licence and vertical datum. Its credit and its box are `attribution` and
 `extent` of `dtm-<key>` in `data/sources.toml`.
 
-Open services, no key: `ch`, `fr`, `us`, `no`, `es`, `nl`, `uk`, `gb-sct`, `at`, `ca`, `nz`,
+Open services, no key: `ch`, `fr`, `us`, `no`, `es`, `nl`, `gb-eng`, `gb-sct`, `at`, `ca`, `nz`,
 `pl`, `cz`, `sk`, `is`, `it`, `it-bz`, `it-tn`, and the German states `de-nw`, `de-he`, `de-bw`,
 `de-mv`, `de-st`, `de-by`, `de-sn`, `de-th`, `de-ni`, `de-rp`. Germany publishes elevation per
 state, so `de-*` is a family of rows. `it` and `is` are 10 m, coarser than the lattice, so they

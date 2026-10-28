@@ -1,0 +1,6 @@
+name = "TrailView western-europe: Bremm"
+kind = "box"
+# west, south, east, north
+box = [6.76, 49.87, 7.47, 50.33]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

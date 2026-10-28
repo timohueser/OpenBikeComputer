@@ -1,0 +1,6 @@
+name = "TrailView italy-med: Craco"
+kind = "box"
+# west, south, east, north
+box = [16.21, 40.19, 16.69, 40.56]
+countries = ["IT"]
+time_zone = "Europe/Rome"

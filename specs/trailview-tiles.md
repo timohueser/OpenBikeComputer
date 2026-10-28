@@ -65,9 +65,8 @@ saw snow counts as NDVI −1.
 A material code above 63 needs a new format. The ruleset check rejects more than 255 region ids, so
 a region id is 0 to 254; more ids need a new format, with two bytes.
 
-The material and the barren share come from the sources at zoom 13 and the region at zoom 10. The
-lithology comes from the sources at the highest `zoom` of the lithology sources that name a unit in
-the bounds, and at least at zoom 10. A coarser texel takes the most common byte of its four children,
+The material and the barren share come from the sources at zoom 13, the lithology at zoom 12 and
+the region at zoom 10. A coarser texel takes the most common byte of its four children,
 the first in reading order on a tie. A material or region texel with no data counts only where all
 four have no data, and a missing child has no data. A coarser barren share is the rounded mean of
 the children with data. Finer than the last zoom of its layer, a lithology or region texel is the
@@ -89,8 +88,7 @@ layer has `refines` and `sources`:
 - `refines` maps a material or lithology to the ones that it names more precisely.
 - `sources` is the chain, in the order it applies. A material texel starts as `none`, a lithology
   texel as `unknown`. A step reads each source of its chain once, and a source with an `extent` in
-  `data/sources.toml` only where the extent meets the bounds. A lithology source raises the last
-  zoom of the lithology only where it names a unit in the bounds.
+  `data/sources.toml` only where the extent meets the bounds.
 
 A source of the chain has these keys:
 
@@ -105,7 +103,6 @@ A source of the chain has these keys:
 | `crs` | The CRS of the map images |
 | `legend` | `match` and `classes`: `[native class, name]` pairs, where a name is an id of `materials.json` |
 | `combine` | `authority` or `refine`, see below |
-| `zoom` | A vector lithology source only, where it is required: the highest zoom that its detail fills, 10 to 13 |
 | `reach_m` | A vector source only: where it names no class, its nearest class within this reach also refines the texel |
 
 | `protocol` | Files |

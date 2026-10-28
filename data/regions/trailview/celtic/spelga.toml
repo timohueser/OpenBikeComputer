@@ -1,0 +1,6 @@
+name = "TrailView celtic: Spelga"
+kind = "box"
+# west, south, east, north
+box = [-6.47, 53.92, -5.63, 54.42]
+countries = ["GB", "IE"]
+time_zone = "Europe/London"

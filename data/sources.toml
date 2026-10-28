@@ -35,6 +35,23 @@ refresh = 7
 redistribute = true
 
 [[source]]
+id = "terrain-osm"
+kind = "data"
+group = "OpenStreetMap"
+used_by = ["planner"]
+use = "The coastlines and summits that correct GLO-30 in the planner terrain"
+licence = "ODbL-1.0"
+licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
+attribution = "© OpenStreetMap contributors"
+obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
+fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}-{yymmdd}.osm.pbf" }
+version = "date"
+# The extracts of `geofabrik-extracts`, kept until an operator fetches a newer one, so that the
+# weekly extract does not bake the terrain again.
+refresh = "manual"
+redistribute = true
+
+[[source]]
 id = "geofabrik-index"
 kind = "data"
 group = "OpenStreetMap"
@@ -422,6 +439,20 @@ version = "date"
 redistribute = true
 
 [[source]]
+id = "dtm-gb-eng"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in England: LIDAR Composite DTM 1 m"
+licence = "OGL-UK-3.0"
+attribution = "© Environment Agency copyright and/or database right 2022. All rights reserved."
+fetch = { kind = "dtm", url = "https://environment.data.gov.uk/spatialdata/lidar-composite-digital-terrain-model-dtm-1m/wcs" }
+extent = [-6.5, 49.8, 2.0, 55.9]
+areas = ["europe/united-kingdom/england"]
+version = "date"
+redistribute = true
+
+[[source]]
 id = "dtm-gb-sct"
 kind = "data"
 group = "Elevation"
@@ -579,20 +610,6 @@ extent = [16.8, 47.7, 22.6, 49.7]
 areas = ["europe/slovakia"]
 # GKÚ's quasigeoid grid, which moves the service's ellipsoidal heights onto Bpv.
 hosts = ["cdn.proj.org"]
-version = "date"
-redistribute = true
-
-[[source]]
-id = "dtm-uk"
-kind = "data"
-group = "Elevation"
-used_by = ["device", "planner", "trailview"]
-use = "Terrain in England: LIDAR Composite DTM 1 m"
-licence = "OGL-UK-3.0"
-attribution = "© Environment Agency copyright and/or database right 2022. All rights reserved."
-fetch = { kind = "dtm", url = "https://environment.data.gov.uk/spatialdata/lidar-composite-digital-terrain-model-dtm-1m/wcs" }
-extent = [-6.5, 49.8, 2.0, 55.9]
-areas = ["europe/united-kingdom/england"]
 version = "date"
 redistribute = true
 
@@ -978,7 +995,7 @@ fetch = { kind = "capture", url = "https://mapas.igme.es/gis/rest/services/Carto
 extent = [-10, 35, 5, 44]
 version = "date"
 refresh = "manual"
-redistribute = false
+redistribute = true
 
 # The source of data/trailview/ecoregions.json; its borders are Natural Earth's.
 [[source]]

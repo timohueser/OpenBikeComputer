@@ -1,0 +1,6 @@
+name = "TrailView iberia: Monnegre"
+kind = "box"
+# west, south, east, north
+box = [-0.78, 38.28, -0.3, 38.68]
+countries = ["ES"]
+time_zone = "Europe/Madrid"

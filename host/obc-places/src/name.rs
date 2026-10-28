@@ -283,10 +283,11 @@ mod tests {
     }
 
     /// The fold may never touch a character the device can already draw, so the packer's table can
-    /// not disagree with the font about the repertoire.
+    /// not disagree with the font about the repertoire. The device strips are Terminus, which has no
+    /// glyph above U+FFFF, so the Basic Multilingual Plane holds every drawable character.
     #[test]
     fn every_drawable_character_survives_the_fold() {
-        for code in 0..=char::MAX as u32 {
+        for code in 0..=0xFFFF {
             let Some(c) = char::from_u32(code) else { continue };
             // A drawable space still collapses, and a control is dropped by the record writer.
             if !glyph_supported(c) || c.is_whitespace() || c.is_control() {

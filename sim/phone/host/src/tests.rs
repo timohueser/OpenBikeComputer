@@ -179,22 +179,24 @@ fn setup_on_the_phone_passes_the_pairing_step_by() {
 fn a_gpx_route_imports_as_the_shared_conversion_attributed_to_the_card_map() {
     use obc_formats::io::ByteSource;
     let (card, directory) = card("gpx");
+    // The conversion costs time per point, and a hundred points still reach the map's attribution.
+    let full = std::fs::read_to_string(GPX).expect("the GPX fixture reads");
+    let end = full.match_indices("</trkpt>").nth(99).expect("the fixture has 100 points").0 + "</trkpt>".len();
+    let gpx = directory.join("short.gpx");
+    std::fs::write(&gpx, format!("{}\n  </trkseg></trk>\n</gpx>\n", &full[..end])).expect("the short GPX is written");
     let mut host = open(&card, &directory);
-    let id = host.import_route(Path::new(GPX)).expect("the GPX converts and imports");
-    let expected = convert_gpx(
-        Path::new(GPX),
-        obc_route::BikeType::Road,
-        Some((&host.device.map.reader(), host.attribution_key())),
-    )
-    .expect("the same conversion outside the host")
-    .0;
+    let id = host.import_route(&gpx).expect("the GPX converts and imports");
+    let expected =
+        convert_gpx(&gpx, obc_route::BikeType::Road, Some((&host.device.map.reader(), host.attribution_key())))
+            .expect("the same conversion outside the host")
+            .0;
     let source = host.device.routes.source(id).unwrap();
     let mut stored = vec![0; source.len() as usize];
     source.read_at(0, &mut stored).unwrap();
     assert_eq!(stored, expected);
     assert_ne!(
         expected,
-        convert_gpx(Path::new(GPX), obc_route::BikeType::Road, None).unwrap().0,
+        convert_gpx(&gpx, obc_route::BikeType::Road, None).unwrap().0,
         "the map's attribution is in the bytes"
     );
     drop(source);

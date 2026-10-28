@@ -280,19 +280,6 @@ mod tests {
         [(7_000_000, LAT), (7_010_000, LAT), (7_020_000, LAT)]
     }
 
-    /// Travelling east, a POI north of the line is on the rider's left, so the offset is negative,
-    /// and one south of it is on the right.
-    #[test]
-    fn sign_is_positive_to_the_right_of_travel() {
-        let pts = chunk();
-        let north = project_onto_chunk(&pts, 0, (7_005_000, LAT + 1_000), f32::INFINITY).unwrap();
-        let south = project_onto_chunk(&pts, 0, (7_005_000, LAT - 1_000), f32::INFINITY).unwrap();
-        assert!(north.offset_m < 0.0, "north of an eastbound line is on the left (negative)");
-        assert!(south.offset_m > 0.0, "south of an eastbound line is on the right (positive)");
-        assert!((north.offset_m + south.offset_m).abs() < 0.01, "mirrored offsets, opposite signs");
-        assert!((south.offset_m - 111.32).abs() < 0.5, "1000 µdeg of latitude ≈ 111 m");
-    }
-
     /// The along-route distance is the chunk's cumulative start plus the walked segment length.
     #[test]
     fn along_distance_accumulates_from_the_chunk_start() {

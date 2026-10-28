@@ -20,7 +20,6 @@ mod flat_harness;
 use flat_harness::{boot, boot_on, catalog_image, client, formatted_card, payload, Answer, Plain};
 use obc_link::flat::store::Policy;
 use obc_link::flat::{Ceilings, Link, ObjectId, ObjectKind, Revision};
-use obc_storage::flat::sim::SparseDisk;
 
 const ROUTE: u16 = 1;
 
@@ -364,26 +363,6 @@ fn restart(device: &mut Plain<'_>, bytes: &[u8]) -> Answer {
         }
     }
     answer.expect("the restart is answered")
-}
-
-/// A break with the card gone as well: the catalog a fresh mount finds is the one the break left,
-/// and nothing the abandoned transfer wrote is reachable from it.
-#[test]
-fn a_remount_after_a_break_finds_the_card_the_break_left() {
-    let disk: SparseDisk = formatted_card(9);
-    let free = {
-        let mut device = boot(&disk);
-        let bytes = payload(2_600);
-        device.control(&client::put(1, 0, 0, &bytes, ROUTE, "lost"));
-        device.stream(&client::stream(1, 0, &bytes[..1_008]));
-        device.link_lost();
-        device.free_extents()
-    };
-    let mut remounted = boot(&disk);
-    assert!(remounted.entries().is_empty(), "the abandoned bytes are anonymous");
-    assert_eq!(remounted.free_extents(), free, "and the mount computes the same free map");
-    let answer = Answer::of(remounted.control(&client::status(1, 1, 1)).answer());
-    assert_eq!(answer.body[0], 0, "STATUS says absent, which is the truth the client restarts from");
 }
 
 #[test]

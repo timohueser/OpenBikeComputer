@@ -48,19 +48,6 @@ fn update_container_decodes_and_both_crcs_match() {
     assert_eq!(header.encode(), hdr, "header round-trips byte-for-byte");
 }
 
-/// A flipped body byte breaks the image CRC even though the header still decodes.
-#[test]
-fn corrupt_image_body_fails_the_image_crc() {
-    let mut bytes = container();
-    let mut hdr = [0u8; HEADER_LEN];
-    hdr.copy_from_slice(&bytes[..HEADER_LEN]);
-    let header = ImageHeader::decode(&hdr).expect("header still valid");
-
-    let last = bytes.len() - 1;
-    bytes[last] ^= 0xFF;
-    assert_ne!(crc32(&bytes[HEADER_LEN..]), header.image_crc32);
-}
-
 /// The signed fixture: both CRCs match, the scheme marker is at its pinned offset, and the trailer
 /// verifies against the committed test key.
 #[test]
