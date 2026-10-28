@@ -25,7 +25,6 @@ struct Model {
     sized: f32,
     sink_low: vec4f,
     sink_high: vec4f,
-    luma: f32,
 }
 
 @group(0) @binding(1) var<storage, read> lists: array<Instance>;
@@ -117,33 +116,28 @@ fn tied(colour: vec3f, tint: f32, tie: f32, ground: u32) -> vec3f {
     return mix(own, g * g * clamp(luma(colour) / 0.3, 0.5, 1.2) * tint, tie);
 }
 
-// A forest tree (a model with a crown's luma and no tie, on woodland that emit_tree carries) wears the
-// colour of the ground under it, which the forest's paint shows past the trees' reach. Each point of the
-// crown keeps its own luma against the crown's luma as it shows lit (Model.luma), so a crown keeps its
-// light tips and every species shows as bright as the ground. Its phase adds the change that it makes to
-// the tree's own colour, scaled as the crown's brightness, so an autumn beech turns orange near the eye;
-// the paint shows the satellite's quarter and not the phase, so the change fades out from PHASE_FROM_M to
-// the reach. CROWN_GAIN makes a stand of lit crowns, shaded sides and gaps at the reach as bright as the
-// paint past it: measured on the Engelberg box at noon in summer.
-const CROWN_GAIN: f32 = 2.5;
-const PHASE_FROM_M: f32 = 1500.0;
-// The trees' reach, TREE_REACH_M of tree-models.ts and look.wgsl.
-const PHASE_REACH_M: f32 = 4500.0;
+// A forest tree (a crown with no tie) takes the satellite's colour of the ground under it, which emit_tree
+// carries: its hue at the luma of the tree's own colour in summer, which matches the ground's. A near
+// tree takes SATELLITE_NEAR of it, so its season shows as the region's satellite sees it; from
+// SATELLITE_FROM_M to the trees' reach (TREE_REACH_M of tree-models.ts) the share grows to all of it,
+// so the forest goes on past the reach in the ground's colours.
+const SATELLITE_NEAR: f32 = 0.4;
+const SATELLITE_FROM_M: f32 = 1500.0;
+const SATELLITE_TO_M: f32 = 4500.0;
 
-// The factor of a forest tree's crown on the ground's colour (worn), 0 for any other model.
-fn wear_of(m: Model, ground: u32) -> f32 {
-    return select(0.0, CROWN_GAIN / m.luma, m.luma > 0.0 && m.tie <= 0.0 && luma(unpack4x8unorm(ground).rgb) > 0.0);
+// The share of the satellite's colour that an instance of a model takes at a distance, 0 for none.
+fn satellite_share(m: Model, ground: u32, d: f32) -> f32 {
+    let g = unpack4x8unorm(ground).rgb;
+    return select(0.0, mix(SATELLITE_NEAR, 1.0, smoothstep(SATELLITE_FROM_M, SATELLITE_TO_M, d)), m.crown >= 0.0 && m.tie <= 0.0 && luma(g) > 0.0);
 }
 
-// A crown's colour in its phase, `phased`, worn on the ground's colour by `wear` (wear_of) `d` metres
-// from the eye; `summer` is its colour in summer.
-fn worn(phased: vec3f, summer: vec3f, ground: u32, wear: f32, d: f32) -> vec3f {
-    if (wear <= 0.0) {
-        return phased;
+// A crown's colour in its phase taken toward the satellite's by `share`; `summer` is its colour in summer.
+fn satellite(colour: vec3f, summer: vec3f, ground: u32, share: f32) -> vec3f {
+    if (share <= 0.0) {
+        return colour;
     }
     let g = unpack4x8unorm(ground).rgb;
-    let change = (phased - summer) * (1.0 - smoothstep(PHASE_FROM_M, PHASE_REACH_M, d));
-    return wear * max(luma(summer) * g * g + luma(g * g) * change, vec3f(0.0));
+    return mix(colour, g * g * (luma(summer) / max(luma(g * g), 1e-6)), share);
 }
 
 // An albedo under the share of snow of an instance's look, which settles on the faces that turn up.
@@ -217,7 +211,7 @@ fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     let tint = 0.75 + 0.5 * f32(i.look & 255u) / 255.0;
     // The trunk keeps its bark in every phase.
     let summer = linear(v.colour.rgb);
-    let crown = worn(toned(summer, draw.x / TIERS, i.ground), summer, i.ground, wear_of(m, i.ground), length(p));
+    let crown = satellite(toned(summer, draw.x / TIERS, i.ground), summer, i.ground, satellite_share(m, i.ground, length(p)));
     let colour = select(crown, summer, v.position.w > 0.0);
     out.albedo = snowed(tied(colour, tint, m.tie, i.ground) * crown_shade(model, m) * far_tone(m, length(p)), v.normal.z, i.look);
     out.look = i.look;

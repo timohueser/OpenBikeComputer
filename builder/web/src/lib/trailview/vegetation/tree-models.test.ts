@@ -11,8 +11,7 @@ class FakeWorker {
         jobs.push({ job, answer: data => this.onmessage!({ data: { id: job.id, ...data } }) });
     }
 }
-// A build's luma differs per crown, so a spec shows whose luma it took.
-const built = (crown: number) => ({ tiers: [], crown, luma: 2 * crown });
+const built = (crown: number) => ({ tiers: [], crown });
 
 function trees(near = new Map<string, number>()) {
     vi.stubGlobal('Worker', FakeWorker);
@@ -36,7 +35,7 @@ describe('the tree models', () => {
         jobs[1].answer({ leafy: [], crowns: [built(0.2)] });
         models.update('2026-01-20');
         const winter = specs[beech].phases![0].model;
-        expect([specs[beech].crown, specs[beech].luma, winter === beech ? undefined : specs[winter].crown, specs[winter].luma, jobs.length]).toEqual([0.1, 0.2, 0.2, 0.4, 2]);
+        expect([specs[beech].crown, winter === beech ? undefined : specs[winter].crown, jobs.length]).toEqual([0.1, 0.2, 2]);
     });
 
     it('gives the free workers the species with the most trees about the eye first', () => {
