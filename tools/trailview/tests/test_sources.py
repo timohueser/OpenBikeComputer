@@ -102,13 +102,12 @@ class LithologyTest(unittest.TestCase):
                               field_data=[np.array([uri + "chalk", uri + "clayWithFlints"], object)], fields=[egdi["field"]],
                               crs="EPSG:4326", geometry_type="Polygon", driver="GPKG", layer=egdi["layer"])
             files = {"igme5000": {"IGME5000.zip": archive}, "egdi-geology": {"GeologicUnitView.gpkg": gpkg}}
-            steps, zooms = sources.chain("lithology", GROUND, VOCABULARY, files.get, bounds)
+            steps = sources.chain("lithology", GROUND, VOCABULARY, files.get, bounds)
             from tools.trailview import ground
 
             rock = ground.Lithology(steps)(z, x, y)
             kept = sorted(path.name for path in root.iterdir() if not path.name.startswith("ground-"))
             self.assertEqual(kept, ["33e6f843", "a1b2c3", "shp"], "the zip is read in place, the units kept in the scratch")
-        self.assertEqual(zooms, [10, 10])
         column = lambda lon: int((lon - west) / (east - west) * tiles.TILE)
         self.assertEqual(rock[256, column(west + 5 * km)], L["chalk"])
         self.assertEqual(rock[256, column(west + 11 * km)], L["chalk"], "IGME 5000's limestone 1 km from EGDI's chalk")

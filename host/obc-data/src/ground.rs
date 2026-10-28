@@ -10,7 +10,7 @@ use serde_json::Value;
 
 /// The keys of an entry that change what its capture fetches; `legend` too where the capture
 /// filters by it.
-const CAPTURE_KEYS: [&str; 7] = ["protocol", "layer", "field", "sort", "crs", "px_m", "zoom"];
+const CAPTURE_KEYS: [&str; 6] = ["protocol", "layer", "field", "sort", "crs", "px_m"];
 
 #[derive(Debug, Deserialize)]
 pub struct Ground {
@@ -76,7 +76,6 @@ mod tests {
             base,
             entry(r#"{"source": "x", "protocol": "arcgis-features", "field": "G", "combine": "authority"}"#)
         );
-        assert_ne!(base, entry(r#"{"source": "x", "protocol": "arcgis-features", "field": "F", "zoom": 11}"#));
         assert_eq!(
             entry(r#"{"source": "x", "protocol": "arcgis-features", "legend": {"match": "word", "classes": []}}"#),
             entry(r#"{"source": "x", "protocol": "arcgis-features", "legend": {"classes": [], "match": "word"}}"#),

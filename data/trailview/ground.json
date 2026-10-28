@@ -205,7 +205,6 @@
         "protocol": "vector",
         "layer": "IGME5000_europeEPSG3034shp_geology_poly_v01",
         "field": "Portr_Petr",
-        "zoom": 10,
         "combine": "authority",
         "legend": {
           "match": "code",
@@ -317,7 +316,6 @@
         "protocol": "vector",
         "layer": "GeologicUnitView",
         "field": "representativelithology_uri",
-        "zoom": 10,
         "combine": "authority",
         "reach_m": 2000,
         "about": "Where EGDI names no rock, under a cover unit or past its coast, the rock it names nearby may name IGME 5000's more precisely, as the chalk around clay-with-flints names IGME 5000's limestone.",
@@ -420,7 +418,6 @@
         "source": "geology-es",
         "protocol": "arcgis-features",
         "field": "DESC_UNIT",
-        "zoom": 11,
         "combine": "authority",
         "about": "A unit's description names its main rock first, and variegated beds right after their rock (\"arcillas abigarradas\").",
         "legend": {

@@ -297,8 +297,7 @@ def ground_problems(ground, ids):
         entry = needs(("source", "protocol", "combine", "legend"), obj({
             "source": source, "protocol": one_of(*sources.PROTOCOLS), "layer": text, "field": text, "sort": text, "crs": text,
             "px_m": positive,
-            "combine": one_of(*sources.COMBINES), "reach_m": positive, "about": text, "legend": legend(name),
-            "zoom": number(10, 13)}))
+            "combine": one_of(*sources.COMBINES), "reach_m": positive, "about": text, "legend": legend(name)}))
         spec = ground.get(layer, {})
         out += obj({"about": text, "refines": each(ids[names], listed(name)),
                     "sources": lambda v, p: []})(spec, layer)
@@ -309,11 +308,6 @@ def ground_problems(ground, ids):
             for key in NEEDS.get(protocol, ()):
                 if key not in found:
                     out.append(f"{at}: has no {key}, which the protocol {protocol} needs")
-            zoomed = layer == "lithology" and protocol in sources.VECTOR
-            if zoomed and "zoom" not in found:
-                out.append(f"{at}: has no zoom")
-            if "zoom" in found and not zoomed:
-                out.append(f"{at}.zoom: only a vector lithology source has a zoom")
             if "reach_m" in found and protocol not in sources.VECTOR:
                 out.append(f"{at}.reach_m: only a vector source reaches")
             if protocol in sources.CAPTURED and fetch.get("kind") != "capture":

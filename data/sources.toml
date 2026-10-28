@@ -978,7 +978,7 @@ fetch = { kind = "capture", url = "https://mapas.igme.es/gis/rest/services/Carto
 extent = [-10, 35, 5, 44]
 version = "date"
 refresh = "manual"
-redistribute = false
+redistribute = true
 
 # The source of data/trailview/ecoregions.json; its borders are Natural Earth's.
 [[source]]
