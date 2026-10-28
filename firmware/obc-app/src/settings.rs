@@ -662,7 +662,7 @@ mod tests {
         assert!(stat_fields.push(crate::stat_fields::StatField::Clock));
         Settings {
             units: Units::Imperial,
-            local_offset_known: false,
+            local_offset_known: true,
             clock: DateTime { year: 2026, month: 6, day: 29, hour: 14, minute: 40 },
             utc_offset_min: 120,
             fix_interval_s: 5,
@@ -759,9 +759,8 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00, 0x00,
             0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x01, 0xb9, 0xfa, 0x00, 0x01, 0x01, 0x01, 0xda, 0xa9,
         ];
-        let every_field_set = Settings { local_offset_known: true, ..every_field_set() };
         for (what, value, golden) in
-            [("factory", Settings::FACTORY, FACTORY), ("every field set", every_field_set, EVERY_FIELD_SET)]
+            [("factory", Settings::FACTORY, FACTORY), ("every field set", every_field_set(), EVERY_FIELD_SET)]
         {
             assert_eq!(encode(&value), golden, "{what} encodes to its pinned bytes");
             assert_eq!(decode(&golden), Some(value), "{what} pinned bytes decode back");
@@ -773,7 +772,7 @@ mod tests {
     fn a_v26_blob_decodes_and_ignores_the_retired_byte() {
         assert_eq!(V26_EVERY_FIELD_SET[110], 2, "the fixture stores a non-zero retired byte");
         assert_eq!(decode(&V26_FACTORY), Some(Settings::FACTORY));
-        assert_eq!(decode(&V26_EVERY_FIELD_SET), Some(Settings { local_offset_known: true, ..every_field_set() }));
+        assert_eq!(decode(&V26_EVERY_FIELD_SET), Some(every_field_set()));
     }
 
     /// One row per decode-time clamp: a stored value out of its range reads back as exactly this.
@@ -863,7 +862,7 @@ mod tests {
     #[test]
     fn every_declared_field_round_trips_and_keeps_its_ble_split() {
         let base = Settings::DEFAULT;
-        let other = Settings { local_offset_known: true, ..every_field_set() };
+        let other = every_field_set();
         assert_eq!(decode(&encode(&other)), Some(other), "every field round-trips through the codec");
 
         let mut adopted = base;
@@ -1009,8 +1008,8 @@ mod tests {
         assert_eq!(decode(&below), None, "a version below the supported floor is rejected");
     }
 
-    /// A miniature settings table for tail-defaulting, which the real table cannot exercise: it
-    /// has exactly one supported version, so nothing in it is ever defaulted. Four rows across
+    /// A miniature settings table for what the real table cannot exercise: its versions straddle
+    /// a 16-byte write line, so the encoded length really is version-relative. Four rows across
     /// three versions, with hand-written blobs and hand-written expectations.
     mod mini {
         #![allow(dead_code)] // generated for every table, not exercised here
