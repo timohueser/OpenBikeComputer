@@ -73,16 +73,17 @@ def material_parent(children):
 
 class Material:
     """The material chain of `sources.chain` on one tile, then the barren bit. A texel is the material
-    byte and the barren share. `rock(z, x, y)` gives the lithology under the tile."""
+    byte and the barren share. `colour` is the `colour.Prepared` of the satellite; `rock(z, x, y)` gives the
+    lithology under the tile."""
 
-    def __init__(self, bounds, steps, mosaics, rock):
-        self.bounds, self.steps, self.mosaics, self.rock = bounds, steps, mosaics, rock
+    def __init__(self, bounds, steps, colour, rock):
+        self.bounds, self.steps, self.colour, self.rock = bounds, steps, colour, rock
 
     def __call__(self, z, x, y):
         from . import colour
 
         transform, texel = tiles.transform(z, x, y), tiles.texel_m(z, y)
-        quarters = colour.quarters(self.mosaics, transform, texel)
+        quarters = colour.quarters(self.colour, z, x, y)
         most = np.max([texels[..., 3] for texels in quarters.values()], axis=0)
         tile = Tile(transform, texel, quarters, most, self.rock(z, x, y))
         material = np.zeros((tiles.TILE, tiles.TILE), np.uint8)
@@ -258,7 +259,7 @@ def step():
 
             steps = sources.chain("material", ground, vocabulary, files, bounds, layers["planner/osm"]["osm.pbf"])
             rock = Coarse(layers["planner/trailview-lithology"]["lithology.pmtiles"])
-            bake, top = Material(bounds, steps, colour.mosaics(files("sentinel-2-mosaics")), rock), MATERIAL_ZOOM
+            bake, top = Material(bounds, steps, colour.Prepared(files("colour"), options["year"]), rock), MATERIAL_ZOOM
     bake_layer(layer, bake, top, bounds, output, {"layer": layer})
 
 

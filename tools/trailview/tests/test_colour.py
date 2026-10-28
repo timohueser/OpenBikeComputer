@@ -1,13 +1,18 @@
 """The colour tiles keep the rules of the prototype's bake: no snow in a quarter's colour, summer chroma
-in winter shadow, and the alpha codes of specs/trailview-tiles.md."""
+in winter shadow, and the alpha codes of specs/trailview-tiles.md; a block file of `colour` holds the
+codes and the looks of specs/obc-data.md."""
 
 import io
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
+from tools import planner_geo as geo
 from tools.trailview import colour, tiles
+from tools.trailview.tests.test_ground import raster
 
 
 def quarter(rgb, alpha, shape=(1, 1)):
@@ -89,6 +94,33 @@ class ColourTest(unittest.TestCase):
         mark = ndvi[..., 1].repeat(2, axis=0).repeat(2, axis=1) >> shift & 3
         alpha = np.where(mark == colour.MEASURED, ndvi[..., 0].repeat(2, axis=0).repeat(2, axis=1), mark)
         self.assertTrue((alpha == colour.stored_ndvi(stack[2, ..., 3])).all())
+
+    def test_a_block_file_holds_the_codes_and_looks_and_the_bake_applies_the_look_minimum(self):
+        x, y = map(int, geo.mercator(8.40, 46.82, colour.ZOOM))
+        west, south, east, north = geo.tile_bounds(colour.ZOOM, x, y)
+        around, middle = [west - 0.01, south - 0.01, east + 0.01, north + 0.01], (west + east) / 2
+        # Two looks in the west half, ten in the east; the NDVI of the band values is 0.613.
+        values = {"B02": 400, "B03": 650, "B04": 600, "B08": 2500, "observations": lambda lat, lon: np.where(lon > middle, 10.4, 2.6)}
+        with tempfile.TemporaryDirectory() as tmp:
+            root, found = Path(tmp), {}
+            for q in range(1, 5):
+                for band, value in values.items():
+                    name = f"Sentinel-2_mosaic_2025_Q{q}_TEST_0_0/{band}.tif"
+                    fill = value if callable(value) else lambda lat, lon, value=value: np.full(np.broadcast(lat, lon).shape, value)
+                    found[name] = raster(root / name, around, fill, "float32", -1)
+            block, empty = (x >> 2, y >> 2), ((x >> 2) + 1, y >> 2)
+            files = {colour.block_path(2025, *at): root / colour.block_path(2025, *at) for at in (block, empty)}
+            colour.write(colour.mosaics(found), block, files[colour.block_path(2025, *block)])
+            colour.write({}, empty, files[colour.block_path(2025, *empty)])
+            prepared = colour.Prepared(files, 2025)
+            codes, looks = prepared.tile(x, y)
+            self.assertEqual(codes[1, 256, 100].tolist(), [round(255 * v ** (1 / 2.2)) for v in (0.06, 0.065, 0.04, 0.25)])
+            self.assertEqual((looks[256, 100].tolist(), looks[256, 400].tolist()), ([2] * 4, [10] * 4), "the floor of the looks")
+            clean = colour.quarters(prepared, colour.ZOOM, x, y)
+            self.assertEqual(clean[2][256, 100, 3], 0, "fewer than 3 looks")
+            self.assertAlmostEqual(colour.ndvi(clean[2][256, 400, 3]), 0.613, delta=0.01)
+            self.assertFalse(prepared.tile(4 * empty[0], 4 * empty[1])[1].any(), "a block without data is an empty file")
+            self.assertEqual(files[colour.block_path(2025, *empty)].stat().st_size, 0)
 
 if __name__ == "__main__":
     unittest.main()

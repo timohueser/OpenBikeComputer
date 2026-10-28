@@ -13,7 +13,7 @@ use obc_data::regions::Bbox;
 use obc_data::sources::Source;
 use planner_router_build::grid::mercator;
 
-use crate::prepared_tiles::{self, read_on_day, reuse, Tile};
+use crate::prepared_tiles::{self, read_on_day, reuse, Tile, RUNNING};
 use crate::terrain_reference::{area, meets};
 
 /// The id of the prepared source.
@@ -105,7 +105,7 @@ impl Prepared for ForestReference {
                 (name(tile), models.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>().join(","))
             })
             .collect();
-        let digests = prepared_tiles::make(job, &tiles, |job, name| {
+        let digests = prepared_tiles::make(job, &tiles, RUNNING, |job, name| {
             let mut command = (self.tool)(job.root)?;
             command.args(["fetch", &of[name], "--tile", name, "--out"]).arg(&job.work);
             Ok(command)
@@ -151,28 +151,31 @@ pub(crate) fn models<'a>(
 pub(crate) fn model_tiles(model: &Source, boxes: Option<&[Bbox]>) -> Result<BTreeSet<(u32, u32)>, String> {
     let [west, south, east, north] = model.extent.ok_or_else(|| format!("`{}` has no `extent`", model.id))?;
     let extent = Bbox { west, south, east, north };
-    let Some(boxes) = boxes else { return Ok(box_tiles(&extent)) };
+    let Some(boxes) = boxes else { return Ok(box_tiles(&extent, ZOOM)) };
     Ok(boxes
         .iter()
         .flat_map(|bbox| {
-            box_tiles(&Bbox {
-                west: extent.west.max(bbox.west),
-                south: extent.south.max(bbox.south),
-                east: extent.east.min(bbox.east),
-                north: extent.north.min(bbox.north),
-            })
+            box_tiles(
+                &Bbox {
+                    west: extent.west.max(bbox.west),
+                    south: extent.south.max(bbox.south),
+                    east: extent.east.min(bbox.east),
+                    north: extent.north.min(bbox.north),
+                },
+                ZOOM,
+            )
         })
         .collect())
 }
 
-/// The zoom 12 tiles whose inside meets `inside`; none when it is empty.
-fn box_tiles(inside: &Bbox) -> BTreeSet<(u32, u32)> {
+/// The tiles of `zoom` whose inside meets `inside`; none when it is empty.
+pub(crate) fn box_tiles(inside: &Bbox, zoom: u32) -> BTreeSet<(u32, u32)> {
     if inside.west >= inside.east || inside.south >= inside.north {
         return BTreeSet::new();
     }
-    let (left, top) = mercator(inside.west, inside.north, ZOOM);
-    let (right, bottom) = mercator(inside.east, inside.south, ZOOM);
-    let last = (1u32 << ZOOM) - 1;
+    let (left, top) = mercator(inside.west, inside.north, zoom);
+    let (right, bottom) = mercator(inside.east, inside.south, zoom);
+    let last = (1u32 << zoom) - 1;
     let span = |from: f64, to: f64| (from.floor() as u32).min(last)..=((to.ceil() as u32).max(1) - 1).min(last);
     span(left, right).flat_map(|x| span(top, bottom).map(move |y| (x, y))).collect()
 }

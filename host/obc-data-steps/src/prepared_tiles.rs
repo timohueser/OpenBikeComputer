@@ -1,5 +1,5 @@
 //! The tiles of a prepared source that a program of its producer makes, one tile per run of the
-//! program: `terrain`, `forest` and `climate`. Also what the producers share around them: the
+//! program: `terrain`, `forest`, `climate` and `colour`. Also what the producers share around them: the
 //! outlines of the region of a version, the files that a version keeps of the version before, and
 //! the record of what a service gave on the day of a version.
 
@@ -18,8 +18,8 @@ use crate::device::{box_poly, POLY};
 
 /// The tiles of one move into the home.
 pub(crate) const BATCH: usize = 64;
-/// The programs that run at once. Eight, chosen by the owner: a program waits mostly on its
-/// downloads, and one tile needs little memory.
+/// The programs that run at once, unless a service limits the connections. Eight, chosen by the
+/// owner: a program waits mostly on its downloads, and one tile needs little memory.
 pub(crate) const RUNNING: usize = 8;
 
 /// A tile: its name, and its files in the version, each with the mark in `state/tiles/` that holds
@@ -30,7 +30,7 @@ pub struct Tile {
     pub marks: Vec<String>,
 }
 
-/// Make each tile that the version lacks, [`RUNNING`] at a time, and move its files into the home in batches.
+/// Make each tile that the version lacks, `running` at a time, and move its files into the home in batches.
 /// `command(job, name)` is the program that writes the files of tile `name` into `job.work`, then
 /// their marks, the mark of the last file last; or the empty `<name>.none` for a tile without data.
 /// Each line of its output, and its error, starts with `tile k/K <name>`: tile k of the K tiles of
@@ -39,6 +39,7 @@ pub struct Tile {
 pub fn make(
     job: &mut Job,
     tiles: &[Tile],
+    running_at_most: usize,
     command: impl Fn(&Job, &str) -> Result<Command, String>,
 ) -> Result<BTreeMap<String, String>, String> {
     let marks = job.state.join("tiles");
@@ -61,7 +62,7 @@ pub fn make(
         // A failed program ends the run at once; with all slots taken, the first program that ends
         // frees its slot, so a short tile does not wait behind a long one.
         loop {
-            let full = running.len() == RUNNING;
+            let full = running.len() == running_at_most;
             let mut at = running.iter_mut().position(|(_, program)| program.failed());
             if at.is_none() && full {
                 for (k, (_, program)) in running.iter_mut().enumerate() {
@@ -172,6 +173,29 @@ pub(crate) fn regions(scope: &Scope) -> Result<(Regions, String), String> {
 /// The fetch of the `geofabrik-poly` polygon of `area`, at `version` or the newest.
 pub(crate) fn poly(area: &str, version: Option<String>) -> Wanted {
     Wanted { source: POLY.into(), version, params: vec![("area".into(), area.into())] }
+}
+
+/// What a plan knows of the region of `scope` before a download: the `geofabrik-poly` fetch of each
+/// area of its leaves, and the outline of each box leaf; `None` for the outlines when a leaf is an
+/// area, whose polygon only the run reads.
+pub(crate) fn planned(scope: &Scope) -> Result<(Vec<obc_data::prepared::Input>, Option<Vec<Coverage>>), String> {
+    let (regions, id) = regions(scope)?;
+    let (mut inputs, mut outlines) = (Vec::new(), Some(Vec::new()));
+    for leaf in regions.leaves(&id)? {
+        match &regions.get(leaf).expect("a leaf is a region").area {
+            Area::Box { bbox } => {
+                if let Some(outlines) = &mut outlines {
+                    outlines.push(Coverage::parse_poly(&box_poly(bbox))?);
+                }
+            }
+            Area::Geofabrik { areas } => {
+                inputs.extend(areas.iter().map(|area| (poly(area, None), None).into()));
+                outlines = None;
+            }
+            Area::Union { .. } => {}
+        }
+    }
+    Ok((inputs, outlines))
 }
 
 /// The outline of each leaf of the region of `job`: its box, or the polygon of each of its areas;

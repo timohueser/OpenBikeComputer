@@ -48,7 +48,7 @@
         }
       },
       {
-        "source": "sentinel-2-mosaics",
+        "source": "colour",
         "rule": "satellite-heath",
         "material": "heath",
         "about": "Open ground as red as it is green (the midpoint of 1.1 to 1.4) while its NDVI is high and near the year's highest. Not on sparse ground: a green pixel there is grass beside bare stone. Grass that a dry summer turns as red is green in spring, while heather and moor grass stay brown until midsummer; heather shuns lime, so on calcareous rock such ground is the dry grass.",
