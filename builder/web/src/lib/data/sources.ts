@@ -164,6 +164,7 @@ export const REFERENCES: { id: string; title: string; about: string; add: string
         add: "Add an area",
         models: { prefix: "canopy-", noun: "canopy model" },
     },
+    { id: "climate", title: "Climate", about: "Daily ERA5-Land temperature, rain and wind for the climate layer", add: "Add an area" },
 ];
 
 export const referenceOf = (id: string) => REFERENCES.find((reference) => reference.id === id);

@@ -85,7 +85,16 @@ fn fetch_files(
             source.fetch.url.as_deref().unwrap_or_default()
         )),
         FetchKind::Installed => Err(format!("source `{}` is installed, not fetched", source.id)),
-        FetchKind::Prepared => crate::prepared::fetch(http.roots(), store, request, names),
+        // A plan names a file that it reads as the param `file`.
+        FetchKind::Prepared => {
+            let files = request.params.iter().filter(|(name, _)| name == "file").map(|(_, path)| path.clone());
+            crate::prepared::fetch(
+                http.roots(),
+                store,
+                request,
+                &names.iter().cloned().chain(files).collect::<Vec<_>>(),
+            )
+        }
     }
 }
 
@@ -1123,24 +1132,20 @@ pub(crate) mod tests {
     fn a_capture_names_its_parameters_and_its_missing_credential() {
         let scratch = Scratch::new("credential");
         let store = Store::at(&scratch.0);
-        let mut era5 = located(FetchKind::Capture, "https://example.org/era5");
-        era5.id = "era5-land".into();
-        era5.credential =
+        let mut mosaics = located(FetchKind::Capture, "https://example.org/mosaics");
+        mosaics.id = "sentinel-2-mosaics".into();
+        mosaics.credential =
             Some(crate::sources::Credential { file: Some("~/.obc-test-no-such-key".into()), ..Default::default() });
         let params = |pairs: &[(&str, &str)]| pairs.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
-        let request = |params| Request { refresh: false, source: &era5, version: None, params };
+        let request = |params| Request { refresh: false, source: &mosaics, version: None, params };
         let err =
             fetch(&tooling_root(), &store, &quick(), &request(params(&[("bbox", "7.6,47.9,8.0,48.1")]))).unwrap_err();
-        assert!(err.contains("takes bbox=… first-year=…"), "{err}");
-        let err = fetch(
-            &tooling_root(),
-            &store,
-            &quick(),
-            &request(params(&[("bbox", "8,48,7,49"), ("first-year", "2015")])),
-        )
-        .unwrap_err();
+        assert!(err.contains("takes bbox=… year=…"), "{err}");
+        let err =
+            fetch(&tooling_root(), &store, &quick(), &request(params(&[("bbox", "8,48,7,49"), ("year", "2015")])))
+                .unwrap_err();
         assert!(err.contains("west < east"), "{err}");
-        let good = params(&[("first-year", "2015"), ("bbox", "7.6,47.9,8.0,48.1")]);
+        let good = params(&[("year", "2015"), ("bbox", "7.6,47.9,8.0,48.1")]);
         let err = fetch(&tooling_root(), &store, &quick(), &request(good)).unwrap_err();
         assert!(err.contains("blocked: credential missing: ~/.obc-test-no-such-key"), "{err}");
     }

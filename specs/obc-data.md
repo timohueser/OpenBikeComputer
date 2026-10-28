@@ -360,21 +360,20 @@ is `<fetch.url>#<query>/<path in the directory>`, with the `fetch.url` of the so
 takes the file. The fetch checks every record that it adds to before it writes one. Each fetch
 takes the `NAME=VALUE` of its row, each once, and no other. A `capture` source without a row has
 no fetcher yet; the fetch fails. `wikidata`, `wikipedia` and `commons` have no fetcher: only the
-producer of [`wiki`](#wiki) reads them.
+producer of [`wiki`](#wiki) reads them. `era5-land` has none: only the producer of
+[`climate`](#climate) reads it.
 
 | Source | `NAME=VALUE` | Program | Packages | Query |
 | --- | --- | --- | --- | --- |
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
 | Each source of `data/trailview/ground.json` with the `protocol` `arcgis-features` or `wfs` | `bbox`, `ground` | `tools/trailview/ground.py --source ID --fetch` | group `trailview` | `bbox=W,S,E,N&ground=DIGEST` |
 | `sentinel-2-mosaics` | `bbox`, `year` | `tools/trailview/colour.py --fetch` | group `trailview` | `bbox=W,S,E,N&year=YEAR` |
-| `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | group `planner-climate` | `bbox=W,S,E,N&first-year=YEAR` |
 | `corine-land-cover` | None | `tools/clms.py --fetch` | None | `dataset=0407d497d3c44bcd93ce8fd5bf78596a&file=3d9e2413-46ca-4f6e-abf8-b6eb429a4e48` |
 
 - `bbox` is `WEST,SOUTH,EAST,NORTH` in degrees.
 - A snow file is the window of one source raster that covers `bbox`, one pixel wider on each
   side, in the grid of the source. A season starts on 1 September. An `hr-wsi` box without a
   product gives a fetch without files.
-- An `era5-land` file is a source chunk of the ten years from `first-year`, or the orography.
 - The `corine-land-cover` file is `U2018_CLC2018_V2020_20u1.tif`, the CORINE Land Cover 2018
   raster of Europe. The capture orders the prepackaged `file` of the CLMS `dataset` through the
   [CLMS download API](https://eea.github.io/clms-api-docs/download.html), with an access token
@@ -578,13 +577,13 @@ values, never a value.
 
 | Credential | File | Lines |
 | --- | --- | --- |
-| `env` | `~/.config/openbikecomputer/credentials.env` | `NAME=VALUE` |
+| `env` | `~/.config/openbikecomputer/credentials.env` | `NAME=VALUE`; a leading `export ` and one matching pair of quotes around the value are removed |
 | `file = "~/.cdsapirc"` | `~/.cdsapirc` | `key: VALUE` |
 | `file = "~/.config/openbikecomputer/cdse-s3.env"` | that file | `CDSE_S3_ACCESS_KEY=VALUE` and `CDSE_S3_SECRET_KEY=VALUE` |
 | `file = "~/.config/openbikecomputer/clms-key.json"` | that file | None: a person saves the JSON service key whole, as the `hint` says, and the command refuses it |
 
-Each `obc data` command but `obc data ui` loads `credentials.env` when it starts, and its steps get
-the variables. A variable that the environment already sets wins. `overridden` in the output
+Each `obc data` command but `obc data ui`, and `obc bake publish --target r2`, loads
+`credentials.env` when it starts, and its steps get the variables. A variable that the environment already sets wins. `overridden` in the output
 names such variables: the new value serves only after they are removed from the environment.
 
 Each acquisition check has 15 seconds. The store keeps its answer or failure for one hour.
@@ -1076,11 +1075,11 @@ of the version of `terrain` that the target reads, and `mean/index.json`.
 | `planner/osm` | The selected PBF of each `planner/source/<area>` | `path`: `osm.pbf` for one area; none for multiple areas | `osm.pbf`: one extract as it is, or the available-snapshot union |
 | `planner/osm/bounds` | `planner/osm` | For a region with a box, `bbox`: west, south, east and north of the bounds of the region, widened by `osm.margin_m`, within ±180° and ±90°. For a region without a box, `path`: `osm.pbf` | `osm.pbf`: for a region with a box, the `osmium extract --strategy smart -S types=multipolygon,boundary --set-bounds --generator obc-data` of `bbox`, in which each multipolygon and each boundary that `bbox` touches is complete, and the metrics name the version (`osmium`). For a region without a box, `planner/osm` as it is: its extracts are its whole area |
 | `planner/basemap` | `planner/osm/bounds`; The selected jar of `protomaps-basemaps`; `natural-earth`, `water-polygons`, `land-polygons`, `daylight-landcover`, `qrank`, `pgf-encoding` | `bounds` of the region; `attribution` of `osm-planet`, `natural-earth` and `daylight-landcover` | `basemap.pmtiles`: the Protomaps map at zooms 0 to 14 |
-| `planner/reference` | `terrain`, without params: the mean tiles in `bounds` of `planner/terrain` and `mean/index.json`; only when the version has one of them | `source` and `tiles` as for `device/reference`, of the tiles of `bounds`; `pool`: `mean` | `reference/`: the mean archive of those tiles. A Python step with the group `terrain-reference` |
+| `planner/reference` | `terrain`, without params: the mean tiles in `bounds` of `planner/terrain` and in the ring of tiles around them, and `mean/index.json`; only when the version has one of them | `source` and `tiles` as for `device/reference`, of the tiles of `bounds`; `pool`: `mean` | `reference/`: the mean archive of those tiles. A Python step with the group `terrain-reference` |
 | `planner/terrain-osm/<area>` | `terrain-osm`, `area=<area>`, for each source area | `path`: `source.osm.pbf` | `source.osm.pbf`: the extract as it is |
 | `planner/terrain-osm` | Only for more than one source area: `source.osm.pbf` of each `planner/terrain-osm/<area>` | None | `osm.pbf`: their union, as `planner/osm` merges |
 | `planner/terrain` | The GLO-30 tiles of `bounds`; `planner/reference` when there is one; `planner/terrain-osm`, or for one source area its `planner/terrain-osm/<area>` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours; `attribution`: the credit of GLO-30; `osm_attribution`: the credit of `osm-planet` | `terrain.mbtiles`: the terrain tiles of [the planner release](planner-release.md#terrain-tiles), the bytes that `planner-dem` writes from the same tiles, archive and OSM. `terrain-osm` is the Geofabrik extract with `refresh = "manual"`: the terrain keeps the extract of each area that it read first, and a newer `geofabrik-extracts` does not build the terrain again. `obc data fetch terrain-osm area=<area>` puts a newer extract in the store, which the next update reads. Where GLO-30 has weight, its heights follow the OSM within 300 m of `bounds` (`host/obc-dem/src/shape.rs`): the water side of `natural=coastline` is at 0 m up to 45 m from the line; within 45 m of the top of GLO-30 within 30 m of a `natural=peak` or `natural=volcano` with a numeric `ele`, the cone of its flanks continued from 45 m and 90 m, only rising and never above `ele`. With OSM, the metrics name the Osmium version (`osmium`) |
-| `planner/routing` | `planner/osm/bounds`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`; `attribution` and `terrain_attribution`: the credits of OSM and GLO-30. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells: shared page packs, one manifest for each cell, `blocks.json` and `catalog.json`; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
+| `planner/routing` | `planner/osm/bounds`, the GLO-30 tiles of the bounds of the region, and `planner/reference` when there is one. The heights of the roads are those of `planner/terrain` without the OSM corrections | `region` (the last part of the region id), `bounds`, `profiles` and `countries`; `attribution` and `terrain_attribution`: the credits of OSM and GLO-30. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells: shared page packs, one manifest for each cell, `blocks.json` and `catalog.json`; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
 | `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
 | `planner/assets` | `protomaps-assets`, `tangrams-icons` | None | `assets/fonts/` and `assets/sprites/` of the assets archive; `assets/sprites/LICENSE.txt`: the MIT notice of `tangrams-icons` |
 | `planner/model` | `query-model` | None | `model/`: `model.int8.onnx`, `tokenizer.json` and `tokenizer_config.json` of the archive, and `labels.json`, the labels of the query schema |
@@ -1089,7 +1088,7 @@ of the version of `terrain` that the target reads, and `mean/index.json`.
 | `planner/search/records` | `planner/search/dump` | None | `pois.jsonl.zst` and `addresses.jsonl.zst`: the records of the dump with a POI and with an address |
 | `planner/search/pois`, `planner/search/addresses` | `planner/search/records`; POIs also read the selected `device/landmark-content*` and `device/peak-content*` outputs | `component` (`pois` or `addresses`); `region`, `bounds` and `countries` as for `planner/routing`; `time_zone` of the region; `attribution` of `osm-planet` | `<component>/<region>.sqlite`: the search database of the component, schema 6. The key holds no SQLite version: another Python patch release can give other database bytes. The metrics name the version as `sqlite` |
 | `planner/places` | `planner/search/pois` | None | `places.pmtiles`: the rider places of the POI database, at zoom 11 |
-| `planner/climate` | `era5-land`, `bbox=<bounds>`, `first-year=<climate.first_year>` | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10 | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md) |
+| `planner/climate` | The files of [`climate`](#climate) of the blocks of the outline of the region, as `climate` defines the blocks of a region: the orography and the ten years from `climate.first_year`. A version that lacks one of them refuses | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10; `climate`: the version that it reads | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md). A cell of a block that the step does not read is missing |
 | `planner/snow` | `hr-wsi` when its `extent` meets the bounds and its fetch has files, and `modis-snow`, each `bbox=<bounds>`, `seasons=<snow.seasons>`; `hansen-gfc`, `tile=` of each 10° tile that the bounds touch | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when it reads it, `modis-snow` and `hansen-gfc`; `year`: the year of the `hr-wsi` version, which fills its `{year}`, or null | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md): HR-WSI where it has data, and MODIS elsewhere |
 | `planner/trailview-features` | `planner/osm`, `planner/terrain/grid` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 13 |
 | `planner/trailview-rules` | `data/trailview/` of the repository | `ruleset`: the digest of its JSON files by their paths in it. The step fails when the files differ | `rules.json`: [the TrailView rules](trailview-tiles.md#rules); `regions.json`, `materials.json` and `ground.json`: the region ids, the region areas, the ecoregions, the places, the vocabulary and the ground sources that the ground steps read |
@@ -1688,7 +1687,7 @@ is compact JSON with the keys of each object in byte order:
 3. The review names the root of the home, the version, the inputs with the size of their files in the store or on
    this machine (`unknown` lists an input whose size neither knows), the files of the version at
    most (`files`, `null` when the producer cannot tell before the run), the files
-   that earlier runs moved into the home, the cost from the newest version in the home, only when its scope and languages match, the bytes that go into the store and into the archive (unknown without such a version), the check of this machine as in the
+   that earlier runs moved into the home, the cost from the newest version in the home, only when its scope and languages match, the bytes that go into the store, with the disk that the producer says its programs take, and into the archive (unknown without such a version), the check of this machine as in the
    [review](#review) of an update, which also refuses when the source or an input has a
    `credential` that is not on the machine, or when the root lacks the free space for the bytes of
    the version and 4 GiB more, and for each target of `data/targets.toml` the
@@ -1704,7 +1703,7 @@ is compact JSON with the keys of each object in byte order:
    have no manifest: no run resumes them. Before each 100 deletes, it checks that it still holds
    the lock. A version that `versions.json` lists and that has no manifest refuses the run: its
    manifest is lost, and the fix restores it from the backup.
-6. The producer writes each file. `terrain` and `forest` run the programs of
+6. The producer writes each file. `terrain`, `forest` and `climate` run the programs of
    eight tiles at a time. The run moves each file into the home at once, records its SHA-256 in the journal
    and deletes it from the work. No reader reads a version before its manifest, so the move
    replaces a file that a stopped run left with other bytes. The run shows each tile that a program makes as a step `<id>/<tile>`
@@ -1806,17 +1805,52 @@ format.
   into the tile of the version before when it has one (`--base`, with `--held`, its sources), by
   `fold_tiles`. A model keeps the pixels where it has a height when it ranks better by `PRIORITY`
   than every other source of the tile, also over an older survey of its own; else it fills only
-  the gaps. The program writes `16/<ti:04>/<tj:04>.tif` and `mean/16/<ti:04>/<tj:04>.tif`, then
-  `<ti:04>-<tj:04>.keys`, the sources of the tile best first, then `<ti:04>-<tj:04>.mean.sha256`
-  and `<ti:04>-<tj:04>.sha256`, the SHA-256 of their pixels. Where no model has a height in the
+  the gaps. So the new models that rank better than every source of the version before fold first,
+  worst first, and the others then fold best first. A source of the version before that ranks
+  better than a new model keeps its pixels where both have a height, also where it is not the best
+  source of that pixel: only a tile that records the source of each pixel removes that limit.
+  Before it uses a model whose row has a `summit`, the program pools the tiles near that summit and
+  refuses the model when the highest height within about 1 km of it is more than 10 m from the
+  surveyed height, and names a check that finds no height. `--shared`, one directory for the tiles of a
+  prepare, keeps the passed checks, so one prepare checks a model once. Each lattice pixel that no centre of a model reaches and that lies between four of its
+  centres with a height takes their bilinear height. A model whose step is longer than the east
+  side of a lattice pixel in the tile asks for the tile with two of its steps of margin. So a
+  model coarser than the lattice fills its footprint. A finer model whose step is longer than half
+  the east side can leave a pixel without a centre next to a void, and the fill gives that pixel
+  the bilinear height. On a tile of `es` (5 m) and one of `ch` (2 m), the fill writes no pixel. A
+  raster of one row or one column fills nothing. The program writes `16/<ti:04>/<tj:04>.tif` and `mean/16/<ti:04>/<tj:04>.tif`, then
+  `<ti:04>-<tj:04>.keys`, the sources of the tile best first, and `<ti:04>-<tj:04>.samples`, the
+  bias samples of the mean: the decimetres of the 16 × 16 pixels whose row and column are 32
+  modulo 64, row by row from the south, `-` where the tile has no height. Then it writes
+  `<ti:04>-<tj:04>.mean.sha256` and `<ti:04>-<tj:04>.sha256`, the SHA-256 of their pixels. Where no model has a height in the
   tile, it writes the empty `<ti:04>-<tj:04>.none`. It asks a service only for the part of the tile
   in the `extent`, and it removes the raw rasters. The run keeps the marks of each tile until the
   version is complete, so a resume fetches no tile again that it has.
 - The run moves the files into the home in batches of 64. Each tile of the version before
   that the run did not make stays in `reused`.
+- Then the run measures the GLO-30 bias of each model that is the best source of a tile and that
+  the index of the version before does not state: the median of model − GLO-30, to the
+  centimetre, over the samples of each tile whose best source it is. The samples of a tile that
+  the run made are in its mark; those of a tile of the version before come from its mean tile.
+  GLO-30 is bilinear at the sample, from the squares of `copernicus-glo-30` that
+  `copernicus-glo-30-tiles` names; a land square that the fetch does not give is an error. A
+  sample in a square that the list does not name is at sea and does not count, and the run logs
+  how many. A model with fewer than 1024 samples with GLO-30 has no bias, and a later version
+  measures it again. The number is chosen: the samples of four full tiles, so that a test version
+  of one tile does not fix the bias of a model. A model
+  keeps the bias of the version before, so a region added later does not change it. A version
+  that extends no version, such as the first version of a format, measures every model over all
+  its tiles. The heights of a tile are thus the same in each bake of one version of `terrain`.
+- The plan of `planner/reference` reads `mean/index.json` (a fetch of a prepared version with the
+  param `file` gives that file too). It refuses a version that states no bias of the best model
+  of a tile that it reads, and names the fix: a prepare of a box of about four tiles in the
+  middle of the `extent` of that model extends the version and measures it, such as
+  `obc data source prepare terrain --box 8.10,46.75,8.30,46.95 --dry-run` for `ch`.
 - Last, `ingest.py index-terrain` writes `index.json` and `mean/index.json`: the index of the
   version before with each tile that the run made, its SHA-256 and its `contributors`, and the
-  facts of each model that the run read with `fetched`, the date of the version. The manifest
+  facts of each model that the run read with `fetched`, the date of the version. The facts of a
+  model hold `glo30_bias_m`, its bias in metres: the bias of the version before, else the one
+  that the run measured (`--biases`). The manifest
   names the input `dtm-<key>` of each model at that date, with the [digest](#keys) of the pixel
   SHA-256 of the files that it made.
 - Only the machine that prepares needs the `credential` of each model. A `by-hand` model reads
@@ -1875,6 +1909,63 @@ region to the newest complete version of `forest` in the home, in the same forma
 - The run moves the tiles into the home in batches of 64. The manifest names each model that the version
   read and `hrl-dominant-leaf-type` at the date of the version, with the [digest](#keys) of the
   pixel SHA-256 of the tiles that it made.
+
+#### `climate`
+
+The producer `climate`, format 1, makes the daily values of `era5-land` for each cell of
+[the climate grid](planner-climate-tiles.md#cells), without a calibration. `planner/climate`
+bakes the climate archive from them, and applies `wet_day_mm`, `rain_factors` and `wind_factor`.
+A version adds blocks and years to the newest complete version of `climate` in the home, in the
+same format.
+
+- A block holds 96 × 64 cells, 12 × 16 chunks of the ARCO stores, so no two blocks read one
+  chunk. Block x, y holds the cells whose Zarr column, (i − 1) mod 3600 for the cell column i, is
+  96x to 96x + 95, and whose Zarr row, 1800 − j for the cell row j, is 64y to 64y + 63. A block
+  with x = 37 or y = 28 holds fewer cells. A block has the size of a zoom 6 climate tile, but it is
+  not a tile of the archive.
+- The blocks of a region are those that a box or a `geofabrik-poly` polygon of a leaf of the
+  region meets, after the block grows by 0.2° on each side: the blocks of the cells that overlap
+  the outline and of the two cells around each, which the bake of a box reads for the lapse
+  rates. A run keeps the version of each polygon that its first run read, as for
+  [`terrain`](#terrain). A version of everything has every block. A region within 0.3° of the
+  antimeridian refuses: its bake would read cells on both sides.
+- The years are the ten years from `climate.first_year` of [`data/planner.toml`](#dataplannertoml).
+  For each block of its region, a version holds `orography/<x>/<y>.gz` and `<year>/<x>/<y>.gz` of
+  each year, also for a block without land. A file that the version before holds stays in
+  `reused`, and the run does not make it again: final data of a year does not change. So a new
+  region or a new year adds files, and a new format makes each file again. The manifest names the
+  scopes of the version before in `extends`.
+- For each block, `python -m tools.planner_climate prepare --block <x>-<y> --years <year>,…`
+  writes the files that the version lacks: with `--orography DIR` also the orography, from the
+  orography file that the first program downloads into `DIR` of the run. It reads the chunks of
+  the block with the `credential` of `era5-land`, final data only, as the
+  [climate archive](planner-climate-tiles.md#source) says, at most 2 at once, so the 8 programs
+  open at most 16 connections to the stores. It tries a request again after a 429 or 5xx answer
+  or a network error, for about 35 minutes with longer waits. Then it writes
+  `<x>-<y>.orography.sha256` and `<x>-<y>.<year>.sha256`, the SHA-256 of each file, and deletes
+  its chunks; a block that fails keeps them for the next run.
+- The review counts into the store the chunks and the files of the programs that run at once, and
+  a batch of files that waits for its move into the home.
+- A file is gzip, with no name and time 0, of planes in the order of the table. A plane has one
+  value per cell for each of its indexes. For each index, from 0 in order, the cells of the block
+  follow in row order: the north row first, the west cell first. A value is little-endian. A
+  missing value is NaN, or 255 for `sector`. A day is a local solar day of
+  [the climate archive](planner-climate-tiles.md#time), from day 0 on 1 January; a day with a
+  missing hour is missing.
+
+  | Plane | Type | Indexes | Value of a cell |
+  | --- | --- | --- | --- |
+  | `tmax` | float32 | day | The maximum of the 24 hourly 2 m temperatures of the day, in K, as the store holds it |
+  | `tmin` | float32 | day | The minimum of the same 24 values, in K |
+  | `rain` | float64 | day | The sum, in hour order, of the 24 hourly precipitation totals of the day in mm, each at least 0 |
+  | `wind` | float64 | day | The mean of the 10 hourly 10 m wind speeds of the day time, in m/s |
+  | `sector` | uint8 | 10 × day + hour − 9 | The [sector](planner-climate-tiles.md#values), 0 to 15, of the wind at the local hour 09:00 to 18:00 |
+
+  The orography file has one plane: the geopotential of the cell in m²/s², float64, from the
+  orography file of the climate archive. With these types, `planner/climate` computes the same
+  values as from the hourly data, so its archive has the same bytes except `inputs`.
+- The run moves the files into the home in batches of 64. The manifest names `era5-land` at the date of the
+  version, with the [digest](#keys) of the SHA-256 of the files that it made.
 
 #### `wiki`
 
@@ -2917,7 +3008,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "overridden": {
-          "description": "The names that the environment of the command sets, for example from `tools/obc.local`:\nthe environment wins over the file, so the new value serves only once they are removed\nthere.",
+          "description": "The names that the environment of the command sets, from the shell or `tools/obc.local`:\nthe environment wins over the file, so the new value serves only once they are removed\nthere.",
           "items": {
             "type": "string"
           },

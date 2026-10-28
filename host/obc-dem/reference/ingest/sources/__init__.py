@@ -24,11 +24,14 @@ from .nl import NL
 from .no import NO
 from .nz import NZ
 from .pl import PL
+from .pt import AZ, MA, PT
 from .se import SE
+from .si import SI
 from .sk import SK
 from .us import US
 
 SOURCES = {source.key: source for source in
-           (CH, FR, US, NO, ES, NL, *GB, AT, CA, NZ, DK, SE, FI, AU, PL, CZ, SK, IS, *DE, *IT)}
+           (CH, FR, US, NO, ES, NL, *GB, AT, CA, NZ, DK, SE, FI, AU, PL, CZ, SK, IS, *DE, *IT,
+            SI, PT, AZ, MA)}
 
 __all__ = ["SOURCES", "Credential", "ManualSource", "Source", "http_get"]

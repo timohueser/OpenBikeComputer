@@ -25,3 +25,5 @@ serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip"
 obc-data = { workspace = true }
 # The cut of the OSM of a bake.
 tempfile = { workspace = true }
+# The water polygons of the sea.
+zip = { workspace = true, features = ["deflate-flate2"] }

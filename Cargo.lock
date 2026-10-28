@@ -4158,6 +4158,7 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "tempfile",
+ "zip",
 ]
 
 [[package]]

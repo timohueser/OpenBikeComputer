@@ -19,11 +19,14 @@ it("a card that needs a reference cannot bake until a national model meets the a
     expect(needs(card("trailview-canopy"), { west: 11, south: 48, east: 12, north: 49 }, [...forest("2026-10-24"), everywhere])).toMatchObject({ ready: true, models: [everywhere] });
 });
 
-it("terrain falls back without a reference, the newest version of the archive serves, and a missing login blocks", () => {
+it("terrain falls back without a reference, the newest version of the archive serves, climate needs a version, and a missing login blocks", () => {
     const terrain = [source("terrain", { extent: swiss, prepared: versions("2026-10-01", "2026-10-24") })];
     expect(needs(TERRAIN, lucerne, terrain)).toMatchObject({ ready: true, reference: { version: { version: "2026-10-24" } } });
     expect(needs(TERRAIN, lucerne, []).ready).toBe(true);
-    expect(needs(card("climate"), lucerne, [source("era5-land", { credential_missing: true })])).toMatchObject({ ready: false, credentials: ["era5-land"] });
+    const climate = (...names: string[]) => [source("climate", { prepared: versions(...names) })];
+    expect(needs(card("climate"), lucerne, climate())).toMatchObject({ ready: false, credentials: [], reference: { source: "climate", version: null } });
+    expect(needs(card("climate"), lucerne, climate("2026-10-24")).ready).toBe(true);
+    expect(needs(card("snow"), lucerne, [source("hr-wsi", { credential_missing: true })])).toMatchObject({ ready: false, credentials: ["hr-wsi"] });
 });
 
 it("the flags switch exactly the layers of the cards that are on, and off the others", () => {

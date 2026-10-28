@@ -315,9 +315,10 @@ data *args:
 #   obc bake clean-r2                 # dry-run removal of the complete maps bucket
 #   obc bake clean-r2 --apply         # purge that bucket before a fresh publish
 #
-# Publish reads its public URL and R2 credentials from tools/obc.local or the
-# environment. The clean command verifies the configured bucket by reading the
-# live catalog at OBC_R2_PREFIX, then deletes every object under that prefix through the
+# Publish reads its public URL from tools/obc.local or the environment, and the R2
+# key from ~/.config/openbikecomputer/credentials.env or the environment. The clean
+# command verifies the configured bucket by reading the live catalog at OBC_R2_PREFIX,
+# then deletes every object under that prefix through the
 # R2 client (`obc data r2`), which asks first and logs each object in removed.jsonl.
 [doc("Bake, verify, publish, or replace R2 objects using $OBC_BAKE_TREE")]
 [group('maps')]

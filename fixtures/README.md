@@ -115,8 +115,8 @@ The verifier rebuilds discovery and compares two offline compilations.
 maintainer-only and are deliberately not shared with the production map publisher.
 
 The publisher reads `OBC_FIXTURE_R2_BUCKET`, `OBC_FIXTURE_R2_ENDPOINT`,
-`OBC_FIXTURE_R2_ACCESS_KEY_ID` and `OBC_FIXTURE_R2_SECRET_ACCESS_KEY` from the gitignored
-`tools/obc.local`. **The endpoint must include `.eu.` for this bucket.**
+`OBC_FIXTURE_R2_ACCESS_KEY_ID` and `OBC_FIXTURE_R2_SECRET_ACCESS_KEY` from
+`~/.config/openbikecomputer/credentials.env`. **The endpoint must include `.eu.` for this bucket.**
 
 This bucket is not a country source archive and not the production map-baker cache. Compiled
 landmark text, photos and Sources travel in ordinary maps through the production map publication

@@ -70,7 +70,7 @@ impl Prepared for Wiki {
             return Err("the row `wiki` names no `publish_text`: set it to `true` or `false`".into());
         }
         let inputs = downloads::plan(context, scope, languages)?;
-        Ok(Plan { inputs, files: None })
+        Ok(Plan { inputs, files: None, work_bytes: 0 })
     }
 
     fn languages(&self, requested: &[String]) -> Result<Vec<String>, String> {

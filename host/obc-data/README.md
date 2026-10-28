@@ -44,12 +44,12 @@ serves, so they need no commit.
 | `OBC_FIXTURE_R2_*` | Separate fixture bucket and credentials, with the same suffixes as production |
 | `UV_PYTHON` | Selected prepared Python interpreter |
 | `~/.config/openbikecomputer/credentials.env` | `env` credentials of sources; the environment wins |
-| `~/.cdsapirc` | CDS credential for a selected climate fetch |
+| `~/.cdsapirc` | CDS credential for a prepare of `climate` |
 | `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |
 | `~/.config/openbikecomputer/clms-key.json` | CLMS service key for the CORINE fetch; save the JSON of the token whole, mode 0600 |
 
 Set a source credential on the Machine screen, or pipe it to `obc data source credential ID`.
-Keep other secrets in the host environment or ignored `tools/obc.local`, never tracked config.
+Put other secrets, such as the R2 key, in `credentials.env`, never in `tools/obc.local`.
 
 ## Daily commands
 

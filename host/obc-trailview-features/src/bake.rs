@@ -2,7 +2,7 @@
 //! one archive.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde_json::{json, Map, Value};
@@ -13,9 +13,9 @@ use crate::osm::{self, Selected, LANDUSE, LIFT_REACH_M, USES};
 use crate::pmtiles::{self, Header};
 use crate::roads::{self, Classes, River};
 use crate::structures::{self, class_of, is_bridge, is_track, leading_number, road_half};
-use crate::tiles::{simplified, Geometry, Tiles, BUFFER_M, EXTENT, FORMAT, MAX_ZOOM, TOLERANCE};
+use crate::tiles::{simplified, Geometry, Tiles, BUFFER_M, EXTENT, FORMAT, MAX_ZOOM, MIN_ZOOM, TOLERANCE};
 use crate::water::{self, Kind, Level};
-use crate::{lifts, rails, world, Part, Tags, Terrain};
+use crate::{lifts, rails, sea, world, Part, Tags, Terrain};
 
 const EARTH_RADIUS_KM: f64 = 6371.0088;
 /// The waterways and lakes that the water solver sets, and the falls, weirs and dams that keep the
@@ -26,13 +26,15 @@ const MARKS: [&str; 3] = ["waterfall", "dam", "dam-point"];
 /// The ways that the road solver sets the heights of, but a cable route on rock: it has no bench to stamp.
 const ROADS: [&str; 6] = ["main-road", "road", "path", "railway", "tunnel", "gallery"];
 
-/// What the step bakes: the kind table, the region, the credit and the road classes.
+/// What the step bakes: the kind table, the region, the credit, the road classes and the archive of
+/// the water polygons, without which the tiles hold no sea.
 pub struct Options {
     pub kinds: Vec<Entry>,
     pub bounds: [f64; 4],
     pub attribution: String,
     pub classes: Classes,
     pub class_names: Vec<String>,
+    pub sea: Option<PathBuf>,
 }
 
 /// A feature as it enters the tiles: its kind, geometry and lowest zoom, its tags and parts.
@@ -352,6 +354,12 @@ pub fn bake(
         }
         let masts = placer.counts.get("catenary-mast").copied().unwrap_or(0);
         metrics.insert("rails".into(), json!({"tracks": tracks.len(), "masts": masts, "platforms_unknown": unknown}));
+    }
+    if let Some(zip) = &options.sea {
+        for parts in sea::polygons(zip, &placer.tiles)? {
+            placer.place("sea", Geometry::Area, MIN_ZOOM, Tags::new(), parts);
+        }
+        eprintln!("sea: {:.1} s", started.elapsed().as_secs_f64());
     }
     low_zooms(&mut placer);
     let size = write(&placer, options, output)?;
