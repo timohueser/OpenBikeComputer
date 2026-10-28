@@ -7,7 +7,7 @@
 
 // Per node: the record count, the entry count, GRID² + 1 cell offsets (each with the move of the
 // cell's origin in its top byte, x then y, 8 + units), the cell entries, then RECORD
-// words per primitive. A cell lists its junctions, then per lake and pad its edges and its marker, then the
+// words per primitive. A cell lists its junctions, then per lake, sea polygon and pad its edges and its marker, then the
 // segments of the roads, paths and rivers, line by line: so no list of lakes or lines has a size limit.
 @group(0) @binding(1) var<storage, read> stamp_data: array<u32>;
 
@@ -46,6 +46,7 @@ const TUNNEL: u32 = 9u;
 const RAIL: u32 = 10u;
 const PAD: u32 = 11u;
 const AREA: u32 = 12u;
+const SEA: u32 = 13u;
 // As RAIL_CODE and SLEEPER_M of bins.ts: the surface code of the first track, and the spacing of its sleepers.
 const TRACK_CODE: u32 = 8u;
 const SLEEPER_M: f32 = 0.6;
@@ -90,7 +91,8 @@ const JUNCTION_CAP: f32 = 15.0;
 // A lake's bed falls from its shore at SHORE_SLOPE to BED_DEPTH. On the levels that can hold it, the
 // terrain about the lake stays under a ramp that rises from the shore at SHORE_SLOPE over SHORE_CELLS
 // mesh cells, then widens until it stops binding at the buffer. So every mesh triangle across a shore
-// crosses the level at the shore, and the lake's outline is the water's edge.
+// crosses the level at the shore, and the lake's outline is the water's edge. The sea's bed falls as a
+// lake's, but the land beside it keeps its height, so a cliff keeps its face down to the coast.
 const SHORE_SLOPE: f32 = 0.5;
 const SHORE_CELLS: f32 = 1.5;
 const BED_DEPTH: f32 = 4.0;
@@ -383,14 +385,17 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             out.taken = out.taken || ((entry & INSIDE) != 0u) != crossed;
             crossed = false;
             shore = INF;
-        } else if (kind == LAKE) {
+        } else if (kind == LAKE || kind == SEA) {
+            // bins.ts lists the sea's coast only where its bed slopes: farther off, `shore` may exceed the
+            // distance to the coast, and the bed is at its depth either way.
             let water = real(r + 6u);
+            let lake = kind == LAKE;
             if (((entry & INSIDE) != 0u) != crossed) {
                 hi[WATER_CORE] = min(hi[WATER_CORE], water - min(BED_DEPTH, SHORE_SLOPE * shore));
                 water_in = max(water_in, water);
                 in_lake = true;
-                out.lake = min(out.lake, -shore);
-            } else {
+                out.lake = select(out.lake, min(out.lake, -shore), lake);
+            } else if (lake) {
                 if (shore_shows(level)) {
                     hi[BANKS] = min(hi[BANKS], water + shore_cap(shore, texel));
                 }

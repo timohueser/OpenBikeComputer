@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, EXTENT, unitScale } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
-import { BRIDGE, CELL, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WARP_M, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WARP_M, type Line, type Profile } from './bins';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -132,6 +132,43 @@ describe('the stamp data of a node', () => {
             }
         }
         expect(seen.size).toBe(2);
+    });
+
+    it('holds the ground in the sea under its bed, sloping from the coast, and leaves the land and the islands as they are', () => {
+        // The western half of a level-17 node is sea, with an island of 100 tile units; the node four nodes east is land.
+        const NODE = { level: 17, x: TILE.x * 16 + 8, y: TILE.y * 16 + 8 }, coast = 8704, ring = (x0: number, y0: number, x1: number, y1: number) => Int32Array.from([x0, y0, x1, y0, x1, y1, x0, y1]);
+        const list = [{ kind: 'sea', tags: {}, geometry: 'area' as const, parts: [
+            { outer: true, xy: ring(-100, -100, coast, EXTENT + 100), z: new Float32Array(4) },
+            { outer: false, xy: ring(8300, 8600, 8400, 8700), z: new Float32Array(4) },
+        ] }];
+        const { data, heights } = nodeStamps(list, TILE, NODE);
+        expect(heights).toBe(true);
+        expect(nodeStamps(list, TILE, { ...NODE, x: NODE.x + 4 }).heights).toBe(false);
+        const records = 2 + GRID * GRID + 1 + data![1], word = (r: number, i: number) => data![records + RECORD * r + i] | 0;
+        const scale = unitScale(TILE.level), shift = 22 - NODE.level, cell = CELL * 2 ** shift;
+        // As stamp_at: the upper bound that the sea puts on the ground at a point of tile units, Infinity where it holds none.
+        const bound = (tx: number, ty: number) => {
+            const p = [(TILE.x * EXTENT + tx) * scale, (TILE.y * EXTENT + ty) * scale], unit = metresPerUnit(p[1]);
+            const c = Math.floor((p[1] / 2 ** shift - NODE.y * PAGE + CELL) * 2 ** shift / cell) * GRID + Math.floor((p[0] / 2 ** shift - NODE.x * PAGE + CELL) * 2 ** shift / cell);
+            const { entries, origin } = cellOf(data!, NODE, c);
+            let crossed = false, shore = Infinity, hi = Infinity;
+            for (const entry of entries) {
+                const r = entry & ~INSIDE, kind = word(r, 4), [ax, ay, bx, by] = [0, 1, 2, 3].map(k => word(r, k));
+                if (kind === EDGE) {
+                    crossed = crossed !== crosses(origin, p, [ax, ay, bx, by]);
+                    shore = Math.min(shore, ringsDistance([[ax, ay, bx, by]], p[0], p[1]) * unit);
+                    continue;
+                }
+                if (kind === SEA && ((entry & INSIDE) !== 0) !== crossed) hi = Math.min(hi, -Math.min(RULES.BED_DEPTH, RULES.SHORE_SLOPE * shore));
+                crossed = false;
+                shore = Infinity;
+            }
+            return hi;
+        };
+        const metres = scale * metresPerUnit((TILE.y * EXTENT + 8704) * scale);
+        expect(bound(8250, 8900)).toBe(-RULES.BED_DEPTH);
+        expect(bound(coast - 2 / metres, 8900)).toBeCloseTo(-RULES.SHORE_SLOPE * 2, 3);
+        for (const [x, y] of [[coast + 1, 8900], [coast + 0.5 / metres, 8300], [9100, 8250], [8350, 8650], [8301, 8601]]) expect(bound(x, y), `${x}, ${y}`).toBe(Infinity);
     });
 });
 
