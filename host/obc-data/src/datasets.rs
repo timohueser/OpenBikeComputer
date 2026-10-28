@@ -332,10 +332,7 @@ pub fn holder<'a>(roots: &'a [PathBuf], id: &str) -> Option<&'a PathBuf> {
 /// root that has its files; else `None`, for the first root with room. A dataset is in one root,
 /// so the get refuses while a root is not there.
 fn fixed_root(roots: &[PathBuf], dataset: &Dataset, chosen: Option<&Path>) -> Result<Option<PathBuf>, String> {
-    if let Some(root) = roots.iter().find(|root| !root.is_dir()) {
-        let root = root.display();
-        return Err(format!("the archive root {root} does not exist: create the directory or mount its drive"));
-    }
+    mounted(roots)?;
     // A get that stopped before its first manifest leaves its partial work in its root.
     let partial = |root: &&PathBuf| root.join(".partial").join(&dataset.id).is_dir();
     let holder = holder(roots, &dataset.id).or_else(|| roots.iter().find(partial));
@@ -365,6 +362,16 @@ fn fixed_root(roots: &[PathBuf], dataset: &Dataset, chosen: Option<&Path>) -> Re
     root.cloned()
         .map(Some)
         .ok_or_else(|| format!("no root has kept/{}/: put the files of the dataset there", dataset.id))
+}
+
+/// Fail while a root does not exist: it can hold what a command writes.
+pub(crate) fn mounted(roots: &[PathBuf]) -> Result<(), String> {
+    match roots.iter().find(|root| !root.is_dir()) {
+        Some(root) => {
+            Err(format!("the archive root {} does not exist: create the directory or mount its drive", root.display()))
+        }
+        None => Ok(()),
+    }
 }
 
 /// The first root with the free space for `needed` bytes and [`store::RESERVE`] more.

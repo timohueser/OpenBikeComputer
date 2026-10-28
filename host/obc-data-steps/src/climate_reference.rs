@@ -68,10 +68,6 @@ impl Prepared for ClimateReference {
         1
     }
 
-    fn regional(&self) -> bool {
-        true
-    }
-
     /// `era5-land`, and the polygons of the Geofabrik leaves of the region. The files of the blocks
     /// of a region of boxes are the files at most.
     fn plan(
@@ -110,15 +106,15 @@ impl Prepared for ClimateReference {
             }
         }
         // The chunk caches and the files of the programs that run at once, and a batch that waits
-        // for its upload.
+        // for its move into the home.
         let running = held.as_ref().map_or(RUNNING, |blocks| blocks.len().min(RUNNING)) as u64;
         let year_files = 1 + u64::from(YEARS);
         let work_bytes = running * (CACHE_BYTES + year_files * FILE_BYTES) + BATCH as u64 * FILE_BYTES;
         Ok(Plan { inputs, files: held.map(|blocks| blocks.len() as u64 * year_files), work_bytes })
     }
 
-    /// The files of each block of the region that the version before lacks, made once and uploaded
-    /// with the batch of their block; every file of the version before stays.
+    /// The files of each block of the region that the version before lacks, made once and moved into
+    /// the home with the batch of their block; every file of the version before stays.
     fn prepare(&self, job: &mut Job) -> Result<(), String> {
         let previous = job.extend(FORMAT)?;
         let held: BTreeSet<&str> = previous.iter().flat_map(|manifest| &manifest.files).map(|f| &f.path[..]).collect();
@@ -246,7 +242,6 @@ mod tests {
     use obc_data::prepared::{Manifest, Opening};
     use obc_data::sources::Registry;
     use obc_data::store::Store;
-    use obc_data::target::Target;
 
     const SOURCES: &str = r#"
         [[source]]
@@ -287,13 +282,12 @@ echo "$block" >> made
         std::fs::create_dir_all(root.join("data")).unwrap();
         std::fs::write(root.join("data/sources.toml"), SOURCES).unwrap();
         std::fs::write(root.join("tool.sh"), TOOL).unwrap();
-        let (store, target) = (Store::at(temp.0.join("store")), Target::Dir(temp.0.join("target")));
+        let (store, archive) = (Store::at(temp.0.join("store")), temp.0.join("archive"));
         let sources = Registry::load(&root).unwrap().sources;
         let (producer, http) = (ClimateReference { tool: script }, Http::new());
         let version = |version: &str, scope: Scope| {
             let mut run = Run::create(&store, ["source", "prepare", ID]).unwrap();
-            let opening =
-                Opening { root: &root, store: &store, http: &http, sources: &sources, target: ("t", &target) };
+            let opening = Opening { root: &root, store: &store, http: &http, sources: &sources, home: &archive };
             let mut job = Job::open(opening, (ID, version), Some(scope), &[], &mut run).unwrap();
             producer.prepare(&mut job).unwrap();
             let manifest = Manifest {
@@ -313,7 +307,7 @@ echo "$block" >> made
                 time: format!("{version}T00:00:00Z"),
                 cost: obc_data::prepared::Cost { wall_ms: 0, peak_rss_bytes: None },
             };
-            obc_data::prepared::complete(&target, &manifest).unwrap();
+            obc_data::prepared::complete(&obc_data::prepared::folder(&archive, ID), &manifest).unwrap();
             manifest
         };
         let first_year = crate::planner::climate_first_year().unwrap();

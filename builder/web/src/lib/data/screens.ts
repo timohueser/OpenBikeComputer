@@ -32,11 +32,11 @@ export function runAt(hash: string): string | null {
 }
 
 /** What Downloads and References show: the list `#/downloads`, a source `#/downloads/ID`, or the
- *  review of a prepare `#/references/ID/prepare?to=TARGET&region=ID|box=W,S,E,N`. An id can hold
- *  `/`, so it is encoded. */
+ *  review of a prepare `#/references/ID/prepare?region=ID|box=W,S,E,N`. An id can hold `/`, so it
+ *  is encoded. */
 export function sourceAt(hash: string): {
     id: string | null;
-    prepare: string | null;
+    prepare: boolean;
     area: { flag: "--region" | "--box"; value: string } | null;
 } {
     const [path, query = ""] = hash.replace(/^#\/?/, "").split("?");
@@ -45,14 +45,14 @@ export function sourceAt(hash: string): {
     const [region, box] = [params.get("region"), params.get("box")];
     return {
         id: id ? decodeURIComponent(id) : null,
-        prepare: prepare === "prepare" ? (params.get("to") ?? "prod") : null,
+        prepare: prepare === "prepare",
         area: region ? { flag: "--region", value: region } : box ? { flag: "--box", value: box } : null,
     };
 }
 
-export function prepareHash(id: string, to: string, area: { flag: "--region" | "--box"; value: string } | null = null): string {
-    const at = area ? `&${area.flag === "--region" ? "region" : "box"}=${encodeURIComponent(area.value).replaceAll("%2F", "/").replaceAll("%2C", ",")}` : "";
-    return `#/references/${encodeURIComponent(id)}/prepare?to=${to}${at}`;
+export function prepareHash(id: string, area: { flag: "--region" | "--box"; value: string } | null = null): string {
+    const at = area ? `?${area.flag === "--region" ? "region" : "box"}=${encodeURIComponent(area.value).replaceAll("%2F", "/").replaceAll("%2C", ",")}` : "";
+    return `#/references/${encodeURIComponent(id)}/prepare${at}`;
 }
 
 /** What the Bake screen shows, from

@@ -88,7 +88,12 @@ fn fetch_files(
         // A plan names a file that it reads as the param `file`.
         FetchKind::Prepared => {
             let files = request.params.iter().filter(|(name, _)| name == "file").map(|(_, path)| path.clone());
-            crate::prepared::fetch(root, store, request, &names.iter().cloned().chain(files).collect::<Vec<_>>())
+            crate::prepared::fetch(
+                http.roots(),
+                store,
+                request,
+                &names.iter().cloned().chain(files).collect::<Vec<_>>(),
+            )
         }
     }
 }

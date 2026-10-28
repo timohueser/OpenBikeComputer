@@ -26,11 +26,13 @@ pub fn mismatch(error: &str) -> bool {
     error.starts_with(MISMATCH)
 }
 
-/// The roots of `OBC_DATA_ARCHIVE`, in order; none when it is unset or empty.
+/// The roots of `OBC_DATA_ARCHIVE`, in order, absolute and without a trailing `/`, so that a run in
+/// another folder reads the same roots and a review names a root one way; none when it is unset or
+/// empty.
 pub fn roots() -> Vec<PathBuf> {
-    std::env::var_os("OBC_DATA_ARCHIVE")
-        .map(|value| std::env::split_paths(&value).filter(|root| !root.as_os_str().is_empty()).collect())
-        .unwrap_or_default()
+    let Some(value) = std::env::var_os("OBC_DATA_ARCHIVE") else { return Vec::new() };
+    let roots = std::env::split_paths(&value).filter(|root| !root.as_os_str().is_empty());
+    roots.map(|root| std::path::absolute(&root).unwrap_or(root).components().collect()).collect()
 }
 
 /// `manifest/<dataset>.json`, as `crate::datasets` writes it.
@@ -138,6 +140,11 @@ pub struct Held {
 impl Archive {
     pub fn new(roots: Vec<PathBuf>) -> Self {
         Self { roots, listing: OnceLock::new() }
+    }
+
+    /// The roots, in order.
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
     }
 
     /// The archive of `OBC_DATA_ARCHIVE`, when it names a root.
