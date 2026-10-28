@@ -112,6 +112,21 @@ impl Archive {
 }
 
 impl Held {
+    /// Fail when the bytes of the file in place are not those of its manifest.
+    pub fn verify(&self) -> Result<(), String> {
+        self.check(&store::hash_file(&self.file)?.0)
+    }
+
+    fn check(&self, sha256: &str) -> Result<(), String> {
+        match self.sha256.as_deref().filter(|want| *want != sha256) {
+            Some(want) => Err(format!(
+                "{MISMATCH}{}: the SHA-256 is {sha256}, but its manifest lists {want}",
+                self.file.display()
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// Copy the file into the store, as a download of `url` that meets `expect` would. `None` when
     /// it is another version: other bytes than `expect.sha256`, or, without that, modified after
     /// `expect.modified_by`. A copy, never a link, so that the store and the archive stay apart.
@@ -123,20 +138,26 @@ impl Held {
         let part = store.partial(&format!("{}.archive", http::key(url)));
         let parent = part.parent().ok_or("the partial path has no parent")?;
         fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-        let size = fs::metadata(&self.file).map_err(|e| format!("{}: {e}", self.file.display()))?.len();
+        let size = match fs::metadata(&self.file) {
+            Ok(metadata) => metadata.len(),
+            Err(error) => {
+                eprintln!("obc data: warning: archive file {}: {error}", self.file.display());
+                return Ok(None);
+            }
+        };
         store::check_free(&part, size)?;
+        // A part left by an older build can be a link of the archive file: a copy onto it would
+        // empty the archive file.
+        let _ = fs::remove_file(&part);
         if let Err(error) = fs::copy(&self.file, &part) {
             eprintln!("obc data: warning: archive file {}: {error}", self.file.display());
             let _ = fs::remove_file(&part);
             return Ok(None);
         }
         let (sha256, size) = store::hash_file(&part)?;
-        if let Some(want) = self.sha256.as_deref().filter(|want| *want != sha256) {
+        if let Err(error) = self.check(&sha256) {
             let _ = fs::remove_file(&part);
-            return Err(format!(
-                "{MISMATCH}{}: the SHA-256 is {sha256}, but its manifest lists {want}",
-                self.file.display()
-            ));
+            return Err(error);
         }
         if let Some(want) = expect.sha256.filter(|want| *want != sha256) {
             eprintln!("obc data: archive file {} is not the version with the SHA-256 {want}", self.file.display());

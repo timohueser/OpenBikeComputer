@@ -357,14 +357,11 @@ fn parse_params(params: &[String]) -> Result<Vec<(String, String)>, Error> {
 fn fetched(source: &Source, result: Result<Snapshot, String>) -> Result<Snapshot, Error> {
     let blocked = source.credential.as_ref().is_some_and(|credential| !credential.present());
     result.map_err(|e| {
-        let code = if crate::fetch::archive::mismatch(&e) {
-            Code::InvalidData
-        } else if blocked {
-            Code::Blocked
-        } else {
-            Code::FetchFailed
-        };
-        code.error(e)
+        if crate::fetch::archive::mismatch(&e) {
+            let fix = "Replace the archive file, or correct its manifest, then run again.".into();
+            return Error { fix, ..Code::InvalidData.error(e) };
+        }
+        if blocked { Code::Blocked } else { Code::FetchFailed }.error(e)
     })
 }
 

@@ -108,8 +108,8 @@ pub(crate) fn run(
                     command.args(["--member", "U2018_CLC2018_V2020_20u1.tif", "--work"]).arg(work);
                     command.arg("--fetch").arg(out);
                     if let Some(held) = &held {
+                        held.verify()?;
                         command.arg("--archive").arg(&held.file);
-                        command.args(held.sha256.as_deref().map(|sha256| ["--sha256", sha256]).into_iter().flatten());
                     }
                     Ok(command)
                 },

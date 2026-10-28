@@ -791,14 +791,16 @@ A step list gets the version of each fetch that it reads from one function
 (`obc_data::product::version`), by three rules:
 
 1. A due fetch reads the newest version upstream, and the update uses that version until it ends.
-   When upstream does not serve (no connection, a timeout, HTTP 404, 408, 429 or 5xx) or the
-   credential is missing, the fetch reads rule 2, and a note of the [review](#review) names the
-   fetch, the error and the version that it reads. Another failure stays an error.
+   When the upstream of an HTTP fetch does not serve (no connection, a timeout, HTTP 404, 408, 429
+   or 5xx) or the credential is missing, the fetch reads rule 2, and a note of the
+   [review](#review) names the fetch, the error and the version that it reads. Another failure,
+   such as a failed capture program, stays an error.
 2. Otherwise the fetch reads the newest version that the machine knows: the newest of the serving
    version, the versions of the fetch in the store and the `start` of the source. The serving
-   version of a fetch without `NAME=VALUE`s, or of any fetch of a source with a `start`, is the
-   newest serving version of the source: one version names all its fetches, such as the GLO-30
-   tiles of every region, or the extract of a new area.
+   version of any fetch of a source with a `start` is the newest serving version of the source:
+   one version names all its fetches, such as the GLO-30 tiles of every region. A version of the
+   store serves a fetch without `NAME=VALUE`s only when no record of a fetch with `NAME=VALUE`s
+   names it, so a source that lost its `NAME=VALUE`s never reads an old box.
 3. Otherwise it reads the newest version upstream: the product names the fetch, and the update
    fetches it. A source whose URL needs a `NAME=VALUE`, such as the GLO-30 tiles, has no one newest
    version: a fetch of it without that value fails with `failed`, and the fix names the code of the

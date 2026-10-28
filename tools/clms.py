@@ -207,18 +207,14 @@ def extract(archive, member, target, work):
     return False
 
 
-def fetch(dataset, file, member, work, out, key=KEY, kept=None, sha256=None):
-    """The member of the archive of the prepackaged file into `out`: of the zip `kept`, whose SHA-256
-    is `sha256`, or else of an order. A downloaded archive stays in `work`, so a run that fails after
-    the download resumes without a new order."""
+def fetch(dataset, file, member, work, out, key=KEY, kept=None):
+    """The member of the archive of the prepackaged file into `out`: of the zip `kept`, which the
+    caller checked, or else of an order. A downloaded archive stays in `work`, so a run that fails
+    after the download resumes without a new order."""
     target, archive = out / member, kept or work / "order.zip"
     if target.exists():
         return
-    if kept:
-        with open(kept, "rb") as f:
-            if sha256 and hashlib.file_digest(f, "sha256").hexdigest() != sha256:
-                raise RuntimeError(f"{kept}: the SHA-256 is not {sha256}")
-    elif not archive.exists():
+    if not kept and not archive.exists():
         url = order(Session(json.loads(key.expanduser().read_text())), dataset, file)
         # Without the token: the link names the order itself.
         call(Request(url), lambda response: whole(archive, response, length(response.headers)))
@@ -241,9 +237,8 @@ def main(argv=None):
     parser.add_argument("--work", type=Path, required=True, help="the directory that keeps the archive")
     parser.add_argument("--fetch", type=Path, required=True, help="the directory of the captured file")
     parser.add_argument("--archive", type=Path, help="the zip of the file on the archive drive, instead of an order")
-    parser.add_argument("--sha256", help="the SHA-256 of the zip of --archive")
     args = parser.parse_args(argv)
-    fetch(args.dataset, args.file, args.member, args.work, args.fetch, kept=args.archive, sha256=args.sha256)
+    fetch(args.dataset, args.file, args.member, args.work, args.fetch, kept=args.archive)
 
 
 if __name__ == "__main__":

@@ -158,7 +158,7 @@ impl From<LiveError> for String {
 fn newest_stored(store: &Store, source: &str, params: &[(String, String)]) -> Result<Option<Snapshot>, String> {
     let mut found: Vec<Snapshot> = Vec::new();
     if params.is_empty() {
-        found.extend(store.snapshots(source)?);
+        found.extend(store.paramless_snapshots(source)?);
     } else {
         for request in store.requests(source, params)? {
             let Some(mut snapshot) = store.snapshot(source, &request.version)? else { continue };
@@ -1189,8 +1189,13 @@ pub(crate) mod tests {
         let refresh = Request { refresh: true, ..request(&land) };
         let err = fetch(&tooling_root(), &store, &http(), &refresh).unwrap_err();
         assert!(err.ends_with("HTTP 404"), "a refresh asks upstream: {err}");
+        // A part that an older build linked to the archive file.
+        let part = store.partial(&format!("{}.archive", http::key(&url)));
+        std::fs::create_dir_all(part.parent().unwrap()).unwrap();
+        std::fs::hard_link(root.join(&path), &part).unwrap();
         let before = log.lock().unwrap().len();
         let snapshot = fetch(&tooling_root(), &store, &http(), &request(&land)).unwrap();
+        assert_eq!(std::fs::read(root.join(&path)).unwrap(), b"land", "the copy leaves the archive file whole");
         assert_eq!(log.lock().unwrap().len(), before, "upstream is not asked, and a bad manifest only warns");
         assert_eq!(snapshot.version, "2026-10-05", "the day of the archived file");
         let file = &snapshot.files[0];
@@ -1249,6 +1254,30 @@ pub(crate) mod tests {
             Some(crate::sources::Credential { file: Some("~/.obc-test-no-such-key".into()), ..Default::default() });
         let request = Request { refresh: false, source: &corine, version: None, params: vec![] };
         let store = Store::at(scratch.0.join("store"));
+        // A capture of a box, from before the source lost its params.
+        let boxed = vec![("bbox".to_string(), "8.6,46.85,8.67,46.9".to_string())];
+        let tile = sha256_hex(b"tile");
+        let old = FileRecord {
+            name: "#bbox/a.png".into(),
+            url: "https://example.org/#bbox/a.png".into(),
+            size: 4,
+            sha256: tile,
+            retrieved: String::new(),
+            archive: None,
+        };
+        store
+            .put_snapshot(&Snapshot { source: corine.id.clone(), version: "2026-10-25".into(), files: vec![old] })
+            .unwrap();
+        store
+            .put_requested(
+                &corine.id,
+                &Requested { version: "2026-10-25".into(), params: boxed.clone(), files: vec!["#bbox/a.png".into()] },
+            )
+            .unwrap();
+        let mut inputs = crate::product::Inputs::default();
+        inputs.serving.insert((corine.id.clone(), boxed), "2026-10-25".into());
+        let version = crate::product::version(&inputs, &store, &corine.id, &[]).unwrap();
+        assert_eq!(version.map_err(|wanted| wanted.version), Err(None), "a box never serves a request without params");
 
         let err = fetch(&tooling_root(), &store, &quick(), &request).unwrap_err();
         assert!(err.contains("credential missing"), "{err}");
@@ -1257,6 +1286,13 @@ pub(crate) mod tests {
         assert!(file.url.ends_with("/U2018_CLC2018_V2020_20u1.tif"), "{}", file.url);
         assert_eq!(file.archive.as_deref(), Some(path));
         assert_eq!(std::fs::read(store.object(&file.sha256)).unwrap(), b"raster");
+
+        let mut bytes = std::fs::read(root.join(path)).unwrap();
+        bytes[0] ^= 1;
+        std::fs::write(root.join(path), bytes).unwrap();
+        let other = Store::at(scratch.0.join("other"));
+        let err = fetch(&tooling_root(), &other, &quick().with_archive(&root), &request).unwrap_err();
+        assert!(archive::mismatch(&err), "{err}");
     }
 
     fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {

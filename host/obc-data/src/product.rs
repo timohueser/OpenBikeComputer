@@ -231,9 +231,9 @@ pub fn version(
 }
 
 /// The newest of the serving version of the fetch, its versions in the store and the `start` of
-/// its source, by the order of the source's versions. The serving version of a fetch without
-/// params, or of any fetch of a source with a `start`, is the newest serving version of the source:
-/// one version names all its requests, such as the GLO-30 tiles of every region. A `commit` or a
+/// its source, by the order of the source's versions. The serving version of any fetch of a source
+/// with a `start` is the newest serving version of the source: one version names all its requests,
+/// such as the GLO-30 tiles of every region. A fetch with params never serves one without. A `commit` or a
 /// `digest` has no order: its `start`, so that a change of `data/sources.toml` moves it; else the
 /// version that `obc data source refresh` took, when the target serves a version that it moved
 /// from or none; else the serving version; else the one version in the store, when there is one.
@@ -243,13 +243,13 @@ fn known(inputs: &Inputs, store: &Store, source: &str, params: &[(String, String
     let newest = |versions: &mut dyn Iterator<Item = String>| versions.max_by(|a, b| compare_versions(a, b));
     let serving = match inputs.serving.get(&(source.to_string(), sorted(params))) {
         Some(version) => Some(version.clone()),
-        None if params.is_empty() || start.is_some() => {
+        None if start.is_some() => {
             newest(&mut inputs.serving.iter().filter(|((id, _), _)| id == source).map(|(_, version)| version.clone()))
         }
         None => None,
     };
     let stored: Vec<String> = match params {
-        [] => store.snapshots(source)?.into_iter().map(|snapshot| snapshot.version).collect(),
+        [] => store.paramless_snapshots(source)?.into_iter().map(|snapshot| snapshot.version).collect(),
         params => store.requests(source, params)?.into_iter().map(|request| request.version).collect(),
     };
     if declared.is_some_and(|source| !source.version.ordered()) {

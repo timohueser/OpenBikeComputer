@@ -371,7 +371,7 @@ impl Http {
                 request = request.header("if-range", saved);
             }
         }
-        let mut response = request.call().map_err(|e| Failure::Retry(format!("GET {url}: {e}")))?;
+        let mut response = request.call().map_err(|e| Failure::Retry(no_answer("GET", url, e)))?;
         let status = response.status().as_u16();
         if response.status().is_success()
             && expect.etag.is_some_and(|want| header(&response, "etag").as_deref() != Some(want))
