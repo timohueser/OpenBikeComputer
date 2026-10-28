@@ -1,6 +1,6 @@
 <script lang="ts">
     import contentLanguages from "../../../../../specs/content-languages.json";
-    import { boundsOf, nameOf, parseBox, type Areas } from "../../lib/data/areas";
+    import { nameOf, type Areas } from "../../lib/data/areas";
     import { command } from "../../lib/data/cli";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { prepareHash, type BakeRoute } from "../../lib/data/screens";
@@ -25,7 +25,6 @@
         ...(wiki ? ["--languages", languages.join(",")] : []),
         "--dry-run",
     ]);
-    const bounds = $derived(area ? (area.flag === "--box" ? parseBox(area.value) : areas && boundsOf(area.value, areas)) : null);
     // The map outlines where a national model has data.
     const extent = $derived(
         modelsOf(id, rows).flatMap(({ row }) => (row.extent ? [{ west: row.extent[0], south: row.extent[1], east: row.extent[2], north: row.extent[3] }] : [])),
@@ -50,7 +49,7 @@
         <h2>{wiki ? "Coverage and languages" : "Coverage"}</h2>
         {#if wiki}<label><input type="checkbox" bind:checked={whole} /> Worldwide</label>{/if}
         {#if !whole}
-            <BakeArea {areas} chosen={area} {bounds} served={extent} choose={(next) => (location.hash = prepareHash(id, next))} />
+            <BakeArea {areas} chosen={area} served={extent} serving={null} choose={(next) => (location.hash = prepareHash(id, next))} />
             <p class:soft={!!area} class:missing={!area}>{area ? `Covers ${area.flag === "--box" ? `the box ${area.value}` : nameOf(area.value, areas)}` : "Choose an area."}</p>
         {/if}
         {#if wiki}
@@ -150,6 +149,6 @@
         display: block;
     }
     .review {
-        border: 2px solid var(--ink);
+        border: 1px solid var(--ink-faint);
     }
 </style>

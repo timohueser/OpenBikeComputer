@@ -1,24 +1,79 @@
-/* What every screen of the operator page shares. `:where` keeps these rules at no specificity, so
-   the rule of a component always wins. */
-:where(main :is(h1, h2)) {
+/* What every screen of the operator page shares: the controls of the route planner, at the density
+   of a tool. `:where` keeps the rules of `main` at no specificity, so the rule of a component wins. */
+:root {
+    --ready: #2e6b4a;
+    --running: #2f5d86;
+    --missing: #a3301f;
+    --stale: #8a4a00;
+    --warn: color-mix(in srgb, var(--amber) 14%, var(--panel));
+    --focus: var(--forest);
+    --link: var(--forest);
+    --shadow: 0 6px 18px rgb(28 27 20 / 0.12);
+}
+:root[data-theme="dark"] {
+    --ready: #86c9a0;
+    --running: #94bde4;
+    --missing: #f19a86;
+    --stale: #e9ad62;
+    --link: var(--wood);
+    --shadow: 0 6px 18px rgb(0 0 0 / 0.4);
+}
+* {
+    box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+}
+::selection {
+    background: var(--parchment-3);
+    color: var(--ink);
+}
+body {
     margin: 0;
-    font-weight: 600;
+    background: var(--parchment);
+    color: var(--ink);
+    font: 14px/20px var(--sans);
+    -webkit-font-smoothing: antialiased;
+}
+:is(button, input, select, textarea) {
+    font: inherit;
+    color: inherit;
+}
+:is(button, summary) {
+    cursor: pointer;
+}
+:is(button, input, select, a, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+}
+:where(main) a {
+    color: var(--link);
+    text-underline-offset: 3px;
+}
+:where(main :is(h1, h2, h3)) {
+    margin: 0;
     overflow-wrap: anywhere;
 }
 :where(main h1) {
-    font-size: 28px;
-    line-height: 36px;
+    font-size: 22px;
+    line-height: 28px;
+    font-weight: 700;
 }
 :where(main h2) {
-    font-size: 18px;
-    line-height: 26px;
+    font-size: 16px;
+    line-height: 22px;
+    font-weight: 650;
+}
+:where(main h3) {
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 650;
 }
 :where(main p) {
     margin: 0;
 }
 :where(main code) {
     font-family: var(--mono);
-    font-size: 13px;
+    font-size: 12.5px;
     overflow-wrap: anywhere;
 }
 :where(main .title) {
@@ -35,24 +90,93 @@
     flex-direction: column;
     gap: 8px;
     min-width: 0;
-    padding: 20px;
+    padding: 16px 20px;
     background: var(--panel);
-    border: 1px solid var(--parchment-3);
-    border-radius: 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
     overflow-wrap: anywhere;
 }
-:where(main button) {
-    min-height: 44px;
-    padding: 0 20px;
+/* A note that asks for care, such as a format change or a stale lock. */
+:where(main .warn) {
+    background: var(--warn);
+    border: 1px solid color-mix(in srgb, var(--stale) 45%, transparent);
+    border-radius: 8px;
+}
+:where(main :is(button, a.button, a.primary)) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 36px;
+    padding: 0 14px;
     background: var(--panel);
     color: var(--ink);
-    border: 1px solid var(--ink);
-    border-radius: 8px;
-    font: 600 15px var(--sans);
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+}
+:where(main :is(button, a.button, a.primary)):hover:not(:disabled) {
+    background: var(--parchment-2);
+    border-color: var(--ink-faint);
 }
 :where(main button:disabled) {
-    opacity: 0.6;
+    opacity: 0.4;
+    cursor: default;
+}
+:where(main button[aria-busy="true"]) {
     cursor: progress;
+}
+:where(main .primary) {
+    align-self: flex-start;
+    background: var(--amber);
+    color: var(--on-amber);
+    border-color: var(--amber);
+}
+:where(main .primary):hover:not(:disabled) {
+    background: color-mix(in srgb, var(--amber) 86%, var(--ink));
+    border-color: color-mix(in srgb, var(--amber) 86%, var(--ink));
+}
+:where(main .danger) {
+    color: var(--missing);
+    border-color: color-mix(in srgb, var(--missing) 55%, transparent);
+}
+/* Two to four choices of which one holds, such as the destination of a bake. */
+:where(main .segmented) {
+    display: inline-flex;
+    padding: 2px;
+    background: var(--parchment-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+:where(main .segmented button) {
+    min-height: 30px;
+    padding: 0 12px;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    font-weight: 500;
+    color: var(--ink-soft);
+}
+:where(main .segmented) :is([aria-checked="true"], [aria-pressed="true"]) {
+    background: var(--panel);
+    color: var(--ink);
+    font-weight: 650;
+    box-shadow: 0 1px 3px rgb(28 27 20 / 0.14);
+}
+:where(main :is(input:not([type="checkbox"], [type="radio"]), select)) {
+    min-height: 36px;
+    padding: 0 10px;
+    background: var(--panel);
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+}
+:where(main input[type="checkbox"]) {
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    accent-color: var(--forest);
 }
 :where(main .soft) {
     color: var(--ink-soft);
@@ -72,33 +196,25 @@
 :where(main .off) {
     color: var(--ink-faint);
 }
-:where(main .primary) {
-    background: var(--ink);
-    color: var(--panel);
-}
-:where(main a.primary) {
-    display: inline-flex;
-    align-items: center;
-    align-self: flex-start;
-    min-height: 44px;
-    padding: 0 20px;
-    border-radius: 8px;
-    font-weight: 600;
-    text-decoration: none;
-}
 :where(main .table) {
     overflow-x: auto;
 }
 :where(main table) {
     width: 100%;
     border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
 }
 :where(main :is(th, td)) {
-    padding: 8px 12px;
+    padding: 7px 12px;
     text-align: left;
     vertical-align: top;
     border-bottom: 1px solid var(--line);
 }
 :where(main th) {
-    font-weight: 600;
+    font-size: 12px;
+    font-weight: 650;
+    color: var(--ink-soft);
+}
+:where(main tbody tr:hover) {
+    background: color-mix(in srgb, var(--parchment-2) 50%, transparent);
 }

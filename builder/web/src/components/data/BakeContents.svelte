@@ -133,8 +133,8 @@
         flex-direction: column;
         gap: 2px;
         padding: 12px 16px;
-        border: 1px solid var(--line-strong);
-        border-radius: 10px;
+        background: var(--parchment);
+        border-radius: 8px;
     }
     .cards {
         display: grid;
@@ -144,34 +144,33 @@
     .card-item {
         display: flex;
         flex-direction: column;
-        gap: 6px;
-        padding: 14px 16px;
+        gap: 4px;
+        padding: 12px 14px;
         border: 1px solid var(--line-strong);
-        border-radius: 10px;
+        border-radius: 8px;
         cursor: pointer;
+        transition: background 150ms ease-out, border-color 150ms ease-out;
+    }
+    .card-item:hover:not(.off) {
+        border-color: var(--ink-faint);
     }
     .card-item.on {
-        border-color: var(--ink);
-        box-shadow: inset 0 0 0 1px var(--ink);
+        background: color-mix(in srgb, var(--amber) 12%, var(--panel));
+        border-color: var(--amber);
+        box-shadow: inset 0 0 0 1px var(--amber);
     }
     .card-item.off {
         cursor: not-allowed;
         background: var(--parchment);
+        border-color: var(--line);
+    }
+    .card-item.off :is(b, .about) {
+        color: var(--ink-faint);
     }
     .top {
         display: flex;
         align-items: center;
         gap: 10px;
-    }
-    input[type="checkbox"] {
-        width: 20px;
-        height: 20px;
-        margin: 0;
-        accent-color: var(--ink);
-    }
-    input:focus-visible {
-        outline: 2px solid var(--running);
-        outline-offset: 2px;
     }
     .about {
         color: var(--ink-soft);
