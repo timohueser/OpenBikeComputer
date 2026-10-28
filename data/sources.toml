@@ -105,8 +105,8 @@ redistribute = true
 id = "water-polygons"
 kind = "data"
 group = "OpenStreetMap"
-used_by = ["planner"]
-use = "Sea areas of the basemap"
+used_by = ["planner", "trailview"]
+use = "Sea areas of the basemap and of TrailView"
 licence = "ODbL-1.0"
 licence_url = "https://osmdata.openstreetmap.de/info/license.html"
 attribution = "© OpenStreetMap contributors"
@@ -422,12 +422,12 @@ id = "dtm-es"
 kind = "data"
 group = "Elevation"
 used_by = ["device", "planner", "trailview"]
-use = "Terrain in Spain and the Canary Islands: MDT05 5 m"
+use = "Terrain in Spain, Andorra and the Canary Islands: MDT05 5 m"
 licence = "CC-BY-4.0"
 attribution = "© Instituto Geográfico Nacional"
 fetch = { kind = "dtm", url = "https://servicios.idee.es/wcs-inspire/mdt" }
 extent = [-18.2, 27.6, 4.4, 43.9]
-areas = ["europe/spain", "africa/canary-islands"]
+areas = ["europe/spain", "europe/andorra", "africa/canary-islands"]
 version = "date"
 keep = "prepared"
 redistribute = true
@@ -498,6 +498,22 @@ keep = "prepared"
 redistribute = true
 
 [[source]]
+id = "dtm-gb-wls"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Wales: Welsh Government and NRW LiDAR DTM 1 m"
+licence = "OGL-UK-3.0"
+licence_url = "https://datamap.gov.wales/maps/6969/metadata_detail"
+attribution = "LiDAR of the Welsh Government and Natural Resources Wales. Contains public sector information licensed under the Open Government Licence v3.0."
+fetch = { kind = "dtm", url = "https://dmwproductionblob.blob.core.windows.net/cogs/lidar/wales_dtm_16bit_cog.tif" }
+extent = [-5.6, 51.3, -2.6, 53.5]
+areas = ["europe/united-kingdom/wales"]
+version = "date"
+keep = "prepared"
+redistribute = true
+
+[[source]]
 id = "dtm-is"
 kind = "data"
 group = "Elevation"
@@ -524,6 +540,40 @@ attribution = "TINITALY/1.1 © INGV, doi:10.13127/tinitaly/1.1"
 fetch = { kind = "dtm", url = "https://tinitaly.pi.ingv.it/TINItaly_1_1/wcs" }
 extent = [6.6, 35.4, 18.6, 47.1]
 areas = ["europe/italy"]
+version = "date"
+keep = "prepared"
+redistribute = true
+
+[[source]]
+id = "dtm-it-21"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Piedmont, Italy: DTM 5 m, ICE 2009–2011"
+licence = "CC-BY-4.0"
+licence_url = "https://www.geoportale.piemonte.it/geonetwork/srv/api/records/r_piemon:224de2ac-023e-441c-9ae0-ea493b217a8e"
+attribution = "© Regione Piemonte"
+fetch = { kind = "dtm", url = "https://geomap.reteunitaria.piemonte.it/ws/taims/rp-01/taimsdtmwcs/wcs_ice_2009_2011_dtm" }
+# Piedmont, inside the rectangle of the coverage on EPSG:32632: the WCS refuses a box outside it.
+extent = [6.6, 44.0, 9.3, 46.47]
+areas = ["europe/italy/nord-ovest"]
+version = "date"
+keep = "prepared"
+redistribute = true
+
+[[source]]
+id = "dtm-it-36"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Friuli Venezia Giulia, Italy: DTM 1 m, LiDAR 2006–2010"
+licence = "LicenseRef-IODL-2.0"
+licence_url = "https://www.regione.fvg.it/rafvg/cms/RAFVG/ambiente-territorio/conoscere-ambiente-territorio/FOGLIA4/"
+attribution = "Regione Autonoma Friuli Venezia Giulia"
+obligations = "Credit the region; the Italian Open Data Licence 2.0 asks for attribution only"
+fetch = { kind = "dtm", url = "https://irdat.regione.fvg.it/cartogdownload/DTM_PCR/1M/6708/" }
+extent = [12.2, 45.5, 14.0, 46.7]
+areas = ["europe/italy/nord-est"]
 version = "date"
 keep = "prepared"
 redistribute = true
@@ -619,6 +669,61 @@ keep = "prepared"
 redistribute = true
 
 [[source]]
+id = "dtm-pt"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in mainland Portugal: LiDAR MDT 2 m"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+attribution = "© Direção-Geral do Território"
+fetch = { kind = "dtm", url = "https://cdd.dgterritorio.gov.pt/dgt-be/v1/search" }
+extent = [-9.6, 36.9, -6.1, 42.2]
+areas = ["europe/portugal"]
+hosts = ["*.dgterritorio.gov.pt"]
+version = "date"
+keep = "prepared"
+redistribute = true
+credential = { env = ["OBC_REFERENCE_PT_USER", "OBC_REFERENCE_PT_PASSWORD"], register = "https://cdd.dgterritorio.gov.pt", hint = "Make a free account of the DGT data centre, then give its e-mail address and password." }
+
+[[source]]
+id = "dtm-pt-20"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in the Azores, Portugal: LiDAR MDE 1 m"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+attribution = "© Governo dos Açores, Direção Regional do Ambiente e Ação Climática"
+fetch = { kind = "dtm", url = "https://cdd.dgterritorio.gov.pt/dgt-be/v1/search" }
+extent = [-31.5, 36.8, -24.7, 39.8]
+areas = ["europe/portugal"]
+hosts = ["*.dgterritorio.gov.pt"]
+version = "date"
+keep = "prepared"
+redistribute = true
+# The account of dtm-pt: one login of the DGT data centre serves both rows.
+credential = { env = ["OBC_REFERENCE_PT_USER", "OBC_REFERENCE_PT_PASSWORD"], register = "https://cdd.dgterritorio.gov.pt", hint = "Make a free account of the DGT data centre, then give its e-mail address and password." }
+
+[[source]]
+id = "dtm-pt-30"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Madeira, Portugal: MDT 5 m 2018/19, used while the project is non-commercial"
+licence = "LicenseRef-DROTe-no-conditions"
+licence_url = "https://irig-catalogo.madeira.gov.pt/geonetwork/srv/api/records/abba9a83-cb1c-4d2c-ad1d-ccb592247754"
+attribution = "© Direção Regional do Ordenamento do Território (DROTe), Região Autónoma da Madeira"
+obligations = "Credit DROTe and the Região Autónoma da Madeira. The record states no named licence, only that no conditions apply to access and use; read it again before a commercial use"
+fetch = { kind = "dtm", url = "https://irig-storage.madeira.gov.pt/irig-catalogo/mdt_5m.zip" }
+# Madeira, Porto Santo and the Desertas: the Selvagens are left out.
+extent = [-17.3, 32.35, -16.2, 33.15]
+areas = ["europe/portugal"]
+version = "date"
+keep = "prepared"
+redistribute = true
+
+[[source]]
 id = "dtm-se"
 kind = "data"
 group = "Elevation"
@@ -634,6 +739,22 @@ version = "date"
 keep = "prepared"
 redistribute = true
 credential = { env = ["OBC_REFERENCE_SE_USER", "OBC_REFERENCE_SE_PASSWORD"], register = "https://geotorget.lantmateriet.se", hint = "Apply for Markhöjdmodell Nedladdning, grid 1+ with Basic authentication, then copy the consumer user name and password." }
+
+[[source]]
+id = "dtm-si"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Slovenia: DMR1 1 m, laser scan 2011–2015"
+licence = "CC-BY-4.0"
+licence_url = "https://www.e-prostor.gov.si/fileadmin/struktura/Preberi_me.docx"
+attribution = "Geodetska uprava Republike Slovenije in ARSO, Lasersko skeniranje Slovenije, DMR1 2011–2015"
+fetch = { kind = "dtm", url = "https://gis.arso.gov.si/lidar/dmr1/" }
+extent = [13.3, 45.4, 16.7, 46.9]
+areas = ["europe/slovenia"]
+version = "date"
+keep = "prepared"
+redistribute = true
 
 [[source]]
 id = "dtm-sk"
@@ -1047,6 +1168,8 @@ licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/v
 attribution = "Contains NatureScot information licensed under the Open Government Licence v3.0"
 obligations = "Credit the source as the attribution says"
 fetch = { kind = "capture", url = "https://ogc.nature.scot/geoserver/ows" }
+# The archive keeps the HabMoS GeoPackages of the download site.
+hosts = ["gis-downloads.nature.scot"]
 extent = [-10, 54, 0, 61]
 version = "date"
 refresh = "manual"
@@ -1068,7 +1191,8 @@ fetch = { kind = "capture", url = "https://mapas.igme.es/gis/rest/services/Carto
 extent = [-10, 35, 5, 44]
 version = "date"
 refresh = "manual"
-keep = "archive"
+# IGME gives the whole GEODE map only on request and against a fee, so the store keeps the captures.
+keep = "store"
 redistribute = true
 
 # The source of data/trailview/ecoregions.json; its borders are Natural Earth's.

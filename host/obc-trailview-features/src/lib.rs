@@ -1,9 +1,9 @@
 //! The TrailView feature tiles of a region, the `planner/trailview-features` step of `obc data`
 //! ([`step`]): the OSM objects of the kind table ([`kinds`], [`osm`]), with the levels of rivers and
 //! lakes ([`water`]), the heights of roads, paths, tracks, bridges and tunnels ([`roads`]) from the
-//! master terrain ([`terrain`]), the lifts ([`lifts`]), the railway furniture ([`rails`]) and the
-//! bridges and tunnels ([`structures`]), cut into tiles ([`tiles`]) of a PMTiles archive
-//! ([`pmtiles`]). `specs/trailview-features.md` defines the archive.
+//! master terrain ([`terrain`]), the lifts ([`lifts`]), the railway furniture ([`rails`]), the
+//! bridges and tunnels ([`structures`]) and the sea ([`sea`]), cut into tiles ([`tiles`]) of a
+//! PMTiles archive ([`pmtiles`]). `specs/trailview-features.md` defines the archive.
 
 use std::collections::BTreeMap;
 
@@ -15,6 +15,7 @@ mod osm;
 mod pmtiles;
 mod rails;
 mod roads;
+mod sea;
 pub mod step;
 mod structures;
 pub mod terrain;

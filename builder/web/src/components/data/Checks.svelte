@@ -92,7 +92,7 @@
         flex-direction: column;
         gap: 8px;
         padding: 12px;
-        background: #fdf3e6;
+        background: var(--warn);
         border: 1px solid var(--stale);
         border-radius: 8px;
     }

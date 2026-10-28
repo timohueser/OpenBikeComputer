@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from "svelte";
+    import { onMount, tick } from "svelte";
     import { boundsOf, extent, nameOf, parseBox, type Areas } from "../../lib/data/areas";
     import { CONTENTS } from "../../lib/data/contents";
     import { flagsOf, type Flags } from "../../lib/data/flags";
@@ -11,6 +11,7 @@
     import BakeContents from "./BakeContents.svelte";
     import BakeProgress from "./BakeProgress.svelte";
     import BakeReview from "./BakeReview.svelte";
+    import Icon from "../planner/PlannerIcon.svelte";
     import Failure from "./Failure.svelte";
 
     // A bake in four steps: the area, what it contains, the review of its plan, and the bake. The
@@ -46,7 +47,7 @@
         return ids.flatMap((id) => areas.output!.regions.find((region) => region.id === id)?.countries ?? areas.output!.areas.find((area) => area.id === id)?.countries ?? []);
     });
     const areaName = $derived(
-        route.area ? (route.area.flag === "--box" ? `Box ${route.area.value}` : nameOf(route.area.value, areas.output)) : "",
+        route.area ? (route.area.flag === "--box" ? "A box on the map" : nameOf(route.area.value, areas.output)) : "",
     );
     const chosen = $derived(CONTENTS.filter((content) => route.on.includes(content.id)).map((content) => content.title));
     const destinations = $derived(status?.targets ?? []);
@@ -54,9 +55,12 @@
     // Another run holds the lock of the destination: its bake shows here.
     const busy = $derived(target?.lock && !target.lock.died && target.lock.machine === status?.machine.name ? target.lock.run : null);
 
-    function chooseArea(area: BakeRoute["area"]) {
+    // A choice moves the focus to the next step, which opens in its place.
+    async function chooseArea(area: BakeRoute["area"]) {
         reopened = null;
         go({ area, plan: null, run: null });
+        await tick();
+        document.getElementById("step-contents")?.focus();
     }
     function chooseContents(on: string[]) {
         go({ on, plan: null, run: null });
@@ -80,7 +84,7 @@
 
 <div class="title">
     <h1>Bake</h1>
-    <div class="destination" role="radiogroup" aria-label="Bake for">
+    <div class="segmented" role="radiogroup" aria-label="Bake for">
         {#each destinations as at (at.target)}
             <button
                 type="button"
@@ -111,11 +115,11 @@
 {#snippet header(at: (typeof STEPS)[number], n: number, name: string, summary: string, change: (() => void) | null)}
     {@const state = at === step ? "now" : STEPS.indexOf(at) < STEPS.indexOf(step) ? "done" : "next"}
     <header class="step-head" data-state={state}>
-        <span class="n" aria-hidden="true">{state === "done" ? "✓" : n}</span>
-        <h2>{name}</h2>
+        <span class="n" aria-hidden="true">{#if state === "done"}<Icon name="check" size={15} />{:else}{n}{/if}</span>
+        <h2 id="step-{at}" tabindex="-1">{name}</h2>
         {#if state === "done"}<span class="summary">{summary}</span>{/if}
         <span class="grow"></span>
-        {#if state === "done" && change}<button type="button" class="change" onclick={change}>Change</button>{/if}
+        {#if state === "done" && change}<button type="button" class="change" aria-label="Change the {name.toLowerCase()}" onclick={change}>Change</button>{/if}
     </header>
 {/snippet}
 
@@ -123,7 +127,14 @@
     <li class="step" class:now={step === "area"} aria-current={step === "area" ? "step" : undefined}>
         {@render header("area", 1, "Area", bounds ? `${areaName} · ${extent(bounds)}` : areaName, () => reopen("area"))}
         {#if step === "area"}
-            <BakeArea areas={areas.output} chosen={route.area} {bounds} served={target?.area?.boxes ?? []} choose={chooseArea} />
+            <BakeArea
+                areas={areas.output}
+                chosen={route.area}
+                keep
+                served={target?.area?.boxes ?? []}
+                serving={target?.region ? `${target.region === "box" ? "the box" : nameOf(target.region, areas.output)} on ${target.kind === "r2" ? "production" : "this computer"}` : null}
+                choose={chooseArea}
+            />
         {/if}
     </li>
     <li class="step" class:now={step === "contents"} aria-current={step === "contents" ? "step" : undefined}>
@@ -171,67 +182,57 @@
 </ol>
 
 <style>
-    .destination {
-        display: inline-flex;
-        border: 1px solid var(--ink);
-        border-radius: 8px;
-        overflow: hidden;
-    }
-    .destination button {
-        min-height: 36px;
-        border: 0;
-        border-radius: 0;
-        font-weight: 500;
-    }
-    .destination button[aria-checked="true"] {
-        background: var(--ink);
-        color: var(--panel);
-        font-weight: 600;
-    }
     .steps {
         display: flex;
         flex-direction: column;
-        gap: 12px;
         margin: 0;
         padding: 0;
         list-style: none;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
     }
     .step {
         display: flex;
         flex-direction: column;
         gap: 16px;
-        padding: 16px 20px;
-        background: var(--panel);
-        border: 1px solid var(--parchment-3);
-        border-radius: 12px;
+        padding: 14px 20px;
+    }
+    .step + .step {
+        border-top: 1px solid var(--line);
     }
     .step.now {
-        padding: 20px;
-        border: 2px solid var(--ink);
+        padding: 18px 20px 22px;
     }
     .step-head {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        gap: 8px 12px;
+        gap: 6px 12px;
+        min-height: 36px;
+    }
+    .step-head h2:focus {
+        outline: none;
     }
     .step-head[data-state="next"] {
         color: var(--ink-faint);
     }
     .n {
         display: inline-grid;
+        flex: none;
         place-items: center;
-        width: 28px;
-        height: 28px;
+        width: 26px;
+        height: 26px;
         border: 1.5px solid currentColor;
         border-radius: 999px;
-        font-weight: 600;
+        font-size: 13px;
+        font-weight: 700;
         font-variant-numeric: tabular-nums;
     }
     .step-head[data-state="now"] .n {
-        background: var(--ink);
-        border-color: var(--ink);
-        color: var(--panel);
+        background: var(--amber);
+        border-color: var(--amber);
+        color: var(--on-amber);
     }
     .step-head[data-state="done"] .n {
         background: var(--ready);
@@ -240,11 +241,6 @@
     }
     .summary {
         color: var(--ink-soft);
-    }
-    .change {
-        min-height: 36px;
-        padding: 0 14px;
-        font-weight: 500;
     }
     .grow {
         flex-grow: 1;

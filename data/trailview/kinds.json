@@ -112,7 +112,8 @@
     "match": [{"natural": ["coastline"]}],
     "keep": [],
     "height": "none",
-    "min_zoom": 8
+    "min_zoom": 8,
+    "active": false
   },
   {
     "kind": "dam",

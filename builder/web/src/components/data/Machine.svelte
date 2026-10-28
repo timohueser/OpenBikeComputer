@@ -137,7 +137,7 @@
         gap: 4px;
     }
     .can {
-        border: 2px solid var(--ink);
+        border: 1px solid var(--ink-faint);
     }
     .pair {
         display: flex;

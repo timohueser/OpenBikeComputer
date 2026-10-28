@@ -1,26 +1,18 @@
 <script lang="ts">
     import contentLanguages from "../../../../../specs/content-languages.json";
-    import { boundsOf, nameOf, parseBox, type Areas } from "../../lib/data/areas";
+    import { nameOf, type Areas } from "../../lib/data/areas";
     import { command } from "../../lib/data/cli";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { prepareHash, type BakeRoute } from "../../lib/data/screens";
-    import { list, size, span, type Started, type Target } from "../../lib/data/shapes";
+    import { list, size, span, type Started } from "../../lib/data/shapes";
     import { modelsOf, referenceOf, type PrepareReview, type SourceRow } from "../../lib/data/sources";
     import Action from "./Action.svelte";
     import BakeArea from "./BakeArea.svelte";
     import Failure from "./Failure.svelte";
 
-    // The review of a new version of reference `id` on target `to` for an area, and its Start.
-    let {
-        id,
-        rows,
-        to,
-        area,
-        targets,
-        areas,
-    }: { id: string; rows: SourceRow[]; to: string; area: BakeRoute["area"]; targets: Target[]; areas: Areas | null } = $props();
+    // The review of a new version of reference `id` in the archive for an area, and its Start.
+    let { id, rows, area, areas }: { id: string; rows: SourceRow[]; area: BakeRoute["area"]; areas: Areas | null } = $props();
 
-    const kind = $derived(targets.find((at) => at.target === to)?.kind ?? null);
     const wiki = $derived(id === "wiki");
     const reference = $derived(referenceOf(id));
     let whole = $state(false);
@@ -28,12 +20,11 @@
     const languageName = new Intl.DisplayNames(["en"], { type: "language" });
     const covered = $derived(!whole && area);
     const args = $derived([
-        "source", "prepare", id, "--to", to,
+        "source", "prepare", id,
         ...(covered ? [area!.flag, area!.value] : []),
         ...(wiki ? ["--languages", languages.join(",")] : []),
         "--dry-run",
     ]);
-    const bounds = $derived(area ? (area.flag === "--box" ? parseBox(area.value) : areas && boundsOf(area.value, areas)) : null);
     // The map outlines where a national model has data.
     const extent = $derived(
         modelsOf(id, rows).flatMap(({ row }) => (row.extent ? [{ west: row.extent[0], south: row.extent[1], east: row.extent[2], north: row.extent[3] }] : [])),
@@ -45,8 +36,7 @@
         query = new CliQuery<PrepareReview>(args);
         void query.refresh();
     }
-    const start = $derived(review?.output ? [...review.output.args, ...(kind === "r2" ? ["--yes"] : [])] : []);
-    const where = (target: string) => (targets.find((at) => at.target === target)?.kind ?? (target === "prod" ? "r2" : "dir")) === "r2";
+    const start = $derived(review?.output?.args ?? []);
 </script>
 
 <a href="#/references">All references</a>
@@ -55,25 +45,11 @@
     {#if reference}<span class="soft">{reference.about}</span>{/if}
 </div>
 
-{#if targets.length}
-    <section class="card options" aria-labelledby="where">
-        <h2 id="where">Where it goes</h2>
-        <div class="where" role="radiogroup" aria-labelledby="where">
-            {#each targets as at (at.target)}
-                <button type="button" role="radio" aria-checked={at.target === to} onclick={() => (location.hash = prepareHash(id, at.target, area))}>
-                    <b>{at.kind === "r2" ? "On R2" : "On this computer only"}</b>
-                    <span>{at.kind === "r2" ? "Every bake can use it" : "Only the bakes here"}</span>
-                </button>
-            {/each}
-        </div>
-    </section>
-{/if}
-
 <form class="card options" onsubmit={(event) => (event.preventDefault(), inspect())}>
         <h2>{wiki ? "Coverage and languages" : "Coverage"}</h2>
         {#if wiki}<label><input type="checkbox" bind:checked={whole} /> Worldwide</label>{/if}
         {#if !whole}
-            <BakeArea {areas} chosen={area} {bounds} served={extent} choose={(next) => (location.hash = prepareHash(id, to, next))} />
+            <BakeArea {areas} chosen={area} served={extent} serving={null} choose={(next) => (location.hash = prepareHash(id, next))} />
             <p class:soft={!!area} class:missing={!area}>{area ? `Covers ${area.flag === "--box" ? `the box ${area.value}` : nameOf(area.value, areas)}` : "Choose an area."}</p>
         {/if}
         {#if wiki}
@@ -122,19 +98,19 @@
                 ? ` · no size for ${list(r.cost.unknown)}`
                 : ""}
         </p>
-        <p><b>Peak memory</b> · {r.cost.peak_rss_bytes === null ? "unknown" : size(r.cost.peak_rss_bytes)} · <b>Upload</b> · {r.cost.upload_bytes === null ? "none" : size(r.cost.upload_bytes)}</p>
+        <p><b>Peak memory</b> · {r.cost.peak_rss_bytes === null ? "unknown" : size(r.cost.peak_rss_bytes)} · <b>Archive</b> · {r.cost.archive_bytes === null ? "unknown" : size(r.cost.archive_bytes)}</p>
         {#if r.machine.refusals.length}<p class="missing"><b>This machine cannot do it</b> · {r.machine.refusals.join("; ")}</p>{/if}
         {#if r.abandoned}<p><b>Abandoned</b> · the stopped version {r.abandoned} does not resume.</p>{/if}
         <p>
-            <b>When it finishes</b> · {list(r.stale.map((at) => `${where(at.target) ? "Production" : "This computer"}: ${at.layers.length ? list(at.layers) : "nothing"} to bake again`))}
+            <b>When it finishes</b> · {list(r.stale.map((at) => `${at.target}: ${at.layers.length ? list(at.layers) : "nothing"} to bake again`))}
         </p>
-        {#if kind === "r2"}<p><b>Publishes version {r.version} to R2, where every bake can read it.</b></p>{/if}
+        <p><b>Keeps version {r.version} in the archive at {r.root}, where every bake here reads it.</b></p>
         <Action
             label="Start"
             args={start}
             primary
             folded
-            disabled={!kind || !!r.machine.refusals.length}
+            disabled={!!r.machine.refusals.length}
             ondone={(started: Started) => (location.hash = `#/runs/${started.run}`)}
         />
     </section>
@@ -145,34 +121,6 @@
 <style>
     .options {
         gap: 12px;
-    }
-    .where {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-    }
-    .where button {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        min-height: 56px;
-        padding: 8px 16px;
-        border-color: var(--line-strong);
-        font-weight: 400;
-        text-align: left;
-    }
-    .where button span {
-        color: var(--ink-soft);
-        font-size: 13px;
-        line-height: 18px;
-    }
-    .where button[aria-checked="true"] {
-        border-color: var(--ink);
-        box-shadow: inset 0 0 0 1px var(--ink);
-    }
-    .where button:focus-visible {
-        outline: 2px solid var(--running);
-        outline-offset: 2px;
     }
     fieldset {
         display: flex;
@@ -201,6 +149,6 @@
         display: block;
     }
     .review {
-        border: 2px solid var(--ink);
+        border: 1px solid var(--ink-faint);
     }
 </style>

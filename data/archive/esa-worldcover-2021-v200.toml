@@ -1,0 +1,5 @@
+name = "ESA WorldCover 10 m 2021, Map layer, tiles of 3 x 3 degrees"
+sources = ["esa-worldcover"]
+coverage = "World"
+version = "v200"
+s3 = [{ bucket = "https://esa-worldcover.s3.eu-central-1.amazonaws.com", prefix = "v200/2021/map/", match = "*_Map.tif" }]

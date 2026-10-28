@@ -84,8 +84,8 @@
 
 <style>
     .card {
-        --fetch: #eb6834;
-        --step: #1baf7a;
+        --fetch: var(--amber);
+        --step: var(--ready);
     }
     .legend {
         display: flex;

@@ -1,0 +1,4 @@
+name = "Copernicus DEM GLO-30 tile list"
+sources = ["copernicus-glo-30-tiles"]
+coverage = "World"
+urls = ["https://copernicus-dem-30m.s3.amazonaws.com/tileList.txt"]

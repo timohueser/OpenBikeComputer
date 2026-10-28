@@ -541,6 +541,23 @@ pub fn hash_file(path: &Path) -> Result<(String, u64), String> {
     }
 }
 
+/// The SHA-256 and the MD5 of a file, in lowercase hex, and its size, from one read.
+pub fn digests(path: &Path) -> Result<(String, String, u64), String> {
+    let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (mut sha256, mut md5) = (Sha256::new(), md5::Md5::new());
+    let mut buffer = vec![0; 1 << 16];
+    let mut size = 0;
+    loop {
+        let read = file.read(&mut buffer).map_err(|e| format!("{}: {e}", path.display()))?;
+        if read == 0 {
+            return Ok((hex(&sha256.finalize()), hex(&md5.finalize()), size));
+        }
+        sha256.update(&buffer[..read]);
+        md5.update(&buffer[..read]);
+        size += read as u64;
+    }
+}
+
 pub fn sha256_hex(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
 }

@@ -2,7 +2,7 @@
 
 The layer `planner/trailview-features` holds the OSM features that TrailView draws. Its step
 reads the OSM of `planner/osm` and the master terrain of the grid of `planner/terrain` in the same
-release.
+release, and the water polygons of the source `water-polygons`.
 The kind table
 [`data/trailview/kinds.json`](../data/trailview/kinds.json) selects the features and the tags
 that the tiles keep. A new kind is one entry in that table. The format does not change.
@@ -80,7 +80,7 @@ vertex  = zigzag dx, zigzag dy, then varint z_code when has_z is 1
 are sorted by key. `geometry` is 0 for a point, 1 for a line and 2 for an area. The features of a tile
 come in a fixed order: first the kinds that no solver sets, in the order of the OSM file, the points
 and the lines before the areas; then the buildings, the lifts, the rivers and lakes, the roads, paths
-and tracks, the bridge piers, the catenary masts and the platforms. So the bytes of a tile do not
+and tracks, the bridge piers, the catenary masts, the platforms and the sea. So the bytes of a tile do not
 depend on how much of the file lies outside the region.
 
 ### Coordinates
@@ -243,7 +243,7 @@ Each vertex of a `lake` has one level. It is the median of the terrain inside th
 that terrain lies within 0.3 m of it; else the 15th percentile of the terrain 2 m inside the shore.
 A pond (`water=pond`) takes the lowest terrain 2 m inside its shore, a reservoir (`water=reservoir`
 or `landuse=reservoir`) the median of the terrain on its outline: its full level. An `ele` tag
-within 1.5 m of the level wins. Other kinds have no height yet.
+within 1.5 m of the level wins. Of the other kinds, only the `sea` has a height (see Sea).
 
 The water solver solves each network apart, with each lake whose bounding box comes within 120 m of the
 bounding box of one of its waterways, and each other lake alone. A lake near two networks joins them into
@@ -259,6 +259,15 @@ The shared vectors [`vectors/trailview-features.json`](vectors/trailview-feature
 [`vectors/trailview-features.bin`](vectors/trailview-features.bin) are one tile in its decoded
 form and its bytes. The Rust encoder of the bake, the Python decoder of `tools/planner_verify.py` and
 the TypeScript decoder of the engine read both.
+
+### Sea
+
+OSM maps the sea only as `natural=coastline` lines. The bake adds the kind `sea`, `min_zoom` 8: each
+polygon of the source `water-polygons` (`water-polygons-split-3857.zip` of osmdata.openstreetmap.de)
+whose bounding box comes within one zoom-8 tile of the region. It is one area with its islands as
+holes, and each of its vertices has the height 0 m, sea level in the vertical datum of
+`planner/terrain`. The source splits the sea into pieces that overlap by 100 m at the split lines,
+so no gap opens between them.
 
 ## Kind table
 

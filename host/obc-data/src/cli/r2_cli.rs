@@ -1,6 +1,6 @@
 //! `obc data r2`: the R2 client as plumbing commands for scripts, and the legacy keys of a target.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
@@ -12,6 +12,7 @@ use crate::r2::{
     REMOVAL_LOG,
 };
 use crate::release;
+use crate::sources::FetchKind;
 use crate::store::{sha256_hex, Store};
 use crate::target::Target;
 
@@ -197,6 +198,38 @@ fn refuse_owned(bucket: &Bucket, keys: &[String]) -> Result<(), String> {
     }
 }
 
+/// Refuse a key under `sources/<id>/` of a prepared source while the home of `id` in the archive
+/// roots `roots` lacks a version that `sources/<id>/versions.json` of the bucket lists, or its
+/// manifest: the archive is then the only copy of a version that is not there yet.
+fn refuse_uncopied(bucket: &Bucket, keys: &[String], roots: &[PathBuf]) -> Result<(), Error> {
+    let prepared = |id: &&str| {
+        crate::sources::all().iter().any(|source| source.id == *id && source.fetch.kind == FetchKind::Prepared)
+    };
+    let ids: BTreeSet<&str> =
+        keys.iter().filter_map(|key| Some(key.strip_prefix("sources/")?.split_once('/')?.0)).filter(prepared).collect();
+    for id in ids {
+        let refused = |text: String| {
+            Code::Usage
+                .error(format!("{text}; nothing was deleted"))
+                .fix(format!("Copy the versions first: `obc data source copy {id} --from TARGET`."))
+        };
+        let Some(bytes) = bucket.read(&format!("sources/{id}/versions.json")).map_err(|e| Code::R2Failed.error(e))?
+        else {
+            continue;
+        };
+        let theirs: Vec<crate::prepared::Version> = serde_json::from_slice(&bytes)
+            .map_err(|e| refused(format!("sources/{id}/versions.json of the bucket: {e}")))?;
+        let missing = match crate::prepared::home(roots, id) {
+            Some(root) => crate::prepared::uncopied(&crate::prepared::folder(root, id), id, &theirs)?,
+            None => theirs.first(),
+        };
+        if let Some(entry) = missing {
+            return Err(refused(format!("the archive has no copy of {id}@{} of the bucket", entry.version)));
+        }
+    }
+    Ok(())
+}
+
 /// A refusal of a key that only an update writes.
 fn owned(message: String) -> Error {
     Code::R2Failed.error(message).fix("Once a bucket has a release, only `obc data update` changes its keys.")
@@ -219,6 +252,7 @@ fn delete(
         None => keys,
     };
     refuse_owned(bucket, &keys).map_err(|e| owned(format!("{e}; nothing was deleted")))?;
+    refuse_uncopied(bucket, &keys, &crate::fetch::archive::roots())?;
     if let Some(key) = keys.iter().find(|key| legacy_key(key)).filter(|_| !allow_legacy) {
         return Err(Code::Usage
             .error(format!("{key} is a key of the legacy pipelines; nothing was deleted"))
@@ -283,7 +317,7 @@ fn legacy(store: &Store, target: &Target, args: LegacyArgs, json: bool) -> Resul
 
 /// The legacy keys of `target`, and with `--delete` the refusal of another list than `--expect`.
 fn listed(target: &Target, args: &LegacyArgs) -> Result<Legacy, Error> {
-    let listed = unused((&args.target, target), args.prefix.as_deref())?;
+    let listed = unused((&args.target, target), &crate::fetch::archive::roots(), args.prefix.as_deref())?;
     if args.delete {
         let what = format!("r2 legacy {}", args.target);
         super::update_cli::expect(&what, &listed.digest, Some(args.expect.as_deref().unwrap_or_default()))
@@ -320,9 +354,9 @@ fn remove(store: &Store, target: &Target, args: &LegacyArgs) -> Result<(), Error
 }
 
 /// The keys under `cell-catalog/` and `planner/`, or under `prefix`, that `obc data` does not
-/// write; `Release::check` keeps every other key of a release out of these folders. See the spec
-/// for when it refuses.
-fn unused((name, target): (&str, &Target), prefix: Option<&str>) -> Result<Legacy, Error> {
+/// write; `Release::check` keeps every other key of a release out of these folders. `roots` are the
+/// archive roots, where `terrain` is. See the spec for when it refuses.
+fn unused((name, target): (&str, &Target), roots: &[PathBuf], prefix: Option<&str>) -> Result<Legacy, Error> {
     if release::serving(target)?.is_none() {
         return Err(Code::Blocked
             .error(format!("target `{name}` serves no release; nothing is legacy before the cutover"))
@@ -332,11 +366,13 @@ fn unused((name, target): (&str, &Target), prefix: Option<&str>) -> Result<Legac
         let index: Option<Index> = target.get(INDEX)?.and_then(|bytes| serde_json::from_slice(&bytes).ok());
         let index = index.ok_or_else(|| Code::Blocked.error(format!("{INDEX} is missing or does not parse")))?;
         // The index of the newest version of `terrain` names each model that it holds.
-        let newest = crate::prepared::versions(target, "terrain")?.pop();
-        let held = match newest {
-            Some(newest) => target.get(&format!("sources/terrain/{}/index.json", newest.version))?,
-            None => None,
-        };
+        let mut held = None;
+        if let Some(root) = crate::prepared::home(roots, "terrain") {
+            let folder = crate::prepared::folder(root, "terrain");
+            if let Some(newest) = crate::prepared::versions(&folder, "terrain")?.pop() {
+                held = folder.get(&format!("{}/index.json", newest.version))?;
+            }
+        }
         let held: Option<Index> = held.and_then(|bytes| serde_json::from_slice(&bytes).ok());
         let held = held.map(|held| held.sources).unwrap_or_default();
         let missing: Vec<String> = index.sources.into_keys().filter(|key| !held.contains_key(key)).collect();
@@ -397,6 +433,35 @@ mod tests {
         assert!(!cell.exists());
     }
 
+    #[test]
+    fn a_delete_of_a_prepared_source_needs_its_versions_in_the_archive() {
+        let scratch = crate::store::tests::Scratch::new("r2-uncopied");
+        let (bucket, archive) = (Bucket::local(&scratch.0.join("bucket")), scratch.0.join("archive"));
+        let listed = r#"[{"version": "2026-10-28", "manifest_sha256": "aa", "format": 3, "bytes": 1, "time": ""}]"#;
+        let put = |dir: &Path, bytes: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("versions.json"), bytes).unwrap();
+        };
+        put(&scratch.0.join("bucket/sources/terrain"), listed);
+        let keys = ["sources/terrain/versions.json".to_string(), "sources/era5-land/a.nc".to_string()];
+        let refused = refuse_uncopied(&bucket, &keys, std::slice::from_ref(&archive)).unwrap_err();
+        assert!(refused.message.contains("no copy of terrain@2026-10-28"), "{}", refused.message);
+        put(&crate::prepared::path(&archive, "terrain"), &listed.replace("\"aa\"", "\"bb\""));
+        assert!(refuse_uncopied(&bucket, &keys, std::slice::from_ref(&archive)).is_err(), "another manifest");
+        put(&crate::prepared::path(&archive, "terrain"), listed);
+        assert!(refuse_uncopied(&bucket, &keys, std::slice::from_ref(&archive)).is_err(), "no manifest");
+        let (manifest, home) = (b"{}", crate::prepared::path(&archive, "terrain"));
+        put(&home, &listed.replace("\"aa\"", &format!("\"{}\"", sha256_hex(manifest))));
+        put(
+            &scratch.0.join("bucket/sources/terrain"),
+            &listed.replace("\"aa\"", &format!("\"{}\"", sha256_hex(manifest))),
+        );
+        std::fs::create_dir_all(home.join("2026-10-28")).unwrap();
+        std::fs::write(home.join("2026-10-28/manifest.json"), manifest).unwrap();
+        refuse_uncopied(&bucket, &keys, &[archive]).unwrap();
+        refuse_uncopied(&bucket, &keys[1..], &[]).unwrap();
+    }
+
     /// Keys of the legacy pipelines that `obc data` does not write.
     const OLD: [&str; 3] = ["cell-catalog/cells/a.obcm", "planner/objects/a", "reference/v1/a.tif"];
 
@@ -407,7 +472,7 @@ mod tests {
         for key in OLD.into_iter().chain([release::NEXT]) {
             target.put(key, b"{}", &crate::target::Condition::Any).unwrap();
         }
-        assert_eq!(unused(("local", &target), None).err().map(|e| e.code), Some(Code::Blocked), "no cutover");
+        assert_eq!(unused(("local", &target), &[], None).err().map(|e| e.code), Some(Code::Blocked), "no cutover");
         for device in ["device a", "device b"] {
             let (id, _) = crate::serve::tests::release_at(&target, device, device.as_bytes(), 1, "https://api.test");
             assert!(release::switch(&target, release::serving(&target).unwrap().as_ref(), &id).unwrap());
@@ -417,11 +482,13 @@ mod tests {
 
     #[test]
     fn legacy_lists_only_the_keys_that_obc_data_does_not_write() {
-        let (_scratch, target) = served("r2-legacy-list");
+        let (scratch, target) = served("r2-legacy-list");
         let serving = release::serving(&target).unwrap().unwrap().0;
         assert!(serving.rollback.is_some() && target.get(release::POINTERS[1]).unwrap().is_some());
-        let keys =
-            |prefix| unused(("local", &target), prefix).map(|l| l.folders.into_values().flatten().map(|k| k.key));
+        let roots = [scratch.0.join("archive")];
+        let keys = |prefix| {
+            unused(("local", &target), &roots, prefix).map(|l| l.folders.into_values().flatten().map(|k| k.key))
+        };
         assert_eq!(keys(None).unwrap().collect::<Vec<_>>(), OLD[..2]);
 
         // `reference/v1` goes only when the newest version of `terrain` holds each source of its index.
@@ -431,8 +498,10 @@ mod tests {
         put(INDEX, r#"{"sources": {"ch": {"product": "swissALTI3D"}}}"#);
         assert!(reference().unwrap_err().fix.ends_with(": ch."));
         let version = r#"[{"version": "2026-10-01", "manifest_sha256": "", "format": 3, "bytes": 1, "time": ""}]"#;
-        put("sources/terrain/versions.json", version);
-        put("sources/terrain/2026-10-01/index.json", r#"{"sources": {"ch": {"product": "swissALTI3D"}}}"#);
+        let terrain = crate::prepared::folder(&roots[0], "terrain");
+        let held = |key, bytes: &str| terrain.put(key, bytes.as_bytes(), &crate::target::Condition::Any).unwrap();
+        held("versions.json", version);
+        held("2026-10-01/index.json", r#"{"sources": {"ch": {"product": "swissALTI3D"}}}"#);
         assert_eq!(reference().unwrap(), [OLD[2], INDEX]);
     }
 
@@ -457,7 +526,7 @@ mod tests {
         let next = (vec![release::NEXT.to_string()], None, true);
         let refused = delete(&Bucket::local(&scratch.0.join("local")), next, None, "test", true, true).unwrap_err();
         assert!(refused.message.starts_with("the bucket has `release.json`"), "{}", refused.message);
-        let digest = unused(("local", &target), Some("planner")).unwrap().digest;
+        let digest = unused(("local", &target), &[], Some("planner")).unwrap().digest;
         remove(&store, &target, &args(&digest)).unwrap();
         let after = target.list().unwrap().into_iter().map(|listed| listed.key).collect::<Vec<_>>();
         let gone: Vec<_> = before.into_iter().map(|listed| listed.key).filter(|key| !after.contains(key)).collect();

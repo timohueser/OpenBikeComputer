@@ -1,0 +1,10 @@
+name = "Hansen Global Forest Change 2000-2023, treecover2000 layer, tiles of 10 x 10 degrees"
+sources = ["hansen-gfc"]
+coverage = "World"
+version = "v1.11"
+notes = "With treecover2000.txt, the tile URL list, and download.html, the dataset page with the licence. Cite: Hansen, M. C. et al. 2013. High-Resolution Global Maps of 21st-Century Forest Cover Change. Science 342: 850-853."
+urls = [
+  "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-v1.11/treecover2000.txt",
+  "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-v1.11/download.html",
+]
+s3 = [{ bucket = "https://storage.googleapis.com/earthenginepartners-hansen", prefix = "GFC-2023-v1.11/Hansen_GFC-2023-v1.11_treecover2000_", match = "*.tif" }]

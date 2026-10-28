@@ -1,7 +1,7 @@
 {
     "id": "7a1c0d2a91b7",
     "source": "wiki",
-    "target": "prod",
+    "root": "/media/archive",
     "version": "2026-10-12",
     "abandoned": null,
     "listing": false,
@@ -13,8 +13,8 @@
     "files": null,
     "publish_text": true,
     "done": {"files": 0, "bytes": 0},
-    "cost": {"wall_ms": 7200000, "peak_rss_bytes": 17179869184, "store_bytes": 42949672960, "upload_bytes": 2576980378, "unknown": ["wikidata@newest"]},
+    "cost": {"wall_ms": 7200000, "peak_rss_bytes": 17179869184, "store_bytes": 42949672960, "archive_bytes": 2576980378, "unknown": ["wikidata@newest"]},
     "machine": {"memory_bytes": 34359738368, "store_free_bytes": 442381631488, "refusals": []},
     "stale": [{"target": "prod", "layers": ["device/landmarks", "planner/search"], "error": null}, {"target": "local", "layers": ["device/landmarks"], "error": null}],
-    "args": ["source", "prepare", "wiki", "--to", "prod", "--region", "europe/dach", "--languages", "en,de", "--expect", "7a1c0d2a91b7"]
+    "args": ["source", "prepare", "wiki", "--region", "europe/dach", "--languages", "en,de", "--expect", "7a1c0d2a91b7"]
 }

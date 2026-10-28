@@ -292,7 +292,7 @@ pub(crate) fn content_declarations(
             };
             let Some((version, paths)) = &shards else {
                 let reason =
-                    format!("no target lists a version of `{WIKI}`. Fix: Run `obc data source prepare {WIKI}`.");
+                    format!("the archive lists no version of `{WIKI}`. Fix: Run `obc data source prepare {WIKI}`.");
                 blocked.push(BlockedLayer::new(name, &DEVICE_LANDMARKS, reason));
                 continue;
             };
@@ -1157,7 +1157,7 @@ pub(crate) mod tests {
         let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
         let blocked: Vec<(&str, &str)> =
             listed.blocked.iter().map(|blocked| (blocked.step.as_str(), blocked.reason.as_str())).collect();
-        let reason = "no target lists a version of `wiki`. Fix: Run `obc data source prepare wiki`.";
+        let reason = "the archive lists no version of `wiki`. Fix: Run `obc data source prepare wiki`.";
         assert_eq!(&blocked[..2], [("device/landmark-content", reason), ("device/peak-content", reason)]);
         assert_eq!(blocked[2].0, catalog::LAYER);
         assert!(!listed.steps.iter().any(|step| step.name.starts_with("device/landmarks/")));
@@ -1345,12 +1345,13 @@ pub(crate) mod tests {
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &["N46_00_E008"]);
         let (mut inputs, regions) = grimsel(&store, "1");
-        // The boxes of `dtm-fr`, `dtm-de-by` and `dtm-it` reach the Grimsel; their polygons stop west, east
-        // and south of it.
+        // The boxes of `dtm-fr`, `dtm-de-by`, `dtm-it` and `dtm-it-21` reach the Grimsel; their polygons stop
+        // west, east and south of it.
         for (area, [west, south, east, north]) in [
             ("europe/france", [-5.0, 42.0, 7.5, 51.0]),
             ("europe/germany/bayern", [8.97, 47.27, 13.84, 50.56]),
             ("europe/italy", [6.6, 35.4, 18.6, 46.0]),
+            ("europe/italy/nord-ovest", [6.6, 43.7, 10.6, 46.0]),
         ] {
             let poly = box_poly(&Bbox { west, south, east, north });
             fetched(&store, POLY, "2", &[("area".into(), area.into())], &[(format!("{area}.poly"), poly)]);

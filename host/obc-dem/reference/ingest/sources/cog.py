@@ -15,7 +15,9 @@ This is the third publication model in the registry, beside a service that answe
 and a file small enough to fetch whole.
 """
 
+import fcntl
 import urllib.request
+import zipfile
 from pathlib import Path
 
 import rasterio
@@ -23,7 +25,7 @@ from rasterio.errors import RasterioIOError
 from rasterio.windows import Window, from_bounds
 
 from ..lattice import Refuse
-from .base import HTTP_TIMEOUT, Source, with_retry
+from .base import HTTP_TIMEOUT, RASTER_SUFFIXES, Source, http_download, unpack, with_retry
 from .grid import grid_squares
 from .protocols import projected_box, request_boxes
 
@@ -132,6 +134,46 @@ class CogWindows(Source):
             dst.write(values, 1)
         part.replace(path)
         return path
+
+
+class OneFile(CogWindows):
+    """A whole country in one tiled GeoTIFF."""
+
+    def urls(self, bbox) -> list[tuple[str, str]]:
+        return [(Path(self.base).name, self.base)]
+
+
+class SharedZip(CogWindows):
+    """A region's rasters in one published zip, read by windows like a COG once they are local.
+
+    A zip member gives no range reads, so the zip is downloaded and unpacked once per prepare into
+    the shared directory, under a lock, and each tile reads its windows from the unpacked rasters.
+    """
+
+    def fetch(self, bbox, workdir) -> list[Path]:
+        folder = (self.shared or workdir) / self.key
+        folder.mkdir(parents=True, exist_ok=True)
+        listed = folder / "rasters.txt"
+        with (folder / "lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if not listed.exists():
+                name = Path(self.base).name
+                archive = http_download(self.base, folder / name, what=f"{self.key} {name}")
+                try:
+                    rasters = unpack(archive, folder / "unpacked", RASTER_SUFFIXES)
+                except zipfile.BadZipFile as error:
+                    # Deleted, so that a resume downloads it again.
+                    archive.unlink()
+                    raise Refuse(f"{self.key} {name}: the download is not a zip ({error})") from error
+                listed.write_text("".join(f"{path}\n" for path in rasters), encoding="utf-8")
+        self.rasters = [Path(line) for line in listed.read_text(encoding="utf-8").splitlines()]
+        return super().fetch(bbox, workdir)
+
+    def urls(self, bbox) -> list[tuple[str, str]]:
+        return [(path.name, str(path)) for path in self.rasters]
+
+    def published(self, url: str) -> bool:
+        return True
 
 
 class CogGrid(CogWindows):
