@@ -269,7 +269,7 @@ def vocabulary_problems(vocabulary, models=MODELS):
 
 
 # The keys that each protocol of a ground source reads.
-NEEDS = {"vector": ("field",), "arcgis-features": ("field",), "wfs": ("layer", "field", "sort")}
+NEEDS = {"vector": ("field",), "arcgis-features": ("field",), "archive-features": ("layer", "field")}
 
 
 def ground_problems(ground, ids):
@@ -308,7 +308,7 @@ def ground_problems(ground, ids):
     out += obj({"about": text, "material": lambda v, p: [], "lithology": lambda v, p: []})(ground, "")
     for layer, name, names in (("material", material, "materials"), ("lithology", lithology, "lithologies")):
         entry = needs(("source", "protocol", "combine", "legend"), obj({
-            "source": source, "protocol": one_of(*sources.PROTOCOLS), "layer": text, "field": text, "sort": text,
+            "source": source, "protocol": one_of(*sources.PROTOCOLS), "layer": text, "field": text,
             "px_m": positive, "values": entries(text),
             "combine": one_of(*sources.COMBINES), "reach_m": positive, "about": text, "legend": legend(name)}))
         spec = ground.get(layer, {})

@@ -7,7 +7,7 @@
 //! that upstream or the store can serve; only a file whose bytes are not those of its manifest
 //! fails the fetch. `crate::datasets` writes the archive.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -115,6 +115,8 @@ struct Listing {
     files: HashMap<String, Entry>,
     /// The path of the zip of each prepackaged CLMS file, by dataset UID and file id.
     clms: HashMap<(String, String), String>,
+    /// A root does not exist or a manifest cannot be read: a file can be listed that `files` lacks.
+    unread: bool,
 }
 
 struct Entry {
@@ -163,12 +165,20 @@ impl Archive {
         self.held(self.listing().clms.get(&(dataset.to_string(), file.to_string()))?)
     }
 
+    /// The SHA-256 of each listed file; `None` while the listing can lack a file.
+    pub fn sha256s(&self) -> Option<HashSet<String>> {
+        let listing = self.listing();
+        (!listing.unread).then(|| listing.files.values().map(|entry| entry.sha256.clone()).collect())
+    }
+
     fn listing(&self) -> &Listing {
         self.listing.get_or_init(|| {
             let mut listing = Listing::default();
             for (root, dir) in self.roots.iter().enumerate() {
                 if !dir.is_dir() {
                     eprintln!("obc data: warning: the archive root {} does not exist: mount its drive", dir.display());
+                    listing.unread = true;
+                    continue;
                 }
                 read_manifests(&dir.join("manifest"), root, &mut listing);
             }
@@ -270,13 +280,30 @@ impl Held {
 
 /// Add the files of every `*.json` manifest in `dir` of the root with index `root`. A path that an
 /// earlier root lists stays with that root. A manifest that cannot be read or has no `version` is
-/// a warning, and none of its files serves.
+/// a warning, and none of its files serves. A `dir` that cannot be read or holds no manifest marks
+/// the listing unread, as a drive mounted in the wrong place does.
 fn read_manifests(dir: &Path, root: usize, listing: &mut Listing) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
-    for path in entries.flatten().map(|entry| entry.path()) {
+    let unread = |listing: &mut Listing, why: String| {
+        eprintln!("obc data: warning: the archive manifests {}: {why}", dir.display());
+        listing.unread = true;
+    };
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => return unread(listing, error.to_string()),
+    };
+    let mut manifests = 0;
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(error) => {
+                unread(listing, error.to_string());
+                continue;
+            }
+        };
         if path.extension().is_none_or(|extension| extension != "json") {
             continue;
         }
+        manifests += 1;
         let manifest = match Manifest::read(&path) {
             Ok(Manifest { version: None, .. }) => Err(format!("{}: no `version`", path.display())),
             read => read,
@@ -285,6 +312,7 @@ fn read_manifests(dir: &Path, root: usize, listing: &mut Listing) {
             Ok(manifest) => manifest,
             Err(error) => {
                 eprintln!("obc data: warning: archive manifest {error}");
+                listing.unread = true;
                 continue;
             }
         };
@@ -314,6 +342,9 @@ fn read_manifests(dir: &Path, root: usize, listing: &mut Listing) {
             let entry = Entry { root, bytes: file.bytes, sha256, day };
             listing.files.entry(file.path).or_insert(entry);
         }
+    }
+    if manifests == 0 {
+        unread(listing, "no manifest".into());
     }
 }
 
@@ -357,7 +388,7 @@ mod tests {
         std::fs::write(second.join("manifest/unhashed.json"), unhashed).unwrap();
         std::fs::write(second.join("mirror/example.org/w"), b"w").unwrap();
 
-        let archive = Archive::new(vec![first, second.clone()]);
+        let archive = Archive::new(vec![first.clone(), second.clone()]);
         let held = archive.find("https://example.org/x").unwrap();
         assert_eq!((held.sha256.as_str(), held.day.as_deref()), ("ab", Some("2026-10-05")), "the first root serves");
         let held = archive.find("https://example.org/y").unwrap();
@@ -375,5 +406,12 @@ mod tests {
             assert!(archive.find(url).is_none(), "{url}");
         }
         assert!(archive.clms("d", "f").is_none(), "a manifest path outside the archive never serves");
+        assert!(archive.sha256s().is_none(), "a manifest that cannot be read can list any file");
+        assert_eq!(Archive::new(vec![first.clone()]).sha256s(), Some(HashSet::from(["ab".to_string()])));
+        let bare = scratch.0.join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        assert!(Archive::new(vec![first.clone(), bare.clone()]).sha256s().is_none(), "a root without `manifest/`");
+        std::fs::create_dir_all(bare.join("manifest")).unwrap();
+        assert!(Archive::new(vec![first, bare]).sha256s().is_none(), "a root without a manifest");
     }
 }
