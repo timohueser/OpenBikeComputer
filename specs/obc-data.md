@@ -366,7 +366,7 @@ producer of [`wiki`](#wiki) reads them. `era5-land` has none: only the producer 
 | Source | `NAME=VALUE` | Program | Packages | Query |
 | --- | --- | --- | --- | --- |
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
-| Each source of `data/trailview/ground.json` with the `protocol` `arcgis-features` or `wfs` | `bbox`, `ground` | `tools/trailview/ground.py --source ID --fetch` | group `trailview` | `bbox=W,S,E,N&ground=DIGEST` |
+| Each source of `data/trailview/ground.json` with the `protocol` `arcgis-features` or `archive-features` | `bbox`, `ground` | `tools/trailview/ground.py --source ID --fetch` | group `trailview` | `bbox=W,S,E,N&ground=DIGEST` |
 | `sentinel-2-mosaics` | `bbox`, `year` | `tools/trailview/colour.py --fetch` | group `trailview` | `bbox=W,S,E,N&year=YEAR` |
 | `corine-land-cover` | None | `tools/clms.py --fetch` | None | `dataset=0407d497d3c44bcd93ce8fd5bf78596a&file=3d9e2413-46ca-4f6e-abf8-b6eb429a4e48` |
 
@@ -385,21 +385,25 @@ producer of [`wiki`](#wiki) reads them. `era5-land` has none: only the producer 
   the download resumes without a new order. An archive that is not a zip is deleted, and the next
   run orders again.
 - `ground` is the first 12 hex digits of the SHA-256 of the canonical JSON of the keys `protocol`,
-  `layer`, `field` and `sort` of the source's entry, and of its `legend` for `arcgis-features`.
-  The fetch refuses a digest that the entry does not have.
-- An `arcgis-features` or `wfs` file is `features-NNNNN.geojson`: a page of the features that
-  meet `bbox`, in EPSG:4326 with the source's `field`. `arcgis-features` asks only for the
-  features whose `field` the legend may name, pages by object id, and asks again for the ids that
-  an answer lacks. It leaves out an id that the service no longer has, up to 0.1 % of the ids,
-  and fails above that. It simplifies each feature by a quarter of a zoom 13 texel at the
-  equator. `wfs` pages in the order of `sort` until the pages hold the
-  `numberMatched` features of a `hits` request. A box without a feature gives a fetch without
-  files.
-- A ground capture tries a request again after a failed or cut transfer, a 5xx or 429 answer, an
-  ArcGIS error without a 4xx code, 6 times in all. Another 4xx
-  answer or ArcGIS error fails at once. The hidden file `.positions` records the object ids or the
-  `numberMatched` that the page numbers stand for; a resumed run that finds others deletes the
-  pages.
+  `layer`, `field` and `legend` of the source's entry. The fetch refuses a digest that the entry
+  does not have.
+- A ground file is `features-NNNNN.geojson`: a page of the features that meet `bbox` and whose
+  `field` the legend may name, in EPSG:4326 with that field and 6 decimals. Each feature is
+  simplified by a quarter of a zoom 13 texel at the equator. A box without a feature gives a
+  fetch without files.
+- `arcgis-features` asks the service, pages by object id, and asks again for the ids that an
+  answer lacks. It leaves out an id that the service no longer has, up to 0.1 % of the ids, and
+  fails above that.
+- `archive-features` reads the zip of the `fetch.url` of the source in the [archive](#archive),
+  never upstream. Without that file in the archive, the fetch fails and names the fix. The
+  capture checks the SHA-256 of the zip against its manifest. It unpacks the one GeoPackage or
+  FileGDB of the zip into its work directory, because a read in a deflated member inflates the
+  member from its start. It reads the `layer` of that file, 5000 features to a page, in the
+  order of their feature ids.
+- An `arcgis-features` capture tries a request again after a failed or cut transfer, a 5xx or
+  429 answer, an ArcGIS error without a 4xx code, 6 times in all. Another 4xx answer or ArcGIS
+  error fails at once. The hidden file `.positions` records the object ids that the page numbers
+  stand for; a resumed run that finds others deletes the pages.
 - A `sentinel-2-mosaics` file is `<mosaic tile>/<band>.tif`: the window over `bbox`, one pixel
   wider on each side, of a band of a quarterly mosaic tile of the year, as the STAC search lists it.
 - The version is the day of the fetch, because the service answers with current data. Another
@@ -569,7 +573,8 @@ is `2022-05-09` or earlier. `obc data source refresh` asks upstream, not the arc
 
 The `corine-land-cover` capture looks for the manifest with its `dataset` and `file`. When the
 archive has the zip, the capture checks its SHA-256 against the manifest, and `tools/clms.py --archive
-ZIP` takes the file from that zip as from an order.
+ZIP` takes the file from that zip as from an order. An `archive-features` ground capture reads only
+the archive, see [Fetch](#fetch).
 
 ### Credentials of sources
 
