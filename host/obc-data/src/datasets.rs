@@ -73,13 +73,7 @@ pub struct Clms {
 pub fn load(root: &Path, registry: &Registry) -> Result<Vec<Dataset>, String> {
     let dir = root.join("data/archive");
     let entries = fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let mut paths: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|e| e == "toml"))
-        .collect();
-    paths.sort();
-    paths
+    toml_paths(&dir, entries.map(|entry| entry.map(|entry| entry.path())))?
         .iter()
         .map(|path| {
             let id = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default();
@@ -87,6 +81,20 @@ pub fn load(root: &Path, registry: &Registry) -> Result<Vec<Dataset>, String> {
             parse(id, &text, registry).map_err(|e| format!("data/archive/{id}.toml: {e}"))
         })
         .collect()
+}
+
+/// The `*.toml` paths of `entries` of `dir`, sorted. An entry that cannot be read fails, so that no
+/// dataset leaves the catalog without an error.
+fn toml_paths(dir: &Path, entries: impl Iterator<Item = std::io::Result<PathBuf>>) -> Result<Vec<PathBuf>, String> {
+    let mut paths = Vec::new();
+    for path in entries {
+        let path = path.map_err(|e| format!("{}: {e}", dir.display()))?;
+        if path.extension().is_some_and(|e| e == "toml") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
 }
 
 fn parse(id: &str, text: &str, registry: &Registry) -> Result<Dataset, String> {
@@ -332,6 +340,13 @@ fn fixed_root(roots: &[PathBuf], dataset: &Dataset, chosen: Option<&Path>) -> Re
         let root = root.ok_or_else(|| format!("{} is not a root of OBC_DATA_ARCHIVE", chosen.display()))?;
         if let Some(holder) = holder.filter(|holder| *holder != root) {
             return Err(format!("{} holds `{}`: a dataset is in one root", holder.display(), dataset.id));
+        }
+        if dataset.kept && holder.is_none() && !root.join("kept").join(&dataset.id).is_dir() {
+            return Err(format!(
+                "{} has no kept/{}/: put the files of the dataset there, or give the root that has them",
+                root.display(),
+                dataset.id
+            ));
         }
         return Ok(Some(root.clone()));
     }
@@ -802,6 +817,17 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_of_the_catalog_that_cannot_be_read_fails_the_load() {
+        let dir = Path::new("data/archive");
+        let entries = [Ok(dir.join("b.toml")), Ok(dir.join("notes.txt")), Ok(dir.join("a.toml"))];
+        let paths = toml_paths(dir, entries.into_iter()).unwrap();
+        assert_eq!(paths, [dir.join("a.toml"), dir.join("b.toml")]);
+        let broken = [Ok(dir.join("a.toml")), Err(std::io::Error::other("bad entry"))];
+        let err = toml_paths(dir, broken.into_iter()).unwrap_err();
+        assert!(err.contains("bad entry"), "{err}");
+    }
+
+    #[test]
     fn a_listing_follows_its_pages_and_gives_the_matching_objects() {
         let s3 = S3 {
             bucket: "https://eodata.dataspace.copernicus.eu/eodata".into(),
@@ -960,6 +986,8 @@ mod tests {
         let dataset = parse("x", text, &registry).unwrap();
         let (roots, store) = (vec![first.clone(), root.clone()], Store::at(scratch.0.join("store")));
         let http = Http::with_backoff(Duration::ZERO);
+        let err = get(&http, &store, &dataset, &roots, Some(&first)).map(|_| ()).unwrap_err();
+        assert!(err.contains("has no kept/x/"), "{err}");
         let got = get(&http, &store, &dataset, &roots, None).unwrap();
         assert_eq!(got.root, root, "the root that has kept/x/");
         let listed = &got.manifest.files[0];
