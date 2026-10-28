@@ -137,7 +137,11 @@ pub fn write(home: &Path, place: &Place, values: &[String]) -> Result<PathBuf, S
 /// `text` without the lines of `names`, then a line for each name with its value.
 fn merge(text: &str, separator: &str, names: &[String], values: &[String]) -> String {
     let named = |line: &str| {
-        line.split_once(separator.trim()).is_some_and(|(name, _)| names.contains(&name.trim().to_string()))
+        let line = line.trim_start();
+        line.strip_prefix("export ")
+            .unwrap_or(line)
+            .split_once(separator.trim())
+            .is_some_and(|(name, _)| names.contains(&name.trim().to_string()))
     };
     let kept = text.lines().filter(|line| !named(line)).map(str::to_string);
     let set = names.iter().zip(values).map(|(name, value)| format!("{name}{separator}{value}"));
@@ -164,7 +168,10 @@ mod tests {
         assert_eq!((mode(&path), mode(path.parent().unwrap())), (0o600, 0o700));
         let pair = place(&env(&["OBC_TEST_USER", "OBC_TEST_PASSWORD"])).unwrap();
         write(&home.0, &pair, &["fake-user".into(), "fake password".into()]).unwrap();
+        let moved = std::fs::read_to_string(&path).unwrap() + "export OBC_TEST_TOKEN=fake-token-moved\n";
+        std::fs::write(&path, moved).unwrap();
         write(&home.0, &token, &["fake-token-2".into()]).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("moved"));
         let expected = [
             ("OBC_TEST_PASSWORD", "fake password"),
             ("OBC_TEST_TOKEN", "fake-token-2"),

@@ -49,7 +49,7 @@ obc_init() {
     local secrets
     secrets="$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z0-9_]*(TOKEN|PASSWORD|API_KEY|SECRET_KEY|SECRET_ACCESS_KEY|ACCESS_KEY_ID))=.*/\2/p' "$local_file" | tr '\n' ' ')"
     if [[ -n "$secrets" ]]; then
-      _warn "$local_file holds secrets: ${secrets% }. Move each NAME=VALUE line to ~/.config/openbikecomputer/credentials.env (mode 0600)."
+      _warn "$local_file holds secrets: ${secrets% }. Write each as a literal NAME=VALUE line in ~/.config/openbikecomputer/credentials.env (mode 0600); the file is not a shell script."
     fi
     set -a
     source "$local_file"

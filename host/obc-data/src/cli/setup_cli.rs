@@ -256,7 +256,7 @@ pub fn setup(root: &Path, json: bool) -> Result<(), Error> {
             true => "rclone and the R2 key are present.".into(),
             false if r2 => format!("Needs {}. Install it, then check again.", list(&publish)),
             false => format!(
-                "Needs {}. Ask the owner for the key, then put it in ~/.config/openbikecomputer/credentials.env.",
+                "Needs {}. Ask the owner for the key, then put it in ~/.config/openbikecomputer/credentials.env with mode 0600.",
                 list(&publish)
             ),
         },

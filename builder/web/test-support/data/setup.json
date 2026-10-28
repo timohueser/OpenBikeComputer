@@ -3,7 +3,7 @@
     "jobs": [
         { "name": "Bake device layers here", "state": "ready", "reason": "All tools are present." },
         { "name": "Bake planner layers here", "state": "missing", "reason": "Needs GEOS and Java 21+. Install them, then check again." },
-        { "name": "Publish to prod", "state": "missing", "reason": "Needs an R2 key. Ask the owner for the key, then put it in ~/.config/openbikecomputer/credentials.env." },
+        { "name": "Publish to prod", "state": "missing", "reason": "Needs an R2 key. Ask the owner for the key, then put it in ~/.config/openbikecomputer/credentials.env with mode 0600." },
         { "name": "Fetch sources that need an account", "state": "optional", "reason": "Optional: 5 of 6 credentials are not set. Credentials names the sources of each." }
     ],
     "tools": [
