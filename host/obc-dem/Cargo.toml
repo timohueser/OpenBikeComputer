@@ -59,7 +59,7 @@ serde_json = { workspace = true, optional = true }
 # `fetch` only: the store and its fetcher for the tiles. The binary also prints the Copernicus
 # credit from data/sources.toml.
 obc-data = { workspace = true, optional = true }
-# `fetch` only: the Osmium of `obc data`, which reads the coastlines, cliffs and summits of the OSM
+# `fetch` only: the Osmium of `obc data`, which reads the coastlines and summits of the OSM
 # that correct GLO-30 in the planner terrain.
 obc-osm = { workspace = true, optional = true }
 # `geotiff` only: a planner terrain bake decodes the GLO-30 squares of a row and fills a row of
