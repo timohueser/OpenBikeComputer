@@ -122,12 +122,16 @@ class DevCleanupTests(unittest.TestCase):
             for path in (repo / ".git", repo / "target", repo, old_scratch, unrelated):
                 os.utime(path, (old, old))
 
-            target = root / "cargo-target"
-            old_rlib = target / "debug" / "deps" / "libold.rlib"
-            old_rlib.parent.mkdir(parents=True)
-            old_rlib.write_text("old")
-            os.utime(old_rlib, (old, old))
-            (target / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55")
+            target = self.make_target(
+                root / "cargo-target",
+                {
+                    "CACHEDIR.TAG": (old, old),
+                    "debug/.cargo-lock": (old, old),
+                    "debug/.fingerprint/old-1/lib-old": (old, old),
+                    "debug/deps/libold-1.rlib": (old, old),
+                },
+            )
+            old_rlib = target / "debug" / "deps" / "libold-1.rlib"
 
             output = io.StringIO()
             with (
@@ -182,55 +186,71 @@ class DevCleanupTests(unittest.TestCase):
             os.utime(target / name, times)
         return target
 
-    def test_prune_cargo_target_removes_only_unused_entries_inside_the_target(self):
+    def test_prune_cargo_target_removes_unused_units_whole_inside_the_target(self):
         with tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryDirectory() as outside:
             now = time.time()
             old = now - 8 * cleanup.SECONDS_PER_DAY
+            wasm = "wasm32-unknown-unknown/debug"
             target = self.make_target(
                 Path(scratch),
                 {
-                    "debug/deps/libold.rlib": (old, old),
-                    "debug/deps/libnew.rlib": (now, now),
-                    # A reused dependency keeps its build mtime, but a read refreshes its atime.
-                    "debug/deps/libused.rlib": (now, old),
+                    "debug/.cargo-lock": (old, old),
+                    # Every build reads the fingerprint but only stats the other outputs.
+                    "debug/.fingerprint/live-1/lib-live": (now, old),
+                    "debug/build/live-1/out/gen.rs": (old, old),
+                    "debug/deps/liblive-1.rmeta": (old, old),
+                    "debug/.fingerprint/stale-2/lib-stale": (old, old),
+                    "debug/build/stale-2/output": (old, old),
+                    "debug/deps/libstale-2.rlib": (old, old),
+                    "debug/deps/stale-2.d": (old, old),
                     "debug/obc-data": (old, old),
-                    "debug/incremental/stale-1/s-1/dep-graph.bin": (old, old),
-                    "debug/incremental/live-1/s-2/dep-graph.bin": (now, now),
-                    "debug/incremental/live-1/s-2/object.o": (old, old),
-                    "wasm32-unknown-unknown/debug/build/pkg-1/out/gen.rs": (old, old),
+                    "debug/incremental/stale-3/s-1/dep-graph.bin": (old, old),
+                    "debug/incremental/live-4/s-2/dep-graph.bin": (now, now),
+                    "debug/incremental/live-4/s-2/object.o": (old, old),
+                    f"{wasm}/.cargo-lock": (old, old),
+                    f"{wasm}/.fingerprint/w-5/lib-w": (old, old),
+                    # A profile without `.cargo-lock` is not cargo's.
+                    "doc/.fingerprint/d-6/lib-d": (old, old),
+                    "doc/deps/libd-6.rlib": (old, old),
                 },
             )
-            outside_file = Path(outside) / "deps" / "libkeep.rlib"
+            outside_file = Path(outside) / "w-5" / "output"
             outside_file.parent.mkdir()
             outside_file.write_text("x")
             os.utime(outside_file, (old, old))
-            (target / "release").mkdir()
-            (target / "release" / "deps").symlink_to(outside_file.parent, target_is_directory=True)
+            (target / wasm / "build").symlink_to(outside_file.parent.parent, target_is_directory=True)
             cutoff = now - 7 * cleanup.SECONDS_PER_DAY
             expected = (
                 {
-                    target / "debug" / "deps": (1, 1),
+                    target / "debug" / ".fingerprint": (1, 1),
+                    target / "debug" / "build": (1, 1),
+                    target / "debug" / "deps": (2, 2),
                     target / "debug" / "incremental": (1, 1),
-                    target / "wasm32-unknown-unknown" / "debug" / "build": (1, 1),
+                    target / wasm / ".fingerprint": (1, 1),
                 },
                 [],
             )
 
             self.assertEqual(cleanup.prune_cargo_target(target, cutoff, apply=False), expected)
-            self.assertTrue((target / "debug" / "deps" / "libold.rlib").exists())
+            self.assertTrue((target / "debug" / "deps" / "libstale-2.rlib").exists())
 
             self.assertEqual(cleanup.prune_cargo_target(target, cutoff, apply=True), expected)
             for gone in (
-                "debug/deps/libold.rlib",
-                "debug/incremental/stale-1",
-                "wasm32-unknown-unknown/debug/build/pkg-1",
+                "debug/.fingerprint/stale-2",
+                "debug/build/stale-2",
+                "debug/deps/libstale-2.rlib",
+                "debug/deps/stale-2.d",
+                "debug/incremental/stale-3",
+                f"{wasm}/.fingerprint/w-5",
             ):
                 self.assertFalse((target / gone).exists(), gone)
             for kept in (
-                "debug/deps/libnew.rlib",
-                "debug/deps/libused.rlib",
+                "debug/.fingerprint/live-1/lib-live",
+                "debug/build/live-1/out/gen.rs",
+                "debug/deps/liblive-1.rmeta",
                 "debug/obc-data",
-                "debug/incremental/live-1/s-2/object.o",
+                "debug/incremental/live-4/s-2/object.o",
+                "doc/deps/libd-6.rlib",
             ):
                 self.assertTrue((target / kept).exists(), kept)
             self.assertTrue(outside_file.exists())
@@ -238,29 +258,39 @@ class DevCleanupTests(unittest.TestCase):
     def test_prune_cargo_target_skips_a_profile_that_a_build_holds(self):
         with tempfile.TemporaryDirectory() as scratch:
             old = time.time() - 8 * cleanup.SECONDS_PER_DAY
-            target = self.make_target(Path(scratch), {"debug/deps/libold.rlib": (old, old)})
+            target = self.make_target(
+                Path(scratch),
+                {
+                    "debug/.cargo-lock": (old, old),
+                    "debug/.fingerprint/old-1/lib-old": (old, old),
+                    "debug/deps/libold-1.rlib": (old, old),
+                },
+            )
             cutoff = time.time() - 7 * cleanup.SECONDS_PER_DAY
-            with open(target / "debug" / ".cargo-lock", "w") as lock:
+            with open(target / "debug" / ".cargo-lock") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 self.assertEqual(
                     cleanup.prune_cargo_target(target, cutoff, apply=True), ({}, [target / "debug"])
                 )
-            self.assertTrue((target / "debug" / "deps" / "libold.rlib").exists())
+            self.assertTrue((target / "debug" / "deps" / "libold-1.rlib").exists())
             self.assertEqual(
-                cleanup.prune_cargo_target(target, cutoff, apply=True),
-                ({target / "debug" / "deps": (1, 1)}, []),
+                cleanup.prune_cargo_target(target, cutoff, apply=True)[0],
+                {target / "debug" / ".fingerprint": (1, 1), target / "debug" / "deps": (1, 1)},
             )
 
-    def test_cargo_target_refuses_root_home_repositories_and_untagged_dirs(self):
+    def test_cargo_target_refuses_root_home_and_repositories_and_skips_untagged_dirs(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             repo = root / "repo"
             cleanup.git(root, "init", str(repo))
-            untagged = root / "untagged"
-            untagged.mkdir()
-            for value in ("/", str(Path.home()), str(repo), str(untagged)):
+            for value in ("/", str(Path.home()), str(repo)):
                 with self.assertRaises(cleanup.CleanupError):
                     cleanup.cargo_target(value)
+            untagged = root / "untagged"
+            untagged.mkdir()
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertIsNone(cleanup.cargo_target(str(untagged)))
+            self.assertIn("no CACHEDIR.TAG", output.getvalue())
             (untagged / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55")
             self.assertEqual(cleanup.cargo_target(str(untagged)), untagged.resolve())
             self.assertIsNone(cleanup.cargo_target(""))

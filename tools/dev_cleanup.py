@@ -18,8 +18,6 @@ from stat import S_ISDIR
 
 
 SECONDS_PER_DAY = 24 * 60 * 60
-# Per-profile cargo caches, as `<profile>/<name>` or `<triple>/<profile>/<name>`.
-CARGO_ARTIFACT_DIRS = ("deps", "build", ".fingerprint", "incremental")
 
 
 class CleanupError(RuntimeError):
@@ -159,43 +157,48 @@ def cargo_target(value: str | None) -> Path | None:
         raise CleanupError(f"refusing to prune CARGO_TARGET_DIR={target}")
     # Cargo writes this tag; without it the globs below could match a real project folder.
     if not (target / "CACHEDIR.TAG").is_file():
-        raise CleanupError(f"CARGO_TARGET_DIR={target} has no CACHEDIR.TAG; not a cargo target")
+        print(f"warning: CARGO_TARGET_DIR={target} has no CACHEDIR.TAG; not pruning it")
+        return None
     return target
 
 
-def last_use(unit: Path) -> tuple[float, int]:
+def last_use(entry: Path) -> tuple[float, int]:
     """Return (newest use, bytes) of a file or a whole directory tree.
 
-    Age is the later of atime and mtime: cargo does not rewrite a dependency that it reuses,
-    but reading it updates atime (daily under relatime). A directory counts by mtime only,
-    because this walk updates its atime.
+    Use is the later of atime and mtime: reading a file updates atime (daily under relatime).
+    A directory counts by mtime only, because this walk updates its atime.
     """
-    info = unit.lstat()
+    info = entry.lstat()
     if not S_ISDIR(info.st_mode):
         return max(info.st_atime, info.st_mtime), info.st_size
     newest, size = info.st_mtime, 0
-    for root, dirs, files in os.walk(unit):
+    for root, dirs, files in os.walk(entry):
         for name in dirs:
             newest = max(newest, (Path(root) / name).lstat().st_mtime)
         for name in files:
-            entry = (Path(root) / name).lstat()
-            newest = max(newest, entry.st_atime, entry.st_mtime)
-            size += entry.st_size
+            stat = (Path(root) / name).lstat()
+            newest = max(newest, stat.st_atime, stat.st_mtime)
+            size += stat.st_size
     return newest, size
 
 
+def unit_hash(entry: Path) -> str:
+    """`serde-<hash>`, `libserde-<hash>.rlib` and `serde-<hash>.d` share one unit hash."""
+    return entry.name.split(".", 1)[0].rpartition("-")[2]
+
+
 @contextlib.contextmanager
-def build_lock(profile: Path, apply: bool) -> Iterator[bool]:
+def build_lock(lock: Path, apply: bool) -> Iterator[bool]:
     """Hold the lock cargo holds for a build in this profile; yield False if a build has it.
 
-    A running build only stats a dependency it judged fresh and reads it later, so a removal
-    under that build breaks it. Between builds cargo rebuilds a missing artifact.
+    A running build only stats an output it judged fresh and reads it later, so a removal
+    under that build breaks it. Between builds cargo rebuilds a missing unit.
     A dry run takes no lock and writes nothing.
     """
     if not apply:
         yield True
         return
-    fd = os.open(profile / ".cargo-lock", os.O_RDWR | os.O_CREAT, 0o644)
+    fd = os.open(lock, os.O_RDONLY)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -212,40 +215,51 @@ def prune_cargo_target(
 ) -> tuple[dict[Path, tuple[int, int]], list[Path]]:
     """Return ({artifact dir: (entries, bytes)} unused since cutoff, busy profiles).
 
-    Each direct child of an artifact dir is one entry, aged by its newest file and removed
-    whole: a part of a rustc incremental crate dir or a build-script dir breaks the rest.
+    A unit's files share one hash in `.fingerprint/`, `build/` and `deps/`. Cargo reads the
+    fingerprint on every build that includes the unit but only stats the other outputs, so the
+    fingerprint dates the whole unit, and the unit goes whole: a lost part rebuilds the unit
+    and everything downstream. An incremental crate dir is dated by its newest file.
     """
-    profiles = {
-        top.parent
-        for name in CARGO_ARTIFACT_DIRS
-        for top in [*target.glob(f"*/{name}"), *target.glob(f"*/*/{name}")]
-    }
     pruned: dict[Path, tuple[int, int]] = {}
     busy: list[Path] = []
-    for profile in sorted(profiles):
+    # Cargo creates `.cargo-lock` before it writes a profile; a dir without one is not a profile.
+    for lock in sorted([*target.glob("*/.cargo-lock"), *target.glob("*/*/.cargo-lock")]):
+        profile = lock.parent
+        fingerprints = profile / ".fingerprint"
         # A symlink anywhere in the path could lead out of the target.
-        if profile.resolve() != profile:
+        if profile.resolve() != profile or fingerprints.is_symlink() or not fingerprints.is_dir():
             continue
-        with build_lock(profile, apply) as locked:
+        with build_lock(lock, apply) as locked:
             if not locked:
                 busy.append(profile)
                 continue
-            for name in CARGO_ARTIFACT_DIRS:
+            alive: set[str] = set()
+            for name in (".fingerprint", "build", "deps", "incremental"):
                 top = profile / name
                 if top.is_symlink() or not top.is_dir():
                     continue
                 entries = size = 0
-                for unit in sorted(top.iterdir()):
+                for entry in sorted(top.iterdir()):
                     try:
-                        used, unit_size = last_use(unit)
-                        if used > cutoff:
-                            continue
-                        if apply:
-                            remove_path(unit)
+                        used, entry_size = last_use(entry)
                     except OSError:
+                        alive.add(unit_hash(entry))
                         continue
+                    if name in ("build", "deps"):
+                        keep = unit_hash(entry) in alive
+                    else:
+                        keep = used > cutoff
+                        if keep and name == ".fingerprint":
+                            alive.add(unit_hash(entry))
+                    if keep:
+                        continue
+                    if apply:
+                        try:
+                            remove_path(entry)
+                        except OSError:
+                            continue
                     entries += 1
-                    size += unit_size
+                    size += entry_size
                 if entries:
                     pruned[top] = (entries, size)
     return pruned, busy
