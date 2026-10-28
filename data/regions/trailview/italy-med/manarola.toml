@@ -1,0 +1,6 @@
+name = "TrailView italy-med: Manarola"
+kind = "box"
+# west, south, east, north
+box = [9.45, 43.91, 10.01, 44.31]
+countries = ["IT"]
+time_zone = "Europe/Rome"

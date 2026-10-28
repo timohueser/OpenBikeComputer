@@ -1,0 +1,6 @@
+name = "TrailView celtic: Lough Tay"
+kind = "box"
+# west, south, east, north
+box = [-6.67, 52.87, -5.86, 53.36]
+countries = ["IE"]
+time_zone = "Europe/Dublin"

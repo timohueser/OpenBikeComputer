@@ -1,0 +1,6 @@
+name = "TrailView caledon: West Highlands"
+kind = "box"
+# west, south, east, north
+box = [-5.83, 56.4, -4.4, 57.83]
+countries = ["GB"]
+time_zone = "Europe/London"

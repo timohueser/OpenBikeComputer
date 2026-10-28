@@ -1,0 +1,6 @@
+name = "TrailView celtic: Moffat Dale"
+kind = "box"
+# west, south, east, north
+box = [-3.74, 55.16, -2.85, 55.67]
+countries = ["GB"]
+time_zone = "Europe/London"

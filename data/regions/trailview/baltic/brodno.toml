@@ -1,0 +1,6 @@
+name = "TrailView baltic: Brodno"
+kind = "box"
+# west, south, east, north
+box = [17.67, 54.02, 18.52, 54.52]
+countries = ["PL"]
+time_zone = "Europe/Warsaw"

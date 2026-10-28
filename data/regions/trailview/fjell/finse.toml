@@ -1,0 +1,6 @@
+name = "TrailView fjell: Finse"
+kind = "box"
+# west, south, east, north
+box = [6.91, 60.31, 8.05, 60.88]
+countries = ["NO"]
+time_zone = "Europe/Oslo"

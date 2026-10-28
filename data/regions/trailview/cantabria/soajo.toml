@@ -1,0 +1,6 @@
+name = "TrailView cantabria: Soajo"
+kind = "box"
+# west, south, east, north
+box = [-8.52, 41.68, -8.01, 42.07]
+countries = ["PT", "ES"]
+time_zone = "Europe/Lisbon"

@@ -1,0 +1,6 @@
+name = "TrailView italy-med: Montefiascone"
+kind = "box"
+# west, south, east, north
+box = [11.76, 42.34, 12.29, 42.73]
+countries = ["IT"]
+time_zone = "Europe/Rome"

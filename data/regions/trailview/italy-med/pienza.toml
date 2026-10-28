@@ -1,0 +1,6 @@
+name = "TrailView italy-med: Pienza"
+kind = "box"
+# west, south, east, north
+box = [11.4, 42.88, 11.94, 43.28]
+countries = ["IT"]
+time_zone = "Europe/Rome"

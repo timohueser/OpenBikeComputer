@@ -1,0 +1,6 @@
+name = "TrailView catalan-med: Esterel"
+kind = "box"
+# west, south, east, north
+box = [6.62, 43.24, 7.16, 43.64]
+countries = ["FR"]
+time_zone = "Europe/Paris"

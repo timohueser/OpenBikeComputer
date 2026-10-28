@@ -1,0 +1,6 @@
+name = "TrailView english-lowlands: Kersey"
+kind = "box"
+# west, south, east, north
+box = [0.53, 51.82, 1.3, 52.3]
+countries = ["GB"]
+time_zone = "Europe/London"

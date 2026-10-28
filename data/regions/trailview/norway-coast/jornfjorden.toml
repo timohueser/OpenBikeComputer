@@ -1,0 +1,6 @@
+name = "TrailView norway-coast: Jornfjorden"
+kind = "box"
+# west, south, east, north
+box = [13.8, 68.38, 15.58, 69.04]
+countries = ["NO"]
+time_zone = "Europe/Oslo"

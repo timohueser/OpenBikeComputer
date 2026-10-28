@@ -1,0 +1,6 @@
+name = "TrailView apennines: Castelluccio"
+kind = "box"
+# west, south, east, north
+box = [12.95, 42.62, 13.48, 43.02]
+countries = ["IT"]
+time_zone = "Europe/Rome"

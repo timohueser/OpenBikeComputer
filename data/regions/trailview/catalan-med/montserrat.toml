@@ -1,0 +1,6 @@
+name = "TrailView catalan-med: Montserrat"
+kind = "box"
+# west, south, east, north
+box = [1.52, 41.41, 2.03, 41.79]
+countries = ["ES"]
+time_zone = "Europe/Madrid"

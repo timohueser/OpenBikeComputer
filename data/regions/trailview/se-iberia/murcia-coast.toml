@@ -1,0 +1,6 @@
+name = "TrailView se-iberia: Murcia Coast"
+kind = "box"
+# west, south, east, north
+box = [-1.55, 37.39, -0.6, 37.76]
+countries = ["ES"]
+time_zone = "Europe/Madrid"
