@@ -1,7 +1,7 @@
 {
  "name": "Madeira evergreen forests",
  "extends": "base",
- "about": "Laurel forest of Madeira laurel, til, vinhático and barbusano with faya; planted eucalyptus, maritime pine, Japanese cedar and sweet chestnut on the mid slopes, canary palms by the villages; tree heath and Madeira bilberry in the heath belt up to the summits, broom, gorse and pride of Madeira on the ridge and the Paul da Serra, fish-stunning spurge on the coastal cliffs; bracken on the moor, chain fern under the laurels, agapanthus on the verges; brown cattle and a few sheep on the Paul da Serra, goats on the cliffs; white and pastel houses with orange tile roofs. Bananas and vines on the low terraces have no model yet, so the pack's broadleaves stand in the orchards.",
+ "about": "Laurel forest of Madeira laurel, til, vinhático and barbusano with faya; planted eucalyptus, maritime pine, Japanese cedar and sweet chestnut on the mid slopes, canary palms by the villages; tree heath and Madeira bilberry in the heath belt up to the summits, broom, gorse and pride of Madeira on the ridge and the Paul da Serra, fish-stunning spurge on the coastal cliffs; bracken on the moor, chain fern under the laurels, agapanthus on the verges; brown cattle and a few sheep on the Paul da Serra, goats on the cliffs; white and pastel houses with orange tile roofs. Bananas on the low terraces have no model yet, and the orchards stand no trees.",
  "trees": {
   "laurel": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1400], "weight": 4 },
   "til": { "model": "laurel", "latin": "Ocotea foetens", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1400], "weight": 4 },

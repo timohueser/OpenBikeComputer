@@ -35,6 +35,6 @@
   "goat": { "groups": 1, "size": [8, 30], "on": ["scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
   "horse": { "groups": 1, "size": [3, 12], "on": ["pasture", "grassland", "arable"] }
  },
- "orchard": "holm-oak",
+ "rows": { "orchard": "holm-oak" },
  "style": "village-house"
 }

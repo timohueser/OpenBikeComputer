@@ -1,4 +1,5 @@
 import contextlib
+import fcntl
 import importlib.util
 import io
 import os
@@ -19,6 +20,10 @@ SPEC.loader.exec_module(cleanup)
 
 
 class DevCleanupTests(unittest.TestCase):
+    def setUp(self):
+        # Never let a test reach the developer's real shared cargo target.
+        self.enterContext(mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": ""}))
+
     def test_registered_worktrees_keeps_paths_with_newlines(self):
         output = "worktree /repo\0HEAD abc\0\0worktree /temp/obc-branch\nname\0locked active\0\0"
         with mock.patch.object(cleanup, "git") as git:
@@ -117,16 +122,31 @@ class DevCleanupTests(unittest.TestCase):
             for path in (repo / ".git", repo / "target", repo, old_scratch, unrelated):
                 os.utime(path, (old, old))
 
+            target = self.make_target(
+                root / "cargo-target",
+                {
+                    "CACHEDIR.TAG": (old, old),
+                    "debug/.cargo-lock": (old, old),
+                    "debug/.fingerprint/old-1111111111111111/lib-old": (old, old),
+                    "debug/deps/libold-1111111111111111.rlib": (old, old),
+                },
+            )
+            old_rlib = target / "debug" / "deps" / "libold-1111111111111111.rlib"
+
             output = io.StringIO()
             with (
                 mock.patch.object(cleanup.tempfile, "gettempdir", return_value=str(root)),
+                mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target)}),
                 contextlib.redirect_stdout(output),
             ):
                 self.assertEqual(cleanup.main(["--repo", str(repo)]), 0)
                 self.assertTrue(old_scratch.exists())
+                self.assertTrue(old_rlib.exists())
                 self.assertIn(str(old_scratch), output.getvalue())
+                self.assertIn(str(old_rlib.parent), output.getvalue())
                 self.assertEqual(cleanup.main(["--repo", str(repo), "--apply"]), 0)
             self.assertFalse(old_scratch.exists())
+            self.assertFalse(old_rlib.exists())
             self.assertTrue(recent_scratch.exists())
             self.assertTrue(unrelated.exists())
             self.assertEqual(cache.read_text(), "keep")
@@ -152,6 +172,136 @@ class DevCleanupTests(unittest.TestCase):
             ):
                 self.assertEqual(cleanup.main(["--repo", str(repo), "--apply"]), 0)
             self.assertTrue((candidate / "active").exists())
+
+    def make_target(self, root: Path, files: dict[str, tuple[float, float]]) -> Path:
+        """A fake cargo target with old directories and files at the given (atime, mtime)."""
+        target = root.resolve()
+        for name in files:
+            (target / name).parent.mkdir(parents=True, exist_ok=True)
+            (target / name).write_text("x")
+        old = time.time() - 8 * cleanup.SECONDS_PER_DAY
+        for directory, _, _ in os.walk(target):
+            os.utime(directory, (old, old))
+        for name, times in files.items():
+            os.utime(target / name, times)
+        return target
+
+    def test_prune_cargo_target_removes_unused_units_whole_inside_the_target(self):
+        with tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryDirectory() as outside:
+            now = time.time()
+            old = now - 8 * cleanup.SECONDS_PER_DAY
+            wasm = "wasm32-unknown-unknown/debug"
+            target = self.make_target(
+                Path(scratch),
+                {
+                    "debug/.cargo-lock": (old, old),
+                    # Every build reads the fingerprint but only stats the other outputs.
+                    "debug/.fingerprint/live-1111111111111111/lib-live": (now, old),
+                    "debug/build/live-1111111111111111/out/gen.rs": (old, old),
+                    "debug/deps/liblive-1111111111111111.rmeta": (old, old),
+                    "debug/.fingerprint/stale-2222222222222222/lib-stale": (old, old),
+                    "debug/build/stale-2222222222222222/output": (old, old),
+                    "debug/deps/libstale-2222222222222222.rlib": (old, old),
+                    "debug/deps/stale-2222222222222222.d": (old, old),
+                    "debug/obc-data": (old, old),
+                    # Cargo leaves the hash out of a path package's cdylib and overwrites it.
+                    "debug/deps/libcdy_lib.so": (old, old),
+                    "debug/deps/cdy_lib.d": (old, old),
+                    f"{wasm}/deps/cdy_lib.wasm": (old, old),
+                    "debug/incremental/stale-3333333333333333/s-1/dep-graph.bin": (old, old),
+                    "debug/incremental/live-4444444444444444/s-2/dep-graph.bin": (now, now),
+                    "debug/incremental/live-4444444444444444/s-2/object.o": (old, old),
+                    f"{wasm}/.cargo-lock": (old, old),
+                    f"{wasm}/.fingerprint/w-5555555555555555/lib-w": (old, old),
+                    # A profile without `.cargo-lock` is not cargo's.
+                    "doc/.fingerprint/d-6666666666666666/lib-d": (old, old),
+                    "doc/deps/libd-6666666666666666.rlib": (old, old),
+                },
+            )
+            outside_file = Path(outside) / "w-5555555555555555" / "output"
+            outside_file.parent.mkdir()
+            outside_file.write_text("x")
+            os.utime(outside_file, (old, old))
+            (target / wasm / "build").symlink_to(outside, target_is_directory=True)
+            cutoff = now - 7 * cleanup.SECONDS_PER_DAY
+            expected = (
+                {
+                    target / "debug" / ".fingerprint": (1, 1),
+                    target / "debug" / "build": (1, 1),
+                    target / "debug" / "deps": (2, 2),
+                    target / "debug" / "incremental": (1, 1),
+                    target / wasm / ".fingerprint": (1, 1),
+                },
+                [],
+            )
+
+            self.assertEqual(cleanup.prune_cargo_target(target, cutoff, apply=False), expected)
+            self.assertTrue((target / "debug" / "deps" / "libstale-2222222222222222.rlib").exists())
+
+            self.assertEqual(cleanup.prune_cargo_target(target, cutoff, apply=True), expected)
+            for gone in (
+                "debug/.fingerprint/stale-2222222222222222",
+                "debug/build/stale-2222222222222222",
+                "debug/deps/libstale-2222222222222222.rlib",
+                "debug/deps/stale-2222222222222222.d",
+                "debug/incremental/stale-3333333333333333",
+                f"{wasm}/.fingerprint/w-5555555555555555",
+            ):
+                self.assertFalse((target / gone).exists(), gone)
+            for kept in (
+                "debug/.fingerprint/live-1111111111111111/lib-live",
+                "debug/build/live-1111111111111111/out/gen.rs",
+                "debug/deps/liblive-1111111111111111.rmeta",
+                "debug/obc-data",
+                "debug/deps/libcdy_lib.so",
+                "debug/deps/cdy_lib.d",
+                f"{wasm}/deps/cdy_lib.wasm",
+                "debug/incremental/live-4444444444444444/s-2/object.o",
+                "doc/deps/libd-6666666666666666.rlib",
+            ):
+                self.assertTrue((target / kept).exists(), kept)
+            self.assertTrue(outside_file.exists())
+
+    def test_prune_cargo_target_skips_a_profile_that_a_build_holds(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            old = time.time() - 8 * cleanup.SECONDS_PER_DAY
+            target = self.make_target(
+                Path(scratch),
+                {
+                    "debug/.cargo-lock": (old, old),
+                    "debug/.fingerprint/old-1111111111111111/lib-old": (old, old),
+                    "debug/deps/libold-1111111111111111.rlib": (old, old),
+                },
+            )
+            cutoff = time.time() - 7 * cleanup.SECONDS_PER_DAY
+            with open(target / "debug" / ".cargo-lock") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                self.assertEqual(
+                    cleanup.prune_cargo_target(target, cutoff, apply=True), ({}, [target / "debug"])
+                )
+            self.assertTrue((target / "debug" / "deps" / "libold-1111111111111111.rlib").exists())
+            self.assertEqual(
+                cleanup.prune_cargo_target(target, cutoff, apply=True)[0],
+                {target / "debug" / ".fingerprint": (1, 1), target / "debug" / "deps": (1, 1)},
+            )
+
+    def test_cargo_target_refuses_root_home_and_repositories_and_skips_untagged_dirs(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            repo = root / "repo"
+            cleanup.git(root, "init", str(repo))
+            for value in ("/", str(Path.home()), str(repo)):
+                with self.assertRaises(cleanup.CleanupError):
+                    cleanup.cargo_target(value)
+            untagged = root / "untagged"
+            untagged.mkdir()
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertIsNone(cleanup.cargo_target(str(untagged)))
+            self.assertIn("no CACHEDIR.TAG", output.getvalue())
+            (untagged / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55")
+            self.assertEqual(cleanup.cargo_target(str(untagged)), untagged.resolve())
+            self.assertIsNone(cleanup.cargo_target(""))
+            self.assertIsNone(cleanup.cargo_target(str(root / "missing")))
 
 
 if __name__ == "__main__":

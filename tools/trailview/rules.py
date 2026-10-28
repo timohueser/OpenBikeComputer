@@ -38,6 +38,8 @@ MAX_TREE_SPECIES = 32
 MAX_PLANT_SLOTS = 16
 # The house styles that the style table of structures/houses.ts holds: STYLES of 64, the last the industrial hall's.
 MAX_STYLES = 63
+# The materials planted in rows that the plantings hold (CROPS of vegetation/rows.ts).
+MAX_CROPS = 4
 MODELS = ROOT / "builder/web/src/lib/trailview/models"
 
 
@@ -193,7 +195,7 @@ def tables(materials):
                 "on": ground_names(materials)})
     pack = obj({
         "name": text, "about": text, "extends": text, "trees": entries(species), "ground": entries(ground),
-        "herds": entries(herd), "style": by_place(text), "houses": text, "orchard": text,
+        "herds": entries(herd), "style": by_place(text), "houses": text, "rows": each(materials["rows"], text),
     })
     style = obj({
         "name": text, "about": text, "extends": text, "pitch": listed(number(0, 80), 2), "eave": number(0, 5), "verge": number(0, 5),
@@ -236,8 +238,15 @@ def load(root=RULESET):
     }
 
 
-def vocabulary_problems(vocabulary):
+def vocabulary_problems(vocabulary, models=MODELS):
     out = []
+    have = {path.stem for kind in ("trees", "plants") for path in (models / kind).glob("*.ts")}
+    model = lambda v, p: text(v, p) or ([] if v in have else wrong(p, f"{said(v)} is no tree or plant model"))
+    span = lambda v, p: listed(positive, 2)(v, p) or ([] if v[0] <= v[1] else wrong(p, f"{said(v)}: its first value is above its second"))
+    rows = obj({"model": model, "across_m": span, "along_m": span, "height_m": span, "reach_m": number(1, 4500), "hedge": one_of(True, False)})
+    planted = [i for i, entry in enumerate(vocabulary["materials"]) if "rows" in entry]
+    if len(planted) > MAX_CROPS:
+        out.append(f"materials.json: {len(planted)} materials with rows, more than the {MAX_CROPS} that the plantings hold")
     if len(vocabulary["materials"]) > MAX_MATERIALS:
         out.append(f"materials.json: {len(vocabulary['materials'])} materials, more than the {MAX_MATERIALS} that a code of the ground tiles holds")
     for i, entry in enumerate(vocabulary["materials"]):
@@ -245,6 +254,11 @@ def vocabulary_problems(vocabulary):
             out.append(f"materials.json: materials[{i}].cover: {entry['cover']} is not one of {', '.join(COVER_ORDER)}")
         out += [f"materials.json: {problem}" for share in ("stones", "clumps", "shrubs") if share in entry
                 for problem in number(0, 1)(entry[share], f"materials[{i}].{share}")]
+        if "rows" in entry:
+            at = f"materials[{i}].rows"
+            out += [f"materials.json: {problem}" for problem in rows(entry["rows"], at)]
+            out += [f"materials.json: {at}: has no {key}" for key in ("across_m", "along_m", "height_m", "reach_m")
+                    if isinstance(entry["rows"], dict) and key not in entry["rows"]]
         if "tags" in entry:
             tag = lambda v, p: [] if isinstance(v, str) and re.fullmatch(r"[a-z]+(-[a-z]+)*", v) else wrong(p, f"{said(v)} is not a tag")
             out += [f"materials.json: {problem}" for problem in listed(tag)(entry["tags"], f"materials[{i}].tags")]
@@ -324,6 +338,7 @@ def validate(ruleset):
     vocabulary = ruleset["materials"]
     out = vocabulary_problems(vocabulary)
     ids = {key: [entry["id"] for entry in vocabulary[key]] for key in ("materials", "lithologies")}
+    ids["rows"] = [entry["id"] for entry in vocabulary["materials"] if "rows" in entry]
     ids["tags"] = {tag for entry in vocabulary["materials"] if isinstance(entry.get("tags"), list)
                    for tag in entry["tags"] if isinstance(tag, str)}
     out += ground_problems(ruleset["ground"], ids)
@@ -372,8 +387,8 @@ def chain(table, name):
 
 def model_problems(regions, packs, models=MODELS):
     """The species of each region's pack, with what it inherits: MAX_TREE_SPECIES trees and
-    MAX_PLANT_SLOTS shrubs and ground plants at most, each tree and orchard with a tree model of the
-    engine, each shrub with a tree or a plant model, each ground plant with a plant model."""
+    MAX_PLANT_SLOTS shrubs and ground plants at most, each tree with a tree model of the engine, each
+    shrub and each plant of its rows with a tree or a plant model, each ground plant with a plant model."""
     trees_have, plants_have = ({path.stem for path in (models / kind).glob("*.ts")} for kind in ("trees", "plants"))
     out = []
     for name in sorted(regions):
@@ -400,9 +415,11 @@ def model_problems(regions, packs, models=MODELS):
                 out.append(f"{file}: {'shrub' if rule.get('cover') == 'shrub' else 'tree'} {species} has no model {model}")
         out += [f"{file}: ground plant {species} has no model {rule.get('model', species)}"
                 for species, rule in tables["ground"].items() if rule.get("model", species) not in plants_have]
-        orchard = next((data["orchard"] for data in chain(packs, pack) if "orchard" in data), None)
-        if isinstance(orchard, str) and orchard not in trees_have:
-            out.append(f"{file}: orchard has no model {orchard}")
+        rows = {}
+        for data in reversed(chain(packs, pack)):
+            rows.update(data.get("rows") or {})
+        out += [f"{file}: rows {material} has no model {model}" for material, model in rows.items()
+                if isinstance(model, str) and model not in trees_have | plants_have]
     return out
 
 

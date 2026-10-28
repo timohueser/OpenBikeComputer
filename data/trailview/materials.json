@@ -1,5 +1,5 @@
 {
- "about": "The ground vocabulary that bake.py writes and the page reads. A code is its entry's index: append only, never reorder, delete or reuse an entry, and mark a retired one \"retired\": true. A material's cover is the WorldCover group whose ramp paints it and whose plants stand on it; its stones are the share of ground strewn with loose stones near the eye, and its clumps the share in tussocks and low shrubs, each 0 where it has none; its shrubs the share of its cover's shrubs that stand on it, 1 where it does not say. Its tags group it: a rule names a group as \"#tag\". The engine reads two of them: rocks lie on rough ground, which is not farmed, and on rocky ground, which is exposed rock that a ledge of turf can cover. A lithology's hardness runs from 0 soft to 1 hard.",
+ "about": "The ground vocabulary that bake.py writes and the page reads. A code is its entry's index: append only, never reorder, delete or reuse an entry, and mark a retired one \"retired\": true. A material's cover is the WorldCover group whose ramp paints it and whose plants stand on it; its stones are the share of ground strewn with loose stones near the eye, and its clumps the share in tussocks and low shrubs, each 0 where it has none; its shrubs the share of its cover's shrubs that stand on it, 1 where it does not say; its rows how it is planted in the rows of fields: its model, a tree or a plant, which a pack's rows may name instead, the metres across its rows and along them, its plants' heights, the metres from the eye where they stand, and hedge where the plants of a row touch; each field takes one value of each range. The cartoon plants of an orchard stand wider apart and larger than real ones. Its tags group it: a rule names a group as \"#tag\". The engine reads two of them: rocks lie on rough ground, which is not farmed, and on rocky ground, which is exposed rock that a ledge of turf can cover. A lithology's hardness runs from 0 soft to 1 hard.",
  "materials": [
   { "id": "none", "cover": "grass", "about": "Ground that no source names.", "clumps": 0.2, "tags": ["rough"] },
   { "id": "sea", "cover": "water", "about": "The sea." },
@@ -23,9 +23,12 @@
   { "id": "salt-marsh", "cover": "wetland", "about": "Salt marsh on the shore.", "clumps": 0.25, "tags": ["rough"] },
   { "id": "arable", "cover": "crop", "about": "Ploughed fields." },
   { "id": "rice", "cover": "crop", "about": "Rice paddies." },
-  { "id": "vineyard", "cover": "crop", "about": "Vineyards." },
-  { "id": "orchard", "cover": "crop", "about": "Fruit and nut orchards.", "clumps": 0.1 },
-  { "id": "olive-grove", "cover": "crop", "about": "Olive groves.", "clumps": 0.15 },
+  { "id": "vineyard", "cover": "crop", "about": "Vineyards.",
+    "rows": { "model": "grapevine", "across_m": [2.0, 2.6], "along_m": [1.1, 1.5], "height_m": [1.2, 1.7], "reach_m": 80, "hedge": true } },
+  { "id": "orchard", "cover": "crop", "about": "Fruit and nut orchards.", "clumps": 0.1,
+    "rows": { "across_m": [3.0, 4.0], "along_m": [2.5, 3.5], "height_m": [3.5, 4.5], "reach_m": 2000, "hedge": true } },
+  { "id": "olive-grove", "cover": "crop", "about": "Olive groves.", "clumps": 0.15,
+    "rows": { "model": "olive", "across_m": [8.0, 12.0], "along_m": [8.0, 12.0], "height_m": [4.0, 6.0], "reach_m": 2000 } },
   { "id": "hedge", "cover": "shrub", "about": "Hedgerows and tree lines between fields.", "tags": ["rough"] },
   { "id": "sparse", "cover": "bare", "about": "Bare ground with sparse vegetation.", "stones": 0.5, "clumps": 0.35, "tags": ["rough"] },
   { "id": "bare-soil", "cover": "bare", "about": "Bare earth: quarries, dumps, disturbed ground.", "stones": 0.15, "tags": ["rough"] },

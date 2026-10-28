@@ -1,7 +1,7 @@
 {
  "name": "Insubric lake district",
  "extends": "alps",
- "about": "Sweet chestnut, hop hornbeam, manna ash, downy oak and black locust on the lake slopes, holm oak, cypress and bay laurel on the warm shores, Scots pine on acid ground, beech higher up; hazel, hawthorn, smoke tree and box in the scrub; ferns and bracken under the chestnuts; Brown Swiss cattle and goats; reeds on the lake shores; rendered village houses under tile roofs. The orchards are olive groves.",
+ "about": "Sweet chestnut, hop hornbeam, manna ash, downy oak and black locust on the lake slopes, holm oak, cypress and bay laurel on the warm shores, Scots pine on acid ground, beech higher up; hazel, hawthorn, smoke tree and box in the scrub; ferns and bracken under the chestnuts; Brown Swiss cattle and goats; reeds on the lake shores; rendered village houses under tile roofs. Almond stands in for the fruit and nut orchards; olive groves are ground of their own.",
  "trees": {
   "sweet-chestnut": { "weight": 4 },
   "hop-hornbeam": { "elevation": [100, 1200], "weight": 3 },
@@ -26,6 +26,6 @@
   "chamois": null,
   "alpine-ibex": null
  },
- "orchard": "olive",
+ "rows": { "orchard": "almond" },
  "style": "village-house"
 }

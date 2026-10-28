@@ -831,7 +831,7 @@ check *args:
     _ok "all run gates passed"
 
 # Dry-run by default: `obc clean`, then `obc clean --days 14 --apply`.
-[doc("Remove old OBC test scratch under the system temp directory. Args: [--apply] [--days N]")]
+[doc("Remove old OBC test scratch and old artifacts in $CARGO_TARGET_DIR. Args: [--apply] [--days N]")]
 [group('build')]
 clean *args:
     #!/usr/bin/env bash

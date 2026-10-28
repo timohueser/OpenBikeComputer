@@ -36,6 +36,6 @@
   "horse": { "groups": 1, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "heath", "pasture", "arable"] },
   "iberian-ibex": { "model": "goat", "latin": "Capra pyrenaica", "groups": 1, "size": [3, 12], "on": ["bare-rock", "scree", "sparse"] }
  },
- "orchard": "hawthorn",
+ "rows": { "orchard": "hawthorn" },
  "style": "village-house"
 }

@@ -195,13 +195,6 @@
     "height": "surface"
   },
   {
-    "kind": "orchard",
-    "geometry": "area",
-    "match": [{"landuse": ["orchard"]}],
-    "keep": ["trees", "produce"],
-    "height": "surface"
-  },
-  {
     "kind": "arete",
     "geometry": "line",
     "match": [{"natural": ["arete"]}],
