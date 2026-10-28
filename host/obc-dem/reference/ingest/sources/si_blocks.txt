@@ -1,3 +1,4 @@
+# From http://gis.arso.gov.si/related/lidar_porocila/lidar_fishnet_D96TM.zip, fields NAME (`E_N` in km) and BLOK (`b_NN`). To make it again: `ogr2ogr -f CSV index.csv LIDAR_FISHNET_D96.shp -select NAME,BLOK`, then write one line per northing N: `N first-last:block ...`, a run per block of consecutive eastings.
 31 511-518:16
 32 409-413:21 510-518:16
 33 406-414:21 509-518:16

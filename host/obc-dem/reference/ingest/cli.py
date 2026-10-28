@@ -12,6 +12,7 @@ source pixel wide survives the 7 m step.
 """
 
 import argparse
+import fcntl
 import json
 import os
 import shutil
@@ -21,11 +22,13 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 import rasterio
 
 from .archive import (MEAN, coarse, fold_tiles, local_rasters, padded, pool_tile, priority_rank, samples,
                       tile_digest, write_tile)
-from .lattice import MEAN_NODATA, NODATA, Refuse, check_world, tile_bounds, tile_path
+from .lattice import (MEAN_NODATA, NODATA, TILE_PX, Refuse, check_world, covering_window, pixel_index, tile_bounds,
+                      tile_path, tile_window, udeg_floor)
 from .sources import SOURCES, ManualSource
 
 
@@ -46,7 +49,13 @@ def command_fetch(args) -> int:
     writes only the empty `<ti>-<tj>.none`, and the version keeps the tile before.
 
     The raw rasters go to `--work`, which is removed at the end whatever happens, so disk holds
-    only the rasters of the tiles that run and the store never sees them.
+    only the rasters of the tiles that run and the store never sees them. `--shared` is what the
+    tiles of one prepare share: the summit check of each model, and a file that a whole region is
+    published in.
+
+    The models are folded best first by `PRIORITY`, whatever order they come in: a model fills only
+    the gaps of the better ones, so a worse one folded first would keep pixels that a better one
+    folded later cannot take back when a third, better than both, is already held.
     """
 
     def stop(*_):
@@ -59,6 +68,7 @@ def command_fetch(args) -> int:
     stop_with_parent()
     ti, tj = parse_tile(args.tile)
     work, out = Path(args.work), Path(args.out)
+    shared = Path(args.shared) if args.shared else work / "shared"
     check_world(tile_bounds(ti, tj), f"--tile {args.tile}")
     held = set(filter(None, (args.held or "").split(",")))
     folded = {}
@@ -70,8 +80,8 @@ def command_fetch(args) -> int:
                     folded[root] = src.read(1)
     try:
         fetched = False
-        for key in args.source.split(","):
-            pooled = pool_model(registered(key), ti, tj, work / key)
+        for key in sorted(args.source.split(","), key=priority_rank):
+            pooled = pool_model(registered(key), ti, tj, work / key, shared)
             if pooled is None:
                 continue
             fetched = True
@@ -97,12 +107,66 @@ def command_fetch(args) -> int:
     return 0
 
 
-def pool_model(source, ti: int, tj: int, work: Path):
+def pool_model(source, ti: int, tj: int, work: Path, shared: Path):
     """The maximum and the mean of `source` in tile `ti`, `tj`, or `None` where it has no height."""
 
+    source.shared = shared
+    check_summit(source, shared)
     box = tile_bounds(ti, tj)
     if coarse(source, ti, tj):
         box = padded(box, source)
+    return pool_tile(rasters(source, box, work), source, ti, tj)
+
+
+# How far the highest pooled height near a row's summit may stand from the surveyed one. The geoid
+# stands 20 m to 60 m above the ellipsoid over Europe and its islands, so an ellipsoidal or wrongly
+# referenced model misses by more; a 5 m model reads a sharp summit a few metres low.
+SUMMIT_TOLERANCE_M = 10.0
+# The half side of the box read around a summit, in degrees: about 300 m.
+SUMMIT_BOX = 0.003
+
+
+def check_summit(source, shared: Path) -> None:
+    """Refuse a model whose heights miss its row's `summit`, before any of its heights are used.
+
+    One prepare checks a model once: the tile that checks first writes `checks/<key>.ok` in
+    `shared`, under a lock, and the others read it.
+    """
+
+    if source.summit is None:
+        return
+    checks = shared / "checks"
+    checks.mkdir(parents=True, exist_ok=True)
+    passed = checks / f"{source.key}.ok"
+    with (checks / f"{source.key}.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if passed.exists():
+            return
+        lon, lat, metres = source.summit
+        ti, tj = (pixel_index(udeg_floor(value)) // TILE_PX for value in (lat, lon))
+        west, south, east, north = tile_bounds(ti, tj)
+        box = (max(west, lon - SUMMIT_BOX), max(south, lat - SUMMIT_BOX),
+               min(east, lon + SUMMIT_BOX), min(north, lat + SUMMIT_BOX))
+        work = checks / source.key
+        try:
+            pooled = pool_tile(rasters(source, box, work), source, ti, tj)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        tile, near = tile_window(ti, tj), covering_window(box)
+        top = tile.row0 + TILE_PX
+        part = np.s_[top - near.row0 - near.rows:top - near.row0, near.col0 - tile.col0:near.col0 - tile.col0 + near.cols]
+        held = pooled[0][part][pooled[0][part] != NODATA] if pooled is not None else np.array([])
+        highest = int(held.max()) if held.size else None
+        if highest is None or abs(highest - metres) > SUMMIT_TOLERANCE_M:
+            raise Refuse(f"{source.key}: the summit at {lat}, {lon} is {metres} m, and the model reads "
+                         f"{highest if highest is not None else 'no height'} there; its heights are not "
+                         f"the orthometric metres of `{source.vertical_datum}`")
+        passed.touch()
+
+
+def rasters(source, box, work: Path):
+    """The rasters of `source` that cover `box`, fetched or read from the delivery."""
+
     if isinstance(source, ManualSource):
         # A delivery is like a credential: the environment names its directory and the datum
         # that the owner read in the order's metadata.
@@ -119,14 +183,12 @@ def pool_model(source, ti: int, tj: int, work: Path):
             raise Refuse(f"{source.key} delivers more than one vertical datum: read the order's metadata and set "
                          f"{prefix}_DATUM={source.confirm_datum} when it says so; nothing here converts an "
                          "ellipsoidal height")
-        rasters = local_rasters(source, base, box, work)
-    else:
-        source.require_credential()
-        # Outside its `extent` the product has no data, so only the overlap is downloaded.
-        west, south, east, north = source.extent
-        box = (max(box[0], west), max(box[1], south), min(box[2], east), min(box[3], north))
-        rasters = source.fetch(box, work) if box[0] < box[2] and box[1] < box[3] else []
-    return pool_tile(rasters, source, ti, tj)
+        return local_rasters(source, base, box, work)
+    source.require_credential()
+    # Outside its `extent` the product has no data, so only the overlap is downloaded.
+    west, south, east, north = source.extent
+    box = (max(box[0], west), max(box[1], south), min(box[2], east), min(box[3], north))
+    return source.fetch(box, work) if box[0] < box[2] and box[1] < box[3] else []
 
 
 def command_index_terrain(args) -> int:
@@ -196,6 +258,7 @@ def main(argv=None) -> int:
     fetch.add_argument("--out", required=True, help="where the pooled tile goes")
     fetch.add_argument("--base", help="the archive root of the version before, which holds the tile")
     fetch.add_argument("--held", help="the sources of the tile of --base, joined by commas")
+    fetch.add_argument("--shared", help="what the tiles of one prepare share; default: inside --work")
     fetch.set_defaults(run=command_fetch)
 
     tiles = commands.add_parser("index-terrain", help="index.json of a version of terrain, for obc data")

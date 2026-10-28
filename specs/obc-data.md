@@ -1645,9 +1645,12 @@ the same format; `prod` takes a version of a region.
 - For each tile, `host/obc-dem/reference/ingest.py fetch <keys> --tile <ti:04>-<tj:04>` pools the
   rasters of each model of the tile onto the lattice in one pass, and folds each into the tile:
   into the tile of the version before when it has one (`--base`, with `--held`, its sources), by
-  `fold_tiles`. A model keeps the pixels where it has a height when it ranks better by `PRIORITY`
-  than every other source of the tile, also over an older survey of its own; else it fills only
-  the gaps. Each lattice pixel that no centre of a model reaches and that lies between four of its
+  `fold_tiles`, the models best first by `PRIORITY`. A model keeps the pixels where it has a height
+  when it ranks better than every other source of the tile, also over an older survey of its own;
+  else it fills only the gaps. Before it uses a model whose row has a `summit`, the program pools
+  the tile of that summit and refuses the model when the highest height within about 300 m of it
+  is more than 10 m from the surveyed height. `--shared`, one directory for the tiles of a
+  prepare, keeps the passed checks, so one prepare checks a model once. Each lattice pixel that no centre of a model reaches and that lies between four of its
   centres with a height takes their bilinear height. A model whose step is longer than the east
   side of a lattice pixel in the tile asks for the tile with two of its steps of margin. So a
   model coarser than the lattice fills its footprint. A finer model whose step is longer than half

@@ -24,6 +24,7 @@ from rasterio.transform import Affine
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import ingest  # noqa: E402
+import ingest.cli  # noqa: E402
 import merge  # noqa: E402
 
 LV95 = CRS.from_epsg(2056)
@@ -573,6 +574,70 @@ class SwissSurveys(unittest.TestCase):
 
 class Fold(unittest.TestCase):
     """`fold_tiles`: a model into the tile of the version before."""
+
+    def test_three_models_fold_best_first_whatever_order_they_come_in(self):
+        """`data/sources.toml` lists `fr` before `it` before `it-21`. Folded in that order, TINITALY
+        fills the Italian side before Piedmont comes, and Piedmont, worse than `fr`, may only fill
+        gaps: TINITALY would keep the pixels that Piedmont has."""
+
+        nodata, mean_nodata = ingest.NODATA, ingest.MEAN_NODATA
+        heights = {"fr": (1, nodata, nodata), "it-21": (nodata, 2, nodata), "it": (3, 3, 3)}
+
+        def pooled(source, ti, tj, work, shared):
+            row = np.full((ingest.TILE_PX, ingest.TILE_PX), nodata, dtype="int16")
+            row[0, :3] = heights[source.key]
+            mean = np.where(row == nodata, mean_nodata, row.astype("int32") * 10).astype("int32")
+            return row, mean
+
+        with TemporaryDirectory() as directory, unittest.mock.patch.object(ingest.cli, "pool_model", pooled):
+            out = Path(directory) / "out"
+            self.assertEqual(ingest.main(["fetch", "fr,it,it-21", "--tile", "4812-4223",
+                                          "--work", str(Path(directory) / "work"), "--out", str(out)]), 0)
+            with rasterio.open(out / "16" / "4812" / "4223.tif") as src:
+                self.assertEqual(src.read(1)[0, :3].tolist(), [1, 2, 3])
+            self.assertEqual((out / "4812-4223.keys").read_text(encoding="utf-8"), "fr,it-21,it")
+
+
+class Summit(unittest.TestCase):
+    """A row's summit: a model that misses it is refused before its heights are used."""
+
+    class Peak(ingest.Source):
+        """A 10 m raster in degrees around (8.0, 46.5), inside the extent of `dtm-ch`, with one peak."""
+
+        fetches = 0
+
+        def fetch(self, bbox, workdir):
+            type(self).fetches += 1
+            workdir.mkdir(parents=True, exist_ok=True)
+            values = np.full((100, 100), 1000.0, dtype="float32")
+            values[50, 50] = self.peak
+            path = workdir / "peak.tif"
+            profile = {"driver": "GTiff", "height": 100, "width": 100, "count": 1, "dtype": "float32",
+                       "crs": ingest.WGS84, "transform": Affine(1e-4, 0, 7.995, 0, -1e-4, 46.505)}
+            with rasterio.open(path, "w", **profile) as dst:
+                dst.write(values, 1)
+            return [path]
+
+    def model(self, peak):
+        source = self.Peak("ch", "Testland", "test", 10.0, "CC0", "orthometric, unverified",
+                           summit=(8.00005, 46.49995, 2000))
+        source.peak = peak
+        return source
+
+    def test_a_model_within_the_tolerance_passes_once_per_prepare_and_one_beside_it_is_refused(self):
+        with TemporaryDirectory() as directory:
+            shared = Path(directory)
+            ingest.cli.check_summit(self.model(2004.0), shared)
+            ingest.cli.check_summit(self.model(2004.0), shared)
+            self.assertEqual(self.Peak.fetches, 1, "the mark of the passed check answers the second tile")
+            self.assertFalse((shared / "checks" / "ch").exists(), "the rasters of the check are removed")
+        with TemporaryDirectory() as directory, self.assertRaises(ingest.Refuse) as refusal:
+            ingest.cli.check_summit(self.model(2055.0), Path(directory))
+        self.assertIn("2055", str(refusal.exception))
+
+    def test_a_datum_that_names_no_known_system_needs_a_summit(self):
+        with self.assertRaises(ingest.Refuse):
+            ingest.Source("x", "Nowhere", "p", 1.0, "l", "orthometric, unverified")
 
     def test_a_better_model_wins_where_it_has_a_height_and_a_worse_one_fills_the_gaps(self):
         nodata = ingest.NODATA

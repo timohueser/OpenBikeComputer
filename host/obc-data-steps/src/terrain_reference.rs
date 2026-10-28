@@ -142,6 +142,8 @@ impl Prepared for TerrainReference {
                 }
                 command.arg("--base").arg(&base).args(["--held", &sources.join(",")]);
             }
+            // The summit check of each model, once per prepare, and a file a whole region is in.
+            command.arg("--shared").arg(job.state.join("shared"));
             Ok(command)
         })?;
         // A tile that this version did not make is the tile of the version before.
@@ -394,7 +396,7 @@ mod tests {
     /// signal stops it. `index-terrain` writes the digests that it gets unless `fail-index` exists.
     const INGEST: &str = r#"case "$1" in
 fetch)
-    echo "fetch $4 $2${10:+ over ${12}}" >> calls
+    echo "fetch $4 $2$([ "$9" = --base ] && echo " over ${12}")" >> calls
     # As `ingest.py fetch` does, it removes its `--work` when it ends, also on SIGTERM.
     trap 'rm -rf "$6"' EXIT && trap 'exit 143' TERM
     mkdir -p "$6" && touch "$6/raw.tif" && echo "$6" >> works

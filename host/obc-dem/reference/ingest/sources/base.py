@@ -50,6 +50,10 @@ def registry(key: str) -> dict:
 # this, and a zip that claims to is not a delivery.
 MAX_MEMBER_BYTES = 16 << 30
 
+# The first four bytes of a TIFF and of a BigTIFF, either byte order. A portal that answers an
+# error or a login page with a 200 sends something else.
+TIFF_MAGIC = (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")
+
 # What the tail can open. A GeoTIFF carries its own CRS; an ESRI ASCII grid states its
 # origin and its step and never its CRS, so a row published or delivered as one names the
 # grid in `grid_epsg` and `placed` writes the `.prj` that format keeps a CRS in. An XYZ
@@ -68,15 +72,15 @@ RETRY_DELAYS = (5, 30, 120, 600)
 # OWS exception codes that name a fault of the server, whatever status they ride on.
 SERVER_FAULTS = (b"NoApplicableCode", b"LayerNotDefined")
 
-# The orthometric height systems the registry knows. A row has to name one of them: the
-# archive is orthometric metres and the bakery holds the reference against Copernicus on
-# EGM2008, so a datum nobody recognised is a refusal and not a footnote. Add a name here
-# when a new source's agency documents an orthometric system.
+# The orthometric height systems the registry knows. A row has to name one of them, or carry a
+# `summit` that the prepare checks: the archive is orthometric metres and the bakery holds the
+# reference against Copernicus on EGM2008, so a datum nobody recognised is a refusal and not a
+# footnote. Add a name here when a new source's agency documents an orthometric system.
 ORTHOMETRIC = (
     "LN02", "LHN95", "NGF-IGN69", "NAVD88", "NN2000", "REDNAP", "NAP",
     "Ordnance Datum Newlyn", "EVRF2000", "CGVD2013", "NZVD2016", "DHHN2016", "DHHN92",
     "DVR90", "RH2000", "N2000", "AHD", "m s.l.m.", "EGM2008", "Bpv", "PL-KRON86-NH",
-    "ISH2004", "SVS2000", "Cascais", "Azores island heights",
+    "ISH2004", "SVS2000",
 )
 
 # What an ellipsoidal height is called. It stands tens of metres from an orthometric one,
@@ -131,7 +135,7 @@ def inside(url: str, suffix: str) -> bool:
 
 
 class DropAuthOnRedirect(urllib.request.HTTPRedirectHandler):
-    """A redirect to another host does not carry the credential with it.
+    """A redirect to another host, or from https to http, does not carry the credential with it.
 
     urllib copies a request's headers onto the redirect it follows, so an `Authorization`
     or a session `Cookie` header follows a `Location` anywhere. A portal that redirects a
@@ -140,7 +144,8 @@ class DropAuthOnRedirect(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         onward = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if onward is not None and host_of(newurl) != host_of(req.full_url):
+        left_https = req.full_url.startswith("https://") and not newurl.startswith("https://")
+        if onward is not None and (host_of(newurl) != host_of(req.full_url) or left_https):
             onward.headers = {name: value for name, value in onward.headers.items()
                               if name.lower() not in ("authorization", "cookie")}
         return onward
@@ -411,7 +416,15 @@ class Source:
 
     `void` is a height inside the plausible range that the service answers for land it does
     not hold and does not declare as nodata, such as GUGiK's 0 abroad.
+
+    `summit` is `(lon, lat, metres)`, a surveyed summit that the model must read before a prepare
+    uses it: an ellipsoidal or wrongly referenced model misses it by tens of metres. A row whose
+    datum names no system of `ORTHOMETRIC` must have one.
+
+    `shared` is the directory that the tiles of one prepare share; the fetch command sets it.
     """
+
+    shared = None
 
     #: How this kind of adapter carries a credential: `"query"` when its requests are
     #: URLs it builds itself, `"headers"` when it downloads published files, and `None`
@@ -422,8 +435,8 @@ class Source:
 
     def __init__(self, key, country, product, resolution_m, licence, vertical_datum,
                  credential=None, credential_hosts=(), grid_epsg=None, confirm_datum=None,
-                 void=None):
-        self.check_datum(key, vertical_datum)
+                 void=None, summit=None):
+        self.check_datum(key, vertical_datum, summit)
         self.check_credential(key, credential, credential_hosts)
         self.key = key
         self.country = country
@@ -436,6 +449,7 @@ class Source:
         self.grid_epsg = grid_epsg
         self.confirm_datum = confirm_datum
         self.void = void
+        self.summit = summit
 
     @property
     def attribution(self) -> str:
@@ -476,7 +490,7 @@ class Source:
                          "hosts it may be sent to, because an index names where a download is")
 
     @staticmethod
-    def check_datum(key: str, datum: str) -> None:
+    def check_datum(key: str, datum: str, summit=None) -> None:
         if not datum:
             raise Refuse(f"{key}: a source without a vertical_datum cannot be registered")
         if any(word in datum.lower() for word in ELLIPSOIDAL):
@@ -484,10 +498,11 @@ class Source:
                 f"{key}: `{datum}` is an ellipsoidal height, and the archive is orthometric "
                 "metres; convert the product before it reaches the tail"
             )
-        if not any(name in datum for name in ORTHOMETRIC):
+        if summit is None and not any(name in datum for name in ORTHOMETRIC):
             raise Refuse(
                 f"{key}: `{datum}` names no orthometric height system this tool recognises; "
-                "add it to ORTHOMETRIC in sources/base.py if the agency documents one"
+                "add it to ORTHOMETRIC in sources/base.py if the agency documents one, or give "
+                "the row a summit to check"
             )
 
     def require_credential(self) -> None:

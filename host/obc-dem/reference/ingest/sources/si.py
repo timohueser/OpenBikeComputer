@@ -2,10 +2,10 @@
 
 ARSO publishes one file per square kilometre of D96/TM, a semicolon XYZ text named after the
 square's south-west corner in kilometres, under the folder of the flight block it came in:
-`b_37/D96TM/TM1_410_138.txt`. The block is not arithmetic, so `si_blocks.txt` is the index. It is
-ARSO's fishnet `lidar_fishnet_D96TM.zip` (field `BLOK`) as runs: one line per northing in
-kilometres, then `first-last:block` per run of eastings. A square the index does not name has no
-file, so it is not asked for.
+`b_37/D96TM/TM1_410_138.txt`. The block is not arithmetic, so `si_blocks.txt` is the index: ARSO's
+fishnet as runs, one line per northing in kilometres, then `first-last:block` per run of eastings.
+Its first line says where it comes from and how to make it again. A square the index does not
+name has no file, so it is not asked for.
 
 GDAL reads an XYZ grid but no CRS beside it, so `grid_epsg` places it, and the download keeps the
 `.xyz` suffix that the tail reads. The heights are orthometric on SVS2000: the contractor's
@@ -27,6 +27,8 @@ def blocks() -> dict[tuple[int, int], int]:
 
     index = {}
     for line in INDEX.read_text(encoding="utf-8").splitlines():
+        if line.startswith("#"):
+            continue
         north, *runs = line.split()
         for run in runs:
             span, block = run.split(":")
@@ -59,4 +61,5 @@ SI = ArsoTiles(
     "SVS2000, orthometric (D96/TM + SVS2000)",
     grid_epsg=3794,
     base="https://gis.arso.gov.si/lidar/dmr1/",
+    summit=(13.8367, 46.3783, 2864),  # Triglav
 )
