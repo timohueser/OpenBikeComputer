@@ -99,8 +99,9 @@ a summit into a dome.
 
 GLO-30 is a surface model, so it stands on the forest and the roofs. Next to a national model,
 GLO-30 takes the bias of that model: one median offset per model, which the terrain prepare
-measures once. A bake of one region and a bake of all of Europe thus give the same heights. The
-planner routes read the same heights as the maps, so the climb of a route agrees with the map.
+measures once and the version of the terrain keeps. So within one version, a bake of one region
+and a bake of all of Europe give the same heights. The planner routes read their heights through
+the same function as the maps, but without the corrections at coastlines and summits.
 
 Where GLO-30 gives the height, also in the 1 km band where it blends into a national model, the
 bake corrects these faults from OSM. The sea beside the coastline is at sea level. A mapped summit
