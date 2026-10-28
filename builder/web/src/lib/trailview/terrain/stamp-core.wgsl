@@ -67,13 +67,15 @@ const ROAD_CORE: u32 = 2u;
 const PORTAL_CORE: u32 = 3u;
 // A path's tread outranks the slopes of the roads beside it.
 const PATH_CORE: u32 = 4u;
-const BANKS: u32 = 5u;
+// The sea's bed yields to the cores of a pier or a quay in it, and holds against the slopes and the cover of a tunnel.
+const SEA_BED: u32 = 5u;
+const BANKS: u32 = 6u;
 // The slopes of the roads and the paths.
-const CONES: u32 = 6u;
+const CONES: u32 = 7u;
 // The ground under a deck yields to every road beside it and under it.
-const TROUGH: u32 = 7u;
-const COVER: u32 = 8u;
-const BUCKETS: u32 = 9u;
+const TROUGH: u32 = 8u;
+const COVER: u32 = 9u;
+const BUCKETS: u32 = 10u;
 
 const PI: f32 = 3.14159265;
 // As EARTH_RADIUS of frame.ts.
@@ -400,13 +402,12 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             shore = INF;
         } else if (kind == LAKE || kind == SEA) {
             // bins.ts lists the sea's coast only where its bed slopes: farther off, `shore` may exceed the
-            // distance to the coast, and the bed is at its depth either way. The sea's bed yields to the
-            // cores of a pier or a quay in it.
+            // distance to the coast, and the bed is at its depth either way.
             let water = real(r + 6u);
             let lake = kind == LAKE;
             if (((entry & INSIDE) != 0u) != crossed) {
                 let bed = select(max(0.0, shore - sea_band(texel)), shore, lake);
-                let bucket = select(BANKS, WATER_CORE, lake);
+                let bucket = select(SEA_BED, WATER_CORE, lake);
                 hi[bucket] = min(hi[bucket], water - min(BED_DEPTH, SHORE_SLOPE * bed));
                 water_in = max(water_in, water);
                 in_lake = true;

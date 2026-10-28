@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { decodeFeatures, EXTENT, unitScale } from '../stream/features';
+import { decodeFeatures, EXTENT, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
-import { roadHeight } from './audit-samples';
+import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
 import { BRIDGE, CELL, cellAt, crosses, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
@@ -98,6 +98,10 @@ describe('the stamp data of a node', () => {
             }
         }
         expect(inside).toBeGreaterThan(0);
+        // A node inside the lake holds a mask, which takes the lake's inside, where nothing grows.
+        const middle = { level: 18, x: 2 * NODE.x + 1, y: 2 * NODE.y + 1 }, held = nodeStamps(list, TILE, middle);
+        expect(cellOf(held.data!, middle, 9 * GRID + 9).entries.length).toBe(1);
+        expect(held.mask).toBe(true);
     });
 
     it('takes the points inside the buildings and the river areas, from each cell origin and the edges that the cell lists', () => {
@@ -179,11 +183,29 @@ describe('the stamp data of a node', () => {
     });
 });
 
+describe('the audit of the sea', () => {
+    it('samples the bed over a tunnel in the sea, where a cover that lifted the bed would show', () => {
+        // Sea over the whole tile, and a road tunnel 2 m under sea level across the level-17 node in its middle.
+        const NODE = { level: 17, x: TILE.x * 16 + 8, y: TILE.y * 16 + 8 }, scale = unitScale(TILE.level);
+        const list: Feature[] = [
+            { kind: 'sea', tags: {}, geometry: 'area' as const, parts: [{ outer: true, xy: Int32Array.from([-100, -100, EXTENT + 100, -100, EXTENT + 100, EXTENT + 100, -100, EXTENT + 100]), z: new Float32Array(4) }] },
+            { kind: 'tunnel', tags: { highway: 'tertiary', tunnel: 'yes' }, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from([8000, 8704, 9400, 8704]), z: Float32Array.from([-2, -2]) }] },
+        ];
+        const samples = auditSamples(list, TILE, NODE), floats = new Float32Array(samples.buffer), y = (TILE.y * EXTENT + 8704) * scale;
+        const metres = metresPerUnit(y);
+        const over = Array.from({ length: samples.length / SAMPLE }, (_, i) => i * SAMPLE)
+            .filter(at => samples[at + 2] === (IN_WATER | (SEA << 8)) && Math.abs(samples[at + 1] - y) * metres < 4);
+        expect(over.length).toBeGreaterThan(0);
+        // Each holds the sea's level, 0 m, and a distance from the coast past the start of the bed's slope.
+        for (const at of over) expect([floats[at + 3], floats[at + 5] > 0]).toEqual([0, true]);
+    });
+});
+
 /** As stamp_at: the upper bound that the sea puts on the ground at world point p of a node, Infinity where it holds none. */
 function seaBound(data: Uint32Array, node: { level: number; x: number; y: number }, p: number[]): number {
     const records = 2 + GRID * GRID + 1 + data[1], word = (r: number, i: number) => data[records + RECORD * r + i] | 0;
     const unit = metresPerUnit(p[1]), texel = unit * 2 ** (22 - node.level);
-    const band = Math.min(RULES.SHORE_CELLS * RULES.MESH_TEXELS * texel, RULES.BUFFER_M - 2 * texel - 1 - RULES.BED_DEPTH / RULES.SHORE_SLOPE);
+    const band = Math.max(0, Math.min(RULES.SHORE_CELLS * RULES.MESH_TEXELS * texel, RULES.BUFFER_M - 2 * texel - 1 - RULES.BED_DEPTH / RULES.SHORE_SLOPE));
     const { entries, origin } = cellAt(data, node, p[0], p[1]);
     let crossed = false, shore = Infinity, hi = Infinity;
     for (const entry of entries) {

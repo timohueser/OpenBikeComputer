@@ -612,7 +612,9 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             heights ||= stamps;
         }
     });
-    let mask = cells[0].some(list => list.length > 0) || cells[2].some(list => list.length > 0);
+    // The stamps of a node read only the cells inside its apron.
+    const inner = (c: number) => c % GRID > 0 && c % GRID < GRID - 1 && c >= GRID && c < GRID * (GRID - 1);
+    let mask = [cells[0], cells[2]].some(lists => lists.some((list, c) => inner(c) && list.length > 0));
     // Per lake, sea polygon, pad and area near the node, its edges in each cell that they reach.
     const outlines = [...lakes.map(lake => ({ lake, kind: LAKE })), ...(seaShows(node.level) ? seas.map(lake => ({ lake, kind: SEA })) : []),
         ...(node.level >= PAD_LEVEL ? pads.map(lake => ({ lake, kind: PAD })) : []),
@@ -628,10 +630,11 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             box[3] = Math.max(box[3], ring[i + 1]);
         }
         // An area acts only inside it: its edges go to the cells that they cross, so a village's cells stay
-        // short. The sea acts no farther than the end of its bed's slope (sea_band of stamp-core.wgsl and
-        // BED_M) from its coast, so its long coasts stay short too.
-        const band = RULES.SHORE_CELLS * RULES.MESH_TEXELS * 2 ** shift;
-        const metres = kind === AREA ? 0 : kind === SEA ? Math.min(REACH_M, BED_M + band / units) : REACH_M, reach = metres * units;
+        // short. The sea acts no farther than the end of its bed's slope from its coast, so its long coasts
+        // stay short too: BED_M past sea_band of stamp-core.wgsl, in units at most a shore band and the
+        // buffer less BED_M, a metre and two texels.
+        const band = Math.min(RULES.SHORE_CELLS * RULES.MESH_TEXELS * 2 ** shift, Math.max(0, (RULES.BUFFER_M - 1 - BED_M) * units - 2 * 2 ** shift));
+        const metres = kind === AREA ? 0 : kind === SEA ? BED_M + band / units : REACH_M, reach = metres * units;
         if (box[2] < x0 - reach || box[0] > x0 + span + reach || box[3] < y0 - reach || box[1] > y0 + span + reach) return [];
         const edges = new Map<number, number[]>();
         for (const ring of lake.rings) for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
@@ -662,8 +665,6 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
         throw new Error(`No origin off the shores in cell ${c} of node ${node.level}/${node.x}/${node.y}`);
     };
     const origins = Array.from({ length: GRID * GRID }, (_, c): [number, number] => (near.length ? origin(c) : [0, 0]));
-    // The stamps of a node read only the cells inside its apron.
-    const inner = (c: number) => c % GRID > 0 && c % GRID < GRID - 1 && c >= GRID && c < GRID * (GRID - 1);
     for (const { lake, kind, edges, cells: reached } of near) {
         // A cell lists the lake after its edges, where an edge is near or where its origin lies inside it.
         // Without an edge in the node, every cell lies on the side of the first.
@@ -675,7 +676,8 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             if (!inside && !edges.has(c)) continue;
             cells[1][c].push(...(edges.get(c) ?? []), marker | (inside ? INSIDE : 0));
             used ||= inner(c);
-            mask ||= inner(c) && (edges.has(c) || kind === AREA);
+            // A lake takes its inside, where nothing grows; the open sea needs no mask.
+            mask ||= inner(c) && (edges.has(c) || kind === AREA || kind === LAKE);
         }
         // The box of a sea polygon covers much land, where it stamps nothing.
         heights ||= used && kind !== AREA;
