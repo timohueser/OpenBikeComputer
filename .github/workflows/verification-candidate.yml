@@ -21,7 +21,7 @@ concurrency:
 jobs:
   validate:
     if: github.ref == 'refs/heads/develop'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,7 +53,7 @@ jobs:
   verify:
     if: always()
     needs: [validate, checks, firmware]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require every candidate gate
         env:
@@ -67,7 +67,7 @@ jobs:
   report:
     if: always() && needs.validate.result == 'success'
     needs: [validate, verify]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
