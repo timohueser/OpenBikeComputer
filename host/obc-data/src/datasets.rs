@@ -603,6 +603,10 @@ pub fn get(
         let workers: Vec<_> = (0..WORKERS.min(items.len()))
             .map(|_| {
                 scope.spawn(|| loop {
+                    // A signal stops the get after the files that it takes.
+                    if crate::engine::runs::signalled() {
+                        break;
+                    }
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(item) = items.get(index) else { break };
                     let old = previous.get(item.path.as_str()).copied();
@@ -634,6 +638,9 @@ pub fn get(
         }
     });
     let manifest = save()?;
+    if crate::engine::runs::signalled() {
+        return Err(format!("the get of `{}` stopped on a signal; run it again: it resumes", dataset.id));
+    }
     let results = results.into_inner().unwrap();
     let errors = items
         .iter()
@@ -751,20 +758,23 @@ fn take(
 
 /// The first bytes of a file of each kind whose kind its name tells. An answer of another kind,
 /// such as the HTML login page that a refused token gets, is no file of the dataset.
-const MAGIC: [(&str, &[&[u8]]); 2] =
-    [(".hdf", &[&[0x0e, 0x03, 0x13, 0x01]]), (".tif", &[b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"])];
+const MAGIC: [(&str, &str, &[&[u8]]); 2] =
+    [(".hdf", "an HDF", &[&[0x0e, 0x03, 0x13, 0x01]]), (".tif", "a TIFF", &[b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"])];
 
 /// Whether `file` starts with the magic of the kind of `path`; a file of another kind passes. A
 /// file that fails is deleted.
 fn magic(file: &Path, path: &str) -> Result<(), String> {
-    let Some((_, magics)) = MAGIC.iter().find(|(end, _)| path.ends_with(end)) else { return Ok(()) };
+    let Some(kind) = wrong_magic(file, path) else { return Ok(()) };
+    let _ = fs::remove_file(file);
+    Err(format!("{path}: the answer is not {kind} file"))
+}
+
+/// The kind of `path`, such as `an HDF`, when `file` does not start with its magic.
+fn wrong_magic(file: &Path, path: &str) -> Option<&'static str> {
+    let (_, kind, magics) = MAGIC.iter().find(|(end, ..)| path.ends_with(end))?;
     let mut head = [0; 4];
     let read = fs::File::open(file).and_then(|mut opened| std::io::Read::read_exact(&mut opened, &mut head));
-    if read.is_ok() && magics.iter().any(|magic| head == **magic) {
-        return Ok(());
-    }
-    let _ = fs::remove_file(file);
-    Err(format!("{path}: the answer is not a {} file", &path[path.rfind('.').unwrap_or(0) + 1..]))
+    (read.is_err() || !magics.iter().any(|magic| head == **magic)).then_some(*kind)
 }
 
 /// Whether `file` has the size and the modification day that upstream gives for `item`, and
@@ -820,6 +830,7 @@ fn assemble(
         got: Some(today.to_string()),
         files,
         missing,
+        listed: Some(items.len()),
         clms_dataset_uid: dataset.clms.as_ref().map(|clms| clms.dataset.clone()),
         clms_file_id: dataset.clms.as_ref().map(|clms| clms.file.clone()),
     }
@@ -870,12 +881,8 @@ fn differs(root: &Path, listed: &Listed) -> Option<String> {
         return Some(format!("not in place with {} bytes", listed.bytes));
     }
     let file = root.join(&listed.path);
-    if let Some((_, magics)) = MAGIC.iter().find(|(end, _)| listed.path.ends_with(end)) {
-        let mut head = [0; 4];
-        let read = fs::File::open(&file).and_then(|mut opened| std::io::Read::read_exact(&mut opened, &mut head));
-        if read.is_err() || !magics.iter().any(|magic| head == **magic) {
-            return Some("it does not start with the magic of its kind".into());
-        }
+    if let Some(kind) = wrong_magic(&file, &listed.path) {
+        return Some(format!("it is not {kind} file"));
     }
     match store::hash_file(&root.join(&listed.path)) {
         Err(error) => Some(error),
@@ -992,7 +999,7 @@ pub fn row(dataset: &Dataset, roots: &[PathBuf]) -> ArchiveDataset {
     for file in manifest.files.iter().filter(|file| in_place(root, file)) {
         (row.verified, row.bytes) = (row.verified + 1, row.bytes + file.bytes);
     }
-    row.listed = manifest.files.len() + manifest.missing.len();
+    row.listed = manifest.listed.unwrap_or(manifest.files.len() + manifest.missing.len());
     (row.version, row.got) = (manifest.version, manifest.got);
     // A get that lists no file names no dataset: a wrong prefix or an empty folder.
     row.state =
@@ -1122,7 +1129,7 @@ mod tests {
         }
         write(b"<!DOCTYPE html><html>Earthdata Login</html>");
         let error = magic(&file, "mirror/data.example/MOD10A1.A2025177.h18v04.061.1.hdf").unwrap_err();
-        assert!(error.ends_with("the answer is not a hdf file"), "{error}");
+        assert!(error.ends_with("the answer is not an HDF file"), "{error}");
         assert!(!file.exists(), "the part goes");
         write(b"<html>");
         assert_eq!(magic(&file, "a.json"), Ok(()), "a kind without a magic passes");
@@ -1241,6 +1248,38 @@ mod tests {
         }
         let undated = Listed { modified: None, ..old };
         assert!(!unchanged(&undated, &item), "an entry without a day is no proof");
+    }
+
+    #[test]
+    fn a_get_that_a_signal_stops_or_a_kill_ends_stays_incomplete_without_a_missing_entry_per_file() {
+        let scratch = Scratch::new("datasets-stopped");
+        let (actual, log) = serve(|_, _| whole(b"land"));
+        let url = actual.replacen("http://", "https://", 1);
+        let registry = Registry::load(&repository()).unwrap();
+        let text = format!("name = \"x\"\nsources = [\"land-polygons\"]\ncoverage = \"World\"\nurls = [\"{url}\"]\n");
+        let dataset = parse("x", &text, &registry).unwrap();
+        let root = scratch.0.join("archive");
+        std::fs::create_dir_all(&root).unwrap();
+        let (roots, store) = (vec![root.clone()], Store::at(scratch.0.join("store")));
+
+        // A kill leaves the manifest of the last save: one file of three in place.
+        std::fs::create_dir_all(root.join("manifest")).unwrap();
+        std::fs::create_dir_all(root.join("mirror")).unwrap();
+        std::fs::write(root.join("mirror/a"), b"land").unwrap();
+        let file = serde_json::json!({"path": "mirror/a", "bytes": 4, "sha256": "x"});
+        let saved = serde_json::json!({"version": "2026-10-01", "files": [file], "missing": [], "listed": 3});
+        std::fs::write(root.join("manifest/x.json"), saved.to_string()).unwrap();
+        assert_eq!((row(&dataset, &roots).listed, row(&dataset, &roots).state), (3, DatasetState::Incomplete));
+        std::fs::remove_file(root.join("manifest/x.json")).unwrap();
+
+        // A signal before the first file: the get lists it, takes none and stops.
+        crate::engine::runs::signal();
+        let error = get(&Http::loopback(&actual), &store, &dataset, &roots, None).err().unwrap();
+        assert!(error.contains("stopped on a signal"), "{error}");
+        let manifest = Manifest::read(&root.join("manifest/x.json")).unwrap();
+        assert_eq!((manifest.files.len(), manifest.missing.len(), manifest.listed), (0, 0, Some(1)));
+        assert_eq!(row(&dataset, &roots).state, DatasetState::Incomplete);
+        assert_eq!(log.lock().unwrap().len(), 1, "only the HEAD of the listing");
     }
 
     #[test]

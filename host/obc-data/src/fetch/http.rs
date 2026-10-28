@@ -111,7 +111,6 @@ fn pause(url: &str, delay: Duration) -> Result<(), String> {
     }
 }
 
-/// The error of a request that got no answer, marked when no connection was made or it timed out.
 /// `text` with the query of each URL in it left out: a query can sign the URL, such as a SAS token,
 /// and a log line must not show it.
 pub fn without_queries(text: &str) -> String {
@@ -134,6 +133,7 @@ pub fn without_queries(text: &str) -> String {
     out
 }
 
+/// The error of a request that got no answer, marked when no connection was made or it timed out.
 fn no_answer(method: &str, url: &str, error: ureq::Error) -> String {
     use ureq::Error::{ConnectProxyFailed, ConnectionFailed, HostNotFound, Io, Timeout};
     match error {
@@ -345,7 +345,13 @@ impl Http {
                 .send(body)
                 .map_err(|e| no_answer("POST", url, e))?;
             let status = response.status().as_u16();
-            Ok((status, response.body_mut().read_to_vec().unwrap_or_default()))
+            match response.body_mut().read_to_vec() {
+                Ok(body) => Ok((status, body)),
+                // The status of an answer that is no success says enough; a body cut short is
+                // tried again.
+                Err(_) if !(200..=299).contains(&status) => Ok((status, Vec::new())),
+                Err(e) => Err(format!("POST {url}: {e}")),
+            }
         })
     }
 
