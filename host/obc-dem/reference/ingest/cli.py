@@ -23,7 +23,8 @@ from pathlib import Path
 
 import rasterio
 
-from .archive import MEAN, fold_tiles, local_rasters, pool_tile, priority_rank, tile_digest, write_tile
+from .archive import (MEAN, coarse, fold_tiles, local_rasters, padded, pool_tile, priority_rank, samples,
+                      tile_digest, write_tile)
 from .lattice import MEAN_NODATA, NODATA, Refuse, check_world, tile_bounds, tile_path
 from .sources import SOURCES, ManualSource
 
@@ -39,7 +40,8 @@ def command_fetch(args) -> int:
     `source` (keys joined by commas) pooled onto the lattice and folded into the tile of the
     version before (`--base`, an archive root, whose tile came from `--held`), best rule of
     `fold_tiles`. It writes `16/<ti>/<tj>.tif`, the maximum, and `mean/16/<ti>/<tj>.tif`, the mean;
-    then `<ti>-<tj>.keys`, the sources of the tile best first; then `<ti>-<tj>.mean.sha256` and
+    then `<ti>-<tj>.keys`, the sources of the tile best first, and `<ti>-<tj>.samples`, the bias
+    samples of the mean (`samples`); then `<ti>-<tj>.mean.sha256` and
     `<ti>-<tj>.sha256`, the digests of their pixels. Where no model has a height in the tile it
     writes only the empty `<ti>-<tj>.none`, and the version keeps the tile before.
 
@@ -82,6 +84,7 @@ def command_fetch(args) -> int:
             (out / f"{name}.none").touch()
             return 0
         (out / f"{name}.keys").write_text(",".join(sorted(held, key=priority_rank)), encoding="utf-8")
+        (out / f"{name}.samples").write_text(samples(folded[MEAN]), encoding="utf-8")
         for root, mark in ((MEAN, "mean.sha256"), ("", "sha256")):
             written, path = tile_path(work / "pooled" / root, ti, tj), tile_path(out / root, ti, tj)
             write_tile(written, ti, tj, folded[root])
@@ -98,6 +101,8 @@ def pool_model(source, ti: int, tj: int, work: Path):
     """The maximum and the mean of `source` in tile `ti`, `tj`, or `None` where it has no height."""
 
     box = tile_bounds(ti, tj)
+    if coarse(source, ti, tj):
+        box = padded(box, source)
     if isinstance(source, ManualSource):
         # A delivery is like a credential: the environment names its directory and the datum
         # that the owner read in the order's metadata.
@@ -127,7 +132,8 @@ def pool_model(source, ti: int, tj: int, work: Path):
 def command_index_terrain(args) -> int:
     """`index.json` of `--pool` in a version of `terrain`: the index of the version before
     (`--base`) with each tile of `--digests` (tile id to pixel digest) and `--keys` (tile id to its
-    sources, best first). The models of `--models` were fetched on `--fetched`."""
+    sources, best first). The models of `--models` were fetched on `--fetched`. A model keeps the
+    `glo30_bias_m` of the version before, else takes the one of `--biases` (model to metres)."""
 
     base = json.loads(Path(args.base).read_text(encoding="utf-8")) if args.base else {}
     digests = json.loads(Path(args.digests).read_text(encoding="utf-8"))
@@ -136,8 +142,12 @@ def command_index_terrain(args) -> int:
     sources = dict(base.get("sources", {}))
     for key in filter(None, args.models.split(",")):
         source = registered(key)
+        bias = {"glo30_bias_m": sources[key]["glo30_bias_m"]} if "glo30_bias_m" in sources.get(key, {}) else {}
         sources[key] = {"product": source.product, "attribution": source.credit(args.fetched),
-                        "licence": source.licence, "vertical_datum": source.vertical_datum, "fetched": args.fetched}
+                        "licence": source.licence, "vertical_datum": source.vertical_datum, "fetched": args.fetched,
+                        **bias}
+    for key, metres in json.loads(Path(args.biases).read_text(encoding="utf-8")).items():
+        sources[key] = {**sources[key], "glo30_bias_m": metres}
     used = {key for held in contributors.values() for key in held}
     index = {"schema": 1, "step_log2": 6, "tile_log2": 16, "pool": args.pool,
              "sources": {key: facts for key, facts in sorted(sources.items()) if key in used},
@@ -194,6 +204,7 @@ def main(argv=None) -> int:
     tiles.add_argument("--digests", required=True, help="a JSON object of tile id to pixel digest")
     tiles.add_argument("--keys", required=True, help="a JSON object of tile id to its sources, best first")
     tiles.add_argument("--models", required=True, help="the source keys that this version fetched")
+    tiles.add_argument("--biases", required=True, help="a JSON object of source key to its GLO-30 bias in metres")
     tiles.add_argument("--fetched", required=True, help="the day of the data, YYYY-MM-DD")
     tiles.add_argument("--out", required=True, help="the index.json to write")
     tiles.set_defaults(run=command_index_terrain)
