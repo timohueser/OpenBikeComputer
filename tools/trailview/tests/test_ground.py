@@ -199,7 +199,7 @@ class MaterialTest(unittest.TestCase):
             corine = map_image(root / "corine", "EPSG:3035", around, lambda x, y: np.where(y > mid_y, 321, 322), 100)
             files = {"esa-worldcover": {"worldcover.tif": worldcover}, "sentinel-2-mosaics": mosaics, "corine-land-cover": corine}
             bounds = [west, south, west + 0.9 * (east - west), north]
-            steps, _ = sources.chain("material", GROUND, VOCABULARY, files.get, bounds, osm)
+            steps = sources.chain("material", GROUND, VOCABULARY, files.get, bounds, osm)
             no_rock = lambda z, x, y: np.zeros((tiles.TILE, tiles.TILE), np.uint8)
             texels = ground.Material(bounds, steps, colour.mosaics(mosaics), no_rock)(Z, X, Y)
         n, w, s, e = 100, 100, 412, 300

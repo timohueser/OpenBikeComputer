@@ -375,14 +375,14 @@ producer of [`wiki`](#wiki) reads them.
   `W_S_E_N.png`: the images of its `layer` over `bbox` in its `crs` at its `px_m`, each at most
   4096 pixels on a side and named by its box in whole metres.
 - `ground` is the first 12 hex digits of the SHA-256 of the canonical JSON of the keys `protocol`,
-  `layer`, `field`, `sort`, `crs`, `px_m` and `zoom` of the source's entry, and of its `legend`
-  for `arcgis-features`. The fetch refuses a digest that the entry does not have.
+  `layer`, `field`, `sort`, `crs` and `px_m` of the source's entry, and of its `legend` for
+  `arcgis-features`. The fetch refuses a digest that the entry does not have.
 - An `arcgis-features` or `wfs` file is `features-NNNNN.geojson`: a page of the features that
   meet `bbox`, in EPSG:4326 with the source's `field`. `arcgis-features` asks only for the
   features whose `field` the legend may name, pages by object id, and asks again for the ids that
   an answer lacks. It leaves out an id that the service no longer has, up to 0.1 % of the ids,
-  and fails above that. It simplifies each feature by a quarter of a texel at the equator, at the
-  source's `zoom` or else at zoom 13. `wfs` pages in the order of `sort` until the pages hold the
+  and fails above that. It simplifies each feature by a quarter of a texel at the equator at zoom
+  13. `wfs` pages in the order of `sort` until the pages hold the
   `numberMatched` features of a `hits` request. A box without a feature gives a fetch without
   files.
 - A ground capture tries a request again after a failed or cut transfer, a 5xx or 429 answer, an
