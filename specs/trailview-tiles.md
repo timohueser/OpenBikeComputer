@@ -96,11 +96,11 @@ A source of the chain has these keys:
 | --- | --- |
 | `source` | The id of its row in `data/sources.toml`: its licence, credit, fetch and extent |
 | `protocol` | How the step reads its files, see below |
-| `layer` | The layer of a vector file, the type of a WFS, or the layer of a map service |
+| `layer` | The layer of a vector file, or the type of a WFS |
 | `field` | The attribute that names the class of a feature |
 | `sort` | A `wfs` source only: a unique attribute, the order of the pages of its capture |
-| `px_m` | The pixel size of a raster or of a map image, in metres |
-| `crs` | The CRS of the map images |
+| `px_m` | The pixel size of a raster, in metres |
+| `values` | A `raster` source only: the native class of each raster value, such as `"7": "131"`. A value that it does not list has no class |
 | `legend` | `match` and `classes`: `[native class, name]` pairs, where a name is an id of `materials.json` |
 | `combine` | `authority` or `refine`, see below |
 | `reach_m` | A vector source only: where it names no class, its nearest class within this reach also refines the texel |
@@ -110,7 +110,6 @@ A source of the chain has these keys:
 | `raster` | GeoTIFFs of class values. With `px_m`, finer than its pixels, a shore takes the majority of `inland-water` within half a pixel |
 | `vector` | A GeoPackage, a zipped Shapefile or GeoJSON, by the file name |
 | `arcgis-features`, `wfs` | The GeoJSON of its capture, see [Fetch](obc-data.md#fetch) |
-| `arcgis-image` | The map images of its capture: a class is the label of the legend swatch of its colour |
 | `osm` | The areas of `osm.pbf` of `planner/osm` |
 
 A class matches by its `match`:

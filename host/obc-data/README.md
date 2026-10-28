@@ -44,6 +44,7 @@ serves, so they need no commit.
 | `~/.config/openbikecomputer/credentials.env` | `env` credentials of sources; the environment wins |
 | `~/.cdsapirc` | CDS credential for a selected climate fetch |
 | `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |
+| `~/.config/openbikecomputer/clms-key.json` | CLMS service key for the CORINE fetch; save the JSON of the token whole, mode 0600 |
 
 Set a source credential on the Machine screen, or pipe it to `obc data source credential ID`.
 Keep other secrets in the host environment or ignored `tools/obc.local`, never tracked config.

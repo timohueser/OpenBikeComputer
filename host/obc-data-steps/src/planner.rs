@@ -18,7 +18,7 @@ use obc_data::ground::GroundSource;
 use obc_data::product::{version, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{geofabrik, Area, Bbox, Regions};
 use obc_data::release::{Output, Release};
-use obc_data::sources::{attribution, embedded, FetchKind};
+use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
 use obc_dem::reference::{Window, TILE_LOG2};
 use obc_dem::step::GLO30;
@@ -921,7 +921,7 @@ fn trailview(
                     "osm-planet" => layer_files("planner/osm", &["osm.pbf"]),
                     "esa-worldcover" => snapshot(inputs, store, id, tiles.clone(), wanted)?,
                     "sentinel-2-mosaics" => snapshot(inputs, store, id, mosaics.clone(), wanted)?,
-                    _ if embedded(id).fetch.kind == FetchKind::Capture => {
+                    _ if step.per_box() => {
                         let digest = ("ground".to_string(), step.capture_digest());
                         snapshot(inputs, store, id, vec![bbox.clone(), digest], wanted)?
                     }
@@ -1844,9 +1844,6 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let corine =
-            obc_data::ground::Ground::load(&root()).unwrap().entry("corine-land-cover").unwrap().capture_digest();
-        let corine = format!(r#"corine-land-cover[("bbox", "7.79,47.99,7.82,48.02"), ("ground", "{corine}")]"#);
         assert_eq!(
             read(get("planner/trailview-material")),
             [
@@ -1855,7 +1852,7 @@ mod tests {
                 r#"esa-worldcover[("tile", "N45E006")]"#,
                 r#"sentinel-2-mosaics[("bbox", "7.79,47.99,7.82,48.02"), ("year", "2025")]"#,
                 r#"planner/osm["osm.pbf"]"#,
-                corine.as_str(),
+                "corine-land-cover[]",
             ]
         );
         assert_eq!(
@@ -1906,6 +1903,30 @@ mod tests {
         assert!(
             matches!(refused, Unplanned::Invalid(reason) if reason.contains("`nowhere`, which data/sources.toml lacks"))
         );
+    }
+
+    #[test]
+    fn a_national_map_is_captured_over_the_box_and_corine_is_one_file() {
+        let temp = temp("planner-trailview-kerry");
+        let store = store(&temp, &[]);
+        let (kerry, config) = ([-9.8, 51.9, -9.6, 52.1], TrailView { colour_year: 2025, colour: "test".into() });
+        let on = |layer: &str| ["trailview-rules", "trailview-ground"].contains(&layer);
+        let mut inputs = inputs(AREA, &[]);
+        let mut wanted = Vec::new();
+        trailview(&root(), &inputs, &store, &on, kerry, &config, &mut wanted).unwrap();
+        wanted.iter().for_each(|wanted| inputs.resolve(wanted, "2026-10-01".into()));
+        let steps = trailview(&root(), &inputs, &store, &on, kerry, &config, &mut Vec::new()).unwrap();
+        let material = steps.iter().find(|step| step.name == "planner/trailview-material").unwrap();
+        let read = |id: &str| {
+            material.inputs.iter().find_map(|input| match input {
+                Input::Snapshot { source, params, .. } if source == id => Some(params.clone()),
+                _ => None,
+            })
+        };
+        let digest = obc_data::ground::Ground::load(&root()).unwrap().entry("land-cover-ie").unwrap().capture_digest();
+        let bbox = ("bbox".to_string(), "-9.8,51.9,-9.6,52.1".to_string());
+        assert_eq!(read("land-cover-ie"), Some(vec![bbox, ("ground".to_string(), digest)]));
+        assert_eq!(read("corine-land-cover"), Some(Vec::new()));
     }
 
     #[test]

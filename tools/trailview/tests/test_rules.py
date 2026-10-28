@@ -49,6 +49,9 @@ CASES = [
     # Not the prototype's: a ground source is a row of data/sources.toml, and its legend names the vocabulary.
     ("ground", ["material", "sources", 3, "source"], "land-cover-xx",
      'ground.json: material.sources[3].source: "land-cover-xx" is not a source of data/sources.toml'),
+    ("ground", ["material", "sources", 3, "values", "256"], "999", 'ground.json: material.sources[3].values: "256" is not a byte value'),
+    ("ground", ["material", "sources", 3, "values", "07"], "131", 'ground.json: material.sources[3].values: "07" is not a byte value'),
+    ("ground", ["material", "sources", 2, "values"], {"1": "111"}, "ground.json: material.sources[2].values: only a raster source has values"),
     ("ground", ["lithology", "sources", 0, "legend", "classes", 0, 1], "lava",
      'ground.json: lithology.sources[0].legend.classes[0][1]: "lava" is not one of ' + ", ".join(
          f'"{entry["id"]}"' for entry in RULESET["materials"]["lithologies"])),

@@ -877,7 +877,8 @@ version = "release"
 start = "v200"
 redistribute = true
 
-# The legend and the map images of the CORINE Land Cover raster over a box.
+# The CORINE Land Cover 2018 raster of Europe: the prepackaged GeoTIFF of the Copernicus Land
+# Monitoring Service, grid codes 1 to 44 in EPSG:3035 at 100 m.
 [[source]]
 id = "corine-land-cover"
 kind = "data"
@@ -888,12 +889,15 @@ licence = "LicenseRef-Copernicus-CLMS"
 licence_url = "https://land.copernicus.eu/en/data-policy"
 attribution = "Corine Land Cover 2018 © European Union, Copernicus Land Monitoring Service, European Environment Agency (EEA)"
 obligations = "Credit the Copernicus Land Monitoring Service; state modifications"
-fetch = { kind = "capture", url = "https://image.discomap.eea.europa.eu/arcgis/rest/services/Corine/CLC2018_LAEA/MapServer" }
-# The box of the data of the map service, in whole degrees.
+fetch = { kind = "capture", url = "https://land.copernicus.eu/api/@datarequest_post" }
+# The archive of a finished order.
+hosts = ["copernicus-fme.eea.europa.eu"]
+# The box of the data of the raster, in whole degrees.
 extent = [-32, 27, 45, 72]
 version = "date"
 refresh = "manual"
 redistribute = true
+credential = { file = "~/.config/openbikecomputer/clms-key.json", register = "https://land.copernicus.eu", hint = "Sign in, create a token under API Tokens in your profile, then save its JSON as this file with mode 0600." }
 
 # The band windows over a box of the Sentinel-2 quarterly mosaics of a year, from Sentinel-2 L2A.
 [[source]]

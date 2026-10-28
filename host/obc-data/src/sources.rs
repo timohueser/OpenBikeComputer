@@ -317,7 +317,7 @@ impl Source {
             if credential.env.is_empty() == credential.file.is_none() {
                 return fail("a credential is `env` or `file`");
             }
-            if crate::credentials::place(credential).is_none() {
+            if !crate::credentials::known(credential) {
                 return fail(&format!("`credential.file` is one of {}", crate::credentials::files()));
             }
             if credential.register.as_ref().is_some_and(|url| !url.starts_with("https://")) {

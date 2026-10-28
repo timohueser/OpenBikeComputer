@@ -79,9 +79,29 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                 },
             )
         }
+        "corine-land-cover" => {
+            let [] = values(request, [])?;
+            // The dataset CLC 2018 and its prepackaged raster of Europe.
+            let (dataset, file) = ("0407d497d3c44bcd93ce8fd5bf78596a", "3d9e2413-46ca-4f6e-abf8-b6eb429a4e48");
+            capture(
+                store,
+                request,
+                &format!("dataset={dataset}&file={file}"),
+                &[source],
+                |_| &[0],
+                false,
+                |work, out| {
+                    let mut command = python(root, None)?;
+                    command.args(["-m", "tools.clms", "--dataset", dataset, "--file", file]);
+                    command.args(["--member", "U2018_CLC2018_V2020_20u1.tif", "--work"]).arg(work);
+                    command.arg("--fetch").arg(out);
+                    Ok(command)
+                },
+            )
+        }
         id => {
             let ground = crate::ground::Ground::load(root)?;
-            let Some(entry) = ground.entry(id) else {
+            let Some(entry) = ground.entry(id).filter(|entry| entry.per_box()) else {
                 return Err(format!("source `{id}`: its kind of fetch has no fetcher yet"));
             };
             let [bbox, digest] = values(request, ["bbox", "ground"])?;
@@ -251,7 +271,8 @@ fn values<'a, const N: usize>(request: &'a Request, names: [&str; N]) -> Result<
         return Ok(found);
     }
     let wanted: Vec<_> = names.iter().map(|name| format!("{name}=…")).collect();
-    Err(format!("source `{}` takes {}", request.source.id, wanted.join(" ")))
+    let wanted = if wanted.is_empty() { "no NAME=VALUE".to_string() } else { wanted.join(" ") };
+    Err(format!("source `{}` takes {wanted}", request.source.id))
 }
 
 fn year(text: &str) -> bool {
