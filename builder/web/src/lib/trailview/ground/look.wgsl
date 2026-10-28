@@ -5,6 +5,7 @@
 // #include ../terrain/drawn-height.wgsl
 // #include ../light/shadow.wgsl
 // #include roads.wgsl
+// #include ledge.wgsl
 
 // Per ground node MAP × MAP entries per level about the eye, in the windows of the LOD map: the page + 1, or 0.
 @group(2) @binding(1) var<storage, read> ground_map: array<u32>;
@@ -604,9 +605,12 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     var facet = normalize(cross(dpdx(relative), dpdy(relative)));
     facet *= sign(facet.z);
     var n = render_normal(drawn_normal(s));
+    let ledge = ledge_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, n, length(relative.xy));
+    n = ledge.normal;
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
-    // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
-    let skirt = smoothstep(0.25, 0.5, n.z - facet.z);
+    // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it. Across
+    // a path's bank it is the bank.
+    let skirt = smoothstep(0.25, 0.5, n.z - facet.z) * (1.0 - ledge.zone);
     let sloped = n.z < 0.95 || skirt > 0.0;
     let g = ground_at(level, s, world, footprint, sloped);
     var open = g.open;
@@ -720,6 +724,8 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     albedo = patched(albedo, rule(region, slot_cliff() + 1), shapes.xy, g.patches.x, world, n.y, r, surface_size);
     albedo = patched(albedo, rule(region, slot_cliff() + 2), shapes.zw, g.patches.y, world, n.y, r, surface_size);
     albedo = mix(albedo, road.colour, road.cover * (1.0 - road.share));
+    // A path's bank is the region's dirt.
+    albedo = mix(albedo, rule(region, slot_roads() + 3).rgb, ledge.earth) * ledge.tint;
     if (DETAIL && masoned > 0.0) {
         let stone = rule(region, slot_lithologies() + i32(g.lithology)).rgb;
         // A coordinate along the wall itself would turn with its normal: far from the frame's origin, a
