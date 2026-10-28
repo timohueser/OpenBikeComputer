@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { KERB } from '../ground/rules';
 import { EXTENT, unitScale, type Feature } from '../stream/features';
 import { features, metresPerUnit } from '../terrain/bins';
 import { cornersOf } from '../terrain/corners';
+import { KERB } from '../terrain/town';
 import { rgb, type MeshBuilder } from './mesh';
 import { sidewalks } from './sidewalks';
 
@@ -19,13 +19,17 @@ describe('the sidewalks', () => {
     const road = (xy: number[]) => ({ kind: 'road', tags: { highway: 'residential' }, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from(xy.map(Math.round)), z: Float32Array.from(xy.filter((_, i) => i % 2 === 0).map(() => 1000)) }] });
     const house = (x: number, y: number) => ({ kind: 'building', tags: { building: 'house' }, geometry: 'area' as const, parts: [{ outer: true, xy: Int32Array.from([x, y, x + 10 * m, y, x + 10 * m, y + 8 * m, x, y + 8 * m].map(Math.round)), z: null }] });
 
-    it("end a straight slab where its corner's arc begins", () => {
-        // A road east with a side road south 8 m west of a house on their corner.
-        const x = 3000 - 8 * m, list = [road([1000, 4000, x, 4000, 5000, 4000]), road([x, 4000, x, 4000 + 30 * m]), house(3000, 4000 + 12.5 * m)] as Feature[];
-        const quads = slabs(list, tile, [0, 0, 2 ** 30, 2 ** 30]), granite = rgb(KERB);
-        const corner = cornersOf(features(list, tile).lines).find(({ walk }) => walk[0] && walk[1])!, near = (q: number[][], e: number[]) => q.some(([qx, qy]) => Math.hypot(qx - e[0], qy - e[1]) * metresPerUnit(e[1]) < 0.01);
-        // At each end the arc's kerb top and the straight slab's meet on one edge.
-        for (const end of [corner.a, corner.b]) expect(quads.filter(q => q[0][3] === granite && q.every(v => v[2] === q[0][2]) && near(q, end)).length).toBe(2);
+    it("end a straight slab where its corner's arc begins, also within a half-piece of a vertex", () => {
+        // A road east with a side road south 8 m west of a house on their corner; the arc's end on the road lies
+        // 7.5 m east of the junction, 0.1 m past a vertex in the second case.
+        const x = 3000 - 8 * m;
+        for (const through of [[1000, 4000, x, 4000, 5000, 4000], [1000, 4000, x, 4000, x + 7.4 * m, 4000, 5000, 4000]]) {
+            const list = [road(through), road([x, 4000, x, 4000 + 30 * m]), house(3000, 4000 + 12.5 * m)] as Feature[];
+            const quads = slabs(list, tile, [0, 0, 2 ** 30, 2 ** 30]), granite = rgb(KERB);
+            const corner = cornersOf(features(list, tile).lines).find(({ walk }) => walk[0] && walk[1])!, near = (q: number[][], e: number[]) => q.some(([qx, qy]) => Math.hypot(qx - e[0], qy - e[1]) * metresPerUnit(e[1]) < 0.01);
+            // At each end the arc's kerb top and the straight slab's meet on one edge.
+            for (const end of [corner.a, corner.b]) expect(quads.filter(q => q[0][3] === granite && q.every(v => v[2] === q[0][2]) && near(q, end)).length).toBe(2);
+        }
     });
 
     it("draw each node's part of a street that crosses a tile's border, and meet on it", () => {

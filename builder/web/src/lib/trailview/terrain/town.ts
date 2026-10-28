@@ -12,6 +12,8 @@ import type { Shapes } from './bins';
 export const BUILT_M = 20;
 /** The sides of a line from a to b; world y runs south, so its right is where the cross product is positive. */
 export const LEFT = 1, RIGHT = 2;
+/** The granite of a town's kerbs: the ground's paint and the sidewalks' slabs. */
+export const KERB = '#c3c0b8';
 /** Cells of 2^SHIFT world units: about 50 m in the Alps. */
 const SHIFT = 11;
 
@@ -65,11 +67,11 @@ export const along = (ax: number, ay: number, bx: number, by: number, x: number,
     Math.min(1, Math.max(0, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2 || 1)));
 
 /**
- * The sides, LEFT and RIGHT, of a way (a polyline in world units) through x, y on which a building comes
- * within `reach` world units of the point: the side of the way's nearest point to the building's, among its
- * segments within `reach` of x, y, so a building across a bend counts for its own side.
+ * The sides, LEFT and RIGHT, of a way (a polyline in world units) through x, y on its segment `at` on which a
+ * building comes within `reach` world units of the point: the side of the way's nearest point to the
+ * building's, among its segments within twice `reach` along it, so a building across a bend counts for its own side.
  */
-export function sidesNear(town: Town, x: number, y: number, reach: number, way: number[]): number {
+export function sidesNear(town: Town, x: number, y: number, reach: number, way: number[], at: number): number {
     let sides = 0;
     near(town, x, y, x, y, reach, b => {
         const ring = town.rings[b];
@@ -81,15 +83,15 @@ export function sidesNear(town: Town, x: number, y: number, reach: number, way: 
         }
         if (Number.isNaN(px)) return;
         let nearest = Infinity, side = 0;
-        for (let i = 0; i + 3 < way.length; i += 2) {
-            const [ax, ay, bx, by] = [way[i], way[i + 1], way[i + 2], way[i + 3]];
-            if (Math.min(ax, bx) > x + reach || Math.max(ax, bx) < x - reach || Math.min(ay, by) > y + reach || Math.max(ay, by) < y - reach) continue;
-            const f = along(ax, ay, bx, by, x, y);
-            if ((ax + f * (bx - ax) - x) ** 2 + (ay + f * (by - ay) - y) ** 2 > reach * reach) continue;
-            const t = along(ax, ay, bx, by, px, py), qx = ax + t * (bx - ax), qy = ay + t * (by - ay), d2 = (px - qx) ** 2 + (py - qy) ** 2;
-            if (d2 >= nearest) continue;
-            nearest = d2;
-            side = (bx - ax) * (py - qy) - (by - ay) * (px - qx) > 0 ? RIGHT : LEFT;
+        for (const step of [-1, 1]) {
+            for (let i = step < 0 ? at : at + 1, run = 0; i >= 0 && i + 1 < way.length / 2 && run <= 2 * reach; i += step) {
+                const [ax, ay, bx, by] = [way[2 * i], way[2 * i + 1], way[2 * i + 2], way[2 * i + 3]];
+                run += i === at ? 0 : Math.hypot(bx - ax, by - ay);
+                const t = along(ax, ay, bx, by, px, py), qx = ax + t * (bx - ax), qy = ay + t * (by - ay), d2 = (px - qx) ** 2 + (py - qy) ** 2;
+                if (d2 >= nearest) continue;
+                nearest = d2;
+                side = (bx - ax) * (py - qy) - (by - ay) * (px - qx) > 0 ? RIGHT : LEFT;
+            }
         }
         sides |= side;
     });

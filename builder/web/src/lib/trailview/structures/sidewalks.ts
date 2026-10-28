@@ -7,10 +7,9 @@
 // as the paint has it. In a junction's corner the slab follows
 // the kerb's arc from the one road's sidewalk to the other's, or narrows to the bare kerb into a road
 // without one. Farther off, the mask paints them.
-import { cornerAt, cornersOf, halfAt, partnersOf, type Corner } from '../terrain/corners';
-import { KERB } from '../ground/rules';
+import { cornerAt, cornersOf, halfAt, heightAt, partnersOf, type Corner } from '../terrain/corners';
 import { crossSlope, metresPerUnit, PAVING_CODE, RAIL, ROAD, walkOf, type Line } from '../terrain/bins';
-import { gridOf, LEFT, near, RIGHT, type Grid } from '../terrain/town';
+import { gridOf, KERB, LEFT, near, RIGHT, type Grid } from '../terrain/town';
 import { GROUND, mix, PAINT, rgb, station, type MeshBuilder, type Station } from './mesh';
 
 /** The slab's height over the road and the width of its granite kerb, as KERB_M of roads.wgsl; its kerb's face reaches FOOT_M under the road, its skirt SINK_M into the drawn ground. */
@@ -120,24 +119,26 @@ export function sidewalks(b: MeshBuilder, lines: Line[], [x0, y0, x1, y1]: numbe
                     else if (m0[axis] < lo || m0[axis] >= hi) c1 = c0;
                 }
                 if (c0 >= c1) continue;
-                // A run of open pieces ends between the centre of its last piece and of the next, where the slab
-                // stops with a face; where a corner takes it on, it ends square with the corner's arc.
+                // A run of open samples, the segment's ends and its pieces' centres, ends between its last sample
+                // and the next, where the slab stops with a face; where a corner takes it on, it ends square with the
+                // corner's arc.
                 const edge = (inside: number, outside: number): [number, boolean] => {
+                    const [lo, hi] = [Math.min(inside, outside), Math.max(inside, outside)];
                     for (let i = 0; i < BISECTIONS; i++) {
                         const half = (inside + outside) / 2;
                         if (open(v, side, half)) inside = half;
                         else outside = half;
                     }
                     const corner = cornerAt(lines, ...middle(v, side, outside));
-                    return corner ? [onKerb(s, t, side, halves, corner), false] : [inside, true];
+                    return corner ? [Math.min(hi, Math.max(lo, onKerb(s, t, side, halves, corner))), false] : [inside, true];
                 };
-                const kept = Array.from({ length: pieces }, (_, k) => open(v, side, centre(k)));
-                for (let k = 0; k < pieces; k++) {
+                const samples = [0, ...Array.from({ length: pieces }, (_, k) => centre(k)), 1], kept = samples.map(u => open(v, side, u));
+                for (let k = 0; k < samples.length; k++) {
                     if (!kept[k] || (k > 0 && kept[k - 1])) continue;
                     let last = k;
-                    while (last + 1 < pieces && kept[last + 1]) last++;
-                    const [u0, face0] = k > 0 ? edge(centre(k), centre(k - 1)) : [0, !runsOn(v, side, -1)];
-                    const [u1, face1] = last + 1 < pieces ? edge(centre(last), centre(last + 1)) : [1, !runsOn(v, side, 1)];
+                    while (last + 1 < samples.length && kept[last + 1]) last++;
+                    const [u0, face0] = k > 0 ? edge(samples[k], samples[k - 1]) : [0, !runsOn(v, side, -1)];
+                    const [u1, face1] = last + 1 < samples.length ? edge(samples[last], samples[last + 1]) : [1, !runsOn(v, side, 1)];
                     if (Math.max(u0, c0) >= Math.min(u1, c1)) continue;
                     const slope = (u: number) => crossSlope(line, v, u * length, (1 - u) * length);
                     slab(b, s, t, Math.max(u0, c0), Math.min(u1, c1), side === LEFT ? 1 : -1, halves, [walk, walk], [face0 && u0 >= c0, face1 && u1 <= c1], slope);
@@ -161,15 +162,21 @@ function onKerb(s: Station, t: Station, side: number, halves: [number, number], 
  * their stations on the kerb and across toward the arc's centre: as wide as each road's sidewalk at its
  * end, and no narrower than the kerb, which stops with a face at the end of a road without one.
  */
-function arc(b: MeshBuilder, { o, a, b: end, z, walk }: Corner): void {
-    const ea = [a[0] - o[0], a[1] - o[1]], eb = [end[0] - o[0], end[1] - o[1]], ra = Math.hypot(ea[0], ea[1]), rb = Math.hypot(eb[0], eb[1]), unit = metresPerUnit(o[1]);
+function arc(b: MeshBuilder, corner: Corner): void {
+    const { o, a, b: end, walk } = corner, ea = [a[0] - o[0], a[1] - o[1]], eb = [end[0] - o[0], end[1] - o[1]], ra = Math.hypot(ea[0], ea[1]), rb = Math.hypot(eb[0], eb[1]), unit = metresPerUnit(o[1]);
     const turn = Math.atan2(ea[0] * eb[1] - ea[1] * eb[0], ea[0] * eb[0] + ea[1] * eb[1]), pieces = Math.max(1, Math.ceil((Math.abs(turn) * Math.max(ra, rb) * unit) / PIECE_M));
-    const at = (k: number): Station => {
-        const angle = Math.atan2(ea[1], ea[0]) + (turn * k) / pieces, cos = Math.cos(angle), sin = Math.sin(angle), r = ra + ((rb - ra) * k) / pieces;
-        return { x: o[0] + r * cos, y: o[1] + r * sin, z: z[0] + ((z[1] - z[0]) * k) / pieces, ax: cos / unit, ay: sin / unit };
-    };
     const wide = (k: number) => Math.max(KERB_M, walk[0] + ((walk[1] - walk[0]) * k) / pieces);
-    for (let k = 0; k < pieces; k++) slab(b, at(k), at(k + 1), 0, 1, -1, [0, 0], [wide(k), wide(k + 1)], [k === 0 && !walk[0], k + 1 === pieces && !walk[1]], () => 0);
+    // A station on the kerb at the corner's height there, and the slope of that height in toward the centre.
+    const at = (k: number): Station & { slope: number } => {
+        const angle = Math.atan2(ea[1], ea[0]) + (turn * k) / pieces, cos = Math.cos(angle), sin = Math.sin(angle), r = ra + ((rb - ra) * k) / pieces;
+        const x = o[0] + r * cos, y = o[1] + r * sin, w = wide(k), z = heightAt(corner, x, y);
+        return { x, y, z, ax: cos / unit, ay: sin / unit, slope: (heightAt(corner, x - (cos * w) / unit, y - (sin * w) / unit) - z) / w };
+    };
+    for (let k = 0, s = at(0); k < pieces; k++) {
+        const t = at(k + 1), [from, to] = [s.slope, t.slope];
+        slab(b, s, t, 0, 1, -1, [0, 0], [wide(k), wide(k + 1)], [k === 0 && !walk[0], k + 1 === pieces && !walk[1]], u => from + (to - from) * u);
+        s = t;
+    }
 }
 
 /**

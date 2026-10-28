@@ -38,7 +38,7 @@ function lamps({ tags, parts }: Placed, out: Build, side: number): void {
                 const t = (next - done) / length, spot = (sign: number): [number, number] => [ax + t * dx - dy * across * sign, ay + t * dy + dx * across * sign];
                 if (!out.owns(...spot(1)) && !out.owns(...spot(-1))) continue;
                 const way = sidewalk ? nearestWay(out.ways, ax + t * dx, ay + t * dy) : undefined;
-                const sides = way ? (way.line.sidewalks?.[way.v] ?? 0) : sidesNear(town, ax + t * dx, ay + t * dy, BUILT_M / unit, xy);
+                const sides = way ? (way.line.sidewalks?.[way.v] ?? 0) : sidesNear(town, ax + t * dx, ay + t * dy, BUILT_M / unit, xy, i / 2);
                 const [x, y] = spot(sidewalk && !(sides & RIGHT) ? -1 : 1);
                 if (!sides || !out.owns(x, y) || out.cornered(x, y)) continue;
                 let walled = false;

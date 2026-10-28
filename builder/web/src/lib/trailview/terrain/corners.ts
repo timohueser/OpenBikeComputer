@@ -12,11 +12,16 @@ import { gridOf, LEFT, near, RIGHT, type Grid } from './town';
  * TANGENT_M of each road in its 40 m buffer and decides it alike.
  */
 const FILLET_M = 5, LEAST_M = 1, TANGENT_M = 10, STRAIGHT_M = 0.3;
-/** The widest angle between two roads' ways out of a junction that makes a corner. */
-const MAX_TURN = (150 * Math.PI) / 180;
+/** The widest angle between two roads' ways out of a junction that makes a corner; the steepest grade of its kerb, about the steepest street's. */
+const MAX_TURN = (150 * Math.PI) / 180, MAX_GRADE = 0.25;
 
-/** A corner: the centre of its kerb's arc and its ends on the edges of the two roads, in world units, its radius running from the one end's to the other's; at each end the kerb's height and the sidewalk's width; its surface code, and the profile and half-width of its narrower road. */
-export interface Corner { o: [number, number]; a: [number, number]; b: [number, number]; z: [number, number]; walk: [number, number]; code: number; profile: number; h: number }
+/**
+ * A corner: the centre of its kerb's arc and its ends on the edges of the two roads, in world units, its radius
+ * running from the one end's to the other's; at each end the kerb's height, the slope of that road's surface
+ * there per metre east and south, and the sidewalk's width; its surface code, and the profile and half-width of
+ * its narrower road.
+ */
+export interface Corner { o: [number, number]; a: [number, number]; b: [number, number]; z: [number, number]; grad: [number, number][]; walk: [number, number]; code: number; profile: number; h: number }
 
 /** A road's way out of its vertex v, step 1 or -1 along it: its direction in world units toward its point TANGENT_M on, and the metres that it runs on within STRAIGHT_M of that. */
 interface Way { line: Line; v: number; step: number; ux: number; uy: number; angle: number; room: number }
@@ -174,8 +179,9 @@ function cornerOf(p: Way, q: Way, partners: Map<Line, [Line?, Line?]>): Corner |
     if (!(r >= LEAST_M)) return undefined;
     const o = centre(r);
     // An end of the arc: the foot of its centre on its road's edge, where the arc meets the edge square and
-    // the road's slab stops across it; with the kerb's height and the sidewalk's width there, as that slab has them.
-    const end = ({ line, v, step }: Way, n: number[]): [[number, number], number, number] => {
+    // the road's slab stops across it; with the kerb's height, the surface's slope and the sidewalk's width
+    // there, as that slab and the road's core have them.
+    const end = ({ line, v, step }: Way, n: number[]): [[number, number], number, [number, number], number] => {
         const ox = x + o[0] / unit, oy = y + o[1] / unit;
         let s = Math.min(v, v + step), u = 0, dx = 0, dy = 0;
         for (; s >= 0 && s + 1 < line.z.length; s += step) {
@@ -188,14 +194,37 @@ function cornerOf(p: Way, q: Way, partners: Map<Line, [Line?, Line?]>): Corner |
         const h = halfAt(line, s, partners) + (halfAt(line, s + 1, partners) - halfAt(line, s, partners)) * u;
         const l = Math.hypot(dx, dy) || 1, side = dx * n[1] - dy * n[0] > 0 ? RIGHT : LEFT, sign = side === LEFT ? 1 : -1, across = (sign * h) / unit / l;
         const at: [number, number] = [Math.round(line.xy[2 * s] + u * dx + dy * across), Math.round(line.xy[2 * s + 1] + u * dy - dx * across)];
-        const z = line.z[s] + (line.z[s + 1] - line.z[s]) * u - sign * h * crossSlope(line, s, u * l * unit, (1 - u) * l * unit);
-        return [at, z, (line.sidewalks?.[s] ?? 0) & side ? walkOf(line) : 0];
+        const tilt = crossSlope(line, s, u * l * unit, (1 - u) * l * unit), grade = (line.z[s + 1] - line.z[s]) / (l * unit);
+        const z = line.z[s] + (line.z[s + 1] - line.z[s]) * u - sign * h * tilt;
+        // Up the segment by its grade, and down to its left by its tilt.
+        return [at, z, [(grade * dx - tilt * dy) / l, (grade * dy + tilt * dx) / l], (line.sidewalks?.[s] ?? 0) & side ? walkOf(line) : 0];
     };
-    const [a, za, wa] = end(p, np), [b, zb, wb] = end(q, nq), narrow = p.line.h <= q.line.h ? p.line : q.line;
+    const [a, za, ga, wa] = end(p, np), [b, zb, gb, wb] = end(q, nq), narrow = p.line.h <= q.line.h ? p.line : q.line;
+    // Roads whose kerbs climb past MAX_GRADE from one end to the other lie at two levels, as at a ramp: no corner.
+    if (Math.abs(za - zb) > MAX_GRADE * Math.hypot(a[0] - b[0], a[1] - b[1]) * unit) return undefined;
     return {
-        o: [Math.round(x + o[0] / unit), Math.round(y + o[1] / unit)], a, b, z: [za, zb], walk: [wa, wb],
+        o: [Math.round(x + o[0] / unit), Math.round(y + o[1] / unit)], a, b, z: [za, zb], grad: [ga, gb], walk: [wa, wb],
         code: p.line.code === q.line.code ? p.line.code : ROAD_CODE, profile: narrow.profile, h: narrow.h,
     };
+}
+
+/**
+ * The height of a corner's ground at a point: each road's surface carried on from its end to the point, by the
+ * point's distances past each road's sidewalk from the corner's two sides: the first road's, from the centre to
+ * its end and on along its edge to the roads' corner, and the second's. So the ground is each road's own within
+ * its sidewalk's width of its side, where that road's core holds it too.
+ */
+export function heightAt({ o, a, b, z, grad, walk }: Corner, x: number, y: number): number {
+    const unit = metresPerUnit(a[1]), ea = [a[0] - o[0], a[1] - o[1]], eb = [b[0] - o[0], b[1] - o[1]], e = [x - o[0], y - o[1]];
+    const s = ((eb[0] - ea[0]) * eb[0] + (eb[1] - ea[1]) * eb[1]) / (-ea[1] * eb[0] + ea[0] * eb[1]), c = [ea[0] - s * ea[1], ea[1] + s * ea[0]];
+    const gap = (p: number[], q: number[]) => {
+        const t = Math.min(1, Math.max(0, ((e[0] - p[0]) * (q[0] - p[0]) + (e[1] - p[1]) * (q[1] - p[1])) / ((q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2 || 1)));
+        return Math.hypot(e[0] - p[0] - t * (q[0] - p[0]), e[1] - p[1] - t * (q[1] - p[1]));
+    };
+    const da = Math.max(0, Math.min(gap([0, 0], ea), gap(ea, c)) * unit - walk[0]), db = Math.max(0, Math.min(gap(c, eb), gap(eb, [0, 0])) * unit - walk[1]);
+    const w = da + db > 0 ? da / (da + db) : 0.5;
+    const za = z[0] + (grad[0][0] * (x - a[0]) + grad[0][1] * (y - a[1])) * unit;
+    return za + (z[1] + (grad[1][0] * (x - b[0]) + grad[1][1] * (y - b[1])) * unit - za) * w;
 }
 
 /** The box of a corner as inCorner has it: its arc's centre, its ends moved its reach onto the roads, and where the edges through those meet. */

@@ -375,6 +375,9 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     var under_deck = false;
     // The rank of the paint so far: a carriageway outranks all else, then a junction's corner, then a road's
     // sidewalk, then the nearest outer edge.
+    // The nearest corner's distance to its arc and its sidewalk's width, INF where no corner holds the texel.
+    var corner_d = INF;
+    var corner_walk = 0.0;
     var paint_rank = INF;
     let first_entry = offset & 0xffffffu;
     let last_entry = word(data + HEAD + u32(c) + 1u) & 0xffffffu;
@@ -387,9 +390,12 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         } else if (kind == CORNER) {
             // Between the ends of a corner's arc seen from its centre, off both roads or less than the narrower
             // one's half-width onto them, the arc is the nearest edge, as inCorner of corners.ts has it. The corner
-            // paints its asphalt and the sidewalk round it, and holds their ground, with the radius, height and
-            // width of its ends by the share of the arc between them, as the slab has them. On a road's carriageway
-            // the road paints and holds; the corner takes only the slivers beside it where a road bends inside it.
+            // paints its asphalt and the sidewalk round it and holds their ground: each road's surface carried on
+            // from its end, as heightAt has it, and the slab with it. On a road's carriageway
+            // the road paints and holds, but for its edge there, which the arc replaces; the corner takes only the
+            // slivers beside it where a road bends inside it. Its record: the centre, the first end, the heights at
+            // the ends, the sidewalks' widths in decimetres, the slopes per metre east and south of the first road
+            // in words 9 and 13 and of the second in 14 and 15, the second end and the narrower half-width.
             let rule = profiles[(word(r + 5u) >> 16u) & 0xffu];
             let o = point(r);
             let ea = vec2f(point(r + 2u) - o);
@@ -405,9 +411,21 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 continue;
             }
             let d = (mix(length(ea), length(eb), t) - length(e)) * unit;
-            let walk = mix(real(r + 8u), real(r + 9u), t);
-            if (d <= select(walk, max(walk, CORNER_KERB_M), max(real(r + 8u), real(r + 9u)) > 0.0)) {
-                let z = mix(real(r + 6u), real(r + 7u), t);
+            let walks = word(r + 8u);
+            let walk = mix(f32(walks & 0xffu), f32((walks >> 8u) & 0xffu), t) * 0.1;
+            if (d < corner_d) {
+                corner_d = d;
+                corner_walk = walk;
+            }
+            if (d <= select(walk, max(walk, CORNER_KERB_M), walks != 0u)) {
+                // As heightAt of corners.ts: by the distances past each road's sidewalk from the first road's side,
+                // the centre to its end and on to the roads' corner c, and from the second's.
+                let c = ea + vec2f(-ea.y, ea.x) * dot(eb - ea, eb) / dot(vec2f(-ea.y, ea.x), eb);
+                let da = max(0.0, min(segment_distance(e, vec2f(0.0), ea), segment_distance(e, ea, c)) * unit - f32(walks & 0xffu) * 0.1);
+                let db = max(0.0, min(segment_distance(e, c, eb), segment_distance(e, eb, vec2f(0.0))) * unit - f32((walks >> 8u) & 0xffu) * 0.1);
+                let za = real(r + 6u) + dot(vec2f(real(r + 9u), real(r + 13u)), vec2f(p - point(r + 2u))) * unit;
+                let zb = real(r + 7u) + dot(vec2f(real(r + 14u), real(r + 15u)), vec2f(p - point(r + 10u))) * unit;
+                let z = mix(za, zb, select(0.5, da / (da + db), da + db > 0.0));
                 lo[CORNER_CORE] = max(lo[CORNER_CORE], z - rule.tol);
                 hi[CORNER_CORE] = min(hi[CORNER_CORE], z + rule.tol);
             }
@@ -599,6 +617,11 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         }
     }
     out.conflict = out.conflict || (line_near && !line_held);
+    // On a carriageway in a corner the arc is the kerb: no shadow or edge line of the road's edge that it replaces.
+    if (out.road < 0.0 && corner_d < INF) {
+        out.road = min(out.road, corner_d);
+        out.walk = corner_walk;
+    }
     out.water = water_in;
     out.taken = out.taken || water_in > -1e30;
     // Under a deck the ground falls away: no fill of a road or a path holds it up. Their cuts hold, so a

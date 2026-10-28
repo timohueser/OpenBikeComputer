@@ -345,7 +345,7 @@ function townPieces({ xy, z, anchors }: ReturnType<typeof smoothed>, town: Town)
     const out = { xy: [xy[0], xy[1]], z: [z[0]], anchors: [anchors[0]] }, sides: number[] = [];
     for (let v = 0; v + 1 < z.length; v++) {
         const [ax, ay, bx, by] = xy.slice(2 * v, 2 * v + 4), dx = bx - ax, dy = by - ay, unit = metresPerUnit(ay), count = Math.max(1, Math.ceil(Math.hypot(dx, dy) * unit / PIECE_M));
-        const pieces = Array.from({ length: count }, (_, k) => sidesNear(town, ax + dx * (k + 0.5) / count, ay + dy * (k + 0.5) / count, BUILT_M / unit, xy));
+        const pieces = Array.from({ length: count }, (_, k) => sidesNear(town, ax + dx * (k + 0.5) / count, ay + dy * (k + 0.5) / count, BUILT_M / unit, xy, v));
         for (let k = 1; k <= count; k++) {
             if (k < count && pieces[k] === pieces[k - 1]) continue;
             sides.push(pieces[k - 1]);
@@ -683,9 +683,10 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
         for (const c of touched) cells[0][c].push(at);
     }
     for (const corner of cornersOf(lines)) {
-        const { o, a, b, z, walk, code, profile, h } = corner, touched = within(boxOf(corner), 1);
+        const { o, a, b, z, grad, walk, code, profile, h } = corner, touched = within(boxOf(corner), 1);
         if (!touched.length) continue;
-        const at = record([...o, ...a, CORNER, code | (profile << 16), f(z[0]), f(z[1]), f(walk[0]), f(walk[1]), ...b, f(h)]);
+        // The sidewalks' widths in decimetres share a word; the slopes fill the words about the second end.
+        const at = record([...o, ...a, CORNER, code | (profile << 16), f(z[0]), f(z[1]), Math.round(10 * walk[0]) | (Math.round(10 * walk[1]) << 8), f(grad[0][0]), ...b, f(h), f(grad[0][1]), f(grad[1][0]), f(grad[1][1])]);
         for (const c of touched) cells[2][c].push(at);
     }
     let heights = false;
