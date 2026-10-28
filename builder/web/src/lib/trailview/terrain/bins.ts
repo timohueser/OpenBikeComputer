@@ -5,7 +5,7 @@ import { DEEPEST, EXTENT, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
-import { BUILT_M, LEFT, near, RIGHT, sidesNear, townOf, type Town } from './town';
+import { BUILT_M, builtNear, LEFT, near, RIGHT, townOf, type Town } from './town';
 
 /** Words of a primitive record. */
 export const RECORD = 16;
@@ -345,7 +345,7 @@ function townPieces({ xy, z, anchors }: ReturnType<typeof smoothed>, town: Town)
     const out = { xy: [xy[0], xy[1]], z: [z[0]], anchors: [anchors[0]] }, sides: number[] = [];
     for (let v = 0; v + 1 < z.length; v++) {
         const [ax, ay, bx, by] = xy.slice(2 * v, 2 * v + 4), dx = bx - ax, dy = by - ay, unit = metresPerUnit(ay), count = Math.max(1, Math.ceil(Math.hypot(dx, dy) * unit / PIECE_M));
-        const pieces = Array.from({ length: count }, (_, k) => sidesNear(town, ax + dx * (k + 0.5) / count, ay + dy * (k + 0.5) / count, BUILT_M / unit, xy, v));
+        const pieces = Array.from({ length: count }, (_, k) => (builtNear(town, ax + dx * (k + 0.5) / count, ay + dy * (k + 0.5) / count, BUILT_M / unit) ? LEFT | RIGHT : 0));
         for (let k = 1; k <= count; k++) {
             if (k < count && pieces[k] === pieces[k - 1]) continue;
             sides.push(pieces[k - 1]);

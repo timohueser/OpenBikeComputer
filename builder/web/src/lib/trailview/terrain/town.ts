@@ -66,34 +66,15 @@ export function near(grid: Grid, ax: number, ay: number, bx: number, by: number,
 export const along = (ax: number, ay: number, bx: number, by: number, x: number, y: number) =>
     Math.min(1, Math.max(0, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2 || 1)));
 
-/**
- * The sides, LEFT and RIGHT, of a way (a polyline in world units) through x, y on its segment `at` on which a
- * building comes within `reach` world units of the point: the side of the way's nearest point to the
- * building's, among its segments within twice `reach` along it, so a building across a bend counts for its own side.
- */
-export function sidesNear(town: Town, x: number, y: number, reach: number, way: number[], at: number): number {
-    let sides = 0;
+/** Whether a building comes within `reach` world units of x, y. */
+export function builtNear(town: Town, x: number, y: number, reach: number): boolean {
+    let built = false;
     near(town, x, y, x, y, reach, b => {
         const ring = town.rings[b];
-        let least = reach * reach, px = NaN, py = NaN;
-        for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
-            const t = along(ring[j], ring[j + 1], ring[i], ring[i + 1], x, y), qx = ring[j] + t * (ring[i] - ring[j]), qy = ring[j + 1] + t * (ring[i + 1] - ring[j + 1]);
-            if ((qx - x) ** 2 + (qy - y) ** 2 > least) continue;
-            [least, px, py] = [(qx - x) ** 2 + (qy - y) ** 2, qx, qy];
+        for (let i = 0, j = ring.length - 2; i < ring.length && !built; j = i, i += 2) {
+            const t = along(ring[j], ring[j + 1], ring[i], ring[i + 1], x, y);
+            built = (ring[j] + t * (ring[i] - ring[j]) - x) ** 2 + (ring[j + 1] + t * (ring[i + 1] - ring[j + 1]) - y) ** 2 <= reach * reach;
         }
-        if (Number.isNaN(px)) return;
-        let nearest = Infinity, side = 0;
-        for (const step of [-1, 1]) {
-            for (let i = step < 0 ? at : at + 1, run = 0; i >= 0 && i + 1 < way.length / 2 && run <= 2 * reach; i += step) {
-                const [ax, ay, bx, by] = [way[2 * i], way[2 * i + 1], way[2 * i + 2], way[2 * i + 3]];
-                run += i === at ? 0 : Math.hypot(bx - ax, by - ay);
-                const t = along(ax, ay, bx, by, px, py), qx = ax + t * (bx - ax), qy = ay + t * (by - ay), d2 = (px - qx) ** 2 + (py - qy) ** 2;
-                if (d2 >= nearest) continue;
-                nearest = d2;
-                side = (bx - ax) * (py - qy) - (by - ay) * (px - qx) > 0 ? RIGHT : LEFT;
-            }
-        }
-        sides |= side;
     });
-    return sides;
+    return built;
 }

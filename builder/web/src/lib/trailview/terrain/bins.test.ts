@@ -6,7 +6,7 @@ import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
 import { BRIDGE, CELL, CORNER, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WALK, WARP_M, type Line, type Profile } from './bins';
 import { cornersOf } from './corners';
-import { RIGHT } from './town';
+import { LEFT, RIGHT } from './town';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -252,9 +252,9 @@ describe('a town', () => {
         return { kind: 'building', tags: { building: 'house' }, geometry: 'area' as const, parts: [{ outer: true, xy: Int32Array.from([x, y, x + w, y, x + w, y + d, x, y + d].map(Math.round)), z: null }] };
     };
 
-    it('gives a road a sidewalk on the side where a building is near, along the pieces within 20 m of it', () => {
+    it('gives a road sidewalks on both sides where a building is near either, along the pieces within 20 m of it', () => {
         const [line] = features([road, house(10)], tile).lines, unit = metresPerUnit(line.xy[1]);
-        expect(new Set(line.sidewalks)).toEqual(new Set([0, RIGHT]));
+        expect(new Set(line.sidewalks)).toEqual(new Set([0, LEFT | RIGHT]));
         // The house's 10 m and about 16 m before and after it, in whole pieces of 8 m.
         const along = line.sidewalks!.reduce((sum, sides, v) => sum + (sides ? Math.hypot(line.xy[2 * v + 2] - line.xy[2 * v], line.xy[2 * v + 3] - line.xy[2 * v + 1]) * unit : 0), 0);
         expect(Math.abs(along - 42)).toBeLessThan(8);
@@ -273,11 +273,16 @@ describe('a town', () => {
 
     it('rounds the corners of a junction with a 5 m kerb, and runs a sidewalk round one or narrows it into a road without', () => {
         // The road runs on through a vertex where a side road leaves south, 8 m west of the house.
-        const x = Math.round(3000 - 8 / metres), line = (xy: number[]) => ({ ...road, parts: [{ outer: false, xy: Int32Array.from(xy), z: Float32Array.from(xy.filter((_, i) => i % 2 === 0).map(() => 1000)) }] });
-        const lines = features([line([1000, 4000, x, 4000, 5000, 4000]), line([x, 4000, x, Math.round(4000 + 30 / metres)]), house(10)], tile).lines;
-        const corners = cornersOf(lines), unit = metresPerUnit(corners[0].o[1]);
-        expect(corners.length).toBe(2);
-        for (const { o, a, b } of corners) for (const end of [a, b]) expect(Math.hypot(end[0] - o[0], end[1] - o[1]) * unit).toBeCloseTo(5, 1);
-        expect(corners.map(({ walk }) => [...walk].sort()).sort()).toEqual([[0, 1.5], [1.5, 1.5]]);
+        const x = Math.round(3000 - 8 / metres), line = (xy: number[], highway = 'residential') => ({ ...road, tags: { highway }, parts: [{ outer: false, xy: Int32Array.from(xy), z: Float32Array.from(xy.filter((_, i) => i % 2 === 0).map(() => 1000)) }] });
+        const walks = (highway: string) => {
+            const lines = features([line([1000, 4000, x, 4000, 5000, 4000]), line([x, 4000, x, Math.round(4000 + 30 / metres)], highway), house(10)], tile).lines;
+            const corners = cornersOf(lines), unit = metresPerUnit(corners[0].o[1]);
+            expect(corners.length).toBe(2);
+            for (const { o, a, b } of corners) for (const end of [a, b]) expect(Math.hypot(end[0] - o[0], end[1] - o[1]) * unit).toBeCloseTo(5, 1);
+            return corners.map(({ walk }) => [...walk].sort()).sort();
+        };
+        expect(walks('residential')).toEqual([[1.5, 1.5], [1.5, 1.5]]);
+        // A service road has no sidewalks.
+        expect(walks('service')).toEqual([[0, 1.5], [0, 1.5]]);
     });
 });
