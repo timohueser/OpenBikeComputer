@@ -183,6 +183,11 @@ class DevCleanupTests(unittest.TestCase):
                 path.write_text("x")
             for path in [*old_files, kept[1], outside_file]:
                 os.utime(path, (old, old))
+            # A reused dependency keeps its build mtime, but a read refreshes its atime.
+            used = target / "debug" / "deps" / "libused.rlib"
+            used.write_text("x")
+            os.utime(used, (time.time(), old))
+            kept.append(used)
             (target / "release").mkdir()
             (target / "release" / "deps").symlink_to(outside_file.parent, target_is_directory=True)
             cutoff = time.time() - 7 * cleanup.SECONDS_PER_DAY

@@ -160,8 +160,9 @@ def cargo_target(value: str | None) -> Path | None:
 def prune_cargo_target(target: Path, cutoff: float, apply: bool) -> dict[Path, tuple[int, int]]:
     """Return {artifact dir: (files, bytes)} older than cutoff; remove them when apply is set.
 
-    mtime is enough: cargo rebuilds or relinks any artifact that is missing, so pruning an
-    artifact that is still in use costs one rebuild and never a wrong build.
+    Age is the later of atime and mtime: cargo does not rewrite a dependency that it reuses,
+    but reading it updates atime (daily under relatime). On a noatime mount an artifact in use
+    can look old; cargo rebuilds a missing artifact, so that costs one rebuild, never a wrong build.
     """
     result: dict[Path, tuple[int, int]] = {}
     for name in CARGO_ARTIFACT_DIRS:
@@ -179,7 +180,7 @@ def prune_cargo_target(target: Path, cutoff: float, apply: bool) -> dict[Path, t
                     path = here / entry
                     try:
                         stat = path.lstat()
-                        if stat.st_mtime > cutoff:
+                        if max(stat.st_atime, stat.st_mtime) > cutoff:
                             continue
                         if apply:
                             path.unlink()
