@@ -246,9 +246,10 @@ fn color2_wire_bytes_ignored_when_flag_clear() {
     assert_eq!(r.style(7).unwrap().color2, None, "nonzero color2 bytes are ignored when bit 3 is clear");
 }
 
-/// Style-record bits 4 and 5, forged onto the packed record: the reader must pick them out of the
-/// byte already on the wire, and the record stays 8 bytes. Bits 6-7 are reserved, and a reader
-/// ignores them rather than rejecting the record, unlike a feature's reserved bits.
+/// Style-record bits 4, 5 and 6, forged onto the packed record: the reader must pick them out of
+/// the byte already on the wire, and the record stays 8 bytes. With bits 2 and 6 both set the line
+/// is ticked. Bit 7 is reserved, and a reader ignores it rather than rejecting the record, unlike a
+/// feature's reserved bits.
 #[test]
 fn style_record_round_trips_fixed_width_and_terrain_layer() {
     let styles: &[Style] = &[(1, 8, 0xAD55, 1, 4, true, None), (2, 0, 0xF800, 2, 3, false, None)];
@@ -260,7 +261,8 @@ fn style_record_round_trips_fixed_width_and_terrain_layer() {
     );
     let flags_at = STYLE_OFFSET + 1 + 5;
     assert_eq!(bytes[flags_at] & 0xF0, 0, "the oracle writes bits 4-7 clear");
-    bytes[flags_at] |= 0x10 | 0x20 | 0x80; // fixed width + terrain layer + one still-reserved bit
+    assert_eq!(bytes[flags_at] & 0x04, 0x04, "style 1 is packed dashed");
+    bytes[flags_at] |= 0x10 | 0x20 | 0x40 | 0x80; // fixed width + terrain layer + ticked + reserved bit
 
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
@@ -270,8 +272,8 @@ fn style_record_round_trips_fixed_width_and_terrain_layer() {
     let s1 = r.style(1).expect("a record with a reserved bit set is still read, not rejected");
     assert!(s1.flags.fixed_width(), "bit 4 ⇒ fixed width");
     assert!(s1.flags.terrain_layer(), "bit 5 ⇒ terrain layer");
+    assert_eq!(s1.flags.line_style(), LineStyle::Ticked, "bits 2 and 6 both set ⇒ ticked");
     // The bits below are untouched by the ones above.
-    assert_eq!(s1.flags.line_style(), LineStyle::Dashed);
     assert_eq!((s1.weight, s1.priority, s1.color), (1, 4, 0xAD55));
 
     let s2 = r.style(2).expect("style 2");
