@@ -41,9 +41,8 @@ struct ImpostorOut {
     @location(9) @interpolate(flat) ground: u32,
     @location(10) @interpolate(flat) tie: f32,
     @location(11) @interpolate(flat) model: u32,
-    // How the crown wears the ground's colour (wear_of of draw.wgsl), and the distance of its centre.
-    @location(12) @interpolate(flat) wear: f32,
-    @location(13) @interpolate(flat) far: f32,
+    // The share of the satellite's colour (satellite_share of draw.wgsl).
+    @location(12) @interpolate(flat) satellite: f32,
 }
 
 @vertex
@@ -96,8 +95,7 @@ fn impostor_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> Imposto
     out.ground = i.ground;
     out.tie = m.tie;
     out.model = model;
-    out.wear = wear_of(m, i.ground);
-    out.far = far;
+    out.satellite = satellite_share(m, i.ground, far);
     out.tint = (0.75 + 0.5 * f32(i.look & 255u) / 255.0) * far_tone(m, far);
     out.level = level;
     return out;
@@ -121,6 +119,6 @@ fn impostor_fragment(in: ImpostorOut) -> @location(0) vec4f {
     let n = normalize(vec3f(in.turn.x * local.x - in.turn.y * local.y, in.turn.y * local.x + in.turn.x * local.y, local.z));
     // The phase's colour matrix fits the crown only: the trunk's share keeps its bark.
     let colour = albedo.rgb / albedo.a;
-    let phased = mix(worn(toned(colour, in.model, in.ground), colour, in.ground, in.wear, in.far), colour, normal.a);
+    let phased = mix(satellite(toned(colour, in.model, in.ground), colour, in.ground, in.satellite), colour, normal.a);
     return vec4f(in.fog * light_up(snowed(tied(phased, in.tint, in.tie, in.ground), n.z, in.look), n, sun_of(in.ground), 1.0, look.horizon.w) + in.air, 1.0);
 }
