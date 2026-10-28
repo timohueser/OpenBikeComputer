@@ -361,13 +361,13 @@ takes the file. The fetch checks every record that it adds to before it writes o
 takes the `NAME=VALUE` of its row, each once, and no other. A `capture` source without a row has
 no fetcher yet; the fetch fails. `wikidata`, `wikipedia` and `commons` have no fetcher: only the
 producer of [`wiki`](#wiki) reads them. `era5-land` has none: only the producer of
-[`climate`](#climate) reads it.
+[`climate`](#climate) reads it. `sentinel-2-mosaics` has none: only the producer of
+[`colour`](#colour) reads it.
 
 | Source | `NAME=VALUE` | Program | Packages | Query |
 | --- | --- | --- | --- | --- |
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
 | Each source of `data/trailview/ground.json` with the `protocol` `arcgis-features` or `wfs` | `bbox`, `ground` | `tools/trailview/ground.py --source ID --fetch` | group `trailview` | `bbox=W,S,E,N&ground=DIGEST` |
-| `sentinel-2-mosaics` | `bbox`, `year` | `tools/trailview/colour.py --fetch` | group `trailview` | `bbox=W,S,E,N&year=YEAR` |
 | `corine-land-cover` | None | `tools/clms.py --fetch` | None | `dataset=0407d497d3c44bcd93ce8fd5bf78596a&file=3d9e2413-46ca-4f6e-abf8-b6eb429a4e48` |
 
 - `bbox` is `WEST,SOUTH,EAST,NORTH` in degrees.
@@ -400,8 +400,6 @@ producer of [`wiki`](#wiki) reads them. `era5-land` has none: only the producer 
   answer or ArcGIS error fails at once. The hidden file `.positions` records the object ids or the
   `numberMatched` that the page numbers stand for; a resumed run that finds others deletes the
   pages.
-- A `sentinel-2-mosaics` file is `<mosaic tile>/<band>.tif`: the window over `bbox`, one pixel
-  wider on each side, of a band of a quarterly mosaic tile of the year, as the STAC search lists it.
 - The version is the day of the fetch, because the service answers with current data. Another
   day comes only from the store. A request that a started version of a `manual` source lacks joins
   that version, so requests over several days have one version.
@@ -1096,11 +1094,11 @@ of the version of `terrain` that the target reads, and `mean/index.json`.
 | `planner/snow` | `hr-wsi` when its `extent` meets the bounds and its fetch has files, and `modis-snow`, each `bbox=<bounds>`, `seasons=<snow.seasons>`; `hansen-gfc`, `tile=` of each 10° tile that the bounds touch | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when it reads it, `modis-snow` and `hansen-gfc`; `year`: the year of the `hr-wsi` version, which fills its `{year}`, or null | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md): HR-WSI where it has data, and MODIS elsewhere |
 | `planner/trailview-features` | `planner/osm`, `planner/terrain/grid` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 13 |
 | `planner/trailview-rules` | `data/trailview/` of the repository | `ruleset`: the digest of its JSON files by their paths in it. The step fails when the files differ | `rules.json`: [the TrailView rules](trailview-tiles.md#rules); `regions.json`, `materials.json` and `ground.json`: the region ids, the region areas, the ecoregions, the places, the vocabulary and the ground sources that the ground steps read |
-| `planner/trailview-material` | `materials.json` and `ground.json` of `planner/trailview-rules`; `lithology.pmtiles` of `planner/trailview-lithology`; each [material source](trailview-tiles.md#ground-sources) that meets the bounds: `osm.pbf` of `planner/osm` for `osm-planet`; `esa-worldcover`, `tile=` of each 3° tile that the bounds touch and that `esa-worldcover-grid` lists; `sentinel-2-mosaics`, `bbox=<bounds>`, `year=<trailview.colour_year>`; a `capture` source with `bbox=<bounds>`, another without params | `layer`: `material`; `bounds` | `material.pmtiles`: the material bytes and the barren shares of [the ground](trailview-tiles.md#ground) |
+| `planner/trailview-material` | `materials.json` and `ground.json` of `planner/trailview-rules`; `lithology.pmtiles` of `planner/trailview-lithology`; each [material source](trailview-tiles.md#ground-sources) that meets the bounds: `osm.pbf` of `planner/osm` for `osm-planet`; `esa-worldcover`, `tile=` of each 3° tile that the bounds touch and that `esa-worldcover-grid` lists; the files of [`colour`](#colour) of `trailview.colour_year` of the blocks that the bounds meet, for `colour`. A version that lacks one of them refuses; a `capture` source with `bbox=<bounds>`, another without params | `layer`: `material`; `bounds`; `year`: `trailview.colour_year` | `material.pmtiles`: the material bytes and the barren shares of [the ground](trailview-tiles.md#ground) |
 | `planner/trailview-lithology` | `materials.json` and `ground.json` of `planner/trailview-rules`; each lithology source that meets the bounds, as for the material | `layer`: `lithology`; `bounds` | `lithology.pmtiles`: the lithology bytes |
 | `planner/trailview-region` | `regions.json` of `planner/trailview-rules` | `layer`: `region`; `bounds` | `region.pmtiles`: the region bytes |
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region` | `layer`: `ground`; `bounds`; `attribution` of the sources of the three | `ground.pmtiles`: [the ground archive](trailview-tiles.md#ground) |
-| `planner/trailview-colour` | `sentinel-2-mosaics`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles`: [the colour archives](trailview-tiles.md#colour) |
+| `planner/trailview-colour` | The files of `colour`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles`: [the colour archives](trailview-tiles.md#colour) |
 | `planner/trailview-snow` | `snow.pmtiles` of `planner/snow` | `bounds` | `00.pmtiles` to `45.pmtiles`: [the snow days](trailview-tiles.md#snow-days), one archive per band |
 | `planner/trailview-canopy` | The tiles of [`forest`](#forest) that the canopy models of the region meet in the boxes of the region, as `forest` defines them, or in the bounds of a region without boxes. A version whose scope and `extends` lack one of those tiles refuses, and so does a region that no canopy model meets | `bounds`; `attribution`: the credits of the canopy models of those tiles and of the leaf type | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
 
@@ -1709,7 +1707,7 @@ is compact JSON with the keys of each object in byte order:
    the lock. A version that `versions.json` lists and that has no manifest refuses the run: its
    manifest is lost, and the fix restores it from the backup.
 6. The producer writes each file. `terrain`, `forest` and `climate` run the programs of
-   eight tiles at a time. The run moves each file into the home at once, records its SHA-256 in the journal
+   eight tiles at a time, `colour` of four. The run moves each file into the home at once, records its SHA-256 in the journal
    and deletes it from the work. No reader reads a version before its manifest, so the move
    replaces a file that a stopped run left with other bytes. The run shows each tile that a program makes as a step `<id>/<tile>`
    of the layer `<id>`, with its time, CPU, peak memory and the bytes of its files, so the page
@@ -1971,6 +1969,58 @@ same format.
   values as from the hourly data, so its archive has the same bytes except `inputs`.
 - The run moves the files into the home in batches of 64. The manifest names `era5-land` at the date of the
   version, with the [digest](#keys) of the SHA-256 of the files that it made.
+
+#### `colour`
+
+The producer `colour`, format 1, makes the Sentinel-2 measurements of each texel of the zoom 12
+tiles, per quarter of a year, from `sentinel-2-mosaics`: the CDSE collection
+`sentinel-2-global-mosaics`. `planner/trailview-colour` and `planner/trailview-material` read
+them and apply the rules of [the colour](trailview-tiles.md#colour): the look minimum, the NDVI,
+the shadow rule and the snow rule. A version adds blocks and years to the newest complete version
+of `colour` in the home, in the same format.
+
+- A block is a zoom 10 tile, which holds 4 × 4 zoom 12 tiles. The blocks of a region are those
+  whose inside a box or a `geofabrik-poly` polygon of a leaf of the region meets. A run keeps the
+  version of each polygon that its first run read, as for [`terrain`](#terrain). A version without
+  a region refuses.
+- The year is `trailview.colour_year` of [`data/planner.toml`](#dataplannertoml). For each block
+  of its region, a version holds `<year>/<x>/<y>.pmtiles`, with x and y of zoom 10. The file of
+  a block without data is empty. A file that the version before holds stays in `reused`, and the
+  run does not make it again. So a new region or a new year adds files, and a new format makes each
+  file again. The manifest names the scopes of the version before in `extends`.
+- For each block, `python -m tools.trailview.colour prepare --block <x>-<y> --year <year>`
+  writes the file of the block and then `<x>-<y>.sha256`, the SHA-256 of the file. It reads the
+  window over the block, one pixel wider on each side, of each band of each mosaic tile of the
+  year that the STAC search of the collection lists, from CDSE S3 with the `credential` of
+  `sentinel-2-mosaics`, one window at a time. CDSE S3 allows 4 connections per user, so 4
+  programs run at once. It deletes its windows when the file is complete; a block that fails
+  keeps them for the next run.
+- In each quarter, the program puts the bands B02, B03, B04, B08 and `observations` on the
+  512 × 512 texels of each zoom 12 tile in EPSG:3857: bilinear where the texel is under 10 m, the
+  mean of the pixels otherwise. The mosaic tiles go in the order of their ids, and a later tile
+  writes over an earlier one where it has a pixel. `refl` is a band ÷ 10000, from 0 to 1, and 0
+  without a pixel.
+
+  | Plane | Value of a texel |
+  | --- | --- |
+  | Red, green, blue, near-infrared | round(255 × refl^(1/2.2)) of B04, B03, B02 and B08 |
+  | Look | min(15, ⌊`observations`⌋) where B04 has a pixel; else 0 |
+
+  So a test "look ≥ n" for n of 1 to 15 is the same test as on the resampled `observations`.
+- A file is PMTiles v3 at zoom 12 only: tile type `unknown` (0), no tile compression, metadata
+  `{}`. A tile is five lossless WebP images of 512 × 512 texels, one after the other: the quarters
+  1 to 4 as RGBA, with the near-infrared in alpha; then the looks of the quarters 1 to 4 as red,
+  green, blue and alpha. A texel keeps each byte where its alpha is 0 (WebP `exact`). The length
+  of an image is 8 + the RIFF size in bytes 4 to 7, little endian. A tile whose look is 0 in each
+  quarter is not in the file.
+- A file depends only on its block, its year and the mosaics, never on the region. So
+  `planner/trailview-colour` makes the same tiles from each version that holds the blocks of its
+  bounds.
+- The review counts into the store the windows of the 4 programs and a batch of files that waits
+  for its move into the home.
+- The run moves the files into the home in batches of 64. The manifest names
+  `sentinel-2-mosaics` at the date of the version, with the [digest](#keys) of the SHA-256 of the
+  files that it made.
 
 #### `wiki`
 

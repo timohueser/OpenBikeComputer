@@ -66,8 +66,9 @@ A material code above 63 needs a new format. The ruleset check rejects more than
 a region id is 0 to 254; more ids need a new format, with two bytes.
 
 The material and the barren share come from the sources at zoom 13, the lithology at zoom 12 and
-the region at zoom 10. A coarser texel takes the most common byte of its four children,
-the first in reading order on a tie. A material or region texel with no data counts only where all
+the region at zoom 10. The quarters of the satellite, for the barren share and `satellite-heath`,
+come from zoom 12: a zoom 13 texel takes the zoom 12 texel that holds its centre. A coarser texel
+takes the most common byte of its four children, the first in reading order on a tie. A material or region texel with no data counts only where all
 four have no data, and a missing child has no data. A coarser barren share is the rounded mean of
 the children with data. Finer than the last zoom of its layer, a lithology or region texel is the
 texel of that zoom that holds its centre. A tile is in the archive where its material has data.
@@ -127,7 +128,8 @@ value names its `class`. A value without a class names nothing. `authority` take
 material source keeps `inland-water`. `refine` takes a class only where `refines` lists the
 texel's code for that class.
 
-The entry with `rule: satellite-heath` reads `sentinel-2-mosaics`. It makes `material` of each
+The entry with `rule: satellite-heath` reads the quarters of [the colour](#colour) after its rules 1
+to 3. It makes `material` of each
 texel whose material it lists in `on`, where the summer quarter, or spring where summer saw
 nothing, measured green below `green_red` × red, an NDVI of `ndvi` or more, and an NDVI no more
 than `peak` below the year's highest. On a lithology of `spring_on`, spring also measured green
@@ -136,12 +138,21 @@ archive for this rule.
 
 ## Colour
 
-`trailview-colour` has four archives from the Sentinel-2 quarterly mosaics of one year, `q1` to
-`q4`. Quarter q holds the months 3q − 2 to 3q. A texel has the colour of the quarter and its NDVI
-code.
+`trailview-colour` has four archives, `q1` to `q4`, from the zoom 12 texels of the prepared
+source [`colour`](obc-data.md#colour) of the year `trailview.colour_year`. Quarter q holds the
+months 3q − 2 to 3q. A texel has the colour of the quarter and its NDVI code.
+
+The bake applies these rules to the texels of `colour`, in this order:
+
+1. A texel with a look of 3 or more takes the NDVI code 1 + round((max(v, −0.99) + 1) ÷ 2 × 254),
+   2 to 255, of v = (nir − red) ÷ max(nir + red, 0.0001), from −1 to 1, of the reflectance of its
+   near-infrared and red. A texel with a look below 3 takes NDVI code 0.
+2. The shadow rule, below.
+3. The snow rule: code 1 in the table.
+4. A texel whose centre is outside the region bounds takes 0 in each byte.
 
 The colour is the visible reflectance `refl` of the red, green and blue bands, as
-round(255 × refl^(1/2.2)).
+round(255 × refl^(1/2.2)). A rule reads the colour c of a texel as refl = (c ÷ 255)^2.2.
 
 | Code | Meaning |
 | --- | --- |
@@ -165,9 +176,9 @@ A tile is two images, one after the other:
    endian.
 2. The colour: an RGB image of 512 × 512 texels in the codec of the variant.
 
-In the first and the last quarter, a texel darker than 0.025 in visible reflectance is terrain
-shadow, unless it is snow in shade. Where the third quarter looked, it takes the chroma of the third
-quarter at its own brightness.
+The shadow rule: in the first and the last quarter, a texel darker than 0.025 in visible
+reflectance is terrain shadow, unless it is snow in shade. Where the third quarter looked, it takes
+the chroma of the third quarter at its own brightness.
 
 The archives hold zoom 9 to the last zoom of the variant. A coarser texel is the mean colour, in
 linear light, of its children that looked, without the black of a child with code 1; and the mean
@@ -175,7 +186,6 @@ NDVI code of those that measured one. It is 1 where more children saw snow than 
 
 | Variant | Codec | Last zoom | Chroma at 47° N | NDVI at 47° N |
 | --- | --- | --- | --- | --- |
-| `webp-13` | lossy WebP, 4:2:0 | 13 | 13 m | 13 m |
 | `webp-12` | lossy WebP, 4:2:0 | 12 | 26 m | 26 m |
 | `webp-11` | lossy WebP, 4:2:0 | 11 | 52 m | 52 m |
 | `avif-12` | AVIF, 4:2:0 | 12 | 26 m | 26 m |
