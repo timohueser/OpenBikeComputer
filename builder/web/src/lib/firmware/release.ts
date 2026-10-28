@@ -133,10 +133,11 @@ interface Version {
  *
  * Accepts an optional leading `v`, a three-part numeric core, an optional `-pre` tag and optional
  * `+build` metadata — the last of which is *ignored*, so `1.2.0+abc1234` and `1.2.0` are the same
- * version. A bare git hash parses as nothing at all, which is the point.
+ * version. An empty pre-release identifier (`1.2.0-a..b`) is not a version. A bare git hash parses
+ * as nothing at all, which is the point.
  */
 export function parseVersion(text: string): Version | null {
-    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(text.trim());
+    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?$/.exec(text.trim());
     if (!match) return null;
     const major = Number(match[1]);
     const minor = Number(match[2]);

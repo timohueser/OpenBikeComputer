@@ -117,7 +117,7 @@ struct FirmwareReleaseTests {
     @Test(arguments: [
         "", " ", "v", "1", "1.2", "1.2.3.4", "1.2.x", "1.2.-1", "v1.2.0-", "1.2.0+",
         "abc1234", "g1a2b3c4", "1.2.0-rc 1", "one.two.three", "1.2.0+build+more", "-1.2.0",
-        "9007199254740992.0.0",
+        "9007199254740992.0.0", "1.0.0-", "1.0.0-.a", "1.0.0-a.", "1.0.0-a..b",
     ])
     func refusesEverythingThatIsNotAReleaseVersion(text: String) {
         #expect(FirmwareVersion.parse(text) == nil, "\"\(text)\" must not parse as a release version")
