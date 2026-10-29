@@ -348,11 +348,17 @@ describe('a town', () => {
         expect(features([road], tile).lines[0].sidewalks).toEqual([0]);
     });
 
-    it('keeps a sidewalk out of the bed of a track beside the road', () => {
-        // A track 5 m north of the road's middle, on its left: its bed takes the left sidewalk's band.
-        const y = Math.round(4000 - 5 / metres), track = { kind: 'railway', tags: { railway: 'rail' }, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from([1000, y, 5000, y]), z: Float32Array.from([1001, 1001]) }] };
-        const line = features([road, track, house(10)], tile).lines.find(line => line.kind === ROAD)!;
-        expect(new Set(line.sidewalks)).toEqual(new Set([0, RIGHT]));
+    it('keeps a sidewalk out of the bed of a line beside the road in every tile alike, and out of no culvert', () => {
+        // Lines 5 m north of the road's middle, on its left: a bed there takes the left sidewalk's band.
+        const y = Math.round(4000 - 5 / metres), beside = (kind: string, tags: Record<string, string>, xy: number[], heights = true) =>
+            ({ kind, tags, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from(xy), z: heights ? Float32Array.from(xy.filter((_, i) => i % 2 === 0).map(() => 1001)) : null }] });
+        const sides = (line: ReturnType<typeof beside>) => new Set(features([road, line, house(10)], tile).lines[0].sidewalks);
+        expect(sides(beside('railway', { railway: 'rail' }, [1000, y, 5000, y]))).toEqual(new Set([0, RIGHT]));
+        // A service road that leaves the road's first vertex, far from the house, as the tile that holds that vertex has it, and as one past it has it.
+        expect(sides(beside('road', { highway: 'service' }, [1000, 4000, 1100, y, 5000, y]))).toEqual(new Set([0, RIGHT]));
+        expect(sides(beside('road', { highway: 'service' }, [1100, y, 5000, y]))).toEqual(new Set([0, RIGHT]));
+        // A culvert under the left sidewalk has no heights, and holds no ground.
+        expect(sides(beside('stream', { waterway: 'stream', tunnel: 'culvert' }, [1000, Math.round(4000 - 3 / metres), 5000, Math.round(4000 - 3 / metres)], false))).toEqual(new Set([0, LEFT | RIGHT]));
     });
 
     it('leads a walk from a house to the sidewalk, and a forecourt from a house near it', () => {

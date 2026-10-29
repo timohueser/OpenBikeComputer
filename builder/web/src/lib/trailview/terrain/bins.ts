@@ -370,10 +370,11 @@ function townPieces({ xy, z, anchors }: ReturnType<typeof smoothed>, town: Town,
 }
 
 /**
- * The ground beds of a tile's roads, paths, tracks and waterways: their segments in a grid, the widest
- * half-width, the features at each vertex and each feature's vertices.
+ * The beds that the stamp holds on the ground, of a tile's roads, paths, tracks and waterways: their
+ * segments in a grid of their boxes grown by their half-widths, the features at each vertex and each
+ * feature's vertices.
  */
-interface Beds extends Grid { segments: { feature: number; h: number; xy: number[] }[]; widest: number; vertices: Map<string, number[]>; keys: string[][] }
+interface Beds extends Grid { segments: { feature: number; h: number; xy: number[] }[]; vertices: Map<string, number[]>; points: number[][][] }
 /** Whether the sidewalk on a side of a street's piece through x, y along dx, dy keeps out of the beds. */
 type Clear = (x: number, y: number, dx: number, dy: number, side: number) => boolean;
 
@@ -385,41 +386,55 @@ function halfOf(kind: string, tags: Record<string, string>): number {
 }
 
 function bedsOf(list: Feature[], world: (xy: Int32Array, v: number) => number[]): Beds {
-    const segments: Beds['segments'] = [], vertices = new Map<string, number[]>(), keys: string[][] = [];
+    const segments: Beds['segments'] = [], vertices = new Map<string, number[]>(), points: number[][][] = [];
     list.forEach(({ kind, tags, parts }, feature) => {
         // A bridge's and a tunnel's beds are off the ground.
         if (!['main-road', 'road', 'path', 'railway', 'river', 'stream'].includes(kind) || !GROUND.includes(tags.bridge ?? 'no')) return;
         const h = halfOf(kind, tags);
-        keys[feature] = [];
-        for (const { xy } of parts) {
-            const points = Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v));
-            for (const [x, y] of points) {
-                const key = `${x},${y}`;
-                keys[feature].push(key);
+        points[feature] = [];
+        // As in the stamp, a part or a segment without heights, as a culvert's, holds no ground.
+        for (const { xy, z } of parts) {
+            if (!z) continue;
+            const at = Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v));
+            for (const point of at) {
+                const key = `${point[0]},${point[1]}`;
+                points[feature].push(point);
                 (vertices.get(key) ?? vertices.set(key, []).get(key)!).push(feature);
             }
-            for (let v = 0; v + 1 < points.length; v++) segments.push({ feature, h, xy: [...points[v], ...points[v + 1]] });
+            for (let v = 0; v + 1 < at.length; v++) if (!Number.isNaN(z[v]) && !Number.isNaN(z[v + 1])) segments.push({ feature, h, xy: [...at[v], ...at[v + 1]] });
         }
     });
-    const boxes = segments.map(({ xy: [ax, ay, bx, by] }) => [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)]);
-    return { ...gridOf(boxes), segments, widest: Math.max(0, ...segments.map(({ h }) => h)), vertices, keys };
+    const boxes = segments.map(({ h, xy: [ax, ay, bx, by] }) => {
+        const r = h / metresPerUnit(ay);
+        return [Math.min(ax, bx) - r, Math.min(ay, by) - r, Math.max(ax, bx) + r, Math.max(ay, by) + r];
+    });
+    return { ...gridOf(boxes), segments, vertices, points };
 }
 
 /**
- * The sidewalk test of a street of half-width h with sidewalks `walk` metres wide: the middle of a
- * sidewalk lies outside the bed of every other line but those that meet the street at a vertex, its side
- * streets and level crossings, whose mouths the corners shape.
+ * A line that meets a street at a vertex does not count within this many metres of that vertex, a little
+ * past the end of the corner's arc, at most 10 m along each road (TANGENT_M of corners.ts): the corner
+ * shapes the mouth of a side street, a path or a level crossing. The vertex and the beds that the test
+ * reads lie within BUILT_M of the piece's middle, as its buildings do, for beds up to about 14 m either
+ * side of their line: each tile decides alike.
+ */
+const JOIN_M = 12;
+
+/**
+ * The sidewalk test of a street of half-width h with sidewalks `walk` metres wide: the sidewalk lies
+ * outside the bed of every other line, but near the vertices where those lines meet the street.
  */
 function clearOf(beds: Beds, feature: number, h: number, walk: number): Clear {
-    const joined = new Set([feature, ...(beds.keys[feature] ?? []).flatMap(key => beds.vertices.get(key)!)]), reach = beds.widest + walk / 2;
+    const joins = (beds.points[feature] ?? []).map(([x, y]) => ({ x, y, lines: beds.vertices.get(`${x},${y}`)!.filter(f => f !== feature) })).filter(({ lines }) => lines.length);
     return (x, y, dx, dy, side) => {
         const unit = metresPerUnit(y), l = Math.hypot(dx, dy) * unit || 1, out = (side === LEFT ? 1 : -1) * (h + walk / 2) / l;
         // Left of the way, whose y runs south.
         const mx = x + dy * out, my = y - dx * out;
+        const joined = (f: number) => joins.some(join => join.lines.includes(f) && Math.hypot(join.x - mx, join.y - my) * unit < JOIN_M);
         let clear = true;
-        near(beds, mx, my, mx, my, reach / unit, b => {
+        near(beds, mx, my, mx, my, walk / 2 / unit, b => {
             const { feature: f, h: bed, xy: [ax, ay, bx, by] } = beds.segments[b];
-            if (!clear || joined.has(f)) return;
+            if (!clear || f === feature || joined(f)) return;
             const t = along(ax, ay, bx, by, mx, my);
             clear = Math.hypot(ax + t * (bx - ax) - mx, ay + t * (by - ay) - my) * unit >= bed + walk / 2;
         });
@@ -645,14 +660,18 @@ function catmullRom(a: number[], b: number[], c: number[], d: number[]): (u: num
     };
 }
 
-/** Junctions: vertices that two road lines meet at, or that one line passes twice (a ring's start), with the widest half-width there. */
-export function junctions(lines: Line[]): Map<string, { x: number; y: number; h: number }> {
-    const seen = new Map<string, { x: number; y: number; h: number; count: number }>();
+/**
+ * Junctions: vertices that two road lines meet at, or that one line passes twice (a ring's start), with the
+ * widest half-width there and the count of ways out: two where OSM splits a road.
+ */
+export function junctions(lines: Line[]): Map<string, { x: number; y: number; h: number; ways: number }> {
+    const seen = new Map<string, { x: number; y: number; h: number; ways: number; count: number }>();
     for (const line of lines) {
         for (let v = 0; v < line.z.length; v++) {
             const x = line.xy[2 * v], y = line.xy[2 * v + 1], key = `${x},${y}`;
-            const entry = seen.get(key) ?? { x, y, h: 0, count: 0 };
+            const entry = seen.get(key) ?? { x, y, h: 0, ways: 0, count: 0 };
             entry.count++;
+            entry.ways += (v > 0 ? 1 : 0) + (v + 1 < line.z.length ? 1 : 0);
             entry.h = Math.max(entry.h, line.h);
             seen.set(key, entry);
         }
