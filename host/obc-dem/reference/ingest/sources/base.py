@@ -14,6 +14,7 @@ and a redirect that leaves the host loses the `Authorization` header.
 
 import base64
 import hashlib
+import http.client
 import os
 import shutil
 import sys
@@ -182,7 +183,8 @@ def with_retry(attempt, what: str, absent=()):
             if delay is None:
                 raise Refuse(redact(f"{what}: HTTP {error.code} after {len(RETRY_DELAYS)} "
                                     f"retries — {body}")) from error
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
+        # A body the server cuts short is an `HTTPException`, not an `OSError`.
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as error:
             if delay is None:
                 raise Refuse(redact(f"{what}: {type(error).__name__}: {error}")) from error
         time.sleep(delay)

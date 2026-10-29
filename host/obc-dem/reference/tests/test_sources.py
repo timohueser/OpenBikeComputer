@@ -6,6 +6,7 @@ against a synthetic answer. The live probes are in `README.md`, with the summit 
 source was verified against.
 """
 
+import http.client
 import json
 import os
 import sys
@@ -1112,6 +1113,22 @@ class Registry(unittest.TestCase):
         body = ingest.sources.base.http_get(f"http://127.0.0.1:{flaky.server_address[1]}/x", what="flaky")
         self.assertEqual(body, b"II*\x00ok")
         self.assertEqual(len(calls), 2)
+
+    def test_a_body_the_server_cuts_short_is_retried(self):
+        attempts = []
+
+        def attempt():
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise http.client.IncompleteRead(b"", 11308800)
+            return b"ok"
+
+        real = ingest.sources.base.RETRY_DELAYS
+        ingest.sources.base.RETRY_DELAYS = (0,)
+        self.addCleanup(setattr, ingest.sources.base, "RETRY_DELAYS", real)
+
+        self.assertEqual(ingest.sources.base.with_retry(attempt, "short"), b"ok")
+        self.assertEqual(len(attempts), 2)
 
     def test_a_service_that_answers_xml_instead_of_a_raster_is_refused_by_name(self):
         """Out of coverage, renamed, or down: every one of them arrives as a 200 and XML."""
