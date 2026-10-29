@@ -11,6 +11,7 @@ import { NO_SLEEPERS, type MeshBuilder } from '../structures/mesh';
 import type { Owns } from '../structures/node';
 import { carriageway, corridorLine, MAT, sideOf, type Part } from './section';
 import { stationsOf, type Station } from './stations';
+import { kerbDrop, prepareDetails, roadside, type DetailEnv } from './details';
 
 /** Vertex flags in the colour's alpha that mark a corridor vertex: VOID and INSIDE of mesh.ts, which no other face has together. */
 const CORRIDOR = 12;
@@ -30,13 +31,16 @@ interface Ctx { b: MeshBuilder; line: Line; lift: number; prio: number; made: Ma
 /** A vertex and its plan position in world units. */
 interface V { i: number; x: number; y: number }
 
-export function corridors(b: MeshBuilder, lines: Line[], owns: Owns): void {
-    const shared = junctions(lines);
+export function corridors(b: MeshBuilder, lines: Line[], owns: Owns, env?: DetailEnv): void {
+    const shared = junctions(lines), prep = prepareDetails(lines.filter(corridorLine), env), cache = new Map();
     lines.forEach((line, id) => {
         if (!corridorLine(line) || line.z.length < 2) return;
         const ctx: Ctx = { b, line, lift: classLift(line, id), prio: bandPrio(line), made: new Map() }, stations = stationsOf(line);
         for (let j = 0; j + 1 < stations.length; j++) {
-            if (owns(stations[j].x, stations[j].y)) sweep(ctx, stations[j], stations[j + 1]);
+            if (owns(stations[j].x, stations[j].y)) {
+                sweep(ctx, stations[j], stations[j + 1]);
+                if (!(globalThis as Record<string, unknown>).NO_DETAILS) roadside(b, line, stations, j, prep, cache);
+            }
         }
         const n = line.z.length;
         for (const [end, s, dir] of [[0, stations[0], -1], [n - 1, stations[stations.length - 1], 1]] as const) {
@@ -86,7 +90,7 @@ function sweep(ctx: Ctx, s: Station, t: Station): void {
 
 /** The quad from part p to part q (signed metres across) between stations s and t, in q's material. */
 function strip(ctx: Ctx, s: Station, t: Station, p: Part, q: Part, side: number): void {
-    const v = (st: Station, part: Part) => vertex(ctx, st, part.a, part.dz, q.mat, part.flags ?? 0);
+    const v = (st: Station, part: Part) => vertex(ctx, st, part.a, part.dz - kerbDrop(ctx.line, st, side, part), q.mat, part.flags ?? 0);
     quad(ctx.b, [v(s, p), v(s, q), v(t, q), v(t, p)], side);
 }
 

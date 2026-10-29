@@ -4,6 +4,7 @@
 // and the flags.
 import { PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SURFACES, walkOf, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
+import { kerbParts } from './details';
 
 export const CLASS_NAMES = Object.keys(PROFILES);
 export const SURFACE_NAMES = Object.keys(SURFACES) as (keyof typeof SURFACES)[];
@@ -66,7 +67,7 @@ export function sideOf(line: Line, side: 1 | -1, v: number): Part[] {
     const h = line.h, out: Part[] = [], walk = (line.sidewalks?.[v] ?? 0) & (side > 0 ? LEFT : RIGHT) ? walkOf(line) : 0;
     let a = h, dz = LIFT_M;
     if (walk > 0) {
-        out.push({ a, dz: dz + KERB_RISE_M, mat: MAT.KERB }, { a: a + KERB_TOP_M, dz: dz + KERB_RISE_M, mat: MAT.KERB }, { a: a + walk, dz: dz + KERB_RISE_M, mat: MAT.SIDEWALK });
+        out.push(...kerbParts(a, dz, walk));
         a += walk;
         dz += KERB_RISE_M;
     } else if (line.kind === RAIL || line.code >= RAIL_CODE) {

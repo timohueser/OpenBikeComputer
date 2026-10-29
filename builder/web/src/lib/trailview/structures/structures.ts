@@ -15,7 +15,7 @@ import { FLOOR, OWNER, type NodeMeshes } from './node';
  * meshes that a frame draws, and their heights.
  */
 // PROTOTYPE (road study): room for the corridor meshes of the near owners.
-const VERTEX_BYTES = 64 * 2 ** 20, INDEX_BYTES = 32 * 2 ** 20, ANCHORED_BYTES = 6 * 2 ** 20, ANCHORED_INDEX_BYTES = 3 * 2 ** 20, ANCHORS = 2 ** 16;
+const VERTEX_BYTES = 96 * 2 ** 20, INDEX_BYTES = 48 * 2 ** 20, ANCHORED_BYTES = 6 * 2 ** 20, ANCHORED_INDEX_BYTES = 3 * 2 ** 20, ANCHORS = 2 ** 16;
 /**
  * A floor reaches this far past the ends of its segments: off a deck or out of a tunnel the ground holds
  * the road's height, and the probe of the ground under the eye, a few frames late, catches up meanwhile.

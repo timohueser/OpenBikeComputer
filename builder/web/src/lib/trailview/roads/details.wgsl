@@ -1,0 +1,214 @@
+// PROTOTYPE road system (a study; never merges). The roadside details of roads/details.ts: the vertex stage
+// decides from the stamped ground where a guardrail, a delineator or a retaining wall stands, and the
+// fragment stage paints them. corridor.wgsl includes it.
+// #include hole.wgsl
+// #include ../ground/look.wgsl
+
+// Materials, as DM of details.ts.
+const DM_RAIL: u32 = 40u;
+const DM_RAIL_POST: u32 = 41u;
+const DM_RAIL_BLOCK: u32 = 42u;
+const DM_DELI: u32 = 44u;
+const DM_DELI_BAND: u32 = 45u;
+const DM_REFLECTOR: u32 = 46u;
+const DM_WALL: u32 = 48u;
+const DM_CAP: u32 = 49u;
+const DM_KERB: u32 = 50u;
+const DM_EDGING: u32 = 51u;
+// As CF.BARRIER of section.ts.
+const DETAIL_BARRIER: u32 = 4u;
+// A guardrail stands where the road edge lies DROP_M over the ground OUT_M past E, somewhere within
+// DILATE_M along; it ramps up over RAMP_M past that.
+const DROP_LOW_M: f32 = 1.1;
+const DROP_HIGH_M: f32 = 1.6;
+const DROP_OUT_M: f32 = 4.0;
+const DILATE_M: f32 = 6.0;
+const DETAIL_RAMP_M: f32 = 4.0;
+// A wall stands where the ground WALL_OUT_M past E climbs CUT_M over the road edge; it is at most WALL_MAX_M high.
+const CUT_LOW_M: f32 = 1.0;
+const CUT_HIGH_M: f32 = 1.5;
+const WALL_OUT_M: f32 = 2.2;
+const WALL_MAX_M: f32 = 3.5;
+// A detail that does not stand sinks this far under the lower of the ground and the road edge.
+const DETAIL_SINK_M: f32 = 0.6;
+
+// Metres per world unit at world row y.
+fn detail_unit_m(y: i32) -> f32 {
+    return 2.0 * 3.14159265 * 6371000.0 / 1073741824.0 / cosh(3.14159265 * (1.0 - f32(y) / 536870912.0));
+}
+
+struct DetailFrame {
+    // World units per metre outward and along.
+    o: vec2f,
+    t: vec2f,
+    grade: f32,
+}
+
+fn detail_frame(at: vec2i, packed: f32) -> DetailFrame {
+    let p = u32(max(packed, 0.0) + 0.5);
+    let angle = f32(p / 4096u) / 4096.0 * 6.2831853 - 3.14159265;
+    let m = detail_unit_m(at.y);
+    var f: DetailFrame;
+    f.o = vec2f(cos(angle), sin(angle)) / m;
+    f.t = vec2f(-f.o.y, f.o.x);
+    f.grade = (f32(p % 4096u) - 2048.0) / 4096.0;
+    return f;
+}
+
+// The stamped ground `out` metres past E and `along` metres along from a vertex `rel` metres past E.
+fn detail_ground(at: vec2i, f: DetailFrame, rel: f32, out: f32, along: f32) -> f32 {
+    let d = f.o * (out - rel) + f.t * along;
+    return units_height(at + vec2i(round(d)), surface.finest);
+}
+
+// How far a guardrail stands at a vertex, 0..1: the drop past the edge within DILATE_M along, its ends ramped.
+fn rail_share(at: vec2i, f: DetailFrame, rel: f32, edge: f32) -> f32 {
+    var share = 0.0;
+    for (var k = -4; k <= 4; k++) {
+        let along = f32(k) * 0.25 * (DILATE_M + DETAIL_RAMP_M);
+        let g = detail_ground(at, f, rel, DROP_OUT_M, along);
+        if (!known(g)) {
+            continue;
+        }
+        let drop = edge + f.grade * along - g;
+        let weight = clamp((DILATE_M + DETAIL_RAMP_M - abs(along)) / DETAIL_RAMP_M, 0.0, 1.0);
+        share = max(share, smoothstep(DROP_LOW_M, DROP_HIGH_M, drop) * weight);
+    }
+    return share;
+}
+
+// How far a wall stands at a vertex and its height over the road edge.
+fn wall_share(at: vec2i, f: DetailFrame, rel: f32, edge: f32) -> vec2f {
+    var share = 0.0;
+    var rise = 0.0;
+    var count = 0.0;
+    for (var k = -3; k <= 3; k++) {
+        let along = f32(k) * 2.0;
+        let g = detail_ground(at, f, rel, WALL_OUT_M, along);
+        if (!known(g)) {
+            continue;
+        }
+        let r = g - edge - f.grade * along;
+        let weight = clamp((7.0 - abs(along)) / 3.0, 0.0, 1.0);
+        share = max(share, smoothstep(CUT_LOW_M, CUT_HIGH_M, r) * weight);
+        if (abs(k) <= 1) {
+            rise += r;
+            count += 1.0;
+        }
+    }
+    return vec2f(share, clamp(rise / max(count, 1.0) + 0.3, 0.6, WALL_MAX_M));
+}
+
+// The height of a detail vertex (CF.BARRIER) at `at` (whole world units) with its road edge `edge`, its
+// metres past E and height code (`road`), its packed frame (`packed`) and its colour; others keep `z`.
+fn detail_height(at: vec2i, edge: f32, z: f32, colour: vec4f, road: vec2f, packed: f32, s: vec2f) -> f32 {
+    let flags = u32(round(colour.b * 255.0));
+    if ((flags & DETAIL_BARRIER) == 0u) {
+        return z;
+    }
+    let mat = u32(round(colour.r * 255.0));
+    let ramp = colour.g;
+    let f = detail_frame(at, packed);
+    let rel = road.x;
+    let code = road.y;
+    let here = units_height(at, surface.finest);
+    let ground = select(edge, here, known(here));
+    var share = 0.0;
+    var goal = edge + code;
+    if (mat == DM_WALL || mat == DM_CAP || mat == 1u) {
+        let w = wall_share(at, f, rel, edge);
+        share = w.x * ramp;
+        if (code > 4.0) {
+            goal = edge + w.y + code - 6.0;
+        }
+    } else {
+        let rail = rail_share(at, f, rel, edge) * ramp;
+        share = select(rail, 1.0 - rail, mat == DM_DELI || mat == DM_DELI_BAND || mat == DM_REFLECTOR);
+    }
+    if (code < -5.0) {
+        goal = ground + code + 10.0;
+    }
+    var h = mix(min(ground, edge) - DETAIL_SINK_M, goal, share);
+    if (!corridor_drawn(s)) {
+        h -= 4.0;
+    }
+    return h;
+}
+
+// Rubble masonry: rounded stones about `size` metres, each lighter or darker, in dark joints; on a face,
+// mapped onto the vertical plane it is nearest.
+fn detail_masonry(p: vec3f, n: vec3f, pixel: f32, size: f32) -> f32 {
+    let q = select(vec2f(select(p.x, p.y, abs(n.x) > abs(n.y)), p.z * 1.6), p.xy, abs(n.z) > 0.7);
+    let c = voronoi(q, size);
+    let stone = (0.7 + 0.5 * c.z) * mix(0.3, 1.0, smoothstep(0.0, 0.18, c.y));
+    return mix(stone, 0.78, smoothstep(0.02, 0.1, pixel / size));
+}
+
+// The colour of a detail fragment: material `mat`, `su` its LOD space, `relative` about the eye, `along`
+// its packed frame (metres along for a kerb), `n` its normal.
+fn detail_fragment(mat: u32, su: vec2f, relative: vec3f, altitude: f32, along: f32, n: vec3f) -> vec4f {
+    let p = look.place.xy + relative.xy;
+    let w = max(length(dpdx(relative)), length(dpdy(relative)));
+    let region = region_at(su);
+    var albedo = vec3f(0.5);
+    var spec = 0.0;
+    var glow = vec3f(0.0);
+    switch mat {
+        case DM_RAIL, DM_RAIL_POST, DM_RAIL_BLOCK: {
+            // Galvanised steel: pale grey, mottled with spangle and dull patches.
+            let mottle = 0.86 + 0.1 * noise(p / 0.6) + 0.06 * noise(p / 0.07);
+            albedo = vec3f(0.42, 0.44, 0.45) * mottle;
+            if (mat != DM_RAIL) {
+                albedo *= 0.8;
+            }
+            spec = 0.35;
+        }
+        case DM_DELI: {
+            albedo = vec3f(0.78, 0.78, 0.76);
+            spec = 0.1;
+        }
+        case DM_DELI_BAND: {
+            albedo = vec3f(0.025);
+            spec = 0.1;
+        }
+        case DM_REFLECTOR: {
+            albedo = vec3f(0.9, 0.42, 0.05);
+            glow = vec3f(0.35, 0.14, 0.01);
+        }
+        case DM_WALL, DM_CAP: {
+            let cell = cell_at(su, u32(ceil(lod(su))));
+            let rock = clamp(rule(cell.b, slot_lithologies() + i32(cell.g)).rgb / vec3f(0.3101, 0.3189, 0.2929), vec3f(0.5), vec3f(1.6));
+            let q = vec3f(p, altitude);
+            if (mat == DM_WALL) {
+                albedo = vec3f(0.30, 0.30, 0.285) * rock * detail_masonry(q, n, w * look.screen.z, 0.22);
+            } else {
+                albedo = vec3f(0.42, 0.41, 0.39) * rock * (0.9 + 0.1 * noise(p / 0.3));
+            }
+        }
+        case DM_KERB: {
+            // Granite blocks a metre long in fine joints, speckled.
+            let kerb = rule(region, slot_kerb()).rgb;
+            let block = floor(along);
+            let joint = (0.5 - abs(fract(along) - 0.5));
+            let along_w = max(abs(dpdx(along)), abs(dpdy(along)));
+            albedo = kerb * (0.9 + 0.08 * hash(vec2f(block, 3.0)) + 0.08 * noise(p / 0.05));
+            albedo *= 1.0 - 0.45 * band(joint, -0.006, 0.006, max(along_w, 1e-4));
+            spec = 0.05;
+        }
+        case DM_EDGING: {
+            albedo = vec3f(0.36, 0.355, 0.34) * (0.92 + 0.12 * noise(p / 0.4));
+        }
+        default: {}
+    }
+    let shadow = sun_share(sun_at(su), relative, n, LIFT_SOLID);
+    var lit = light_up(albedo, n, shadow, 1.0, look.horizon.w);
+    if (spec > 0.0) {
+        let v = -normalize(relative);
+        let hv = normalize(v + look.sun.xyz);
+        lit += look.sun_colour.rgb * spec * shadow * pow(max(dot(n, hv), 0.0), 24.0) * step(0.0, dot(n, look.sun.xyz));
+        // Sheen of the sky on steel, by the angle of view.
+        lit += look.ambient.rgb * spec * 0.4 * pow(1.0 - max(dot(n, v), 0.0), 3.0);
+    }
+    lit += glow;
+    return vec4f(atmosphere(lit, relative, altitude), 1.0);
+}

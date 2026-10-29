@@ -84,9 +84,9 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side;
     const owns: Owns = (x, y) => x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
     const words: number[] = [], far = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) }, near = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) };
-    const { lines, buildings } = features(list, tile);
+    const { lines, buildings, walks } = features(list, tile);
     // PROTOTYPE (road study): the corridors draw the roads near the eye, with their kerbs and sidewalks.
-    corridors(near.mesh, lines, owns);
+    corridors(near.mesh, lines, owns, { walks, buildings });
     bridges(far.mesh, list, tile, lines, owns);
     tunnels(far.mesh, lines, owns);
     galleries(far.mesh, lines, owns);
@@ -94,7 +94,7 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
     const points: Point[] = [];
     let kind = '';
     const place = ({ model, tint = 1, ...at }: Placement) => points.push({ ...at, tint, model: POINT_MODELS.indexOf(`${kind}/${model}`) });
-    const out: Build = { far, near, owns, place, ways: lines.filter(line => line.kind === ROAD || line.kind === PATH), buildings, cornered: (x, y) => !!cornerAt(lines, x, y) };
+    const out: Build = { far, near, owns, place, ways: lines.filter(line => line.kind === ROAD || line.kind === PATH), buildings, walks, cornered: (x, y) => !!cornerAt(lines, x, y) };
     for (const feature of list) {
         kind = feature.kind;
         KINDS.get(kind)?.build(placed(feature, tile), out);
