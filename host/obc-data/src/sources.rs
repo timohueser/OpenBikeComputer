@@ -270,7 +270,7 @@ pub struct Source {
 }
 
 /// The Wikimedia sources that only the producer of `wiki` reads, on the machine that prepares.
-pub(crate) const WIKI_INPUTS: [&str; 3] = ["wikidata", "wikipedia", "commons"];
+pub const WIKI_INPUTS: [&str; 3] = ["wikidata", "wikipedia", "commons"];
 
 impl Source {
     /// Whether the source can have data in `[west, south, east, north]`: it has an `extent`, and

@@ -58,6 +58,10 @@ impl Prepared for TerrainReference {
         1
     }
 
+    fn reads(&self, source: &Source) -> bool {
+        source.id.starts_with("dtm-")
+    }
+
     /// The models with a tile in a block that the boxes of the region meet, else those of its
     /// countries and each model whose `extent` meets one of theirs, and the polygons of their areas.
     /// The two pools of the blocks that the boxes meet, and `index.json`, are the files at most.

@@ -60,6 +60,10 @@ impl Prepared for ForestReference {
         1
     }
 
+    fn reads(&self, source: &Source) -> bool {
+        source.id.starts_with("canopy-")
+    }
+
     /// The models of the blocks of a region of boxes, or every model, the leaf type, and the
     /// polygons of the Geofabrik leaves. The blocks of a region of boxes are the files.
     fn plan(

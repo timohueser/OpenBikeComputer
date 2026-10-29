@@ -57,6 +57,10 @@ impl Prepared for Wiki {
         1
     }
 
+    fn reads(&self, source: &Source) -> bool {
+        obc_data::sources::WIKI_INPUTS.contains(&source.id.as_str())
+    }
+
     /// Reuse cached inputs and discover missing inputs from metadata. The review names each
     /// archive and its size; the number of output shards is unknown before the run.
     fn plan(

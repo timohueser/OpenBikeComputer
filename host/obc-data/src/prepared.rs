@@ -42,6 +42,10 @@ pub trait Prepared: Sync {
     fn format(&self) -> u32;
     /// A person changes it in the change that improves the output.
     fn revision(&self) -> u32;
+    /// Whether a prepare can read `source`, a source that only a prepare reads.
+    fn reads(&self, _source: &Source) -> bool {
+        false
+    }
     /// Plan the inputs with metadata requests only; never download an archive here.
     fn plan(
         &self,
