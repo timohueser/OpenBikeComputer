@@ -1,12 +1,24 @@
-# obc data
+# obc data registry and releases
 
-`obc data` reads the data registry: the external sources that a bake uses, the regions, and
-the targets. It fetches sources into the store, bakes layers and updates the release that a
-target serves. The crate is `host/obc-data`.
-All files under `data/` are TOML. A file with an unknown key is refused.
+The data registry under `data/` (sources, regions, targets, archive datasets, machines), the
+store, the archive, the layers that a bake makes, the releases that a target serves, and the
+`obc data` commands with their errors and JSON output.
 
-The landmark and peak content reads the prepared source `wiki`, which
-[Shared Wikimedia content](wikimedia-content.md#the-wiki-source) defines.
+- Version: store `layout` 3; release manifest format 1. Each section gives its refusal rule.
+- Writers: people (`data/*.toml`); `host/obc-data` (store, archive, targets, releases); the
+  `obc data` binary of `host/obc-data-steps` (the steps of the products and the producers of the
+  prepared sources).
+- Readers: `host/obc-data`, `tools/data_registry.py`, `tools/check_data_sources.py`, `obc-bake`
+  (`data/regions/`), the planner services and the device.
+- Code authority: `host/obc-data`. Its Rust types generate [Error codes](#error-codes) and
+  [JSON schemas](#json-schemas), and a test compares them with this file.
+- Related: [Shared Wikimedia content](wikimedia-content.md#the-wiki-source) (the prepared source
+  `wiki`), [planner release](planner-release.md), [offline planner bundle](planner-offline.md),
+  [TrailView tiles](trailview-tiles.md), [OBCC catalog](obcc-catalog.md).
+
+## Conventions
+
+- All files under `data/` are TOML. A file with an unknown key is refused.
 
 ## Files
 
@@ -30,7 +42,7 @@ One `[[source]]` table per source.
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `start` | string | no | The version that a step list reads while no serving release reads the source. It has the form of `version` |
 | `refresh` | integer or string | no, `"manual"` | The policy, which the settings of a target can replace: `1` through `65535` whole days, or `"manual"` |
-| `keep` | string | yes | Where the copy that a bake reads stays, so that no outage stops a bake: `archive`, the [archive](#archive) holds the whole dataset; `store`, the store keeps what each fetch took; `prepared`, we keep what we make: the [archive](#prepared-sources) keeps a prepared source and a source that only a prepare reads, and R2 keeps our own asset. `tools/check_data_sources.py` refuses a source without it |
+| `keep` | string | yes | Where the copy that a bake reads stays: `archive`, the [archive](#archive) holds the whole dataset; `store`, the store keeps what each fetch took; `prepared`, we keep what we make: the [archive](#prepared-sources) keeps a prepared source and a source that only a prepare reads, and R2 keeps our own asset. `tools/check_data_sources.py` refuses a source without it |
 | `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory. `register`: the `https://` page where a person gets it, and `hint`: what to copy there, in one line. See [Credentials of sources](#credentials-of-sources) |
 | `publish_text` | boolean | no, `true` | Only for a `prepared` source of article text: `false` keeps the text out of its versions |
@@ -62,8 +74,8 @@ Rules:
 - An id is listed once.
 - Each kind of fetch but `installed` and `prepared` has a `url`, and the `url` starts with `https://`.
 - A `prepared` source has `version = "date"`, `redistribute = true` and `keep = "prepared"`.
-- Data changes only on purpose: only the OSM sources, so that roads stay current, and the prepared
-  sources have a `refresh` in days. A prepared source changes when a person prepares a version.
+- Only the OSM sources and the prepared sources have a `refresh` in days. A prepared source
+  changes when a person prepares a version.
 - `refresh` in days needs `version = "date"`, because only a date version has an age.
 - A credential has `env` or `file`, not both. A `file` is `~/.cdsapirc`,
   `~/.config/openbikecomputer/cdse-s3.env` or `~/.config/openbikecomputer/clms-key.json`.
@@ -156,7 +168,7 @@ The bakes read this directory:
 | `fixtures/build-map-package.sh` | The `box` regions of the fixtures |
 
 `tools/data_registry.py box ID [--lat-first]` prints the box of a `box` region and refuses
-every other kind, so Python and shell never resolve a union or a Geofabrik area.
+every other kind.
 
 ### `data/planner.toml`
 
@@ -201,8 +213,7 @@ age is separate from data age.
 
 Each fetch gives its params, serving version, state, reason, age and upstream observation. The
 observation gives the result, the latest probe time and the last successful probe time and
-version. A failed probe keeps the last success. A capture result has no probe time: the capture
-policy is not evidence of a network check. The source row gives missing credentials, but a
+version. A failed probe keeps the last success. A capture result has no probe time. The source row gives missing credentials, but a
 credential blocks only a new fetch.
 
 ### Source overview
@@ -246,12 +257,12 @@ with the columns SOURCE, LICENCE, RULE, COVERS, STATUS, WHERE, SIZE and DATE, an
 the source for each target.
 
 `--layer [LAYER]` gives each name of `used_by`, or LAYER only, with the `data` sources and assets
-whose `used_by` has it, but no source that only a prepare reads. It gives no verdict: whether a
-bake still downloads depends on the region, which `--region` tells.
+whose `used_by` has it, but no source that only a prepare reads. It does not tell what a bake
+still downloads; `--region` does.
 
 `--region ID|PATH[,PATH…]` and `--box W,S,E,N` name a region as `update` does, with each optional
-part on. They need the products of `obc data`: `obc-data-plumbing` refuses. A Geofabrik area that the cached index lacks refuses. The output lists the step lists of
-the products for the region, as the [overview](#overview) does, but with no fetch: the sources are
+part on. They need the products of `obc data`: `obc-data-plumbing` refuses. A Geofabrik area
+that the cached index lacks refuses. The output lists the step lists of the products for the region, as the [overview](#overview) does, but with no fetch: the sources are
 the fetches that the step lists read, and the sources that only a prepare reads of the prepared
 sources among them, by their `extent`, the bounds of their `areas` in the index, and for a national
 model (`dtm-<cc>…`, `canopy-<cc>`) of a region that names countries, its country `<CC>`. A fetch
@@ -278,8 +289,8 @@ of its coverage.
 A version covers the region when one of its scopes is `null`, or each box of the region is inside
 one box of a scope that names no countries or each country of the region. `for_region` also counts
 the fetches, the held fetches and their known bytes, the known bytes to download and the fetches
-of unknown size. Each layer has the most of the needs of the sources that its steps read. The output sums the known bytes to
-download, and names the sources of unknown size or need and the sources to prepare.
+of unknown size. Each layer has the most of the needs of the sources that its steps read. The
+output sums the known bytes to download, and names the sources of unknown size or need and the sources to prepare.
 
 ## Store
 
@@ -352,9 +363,8 @@ it runs in, and the store:
 
 - A snapshot record is reached when an output of a root release read its source and version. The
   newest record of each source, by the latest `retrieved` of its files, is also reached: a plan
-  step list reads it when nothing else names a version (see [Versions](#versions)), and a source whose
-  upstream gives only its newest file cannot give it again. So is the newest version of each request record (`requests/`), by the
-  latest `retrieved` of its files, such as the extract of each Geofabrik area, and each version
+  step list reads it when nothing else names a version (see [Versions](#versions)). So is the
+  newest version of each request record (`requests/`), by the latest `retrieved` of its files, such as the extract of each Geofabrik area, and each version
   that `obc data source refresh` took (`refreshed/`).
 - An object is reached when a reached snapshot record or a reached layer has it, or when its
   SHA-256 is a file of an output of a root release, or is in `fixtures/catalog.toml` or a JSON or
@@ -373,12 +383,12 @@ reached snapshot record, with the reasons: `served by TARGET, …`, `newest of t
 `newest of a request` and `refreshed`. Then one entry for the reached layers of each step (`inputs kept`).
 Then one entry for each kind of root that names objects that no reached record or layer has:
 `release` or `fixture`. Then one entry for the unpacked copies that stay: `in the archive` or
-`archive not read`. The size of
-an entry is the size of its files, and the plan gives the size of `partial/`. The collection
-takes the store lock alone, or refuses to start while a run or a fetch holds it. A run holds it
-until it finishes; a run of `serve` does not hold it. A collection deletes each snapshot record, each object and each unpacked copy that is not
-reached, and empties `partial/`. It deletes the `.complete` of a copy first, so a stopped
-collection leaves no damaged copy that is marked whole. Receipts and upstream checks stay. A clean that cannot read a target
+`archive not read`. The size of an entry is the size of its files, and the plan gives the size
+of `partial/`. The collection takes the store lock alone, or refuses to start while a run or a
+fetch holds it. A run holds it until it finishes; a run of `serve` does not hold it. A collection
+deletes each snapshot record, each object and each unpacked copy that is not reached, and empties
+`partial/`. It deletes the `.complete` of a copy first, so a stopped collection leaves no damaged
+copy that is marked whole. Receipts and upstream checks stay. A clean that cannot read a target
 deletes nothing.
 
 ## Fetch
@@ -404,8 +414,8 @@ Which version a fetch gets:
 
 A download stops after four failed tries in a row, and waits 2, 4 and 8 seconds between them. A
 try that adds bytes to a resumed part resets the count; a try that starts the file again does
-not. A try receives its body for at most 15 minutes, so a
-stalled transfer becomes a retry. It retries a connection error, a cut-off or stalled body, a
+not. A try receives its body for at most 15 minutes; a stalled transfer is then a retry. It
+retries a connection error, a cut-off or stalled body, a
 refused resume and HTTP 408, 429 and 5xx. It keeps the bytes it has in `partial/`. The next
 try, or the next fetch, asks for the rest with `Range` and `If-Range`, with the strong `ETag`
 or else the `Last-Modified` of the first response. A `206` answer with another validator, or a
@@ -482,8 +492,7 @@ producer of [`wiki`](#wiki) reads them. `era5-land` has none: only the producer 
   never upstream. Without that file in the archive, the fetch fails and names the fix. The
   capture reads the `layer` of the one GeoPackage or FileGDB of the zip, 5000 features to a page,
   in the order of their feature ids. It reads that file from its copy in `unpacked/<sha256>/` of
-  the [store](#store), because a read in a deflated member inflates the member from its start.
-  While the copy has no `.complete`, one capture at a time makes it: it checks the SHA-256 of
+  the [store](#store). While the copy has no `.complete`, one capture at a time makes it: it checks the SHA-256 of
   the zip against its manifest, refuses while the disk of the store cannot take the members that
   the copy lacks and keep 4 GiB free, unpacks them, flushes them to disk and then writes
   `.complete`. A stopped unpack resumes with the members in place. Each later box reads the
@@ -494,8 +503,7 @@ producer of [`wiki`](#wiki) reads them. `era5-land` has none: only the producer 
   stand for; a resumed run that finds others deletes the pages.
 - A `sentinel-2-mosaics` file is `<mosaic tile>/<band>.tif`: the window over `bbox`, one pixel
   wider on each side, of a band of a quarterly mosaic tile of the year, as the STAC search lists it.
-- The version is the day of the fetch, because the service answers with current data. Another
-  day comes only from the store. A request that a started version of a `manual` source lacks joins
+- The version is the day of the fetch. Another day comes only from the store. A request that a started version of a `manual` source lacks joins
   that version, so requests over several days have one version.
 - A source with a `credential` that is not on this machine fails before the program runs, and
   the error names the variables or the file. A capture that the [archive](#archive) serves needs
@@ -504,10 +512,9 @@ producer of [`wiki`](#wiki) reads them. `era5-land` has none: only the producer 
 ### Archive
 
 The archive keeps whole datasets and the versions of the prepared sources on drives of their
-own, so that no outage stops a bake. `OBC_DATA_ARCHIVE` names its roots, separated by `:`.
-Without the variable, or with an empty value, there is no archive. Each root is a complete
-archive. A dataset is wholly in one root, and so are the versions of a prepared source, so a failed
-drive loses only its own. A prepared version has no other copy. Only `obc data archive` writes
+own. `OBC_DATA_ARCHIVE` names its roots, separated by `:`. Without the variable, or with an empty
+value, there is no archive. Each root is a complete archive. A dataset is wholly in one root, and
+so are the versions of a prepared source. A prepared version has no other copy. Only `obc data archive` writes
 `mirror/`, `manifest/` and `.partial/`, and only `obc data source prepare`,
 `obc data source copy` and `obc data unlock --source` write `prepared/`.
 
@@ -597,21 +604,19 @@ The version of a dataset:
   removes leaves the manifest.
 - A file of the manifest that is in place with its `bytes` stays without a download when upstream
   gives its size, its `ETag` and its `Last-Modified` day, as far as upstream gives them. Only a
-  bucket listing gives the `ETag`: the `ETag` of a `HEAD` can differ from one request to the next
-  and from that of a `GET`.
+  bucket listing gives the `ETag`: the `ETag` of a `HEAD` is not stable.
 - A file on disk with the `Content-Length` and the `Last-Modified` day of upstream as its size and
   modification day is read in place once.
 - Each other file downloads into `.partial/<dataset>/` with the retries and the resume of
   [Fetch](#fetch), four files at a time, and goes into `mirror/` after its check. An `ETag` of 32
   hex digits in a bucket listing, which S3 and GCS give for a file of one part, is its MD5.
-- A kept file has no other source, so a get never gives it other bytes than the `sha256` that the
-  manifest records in `files` or `missing`. A new kept file is read in place for its SHA-256. To
+- A get never gives a kept file other bytes than the `sha256` that the manifest records in
+  `files` or `missing`. A new kept file is read in place for its SHA-256. To
   replace a kept file, a person puts the new file in place and removes its entry from the
   manifest.
 - A file that the get cannot take keeps its entry of the manifest before while that file is in
   place; else it is in `missing`. The get fails when a file failed.
-- The get writes the manifest each minute and at the end, so a stopped get keeps the files that
-  it has. The next get resumes. Only one get or verify of a dataset runs at a time.
+- The get writes the manifest each minute and at the end. The next get resumes. Only one get or verify of a dataset runs at a time.
 
 #### Verify
 
@@ -626,8 +631,7 @@ place. The verify fails when a file differs or is not in place.
 `obc data archive status` gives each root with its free space, and each dataset of
 `data/archive/`: its sources, coverage, root, state, version, the day of the last get, the files
 that the last get listed and their known bytes, the verified files and their bytes, and the
-`bytes_estimate`. It also names each source with
-`keep = "archive"` that no dataset has. It reads only the manifests and the sizes of the files.
+`bytes_estimate`. It also names each source with `keep = "archive"` that no dataset has. It reads only the manifests and the sizes of the files.
 
 | State | When |
 | --- | --- |
@@ -654,16 +658,15 @@ that the last get listed and their known bytes, the verified files and their byt
 An `http`, `glo30` or `github` fetch looks for the file of each URL that the store does not have,
 before it downloads. The day of a file stands for `Last-Modified`: its `modified`, or else the
 version of its dataset when that is a day. For a `date` source without a version, the latest day of
-its files is the version. Only a URL that the archive has no day for gets a `HEAD` request upstream,
-so a fetch offline needs a day in the archive for each of its URLs. The archive file serves when it is the
-version: its SHA-256 is that of the record of the version or of the `digest` version, or else its
-day is on or before the day of a date version. Otherwise the fetch writes why and downloads the
-file. So a GLO-30 tile, which the fetch reads at the `start` `2022-05-09`, serves only when its day
-is `2022-05-09` or earlier. `obc data source refresh` asks upstream, not the archive.
+its files is the version. Only a URL that the archive has no day for gets a `HEAD` request
+upstream, so a fetch offline needs a day in the archive for each of its URLs. The archive file
+serves when it is the version: its SHA-256 is that of the record of the version or of the `digest`
+version, or else its day is on or before the day of a date version. Otherwise the fetch writes
+why and downloads the file. `obc data source refresh` asks upstream, not the archive.
 
 The `corine-land-cover` capture looks for the manifest with its `dataset` and `file`. When the
-archive has the zip, the capture checks its SHA-256 against the manifest, and `tools/clms.py --archive
-ZIP` takes the file from that zip as from an order. An `archive-features` ground capture reads only
+archive has the zip, the capture checks its SHA-256 against the manifest, and
+`tools/clms.py --archive ZIP` takes the file from that zip as from an order. An `archive-features` ground capture reads only
 the archive, see [Fetch](#fetch).
 
 ### Credentials of sources
@@ -682,8 +685,8 @@ values, never a value.
 | `file = "~/.config/openbikecomputer/clms-key.json"` | that file | None: a person saves the JSON service key whole, as the `hint` says, and the command refuses it |
 
 Each `obc data` command but `obc data ui`, and `obc bake publish --target r2`, loads
-`credentials.env` when it starts, and its steps get the variables. A variable that the environment already sets wins. `overridden` in the output
-names such variables: the new value serves only after they are removed from the environment.
+`credentials.env` when it starts, and its steps get the variables. A variable that the
+environment already sets wins. `overridden` in the output names such variables: the new value serves only after they are removed from the environment.
 
 Each acquisition check has 15 seconds. The store keeps its answer or failure for one hour.
 Equal normalized requests share a check. A changed acquisition URL or check kind invalidates
@@ -779,9 +782,7 @@ Code is not in the key. A change of code with the same version reuses the files 
 change that gives other output changes the `revision` of its layer; a change of the readers
 changes its `format`.
 
-A step input enters a key with its digest, not with its key. A rebuild that gives the same
-files gives the same digest, so the keys of the steps that read it do not change, and the
-engine reuses them. A snapshot version enters a key the same way, by the digest of its files.
+A step input enters a key with its digest, not with its key. A snapshot version enters a key the same way, by the digest of its files.
 
 The recipe of a step is the SHA-256 of the same object without digests and with `client`: each
 input as `{"kind", "name", "files"}` for a step and `{"kind", "name", "version", "params",
@@ -808,17 +809,17 @@ A step starts in the repository root, in a process group of its own. On Linux it
 when the engine ends; the programs that it started can stay. Its standard output and
 standard error go to the standard error of the engine. Exit status 0 is success. When a Rust
 function fails, its child process writes the error as the last line of standard error and exits
-with 1. The objects are read-only. While a step
-runs, `output` and `metrics` are in `partial/layer-<key>/`; the engine removes that directory
-when the step ends, also when it fails. `TMPDIR` of a step is the empty directory `tmp` there, beside
-`output`; a step makes no other file with that name. A program puts no socket in `TMPDIR`: its path
-can be longer than the 108 bytes of a socket path. A failed step writes no receipt. A declared directory may be empty when the step creates it.
-A declared output that does not exist is an error.
+with 1. The objects are read-only. While a step runs, `output` and `metrics` are in
+`partial/layer-<key>/`; the engine removes that directory when the step ends, also when it fails.
+`TMPDIR` of a step is the empty directory `tmp` there, beside `output`; a step makes no other file
+with that name. A program puts no socket in `TMPDIR`: its path can be longer than the 108 bytes of
+a socket path. A failed step writes no receipt. A declared directory may be empty when the step
+creates it. A declared output that does not exist is an error.
 
 ### Offline
 
-A step reads the data inputs of its request. A step does not use the network; fetchers are the only network users. A step must not write to its
-inputs: their paths, and the links of a view, are objects of the store, and a step that runs as
+A step reads the data inputs of its request. A step does not use the network; fetchers are the
+only network users. A step must not write to its inputs: their paths, and the links of a view, are objects of the store, and a step that runs as
 root can write to a read-only object. The engine does not enforce this.
 A step that needs a package or a tool finds it installed, or reads it as a snapshot.
 
@@ -849,7 +850,7 @@ ends.
 | `built` | `YYYY-MM-DDTHH:MM:SSZ` |
 | `wall_ms` | The time from start to end, in milliseconds |
 | `cpu_ms` | User and system time in milliseconds of the process of the step and of the children that it waited for, such as Osmium (`wait4`). `null` when the system does not report it |
-| `peak_rss_bytes` | The peak resident set of the process of the step, or of the largest child that it waited for. It is not the sum of processes that run at the same time. Linux starts the peak of a forked process at the resident set of the engine, which runs no step itself. `null` when the system does not report it |
+| `peak_rss_bytes` | The peak resident set of the process of the step, or of the largest child that it waited for. It is not the sum of processes that run at the same time. `null` when the system does not report it |
 | `own_process` | Whether the step ran in a process of its own. Without it (`false` when absent), `cpu_ms` and `peak_rss_bytes` can be those of the engine, and no estimate reads the peak |
 | `bytes_in` | The size of the input files |
 | `bytes_out` | The size of `files` |
@@ -868,7 +869,7 @@ looks at the steps in dependency order:
 - The plan does not list the other steps: the store has their layers.
 
 A group is one change. Two builds are in the same group when one reads the layer of the other.
-Thus a run of one group never needs a build of another group. Two groups can need the same
+Two groups can need the same
 fetch. An `id` names a group only in the plan that it comes from.
 
 | Key | Value |
@@ -882,19 +883,15 @@ fetch. An `id` names a group only in the plan that it comes from.
 The estimate of a build is `wall_ms`, `bytes_out`, `client_bytes` (the size of the files that a
 client reads) and `peak_rss_bytes` of the newest receipt, by `built`, of the same step with the same
 options. Without one, it is the `cost` of the output of the step in the serving release with the
-same options, else the newest receipt of the step, else that `cost` with other options, or `null`. Its `peak_rss_bytes` is `null` unless it comes from a
-receipt with `own_process`: the cost in a release does not tell whose peak it is.
+same options, else the newest receipt of the step, else that `cost` with other options, or
+`null`. Its `peak_rss_bytes` is `null` unless it comes from a receipt with `own_process`.
 An estimate from a receipt or a cost with other options than the step, such as another region, is
 a guess (`guess`). It scales `wall_ms`, `bytes_out` and `client_bytes` by the input size of the
 step against theirs: the input bytes (`bytes_in`) when the store has every input of the step and
 the receipt read some, else the area of the option `bounds` (`[west, south, east, north]` in
-degrees, on a sphere) when both have it, else not at all. Its `peak_rss_bytes` does not scale: it
-is the peak of the largest process, and a step that works by chunks keeps it at any size. So it is
-a lower bound. On a first bake of a region the store seldom has every input of a step, so a guess
-mostly scales by area.
+degrees, on a sphere) when both have it, else not at all. Its `peak_rss_bytes` does not scale.
 
-The `bytes` of a fetch is the size of its files in the
-record of the version. When that record does not list them all, it is the size in the record of
+The `bytes` of a fetch is the size of its files in the record of the version. When that record does not list them all, it is the size in the record of
 another version that lists them all, the last in byte order. Without `files`, the files are those
 that a fetch with the same `params` gave, or else every file. Otherwise `bytes` is `null`. A run
 fetches a version with the same `params` once, with the files of every group that needs it.
@@ -903,10 +900,10 @@ fetches a version with the same `params` once, with the files of every group tha
 
 The `device/catalog` step consumes selected layer paths and their receipt metadata. Map and terrain
 layers list their empty cells beside the cells: a map layer in `cells/<band>/empty.json`, a terrain
-layer in `metadata/`, with the decoded reference credits. The `cells/`
-and `terrain/` payloads and `metadata/` are client files: a target holds the metadata that the
-catalog and the map cells read, so another machine bakes them without the leaf. Every file of the catalog layer is a client file: the
-pinned satellites in `objects/`, which it names `/objects/<sha256>`, and the root `catalog.json`
+layer in `metadata/`, with the decoded reference credits. The `cells/` and `terrain/` payloads
+and `metadata/` are client files: a target holds the metadata that the catalog and the map cells
+read, so another machine bakes them without the leaf. Every file of the catalog layer is a client
+file: the pinned satellites in `objects/`, which it names `/objects/<sha256>`, and the root `catalog.json`
 with the schema, terrain, licence and region files, which are the named files of the device. The
 option `credits` holds the OSM source entry and the credits of GLO-30 and of the landmark
 articles, from `data/sources.toml`, so that a credit edit changes the key.
@@ -924,8 +921,7 @@ pick can reuse prior verification.
 
 An update and a rollback own one run each. It starts after the arguments are checked, and
 finishes after the switch, and for an update after the collection that follows it.
-`update --dry-run` creates none.
-A read-only command creates none. A failure after the run starts returns its id in `error.run`.
+`update --dry-run` and a read-only command create none. A failure after the run starts returns its id in `error.run`.
 
 A run fetches the fetches of a plan, one after another, with the fetchers of [Fetch](#fetch).
 Then it builds the builds of the plan. A layer that a planned step reads, and that the plan does
@@ -937,8 +933,7 @@ the serving release is unchanged: the step does not bake, also when the store la
 new release keeps the files, the digest and the cost of that output by reference, with the
 versions and the client of the step now. This needs the store to have each file of that output
 that no client of the serving release reads. `--only` bakes the steps of the named layers also
-when they are unchanged. So a leaf whose input files are the same, such as the OSM of a leaf
-after a refresh of the extract, does not bake on any machine.
+when they are unchanged.
 
 - A step starts when the layers that it reads are built.
 - At most one step per core runs at a time.
@@ -947,15 +942,12 @@ after a refresh of the extract, does not bake on any machine.
   end of the run starts first: its estimated `wall_ms` and that of the longest chain of the steps
   that read it. A step without an estimate counts as the longest.
 - The memory that the steps that run at the same time reserve is not more than three quarters of
-  the physical memory of the machine. The rest is for the engine, the page cache and other
-  programs. A step reserves its estimated peak (`peak_rss_bytes` of the estimate).
+  the physical memory of the machine. A step reserves its estimated peak (`peak_rss_bytes` of the estimate).
   A step with a guess, or without a peak, reserves from its measured runs too, the larger of the
   two: the receipts of the step, also with other options or of another leaf of its tiled step,
   with `own_process`, a peak and input bytes, in the store or of this run. They give their
   smallest peak, or, when that is more, its input bytes (`bytes_in`) times the peak per input byte
-  of the run that read the most. The peak per input byte of a run that read little is mostly the
-  fixed memory of a process. Another step of the layer does not count: a copy and a parse of one
-  extract differ greatly in memory. A step without a peak and without a measured run reserves
+  of the run that read the most. Another step of the layer does not count. A step without a peak and without a measured run reserves
   512 MiB and 16 times its input bytes. A step that reserves more than the memory runs alone.
 - A step with worker processes reserves its largest process, not their sum. It gets
   `OBC_DATA_MEMORY_BYTES`: the part of the budget that the steps that run do not reserve when it
@@ -965,8 +957,7 @@ after a refresh of the extract, does not bake on any machine.
 - A step that does not fit in the free memory holds back the steps after it, so that it starts
   first.
 - After a fetch fails, no step starts. After a step fails, no other step starts, and the steps
-  that run finish. The layers that the run built stay in the store, so the next update reuses
-  them: it continues after the failed step.
+  that run finish. The layers that the run built stay in the store; the next update reuses them.
 
 The id of a run is its start time in UTC, `YYYY-MM-DD-HHMMSS`, with `-2`, `-3` and so on when
 another run has that id. The folder `runs/<id>/` and a status `starting` reserve the id. The
@@ -979,10 +970,11 @@ process never started.
   [JSON schemas](#json-schemas)): its arguments after `obc data`, its process (while it starts,
   the process that reserved it, then the process that it starts), its state (`starting`,
   `running`, `ok`, `failed` or `stopped`), each phase that it entered with its state and why it
-  waits (`waiting`, see [Router ready](#router-ready)), the progress of each layer that it bakes (when its first step started, steps done of the total, and
-  for a tiled layer the leaves done, the leaves that bake now and the leaves whose steps are all
-  unchanged), its fetches and steps (each `unchanged` or not, with when it started and ended, in milliseconds after the start of the run), the
-  releases that it switched the target to, and its error with the code, the fix and the steps
+  waits (`waiting`, see [Router ready](#router-ready)), the progress of each layer that it bakes
+  (when its first step started, steps done of the total, and for a tiled layer the leaves done,
+  the leaves that bake now and the leaves whose steps are all unchanged), its fetches and steps
+  (each `unchanged` or not, with when it started and ended, in milliseconds after the start of
+  the run), the releases that it switched the target to, and its error with the code, the fix and the steps
   whose layers the store keeps. The run replaces it with one rename, at most each second while
   events come, at each phase and at the start of each fetch. A reader ignores keys that it does not
   know.
@@ -994,8 +986,7 @@ process never started.
   `obc data runs RUN --stop` writes it, and sends SIGTERM to the process group of a `running`
   run, once. When a run stops, the process group of each step that runs gets SIGTERM: the step
   ends with the programs that it started, and fails. A detached run whose process finds it at its
-  start does nothing more. A run that
-  stops frees the lock of its target, keeps what it baked, and ends as `stopped`; so does a
+  start does nothing more. A run that stops frees the lock of its target, keeps what it baked, and ends as `stopped`; so does a
   detached `serve`.
 
 `obc data update` runs detached. It makes the review in its own process, refuses as the review
@@ -1021,7 +1012,7 @@ A step list gets the version of each fetch that it reads from one function
    version of any fetch of a source with a `start` is the newest serving version of the source:
    one version names all its fetches, such as the GLO-30 tiles of every region. A version of the
    store serves a fetch without `NAME=VALUE`s only when no record of a fetch with `NAME=VALUE`s
-   names it, so a source that lost its `NAME=VALUE`s never reads an old box.
+   names it.
 3. Otherwise it reads the newest version upstream: the product names the fetch, and the update
    fetches it. A source whose URL needs a `NAME=VALUE`, such as the GLO-30 tiles, has no one newest
    version: a fetch of it without that value fails with `failed`, and the fix names the code of the
@@ -1030,12 +1021,10 @@ A step list gets the version of each fetch that it reads from one function
 A `date` or a `release` version is newer by its parts: a run of digits by its number, any other
 run as text, so `v1.9` comes before `v1.11`; two versions with equal numbers, such as `v1.0`
 and `v1.00`, are in the order of their text. A `commit` or a `digest` has no order: rule 2 gives
-its `start`, so that a change of `data/sources.toml` moves it; else the version that
-`obc data source refresh` took last on this machine, when the target serves a version that the
-targets served then, or none: a refresh never moves a target that another machine moved since;
-else the serving version; else the one
-version in the store, when the store has exactly one. So an update after an update that changed
-nothing reads the same versions. A `prepared` source has the rule of
+its `start`; else the version that `obc data source refresh` took last on this machine, when the
+target serves a version that the targets served then, or none: a refresh never moves a target
+that another machine moved since; else the serving version; else the one version in the store,
+when the store has exactly one. A `prepared` source has the rule of
 [Prepared sources](#prepared-sources).
 
 Before it lists the steps, an update finds the fetches that the step lists read, with only small
@@ -1093,8 +1082,7 @@ outline of the region touches. The outline of a `box` region is its box; the out
 
 Both products resolve the same source areas. A Geofabrik definition names its areas directly.
 For a Box, the cached index selects candidates by polygon coverage: of the areas whose polygons
-meet the Box, each area that the others cover drops out, largest first. So neighbouring areas
-cover a sliver of the Box before their parent does. Full `.poly` files must then cover the
+meet the Box, each area that the others cover drops out, largest first. Full `.poly` files must then cover the
 complete Box. A gap tries the parent extract before selecting bulk inputs.
 An uncovered Box gives an actionable error. Country metadata does not remove required geography.
 
@@ -1105,8 +1093,7 @@ when a capture holds older extract or polygon bytes. Each product sorts and dedu
 
 A multi-area input uses prepared `osmium merge --with-history`, then `time-filter` at the latest
 object timestamp present in the union. For an overlapping object, its highest supplied version
-wins. Unique supplied objects remain. An extract cannot reveal a deletion absent from its bytes;
-this is a union of available snapshots, not a snapshot at one common date. Conflicting payloads
+wins. Unique supplied objects remain. Conflicting payloads
 at the same object type, id and version are malformed OSM inputs.
 
 The merge, the map crop, the cut and the terrain of the planner run the Osmium of `OBC_OSMIUM`, or
@@ -1120,25 +1107,24 @@ and the step list reads files such as a `.poly` and the GLO-30 tile list, each a
 [Versions](#versions)). `copernicus-glo-30` and its tile list are `manual`.
 
 A leaf reads the archive tiles of its terrain cells: those of the windows that the crest rule of
-`OBCT_Spec.md` §9 reads, which have a halo of two postings. A model whose `extent` meets one of
+`obct-terrain.md` §9 reads, which have a halo of two postings. A model whose `extent` meets one of
 those tiles in the version of `terrain` that the target reads (see [Prepared sources](#prepared-sources)):
 the step list reads its manifest, and the leaf reads the blocks `18/<bi:04>/<bj:04>.tif` of the
-manifest that hold those tiles and its `index.json`. So a machine with an empty store plans a
-region from the manifest alone. A leaf where the version has no block of its tiles has no
-`device/reference` layer. Where a tile whose block the version lacks meets the outline of the region and is in the
-`geofabrik-poly` polygon of one of the
-`areas` of a `dtm-*` model, a note on `device/terrain` names the model and the command that adds
+manifest that hold those tiles and its `index.json`. A leaf where the version has no block of its
+tiles has no `device/reference` layer. Where a tile whose block the version lacks meets the
+outline of the region and is in the `geofabrik-poly` polygon of one of the `areas` of a `dtm-*`
+model, a note on `device/terrain` names the model and the command that adds
 the region; the version that adds it is a new input of the leaves that read it.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
 | `device/region-osm` | The selected PBF of each `device/source/<area>`; only for multiple areas | None | `osm.pbf`: the available-snapshot union |
 | `device/osm` | The PBF of one `device/source/<area>`, or `device/region-osm` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds --generator obc-data` of the square of the leaf and one µdeg around it, without the header options of the input, such as its replication fields. Each Osmium run writes at most two extracts: the rectangle around the leaves is halved along its longer side, and each half is cut from the extract of its parent, until each part is one leaf. Each leaf has the bytes of the direct extract. The metrics name the version (`osmium`) |
-| `device/map/<i>-<j>` | `device/osm`, the file of the leaf; `land-polygons`; `device/terrain/<i>-<j>`, which the contours, the nav graph and the POIs read | `leaf`: `[23, i, j]`; `cells`: for each band of the recommended band table (`OBCA_Spec.md`), `[ci, cj]` of each cell of the band in the leaf that the outline touches; `partial_cells`: the ids of those cells that the source coverage does not hold | `cells/<band>/<ci>/<cj>.obcm` for each cell with content or with partial coverage; `cells/<band>/empty.json`: the ids of the other cells of the band. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks. The step decodes the OSM of the leaf once |
+| `device/map/<i>-<j>` | `device/osm`, the file of the leaf; `land-polygons`; `device/terrain/<i>-<j>`, which the contours, the nav graph and the POIs read | `leaf`: `[23, i, j]`; `cells`: for each band of the recommended band table (`obca-assembly.md`), `[ci, cj]` of each cell of the band in the leaf that the outline touches; `partial_cells`: the ids of those cells that the source coverage does not hold | `cells/<band>/<ci>/<cj>.obcm` for each cell with content or with partial coverage; `cells/<band>/empty.json`: the ids of the other cells of the band. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks. The step decodes the OSM of the leaf once |
 | `device/reference/<i>-<j>` | `terrain`, without params: the blocks of those tiles in its version and `index.json`; only when the version has one of them | `source`: `terrain`; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of those tiles that the index names, each cut out of its block, and the `index.json` of the version cut to them, with `tiles` and the `sha256` of the pixels of each tile. A Python step with the group `terrain-reference` |
-| `device/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `device/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `metadata/empty.json`: the ids of the cells without a height; `metadata/credits.json`, when a cell reads a national model: `key`, `product`, `attribution` and `licence` of each model that a cell reads, as the reference archive states them |
+| `device/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `device/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`obcc-catalog.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `metadata/empty.json`: the ids of the cells without a height; `metadata/credits.json`, when a cell reads a national model: `key`, `product`, `attribution` and `licence` of each model that a cell reads, as the reference archive states them |
 | `device/landmark-content[/<area>]`, `device/peak-content[/<area>]` | `wiki`, without params: `common.tar.zst` and the shards of the `2^20` µdeg cells that the `.poly` of the area touches, of its manifest; regional `geofabrik-extracts` and `geofabrik-poly` | None | `landmarks/content.json` or `peaks/peaks.json` and device photos. The metrics count the facts that the version lacks, by kind (`absent`), and the run log names them. No client reads the layer: the device cell layers publish the final assets |
-| `device/landmarks/<i>-<j>`, `device/peaks/<i>-<j>` | Every area's landmark content and `device/osm`, the file of the leaf; or every area's peak content | `cell_log2`: 18; `cells`: `[ci, cj]` of each network cell of the leaf: the `network` list of `cells` of `device/map/<i>-<j>` | `landmarks/<ci>/<cj>.bin` or `peaks/<ci>/<cj>.bin` for each cell that owns content (`OBCC_Spec.md` §14.3). A landmark joins the OSM objects of the leaf that name it |
+| `device/landmarks/<i>-<j>`, `device/peaks/<i>-<j>` | Every area's landmark content and `device/osm`, the file of the leaf; or every area's peak content | `cell_log2`: 18; `cells`: `[ci, cj]` of each network cell of the leaf: the `network` list of `cells` of `device/map/<i>-<j>` | `landmarks/<ci>/<cj>.bin` or `peaks/<ci>/<cj>.bin` for each cell that owns content (`obcc-catalog.md` §14.3). A landmark joins the OSM objects of the leaf that name it |
 
 `<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
 
@@ -1153,15 +1139,15 @@ A single-area definition keeps the unsuffixed content layer names. Other definit
 content layer per collection and source area. Article inputs keep separate file views;
 canonical content merge rules deduplicate overlaps without losing unique articles.
 
-`device/source/<area>`, `device/region-osm`, `device/osm`, `device/reference/<i>-<j>` and all content
-layers are private intermediates. Their complete records stay in release provenance.
+`device/source/<area>`, `device/region-osm`, `device/osm`, `device/reference/<i>-<j>` and all
+content layers are private intermediates. Their complete records stay in release provenance.
 
 #### `planner`
 
 The planner reads the `countries` of the region, or else the countries of its source areas in
 the Geofabrik index, sorted; a region without countries is blocked. It reads the `time_zone` of the
-region, or else `UTC`. It uses the shared source selection above. Its bounds enclose the requested Box or union of selected outlines.
-Each snapshot, such as `copernicus-glo-30`, the extract, the `.poly` and the GLO-30 tile list, is
+region, or else `UTC`. It uses the shared source selection above. Its bounds enclose the
+requested Box or union of selected outlines. Each snapshot, such as `copernicus-glo-30`, the extract, the `.poly` and the GLO-30 tile list, is
 at its version (see [Versions](#versions)), as for `device`. The other options come from
 [`data/planner.toml`](#dataplannertoml). A GLO-30 input reads the tile
 of each 1° square that its box touches and that `copernicus-glo-30-tiles` names; a box at sea
@@ -1189,7 +1175,7 @@ reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the arch
 | `planner/places` | `planner/search/pois` | None | `places.pmtiles`: the rider places of the POI database, at zoom 11 |
 | `planner/climate` | The files of [`climate`](#climate) of the blocks of the outline of the region, as `climate` defines the blocks of a region: the orography and the ten years from `climate.first_year`. A version that lacks one of them refuses | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10; `climate`: the version that it reads | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md). A cell of a block that the step does not read is missing |
 | `planner/snow` | `hr-wsi` when its `extent` meets the bounds and its fetch has files, and `modis-snow`, each `bbox=<bounds>`, `seasons=<snow.seasons>`; `hansen-gfc`, `tile=` of each 10° tile that the bounds touch | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when it reads it, `modis-snow` and `hansen-gfc`; `year`: the year of the `hr-wsi` version, which fills its `{year}`, or null | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md): HR-WSI where it has data, and MODIS elsewhere |
-| `planner/trailview-features` | `planner/osm`, `planner/terrain/grid` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 13 |
+| `planner/trailview-features` | `planner/osm`, `planner/terrain/grid`, `water-polygons` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `roads`: the road classes of `data/trailview/roads.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 13 |
 | `planner/trailview-rules` | `data/trailview/` of the repository | `ruleset`: the digest of its JSON files by their paths in it. The step fails when the files differ | `rules.json`: [the TrailView rules](trailview-tiles.md#rules); `regions.json`, `materials.json` and `ground.json`: the region ids, the region areas, the ecoregions, the places, the vocabulary and the ground sources that the ground steps read |
 | `planner/trailview-material` | `materials.json` and `ground.json` of `planner/trailview-rules`; `lithology.pmtiles` of `planner/trailview-lithology`; each [material source](trailview-tiles.md#ground-sources) that meets the bounds: `osm.pbf` of `planner/osm` for `osm-planet`; `esa-worldcover`, `tile=` of each 3° tile that the bounds touch and that `esa-worldcover-grid` lists; `sentinel-2-mosaics`, `bbox=<bounds>`, `year=<trailview.colour_year>`; a `capture` source with `bbox=<bounds>`, another without params | `layer`: `material`; `bounds` | `material.pmtiles`: the material bytes and the barren shares of [the ground](trailview-tiles.md#ground) |
 | `planner/trailview-lithology` | `materials.json` and `ground.json` of `planner/trailview-rules`; each lithology source that meets the bounds, as for the material | `layer`: `lithology`; `bounds` | `lithology.pmtiles`: the lithology bytes |
@@ -1201,22 +1187,20 @@ reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the arch
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
 `terrain`, `overlays`, `climate`, `snow`, `trailview-features`, `trailview-ground` or
-`trailview-canopy`. It reads only the archive of its
-producer.
+`trailview-canopy`. It reads only the archive of its producer.
 `planner/trailview-colour/<archive>/grid` reads one archive of the colour step, as the kind
-`trailview-colour-<archive>`.
-`planner/trailview-snow/<band>/grid` reads one archive of the snow day step, as the kind
-`trailview-snow-<band>`.
-It converts terrain MBTiles with the pinned Python PMTiles library. Each tile goes into the
-archive of its zoom 11 parent, or its own tile when its zoom is less than 11. The tile bytes
-stay the same, except for terrain: it encodes each terrain tile again with the same pixels, and
-puts zoom 13 in archives of its own ([terrain tiles](planner-release.md#terrain-tiles)). Each
+`trailview-colour-<archive>`. `planner/trailview-snow/<band>/grid` reads one archive of the snow
+day step, as the kind `trailview-snow-<band>`. It converts terrain MBTiles with the pinned Python
+PMTiles library. It groups the tiles as
+[grid publication](planner-offline.md#grid-publication-and-selection) says: each tile goes into
+the archive of its zoom 11 parent, or its own tile when its zoom is less than 11, and zoom 13
+terrain has archives of its own ([terrain tiles](planner-release.md#terrain-tiles)). Each
 archive is packed as `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles`, and its TileJSON
 as `maps/<kind>.json`, with the transport rules of [the offline contract](planner-offline.md).
 The step writes the packed bytes in `objects/<transport sha256>`, and selects `objects` and
 `index.json` for clients. Its `index.json` has `format: 1`, `kind`, `map_zoom: 11`, `files`,
-`source` and `metadata`. `files` maps logical names to source and transport hashes, sizes and encoding.
-`source` names the converted archive bytes, or the raw MBTiles when it has no tiles. `metadata`
+`source` and `metadata`. `files` maps logical names to source and transport hashes, sizes and
+encoding. `source` names the converted archive bytes, or the raw MBTiles when it has no tiles. `metadata`
 is the TileJSON. Empty terrain has TileJSON and no tile archives.
 
 The parts of the planner are `map`, `routing`, `search`, `climate`, `snow`,
@@ -1225,11 +1209,8 @@ and `trailview-canopy`; the device maps are the part `device`. A planner step is
 part that is on makes it or reads it: `map` makes the basemap, places, assets and terrain grids,
 `routing` the routing and overlays grids, `search` the model and the two search grids; the other
 parts make their own steps. The fonts, the index and the catalog read only the grids that stay.
-So `trailview-features` alone bakes the OSM, the terrain and the features, and `map` without `search` still bakes the POIs that
-the places read.
 `trailview-ground` makes the material, lithology and region steps, and needs `trailview-rules`.
-`trailview-snow` needs `snow`.
-All producers are intermediate layers. Grid steps select their `objects/` and their
+`trailview-snow` needs `snow`. All producers are intermediate layers. Grid steps select their `objects/` and their
 `index.json`.
 
 | Layer | Reads | Files |
@@ -1278,10 +1259,11 @@ The pointer names routing, search and downloads under
 `dir` target. [`obc data deploy`](#deploy) puts the follower of `prod` on its server and the tile
 Worker on Cloudflare.
 
-Downloads jobs return a ready quote with an absolute pinned `source` URL. The client reads the
-bundle, release and objects through that source, so a stable entry switch cannot mix releases.
-The private selection key binds the object pool as well as the catalog and bounds. A quote
-stays valid while its bundle exists; a missing bundle requires a new quote. Job creation completes synchronously; there is no mutable polling path.
+The [download service](planner-offline.md#download-service) returns a ready quote with an
+absolute pinned `source` URL. The client reads the bundle, release and objects through that
+source. The job ID hashes the URL of the object pool as well as the catalog and the bounds. A
+quote stays valid while its bundle exists; a missing bundle requires a new quote. Job creation
+completes synchronously; there is no polling path.
 
 A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap, clipped to the
 bounds, with the id `9-<x>-<y>`. The JSON objects that `planner/routing` writes have their keys in
@@ -1339,8 +1321,7 @@ One table per target. The name of the table is the name of the target, in lowerc
 | `dir` | string | `dir` only, optional: an absolute path, or a path that starts with `~/` for the home directory. Without it, the folder with the name of the target beside the store |
 
 The file has `prod`, the public bucket, and `local`, a folder on each machine. A `dir` target and
-the store do not overlap, also through a link, so a clean of the store never deletes a file of a
-target.
+the store do not overlap, also through a link.
 
 `obc data` reads an R2 target through the S3 API when it has the credentials, because the public
 origin can serve a cached pointer. Else, and always in [serve](#serve), it reads through the public
@@ -1350,10 +1331,9 @@ URL, with each part of a key percent-encoded, so a `#` in a key under `sources/`
 a small document through the S3 API, signed with AWS Signature Version 4, and the files of a
 release with rclone. `OBC_R2_BUCKET` must be the `bucket` of the target. A command that writes an
 R2 target without these variables refuses (`blocked`); so do an update and a rollback without
-rclone, which lists and checks the files of a release. A tagged read and a
-review need the credentials too: the review id holds the tag of `release.json`, which is the ETag
-of the S3 API, and the public origin can give another form of it, such as the weak ETag of a
-compressed answer.
+rclone, which lists and checks the files of a release. A tagged read and a review need the
+credentials too: the review id holds the tag of `release.json`, the ETag of the S3 API, and the
+public origin can give another form of it.
 
 ### Target layout
 
@@ -1365,21 +1345,20 @@ A key is a path with `/` between its parts. No part is empty, `.` or `..`.
 | `lock.json` | The [lock](#lock): the run that changes the target, or free |
 | `planner/next.json` | Optional: a release whose planner services [serve](#serve) loads before a switch to it, see [Router ready](#router-ready) |
 | `releases/<id>.json` | The [manifest](#release-manifest) of a release. Immutable |
-| `releases/<folder>/<path>` | A file that a client finds by name. `<folder>` is the [digest](#keys) of the files of the folder, listed by `<path>`. So other files make another folder. Immutable |
+| `releases/<folder>/<path>` | A file that a client finds by name. `<folder>` is the [digest](#keys) of the files of the folder, listed by `<path>`. Immutable |
 | `objects/<sha256>` | A client file of an output. Immutable |
 | `cell-catalog/catalog.json`, `planner/catalog.json` | The pointers: a copy of the object that the serving release names for the key |
 
 Only client files of outputs go to a target: an output that no client reads can derive from a
 source that we may not give to others, and a bucket is public. No target holds a version of a
-[prepared source](#prepared-sources). A step that reads such an output
-of a kept layer reads it from the store of the machine.
+[prepared source](#prepared-sources). A step that reads such an output of a kept layer reads it
+from the store of the machine.
 
 ### Release manifest
 
 `releases/<id>.json` is compact JSON with the keys of each object in byte order. The id is the
 SHA-256 of these bytes. The manifest has format 1. A change that a follower of the format before
-cannot read raises the format. A follower reads its own format and the one before, so a deploy of
-the services keeps the serving release. It says its format at `/planner-api/version`, and the review
+cannot read raises the format. A follower reads its own format and the one before. It says its format at `/planner-api/version`, and the review
 of an update of prod names a follower that cannot read the release.
 
 | Key | Meaning |
@@ -1440,10 +1419,7 @@ beside the others, and gives it to no client.
 
 Before it writes `release.json`, a switch to another release needs each pointer to hold nothing,
 the bytes of the serving release, or the bytes of the release that it switches to. A switch to the
-serving release writes its pointers again, and sets `since` of the serving release: a pointer
-that drifted served other bytes until then. So each pointer holds the bytes of the serving release
-or of the rollback, and a rollback after a stopped switch needs nothing of the release that it
-leaves. Drift is a pointer whose bytes are not those of the serving release. Nothing deletes a
+serving release writes its pointers again, and sets `since` of the serving release. Drift is a pointer whose bytes are not those of the serving release. Nothing deletes a
 pointer key: clients of older publishers read these keys.
 
 A `dir` target must be on a local file system. A conditional write holds `<dir>/.lock` while it
@@ -1459,7 +1435,7 @@ that is not 2xx is an error. `release.json`, `planner/next.json` and `lock.json`
 before the switch, each key of the release must be on the target with its size, else nothing
 switches.
 
-Older publishers wrote other keys of the `prod` bucket, such as `cell-catalog/objects/`,
+The `prod` bucket also holds keys of older publishers, such as `cell-catalog/objects/`,
 `planner/releases/` and `reference/v1/`. An update and a rollback never write or delete them.
 
 ### Lock
@@ -1490,19 +1466,20 @@ it.
 - The server can apply a write whose answer does not come, so a later write on the old tag fails.
   After a write that fails or gets no answer, the run reads `lock.json`: when it is what the run
   wrote, the write is done; when it names this run on this machine, the run writes again on its
-  tag. Else another run took the lock: the run stops and changes nothing more. The write at the start of the phase `switch` checks this immediately before the
-  switch. After the switch, a lost lock stops only the collection.
+  tag. Else another run took the lock: the run stops and changes nothing more. The write at the
+  start of the phase `switch` checks this immediately before the switch. After the switch, a lost
+  lock stops only the collection.
 - At its end, the run frees the lock with a conditional write of `{"state": "free"}`: also when
-  it fails or panics. When another run took the lock meanwhile, the run reports that. SIGINT and SIGTERM stop the run before its next fetch, step or phase, and
-  end the steps that run, so it frees the lock too, and a run that a signal stopped before the switch does not switch. A second
+  it fails or panics. When another run took the lock meanwhile, the run reports that. SIGINT and
+  SIGTERM stop the run before its next fetch, step or phase, and end the steps that run, so it
+  frees the lock too. A run that a signal stopped before the switch does not switch. A second
   signal ends the process at once.
 - A process that ends without that, such as on SIGKILL, a crash or an out-of-memory kill, keeps
-  the lock. On its machine, on Linux, the next run of the same store takes the lock over at once, with a
-  conditional write, and writes that to its log: the store shows that the process of the run
-  ended (see [Runs](#runs)), and no process of its session runs, such as a program of a
-  step. On another machine, `obc data unlock TARGET --from MACHINE` frees the
-  lock of a run of MACHINE whose heartbeat is 10 minutes old or older (`STALE` in `lock.rs`): ten
-  heartbeats that did not come. It asks first. When that run continues, its next write fails,
+  the lock. On its machine, on Linux, the next run of the same store takes the lock over at once,
+  with a conditional write, and writes that to its log: the store shows that the process of the
+  run ended (see [Runs](#runs)), and no process of its session runs, such as a program of a step.
+  On another machine, `obc data unlock TARGET --from MACHINE` frees the lock of a run of MACHINE
+  whose heartbeat is 10 minutes old or older (`STALE` in `lock.rs`). It asks first. When that run continues, its next write fails,
   and it does not switch.
 - The heartbeat is the time of the clock of the holder. A `dir` target is on a local file system,
   so the holder and `unlock` read the clock of one machine. On an R2 target, `unlock` measures the
@@ -1576,10 +1553,9 @@ its bakes and the checks of the products read:
 - A step that bakes and reads a file of a fetch that the serving release lists must find the same
   SHA-256 in the record of the store: before the review, and again after the fetches of the
   update, before any bake. Else nothing changes (`verify_failed`).
-- A fetch that the serving release read, of a source whose upstream gives only its newest version (a
-  capture), refuses the update (`blocked`) before the fetch, also while the update lists the steps, when the store lacks
-  it and a capture cannot give it: this machine cannot get that version again. A capture gives the
-  version of today, and a version of a manual source that the store started (see [Fetch](#fetch)).
+- A fetch that the serving release read, of a source whose upstream gives only its newest version
+  (a capture), refuses the update (`blocked`) before the fetch, also while the update lists the
+  steps, when the store lacks it and a capture cannot give it. A capture gives the version of today, and a version of a manual source that the store started (see [Fetch](#fetch)).
   The fix names the machine that made the serving release. A refresh that moves the source to a new
   version is the other way.
 - When the store and the serving release give a fetched file the same name, size and SHA-256, the
@@ -1595,8 +1571,8 @@ its bakes and the checks of the products read:
 The review of an update says what it does before it changes a target. `--dry-run` writes the
 review and creates no run. `--plan` makes the review in a detached run, as [Runs](#runs) says: the
 run logs each fetch with its progress and each product that it plans, writes the review to
-`runs/<id>/review.json`, and bakes nothing. It takes no lock: it writes nothing to the target. `runs RUN` gives that review. To
-list the steps, an update fetches what the step lists need, which can be bulk data. It fetches into
+`runs/<id>/review.json`, and bakes nothing. It takes no lock: it writes nothing to the target.
+`runs RUN` gives that review. To list the steps, an update fetches what the step lists need, which can be bulk data. It fetches into
 the store only, and it never writes to the target.
 
 - `layers`: each layer that bakes or goes, with its cause (`stale` with the cause of
@@ -1613,11 +1589,9 @@ the store only, and it never writes to the target.
   reference, what this machine fetches upstream and downloads from the target, the steps that it
   builds, and the steps whose output the store has from an earlier build, each with `built`. A
   reused step does not build; its client files go to the target.
-- `cost`: each bake has the estimate of the newest receipt in the store of the step with the same
-  options, else of the `cost` of the step in the serving release with the same options, else of
-  the newest receipt of the step, else of that `cost`. `upload_bytes` is the size of the files of the bakes and of the reused steps that a client reads.
-  `unknown` lists each bake without an estimate, with a guess or without a peak, and each fetch
-  whose size is not known.
+- `cost`: the estimate of each bake, as [Plan](#plan) says. `upload_bytes` is the size of the
+  files of the bakes and of the reused steps that a client reads. `unknown` lists each bake
+  without an estimate, with a guess or without a peak, and each fetch whose size is not known.
 - `machine`: the memory of the machine and the free bytes of the disk of the store after the
   listing. A bake whose estimated peak, also a guess, is more than the memory, or fetches,
   downloads and bakes that leave less than 4 GiB free on the disk, refuse the update.
@@ -1654,8 +1628,8 @@ second rollback undoes the first. A target without a rollback refuses. The targe
 key of the rollback release, else nothing changes. On an R2 target, the follower must also serve
 the planner release of the rollback: the rollback asks its `ready` once, as [Router
 ready](#router-ready) says, and any answer but 200 refuses (`blocked`) with its reason. The
-follower keeps that planner release running, so it waits for nothing. Then it switches as [Publish and switch](#publish-and-switch) says. It holds the [lock](#lock)
-as an update does. A rollback bakes, uploads and deletes nothing: the next update collects.
+follower keeps that planner release running. Then it switches as
+[Publish and switch](#publish-and-switch) says. It holds the [lock](#lock) as an update does. A rollback bakes, uploads and deletes nothing: the next update collects.
 
 ### Collection
 
@@ -1691,8 +1665,8 @@ and the archive is the only place that keeps it: no target holds a version. A ba
 as it reads any other source.
 
 A prepared source is a row of `data/sources.toml` with `fetch.kind = "prepared"`. The `obc data`
-binary links a producer for each name: the producer of `<name>` makes the source `<name>`. Only a source whose licence lets us give its bytes to others is
-prepared.
+binary links a producer for each name: the producer of `<name>` makes the source `<name>`. Only a
+source whose licence lets us give its bytes to others is prepared.
 
 The name of a version is the UTC date when its first run starts, `YYYY-MM-DD`. A later version of
 the same day adds `.2`, `.3` and so on: `2026-10-28`, `2026-10-28.2`, `2026-10-28.10`. Versions
@@ -1701,8 +1675,8 @@ are in the order of the date, then of the number; a plain date is number 1.
 The home of a prepared source is the folder `prepared/<id>/` of the first root of
 `OBC_DATA_ARCHIVE` that has it. Each version of the source is in its home, because a version can
 keep the files of an earlier one (`reused`). When a later root also has files in
-`prepared/<id>/`, each command that reads or writes the source warns: only the home serves. A test
-root does this on purpose. The home holds:
+`prepared/<id>/`, each command that reads or writes the source warns: only the home serves. The
+home holds:
 
 | Path | Holds |
 | --- | --- |
@@ -1771,7 +1745,7 @@ is compact JSON with the keys of each object in byte order:
    exist, such as a drive that is not mounted: that root can be the home. A source without a home
    gets one in the first root with 4 GiB free. To put it in another root, a person makes the empty
    folder `prepared/<id>/` there first. A run that made the home and then refuses or fails
-   removes the home again while it holds only the lock, so a refusal never fixes the root. While
+   removes the home again while it holds only the lock. While
    a target of `data/targets.toml` lists a version in its legacy folder `sources/<id>/` that the
    home lacks, with its manifest SHA-256 and that manifest, or cannot be read, the prepare
    refuses: [copy](#copy) it first.
@@ -1779,17 +1753,19 @@ is compact JSON with the keys of each object in byte order:
    `versions.json` and has no manifest in the home. A run keeps its work in
    `prepared/<id>/<version>/` of the [store](#store) of its machine. The same command
    resumes the version: the producer does not make a file of the journal again, unless the home
-   lacks it. A resume with another archive root, region or language selection refuses. When the manifest of a stopped version is
-   in the home and names the files of its journal, its run stopped after the manifest: the run
+   lacks it. A resume with another archive root, region or language selection refuses. When the
+   manifest of a stopped version is in the home and names the files of its journal, its run stopped after the manifest: the run
    only adds the version to `versions.json`, and the review says `listing`. Another stopped version
    that is not newer than the newest complete version in the home, or whose manifest is in the
    home, is not resumed: the run starts a new version, deletes the work of the old one, and the
    review names it in `abandoned`. So a run never writes a file of a complete version.
-3. The review names the root of the home, the version, the inputs with the size of their files in the store or on
-   this machine (`unknown` lists an input whose size neither knows), the files of the version at
-   most (`files`, `null` when the producer cannot tell before the run), the files
-   that earlier runs moved into the home, the cost from the newest version in the home, only when its scope and languages match, the bytes that go into the store, with the disk that the producer says its programs take, and into the archive (unknown without such a version), the check of this machine as in the
-   [review](#review) of an update, which also refuses when the source or an input has a
+3. The review names the root of the home, the version, the inputs with the size of their files in
+   the store or on this machine (`unknown` lists an input whose size neither knows), the files of
+   the version at most (`files`, `null` when the producer cannot tell before the run), the files
+   that earlier runs moved into the home, the cost from the newest version in the home, only when
+   its scope and languages match, the bytes that go into the store, with the disk that the
+   producer says its programs take, and into the archive (unknown without such a version), the
+   check of this machine as in the [review](#review) of an update, which also refuses when the source or an input has a
    `credential` that is not on the machine, or when the root lacks the free space for the bytes of
    the version and 4 GiB more, and for each target of `data/targets.toml` the
    layers of its serving release that read an older version. `--dry-run` writes it. Its id is the
@@ -1804,19 +1780,19 @@ is compact JSON with the keys of each object in byte order:
    have no manifest: no run resumes them. Before each 100 deletes, it checks that it still holds
    the lock. A version that `versions.json` lists and that has no manifest refuses the run: its
    manifest is lost, and the fix restores it from the backup.
-6. The producer writes each file. `terrain`, `forest` and `climate` run the programs of
-   eight tiles at a time. The run moves each file into the home at once, records its SHA-256 in the journal
-   and deletes it from the work. No reader reads a version before its manifest, so the move
-   replaces a file that a stopped run left with other bytes. The run shows each tile that a program makes as a step `<id>/<tile>`
-   of the layer `<id>`, with its time, CPU, peak memory and the bytes of its files, so the page
-   shows its progress as it shows the steps of an update.
+6. The producer writes each file. `terrain`, `forest` and `climate` run the programs of eight
+   tiles at a time. The run moves each file into the home at once, records its SHA-256 in the
+   journal and deletes it from the work. No reader reads a version before its manifest, so the
+   move replaces a file that a stopped run left with other bytes. The run shows each tile that a
+   program makes as a step `<id>/<tile>` of the layer `<id>`, with its time, CPU, peak memory and
+   the bytes of its files.
 7. The run checks that it still holds the lock, and that the home has each file of the journal
    with its size. It writes the manifest only when the file is absent: a manifest that an earlier
    run of the version wrote stays when it names the same files. Then a conditional write adds the
    version to `versions.json`, with the time of the manifest, and the work of the version goes.
 
-`--region` and `--box` make a version of that region only. `obc data runs RUN --stop` stops a run, and the same command resumes
-it. `obc data unlock --source ID --from MACHINE` frees a lock that a stopped run left.
+`--region` and `--box` make a version of that region only. `obc data runs RUN --stop` stops a run,
+and the same command resumes it. `obc data unlock --source ID --from MACHINE` frees a lock that a stopped run left.
 
 A test of a producer uses a root of its own: name it first in `OBC_DATA_ARCHIVE`, and make the
 empty folder `prepared/<id>/` in it. Then the prepare and each update with that variable use the
@@ -1824,22 +1800,20 @@ versions of the test root, and the other roots still serve their datasets.
 
 #### Read
 
-The archive is the reference: each target reads the versions that the home lists. Before an update or the
-[overview](#overview) lists the steps, each prepared source (an update) or each that the steps read
-(the overview) gets a version in the
-`format` of the producer of this `obc data`: the serving version of a `manual` source, else the
-newest version of the home. So a new version makes each layer that reads an older one stale, with the cause
-`source`, in each target. When no root has the home, such as on a machine without the
+The archive is the reference: each target reads the versions that the home lists. Before an
+update or the [overview](#overview) lists the steps, each prepared source (an update) or each
+that the steps read (the overview) gets a version in the `format` of the producer of this
+`obc data`: the serving version of a `manual` source, else the newest version of the home. So a
+new version makes each layer that reads an older one stale, with the cause `source`, in each
+target. When no root has the home, such as on a machine without the
 archive, a target keeps the version that it serves, and a bake from the store needs no archive.
 When the home lists no version in that format and the target serves none, the listing blocks the
 layers that read the source (`blocked`), and the fix names `OBC_DATA_ARCHIVE` and the command that
-prepares one. A product can bake a layer
-without the source instead, as `device/terrain` does without a national terrain model: then a note
+prepares one. A product can bake a layer without the source instead, as `device/terrain` does without a national terrain model: then a note
 of the [review](#review) names the source and the command.
 
-A test root can have other files under the name of a version. So the manifest is the identity of a
-version: a step reads
-`<version>/<manifest sha256>`, and the record in the store, the `sources` entry of a release
+The manifest is the identity of a version: a step reads `<version>/<manifest sha256>`, and the
+record in the store, the `sources` entry of a release
 and the fetch name it. Text output shows it as `<version> (<first 12 hex digits
 of the SHA-256>)`; with `--json`, a command gives the whole version.
 
@@ -1898,8 +1872,7 @@ format.
   polygon of a leaf of the region meets; for a version of everything, each block with a tile of a
   model. A run keeps the version of each polygon that the first run of the version read. A
   version makes each block of its region from each model with a tile in it, also from a model of
-  a country that the region does not name. So the pixels of a block do not depend on the region,
-  and a version that makes a block of the version before again makes it from all its models.
+  a country that the region does not name. So the pixels of a block do not depend on the region.
   Each other block of the version before stays in `reused`; the manifest names the scopes of the
   versions before in `extends`. The review counts the two pools of the blocks that the boxes of the
   region meet, and `index.json`; for a region with a `geofabrik` leaf, `files` is `null`. The review
@@ -1909,17 +1882,14 @@ format.
 - For each block, `host/obc-dem/reference/ingest.py fetch --block <bi:04>-<bj:04>
   <ti:04>-<tj:04>=<keys> …` pools the rasters of each model of each tile of the block onto the
   lattice in one pass, and folds the models of the tile worst first by `PRIORITY`: a model keeps
-  each pixel where it has a height. So the best model with a height holds each pixel. Before it
+  each pixel where it has a height. Before it
   uses a model whose row has a `summit`, the program pools the tiles near that summit and refuses
   the model when the highest height within about 1 km of it is more than 10 m from the surveyed
   height, and names a check that finds no height. `--shared`, one directory for the blocks of a
-  prepare, keeps the passed checks, so one prepare checks a model once. Each lattice pixel that no
+  prepare, keeps the passed checks. Each lattice pixel that no
   centre of a model reaches and that lies between four of its centres with a height takes their
   bilinear height. A model whose step is longer than the east side of a lattice pixel in the tile
-  asks for the tile with two of its steps of margin. So a model coarser than the lattice fills its
-  footprint. A finer model whose step is longer than half the east side can leave a pixel without
-  a centre next to a void, and the fill gives that pixel the bilinear height. On a tile of `es`
-  (5 m) and one of `ch` (2 m), the fill writes no pixel. A raster of one row or one column fills
+  asks for the tile with two of its steps of margin. A raster of one row or one column fills
   nothing. The program writes `18/<bi:04>/<bj:04>.tif` and `mean/18/<bi:04>/<bj:04>.tif`, then
   `<bi:04>-<bj:04>.tiles`, a JSON object of each tile `<ti:04>/<tj:04>` of the block with a height:
   `sources`, its sources best first, and `samples`, the bias samples of its mean: the decimetres of
@@ -1943,11 +1913,8 @@ format.
   `copernicus-glo-30-tiles` names; a land square that the fetch does not give is an error. A
   sample in a square that the list does not name is at sea and does not count, and the run logs
   how many. A model with fewer than 1024 samples with GLO-30 has no bias, and a later version
-  measures it again. The number is chosen: the samples of four full tiles, so that a test version
-  of one tile does not fix the bias of a model. A model keeps the bias of the version before, so a
-  region added later does not change it. A version that extends no version, such as the first
-  version of a format, measures every model over all its tiles. The heights of a tile are thus the
-  same in each bake of one version of `terrain`.
+  measures it again. A model keeps the bias of the version before. A version that extends no
+  version, such as the first version of a format, measures every model over all its tiles.
 - The plan of `planner/reference` reads `index.json` (a fetch of a prepared version with the param
   `file` gives that file too). It refuses a version that states no bias of the best model of a
   tile that it reads, and names the fix: a prepare of a box of about four tiles in the middle of
@@ -1988,8 +1955,7 @@ same format.
   its `extent`.
 - The blocks of a region are the blocks with a tile of a model that a box or a `geofabrik-poly`
   polygon of a leaf of the region meets; for a version of everything, the blocks with a tile of a
-  national model. A run
-  keeps the version of each polygon that the first run of the version read, as for
+  national model. A run keeps the version of each polygon that the first run of the version read, as for
   [`terrain`](#terrain). A version has a file for each block of its region, also for a block
   without a pixel, and makes each zoom 12 tile of the block from each model that has the tile, also
   from a model of a country that the region does not name. So the pixels of a block do not depend
@@ -2023,10 +1989,8 @@ same format.
   order.
 - `global` reads `canopy-global`, Canopy Height Maps v2, through HTTP range requests: a COG per zoom
   10 tile, whose pixels of zoom 17 lie on the cells, 32 × 32 to a cell. Its heights are whole metres,
-  where 0 is also no data. It reads low and its tree tops are artefacts, so a cell takes 0.982 times
-  its height plus 3.73 m, and the stems that fill 41.7 % of its cover with crowns of that height. The
-  factors are fitted against `canopy-ch` on the canopy cells of eight tiles of the Jura, the
-  Mittelland and the Alps.
+  where 0 is also no data. A cell takes 0.982 times its height plus 3.73 m, and the stems that fill
+  41.7 % of its cover with crowns of that height.
 - `ch` reads `canopy-ch` through HTTP range requests, in strips of whole rows of its internal
   tiles, so each internal tile downloads once: at each 0.5 m pixel, the newest acquisition that has
   it.
@@ -2058,9 +2022,8 @@ same format.
 - The years are the ten years from `climate.first_year` of [`data/planner.toml`](#dataplannertoml).
   For each block of its region, a version holds `orography/<x>/<y>.gz` and `<year>/<x>/<y>.gz` of
   each year, also for a block without land. A file that the version before holds stays in
-  `reused`, and the run does not make it again: final data of a year does not change. So a new
-  region or a new year adds files, and a new format makes each file again. The manifest names the
-  scopes of the version before in `extends`.
+  `reused`, and the run does not make it again: final data of a year does not change. The manifest
+  names the scopes of the version before in `extends`.
 - For each block, `python -m tools.planner_climate prepare --block <x>-<y> --years <year>,…`
   writes the files that the version lacks: with `--orography DIR` also the orography, from the
   orography file that the first program downloads into `DIR` of the run. It reads the chunks of
@@ -2090,8 +2053,8 @@ same format.
   The orography file has one plane: the geopotential of the cell in m²/s², float64, from the
   orography file of the climate archive. With these types, `planner/climate` computes the same
   values as from the hourly data, so its archive has the same bytes except `inputs`.
-- The run moves the files into the home in batches of 64. The manifest names `era5-land` at the date of the
-  version, with the [digest](#keys) of the SHA-256 of the files that it made.
+- The run moves the files into the home in batches of 64. The manifest names `era5-land` at the
+  date of the version, with the [digest](#keys) of the SHA-256 of the files that it made.
 
 #### `wiki`
 
@@ -2113,21 +2076,19 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   archives serially, with Range resume and the reviewed size and ETag, then prepares the source.
   A changed remote identity refuses. The archive becomes visible only after the download ends.
   Credentials stay in the local environment and private token cache. No review or manifest holds
-  them. The manifest names
-  `wikidata`, `wikipedia` and `osm-planet` or `geofabrik-extracts` at the days of their dumps, with the
-  [digest](#keys) of the SHA-256 of the files.
+  them. The manifest names `wikidata`, `wikipedia` and
+  `osm-planet` or `geofabrik-extracts` at the days of their dumps, with the [digest](#keys) of the
+  SHA-256 of the files.
 - `--languages en,de` selects article languages from `specs/content-languages.json`. Without
   the flag, all supported languages are selected. Unknown or empty codes refuse; duplicates
   are removed and codes have supported order. The review, its id and the manifest keep the
-  selection. Only selected languages require HTML and language-link dumps. An excluded article
-  is a `missing` fact with `reason: "language_not_prepared"`; it supplies no lead-image candidate.
-  The identity order for a page without a Wikidata item stays the supported-language order.
-  Without the dumps that prove its canonical identity, its link stays unresolved.
+  selection. Only selected languages require HTML and language-link dumps.
+  [The `wiki` source](wikimedia-content.md#the-wiki-source) gives the facts of an excluded
+  language.
 - Start saves the reviewed input plan before it downloads. A resume uses this plan, including
   the URLs, sizes and object identities. The review ID covers these decisions, but not whether
   the download has since completed. After acquisition, the run pins each dump with its path, size,
-  modification time and SHA-256,
-  and `publish_text`. A resume reads exactly those dumps, and refuses when one is gone or changed,
+  modification time and SHA-256, and `publish_text`. A resume reads exactly those dumps, and refuses when one is gone or changed,
   or `publish_text` changed; the fix deletes the work of the version, so the next run starts a
   new one. A dump of the pinned size with another modification time is the pinned dump when its
   SHA-256 is. `tools.wiki` gets each SHA-256 and does not hash a dump again. A row without
@@ -2138,8 +2099,8 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   the version. A step whose output the run has does not run again, and `tools.wiki` does not
   repeat an import that finished with the same input.
 - The selection is the rule of the compilers: each subject of a landmark category, and each peak
-  with a resolved link of a node that the map takes as a summit. Only their articles are read, and only the photos that the compilers
-  choose for them come from Commons, as [Shared Wikimedia content](wikimedia-content.md#the-wiki-source)
+  with a resolved link of a node that the map takes as a summit. Only their articles are read, and
+  only the photos that the compilers choose for them come from Commons, as [Shared Wikimedia content](wikimedia-content.md#the-wiki-source)
   says.
 - A box keeps the subjects whose box meets it. A region whose leaves are all Geofabrik regions
   reads the extract of each of their areas. An object in two extracts is the object of its
@@ -2152,16 +2113,15 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   run, unless the run lacks the fact, has an older revision of it, or has it only as an article
   of a language that the run did not prepare. Then the fact keeps its earlier bytes and its asset,
   also its languages. A shard writes its facts in the order of kind and key, and an earlier shard
-  whose members do not change stays in `reused`. So `common.tar.zst` keeps earlier facts until a
-  version of everything replaces them. A version of everything extends no version.
+  whose members do not change stays in `reused`. A version of everything extends no version.
 - An extension whose row has another `publish_text` than the version before refuses before its
-  first step: the kept articles would not match the manifest. The fix is the `publish_text` of the
-  version before, or a version of everything. Without published text, no shard has article text.
+  first step. The fix is the `publish_text` of the
+  version before, or a version of everything.
 - The run moves the shards into the home in batches of 64, then `index.json`. A resume names the
   shards in the home to `shards`, which does not write them again.
-- With `publish_text = false`, each article in the shards is a fact with its key and the status
-  `missing`, without text, and no lead image is a photo. The review says "text published" or
-  "text kept local".
+- With `publish_text = false`, each article is a `missing` fact, as
+  [the `wiki` source](wikimedia-content.md#the-wiki-source) says. The review says "text published"
+  or "text kept local".
 
 ### Serve
 
@@ -2215,14 +2175,14 @@ then writes a warning: an update can delete the files of that release.
 
 The services of a planner release read its files under `routing/`, `search/` and `offline/` in
 `<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json` that the
-manifest names lists them. Each file comes from an object of the store of serve, which downloads an object
-that it lacks from `objects/` of the target and checks its SHA-256: a link to an `identity`
+manifest names lists them. Each file comes from an object of the store of serve, which downloads
+an object that it lacks from `objects/` of the target and checks its SHA-256: a link to an `identity`
 object, or the decoded bytes of a `gzip` object under a temporary name. No write opens an
 existing file. Each file must have the SHA-256 and the size that the planner release gives. When
 serve stops, it ends each download at its next read and waits for it within the 10 seconds of its
 grace; a wait before a retry, a connection or a hash does not see the stop.
-Serve removes `<store>/serve/<target>/` when it starts and when it stops; `obc data clean` does not
-touch it. The objects are in a store of serve alone, `<store>/follower/<target>/`. After the
+Serve removes `<store>/serve/<target>/` when it starts and when it stops; `obc data clean` does
+not touch it. The objects are in a store of serve alone, `<store>/follower/<target>/`. After the
 releases that the two files name change, and after downloads, serve deletes there each object and
 each unfinished download that the services of none of them read, once no download runs. A
 download for a planner release that no release names any more stops at its next object. For a
@@ -2259,8 +2219,8 @@ commands in a row: the login, the configuration of `ssh` and the host key.
 | Action | Checks |
 | --- | --- |
 | Publish: an update of `prod` and `r2 legacy` | The `OBC_R2_*` variables; rclone on PATH |
-| `deploy services` | `OBC_VPS_SSH`, which does not start with `-`; this machine logs in as root without a prompt, with a host key that it knows; the one-time setup on the VPS: the user `obc-data`, `/opt/obc-data`, Rust and uv of that user, a C compiler, Python and Node of the `[target]` of `data/planner-runtime.toml`, and the enabled unit. The Caddy route of the API is a check that the deploy does not wait for. `tools/vps/` and `data/planner-runtime.toml` have no change that the commit does not hold, because the deploy runs the script of the checkout |
-| `deploy tiles` | The two variables; the token may list the Workers of the account; `planner/tiles` has no change that the commit does not hold, because `wrangler deploy` reads the files of the checkout |
+| `deploy services` | `OBC_VPS_SSH`, which does not start with `-`; this machine logs in as root without a prompt, with a host key that it knows; the one-time setup on the VPS: the user `obc-data`, `/opt/obc-data`, Rust and uv of that user, a C compiler, Python and Node of the `[target]` of `data/planner-runtime.toml`, and the enabled unit. The Caddy route of the API is a check that the deploy does not wait for. `tools/vps/` and `data/planner-runtime.toml` have no change that the commit does not hold |
+| `deploy tiles` | The two variables; the token may list the Workers of the account; `planner/tiles` has no change that the commit does not hold |
 | Both | The commit of the checkout is on `origin/develop` after a fetch. An older commit of develop serves to go back |
 
 A refused login names its causes: the VPS does not know the key of this machine, the host does
@@ -2277,8 +2237,7 @@ changed goes only with `ssh-keygen -R`. Then it asks, or needs `--yes` without a
 appends the key under the name and to the file that `ssh` reads for the host: its
 `HostKeyAlias` and its first `UserKnownHostsFile`. It is the one change of a check.
 
-`deploy services|tiles --dry-run` checks the credential, the commit and the files,
-and writes the commit, what the deploy changes, its commands and the arguments that start it. A
+`deploy services|tiles --dry-run` checks the credential, the commit and the files, and writes the commit, what the deploy changes, its commands and the arguments that start it. A
 deploy starts only with `--expect COMMIT`, the commit of the checkout now, and asks first, or needs
 `--yes` without a terminal. It is a detached [run](#runs), and the output of each command goes to
 its log. One run at a time deploys each part. The commands get only `PATH`, `HOME`, the user, the
@@ -2291,13 +2250,12 @@ services|tiles` reads the values on standard input, as
 `obc data` gives the machine that runs it and, for each target, the release that it serves, the
 machine that made it and when, its rollback, for a `dir` target how [serve](#serve) gives it to
 each app, the run that holds its lock or why `lock.json` cannot be read, the region and the parts
-that are on, the state of
-each layer against the steps of now, the blocked steps, the notes of the layers as in the
-[review](#review), the pointers that drift, an error that
-stopped the judgement, and the command to run next. While a run holds the lock of a `dir` target,
+that are on, the state of each layer against the steps of now, the blocked steps, the notes of the
+layers as in the [review](#review), the pointers that drift, an error that stopped the judgement,
+and the command to run next. While a run holds the lock of a `dir` target,
 the next step is to wait for that run, unless its process ended on this machine: then the next
-update takes the lock over. It fetches only small metadata, and checks upstream with the
-checks of the last hour. A target that serves nothing has the next command
+update takes the lock over. It fetches only small metadata, and checks upstream with the checks
+of the last hour. A target that serves nothing has the next command
 `obc data update TARGET --region ID`. For an R2 target, the next command is the review
 (`--dry-run`): its update needs the id that the owner approved.
 
@@ -2309,20 +2267,20 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --plan \| --expect ID] [--accept-format-change] [--yes] [--json]` | The [update](#update) of a target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. `--plan` makes the review in a run and changes nothing; with `--json`, it writes the run and a `null` review id. Else it starts a detached run, as [Runs](#runs) says, and writes its log until it ends: the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did. With `--json`, it writes the run and the review id |
 | `obc data rollback TARGET [--yes] [--json]` | The [rollback](#rollback) of a target. Writes the release that the target serves and its rollback |
 | `obc data router TARGET [--json]` | For an R2 target, asks the follower once, as [Router ready](#router-ready) says, for the planner release of the serving release and of the rollback. Writes each answer, and the release that `planner/next.json` names. Changes nothing. Refuses a `dir` target |
-| `obc data unlock (TARGET \| --source ID) --from MACHINE [--yes] [--json]` | Frees the [lock](#lock) of a target, or with `--source` the lock of a [prepared source](#prepared-sources) in the archive, that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
+| `obc data unlock (TARGET \| --source ID) --from MACHINE [--yes] [--json]` | Frees the [lock](#lock) of a target, or with `--source` the lock of a [prepared source](#prepared-sources), that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
 | `obc data sources [--check-now] [--json]` | Every source with licence, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); the versions in the local store; for a prepared source the root of its home, its versions there and the run that holds its lock; and how this machine holds it, as the [source overview](#source-overview) says. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data sources --layer [LAYER] [--json]` | For each layer, or LAYER, the sources that it reads with their status, as the [source overview](#source-overview) says |
 | `obc data sources (--region ID\|PATH[,PATH…] \| --box W,S,E,N) [--json]` | The sources that a bake of the region reads, what each layer and each source still needs, and what a bake still downloads or prepares, as the [source overview](#source-overview) says. Fetches nothing |
 | `obc data source refresh ID [--json]` | Fetches upstream's newest version of a `digest` source without `start` or params, and writes `refreshed/<source>.json` of the store with the versions that the targets serve: the next update of a target that serves one of them, or none, reads it, as [Versions](#versions) says. Refuses another source. The fetch is a detached [run](#runs): a terminal follows it, and `--json` writes `{run}` and ends |
 | `obc data source prepare ID [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--languages L,…] [--dry-run \| --expect ID] [--json]` | [Prepares](#prepare) a version of a prepared source in the archive. `--dry-run` writes the review. Else it starts a detached run and writes its log until it ends; with `--json`, it writes the run and the review id |
-| `obc data source copy ID --from TARGET [--dry-run] [--json]` | [Copies](#copy) the versions of a prepared source from the legacy folder `sources/<id>/` of a target into the archive. `--dry-run` writes the plan. Else it starts a detached run and writes its log until it ends; with `--json`, it writes `{run}` |
+| `obc data source copy ID --from TARGET [--dry-run] [--json]` | [Copies](#copy) the versions of a prepared source from a target into the archive. `--dry-run` writes the plan. Else it starts a detached run and writes its log until it ends; with `--json`, it writes `{run}` |
 | `obc data source credential ID [--json]` | Reads the values of the credential of a source on standard input and writes them, as [Credentials of sources](#credentials-of-sources) says. Writes the file and the names of the values |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
-| `obc data archive status [--json]` | The [status](#status) of the archive: each root with its free space, and each dataset with its root, version, state and files. Changes nothing |
-| `obc data archive get DATASET [--root PATH] [--json]` | [Gets](#get) the files of the dataset that its root does not hold, and writes its manifest. Writes the status of the dataset |
-| `obc data archive verify DATASET [--json]` | [Verifies](#verify) each file of the manifest of the dataset. Writes the status of the dataset |
+| `obc data archive status [--json]` | The [status](#status) of the archive. Changes nothing |
+| `obc data archive get DATASET [--root PATH] [--json]` | [Gets](#get) the dataset. Writes the status of the dataset |
+| `obc data archive verify DATASET [--json]` | [Verifies](#verify) the dataset. Writes the status of the dataset |
 | `obc data areas [QUERY] [--json]` | The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name holds `QUERY`. Fetches nothing |
-| `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the size of `partial/`. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
+| `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean). `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
 | `obc data runs [--json]` | Every run in the store, newest first: id, arguments, state, time, and the size of its fetches and of the layers that it built |
 | `obc data runs RUN [--json]` | One run: its status, with the users of each step and its time in the last run that built it, the last 50 lines of its log with its path, and the review of a run of `update --plan` |
 | `obc data runs RUN --follow [--json]` | The log of the run as it comes, until it ends; with `--json`, its status each time it changes. Ctrl-C ends only the following. The exit status is the one of the run |
@@ -2382,15 +2340,14 @@ A request that does not, and a command that the page does not run, get HTTP 403 
 
 The R2 client in `host/obc-data` reaches the bucket for `obc bake publish --target r2`,
 `obc bake clean-r2`, `obc fixtures publish` and the firmware publish workflow. rclone moves the
-bytes.
-`obc data r2` is plumbing for scripts: those commands call it, and a person deletes a key with
+bytes. `obc data r2` is plumbing for scripts: those commands call it, and a person deletes a key with
 `obc data r2 delete`. It does not change the state of a release. Once the bucket has the
 `release.json` of `obc data`, `obc bake publish --target r2` refuses to run, and `obc data r2 put`
 and `delete` refuse `release.json`, `lock.json`, `planner/next.json`, a pointer key, a key
 under `objects/` or `releases/`. `obc data r2 delete` refuses a key under `sources/<id>/` of a
 prepared source while the [archive](#prepared-sources) lacks a version that
-`sources/<id>/versions.json` of the bucket lists, with its manifest SHA-256 and that manifest. `obc bake clean-r2` refuses to run when the pointer
-of its prefix has `release`, or is not JSON. `obc data` never writes under `reference/v1/`.
+`sources/<id>/versions.json` of the bucket lists, with its manifest SHA-256 and that manifest.
+`obc bake clean-r2` refuses to run when the pointer of its prefix has `release`, or is not JSON. `obc data` never writes under `reference/v1/`.
 
 ### Credentials
 
@@ -2420,7 +2377,7 @@ key and never sends it.
 Rules:
 
 - The `r2` commands are plumbing below the rule of [Errors](#errors). Only `delete` and
-  `legacy --delete` ask, because a delete cannot be undone. `put` and `get` never ask.
+  `legacy --delete` ask: a delete cannot be undone. `put` and `get` never ask.
 - A key or a prefix is never empty, has no empty, `.` or `..` part, and has no control
   character. The bucket root is never a target.
 - Verify passes when the object has the size of the file, and the same MD5 when both sides
@@ -2435,13 +2392,13 @@ Rules:
 - `legacy` lists each key under `cell-catalog/` and `planner/`, or under the one `--prefix`, that
   `obc data` does not write. It refuses while the target serves no release. It refuses
   `reference/v1` while `reference/v1/index.json` is missing or does not parse, and while the
-  `index.json` of the newest version of `terrain` in the archive lacks a key of its `sources`. The digest is the
-  SHA-256 of one line `<bytes>  <key>\n` per key, sorted by key. With `--delete`, it lists again,
+  `index.json` of the newest version of `terrain` in the archive lacks a key of its `sources`. The
+  digest is the SHA-256 of one line `<bytes>  <key>\n` per key, sorted by key. With `--delete`, it lists again,
   refuses when the digest is not `--expect`, asks, and then deletes in a detached [run](#runs): as
   `delete --legacy`, with the counts, the bytes and the digest as its plan. The run lists again
   and refuses another digest too. One run at a time deletes the keys of a target. With no key, the
   run deletes nothing. With `--json`, it writes `{run}`; else it follows the log of the run.
-- `delete` cannot be undone. It prints the plan: the bucket, and each object with its size and
+- `delete` prints the plan: the bucket, and each object with its size and
   upload time. With `--json`, the plan goes to standard error, and the output is the objects
   that it deleted. Then it asks as [Errors](#errors) says.
 - `delete` appends one line per object to `removed.jsonl` at the bucket root before it deletes:
@@ -2471,18 +2428,14 @@ nothing.
 
 | Code | Exit | When | Fix |
 | --- | --- | --- | --- |
-| `usage` | 2 | An argument is not valid, an id names nothing, the command runs outside the repository, or
-another command must run first. | Correct the command. `obc data --help` lists the commands and their arguments. |
+| `usage` | 2 | An argument is not valid, an id names nothing, the command runs outside the repository, or another command must run first. | Correct the command. `obc data --help` lists the commands and their arguments. |
 | `no_terminal` | 2 | A command that asks has no terminal to ask in, and no `--yes`. | Show the question to a person. When they agree, run the command again with `--yes`. |
 | `not_confirmed` | 1 | The person did not answer yes. | Nothing changed. Run the command again when you want the change. |
 | `invalid_data` | 1 | A file under `data/` is not valid. | Correct the file that the message names. `specs/obc-data.md` gives its format. |
 | `fetch_failed` | 1 | A fetch or an upstream check failed. | Run the command again. A download continues where it stopped. |
-| `blocked` | 4 | A credential is missing: a fetch failed without the credential of its source, or the R2
-variables are not set. Or a layer cannot be planned, the target cannot take the command, or
-this machine cannot do the work. | Set the credential that the message or `obc data sources` names, or correct what the message says a product needs, then run again. |
+| `blocked` | 4 | A credential is missing: a fetch failed without the credential of its source, or the R2 variables are not set. Or a layer cannot be planned, the target cannot take the command, or this machine cannot do the work. | Set the credential that the message or `obc data sources` names, or correct what the message says a product needs, then run again. |
 | `r2_failed` | 1 | R2 or rclone failed, or refused a key. | Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again. |
-| `verify_failed` | 5 | A release failed its check before a target serves it, or after an upload the object in the
-bucket is not the file. | Upload the file again. |
+| `verify_failed` | 5 | A release failed its check before a target serves it, or after an upload the object in the bucket is not the file. | Upload the file again. |
 | `run_failed` | 1 | A run failed: the build, or the run that `runs RUN --follow` shows. | `obc data runs RUN` shows the step that failed and its error. |
 | `failed` | 1 | The store or the file system failed. | Correct the file or the directory that the message names, then run again. |
 

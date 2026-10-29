@@ -4,7 +4,7 @@ The archive is one format: pooled bare-earth height on the OBCT lattice at 2^6 �
 2^16 µdeg: the maximum in `int16` metres, and the mean in `int32` decimetres. A prepared version
 packs them into one GeoTIFF per 2^18 µdeg block and pool.
 Every country branch is an adapter in `ingest/sources/`. The baker knows the tiles only, and
-`README.md` beside this file holds the contract both sides read.
+`host/obc-dem/reference/README.md` holds the tile contract both sides read.
 
 A source adapter has one job: give the shared tail rasters that cover the box, in any CRS
 and any dtype. The tail pools them onto the lattice by the contract's rule — a lattice

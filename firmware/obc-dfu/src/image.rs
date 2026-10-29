@@ -1,4 +1,4 @@
-//! The OBCU update-image container header (`OBCU_Spec.md`).
+//! The OBCU update-image container header (`obcu-update.md`).
 //!
 //! An update image on the card is a fixed 64-byte header, the raw application image, and an
 //! optional signature trailer. The header carries the image length, a CRC-32 over the raw image, a

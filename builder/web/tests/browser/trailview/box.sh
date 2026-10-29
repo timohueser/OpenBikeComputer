@@ -94,7 +94,7 @@ else:
         for tx in range(x(w), x(e) + 1):
             for ty in range(y(n), y(s) + 1):
                 blocks.setdefault(f"10-{tx >> 2}-{ty >> 2}", []).append(f"12-{tx}-{ty}=ch")
-    elif kind == "terrain":  # specs/OBCT_Spec.md: origin -2^28 µdeg, tiles of 2^16 µdeg, 4 × 4 to a block
+    elif kind == "terrain":  # specs/obct-terrain.md: origin -2^28 µdeg, tiles of 2^16 µdeg, 4 × 4 to a block
         t = lambda deg: (round(deg * 1e6) + 2**28) >> 16
         for ti in range(t(s), t(n) + 1):
             for tj in range(t(w), t(e) + 1):

@@ -5,7 +5,7 @@
  *
  *   0x0000_0000  obc-boot           32 KB   (this crate — FLASH below)
  *   0x0000_8000  app slot         1976 KB   (the board crate, linked at 0x8000)
- *   0x001F_6000  SEMMC_STAGE        20 KB   (the armer-staged sEMMC blob — OBCU_Spec.md §3, read here)
+ *   0x001F_6000  SEMMC_STAGE        20 KB   (the armer-staged sEMMC blob — obcu-update.md §3, read here)
  *   0x001F_B000  BOOT_STATE page     4 KB   (the obc-dfu handoff page — read here)
  *   0x001F_C000  SETTINGS page       4 KB   (the app's persistent settings, #193 — never ours)
  *
@@ -29,8 +29,8 @@
 MEMORY
 {
     FLASH       : ORIGIN = 0x00000000, LENGTH = 32K
-    SEMMC_STAGE : ORIGIN = 0x001F6000, LENGTH = 20K  /* armer-staged sEMMC blob (OBCU_Spec.md §3) */
-    BOOT_STATE  : ORIGIN = 0x001FB000, LENGTH = 4K   /* boot-state handoff page (OBCU_Spec.md §2) */
+    SEMMC_STAGE : ORIGIN = 0x001F6000, LENGTH = 20K  /* armer-staged sEMMC blob (obcu-update.md §3) */
+    BOOT_STATE  : ORIGIN = 0x001FB000, LENGTH = 4K   /* boot-state handoff page (obcu-update.md §2) */
     RAM         : ORIGIN = 0x20000000, LENGTH = 480K
 }
 
@@ -38,7 +38,7 @@ MEMORY
  * (the magic address lives only in the linker script; main.rs reads the symbol). */
 PROVIDE(__boot_state_base = ORIGIN(BOOT_STATE));
 
-/* Base of the blob-stage carve (#1158, OBCU_Spec.md §3) — where the armer left the sEMMC
+/* Base of the blob-stage carve (#1158, obcu-update.md §3) — where the armer left the sEMMC
  * soft-peripheral image this bootloader boots the card through. Also the app slot's END:
  * the install engine's slot length is `__semmc_stage_base - __app_slot_base`, so nothing
  * the engine flashes can ever touch the carve. */

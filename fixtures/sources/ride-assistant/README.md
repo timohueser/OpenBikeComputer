@@ -22,7 +22,7 @@ source needs a new immutable package. No acquisition command runs during map gen
 `fixtures/verify-assistant-places.py` runs the `fixtures.assistant-places` suite against the
 pinned Swiss PBF; see [place query validation](PLACES-VALIDATION.md).
 
-## Build the maps offline
+## Build
 
 Build the shipping tools once while Cargo dependencies are available, then work from cached
 inputs:
@@ -61,6 +61,31 @@ intersect longitude 8.1–8.4 and latitude 46.5–46.8. **It does not pre-extrac
 pre-extract would change the data in the boundary cells. These map-selection bounds are separate
 from the wider acquisition and replay bounds in `regions.geojson`. The catalog region ID is
 `europe/switzerland`; the assembled package is `sim-assistant-meiringen`.
+
+## Run
+
+```sh
+tools/obc sim assistant-dunlough-access
+tools/obc sim assistant-monaco-dense
+tools/obc sim assistant-out-and-back
+tools/obc sim assistant-forward-rejoin
+tools/obc sim assistant-loop-crossing
+```
+
+Once the packages and Cargo dependencies are cached, these need no live source API.
+
+For a persistent card, start with a path that does not exist:
+
+```sh
+tools/obc sim assistant-dunlough-access -- --create-card .artifacts/west-cork.obc
+cargo run --release -p obc-sim -- --card .artifacts/west-cork.obc --physical \
+  --clock 2026-09-14T10:00 --utc-offset-min 60
+```
+
+The second command reopens saved routes and recordings without importing the fixture again.
+**The card is user state**: fixture sync does not replace it, so create a new card to test a new
+package. See the [simulator README](../../../sim/desktop/README.md) for imports and recording
+recovery.
 
 ## Sources and licences
 
@@ -112,29 +137,3 @@ The Dunlough paths carry `sac_scale=mountain_hiking` and mud or ground surfaces 
 unknown. Hours are absent on the selected landmark objects. Dunlough Castle is Wikidata `Q5315471`
 through OSM way `300189816`, with real article and photo Sources; a truthful unavailable Visit is
 a valid result there.
-
-## Run the scenarios
-
-```sh
-tools/obc sim assistant-dunlough-access
-tools/obc sim assistant-monaco-dense
-tools/obc sim assistant-out-and-back
-tools/obc sim assistant-forward-rejoin
-tools/obc sim assistant-loop-crossing
-```
-
-These use ordinary map loading and authored GPS replay. Once the packages and Cargo dependencies
-are cached they need no live source API.
-
-For a persistent card, start with a path that does not exist:
-
-```sh
-tools/obc sim assistant-dunlough-access -- --create-card .artifacts/west-cork.obc
-cargo run --release -p obc-sim -- --card .artifacts/west-cork.obc --physical \
-  --clock 2026-09-14T10:00 --utc-offset-min 60
-```
-
-The second command reopens saved routes and recordings without importing the fixture again.
-**The card is user state**: fixture sync does not replace it, so create a new card to test a new
-package. See the [simulator README](../../../sim/desktop/README.md) for imports and recording
-recovery.

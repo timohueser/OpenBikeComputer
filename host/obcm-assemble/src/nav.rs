@@ -1,4 +1,4 @@
-//! Merging the navigation graph (`OBCA_Spec.md`).
+//! Merging the navigation graph (`obca-assembly.md`).
 //!
 //! Node ids are file-local and an `Edge Id` addresses one cell's own pool, so nothing survives
 //! concatenation: the graph is read back out of every `network` cell, unified at the seams, pruned,
@@ -1505,7 +1505,7 @@ fn fnv(bytes: &[u8]) -> u64 {
 /// `[directory][filler][profile table][alignment run][node index][filler][node chunks][edge pool]
 /// [alignment run][snap index][filler][snap chunks]`.
 ///
-/// Every one of those gaps is `0xFF`: one fill byte, one rule (`OBCM_Spec.md`) — a gap is `0xFF`
+/// Every one of those gaps is `0xFF`: one fill byte, one rule (`obcm-map.md`) — a gap is `0xFF`
 /// and a reserved field is `0`. An alignment run is a gap no offset reaches, so it takes the gap's
 /// byte.
 ///

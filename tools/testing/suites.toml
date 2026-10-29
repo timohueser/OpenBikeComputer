@@ -60,7 +60,7 @@ triggers = ["specs/vectors/**", "builder/presets/**", "builder/wasm/tests/fixtur
 
 [[package]]
 name = "obc-usb"
-triggers = ["specs/FLAT_Store_Protocol.md", "specs/vectors/flat-store-v4/**"]
+triggers = ["specs/flat-store-protocol.md", "specs/vectors/flat-store-v4/**"]
 
 [[package]]
 name = "obc-fixtures"

@@ -2,7 +2,7 @@
 @preconcurrency import CoreBluetooth
 
 /// The GATT service and characteristic map `BLETransport` discovers: the control plane of
-/// `obc-ble-interface-spec.md`.
+/// `ble-interface.md`.
 ///
 /// The OBC Control UUIDs use the random base `3C92XXXX-9916-4EBA-ABC2-342FE08F6B10`, where the
 /// 16-bit `XXXX` block selects the entity (`0000` is the service, `000N` characteristic N). A

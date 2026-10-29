@@ -1,9 +1,10 @@
 # TrailView
 
-TrailView is the 3D view of the planner: TypeScript, raw WebGPU and WGSL, no framework. The page is `builder/web/trailview.html`. The terrain streams with LOD from
-the master terrain tiles: zooms 0 to 12 from the tile service, zoom 13 from its packs. The ground
-look comes from the TrailView layers of the release ([specs/trailview-tiles.md](../../../../../specs/trailview-tiles.md))
-and the planner's snow tiles.
+The 3D view of the planner: TypeScript, raw WebGPU and WGSL, no framework. The page is
+`builder/web/trailview.html`. The terrain streams with LOD from the master terrain tiles: zooms 0
+to 12 from the tile service, zoom 13 from its packs. The ground comes from the TrailView layers of
+the release ([specs/trailview-tiles.md](../../../../../specs/trailview-tiles.md)) and the planner's
+snow tiles.
 
 ## Build and run
 
@@ -15,9 +16,9 @@ VITE_PLANNER_CATALOG=URL npm run dev -- --mode trailview   # open /trailview.htm
 npm run build:trailview                                 # dist/trailview
 ```
 
-The page reads the `active` entry of the planner catalogue, or `VITE_PLANNER_CONFIG`. The ground needs
-`trailview_rules` and the `trailview-*` archives in `layers` of the entry; without them the ground
-is the palette of the `world` region.
+The page reads the `active` entry of the planner catalogue, or `VITE_PLANNER_CONFIG`. The ground
+needs `trailview_rules` and the `trailview-*` archives in `layers` of the entry; without them it is
+the palette of the `world` region.
 
 ## Layout
 
@@ -63,8 +64,9 @@ The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
 ## Labs
 
 A lab is an entry in `LABS` of `labs.ts`, with its variants and the default first; `?lab=` selects
-one. The HUD has a menu per lab, which loads the page again at the same view. The terrain has no lab: CDLOD by distance, bicubic synthesized levels, and 16-bit
-pages with an offset and a scale per page.
+one. The HUD has a menu per lab, which loads the page again at the same view. The terrain has no
+lab: CDLOD by distance, bicubic synthesized levels, and 16-bit pages with an offset and a scale per
+page.
 
 ## Shots and flights
 
@@ -80,13 +82,14 @@ node trailview/network.mjs [--view V] [--mbit 25] [--rtt 40] [--web DIR]  # a co
 npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
 ```
 
-`shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs can differ
-in a few pixels by a few levels: compare shots by their difference. `flight.mjs` prints the GPU
-time per pass, the CPU selection time, the nodes, triangles and pages of each flight of `flights.json`. The `ground` pass runs only when ground pages arrive:
-read its `amortized` time. Run it on the M1 Pro with `--gpu`: Chrome then draws
-2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
-of the fixture, and `--features` a folder `z/x/y.bin`; build the page with a config
-whose `bounds` are its box. `--lab NAME:VARIANT` adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
+`shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs can differ in
+a few pixels by a few levels: compare shots by their difference. `flight.mjs` prints the GPU time
+per pass, the CPU selection time, and the nodes, triangles and pages of each flight of
+`flights.json`. The `ground` pass runs only when ground pages arrive: read its `amortized` time.
+Run it on the M1 Pro with `--gpu`: Chrome then draws 2560 × 1600 pixels and reports exact
+timestamps. `--tiles` serves a `planner-dem` MBTiles instead of the fixture, and `--features` a
+folder `z/x/y.bin`; build the page with a config whose `bounds` are its box. `--lab NAME:VARIANT`
+adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
 `debug=cracks`; such a flight looks down on known terrain only, as `cracks.json` does over the box.
 
 `--ground DIR` serves the bakes of `tools/trailview` and `tools/planner_snow.py` as the tile service
@@ -99,7 +102,7 @@ the page with a config whose `layers` name `https://tiles.test/<name>.json` and 
 prints the RMS of the drawn skyline against the photograph's, per quarter-degree column. It exits 1
 past an `rms_limit_deg`.
 
-## Checks
+## Test
 
 ```sh
 npx vitest run src/lib/trailview
@@ -122,12 +125,12 @@ cargo run --release --locked -p obc-trailview-features -- --osm OSM.pbf \
 uv run --locked --group planner-maps python builder/web/tests/browser/trailview/make-fixture.py terrain.mbtiles features.pmtiles
 ```
 
-## What bites
+## Pitfalls
 
 - SwiftShader times are not GPU times. Measure on a GPU.
 - macOS lowers the GPU clock when a frame has time to spare, so a pass measures long;
   `flight.mjs --gpu` keeps the clock high.
-- A browser test that draws for minutes on SwiftShader takes `{ tag: '@gpu' }`: pull requests skip
+- Tag a browser test that draws for minutes on SwiftShader `{ tag: '@gpu' }`: pull requests skip
   it, `test-weekly.yml` runs it each Monday.
 - Headless Chromium on Linux with no GPU shows a WebGPU canvas only with
   `--use-vulkan=swiftshader` (`SWIFTSHADER` in `harness.js`). Else the device is lost: "A valid
@@ -151,4 +154,5 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
   part of a page) and loads most tile bodies again: a view's bodies exceed the 96 MiB cache.
 - Mountain shadows need the `trailview-ground` layer.
 - The ground noise is in frame metres about the first view: far from it, float32 coarsens its
-  finest grains, and a view that starts elsewhere draws other grains, so compare shots of one first view.
+  finest grains, and a view that starts elsewhere draws other grains. Compare shots of one first
+  view.

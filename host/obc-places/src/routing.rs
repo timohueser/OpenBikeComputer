@@ -40,7 +40,7 @@ fn surface_class(surface: Option<&str>) -> u8 {
 /// Classify a way into its packed way-kind byte, or `None` if the way is not routable.
 ///
 /// The byte is `kind = (surface_class << 5) | highway_class`, from the canonical [`highway_class`]
-/// and [`surface_class`] tables that `OBCM_Spec.md` mirrors. The device never sees raw tags: a
+/// and [`surface_class`] tables that `obcm-map.md` mirrors. The device never sees raw tags: a
 /// routing profile weights edges purely off this byte.
 ///
 /// A way is not routable when any hard-exclude applies: `highway=motorway|motorway_link`;

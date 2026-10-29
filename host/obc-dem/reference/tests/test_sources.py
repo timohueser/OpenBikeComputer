@@ -2,8 +2,8 @@
 
 No test here reaches the network. A request is held as the URL it would send, and the one
 adapter that parses bytes itself — France, which is served raw float32 over WMS — is held
-against a synthetic answer. The live probes are in `README.md`, with the summit each
-source was verified against.
+against a synthetic answer. The live check is a row's `summit`, where the row has one:
+`check_summit` in `ingest/cli.py` holds the model to it once per prepare.
 """
 
 import json
@@ -43,9 +43,8 @@ from http_serving import serve  # noqa: E402
 
 BOX = (6.8255, 45.9257, 6.8495, 45.9417)  # about 1.9 x 1.8 km over Chamonix
 
-#: The verification box of every source with an adapter, exactly as `README.md` documents
-#: it. A request is only ever built from a box the split has already cut, so these tests
-#: go through `request_boxes` the way `TiledService.fetch` does.
+#: One small box per source with an adapter. A request is only ever built from a box the split
+#: has already cut, so these tests go through `request_boxes` the way `TiledService.fetch` does.
 BOXES = {
     "ch": (8.3800, 46.7800, 8.4200, 46.8200),
     "fr": (2.8019, 45.5204, 2.8259, 45.5364),

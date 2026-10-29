@@ -1,6 +1,6 @@
 //! The break matrix: every opcode flow, cut at every protocol step boundary.
 //!
-//! It discharges one obligation of `FLAT_Store_Protocol.md`: any break before the commit leaves the
+//! It discharges one obligation of `flat-store-protocol.md`: any break before the commit leaves the
 //! card as if nothing happened. Each flow is run once to the end to establish the card after it,
 //! then run again for every prefix of its records with the link torn down at that point. Three
 //! things must then hold:

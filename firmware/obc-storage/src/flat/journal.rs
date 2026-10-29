@@ -1,4 +1,4 @@
-//! The ride journal (`FLAT_Store_Format.md`): the one place in this format where bytes become
+//! The ride journal (`flat-store-format.md`): the one place in this format where bytes become
 //! durable without a commit.
 //!
 //! Each slot's tail is one full program page. Its header lives in a separate, page-isolated record and

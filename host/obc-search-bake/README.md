@@ -20,10 +20,14 @@ categories and coordinates. Search retains names, aliases, contact details, and
 opening hours. Locality nodes retain the extent of linked administrative areas.
 The planner also searches categories that the device does not display.
 
-Address interpolation supports numeric ranges.
-Entrance selection, geometry repair, and tokenization can differ from Nominatim.
+## Test
 
 Run `obc test -p obc-search-bake` and
 `cargo clippy -p obc-search-bake --all-targets -- -D warnings`.
 The tests compare device and search POI identities, categories, and coordinates.
 Run `npm test --prefix planner/search` for search tests.
+
+## Pitfalls
+
+Address interpolation supports numeric ranges.
+Entrance selection, geometry repair, and tokenization can differ from Nominatim.

@@ -1,40 +1,57 @@
 # Planner search
 
-Run place search and smart requests locally or on the VPS. The service binds to loopback.
-Caddy serves hosted requests with the configured site origin. SQLite and model inference
-need no external search service. Map tiles and routing are separate services.
+Place search and smart requests, local or on the VPS. The service binds to loopback; Caddy serves
+hosted requests with the configured site origin. SQLite and model inference need no external
+search service. Map tiles and routing are separate services.
 
-## Setup and run
+## Setup
 
-`obc data update local` prepares maps, search and routing data. See the
-[planner README](../../builder/web/src/components/planner/README.md). Run search as below.
-
-To prepare dependencies and the query model separately, install Node 24 or later,
-Python 3.14 or later, `uv`, and the GitHub CLI. Run from the repository root:
+`obc data update local` prepares maps, search and routing data; see the
+[planner README](../../builder/web/src/components/planner/README.md). To prepare dependencies and
+the query model separately, install Node 24 or later, Python 3.14 or later, `uv` and the GitHub
+CLI, then run from the repository root:
 
 ```sh
 python3 planner/search/setup.py
 OBC_SEARCH_DATA=RELEASE/search npm run dev --prefix planner/search
 ```
 
-Use the search directory of a planner release. The
-[Rust baker](../../host/obc-search-bake/README.md) produces addresses, POIs, and
-localities from the release's OSM snapshot. POI tiles are a projection of this
-search database. Device and planner POIs share classification and coordinates.
-Setup verifies the query model hash. Pass `--data-dir DIRECTORY` to store it elsewhere.
-Build packages in a fresh directory. An interrupted build has no completion metadata.
+Use the search directory of a planner release. Setup verifies the query model hash. Pass
+`--data-dir DIRECTORY` to store it elsewhere. The Python and Node `major.minor` versions are in
+`data/planner-runtime.toml`; the [runtime contract](../../specs/obc-data.md#service-runtimes)
+defines them.
 
-Build independent components from one verified enriched dump:
+## Build
+
+The [Rust baker](../../host/obc-search-bake/README.md) produces addresses, POIs and localities from
+the release's OSM snapshot. POI tiles are a projection of this search database. Build packages in a fresh directory; an interrupted
+build has no completion metadata. Build independent components from one verified enriched dump:
 
 ```sh
 uv run --locked --group planner-search python planner/search/split.py SOURCE.jsonl.zst /tmp/search-records
 uv run --locked --group planner-search python planner/search/build.py /tmp/search-records/pois.jsonl.zst --component pois --output DATA/pois --region REGION --bounds=WEST,SOUTH,EAST,NORTH --countries=de,ch --osm-sha256=SHA256 --time-zone=Europe/Berlin
 ```
 
-Use `addresses.jsonl.zst`, `--component addresses`, and `DATA/addresses` for
-addresses. The service opens both directories from `OBC_SEARCH_DATA=DATA`.
-The split runs once per source identity. A POI transform update reads only
-its filtered records.
+Use `addresses.jsonl.zst`, `--component addresses` and `DATA/addresses` for addresses. The service
+opens both directories from `OBC_SEARCH_DATA=DATA`. The split runs once per source identity. A POI
+transform update reads only its filtered records. Search packages use schema 6; rebuild with
+`build.py` after a schema change. Pass `--landmarks CONTENT.json` and `--peaks PEAKS.json` to
+include prepared content. The normal `obc data` POI step reads both content layers.
+
+## Test
+
+```sh
+npm test --prefix planner/search
+npm run test:query --prefix planner/search
+npm run test:data --prefix planner/search
+npm run test:model --prefix planner/search
+```
+
+The first two suites run in CI without large downloads. The last two use local packages and model
+weights. Model evaluation uses the hand-written EN, DE, FR and IT testsets. For the shared BW
+cache, pass `OBC_SEARCH_DATA` and `OBC_SEARCH_REGIONS=baden-wuerttemberg` to the data suite.
+
+## Reference
 
 | Setting | Default |
 | --- | --- |
@@ -48,64 +65,43 @@ One process serves the one region that `OBC_SEARCH_REGIONS` names. `node server.
 prints the formats that it reads, such as `{"planner/search":6,"planner/index":3}`, and opens no
 data.
 
-Configure the Python and Node `major.minor` versions in `data/planner-runtime.toml`. The
-[runtime contract](../../specs/obc-data.md#service-runtimes) defines them.
-
-## Runtime and data limits
+`POST /api/planner-search/reverse` accepts `[longitude, latitude]` in `coordinate`. It returns
+`label` for the nearest mapped house within 100 metres, or `null`.
 
 [`query/`](query/) parses sentences with the pinned int8 model.
 [`query/contract.json`](query/contract.json) defines the decoded request.
-[`validation.mjs`](validation.mjs) checks its plan context. The resolver applies it to the view, route, days, and places. Explicit words override
-pointing; pointing overrides the view. Edited requests bypass inference.
+[`validation.mjs`](validation.mjs) checks its plan context. The resolver applies it to the view,
+route, days and places. Explicit words override pointing; pointing overrides the view. Edited
+requests bypass inference.
 
-[`runtime.mjs`](runtime.mjs) is shared by the server and the
-[native provider](../../companion-ios/PlannerSearch/README.md). It retrieves mapped places from SQLite and merges
-results across search cells. Search returns plan edits; the client applies them and
-calls its routing service. Search does not call routing.
+The server and the [native provider](../../companion-ios/PlannerSearch/README.md) share
+[`runtime.mjs`](runtime.mjs). Search returns plan edits; the client applies them and calls its
+routing service. Search does not call routing.
 
-The server exits with status 1 if inference stops or hangs. Run it under a supervisor
-such as systemd. Clients must discard stale responses.
+- Supply riding time only when every leg is routed. Stretch queries need routed segments. Without
+  cumulative distances, search measures the line. Split and join require unpinned nights and no
+  rest days; they preserve the line.
+- Opening filters use mapped `opening_hours`, each place's country holidays and the region time
+  zone. Unknown hours are excluded and counted. Trip-day filters need a start date. Weekday filters
+  need no date; date-dependent rules remain unknown. No filter predicts arrival time.
+- Distances from the route are geometric, not routed detours. Place gaps depend on map
+  completeness. Search does not interpolate house numbers; a missing number returns a clearly
+  labelled street location.
+- Search matches explicit Wikidata and Wikipedia links and returns one result per curated
+  landmark. Summit links keep OSM coordinates. The planners keep short articles offline. Photos
+  load from Commons only after current file and credit revisions match. A failed check leaves the
+  text and photo source link available. Search and routing packages contain no photo bytes.
 
-Supply riding time only when every leg is routed. Stretch queries need routed segments.
-Without cumulative distances, search measures the line. Split and join require
-unpinned nights and no rest days; they preserve the line.
+## Pitfalls
 
-Opening filters use mapped `opening_hours`, each place's country holidays, and the
-region time zone. Unknown hours are excluded and counted.
-Trip-day filters need a start date. Weekday filters need no date; date-dependent rules
-remain unknown. No filter predicts arrival time. Distances from the route are geometric,
-not routed detours. Place gaps depend on map completeness. Search does not interpolate
-house numbers. A missing number returns a clearly labelled street location.
-
-`POST /api/planner-search/reverse` accepts `[longitude, latitude]` in `coordinate`.
-It returns `label` for the nearest mapped house within 100 metres, or `null`.
-Search packages use schema 6. Rebuild with `build.py` after a schema change.
-Pass `--landmarks CONTENT.json` and `--peaks PEAKS.json` to include prepared content.
-The normal `obc data` POI step reads both content layers. Search matches explicit
-Wikidata and Wikipedia links and returns one result per curated landmark. Summit links keep OSM
-coordinates. The planners retain short articles offline. Photos load from Commons
-only after current file and credit revisions match. A failed check leaves the text
-and photo source link available. Search and routing packages contain no photo bytes.
-
-## Checks
-
-```sh
-npm test --prefix planner/search
-npm run test:query --prefix planner/search
-npm run test:data --prefix planner/search
-npm run test:model --prefix planner/search
-```
-
-The first two suites run in CI without large downloads. The last two use local packages
-and model weights. Model evaluation uses the hand-written EN, DE, FR, and IT testsets.
-For the shared BW cache, pass `OBC_SEARCH_DATA` and
-`OBC_SEARCH_REGIONS=baden-wuerttemberg` to the data suite.
+- The server exits with status 1 if inference stops or hangs. Run it under a supervisor such as
+  systemd. Clients must discard stale responses.
 
 ## Model development
 
-The generator, templates, decoder, training, and ONNX export code live in `query/`.
-Use [the training CLI](query/train.py) to retrain. Keep the held-out
-sentences separate from template and lexicon changes.
+The generator, templates, decoder, training and ONNX export code live in `query/`. Use
+[the training CLI](query/train.py) to retrain. Keep the held-out sentences separate from template
+and lexicon changes.
 
 Search data carries the `osm-planet` credit of [`data/sources.toml`](../../data/sources.toml).
 The category vocabulary derives from the iD tagging schema (ISC). The model derives from

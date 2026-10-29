@@ -17,9 +17,8 @@ tar -xzf ../data/training/mmbert-small-cut50k.tar.gz
 tar -xzf ../data/training/query-parser-v2-checkpoint.tar.gz
 ```
 
-The archives restore `data/`, `speed/work/cut-50k/`, and `work/ckpt-v2/`.
-They remain ignored by Git. Use `gen/fetch_names.py` only to refresh the Wikidata names.
-Refreshes change the generated data.
+The archives restore `data/`, `speed/work/cut-50k/` and `work/ckpt-v2/`; Git ignores them. Use
+`gen/fetch_names.py` only to refresh the Wikidata names: a refresh changes the generated data.
 
 To regenerate the training rows and train:
 
@@ -34,8 +33,8 @@ speed/.venv/bin/python train.py --base speed/work/cut-50k --train data/train/{en
 `speed/cut_vocab.py` can rebuild the cut encoder from the base model and FrequencyWords
 lists. See `--help`. The archived encoder is the stable input for reproduction.
 
-The ONNX export keeps layers with large calibration activations in fp32. Plain dynamic
-int8 quantization of these layers damages the word labels. Keep outlier detection enabled. Labels
+The ONNX export keeps layers with large calibration activations in fp32: plain dynamic int8
+quantization of these layers damages the word labels. Keep outlier detection enabled. Labels
 refer to `words.split` words. Inference aligns each label with its first tokenizer token.
 
 Training writes `training.json` with arguments, dependency versions, and SHA-256 hashes

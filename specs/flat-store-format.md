@@ -1,60 +1,64 @@
 # Flat store on-card format
 
-- Status: **normative** for the flat card store
-- Format version: 1
-- Seam and wire contract: [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md)
+The byte contract for the raw SD card of the flat store. There is no partition table and no
+filesystem: the card is five fixed regions and an array of equal extents. Every address is
+arithmetic on those constants and on one recorded value, the extent size, which §8 scales to the
+card and §4 stores.
 
-This document is the byte contract for the raw SD card. There is no partition table and no
-filesystem: the card is five fixed regions and an array of equal extents, and every address the
-store computes is arithmetic on those constants and on one recorded value — the extent size, which
-§8 scales to the card and §4 stores.
+- Version: format version 1. A decoder refuses an unknown format version. There is no migration:
+  an old card is re-initialized (§8).
+- Writers: `firmware/obc-storage` (`src/flat/`), on the device and in the simulator
+  (`sim/flat-device`).
+- Readers: `firmware/obc-storage` (`src/flat/`).
+- Code authority: `firmware/obc-storage/src/flat/layout.rs` (geometry constants and address
+  arithmetic).
+- Test vectors: §4.1, §5.7 and §7.5, pinned by `firmware/obc-storage/src/flat/vectors.rs`.
+- Related: [flat store seam and protocol v4](flat-store-protocol.md),
+  [ride archive metadata](ride-archive-metadata.md).
 
-The rule the whole format serves:
+The rule of the format: an object never changes. New bytes get new space. One commit makes the new
+bytes visible and makes the old bytes free. The active ride is the one exception, and §7 is its one
+mechanism.
 
-> An object never changes. New bytes get new space. One commit makes the new bytes visible and
-> makes the old bytes free.
+## Conventions
 
-The active ride is the one exception — it grows for hours — and §7 is the one mechanism it gets.
-
-Integers are unsigned little-endian unless a field says signed, in which case it is two's complement
-at the stated width. Byte offsets are zero-based. Reserved **fields inside a record** are written as
-zero and MUST be zero when read. Space **outside** any record — the region tail of §2, the superblock
-pad of §4, the catalog tails of §5.1 — is whatever an earlier commit or an earlier card left there:
-nothing reads it, no CRC covers it, and initialization does not spend writes zeroing it.
-`MUST`, `MUST NOT`, `SHOULD` and `MAY` have their RFC 2119 meanings. A decoder
-rejects an unknown magic, an unknown format version, a count above its stated capacity, a range that
-leaves the extent area, or arithmetic overflow **before** it uses any derived address.
-
-CRC fields are CRC-32/IEEE: reflected polynomial `0xEDB88320`, initial value and xor-out
-`0xFFFFFFFF`, check value `crc32("123456789") = 0xCBF43926`. The one implementation is
-[`obc-crc`](../firmware/obc-crc); no other polynomial or parameterisation appears in this format. A
-CRC field reads as zero while the bytes it covers are checksummed. CRC detects accidental
-corruption; it is not identity, authentication, or an idempotency proof.
+- Integers are unsigned little-endian unless a field says signed, which is two's complement at the
+  stated width. Byte offsets are zero-based.
+- Reserved **fields inside a record** are written as zero and MUST be zero when read. Space
+  **outside** any record (the region tail of §2, the superblock pad of §4, the catalog tails of
+  §5.1) holds whatever an earlier commit or an earlier card left there: nothing reads it, no CRC
+  covers it, and initialization does not zero it.
+- `MUST`, `MUST NOT`, `SHOULD` and `MAY` have their RFC 2119 meanings.
+- A decoder rejects an unknown magic, an unknown format version, a count above its stated capacity,
+  a range that leaves the extent area, or arithmetic overflow **before** it uses any derived
+  address.
+- CRC fields are CRC-32/IEEE: reflected polynomial `0xEDB88320`, initial value and xor-out
+  `0xFFFFFFFF`, check value `crc32("123456789") = 0xCBF43926`. The one implementation is
+  [`obc-crc`](../firmware/obc-crc); no other polynomial or parameterisation appears in this format.
+  A CRC field reads as zero while the bytes it covers are checksummed. CRC detects accidental
+  corruption; it is not identity, authentication, or an idempotency proof.
 
 ## 1. Media fault model
 
-A 512-byte block write is **not** assumed to be all-or-nothing. A power cut during programming may
-corrupt any block inside the media **program page** being programmed. The program page `P` is a
-format constant of **16,384 bytes**, and every region boundary and record stride below is a multiple
-of it, measured from physical LBA 0. A write may corrupt blocks inside the page it is programming
-and does not corrupt blocks lying in another page.
+A 512-byte block write is **not** all-or-nothing. A power cut during programming may corrupt any
+block inside the media **program page** being programmed. The program page `P` is a format constant
+of **16,384 bytes**, and every region boundary and record stride below is a multiple of it, measured
+from physical LBA 0. A write may corrupt blocks inside the page it is programming and does not
+corrupt blocks in another page.
 
-A **multi-block write command** is not a unit of atomicity either, and nothing below may assume it is.
-A cut inside one leaves an arbitrary **subset** of its blocks on the card: the card is free to have
-committed any of them already and to lose the rest with the power, and the block it was mid-programming
-is corrupted by the page rule above — or none is, if it stopped cleanly between two blocks. So a store
-may issue a region's blocks in as few commands as the media rewards without changing what a reader must
-tolerate: what makes a record all-or-nothing is its CRC and, where the record is too large for one
-shot, its gate. Never the command count.
+A **multi-block write command** is not a unit of atomicity either. A cut inside one leaves an
+arbitrary **subset** of its blocks on the card, and the block being programmed is corrupted by the
+page rule above (or no block is, if the command stopped cleanly between two blocks). A store may
+issue a region's blocks in as few commands as it likes. A record is all-or-nothing only through its
+CRC and, when it is too large for one write, its gate. Never through the command count.
 
-Two consequences are used throughout and stated once here:
+Two consequences apply throughout:
 
-- A ride-journal tail is one program page and its header is a gate in a different program page. The
-  tail is synchronized first; the header is written and synchronized second. The header's CRC covers
-  both records, so a cut during either write leaves no header/tail pair recovery accepts (§7).
+- A ride-journal tail is one program page, and its header is a gate in a different program page
+  (§7).
 - A record too large to write in one shot needs a **gate**: a separate, later, single-block write
-  that certifies the body. The gate sits in a page of its own so that programming it can never
-  damage the body it certifies. This is the catalog (§5).
+  that certifies the body. The gate sits in a page of its own, so programming it cannot damage the
+  body it certifies. This is the catalog (§5).
 
 ## 2. Card geometry
 
@@ -72,20 +76,19 @@ the extent area is everything after it.
 | `2112 .. 4096` | 1984 | 992 KiB | reserved; never written and never read |
 | `4096 .. ` | — | rest of card | extent area, extents of the recorded size (§6) |
 
-Every one of those boundaries is a multiple of 16,384 bytes, so no two regions share a program page
-and the reserved tail places the extent area on a **2 MiB** boundary. That is what makes §6's
-address arithmetic exact and §6.1's page-alignment property hold at every size §8 can pick. An
+Every boundary is a multiple of 16,384 bytes, so no two regions share a program page, and the
+extent area starts on a **2 MiB** boundary. §6 and §6.1 rely on this at every size §8 can pick. An
 extent does not begin on a multiple of its own size: at 8 MiB extents, extent 0 still begins at
 absolute 2 MiB.
 
-**Block 0 is deliberately not an MBR.** Its bytes `510..511` are zero (§4 puts the superblock CRC at
-`504..508` for exactly this reason), so a host that inspects the card sees an unformatted device
-rather than a partition table it might try to repair.
+**Block 0 is not an MBR.** Its bytes `510..511` are zero (§4 puts the superblock CRC at `504..508`
+for this reason), so a host sees an unformatted device and not a partition table it might try to
+repair.
 
 ## 3. Identity
 
-Three identities, and no others. `GenerationId` and `OperationId` do not exist in this format:
-uncommitted bytes are anonymous, and the catalog is the only durable record of a result.
+Three identities, and no others. Uncommitted bytes are anonymous, and the catalog is the only
+durable record of a result.
 
 | Identity | Width | Scope |
 | :-- | --: | :-- |
@@ -94,8 +97,8 @@ uncommitted bytes are anonymous, and the catalog is the only durable record of a
 | `Revision` | `u64` | per object. `1` for the commit that creates it, `+1` for every commit that replaces it. Never wraps; reaching `u64::MAX` mounts the store read-only. |
 
 An object is identified by `ObjectId` alone. `Revision` is the compare-and-swap token every mutation
-carries and the discriminator between the two entries an object may have while a previous revision is
-retained (§5.3).
+carries, and the discriminator between the two entries an object may have while a previous revision
+is retained (§5.3).
 
 ### 3.1 Object kinds
 
@@ -108,18 +111,17 @@ same numbers and defines no others.
 | 1 | route | OBCR payload |
 | 2 | trip | the days of a trip, one route each |
 | 3 | ride | produced by the device; the one growing object (§7) |
-| 5 | map shard | one OBCM object, carrying its terrain inside it (`OBCM_Spec.md` §1.3) |
+| 5 | map shard | one OBCM object, carrying its terrain inside it (`obcm-map.md` §1.3) |
 | 6 | map set manifest | **retired.** No producer writes this kind; the value is not reissued |
 | 7 | update package | OBCU image |
 | 8 | firmware rollback reserve | extents owned by the store, bytes written by the update path (§5.3) |
-| 9 | metadata | device-owned ride archive proofs; [contract](Ride_Archive_Metadata.md) |
+| 9 | metadata | device-owned ride archive proofs; [contract](ride-archive-metadata.md) |
 
 ## 4. Superblock
 
-Two copies, A and B, of identical bytes. The superblock is written **once**, by initialization, and
-never again — nothing in normal operation updates it, which is why it carries no gate and no
-sequence. Two copies exist so that one bad block does not make the card unreadable; a mount takes
-copy A when it validates and copy B otherwise.
+Two copies, A and B, of identical bytes. Initialization writes the superblock **once**; nothing in
+normal operation updates it, so it carries no gate and no sequence. A mount takes copy A when it
+validates and copy B otherwise.
 
 The body is block 0 of the copy. Blocks `1..32` of the copy are outside the record: never written,
 never read.
@@ -137,31 +139,29 @@ never read.
 | 508 | 4 | zero |
 
 The block count and the extent size are the card's **geometry**. Everything else about the layout is
-a constant of format version 1. The extent size is written once, by initialization, and read by every
-mount; nothing derives it a second time.
+a constant of format version 1. Initialization writes the extent size once and every mount reads it;
+nothing derives it a second time.
 
-The size is recorded as a **logarithm**, so no byte in this field names a size that is not a power of
-two. Two rules are left, and a superblock that breaks either is not a superblock — the same face a
-failed CRC gets:
+The size is a **logarithm**, so the field cannot name a size that is not a power of two. A
+superblock that breaks either rule below is not a superblock, the same as a failed CRC:
 
-- the recorded value is outside `20..=31` — below the 1 MiB minimum, or above the 2 GiB ceiling that
-  makes `65,536 × E` the 128 TiB no SD standard exceeds;
-- the recorded size does not cover the recorded card in the 65,536 extents §6's index can name. §8's
-  rule produces no such card, so this is forgery or corruption, never a store that was written.
+- the recorded value is outside `20..=31`: below the 1 MiB minimum, or above the 2 GiB ceiling at
+  which `65,536 × E` is 128 TiB, more than any SD standard defines;
+- the recorded size does not cover the recorded card in the 65,536 extents §6's index can name. §8
+  never produces such a card, so this is forgery or corruption.
 
 A superblock is otherwise valid when its magic, version and CRC all check. The extent *count* is not
 stored: §6 recomputes it from the block count and the recorded size at every mount.
 
-If a mount observes a card larger than `total card blocks`, the surplus is unused; a card smaller
-than that value is refused as damaged or swapped, never silently truncated.
+If a mount observes a card larger than `total card blocks`, the surplus is unused. A card smaller
+than that value is refused as damaged or swapped, never truncated.
 
 ### 4.1 Vectors
 
-Two cards, because the geometry byte is the field with something to say. `StoreId =
-8F2C41D96B074EA3B1559C207DE83466` for both.
+Two cards, both with `StoreId = 8F2C41D96B074EA3B1559C207DE83466`.
 
-A 32 GB card — 62,914,560 blocks, 30 GiB. §8 gives it the 1 MiB minimum (`log2 = 20 = 0x14`), from
-which §6 recomputes 30,718 extents.
+A 32 GB card: 62,914,560 blocks, 30 GiB. §8 gives it the 1 MiB minimum (`log2 = 20 = 0x14`), and §6
+recomputes 30,718 extents.
 
 ```
 0000  46 53 53 42 01 00 00 00 8F 2C 41 D9 6B 07 4E A3
@@ -172,8 +172,8 @@ which §6 recomputes 30,718 extents.
 
 CRC-32 over bytes `0..504` is `0x53744CB7`.
 
-A 128 GiB card — 268,435,456 blocks — which a fixed 1 MiB extent could not have addressed: it would
-need 131,070 of them. §8 gives it 2 MiB extents (`log2 = 21 = 0x15`), and §6 recomputes 65,535.
+A 128 GiB card: 268,435,456 blocks. A fixed 1 MiB extent would need 131,070 extents, more than the
+index names. §8 gives it 2 MiB extents (`log2 = 21 = 0x15`), and §6 recomputes 65,535.
 
 ```
 0000  46 53 53 42 01 00 00 00 8F 2C 41 D9 6B 07 4E A3
@@ -186,9 +186,8 @@ CRC-32 over bytes `0..504` is `0xE337E72D`.
 
 ## 5. Catalog
 
-The catalog **is** the store. It names every object that exists, which extents each one occupies, and
-nothing else. The free-extent bitmap is its complement, recomputed at mount; there is no free list on
-the card and nothing to reconcile.
+The catalog names every object that exists and the extents each one occupies, and nothing else. The
+free-extent bitmap is its complement, recomputed at mount; there is no free list on the card.
 
 Two copies alternate. One commit writes the inactive copy and then its gate; the gate is the moment
 the new bytes become the truth.
@@ -204,10 +203,10 @@ Each copy is 256 KiB = 512 blocks = 16 program pages.
 | `480` | `245760 .. 246272` | gate sector (§5.4) |
 | `481 .. 512` | `246272 .. 262144` | outside the record: never written, never read |
 
-The **body** is the header followed by exactly `entry count` entries — `512 + entry_count × 128`
-bytes — and nothing else. Bytes of the entry array beyond the live prefix are whatever an earlier
-commit left there; they are never read and are not covered by any CRC. That is what makes the
-used-entries copy of §5.5 possible: a commit writes `1 + ceil(entry_count / 4)` blocks, not 480.
+The **body** is the header followed by exactly `entry count` entries (`512 + entry_count × 128`
+bytes) and nothing else. Bytes of the entry array beyond the live prefix are whatever an earlier
+commit left there; nothing reads them and no CRC covers them. So a commit writes
+`1 + ceil(entry_count / 4)` blocks, not 480 (§5.5).
 
 The gate occupies a program page of its own (blocks `480..512`), so programming the gate cannot
 damage the last entries of the body it certifies.
@@ -229,16 +228,16 @@ exactly.
 | 42 | 470 | zero |
 
 The commit sequence starts at `1` at initialization and increments by exactly one per commit. It is
-store-global, never wraps, and is the value a client uses to tell whether its cached listing is
-stale — a staleness hint, not a version a client may pin bytes to, for the reason §5.5 step 2 gives.
-`next ObjectId` is strictly greater than every `ObjectId` in the array and is never rewound;
-an object removed does not return its id. A commit that **creates** an object must therefore name an id
-at or beyond the cursor, and one below it is refused: that id has named an object already, a reader's
-hold is keyed by `(ObjectId, Revision)`, and re-creating a key over different extents would serve a
-removed object's bytes under a live identity.
+store-global and never wraps. A client uses it to tell whether its cached listing is stale. It is a
+staleness hint, not a version a client may pin bytes to (§5.5 step 2).
 
-The header carries no CRC of its own — it is part of the body, and the gate is what certifies the
-body.
+`next ObjectId` is strictly greater than every `ObjectId` in the array and is never rewound; a
+removed object does not return its id. A commit that **creates** an object must name an id at or
+beyond the cursor, and one below it is refused: a reader's hold is keyed by `(ObjectId, Revision)`,
+and a re-created key over different extents would serve a removed object's bytes under a live
+identity.
+
+The header carries no CRC of its own: it is part of the body, and the gate certifies the body.
 
 ### 5.3 Entry
 
@@ -261,17 +260,16 @@ Exactly 128 bytes. One entry names one revision of one object.
 | 120 | 8 | zero |
 
 Ranges `range count .. 8` are all zero. Each live range has a nonzero extent count, lies wholly
-inside the extent area, and does not overlap any other range of any entry — the mount that builds
-the free bitmap (§5.6) checks exactly that and fails the copy if it does not hold. Ranges are in
-payload order: range `i` carries the payload bytes that follow range `i-1`.
+inside the extent area, and does not overlap any other range of any entry. The mount that builds the
+free bitmap (§5.6) checks this and fails the copy if it does not hold. Ranges are in payload order:
+range `i` carries the payload bytes that follow range `i-1`.
 
 The ranges MUST cover at least `ceil(payload length / E)` extents, where `E` is the card's recorded
-extent size (§4, §6). They may cover more only while
-the `RECORDING` or `RESERVED` flag is set; every other entry is trimmed to its payload at the commit
-that publishes it, so the tail of the last extent is the only slack an ordinary object carries. A
-**zero-length object is therefore unrepresentable** without one of those flags: `range count` is at
-least `1` and every live range holds at least one extent. An object with no bytes is a `Remove`, not
-a `Put`.
+extent size (§4, §6). They may cover more only while the `RECORDING` or `RESERVED` flag is set. The
+commit that publishes any other entry trims it to its payload, so the tail of the last extent is the
+only slack an ordinary object carries. A **zero-length object is therefore unrepresentable** without
+one of those flags: `range count` is at least `1` and every live range holds at least one extent. An
+object with no bytes is a `Remove`, not a `Put`.
 
 Flags:
 
@@ -284,16 +282,16 @@ Flags:
 
 Bits `4..15` are zero. The acceptance flag is set by an `Amend` with unchanged ObjectId,
 revision, payload length, and CRC in the checkpoint transaction described in
-[Ride archive metadata](Ride_Archive_Metadata.md). A fresh payload cannot carry this flag.
+[Ride archive metadata](ride-archive-metadata.md). A fresh payload cannot carry this flag.
 Catalog copying preserves it. Clearing the checkpoint does not clear acceptance.
 
-**Display name** is what a menu shows. It is UTF-8, at most 48 bytes, and the store does not
-normalise, trim or case-fold it. An empty name (length `0`) is legal — a ride has none until it is
+**Display name** is the name a menu shows. It is UTF-8, at most 48 bytes, and the store does not
+normalise, trim or case-fold it. An empty name (length `0`) is legal: a ride has none until it is
 finalised.
 
 **Ordering and uniqueness.** Entries are sorted ascending by `(ObjectId, Revision)` and the pair is
-unique. A lookup is therefore a binary search over the live prefix — at most nine block reads — and
-the byte image of the catalog is a function of the store's state.
+unique. A lookup is a binary search over the live prefix (at most nine block reads), and the byte
+image of the catalog is a function of the store's state.
 
 For one `ObjectId` the array holds either one entry, or exactly two of which precisely one carries
 `RETAINED`. The entry without `RETAINED` is the **head** and has the greater `Revision`, so the
@@ -319,21 +317,19 @@ synchronized, and it is the only thing that makes the body it names authoritativ
 | 504 | 4 | gate CRC-32 over bytes `0..504` |
 | 508 | 4 | zero |
 
-Gate validity is two-tiered, because selecting a copy and trusting one are different questions and
+Gate validity has two tiers, because selecting a copy and trusting one are different questions and
 the body read sits between them.
 
 A gate is **well-formed** when its magic and version are known, its copy index equals its physical
 position, its `StoreId` equals the superblock's, its gate CRC checks, and its entry count is within
-capacity. All five are properties of the 512 gate bytes alone, so being well-formed is decidable from
-the two gate reads of §5.6 step 2 — which is exactly what selecting a copy and taking a sequence
-high-water mark may rely on. It also means no field of a gate that is not well-formed is ever read:
-media garbage in a dead gate's sequence field cannot poison the high-water mark or burn sequence
-space, because that gate contributes nothing.
+capacity. These five depend only on the 512 gate bytes, so the two gate reads of §5.6 step 2 decide
+them, and copy selection and the sequence high-water mark use only well-formed gates. No field of a
+gate that is not well-formed is ever read, so garbage in a dead gate's sequence field cannot poison
+the high-water mark or burn sequence space.
 
 A gate is **valid** when it is well-formed **and** its body CRC equals a fresh CRC of the body it
-describes. Only a valid gate certifies a catalog. There is no partially valid gate and no repair path,
-and the gate CRC already covers the body-CRC field, so the body CRC needs no mirror or complement of
-its own.
+describes. Only a valid gate certifies a catalog. There is no partially valid gate and no repair
+path. The gate CRC covers the body-CRC field, so the body CRC has no mirror or complement.
 
 **Invalidating** a gate means writing 512 zero bytes over exactly that block and synchronizing. An
 all-zero gate fails magic and CRC, so invalidation needs neither a sentinel value nor a
@@ -341,26 +337,26 @@ read-modify-write.
 
 ### 5.5 Commit
 
-A commit is the only durable state transition an object ever undergoes. Payload bytes are written and
-synchronized **before** it begins; extents that hold uncommitted bytes are held in RAM only, so a cut
-at any point before step 3 leaves those bytes anonymous and their extents free at the next mount.
+A commit is the only durable state transition an object undergoes. Payload bytes are written and
+synchronized **before** it begins. Extents that hold uncommitted bytes are held in RAM only, so a
+cut at any point before step 3 leaves those bytes anonymous and their extents free at the next
+mount.
 
-Let `A` be the copy the store is **currently serving** — the one mount selected in §5.6, or the one
-the last commit wrote — and `B` the other. The target is defined by what the store is serving, not by
-which gate has the greater sequence, because those differ: mount falls back to the older copy when the
-newer one's gate is well-formed but its body fails, and a commit that then overwrote the copy it served
-would leave the card with no valid catalog at all.
+Let `A` be the copy the store is **currently serving** (the one mount selected in §5.6, or the one
+the last commit wrote) and `B` the other. The target follows the served copy, not the gate
+sequences: mount falls back to the older copy when the newer one's gate is well-formed but its body
+fails, and a commit that then overwrote the served copy would leave the card with no valid catalog.
 
 1. Invalidate `B`'s gate; synchronize.
-2. Write `B`'s body — one header block, then `ceil(entry_count / 4)` entry blocks — with a commit
+2. Write `B`'s body (one header block, then `ceil(entry_count / 4)` entry blocks) with a commit
    sequence one greater than the highest any gate on this card has carried; synchronize. That
-   high-water mark comes from every **well-formed** gate mount saw (§5.4), not only from the one whose
-   body validated, so a fallback alone cannot make the sequence repeat. It is not global uniqueness —
-   the mark lives only in the gates and step 1 erases the one that carried it — so a cut inside the
-   commit following a fallback can still reissue a sequence; the sequence is a staleness hint, not a
-   version a client may pin bytes to. There is nothing past `u64::MAX` to continue to, so a card whose
-   high-water mark has reached it is read-only — whether the mark was already there at mount or the
-   commit that reached it has just landed. Reads are still served, as for an exhausted `Revision` (§3).
+   high-water mark comes from every **well-formed** gate mount saw (§5.4), not only from the one
+   whose body validated, so a fallback alone cannot make the sequence repeat. It is not global
+   uniqueness: step 1 erases the gate that carried the mark, so a cut inside the commit after a
+   fallback can still reissue a sequence. The sequence is a staleness hint, not a version a client
+   may pin bytes to. A card whose high-water mark has reached `u64::MAX` is read-only, whether the
+   mark was there at mount or the commit that reached it has just landed. Reads are still served,
+   as for an exhausted `Revision` (§3).
 3. Write `B`'s gate; synchronize.
 
 After step 3 succeeds, the store's truth is `B`. A cut before gate publication leaves `A` valid
@@ -375,38 +371,36 @@ allocation to the free map. Closing a handle releases its hold but MUST NOT recl
 uncertain catalog. Already open handles can still read their exact pinned bytes.
 
 Fresh opens and catalog listings MUST refuse authority in this mode, including an empty listing or
-an iterator created before the failure. The wire reports the existing `readOnly` / `catalogUnreadable`
-result. Errors before the final gate publication keep their existing retry and cancellation behavior.
+an iterator created before the failure. The wire reports `readOnly` / `catalogUnreadable`
+([protocol](flat-store-protocol.md) §3.9). Errors before the final gate publication keep their
+ordinary retry and cancellation behavior.
 
-Step 1 exists because step 3 may otherwise leave a gate that certifies a body only half rewritten:
-`B`'s old gate would still name an old entry count and an old body CRC, both of which a partially
-written body can accidentally satisfy in the prefix the count selects. Invalidating first makes
-"body not yet certified" the only intermediate state.
+Step 1 exists because `B`'s old gate names an old entry count and an old body CRC, which a partially
+rewritten body can satisfy in the prefix that count selects. Invalidating first makes "body not yet
+certified" the only intermediate state.
 
-The cost is `ceil(n/4) + 3` block **writes** and three synchronizations, and — because the mechanism
-rewrites the whole live prefix — two passes over the array's `ceil(n/4)` blocks to produce them: one
-to check everything the batch would write against §5.3 before the card is touched, one to write it.
+The cost is `ceil(n/4) + 3` block **writes** and three synchronizations, and two passes over the
+array's `ceil(n/4)` blocks: one to check everything the batch would write against §5.3 before the
+card is touched, one to write it.
 
 The block count is normative; the time it takes is not. A store may issue these blocks in as few
-multi-block commands as it likes. What this section fixes is the blocks, their addresses, their
-contents, and their order relative to the three synchronizations — a cut inside a wide command is
-still a cut, and the isolation assumption of §1 is per program page whatever command was programming
-it.
+multi-block commands as it likes. This section fixes the blocks, their addresses, their contents,
+and their order relative to the three synchronizations. A cut inside a wide command is still a cut,
+and §1 isolates per program page whatever command was programming it.
 
 ### 5.6 Mount
 
 1. Read superblock A block 0; on failure read superblock B. Neither valid ⇒ the card is not a flat
    store: initialization (§8) is the only transition, and it is destructive and explicit. Validity
-   here includes §4's two geometry rules, and what a mount takes from the winning copy is the extent
-   size every address below is computed from — §6's count included.
+   here includes §4's two geometry rules. The mount takes from the winning copy the extent size that
+   every address below is computed from, §6's count included.
 2. Read both gate blocks (2 reads) and consider only the **well-formed** ones (§5.4). The highest
    commit sequence any of them carries is the sequence high-water mark §5.5 continues from. No
-   well-formed gate ⇒ read-only, evidence preserved: a valid superblock implies a catalog was written
-   and no superblock survives an interrupted initialization (§8), and §5.5 never leaves both gates
-   ill-formed, so this is media damage rather than any state the store can produce. Two well-formed
-   gates at equal sequences is likewise corruption and mounts read-only. Otherwise order them by
-   sequence, greatest first.
-3. Promote to **valid**: read the leading candidate's body — `1 + ceil(entry_count / 4)` blocks —
+   well-formed gate ⇒ read-only, evidence preserved: a valid superblock implies a catalog was
+   written (§8) and §5.5 never leaves both gates ill-formed, so this is media damage. Two
+   well-formed gates at equal sequences is also corruption and mounts read-only. Otherwise order
+   them by sequence, greatest first.
+3. Promote to **valid**: read the leading candidate's body (`1 + ceil(entry_count / 4)` blocks)
    and check the body CRC and every structural rule of §5.3. On failure, fall back to the next
    candidate and repeat. None valid ⇒ read-only, evidence preserved, no repair. The copy that
    succeeds is the one the store **serves**, and §5.5's next commit targets the other one.
@@ -415,17 +409,15 @@ it.
 5. If exactly one entry carries `RECORDING`, read the 16 ride-journal headers and validate candidate
    tail slots to recover the ride (§7.3). Otherwise the journal is not read at all.
 
-Those five steps are the whole of mount. There is **no journal replay** — the catalog copy *is* the
-commit; **no garbage collection** — an extent is free exactly when no entry names it; and **no
-recovery scan** — nothing on the card can be committed that the winning gate does not already
-describe. On a card with no ride in progress a mount reads at most 3 blocks plus the live catalog
-prefix — 261 blocks at 1,025 entries, the whole boot cost. As in §5.5, the block count is the
-normative part and the time is not.
+Those five steps are the whole of mount. There is **no journal replay** (the catalog copy *is* the
+commit), **no garbage collection** (an extent is free exactly when no entry names it) and **no
+recovery scan** (nothing on the card can be committed that the winning gate does not describe). On a
+card with no ride in progress a mount reads at most 3 blocks plus the live catalog prefix: 261
+blocks at 1,025 entries. As in §5.5, the block count is normative and the time is not.
 
-One thing that reads like mount is deliberately outside it: reconciling an update that armed before
-the last reboot, which may remove an orphaned rollback reserve
-([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §4). That is device policy running against a
-mounted store, on the ordinary commit path, and it is not part of bringing the card up.
+Reconciling an update that armed before the last reboot, which may remove an orphaned rollback
+reserve ([`flat-store-protocol.md`](flat-store-protocol.md) §4), is not part of mount. It is device
+policy on a mounted store, on the ordinary commit path.
 
 ### 5.7 Vectors
 
@@ -440,7 +432,7 @@ Header, block 0 of the copy (bytes `42..512` are zero):
 0020  03 00 00 00 00 00 00 00 02 00 00 00 00 00 00 00
 ```
 
-Entry 0 — route, 1 range (extent 12, 1 extent), 42,137 bytes, payload CRC `0x9C4A7E21`, name
+Entry 0: route, 1 range (extent 12, 1 extent), 42,137 bytes, payload CRC `0x9C4A7E21`, name
 `"Grimsel Loop"`:
 
 ```
@@ -454,9 +446,8 @@ Entry 0 — route, 1 range (extent 12, 1 extent), 42,137 bytes, payload CRC `0x9
 0070  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 ```
 
-Entry 1 — ride, `RECORDING`, 1 range (extent 13, 32 extents, a 32 MiB reserve on this card's 1 MiB
-extents), length and CRC zero,
-no name:
+Entry 1: ride, `RECORDING`, 1 range (extent 13, 32 extents, a 32 MiB reserve on this card's 1 MiB
+extents), length and CRC zero, no name:
 
 ```
 0000  03 00 01 00 01 00 00 00 02 00 00 00 00 00 00 00
@@ -484,25 +475,24 @@ Gate CRC-32 over bytes `0..504` is `0x935531B8`.
 The extent area begins at LBA 4096 and is a flat array of equal extents of `E` bytes, `E / 512`
 blocks each. Extent `k` begins at LBA `4096 + (E / 512) × k`.
 
-`E` is **not** a constant of this format. It is chosen once, by initialization, from the rule §8
-states — `max(1 MiB, card bytes / 65,536)` rounded up to a power of two — and recorded in the
-superblock, which is the only place it is ever written. Every card of 64 GiB or less gets the 1 MiB
-minimum. `E` is always a power of two between 1 MiB and 2 GiB, so `E / 512` is a whole number of
-blocks and a multiple of the 16,384-byte program page.
+`E` is **not** a constant of this format. Initialization chooses it once, by the rule of §8, and
+records it in the superblock, the only place it is written. Every card of 64 GiB or less gets the
+1 MiB minimum. `E` is always a power of two between 1 MiB and 2 GiB, so `E / 512` is a whole number
+of blocks and a multiple of the 16,384-byte program page.
 
 ```
 extent_count = (total_card_blocks - 4096) / (E / 512)      // integer division
 ```
 
-`extent_count` MUST be at most 65,536 — what the entry's `u16` extent index names. §8's rule
-guarantees it for every card initialization accepts, and §4's decoder refuses a superblock that
-violates it rather than capping, because the capped tail would be space the superblock claims and no
+`extent_count` MUST be at most 65,536, the count the entry's `u16` extent index names. §8's rule
+guarantees it for every card initialization accepts. §4's decoder refuses a superblock that violates
+it and does not cap the count, because the capped tail would be space the superblock claims and no
 index reaches.
 
-**What is fixed is the index, and what scales is the grain.** 65,536 extents is an 8 KiB resident
-free bitmap whatever the card holds. The cost is granularity: on a card above 64 GiB an object wastes
-up to `E - 1` bytes in the tail of its last extent, and there is **no sub-extent allocator** — an
-object is a whole number of extents or it is nothing.
+**The index is fixed and the grain scales.** 65,536 extents is an 8 KiB resident free bitmap at
+every card size. The cost is granularity: on a card above 64 GiB an object wastes up to `E - 1`
+bytes in the tail of its last extent, and there is **no sub-extent allocator**. An object is a whole
+number of extents or it is nothing.
 
 ### 6.1 Addressing
 
@@ -530,26 +520,25 @@ extent index means what the card's superblock says it means, and nothing in the 
 ### 6.2 Allocation
 
 Allocation is first-fit over the free bitmap, in ascending extent order, and the result is at most 8
-ranges. An allocation that cannot be expressed in 8 ranges is **refused** — the caller sees a
-refusal, never a partial object and never a rewritten card. Fragmentation's worst case is therefore a
+ranges. An allocation that cannot be expressed in 8 ranges is **refused**: the caller sees a
+refusal, never a partial object and never a rewritten card. The worst case of fragmentation is a
 refused allocation, never corruption. There is no object mover in format version 1.
 
 An allocation is RAM state until the commit that names its extents in an entry. It is released by an
-explicit cancel, by the store's drop, and by mount — which rebuilds the bitmap from the catalog and
-so cannot see it at all.
+explicit cancel, by the store's drop, and by mount, which rebuilds the bitmap from the catalog and
+so cannot see it.
 
 **Extents named by no entry are free, immediately.** A commit that replaces an object frees the old
-extents at the moment its gate lands. The one qualification is a reader: while an open handle names
-an entry, the store keeps that entry's extents out of the allocator even after a commit has removed
-it, and returns them when the last handle closes. This hold is RAM-only and needs no durable record —
-after a reboot the extents are free, and there is no reader left to be surprised.
+extents at the moment its gate lands. The one exception is a reader: while an open handle names an
+entry, the store keeps that entry's extents out of the allocator even after a commit has removed it,
+and returns them when the last handle closes. This hold is RAM-only and has no durable record: after
+a reboot the extents are free, and no reader is left.
 
-Working out which of a closing hold's extents the catalog still names is a read, and a read can fail. A
-failed read is not evidence that an entry is gone: those extents stay allocated until an entry that names
-them is removed, or until the next mount rebuilds the bitmap from the catalog. Losing the use of an
-extent that long is the only harm; handing out one a live entry names would put two objects on the same
-bytes, and that is an overlap only a mount detects — after which the catalog copy carrying it is
-unreadable.
+Finding which of a closing hold's extents the catalog still names is a read, and a read can fail. A
+failed read is not evidence that an entry is gone: those extents stay allocated until an entry that
+names them is removed, or until the next mount rebuilds the bitmap from the catalog. Handing out an
+extent that a live entry names would put two objects on the same bytes, an overlap that only a mount
+detects, after which the catalog copy that carries it is unreadable.
 
 ## 7. Ride journal
 
@@ -557,13 +546,11 @@ A ride grows for hours. The journal is the only place in this format where bytes
 without a commit.
 
 The region holds 16 **16 KiB tail slots** followed by 16 page-isolated headers. Each slot is a full
-snapshot of the ride bytes after the flushed payload prefix; the recorder does not keep that snapshot
-in RAM. Tail slot `k` is the
-32 blocks at LBA `1088 + 32 × k`; its header is block 0 of the program page at
-`1600 + 32 × k`. A checkpoint writes and synchronizes the tail first, then writes and synchronizes
-the header. The header is the gate and its CRC covers itself plus the full tail slot. A cut while
-replacing either record therefore leaves no new valid pair, and no header shares a program page with
-a tail or another header.
+snapshot of the ride bytes after the flushed payload prefix; the recorder does not keep that
+snapshot in RAM. Tail slot `k` is the 32 blocks at LBA `1088 + 32 × k`; its header is block 0 of
+the program page at `1600 + 32 × k`. No header shares a program page with a tail or another header.
+A checkpoint writes and synchronizes the tail first, then writes and synchronizes the header. The
+header is the gate, and its CRC covers itself plus the full tail slot.
 
 ### 7.1 Slot
 
@@ -596,8 +583,8 @@ read.
 
 For a logical slot, the ride's payload at this checkpoint is `extents[0 .. flushed length]` followed
 by the slot's first `tail length` tail bytes. The total is `flushed length + tail length`; it is
-derived, not stored. The 96-byte resume image belongs to the recorder, not storage: storage preserves
-it byte-for-byte and CRC-protects it as part of precisely this logical checkpoint, but never decodes
+derived, not stored. The 96-byte resume image belongs to the recorder: storage preserves it
+byte-for-byte and CRC-protects it as part of precisely this logical checkpoint, but never decodes
 it.
 
 A `PROOF` slot has exactly 16,384 tail bytes, a zero referenced-proof sequence and a zero resume
@@ -606,24 +593,23 @@ checkpoint**. A non-proof slot normally has a zero referenced-proof sequence. Du
 instead names the immediately preceding proof sequence (`proof + 1 == logical sequence`); recovery
 requires both records before it can expose that logical slot.
 
-The extent ranges are copied into the slot as a **cross-check**, not to save a lookup — recovery has
-the catalog entry in hand already, since that entry's `RECORDING` flag is what sent it here. A slot
-whose ranges differ from that entry's is rejected, which is what stops a slot left by an earlier ride
-over reused extents from being read as this one's.
+The extent ranges are copied into the slot as a **cross-check**; recovery already has the catalog
+entry. A slot whose ranges differ from that entry's is rejected, so a slot left by an earlier ride
+over reused extents is not read as this one's.
 
 ### 7.2 Recording
 
-Ride start is one commit: allocate a **32 MiB reserve** — `ceil(32 MiB / E)` extents, 32 of them on a
-card of the 1 MiB minimum, roughly 400 hours at the ride payload's real byte rate — put an entry of
-kind `ride` with `RECORDING` set, length and CRC zero. No further commit happens until the ride ends,
-which is why the reserve is taken up front and why a start that cannot get it in 8 ranges fails rather
-than recording into a budget it might outgrow.
+Ride start is one commit: allocate a **32 MiB reserve** (`ceil(32 MiB / E)` extents, 32 of them on
+a card of the 1 MiB minimum, roughly 400 hours at the ride payload's byte rate) and put an entry of
+kind `ride` with `RECORDING` set, length and CRC zero. No further commit happens until the ride
+ends, so the reserve is taken up front, and a start that cannot get it in 8 ranges fails.
 
 Then, on a fixed cadence of **10 seconds**:
 
 1. The recorder lends only the points appended since the last checkpoint that returned success,
    together with the running payload CRC and resume image. The production bound is sixteen 20-byte
-   samples plus the 154-byte final footer: **474 bytes**, independent of the durable tail length.
+   samples plus the 154-byte final footer ([ride object](ble-interface.md) §7.2): **474 bytes**,
+   independent of the durable tail length.
 2. Storage reads the previous logical slot in bounded chunks, folds its CRC while copying it into the
    next slot, appends the lent bytes, and zero-pads to 16,384 bytes. A bad source CRC refuses the
    checkpoint before its header is written. If the reconstructed tail is shorter than 16,384 bytes,
@@ -648,13 +634,13 @@ ordinary slot's following sequence—or both rollover slots and their following 
 representable. Exhaustion refuses without touching media. Recovery likewise rejects a restamped
 logical slot at `u64::MAX`, because no writer following this rule can have produced it.
 
-The two headers before the payload write are the ordering that makes write-once exact without ever
-exposing a recorder-invalid 16,384-byte boundary (the ride sample is 20 bytes). Every payload page is
-byte-for-byte present in a valid proof before its extent page is touched, while the paired logical
-gate preserves the spill, payload CRC and resume state. A cut before the logical gate falls back to
-the previous logical checkpoint; a lone proof never advances recovery. A cut during or after the
-payload write selects the logical gate only after recovery has verified the proof and completed or
-repaired the page from those **same bytes**. No later point can change what is written at that offset.
+The two headers before the payload write keep write-once exact without exposing a recorder-invalid
+16,384-byte boundary (the ride sample is 20 bytes). Every payload page is byte-for-byte present in a
+valid proof before its extent page is touched, and the paired logical gate preserves the spill,
+payload CRC and resume state. A cut before the logical gate falls back to the previous logical
+checkpoint; a lone proof never advances recovery. A cut during or after the payload write selects
+the logical gate only after recovery has verified the proof and completed or repaired the page from
+those **same bytes**.
 
 Within each slot transaction, the tail precedes its header. A cut while replacing a tail may leave
 the old header intact, but its CRC no longer matches the tail and recovery skips it. A cut while
@@ -676,15 +662,14 @@ write, plus its header gate; rollover performs the fixed proof/logical pair and 
 copy.
 
 The binding limit on the tail is the slot's 16,384-byte page, not the `u32` field that measures it.
-Step 2 leaves at most 16,383 bytes behind, so every possible page remainder fits; there is no header
-inside the tail page consuming payload capacity. A header claiming a tail above 16,384 is invalid.
+Step 2 leaves at most 16,383 bytes behind, so every possible page remainder fits; no header inside
+the tail page consumes payload capacity. A header claiming a tail above 16,384 is invalid.
 
-Ride end: flush whatever the tail still holds — a partial page, whose bytes are all in the last slot,
-so a cut during it is recovered by comparing each destination block and repairing only mismatches —
-then one commit that clears `RECORDING`, sets the
-final length and payload CRC, and trims the ranges to `ceil(length / E)` extents, freeing the
-rest of the reserve. The 16 slot headers are then zeroed. A cut during that zeroing is harmless: no
-entry carries `RECORDING`, so §5.6 never reads them.
+Ride end: flush whatever the tail still holds (a partial page, whose bytes are all in the last slot,
+so a cut during it is recovered by comparing each destination block and repairing only mismatches),
+then one commit that clears `RECORDING`, sets the final length and payload CRC, and trims the ranges
+to `ceil(length / E)` extents, freeing the rest of the reserve. The 16 slot headers are then zeroed.
+A cut during that zeroing is harmless: no entry carries `RECORDING`, so §5.6 never reads them.
 
 Finish I/O is independent of ride length: the store validates and copies only the selected 16 KiB
 tail slot, commits one catalog, then clears the fixed header ring. No finish-time conversion or
@@ -703,34 +688,33 @@ on the next boot. Take the valid logical candidate with the greatest checkpoint 
 reads all 16 one-block headers but reads tail pages only from newest to oldest until one validates,
 and only when an entry says a ride was recording.
 
-**The payload CRC is a seed, not a verification obligation.** Its normative role is to give the
-resumed session the running CRC it needs so that the commit ending the ride can state the whole ride's
-CRC without re-reading it. A recovery MAY re-read `extents[0 .. flushed length]` and check the CRC of
-that prefix followed by the tail against the field — a host harness should, and FS3's crash matrix
-will — but a device MUST NOT make that read a precondition of mounting: after a long ride the prefix
-is tens of megabytes, and a full-prefix read on every boot is exactly the recovery scan this format
-does not have. A device that does check SHOULD bound the read to the last flushed page, which is the
-only region a cut can have damaged.
+**The payload CRC is a seed, not a verification obligation.** It gives the resumed session the
+running CRC, so the commit that ends the ride can state the whole ride's CRC without re-reading it.
+A recovery MAY re-read `extents[0 .. flushed length]` and check the CRC of that prefix followed by
+the tail against the field, and a host harness should. A device MUST NOT make that read a
+precondition of mounting: a full-prefix read on every boot is the recovery scan this format does not
+have. A device that does check SHOULD bound the read to the last flushed page, which is the only
+region a cut can have damaged.
 
 Recovery leaves the durable tail snapshot store-owned and hands the recorder only the recovered total
 length, payload CRC and opaque resume image; its append buffer starts empty. Random access to recovered
 bytes remains available for the fixed-size validation reads needed by continuation or finalisation.
-**Recording resumes at checkpoint sequence `recovered + 1`**, never
-at `1`: restarting the count would leave the stale slots of this same ride carrying greater sequences
-than the resumed session's, and the next recovery would pick one of them and roll the ride back.
+**Recording resumes at checkpoint sequence `recovered + 1`**, never at `1`: a restarted count would
+leave stale slots of the same ride with greater sequences, and the next recovery would roll the ride
+back to one of them.
 
 A catalog entry carrying `RECORDING` with no valid logical slot is the durable state between the ride
 start commit and its first checkpoint. Recovery exposes it as a zero-length ride at checkpoint
-sequence zero, with zero CRC and zero resume image, so the recorder can continue or discard it. The
-presence of an unpaired proof does not change that state.
+sequence zero, with zero CRC and zero resume image, so the recorder can continue or discard it. An
+unpaired proof does not change that state.
 
 ### 7.4 Loss cap
 
 Every power cut loses at most the points recorded since the newest **valid** slot. A cut that tears
 the slot being written costs the interval before it as well. With the 10-second cadence the worst
-case is therefore **two intervals, about 20 seconds of track**, and the ride itself — every byte
-before that point — cannot be lost, because a payload page is only ever written from bytes a slot
-already holds and is never rewritten.
+case is therefore **two intervals, about 20 seconds of track**. Every byte before that point cannot
+be lost, because a payload page is only written from bytes a slot already holds and is never
+rewritten.
 
 ### 7.5 Vector
 
@@ -758,9 +742,8 @@ Tail slot:
 ```
 
 The slot CRC-32 over the header with bytes `504..508` zero followed by the 16,384-byte tail slot is
-`0x7D9178EF`. The payload
-CRC field `0x5E1B03C7` is a declared value covering payload bytes `[0, 249472)`, which this vector
-does not carry.
+`0x7D9178EF`. The payload CRC field `0x5E1B03C7` is a declared value covering payload bytes
+`[0, 249472)`, which this vector does not carry.
 
 ## 8. Initialization
 
@@ -774,30 +757,26 @@ already a valid flat store is never written to implicitly.
    E = max(1 MiB, ceil(total_card_blocks × 512 / 65,536)) rounded up to a power of two
    ```
 
-   This is the rule §4 records and §6 computes every address from, and it is stated in exactly these
-   two places. It divides by the whole card rather than by the extent area, which only makes `E`
-   conservative — `extent_count` is then strictly below 65,536 — and it is refused outright for a card
-   past `65,536 × 2 GiB`, or 128 TiB, which no SD standard defines: a superblock recording a size that
-   cannot cover its own card would not mount, and initialization must not write one.
+   §4 records this value and §6 computes every address from it. The rule divides by the whole card,
+   not by the extent area, so `E` is conservative and `extent_count` is strictly below 65,536.
+   Initialization refuses a card past `65,536 × 2 GiB` (128 TiB), which no SD standard defines: a
+   superblock whose size cannot cover its own card would not mount.
 3. Zero the gate block of catalog copy B; synchronize.
 4. Zero the 16 page-isolated ride-journal header records; synchronize.
-5. Write catalog copy A's body — header with commit sequence `1`, next `ObjectId` `1`, entry count
-   `0` — then its gate; synchronize each.
+5. Write catalog copy A's body (header with commit sequence `1`, next `ObjectId` `1`, entry count
+   `0`), then its gate; synchronize each.
 6. Write superblock copy A, then copy B, both carrying `E`; synchronize.
 
 **The superblocks are destroyed first and written last, and that bracket is the invariant.** A valid
-superblock therefore implies a valid catalog, unconditionally: a cut anywhere between steps 1 and 6
-leaves a card §5.6 step 1 classifies as *not a flat store*, which is the destructive-initialization
-path and not a data-loss one. Step 1 is what makes that hold when the card was **already** a flat
-store — re-initialization is the ordinary case, since old cards are re-initialized rather than
-migrated — because the old superblock at LBA 0 would otherwise keep validating right up to step 6 and
-a cut in between would present a card that mounts with a valid `StoreId` and no catalog at all.
+superblock implies a valid catalog: a cut anywhere between steps 1 and 6 leaves a card that §5.6
+step 1 classifies as *not a flat store*, which is the destructive-initialization path and not a
+data-loss one. Step 1 makes this hold when the card is **already** a flat store (re-initialization
+is the ordinary case): without it, the old superblock at LBA 0 would validate up to step 6, and a cut
+in between would leave a card that mounts with a valid `StoreId` and no catalog.
 
-A mount after step 6 finds copy A valid and copy B ill-formed, an empty catalog, and every extent free.
-There is no migration path from any earlier layout: an old card is re-initialized, and every object
-on it is gone. That covers a card written before the extent size was recorded as well: byte 32 of its
-superblock is zero, which names no size §4 admits, so the record does not decode, so §5.6 step 1
-classifies the card as not a flat store and the ordinary destructive path takes it from there.
+A mount after step 6 finds copy A valid and copy B ill-formed, an empty catalog, and every extent
+free. There is no migration path from any other layout: an old card is re-initialized, and every
+object on it is gone.
 
 ## 9. Capacities
 

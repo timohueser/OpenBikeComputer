@@ -170,7 +170,7 @@ fn read_region(
                 index.get(&canonical).map_err(|e| format!("{}: {e}", doc_path.display()))?.ok_or_else(|| {
                     format!(
                     "{}: band `{}` names cell `{canonical}`, which is not published — either bake it or drop it from \
-                     the selection (OBCC_Spec.md §6)",
+                     the selection (obcc-catalog.md §6)",
                     doc_path.display(),
                     band.id
                 )
@@ -276,7 +276,7 @@ fn read_region_terrain(
         if !doc.terrain.is_empty() {
             return Err(format!(
                 "{}: the region selects {} terrain cell(s) but the tree publishes no terrain — either bake it or drop \
-                 the selection (OBCC_Spec.md §13.3)",
+                 the selection (obcc-catalog.md §13.3)",
                 doc_path.display(),
                 doc.terrain.len()
             ));
@@ -307,7 +307,7 @@ fn read_region_terrain(
             None => {
                 return Err(format!(
                     "{}: terrain cell `{canonical}` is not published — either bake it or drop it from the selection \
-                     (OBCC_Spec.md §13.3)",
+                     (obcc-catalog.md §13.3)",
                     doc_path.display()
                 ))
             }

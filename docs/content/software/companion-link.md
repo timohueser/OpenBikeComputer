@@ -10,9 +10,9 @@ out. Bluetooth and USB carry the same protocol frames, so there is one transfer 
 of rules. Bluetooth adds the device-local controls: pairing, the clock, the settings, and bond
 removal. USB carries objects and device information only.
 
-The normative contracts are the [flat-store protocol](src:specs/FLAT_Store_Protocol.md), the
-[card format](src:specs/FLAT_Store_Format.md), and the
-[BLE control surface](src:specs/obc-ble-interface-spec.md).
+The normative contracts are the [flat-store protocol](src:specs/flat-store-protocol.md), the
+[card format](src:specs/flat-store-format.md), and the
+[BLE control surface](src:specs/ble-interface.md).
 
 ## Two planes: control and data
 
@@ -93,7 +93,7 @@ The phone then sends the device proof that it holds that exact finalized ride, a
 commits and reads back that proof. Proof turns the synced indicator on. It is deliberately not a
 deletion trigger: routes and rides stay on the device until the rider removes them, and a full card
 offers the rider an age-based cleanup instead of deciding alone. The durable format is in the
-[metadata contract](src:specs/Ride_Archive_Metadata.md).
+[metadata contract](src:specs/ride-archive-metadata.md).
 
 ## Pairing and the Bluetooth controls
 

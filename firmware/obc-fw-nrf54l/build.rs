@@ -130,8 +130,8 @@ fn flpr_memory_x() -> String {
 MEMORY
 {{
     FLASH       : ORIGIN = {APP_SLOT_BASE:#010X}, LENGTH = {app_len:#X} /* app slot ({app_kb}K) above the 32K obc-boot (#617) */
-    SEMMC_STAGE : ORIGIN = {SEMMC_STAGE_BASE:#010X}, LENGTH = {stage_kb}K   /* staged sEMMC blob — armer→boot handoff (#1158, OBCU_Spec.md §3) */
-    BOOT_STATE  : ORIGIN = {BOOT_STATE_BASE:#010X}, LENGTH = 4K    /* DFU boot-state handoff page (#617, OBCU_Spec.md §2) */
+    SEMMC_STAGE : ORIGIN = {SEMMC_STAGE_BASE:#010X}, LENGTH = {stage_kb}K   /* staged sEMMC blob — armer→boot handoff (#1158, obcu-update.md §3) */
+    BOOT_STATE  : ORIGIN = {BOOT_STATE_BASE:#010X}, LENGTH = 4K    /* DFU boot-state handoff page (#617, obcu-update.md §2) */
     SETTINGS    : ORIGIN = {SETTINGS_BASE:#010X}, LENGTH = 4K    /* persistent settings page (#193) — top of RRAM */
     RAM         : ORIGIN = {SRAM_BASE:#010X}, LENGTH = {ram_kb}K   /* M33 .data/.bss/stack */
     /* Reserved for the FLPR (not linked by the M33; see the generated flpr.ld):
@@ -144,7 +144,7 @@ PROVIDE(__settings_base = ORIGIN(SETTINGS));
 /* Base of the carved boot-state page: the armer's write target. */
 PROVIDE(__boot_state_base = ORIGIN(BOOT_STATE));
 /* Base of the blob-stage carve, where the armer copies the sEMMC image for the
-   bootloader's Install/Rollback card bring-up (OBCU_Spec.md §3). */
+   bootloader's Install/Rollback card bring-up (obcu-update.md §3). */
 PROVIDE(__semmc_stage_base = ORIGIN(SEMMC_STAGE));
 /* Base of the app slot, where the armer's rollback snapshot reads the running image
    from (memory-mapped; RRAM is XIP-readable). The linker map stays the only address authority. */

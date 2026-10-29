@@ -384,7 +384,8 @@ mod tests {
         let mut text = String::from("| Code | Exit | When | Fix |\n| --- | --- | --- | --- |\n");
         for variant in schema["oneOf"].as_array().expect("each code has a description") {
             let code: Code = serde_json::from_value(variant["const"].clone()).unwrap();
-            let when = variant["description"].as_str().unwrap();
+            // A doc comment wraps; a table row must be one line.
+            let when = variant["description"].as_str().unwrap().replace('\n', " ");
             text +=
                 &format!("| `{}` | {} | {when} | {} |\n", variant["const"].as_str().unwrap(), code.exit(), code.fix());
         }

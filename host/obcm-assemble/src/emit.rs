@@ -26,7 +26,7 @@ use crate::{Error, Result};
 
 /// The hard per-file ceiling: the smaller of the two walls a written file has to clear.
 ///
-/// 1. The format wall — `OBCM_Spec.md`'s addressable interior at this engine's [`SCALE`],
+/// 1. The format wall — `obcm-map.md`'s addressable interior at this engine's [`SCALE`],
 ///    `2^32 units × U`, which at `U = 16` is 64 GiB.
 /// 2. The readable wall — how far [`obc_formats::io::ByteSource`], the tree's one read interface,
 ///    can address.

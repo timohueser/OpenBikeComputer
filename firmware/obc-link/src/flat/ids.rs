@@ -1,7 +1,7 @@
 //! The vocabulary both sides of the engine speak: three identities, the kind table, the entry
 //! flags, a display name, and the metadata half of a catalog entry.
 //!
-//! `FLAT_Store_Format.md` is the authority for every value here. The types are declared in this
+//! `flat-store-format.md` is the authority for every value here. The types are declared in this
 //! crate rather than imported from the store, because the dependency runs the other way (see
 //! [`super::store`]), and the binder's pinning test holds the two definitions equal.
 
@@ -40,7 +40,7 @@ impl Revision {
     }
 }
 
-/// The kind table of `FLAT_Store_Format.md`, carried unchanged on the wire.
+/// The kind table of `flat-store-format.md`, carried unchanged on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ObjectKind {

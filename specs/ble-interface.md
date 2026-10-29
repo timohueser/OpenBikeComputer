@@ -1,15 +1,25 @@
 # OBC BLE interface
 
 The GATT surface the device serves to the companion app: the two SIG services, the custom OBC
-Control service, its live characteristics, and the payload layouts of the objects those
-characteristics carry. Pairing and encryption are §8. The QR link that starts pairing is §9.
+Control service and its characteristics, and the payload layouts of the objects they carry. Pairing
+and encryption are §8. The QR link that starts pairing is §9.
 
-Object transfers are **not** here. They are protocol v4, whose normative contract is
-[`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md); §5.1 of that document binds it to the
-`protocolVersion`, `psm` and `objectControl` characteristics below.
+- Writers: the device GATT server `firmware/obc-fw-nrf54l` (`src/ble/gatt.rs`), with the command
+  and status codecs in `firmware/obc-ble` (`src/descriptor.rs`); the ride recorder
+  (`firmware/obc-formats/src/ride.rs`); the companion app (`companion-ios/Packages/OBCKit`) for
+  commands, Config and trip objects.
+- Readers: the companion app (`OBCTransport` and `OBCDomain` in `companion-ios/Packages/OBCKit`);
+  the device for commands, Config and trip objects (`firmware/obc-route/src/trip.rs`).
+- Test vectors: [`specs/vectors/`](vectors/) (`ride-v6.bin`, `trip-v3.bin`, `config-v1.bin`,
+  `status-command-result.bin`, `command-set-clock.bin`), built by `host/obc-vectors` and read by
+  both `cargo test` and `swift test`.
+- Related: [protocol v4](flat-store-protocol.md) (object transfers, §3.3),
+  [OBCR route](obcr-route.md), [OBCU update](obcu-update.md),
+  [ride archive metadata](ride-archive-metadata.md).
 
-All multi-byte integers are **little-endian**. Shared binary test vectors pinning these layouts
-live in [`specs/vectors/`](vectors/) and are read by both `cargo test` and `swift test`.
+## Conventions
+
+All multi-byte integers are **little-endian**.
 
 ## 3. GATT control plane
 
@@ -25,7 +35,7 @@ live in [`specs/vectors/`](vectors/) and are read by both `cargo test` and `swif
 in this preference order:
 
 1. the **installed image's OBCU version string, verbatim** — the `fw_version` field of the container
-   the device installed ([`OBCU_Spec.md`](OBCU_Spec.md) §1). For a released build that is the
+   the device installed ([`obcu-update.md`](obcu-update.md) §1). For a released build that is the
    release tag, e.g. `v1.3.0`;
 2. otherwise the **build's bare git short hash**, e.g. `ca9b336` — a device flashed over SWD, which
    has never installed a container and has no version to report.
@@ -33,12 +43,12 @@ in this preference order:
 Case 1 is the only string that can be compared against a published release. Hosts parse it as a
 release version with an optional leading `v`.
 
-Case 2 is deliberately **not parseable as a version**: a host that cannot read a running version
-MUST NOT offer an automatic update. A development device stays on whatever its owner flashed and
-gets back onto the release track through the manual install path.
+Case 2 is **not parseable as a version**: a host that cannot read a running version MUST NOT offer
+an automatic update. A development device gets back onto the release track only through the manual
+install path.
 
 The value is at most 32 bytes (the OBCU `fw_version` field width). This characteristic and the USB
-device-information read ([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §5.2.1) always carry
+device-information read ([`flat-store-protocol.md`](flat-store-protocol.md) §5.2.1) always carry
 identical bytes.
 
 ### 3.2 Battery Service — `0x180F` (SIG)
@@ -62,7 +72,7 @@ Base UUID (random; **not** derived from the SIG base): the 16-bit block `XXXX` i
 | `3C920008-9916-4EBA-ABC2-342FE08F6B10` | `protocolVersion` | read, open | `u16` = `4`, the protocol-v4 major |
 | `3C920009-9916-4EBA-ABC2-342FE08F6B10` | `objectControl` | write + indicate | the protocol-v4 control channel |
 
-The last three are bound by [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §5.1, which owns
+The last three are bound by [`flat-store-protocol.md`](flat-store-protocol.md) §5.1, which owns
 their byte rules.
 
 `3C920003`, `3C920005` and `3C920006` are retired and **MUST NOT** be reused. A retired UUID never
@@ -73,7 +83,8 @@ takes a new meaning.
 The device requests, and the app accepts where the OS allows: **2M PHY**, data length extension
 (**251-byte PDUs**), ATT MTU **247**. The L2CAP CoC MPS is aligned to the PDU so one SDU chunk of
 **244 bytes** rides in one packet. These are preferences, not requirements — the protocol is
-correct at any negotiated MTU, just slower.
+correct at any negotiated MTU at or above the floor of
+[`flat-store-protocol.md`](flat-store-protocol.md) §5.1, just slower.
 
 ## 4. Commands and status
 
@@ -90,8 +101,8 @@ msg = 3  commandResult (4 bytes total):
   detail  u8   command-specific, 0 unless documented
 ```
 
-Discriminators `1`, `2` and `4` carried the retired object surface and are not served. An app
-ignores a `msg` value it does not know.
+Discriminators `1`, `2` and `4` are retired and not served. An app ignores a `msg` value it does
+not know.
 
 ### 4.4 `command` — small imperatives
 
@@ -107,7 +118,7 @@ support it".
 
 Commands `1` (`deleteObject`) and `2` (`ackRides`) are retired: object removal is protocol v4
 `REMOVE` and ride possession is `ARCHIVE_RIDE`
-([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §3.7, §3.12). The device answers them
+([`flat-store-protocol.md`](flat-store-protocol.md) §3.7, §3.12). The device answers them
 `unknown command`. **Next free command: `6`.**
 
 **`installFw`.** The command only *requests*; it never waits for the rider and never installs on its
@@ -119,17 +130,15 @@ the staged image, show a confirm card, and install only on a physical **Select p
 | accepted | `ok` (0) | the device opens its on-glass check and confirm flow |
 | busy | `busy` (3) | a ride is recording, or an install request is already pending |
 
-Precedence: **`busy` > `ok`**. The two answers are the whole set, because "can the device act now"
-is the only question the command handler can answer cheaply. Whether a package is staged, and
-whether it is a valid one, are the on-device scan's own answers a moment later, and the multi-second
-image scan MUST NOT run inside the command handler. A second answer given here would be a second
-truth about the same fact, so the device accepts and the confirm card reports what the scan found.
+Precedence: **`busy` > `ok`**. The two answers are the whole set. Whether a package is staged and
+valid is the answer of the on-device scan: the multi-second image scan MUST NOT run inside the
+command handler, and the confirm card reports what the scan found.
 
 **Security posture — no silent installs.** Staging a package is authenticated only by the bonded,
 encrypted link (§8). **Installing** is gated on physical confirmation at the device. `installFw`
 therefore never arms and never reboots on its own. Image authenticity is separate and is checked on
 every delivery path: the armer verifies the container's Ed25519 signature, and refuses an unsigned
-container, before an install can be armed ([`OBCU_Spec.md`](OBCU_Spec.md) §1.3, §1.4).
+container, before an install can be armed ([`obcu-update.md`](obcu-update.md) §1.3, §1.4).
 
 **`forgetBond`.** The bonded phone asks the device to clear its side of the bond, so an app-side
 "Forget device" does not leave the pair wedged under the reject-when-bonded posture (§8). The device
@@ -165,8 +174,8 @@ immediately after encryption. A timestamp the device stamps later in the session
 ## 7. Object layouts
 
 A route object's payload is exactly the bytes of an OBCR file
-([`OBCR_Spec.md`](OBCR_Spec.md)); the device stores and serves it verbatim. An update package's
-payload is exactly the bytes of an OBCU container ([`OBCU_Spec.md`](OBCU_Spec.md) §1).
+([`obcr-route.md`](obcr-route.md)); the device stores and serves it verbatim. An update package's
+payload is exactly the bytes of an OBCU container ([`obcu-update.md`](obcu-update.md) §1).
 
 ### 7.2 `ride` — ride object v6
 
@@ -229,10 +238,11 @@ The final 154 bytes are the summary footer:
   while the ride records and is not paused. The total is rounded down to whole kJ. A ride without
   power data writes the absent value, so `0` is a ride with power data and no work.
 - **Bike type.** The bike type that is current when the ride starts
-  ([`OBCR_Spec.md`](OBCR_Spec.md) §1.2). The phone can change its own copy. The device copy does
+  ([`obcr-route.md`](obcr-route.md) §1.2). The phone can change its own copy. The device copy does
   not change.
-- **Trip.** A ride is on a trip when it starts on a day of a stored trip (§7.7). The footer holds the trip key, the index of that day and the trip's day
-  count. The rider sees Day 1 for day index 0. A reader requires `day index < day count`.
+- **Trip.** A ride is on a trip when it starts on a day of a stored trip (§7.7). The footer holds
+  the trip key, the index of that day and the trip's day count. The rider sees Day 1 for day index
+  0. A reader requires `day index < day count`.
 - **Trip name.** The device writes the name of the trip when the ride is saved, so the name stays
   after the trip is deleted. It is empty when the device no longer holds a trip with that key.
 - **No trip.** With trip key 0, the day index, the day count and every trip-name byte are zero.
@@ -250,9 +260,10 @@ The final 154 bytes are the summary footer:
 The footer is last because the flat-store payload pages are write-once. A list row reads precisely
 154 bytes at `object length − 154`; a full reader requires
 `object length == point_count × 20 + 154`. A reader rejects any other footer length.
-Finalize appends this footer and performs one store commit that publishes the final length and CRC
-and clears `RECORDING`. `specs/vectors/ride-v6.bin` pins three sample records — including sensor
-sentinels and segment flags — and a footer on a trip day with both effort limits and the demo flag set.
+Finalize appends this footer, then the ride-end commit publishes the final length and CRC and clears
+`RECORDING` ([`flat-store-format.md`](flat-store-format.md) §7.2). `specs/vectors/ride-v6.bin` pins
+three sample records, including sensor sentinels and segment flags, and a footer on a trip day with
+both effort limits and the demo flag set.
 
 ### 7.3 `config` — the Config object
 
@@ -333,7 +344,7 @@ any other length, which also rejects a torn write.
 
 The device keeps one progress record per trip key. The record never crosses the wire. The device
 writes it at Finish of a ride on a trip day, and keeps it in the ride-archive Metadata object
-([`Ride_Archive_Metadata.md`](Ride_Archive_Metadata.md)) with the navigator checkpoint.
+([`ride-archive-metadata.md`](ride-archive-metadata.md)) with the navigator checkpoint.
 
 - **Start record.** The fresh start of a ride on a trip day, and the continuation of that ride
   after a reset, write a start record for the trip: position day 0, the route ObjectId of day 0,
@@ -419,15 +430,17 @@ Days count from 0 in the object; the rider sees Day 1 for day 0.
   identity alike. A stored bond can only be cleared by the rider: the hold-guarded **Forget phone**
   action in Settings ▸ Connections zeroes the bond slot, removes the peer from the host's bond table
   and resolving list, and drops the connection if that peer is connected. A factory reset runs the
-  same clear. After the clear, the next pairing is open again. Physical possession guards the *clear* step, so a stranger who can see the
-  screen cannot silently evict the rider's phone by pairing.
+  same clear. After the clear, the next pairing is open again. Physical possession guards the
+  *clear* step, so a stranger who can see the screen cannot silently evict the rider's phone by
+  pairing.
 - **Reject mechanics.** The pairing link is not bondable while a bond is stored, and the device
   refuses the attempt at its first SMP surface: it suppresses the passkey display and drops the
   link. **No distinguishable SMP failure reason crosses the wire** — the host stack auto-answers the
   SMP Pairing Request before the application sees it, and iOS does not surface an SMP reason code to
   the app. The app infers "already bonded elsewhere" from context, not from a code. A phone that
   forgets the device **while offline** is rejected like any other until the rider runs Forget phone
-  or a factory reset on the device; a forget **while connected** uses `forgetBond` (§4.4) and needs no on-device step.
+  or a factory reset on the device; a forget **while connected** uses `forgetBond` (§4.4) and needs
+  no on-device step.
 
 - **Reconnect policy**: the device keeps a **stable static random address** and does **not** enable
   device-side privacy. The phone stores that identity and reconnects on any advertising contact.
@@ -462,10 +475,8 @@ The link is these 32 ASCII bytes. It has no query, no fragment and no trailing s
 | Quiet zone | 4 modules or more on each side |
 | Colors | dark modules on a light background, in each theme |
 
-Version 3 is the smallest version that holds the link at level M. At version 3, level Q holds 32
-bytes in byte mode, so the link also fits at the higher level. At 5 px per module the code and its
-quiet zone use 185 × 185 px. The symbol is fixed, so the device stores its modules and does not
-encode at run time.
+At 5 px per module the code and its quiet zone use 185 × 185 px. The symbol is fixed, so the device
+stores its modules and does not encode at run time.
 
 ### 9.3 Device rules
 

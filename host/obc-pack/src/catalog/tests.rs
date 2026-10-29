@@ -1766,7 +1766,7 @@ fn the_shipped_schema_and_skin_generate_the_current_catalog() {
             "coarse", "coarse", "coarse", "coarse", "coarse", "mid", "mid", "mid", "mid", "fine", "fine", "fine",
             "fine", "fine"
         ],
-        "OBCA_Spec.md §1.5's band table partitions the shipped ladder"
+        "obca-assembly.md §1.5's band table partitions the shipped ladder"
     );
     let skin = &g.root.skins[0];
     assert_eq!(skin.id, "default");

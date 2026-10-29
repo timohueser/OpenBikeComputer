@@ -2,7 +2,7 @@
  * Protocol v4's shared vocabulary in TypeScript: the opcode, kind, flag and error tables, the
  * decoded response shapes, and the few byte helpers the client and its parsers share.
  *
- * `specs/FLAT_Store_Protocol.md` is the sole authority. The wire codec itself is the Rust
+ * `specs/flat-store-protocol.md` is the sole authority. The wire codec itself is the Rust
  * `obc_link::flat` client, which the browser runs through the wasm bridge.
  *
  * Every `u64` is a `bigint`, never a `number`: `Number` loses integers above 2^53, and a codec that

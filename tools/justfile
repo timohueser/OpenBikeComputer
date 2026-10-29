@@ -418,7 +418,7 @@ bake *args:
           _run "${client[@]}" list "$prefix"
         fi ;;
       terrain)
-        # The terrain artifact class, on its own revision track (OBCC_Spec.md §13). Same
+        # The terrain artifact class, on its own revision track (obcc-catalog.md §13). Same
         # tree as `bake`, deliberately a separate command: it needs DEM tiles and no OSM
         # extract, and it must never be a step of a schema re-bake.
         shift

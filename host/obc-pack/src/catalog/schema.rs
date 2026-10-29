@@ -72,7 +72,7 @@ const CATALOG_DESCRIPTION: &str =
      verifies each satellite against the `bytes` + `sha256` pinned here. The satellite documents are \
      `$defs/CellIndexDocument`, `$defs/RegionCellsDocument` and `$defs/TerrainIndexDocument`. The optional \
      `terrain` block is a second artifact class on its own dataset and lattice identity (§13). Normative contract: \
-     OBCC_Spec.md, with OBCA_Spec.md for the grid, bands, and assembly and OBCT_Spec.md for the raster.";
+     obcc-catalog.md, with obca-assembly.md for the grid, bands, and assembly and obct-terrain.md for the raster.";
 
 const BOUNDARY_DESCRIPTION: &str =
     "A region's simplified outline, in integer microdegrees, `[lat, lon]` per point. Presentation only: it \
@@ -80,14 +80,14 @@ const BOUNDARY_DESCRIPTION: &str =
      input bbox. The coverage outline a builder draws for a live selection is a different object — the union \
      of the selected cells' squares, computed client-side — and is deliberately not in the catalog.";
 
-const TERRAIN_DESCRIPTION: &str = "The terrain artifact class (OBCC_Spec.md §13): an OBCT raster on the OBCA grid. \
+const TERRAIN_DESCRIPTION: &str = "The terrain artifact class (obcc-catalog.md §13): an OBCT raster on the OBCA grid. \
      Dataset identity, dataset version, posting size and cell size define its lockstep. \
      Terrain has no map schema binding. Network layer receipts identify the terrain bytes \
      sampled while the bake integrates ascents.";
 
 const CELL_DESCRIPTION: &str =
     "One published cell. There is deliberately no bbox: a cell's coverage is exactly its grid square, which \
-     the `id` determines to the microdegree (OBCA_Spec.md §1.3), and the generator verifies the artifact's own \
+     the `id` determines to the microdegree (obca-assembly.md §1.3), and the generator verifies the artifact's own \
      OBCM header bbox against it at bake time. A stored copy could only agree (redundant) or disagree (a lie).";
 
 /// Generate the catalog documents' JSON Schema from the same serde model the generator writes and
@@ -403,7 +403,7 @@ fn check_band_table(bands: &[BandDoc], lod_count: usize, path: &Path) -> Result<
         if band.id == TERRAIN_DIR {
             return Err(format!(
                 "{}: `{TERRAIN_DIR}` is reserved — `cells/{TERRAIN_DIR}/` holds the terrain artifact class, which is \
-                 on its own revision track and is not a band (OBCC_Spec.md §13.1)",
+                 on its own revision track and is not a band (obcc-catalog.md §13.1)",
                 at()
             ));
         }
@@ -435,7 +435,7 @@ fn check_band_table(bands: &[BandDoc], lod_count: usize, path: &Path) -> Result<
             if let Some(other) = lod_owner.insert(lod, &band.id) {
                 return Err(format!(
                     "{}: LOD {lod} is in both band `{other}` and band `{}` — it would be written twice \
-                     (OBCA_Spec.md §1.2)",
+                     (obca-assembly.md §1.2)",
                     at(),
                     band.id
                 ));
@@ -507,7 +507,7 @@ fn check_band_table(bands: &[BandDoc], lod_count: usize, path: &Path) -> Result<
     let missing: Vec<usize> = (0..lod_count).filter(|l| !lod_owner.contains_key(&(*l as u32))).collect();
     if !missing.is_empty() {
         return Err(format!(
-            "{}: ladder LOD(s) {missing:?} are in no band — a map would be blank at that zoom (OBCA_Spec.md §1.2)",
+            "{}: ladder LOD(s) {missing:?} are in no band — a map would be blank at that zoom (obca-assembly.md §1.2)",
             at()
         ));
     }
@@ -526,7 +526,7 @@ fn ladder(config: &Config, bands: &[BandEntry], path: &Path) -> Result<Vec<LodEn
             (0, None) => {}
             (0, Some(mpp)) => {
                 return Err(format!(
-                    "{}: ladder LOD 0 has max_mpp {mpp} — the coarsest level is +inf (`null`), OBCM_Spec.md §3",
+                    "{}: ladder LOD 0 has max_mpp {mpp} — the coarsest level is +inf (`null`), obcm-map.md §3",
                     path.display()
                 ))
             }
@@ -658,7 +658,7 @@ pub(super) fn check_skin_document(json: &str, at: &str) -> Result<(), String> {
     Err(format!(
         "{at}: a skin is presentation only, and this one carries schema key(s): {}. A skin is stamped onto cells \
          already cut at the schema's ladder, tolerances, merge passes and routing table, so these would have no \
-         effect — changing any of them is a new schema revision and a re-bake (OBCC_Spec.md §5). Remove them; a \
+         effect — changing any of them is a new schema revision and a re-bake (obcc-catalog.md §5). Remove them; a \
          style record may carry {}.",
         offenders.join(", "),
         SKIN_STYLE_KEYS.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")
@@ -680,7 +680,7 @@ fn check_skin_ids(want: &BTreeMap<String, u8>, have: &BTreeMap<String, u8>) -> R
     if !missing.is_empty() {
         return Err(format!(
             "this skin has no style for {}. A missing style would ship a map with an invisible layer \
-             (OBCC_Spec.md §5).",
+             (obcc-catalog.md §5).",
             joined(missing.into_iter())
         ));
     }
@@ -692,7 +692,7 @@ fn check_skin_ids(want: &BTreeMap<String, u8>, have: &BTreeMap<String, u8>) -> R
     if !renumbered.is_empty() {
         return Err(format!(
             "a skin MUST NOT renumber style ids — every feature header in every baked chunk references them \
-             (OBCA_Spec.md §4.7): {}",
+             (obca-assembly.md §4.7): {}",
             renumbered.join("; ")
         ));
     }
