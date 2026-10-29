@@ -3,7 +3,7 @@
 The compiler that turns a raw capture into the landmark and peak content a map carries. It uses
 local files only: no network, no simulator, no device.
 
-## Run it
+## Run
 
 ```sh
 cargo build -p obc-bake --locked
@@ -15,16 +15,16 @@ target/debug/obc-bake landmark-content \
 ```
 
 **Use an empty output directory.** The `assistant-wiki` package is a four-site review sample, not
-Switzerland coverage. Acquiring a country capture is [CAPTURE.md](../../../../fixtures/sources/ride-assistant/CAPTURE.md).
+Switzerland coverage. [CAPTURE.md](../../../../fixtures/sources/ride-assistant/CAPTURE.md) acquires
+a country capture.
 
 ## Input
 
 A schema 1 source manifest: each raw response has a relative path, URL, byte count and SHA-256.
 Entity responses are `entities/QID.json`, parent classes are in `classes/`, locale entities in
 `locales/`. The compiler verifies the registered bytes before it selects sites, and derives
-coordinates and types from the raw entities. A raw
-`wbgetentities` response can carry an explicit redirect; the compiler keeps the edge to the
-canonical class before it follows parents.
+coordinates and types from the raw entities. A raw `wbgetentities` response can carry an
+explicit redirect; the compiler keeps the edge to the canonical class before it follows parents.
 
 The boundary is a GeoJSON Polygon, MultiPolygon or FeatureCollection of those. Border points are
 included. **Country claims do not select sites**; `policy.json` owns the category roots and
@@ -127,7 +127,7 @@ language variants share one photo.
 identities of emitted summit POIs. `obc-bake bake --peaks FILE` takes one global catalogue;
 its cache keys include the peak content fingerprint.
 
-## Verify
+## Test
 
 ```sh
 tools/obc fixtures sync peak-articles
