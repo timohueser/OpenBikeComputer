@@ -1,9 +1,18 @@
 # Planner release
 
-A release joins map, routing, search and model data.
-`release.json` is UTF-8 JSON. The release and its files are immutable.
-A release of `obc data update` has the ID of the [named files of the planner](obc-data.md#planner).
-The standalone publisher uses the SHA-256 of `release.json`.
+A planner release joins map, routing, search and model data. `release.json` is its UTF-8 JSON
+manifest. This contract also defines the grid storage, the tile API paths and the catalogue. The
+release and its files are immutable. A release of `obc data update` has the ID of the [named files
+of the planner](obc-data.md#planner). The standalone publisher uses the SHA-256 of `release.json`.
+
+- Version: manifest `format` `1`; catalogue `format: 1`; `public/grid.json` `format: 3`. A client
+  refuses a catalogue `format` that it does not know.
+- Writers: `obc data update` (`host/obc-data`), the standalone publisher.
+- Readers: the web planner (`builder/web/src/lib/planner/release.ts`), the map builder, the tile
+  service ([`planner/tiles`](../planner/tiles/README.md)), `obc data serve`, the companion app.
+- Related: [offline bundle](planner-offline.md), [route package](route-package.md), [route
+  catalog](route-catalog.md), [snow tiles](planner-snow-tiles.md), [climate
+  tiles](planner-climate-tiles.md), [`obc data`](obc-data.md).
 
 ## Manifest
 
@@ -17,98 +26,89 @@ The standalone publisher uses the SHA-256 of `release.json`.
 | `routing_package` | Hash of `routing/manifest.json` or `routing/blocks.json` |
 | `profiles` | Sorted routing profile IDs |
 | `attribution` | OSM credit: the `osm-planet` attribution of `data/sources.toml` |
-| `landcover_attribution` | Credit of the basemap's land cover: the `daylight-landcover` attribution of `data/sources.toml`. Older releases have none |
+| `landcover_attribution` | Credit of the basemap's land cover: the `daylight-landcover` attribution of `data/sources.toml`. Can be absent |
 | `terrain_attribution` | Elevation source credits: each reference model used, and the `copernicus-glo-30` credit when the bake reads GLO-30 tiles |
 | `terrain_bounds` | Bounds that include contour neighbour tiles |
 | `files` | Relative file names, each with `bytes` and `sha256` |
 
-File paths stay inside the release directory. File hashes use lowercase
-64-character hex. Maps, search, and routing have the same OSM hash and bounds.
-The terrain inputs cover every routing elevation input. Search metadata contains
-the OSM hash. Terrain TileJSON contains terrain input hashes. The
-[`obc data` release manifest](obc-data.md#release-manifest) records source versions, tool
-identities and layer receipts. These are not client files.
+File paths stay inside the release directory. File hashes use lowercase 64-character hex. Maps,
+search, and routing have the same OSM hash and bounds. The terrain inputs cover every routing
+elevation input. Search metadata contains the OSM hash. Terrain TileJSON contains terrain input
+hashes. The [`obc data` release manifest](obc-data.md#release-manifest) records source versions,
+tool identities and layer receipts. These are not client files.
 
 ## Objects and services
 
-The standalone publisher stores release files under `planner/releases/ID/` of R2. It
-stores source mirrors under `planner/sources/`, without the local `sources/` path prefix.
-A source name starts with its SHA-256. Source mirrors can be shared by releases. A grid
-release of `obc data` uses the layout of [Canonical grid storage](#canonical-grid-storage).
+The standalone publisher stores release files under `planner/releases/ID/` of R2. It stores source
+mirrors under `planner/sources/`, without the local `sources/` path prefix. A source name starts
+with its SHA-256. Source mirrors can be shared by releases. A grid release of `obc data` uses the
+layout of [Canonical grid storage](#canonical-grid-storage).
 
-`maps/` contains `basemap.pmtiles`, `places.pmtiles`, `overlays.pmtiles`,
-`terrain.pmtiles`, map assets, and their manifest. When the region recipe names a
-snow source, it also contains `snow.pmtiles` from the
-[snow tile contract](planner-snow-tiles.md). When the recipe has a `climate` field,
-it also contains `climate.pmtiles` from the
-[climate tile contract](planner-climate-tiles.md). The release `files` hold exactly the
-files of the map manifest and the manifest itself. `routing/` contains the three files in the
-[route package contract](route-package.md), plus `overlays.sqlite`. The overlay
-index stores the routing manifest identity and has the same OSM source.
-`search/` contains `pois/REGION.sqlite`, `addresses/REGION.sqlite`,
-and `model/`. Local combined packages use `REGION.sqlite`. `routes/` contains `REGION.json` from the
-[route catalog contract](route-catalog.md). `device/catalog.json` is a snapshot. Its file references are absolute
-URLs to the original immutable cell objects.
+`maps/` contains `basemap.pmtiles`, `places.pmtiles`, `overlays.pmtiles`, `terrain.pmtiles`, map
+assets, and their manifest. When the region recipe names a snow source, it also contains
+`snow.pmtiles` from the [snow tile contract](planner-snow-tiles.md). When the recipe has a `climate`
+field, it also contains `climate.pmtiles` from the [climate tile
+contract](planner-climate-tiles.md). The release `files` hold exactly the files of the map manifest
+and the manifest itself. `routing/` contains the three files in the [route package
+contract](route-package.md), plus `overlays.sqlite`. The overlay index stores the routing manifest
+identity and has the same OSM source. `search/` contains `pois/REGION.sqlite`,
+`addresses/REGION.sqlite`, and `model/`. Local combined packages use `REGION.sqlite`. `routes/`
+contains `REGION.json` from the [route catalog contract](route-catalog.md). `device/catalog.json` is
+a snapshot. Its file references are absolute URLs to the original immutable cell objects.
 
-Search packages use schema `6`. Each place stores `website`, `phone`, and
-`description` as UTF-8 text. Empty values are empty strings. Each place stores
-`country`, the lowercase ISO 3166-1 code of its source record, and `region`, its
-state. A Swiss `region` is the German canton name of the opening hours library,
-for example `Sankt Gallen`. Opening hours select public holidays by `country` and `region`, and
-evaluate times in the metadata `time_zone`. The producer uses
-`website` before `contact:website`, and `phone` before `contact:phone`, skipping
-empty values. A description uses `description`, then `description:en`, then
-`description:de`, then the first nonempty `description:*` key in sorted order.
-The producer trims outer whitespace and keeps the description's internal text.
-The search query accepts an optional `source` with an OSM identity such as
-`n123`, `w123`, or `r123`, or a curated Wikidata identity such as `Q123`. It returns that place without name matching or model
-inference. An absent identity returns an empty result.
+Search packages use schema `6`. Each place stores `website`, `phone`, and `description` as UTF-8
+text. Empty values are empty strings. Each place stores `country`, the lowercase ISO 3166-1 code of
+its source record, and `region`, its state. A Swiss `region` is the German canton name of the
+opening hours library, for example `Sankt Gallen`. Opening hours select public holidays by `country`
+and `region`, and evaluate times in the metadata `time_zone`. The producer uses `website` before
+`contact:website`, and `phone` before `contact:phone`, skipping empty values. A description uses
+`description`, then `description:en`, then `description:de`, then the first nonempty `description:*`
+key in sorted order. The producer trims outer whitespace and keeps the description's internal text.
+The search query accepts an optional `source` with an OSM identity such as `n123`, `w123`, or
+`r123`, or a curated Wikidata identity such as `Q123`. It returns that place without name matching
+or model inference. An absent identity returns an empty result.
 
 `place_identities` maps place ids to explicit Wikidata and Wikipedia identities. `place_content`
-contains `place_id`, `content` (UTF-8 JSON), and nullable `landmark_id`. The `places`
-view joins this content. A landmark reuses matching OSM places, including explicit
-Wikidata redirects and validated Wikipedia title redirects. Search results deduplicate their `landmark_id`. A landmark
-without a match uses its Wikidata identity and prepared coordinate. Peak articles
-join by OSM node id. Distinct summits that share an article stay distinct places.
+contains `place_id`, `content` (UTF-8 JSON), and nullable `landmark_id`. The `places` view joins
+this content. A landmark reuses matching OSM places, including explicit Wikidata redirects and
+validated Wikipedia title redirects. Search results deduplicate their `landmark_id`. A landmark
+without a match uses its Wikidata identity and prepared coordinate. Peak articles join by OSM node
+id. Distinct summits that share an article stay distinct places.
 
-Content contains `default_language` and `variants`. Each variant contains `language`,
-`text_pages`, and `attribution` (`source_url`, string `revision`, `license_url`). Optional
-`photo` contains `online_url`, four complete `credit` strings, those attribution
-fields, `file_identity` (`filename`, `page_id`), `page_revision`, and `file_revision`
-(`timestamp`, `sha1`). Missing photo identity fields are null. Content excludes
-original notice envelopes, device paths, hashes, byte counts, and image payloads.
-Grid shards retain the content of their selected places.
+Content contains `default_language` and `variants`. Each variant contains `language`, `text_pages`,
+and `attribution` (`source_url`, string `revision`, `license_url`). Optional `photo` contains
+`online_url`, four complete `credit` strings, those attribution fields, `file_identity` (`filename`,
+`page_id`), `page_revision`, and `file_revision` (`timestamp`, `sha1`). Missing photo identity
+fields are null. Content excludes original notice envelopes, device paths, hashes, byte counts, and
+image payloads. Grid shards retain the content of their selected places.
 
-Planner details select English, then the prepared default language. Photo details
-make one bounded Commons metadata request when opened. A photo appears only when
-its page identity, description revision, file revision, and 500 px thumbnail URL
-match the prepared reference. A failed request or mismatch retains the article and
-source links. A missing online URL never falls back to an original image.
+Planner details select English, then the prepared default language. Photo details make one bounded
+Commons metadata request when opened. A photo appears only when its page identity, description
+revision, file revision, and 500 px thumbnail URL match the prepared reference. A failed request or
+mismatch retains the article and source links. A missing online URL never falls back to an original
+image.
 
-The overlay database has SQLite `user_version=2`. `features` stores stable IDs,
-layer kinds, cycling and walking minimum zooms, geometry IDs, and attribute IDs.
-`attributes` stores distinct JSON properties without the way ID or layer kind.
-Route memberships are ordered relation IDs. `routes` stores each relation's JSON
-properties once. `geometries` stores the way ID, a point count, and a Postcard `Vec<[i32;2]>`.
-Each coordinate pair is longitude and latitude in microdegrees. The first pair
-is absolute; each later pair is a difference from the previous pair. Decoding
-uses checked addition. Shared geometry retains every source point.
+The overlay database has SQLite `user_version=2`. `features` stores stable IDs, layer kinds, cycling
+and walking minimum zooms, geometry IDs, and attribute IDs. `attributes` stores distinct JSON
+properties without the way ID or layer kind. Route memberships are ordered relation IDs. `routes`
+stores each relation's JSON properties once. `geometries` stores the way ID, a point count, and a
+Postcard `Vec<[i32;2]>`. Each coordinate pair is longitude and latitude in microdegrees. The first
+pair is absolute; each later pair is a difference from the previous pair. Decoding uses checked
+addition. Shared geometry retains every source point.
 
-`places.pmtiles` holds rider places from the POI search database. It has gzip MVT
-at zoom 11, extent 4096, and one `pois` layer. Each point has the database's
-`kind` and `name`. String properties `lon` and `lat` retain the search coordinates
-without tile quantization. The feature ID is `(type << 44) | source_id`, where type
-is 1 for nodes, 2 for ways, 3 for relations, and 4 for curated Wikidata items.
-Source IDs are positive and below 2^44; a Wikidata item uses the digits after `Q`. Categories are defined in the
-[place categories](../planner/search/place-kinds.json).
-Archive metadata includes the source `osm_sha256`. Empty tiles are absent,
-except that an empty archive contains one empty tile at the southwest bound.
+`places.pmtiles` holds rider places from the POI search database. It has gzip MVT at zoom 11, extent
+4096, and one `pois` layer. Each point has the database's `kind` and `name`. String properties `lon`
+and `lat` retain the search coordinates without tile quantization. The feature ID is
+`(type << 44) | source_id`, where type is 1 for nodes, 2 for ways, 3 for relations, and 4 for
+curated Wikidata items. Source IDs are positive and below 2^44; a Wikidata item uses the digits
+after `Q`. Categories are defined in the [place categories](../planner/search/place-kinds.json).
+Archive metadata includes the source `osm_sha256`. Empty tiles are absent, except that an empty
+archive contains one empty tile at the southwest bound.
 
-`overlays.pmtiles` holds the route networks and access restrictions of the
-overlay index. It has gzip MVT tiles from zoom 6 to 14, with extent 4096. Its
-metadata `routing_package` is the routing manifest identity of the overlay index.
-In a grid release, `maps/overlays.json` names the grid routing package, the
-SHA-256 of `routing/blocks.json`, which packs the same graph.
+`overlays.pmtiles` holds the route networks and access restrictions of the overlay index. It has
+gzip MVT tiles from zoom 6 to 14, with extent 4096. Its metadata `routing_package` is the routing
+manifest identity of the overlay index. In a grid release, `maps/overlays.json` names the grid
+routing package, the SHA-256 of `routing/blocks.json`, which packs the same graph.
 
 | Layer | Feature ID | Properties |
 | --- | --- | --- |
@@ -116,35 +116,33 @@ SHA-256 of `routing/blocks.json`, which packs the same graph.
 | `access` | Way ID | `cycling_status`, `walking_status`, `name`, `ref`, `conditional`; `riding`, `walking`, `pushing` and `tags` as JSON text; `cycling_minzoom` and `walking_minzoom`, the overlay index minimum zoom of each restricted mode |
 | `routes` | Relation ID | The route properties that are not empty: `kind`, `network`, `rank`, `name`, `ref`, `website`, `symbol`, `symbol_text`. The point is the tile origin. |
 
-A feature starts at the lower mode minimum zoom of its overlay index feature,
-at most zoom 14. The planner shows access from the `MODE_minzoom` of its travel mode.
-A line names only the routes that start at or below the tile zoom. Lines with
-equal properties join where exactly two of them meet. The `routes` layer of a
-tile holds each route that its lines name. A tile with no features is absent.
+A feature starts at the lower mode minimum zoom of its overlay index feature, at most zoom 14. The
+planner shows access from the `MODE_minzoom` of its travel mode. A line names only the routes that
+start at or below the tile zoom. Lines with equal properties join where exactly two of them meet.
+The `routes` layer of a tile holds each route that its lines name. A tile with no features is
+absent.
 
-The tile API serves `/releases/ID/basemap.json`, vector tiles at
-`/releases/ID/basemap/Z/X/Y.mvt`, `/releases/ID/places.json`, places tiles at
-`/releases/ID/places/Z/X/Y.mvt`, `/releases/ID/overlays.json`, overlay tiles at
-`/releases/ID/overlays/Z/X/Y.mvt`, Terrarium tiles at
+The tile API serves `/releases/ID/basemap.json`, vector tiles at `/releases/ID/basemap/Z/X/Y.mvt`,
+`/releases/ID/places.json`, places tiles at `/releases/ID/places/Z/X/Y.mvt`,
+`/releases/ID/overlays.json`, overlay tiles at `/releases/ID/overlays/Z/X/Y.mvt`, Terrarium tiles at
 `/releases/ID/terrain/Z/X/Y.webp`, and, for each data layer of the release,
-`/releases/ID/LAYER.json` and its tiles at `/releases/ID/LAYER/Z/X/Y`. It serves
-route catalog cells at `/releases/ID/routes/tiles/9-X-Y.json`, and TrailView's ruleset at
-`/releases/ID/trailview/rules.json`. Each
-TileJSON holds its archive metadata. Data layer tiles that are not MVT or WebP keep their
-gzip encoding. An absent tile returns 204. The raw archives
-remain downloadable from R2.
+`/releases/ID/LAYER.json` and its tiles at `/releases/ID/LAYER/Z/X/Y`. It serves route catalog cells
+at `/releases/ID/routes/tiles/9-X-Y.json`, and TrailView's ruleset at
+`/releases/ID/trailview/rules.json`. Each TileJSON holds its archive metadata. Data layer tiles that
+are not MVT or WebP keep their gzip encoding. An absent tile returns 204. The raw archives remain
+downloadable from R2.
 
-Routing, search and downloads APIs have the prefix `/planner-api/releases/ID/`. The final
-path component selects `routing`, `search` or `downloads`. `obc data serve` runs the
-services of each release that `release.json` of its target names.
+Routing, search and downloads APIs have the prefix `/planner-api/releases/ID/`. The final path
+component selects `routing`, `search` or `downloads`. `obc data serve` runs the services of each
+release that `release.json` of its target names.
 
 ## Terrain tiles
 
 One terrain pyramid serves the planner and TrailView: format 2 of the layer `planner/terrain`. A
-tile is a 512 × 512 lossless WebP in the Terrarium encoding. A pixel is the height at its centre
-in metres, R × 256 + G + B / 256 − 32768, rounded to the nearest decimetre: B is the tenths ×
-25.6, rounded, so B is one of 0, 26, 51, 77, 102, 128, 154, 179, 205 and 230. A pixel with alpha 0
-has no known height.
+tile is a 512 × 512 lossless WebP in the Terrarium encoding. A pixel is the height at its centre in
+metres, R × 256 + G + B / 256 − 32768, rounded to the nearest decimetre: B is the tenths × 25.6,
+rounded, so B is one of 0, 26, 51, 77, 102, 128, 154, 179, 205 and 230. A pixel with alpha 0 has no
+known height.
 
 | Zoom | Tiles |
 | --- | --- |
@@ -165,114 +163,97 @@ service and an offline area never load zoom 13:
 `terrain.mbtiles`. An opaque tile can lose its alpha chunk: a decoder then gives alpha 255.
 
 The planner reads zooms 0 to 12; TrailView reads zoom 13 too. The heights are the mean pool of the
-national terrain models (`terrain`) where they hold the ground, and Copernicus
-GLO-30 elsewhere. The two meet in a seam that `host/obc-dem/src/planner.rs` defines. The national
-weight is 0 within one coverage cell (about 114 m × 78 m at 47° N) of a cell where the national
-model misses a pixel, and rises to 1 over the next 1 km. GLO-30 takes the bias of a national
-model there: the median of national − GLO-30 that `index.json` of `terrain` states for the best
-model of the tile, or outside the coverage for that of the nearest full cell, faded out over
-1 km. The height is continuous, also at a concave edge such as a national border. A height reads
-the archive tiles of `terrain_bounds` and one ring of tiles around them, so it does not depend on
-the bounds of the bake. The routes read the same heights, without the OSM corrections of
-coastlines and summits.
+national terrain models (`terrain`) where they hold the ground, and Copernicus GLO-30 elsewhere. The
+two meet in a seam that `host/obc-dem/src/planner.rs` defines. The national weight is 0 within one
+coverage cell (about 114 m × 78 m at 47° N) of a cell where the national model misses a pixel, and
+rises to 1 over the next 1 km. GLO-30 takes the bias of a national model there: the median of
+national − GLO-30 that `index.json` of `terrain` states for the best model of the tile, or outside
+the coverage for that of the nearest full cell, faded out over 1 km. The height is continuous, also
+at a concave edge such as a national border. A height reads the archive tiles of `terrain_bounds`
+and one ring of tiles around them, so it does not depend on the bounds of the bake. The routes read
+the same heights, without the OSM corrections of coastlines and summits.
 
 ## Canonical grid storage
 
-The online services serve grid releases only. A regional release
-without `grid` is for local preview. A grid release adds `grid: {format: 2, zoom: 9, map_zoom: 11}`. Its `files`
-entries retain logical paths and decoded `bytes` and `sha256`. Each also has
-`transport: {bytes, sha256, encoding}`. Encoding is `identity` or `gzip`.
-A target of `obc data` stores each distinct transport once at `objects/SHA256`.
-The online services and offline installer consume this same pool.
-Named metadata stays at `releases/ID/`: `release.json`, `public/`, and
-`indexes/GRID_STEP/index.json` for each selected grid. The release manifests of
-`obc data` bind each named path to its size and SHA-256. Producer directories and source
-archives are not part of these verification indexes.
+The online services serve grid releases only. A regional release without `grid` is for local
+preview. A grid release adds `grid: {format: 2, zoom: 9, map_zoom: 11}`. Its `files` entries retain
+logical paths and decoded `bytes` and `sha256`. Each also has
+`transport: {bytes, sha256, encoding}`. Encoding is `identity` or `gzip`. A target of `obc data`
+stores each distinct transport once at `objects/SHA256`. The online services and offline installer
+consume this same pool. Named metadata stays at `releases/ID/`: `release.json`, `public/`, and
+`indexes/GRID_STEP/index.json` for each selected grid. The release manifests of `obc data` bind each
+named path to its size and SHA-256. Producer directories and source archives are not part of these
+verification indexes.
 
-Before publication, the verifier checks the packed bytes and named metadata
-against their receipts. It composes the indexes with the same source and coverage
-checks as the producer. It reads changed decoded map archives, search shards and
-routing graphs with their format validators. Unchanged binary payloads retain their
-previous verification. The Python group and Node reader dependencies must be
-prepared from their locks. A fresh store can restore the named
-indexes and client objects without the producer files. Verification does not
-install tools, download data or build runtimes.
+Before publication, the verifier checks the packed bytes and named metadata against their receipts.
+It composes the indexes with the same source and coverage checks as the producer. It reads changed
+decoded map archives, search shards and routing graphs with their format validators. Unchanged
+binary payloads retain their previous verification. The Python group and Node reader dependencies
+must be prepared from their locks. A fresh store can restore the named indexes and client objects
+without the producer files. Verification does not install tools, download data or build runtimes.
 
-The planner release binds service source and locked dependencies in its final index.
-The VPS builds services from a commit.
+The planner release binds service source and locked dependencies in its final index. The VPS builds
+services from a commit.
 
-`public/grid.json` contains `format: 3` and `map_zoom`. A pointer repeats the
-transport entry of a file and adds `decoded_bytes`. A file of a grid cell, at
-`DIR/Z-X-Y.EXT` under `maps/tiles/` or `routes/tiles/`, has its pointer in the
-block index `public/DIR/B-BX-BY.json`: a JSON object that maps `Z-X-Y.EXT` to
-the pointer. `B` is the larger of `Z - 4` and 0, and `BX` and `BY` are `X` and
-`Y` shifted right by `Z - B` bits, so an index holds at most 16 × 16 cells of a
-zoom. Each other asset, TileJSON and device catalog has its pointer at
-`public/LOGICAL_PATH.json`. So the count of public keys grows with the area of a
-release by one index per block, not by one pointer per cell of each layer.
-The tile service resolves a pack through its pointer. A tile without a pack is
-absent. A block index holds at most 64 KiB, which the tile service reads. The
-tile service and TrailView also read format 2, which has a pointer at
-`public/LOGICAL_PATH.json` for each file, for a rollback release. An update of
-prod refuses while the tile service does not read the grid format of the release.
-No regional map archive is required beside the pool. Grid assets use the tile
-service origin.
+`public/grid.json` contains `format: 3` and `map_zoom`. A pointer repeats the transport entry of a
+file and adds `decoded_bytes`. A file of a grid cell, at `DIR/Z-X-Y.EXT` under `maps/tiles/` or
+`routes/tiles/`, has its pointer in the block index `public/DIR/B-BX-BY.json`: a JSON object that
+maps `Z-X-Y.EXT` to the pointer. `B` is the larger of `Z - 4` and 0, and `BX` and `BY` are `X` and
+`Y` shifted right by `Z - B` bits, so an index holds at most 16 × 16 cells of a zoom. Each other
+asset, TileJSON and device catalog has its pointer at `public/LOGICAL_PATH.json`. The tile service
+resolves a pack through its pointer. A tile without a pack is absent. A block index holds at most 64
+KiB, which the tile service reads. The tile service and TrailView also read format 2, which has a
+pointer at `public/LOGICAL_PATH.json` for each file, for a rollback release. An update of prod
+refuses while the tile service does not read the grid format of the release. No regional map archive
+is required beside the pool. Grid assets use the tile service origin.
 
-The VPS materializes routing, search, and offline selection metadata. Search
-uses `search/REGION.grid.json` to list cell files and coverage. Route catalog
-cells follow the [route catalog contract](route-catalog.md#files). The
-[offline contract](planner-offline.md#grid-publication-and-selection) defines
-cell selection and download manifests.
+The VPS materializes routing, search, and offline selection metadata. Search uses
+`search/REGION.grid.json` to list cell files and coverage. Route catalog cells follow the [route
+catalog contract](route-catalog.md#files). The [offline
+contract](planner-offline.md#grid-publication-and-selection) defines cell selection and download
+manifests.
 
 ## Catalogue
 
 `planner/catalog.json` has `format: 1`, `origins` and `active`. `origins` is the `[publication]`
-table of `data/planner-runtime.toml`.
-`active` contains the release `id`, manifest URL, region, bounds, attribution,
-land cover attribution when the release has one, terrain attribution, device catalogue URL, map asset URLs, tile URLs, and routing,
-search and downloads API prefixes. `name` is the name of the recipe's region in `data/regions/`. `layers` maps
-the name of each data layer of the release to its TileJSON URL.
-`trailview_rules` is the URL of TrailView's ruleset when the release has it.
-`routes` is the route catalog cell URL template on the tile API origin,
+table of `data/planner-runtime.toml`. `active` contains the release `id`, manifest URL, region,
+bounds, attribution, land cover attribution when the release has one, terrain attribution, device
+catalogue URL, map asset URLs, tile URLs, and routing, search and downloads API prefixes. `name` is
+the name of the recipe's region in `data/regions/`. `layers` maps the name of each data layer of the
+release to its TileJSON URL. `trailview_rules` is the URL of TrailView's ruleset when the release
+has it. `routes` is the route catalog cell URL template on the tile API origin,
 `/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`.
 
-The publisher uploads and verifies all release files before the manifest. The
-catalogue cache lifetime is 30 seconds. Immutable objects have a one-year
-cache lifetime. The web planner and the map builder read the catalogue at page
-load. The planner uses `active`, unchanged, as its configuration. The map builder
-uses its device catalogue. A client refuses a catalogue `format` that it does not
-know. When a release object returns 404 or no answer, a client reads the catalogue
+The publisher uploads and verifies all release files before the manifest. The catalogue cache
+lifetime is 30 seconds. Immutable objects have a one-year cache lifetime. The web planner and the
+map builder read the catalogue at page load. The planner uses `active`, unchanged, as its
+configuration. The map builder uses its device catalogue. A client refuses a catalogue `format` that
+it does not know. When a release object returns 404 or no answer, a client reads the catalogue
 again, once, and retries with the new `active` entry.
 
 ## Component receipts
 
-`sources.components` maps component names to immutable receipts. Each has
-`format: 1`, `key`, `spec`, `files`, and `cost`. The key is SHA-256 of the
-canonical JSON `spec`, including its trailing newline. The spec contains
-`format`, `name`, `producer`, `inputs`, `options`, `coverage`, and `dependencies`.
-Producer identities include effective source code and dependency contracts.
-Inputs identify source snapshots and upstream component keys. Coverage uses
-`[west,south,east,north]`. A receipt contains only completed, verified files.
-Selection includes consumers of changed shared inputs. Terrain and routing
-share an elevation identity for source rasters and local elevation code.
-Each file entry has `bytes` and `sha256`. Cost fields are `elapsed_seconds`,
-`cpu_seconds`, `output_bytes`, and `peak_ram_bytes`; unavailable RAM is null.
-`cpu_seconds` counts the whole bake process while the component builds, so it
-includes a component that builds at the same time.
+`sources.components` maps component names to immutable receipts. Each has `format: 1`, `key`,
+`spec`, `files`, and `cost`. The key is SHA-256 of the canonical JSON `spec`, including its trailing
+newline. The spec contains `format`, `name`, `producer`, `inputs`, `options`, `coverage`, and
+`dependencies`. Producer identities include effective source code and dependency contracts. Inputs
+identify source snapshots and upstream component keys. Coverage uses `[west,south,east,north]`. A
+receipt contains only completed, verified files. Selection includes consumers of changed shared
+inputs. Terrain and routing share an elevation identity for source rasters and local elevation code.
+Each file entry has `bytes` and `sha256`. Cost fields are `elapsed_seconds`, `cpu_seconds`,
+`output_bytes`, and `peak_ram_bytes`; unavailable RAM is null. `cpu_seconds` counts the whole bake
+process while the component builds, so it includes a component that builds at the same time.
 `sources.grid_components` records the partition and transport receipts.
 
-Search schema 6 metadata `component` is `pois`, `addresses`, or `all`. Metadata
-`time_zone` is the IANA time zone of the region recipe. All components and cells
-of a release have the same `time_zone`.
-Addresses own street records and house records. POIs own the other searchable
-places, including locality records. Independent POI IDs are positive integers
-below 2^52; independent address street IDs are above 2^52 and below 2^53.
-Components share the declared OSM snapshot and regional bounds. Each search
-cell retains that snapshot and declares its clipped cell bounds.
+Search schema 6 metadata `component` is `pois`, `addresses`, or `all`. Metadata `time_zone` is the
+IANA time zone of the region recipe. All components and cells of a release have the same
+`time_zone`. Addresses own street records and house records. POIs own the other searchable places,
+including locality records. Independent POI IDs are positive integers below 2^52; independent
+address street IDs are above 2^52 and below 2^53. Components share the declared OSM snapshot and
+regional bounds. Each search cell retains that snapshot and declares its clipped cell bounds.
 
-Split search grids use `format: 3`. Their `metadata` describes the complete
-region. Each cell has `id`, `bounds`, and `files`. File names are relative to
-`search/`: `tiles/pois/CELL.sqlite` and `tiles/addresses/CELL.sqlite`.
-Both components are present. Offline catalogue cell files use release-relative
-paths. Consumers require one schema and OSM snapshot in all cells, and select cells
+Split search grids use `format: 3`. Their `metadata` describes the complete region. Each cell has
+`id`, `bounds`, and `files`. File names are relative to `search/`: `tiles/pois/CELL.sqlite` and
+`tiles/addresses/CELL.sqlite`. Both components are present. Offline catalogue cell files use
+release-relative paths. Consumers require one schema and OSM snapshot in all cells, and select cells
 by the bounds in each cell's metadata.
