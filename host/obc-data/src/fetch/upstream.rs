@@ -175,7 +175,7 @@ fn run(http: &Http, check: &Check) -> Result<String, String> {
             let day = digits.map(|d| format!("20{}-{}-{}", &d[..2], &d[2..4], &d[4..]));
             day.filter(|day| date::parse(day).is_some()).ok_or_else(|| format!("{target} names no day"))
         }
-        Check::LastModified(url) => http.modified(url)?.ok_or_else(|| format!("{url} has no Last-Modified")),
+        Check::LastModified(url) => http.head(url)?.modified.ok_or_else(|| format!("{url} has no Last-Modified")),
         Check::GithubCommit(api) => {
             let sha = http.text(&format!("{api}/commits/HEAD"), "application/vnd.github.sha")?;
             Ok(sha.trim().to_string())

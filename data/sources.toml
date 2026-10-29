@@ -1150,7 +1150,7 @@ licence = "CC-BY-4.0"
 licence_url = "https://creativecommons.org/licenses/by/4.0/"
 attribution = "National Land Cover Map 2018 © Tailte Éireann and the Environmental Protection Agency"
 obligations = "Credit the source as the attribution says; state modifications"
-fetch = { kind = "capture", url = "https://services-eu1.arcgis.com/FH5XCsx8rYXqnjF5/arcgis/rest/services/MapGenieNationalLandCover2018ITM/FeatureServer/0" }
+fetch = { kind = "capture", url = "https://services-eu1.arcgis.com/FH5XCsx8rYXqnjF5/arcgis/rest/services/MapGenieNationalLandCover2018ITM/FeatureServer/replicafilescache/MapGenieNationalLandCover2018ITM_2196705754881737910.zip" }
 extent = [-11, 51, -5, 56]
 version = "date"
 refresh = "manual"
@@ -1167,7 +1167,7 @@ licence = "OGL-UK-3.0"
 licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
 attribution = "Contains NatureScot information licensed under the Open Government Licence v3.0"
 obligations = "Credit the source as the attribution says"
-fetch = { kind = "capture", url = "https://ogc.nature.scot/geoserver/ows" }
+fetch = { kind = "capture", url = "https://gis-downloads.nature.scot/HABMOS-NVC-CLEANED_SCOTLAND_GPKG_27700.zip" }
 extent = [-10, 54, 0, 61]
 version = "date"
 refresh = "manual"
@@ -1189,7 +1189,8 @@ fetch = { kind = "capture", url = "https://mapas.igme.es/gis/rest/services/Carto
 extent = [-10, 35, 5, 44]
 version = "date"
 refresh = "manual"
-keep = "archive"
+# IGME gives the whole GEODE map only on request and against a fee, so the store keeps the captures.
+keep = "store"
 redistribute = true
 
 # The source of data/trailview/ecoregions.json; its borders are Natural Earth's.

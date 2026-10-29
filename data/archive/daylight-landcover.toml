@@ -1,0 +1,4 @@
+name = "Daylight land cover (from ESA WorldCover), GeoPackage"
+sources = ["daylight-landcover"]
+coverage = "World"
+urls = ["https://r2-public.protomaps.com/datasets/daylight-landcover.gpkg"]

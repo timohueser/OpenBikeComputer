@@ -1,0 +1,4 @@
+name = "RESOLVE Ecoregions 2017"
+sources = ["resolve-ecoregions"]
+coverage = "World"
+urls = ["https://storage.googleapis.com/teow2016/Ecoregions2017.zip"]

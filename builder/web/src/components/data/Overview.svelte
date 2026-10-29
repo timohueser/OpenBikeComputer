@@ -55,7 +55,7 @@
 
 <div class="title">
     <h1>Overview</h1>
-    <div class="switch" role="group" aria-label="Target">
+    <div class="segmented" role="group" aria-label="Target">
         {#each targets as at (at.target)}
             <button
                 type="button"
@@ -169,20 +169,6 @@
 {/if}
 
 <style>
-    .switch {
-        display: flex;
-        border: 1px solid var(--ink);
-        border-radius: 8px;
-        overflow: hidden;
-    }
-    .switch button {
-        border: 0;
-        border-radius: 0;
-    }
-    .switch button[aria-pressed="true"] {
-        background: var(--ink);
-        color: var(--panel);
-    }
     .summary {
         flex-direction: row;
         flex-wrap: wrap;
@@ -268,7 +254,7 @@
     }
     .card-node.stale {
         border: 2px solid var(--stale);
-        background: #fdf3e6;
+        background: var(--warn);
     }
     .card-node.off {
         border-style: dashed;
@@ -288,11 +274,11 @@
     }
     .outlined,
     .card-node[aria-pressed="true"] {
-        outline: 3px solid var(--ink);
+        outline: 3px solid var(--amber);
         outline-offset: 2px;
     }
     .to {
-        border: 2px solid var(--ink);
+        border: 1px solid var(--ink-faint);
         gap: 8px;
     }
     @media (max-width: 800px) {

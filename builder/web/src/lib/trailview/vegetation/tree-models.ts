@@ -152,7 +152,7 @@ export class TreeModels {
             const [model, evergreen, tie] = key.split('|'), leafy = this.leafy.get(`${model}|${evergreen}`);
             if (!leafy) continue;
             const spec = (crown: BuiltModel): ModelSpec => ({
-                tiers: crown.tiers.map((mesh, t) => ({ mesh, until: TIERS_M[t] })), impostor: { from: 2, until: TREE_REACH_M }, crown: crown.crown, tie: Number(tie), sized: TREE_SIZE_M, luma: crown.luma,
+                tiers: crown.tiers.map((mesh, t) => ({ mesh, until: TIERS_M[t] })), impostor: { from: 2, until: TREE_REACH_M }, crown: crown.crown, tie: Number(tie), sized: TREE_SIZE_M,
             });
             const own = SEASONS.map((_, phase) => {
                 if (!this.phases.has(phase) || !leafy.own[phase]) return undefined;

@@ -41,8 +41,11 @@ pub(super) fn fetcher<'a>(
         let prepared = sources.iter().any(|s| s.id == wanted.source && s.fetch.kind == FetchKind::Prepared);
         if prepared && wanted.version.is_none() {
             return Err(Code::Blocked
-                .error(format!("no target lists a version of `{}` in the format of this `obc data`", wanted.source))
-                .fix(format!("Run `obc data source prepare {}`.", wanted.source)));
+                .error(format!("the archive lists no version of `{}` in the format of this `obc data`", wanted.source))
+                .fix(format!(
+                    "Set OBC_DATA_ARCHIVE to the roots of the archive, or run `obc data source prepare {}`.",
+                    wanted.source
+                )));
         }
         // A prepared fetch without names gives only the manifest of its version.
         if !bulk && !prepared && !METADATA.contains(&wanted.source.as_str()) {

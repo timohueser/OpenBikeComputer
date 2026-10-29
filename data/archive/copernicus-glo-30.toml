@@ -1,0 +1,5 @@
+name = "Copernicus DEM GLO-30, the DEM layer of each 1 x 1 degree tile"
+sources = ["copernicus-glo-30"]
+coverage = "World"
+notes = "The AUXFILES, previews and metadata beside each tile are not archived."
+s3 = [{ bucket = "https://copernicus-dem-30m.s3.amazonaws.com", prefix = "Copernicus_DSM_COG_10_", match = "*/*_DEM.tif" }]

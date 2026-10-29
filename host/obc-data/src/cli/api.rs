@@ -296,7 +296,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{
-        deploy_cli, overview, prepare_cli, r2_cli, rollback_cli, router_cli, runs_cli, serve_cli, setup_cli,
+        copy_cli, deploy_cli, overview, prepare_cli, r2_cli, rollback_cli, router_cli, runs_cli, serve_cli, setup_cli,
         unlock_cli, update_cli,
     };
     use crate::engine::runs::{Status, View};
@@ -315,12 +315,15 @@ mod tests {
             schema("`unlock`", generator.subschema_for::<unlock_cli::Unlocked>()),
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
             schema(
-                "`source refresh`, `serve --detach`, `deploy WHAT --expect`, `r2 legacy --delete`",
+                "`source refresh`, `source copy`, `serve --detach`, `deploy WHAT --expect`, `r2 legacy --delete`",
                 generator.subschema_for::<Detached>(),
             ),
             schema("`source prepare`", generator.subschema_for::<update_cli::Started>()),
             schema("`source prepare --dry-run`", generator.subschema_for::<prepare_cli::PrepareReview>()),
+            schema("`source copy --dry-run`", generator.subschema_for::<copy_cli::CopyPlan>()),
             schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),
+            schema("`archive status`", generator.subschema_for::<crate::datasets::ArchiveStatus>()),
+            schema("`archive get`, `archive verify`", generator.subschema_for::<crate::datasets::ArchiveDataset>()),
             schema("`areas`", generator.subschema_for::<crate::cli::Areas>()),
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
             schema("`serve`, when it listens", generator.subschema_for::<serve_cli::Listening>()),

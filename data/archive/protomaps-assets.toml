@@ -1,0 +1,5 @@
+name = "Protomaps basemaps-assets (fonts and sprites), repository zip"
+sources = ["protomaps-assets"]
+coverage = "World"
+version = "028c18f713baecad011301ff7a69acc39bcc2ae7"
+urls = ["https://codeload.github.com/protomaps/basemaps-assets/zip/028c18f713baecad011301ff7a69acc39bcc2ae7"]

@@ -1,0 +1,5 @@
+name = "National Land Cover Map of Ireland 2018, Esri file geodatabase, ITM (EPSG:2157)"
+sources = ["land-cover-ie"]
+coverage = "Ireland"
+notes = "The ArcGIS Hub download of item 3f3cec799db545a684f1361ab433ab5e (file geodatabase, layer 0) redirects to this cached export of the land-cover-ie FeatureServer, which redirects to a signed Azure blob URL. The same export as GeoPackage is 48 GB unpacked and is not archived."
+urls = ["https://services-eu1.arcgis.com/FH5XCsx8rYXqnjF5/arcgis/rest/services/MapGenieNationalLandCover2018ITM/FeatureServer/replicafilescache/MapGenieNationalLandCover2018ITM_2196705754881737910.zip"]

@@ -6,11 +6,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
-/// The keys of an entry that change what its capture fetches; `legend` too where the capture
-/// filters by it.
-const CAPTURE_KEYS: [&str; 4] = ["protocol", "layer", "field", "sort"];
+/// The keys of an entry that change what its capture fetches, besides the part of its legend.
+const CAPTURE_KEYS: [&str; 3] = ["protocol", "layer", "field"];
 
 #[derive(Debug, Deserialize)]
 pub struct Ground {
@@ -47,21 +46,40 @@ impl Ground {
 }
 
 impl GroundSource {
-    /// Whether a capture fetches the source over each box: its protocol is `arcgis-features` or `wfs`.
+    /// Whether a capture fetches the source over each box: its protocol is `arcgis-features` or
+    /// `archive-features`.
     pub fn per_box(&self) -> bool {
-        matches!(self.keys.get("protocol").and_then(Value::as_str), Some("arcgis-features" | "wfs"))
+        matches!(self.protocol(), Some("arcgis-features" | "archive-features"))
+    }
+
+    /// Whether its capture reads the zip of the `fetch.url` of its source in the archive.
+    pub fn archived(&self) -> bool {
+        self.protocol() == Some("archive-features")
+    }
+
+    fn protocol(&self) -> Option<&str> {
+        self.keys.get("protocol").and_then(Value::as_str)
     }
 
     /// The first 12 hex digits of the SHA-256 of the keys that decide what a capture fetches. A
-    /// capture request names it, so a stored capture with other keys is not read again.
+    /// capture request names it, so a stored capture with other keys is not read again. Of the
+    /// legend, only what decides the kept features counts: a class that a tune names anew keeps
+    /// every stored capture.
     pub fn capture_digest(&self) -> String {
-        let filtered = self.keys.get("protocol").and_then(Value::as_str) == Some("arcgis-features");
-        let keys: serde_json::Map<String, Value> = self
+        let mut keys: serde_json::Map<String, Value> = self
             .keys
             .iter()
-            .filter(|(key, _)| CAPTURE_KEYS.contains(&key.as_str()) || (filtered && key.as_str() == "legend"))
+            .filter(|(key, _)| CAPTURE_KEYS.contains(&key.as_str()))
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
+        if let Some(legend) = self.keys.get("legend") {
+            let classes = legend["classes"].as_array().into_iter().flatten();
+            let mut natives: Vec<String> = classes.map(|class| class[0].to_string()).collect();
+            natives.sort();
+            natives.dedup();
+            let kept = json!({"match": legend["match"], "natives": natives, "qualifier": legend["qualifier"]["word"]});
+            keys.insert("legend".into(), kept);
+        }
         // Nested objects keep their order where a build enables `serde_json/preserve_order`.
         let text = serde_json::to_string(&crate::engine::sorted(Value::Object(keys))).expect("JSON values serialize");
         crate::store::sha256_hex(text.as_bytes())[..12].to_string()
@@ -86,9 +104,12 @@ mod tests {
             entry(r#"{"source": "x", "protocol": "arcgis-features", "legend": {"classes": [], "match": "word"}}"#),
             "the order of a legend's keys does not change the digest"
         );
-        let wfs = |legend: &str| {
-            entry(&format!(r#"{{"source": "x", "protocol": "wfs", "legend": {{"classes": [["1", "{legend}"]]}}}}"#))
+        let legend = |classes: &str| {
+            let legend = format!(r#"{{"match": "prefix", "classes": {classes}}}"#);
+            entry(&format!(r#"{{"source": "x", "protocol": "archive-features", "legend": {legend}}}"#))
         };
-        assert_eq!(wfs("heath"), wfs("bog"), "the legend does not filter a WFS capture");
+        let heath = legend(r#"[["F4", "heath"], ["D1", "bog"]]"#);
+        assert_eq!(heath, legend(r#"[["D1", "bog"], ["F4", "moor"]]"#), "a new name or order keeps the captured set");
+        assert_ne!(heath, legend(r#"[["F4", "heath"]]"#), "a native class less captures less");
     }
 }

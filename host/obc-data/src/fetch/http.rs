@@ -22,6 +22,20 @@ pub struct Expect<'a> {
     pub modified_by: Option<&'a str>,
     pub etag: Option<&'a str>,
     pub bytes: Option<u64>,
+    /// The MD5 of the bytes, in lowercase hex, as upstream publishes it.
+    pub md5: Option<&'a str>,
+}
+
+/// What a `HEAD` request tells about a file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Head {
+    pub bytes: Option<u64>,
+    /// A strong `ETag`.
+    pub etag: Option<String>,
+    /// The `Last-Modified` day.
+    pub modified: Option<String>,
+    /// The `Last-Modified` time, in seconds since 1970-01-01.
+    pub modified_at: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -39,6 +53,9 @@ const ATTEMPTS: u32 = 4;
 const BODY: Duration = Duration::from_secs(15 * 60);
 /// The longest time a HEAD request or a small document may take.
 const SMALL: Duration = Duration::from_secs(15);
+/// The longest time a page of a bucket listing may take: a page of 1,000 keys of a busy service.
+/// Chosen, not measured.
+const LISTING: Duration = Duration::from_secs(120);
 /// The longest wait that a server `Retry-After` gets. A server that asks for more does not answer
 /// within the retries of one run, so the download fails sooner and the next run resumes its part.
 const RETRY_AFTER: Duration = Duration::from_secs(60);
@@ -110,6 +127,15 @@ pub struct Http {
     bearer: Option<(String, String)>,
     backoff: Duration,
     archive: Option<Archive>,
+    /// The origin, with a trailing `/`, whose requests are signed for S3, and its keys.
+    s3: Option<(String, S3Keys)>,
+}
+
+/// The keys and the region of an S3 API that signs with AWS Signature Version 4.
+pub struct S3Keys {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub region: String,
 }
 
 enum Failure {
@@ -138,7 +164,7 @@ impl Http {
                 },
             )
             .build();
-        Self { agent: config.into(), bearer: None, backoff: Duration::ZERO, archive: None }
+        Self { agent: config.into(), bearer: None, backoff: Duration::ZERO, archive: None, s3: None }
     }
 
     /// A client with the archive of `OBC_DATA_ARCHIVE`.
@@ -156,12 +182,17 @@ impl Http {
             .timeout_recv_response(Some(Duration::from_secs(60)))
             .timeout_recv_body(Some(BODY))
             .build();
-        Self { agent: config.into(), bearer: None, backoff, archive: None }
+        Self { agent: config.into(), bearer: None, backoff, archive: None, s3: None }
     }
 
     #[cfg(test)]
-    pub(crate) fn with_archive(mut self, root: &Path) -> Self {
-        self.archive = Some(Archive::new(root.to_path_buf()));
+    pub(crate) fn with_archive(self, root: &Path) -> Self {
+        self.with_roots(vec![root.to_path_buf()])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.archive = Some(Archive::new(roots));
         self
     }
 
@@ -171,42 +202,57 @@ impl Http {
         self.archive.as_ref().filter(|_| source.keep == Keep::Archive)
     }
 
+    /// The roots of the archive, whatever the source: the homes of the prepared sources are there.
+    pub fn roots(&self) -> &[PathBuf] {
+        self.archive.as_ref().map_or(&[], Archive::roots)
+    }
+
     /// Authorize only requests to this HTTPS origin. Redirects strip authorization by default.
     pub fn with_bearer(mut self, origin: &str, token: String) -> Self {
         self.bearer = Some((format!("{}/", origin.trim_end_matches('/')), token));
         self
     }
 
-    fn authorize(
-        &self,
-        url: &str,
-        request: ureq::RequestBuilder<ureq::typestate::WithoutBody>,
-    ) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
-        match &self.bearer {
-            Some((origin, token)) if url.starts_with(origin) => {
-                request.header("authorization", format!("Bearer {token}"))
-            }
-            _ => request,
-        }
+    /// Sign the `GET` and `HEAD` requests to this HTTPS origin for S3. A URL must have its path and
+    /// query encoded as S3 needs them, and its query sorted by name.
+    pub fn with_s3(mut self, origin: &str, keys: S3Keys) -> Self {
+        self.s3 = Some((format!("{}/", origin.trim_end_matches('/')), keys));
+        self
     }
 
-    /// Size and strong object identity from headers only.
-    pub fn headers(&self, url: &str) -> Result<(u64, Option<String>), String> {
-        let response = self
-            .authorize(url, self.agent.head(url))
-            .config()
-            .timeout_global(Some(SMALL))
-            .build()
-            .call()
-            .map_err(|e| no_answer("HEAD", url, e))?;
+    fn authorize(
+        &self,
+        method: &str,
+        url: &str,
+        mut request: ureq::RequestBuilder<ureq::typestate::WithoutBody>,
+    ) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+        if let Some((_, token)) = self.bearer.as_ref().filter(|(origin, _)| url.starts_with(origin.as_str())) {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        if let Some((_, keys)) = self.s3.as_ref().filter(|(origin, _)| url.starts_with(origin.as_str())) {
+            for (name, value) in crate::r2::s3::sign_url(keys, method, url, date::now()) {
+                request = request.header(name, value);
+            }
+        }
+        request
+    }
+
+    /// What a `HEAD` request of `url` tells, after redirects. A 404 is an error that [`not_found`]
+    /// knows.
+    pub fn head(&self, url: &str) -> Result<Head, String> {
+        // The size of the bytes as upstream stores them, as a download asks for them.
+        let request = self.authorize("HEAD", url, self.agent.head(url)).header("accept-encoding", "identity");
+        let response =
+            request.config().timeout_global(Some(SMALL)).build().call().map_err(|e| no_answer("HEAD", url, e))?;
         if !response.status().is_success() {
             return Err(format!("HEAD {url}: HTTP {}", response.status().as_u16()));
         }
-        let bytes = header(&response, "content-length")
-            .and_then(|v| v.parse().ok())
-            .ok_or_else(|| format!("HEAD {url}: no Content-Length"))?;
-        let etag = header(&response, "etag").filter(|v| !v.starts_with("W/"));
-        Ok((bytes, etag))
+        Ok(Head {
+            bytes: header(&response, "content-length").and_then(|value| value.parse().ok()),
+            etag: header(&response, "etag").filter(|value| !value.starts_with("W/")),
+            modified: header(&response, "last-modified").and_then(|value| date::from_http(&value)),
+            modified_at: header(&response, "last-modified").and_then(|value| date::http_seconds(&value)),
+        })
     }
 
     /// A small JSON POST. Errors omit the response body, which can contain credentials.
@@ -225,16 +271,6 @@ impl Http {
             return Err(format!("POST {url}: HTTP {}", response.status().as_u16()));
         }
         response.body_mut().read_to_vec().map_err(|_| format!("POST {url}: invalid response"))
-    }
-
-    /// The `Last-Modified` day of `url`, after redirects. A 404 is an error that [`not_found`] knows.
-    pub fn modified(&self, url: &str) -> Result<Option<String>, String> {
-        let request = self.agent.head(url).config().timeout_global(Some(SMALL)).build();
-        let response = request.call().map_err(|e| no_answer("HEAD", url, e))?;
-        if !response.status().is_success() {
-            return Err(format!("HEAD {url}: HTTP {}", response.status().as_u16()));
-        }
-        Ok(header(&response, "last-modified").and_then(|value| date::from_http(&value)))
     }
 
     /// Where `url` redirects to, from one HEAD request.
@@ -259,11 +295,35 @@ impl Http {
 
     /// The status and the body of a small answer, also of one that is no success.
     pub fn answer(&self, url: &str, accept: &str) -> Result<(u16, Vec<u8>), String> {
+        self.answer_within(url, accept, SMALL)
+    }
+
+    /// A page of a bucket listing, which can take longer than a small document.
+    /// It is tried again like a download after no answer and after HTTP 408, 429 and 5xx.
+    pub fn listing(&self, url: &str) -> Result<String, String> {
+        let mut failures = 0;
+        loop {
+            let why = match self.answer_within(url, "application/xml", LISTING) {
+                Ok((200..=299, body)) => return String::from_utf8(body).map_err(|e| format!("GET {url}: {e}")),
+                Ok((status @ (408 | 429 | 500..=599), _)) => format!("GET {url}: HTTP {status}"),
+                Ok((status, _)) => return Err(format!("GET {url}: HTTP {status}")),
+                Err(why) => why,
+            };
+            failures += 1;
+            if failures == ATTEMPTS {
+                return Err(why);
+            }
+            eprintln!("obc data: {why} — retrying");
+            pause(url, self.backoff * 2u32.pow(failures - 1))?;
+        }
+    }
+
+    fn answer_within(&self, url: &str, accept: &str, timeout: Duration) -> Result<(u16, Vec<u8>), String> {
         let request = self
-            .authorize(url, self.agent.get(url))
+            .authorize("GET", url, self.agent.get(url))
             .header("accept", accept)
             .config()
-            .timeout_global(Some(SMALL))
+            .timeout_global(Some(timeout))
             .build();
         let mut response = request.call().map_err(|e| no_answer("GET", url, e))?;
         let status = response.status().as_u16();
@@ -342,7 +402,17 @@ impl Http {
             pause(url, delay.min(RETRY_AFTER).max(self.backoff * 2u32.pow(failures - 1)))?;
         }
         let _ = fs::remove_file(validator);
-        let (sha256, size) = store::hash_file(part)?;
+        let (sha256, size) = match expect.md5 {
+            Some(want) => {
+                let (sha256, md5, size) = store::digests(part)?;
+                if md5 != want {
+                    let _ = fs::remove_file(part);
+                    return Err(format!("{url}: the MD5 is {md5}, not {want}"));
+                }
+                (sha256, size)
+            }
+            None => store::hash_file(part)?,
+        };
         if let Some(want) = expect.sha256.filter(|want| *want != sha256) {
             let _ = fs::remove_file(part);
             return Err(format!("{url}: the SHA-256 is {sha256}, not {want}"));
@@ -363,7 +433,7 @@ impl Http {
             && (saved.is_some() || expect.sha256.is_some())
             && expect.etag.is_none_or(|want| saved.as_deref() == Some(want));
         // The bytes as upstream stores them: a decoded body has no ranges and another digest.
-        let mut request = self.authorize(url, self.agent.get(url)).header("accept-encoding", "identity");
+        let mut request = self.authorize("GET", url, self.agent.get(url)).header("accept-encoding", "identity");
         if let Some(etag) = expect.etag {
             request = request.header("if-match", etag);
         }

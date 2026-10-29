@@ -1,0 +1,4 @@
+name = "Natural Earth vector, all themes, GeoPackage"
+sources = ["natural-earth"]
+coverage = "World"
+urls = ["https://naciscdn.org/naturalearth/packages/natural_earth_vector.gpkg.zip"]

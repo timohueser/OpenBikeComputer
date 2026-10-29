@@ -54,12 +54,16 @@ it("walks area, contents, review and bake, each step from its URL", async () => 
     search.value = "central";
     search.dispatchEvent(new Event("input", { bubbles: true }));
     flushSync();
-    button("Central Switzerland").click();
+    search.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    flushSync();
+    expect(location.hash, "Enter picks the first match, and the pick waits for its button").toBe("");
+    expect(text()).toContain("Central Switzerland · 103 × 88 km");
+    button("Use this area").click();
     expect(location.hash).toBe("#/bake?region=central-switzerland");
     await unmount(area.shown);
 
     const contents = screen("#/bake?region=central-switzerland&on=trailview");
-    await vi.waitFor(() => expect(text()).toContain("2026-08-20 on R2 · covers central-switzerland"));
+    await vi.waitFor(() => expect(text()).toContain("2026-08-20 in the archive · covers central-switzerland"));
     expect(text()).toContain("Climate · not prepared. Prepare this area");
     expect(document.querySelector<HTMLInputElement>('input[type="checkbox"]:disabled')).not.toBeNull();
     button("Make the plan").click();

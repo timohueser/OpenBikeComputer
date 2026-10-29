@@ -1,7 +1,7 @@
 //! The producer of `forest`: the canopy of each cell of the zoom 12 tiles at 256 px that the
 //! canopy models meet, `12/<x>/<y>.tif` (`specs/obc-data.md`). A version extends the
 //! version before: it makes each tile of its region again and keeps every other tile of the version
-//! before without an upload. `tools/forest_reference.py fetch` reduces the source rasters of one tile.
+//! before without a copy. `tools/forest_reference.py fetch` reduces the source rasters of one tile.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -56,10 +56,6 @@ impl Prepared for ForestReference {
         1
     }
 
-    fn regional(&self) -> bool {
-        true
-    }
-
     /// The models that meet the region, and the leaf type. The tiles of each model in the boxes of
     /// the region are the files at most.
     fn plan(
@@ -82,8 +78,8 @@ impl Prepared for ForestReference {
         Ok(Plan { inputs, files: Some(tiles.len() as u64), work_bytes: 0 })
     }
 
-    /// Each tile of the region where a model has a pixel, made once and uploaded with the batch of
-    /// its tile; every other tile of the version before stays.
+    /// Each tile of the region where a model has a pixel, made once and moved into the home with the
+    /// batch of its tile; every other tile of the version before stays.
     fn prepare(&self, job: &mut Job) -> Result<(), String> {
         let previous = job.extend(self.format())?;
         let (boxes, countries) = area(job.scope.as_ref())?;
@@ -190,7 +186,6 @@ mod tests {
     use obc_data::prepared::{Manifest, Opening};
     use obc_data::sources::Registry;
     use obc_data::store::Store;
-    use obc_data::target::Target;
 
     const SOURCES: &str = r#"
         [[source]]
@@ -287,13 +282,12 @@ t="${4#12-}"; mkdir -p "$6/12/${t%-*}" && echo "$4" > "$6/12/${t%-*}/${t#*-}.tif
         std::fs::create_dir_all(root.join("data")).unwrap();
         std::fs::write(root.join("data/sources.toml"), SOURCES).unwrap();
         std::fs::write(root.join("tool.sh"), TOOL).unwrap();
-        let (store, target) = (Store::at(temp.0.join("store")), Target::Dir(temp.0.join("target")));
+        let (store, archive) = (Store::at(temp.0.join("store")), temp.0.join("archive"));
         let sources = Registry::load(&root).unwrap().sources;
         let (producer, http) = (ForestReference { tool: script }, Http::new());
         let version = |version: &str, scope: Scope| {
             let mut run = Run::create(&store, ["source", "prepare", ID]).unwrap();
-            let opening =
-                Opening { root: &root, store: &store, http: &http, sources: &sources, target: ("t", &target) };
+            let opening = Opening { root: &root, store: &store, http: &http, sources: &sources, home: &archive };
             let mut job = Job::open(opening, (ID, version), Some(scope), &[], &mut run).unwrap();
             producer.prepare(&mut job).unwrap();
             let manifest = Manifest {
@@ -313,7 +307,7 @@ t="${4#12-}"; mkdir -p "$6/12/${t%-*}" && echo "$4" > "$6/12/${t%-*}/${t#*-}.tif
                 time: format!("{version}T00:00:00Z"),
                 cost: obc_data::prepared::Cost { wall_ms: 0, peak_rss_bytes: None },
             };
-            obc_data::prepared::complete(&target, &manifest).unwrap();
+            obc_data::prepared::complete(&obc_data::prepared::folder(&archive, ID), &manifest).unwrap();
             run.flush().unwrap();
             let status: serde_json::Value = serde_json::from_slice(&std::fs::read(run.status_file()).unwrap()).unwrap();
             // Each tile that ended while others ran keeps what it used.

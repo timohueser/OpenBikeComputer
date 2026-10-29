@@ -2,6 +2,8 @@
 //! fetch sources into the store, and show runs. Without a command, it shows every target.
 
 mod api;
+mod archive_cli;
+mod copy_cli;
 mod deploy_cli;
 mod freshness;
 mod listing;
@@ -19,7 +21,7 @@ mod unlock_cli;
 mod update_cli;
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -66,10 +68,11 @@ enum Command {
     /// Free the lock of a target that a stopped run of MACHINE holds: its heartbeat is older than
     /// 10 minutes. Asks first.
     Unlock {
-        target: String,
+        #[arg(required_unless_present = "source", conflicts_with = "source")]
+        target: Option<String>,
         #[arg(long, value_name = "MACHINE")]
         from: String,
-        /// The lock of this prepared source on the target, not the lock of the target.
+        /// The lock of this prepared source in the archive, not the lock of a target.
         #[arg(long, value_name = "ID")]
         source: Option<String>,
         /// Do not ask. Required without a terminal.
@@ -93,6 +96,11 @@ enum Command {
         target: String,
         /// NAME=VALUE for each `{name}` in the URL of the source, such as `tile=…` or `area=…`.
         params: Vec<String>,
+    },
+    /// The datasets of the archive in OBC_DATA_ARCHIVE: their state, and their get and verify.
+    Archive {
+        #[command(subcommand)]
+        command: archive_cli::ArchiveCommand,
     },
     /// The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name
     /// holds QUERY. Nothing is fetched.
@@ -172,7 +180,7 @@ fn run(cli: Cli, products: &[&dyn Product], prepared: &[&dyn Prepared], ui: Opti
         Command::Rollback(args) => rollback_cli::command(&root()?, args, json),
         Command::Router { target } => router_cli::command(&root()?, &target, json),
         Command::Unlock { target, from, source, yes } => {
-            unlock_cli::command(&root()?, (&target, source.as_deref()), &from, yes, json)
+            unlock_cli::command(&root()?, (target.as_deref(), source.as_deref()), &from, yes, json)
         }
         Command::Sources { check_now } => print_sources(&root()?, check_now, json),
         Command::Source { command } => source_cli::run(&root()?, prepared, command, json),
@@ -188,6 +196,7 @@ fn run(cli: Cli, products: &[&dyn Product], prepared: &[&dyn Prepared], ui: Opti
             let snapshot = crate::fetch::fetch(&root()?, &store, &Http::new(), &request);
             print_snapshot(&store, &fetched(source, snapshot)?, json)
         }
+        Command::Archive { command } => archive_cli::run(&root()?, command, json),
         Command::Areas { query } => print_areas(&root()?, &query, json),
         Command::Serve(args) => serve_cli::command(&root()?, args, json),
         Command::Runs(runs) => runs_cli::run(runs, json),
@@ -212,13 +221,14 @@ struct CleanPlan {
 
 impl CleanPlan {
     fn is_empty(&self) -> bool {
-        self.store.snapshots.is_empty() && self.store.objects.is_empty() && self.store.partial_bytes == 0
+        let gc = &self.store;
+        gc.snapshots.is_empty() && gc.objects.is_empty() && gc.partial_bytes == 0 && gc.unpacked.is_empty()
     }
 
     /// The one question before a clean.
     fn question(&self) -> String {
         let gc = &self.store;
-        match (gc.objects.len(), gc.snapshots.len(), gc.partial_bytes) {
+        match (gc.objects.len() + gc.unpacked.len(), gc.snapshots.len(), gc.partial_bytes) {
             (0, 0, 0) => "Nothing to clean.".into(),
             (0, 1, 0) => "Remove 1 record from the local store?".into(),
             (0, records, 0) => format!("Remove {records} records from the local store?"),
@@ -263,6 +273,7 @@ fn roots(root: &Path, store: &Store) -> Result<gc::Roots, Error> {
         releases.iter().for_each(|release| roots.add_release(&name, release));
     }
     roots.refreshed = store.refreshes()?.into_iter().map(|refreshed| (refreshed.source, refreshed.to)).collect();
+    roots.archived = crate::fetch::archive::Archive::from_env().and_then(|archive| archive.sha256s());
     Ok(roots)
 }
 
@@ -310,12 +321,20 @@ fn clean_text(store: &Store, plan: &CleanPlan) -> String {
     text += &format!("REMOVE FROM {}\n", store.root().display());
     gc.snapshots.iter().for_each(|snapshot| text += &format!("  snapshot {snapshot}\n"));
     gc.objects.iter().for_each(|(sha256, size)| text += &format!("  object {sha256}  {}\n", bytes(*size)));
-    text +=
-        &format!("  {} that nothing reaches, {}\n", gc::objects_text(gc.objects.len() as u64), bytes(gc.remove_bytes));
+    let objects = gc.objects.iter().map(|(_, size)| size).sum();
+    text += &format!("  {} that nothing reaches, {}\n", gc::objects_text(gc.objects.len() as u64), bytes(objects));
+    for (sha256, size) in &gc.unpacked {
+        text += &format!("  unpacked/{sha256}: its archive file is no longer listed, {}\n", bytes(*size));
+    }
     if gc.partial_bytes > 0 {
         text += &format!("  partial/: unfinished downloads and stopped steps, {}\n", bytes(gc.partial_bytes));
     }
-    text += &format!("KEEP {}, {}\n", gc::objects_text(gc.keep_objects), bytes(gc.keep_bytes));
+    let copies = match gc.keep_copies {
+        0 => String::new(),
+        1 => " and 1 unpacked copy".into(),
+        copies => format!(" and {copies} unpacked copies"),
+    };
+    text += &format!("KEEP {}{copies}, {}\n", gc::objects_text(gc.keep_objects), bytes(gc.keep_bytes));
     let kept =
         gc.kept.iter().map(|kept| vec![format!("  {}", kept.entry), bytes(kept.bytes), kept.because.join(" · ")]);
     text += &table(&kept.collect::<Vec<_>>());
@@ -360,6 +379,11 @@ fn fetched(source: &Source, result: Result<Snapshot, String>) -> Result<Snapshot
         if crate::fetch::archive::mismatch(&e) {
             let fix = "Replace the archive file, or correct its manifest, then run again.".into();
             return Error { fix, ..Code::InvalidData.error(e) };
+        }
+        if crate::prepared::absent_from_archive(&e) {
+            let fix = "Set OBC_DATA_ARCHIVE to the roots of the archive and mount their drives, or run on the \
+                       machine that has them.";
+            return Error { fix: fix.into(), ..Code::Blocked.error(e) };
         }
         if blocked { Code::Blocked } else { Code::FetchFailed }.error(e)
     })
@@ -411,33 +435,36 @@ struct SourceRow {
     credential_missing: bool,
     /// Whether `source refresh` moves the source.
     refreshable: bool,
-    /// For a prepared source, by target: its complete versions there, and the run that holds the
-    /// lock of the source there. Empty for another source.
-    prepared: BTreeMap<String, PreparedOn>,
+    /// For a prepared source: its home in the archive, its complete versions there, and the run
+    /// that holds its lock. `null` for another source.
+    prepared: Option<PreparedIn>,
 }
 
 #[derive(Serialize, JsonSchema)]
-struct PreparedOn {
+struct PreparedIn {
+    /// The archive root of the home; `null` when no root of `OBC_DATA_ARCHIVE` has one.
+    root: Option<PathBuf>,
     versions: Vec<crate::prepared::Version>,
     lock: Option<overview::Lock>,
-    /// Why the versions or the lock of the source there cannot be read; `null` when they can.
+    /// Why the versions or the lock of the source cannot be read; `null` when they can.
     error: Option<String>,
 }
 
-/// The [`PreparedOn`] of source `id` on each of `targets`.
-fn prepared_on(
-    store: &Store,
-    targets: &BTreeMap<String, crate::target::Target>,
-    id: &str,
-) -> BTreeMap<String, PreparedOn> {
-    let read = |target| -> Result<PreparedOn, String> {
-        let versions = crate::prepared::versions(target, id)?;
-        let lock =
-            crate::lock::holder(&crate::prepared::folder(target, id))?.map(|holder| overview::Lock::of(store, holder));
-        Ok(PreparedOn { versions, lock, error: None })
+/// The [`PreparedIn`] of the source `id` in the archive roots `roots`.
+fn prepared_in(store: &Store, roots: &[PathBuf], id: &str) -> PreparedIn {
+    let Some(root) = crate::prepared::home(roots, id) else {
+        return PreparedIn { root: None, versions: Vec::new(), lock: None, error: None };
     };
-    let on = |target| read(target).unwrap_or_else(|e| PreparedOn { versions: Vec::new(), lock: None, error: Some(e) });
-    targets.iter().map(|(name, target)| (name.clone(), on(target))).collect()
+    let folder = crate::prepared::folder(root, id);
+    let read = || -> Result<_, String> {
+        let lock = crate::lock::holder(&folder)?.map(|holder| overview::Lock::of(store, holder));
+        Ok((crate::prepared::versions(&folder, id)?, lock))
+    };
+    let (versions, lock, error) = match read() {
+        Ok((versions, lock)) => (versions, lock, None),
+        Err(e) => (Vec::new(), None, Some(e)),
+    };
+    PreparedIn { root: Some(root.clone()), versions, lock, error }
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -531,8 +558,8 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             .collect();
         let credential_missing = source.credential.as_ref().is_some_and(|credential| !credential.present());
         let prepared = match source.fetch.kind {
-            crate::sources::FetchKind::Prepared => prepared_on(&store, &all, &source.id),
-            _ => BTreeMap::new(),
+            crate::sources::FetchKind::Prepared => Some(prepared_in(&store, http.roots(), &source.id)),
+            _ => None,
         };
         let refreshable = source_cli::moves(&source);
         rows.push(SourceRow { source, targets, snapshots, requests, credential_missing, refreshable, prepared });
@@ -749,23 +776,25 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_prepared_source_names_its_versions_and_lock_on_each_target_or_why_they_cannot_be_read() {
-        let dir = Scratch::new("prepared-on");
-        let folder = dir.0.join("sources/wiki");
+    fn a_prepared_source_names_its_home_versions_and_lock_or_why_they_cannot_be_read() {
+        let dir = Scratch::new("prepared-in");
+        let (other, roots) = (dir.0.join("other"), vec![dir.0.join("empty"), dir.0.clone()]);
+        let folder = dir.0.join("prepared/wiki");
         std::fs::create_dir_all(&folder).unwrap();
         let version = r#"[{"version": "2026-09-01", "manifest_sha256": "aa", "format": 1, "bytes": 5, "time": "2026-09-02T00:00:00Z"}]"#;
         std::fs::write(folder.join("versions.json"), version).unwrap();
         let lock = r#"{"state": "held", "machine": "bake", "run": "r1", "review": null, "phase": "build", "heartbeat": "2026-09-03T00:00:00Z"}"#;
         std::fs::write(folder.join("lock.json"), lock).unwrap();
-        let targets = BTreeMap::from([("prod".to_string(), crate::target::Target::Dir(dir.0.clone()))]);
         let store = Store::at(dir.0.join("store"));
-        let on = prepared_on(&store, &targets, "wiki");
-        let lock = on["prod"].lock.as_ref().unwrap();
-        assert_eq!((on["prod"].versions[0].version.as_str(), lock.holder.machine.as_str()), ("2026-09-01", "bake"));
+        let found = prepared_in(&store, &roots, "wiki");
+        let lock = found.lock.as_ref().unwrap();
+        assert_eq!((found.versions[0].version.as_str(), lock.holder.machine.as_str()), ("2026-09-01", "bake"));
+        assert_eq!(found.root.as_deref(), Some(dir.0.as_path()), "the first root that has the home");
         assert!(lock.stale);
+        assert_eq!(prepared_in(&store, &[other], "wiki").root, None);
 
         std::fs::write(folder.join("versions.json"), "[").unwrap();
-        let on = prepared_on(&store, &targets, "wiki");
-        assert!(on["prod"].error.as_ref().unwrap().contains("versions.json"), "{:?}", on["prod"].error);
+        let found = prepared_in(&store, &roots, "wiki");
+        assert!(found.error.as_ref().unwrap().contains("versions.json"), "{:?}", found.error);
     }
 }

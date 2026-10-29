@@ -721,7 +721,7 @@ fn reference(
         return Err(invalid(format!(
             "{id}@{version} states no GLO-30 bias of `{key}`, the best model of a tile of the planner terrain. Fix: a \
              prepare of a small box inside the extent of dtm-{key} extends the version and measures it: obc data \
-             source prepare {id} --box {example} --to TARGET --dry-run"
+             source prepare {id} --box {example} --dry-run"
         )));
     }
     let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}/{:04}", tile.i, tile.j)).collect();
@@ -1502,7 +1502,7 @@ mod tests {
             panic!("the plan reads a version without a bias")
         };
         assert!(error.contains("no GLO-30 bias of `ch`"), "{error}");
-        assert!(error.ends_with("--box 8.10,46.75,8.30,46.95 --to TARGET --dry-run"), "{error}");
+        assert!(error.ends_with("--box 8.10,46.75,8.30,46.95 --dry-run"), "{error}");
     }
 
     #[test]

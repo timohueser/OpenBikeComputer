@@ -9,6 +9,7 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use super::{Account, Bucket, Credentials};
+use crate::fetch::http::S3Keys;
 use crate::target::{Condition, Tag};
 
 /// An R2 target: the origin that serves the keys of its bucket, the bucket, and the folder of the
@@ -196,6 +197,34 @@ fn request(
     Signed { url: format!("https://{host}{path}"), headers }
 }
 
+/// The headers that sign a `method` request of `url` with an empty body at the time `now`. The path
+/// and the query of `url` are encoded as S3 needs them, and the query is sorted by name.
+pub(crate) fn sign_url(keys: &S3Keys, method: &str, url: &str, now: u64) -> Vec<(String, String)> {
+    let rest = url.strip_prefix("https://").unwrap_or(url);
+    let (place, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let (host, path) =
+        place.split_once('/').map_or((place, "/".to_string()), |(host, path)| (host, format!("/{path}")));
+    let time = crate::date::timestamp(now).replace(['-', ':'], "");
+    let payload = hex(&Sha256::digest(b""));
+    let headers = vec![
+        ("host".to_string(), host.to_string()),
+        ("x-amz-content-sha256".to_string(), payload.clone()),
+        ("x-amz-date".to_string(), time.clone()),
+    ];
+    let signing = Signing {
+        access_key_id: &keys.access_key_id,
+        secret_access_key: &keys.secret_access_key,
+        region: &keys.region,
+        service: "s3",
+    };
+    let authorization = sign(&signing, method, &path, query, &headers, &payload, &time);
+    vec![
+        ("x-amz-content-sha256".to_string(), payload),
+        ("x-amz-date".to_string(), time),
+        ("authorization".to_string(), authorization),
+    ]
+}
+
 /// What signs a request.
 struct Signing<'a> {
     access_key_id: &'a str,
@@ -247,7 +276,7 @@ fn hmac(key: &[u8], message: &[u8]) -> [u8; 32] {
 
 /// The path `text` with each byte but `A-Z a-z 0-9 - _ . ~ /` percent-encoded, as S3 and a URL
 /// need it.
-fn encode(text: &str) -> String {
+pub(crate) fn encode(text: &str) -> String {
     let mut encoded = String::new();
     for byte in text.bytes() {
         match byte {
@@ -274,12 +303,11 @@ fn precondition(condition: &Condition) -> Option<(String, String)> {
 /// The caching of a key that never changes.
 pub const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
-/// The caching of a key: `release.json`, `planner/next.json`, `lock.json` and the `versions.json` of
-/// a prepared source change at any time, a pointer each update, and every other key never. A
-/// prepared source writes its keys through a target of its folder.
+/// The caching of a key: `release.json`, `planner/next.json` and `lock.json` change at any time, a
+/// pointer each update, and every other key never.
 fn cache_control(key: &str) -> &'static str {
     match key {
-        crate::release::SERVING | crate::release::NEXT | crate::lock::LOCK | crate::prepared::VERSIONS => "no-store",
+        crate::release::SERVING | crate::release::NEXT | crate::lock::LOCK => "no-store",
         key if crate::release::POINTERS.contains(&key) => "public, max-age=60, must-revalidate",
         _ => IMMUTABLE,
     }
@@ -419,6 +447,25 @@ mod tests {
         );
     }
 
+    /// The example "GET Bucket (List Objects)" of the S3 documentation of Signature Version 4.
+    #[test]
+    fn a_signed_url_is_the_bucket_listing_of_the_s3_documentation() {
+        let keys = S3Keys {
+            access_key_id: "AKIAIOSFODNN7EXAMPLE".into(),
+            secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into(),
+            region: "us-east-1".into(),
+        };
+        let url = "https://examplebucket.s3.amazonaws.com/?max-keys=2&prefix=J";
+        let headers = sign_url(&keys, "GET", url, 1_369_353_600);
+        assert_eq!(headers[1], ("x-amz-date".to_string(), "20130524T000000Z".to_string()));
+        assert_eq!(
+            headers[2].1,
+            "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, \
+             SignedHeaders=host;x-amz-content-sha256;x-amz-date, \
+             Signature=34b48302e7b5fa45bde8084f4b7868a86f0a534bc59db6670ed5711ef69dc6f7"
+        );
+    }
+
     #[test]
     fn a_request_names_the_key_of_the_folder_encoded_and_signs_its_condition() {
         let account = Account {
@@ -452,7 +499,6 @@ mod tests {
         assert_eq!(precondition(&Condition::Any), None);
         assert_eq!(cache_control("lock.json"), "no-store");
         assert_eq!(cache_control("planner/next.json"), "no-store");
-        assert_eq!(cache_control("versions.json"), "no-store");
         assert_eq!(cache_control("objects/ab"), IMMUTABLE);
         assert_eq!(content_type("releases/ab.json"), "application/json");
     }

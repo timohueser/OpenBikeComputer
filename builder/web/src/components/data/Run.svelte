@@ -80,7 +80,7 @@
         <span class="grow"></span>
         {#if bake && view.args.includes("--plan")}<a class="primary" href={bakeHash({ ...bake, plan: id })}>Open the plan</a>{/if}
         {#if live && stopping === "no"}
-            <button type="button" class="stop" onclick={() => (stopping = "ask")}>Stop…</button>
+            <button type="button" class="danger" onclick={() => (stopping = "ask")}>Stop…</button>
         {/if}
     </div>
 
@@ -162,11 +162,8 @@
 
 <style>
     .confirm {
-        border: 2px solid var(--missing);
-    }
-    .stop {
-        color: var(--missing);
-        border-color: var(--missing);
+        background: color-mix(in srgb, var(--missing) 7%, var(--panel));
+        border-color: color-mix(in srgb, var(--missing) 45%, transparent);
     }
     pre {
         margin: 0;
@@ -175,6 +172,7 @@
         padding: 12px;
         background: #1f1f1d;
         color: #f2f1ec;
+        border: 1px solid var(--line-strong);
         border-radius: 8px;
         font: 13px/20px var(--mono);
     }
