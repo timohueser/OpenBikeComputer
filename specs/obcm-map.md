@@ -1,27 +1,30 @@
-# OBCM File Format Specification (v19)
+# OBCM map format
 
-OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
-for efficient rendering on memory-constrained devices such as microcontrollers
-(MCUs). It is written by the Rust packer (`host/obc-bake`) and read by the
-Rust crate (`firmware/obc-reader`, shared by the desktop simulator and the nRF54L
-firmware).
+A map (OpenStreetMap Binary Chunked Map): light and dark style tables, geometry in levels of
+detail, POIs, a routable navigation graph, optional landmark and peak content, and an optional
+embedded terrain region.
 
-This document is the normative byte contract. Its code authority for version numbers,
-fixed lengths, flags, sentinels, the canonical POI id table, and endian primitives is
-`firmware/obc-formats/src/obcm.rs`; producers and consumers import those facts directly.
+- Version: 19 (`0x13`). A reader MUST check `Version` before it reads any later field and MUST
+  refuse every other value. The header version applies to the whole file. Repack older maps.
+  Style flag bits get new meanings without a version change (§2).
+- Writers: `host/obc-bake` (`serialize.rs`, `serialize_lods`) composes a complete map from the
+  crates under [Reference implementations](#reference-implementations).
+- Readers: `firmware/obc-reader` (`src/reader/mod.rs`, `src/reader/nav.rs`), shared by the desktop
+  simulator and the nRF54L firmware.
+- Code authority: `firmware/obc-formats/src/obcm.rs` (version numbers, fixed lengths, flags,
+  sentinels, the canonical POI id table); `firmware/obc-formats/src/io.rs` (little-endian
+  primitives). Producers and consumers import these facts directly.
+- Test vectors: [`vectors/`](vectors/README.md) (`place-train-v15.bin` §7.3,
+  `landmark-section-v16.bin` §9, `peak-section-v17.bin` §10).
+- Related: [OBCA](obca-assembly.md), [OBCT](obct-terrain.md), [OBCC](obcc-catalog.md),
+  [OBCR](obcr-route.md).
 
-**v19 is the only supported version**; earlier maps get repacked. A reader MUST
-check `Version` before it reads any later field and MUST refuse every value other
-than `0x13`. The header version applies to the whole file.
+## Conventions
 
-Style flag bits gain meanings without a version bump, because the record's length, layout
-and offsets do not move. §2 states every defined bit.
-
-Every section is reached through an explicit offset and every count is stored, so a
-reader does no traversal or sizing work to parse the structure.
-
-All coordinates are integer **microdegrees** (1e-6 degrees). Projection to
-screen space is the renderer's responsibility, not the format's.
+- Multi-byte integers are little-endian.
+- Coordinates are integer microdegrees (1e-6 degrees).
+- Every section is reached through an explicit offset and every count is stored. A reader does no
+  traversal or sizing work to parse the structure.
 
 ## File layout
 
@@ -42,13 +45,8 @@ screen space is the renderer's responsibility, not the format's.
 [Dark Style Table]                  (global — shares IDs with the light table)
 ```
 
-Every structure a header or directory offset reaches begins on a **unit boundary** (§1.1), so the
-brackets above are separated by `0..U-1` bytes of `0xFF` filler wherever the previous one did not
-end on one. §1.2 states that rule once and what it costs.
-
-The byte layout is produced by `host/obc-bake/src/serialize.rs` (`serialize_lods`) and parsed by
-`firmware/obc-reader/src/reader/mod.rs` plus `firmware/obc-reader/src/reader/nav.rs`. All multi-byte
-integers are **little-endian**.
+Every structure a header or directory offset reaches begins on a **unit boundary** (§1.1). Where
+the previous structure does not end on one, `0..U-1` bytes of `0xFF` filler follow it (§1.2).
 
 ---
 
@@ -80,17 +78,17 @@ Packed as `struct "<4sBiiiiIBIHIIBIIIIIIIH"`.
 | 65 | Dark Style Offset | 4 | `uint32` | **Scaled** offset to the Dark Style Table (§2) |
 | 69 | Dark Marker Color | 2 | `uint16` | Dark user-position marker color (RGB565) |
 
-Note the bbox field order in the file is **lat, lon, lat, lon**. A **scaled** offset is a count of
-`2^Offset Scale`-byte units, not of bytes — §1.1 is the whole of that rule, and it applies to every
-field this document marks that way, here and in the LOD table (§3), the offset tables (§5.1) and the
-POI (§7.1) and nav (§8.1) directories.
+The bbox field order in the file is **lat, lon, lat, lon**. A **scaled** offset is a count of
+`2^Offset Scale`-byte units, not of bytes (§1.1). This applies to every field marked scaled, here
+and in the LOD table (§3), the offset tables (§5.1) and the POI (§7.1) and nav (§8.1) directories.
 
-The header is 71 bytes, which is not a whole number of units at any scale above `0`, so the Light Style
-Table begins at the first unit boundary at or after it — `80` at the default `U = 16`, giving
-`Style Offset = 5` — and the `71..80` gap is `0xFF` filler (§1.2). A reader follows `Style Offset`
-rather than assuming the section follows the header. The POI and nav sections are always present, so neither of their offsets is
-ever `0` — a map with no POIs (or no routable ways) writes an **empty** directory there instead.
-`Terrain Offset`, `Landmark Offset` and `Peak Offset` may be `0`; each is zero exactly when its corresponding length is zero.
+The 71-byte header is not a whole number of units at any scale above `0`. The Light Style Table
+begins at the first unit boundary at or after it: `80` at the default `U = 16`, so
+`Style Offset = 5`, and bytes `71..80` are `0xFF` filler (§1.2). A reader follows `Style Offset`; it
+does not assume that the section follows the header. The POI and nav sections are always present,
+so their offsets are never `0`: a map with no POIs (or no routable ways) writes an **empty**
+directory. `Terrain Offset`, `Landmark Offset` and `Peak Offset` may be `0`; each is zero exactly
+when its length is zero.
 
 ### 1.1 Offset scale
 
@@ -101,117 +99,99 @@ U           = 1 << Offset Scale        # bytes per unit
 byte_offset = u64(field) * U           # 64-bit arithmetic, always
 ```
 
-A reader MUST widen before it multiplies. `u32(field) * U` is the one way to get this wrong, and it
-is wrong silently: the product wraps and lands inside the file rather than outside it, so the read
-succeeds and returns the wrong section.
+A reader MUST widen to 64 bits before it multiplies: a `u32(field) * U` product wraps silently and
+returns the wrong section.
 
-Producers write `4`, so `U = 16` and a file's addressable interior is `2^32 × 16 = 64 GiB`. Legal
-values are **`0..=9`**; a reader MUST refuse any other, with an error **distinct from the version
-check** — a scale it cannot resolve is an unreadable file, not an old one, and telling a rider the
-map is from a future firmware when the byte is simply corrupt is the wrong answer.
+Producers write `4` (this also pins byte determinism), so `U = 16` and a file's addressable
+interior is `2^32 × 16 = 64 GiB`. Legal values are **`0..=9`**; a reader MUST refuse any other
+value with an error **distinct from the version check**, because a bad scale is a corrupt file, not
+an old one. At scale `0` a unit is one byte.
 
-The range stops at `9` because **`9` is the largest scale at which `512 % U == 0`.** 512 is both the
-card block and this format's own fixed chunk size — §7's POI chunks and §8's node, edge and snap
-chunks are all 512-byte strides from their region's start — so while `U` divides 512, every one of
-those chunk starts falls on a unit boundary the region start already established, and those runs
-carry no filler inside them. At scale `0` a unit is one byte.
+At every legal scale `U` divides 512, the card block. §7's POI chunks and §8's node, edge and snap
+chunks are 512-byte strides from their region's start, so each of them starts on a unit boundary
+with no filler between them.
 
-One rule binds a producer: **the scale MUST cover the file it writes** — `2^32 × U` MUST be at
-least the file's total length. ("At least", not "exceed": the largest legal file is exactly
-`2^32 × U` bytes, whose last structure starts no later than `(2^32 - 1) × U` and is therefore still
-expressible.) A file whose own bytes reach past what its scale can address is malformed, and the
-producer that laid it out is the only party positioned to notice. Everything in this tree writes
-`4`, which is also a byte-determinism pin.
+**The scale MUST cover the file it writes**: `2^32 × U` MUST be at least the file's total length.
+The largest legal file is exactly `2^32 × U` bytes. A file whose bytes reach past what its scale can
+address is malformed.
 
 ### 1.2 Alignment, filler, and what it costs
 
-A scaled offset cannot name a byte that is not a multiple of `U`, so **every structure a scaled
-offset reaches begins on a unit boundary**. That is not a rule a writer obeys; it is a property no
-encoding of an offset can violate. What a writer obeys is the consequence: wherever the next such
-structure would otherwise begin mid-unit, it writes `0xFF` filler up to the boundary.
+A scaled offset can name only a multiple of `U`, so **every structure a scaled offset reaches begins
+on a unit boundary**. Where the next such structure would otherwise begin mid-unit, a writer writes
+`0xFF` filler up to the boundary. Filler is never content. It occurs:
 
-Three kinds of gap follow, and none of them is content:
-
-- **between sections** — the 71-byte header and a style table, and any two sections a header or
+- **between sections**: the 71-byte header and a style table, and any two sections a header or
   directory offset names;
-- **before a region's chunks** — a region's chunk data begins at the first unit boundary at or after
-  the structure preceding it, which is the index (§7.1, §8.1) or the index plus the offset table
-  (§3). The `0..U-1` bytes between them are filler;
-- **between offset-table-addressed chunks** (§5.1) — chunk `k`'s content ends at its `0xFF`
+- **before a region's chunks**: chunk data begins at the first unit boundary at or after the
+  structure before it, which is the index (§7.1, §8.1) or the index plus the offset table (§3);
+- **between offset-table-addressed chunks** (§5.1): chunk `k`'s content ends at its `0xFF`
   sentinel, and chunk `k+1` starts at the next unit boundary.
 
-A reader never sees any of it. A chunk's content ends at its sentinel, a record's at its own length,
-and no offset in the file names a filler byte. `0xFF` is the fill because it is already this
-format's "nothing here" byte in every chunked section — the style-id sentinel (§5.1), the POI
-subtype sentinel (§7.3), the nav degree sentinel (§8.3), the edge `Pt Count` sentinel (§8.4) — so
-filler that leaks into a decode path meets a stop rather than a plausible record. Reserved
-**fields** are still written `0`: a gap is not content.
+No offset in the file names a filler byte. A chunk's content ends at its sentinel and a record's at
+its own length. `0xFF` is the fill because it is the "nothing here" byte of every chunked section
+(the style-id sentinel §5.1, the POI subtype sentinel §7.3, the nav degree sentinel §8.3, the edge
+`Pt Count` sentinel §8.4), so filler that leaks into a decode path meets a stop. Reserved
+**fields** are still written `0`.
 
-A walk through a chunk ends at that stop **or at the chunk's end, whichever comes first**, and both
-halves are needed. §8.7's snap chunk is the case that shows why: 512 bytes hold at most
-`floor(512 / 12) = 42` twelve-byte anchors, leaving an eight-byte tail too short for a reader to
-read a sentinel *out* of — a record starting there would put its `Edge Id` field at bytes `512..516`.
-So the byte count bounds that walk and the sentinel bounds the others, and a reader that relies on
-only one of the two is wrong in one section each way.
+A walk through a chunk ends at the sentinel **or at the chunk's end, whichever comes first**. A
+reader MUST apply both bounds. A 512-byte §8.7 snap chunk holds at most `floor(512 / 12) = 42`
+twelve-byte anchors and leaves an eight-byte tail that cannot hold a full record (its `Edge Id`
+would be at bytes `512..516`), so the byte count bounds that walk and the sentinel bounds the
+others.
 
-**What it costs.** Only §5's offset-table-addressed geometry chunks pay per chunk: §7's POI chunks
-and §8's node, edge and snap chunks are fixed 512-byte strides from an already-aligned region start,
-and `U` divides 512 at every legal scale (§1.1), so those chunk starts are unit boundaries already.
-A geometry chunk's gap is `0..U-1` bytes.
+**What it costs.** Only §5's offset-table-addressed geometry chunks have a gap per chunk, of
+`0..U-1` bytes. §7 and §8 chunks start on unit boundaries already (§1.1).
 
-Per region and per section boundary, **everything pays** one gap of `0..U-1` bytes: two per LOD (its
-index and its `data_start`) plus the fixed ones across the header, the style and LOD tables, the POI
-categories, the hours pool, the nav section and the terrain region. The gaps are part of the file,
-and two bakes of the same input agree on them.
+Each region and section boundary has one gap of `0..U-1` bytes: two per LOD (its index and its
+`data_start`), plus the fixed ones at the header, the style and LOD tables, the POI categories, the
+hours pool, the nav section and the terrain region. The gaps are part of the file, and two bakes of
+the same input have the same gaps.
 
 ### 1.3 The terrain region
 
-`Terrain Offset` and `Terrain Length` are a scaled pointer to a region at the file tail holding one
-[OBCT](obct-terrain.md) container, byte-for-byte the bytes `obc-dem` bakes and the assembler splices.
-Terrain sits last precisely so that splicing it moves no other offset.
+`Terrain Offset` and `Terrain Length` are a scaled pointer to a region at the file tail that holds
+one [OBCT](obct-terrain.md) container, byte for byte the bytes that `obc-dem` bakes and the
+assembler splices. Terrain is last so that splicing it moves no other offset.
 
-**Terrain is part of the map, and partial updates are not a supported operation**: a terrain re-bake
-re-emits the map, the same as any other content change. There is no terrain-only update path and no
-separable raster object.
+**Terrain is part of the map.** A terrain re-bake re-emits the map. There is no terrain-only update
+path and no separable raster object.
 
 `Terrain Offset == 0` means **the map carries no elevation**, and `Terrain Length` MUST then be `0`;
-a reader MUST refuse a file that sets one without the other. `0` is unambiguous as an absence
-because the header occupies byte `0`, so no region can begin there.
+a reader MUST refuse a file that sets one without the other. No region can begin at byte `0`,
+because the header occupies it.
 
-**A reader hands the region over; it does not parse it.** A reader forms a **window** — a byte
-source whose offset `0` is the region's first byte and whose length is `Terrain Length × U` — and
-gives that to the terrain consumer, which reads it exactly as [`obct-terrain.md`](obct-terrain.md)
-describes reading a terrain file. The container carries its own magic, version, header and offset
-directory, and every offset inside it is relative to its own first byte, which is what makes a
-window sufficient and a copy unnecessary.
+**A reader hands the region over; it does not parse it.** A reader forms a **window**: a byte
+source whose offset `0` is the region's first byte and whose length is `Terrain Length × U`. It
+gives the window to the terrain consumer, which reads it as [`obct-terrain.md`](obct-terrain.md)
+describes for a terrain file. Every offset inside the container is relative to its own first byte,
+so a window is sufficient and a copy is not necessary.
 
-Two consequences:
-
-- **The window is up to `U - 1` bytes longer than the container.** `Terrain Length` counts units, so
-  it is the container's byte length rounded up, and the tail is §1.2 filler. The container's own
-  header bounds its content: a reader MUST NOT derive the payload length from the region length, and
-  a consumer MUST NOT read past what the container's own structure addresses.
-- **A terrain region that will not parse is not a broken map.** Elevation is an enhancement
+- **The window is up to `U - 1` bytes longer than the container.** `Terrain Length` is the
+  container's byte length rounded up to units, and the tail is §1.2 filler. A reader MUST NOT derive
+  the payload length from the region length, and a consumer MUST NOT read past what the container's
+  own structure addresses.
+- **A terrain region that does not parse is not a broken map.** Elevation is an enhancement
   (`obcc-catalog.md` §13): a reader whose OBCT parse fails MUST fall back to no elevation, MUST still
-  mount, render and route, and MUST NOT present the map as faulty. A **writer** gets no such
-  clemency and MUST verify the region it splices.
+  mount, render and route, and MUST NOT present the map as faulty. A **writer** MUST verify the
+  region it splices.
 
 ### Marker Colors
 
-The **user-position marker** is a chevron drawn at the user's GPS fix, pointing along their course.
-It is not an OSM feature, so its colors are global header fields rather than style records. They are
-RGB565 like every style color. The renderer selects the light or dark marker with the matching style
-table. The marker's shape and size are fixed in the renderer.
+The **user-position marker** is a chevron at the user's GPS fix that points along the course. It is
+not an OSM feature, so its colors are header fields, not style records. They are RGB565. The
+renderer selects the light or dark marker with the matching style table. The renderer fixes the
+marker's shape and size.
 
 ---
 
 ## 2. Style Tables
 
 The light and dark tables map the same numeric style IDs to independently authored rendering
-properties. Style IDs are global across every LOD and both tables. Each table is packed as `Count`,
-then `Count` records. Both tables MUST contain exactly the same nonzero IDs. A reader MUST reject a
-missing, duplicate or mismatched ID. Geometry is stored once and selects the active record by its
-shared ID. Changing tables therefore does not reload or convert geometry.
+properties. Style IDs are global across every LOD and both tables. Both tables MUST contain exactly
+the same nonzero IDs. A reader MUST reject a missing, duplicate or mismatched ID. Geometry is stored
+once and selects the active record by its shared ID, so a table change does not reload or convert
+geometry. Each table is:
 
 1. **Count** (`uint8`): number of styles.
 2. **Style Records** (`Count` × 8 bytes):
@@ -225,31 +205,25 @@ shared ID. Changing tables therefore does not reload or convert geometry.
 | 5 | Flags | 1 | `uint8` | Bits 0-1: priority level (1=highest/render first, 4=lowest/render last). **Bit 2: dashed** line (ignored for polygons). **Bit 3: color2 present.** **Bit 4: fixed width.** **Bit 5: terrain layer.** **Bit 6: ticked** line — a solid stroke with regular perpendicular ticks, the cableway mark; a writer MUST leave bit 2 clear with it, and a reader that meets both MUST draw the line ticked. A line with neither bit 2 nor bit 6 is solid. Bit 7 reserved, written 0 — a reader MUST **ignore** it, not reject the record (see below) |
 | 6 | Color2 | 2 | `uint16` | RGB565 **secondary color**. Written `0x0000` when flag bit 3 is clear; readers MUST ignore it then (`0x0000` is a legit color — black — not a "no color2" sentinel) |
 
-The **secondary color** and **line style** drive the finest-LOD line and polygon
-embellishments (road casing, dashed admin borders, railway stripes, polygon ring
-outlines); the semantics are the renderer's, not the format's. A solid, single-color style
-has flags bits 2-3 clear and `Color2 = 0x0000`.
+The **secondary color** and **line style** drive the finest-LOD line and polygon embellishments
+(road casing, dashed admin borders, railway stripes, polygon ring outlines); the renderer owns their
+semantics. A solid, single-color style has flag bits 2-3 clear and `Color2 = 0x0000`.
 
-**Bit 4 — fixed width.** `Weight` is the stroke's width in **device pixels**, used
-verbatim: the renderer's zoom→width ramp does not apply to this style. It marks a style as
-*a mark on the map* rather than *a thing with width on the ground*. The width is still
-clamped to the renderer's `1..=12` px range; the bit opts out of the ramp, not out of the
-clamp. Ignored for polygons, whose fills have no stroke width.
+**Bit 4 — fixed width.** `Weight` is the stroke width in **device pixels**, used verbatim: the
+renderer's zoom-to-width ramp does not apply to this style. The renderer still clamps the width to
+its `1..=12` px range. Ignored for polygons.
 
-**Bit 5 — terrain layer.** The style belongs to the **terrain layer**: the group a device
-may suppress wholesale as one user-facing choice, rather than by naming feature types. It
-is presentation metadata; no reader behaviour depends on it, and a renderer that ignores it
-draws a correct map.
+**Bit 5 — terrain layer.** The style belongs to the **terrain layer**: the group a device may
+suppress as one user choice. It is presentation metadata; no reader behavior depends on it, and a
+renderer that ignores it draws a correct map.
 
-A reader's obligation for a style record's undefined bits is to **ignore** them, never to
-reject the record. Defining one is therefore not a version bump: no offset, length or count
-moves, and an older reader renders the map with one presentation degraded.
+A reader MUST **ignore** the undefined bits of a style record, never reject the record. Defining a
+bit is therefore not a version change: no offset, length or count moves.
 
-**Style IDs are assigned by the packer, not authored.** A style ID is a purely internal
-reference into this table; no reader depends on a specific value, only on global uniqueness
-within the file. The packer ignores any `id` in `config.json` and numbers every feature type
-sequentially (`1`-based, in document order). `0xFF` is reserved as the end-of-features
-sentinel (§4), so a file holds at most 254 distinct styles.
+**The packer assigns style IDs.** No reader depends on a specific value, only on uniqueness within
+the file. The packer ignores any `id` in `config.json` and numbers every feature type sequentially
+(`1`-based, in document order). `0xFF` is reserved as the end-of-features sentinel (§4), so a file
+holds at most 254 distinct styles.
 
 ---
 
@@ -282,28 +256,24 @@ chunk k     = data_start + offsets[k] * U .. data_start + offsets[k+1] * U
 ```
 
 where `align_up(x, U) = (x + U - 1) & !(U - 1)`. All of it is `u64` arithmetic (§1.1). The index
-and the offset table are read by 4-byte indexing from a start the directory names, so neither needs
-a unit boundary of its own, but the **chunks** are addressed by scaled offsets, so `data_start` must
-be one. The `0..U-1` bytes it rounds past are §1.2 filler.
+and the offset table are read by 4-byte indexing and need no unit boundary of their own. The
+**chunks** are addressed by scaled offsets, so `data_start` must be a unit boundary. The `0..U-1`
+bytes it rounds past are §1.2 filler.
 
-**`Chunk Size` is a bound, not a stride.** It is the packer's leaf-split threshold and the
-largest length any single chunk may have; a reader MUST reject a chunk whose offset pair
-spans more than it can hold (§5.1 states the bound exactly, which is `Chunk Size` rounded up
-to the unit). Chunk lengths come from the offset table (§5), which is what lets chunks be
-packed tight.
+**`Chunk Size` is a bound, not a stride.** It is the packer's leaf-split threshold and the largest
+length any single chunk may have; a reader MUST reject a chunk whose offset pair spans more than
+`Chunk Size` rounded up to the unit (§5.1). Chunk lengths come from the offset table (§5).
 
-The reader never walks the tree to learn its size: `Index Node Count` and `Chunk Count` are
-stored. The offset table's last entry (`offsets[Chunk Count]`) is the LOD's total chunk
+`Index Node Count` and `Chunk Count` are stored, so the reader never walks the tree to learn its
+size. The offset table's last entry (`offsets[Chunk Count]`) is the LOD's total chunk
 bytes, so one `uint32` read at parse bounds every later chunk fetch.
 
 ---
 
 ## 4. Quadtree Index (per LOD)
 
-A flat array of `Index Node Count` × `uint32`. **Every LOD's quadtree is built
-over the same global bbox** (from the header), so node bboxes are computed
-identically at every level and the renderer's subdivision math is
-LOD-independent. Coarse levels hold few features ⇒ shallow trees.
+A flat array of `Index Node Count` × `uint32`. **Every LOD's quadtree is built over the same
+global bbox** (from the header), so node bboxes are identical at every level.
 
 Each node value:
 
@@ -346,14 +316,11 @@ quadtree index and the chunks (§3):
   the difference in bytes, and its **content** is the shorter run ending at its sentinel.
 - The table is written even when `Chunk Count == 0`, where it is the single `0` entry.
 
-Each chunk is its packed features followed by **exactly one** `0xFF` `CHUNK_END`
-sentinel byte, then `0..U-1` bytes of `0xFF` filler up to the next unit boundary (§1.2). A `0xFF`
-style-ID byte is an impossible style, so the sentinel marks end-of-features for a reader walking
-the stream, and the offset-derived end is a second, independent bound behind it. A reader
-MUST treat a chunk whose feature stream reaches the offset-derived end **without**
-meeting the sentinel as malformed (truncated), not as a clean finish. Because the filler is `0xFF`,
-a reader that runs off the end of a chunk's real content stops on a sentinel either way; the
-sentinel is what ends the walk, and the span is what bounds it.
+Each chunk is its packed features, then **exactly one** `0xFF` `CHUNK_END` sentinel byte, then
+`0..U-1` bytes of `0xFF` filler up to the next unit boundary (§1.2). A `0xFF` style ID is
+impossible, so the sentinel marks end-of-features; the offset-derived end is a second, independent
+bound. A reader MUST treat a chunk whose feature stream reaches the offset-derived end **without**
+meeting the sentinel as malformed (truncated), not as a clean finish.
 
 A reader MUST validate an offset pair before using it, because `Chunk ID` comes from
 a quadtree leaf and is arbitrary in a corrupt map: `k < Chunk Count`,
@@ -361,13 +328,13 @@ a quadtree leaf and is arbitrary in a corrupt map: `k < Chunk Count`,
 `(offsets[k+1] - offsets[k]) * U <= align_up(Chunk Size, U)`.
 
 A chunk's *content* may not exceed `Chunk Size`; its *span* is that content rounded up to a unit,
-so `align_up(Chunk Size, U)` — 4,096 for the shipped 4,096-byte bound at `U = 16` — is the tight
-bound, and the looser `Chunk Size + U - 1` would admit spans no writer can produce.
+so `align_up(Chunk Size, U)` is the bound (4,096 for the shipped 4,096-byte bound at `U = 16`). Do
+not use `Chunk Size + U - 1`: it admits spans that no writer can produce.
 
 ### 5.2 Feature Header (7 or 12 bytes)
 
-`Flags` is at byte **1** in both layouts — its `0x08` **WIDE** bit selects the
-layout, so a reader knows the header's width before it reads any field behind it.
+`Flags` is at byte **1** in both layouts. Its `0x08` **WIDE** bit selects the layout, so a reader
+knows the header's width before it reads any later field.
 
 **Compact** (WIDE clear), 7 bytes, `struct "<BBBHH"` — the common case:
 
@@ -394,12 +361,12 @@ any of them set. `Pt Count == 0` is malformed in both layouts. Compact anchors a
 **unsigned** — zero-extended, never sign-extended.
 
 A writer MUST choose compact when `Pt Count` is in `1..=255` **and** both anchor
-components are in `0..=65535`, and wide otherwise. A coarse-LOD leaf can span far more than
-65 535 µdeg (~7 km), so an anchor inside it needs the wider field. Everything after the
-header — hole bookkeeping and the delta streams — is identical in both layouts.
+components are in `0..=65535`, and wide otherwise. A coarse-LOD leaf can span more than
+65 535 µdeg (about 7 km), so an anchor in it can need the wide field. Everything after the header
+(hole bookkeeping and the delta streams) is identical in both layouts.
 
-The **anchor** is the feature's first absolute coordinate, stored relative to the
-containing leaf node's min corner to keep it small:
+The **anchor** is the feature's first absolute coordinate, stored relative to the containing leaf
+node's min corner:
 
 ```
 anchor_abs = (node_bbox.min_lon + AnchorX, node_bbox.min_lat + AnchorY)
@@ -407,13 +374,13 @@ anchor_abs = (node_bbox.min_lon + AnchorX, node_bbox.min_lat + AnchorY)
 
 ### Geometry encoding (delta)
 
-Rings are delta-encoded to minimize size. Bit depth is chosen **per feature**:
+Rings are delta-encoded. Bit depth is chosen **per feature**:
 if every `dx`/`dy` fits in `int8` (|d| ≤ 127), `Flags & 0x01 == 0` and deltas are
 `int8`; otherwise the flag is set and all deltas are `int16`.
 
-Polygon rings are **implicitly closed** from their last vertex back to their first. A
-writer should therefore omit a repeated final copy of the first vertex; readers and
-renderers must accept either representation. Line geometry is never implicitly closed.
+Polygon rings are **implicitly closed** from their last vertex back to their first. A writer
+should omit a repeated final copy of the first vertex; readers and renderers must accept either
+representation. Line geometry is never implicitly closed.
 
 - **Exterior ring** (`Pt Count` vertices): the first vertex *is* the anchor;
   the remaining `Pt Count - 1` vertices follow as `(dx, dy)` pairs, each relative
@@ -426,25 +393,23 @@ renderers must accept either representation. Line geometry is never implicitly c
 
 Lines use only the exterior ring (`Flags & 0x02 == 0`, no holes).
 
-> **Long-segment densification:** the packer inserts intermediate vertices on any
-> segment longer than `30000` microdegrees so that no single delta exceeds the
-> 16-bit range. Readers need no special handling — these are ordinary vertices.
+> **Long-segment densification:** the packer inserts intermediate vertices on any segment longer
+> than `30000` microdegrees so that no delta exceeds the 16-bit range. Readers treat them as
+> ordinary vertices.
 
 > **Per-feature vertex cap:** although `Pt Count` is a `uint16`, a single feature (exterior
 > plus all holes, densification included) must not exceed **2048 vertices**. A feature past the
 > cap is dropped whole with an explicit capacity outcome; no truncated line or polygon is
 > exposed. The packer enforces the bound through `Chunk Size`: a feature cannot outgrow its
-> chunk, and its packed bytes are at least `7 + 2·(V−1) = 2·V + 5` for `V` total vertices (the
-> smallest header is the 7-byte compact one, and the densest geometry is 8-bit deltas at 2
-> bytes per vertex after the anchor). So `Chunk Size ≤ (2048−1)·2 + 7 = 4101` keeps every
-> feature within the cap, and `obc-pack` rejects a larger `Chunk Size` at build time.
+> chunk, and its packed bytes are at least `7 + 2·(V−1) = 2·V + 5` for `V` total vertices. So
+> `Chunk Size ≤ (2048−1)·2 + 7 = 4101` keeps every feature within the cap, and `obc-pack` rejects
+> a larger `Chunk Size` at build time.
 
 > **Per-feature ring cap:** although `Hole Count` is a `uint8`, a single feature must not
 > exceed **32 rings** (exterior + 31 holes). A feature past it is dropped whole, with the same
-> capacity outcome as the vertex cap. Bytes do not imply this bound — a simplified polygon can
-> carry dozens of holes on a handful of vertices — so `obc-pack` enforces it structurally: a
-> quadtree node holding an over-cap polygon splits, and at the 10 µdeg split floor the smallest
-> holes are dropped to fit.
+> capacity outcome as the vertex cap. Byte size does not imply this bound, so `obc-pack` enforces
+> it structurally: a quadtree node that holds an over-cap polygon splits, and at the 10 µdeg split
+> floor the smallest holes are dropped to fit.
 
 ### Polygon-with-holes byte layout
 
@@ -491,12 +456,11 @@ Within a selected LOD, query the quadtree for the viewport, decode the visible c
 features by style `Z-Index` (painter's algorithm), then draw: polygons by even-odd scanline
 fill (holes fall out of the even-odd rule), lines as weighted polylines.
 
-**Backdrop convention.** Before drawing geometry, a renderer clears the screen to the
-**backdrop color**: the color of the style with the lowest `Z-Index`, in the shipped schema
-`natural.land` at `z_index 0`. It is derived from the style table, not a fixed style ID, so it
-survives the packer's automatic ID assignment. The shipped packer writes the coastline
-complement as `natural.sea` geometry on top; schemas with a different lowest style remain
-valid.
+**Backdrop convention.** Before it draws geometry, a renderer clears the screen to the
+**backdrop color**: the color of the style with the lowest `Z-Index` (in the shipped schema
+`natural.land` at `z_index 0`). It comes from the style table, not from a fixed style ID, because
+the packer assigns IDs (§2). The shipped packer writes the coastline complement as `natural.sea`
+geometry on top; schemas with a different lowest style remain valid.
 
 ---
 
@@ -509,9 +473,8 @@ category gets its own quadtree over 64-byte point records.
 
 The section is reached from `POI Section Offset` (header offset 32) and is
 **always present**: a map with no POIs writes a directory of seven empty service
-categories, never a zero offset. Service POI records carry a `HoursRef` u16 into
-the trailing **hours-pool section** (§7.5), reached from the directory's
-`hours_pool_offset`.
+categories, never a zero offset. Service POI records reference the **hours-pool section**
+(§7.5).
 
 ### 7.1 POI Directory
 
@@ -528,40 +491,31 @@ uint32  Hours Pool Offset         (SCALED offset to the hours-pool section, §7.
 uint16  Hours Pool Count          (number of 29-byte blobs; 0 ⇒ no hours in this map)
 ```
 
-`Chunk Size` is shared by every category (all POI chunks are the same fixed
-capacity). As with a LOD, a category's data chunks begin at
-`align_up(Index Offset * U + Index Node Count * 4, U)` — the exact §3/§4 convention, so the
-reader's
-`walk_leaves` leaf-walk and chunk-offset math are reused verbatim. Chunk `k` is then that start plus
-`k * Chunk Size`, and because 512 is a multiple of `U` at every legal scale, every POI chunk lands
-on a unit boundary without a byte of filler between them. An empty
-category (`Index Node Count == 0`) still has a directory entry; its `Index Offset`
-points at where its (zero-length) index would start and `Chunk Count` is `0`.
+`Chunk Size` is shared by every category. As with a LOD, a category's data chunks begin at
+`align_up(Index Offset * U + Index Node Count * 4, U)` (the §3/§4 convention), so the reader reuses
+its `walk_leaves` leaf-walk and chunk-offset math. Chunk `k` is that start plus `k * Chunk Size`,
+with no filler between chunks (§1.1). An empty category (`Index Node Count == 0`) still has a
+directory entry; its `Index Offset` points at where its (zero-length) index would start and
+`Chunk Count` is `0`.
 
-The two **hours-pool fields** trail the per-category entries. `Hours Pool
-Offset` is the scaled offset of the hours-pool section (§7.5), so the pool begins at
-`Hours Pool Offset * U`; `Hours Pool
-Count` is the number of 29-byte blobs there and MUST equal the `count` written at
-that offset. `Hours Pool Count == 0` means the map has no hours (the pool is a bare
-`0` count); a record's `HoursRef == 0xFFFF` likewise means "no hours."
+The two **hours-pool fields** follow the category entries. The pool begins at
+`Hours Pool Offset * U` (§7.5). `Hours Pool Count` is the number of 29-byte blobs there and MUST
+equal the `count` written at that offset. `Hours Pool Count == 0` means the map has no hours (the
+pool is a bare `0` count); a record's `HoursRef == 0xFFFF` also means "no hours."
 
 ### 7.2 Per-category quadtree
 
 Identical to the geometry quadtree (§4): a flat `uint32` array using the same
 node encoding (branch bit / empty-leaf sentinel / chunk id), built over the **same
 global bbox from the header**, with the same floor-division-midpoint NW/NE/SW/SE
-subdivision. Point features make these trees small and shallow. A reader walks
-one exactly as it walks a LOD index, collecting `(chunk_id, node_bbox)` for each
-non-empty leaf; the `node_bbox` is **not** needed to decode a POI record (records
-store absolute coordinates), only to prune the walk.
+subdivision. A reader walks one as it walks a LOD index, collecting `(chunk_id, node_bbox)` for each
+non-empty leaf; the `node_bbox` only prunes the walk, because records store absolute coordinates.
 
 ### 7.3 POI records — fixed 64 bytes
 
 Records are packed into `Chunk Size`-byte chunks (512 ⇒ `512 / 64 = 8`
-records/chunk). Each record is exactly 64 bytes. A `0xFF`
-**Subtype** byte marks the end of records in a chunk (mirrors the geometry chunk's
-`0xFF` style-ID sentinel); trailing bytes of a partial final chunk are
-`0xFF`-padded.
+records/chunk). Each record is exactly 64 bytes. A `0xFF` **Subtype** byte marks the end of records
+in a chunk; trailing bytes of a partial final chunk are `0xFF`-padded.
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
@@ -586,25 +540,21 @@ must check the current profile and actual graph connectivity before it accepts a
 Assemblers preserve the metadata tail and deduplicate service records by source identity,
 not coordinate or subtype. Only the hours-pool reference is remapped.
 
-
-Coordinates are **absolute**, not anchor-relative as in geometry §5, and fixed-size records
-keep chunk packing trivial (`Chunk Size / 64` records per chunk, no per-record length
-bookkeeping). The **category** is not stored per record: each subtype maps to exactly one
-category (§7.4), and the record's category is also implicit in which quadtree it came from.
+Coordinates are **absolute**, not anchor-relative as in geometry §5. The **category** is not stored
+per record: each subtype maps to exactly one category (§7.4), and the quadtree the record came from
+also gives it.
 
 Service names are ASCII-folded at pack time to printable ASCII (`0x20..=0x7E`) and capped at
-**24 bytes**, so the packer transliterates umlauts and accents (`ä → ae`) rather than store
-variable-width UTF-8. An unnamed POI (`Name Len == 0`) shows its subtype's fallback label
-on-device. The 24-byte `Name` field is `0xFF`-padded past `Name Len`.
+**24 bytes**; the packer transliterates umlauts and accents (`ä → ae`). An unnamed POI
+(`Name Len == 0`) shows its subtype's fallback label on the device.
 
-Every stored name, whatever the subtype, is inside the glyph repertoire of the device font —
-ASCII, Latin-1 Supplement and Latin Extended-A — because the producer spells any other character
-in Latin or takes another name tag, so a name never reaches the device as question marks.
+Every stored name, whatever the subtype, is inside the glyph repertoire of the device font: ASCII,
+Latin-1 Supplement and Latin Extended-A. The producer spells any other character in Latin or takes
+another name tag.
 
-`HoursRef` is a 0-based index into the hours-pool section (§7.5): blob `i` lives at
-`hours_pool_offset * U + 2 + i*29`. `0xFFFF` means the POI has no (parseable) hours.
-Duplicate weekly schedules collapse to one pooled blob, so many POIs in a region
-can share a single `HoursRef`.
+`HoursRef` is a 0-based index into the hours-pool section (§7.5). `0xFFFF` means the POI has no
+(parseable) hours. Identical weekly schedules collapse to one pooled blob, so many POIs can share
+one `HoursRef`.
 
 Summits (subtype 19) retain their UTF-8 name, case and diacritics. Names must be nonempty,
 contain no control characters, and end on a complete character within the 24-byte field.
@@ -613,23 +563,19 @@ The producer uses the OSM `ele` tag and fills missing elevations from the map DE
 `-32768` means unknown; all other `int16` values are valid, including negative heights.
 Assemblers preserve this trailer and do not include summits in the hours pool.
 
-Settlements (subtypes 21 to 24) keep their UTF-8 name, case and diacritics, under the same
-rules as summits. The name must not be empty, must hold no control character, and must end on
-a complete character inside the 24-byte field. The trailer is the population in hundreds of
-people, as an unsigned little-endian value. `0xFFFF` means unknown. The producer saturates a
-larger population at `0xFFFE`. A settlement has no routable approach, so the producer writes all
-20 approach and reserved bytes as zero. Assemblers keep this trailer and do not put settlements in
-the hours pool.
+Settlements (subtypes 21 to 24) keep their UTF-8 name, case and diacritics, under the same name
+rules as summits. The trailer is the population in hundreds of people, as an unsigned
+little-endian value. `0xFFFF` means unknown. The producer saturates a larger population at
+`0xFFFE`. A settlement has no routable approach, so the producer writes all 20 approach and
+reserved bytes as zero. Assemblers keep this trailer and do not put settlements in the hours pool.
 
 ### 7.4 Canonical category / subtype table (normative)
 
-This is the **normative home** of the id table; `obc-formats/src/obcm.rs` is its code
-authority for subtype ids, categories, and fallback labels. `obc-places`' `metadata.rs`
-adds only the OSM `key=value` classification that produces each subtype, while the
-device reads the shared table directly. **Ids are append-only** — an existing
-row's category or subtype id must never be renumbered (an old map's records would
-then decode as the wrong POI). Subtype `0` is reserved; `0xFF` is the
-end-of-chunk sentinel and can never be a subtype id.
+This is the **normative home** of the id table; `obc-formats/src/obcm.rs` is its code authority for
+subtype ids, categories and fallback labels. `obc-places`' `metadata.rs` adds only the OSM
+`key=value` classification that produces each subtype; the device reads the shared table directly.
+**Ids are append-only**: an existing row's category or subtype id must never be renumbered.
+Subtype `0` is reserved; `0xFF` is the end-of-chunk sentinel and can never be a subtype id.
 
 | Category ID | Category | Subtype ID | OSM tag (`key=value`) | Fallback label |
 | :-- | :-- | :-- | :-- | :-- |
@@ -663,12 +609,12 @@ end-of-chunk sentinel and can never be a subtype id.
 
 Additional service categories 10–12 are optional. Fuel stations are distinct from shops.
 
-The seven base service categories (IDs 1–6 and 8) are always present in the directory. Category 7 is an optional
-landmark index for Peak View and is not part of the service POI browser. The producer emits
-it only when named summit nodes exist. Closed-way centroids and unnamed peaks are excluded.
-Each subtype belongs to exactly one category; its record must be stored in that category.
-Summit coordinates are the original node coordinates rounded to microdegrees. Distinct
-summits less than 50 metres apart remain separate; only repeated source identities collapse.
+The seven base service categories (IDs 1–6 and 8) are always present in the directory. Category 7
+is an optional landmark index for Peak View and is not part of the service POI browser. The
+producer emits it only when named summit nodes exist. Closed-way centroids and unnamed peaks are
+excluded. Each subtype belongs to exactly one category; its record must be stored in that category.
+Summit coordinates are the original node coordinates rounded to microdegrees. Distinct summits
+less than 50 metres apart remain separate; only repeated source identities collapse.
 
 Category 9 is an optional settlement-name index for the map overlay. It is not part of the
 service POI browser. The producer writes it only when named settlement nodes or areas exist.
@@ -676,12 +622,9 @@ Unnamed settlements are excluded. A settlement area contributes its ring centroi
 
 ### 7.5 Hours-pool section
 
-A single deduplicated pool of weekly opening-hours schedules, written after the
-last POI category's chunks and reached from the directory's `Hours Pool Offset`
-(§7.1). A POI
-record's `HoursRef` (§7.3) is a 0-based index into it; identical schedules collapse
-to one blob, so a region's shops share entries and the pool stays small (only POIs
-with parseable hours cost anything).
+A single deduplicated pool of weekly opening-hours schedules, written after the last POI category's
+chunks and reached from the directory's `Hours Pool Offset` (§7.1). A POI record's `HoursRef`
+(§7.3) is a 0-based index into it; identical schedules collapse to one blob.
 
 ```
 uint16  Count                     (number of blobs; equals Hours Pool Count in the directory)
@@ -693,9 +636,8 @@ per blob (Count entries, 29 bytes each):
 ```
 
 Blob `i` (a record's `HoursRef == i`) lives at `Hours Pool Offset * U + 2 + i*29`. An
-empty pool is just the 2-byte `Count == 0`. Hours are parsed and normalized from
-OSM `opening_hours` **at pack time** (the grammar never runs on the device); the
-device does a trivial weekday lookup.
+empty pool is the 2-byte `Count == 0`. Hours are parsed and normalized from OSM `opening_hours`
+**at pack time**; the device does only a weekday lookup.
 
 **Blob layout (29 bytes).** `Flags` bit 0 is **seasonal**. Bit 1 is **uncertain**:
 a rule or interval was dropped, or compilation rounded a source boundary. This includes
@@ -723,11 +665,11 @@ excludes a place; unknown hours must never be presented as open.
 
 ## 8. Navigation-Graph Section
 
-The **routable graph** the on-device router runs A\* over: junction **nodes** (derived from
-OSM node ids shared across routable `highway=*` ways) joined by undirected **edges** (the
-polyline between two junctions, junction-free inside). The packer builds the graph in
-`nav.rs` (way-kind classification, bike-legality filter, island pruning, junction split,
-dedup, edge splits) and this section is its on-wire form.
+The **routable graph** for the on-device A\* router: junction **nodes** (from OSM node ids shared
+across routable `highway=*` ways) joined by undirected **edges** (the polyline between two
+junctions, with no junction inside). The packer builds the graph in `nav.rs` (way-kind
+classification, bike-legality filter, island pruning, junction split, dedup, edge splits); this
+section is its on-wire form.
 
 The section is reached from `Nav Graph Offset` (header offset 36) and is **always
 present**: a map with no routable ways writes an empty directory (`Index Node
@@ -749,12 +691,12 @@ Layout, in file order:
 [Snap Chunks]       (fixed 512-byte anchor chunks, §8.7)
 ```
 
-There is no id → offset table. A\* **re-fetches spatially**: settling a node is one quadtree
-descent to its coord's leaf plus one chunk read, and each record carries its neighbors'
-coords **inline**, so relaxation (`f = g + h`) needs no second fetch. Edge geometry is
-touched while resolving the two exact projected endpoints and when the final route is
-emitted; the A\* search between those virtual endpoints never fetches geometry. Only the
-directory and the profile table (≤ `8 × 56 = 448` B) are resident.
+There is no id-to-offset table. A\* **re-fetches spatially**: settling a node is one quadtree
+descent to its coordinate's leaf plus one chunk read. Each record carries its neighbors'
+coordinates **inline**, so relaxation (`f = g + h`) needs no second fetch. Edge geometry is read
+only to resolve the two exact projected endpoints and to emit the final route; the A\* search
+between those virtual endpoints never fetches geometry. Only the directory and the profile table
+(≤ `8 × 56 = 448` B) are resident.
 
 ### 8.1 Nav Directory (40 bytes)
 
@@ -773,65 +715,58 @@ directory and the profile table (≤ `8 × 56 = 448` B) are resident.
 | 32 | Snap Index Node Count | 4 | `uint32` | Number of `uint32` nodes in the snap index; `0` ⇒ no interior anchors |
 | 36 | Snap Chunk Count | 4 | `uint32` | Number of fixed 512-byte snap-anchor chunks following that index |
 
-Node data chunks begin at `align_up(Index Offset * U + Index Node Count * 4, U)` — the §3/§4
-convention, so the reader's leaf-walk and chunk-offset math are reused verbatim.
-The packer writes the **profile table just after this 40-byte directory**
-(before the node index), so `Index Offset` and `Edge Pool Offset` point past it. The directory is 40
-bytes and `Profile Table Offset` is scaled, so at `U = 16` the table starts at the directory's byte
-48 with eight bytes of §1.2 filler between them; at `U = 1` it still starts at byte 40.
-For a populated graph, current producers insert `0..511` bytes of `0xFF` filler after the
-profile table such that the first node chunk lands on a 512-byte file offset. Because every node
-chunk is 512 bytes, this
-also makes `Edge Pool Offset` 512-byte aligned. A full-chunk read can therefore
-be served by one physical card command instead of the two commands required when
-the same logical read straddles sectors. This is a **producer guarantee, not a
-reader validity requirement**: every boundary is explicitly addressed by the directory, so a file
-that skips the alignment is still valid and merely slower.
+Node data chunks begin at `align_up(Index Offset * U + Index Node Count * 4, U)` (the §3/§4
+convention), so the reader reuses its leaf-walk and chunk-offset math. The packer writes the
+**profile table just after this 40-byte directory** (before the node index), so `Index Offset` and
+`Edge Pool Offset` point past it. `Profile Table Offset` is scaled, so at `U = 16` the table starts
+at the directory's byte 48, after eight bytes of §1.2 filler; at `U = 1` it starts at byte 40.
 
-**The two alignments do not fight.** 512 is a multiple of `U` at every legal scale (§1.1 caps
-it at 512), so node chunks on a 512-byte boundary are on a unit boundary too. The index start
-must itself be a unit multiple, and `align_up(index_start + 4 × N, U)` must be the 512-byte
-boundary; both are satisfiable for every node count `N`, because the rounding step lets the
-index end anywhere in the `U` bytes below the target. §8.5 works one through.
+For a populated graph, producers insert `0..511` bytes of `0xFF` filler after the profile table so
+that the first node chunk lands on a 512-byte file offset. Every node chunk is 512 bytes, so
+`Edge Pool Offset` is also 512-byte aligned, and a full-chunk read is one physical card command, not
+two. This is a **producer guarantee, not a reader validity requirement**: a file without the
+alignment is valid and slower.
+
+**The two alignments do not conflict.** 512 is a multiple of `U` at every legal scale (§1.1), so a
+512-byte boundary is also a unit boundary. The index start must be a unit multiple, and
+`align_up(index_start + 4 × N, U)` must be the 512-byte boundary; both hold for every node count
+`N`, because the rounding lets the index end anywhere in the `U` bytes below the target. §8.5 shows
+an example.
 
 The edge pool is followed by optional `0xFF` filler, the §8.7 snap index, and its chunks. Producers
-align the first snap chunk to a 512-byte file offset just like the node chunks. An empty graph still
+align the first snap chunk to a 512-byte file offset, as for the node chunks. An empty graph still
 writes `Chunk Size` and the profile table, and points all zero-length data offsets just past the
-profile table, exactly like an empty POI category. A populated graph with no edge longer than 300 m
+profile table, as for an empty POI category. A populated graph with no edge longer than 300 m
 sets both snap counts to zero and points `Snap Index Offset` just past the edge pool.
 
-**All of §8's filler is `0xFF`**, including the 512-byte alignment run: a gap is `0xFF` and a
-reserved field is `0` (§1.2).
+**All of §8's filler is `0xFF`**, including the 512-byte alignment run; a reserved field is `0`
+(§1.2).
 
-**`Chunk Size` is pinned to 512**, so a leaf holds a handful of junction records and one chunk
-read serves one A\* settle. The reader **rejects a directory whose `Chunk Size` is not 512**,
-with a parse error distinct from the header version check. The geometry sections' configurable
-`chunk_size` (§5) is independent; nav is pinned.
+**`Chunk Size` is pinned to 512**, so one chunk read serves one A\* settle. The reader **rejects a
+directory whose `Chunk Size` is not 512**, with a parse error distinct from the header version
+check. The geometry sections' configurable `chunk_size` (§5) is independent.
 
 ### 8.2 Node quadtree
 
 Identical to §4 / §7.2: a flat `uint32` array with the same node encoding (branch
 bit / empty-leaf sentinel / chunk id), built over the **same global bbox from the
 header**, with the same floor-division-midpoint NW/NE/SW/SE subdivision and BFS
-flattening. The packer splits a leaf once its packed records (§8.3) exceed one
-chunk — by **bytes**, since records are variable-length — with the same 10-µdeg
-recursion floor. As with POIs, a node's `node_bbox` is not needed to decode its
-records (coordinates are absolute); the walk only uses it to prune.
+flattening. The packer splits a leaf once its packed records (§8.3) exceed one chunk, by
+**bytes** (records are variable-length), with the same 10-µdeg recursion floor. As with POIs, the
+`node_bbox` only prunes the walk; record coordinates are absolute.
 
 **Bin-packed chunks.** After building the tree, the packer assigns chunk ids **first-fit over
-the leaves in BFS emission order**: each leaf's record block goes into the first already-open
-chunk with room, opening a new chunk only when none fits. One consequence is load-bearing:
+the leaves in BFS emission order**: each leaf's record block goes into the first open chunk with
+room, and a new chunk opens only when none fits.
 
-> **Distinct index leaves may reference the same chunk id.** First-fit reaches
-> back to earlier chunks, so leaves sharing a chunk can be spatially distant. A
-> walk that visits several leaves sharing a chunk decodes that chunk once per
-> leaf, so a consumer may see the same junction record **more than once per
-> query** — and see records outside the leaf's own bbox. Consumers must therefore
-> be **idempotent**. The reference consumers are: A\* settle matches by `Node Id`
-> (a repeat is a no-op), and snap tracks the best candidate (a repeat can't
-> change the best). A single leaf's records never straddle a chunk boundary.
+> **Distinct index leaves may reference the same chunk id**, and leaves that share a chunk can be
+> far apart. A walk decodes a shared chunk once per leaf, so a consumer may see the same junction
+> record **more than once per query**, and records outside the leaf's own bbox. Consumers must
+> therefore be **idempotent**. The reference consumers: A\* settle matches by `Node Id` (a repeat
+> is a no-op), and snap keeps the best candidate (a repeat cannot change it). A single leaf's
+> records never straddle a chunk boundary.
 
-The index stores exactly one chunk id per leaf; the leaf → chunk mapping is many-to-one.
+The index stores exactly one chunk id per leaf; the leaf-to-chunk mapping is many-to-one.
 
 ### 8.3 Junction records (variable length)
 
@@ -858,38 +793,34 @@ Per neighbor entry (17 bytes):
 | 14 | Way Kind | 1 | `uint8` | The edge's packed class byte (§8.6) — the input to profile weighting |
 | 15 | Ascent M | 2 | `uint16` | **Directional**: the integrated climb, in metres, of riding this edge *from this record's node toward the neighbor*. Saturating; `0` on a map packed without terrain |
 
-The neighbor's absolute coord is reconstructed as `(Lat + dLat, Lon + dLon)`; the
-packer guarantees both endpoints of every edge sit within `int16` of each other
-(see §8.4) so the delta never overflows. `Cost M` is the **unweighted** ground
-distance; the profile-weighted cost A\* actually accumulates is
-`Cost M × effective_multiplier(Way Kind) >> 4 + Ascent M × Climb Weight` (§8.6),
-computed on device at relaxation — the file stores distance and climb, not weight.
+The neighbor's absolute coordinate is `(Lat + dLat, Lon + dLon)`; the packer guarantees that both
+endpoints of every edge are within `int16` of each other (§8.4), so the delta never overflows.
+`Cost M` is the **unweighted** ground distance; the profile-weighted cost A\* accumulates is
+`Cost M × effective_multiplier(Way Kind) >> 4 + Ascent M × Climb Weight` (§8.6), computed on the
+device at relaxation. The file stores distance and climb, not weight.
 
-`Ascent M` is an **integral over the edge's polyline, not an endpoint difference**: a pass
-road between two 500 m junctions has hundreds of metres of climb in each direction and no net
-change at all. The producer samples elevation along the edge's densified polyline (one sample
-per vertex plus interpolated points, so no gap exceeds ~50 m of ground) and folds the
+`Ascent M` is an **integral over the edge's polyline, not an endpoint difference** (a pass road
+between two junctions at 500 m has hundreds of metres of climb in each direction and no net
+change). The producer samples elevation along the edge's densified polyline (one sample per vertex
+plus interpolated points, so no gap exceeds about 50 m of ground) and folds the
 `(distance, elevation)` stream through the shared dead-banded integrator. A stretch with no
-elevation coverage contributes nothing: the integrator re-anchors across the hole rather than
-booking the climb over it.
+elevation coverage contributes nothing: the integrator re-anchors across the gap.
 
 Rules:
 
-- **Sentinel.** Because chunks are `0xFF`-padded, the byte where the next record's
-  `Degree` would sit reads `0xFF` — the reader stops there (mirrors the POI
-  subtype sentinel; the geometry chunks' style-id sentinel likewise). A record
-  never straddles a chunk boundary, so a chunk decodes in isolation.
+- **Sentinel.** Chunks are `0xFF`-padded, so the byte where the next record's `Degree` would be
+  reads `0xFF`, and the reader stops there. A record never straddles a chunk boundary, so a chunk
+  decodes in isolation.
 - **Degree cap: 24.** `13 + 24 × 17 = 421 ≤ 512`, so a cap-degree record always fits one
   chunk. A node past the cap keeps its **first 24** adjacency entries (edge-pool order,
   deterministic) and the packer warns; a dropped arc survives one-way via the neighbor's own
   record. `0xFF` can therefore never be a real degree.
-- **Undirected, with one exception.** Every edge appears in both endpoints'
-  records with the **same** `Edge Id`, `Cost M`, and `Way Kind`. **`Ascent M` is
-  the exception and MUST NOT be assumed equal**: the entry `a→b` carries
-  `ascent(a→b)` and the entry `b→a` carries `ascent(b→a)`, which is the first
-  direction's *descent*. A consumer that verifies "both sides agree" must exclude
-  this field. A self-loop (`a == b`, e.g. a lollipop loop) appears **once** in its
-  node's record, carrying its forward direction's ascent.
+- **Undirected, with one exception.** Every edge appears in both endpoints' records with the
+  **same** `Edge Id`, `Cost M`, and `Way Kind`. **`Ascent M` MUST NOT be assumed equal**: the entry
+  `a→b` carries `ascent(a→b)` and the entry `b→a` carries `ascent(b→a)`, which is the first
+  direction's *descent*. A consumer that verifies "both sides agree" must exclude this field. A
+  self-loop (`a == b`, e.g. a lollipop loop) appears **once** in its node's record, carrying its
+  forward direction's ascent.
 - **Seam determinism.** A producer that cuts one edge into pieces at a cell border
   (`obca-assembly.md` §3) integrates each piece over the **same global elevation
   lattice**, so two neighbouring cells' stubs are each the integral of their own
@@ -901,11 +832,11 @@ Rules:
 
 Deduplicated edge geometry, fetched at route emit (stitching the A\* came-from chain into the
 output polyline) and by endpoint projection. The sum of `Length M` over the chain is the
-route's **displayed** distance; the weighted `g` is not a distance. The pool is a run of
-`Edge Chunk Count` × 512-byte chunks beginning at `Edge Pool Offset * U`. Records are packed
-back-to-back, and a record that would cross a chunk boundary is pushed to the next chunk start
-(`0xFF` filler fills the gap), so **no record straddles a chunk**: one chunk-granular read
-always covers one edge, and "the *n*th record of a chunk" is well defined.
+route's **displayed** distance; the weighted `g` is not a distance. The pool is
+`Edge Chunk Count` × 512-byte chunks from `Edge Pool Offset * U`. Records are packed back-to-back;
+a record that would cross a chunk boundary moves to the next chunk start (`0xFF` filler fills the
+gap), so **no record straddles a chunk**: one chunk read always covers one edge, and "the *n*th
+record of a chunk" is well defined.
 
 **Addressing: `Edge Id` is a packed `(chunk, ordinal)` pair.** The `uint32` splits at bit 5:
 
@@ -915,15 +846,13 @@ ordinal     = Edge Id & 0x1F           #  5 bits
 chunk_start = Edge Pool Offset * U + chunk_index * 512
 ```
 
-`ordinal` is the record's **position within its chunk**, counting from `0` — not a byte offset into
-it. Ids stay opaque to consumers (assigned at pack time, meaningless across files) and the pool
-still carries **zero resident index bytes**, which is the property that chose this packing over an
-edge-id table in the first place.
+`ordinal` is the record's **position within its chunk**, counting from `0`, not a byte offset.
+Ids are opaque to consumers (assigned at pack time, meaningless across files), and the pool has
+**zero resident index bytes**.
 
-**Resolving one.** A reader reads the single 512-byte chunk at `chunk_start` and walks `ordinal`
-records from its first byte, taking each record's length from its own `Pt Count`. Every record the
-walk touches — the intermediate ones and the target alike — gets the **same four checks**, so the
-walk is written once and applied `ordinal + 1` times:
+**Resolving one.** A reader reads the 512-byte chunk at `chunk_start` and walks `ordinal` records
+from its first byte, taking each record's length from its own `Pt Count`. Every record the walk
+touches, intermediate and target, gets the **same four checks** (`ordinal + 1` times):
 
 ```
 # `p` is a byte position in 0..=512. Every bound below is written ADDITIVELY on `p`.
@@ -943,56 +872,43 @@ repeat ordinal times:
 step(p)                                  # the target record, same four checks
 ```
 
-**`512 - p` MUST NOT appear anywhere in that walk, in any width.** Written as `512 - p < 19` the
-guard is a bug in every unsigned language this spec is implemented in: once `p` passes `512` — which
-a corrupt `Pt Count` does in a single step — the subtraction wraps to a huge value, the guard passes,
-and `u16_at(p + 4)` reads outside the chunk. This is the same class of mistake as the `u32 * U`
-narrowing §1.1 warns about, and it is spelled out here because this block is the one a reader
-transcribes verbatim.
+**`512 - p` MUST NOT appear anywhere in that walk, in any width**: once a corrupt `Pt Count` moves
+`p` past `512`, the unsigned subtraction wraps, the guard passes, and `u16_at(p + 4)` reads outside
+the chunk.
 
-**`n` is a `uint16` but `len` needs 19 bits — evaluate `15 + 4 × (n - 1)` in at least 32 bits**, the
-same widening rule §1.1 states for `u32 × U`. It is the same defect one operator over: the largest
-`n` the guards above let through is `0xFFFE`, giving `len = 15 + 4 × 65 533 = 262 147`, and a
-transcriber that computes it in the operand's own width wraps that to `3`. Then `p + 3 > 512` is
-false, the `record claims bytes past its chunk` check passes, and the walk advances three bytes into
-the middle of a record instead of refusing — silently, and with every bound in the block written
-correctly.
+**Evaluate `15 + 4 × (n - 1)` in at least 32 bits** (§1.1's widening rule). `n` is a `uint16`, but
+for the largest `n` the guards let through, `0xFFFE`, `len = 15 + 4 × 65 533 = 262 147`; in 16 bits
+that wraps to `3` and passes the `record claims bytes past its chunk` check.
 
 Four refusal rules, and a reader MUST apply all of them, because an `Edge Id` reaches it from an
 adjacency entry or a snap record and is arbitrary in a corrupt map: `chunk_index < Edge Chunk
 Count`; no record may start where one cannot fit; the walk MUST NOT pass the chunk's last record (an
-`ordinal` past it is invalid, never a neighbouring record — and not a record of the *next* chunk,
-which is why the bound is `512` and not the pool's end); and no record may claim bytes past its
-chunk. A refused id is a malformed map, not an absent edge.
+`ordinal` past it is invalid, never a neighbouring record, and never a record of the *next* chunk,
+so the bound is `512` and not the pool's end); and no record may claim bytes past its chunk. A
+refused id is a malformed map, not an absent edge.
 
-**`Pt Count == 0xFFFF` is the end-of-chunk sentinel**, and it costs a writer nothing: chunks are
-already `0xFF`-filled, so the two bytes at `p + 4` of a gap already spell it. `Pt Count` is at least
-`2` in every real record, so `0xFFFF` is impossible content — the same shape as the style-id
-sentinel (§5.1), the POI subtype sentinel (§7.3) and the nav degree sentinel (§8.3). A gap shorter
-than six bytes cannot be read for it, which is what the `512 - p < 19` test covers: no record fits
-there either way.
+**`Pt Count == 0xFFFF` is the end-of-chunk sentinel.** Chunks are `0xFF`-filled, so the two bytes
+at `p + 4` of a gap already spell it. `Pt Count` is at least `2` in every real record, so `0xFFFF`
+is impossible content (as for the sentinels of §5.1, §7.3 and §8.3). A gap shorter than six bytes
+cannot be read for it, which is what the `512 - p < 19` test covers: no record fits there either
+way.
 
-**Why five bits.** An edge record is `15 + 4 × (Pt Count − 1)` bytes with `Pt Count ≥ 2`, so
-the smallest record this format can express is **19 bytes** and a 512-byte chunk holds at most
-`floor(512 / 19) = 26` of them. Five bits name `0..=31`, which covers 26, and leave **27** for
-the chunk index, which is the split where the two ceilings meet:
+**Five ordinal bits.** An edge record is `15 + 4 × (Pt Count − 1)` bytes with `Pt Count ≥ 2`, so
+the smallest record is **19 bytes** and a 512-byte chunk holds at most `floor(512 / 19) = 26` of
+them. Five bits name `0..=31`, which covers 26, and leave **27** for the chunk index:
 
 ```
 pool ceiling = 2^27 chunks × 512 B/chunk = 2^36 B = 64 GiB
 interior     = 2^32 units × 16 B/unit    = 2^36 B = 64 GiB      (§1.1, at the default scale 4)
 ```
 
-`Edge Chunk Count` MUST therefore be at most `2^27`, and a reader MUST refuse a directory that
-exceeds it: no `Edge Id` could name the chunks past that point, so the tail would be bytes the
-directory claims and no id reaches.
+`Edge Chunk Count` MUST be at most `2^27`, and a reader MUST refuse a directory that exceeds it: no
+`Edge Id` can name the chunks past that point.
 
-**A chunk holds at most 31 records** — a producer MUST NOT write a 32nd, so `ordinal` is never
-more than `30`. Today's 19-byte minimum record puts the real maximum at 26, so the cap gives up
-nothing; it exists so that the encoding stays sound if a future record ever shrinks. **31 and
-not 32** is what makes `0xFFFFFFFF` impossible unconditionally: that id is ordinal `31` of
-chunk `2^27 − 1`, and both halves are otherwise legal.
-
-**`0xFFFFFFFF` remains an impossible id**, which is what keeps §8.7's sentinel working.
+**A chunk holds at most 31 records**: a producer MUST NOT write a 32nd, so `ordinal` is never more
+than `30`. With the 19-byte minimum record the real maximum is 26. The cap is 31, not 32, so that
+`0xFFFFFFFF` (ordinal `31` of chunk `2^27 − 1`) is always an impossible id, which keeps §8.7's
+sentinel working.
 
 Edge record (`15 + 4 × (Pt Count - 1)` bytes):
 
@@ -1010,42 +926,35 @@ or absent terrain, even when both endpoint heights are valid.
 | 11 | Anchor Lon | 4 | `int32` | First vertex longitude |
 | 15 | Deltas | 4 × (Pt Count − 1) | | Per vertex: `dlat int16, dlon int16`, chained from the previous vertex |
 
-The polyline runs from endpoint `a` to endpoint `b` inclusive (first vertex = `a`'s
-coord, last = `b`'s); a consumer walking the edge from `b` reverses it. Deltas are
-**lat-first** like every §7/§8 record (the geometry sections §5 are lon-first —
-anchors there are viewport-space `x, y`).
+The polyline runs from endpoint `a` to endpoint `b` inclusive (first vertex = `a`'s coordinate,
+last = `b`'s); a consumer walking the edge from `b` reverses it. Deltas are **lat-first** like
+every §7/§8 record (the §5 geometry sections are lon-first: anchors there are viewport-space
+`x, y`).
 
-`Pt Count ≥ 2` is what makes the 19-byte minimum record — and therefore the 26-record chunk and the
-5-bit ordinal (above) — a property of the format rather than an observation about real maps.
+Packer guarantees that make the fixed `int16` deltas, the `int16` neighbor deltas (§8.3), the
+`uint16` cost, the no-straddle rule and the ordinal's 5-bit field hold **by construction**:
 
-Packer guarantees that make the fixed `int16` deltas, the `int16` neighbor deltas
-(§8.3), the `uint16` cost, the no-straddle rule and the ordinal's 5-bit field all hold **by
-construction**:
-
-- **Densification.** Any segment whose lat **or** lon delta exceeds `30000`
-  microdegrees is subdivided with interpolated vertices — the same threshold as
-  §5 geometry and the OBCR track encoding. Readers need no special handling.
+- **Densification.** Any segment whose lat **or** lon delta exceeds `30000` microdegrees is
+  subdivided with interpolated vertices (the same threshold as §5 geometry and the OBCR track
+  encoding). Readers need no special handling.
 - **Edge splits.** `nav.rs` splits any edge whose endpoint-to-endpoint lat/lon
   delta exceeds `32000` µdeg (so the §8.3 neighbor delta fits `int16`) or whose
   `Length M` exceeds `60000` m (so `Cost M` fits `uint16`), into pieces joined by
-  **synthetic degree-2 junctions** (new dense ids past the real ones). The
-  serializer additionally splits any piece whose densified record would exceed one
-  chunk (`Pt Count > (512 − 15) / 4 + 1`, i.e. 125 points) or whose endpoint span
-  would exceed the `int16` bound after densification. Because the smallest record is 19 bytes, a
-  chunk that survives those splits holds `1..=26` records — inside the 31-record cap, and so
-  inside the ordinal's `0..=30`. Routing-neutral: each piece's
-  `Length M` is re-measured over its sub-polyline, so costs still sum to the
-  original.
+  **synthetic degree-2 junctions** (new dense ids past the real ones). The serializer also splits
+  any piece whose densified record would exceed one chunk (`Pt Count > (512 − 15) / 4 + 1`, i.e.
+  125 points) or whose endpoint span would exceed the `int16` bound after densification. A chunk
+  then holds `1..=26` records, inside the 31-record cap and the ordinal's `0..=30`. Each piece's
+  `Length M` is re-measured over its sub-polyline, so costs still sum to the original.
 
 ### 8.5 Worked example
 
 A minimal graph — two junctions `A`(lat 100, lon 200) and `B`(lat 900, lon 800)
 joined by one 3-vertex edge of 1234 m and way-kind `0x2A` (tertiary/paved: highway
 class 10 `| (`surface class 1 `<< 5)`) that climbs 300 m from `A` to `B` and
-re-climbs 42 m of dips on the way back — with one profile "`Road`" (climb weight
-10; a real producer writes four, one is enough to show the layout), at the default `Offset Scale = 4` (`U = 16`), with the section at a 512-byte-aligned file
-offset `S`. Directory fields are **units**, so each is a byte offset divided by 16; `S` is a multiple
-of 512 and therefore of 16, and `s = S / 16` is the section's own scaled address:
+re-climbs 42 m of dips on the way back — with one profile "`Road`" (climb weight 10; a real
+producer writes four), at the default `Offset Scale = 4` (`U = 16`), with the section at a
+512-byte-aligned file offset `S`. Directory fields are **units** (a byte offset divided by 16), and
+`s = S / 16` is the section's own scaled address:
 
 ```
 S+0    Nav Directory (40 B):
@@ -1092,28 +1001,24 @@ S+2048 Snap Chunk 0 (512 B):
          0xFF × 464                                 (padding = sentinel)
 ```
 
-The section ends at `S+2560`. Two of the offsets are worth checking by hand, because they are
-the two the scaling constrains:
+The section ends at `S+2560`. The two offsets that the scaling constrains:
 
 - **`profile_table_offset`.** `S+40`, immediately behind the directory, is not a multiple of 16, so
-  no offset can name it; the table sits at `S+48` and the eight bytes behind the directory are
+  no offset can name it; the table is at `S+48` and the eight bytes behind the directory are
   filler.
 - **`index_offset`.** The producer wants the first node chunk at `S+512`, and the reader computes it
-  as `align_up(index_offset × 16 + 1 × 4, 16)`. Working backwards, `index_offset × 16` must lie in
-  `(S+492, S+508]` and be a multiple of 16, which leaves `S+496` — so `index_offset = s+31`, the
-  index occupies `S+496..S+500`, and twelve bytes of filler carry it to the boundary. The rounding
-  step is what lets both alignments hold at once, for **every** node count, and it costs `0..15`
-  bytes once per region.
+  as `align_up(index_offset × 16 + 1 × 4, 16)`. So `index_offset × 16` must be a multiple of 16 in
+  `(S+492, S+508]`, which leaves `S+496`: `index_offset = s+31`, the index occupies
+  `S+496..S+500`, and twelve bytes of filler carry it to the boundary.
 
-Node `A` reconstructs neighbor `B` as `(100 + 800, 200 + 600) = (900, 800)` — no edge fetch
-needed for `h`. The only edge is the first record of the first chunk, so `(0 << 5) | 0` is
-`edge_id = 0`; a second edge behind it would be `edge_id = 1`. Both directions of the edge
-carry `edge_id = 0`, `cost_m = 1234` and `way_kind = 0x2A`; only `ascent_m` differs, which is
-the §8.3 exception — the same road costs 300 m of climb uphill and 42 m down.
-Under "`Road`" the uphill arc weighs `(1234 × 16) >> 4 + 300 × 10 = 4234` and the
-downhill one `1234 + 42 × 10 = 1654`. Fetching the edge decodes the polyline
-`(100,200) → (500,500) → (900,800)`, its way-kind `0x2A`, and its 1234 m length in
-one ≤ 512-byte read.
+Node `A` reconstructs neighbor `B` as `(100 + 800, 200 + 600) = (900, 800)` with no edge fetch for
+`h`. The only edge is the first record of the first chunk, so `(0 << 5) | 0` is `edge_id = 0`; a
+second edge behind it would be `edge_id = 1`. Both directions of the edge carry `edge_id = 0`,
+`cost_m = 1234` and `way_kind = 0x2A`; only `ascent_m` differs (the §8.3 exception): 300 m of
+climb uphill and 42 m down. Under "`Road`" the uphill arc weighs
+`(1234 × 16) >> 4 + 300 × 10 = 4234` and the downhill one `1234 + 42 × 10 = 1654`. Fetching the
+edge decodes the polyline `(100,200) → (500,500) → (900,800)`, its way-kind `0x2A`, and its 1234 m
+length in one ≤ 512-byte read.
 
 ### 8.6 Profile table (bike-type routing)
 
@@ -1134,7 +1039,7 @@ the table under profile 0.
 | 53 | Reserved | 3 | `uint8[3]` | Written `0`; readers MUST ignore |
 
 Stock `Climb Weight` values are Road `10`, Gravel `8`, MTB `6`, Touring `8`. `0` is legal and
-means climb-blind costing; it is what a producer writes when it has no opinion.
+means climb-blind costing; a producer with no opinion writes it.
 
 The **effective multiplier** for an edge whose packed `Way Kind` is `k` is:
 
@@ -1160,17 +1065,14 @@ whose quantized weight is non-zero but `< 16`; the reader **clamps** a non-zero 
 
 **The climb term is additive and non-negative (normative).** `Ascent M` and `Climb Weight` are
 both unsigned and the term is *added*, so a descent MUST NOT reduce an edge's cost below its
-profile-weighted ground length. `Climb Weight` therefore needs no lower bound the way a
-multiplier does: every `uint8`, `0` included, is admissible. The worst real edge (60 km,
-3000 m of ascent, the §8.4 split bounds) at `Climb Weight = 15` is `60 000 + 45 000`, inside
-the saturating arithmetic.
+profile-weighted ground length. `Climb Weight` therefore needs no lower bound: every `uint8`, `0`
+included, is admissible.
 
 #### Canonical way-kind table (normative)
 
-`Way Kind = (surface_class << 5) | highway_class`. This mirrors the packer's single
-source of truth (`obc-places/src/routing.rs` — `highway_class` / `surface_class` /
-`classify`); profile configs and the web builder key their multipliers by these
-class names.
+`Way Kind = (surface_class << 5) | highway_class`. The packer's single source of truth is
+`obc-places/src/routing.rs` (`highway_class` / `surface_class` / `classify`); profile configs and
+the web builder key their multipliers by these class names.
 
 **Highway class** (5 bits, `0..=31`; `0..=13` assigned, `14..=31` reserved):
 
@@ -1212,12 +1114,12 @@ legality) is the profile's job.
 
 ### 8.7 Sparse exact-edge snap index
 
-The edge pool is followed by a second quadtree index — at `Snap Index Offset * U`, scaled like every
-other directory offset — and `Snap Chunk Count` fixed 512-byte chunks beginning at
-`align_up(Snap Index Offset * U + Snap Index Node Count * 4, U)`, the §8.1 convention verbatim.
-The quadtree has §8.2's identical flat encoding, global bbox, subdivision, split floor and first-fit
-leaf bin packing. Consequently distinct leaves may reference one shared chunk and readers MUST
-filter records by their absolute coordinate.
+The edge pool is followed by a second quadtree index at `Snap Index Offset * U` and
+`Snap Chunk Count` fixed 512-byte chunks beginning at
+`align_up(Snap Index Offset * U + Snap Index Node Count * 4, U)` (the §8.1 convention). The
+quadtree has §8.2's flat encoding, global bbox, subdivision, split floor and first-fit leaf bin
+packing, so distinct leaves may reference one shared chunk and readers MUST filter records by their
+absolute coordinate.
 
 Each record is 12 bytes:
 
@@ -1227,12 +1129,11 @@ Each record is 12 bytes:
 | 4 | Lon | 4 | `int32` | Anchor longitude, absolute microdegrees |
 | 8 | Edge Id | 4 | `uint32` | Pool-relative id of the §8.4 edge geometry to project |
 
-Unused chunk tails are `0xFF`; `Edge Id == 0xFFFFFFFF` is the sentinel, which §8.4 shows stays
-impossible as a real id under the `(chunk, ordinal)` packing. A final serialized edge
-piece contributes no record when its measured geometry is at most 300 m. Otherwise the producer
-chooses `ceil(length / 300)` equal-length intervals along the polyline and writes the `intervals − 1`
-interior boundaries. Thus endpoint/anchor gaps are no more than 300 m without adding routable graph
-nodes or changing A* topology.
+Unused chunk tails are `0xFF`; `Edge Id == 0xFFFFFFFF` is the sentinel, impossible as a real id
+(§8.4). A final serialized edge piece contributes no record when its measured geometry is at most
+300 m. Otherwise the producer chooses `ceil(length / 300)` equal-length intervals along the
+polyline and writes the `intervals − 1` interior boundaries. So no endpoint/anchor gap is more than
+300 m, and no routable graph node or A* topology change is added.
 
 The coverage guarantee above requires every generated record to reach the index. A producer MUST
 report a split-floor leaf overflow and its dropped-record count; a map release claiming complete
@@ -1251,11 +1152,10 @@ distance (100 m in the reference router).
 
 ## Reference implementations
 
-- **Format authority (Rust, no_std):** `firmware/obc-formats/src/obcm.rs` (version, fixed
-  record lengths, flags, sentinels, POI ids/categories/labels, `OffsetScale` / `ScaledOffset`
-  for §1.1, and `UnitWriter`, §1.2's boundary-and-filler rule as a cursor) and
-  `firmware/obc-formats/src/io.rs` (checked little-endian primitives plus the neutral
-  byte-source/sink seam). It contains no reader, packer, cache, or rendering policy.
+- **Format authority (Rust, no_std):** `firmware/obc-formats/src/obcm.rs` (also `OffsetScale` /
+  `ScaledOffset` for §1.1, and `UnitWriter`, §1.2's boundary-and-filler rule as a cursor) and
+  `firmware/obc-formats/src/io.rs` (checked little-endian primitives, byte source and sink). It
+  contains no reader, packer, cache, or rendering policy.
 - **Writer (Rust, std host):** `host/obc-draw/src/serialize.rs` encodes feature trees.
   `host/obc-network/src/serialize.rs` encodes POI, graph and snap sections.
   `host/obc-map-core/src/serialize.rs` frames these bytes, styles and routing profiles.
@@ -1284,7 +1184,7 @@ They do not use the map offset scale.
 
 ### 9.1 Directory and spatial records
 
-All integers are little-endian. The directory is 16 bytes:
+The directory is 16 bytes:
 
 | Offset | Field | Type | Constraint |
 | :-- | :-- | :-- | :-- |
@@ -1415,7 +1315,7 @@ Peak View; landmark and service-place queries MUST NOT return these records.
 
 The section follows landmarks and precedes terrain. The header offset and length use the map's
 Offset Scale. Interior offsets are unsigned byte offsets relative to the start of this section.
-Final unit padding is `0xFF`; it is outside the exact section length below. All integers are little-endian.
+Final unit padding is `0xFF`; it is outside the exact section length below.
 
 ### 10.1 Directory and identity tables
 
@@ -1463,7 +1363,7 @@ The name is required. Both photo references are `(0, 0)` when absent; otherwise 
 The article bundle reference is `(0, 0)` when the record has no text; a record MUST carry the
 article bundle, the photo, or both. A present reference MUST start at or after Payload Offset,
 contain more than 33 bytes, and end at or before Section Length without integer overflow. Payload
-limits, excluding the guard, are the same as §9: name at most 256 bytes, article bundle at most the
+limits, excluding the guard, are those of §9.1: name at most 256 bytes, article bundle at most the
 shared article limit, compressed photo at most 52,096 bytes, and photo attribution at most 1,024
 bytes. The article bundle uses §9.2 unchanged. Its internal offsets are relative to the start of
 that bundle, after the guard. The photo stream uses §9.3 unchanged. One optional photo serves all
@@ -1482,8 +1382,8 @@ A selection retains the map generation and the full association. Before each con
 reader MUST require the same active generation, SourceId, article identity and article index.
 A missing section or missing source key means no article. A malformed index, reference, guard or
 bundle is an error; it MUST NOT open another article. An old selection MUST fail after a map change,
-even when the new map reuses the same table index. Text language selection uses §9.2: UI language,
-then English, then the baked default. It does not change the summit association.
+even when the new map reuses the same table index. Text language selection follows §9.2. It does
+not change the summit association.
 
 ### 10.4 Packing, clipping and assembly
 
@@ -1509,5 +1409,4 @@ change the result. Conflicting summit-to-article identities MUST fail instead of
 
 Peak catalogue bytes, declared photo bytes, encoder policy and dependency identity belong to the
 cell cache key. Verify declared photo digests before a cache hit. The same normal pack, cut and
-assembly entry points carry this section. Automatic regional content capture and artifact delivery
-are orchestration concerns outside this byte contract.
+assembly entry points carry this section.
