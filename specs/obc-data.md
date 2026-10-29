@@ -1122,10 +1122,10 @@ and the step list reads files such as a `.poly` and the GLO-30 tile list, each a
 A leaf reads the archive tiles of its terrain cells: those of the windows that the crest rule of
 `OBCT_Spec.md` §9 reads, which have a halo of two postings. A model whose `extent` meets one of
 those tiles in the version of `terrain` that the target reads (see [Prepared sources](#prepared-sources)):
-the step list reads its manifest, and the leaf reads the files `16/<ti:04>/<tj:04>.tif` of the
-manifest among those tiles and its `index.json`. So a machine with an empty store plans a region
-from the manifest alone. A leaf where the version has none of its tiles has no `device/reference`
-layer. Where a tile that the version lacks meets the outline of the region and is in the
+the step list reads its manifest, and the leaf reads the blocks `18/<bi:04>/<bj:04>.tif` of the
+manifest that hold those tiles and its `index.json`. So a machine with an empty store plans a
+region from the manifest alone. A leaf where the version has no block of its tiles has no
+`device/reference` layer. Where a tile whose block the version lacks meets the outline of the region and is in the
 `geofabrik-poly` polygon of one of the
 `areas` of a `dtm-*` model, a note on `device/terrain` names the model and the command that adds
 the region; the version that adds it is a new input of the leaves that read it.
@@ -1135,7 +1135,7 @@ the region; the version that adds it is a new input of the leaves that read it.
 | `device/region-osm` | The selected PBF of each `device/source/<area>`; only for multiple areas | None | `osm.pbf`: the available-snapshot union |
 | `device/osm` | The PBF of one `device/source/<area>`, or `device/region-osm` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds --generator obc-data` of the square of the leaf and one µdeg around it, without the header options of the input, such as its replication fields. Each Osmium run writes at most two extracts: the rectangle around the leaves is halved along its longer side, and each half is cut from the extract of its parent, until each part is one leaf. Each leaf has the bytes of the direct extract. The metrics name the version (`osmium`) |
 | `device/map/<i>-<j>` | `device/osm`, the file of the leaf; `land-polygons`; `device/terrain/<i>-<j>`, which the contours, the nav graph and the POIs read | `leaf`: `[23, i, j]`; `cells`: for each band of the recommended band table (`OBCA_Spec.md`), `[ci, cj]` of each cell of the band in the leaf that the outline touches; `partial_cells`: the ids of those cells that the source coverage does not hold | `cells/<band>/<ci>/<cj>.obcm` for each cell with content or with partial coverage; `cells/<band>/empty.json`: the ids of the other cells of the band. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks. The step decodes the OSM of the leaf once |
-| `device/reference/<i>-<j>` | `terrain`, without params: those tiles of its version and `index.json`; only when the version has one of them | `source`: `terrain`; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of those tiles, and the `index.json` of the version cut to them. A Python step with the group `terrain-reference` |
+| `device/reference/<i>-<j>` | `terrain`, without params: the blocks of those tiles in its version and `index.json`; only when the version has one of them | `source`: `terrain`; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of those tiles that the index names, each cut out of its block, and the `index.json` of the version cut to them, with `tiles` and the `sha256` of the pixels of each tile. A Python step with the group `terrain-reference` |
 | `device/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `device/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `metadata/empty.json`: the ids of the cells without a height; `metadata/credits.json`, when a cell reads a national model: `key`, `product`, `attribution` and `licence` of each model that a cell reads, as the reference archive states them |
 | `device/landmark-content[/<area>]`, `device/peak-content[/<area>]` | `wiki`, without params: `common.tar.zst` and the shards of the `2^20` µdeg cells that the `.poly` of the area touches, of its manifest; regional `geofabrik-extracts` and `geofabrik-poly` | None | `landmarks/content.json` or `peaks/peaks.json` and device photos. The metrics count the facts that the version lacks, by kind (`absent`), and the run log names them. No client reads the layer: the device cell layers publish the final assets |
 | `device/landmarks/<i>-<j>`, `device/peaks/<i>-<j>` | Every area's landmark content and `device/osm`, the file of the leaf; or every area's peak content | `cell_log2`: 18; `cells`: `[ci, cj]` of each network cell of the leaf: the `network` list of `cells` of `device/map/<i>-<j>` | `landmarks/<ci>/<cj>.bin` or `peaks/<ci>/<cj>.bin` for each cell that owns content (`OBCC_Spec.md` §14.3). A landmark joins the OSM objects of the leaf that name it |
@@ -1166,15 +1166,15 @@ at its version (see [Versions](#versions)), as for `device`. The other options c
 [`data/planner.toml`](#dataplannertoml). A GLO-30 input reads the tile
 of each 1° square that its box touches and that `copernicus-glo-30-tiles` names; a box at sea
 reads no snapshot. `planner/terrain` reads the mean of the national terrain models as `device`
-reads their maximum: the files `mean/16/<ti:04>/<tj:04>.tif` among the archive tiles of its `bounds`
-of the version of `terrain` that the target reads, and `mean/index.json`.
+reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the archive tiles of its
+`bounds` in the version of `terrain` that the target reads, and `index.json`.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
 | `planner/osm` | The selected PBF of each `planner/source/<area>` | `path`: `osm.pbf` for one area; none for multiple areas | `osm.pbf`: one extract as it is, or the available-snapshot union |
 | `planner/osm/bounds` | `planner/osm` | For a region with a box, `bbox`: west, south, east and north of the bounds of the region, widened by `osm.margin_m`, within ±180° and ±90°. For a region without a box, `path`: `osm.pbf` | `osm.pbf`: for a region with a box, the `osmium extract --strategy smart -S types=multipolygon,boundary --set-bounds --generator obc-data` of `bbox`, in which each multipolygon and each boundary that `bbox` touches is complete, and the metrics name the version (`osmium`). For a region without a box, `planner/osm` as it is: its extracts are its whole area |
 | `planner/basemap` | `planner/osm/bounds`; The selected jar of `protomaps-basemaps`; `natural-earth`, `water-polygons`, `land-polygons`, `daylight-landcover`, `qrank`, `pgf-encoding` | `bounds` of the region; `attribution` of `osm-planet`, `natural-earth` and `daylight-landcover` | `basemap.pmtiles`: the Protomaps map at zooms 0 to 14 |
-| `planner/reference` | `terrain`, without params: the mean tiles in `bounds` of `planner/terrain` and in the ring of tiles around them, and `mean/index.json`; only when the version has one of them | `source` and `tiles` as for `device/reference`, of the tiles of `bounds`; `pool`: `mean` | `reference/`: the mean archive of those tiles. A Python step with the group `terrain-reference` |
+| `planner/reference` | `terrain`, without params: the mean blocks of the tiles in `bounds` of `planner/terrain` and in the ring of tiles around them, and `index.json`; only when the version has one of them | `source` and `tiles` as for `device/reference`, of the tiles of `bounds`; `pool`: `mean` | `reference/`: the mean archive of those tiles. A Python step with the group `terrain-reference` |
 | `planner/terrain-osm/<area>` | `terrain-osm`, `area=<area>`, for each source area | `path`: `source.osm.pbf` | `source.osm.pbf`: the extract as it is |
 | `planner/terrain-osm` | Only for more than one source area: `source.osm.pbf` of each `planner/terrain-osm/<area>` | None | `osm.pbf`: their union, as `planner/osm` merges |
 | `planner/terrain` | The GLO-30 tiles of `bounds`; `planner/reference` when there is one; `planner/terrain-osm`, or for one source area its `planner/terrain-osm/<area>` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours; `attribution`: the credit of GLO-30; `osm_attribution`: the credit of `osm-planet` | `terrain.mbtiles`: the terrain tiles of [the planner release](planner-release.md#terrain-tiles), the bytes that `planner-dem` writes from the same tiles, archive and OSM. `terrain-osm` is the Geofabrik extract with `refresh = "manual"`: the terrain keeps the extract of each area that it read first, and a newer `geofabrik-extracts` does not build the terrain again. `obc data fetch terrain-osm area=<area>` puts a newer extract in the store, which the next update reads. Where GLO-30 has weight, its heights follow the OSM within 300 m of `bounds` (`host/obc-dem/src/shape.rs`): the water side of `natural=coastline` is at 0 m up to 45 m from the line; within 45 m of the top of GLO-30 within 30 m of a `natural=peak` or `natural=volcano` with a numeric `ele`, the cone of its flanks continued from 45 m and 90 m, only rising and never above `ele`. With OSM, the metrics name the Osmium version (`osmium`) |
@@ -1197,7 +1197,7 @@ of the version of `terrain` that the target reads, and `mean/index.json`.
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region` | `layer`: `ground`; `bounds`; `attribution` of the sources of the three | `ground.pmtiles`: [the ground archive](trailview-tiles.md#ground) |
 | `planner/trailview-colour` | `sentinel-2-mosaics`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles`: [the colour archives](trailview-tiles.md#colour) |
 | `planner/trailview-snow` | `snow.pmtiles` of `planner/snow` | `bounds` | `00.pmtiles` to `45.pmtiles`: [the snow days](trailview-tiles.md#snow-days), one archive per band |
-| `planner/trailview-canopy` | The tiles of [`forest`](#forest) that the canopy models of the region meet in the boxes of the region, as `forest` defines them, or in the bounds of a region without boxes. A version whose scope and `extends` lack one of those tiles refuses, and so does a region that no canopy model meets | `bounds`; `attribution`: the credits of the canopy models of those tiles and of the leaf type | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
+| `planner/trailview-canopy` | The blocks of [`forest`](#forest) that the outline of the region meets, as `forest` defines them. A version that lacks one of those blocks refuses | `bounds`; `attribution`: the credits of the canopy models with a tile in those blocks and of the leaf type | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
 `terrain`, `overlays`, `climate`, `snow`, `trailview-features`, `trailview-ground` or
@@ -1883,77 +1883,92 @@ copy only reads the target.
 
 #### `terrain`
 
-The producer `terrain`, format 3, makes the tiles of the reference archive
+The producer `terrain`, format 4, makes the blocks of the reference archive
 (`host/obc-dem/reference/README.md`) of the national terrain models `dtm-<key>`, in two pools: the
 maximum, which `device/terrain` reads, and under `mean/` the mean, which `planner/terrain` reads.
 A version adds a region to the newest complete version of `terrain` in the home, in the same
 format.
 
-- The boxes of a region are the box of each of its leaves, so a union reads no tile between its
-  boxes. A region with a `geofabrik` leaf has no boxes.
-- The models are the `dtm-*` rows with `redistribute = true` whose `extent` meets a box of the
-  region and, when the region names `countries`, whose key is of one of them: the first part of
-  the key is the lowercase ISO 3166-1 code, so `dtm-de-by` is of `DE`; all of them for a version
-  of everything. A region that names no `countries` has those of its leaves, and none when a leaf
-  names none. The tiles of a model are those that meet its
-  `extent` and the `geofabrik-poly` polygon of one of its `areas`: the boundary of the polygon
-  crosses the tile, or the polygon holds the centre of the tile. A version of a region has only
-  those tiles in its boxes and in the polygons of its areas. A run keeps the version of each
-  polygon that the first run of the version read. The review counts the two pools of the tiles of
-  each `extent` in the boxes of the region, and the two `index.json`.
-- For each tile, `host/obc-dem/reference/ingest.py fetch <keys> --tile <ti:04>-<tj:04>` pools the
-  rasters of each model of the tile onto the lattice in one pass, and folds each into the tile:
-  into the tile of the version before when it has one (`--base`, with `--held`, its sources), by
-  `fold_tiles`. A model keeps the pixels where it has a height when it ranks better by `PRIORITY`
-  than every other source of the tile, also over an older survey of its own; else it fills only
-  the gaps. So the new models that rank better than every source of the version before fold first,
-  worst first, and the others then fold best first. A source of the version before that ranks
-  better than a new model keeps its pixels where both have a height, also where it is not the best
-  source of that pixel: only a tile that records the source of each pixel removes that limit.
-  Before it uses a model whose row has a `summit`, the program pools the tiles near that summit and
-  refuses the model when the highest height within about 1 km of it is more than 10 m from the
-  surveyed height, and names a check that finds no height. `--shared`, one directory for the tiles of a
-  prepare, keeps the passed checks, so one prepare checks a model once. Each lattice pixel that no centre of a model reaches and that lies between four of its
-  centres with a height takes their bilinear height. A model whose step is longer than the east
-  side of a lattice pixel in the tile asks for the tile with two of its steps of margin. So a
-  model coarser than the lattice fills its footprint. A finer model whose step is longer than half
-  the east side can leave a pixel without a centre next to a void, and the fill gives that pixel
-  the bilinear height. On a tile of `es` (5 m) and one of `ch` (2 m), the fill writes no pixel. A
-  raster of one row or one column fills nothing. The program writes `16/<ti:04>/<tj:04>.tif` and `mean/16/<ti:04>/<tj:04>.tif`, then
-  `<ti:04>-<tj:04>.keys`, the sources of the tile best first, and `<ti:04>-<tj:04>.samples`, the
-  bias samples of the mean: the decimetres of the 16 × 16 pixels whose row and column are 32
-  modulo 64, row by row from the south, `-` where the tile has no height. Then it writes
-  `<ti:04>-<tj:04>.mean.sha256` and `<ti:04>-<tj:04>.sha256`, the SHA-256 of their pixels. Where no model has a height in the
-  tile, it writes the empty `<ti:04>-<tj:04>.none`. It asks a service only for the part of the tile
-  in the `extent`, and it removes the raw rasters. The run keeps the marks of each tile until the
-  version is complete, so a resume fetches no tile again that it has.
-- The run moves the files into the home in batches of 64. Each tile of the version before
-  that the run did not make stays in `reused`.
+- A block is 4 × 4 archive tiles, `2^18` µdeg on a side, about 29 km. Block `(bi, bj)` holds the
+  tiles `(ti, tj)` with `ti >> 2 = bi` and `tj >> 2 = bj`.
+- The models are the `dtm-*` rows with `redistribute = true`. The tiles of a model are those that
+  meet its `extent` and the `geofabrik-poly` polygon of one of its `areas`: the boundary of the
+  polygon crosses the tile, or the polygon holds the centre of the tile.
+- The blocks of a region are the blocks with a tile of a model that a box or a `geofabrik-poly`
+  polygon of a leaf of the region meets; for a version of everything, each block with a tile of a
+  model. A run keeps the version of each polygon that the first run of the version read. A
+  version makes each block of its region from each model with a tile in it, also from a model of
+  a country that the region does not name. So the pixels of a block do not depend on the region,
+  and a version that makes a block of the version before again makes it from all its models.
+  Each other block of the version before stays in `reused`; the manifest names the scopes of the
+  versions before in `extends`. The review counts the two pools of the blocks that the boxes of the
+  region meet, and `index.json`; for a region with a `geofabrik` leaf, `files` is `null`. The review
+  names the models with a tile in a block that the boxes meet; for a region without boxes, the
+  models of its countries and each model whose `extent` meets the `extent` of one of them, or every
+  model when the region names no countries.
+- For each block, `host/obc-dem/reference/ingest.py fetch --block <bi:04>-<bj:04>
+  <ti:04>-<tj:04>=<keys> …` pools the rasters of each model of each tile of the block onto the
+  lattice in one pass, and folds the models of the tile worst first by `PRIORITY`: a model keeps
+  each pixel where it has a height. So the best model with a height holds each pixel. Before it
+  uses a model whose row has a `summit`, the program pools the tiles near that summit and refuses
+  the model when the highest height within about 1 km of it is more than 10 m from the surveyed
+  height, and names a check that finds no height. `--shared`, one directory for the blocks of a
+  prepare, keeps the passed checks, so one prepare checks a model once. Each lattice pixel that no
+  centre of a model reaches and that lies between four of its centres with a height takes their
+  bilinear height. A model whose step is longer than the east side of a lattice pixel in the tile
+  asks for the tile with two of its steps of margin. So a model coarser than the lattice fills its
+  footprint. A finer model whose step is longer than half the east side can leave a pixel without
+  a centre next to a void, and the fill gives that pixel the bilinear height. On a tile of `es`
+  (5 m) and one of `ch` (2 m), the fill writes no pixel. A raster of one row or one column fills
+  nothing. The program writes `18/<bi:04>/<bj:04>.tif` and `mean/18/<bi:04>/<bj:04>.tif`, then
+  `<bi:04>-<bj:04>.tiles`, a JSON object of each tile `<ti:04>/<tj:04>` of the block with a height:
+  `sources`, its sources best first, and `samples`, the bias samples of its mean: the decimetres of
+  the 16 × 16 pixels whose row and column are 32 modulo 64, row by row from the south, `-` where the
+  tile has no height. Then it writes `<bi:04>-<bj:04>.mean.sha256` and `<bi:04>-<bj:04>.sha256`,
+  the SHA-256 of the pixels of the two blocks. Where no model has a height in the block, it writes
+  the empty `<bi:04>-<bj:04>.none`. It asks a service only for the part of a tile in the `extent`,
+  and it removes the raw rasters of a tile after it pools the tile. The run keeps the marks of each
+  block until the version is complete, so a resume fetches no block again that it has.
+- A block is a GeoTIFF of 4096 × 4096 lattice pixels with the encoding of an archive tile and
+  256 × 256 internal tiles. Tile `(ti, tj)` is the window of 1024 × 1024 pixels that starts
+  `(4 bi + 3 − ti) × 1024` rows below the north edge and `(tj − 4 bj) × 1024` columns east of the
+  west edge. Each pixel of a tile without a height is nodata. The SHA-256 of the pixels of a block
+  is over its rows north first, little endian.
+- The run moves the files into the home in batches of 64.
 - Then the run measures the GLO-30 bias of each model that is the best source of a tile and that
   the index of the version before does not state: the median of model − GLO-30, to the
   centimetre, over the samples of each tile whose best source it is. The samples of a tile that
-  the run made are in its mark; those of a tile of the version before come from its mean tile.
-  GLO-30 is bilinear at the sample, from the squares of `copernicus-glo-30` that
+  the run made are in the mark of its block; those of a tile of the version before come from its
+  mean block. GLO-30 is bilinear at the sample, from the squares of `copernicus-glo-30` that
   `copernicus-glo-30-tiles` names; a land square that the fetch does not give is an error. A
   sample in a square that the list does not name is at sea and does not count, and the run logs
   how many. A model with fewer than 1024 samples with GLO-30 has no bias, and a later version
   measures it again. The number is chosen: the samples of four full tiles, so that a test version
-  of one tile does not fix the bias of a model. A model
-  keeps the bias of the version before, so a region added later does not change it. A version
-  that extends no version, such as the first version of a format, measures every model over all
-  its tiles. The heights of a tile are thus the same in each bake of one version of `terrain`.
-- The plan of `planner/reference` reads `mean/index.json` (a fetch of a prepared version with the
-  param `file` gives that file too). It refuses a version that states no bias of the best model
-  of a tile that it reads, and names the fix: a prepare of a box of about four tiles in the
-  middle of the `extent` of that model extends the version and measures it, such as
+  of one tile does not fix the bias of a model. A model keeps the bias of the version before, so a
+  region added later does not change it. A version that extends no version, such as the first
+  version of a format, measures every model over all its tiles. The heights of a tile are thus the
+  same in each bake of one version of `terrain`.
+- The plan of `planner/reference` reads `index.json` (a fetch of a prepared version with the param
+  `file` gives that file too). It refuses a version that states no bias of the best model of a
+  tile that it reads, and names the fix: a prepare of a box of about four tiles in the middle of
+  the `extent` of that model extends the version and measures it, such as
   `obc data source prepare terrain --box 8.10,46.75,8.30,46.95 --dry-run` for `ch`.
-- Last, `ingest.py index-terrain` writes `index.json` and `mean/index.json`: the index of the
-  version before with each tile that the run made, its SHA-256 and its `contributors`, and the
-  facts of each model that the run read with `fetched`, the date of the version. The facts of a
-  model hold `glo30_bias_m`, its bias in metres: the bias of the version before, else the one
-  that the run measured (`--biases`). The manifest
-  names the input `dtm-<key>` of each model at that date, with the [digest](#keys) of the pixel
-  SHA-256 of the files that it made.
+- Last, `ingest.py index-terrain` writes `index.json`, one for the two pools: the index of the
+  version before, where the tiles of each block that the run made replace the tiles of that block,
+  and the facts of each model that the run read with `fetched`, the date of the version. The facts
+  of a model hold `glo30_bias_m`, its bias in metres: the bias of the version before, else the one
+  that the run measured (`--biases`). The index is compact JSON with the keys in byte order:
+
+  ```json
+  {"block_log2":18,"contributors":{"3410/2882":["ch","es"]},
+   "sources":{"ch":{"attribution":"© swisstopo","fetched":"2026-09-21","glo30_bias_m":-1.42,
+   "licence":"…","product":"swissALTI3D 2 m","vertical_datum":"LN02/LHN95"}},
+   "step_log2":6,"tile_log2":16}
+  ```
+
+  `contributors` names each tile with a height and its sources, best first; `sources` names each
+  source of a tile. The manifest names the input `dtm-<key>` of each model at that date, with the
+  [digest](#keys) of the pixel SHA-256 of the blocks that it made.
 - Only the machine that prepares needs the `credential` of each model. A `by-hand` model reads
   its delivery: `OBC_REFERENCE_<KEY>_INPUT` names its directory, as an absolute path, and
   `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of the order states.
@@ -1961,29 +1976,38 @@ format.
 
 #### `forest`
 
-The producer `forest`, format 3, makes the forest of each cell of the zoom 12 tiles at
-256 × 256 cells, which [the canopy archive](trailview-tiles.md#canopy) packs. A version adds a
-region to the newest complete version of `forest` in the home, in the same format.
+The producer `forest`, format 4, makes the forest of each cell of the zoom 12 tiles at
+256 × 256 cells, which [the canopy archive](trailview-tiles.md#canopy) packs, in one file per zoom
+10 tile. A version adds a region to the newest complete version of `forest` in the home, in the
+same format.
 
+- A block is a zoom 10 tile: block `(x, y)` holds the zoom 12 tiles `(x', y')` with `x' >> 2 = x`
+  and `y' >> 2 = y`.
 - The canopy models are the `canopy-<key>` rows: one per country, whose key is the lowercase
-  country code, and `canopy-global`. A version reads each national model whose `extent` meets a
-  box of the region, as [`terrain`](#terrain) defines the boxes, and, when the region names
-  `countries`, whose country is one of them; all of them for a version of everything. A region
-  that names no `countries` has those of its leaves, as for `terrain`. It reads `canopy-global`
-  where its `extent` meets a box; a region without boxes reads no `canopy-global`. Its tiles are
-  the zoom 12 tiles whose inside meets the `extent` of a model and a box of the region.
-- For each tile, `python -m tools.forest_reference fetch <key>,… --tile 12-<x>-<y>` writes
-  `12/<x>/<y>.tif` and then `12-<x>-<y>.sha256`, the SHA-256 of its pixels. The keys are the models
-  that meet the tile, the national ones in the order of `data/sources.toml` and then `global`; a
-  cell takes the first model that has a pixel in it. Where no model has a pixel in the tile, it
-  writes the empty `12-<x>-<y>.none`. It keeps no raw raster. The run keeps
-  the SHA-256 or the `.none` of each tile until the version is complete, so a resume makes no tile
-  again that it has.
-- Each tile of the version before that is not a tile of the region stays in `reused`; the
-  manifest names the scope of that version in `extends`.
-- A tile is a GeoTIFF in EPSG:3857 on the cells of the tile: four bands of `uint16`, deflate,
-  65535 unknown. The SHA-256 of its pixels is over the bands in order, rows north first, little
-  endian.
+  country code, and `canopy-global`. The tiles of a model are the zoom 12 tiles whose inside meets
+  its `extent`.
+- The blocks of a region are the blocks with a tile of a model that a box or a `geofabrik-poly`
+  polygon of a leaf of the region meets; for a version of everything, the blocks with a tile of a
+  national model. A run
+  keeps the version of each polygon that the first run of the version read, as for
+  [`terrain`](#terrain). A version has a file for each block of its region, also for a block
+  without a pixel, and makes each zoom 12 tile of the block from each model that has the tile, also
+  from a model of a country that the region does not name. So the pixels of a block do not depend
+  on the region. Each other block of the version before stays in `reused`; the manifest names the
+  scopes of the versions before in `extends`. The review counts the blocks of a region of boxes and
+  names the models of their tiles; for a region with a `geofabrik` leaf, `files` is `null`, and the
+  review names every canopy model.
+- For each block, `python -m tools.forest_reference fetch --block 10-<x>-<y> 12-<x'>-<y'>=<keys> …`
+  writes `10/<x>/<y>.tif` and then `10-<x>-<y>.sha256`, the SHA-256 of its pixels. The keys of a
+  tile are the models that have it, the national ones in the order of `data/sources.toml` and then
+  `global`; a cell takes the first model that has a pixel in it. It keeps no raw raster. The run
+  keeps the SHA-256 of each block until the version is complete, so a resume makes no block again
+  that it has.
+- A block is a GeoTIFF in EPSG:3857 on the 1024 × 1024 cells of its zoom 12 tiles: four bands of
+  `uint16`, deflate, predictor 2, 65535 unknown, with 256 × 256 internal tiles. Tile `(x', y')` is
+  the internal tile `(x' − 4x, y' − 4y)`; GDAL leaves out an internal tile without a known cell,
+  which a reader reads as unknown. The SHA-256 of the pixels of a block is over the bands in
+  order, rows north first, little endian.
 
   | Band | Value of a cell |
   | --- | --- |
@@ -2003,13 +2027,14 @@ region to the newest complete version of `forest` in the home, in the same forma
   its height plus 3.73 m, and the stems that fill 41.7 % of its cover with crowns of that height. The
   factors are fitted against `canopy-ch` on the canopy cells of eight tiles of the Jura, the
   Mittelland and the Alps.
-- `ch` reads `canopy-ch` through HTTP range requests, in strips of whole block rows, so each
-  block of a tile downloads once: at each 0.5 m pixel, the newest acquisition that has it.
+- `ch` reads `canopy-ch` through HTTP range requests, in strips of whole rows of its internal
+  tiles, so each internal tile downloads once: at each 0.5 m pixel, the newest acquisition that has
+  it.
 - The leaf type of a cell with a height is `hrl-dominant-leaf-type` of 2024 at 4 × 4 samples per
   cell, from its tiles on CDSE S3.
-- The run moves the tiles into the home in batches of 64. The manifest names each model that the version
-  read and `hrl-dominant-leaf-type` at the date of the version, with the [digest](#keys) of the
-  pixel SHA-256 of the tiles that it made.
+- The run moves the blocks into the home in batches of 64. The manifest names each model that the
+  version read and `hrl-dominant-leaf-type` at the date of the version, with the [digest](#keys) of
+  the pixel SHA-256 of the blocks that it made.
 
 #### `climate`
 

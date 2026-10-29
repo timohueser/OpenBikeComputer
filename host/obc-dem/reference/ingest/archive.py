@@ -71,17 +71,23 @@ def samples(mean) -> str:
 def write_tile(path: Path, ti: int, tj: int, tile) -> None:
     """An `int16` tile of the maximum, or an `int32` tile of the mean with the horizontal predictor."""
 
-    mean = tile.dtype == np.int32
+    write_raster(path, tile_window(ti, tj), tile)
+
+
+def write_raster(path: Path, window: Window, values) -> None:
+    """A tile or a block of the archive encoding on the lattice window `window`."""
+
+    mean = values.dtype == np.int32
     path.parent.mkdir(parents=True, exist_ok=True)
     profile = {
         "driver": "GTiff",
-        "height": TILE_PX,
-        "width": TILE_PX,
+        "height": window.rows,
+        "width": window.cols,
         "count": 1,
-        "dtype": str(tile.dtype),
+        "dtype": str(values.dtype),
         "nodata": MEAN_NODATA if mean else NODATA,
         "crs": WGS84,
-        "transform": tile_window(ti, tj).transform,
+        "transform": window.transform,
         "compress": "deflate",
         "tiled": True,
         "blockxsize": 256,
@@ -89,23 +95,8 @@ def write_tile(path: Path, ti: int, tj: int, tile) -> None:
         **({"predictor": 2} if mean else {}),
     }
     with rasterio.open(path, "w", **profile) as dst:
-        dst.write(tile, 1)
+        dst.write(values, 1)
         dst.update_tags(AREA_OR_POINT="Area")
-
-
-def fold_tiles(existing, incoming, held: set[str], key: str, nodata: int):
-    """The tile of a version of `terrain`: the tile that `key` pooled, folded into the tile of the
-    version before, whose pixels come from the sources `held`.
-
-    `key` keeps the pixels where it has a height when it ranks better than every other source in
-    `held`, also over an older survey of its own; else it only fills the gaps. A pixel does not
-    record its source, so a tile that a better and a worse source share keeps the better one's
-    pixels where both have one, whichever came first.
-    """
-
-    if all(priority_rank(key) < priority_rank(other) for other in held - {key}):
-        return np.where(incoming != nodata, incoming, existing)
-    return np.where(existing != nodata, existing, incoming)
 
 
 def pool_tile(rasters: list[Path], source: Source, ti: int, tj: int):
@@ -209,14 +200,19 @@ def local_rasters(source: Source, directory: Path, bbox, into: Path) -> list[Pat
 
 
 def tile_digest(path: Path) -> str:
-    """The sha256 of a tile's pixels: row-major, little-endian, in the dtype of the tile.
+    """The sha256 of a tile's pixels (`pixel_digest`)."""
+
+    with open_raster(path) as src:
+        return pixel_digest(src.read(1))
+
+
+def pixel_digest(pixels) -> str:
+    """The sha256 of pixels: row-major, little-endian, in their dtype.
 
     Not of the file. Two GDAL or zlib builds deflate the same pixels into different bytes,
     and the terrain bakery uses this digest as a skip key, so it has to mean "these heights"
     and not "this compressed stream".
     """
 
-    with open_raster(path) as src:
-        pixels = src.read(1)
     little = pixels.astype(pixels.dtype.newbyteorder("<"))
     return hashlib.sha256(np.ascontiguousarray(little).tobytes()).hexdigest()
