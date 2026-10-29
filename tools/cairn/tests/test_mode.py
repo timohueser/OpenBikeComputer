@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import mode  # noqa: E402
@@ -22,8 +23,8 @@ def repository(folder):
     return folder
 
 
-def issue(systems="routing (new: cairn), documentation", status="Status: approved"):
-    body = f"## TL;DR\n\n**Systems:** {systems}\n\nThe plan.   \n"
+def issue(systems="routing (new: cairn), documentation", status="Status: approved", size="**Size:** M (2 systems)"):
+    body = f"## TL;DR\n\n{size}\n**Systems:** {systems}\n\nThe plan.   \n"
     return f"{status}\nApproved: {mode.approval_hash(body)}\n{body}"
 
 
@@ -78,8 +79,9 @@ class StoreTests(unittest.TestCase):
 
 
 class RuleTests(unittest.TestCase):
-    def check(self, line, diff, body=None, limit=1000):
-        return mode.violations(mode.parse(line), diff, limit, body, NAMES)
+    def check(self, line, diff, body=None, limit=1000, epic=None):
+        rules = {**mode.DEFAULTS, "fix": {"max_lines": limit}}
+        return mode.violations(mode.parse(line), diff, rules, body, NAMES, epic)
 
     def test_a_fix_stays_inside_one_system_and_its_size(self):
         self.assertEqual(self.check("fix", mode.Diff(frozenset({"routing"}), lines=1000)), [])
@@ -136,6 +138,61 @@ class RuleTests(unittest.TestCase):
         # A missing Mode line is a violation like any other.
         self.assertTrue(mode.fails(None, found, frozenset({"routing"}), {"routing"}))
         self.assertFalse(mode.fails(None, found, frozenset(), {"routing"}))
+
+
+class SizeTests(unittest.TestCase):
+    def size(self, **diff):
+        return mode.size(mode.Diff(**{"touched": frozenset({"routing"}), **diff}), mode.DEFAULTS["size"])
+
+    def check(self, diff, body):
+        return mode.violations(mode.parse("change #5"), diff, mode.DEFAULTS, body, NAMES)
+
+    def test_each_signal_moves_the_size_up(self):
+        three = frozenset({"routing", "search", "repository-tooling"})
+        self.assertEqual(self.size(lines=500), ("S", ["1 system", "500 changed lines outside tests"]))
+        self.assertEqual(self.size(lines=501), ("M", ["501 changed lines outside tests"]))
+        self.assertEqual(self.size(lines=1500)[0], "M")
+        self.assertEqual(self.size(lines=1501), ("L", ["1,501 changed lines outside tests"]))
+        self.assertEqual(self.size(touched=frozenset({"routing", "search"})), ("M", ["2 systems"]))
+        self.assertEqual(self.size(touched=three)[0], "M")
+        self.assertEqual(self.size(touched=three | {"documentation"}), ("L", ["4 systems"]))
+        self.assertEqual(self.size(specs=("specs/obcr-route.md",)), ("M", ["a contract change in specs/obcr-route.md"]))
+        self.assertEqual(self.size(new_edges=frozenset({("routing", "search")})), ("M", ["a new dependency routing -> search"]))
+        self.assertEqual(self.size(new_docs=frozenset({"search"})), ("L", ["a new system doc for search"]))
+
+    def test_a_change_larger_than_its_issue_is_a_violation(self):
+        body = issue("routing", size="**Size:** S (one system)")
+        self.assertEqual(self.check(mode.Diff(frozenset({"routing"}), lines=500), body), [])
+        self.assertEqual(self.check(mode.Diff(frozenset({"routing"}), lines=640), body), [
+            "`change #5` is sized S, but the diff is M: 640 changed lines outside tests. Shrink the pull request, "
+            "amend the issue (which needs a new approval), or override with a reason"])
+        self.assertEqual(self.check(mode.Diff(frozenset({"routing"})), issue("routing", size="")),
+                         ["issue #5 has no `**Size:** S|M|L` line"])
+
+
+class EpicTests(unittest.TestCase):
+    def check(self, sub, epic):
+        diff = mode.Diff(frozenset({"routing"}))
+        return mode.violations(mode.parse("change #7"), diff, mode.DEFAULTS, sub, NAMES, (5, epic))
+
+    def test_a_sub_issue_passes_with_its_approved_epic_inside_its_scope(self):
+        sub = "**Size:** S\n**Systems:** routing\n"
+        self.assertEqual(self.check(sub, issue("routing, search")), [])
+        self.assertEqual(self.check(sub, issue("routing", status="Status: designed")),
+                         ["the first `Status:` line of issue #5 is not `Status: approved`"])
+        self.assertEqual(self.check("**Size:** S\n**Systems:** routing, search\n", issue("routing")),
+                         ["issue #7 lists search on its Systems line, and its epic #5 does not"])
+
+    def test_the_epic_is_the_parent_from_the_sub_issue_relation(self):
+        with mock.patch.object(mode, "api", side_effect=OSError("gh: No parent issue found (HTTP 404)")):
+            self.assertIsNone(mode.fetch_epic(Path("."), 7))
+        with mock.patch.object(mode, "api", side_effect=OSError("gh: Not Found (HTTP 404)")), self.assertRaises(OSError):
+            mode.fetch_epic(Path("."), 7)
+        with mock.patch.object(mode, "api", return_value={"number": 5, "body": "Epic."}):
+            self.assertEqual(mode.fetch_epic(Path("."), 7), (5, "Epic."))
+        with mock.patch.object(mode, "api", return_value={"number": 5, "body": "", "pull_request": {}}), \
+                self.assertRaisesRegex(ValueError, "#5 is a pull request"):
+            mode.fetch_epic(Path("."), 7)
 
 
 class HookTests(unittest.TestCase):

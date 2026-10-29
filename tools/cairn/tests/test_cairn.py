@@ -243,17 +243,19 @@ class PullRequestDiffTests(unittest.TestCase):
             repository.commit({
                 "docs/design/routing.md": header("routing", "route/**", status="approved"),
                 "docs/design/search.md": header("search", "search/**") + "Body.\n",
+                "docs/design/terrain.md": header("terrain", "terrain/**"),
                 "route/a.rs": "a\nb\n",
                 "route/tests/a.rs": "t\n" * 50,
                 "specs/route.md": "x\n",
             })
             diff = cairn.pr_diff(repository.root, base, docs, config, set())
-        self.assertEqual(diff.touched, {"routing", "search"})
-        self.assertEqual(diff.docs, {"routing", "search"})
-        self.assertEqual(diff.headers, {"routing"})
+        self.assertEqual(diff.touched, {"routing", "search", "terrain"})
+        self.assertEqual(diff.docs, {"routing", "search", "terrain"})
+        self.assertEqual(diff.headers, {"routing", "terrain"})
+        self.assertEqual(diff.new_docs, {"terrain"})
         self.assertEqual(diff.specs, ("specs/route.md",))
-        # The tests do not count: route/a.rs 2, the routing doc 2, the search doc 1, the spec 1.
-        self.assertEqual(diff.lines, 6)
+        # The tests do not count: route/a.rs 2, the routing doc 2, the search doc 1, the terrain doc 9, the spec 1.
+        self.assertEqual(diff.lines, 15)
 
     def test_a_test_pattern_with_no_folder_matches_the_file_name_only(self):
         patterns = json.loads((cairn.ROOT / cairn.CONFIG).read_text())["fix"]["tests"]
@@ -292,6 +294,32 @@ class ModeGateTests(unittest.TestCase):
             repository.commit({"docs/design/routing.md": header("routing", "route/**", status="approved")})
             fails, report = repository.gate(base, "fix")
             self.assertTrue(fails, report)
+
+    def test_a_change_larger_than_its_issue_fails_only_for_an_approved_system(self):
+        body = "Status: approved\n**Size:** S\n**Systems:** routing\n"
+        body = body.replace("\n", f"\nApproved: {cairn.modes.approval_hash(body)}\n", 1)
+        for status, failing in (("approved", True), ("draft", False)):
+            with tempfile.TemporaryDirectory() as folder:
+                repository = Repository(folder)
+                base = repository.commit({"docs/design/routing.md": header("routing", "route/**", status=status),
+                                          "route/a.rs": "a\n"}, fix={"max_lines": 1000, "tests": []})
+                repository.commit({"route/a.rs": "a\n" * 502})
+                with mock.patch.object(cairn.modes, "fetch_issue", return_value=body), \
+                        mock.patch.object(cairn.modes, "fetch_epic", return_value=None):
+                    fails, report = repository.gate(base, "change #5")
+            self.assertEqual(fails, failing, report)
+            self.assertIn("`change #5` is sized S, but the diff is M: 501 changed lines outside tests", report)
+
+    def test_the_rules_fall_back_to_the_defaults(self):
+        config = json.loads((cairn.ROOT / cairn.CONFIG).read_text())
+        self.assertEqual(cairn.modes.DEFAULTS, {key: config[key] for key in cairn.modes.DEFAULTS})
+        bare = json.dumps({key: value for key, value in Repository.CONFIG.items() if key != "fix"})
+        with tempfile.TemporaryDirectory() as folder:
+            repository = Repository(folder)
+            base = repository.commit({".cairn/config.json": bare, "route/a.rs": "a\n"})
+            repository.commit({"route/a.rs": "a\n" * 1002})
+            fails, report = repository.gate(base, "fix")
+        self.assertIn("a fix changes at most 1,000 lines outside tests, and this one changes 1,001", report)
 
     def test_check_pr_fails_a_fix_over_the_limit_in_an_approved_system(self):
         docs = [doc("routing", ["route/**"], status="approved")]
