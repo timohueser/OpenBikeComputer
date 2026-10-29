@@ -568,7 +568,7 @@ prose *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/prose.py" "$@"
 
-[doc("System docs against the code: ownership, dependencies, R1-R4, ratchet. Args: check [--update]")]
+[doc("System docs against the code, and the mode of a change. Args: check [--base REF [--pr]] [--update] | mode [KIND [VALUE]] | hash FILE")]
 [group('docs')]
 cairn *args:
     #!/usr/bin/env bash

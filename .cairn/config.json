@@ -1,6 +1,11 @@
 {
   "docs": "docs/design",
   "baseline": ".cairn/baseline.json",
+  "specs": "specs",
+  "fix": {
+    "max_lines": 1000,
+    "tests": ["**/tests/**", "**/tests.rs", "**/*_tests.rs", "**/test_*.py", "**/*_test.py", "**/*Tests.swift", "**/*.test.ts"]
+  },
   "sources": {
     "extensions": [".rs", ".ts", ".svelte", ".py", ".swift", ".wgsl", ".js", ".mjs", ".sh", ".h", ".c"],
     "files": ["tools/obc"]

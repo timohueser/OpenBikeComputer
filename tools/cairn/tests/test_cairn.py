@@ -1,6 +1,8 @@
 import importlib.util
 import io
+import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -175,6 +177,43 @@ class RatchetTests(unittest.TestCase):
         }
         self.assertEqual(cairn.base_baseline(files.get), {"R3 app": 80})
         self.assertIsNone(cairn.base_baseline({}.get))
+
+
+class PullRequestDiffTests(unittest.TestCase):
+    def test_the_diff_names_its_systems_doc_headers_specs_and_lines_outside_tests(self):
+        header = "---\nsystem: routing\nkind: system\narea: Device\npurpose: Routes.\nowns: [route/**]\n---\n# Routing\n"
+        config = {"docs": "docs/design", "specs": "specs", "fix": {"tests": ["**/tests/**"]}}
+        docs = [doc("routing", ["route/**"]), doc("search", ["search/**"])]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+
+            def commit(files):
+                for path, text in files.items():
+                    (root / path).parent.mkdir(parents=True, exist_ok=True)
+                    (root / path).write_text(text)
+                for command in (["add", "-A"], ["commit", "--quiet", "-m", "c"]):
+                    subprocess.run(["git", "-C", folder, "-c", "user.name=t", "-c", "user.email=t@t", *command], check=True)
+                return subprocess.run(["git", "-C", folder, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+            subprocess.run(["git", "init", "--quiet", folder], check=True)
+            base = commit({"docs/design/routing.md": header, "docs/design/search.md": header.replace("routing", "search"),
+                           "docs/design/README.md": "Map.\n"})
+            commit({
+                "docs/design/routing.md": header.replace("Routes.", "Finds routes."),
+                "docs/design/search.md": header.replace("routing", "search") + "Body.\n",
+                "docs/design/README.md": "The map.\n",
+                "route/a.rs": "a\nb\n",
+                "route/tests/a.rs": "t\n" * 50,
+                "specs/route.md": "x\n",
+            })
+            diff = cairn.pr_diff(root, config, docs, set(), base, compare_edges=False)
+        self.assertEqual(diff.touched, {"routing", "search"})
+        self.assertEqual(diff.docs, {"routing", "search"})
+        self.assertEqual(diff.headers, {"routing"})
+        self.assertEqual(diff.specs, ("specs/route.md",))
+        # The tests do not count: route/a.rs 2, the routing doc 2, the search doc 1, the map page 2,
+        # the spec 1.
+        self.assertEqual(diff.lines, 8)
 
 
 if __name__ == "__main__":
