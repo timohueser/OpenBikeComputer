@@ -135,7 +135,7 @@ See [the bridge README](../builder/wasm/README.md) for paths and checks.
 ## Firmware update images (OBCU)
 
 A field update is an OBCU container a client uploads as an update-package object. The byte format
-is [`OBCU_Spec.md`](../specs/OBCU_Spec.md); the codec and boot decision live in `obc-dfu`, and the
+is [`obcu-update.md`](../specs/obcu-update.md); the codec and boot decision live in `obc-dfu`, and the
 producer is `obc-mkimage`. The pipeline is objcopy, then wrap and sign:
 
 ```sh
@@ -174,7 +174,7 @@ and resets into `obc-boot` ([its README](obc-boot/README.md) has the LED codes).
 ## Terrain tiles (OBCT)
 
 `obc-dem` turns Copernicus GLO-30 GeoTIFF into the `.obcd` artifact carried beside a map
-([`OBCT_Spec.md`](../specs/OBCT_Spec.md)). It has no native dependency.
+([`obct-terrain.md`](../specs/obct-terrain.md)). It has no native dependency.
 
 ```sh
 # The tiles a box needs, from the AWS Open Data mirror (~44 MB each).

@@ -1,9 +1,9 @@
 # OBC protocol — iOS implementation notes
 
 The normative wire contract is
-[`../specs/obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md). It owns every UUID,
+[`../specs/ble-interface.md`](../specs/ble-interface.md). It owns every UUID,
 byte layout, state transition and security rule, and it wins over anything here. The ride archive
-rules are in [`../specs/Ride_Archive_Contract.md`](../specs/Ride_Archive_Contract.md). Shared
+rules are in [`../specs/ride-archive-receipts.md`](../specs/ride-archive-receipts.md). Shared
 fixtures under `specs/vectors/` pin the codecs byte for byte.
 
 This file records only the choices an iOS contributor needs while reading the implementation.

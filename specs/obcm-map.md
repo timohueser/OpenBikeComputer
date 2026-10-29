@@ -167,7 +167,7 @@ and two bakes of the same input agree on them.
 ### 1.3 The terrain region
 
 `Terrain Offset` and `Terrain Length` are a scaled pointer to a region at the file tail holding one
-[OBCT](OBCT_Spec.md) container, byte-for-byte the bytes `obc-dem` bakes and the assembler splices.
+[OBCT](obct-terrain.md) container, byte-for-byte the bytes `obc-dem` bakes and the assembler splices.
 Terrain sits last precisely so that splicing it moves no other offset.
 
 **Terrain is part of the map, and partial updates are not a supported operation**: a terrain re-bake
@@ -180,7 +180,7 @@ because the header occupies byte `0`, so no region can begin there.
 
 **A reader hands the region over; it does not parse it.** A reader forms a **window** — a byte
 source whose offset `0` is the region's first byte and whose length is `Terrain Length × U` — and
-gives that to the terrain consumer, which reads it exactly as [`OBCT_Spec.md`](OBCT_Spec.md)
+gives that to the terrain consumer, which reads it exactly as [`obct-terrain.md`](obct-terrain.md)
 describes reading a terrain file. The container carries its own magic, version, header and offset
 directory, and every offset inside it is relative to its own first byte, which is what makes a
 window sufficient and a copy unnecessary.
@@ -192,7 +192,7 @@ Two consequences:
   header bounds its content: a reader MUST NOT derive the payload length from the region length, and
   a consumer MUST NOT read past what the container's own structure addresses.
 - **A terrain region that will not parse is not a broken map.** Elevation is an enhancement
-  (`OBCC_Spec.md` §13): a reader whose OBCT parse fails MUST fall back to no elevation, MUST still
+  (`obcc-catalog.md` §13): a reader whose OBCT parse fails MUST fall back to no elevation, MUST still
   mount, render and route, and MUST NOT present the map as faulty. A **writer** gets no such
   clemency and MUST verify the region it splices.
 
@@ -891,7 +891,7 @@ Rules:
   this field. A self-loop (`a == b`, e.g. a lollipop loop) appears **once** in its
   node's record, carrying its forward direction's ascent.
 - **Seam determinism.** A producer that cuts one edge into pieces at a cell border
-  (`OBCA_Spec.md` §3) integrates each piece over the **same global elevation
+  (`obca-assembly.md` §3) integrates each piece over the **same global elevation
   lattice**, so two neighbouring cells' stubs are each the integral of their own
   geometry over one surface and the pieces' ascents sum to the uncut edge's.
 - Degree `0` is valid to decode but the packer never emits it (every junction
@@ -1119,7 +1119,7 @@ one ≤ 512-byte read.
 
 `Profile Count` consecutive **56-byte** records at `Profile Table Offset`, one per bike
 type. A producer writes **exactly four**, in the bike-type order of
-[`OBCR_Spec.md`](OBCR_Spec.md) §1.2: Road = 0, Gravel = 1, MTB = 2, Touring = 3. The count,
+[`obcr-route.md`](obcr-route.md) §1.2: Road = 0, Gravel = 1, MTB = 2, Touring = 3. The count,
 the order and the meaning are fixed; only the weights are tunable. The device picks a record
 by bike-type value; A\* weights each edge by it. The table is **always present**, even for an
 empty graph. The reader rejects a `Profile Count` of `0` or `> 8`, and routes a bike type past

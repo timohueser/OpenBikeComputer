@@ -63,7 +63,7 @@ pub fn verify_cell(path: &Path, square: (i64, i64, i64, i64)) -> Result<Verified
     if got != (min_lon, min_lat, max_lon, max_lat) {
         return Err(format!(
             "{}: header bbox {got:?} is not the cell's grid square {square:?} (lon/lat µdeg). A cell's bbox MUST be \
-             exactly its square (OBCA_Spec.md §3.1) — that is what lets an assembler copy its chunk bytes verbatim.",
+             exactly its square (obca-assembly.md §3.1) — that is what lets an assembler copy its chunk bytes verbatim.",
             path.display()
         ));
     }
@@ -246,7 +246,7 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
         problem(
             format!(
                 "the catalog publishes OBCM v{} but this build reads v{} — every cell in the store is unreadable to \
-                 it (OBCC_Spec.md §10)",
+                 it (obcc-catalog.md §10)",
                 root.schema.obcm_version,
                 obc_formats::obcm::VERSION
             ),
@@ -359,7 +359,7 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
                         problem(
                             format!(
                                 "{}: carries a landmark section, but the catalog publishes no landmark block — the \
-                                 credit for that text and those photos is nowhere in the store (OBCC_Spec.md §14.2)",
+                                 credit for that text and those photos is nowhere in the store (obcc-catalog.md §14.2)",
                                 path.display()
                             ),
                             &mut report.problems,
@@ -376,7 +376,7 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
                     if got != want {
                         problem(
                             format!(
-                                "{}: header bbox {got:?} is not cell `{}`'s square {want:?} (OBCA_Spec.md §3.1)",
+                                "{}: header bbox {got:?} is not cell `{}`'s square {want:?} (obca-assembly.md §3.1)",
                                 path.display(),
                                 entry.id
                             ),
@@ -507,7 +507,7 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
         let summed: u64 = region.bytes_by_band.values().sum();
         if summed != region.bytes {
             problem(
-                format!("region `{}`: bytes_by_band sums to {summed} but bytes is {} — the per-file projection of `OBCA_Spec.md` is arithmetic over exactly these numbers", region.id, region.bytes),
+                format!("region `{}`: bytes_by_band sums to {summed} but bytes is {} — the per-file projection of `obca-assembly.md` is arithmetic over exactly these numbers", region.id, region.bytes),
                 &mut report.problems,
             );
         }
@@ -519,7 +519,7 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
             for id in ids {
                 if !index.contains(id) {
                     problem(
-                        format!("{rel}: names cell `{id}` in band `{band}`, which is not published (OBCC_Spec.md §6)"),
+                        format!("{rel}: names cell `{id}` in band `{band}`, which is not published (obcc-catalog.md §6)"),
                         &mut report.problems,
                     );
                 }
@@ -659,7 +659,7 @@ fn satellite<T: serde::de::DeserializeOwned>(
     if sha != sha256 {
         problems.push(format!(
             "{rel}: sha256 {sha}, root pinned {sha256} — a satellite that does not match its pin MUST be rejected \
-             and the root retained (OBCC_Spec.md §9)"
+             and the root retained (obcc-catalog.md §9)"
         ));
         return None;
     }

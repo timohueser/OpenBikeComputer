@@ -1,4 +1,4 @@
-//! The catalog (`FLAT_Store_Format.md`): the header, the 128-byte entry, the gate sector, and the
+//! The catalog (`flat-store-format.md`): the header, the 128-byte entry, the gate sector, and the
 //! structural rules an entry array must satisfy.
 //!
 //! The catalog is the store. It names every object that exists and which extents each one occupies,

@@ -30,7 +30,7 @@ fixtures/build-map-package.sh terrain
 ```
 
 It is baked at the real v1 posting (`2^9` µdeg) with a `2^16` cell, so the 1 × 2 cell rectangle is
-65 576 B rather than a 2 MiB v1 cell that is mostly outside the crop. `OBCT_Spec.md` §1.3 makes
+65 576 B rather than a 2 MiB v1 cell that is mostly outside the crop. `obct-terrain.md` §1.3 makes
 both header data and §4.5 requires a reader to accept the pairing.
 
 There is no terrain in the map, deliberately: the Rhine plain has nothing to show in a 1.2 km

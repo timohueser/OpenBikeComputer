@@ -6,7 +6,7 @@ page verifies the staged image's CRC, flashes the app slot through RRAMC, verifi
 writes `Trial` and jumps into the new image; a `Trial` still present at a later entry rolls back.
 This crate only wires the card transport, RRAMC and GPIO into that engine (`src/semmc.rs`,
 `src/install.rs`, `src/led.rs`). The byte formats and the boot decision table are normative in
-[`OBCU_Spec.md`](../../specs/OBCU_Spec.md).
+[`obcu-update.md`](../../specs/obcu-update.md).
 
 The card transport is the sEMMC soft peripheral. The card exists only behind a ~13.6 KB
 coprocessor image this crate cannot embed, so the app-side armer stages that image into the

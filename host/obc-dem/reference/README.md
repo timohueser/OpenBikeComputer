@@ -2,7 +2,7 @@
 
 Copernicus GLO-30 is the native elevation source, but 30 m cannot hold a rock tower. The archive
 holds finer national DTM heights on the OBCT lattice, and the bakery lifts a crest to them. See
-`specs/OBCT_Spec.md` §9 for the lift rule.
+`specs/obct-terrain.md` §9 for the lift rule.
 
 `obc data source prepare terrain` fills the archive from the national DTMs, never a bake.
 
@@ -145,7 +145,7 @@ nothing into it**; unpacked members go into the work directory under the digest 
 The attribution of every source a map's cells read must travel with that map, beside the
 Copernicus attribution the native heights carry. `index.json` states it per source; the terrain
 bakery records per cell which sources its lifts came from, and the catalog's terrain block lists
-each of them once in `references` (`OBCC_Spec.md` §13.1).
+each of them once in `references` (`obcc-catalog.md` §13.1).
 
 ## A local archive
 

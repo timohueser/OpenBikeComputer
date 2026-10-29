@@ -13,7 +13,7 @@ use obc_elevation::{TerrainReader, TileCache, DEFAULT_TILE_SLOTS};
 use obc_formats::io::SliceSource;
 
 /// The pairing both sidecars are baked at: the **real** v1 posting with a 2^16 cell, so a map-sized
-/// box is a few hundred KB instead of four 2 MiB blocks mostly outside the map. `OBCT_Spec.md` §1.3
+/// box is a few hundred KB instead of four 2 MiB blocks mostly outside the map. `obct-terrain.md` §1.3
 /// makes both header data for this reason and §4.5 requires a reader to accept the pairing.
 const POSTING_LOG2: u8 = 9;
 const CELL_LOG2: u8 = 16;
@@ -74,7 +74,7 @@ fn the_grimsel_sidecar_covers_its_map_and_reads_as_the_grimsel() {
 
 /// The skin-preview sidecar: the Rhine plain around Teningen, where the interesting property is that
 /// the terrain is nearly flat and low — the opposite of the alpine one, and a check that a 2-cell
-/// container is as valid as a wide one (`OBCT_Spec.md` §4.1).
+/// container is as valid as a wide one (`obct-terrain.md` §4.1).
 #[test]
 fn the_teningen_sidecar_covers_the_preview_camera() {
     let bytes = asset("host/obc-bake/assets/teningen-preview.obcd");

@@ -3,12 +3,12 @@
 Version 3 adds the geographic surface index in section 8. Sections 1–7 describe the native
 v1 raster, which remains the base height plane of v3.
 
-OBCT is the terrain artifact: a raster of ground heights on the [OBCA](OBCA_Spec.md) cell grid. It
+OBCT is the terrain artifact: a raster of ground heights on the [OBCA](obca-assembly.md) cell grid. It
 defines the sample lattice (§1), the 512-byte tile and the terrain cell (§2, §3), the container
 (§4) and the sampling rules (§5).
 
 Terrain is a separate artifact class with its own revision track. An assembly's raster is embedded
-**verbatim** in the map file's terrain region ([`OBCM_Spec.md` §1.3](OBCM_Spec.md)), which the map
+**verbatim** in the map file's terrain region ([`obcm-map.md` §1.3](obcm-map.md)), which the map
 reader hands over as an opaque window rather than parsing.
 
 This document is normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be
@@ -19,9 +19,9 @@ arithmetic is [`firmware/obc-formats/src/obct.rs`](../firmware/obc-formats/src/o
 and consumers import those facts directly rather than transcribing them. The reference reader,
 sampler and tile cache are [`firmware/obc-elevation`](../firmware/obc-elevation).
 
-Related contracts: [`OBCA_Spec.md`](OBCA_Spec.md) §1 defines the grid this raster sits on;
-[`OBCC_Spec.md`](OBCC_Spec.md) §13 publishes terrain cells as a catalog artifact class with its own
-revision track; [`OBCM_Spec.md`](OBCM_Spec.md) is the map that carries an assembly's raster, and
+Related contracts: [`obca-assembly.md`](obca-assembly.md) §1 defines the grid this raster sits on;
+[`obcc-catalog.md`](obcc-catalog.md) §13 publishes terrain cells as a catalog artifact class with its own
+revision track; [`obcm-map.md`](obcm-map.md) is the map that carries an assembly's raster, and
 whose §8 nav graph stores the ascent integrated *from* these samples.
 
 ---
@@ -31,7 +31,7 @@ whose §8 nav graph stores the ascent integrated *from* these samples.
 ### 1.1 Origin and posting
 
 All coordinates are integer **microdegrees** (µdeg, 1e-6 degrees), the unit of every OBCM
-coordinate. The lattice is anchored on the OBCA grid origin ([`OBCA_Spec.md` §1.1](OBCA_Spec.md)):
+coordinate. The lattice is anchored on the OBCA grid origin ([`obca-assembly.md` §1.1](obca-assembly.md)):
 
 ```
 GRID_ORIGIN = −268435456 µdeg   (= −2^28, on BOTH axes)
@@ -54,7 +54,7 @@ narrowing towards the poles. This is not corrected anywhere and MUST NOT be: the
 the lattice being derivable from the coordinate by a shift.
 
 The lattice does not wrap, and it spans the world box rather than the geographic domain — the
-antimeridian and pole rules of [`OBCA_Spec.md` §1.4](OBCA_Spec.md) apply unchanged.
+antimeridian and pole rules of [`obca-assembly.md` §1.4](obca-assembly.md) apply unchanged.
 
 ### 1.2 Values
 
@@ -84,7 +84,7 @@ values are
 | Terrain cell | `2^19` µdeg | 58 × 40 km — 1024 × 1024 samples, 2 MiB raw |
 
 They are the bakery's choice, published in the catalog. Retuning them is a terrain re-bake,
-**not** a version bump of this format (the [`OBCA_Spec.md` §1.5](OBCA_Spec.md) idiom).
+**not** a version bump of this format (the [`obca-assembly.md` §1.5](obca-assembly.md) idiom).
 
 A reader MUST accept any pairing this document permits (§4.5), not only the v1 one.
 
@@ -113,7 +113,7 @@ One tile spans `16·P` µdeg on each axis — at the v1 posting, `2^13` µdeg �
 ### 3.1 A cell is an OBCA grid square
 
 A **terrain cell** of side `S = 2^cell_log2` µdeg is the OBCA cell of that size
-([`OBCA_Spec.md` §1.1](OBCA_Spec.md)): the half-open square
+([`obca-assembly.md` §1.1](obca-assembly.md)): the half-open square
 
 ```
 cell(S, ci, cj) = [ GRID_ORIGIN + ci·S , GRID_ORIGIN + (ci+1)·S )   in latitude
@@ -210,7 +210,7 @@ There is no separate cell format.
 | 24 | Reserved | 8 | `uint8[8]` | MUST be zero |
 
 The header carries **no bounding box**: the cell rectangle *is* the bounding box (see
-[`OBCC_Spec.md` §8](OBCC_Spec.md), and §13.1 for a terrain cell's own entry).
+[`obcc-catalog.md` §8](obcc-catalog.md), and §13.1 for a terrain cell's own entry).
 
 `Flags` is this format's extension point: a future per-tile packed encoding (§3.2) sets a bit here.
 A v1 reader MUST refuse a file with any bit set.
@@ -264,7 +264,7 @@ recorded ride log already uses `.obct`
 ([`obc-formats/src/track.rs`](../firmware/obc-formats/src/track.rs)). The magic stays `OBCT`.
 
 An assembly's raster is not a file on the card at all: it is spliced into the map file's terrain
-region ([`OBCM_Spec.md` §1.3](OBCM_Spec.md)). A **published cell** is an object of its own, named
+region ([`obcm-map.md` §1.3](obcm-map.md)). A **published cell** is an object of its own, named
 by the catalog.
 
 ---
@@ -580,5 +580,5 @@ A producer SHOULD report the largest lift of a run, the node it is at, and how m
 reader can check it; `obc-dem bake` prints it.
 
 A change of reference archive changes the baked samples, so it is a terrain revision bump and hence
-a navigation re-bake (`OBCC_Spec.md` §13.4). The reference DEM keeps its own attribution, which
+a navigation re-bake (`obcc-catalog.md` §13.4). The reference DEM keeps its own attribution, which
 MUST travel with every container derived from it.

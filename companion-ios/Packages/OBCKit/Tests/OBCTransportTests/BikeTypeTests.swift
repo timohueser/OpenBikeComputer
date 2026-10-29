@@ -3,7 +3,7 @@ import Testing
 import OBCDomain
 import OBCTransport
 
-/// The `OBCR_Spec.md` §1.2 estimate against the shared vector file, and the bike-type byte in
+/// The `obcr-route.md` §1.2 estimate against the shared vector file, and the bike-type byte in
 /// the OBCR header.
 struct BikeTypeTests {
     private static let vectorsDir = URL(fileURLWithPath: #filePath)

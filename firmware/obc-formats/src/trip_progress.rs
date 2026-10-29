@@ -1,5 +1,5 @@
-//! The device's trip progress records (`obc-ble-interface-spec.md` §7.7). The Metadata singleton
-//! holds them; `Ride_Archive_Metadata.md` has the bytes.
+//! The device's trip progress records (`ble-interface.md` §7.7). The Metadata singleton
+//! holds them; `ride-archive-metadata.md` has the bytes.
 
 use crate::io::{put_u32, rd_u16, rd_u32};
 

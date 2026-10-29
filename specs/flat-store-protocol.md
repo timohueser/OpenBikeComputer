@@ -1,7 +1,7 @@
 # Flat store seam and protocol v4
 
 - Status: **normative** for the flat store's public seam and for wire major **4**
-- On-card contract: [`FLAT_Store_Format.md`](FLAT_Store_Format.md)
+- On-card contract: [`flat-store-format.md`](flat-store-format.md)
 
 §2 is the seam between the store and everything above it inside the firmware. §3 is what crosses
 the link to a phone, a cable client, or the simulator. §5 binds §3 to BLE and USB.
@@ -17,7 +17,7 @@ and covers whole object payloads, never frames. Frame integrity belongs to the l
 CRC and retransmission, USB packet CRC and retry).
 
 `ObjectId`, `Revision`, `StoreId`, object kinds and entry flags are defined by
-[`FLAT_Store_Format.md`](FLAT_Store_Format.md) §3 and carry the same values here.
+[`flat-store-format.md`](flat-store-format.md) §3 and carry the same values here.
 
 ## 2. The store seam
 
@@ -84,7 +84,7 @@ pub trait Store {
     fn next_object_id(&self) -> ObjectId;
 
     /// The ride exception, and the only way bytes become durable without a commit. Performs both
-    /// halves of `FLAT_Store_Format.md` §7.2: reconstruct the store-owned 16 KiB tail snapshot from
+    /// halves of `flat-store-format.md` §7.2: reconstruct the store-owned 16 KiB tail snapshot from
     /// its previous slot plus the bounded append, and gate any whole payload-page rollover.
     fn journal(&self, checkpoint: RideCheckpoint) -> Result<(), StoreError>;
 }
@@ -124,7 +124,7 @@ pub struct RideCheckpoint<'a> {
     pub resume: &'a [u8; RIDE_RESUME_LEN],
 }
 
-/// Why a mounted store refuses writes, or refuses everything (`FLAT_Store_Format.md` §5.6). The
+/// Why a mounted store refuses writes, or refuses everything (`flat-store-format.md` §5.6). The
 /// `readOnly` details of §3.9 are chosen from it: the two exhausted cases still serve reads, and
 /// `CardTooSmall` — the card is not the card the superblock describes — reads out as `unformatted`.
 pub enum Mode {
@@ -201,7 +201,7 @@ a ride journals. An implementation carries whatever interior mutability that nee
    covers and for how many commands. State must never be held across an `await`, across a callback,
    or across another seam call, carve-out or not.
 2. **`close` on an object another reader still holds is a runtime refusal, not a teardown.** The
-   reader refcount of `FLAT_Store_Format.md` §6.2 decides it: such a `close` spends a count and
+   reader refcount of `flat-store-format.md` §6.2 decides it: such a `close` spends a count and
    returns, and the extents come back only when the last reader lets go. The guarantee is kept at
    runtime — *refused*, never *silent*.
 
@@ -318,7 +318,7 @@ Request, 32 bytes:
 
 The cursor is the **pair**, and the page resumes strictly after it: the catalog is keyed by
 `(ObjectId, Revision)` and an object may hold two entries, the retained one sorting first
-(`FLAT_Store_Format.md` §5.3).
+(`flat-store-format.md` §5.3).
 
 Response payload is a 24-byte prefix followed by `n` entries:
 
@@ -455,7 +455,7 @@ A `PUT` naming an entry that carries `RECORDING` or `RESERVED` is refused `inval
 replaces: those kinds are produced by the device, and a client that could overwrite a ride
 mid-recording or a rollback reserve mid-update would be writing where the store and the bootloader
 already are. Metadata writes require device policy admission under
-[Ride_Archive_Metadata.md](Ride_Archive_Metadata.md); remote writes cannot establish archive proof.
+[ride-archive-metadata.md](ride-archive-metadata.md); remote writes cannot establish archive proof.
 
 One commit publishes the new head and removes both the displaced head and any retained revision.
 
@@ -560,7 +560,7 @@ request is well formed and can succeed against the same device a moment later.
 
 `readOnly` is the wire face of a store that cannot be written: no usable catalog, an exhausted
 revision space, or a card §5.6 step 1 classified as **not a flat store**
-(`FLAT_Store_Format.md` §3, §5.6). Every opcode returns it in the unformatted and unreadable cases,
+(`flat-store-format.md` §3, §5.6). Every opcode returns it in the unformatted and unreadable cases,
 including the reads, because there is nothing to read; only the exhausted case still serves reads.
 `FORMAT` is the sole exception: it is the explicit destructive recovery operation in §3.10.
 
@@ -615,7 +615,7 @@ the recovery transport down.
 
 ### 3.11 Vectors
 
-`StoreId` and the two objects are those of [`FLAT_Store_Format.md`](FLAT_Store_Format.md) §5.7.
+`StoreId` and the two objects are those of [`flat-store-format.md`](flat-store-format.md) §5.7.
 
 `PUT` creating the route, `RequestId 0x00002A01`, 100 bytes on the wire:
 
@@ -667,7 +667,7 @@ A complete `LIST` response, `RequestId 0x00002A02`, both entries, no further pag
 
 The client MUST send this request only after its archive persistence barriers complete, or after
 it revalidates an existing durable archive. GET completion, a UI flag and deletion history are not
-archive proof. See [the archive contract](Ride_Archive_Contract.md).
+archive proof. See [the archive contract](ride-archive-receipts.md).
 
 **Request — 44 bytes**
 
@@ -733,8 +733,8 @@ Request, 16 bytes: package `ObjectId u64`, expected `Revision u64`. The device t
    allocate, only write where it is told.
 3. **Writes the boot handoff**: both extent lists, resolved to absolute 512-byte block runs, into the
    RRAM boot-state page, then reads it back and verifies. The page format and the bootloader's
-   decision logic are [`OBCU_Spec.md`](OBCU_Spec.md) §2; its `Extent { start_block, blocks }` is
-   exactly what `FLAT_Store_Format.md` §6.1 computes.
+   decision logic are [`obcu-update.md`](obcu-update.md) §2; its `Extent { start_block, blocks }` is
+   exactly what `flat-store-format.md` §6.1 computes.
 4. **Answers and drains**: the response, 16 bytes — rollback `ObjectId u64`, new catalog commit
    sequence `u64` — must reach the transport before the reboot, or the adapter's bounded drain
    timeout must expire.

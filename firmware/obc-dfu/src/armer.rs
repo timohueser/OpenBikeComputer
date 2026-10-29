@@ -7,7 +7,7 @@
 //! the half that ships with every image (see [`crate::sig`]).
 //!
 //! The extent chain a [`StageIo`] resolves covers the whole staged object, header included, while
-//! the [`StagedRef`]'s `len`/`crc32` stay raw-image values (`OBCU_Spec.md`). The install engine
+//! the [`StagedRef`]'s `len`/`crc32` stay raw-image values (`obcu-update.md`). The install engine
 //! consumes it with the same skip arithmetic.
 
 use crate::crc32::Crc32;

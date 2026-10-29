@@ -1,4 +1,4 @@
-//! The four fixed bike types (`OBCR_Spec.md` §1.2, `OBCM_Spec.md` §8.6).
+//! The four fixed bike types (`obcr-route.md` §1.2, `obcm-map.md` §8.6).
 //!
 //! The wire value is also the map's routing-profile index, so `BikeType as u8` is the profile
 //! the router uses.
@@ -38,7 +38,7 @@ impl BikeType {
     }
 
     /// Flat-ground speed (km/h) and climb cost (tenths of a second per metre climbed): the
-    /// estimate table of `OBCR_Spec.md` §1.2.
+    /// estimate table of `obcr-route.md` §1.2.
     const fn eta_row(self) -> (u64, u64) {
         match self {
             BikeType::Road => (22, 16),

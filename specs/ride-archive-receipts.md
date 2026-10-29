@@ -1,8 +1,8 @@
 # Ride archive and persistence receipts
 
 This contract defines the iOS archive boundary and the device archive-proof boundary.
-[ARCHIVE_RIDE](FLAT_Store_Protocol.md#312-archive_ride) carries proof into
-[card archive metadata](Ride_Archive_Metadata.md). iOS delivers and retries these receipts; the board uses validated proof for its synced indicator.
+[ARCHIVE_RIDE](flat-store-protocol.md#312-archive_ride) carries proof into
+[card archive metadata](ride-archive-metadata.md). iOS delivers and retries these receipts; the board uses validated proof for its synced indicator.
 
 ## Source identity
 
@@ -25,7 +25,7 @@ link. It checks the served revision, length and CRC against the requested source
 the download. The canonical archive is decoded from the returned payload; an earlier catalog's
 display fields do not replace the downloaded fields.
 
-[GET](FLAT_Store_Protocol.md#35-get) completion is transport delivery. It is not client storage
+[GET](flat-store-protocol.md#35-get) completion is transport delivery. It is not client storage
 proof.
 
 ## Atomic local archive
@@ -103,7 +103,7 @@ local saves, never device proof. The device synced indicator uses only validated
 
 ## Device archive proof
 
-The wire rules are [`ARCHIVE_RIDE`](FLAT_Store_Protocol.md#312-archive_ride); the stored rows and
-the synced indicator are [card archive metadata](Ride_Archive_Metadata.md). The device accepts proof
+The wire rules are [`ARCHIVE_RIDE`](flat-store-protocol.md#312-archive_ride); the stored rows and
+the synced indicator are [card archive metadata](ride-archive-metadata.md). The device accepts proof
 only for the exact current finalized Ride source on the mounted card, and a source that has since
 changed or vanished is terminal for that receipt: the device never recreates the ride or its proof.

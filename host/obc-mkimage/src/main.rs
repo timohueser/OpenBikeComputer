@@ -14,7 +14,7 @@
 //! same step); `sign` attaches or replaces the Ed25519 trailer on an already-wrapped container;
 //! `inspect` decodes, verifies both CRCs **and** the signature, and exits non-zero on any failure —
 //! it is the release workflow's gate. See `firmware/README.md` (§Firmware update images) for how the
-//! raw `.bin` is produced, and `specs/OBCU_Spec.md` §1 for the bytes.
+//! raw `.bin` is produced, and `specs/obcu-update.md` §1 for the bytes.
 
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};

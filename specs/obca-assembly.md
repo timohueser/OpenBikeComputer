@@ -6,17 +6,17 @@ chunk bytes verbatim (§2), what a baked **cell** is (§3), and what an **assemb
 must do (§4).
 
 OBCA introduces **no new OBCM version and changes no OBCM semantics**. Every cell is an ordinary
-[OBCM](OBCM_Spec.md) file that today's reader parses unchanged. What OBCA adds is a set of
+[OBCM](obcm-map.md) file that today's reader parses unchanged. What OBCA adds is a set of
 *constraints* on how those files are produced.
 
 This document is normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be
 interpreted as in RFC 2119.
 
-Related contracts: [`OBCM_Spec.md`](OBCM_Spec.md) is the byte format of every cell and
-assembly; [`OBCC_Spec.md`](OBCC_Spec.md) is the catalog manifest that publishes cells and names
-the selectable regions; [`OBCT_Spec.md`](OBCT_Spec.md) is the terrain raster, a second artifact
+Related contracts: [`obcm-map.md`](obcm-map.md) is the byte format of every cell and
+assembly; [`obcc-catalog.md`](obcc-catalog.md) is the catalog manifest that publishes cells and names
+the selectable regions; [`obct-terrain.md`](obct-terrain.md) is the terrain raster, a second artifact
 class on **this same grid** (§1) with its own revision track, carried **inside** the assembled map
-(`OBCM_Spec.md` §1.3).
+(`obcm-map.md` §1.3).
 
 ---
 
@@ -48,7 +48,7 @@ divides `GRID_ORIGIN` and `WORLD_SIDE`.
 Three properties of this definition are load-bearing:
 
 - **Square in µdeg, not in metres.** An OBCM quadtree halves latitude and longitude *together*
-  (`OBCM_Spec.md` §4), so a node can only ever coincide with a cell if the cell is square in the
+  (`obcm-map.md` §4), so a node can only ever coincide with a cell if the cell is square in the
   quadtree's own units. Cells are therefore taller than wide on the ground — at 47°N a `2^18`
   cell is ≈ 29 km × 20 km. Producers MUST NOT "correct" this with per-latitude sizes; it would
   break §2.
@@ -86,9 +86,9 @@ with `i` and `j` zero-padded to `max(4, decimal_width(WORLD_SIDE / S − 1))` di
 size at or above `2^16`, which is every band the v1 table uses, and wider for the smaller sizes
 §1.1 still permits. Producers MUST widen rather than truncate. Catalog entries (§6) and object paths
 use this id, so a cell's URL is derivable from its **band** and its id plus a base URL — the band,
-because two bands may share a cell size ([`OBCC_Spec.md` §2](OBCC_Spec.md)) — while its
+because two bands may share a cell size ([`obcc-catalog.md` §2](obcc-catalog.md)) — while its
 **square is derivable from its id alone**, which is why a catalog cell entry carries no bbox
-([`OBCC_Spec.md` §8](OBCC_Spec.md)).
+([`obcc-catalog.md` §8](obcc-catalog.md)).
 
 Implementations MAY use the packed convenience key `(log2(S) << 24) | (i << 12) | j`, valid for
 `S ≥ 2^18`. It is not normative and MUST NOT appear in any published artifact.
@@ -144,7 +144,7 @@ that is **grid-aligned**: `A_lat ≡ A_lon ≡ GRID_ORIGIN (mod S_MAX)`, with `2
 `S_MAX`-aligned, so the box stays tight to the selection.)
 
 > **Theorem.** For a quadtree built over a grid-aligned assembly bbox per
-> [`OBCM_Spec.md` §4](OBCM_Spec.md), and for every band size `S = 2^s` in the table, the nodes at
+> [`obcm-map.md` §4](obcm-map.md), and for every band size `S = 2^s` in the table, the nodes at
 > depth `d = n − s` are **exactly** the cells of size `S` that tile the assembly bbox — same
 > minimum corner, same span, to the microdegree.
 
@@ -159,7 +159,7 @@ Two corollaries that implementations lean on:
 A cell artifact's own header bbox **is** its cell (§3.1), so the cell file's root node is that cell
 and its subtree is the same subdivision the assembly performs at that position — identical node
 bboxes at every level, to the microdegree. A feature's anchor is stored relative to its **leaf's**
-minimum corner (`OBCM_Spec.md` §5.2) and its deltas are relative to the previous vertex, so every
+minimum corner (`obcm-map.md` §5.2) and its deltas are relative to the previous vertex, so every
 byte of a chunk decodes to the same absolute geometry in the cell file and in the assembly. §4.3
 states what is therefore copied and what must be rebuilt.
 
@@ -179,11 +179,11 @@ A baked cell MUST be a complete, valid OBCM file of the catalog's OBCM version, 
   pack computes, because §2 needs the box to be the grid square;
 - it MUST write the **complete ladder** in its LOD table — one entry per schema LOD, in ladder
   order, with each entry's `Max Meters/Pixel` taken from the schema (so LOD 0 is `+inf` and the
-  sequence is strictly decreasing, exactly as `OBCM_Spec.md` §3 requires). LODs outside the cell's
+  sequence is strictly decreasing, exactly as `obcm-map.md` §3 requires). LODs outside the cell's
   band are written **empty**: `Index Node Count = 0`, `Chunk Count = 0`, and the single-`0`-entry
-  offset table `OBCM_Spec.md` §5.1 mandates for an empty region. A reader walks an empty LOD and
+  offset table `obcm-map.md` §5.1 mandates for an empty region. A reader walks an empty LOD and
   finds nothing, so a cell of any band stays a legal, openable map;
-- the POI section and the nav section MUST be present, per `OBCM_Spec.md` §7/§8, and MUST be
+- the POI section and the nav section MUST be present, per `obcm-map.md` §7/§8, and MUST be
   **empty** unless the cell's band carries them;
 - both style tables MUST be the schema digest's **canonical table** (§6.2) — right ids, right
   count, right order, placeholder values — and both marker colors the schema's placeholder.
@@ -269,7 +269,7 @@ follows, and the computation MUST be used verbatim by both neighbours:
 classify junction-ness from the **source snapshot's** way set, not from the ways that survive
 inside the cell, and MUST NOT rely on any *interior* synthetic node coinciding with anything.
 Interior synthetic nodes are minted by the packer's own edge splits at a midpoint index of the edge
-*as that run sees it* (`nav.rs::split_edge`, plus the serializer's `OBCM_Spec.md` §8.4 chunk-fit and
+*as that run sees it* (`nav.rs::split_edge`, plus the serializer's `obcm-map.md` §8.4 chunk-fit and
 span splits), so two runs over a different set of ways place them metres apart.
 
 **Exact-coordinate unification only — an epsilon snap is forbidden.** At a cell seam, genuinely
@@ -278,7 +278,7 @@ distinct nodes and invent turns. Producers and assemblers MUST use exact integer
 NOT offer a tolerance knob.
 
 **Wire limits survive.** Unifying two junctions unions their adjacency and recomputes nothing, so
-`OBCM_Spec.md` §8.3's degree cap of 24, its `int16` neighbour deltas, and its `uint16` `Cost M` all
+`obcm-map.md` §8.3's degree cap of 24, its `int16` neighbour deltas, and its `uint16` `Cost M` all
 hold. Boundary junctions are ordinary degree-2 nodes. An assembler MUST nevertheless re-check the
 cap (§4.8) rather than assume it.
 
@@ -351,7 +351,7 @@ an implicit metadata source.
 ## 4. The assembly contract
 
 An **assembly** is **one** OBCM file built from catalog cells for one selection and two authored skins,
-carrying its terrain raster in `OBCM_Spec.md` §1.3's region when the selection has elevation. This
+carrying its terrain raster in `obcm-map.md` §1.3's region when the selection has elevation. This
 section defines what an assembler does.
 
 ### 4.1 Inputs and preconditions
@@ -363,7 +363,7 @@ known-empty identities (§3.8). It MUST refuse to proceed if:
 - the cells do not all carry the same OBCM version, or that version is not the one it writes; or
 - the cells do not all belong to the same schema digest; or
 - two cells disagree on the style table's ordered ids, or on the
-  `OBCM_Spec.md` §8.6 profile table; or
+  `obcm-map.md` §8.6 profile table; or
 - any selected cell is missing, and the caller has not accepted the resulting hole; or
 - any selected cell is `partial`, and the caller has not accepted the reduced coverage.
 
@@ -372,14 +372,14 @@ so a selection with holes is well-formed by construction. Known-empty cells also
 leaves but are explicit canonical coverage, not holes. What is not legal is a *silent* hole.
 
 **The assembly's size is known before anything is downloaded.** A cell's `bytes` is published per
-cell ([`OBCC_Spec.md` §8](OBCC_Spec.md)) and, for a named region, per band in the catalog root
-(`bytes_by_band`, [`OBCC_Spec.md` §6](OBCC_Spec.md)), and the remaining overheads do not depend on
+cell ([`obcc-catalog.md` §8](obcc-catalog.md)) and, for a named region, per band in the catalog root
+(`bytes_by_band`, [`obcc-catalog.md` §6](obcc-catalog.md)), and the remaining overheads do not depend on
 content: the header, the schema's style table, the LOD table, the POI and nav directories, and the
 per-LOD offset tables, whose sizes follow from the cell count. Therefore:
 
 - A consumer **MUST** project the file before the download and **MUST refuse the selection** if the
   projection exceeds the per-file wall, which is **whichever is smaller**: the interior the file's
-  `Offset Scale` covers ([`OBCM_Spec.md` §1.1](OBCM_Spec.md)), and what the consumer's read seam
+  `Offset Scale` covers ([`obcm-map.md` §1.1](obcm-map.md)), and what the consumer's read seam
   addresses. It MUST NOT begin fetching an assembly it cannot legally write **or read**. Both walls
   are stated by reference rather than as literals, because a number copied into this section would
   go stale against either.
@@ -394,9 +394,9 @@ The terrain raster is projected the same way. Its size is
 `32 + 4 · rows · cols + present · T² · 512` — a header, a directory over the assembly rectangle, and
 one fixed-size block per square that has a published object — and every term is known from the
 catalog: the rectangle from the assembly bbox and the terrain block's `cell_log2`, the block length
-from the `posting_log2`/`cell_log2` pairing (`OBCT_Spec.md` §3.2), and which squares are present
+from the `posting_log2`/`cell_log2` pairing (`obct-terrain.md` §3.2), and which squares are present
 from the pinned terrain index. A consumer MUST show the raster's bytes as their own figure rather
-than folding them into the map's ([`OBCC_Spec.md` §13.3](OBCC_Spec.md)).
+than folding them into the map's ([`obcc-catalog.md` §13.3](obcc-catalog.md)).
 
 ### 4.2 Choosing the assembly bbox
 
@@ -431,8 +431,8 @@ overhang: the cells out there do not exist, so their leaves are empty. It MUST N
 | **Style tables** | Rebuilt from the skins (§4.7) — same ids, same count, same order; values replaced. |
 | **POI section + hours pool** | Rebuilt (§4.5). |
 | **Nav section** (directory, node tree, node chunks, edge pool) | Rebuilt (§4.6). |
-| **Profile table** (`OBCM_Spec.md` §8.6) | Copied from the cells after checking every cell agrees; it is schema data. |
-| **Terrain cell blocks** ([`OBCT_Spec.md`](OBCT_Spec.md) §3.2) | **Verbatim**, into a fresh directory over the assembly rectangle. Terrain assembly is *placement*, not grafting: the lattice is global and half-open, so two neighbouring cells already agree about every sample and there is nothing to relocate, re-index or unify. |
+| **Profile table** (`obcm-map.md` §8.6) | Copied from the cells after checking every cell agrees; it is schema data. |
+| **Terrain cell blocks** ([`obct-terrain.md`](obct-terrain.md) §3.2) | **Verbatim**, into a fresh directory over the assembly rectangle. Terrain assembly is *placement*, not grafting: the lattice is global and half-open, so two neighbouring cells already agree about every sample and there is nothing to relocate, re-index or unify. |
 
 An assembler MUST NOT decode a geometry chunk in the normal path. Decoding is for verification
 (§4.8).
@@ -442,14 +442,14 @@ square tiles it exactly, because the assembly corner is congruent to `GRID_ORIGI
 and therefore modulo the terrain cell too. An assembler MUST refuse a terrain `cell_log2` larger
 than the assembly's `span_log2` rather than overhang the box or grow it (§4.2 forbids growing it).
 Squares the selection covers but the catalog does not publish an object for — canonically void
-ocean ([`OBCC_Spec.md` §13.6](OBCC_Spec.md)), or ground outside the dataset — are directory `0`.
+ocean ([`obcc-catalog.md` §13.6](obcc-catalog.md)), or ground outside the dataset — are directory `0`.
 
 ### 4.4 Grafting geometry, per LOD
 
 For each ladder LOD `L`, with band size `S = 2^s` and cell depth `d = n − s`:
 
 1. Order the band's present cells by their depth-`d` node index (the BFS order of
-   `OBCM_Spec.md` §4), so output order is deterministic and independent of fetch order.
+   `obcm-map.md` §4), so output order is deterministic and independent of fetch order.
 2. Emit the fresh upper tree for depths `0..d`, reserving a slot for every depth-`d` position and
    writing `0x7FFFFFFF` (empty leaf) where the cell is absent. A depth-`d` position whose cell is
    present takes that cell's **root node** — which may itself be a leaf or a branch, relocated as
@@ -457,7 +457,7 @@ For each ladder LOD `L`, with band size `S = 2^s` and cell depth `d = n − s`:
 3. Append each present cell's relocated subtree, then its offset-table entries, then its chunk
    bytes.
 4. `Chunk Size` for the LOD is the schema's value; the assembler MUST verify every copied offset
-   pair still spans at most that (`OBCM_Spec.md` §5.1) — a cell that violated it would poison the
+   pair still spans at most that (`obcm-map.md` §5.1) — a cell that violated it would poison the
    assembly.
 
 A cell whose LOD `L` region is empty contributes an empty leaf, exactly like an absent cell.
@@ -466,13 +466,13 @@ A cell whose LOD `L` region is empty contributes an empty leaf, exactly like an 
 
 1. Collect every POI record from every `network`-band cell. Records are 64 bytes with **absolute**
    coordinates, so they need no relocation.
-2. Deduplicate by source identity (`OBCM_Spec.md` §7.3). §3.6 gives each POI exactly one cell, so a
+2. Deduplicate by source identity (`obcm-map.md` §7.3). §3.6 gives each POI exactly one cell, so a
    duplicate is dropped and SHOULD be reported.
 3. Rebuild the hours pool: collect each source blob, deduplicate the 29-byte blobs, and remap every
    service record's `HoursRef` to the new index. `0xFFFF` stays `0xFFFF`. Summit records
    (subtype 19) keep their signed elevation trailer; they do not reference the hours pool.
 4. Re-bin each category into a fresh quadtree over the **assembly** bbox and re-chunk at the
-   directory's shared `Chunk Size`, per `OBCM_Spec.md` §7.1–§7.3.
+   directory's shared `Chunk Size`, per `obcm-map.md` §7.1–§7.3.
 5. Order records within a chunk by source identity so the output is deterministic.
    Preserve the explicit approach metadata. If a spatial leaf exceeds capacity, fail the assembly
    instead of omitting service identities.
@@ -482,7 +482,7 @@ The pool count MUST not exceed `0xFFFE` distinct blobs, because `HoursRef` is a 
 
 ### 4.5.1 Peak article associations
 
-Core cells carry the separate `OBCM_Spec.md` §10 collection. Select associations by the summit
+Core cells carry the separate `obcm-map.md` §10 collection. Select associations by the summit
 SourceIds retained in the merged POI set. Keep each selected summit's article without a geographic
 content filter. Union summit associations, reject conflicting identities, deduplicate article
 records, and relocate all indexes and guarded content references. Apply §10.4's deterministic
@@ -492,8 +492,8 @@ content precedence and bounded source-copy checks. Landmark queries remain separ
 
 This is the most involved rebuild, and its order matters.
 
-1. **Read the serialized node set.** Walk each `network` cell's `OBCM_Spec.md` §8 node quadtree through a real
-   reader and collect junction records, keyed by `Node Id` (`OBCM_Spec.md` §8.2's bin-packing
+1. **Read the serialized node set.** Walk each `network` cell's `obcm-map.md` §8 node quadtree through a real
+   reader and collect junction records, keyed by `Node Id` (`obcm-map.md` §8.2's bin-packing
    means one leaf walk can yield a record more than once, so the collection MUST be idempotent).
    The set to renumber is the **serialized** one, not the one a graph builder would produce: the
    serializer mints further synthetic degree-2 junctions after the builder finishes, and they are
@@ -521,12 +521,12 @@ This is the most involved rebuild, and its order matters.
 5. **Renumber** the surviving nodes densely from 0, in a deterministic order (`(lat, lon)`
    ascending is sufficient and content-derived).
 6. **Rebuild the edge pool.** `Edge Id` names a record by its chunk and its position within that
-   chunk (`OBCM_Spec.md` §8.4 — it was a pool byte offset before OBCM v14, and either way it is a
+   chunk (`obcm-map.md` §8.4 — it was a pool byte offset before OBCM v14, and either way it is a
    property of *placement*), so every edge record is re-emitted and every `Edge Id` re-derived. Edge polyline bytes MAY be copied from the
    source record (they are self-contained: absolute anchor plus deltas), but their *placement* is
    new, and the no-straddle rule must be re-applied at the 512-byte chunk granularity.
 7. **Re-check the wire limits** (§4.8) and rebuild the node quadtree over the assembly bbox, with
-   `OBCM_Spec.md` §8.2 bin-packed 512-byte node chunks.
+   `obcm-map.md` §8.2 bin-packed 512-byte node chunks.
 8. **Copy the profile table** after confirming every cell's is identical.
 
 An assembler MUST NOT create an edge between two nodes that no single cell joined. Unification only
@@ -543,7 +543,7 @@ z-index and priority, plus a marker color. Each assembly stamps one light and on
 - before any output write, compare the resolved ids against the cells' canonical table. This check
   also applies when a local schema omits the style assignment and the skins supply explicit ids;
 - write both style tables with the schema's ids in the schema's order and each skin's values in the
-  other seven bytes of each 8-byte record (`OBCM_Spec.md` §2);
+  other seven bytes of each 8-byte record (`obcm-map.md` §2);
 - write both marker colors into the header.
 
 A paired restyle changes only the two small tables and marker fields. Styles may change drawing order freely. An
@@ -564,7 +564,7 @@ uses — and MUST cover:
    the gate that catches a mis-relocated index or a bad offset base, because a wrong `node_bbox`
    produces geometry in the wrong place *and* an anchor that no longer fits, and a wrong chunk
    base produces a stream that never meets its `0xFF` sentinel.
-3. **Offset-table invariants** of `OBCM_Spec.md` §5.1 for every chunk: monotone offsets, in-region
+3. **Offset-table invariants** of `obcm-map.md` §5.1 for every chunk: monotone offsets, in-region
    end, and span ≤ `Chunk Size`.
 4. **Nav integrity.** Every neighbour entry's `Neighbor Id` resolves to a record in the same file;
    `Degree ≤ 24`; every `Edge Id` decodes to a record whose first and last vertices equal the two
@@ -574,35 +574,35 @@ uses — and MUST cover:
    surface a selection whose largest component covers an implausibly small share of the graph,
    because that is what a broken seam looks like; it MUST NOT silently repair it.
 6. **The file answers for itself.** Two properties of the file alone: its header's `Offset Scale`
-   MUST cover its length (`OBCM_Spec.md` §1.1), and its length MUST equal what the pre-download
+   MUST cover its length (`obcm-map.md` §1.1), and its length MUST equal what the pre-download
    projection said it would be (§4.1). An assembler MUST refuse rather than emit a file past the
    interior that scale addresses, and MUST apply that refusal **at plan time**, because every byte
    of an assembly is computable before any of it is written.
 7. **Digests.** SHA-256 of the assembled file, and of nothing inside it. In particular the
    **terrain region has no digest of its own**: it is a run of bytes inside the map, and the map has
    one identity. Step 8's read-back is what proves the raster is the bytes the catalog served.
-8. **The terrain region** — the raster, spliced into `OBCM_Spec.md` §1.3. Every input is checked
+8. **The terrain region** — the raster, spliced into `obcm-map.md` §1.3. Every input is checked
    **before its bytes are copied**, because a bad cell must not reach the map even to be caught on
    the way out: each downloaded object parses as an OBCT container through the real reader
-   (`OBCT_Spec.md` §4.5 — magic, version, flags, the posting/cell pairing, the rectangle against the
+   (`obct-terrain.md` §4.5 — magic, version, flags, the posting/cell pairing, the rectangle against the
    world grid, and every directory entry against the file's own length, which is what rejects a
    truncated download and an out-of-bounds offset); its header's `Posting Log2` and `Cell Log2` equal
-   the catalog's terrain block ([`OBCC_Spec.md` §13.1](OBCC_Spec.md)); it is the `1 × 1` container at
+   the catalog's terrain block ([`obcc-catalog.md` §13.1](obcc-catalog.md)); it is the `1 × 1` container at
    exactly its own id that §13.1 requires of a *published cell*; and its SHA-256 equals the one the
    pinned terrain index published. The written region is then read back through the same reader —
-   through `OBCM_Spec.md` §1.3's window, once the raster lives inside the map — and
+   through `obcm-map.md` §1.3's window, once the raster lives inside the map — and
    every present cell's block MUST equal the block of the object it came from, with every square the
    assembly did not receive at directory `0`.
 
 A failure at any step MUST abort the whole assembly. A partially written map is not a degraded map;
 it is an unmountable one, which is the correct outcome. The atomicity is the flat store's commit
-(`FLAT_Store_Format.md` §5).
+(`flat-store-format.md` §5).
 
 ---
 
 ## 6. Catalog, schema, and skins
 
-The catalog contract is [`OBCC_Spec.md`](OBCC_Spec.md); `schema_version 3` there carries cells,
+The catalog contract is [`obcc-catalog.md`](obcc-catalog.md); `schema_version 3` there carries cells,
 bands, schemas, skins, and region cell-sets. This section states only the parts that are OBCA's to
 define.
 
@@ -622,7 +622,7 @@ routing profile table, `min_component_edges`, and the **band table** (§1.2). Al
 into chunk bytes, so it is the identity of a cell store.
 
 Critically, the schema also fixes the **style-id assignment**: `obc-pack` numbers feature types
-`1`-based in config document order (`OBCM_Spec.md` §2), and those ids are referenced by every
+`1`-based in config document order (`obcm-map.md` §2), and those ids are referenced by every
 feature header in every chunk. A schema digest therefore has one **canonical style assignment** —
 one id per feature type, in one order. The two skins may change the other seven bytes of each record
 and their marker colors, and nothing else (§4.7).
@@ -635,7 +635,7 @@ therefore skins. Custom schemas remain a local-bake affair for the desktop app.
 An OBCM version bump or a schema digest change invalidates **every** cell, because assembly copies
 chunk bytes between files and that is only meaningful under one schema. The bakery's guard MUST
 refuse to publish a catalog that mixes OBCM versions or schema digests across cells, exactly as
-`OBCC_Spec.md` §10 already refuses a mixed-version artifact catalog, and an assembler MUST refuse a
+`obcc-catalog.md` §10 already refuses a mixed-version artifact catalog, and an assembler MUST refuse a
 mixed input set (§4.1).
 
 ---
@@ -719,7 +719,7 @@ cell. **No feature was decoded**, because every anchor is relative to a leaf who
 bit-identical in the cell file and in the assembly.
 
 Note the layout is breadth-first only down to the cell depth; below it, each cell's subtree is a
-contiguous block. That is legal: `OBCM_Spec.md` §4's reader contract requires only that a branch's
+contiguous block. That is legal: `obcm-map.md` §4's reader contract requires only that a branch's
 four children be contiguous, in NW/NE/SW/SE order, and at a **higher** index than the branch, all
 of which a per-cell block satisfies. An assembler MUST NOT be required to re-interleave cell
 subtrees into global breadth-first order, and a consumer MUST NOT assume global breadth-first
@@ -737,10 +737,10 @@ degree-2 junction and the road is continuous. A junction 3.9 m away on either si
 ## 8. Where this lives
 
 - The map byte format every cell and assembly is an instance of:
-  [`OBCM_Spec.md`](OBCM_Spec.md); its code authority
+  [`obcm-map.md`](obcm-map.md); its code authority
   [`firmware/obc-formats/src/obcm.rs`](../firmware/obc-formats/src/obcm.rs).
 - The catalog that publishes cells, bands, schemas, skins, and region cell-sets:
-  [`OBCC_Spec.md`](OBCC_Spec.md).
+  [`obcc-catalog.md`](obcc-catalog.md).
 - The drawing quadtree and feature encoding: [`host/obc-draw`](../host/obc-draw).
 - The navigation graph and its encoding: [`host/obc-network`](../host/obc-network).
 - Shared grid and byte framing: [`host/obc-map-core`](../host/obc-map-core).

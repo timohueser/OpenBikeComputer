@@ -59,7 +59,7 @@ coarsest scale it serves, so the renderer opens one level and reads nothing else
 
 The header addresses the global sections. An absent section has a zero offset and length, which is
 how a map without terrain, landmarks, or peak articles says so. The paired Light and Dark style
-tables apply to the same geometry at every level. [OBCM](src:specs/OBCM_Spec.md) defines each field.
+tables apply to the same geometry at every level. [OBCM](src:specs/obcm-map.md) defines each field.
 
 ### The quadtree index
 
@@ -112,7 +112,7 @@ Each POI category has its own index, so a search for water reads no campsite rec
 carries its source identity and, where a source node lies on a routable way, a mapped approach.
 That approach is what lets the device plan a ride to a place instead of to a coordinate beside it.
 Separate categories hold named summits and settlement names. See
-[OBCM section 7](src:specs/OBCM_Spec.md).
+[OBCM section 7](src:specs/obcm-map.md).
 
 ### Opening hours: a pooled weekly schedule
 
@@ -162,7 +162,7 @@ the file keeps, so the summary and the route agree.
 
 Missing elevation is an explicit unknown value, because zero meters is a valid height at the coast.
 An unknown point pauses ascent integration instead of adding a false climb. See the
-[OBCR specification](src:specs/OBCR_Spec.md).
+[OBCR specification](src:specs/obcr-route.md).
 
 ## Recorded rides
 
@@ -180,7 +180,7 @@ everything written before the interruption. The footer also records the bike typ
 that the ride started on, so the device and the phone group the rides of a trip without dates. It
 keeps the rider's maximum heart rate and FTP from the start too, so a ride keeps its effort zones
 when the rider changes those settings later. The byte contract is in
-[the BLE interface specification](src:specs/obc-ble-interface-spec.md).
+[the BLE interface specification](src:specs/ble-interface.md).
 
 ## OBCT — the terrain raster
 
@@ -222,7 +222,7 @@ fetched over a network, so the catalog, not the transport, decides what the righ
 The split between schema and skin is why a map can be restyled cheaply. The schema controls
 geometry, levels, style identifiers, routing, and chunk size, and changing it needs a rebake. A
 skin controls only colors, weights, line style, paint order, and priority, and changing it does
-not. See [`OBCC_Spec.md`](src:specs/OBCC_Spec.md).
+not. See [`obcc-catalog.md`](src:specs/obcc-catalog.md).
 
 ## Cells and assemblies
 
@@ -246,7 +246,7 @@ a seam merge when their coordinates are equal.
 All cells in one assembly share the schema digest and the map version. The assembler writes the
 selected Light and Dark presentation records into one file. The browser runs the
 same engine as the command line, through [`obc-builder-bridge`](src:builder/wasm), and
-verifies the result with the production readers. See [`OBCA_Spec.md`](src:specs/OBCA_Spec.md).
+verifies the result with the production readers. See [`obca-assembly.md`](src:specs/obca-assembly.md).
 
 ## Source index
 

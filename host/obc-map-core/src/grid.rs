@@ -1,7 +1,7 @@
 //! The OBCA cell grid: the fixed global µdeg lattice, cell identity, the per-band cell-size table,
 //! and the integer arithmetic the cell cutter cuts with.
 //!
-//! Everything here is normative in [`OBCA_Spec.md`](../../../specs/OBCA_Spec.md) and deliberately
+//! Everything here is normative in [`obca-assembly.md`](../../../specs/obca-assembly.md) and deliberately
 //! integer-only: the grid exists so that an OBCM quadtree's floor-midpoint subdivision lands exactly
 //! on cell boundaries, and a single rounding step in the wrong direction would break that. No float
 //! ever reaches a coordinate computed in this module.
@@ -222,7 +222,7 @@ impl BandRole {
     }
 }
 
-/// One band: a named class of cell content with one cell size. The JSON shape is `OBCC_Spec.md`'s
+/// One band: a named class of cell content with one cell size. The JSON shape is `obcc-catalog.md`'s
 /// `bands` entry verbatim, so a bakery can hand the catalog's own schema straight to the cutter.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Band {

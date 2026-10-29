@@ -1,4 +1,4 @@
-//! The boot-state RRAM handoff page and the bootloader's decision logic (`OBCU_Spec.md`).
+//! The boot-state RRAM handoff page and the bootloader's decision logic (`obcu-update.md`).
 //!
 //! One CRC-framed blob in a dedicated 4 KB RRAM page, the only channel from the app (the armer) to
 //! the bootloader (the installer). Anything that does not decode cleanly is [`BootState::Idle`], so

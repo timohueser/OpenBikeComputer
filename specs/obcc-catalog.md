@@ -2,7 +2,7 @@
 
 OBCC (OpenBikeComputer Catalog) is the JSON contract between the central cell
 bakery and map-building consumers. The website and desktop app read the same
-catalog, select the same [OBCA](OBCA_Spec.md) cells, and feed them to the same
+catalog, select the same [OBCA](obca-assembly.md) cells, and feed them to the same
 assembler. The device does not read OBCC.
 
 The current envelope has `"schema_version": 3`. Consumers MUST reject any other
@@ -421,7 +421,7 @@ artifact entries; known-empty cells contribute zero. After digest verification,
 artifact bytes, selected known-empty identities, and the selected skin are
 passed to the OBCA assembler. Island pruning happens at assembly, seams unify only
 exact serialized coordinates, and the resulting mounted map follows
-[OBCA_Spec.md](OBCA_Spec.md) §4.
+[obca-assembly.md](obca-assembly.md) §4.
 
 The website and desktop app MUST use the same selection arithmetic, verified
 cell bytes, skin, and assembler. Host-specific file saving MUST NOT alter the
@@ -436,7 +436,7 @@ incomplete transfer and MUST NOT leave anything selectable as a map.
 
 ## 13. Terrain artifacts
 
-Terrain is [OBCT](OBCT_Spec.md) raster on the same OBCA grid, published as a
+Terrain is [OBCT](obct-terrain.md) raster on the same OBCA grid, published as a
 **second artifact class with its own revision track**. It is not a band, not a
 section, and not covered by §10.
 

@@ -2,7 +2,7 @@
 
 - Status: **normative** for the flat card store
 - Format version: 1
-- Seam and wire contract: [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md)
+- Seam and wire contract: [`flat-store-protocol.md`](flat-store-protocol.md)
 
 This document is the byte contract for the raw SD card. There is no partition table and no
 filesystem: the card is five fixed regions and an array of equal extents, and every address the
@@ -108,11 +108,11 @@ same numbers and defines no others.
 | 1 | route | OBCR payload |
 | 2 | trip | the days of a trip, one route each |
 | 3 | ride | produced by the device; the one growing object (§7) |
-| 5 | map shard | one OBCM object, carrying its terrain inside it (`OBCM_Spec.md` §1.3) |
+| 5 | map shard | one OBCM object, carrying its terrain inside it (`obcm-map.md` §1.3) |
 | 6 | map set manifest | **retired.** No producer writes this kind; the value is not reissued |
 | 7 | update package | OBCU image |
 | 8 | firmware rollback reserve | extents owned by the store, bytes written by the update path (§5.3) |
-| 9 | metadata | device-owned ride archive proofs; [contract](Ride_Archive_Metadata.md) |
+| 9 | metadata | device-owned ride archive proofs; [contract](ride-archive-metadata.md) |
 
 ## 4. Superblock
 
@@ -284,7 +284,7 @@ Flags:
 
 Bits `4..15` are zero. The acceptance flag is set by an `Amend` with unchanged ObjectId,
 revision, payload length, and CRC in the checkpoint transaction described in
-[Ride archive metadata](Ride_Archive_Metadata.md). A fresh payload cannot carry this flag.
+[Ride archive metadata](ride-archive-metadata.md). A fresh payload cannot carry this flag.
 Catalog copying preserves it. Clearing the checkpoint does not clear acceptance.
 
 **Display name** is what a menu shows. It is UTF-8, at most 48 bytes, and the store does not
@@ -424,7 +424,7 @@ normative part and the time is not.
 
 One thing that reads like mount is deliberately outside it: reconciling an update that armed before
 the last reboot, which may remove an orphaned rollback reserve
-([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §4). That is device policy running against a
+([`flat-store-protocol.md`](flat-store-protocol.md) §4). That is device policy running against a
 mounted store, on the ordinary commit path, and it is not part of bringing the card up.
 
 ### 5.7 Vectors

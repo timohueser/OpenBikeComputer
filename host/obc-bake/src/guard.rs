@@ -43,7 +43,7 @@ impl GuardOutcome {
                 let mut s = format!(
                     "obcm-version guard: FAILED — this build writes OBCM v{expected}, but {} of {cells} \
                      published cells are a different version.\n\nAn OBCM bump invalidates every baked cell \
-                     (OBCC_Spec.md §10): every assembly from the catalog is unreadable to this firmware until the bakery \
+                     (obcc-catalog.md §10): every assembly from the catalog is unreadable to this firmware until the bakery \
                      re-runs. Re-bake and re-publish:\n\n    obc-bake bake --out <tree> --force\n    obc-bake \
                      publish <tree> --base-url <url> --target r2\n\nStale schemas:\n",
                     found.len()
@@ -158,7 +158,7 @@ impl CellStoreOutcome {
                 let _ = writeln!(
                     s,
                     "  {} cell(s) are `partial` — co-bake the neighbouring extract to complete them \
-                     (OBCA_Spec.md §3.7):",
+                     (obca-assembly.md §3.7):",
                     self.partial.len()
                 );
                 for id in self.partial.iter().take(10) {
@@ -335,7 +335,7 @@ pub fn check_cell_store(tree: &std::path::Path) -> Result<CellStoreOutcome, Stri
                         if !state.sidecar.partial {
                             out.problems.push(format!(
                                 "{}: published as `partial`, but this tree recorded it as canonical — a covering bake \
-                                 existed and was replaced by a narrower one (OBCA_Spec.md §3.7)",
+                                 existed and was replaced by a narrower one (obca-assembly.md §3.7)",
                                 path.display()
                             ));
                         }
@@ -388,7 +388,7 @@ fn check_terrain_store(
         if dir.is_dir() {
             problems.push(format!(
                 "{}: terrain cells with no `{}` — a terrain cell is only interpretable beside the dataset, pairing \
-                 and revision it was baked at (OBCC_Spec.md §13.1)",
+                 and revision it was baked at (obcc-catalog.md §13.1)",
                 dir.display(),
                 crate::terrain::TERRAIN_DOC
             ));
@@ -431,7 +431,7 @@ fn check_terrain_store(
                 if sidecar.terrain_revision != doc.revision {
                     problems.push(format!(
                         "{}: baked at terrain revision {} but the terrain store is revision {} — one raster per \
-                         revision (OBCC_Spec.md §13.2)",
+                         revision (obcc-catalog.md §13.2)",
                         path.display(),
                         sidecar.terrain_revision,
                         doc.revision
@@ -475,7 +475,7 @@ fn check_terrain_store(
         problems.push(format!(
             "STALE network band: its cells' nav ascents were baked against terrain revision {}, but this tree \
              publishes terrain revision {}. The router's baked ascents and the published raster are two different \
-             surfaces (OBCC_Spec.md §13.4) — re-bake the cells against the current terrain:\n      obc-bake bake \
+             surfaces (obcc-catalog.md §13.4) — re-bake the cells against the current terrain:\n      obc-bake bake \
              --out <tree> --force <region…>",
             name_revision(network_terrain_revision),
             doc.revision

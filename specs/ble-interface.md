@@ -5,7 +5,7 @@ Control service, its live characteristics, and the payload layouts of the object
 characteristics carry. Pairing and encryption are §8. The QR link that starts pairing is §9.
 
 Object transfers are **not** here. They are protocol v4, whose normative contract is
-[`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md); §5.1 of that document binds it to the
+[`flat-store-protocol.md`](flat-store-protocol.md); §5.1 of that document binds it to the
 `protocolVersion`, `psm` and `objectControl` characteristics below.
 
 All multi-byte integers are **little-endian**. Shared binary test vectors pinning these layouts
@@ -25,7 +25,7 @@ live in [`specs/vectors/`](vectors/) and are read by both `cargo test` and `swif
 in this preference order:
 
 1. the **installed image's OBCU version string, verbatim** — the `fw_version` field of the container
-   the device installed ([`OBCU_Spec.md`](OBCU_Spec.md) §1). For a released build that is the
+   the device installed ([`obcu-update.md`](obcu-update.md) §1). For a released build that is the
    release tag, e.g. `v1.3.0`;
 2. otherwise the **build's bare git short hash**, e.g. `ca9b336` — a device flashed over SWD, which
    has never installed a container and has no version to report.
@@ -38,7 +38,7 @@ MUST NOT offer an automatic update. A development device stays on whatever its o
 gets back onto the release track through the manual install path.
 
 The value is at most 32 bytes (the OBCU `fw_version` field width). This characteristic and the USB
-device-information read ([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §5.2.1) always carry
+device-information read ([`flat-store-protocol.md`](flat-store-protocol.md) §5.2.1) always carry
 identical bytes.
 
 ### 3.2 Battery Service — `0x180F` (SIG)
@@ -62,7 +62,7 @@ Base UUID (random; **not** derived from the SIG base): the 16-bit block `XXXX` i
 | `3C920008-9916-4EBA-ABC2-342FE08F6B10` | `protocolVersion` | read, open | `u16` = `4`, the protocol-v4 major |
 | `3C920009-9916-4EBA-ABC2-342FE08F6B10` | `objectControl` | write + indicate | the protocol-v4 control channel |
 
-The last three are bound by [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §5.1, which owns
+The last three are bound by [`flat-store-protocol.md`](flat-store-protocol.md) §5.1, which owns
 their byte rules.
 
 `3C920003`, `3C920005` and `3C920006` are retired and **MUST NOT** be reused. A retired UUID never
@@ -107,7 +107,7 @@ support it".
 
 Commands `1` (`deleteObject`) and `2` (`ackRides`) are retired: object removal is protocol v4
 `REMOVE` and ride possession is `ARCHIVE_RIDE`
-([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §3.7, §3.12). The device answers them
+([`flat-store-protocol.md`](flat-store-protocol.md) §3.7, §3.12). The device answers them
 `unknown command`. **Next free command: `6`.**
 
 **`installFw`.** The command only *requests*; it never waits for the rider and never installs on its
@@ -129,7 +129,7 @@ truth about the same fact, so the device accepts and the confirm card reports wh
 encrypted link (§8). **Installing** is gated on physical confirmation at the device. `installFw`
 therefore never arms and never reboots on its own. Image authenticity is separate and is checked on
 every delivery path: the armer verifies the container's Ed25519 signature, and refuses an unsigned
-container, before an install can be armed ([`OBCU_Spec.md`](OBCU_Spec.md) §1.3, §1.4).
+container, before an install can be armed ([`obcu-update.md`](obcu-update.md) §1.3, §1.4).
 
 **`forgetBond`.** The bonded phone asks the device to clear its side of the bond, so an app-side
 "Forget device" does not leave the pair wedged under the reject-when-bonded posture (§8). The device
@@ -165,8 +165,8 @@ immediately after encryption. A timestamp the device stamps later in the session
 ## 7. Object layouts
 
 A route object's payload is exactly the bytes of an OBCR file
-([`OBCR_Spec.md`](OBCR_Spec.md)); the device stores and serves it verbatim. An update package's
-payload is exactly the bytes of an OBCU container ([`OBCU_Spec.md`](OBCU_Spec.md) §1).
+([`obcr-route.md`](obcr-route.md)); the device stores and serves it verbatim. An update package's
+payload is exactly the bytes of an OBCU container ([`obcu-update.md`](obcu-update.md) §1).
 
 ### 7.2 `ride` — ride object v6
 
@@ -229,7 +229,7 @@ The final 154 bytes are the summary footer:
   while the ride records and is not paused. The total is rounded down to whole kJ. A ride without
   power data writes the absent value, so `0` is a ride with power data and no work.
 - **Bike type.** The bike type that is current when the ride starts
-  ([`OBCR_Spec.md`](OBCR_Spec.md) §1.2). The phone can change its own copy. The device copy does
+  ([`obcr-route.md`](obcr-route.md) §1.2). The phone can change its own copy. The device copy does
   not change.
 - **Trip.** A ride is on a trip when it starts on a day of a stored trip (§7.7). The footer holds the trip key, the index of that day and the trip's day
   count. The rider sees Day 1 for day index 0. A reader requires `day index < day count`.
@@ -333,7 +333,7 @@ any other length, which also rejects a torn write.
 
 The device keeps one progress record per trip key. The record never crosses the wire. The device
 writes it at Finish of a ride on a trip day, and keeps it in the ride-archive Metadata object
-([`Ride_Archive_Metadata.md`](Ride_Archive_Metadata.md)) with the navigator checkpoint.
+([`ride-archive-metadata.md`](ride-archive-metadata.md)) with the navigator checkpoint.
 
 - **Start record.** The fresh start of a ride on a trip day, and the continuation of that ride
   after a reset, write a start record for the trip: position day 0, the route ObjectId of day 0,

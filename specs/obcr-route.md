@@ -1,11 +1,11 @@
 # OBCR File Format Specification (v5)
 
 OBCR (OpenStreetMap Binary Chunked Route) is the binary **route** format, the sibling of
-the [`OBCM`](OBCM_Spec.md) map format. A route is one ordered polyline with per-point
+the [`OBCM`](obcm-map.md) map format. A route is one ordered polyline with per-point
 elevation, precomputed ride statistics, an optional table of **waypoints** pinned along
 the route, and an optional accepted-visit descriptor. The device and the simulator produce
 it from an uploaded GPX file; the companion app produces it from imported GPX/TCX before a
-BLE upload (see [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md)).
+BLE upload (see [`flat-store-protocol.md`](flat-store-protocol.md)).
 
 This document is the normative byte contract. `firmware/obc-formats/src/obcr.rs` is its
 code authority for versions, fixed lengths, magic, and sentinels;
@@ -107,7 +107,7 @@ Assistant candidates and built trip days use their own retention rules.
 ### 1.2 Bike type and estimated time
 
 Every route has one of four fixed bike types. The value is also the index of the map's routing
-profile for that type ([`OBCM_Spec.md`](OBCM_Spec.md) §8.6).
+profile for that type ([`obcm-map.md`](obcm-map.md) §8.6).
 
 | Value | Type | Flat speed `v` (km/h) | Climb cost `k` (0.1 s per metre of ascent) |
 | :-- | :-- | :-- | :-- |
@@ -222,7 +222,7 @@ accepted-visit producer supplies it when it has the original route's exact sourc
 
 **Category** reuses the map's browsable POI categories —
 `1` water · `2` campsite · `3` accommodation · `4` resupply · `5` pharmacy ·
-`6` bike shop ([`OBCM_Spec.md`](OBCM_Spec.md) §7.4) — and `0` (generic) is first-class.
+`6` bike shop ([`obcm-map.md`](obcm-map.md) §7.4) — and `0` (generic) is first-class.
 Producers map their source symbols onto these ids; §4.1 is the canonical table for GPX.
 
 **`Distance Along`** is defined by nearest-point placement: the cumulative route distance at

@@ -2,7 +2,7 @@
 
 This contract defines the landmark and peak content: the compact facts that the prepared source
 [`wiki`](#the-wiki-source) holds, and how the compilers read them. The compiled device formats in
-[obc-data](obc-data.md) and [OBCM](OBCM_Spec.md) are separate outputs.
+[obc-data](obc-data.md) and [OBCM](obcm-map.md) are separate outputs.
 
 ## Policy owners
 

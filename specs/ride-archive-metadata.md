@@ -95,7 +95,7 @@ closed. It does not prevent unrelated Ride payload mutations. No automatic expir
 
 The trip progress records follow the checkpoint, or the rows when there is no checkpoint. The
 record count is the remaining payload length divided by 96, at most `16`. Records are in write
-order, each with a unique nonzero trip key. `obc-ble-interface-spec.md` §7.7 has the rules. A
+order, each with a unique nonzero trip key. `ble-interface.md` §7.7 has the rules. A
 record never holds a route: route removal and replacement ignore it.
 
 | Record offset | Bytes | Value |

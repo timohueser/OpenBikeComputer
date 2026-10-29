@@ -1,6 +1,6 @@
 import Foundation
 
-/// The four fixed bike types of `specs/OBCR_Spec.md` §1.2. The raw value is the OBCR header byte
+/// The four fixed bike types of `specs/obcr-route.md` §1.2. The raw value is the OBCR header byte
 /// and the map's routing-profile index.
 public enum BikeType: UInt8, CaseIterable, Sendable {
     case road = 0

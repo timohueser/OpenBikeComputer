@@ -1,7 +1,7 @@
 # OpenBikeComputer iOS companion
 
 An on-ramp. The canonical wire contract is
-[`../specs/obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md);
+[`../specs/ble-interface.md`](../specs/ble-interface.md);
 [`OBCProtocol.md`](OBCProtocol.md) records the iOS-facing mappings.
 
 The app imports planned routes, pushes them to the device, and syncs recorded rides back.

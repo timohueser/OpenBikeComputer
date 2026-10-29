@@ -1,4 +1,4 @@
-//! The engine against a real flat store: one behaviour per rule of `FLAT_Store_Protocol.md`.
+//! The engine against a real flat store: one behaviour per rule of `flat-store-protocol.md`.
 //!
 //! The card underneath is the sim-backed [`FlatStore`](obc_storage::flat::FlatStore), so a claim
 //! about the catalog here is a claim about the bytes on a card.

@@ -1,7 +1,7 @@
 import Foundation
 
 /// The rider's effort limits that were in force when a ride started
-/// (`specs/obc-ble-interface-spec.md` §7.2). A ride keeps them when the rider's settings change
+/// (`specs/ble-interface.md` §7.2). A ride keeps them when the rider's settings change
 /// later. Nil is not set on the device at ride time, and that metric then has no zones.
 public struct RideZoneLimits: Equatable, Sendable, Codable {
     public let maxHeartRate: Int?

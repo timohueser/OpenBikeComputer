@@ -1,5 +1,5 @@
-//! The cell bake: named regions in, an [`OBCA`](../../../specs/OBCA_Spec.md) cell store plus an
-//! [`OBCC`](../../../specs/OBCC_Spec.md) catalog out.
+//! The cell bake: named regions in, an [`OBCA`](../../../specs/obca-assembly.md) cell store plus an
+//! [`OBCC`](../../../specs/obcc-catalog.md) catalog out.
 //!
 //! `data/regions/` stays the curation surface — a region is still one reviewable file — but it names
 //! a selection rather than an artifact: the set of grid cells its coverage polygon touches, per
@@ -893,7 +893,7 @@ impl CellBakery<'_> {
                     if !existing.sidecar.partial && dest.is_file() {
                         progress.warn(format!(
                             "  {} [{}]: kept the canonical cell — this run's sources ({}) do not cover its square, \
-                             and a partial cell must never replace a covering bake (OBCA_Spec.md §3.7). Co-bake {} \
+                             and a partial cell must never replace a covering bake (obca-assembly.md §3.7). Co-bake {} \
                              to refresh it.",
                             artifact.id,
                             artifact.band,

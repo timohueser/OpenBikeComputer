@@ -14,7 +14,7 @@ the `obc-boot` bootloader links:
    carve** through which the armer hands the bootloader the sEMMC soft-peripheral
    image it boots the card with.
 
-It shares the conventions of the [`OBCM`](OBCM_Spec.md) map and [`OBCR`](OBCR_Spec.md) route
+It shares the conventions of the [`OBCM`](obcm-map.md) map and [`OBCR`](obcr-route.md) route
 formats: **little-endian** integers throughout, an explicit magic, version and CRC frame, and **no
 runtime discovery** — every field is at a fixed or self-describing offset.
 
@@ -33,7 +33,7 @@ value `crc32("123456789") == 0xCBF43926`).
 ```
 
 The container is one **update-package object** (kind `7`) in the flat store
-([`FLAT_Store_Format.md`](FLAT_Store_Format.md) §3.1). A client uploads it; the card carries no
+([`flat-store-format.md`](flat-store-format.md) §3.1). A client uploads it; the card carries no
 filesystem and no sideload path. It is produced by the `obc-mkimage wrap` / `obc-mkimage sign` host
 tool and consumed by the app-side armer, which validates the header, the full image CRC, **and the
 signature** before arming.
@@ -88,7 +88,7 @@ can install. `obc-mkimage wrap` refuses a larger image. The **whole container** 
 `64 + Image Len + Sig Len` bytes, so a transfer that gates on a length gates at the **container**
 ceiling `MAX_CONTAINER_LEN` = `MAX_IMAGE_LEN + 64 + 64` = 2,023,552: a raw image at the cap must not
 be refused for its own framing. A container is delivered as a `PUT` of kind `7`
-([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §3.6, §4). Bytes past
+([`flat-store-protocol.md`](flat-store-protocol.md) §3.6, §4). Bytes past
 `64 + Image Len + Sig Len` in the delivered file are ignored (§2.3).
 
 ### 1.2 Header Version stays 1 — the flash-once bootloader guarantee (normative)
@@ -296,7 +296,7 @@ Each **Extent** is 8 bytes:
 | +4 | Blocks | 4 | `uint32` | Number of 512-byte blocks in the run |
 
 **`MAX_EXTENTS` = 8.** A stored object holds at most eight extent ranges
-([`FLAT_Store_Format.md`](FLAT_Store_Format.md) §5.3) and one range is one contiguous block run, so
+([`flat-store-format.md`](flat-store-format.md) §5.3) and one range is one contiguous block run, so
 eight is the whole of what an arm can ever resolve. The armer errors out past this rather than
 truncating the chain, and the decoder rejects an Extent Count above `MAX_EXTENTS`.
 
@@ -317,7 +317,7 @@ slot. This is normative for both the armer and the bootloader; the skip arithmet
 `obc-dfu`'s install engine.
 
 **The rollback snapshot is unsigned.** The armer's copy of the running image, written from the app
-slot into the **rollback reserve** ([`FLAT_Store_Format.md`](FLAT_Store_Format.md) §3.1, kind `8`)
+slot into the **rollback reserve** ([`flat-store-format.md`](flat-store-format.md) §3.1, kind `8`)
 before an install, is a **v1/unsigned** container (`Sig Scheme` = `0`). The device cannot
 reconstruct the original release signature from slot bytes alone, and nothing needs one: the
 snapshot never passes through the armer's scan (§1.4), and the bootloader's rollback path validates

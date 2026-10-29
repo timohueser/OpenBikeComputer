@@ -158,8 +158,8 @@ recovers on an MCU reset. See the
 
 ## BLE
 
-See the [BLE contract](../../specs/obc-ble-interface-spec.md) and
-[object protocol](../../specs/FLAT_Store_Protocol.md).
+See the [BLE contract](../../specs/ble-interface.md) and
+[object protocol](../../specs/flat-store-protocol.md).
 
 - Use the internal LF RC clock with MPSL calibration. `ExternalXtal` connections
   fail with HCI `0x3E` unless the DK's `OSCILLATORS` INTCAP registers are set

@@ -70,7 +70,7 @@ pub struct RoutePosition {
 }
 
 /// One chunk's index entry: its bbox, the absolute anchor it decodes from, and the cumulative
-/// stats at its first point. See `OBCR_Spec.md`.
+/// stats at its first point. See `obcr-route.md`.
 #[derive(Debug, Clone, Copy)]
 pub struct ChunkMeta {
     pub bbox: BBox,
@@ -873,7 +873,7 @@ pub(crate) fn for_each_stored_point(
 
 /// One stored route waypoint as it sits on disk, every field included. The ride geometry path
 /// skips the section; [`RouteReader::load_waypoints`] distils the named ones into the resident
-/// [`Waypoints`] table the UI reads. See `OBCR_Spec.md`.
+/// [`Waypoints`] table the UI reads. See `obcr-route.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Waypoint {
     /// Distance from the route start to this waypoint's position, meters.

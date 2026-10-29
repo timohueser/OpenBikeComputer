@@ -1,4 +1,4 @@
-//! The free-extent bitmap (`FLAT_Store_Format.md`): the complement of the catalog, recomputed at
+//! The free-extent bitmap (`flat-store-format.md`): the complement of the catalog, recomputed at
 //! mount.
 //!
 //! There is no free list on the card and nothing to reconcile — an extent is free exactly when no

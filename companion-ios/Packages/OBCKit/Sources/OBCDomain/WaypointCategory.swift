@@ -4,7 +4,7 @@ import Foundation
 /// map already uses, reused verbatim so one icon language covers both sources.
 ///
 /// The raw values are the stable wire ids stored in an OBCR waypoint record's category byte
-/// (`OBCR_Spec.md`). `0` is not a case: it means generic, which this type models as `nil`.
+/// (`obcr-route.md`). `0` is not a case: it means generic, which this type models as `nil`.
 public enum WaypointCategory: UInt8, CaseIterable, Sendable {
     case water = 1
     case campsite = 2

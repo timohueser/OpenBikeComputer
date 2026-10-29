@@ -1,6 +1,6 @@
 //! `obcm-assemble` — the cell assembly engine: baked OBCA grid cells in, one `.obcm` out.
 //!
-//! The contract this crate implements is [`OBCA_Spec.md`](../../../specs/OBCA_Spec.md). In one
+//! The contract this crate implements is [`obca-assembly.md`](../../../specs/obca-assembly.md). In one
 //! paragraph: because the cell grid is a power-of-two µdeg lattice and an OBCM quadtree subdivides
 //! its header bbox at integer floor-midpoints, a grid-aligned assembly bbox subdivides onto cell
 //! boundaries — so at one depth the assembly's quadtree nodes are the cells, and each cell's
