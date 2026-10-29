@@ -6,7 +6,9 @@ systems it depends on. `check` finds the violations of the ownership rule, the d
 the rules R1 to R4, and compares them with the baseline. A violation that is not in the baseline,
 or that grew, fails only when it touches a system whose doc has `status: approved`.
 
-Usage: python3 tools/cairn/cairn.py check [--update | --accept]
+`--base REF` also fails when the baseline grew since the merge base with REF.
+
+Usage: python3 tools/cairn/cairn.py check [--base REF] [--update | --accept]
 """
 
 from __future__ import annotations
@@ -30,8 +32,10 @@ FRONT = re.compile(r"\A---\n(.*?)\n---\n", re.S)
 KINDS = {"system", "shell"}
 STATUSES = {"draft", "approved"}
 
-# The adapters are plain modules beside this file.
+# The adapters are plain modules beside this file. The glob rule is the test plan's own.
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(ROOT / "tools"))
+from test_plan import glob_matches  # noqa: E402
 
 
 class CairnError(RuntimeError):
@@ -56,7 +60,7 @@ class Violation:
     id: str
     systems: frozenset[str]
     message: str
-    # Only R3 (lines) and R4 (files) measure a size. A size above the baseline is a new violation.
+    # R1 and R4 count files, R3 counts lines. A size above the baseline is a new violation.
     size: int = 1
 
 
@@ -113,7 +117,7 @@ def load_docs(root: Path, folder: str) -> list[Doc]:
             doc = Doc(
                 system=str(header["system"]),
                 kind=str(header["kind"]),
-                area=str(header["area"]),
+                area=str(header.get("area", "")),
                 purpose=str(header["purpose"]),
                 owns=tuple(header["owns"]),
                 depends_on=tuple(header.get("depends_on", ())),
@@ -134,6 +138,8 @@ def validate(docs: list[Doc]) -> None:
     for doc in docs:
         if doc.kind not in KINDS:
             raise CairnError(f"{doc.system}: kind must be one of {sorted(KINDS)}")
+        if bool(doc.area) != (doc.kind == "system"):
+            raise CairnError(f"{doc.system}: a system needs an area, and a shell has none")
         if doc.status not in STATUSES:
             raise CairnError(f"{doc.system}: status must be one of {sorted(STATUSES)}")
         for other in doc.depends_on + doc.test_depends_on:
@@ -144,21 +150,11 @@ def validate(docs: list[Doc]) -> None:
 # ── ownership ────────────────────────────────────────────────────────────────
 
 
-def glob_regex(globs: tuple[str, ...]) -> re.Pattern[str]:
-    """`**` matches any characters, `*` matches any characters except `/`."""
-    parts = []
-    for glob in globs:
-        pieces = (".*" if p == "**" else "[^/]*" if p == "*" else re.escape(p) for p in re.split(r"(\*\*|\*)", glob))
-        parts.append("".join(pieces))
-    return re.compile("|".join(f"(?:{p})" for p in parts) or "(?!)")
-
-
 def owners(files: list[str], docs: list[Doc]) -> dict[str, list[str]]:
     """Each file's owners. A system beats a shell: a shell owns only what no system claims."""
-    patterns = [(doc, glob_regex(doc.owns)) for doc in docs]
     found = {}
     for path in files:
-        hits = [doc for doc, pattern in patterns if pattern.fullmatch(path)]
+        hits = [doc for doc in docs if any(glob_matches(path, glob) for glob in doc.owns)]
         systems = [doc for doc in hits if doc.kind == "system"]
         found[path] = [doc.system for doc in systems or hits]
     return found
@@ -266,7 +262,7 @@ def analyse(
             foreign[key] = foreign.get(key, 0) + 1
     for (crate, other), count in sorted(foreign.items()):
         base = unit_owner[crate]
-        out.append(Violation("R1", f"R1 {crate} {other}", frozenset({base, other}), f"crate {crate} ({base}) holds {count} file(s) of {other}"))
+        out.append(Violation("R1", f"R1 {crate} {other}", frozenset({base, other}), f"crate {crate} ({base}) holds {count} file(s) of {other}", count))
 
     # R2: one root for each place that a system's code runs.
     runtimes = config["runtimes"]
@@ -308,10 +304,27 @@ def new_violations(violations: list[Violation], baseline: dict[str, int]) -> lis
     return [v for v in violations if v.size > baseline.get(v.id, 0)]
 
 
+def fails(violation: Violation, approved: set[str]) -> bool:
+    """A new violation fails when it touches an approved system. An unowned file touches none, so
+    it fails as soon as any system is approved."""
+    return bool(violation.systems & approved) if violation.systems else bool(approved)
+
+
 def updated(violations: list[Violation], baseline: dict[str, int]) -> dict[str, int]:
     """Drop the entries that disappeared and lower the sizes that shrank. Never add or raise one."""
     sizes = {v.id: v.size for v in violations}
     return {key: min(size, sizes[key]) for key, size in sorted(baseline.items()) if key in sizes}
+
+
+def grown(head: dict[str, int], base: dict[str, int] | None, violations: list[Violation]) -> list[str]:
+    """The baseline entries that a change added or raised by hand.
+
+    Only `--update` changes an existing baseline, and it only removes and lowers. A base with no
+    baseline allows exactly the first baseline that `--accept` writes.
+    """
+    if base is None:
+        base = {v.id: v.size for v in violations}
+    return [f"{key}: {size}" for key, size in sorted(head.items()) if size > base.get(key, 0)]
 
 
 # ── input ────────────────────────────────────────────────────────────────────
@@ -321,6 +334,16 @@ def tracked_sources(root: Path, sources: dict) -> list[str]:
     out = subprocess.run(["git", "-C", str(root), "ls-files"], capture_output=True, text=True, check=True).stdout
     extensions = tuple(sources["extensions"])
     return [f for f in out.splitlines() if (f.endswith(extensions) or f in sources["files"]) and (root / f).is_file()]
+
+
+def base_baseline(root: Path, ref: str, path: str) -> dict[str, int] | None:
+    """The baseline at the merge base of REF and HEAD, or None when it has none."""
+    git = ["git", "-C", str(root)]
+    merge = subprocess.run([*git, "merge-base", ref, "HEAD"], capture_output=True, text=True)
+    if merge.returncode:
+        raise CairnError(f"no merge base with {ref}: {merge.stderr.strip()}")
+    shown = subprocess.run([*git, "show", f"{merge.stdout.strip()}:{path}"], capture_output=True, text=True)
+    return json.loads(shown.stdout) if shown.returncode == 0 else None
 
 
 def line_count(path: Path) -> int:
@@ -351,8 +374,9 @@ RULES = ("ownership", "dependency", "cycle", "R1", "R2", "R3", "R4")
 def report(result: Result, baseline: dict[str, int], docs: list[Doc], approved: set[str]) -> list[Violation]:
     """Print the report and return the violations that fail."""
     fresh = new_violations(result.violations, baseline)
-    failing = [v for v in fresh if v.systems & approved]
-    gone = sorted(set(baseline) - {v.id for v in result.violations})
+    failing = [v for v in fresh if fails(v, approved)]
+    sizes = {v.id: v.size for v in result.violations}
+    shrunk = [f"{key}: {size} -> {sizes.get(key, 0)}" for key, size in sorted(baseline.items()) if sizes.get(key, 0) < size]
     systems = sum(doc.kind == "system" for doc in docs)
     print(f"cairn: {systems} systems, {len(docs) - systems} shells, {len(approved)} approved")
     for rule in RULES:
@@ -366,10 +390,10 @@ def report(result: Result, baseline: dict[str, int], docs: list[Doc], approved: 
         for v in fresh:
             mark = "FAIL" if v in failing else "    "
             print(f"  {mark} {v.message}")
-    if gone:
-        print("\ngone from the code; `obc cairn check --update` removes them from the baseline:")
-        for key in gone:
-            print(f"  {key}")
+    if shrunk:
+        print("\nshrunk or gone; `obc cairn check --update` records them in the baseline:")
+        for line in shrunk:
+            print(f"  {line}")
     print(f"\ncairn: {len(result.violations)} violation(s), baseline {len(baseline)}, "
           f"{len(fresh)} new, {len(failing)} fail")
     return failing
@@ -379,21 +403,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     check = commands.add_parser("check", help="check the code against the system docs")
+    check.add_argument("--base", metavar="REF", help="also fail when the baseline grew since the merge base with REF")
     mode = check.add_mutually_exclusive_group()
     mode.add_argument("--update", action="store_true", help="remove gone entries and lower shrunk sizes in the baseline")
     mode.add_argument("--accept", action="store_true", help="write the first baseline from the current state")
     args = parser.parse_args(argv)
 
-    root = ROOT
     try:
-        config = json.loads((root / CONFIG).read_text())
-        docs, files, units, edges, lines = gather(root, config)
+        config = json.loads((ROOT / CONFIG).read_text())
+        docs, files, units, edges, lines = gather(ROOT, config)
         result = analyse(docs, files, units, edges, lines, config)
-    except (CairnError, OSError, RuntimeError, KeyError, json.JSONDecodeError) as error:
+        base = base_baseline(ROOT, args.base, config["baseline"]) if args.base else None
+    except (CairnError, OSError, RuntimeError, KeyError, ValueError) as error:
         print(f"cairn: {error}", file=sys.stderr)
         return 1
 
-    path = root / config["baseline"]
+    path = ROOT / config["baseline"]
     baseline = json.loads(path.read_text()) if path.exists() else {}
     if args.accept:
         if path.exists():
@@ -407,7 +432,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"cairn: baseline holds {len(baseline)} entries")
 
     approved = {doc.system for doc in docs if doc.status == "approved"}
-    return 1 if report(result, baseline, docs, approved) else 0
+    failing = report(result, baseline, docs, approved)
+    # The ratchet protects itself while every system is still a draft.
+    added = grown(baseline, base, result.violations) if args.base else []
+    if added:
+        print(f"\ncairn: the baseline grew since the merge base with {args.base}; only `--update` changes it:")
+        for line in added:
+            print(f"  {line}")
+    return 1 if failing or added else 0
 
 
 if __name__ == "__main__":

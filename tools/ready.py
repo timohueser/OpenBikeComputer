@@ -236,7 +236,8 @@ def plan(
             bool(policy),
         )
     )
-    # Any new source file or Cargo edge can change the result, so the check runs on every change.
+    # The check builds nothing, so it runs on every change here. CI runs it only when the test plan
+    # selects `ci.cairn`.
     gates.append(Gate(CAIRN, "every change: system ownership and dependencies", True, covered_by="ci.cairn"))
     gates.append(
         Gate(

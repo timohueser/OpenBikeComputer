@@ -1,11 +1,12 @@
 # cairn
 
-`cairn check` compares the code with the system docs in `docs/design/`. It uses only the Python
-standard library and `cargo metadata`.
+`cairn check` compares the code with the system docs in `docs/design/`. It uses the Python standard
+library, the glob rule of `tools/test_plan.py` and `cargo metadata`.
 
 ```sh
 obc cairn check            # print the report
 obc cairn check --update   # remove gone entries from the baseline, and lower sizes that shrank
+obc cairn check --base origin/develop   # also fail when the baseline grew since the merge base
 python3 -m unittest discover -s tools/cairn/tests
 ```
 
@@ -13,12 +14,12 @@ python3 -m unittest discover -s tools/cairn/tests
 
 | File | Holds |
 | --- | --- |
-| `docs/design/<system>.md` | the header of one system or shell: `kind`, `area`, `purpose`, `owns`, `depends_on`, `test_depends_on`, `status` |
+| `docs/design/<system>.md` | the header of one system or shell: `kind`, `area` (systems only), `purpose`, `owns`, `depends_on`, `test_depends_on`, `status` |
 | `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4 |
 | `.cairn/baseline.json` | the known violations, by ID, with a size |
-| `adapters/cargo.py` | the Rust crates and their path dependencies, from every configured Cargo root |
+| `adapters/cargo.py` | the Rust crates and their path dependencies. Each tracked `Cargo.toml` with a `[workspace]` table is a Cargo root. Every other tracked `Cargo.toml` outside `ignore` must be a member of a root. |
 
-In `owns`, `**` matches any characters and `*` matches any characters except `/`.
+`owns` uses the glob rule of the test plan: `*` also matches `/`, and `**/` also matches no folder.
 
 ## Rules
 
@@ -27,19 +28,25 @@ In `owns`, `**` matches any characters and `*` matches any characters except `/`
 | Ownership | a tracked source file that no doc owns, or that two docs own. A system beats a shell: a shell owns only the files that no system owns. |
 | Dependency | a production edge between two systems that `depends_on` does not list, or a test edge that neither `depends_on` nor `test_depends_on` lists. The system that owns a crate's entry file (`src/lib.rs` or `src/main.rs`) owns all of its edges. |
 | Cycle | each production edge inside a cycle between systems. A cycle is a violation even when the docs declare its edges. |
-| R1 | a Rust crate that holds files of a system other than the owner of its entry file |
+| R1 | a Rust crate that holds files of a system other than the owner of its entry file, with the number of those files |
 | R2 | a system with code under two roots of the same runtime in the `runtimes` table. The longest matching root applies. The check ignores a file under no root. |
-| R3 | each shell's own lines: the lines of the files that no system owns. Each shell's doc sets its target size in Phase 2. |
+| R3 | each shell's own lines: the lines of the files that no system owns. A shell's doc states its target size. |
 | R4 | a file under `tooling.path` whose owner is outside `tooling.area` |
 
 ## Ratchet
 
-A violation that is not in the baseline is new. An R3 or R4 violation whose size (lines or files)
-is above its baseline size is also new. A new violation fails only when it touches a system whose
-doc has `status: approved`. Until then, the check reports and exits with 0.
+A violation that is not in the baseline is new. An R1, R3 or R4 violation whose size (files or
+lines) is above its baseline size is also new. A new violation fails only when it touches a system
+whose doc has `status: approved`. An unowned file touches no system, so it fails when any doc has
+`status: approved`. While no doc is approved, the check only reports.
 
-`--update` never adds an entry and never raises a size. `--accept` writes the first baseline and
-refuses when the file exists.
+A baseline entry that shrank or disappeared does not fail. The report lists it, and `--update`
+records it. `--update` never adds an entry and never raises a size. `--accept` writes the first
+baseline and refuses when the file exists.
 
-`firmware/tools/check_dependencies.py` stays. Its crate groups do not follow the system cut, so it
-keeps the production direction rules until cairn enforces.
+`--base REF` fails when the baseline has an entry or a size that the baseline at the merge base
+does not have. When the merge base has no baseline, the baseline must equal the one `--accept`
+writes. This rule applies also while no doc is approved. The CI job uses it.
+
+`firmware/tools/check_dependencies.py` is a separate check. It enforces the production direction
+between its own crate groups, which do not follow the system cut.

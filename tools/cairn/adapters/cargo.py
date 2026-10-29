@@ -1,8 +1,9 @@
 """Rust units and dependency edges, read from `cargo metadata`.
 
-One unit is one member package of a configured Cargo root. Its entry is the file of its library
+A Cargo root is a tracked `Cargo.toml` with a `[workspace]` table, outside the `ignore` globs. One
+unit is one member package of a root. Its entry is the file of its library
 target, or of its main binary when it has no library. An edge is a path dependency from one unit
-to another unit of any configured root. A `dev` dependency gives a test edge; a normal or `build`
+to another unit of any root. Every other tracked `Cargo.toml` outside `ignore` must give a unit. A `dev` dependency gives a test edge; a normal or `build`
 dependency gives a production edge.
 """
 
@@ -10,7 +11,12 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+import tomllib
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from test_plan import glob_matches  # noqa: E402
 
 LIBRARY_KINDS = {"lib", "rlib", "staticlib", "cdylib", "dylib", "proc-macro"}
 
@@ -74,5 +80,19 @@ def collect(root: Path, metadatas: list[dict]) -> tuple[list[dict], list[tuple[s
     return sorted(units.values(), key=lambda u: u["dir"]), edges
 
 
+def manifests(root: Path, ignore: list[str]) -> list[str]:
+    out = subprocess.run(["git", "-C", str(root), "ls-files", "Cargo.toml", "*/Cargo.toml"],
+                         capture_output=True, text=True, check=True).stdout
+    return [f for f in out.splitlines() if not any(glob_matches(f, glob) for glob in ignore)]
+
+
 def load(root: Path, settings: dict) -> tuple[list[dict], list[tuple[str, str, bool]]]:
-    return collect(root.resolve(), [metadata(root / manifest) for manifest in settings["manifests"]])
+    root = root.resolve()
+    found = manifests(root, settings.get("ignore", []))
+    roots = [f for f in found if "workspace" in tomllib.loads((root / f).read_text())]
+    units, edges = collect(root, [metadata(root / f) for f in roots])
+    covered = {f"{u['dir']}/Cargo.toml" for u in units} | set(roots)
+    missing = sorted(set(found) - covered)
+    if missing:
+        raise AdapterError("no Cargo root holds " + ", ".join(missing))
+    return units, edges

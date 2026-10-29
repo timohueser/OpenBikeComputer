@@ -7,13 +7,7 @@
   },
   "adapters": {
     "cargo": {
-      "manifests": [
-        "Cargo.toml",
-        "firmware/obc-fw-nrf54l/Cargo.toml",
-        "firmware/obc-boot/Cargo.toml",
-        "firmware/obc-sensor-sim/Cargo.toml",
-        "builder/desktop/Cargo.toml"
-      ]
+      "ignore": ["**/vendor/**"]
     }
   },
   "runtimes": {
@@ -30,9 +24,5 @@
   "tooling": {
     "path": "tools/",
     "area": "Tooling"
-  },
-  "fix": {
-    "max_changed_lines": 1000,
-    "source": "chosen by the owner in the cairn design: changed lines outside tests in a `Mode: fix` pull request"
   }
 }
