@@ -157,6 +157,8 @@ jobs:
   # Report only until a system doc is approved. The Rust adapter reads `cargo metadata`, so the
   # job needs the toolchain but builds nothing.
   cairn:
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'cairn')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
