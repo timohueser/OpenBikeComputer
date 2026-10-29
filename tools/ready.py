@@ -25,7 +25,9 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "cairn"))
 
+import mode as cairn_mode
 import test_plan
 
 #: Cargo roots beside the root workspace. Each one formats through its own manifest.
@@ -70,6 +72,9 @@ DOCS_CHECK = "just check-docs"
 
 #: The system docs against the code. It reports, and fails only for an approved system.
 CAIRN = "python3 tools/cairn/cairn.py check"
+
+#: The diff against the branch's declared mode. It fails only for an approved system or a prototype.
+CAIRN_MODE = "python3 tools/cairn/cairn.py check --pr --base {base}"
 
 #: The declared suite that owns the snapshot sweep. Its triggers define the rendering inputs.
 SWEEP = "ci.ui-snapshots"
@@ -236,9 +241,10 @@ def plan(
             bool(policy),
         )
     )
-    # The check builds nothing, so it runs on every change here. CI runs it only when the test plan
-    # selects `ci.cairn`.
+    # The checks build nothing, so they run on every change here. CI runs the first only when the test
+    # plan selects `ci.cairn`, and the mode gate in its own workflow on every pull request.
     gates.append(Gate(CAIRN, "every change: system ownership and dependencies", True, covered_by="ci.cairn"))
+    gates.append(Gate(CAIRN_MODE.format(base=base), "every change: the diff against the declared mode", True))
     gates.append(
         Gate(
             DOCS_CHECK,
@@ -357,11 +363,12 @@ def surfaces(changed: Iterable[str]) -> list[str]:
     return sorted({path.split("/")[0] if "/" in path else "(repository root)" for path in changed})
 
 
-def skeleton(changed: Sequence[str]) -> str:
+def skeleton(changed: Sequence[str], mode: str | None) -> str:
     lines = [
         "",
         "pull request skeleton",
         "",
+        f"Mode: {mode or '<declare it with obc cairn mode>'}",
         f"Surfaces: {', '.join(surfaces(changed)) or 'none'}",
         "Requirements: <SYS-nnn, or `none`>",
     ]
@@ -412,7 +419,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"  {path}", file=sys.stderr)
         print("commit these files, then run obc ready again.", file=sys.stderr)
         return 1
-    print(skeleton(changed))
+    print(skeleton(changed, cairn_mode.declared(root)))
     return 0
 
 
