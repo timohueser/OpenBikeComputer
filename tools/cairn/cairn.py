@@ -6,8 +6,8 @@ systems it depends on. `check` finds the violations of the ownership rule, the d
 the rules R1 to R4, and compares them with the baseline. A violation that is not in the baseline,
 or that grew, fails only when it touches a system whose doc has `status: approved`.
 
-`--base REF` also fails when the baseline grew since the merge base with REF. `--pr` also checks
-that diff against the rules of its mode, which `mode.py` holds.
+`--base REF` also fails when the baseline grew since the merge base with REF. `--pr` checks only
+the diff from that merge base against the rules of its mode, which `mode.py` holds.
 
 Usage: python3 tools/cairn/cairn.py check [--base REF [--pr]] [--update | --accept]
        python3 tools/cairn/cairn.py mode [fix [--over-limit REASON] | change N | prototype | override REASON]
@@ -579,7 +579,7 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     check = commands.add_parser("check", help="check the code against the system docs")
     check.add_argument("--base", metavar="REF", help="also fail when the baseline grew since the merge base with REF")
-    check.add_argument("--pr", action="store_true", help="also check the diff against the base with the rules of its mode")
+    check.add_argument("--pr", action="store_true", help="check only the diff against the base with the rules of its mode")
     write = check.add_mutually_exclusive_group()
     write.add_argument("--update", action="store_true", help="remove gone entries and lower shrunk sizes in the baseline")
     write.add_argument("--accept", action="store_true", help="write the first baseline from the current state")
@@ -599,15 +599,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "hash":
         print(modes.approval_hash(sys.stdin.read() if args.file == "-" else Path(args.file).read_text()))
         return 0
-    if args.pr and not args.base:
-        parser.error("--pr needs --base")
+    if args.pr and (not args.base or args.update or args.accept):
+        parser.error("--pr needs --base, and it writes no baseline")
 
     try:
         config = json.loads((ROOT / CONFIG).read_text())
         docs, files, units, edges, lines = gather(ROOT, config)
         result = analyse(docs, files, units, edges, lines, config)
+        if args.pr:
+            return 1 if mode_gate(ROOT, config, docs, result.edges, args.base) else 0
         base = base_baseline(shown_at(ROOT, merge_base(ROOT, args.base))) if args.base else None
-    except (CairnError, OSError, RuntimeError, KeyError, ValueError) as error:
+    except (CairnError, OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:
         print(f"cairn: {error}", file=sys.stderr)
         return 1
 
@@ -632,12 +634,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\ncairn: the baseline grew since the merge base with {args.base}; only `--update` changes it:")
         for line in added:
             print(f"  {line}")
-    try:
-        mode_fails = mode_gate(ROOT, config, docs, result.edges, args.base) if args.pr else False
-    except (CairnError, OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:
-        print(f"cairn: {error}", file=sys.stderr)
-        return 1
-    return 1 if failing or added or mode_fails else 0
+    return 1 if failing or added else 0
 
 
 if __name__ == "__main__":

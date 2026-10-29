@@ -7,7 +7,7 @@ library, the glob rule of `tools/test_plan.py` and `cargo metadata`.
 obc cairn check            # print the report
 obc cairn check --update   # remove gone entries from the baseline, and lower sizes that shrank
 obc cairn check --base origin/develop   # also fail when the baseline grew since the merge base
-obc cairn check --pr --base origin/develop   # also check the diff against the mode
+obc cairn check --pr --base origin/develop   # check only the diff against the mode
 obc cairn mode change 3012 # declare the mode of the current branch
 obc cairn mode             # print the mode and the `Mode:` line for the pull request body
 obc cairn hash issue.md    # print the approval hash of an issue body (- reads stdin)
@@ -60,9 +60,10 @@ between its own crate groups, which do not follow the system cut.
 ## Mode gate
 
 `cairn mode` writes the mode to the local git config as `branch.<name>.cairnMode`. Each worktree
-of the branch reads it, and nothing is committed. `--pr` reads the mode from the `Mode:` line of
-the pull request body when `GITHUB_EVENT_PATH` is set, and from the branch otherwise. The diff is
-HEAD against the merge base with `--base`.
+of the branch reads it, and nothing is committed. `--pr` runs only the mode gate, not the ratchet.
+It reads the mode from the `Mode:` line of the pull request body when `GITHUB_EVENT_PATH` is set,
+and from the branch otherwise. The diff is HEAD against the merge base with `--base`. The workflow
+`.github/workflows/cairn-mode.yml` runs it on each pull request, also when the body changes.
 
 | `Mode:` line | The diff must |
 | --- | --- |

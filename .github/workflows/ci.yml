@@ -174,21 +174,11 @@ jobs:
           cache: false
       - name: cairn unit tests
         run: python3 -m unittest discover -s tools/cairn/tests -v
-      # A baseline may not grow by hand, so this step fails on that even in report mode. On a pull
-      # request it also checks the diff against the body's `Mode:` line. A `change #N` reads issue N
-      # with the job's token; the job asks for no `issues` permission, because the release workflows
-      # that call this file do not grant it, and a public issue needs none.
+      # A baseline may not grow by hand, so this step fails on that even in report mode.
       - name: System docs against the code
         env:
           BASE: ${{ needs.selection.outputs.base }}
-          EVENT: ${{ github.event_name }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          if [ "$EVENT" = pull_request ]; then
-            python3 tools/cairn/cairn.py check --pr --base "$BASE"
-          else
-            python3 tools/cairn/cairn.py check --base "$BASE"
-          fi
+        run: python3 tools/cairn/cairn.py check --base "$BASE"
 
   # cargo fmt --check for all Cargo roots. rustfmt walks up from each file and finds the
   # shared .rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace

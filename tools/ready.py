@@ -70,9 +70,11 @@ DOCS = "docs/"
 #: This known delegate renders with stdlib Python and does not build a product.
 DOCS_CHECK = "just check-docs"
 
-#: The system docs against the code, and the diff against the branch's declared mode. It reports,
-#: and fails only for an approved system or a prototype.
-CAIRN = "python3 tools/cairn/cairn.py check --pr --base {base}"
+#: The system docs against the code. It reports, and fails only for an approved system.
+CAIRN = "python3 tools/cairn/cairn.py check"
+
+#: The diff against the branch's declared mode. It fails only for an approved system or a prototype.
+CAIRN_MODE = "python3 tools/cairn/cairn.py check --pr --base {base}"
 
 #: The declared suite that owns the snapshot sweep. Its triggers define the rendering inputs.
 SWEEP = "ci.ui-snapshots"
@@ -239,9 +241,10 @@ def plan(
             bool(policy),
         )
     )
-    # The check builds nothing, so it runs on every change here. CI runs it only when the test plan
-    # selects `ci.cairn`. That suite has no mode gate, so it does not cover this gate.
-    gates.append(Gate(CAIRN.format(base=base), "every change: system ownership, dependencies and mode", True))
+    # The checks build nothing, so they run on every change here. CI runs the first only when the test
+    # plan selects `ci.cairn`, and the mode gate in its own workflow on every pull request.
+    gates.append(Gate(CAIRN, "every change: system ownership and dependencies", True, covered_by="ci.cairn"))
+    gates.append(Gate(CAIRN_MODE.format(base=base), "every change: the diff against the declared mode", True))
     gates.append(
         Gate(
             DOCS_CHECK,
