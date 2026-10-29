@@ -578,6 +578,7 @@ fn make(context: &Context, home: &Path, planned: Planned, (run, held): (&mut Run
         scope,
         extends,
         languages: review.languages.clone(),
+        publish_text: source.publish_text,
         licence: source.licence.clone(),
         attribution: source.attribution.clone(),
         machine: crate::machine(),
@@ -1146,7 +1147,7 @@ pub(super) mod tests {
         assert!(error.message.contains("region or language selection"), "{}", error.message);
         super::prepare(&context, &asked, "2026-10-01", &mut run).unwrap();
         let manifest = prepared::manifest(&prepared::folder(&archive, "wiki"), "wiki", "2026-10-01").unwrap().unwrap();
-        assert_eq!(manifest.languages, languages);
+        assert_eq!((manifest.languages.as_slice(), manifest.publish_text), (languages.as_slice(), review.publish_text));
         assert_eq!(manifest.scope, review.scope);
         let changed = plan(&context, &archive, &english, "2026-10-02").unwrap().review;
         assert_eq!(changed.cost.wall_ms, None, "another selection has no measured cost");

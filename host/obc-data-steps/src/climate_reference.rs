@@ -305,6 +305,7 @@ echo "$block" >> made
                 scope: job.scope.clone(),
                 extends: job.extends().to_vec(),
                 languages: Vec::new(),
+                publish_text: None,
                 licence: None,
                 attribution: None,
                 machine: "test".into(),

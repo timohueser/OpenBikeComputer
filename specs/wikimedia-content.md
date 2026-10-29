@@ -153,10 +153,12 @@ subject in the selected coverage: an object with a `wikidata` or `wikipedia` tag
 | Path | Holds |
 | --- | --- |
 | `cells/<i>-<j>.tar.zst` | The facts of each subject whose box touches the `2^20` µdeg OBCA cell `(i, j)`; `<i>` and `<j>` have four digits or more |
-| `common.tar.zst` | The classes, and the facts of each subject without a box or whose box touches more than 16 cells |
-| `index.json` | `shards`: `path`, `sha256`, `bytes` and `facts` of each shard; `counts`: the subjects, those in `common`, those without a resolved link, the unresolved work of each kind, and the compiles of the producer that failed (`photo_compile_failures`) |
+| `common.tar.zst` | The classes, and the facts of each subject without a box or whose box touches more than 16 cells. A version that [extends](obc-data.md#wiki) another keeps each earlier common fact whose kind and key no shard of this run holds, until a version of everything replaces it |
+| `index.json` | `shards`: `path`, `sha256`, `bytes` and `facts` of each shard; `counts`: the subjects that the run read, those in `common`, those without a resolved link, the unresolved work of each kind, and the compiles of the producer that failed (`photo_compile_failures`) |
 
-The version manifest records its coverage and article languages. Regional preparation selects
+The version manifest records the coverage, the article languages and `publish_text` of its run.
+An earlier fact that a version keeps keeps its languages, so a run with fewer languages keeps the
+earlier articles; a newer revision is never replaced by an older one. Regional preparation selects
 subjects from the regional OSM extract before it asks Commons. An article in an excluded
 language is a `missing` fact with `reason: "language_not_prepared"`. This means that the version
 excludes it, not that Wikipedia lacks it. It supplies no text or lead-image candidate. Subject
