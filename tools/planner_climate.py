@@ -67,8 +67,8 @@ OROGRAPHY = ("https://confluence.ecmwf.int/download/attachments/140385202/geo_12
 GRAVITY = 9.80665
 DOI = "10.24381/cds.e2161bac"
 USER_AGENT = "OpenBikeComputer planner climate bake (https://github.com/timohueser/OpenBikeComputer)"
-# The waits before each new try of a request after a rate limit, a server error or a network error:
-# about 35 minutes in all, so a rate limit slows a prepare and does not end it.
+# The waits before each new try of a request after a rate limit, a server error or a network error, and of a
+# store read during the store's daily update: about 35 minutes in all, so these slow a prepare and do not end it.
 RETRY_SECONDS = (5, 15, 60, 180, 600, 600, 600)
 # The downloads of one `prepare` at once. Eight programs run at once: 16 connections to the stores.
 CONNECTIONS = 2
@@ -316,30 +316,35 @@ def hour(day):
 
 def stores(key):
     """{variable: (URL, hour count)}, after a check of each store's layout against the constants here."""
+    start = (EPOCH - dt.datetime(1970, 1, 1)) // dt.timedelta(hours=1)
     result = {}
     for variable, (group, bucket) in SOURCE.items():
         base = ARCO.format(bucket, group)
+        # The daily update of a store names new hours in `.zmetadata` before it uploads their time chunk:
+        # the chunk is missing, or its slot of the last hour still holds the fill value.
         for wait in (*RETRY_SECONDS, None):
             meta = json.loads(fetch(base + "/.zmetadata", key))["metadata"]
             array, axis = meta[f"{variable}/.zarray"], meta["time/.zarray"]
+            if (array["dtype"] != "<f4" or array["shape"][1:] != [GRID_ROWS, GRID_COLS] or array["order"] != "C"
+                    or array["chunks"] != [TIME_CHUNK, CHUNK_ROWS, CHUNK_COLS] or array["filters"]
+                    or array["compressor"]["id"] != "blosc" or meta["time/.zattrs"]["units"] != "hours since 1970-01-01"):
+                raise ValueError(f"Unexpected ERA5-Land store layout: {variable}")
             hours, step = array["shape"][0], axis["chunks"][0]
+            expected = start + hours - 1
             try:
                 last = blosc(fetch(f"{base}/time/{(hours - 1) // step}", key), "<i8")[(hours - 1) % step]
-                break
             except urllib.error.HTTPError as error:
-                # The daily update of a store names a new time chunk in `.zmetadata` before the chunk is there.
                 if error.code != 404 or wait is None:
                     raise
+                last = None
+            if last == expected or wait is None:
+                break
             time.sleep(wait)
-        if (array["dtype"] != "<f4" or array["shape"][1:] != [GRID_ROWS, GRID_COLS] or array["order"] != "C"
-                or array["chunks"] != [TIME_CHUNK, CHUNK_ROWS, CHUNK_COLS] or array["filters"]
-                or array["compressor"]["id"] != "blosc" or meta["time/.zattrs"]["units"] != "hours since 1970-01-01"):
-            raise ValueError(f"Unexpected ERA5-Land store layout: {variable}")
         lat, lon = (blosc(fetch(f"{base}/{name}/0", key), "<f8") for name in ("latitude", "longitude"))
         if not (np.allclose(lat, np.arange(GRID_ROWS) / 10 - 90) and np.allclose(lon, np.arange(1, GRID_COLS + 1) / 10 - 180)):
             raise ValueError(f"Unexpected ERA5-Land grid: {variable}")
         first = blosc(fetch(f"{base}/time/0", key), "<i8")[0]
-        if first != (EPOCH - dt.datetime(1970, 1, 1)) // dt.timedelta(hours=1) or last != first + hours - 1:
+        if first != start or last != expected:
             raise ValueError(f"ERA5-Land time axis is not hourly from 2 January 1950: {variable}")
         result[variable] = base, hours
     return result
