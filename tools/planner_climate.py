@@ -319,18 +319,26 @@ def stores(key):
     result = {}
     for variable, (group, bucket) in SOURCE.items():
         base = ARCO.format(bucket, group)
-        meta = json.loads(fetch(base + "/.zmetadata", key))["metadata"]
-        array, axis = meta[f"{variable}/.zarray"], meta["time/.zarray"]
+        for wait in (*RETRY_SECONDS, None):
+            meta = json.loads(fetch(base + "/.zmetadata", key))["metadata"]
+            array, axis = meta[f"{variable}/.zarray"], meta["time/.zarray"]
+            hours, step = array["shape"][0], axis["chunks"][0]
+            try:
+                last = blosc(fetch(f"{base}/time/{(hours - 1) // step}", key), "<i8")[(hours - 1) % step]
+                break
+            except urllib.error.HTTPError as error:
+                # The daily update of a store names a new time chunk in `.zmetadata` before the chunk is there.
+                if error.code != 404 or wait is None:
+                    raise
+            time.sleep(wait)
         if (array["dtype"] != "<f4" or array["shape"][1:] != [GRID_ROWS, GRID_COLS] or array["order"] != "C"
                 or array["chunks"] != [TIME_CHUNK, CHUNK_ROWS, CHUNK_COLS] or array["filters"]
                 or array["compressor"]["id"] != "blosc" or meta["time/.zattrs"]["units"] != "hours since 1970-01-01"):
             raise ValueError(f"Unexpected ERA5-Land store layout: {variable}")
-        hours, step = array["shape"][0], axis["chunks"][0]
         lat, lon = (blosc(fetch(f"{base}/{name}/0", key), "<f8") for name in ("latitude", "longitude"))
         if not (np.allclose(lat, np.arange(GRID_ROWS) / 10 - 90) and np.allclose(lon, np.arange(1, GRID_COLS + 1) / 10 - 180)):
             raise ValueError(f"Unexpected ERA5-Land grid: {variable}")
         first = blosc(fetch(f"{base}/time/0", key), "<i8")[0]
-        last = blosc(fetch(f"{base}/time/{(hours - 1) // step}", key), "<i8")[(hours - 1) % step]
         if first != (EPOCH - dt.datetime(1970, 1, 1)) // dt.timedelta(hours=1) or last != first + hours - 1:
             raise ValueError(f"ERA5-Land time axis is not hourly from 2 January 1950: {variable}")
         result[variable] = base, hours

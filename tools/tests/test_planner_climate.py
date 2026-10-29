@@ -303,6 +303,38 @@ class FetchTest(unittest.TestCase):
         self.assertEqual(urlopen.call_count, 1)
 
 
+class StoresTest(unittest.TestCase):
+    def test_a_newest_time_chunk_that_is_not_there_yet_is_read_again_after_a_wait(self):
+        import json
+        import urllib.error
+
+        hours = climate.TIME_CHUNK + 24  # the store's daily update starts time chunk 1
+        array = {"dtype": "<f4", "shape": [hours, climate.GRID_ROWS, climate.GRID_COLS], "order": "C", "filters": None,
+                 "chunks": [climate.TIME_CHUNK, climate.CHUNK_ROWS, climate.CHUNK_COLS], "compressor": {"id": "blosc"}}
+        meta = {"time/.zarray": {"chunks": [climate.TIME_CHUNK]}, "time/.zattrs": {"units": "hours since 1970-01-01"},
+                **{f"{variable}/.zarray": array for variable in climate.SOURCE}}
+        first = (climate.EPOCH - dt.datetime(1970, 1, 1)) // dt.timedelta(hours=1)
+        asked = []
+
+        def answer(url, key=None):
+            name = url.split("geoChunked.zarr/")[1]
+            asked.append(name)
+            if name == "time/1" and asked.count(name) == 1:
+                raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+            if name.startswith("time/"):
+                return (first + int(name[5:]) * climate.TIME_CHUNK + np.arange(climate.TIME_CHUNK)).astype("<i8").tobytes()
+            return {".zmetadata": json.dumps({"metadata": meta}).encode(),
+                    "latitude/0": (np.arange(climate.GRID_ROWS) / 10 - 90).tobytes(),
+                    "longitude/0": (np.arange(1, climate.GRID_COLS + 1) / 10 - 180).tobytes()}[name]
+
+        with mock.patch.object(climate, "fetch", answer), mock.patch("time.sleep") as sleep, \
+                mock.patch.object(climate, "blosc", lambda data, dtype: np.frombuffer(data, dtype)):
+            layout = climate.stores("KEY")
+        self.assertEqual({variable: count for variable, (_, count) in layout.items()}, dict.fromkeys(climate.SOURCE, hours))
+        self.assertEqual(([call.args[0] for call in sleep.call_args_list], asked[:3]),
+                         ([climate.RETRY_SECONDS[0]], [".zmetadata", "time/1", ".zmetadata"]))
+
+
 class OracleSource(climate.Source):
     """Chunks in which each cell tells where it is: a 2 m temperature of 273.15 K + (its Zarr row − 1790) + (its Zarr
     column − 3550) / 100, no rain and a 1 m/s north wind."""
