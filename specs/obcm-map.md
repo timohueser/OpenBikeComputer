@@ -8,7 +8,8 @@ embedded terrain region.
   refuse every other value. The header version applies to the whole file. Repack older maps.
   Style flag bits get new meanings without a version change (§2).
 - Writers: `host/obc-bake` (`serialize.rs`, `serialize_lods`) composes a complete map from the
-  crates under [Reference implementations](#reference-implementations).
+  crates under [Reference implementations](#reference-implementations). `host/obcm-assemble`
+  (the assembler) writes a map from baked cells ([OBCA](obca-assembly.md)).
 - Readers: `firmware/obc-reader` (`src/reader/mod.rs`, `src/reader/nav.rs`), shared by the desktop
   simulator and the nRF54L firmware.
 - Code authority: `firmware/obc-formats/src/obcm.rs` (version numbers, fixed lengths, flags,
@@ -222,7 +223,7 @@ bit is therefore not a version change: no offset, length or count moves.
 
 **The packer assigns style IDs.** No reader depends on a specific value, only on uniqueness within
 the file. The packer ignores any `id` in `config.json` and numbers every feature type sequentially
-(`1`-based, in document order). `0xFF` is reserved as the end-of-features sentinel (§4), so a file
+(`1`-based, in document order). `0xFF` is reserved as the end-of-features sentinel (§5.1), so a file
 holds at most 254 distinct styles.
 
 ---
@@ -265,8 +266,8 @@ length any single chunk may have; a reader MUST reject a chunk whose offset pair
 `Chunk Size` rounded up to the unit (§5.1). Chunk lengths come from the offset table (§5).
 
 `Index Node Count` and `Chunk Count` are stored, so the reader never walks the tree to learn its
-size. The offset table's last entry (`offsets[Chunk Count]`) is the LOD's total chunk
-bytes, so one `uint32` read at parse bounds every later chunk fetch.
+size. The offset table's last entry (`offsets[Chunk Count]`) is the LOD's total chunk units
+(`* U` gives bytes, §5.1), so one `uint32` read at parse bounds every later chunk fetch.
 
 ---
 
@@ -659,7 +660,7 @@ excludes a place; unknown hours must never be presented as open.
 - Current status uses trusted UTC plus the configured local UTC offset. An unavailable
   clock or offset authority yields Unknown. Hours are evaluated now, not at predicted arrival.
 - A day with more than two intervals is truncated to the first two and the blob's
-  `Flags` truncated bit is set.
+  `Flags` bit 1 (uncertain) is set.
 
 ---
 
@@ -890,7 +891,7 @@ refused id is a malformed map, not an absent edge.
 **`Pt Count == 0xFFFF` is the end-of-chunk sentinel.** Chunks are `0xFF`-filled, so the two bytes
 at `p + 4` of a gap already spell it. `Pt Count` is at least `2` in every real record, so `0xFFFF`
 is impossible content (as for the sentinels of §5.1, §7.3 and §8.3). A gap shorter than six bytes
-cannot be read for it, which is what the `512 - p < 19` test covers: no record fits there either
+cannot be read for it, which is what the `p + 19 > 512` test covers: no record fits there either
 way.
 
 **Five ordinal bits.** An edge record is `15 + 4 × (Pt Count − 1)` bytes with `Pt Count ≥ 2`, so
@@ -1164,13 +1165,13 @@ distance (100 m in the reference router).
   and way-kind classification in `host/obc-places/src/routing.rs`. Graph construction lives
   in `host/obc-network/src/nav.rs`. Routing config and profile quantization live in
   `host/obc-map-core/src/config.rs`.
-- **Reader + renderer (Rust, no_std):** `firmware/obc-reader` — `reader.rs`
-  (`Reader`, `for_each_feature`, `select_lod_for_mpp`, the POI + nav directories +
-  the profile table in `MapTables`, `for_each_nav_node`, `NavNeighbor` delta
-  decode, `nav_edge`, `MapProfile::multiplier`, `MapProfile::climb_weight`) — and
-  `firmware/obc-render`
-  (`Viewport`, `RenderScratch`). Format-contract tests in
-  `firmware/obc-reader/tests/format.rs` (byte pins) and
+- **Reader + renderer (Rust, no_std):** `firmware/obc-reader` — `src/reader/mod.rs` (`Reader`,
+  the POI + nav directories + the profile table in `MapTables`), `src/reader/geometry.rs`
+  (`for_each_feature`, `select_lod_for_mpp`) and `src/reader/nav.rs` (`for_each_nav_node`,
+  `nav_edge`, `MapProfile::multiplier`, `MapProfile::climb_weight`) — and `firmware/obc-render`
+  (`Viewport`, `RenderScratch`). `NavNeighbor` delta decode lives in
+  `firmware/obc-formats/src/obcm/nav.rs`. Format-contract tests in
+  `firmware/obc-reader/tests/cases/format.rs` (byte pins, run from `tests/main.rs`) and
   `host/obc-bake/tests/packer_cases/nav_round_trip.rs` (writer↔reader §8 round trip, incl.
   the profile table, kinds, delta reconstruction, and the bin-packing fill floor).
 

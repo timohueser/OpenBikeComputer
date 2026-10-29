@@ -5,8 +5,8 @@ A raster of ground heights on the [OBCA](obca-assembly.md) cell grid: the sample
 geographic surface index (§8) and the crest-lift producer rule (§9).
 
 - Version: `0x01` and `3`. Both are current. §1–§5 define the native v1 raster, which is also the
-  base height plane of v3; §8 defines what v3 adds and overrides. A v1 reader refuses every
-  version other than `0x01` (§4.5). Every reader rejects version 2 (§8.1).
+  base height plane of v3; §8 defines what v3 adds and overrides. A reader refuses every other
+  version, version 2 included (§4.5, §8.1).
 - Writers: `host/obc-dem` (`obc-dem bake`, cell blocks); `host/obc-bake` (terrain stage, published
   cells); `host/obcm-assemble` (an assembly's raster, `obca-assembly.md` §4.3).
 - Readers: [`firmware/obc-elevation`](../firmware/obc-elevation) (reference reader, sampler and
@@ -245,8 +245,9 @@ directory.
 A reader MUST refuse the file — not the individual query — when any of the following holds. All of
 them are properties of the bytes, and are checked once at parse.
 
-1. The file is shorter than 32 bytes, `Magic` is not `OBCT`, or `Version` is not `0x01`.
-2. `Flags` is not `0`, or any reserved byte is not `0`.
+1. The file is shorter than 32 bytes, `Magic` is not `OBCT`, or `Version` is not `0x01` or `3`.
+2. `Flags` is not `0` in a v1 container or not `1` or `3` in a v3 container (§8.1), or any reserved
+   byte is not `0`.
 3. `Posting Log2` is outside `4 … 16`, or `Cell Log2` is outside `10 … 28`.
 4. `Cell Log2 − Posting Log2 < 4` — a cell smaller than one tile — or `> 15`, which would put a cell
    block past `uint32`.

@@ -488,9 +488,9 @@ The steps run in this order.
 4. **Prune islands** over the merged graph with the schema's `min_component_edges`, keeping the
    largest component plus every component at or above the threshold — the pass §3.5 deferred from
    bake time. "Largest" is by node count, then by edge count, then by the component that holds the
-   **lowest-numbered node** of the collection order §4.6.1 read the cells in. The tie-break MUST
-   be a property of the graph rather than of the search that found the components, or two
-   assemblers of the same cells disagree about which islet reached the map.
+   **lowest-numbered node** in the collection order of step 1. The tie-break MUST be a property of
+   the graph rather than of the search that found the components, or two assemblers of the same
+   cells disagree about which islet reached the map.
 5. **Renumber** the surviving nodes densely from 0, in a deterministic order (`(lat, lon)`
    ascending is sufficient and content-derived).
 6. **Rebuild the edge pool.** `Edge Id` names a record by its chunk and its position within that

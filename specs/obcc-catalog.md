@@ -123,7 +123,7 @@ The cell store is a derivative database of its source dataset, and this block is
 machine-readable statement of that fact.
 
 All four fields are required and MUST be non-empty when the block is present. A **producer MUST
-publish it**. §13.5's display rule applies here: a consumer that describes the map data SHOULD take
+publish it**. §13.5's display rule applies here: a consumer that describes the map data MUST take
 the strings from the catalog rather than hard-code them.
 
 The publish also carries the same statement for a person at a stable key: `LICENSE.txt` at the store
@@ -642,7 +642,7 @@ beside the place.
 
 **A producer MUST NOT publish a store whose cells carry a landmark section with no `landmarks`
 block.** The section is the text and the photos; the block is the only place their credit is
-published. The two travel together or neither is publishable.
+published.
 
 ### 14.3 Artifacts per core cell
 
