@@ -9,6 +9,7 @@ statements of the doc are now false and which behaviour the doc does not state.
 from __future__ import annotations
 
 import functools
+import http.client
 import itertools
 import json
 import os
@@ -35,7 +36,7 @@ GLOSSARY = "glossary.md"
 MERGE = re.compile(r"Merge pull request #([1-9]\d*)\b")
 # A batch can run longer than the default cache lifetime of five minutes.
 CACHE = {"type": "ephemeral", "ttl": "1h"}
-# A one-hour cache write costs twice the input price, so the worst case counts each input token so.
+# A one-hour cache write costs twice the input price.
 CACHE_WRITE = 2
 POLL_SECONDS = 60
 # GitHub refuses an issue body longer than 65,536 characters.
@@ -78,16 +79,14 @@ SCHEMA = {
 }
 
 
-def flat(text: str) -> str:
-    return " ".join(str(text).split())
+def untrusted(text: str) -> str:
+    """Text from a pull request or the model, on one line. A zero-width space after each `@` keeps
+    GitHub from notifying the user that it names."""
+    return " ".join(str(text).split()).replace("@", "@\u200b")
 
 
-def mode_of(body: str) -> modes.Mode | None:
-    value = modes.body_value(body)
-    try:
-        return modes.parse(value) if value else None
-    except ValueError:
-        return None
+def pull_mode(pull: dict) -> modes.Mode | None:
+    return modes.read(modes.body_value(pull.get("body") or ""), "the pull request body")[0]
 
 
 # ── step 1: no tokens ────────────────────────────────────────────────────────
@@ -102,7 +101,7 @@ def overrides(api: Api, now: datetime) -> list[tuple[int, str, str]]:
     for page in itertools.count(1):
         pulls = api(f"pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}")
         for pull in pulls:
-            mode = mode_of(pull.get("body") or "")
+            mode = pull_mode(pull)
             if pull.get("merged_at") and datetime.fromisoformat(pull["merged_at"]) >= since and mode and mode.kind == "override":
                 found.append((pull["number"], pull["title"], mode.reason))
         if len(pulls) < 100 or datetime.fromisoformat(pulls[-1]["updated_at"]) < since:
@@ -140,8 +139,8 @@ def evidence(root: Path, read: Api, number: int, commit: str, files: list[str]) 
     """A `change` gives the TL;DR of its issue, because it had to update the doc already. Any other
     pull request gives its diff on the files."""
     pull = read(f"pulls/{number}")
-    mode = mode_of(pull.get("body") or "")
-    head = f"## Pull request #{number}: {flat(pull.get('title', ''))}\nMode: {mode.line() if mode else 'none'}\n\n"
+    mode = pull_mode(pull)
+    head = f"## Pull request #{number}: {untrusted(pull.get('title', ''))}\nMode: {mode.line() if mode else 'none'}\n\n"
     if mode and mode.kind == "change":
         return head + tldr(modes.issue_body(mode.issue, read(f"issues/{mode.issue}")))
     return head + (modes.git(root, "diff", "--no-renames", f"{commit}^1", commit, "--", *files) or "")
@@ -149,9 +148,9 @@ def evidence(root: Path, read: Api, number: int, commit: str, files: list[str]) 
 
 def drift_inputs(root: Path, docs: list[cairn.Doc], config: dict, api: Api) -> list[Inputs]:
     """For each approved doc, the pull requests merged since the doc last changed that touch the
-    files of its system outside the `fix.tests` globs and the map, newest first."""
+    files of its system outside the `fix.tests` and `report.ignore` globs and the map, newest first."""
     folder = config["docs"].rstrip("/")
-    tests, limit = config["fix"]["tests"], config["report"]["max_input_chars"]
+    dropped, limit = config["fix"]["tests"] + config["report"]["ignore"], config["report"]["max_input_chars"]
     read = functools.cache(api)
     found = []
     for doc in docs:
@@ -160,7 +159,7 @@ def drift_inputs(root: Path, docs: list[cairn.Doc], config: dict, api: Api) -> l
         parts, numbers = [], []
         for commit, number in merges(root, since) if since else []:
             changed = (modes.git(root, "diff", "--name-only", "--no-renames", "-z", f"{commit}^1", commit) or "").split("\0")
-            kept = [f for f in changed if f and f != f"{folder}/{cairn.MAP}" and not cairn.is_test(f, tests)]
+            kept = [f for f in changed if f and f != f"{folder}/{cairn.MAP}" and not cairn.is_test(f, dropped)]
             files = sorted(f for f, hits in cairn.owners(kept, docs).items() if doc.system in hits)
             if files:
                 numbers.append(number)
@@ -183,6 +182,8 @@ def sender(key: str) -> Send:
                 return answer.read().decode()
         except urllib.error.HTTPError as error:
             raise OSError(f"{method} {url}: HTTP {error.code}: {error.read().decode(errors='replace')[:500]}") from error
+        except http.client.HTTPException as error:
+            raise OSError(f"{method} {url}: {error!r}") from error
 
     return send
 
@@ -191,11 +192,24 @@ def call(send: Send, method: str, path: str, body: dict | None = None) -> dict:
     return json.loads(send(method, f"{API}/{path}", body))
 
 
-def newest(send: Send, family: str) -> str:
-    models = [m for m in call(send, "GET", "models?limit=1000")["data"] if m["id"].startswith(family)]
-    if not models:
-        raise cairn.CairnError(f"the Models API lists no model whose ID starts with {family}")
-    return max(models, key=lambda m: m["created_at"])["id"]
+def resolve(send: Send, name: str) -> str:
+    """An exact model ID is a pin. Any other name is a family prefix, which gives its newest model."""
+    models = call(send, "GET", "models?limit=1000")["data"]
+    if any(m["id"] == name for m in models):
+        return name
+    family = [m for m in models if m["id"].startswith(name + "-")]
+    if not family:
+        raise cairn.CairnError(f"the Models API lists no model {name} and no model whose ID starts with {name}-")
+    return max(family, key=lambda m: m["created_at"])["id"]
+
+
+def cost(usage: dict, price: dict) -> float:
+    """The cost in USD of the usage of one request at batch prices. Each cache write is a one-hour
+    write."""
+    return (usage.get("input_tokens", 0) * price["input"]
+            + usage.get("cache_creation_input_tokens", 0) * price["input"] * CACHE_WRITE
+            + usage.get("cache_read_input_tokens", 0) * price["cache_read"]
+            + usage.get("output_tokens", 0) * price["output"]) / 1e6
 
 
 def findings(text: str) -> dict[str, list[dict[str, str]]]:
@@ -215,7 +229,7 @@ def findings(text: str) -> dict[str, list[dict[str, str]]]:
 def outcome(result: dict) -> dict | str:
     """The findings of one batch result, or why it has none."""
     if result["type"] != "succeeded":
-        return f"the request {result['type']}: {flat(json.dumps(result.get('error')))[:300]}"
+        return f"the request {result['type']}: {json.dumps(result.get('error'))[:300]}"
     message = result["message"]
     try:
         return findings("".join(b.get("text", "") for b in message["content"] if b["type"] == "text"))
@@ -228,7 +242,10 @@ class Drift:
     model: str
     budget: float
     #: The worst-case cost of the requests in the batch.
-    cost: float = 0.0
+    estimate: float = 0.0
+    #: The cost of the usage that the results report.
+    spent: float = 0.0
+    canceled: bool = False
     skipped: list[str] = field(default_factory=list)
     #: The findings of each checked system, or why it has none.
     found: dict[str, dict | str] = field(default_factory=dict)
@@ -237,84 +254,103 @@ class Drift:
 def drift(send: Send, root: Path, inputs: list[Inputs], config: dict,
           sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic) -> Drift:
     """Count the tokens of each request and stop at the run budget, then send one batch and wait
-    for it. The worst case is every input token at the cache write price plus `max_tokens`."""
+    for it. The worst case writes the shared prefix to the cache in each request and uses all of
+    `max_tokens`."""
     settings = config["report"]
     chosen = cairn.model_for(config, "drift", "api")
     if chosen is None:
         raise cairn.CairnError("the drift role has no model in the api tier")
-    entry, effort = chosen
-    family, pin = (entry["family"], entry.get("pin")) if isinstance(entry, dict) else (entry, None)
-    price = settings["batch_prices"][family]
-    out = Drift(pin or newest(send, family), settings["budget_usd"])
+    out = Drift(resolve(send, chosen[0]), settings["budget_usd"])
+    price = settings["batch_prices"].get(out.model)
+    if price is None:
+        raise cairn.CairnError(f"no price for {out.model}; add it to {cairn.CONFIG}")
     glossary = root / config["docs"] / GLOSSARY
-    prefix = INSTRUCTIONS + (f"\n\n<glossary>\n{glossary.read_text()}\n</glossary>" if glossary.exists() else "")
+    system = [{"type": "text", "cache_control": CACHE,
+               "text": INSTRUCTIONS + (f"\n\n<glossary>\n{glossary.read_text()}\n</glossary>" if glossary.exists() else "")}]
+    prefix = call(send, "POST", "messages/count_tokens",
+                  {"model": out.model, "system": system, "messages": [{"role": "user", "content": "."}]})["input_tokens"]
     requests = []
     for i, item in enumerate(inputs):
         doc = (root / item.doc).read_text(encoding="utf-8")
         params = {
             "model": out.model,
             "max_tokens": settings["max_tokens"],
-            "system": [{"type": "text", "text": prefix, "cache_control": CACHE}],
+            "system": system,
             "messages": [{"role": "user", "content": f'<system_doc path="{item.doc}">\n{doc}\n</system_doc>\n\n'
                                                      f"<changes>\n{item.text}\n</changes>"}],
-            "output_config": {"effort": effort, "format": {"type": "json_schema", "schema": SCHEMA}},
+            "output_config": {"effort": chosen[1], "format": {"type": "json_schema", "schema": SCHEMA}},
         }
         tokens = call(send, "POST", "messages/count_tokens", {k: v for k, v in params.items() if k != "max_tokens"})["input_tokens"]
-        cost = (tokens * price["input"] * CACHE_WRITE + settings["max_tokens"] * price["output"]) / 1e6
-        if out.cost + cost > out.budget:
+        worst = cost({"cache_creation_input_tokens": prefix, "input_tokens": max(tokens - prefix, 0),
+                      "output_tokens": settings["max_tokens"]}, price)
+        if out.estimate + worst > out.budget:
             out.skipped = [later.system for later in inputs[i:]]
             break
-        out.cost += cost
+        out.estimate += worst
         requests.append({"custom_id": item.system, "params": params})
     if not requests:
         return out
     batch = call(send, "POST", "messages/batches", {"requests": requests})
+    path = f"messages/batches/{batch['id']}"
     deadline = clock() + settings["timeout_minutes"] * 60
+    # A failed request tries again at the next poll. A canceled batch still ends, and its results
+    # hold the requests that ran, which are paid for.
     while batch["processing_status"] != "ended":
-        if clock() > deadline:
-            call(send, "POST", f"messages/batches/{batch['id']}/cancel")
-            raise cairn.CairnError(f"batch {batch['id']} did not end in {settings['timeout_minutes']} minutes, so it was canceled")
+        if clock() > deadline and not out.canceled:
+            try:
+                call(send, "POST", f"{path}/cancel")
+                out.canceled = True
+            except OSError:
+                pass
         sleep(POLL_SECONDS)
-        batch = call(send, "GET", f"messages/batches/{batch['id']}")
+        try:
+            batch = call(send, "GET", path)
+        except OSError:
+            continue
     for line in send("GET", batch["results_url"], None).splitlines():
         if line.strip():
             row = json.loads(line)
             out.found[row["custom_id"]] = outcome(row["result"])
+            if row["result"]["type"] == "succeeded":
+                out.spent += cost(row["result"]["message"].get("usage", {}), price)
     return out
 
 
 # ── the report ───────────────────────────────────────────────────────────────
 
 
-def drift_lines(inputs: list[Inputs], result: Drift) -> list[str]:
-    lines = [f"Model {result.model}; worst-case cost ${result.cost:.2f} of the ${result.budget:g} run budget."]
+def drift_lines(result: Drift, timeout: int) -> list[str]:
+    costs = f"worst-case estimate ${result.estimate:.2f}, real cost ${result.spent:.2f}, run budget ${result.budget:g}"
+    lines = [f"Model {result.model}; {costs}."]
+    if result.canceled:
+        lines += ["", f"The batch did not end in {timeout} minutes, so it was canceled. Requests that did not run have no findings."]
     if result.skipped:
         lines += ["", f"Skipped at the run budget: {', '.join(result.skipped)}."]
     for system, found in sorted(result.found.items()):
         lines += ["", f"### {system}", ""]
         if isinstance(found, str):
-            lines.append(f"No findings: {found}.")
+            lines.append(f"No findings: {untrusted(found)}.")
             continue
         for item in found["false_statements"]:
-            lines += [f"- **False:** {flat(item['quote'])}", f"  - Evidence: {flat(item['evidence'])}",
-                      f"  - Replace with: {flat(item['replacement'])}"]
+            lines += [f"- **False:** {untrusted(item['quote'])}", f"  - Evidence: {untrusted(item['evidence'])}",
+                      f"  - Replace with: {untrusted(item['replacement'])}"]
         for item in found["missing_behaviour"]:
-            lines += [f"- **Missing:** {flat(item['behaviour'])}", f"  - Evidence: {flat(item['evidence'])}",
-                      f"  - Add: {flat(item['sentence'])}"]
+            lines += [f"- **Missing:** {untrusted(item['behaviour'])}", f"  - Evidence: {untrusted(item['evidence'])}",
+                      f"  - Add: {untrusted(item['sentence'])}"]
         if not found["false_statements"] and not found["missing_behaviour"]:
             lines.append("The doc still holds.")
     return lines
 
 
 def write(root: Path, config: dict, docs: list[cairn.Doc], result: cairn.Result, baseline: dict[str, int],
-          api: Api, key: str | None, now: datetime) -> tuple[str, bool]:
-    """The report, and whether a part of it could not be read."""
+          api: Api, drifting: bool, key: str | None, now: datetime) -> tuple[str, bool]:
+    """The report, and whether a part of it failed. Step 2 runs only when `drifting`."""
     failed = False
     lines = ["# cairn report", "", f"Written on {now:%Y-%m-%d} at {modes.git(root, 'rev-parse', '--short', 'HEAD')}.",
              "", "## Overrides merged in the last 7 days", ""]
     try:
         found = overrides(api, now)
-        rows = [f"| #{n} | {flat(t).replace('|', '/')} | {flat(r).replace('|', '/')} |" for n, t, r in found]
+        rows = [f"| #{n} | {untrusted(t).replace('|', '/')} | {untrusted(r).replace('|', '/')} |" for n, t, r in found]
         lines += ["| Pull request | Title | Reason |", "| --- | --- | --- |", *rows] if rows else ["None."]
     except (OSError, ValueError, KeyError, TypeError) as error:
         failed = True
@@ -339,10 +375,12 @@ def write(root: Path, config: dict, docs: list[cairn.Doc], result: cairn.Result,
         cut = f"; cut from {item.cut:,} to {len(item.text):,} characters" if item.cut else ""
         lines.append(f"- {item.system}: {', '.join(f'#{n}' for n in item.pulls)}{cut}")
     lines.append("")
+    if not drifting:
+        return "\n".join([*lines, "Step 2 runs only with `--drift`, because it spends tokens."]), failed
     if not key:
-        return "\n".join([*lines, "Step 2 is skipped: `ANTHROPIC_API_KEY` is not set."]), failed
+        return "\n".join([*lines, "Step 2 is skipped: `ANTHROPIC_API_KEY` is not set."]), True
     try:
-        lines += drift_lines(inputs, drift(sender(key), root, inputs, config))
+        lines += drift_lines(drift(sender(key), root, inputs, config), config["report"]["timeout_minutes"])
     except (OSError, ValueError, KeyError, TypeError, cairn.CairnError) as error:
         failed = True
         lines.append(f"Step 2 failed: {error}")
@@ -371,7 +409,7 @@ def publish(body: str, api: Api, pin: Callable[[str], object]) -> str:
     return issue["html_url"]
 
 
-def main(publishing: bool) -> int:
+def main(publishing: bool, drifting: bool) -> int:
     root = cairn.ROOT
     try:
         config = json.loads((root / cairn.CONFIG).read_text())
@@ -380,14 +418,14 @@ def main(publishing: bool) -> int:
         path = root / config["baseline"]
         baseline = json.loads(path.read_text()) if path.exists() else {}
         api = functools.partial(modes.api, root)
-        text, failed = write(root, config, docs, result, baseline, api, os.environ.get("ANTHROPIC_API_KEY"),
+        text, failed = write(root, config, docs, result, baseline, api, drifting, os.environ.get("ANTHROPIC_API_KEY"),
                              datetime.now(timezone.utc))
         print(text)
         if publishing:
             def pin(node: str) -> None:
                 answer = modes.gh(root, "graphql", "POST", {"query": PIN, "variables": {"id": node}})
                 if (answer or {}).get("errors"):
-                    raise OSError(flat(json.dumps(answer["errors"])))
+                    raise OSError(json.dumps(answer["errors"]))
 
             print(f"cairn: wrote {publish(text, api, pin)}", file=sys.stderr)
     except (cairn.CairnError, OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:

@@ -16,8 +16,8 @@ Usage: python3 tools/cairn/cairn.py
          mode [fix [--over-limit REASON] | change N | prototype | override REASON]
          hash FILE|-
          hook
-         model ROLE [--harness claude-code|codex|api]
-         report [--publish]
+         model ROLE [--harness claude-code|codex]
+         report [--publish] [--drift]
 """
 
 from __future__ import annotations
@@ -660,10 +660,8 @@ def mode_gate(root: Path, head: Tree, ref: str) -> bool:
         value, source = modes.body_value(pull.get("body") or ""), "the pull request body"
     else:
         value, source = modes.declared(root), "the branch config"
-    try:
-        mode, found = (modes.parse(value), []) if value else (None, [f"no `Mode:` line in {source}"])
-    except ValueError as error:
-        mode, found = None, [str(error)]
+    mode, problem = modes.read(value, source)
+    found = [problem] if problem else []
     commit = merge_base(root, ref)
     try:
         base, unread = tree_at(root, commit), ""
@@ -718,7 +716,7 @@ def mode_command(args: argparse.Namespace) -> int:
     return 0
 
 
-HARNESSES = ("claude-code", "codex", "api")
+HARNESSES = ("claude-code", "codex")
 
 
 def harness() -> str | None:
@@ -727,9 +725,9 @@ def harness() -> str | None:
     return "claude-code" if os.environ.get("CLAUDECODE") == "1" else None
 
 
-def model_for(config: dict, role: str, harness: str | None) -> tuple[str | dict, str] | None:
+def model_for(config: dict, role: str, harness: str | None) -> tuple[str, str] | None:
     """The model of a role in a harness and its effort, or None when the role runs on the
-    session's own model. An `api` model is a family prefix, or `{"family", "pin"}`."""
+    session's own model. An `api` model is a family prefix, or an exact model ID as a pin."""
     roles = config["roles"]
     if role not in roles:
         raise CairnError(f"unknown role `{role}`; the roles are {', '.join(roles)}")
@@ -747,9 +745,7 @@ def model_command(args: argparse.Namespace) -> int:
     if found is None:
         print("inherit")
         return 0
-    model, effort = found
-    print(f"model: {model.get('pin') or model['family'] if isinstance(model, dict) else model}")
-    print(f"effort: {effort}")
+    print(f"model: {found[0]}\neffort: {found[1]}")
     return 0
 
 
@@ -790,6 +786,7 @@ def main(argv: list[str] | None = None) -> int:
     model.add_argument("--harness", choices=HARNESSES, help="the harness, instead of the one the environment shows")
     weekly = commands.add_parser("report", help="print the report on overrides, the ratchet and drift")
     weekly.add_argument("--publish", action="store_true", help="also write it to the open issue labelled cairn-report")
+    weekly.add_argument("--drift", action="store_true", help="run step 2, which spends tokens of the Anthropic API")
     args = parser.parse_args(argv)
 
     if args.command == "mode":
@@ -800,7 +797,7 @@ def main(argv: list[str] | None = None) -> int:
         # Not `import report`: that name is the ratchet report below.
         from report import main as weekly
 
-        return weekly(args.publish)
+        return weekly(args.publish, args.drift)
     if args.command == "hook":
         return hook_command()
     if args.command == "hash":

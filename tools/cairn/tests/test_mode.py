@@ -165,8 +165,8 @@ class SizeTests(unittest.TestCase):
         body = issue("routing", size="**Size:** S (one system)")
         self.assertEqual(self.check(mode.Diff(frozenset({"routing"}), lines=500), body), [])
         self.assertEqual(self.check(mode.Diff(frozenset({"routing"}), lines=640), body), [
-            ("`change #5` is sized S, but the diff is M: 640 changed lines outside tests. Shrink the pull request, "
-             "amend the issue (which needs a new approval), or override with a reason")])
+            "`change #5` is sized S, but the diff is M: 640 changed lines outside tests. Shrink the pull request, "
+            "amend the issue (which needs a new approval), or override with a reason"])
         self.assertEqual(self.check(mode.Diff(frozenset({"routing"})), issue("routing", size="")),
                          ["issue #5 has no `**Size:** S|M|L` line"])
         self.assertIsNone(mode.issue_size("**Size:**\nS\n"))

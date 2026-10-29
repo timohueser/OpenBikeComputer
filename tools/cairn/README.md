@@ -13,7 +13,7 @@ obc cairn mode change 3012 # declare the mode of the current branch
 obc cairn mode             # print the mode and the `Mode:` line for the pull request body
 obc cairn hash issue.md    # print the approval hash of an issue body (- reads stdin)
 obc cairn model code-review   # print the model and effort of a role in this harness
-obc cairn report           # print the weekly report; --publish writes it to its issue
+obc cairn report           # print the weekly report; --publish writes it to its issue, --drift runs step 2
 python3 -m unittest discover -s tools/cairn/tests
 ```
 
@@ -134,7 +134,7 @@ through Bash bypass the hook; AGENTS.md and the mode gate cover them.
 | Key or input | Gives |
 | --- | --- |
 | `roles.<role>` | the `tier` (`strong`, `balanced`, `fast` or `inherit`) and the `effort` of a job |
-| `tiers.<harness>` | the model of each tier for `claude-code`, `codex` and `api`. An `api` model is a family prefix, or `{"family": ..., "pin": "<model ID>"}`. |
+| `tiers.<harness>` | the model of each tier for `claude-code`, `codex` and `api`. An `api` model is a family prefix such as `claude-sonnet`, or an exact model ID, which is a pin. |
 | the harness | `--harness`, else `claude-code` when `CLAUDECODE=1`. Codex sets no such variable. An unknown harness or the tier `inherit` prints `inherit`. |
 
 ## Report
@@ -143,10 +143,11 @@ through Bash bypass the hook; AGENTS.md and the mode gate cover them.
 | --- | --- |
 | Overrides | the pull requests merged in the last 7 days with `Mode: override: <reason>`, read through `gh api` |
 | Ratchet, files with no owner | the analysis of `cairn check` |
-| Drift, step 1 | for each doc with `status: approved`, each `Merge pull request #N` commit on the first-parent line of HEAD after the last change of the doc that touches files of the system outside `fix.tests` and the map. A `change` gives the TL;DR of its issue, another mode its diff on those files. `report.max_input_chars` caps the input of a system. |
-| Drift, step 2 | one Message Batch for the `drift` role in the `api` tier, skipped without `ANTHROPIC_API_KEY`. The family resolves to its newest model ID through the Models API, unless `pin` is set. The fixed instructions and `docs/design/glossary.md` come first, with a cache breakpoint. |
-| Budget | the token-counting endpoint counts each request before it joins the batch. The worst case is the input at twice the input price (a one-hour cache write) plus `report.max_tokens` of output. The batch stops at `report.budget_usd`, and the report names the skipped systems. |
-| `report.batch_prices` | the Message Batches price in USD per million tokens of the newest model of each family. Change it when a family gets a new model. |
-| `report.timeout_minutes` | the longest wait for the batch. The batch is then canceled. |
-| `--publish` | replaces the body of the open issue labelled `cairn-report`, or creates the label and the issue and pins it. Pinning uses GraphQL; a failed pin adds a note to the body. |
-| Exit code | 1 when a part cannot be read |
+| Drift, step 1 | For each doc with `status: approved`: the `Merge pull request #N` commits on the first-parent line of HEAD after the last change to the doc. A commit counts when it changes files of the system outside `fix.tests`, `report.ignore` and the map. A `change` gives the TL;DR of its issue. Another mode gives its diff on those files. `report.max_input_chars` caps the input of a system. |
+| Drift, step 2 | Runs only with `--drift`, because it spends tokens. It needs `ANTHROPIC_API_KEY`. It sends one Message Batch for the `drift` role in the `api` tier. A family prefix resolves to its newest model ID through the Models API. The fixed instructions and `docs/design/glossary.md` come first, with a cache breakpoint. |
+| Budget | The token-counting endpoint counts each request before it joins the batch. The worst case is the shared prefix at the one-hour cache write price (twice the input price), the rest at the input price, and `report.max_tokens` at the output price. The batch stops at `report.budget_usd`, and the report names the skipped systems. The report also gives the real cost from the usage of the results. |
+| `report.batch_prices` | The Message Batches prices in USD per million tokens, by exact model ID. Step 2 refuses a model with no price. |
+| `report.timeout_minutes` | The longest wait for the batch. Then the batch is canceled, and the report still reads the results of the requests that ran. |
+| Mentions | Each `@` in a title, a reason or a finding gets a zero-width space after it, so the issue notifies nobody. |
+| `--publish` | Replaces the body of the open issue labelled `cairn-report`, or creates the label and the issue and pins it. Pinning uses GraphQL; a failed pin adds a note to the body. |
+| Exit code | 1 when a part fails |

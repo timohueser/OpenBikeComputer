@@ -52,12 +52,14 @@
   "report": {
     "budget_usd": 5,
     "max_input_chars": 40000,
-    "max_tokens": 16000,
+    "max_tokens": 8000,
     "timeout_minutes": 180,
+    "ignore": ["*.lock", "package-lock.json", "*.svg", "*.webp", "*.bin", "*.raw", "*.step", "*.stp",
+               "*.kicad_mod", "*.kicad_pcb", "*.kicad_sch", "*.gpx", "*.sha256"],
     "batch_prices": {
-      "claude-opus": { "input": 2, "output": 10 },
-      "claude-sonnet": { "input": 1, "output": 5 },
-      "claude-haiku": { "input": 0.05, "output": 0.25 }
+      "claude-opus-5-5": { "input": 2, "output": 10, "cache_read": 0.1 },
+      "claude-sonnet-5-5": { "input": 1, "output": 5, "cache_read": 0.1 },
+      "claude-haiku-5-5": { "input": 0.05, "output": 0.25, "cache_read": 0.005 }
     }
   }
 }

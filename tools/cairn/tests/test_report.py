@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 import cairn  # noqa: E402
 import report  # noqa: E402
 
+# The roles and tiers of this repository; each test sets its own `report` settings.
 CONFIG = json.loads((cairn.ROOT / cairn.CONFIG).read_text())
 
 
@@ -56,7 +57,8 @@ class DriftInputTests(unittest.TestCase):
 
     def inputs(self, **settings):
         docs = cairn.load_docs(self.repository.root, "docs/design")
-        config = {**CONFIG, "fix": {"tests": ["**/tests/**"]}, "report": {**CONFIG["report"], **settings}}
+        config = {**CONFIG, "fix": {"tests": ["**/tests/**"]},
+                  "report": {"max_input_chars": 40_000, "ignore": ["*.lock"], **settings}}
         return report.drift_inputs(self.repository.root, docs, config, lambda path: self.PULLS[path])
 
     def setUp(self):
@@ -67,18 +69,19 @@ class DriftInputTests(unittest.TestCase):
                                "docs/design/search.md": header("search", "search/**", "draft"),
                                "route/a.rs": "a\n", "search/b.rs": "b\n"})
         self.repository.git("commit", "--quiet", "-m", "start")
-        self.repository.merge(2, {"route/a.rs": "a\nsnap\n", "route/tests/t.rs": "test\n", "search/b.rs": "b\nsearched\n"})
+        self.repository.merge(2, {"route/a.rs": "a\nsnap\n", "route/tests/t.rs": "test\n", "route/Cargo.lock": "lock\n",
+                                  "search/b.rs": "b\nsearched\n"})
         self.repository.merge(3, {"route/c.rs": "c\n"})
         self.repository.merge(4, {"route/tests/u.rs": "test\n"})
         self.repository.merge(5, {"search/b.rs": "b\n"})
 
-    def test_an_approved_system_gets_the_tldr_of_a_change_and_the_diff_of_a_fix_without_tests(self):
+    def test_an_approved_system_gets_the_tldr_of_a_change_and_the_diff_of_a_fix_without_ignored_files(self):
         [found] = self.inputs()
         self.assertEqual((found.system, found.pulls, found.cut), ("routing", (3, 2), 0))
         self.assertIn("**Decision:** split the router.", found.text)
         self.assertNotIn("Secret", found.text)
         self.assertIn("+snap", found.text)
-        for absent in ("route/tests", "searched", "route/c.rs"):
+        for absent in ("route/tests", "Cargo.lock", "searched", "route/c.rs"):
             self.assertNotIn(absent, found.text)
 
     def test_the_cap_cuts_the_input_and_a_doc_change_starts_again(self):
@@ -89,65 +92,112 @@ class DriftInputTests(unittest.TestCase):
         self.assertEqual(self.inputs(), [])
 
 
-class FakeApi:
-    """The Anthropic API: every request counts `tokens` input tokens, and the batch ends after one poll."""
+MODELS = [{"id": "claude-sonnet-4-6", "created_at": "2026-02-17T00:00:00Z"},
+          {"id": "claude-sonnet-5", "created_at": "2026-06-01T00:00:00Z"},
+          {"id": "claude-opus-5-5", "created_at": "2026-09-21T00:00:00Z"},
+          {"id": "claude-sonnet-5-5", "created_at": "2026-09-01T00:00:00Z"}]
 
-    def __init__(self, tokens, answers):
-        self.tokens, self.answers, self.calls = tokens, answers, []
+
+def succeeded(text, **usage):
+    return {"type": "succeeded", "message": {"stop_reason": "end_turn", "usage": usage,
+                                             "content": [{"type": "text", "text": text}]}}
+
+
+class FakeApi:
+    """The Anthropic API. The shared prefix counts 10,000 tokens and each request 100,000. Each poll
+    of the batch takes the next of `statuses`; an exception there is a failed request."""
+
+    def __init__(self, rows, statuses=("ended",)):
+        self.rows, self.statuses, self.calls = rows, list(statuses), []
 
     def __call__(self, method, url, body):
-        self.calls.append((method, url.removeprefix(report.API + "/"), body))
-        path = self.calls[-1][1]
+        path = url.removeprefix(report.API + "/")
+        self.calls.append((method, path, body))
         if path.startswith("models"):
-            return json.dumps({"data": [{"id": "claude-sonnet-4-6", "created_at": "2026-02-17T00:00:00Z"},
-                                        {"id": "claude-opus-5-5", "created_at": "2026-09-21T00:00:00Z"},
-                                        {"id": "claude-sonnet-5-5", "created_at": "2026-09-01T00:00:00Z"}]})
+            return json.dumps({"data": MODELS})
         if path == "messages/count_tokens":
-            return json.dumps({"input_tokens": self.tokens})
+            return json.dumps({"input_tokens": 10_000 if body["messages"][0]["content"] == "." else 100_000})
         if path == "messages/batches":
             return json.dumps({"id": "b1", "processing_status": "in_progress"})
+        if path == "messages/batches/b1/cancel":
+            return json.dumps({"id": "b1", "processing_status": "canceling"})
         if path == "messages/batches/b1":
-            return json.dumps({"id": "b1", "processing_status": "ended", "results_url": "https://results/b1"})
+            status = self.statuses.pop(0)
+            if isinstance(status, Exception):
+                raise status
+            return json.dumps({"id": "b1", "processing_status": status, "results_url": "https://results/b1"})
         if url == "https://results/b1":
-            return "\n".join(json.dumps({"custom_id": system, "result": {"type": "succeeded", "message": {
-                "stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}}}) for system, text in self.answers.items())
+            return "\n".join(json.dumps({"custom_id": system, "result": result}) for system, result in self.rows.items())
         raise AssertionError(url)
+
+    def paths(self, wanted):
+        return [body for method, path, body in self.calls if path == wanted]
 
 
 class DriftCallTests(unittest.TestCase):
-    def test_the_batch_stops_at_the_budget_and_a_bad_answer_is_reported(self):
-        good = {"false_statements": [{"quote": "Q", "evidence": "#2", "replacement": "R"}], "missing_behaviour": []}
-        api = FakeApi(100_000, {"a": json.dumps(good), "b": '{"false_statements": []}'})
+    PRICES = {"claude-sonnet-5-5": {"input": 1, "output": 5, "cache_read": 0.1}}
+
+    def run_drift(self, api, systems, budget=5.0, clock=None):
+        settings = {"budget_usd": budget, "max_tokens": 16_000, "timeout_minutes": 10, "batch_prices": self.PRICES}
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "docs/design").mkdir(parents=True)
             inputs = []
-            for system in "abc":
+            for system in systems:
                 (root / f"docs/design/{system}.md").write_text(f"# {system}\n")
                 inputs.append(report.Inputs(system, f"docs/design/{system}.md", (2,), "diff"))
-            # Each request costs at worst 100,000 x $1 x 2 + 16,000 x $5 = $0.28, so two fit in $0.60.
-            config = {**CONFIG, "report": {**CONFIG["report"], "budget_usd": 0.6}}
             sleeps = []
-            found = report.drift(api, root, inputs, config, sleep=sleeps.append)
-        self.assertEqual((found.model, found.skipped, round(found.cost, 2)), ("claude-sonnet-5-5", ["c"], 0.56))
+            found = report.drift(api, root, inputs, {**CONFIG, "report": settings}, sleep=sleeps.append,
+                                 clock=clock or (lambda: 0))
+        return found, sleeps
+
+    def test_the_batch_stops_at_the_budget_and_a_bad_answer_is_reported(self):
+        good = {"false_statements": [{"quote": "Q @owner", "evidence": "#2", "replacement": "R"}], "missing_behaviour": []}
+        api = FakeApi({"a": succeeded(json.dumps(good), input_tokens=1000, cache_creation_input_tokens=2000, output_tokens=500),
+                       "b": succeeded('{"false_statements": []}', input_tokens=1000, cache_read_input_tokens=2000, output_tokens=500)},
+                      statuses=["in_progress", "ended"])
+        # At worst a request costs 10,000 x $1 x 2 + 90,000 x $1 + 16,000 x $5 = $0.19, so two fit in $0.40.
+        found, sleeps = self.run_drift(api, "abc", budget=0.4)
+        self.assertEqual((found.model, found.skipped, round(found.estimate, 2)), ("claude-sonnet-5-5", ["c"], 0.38))
+        # a: 1,000 + 2,000 x 2 + 500 x 5; b: 1,000 + 2,000 x 0.1 + 500 x 5; in millionths of a dollar.
+        self.assertAlmostEqual(found.spent, (7_500 + 3_700) / 1e6)
         self.assertEqual(found.found["a"], good)
         self.assertRegex(found.found["b"], r"^bad JSON \(stop reason end_turn\)")
-        self.assertEqual(len(sleeps), 1)
-        counted = [body for method, path, body in api.calls if path == "messages/count_tokens"]
-        self.assertEqual(len(counted), 3)
-        self.assertNotIn("max_tokens", counted[0])
-        [batch] = [body for method, path, body in api.calls if path == "messages/batches"]
+        self.assertIn("- **False:** Q @\u200bowner", report.drift_lines(found, 10))
+        self.assertEqual(len(sleeps), 2)
+        counted = api.paths("messages/count_tokens")
+        self.assertEqual(len(counted), 4)
+        self.assertNotIn("max_tokens", counted[1])
+        [batch] = api.paths("messages/batches")
         self.assertEqual([r["custom_id"] for r in batch["requests"]], ["a", "b"])
         params = batch["requests"][0]["params"]
         self.assertEqual(params["system"][0]["cache_control"], report.CACHE)
         self.assertEqual(params["output_config"]["effort"], "low")
         self.assertEqual(params["output_config"]["format"]["schema"], report.SCHEMA)
 
-    def test_a_pin_skips_the_models_api(self):
-        config = {**CONFIG, "tiers": {**CONFIG["tiers"], "api": {"balanced": {"family": "claude-sonnet", "pin": "claude-sonnet-5"}}}}
-        api = FakeApi(1, {})
-        self.assertEqual(report.drift(api, Path("."), [], config).model, "claude-sonnet-5")
-        self.assertEqual(api.calls, [])
+    def test_at_the_timeout_the_batch_is_canceled_and_its_results_are_still_read(self):
+        api = FakeApi({"a": succeeded('{"false_statements": [], "missing_behaviour": []}', output_tokens=100),
+                       "b": {"type": "canceled"}},
+                      statuses=[OSError("reset"), "in_progress", "in_progress", "ended"])
+        times = iter([0, 0, 0, 601])
+        found, sleeps = self.run_drift(api, "ab", clock=lambda: next(times, 601))
+        self.assertTrue(found.canceled)
+        self.assertEqual(len(api.paths("messages/batches/b1/cancel")), 1)
+        self.assertEqual(found.found["a"], {"false_statements": [], "missing_behaviour": []})
+        self.assertRegex(found.found["b"], "^the request canceled")
+        self.assertAlmostEqual(found.spent, 500 / 1e6)
+
+    def test_an_errored_row_has_no_findings_and_no_cost(self):
+        error = {"type": "error", "error": {"type": "invalid_request_error", "message": "bad schema"}}
+        found, _ = self.run_drift(FakeApi({"a": {"type": "errored", "error": error}}), "a")
+        self.assertRegex(found.found["a"], "^the request errored: .*invalid_request_error")
+        self.assertEqual(found.spent, 0)
+
+    def test_an_exact_model_id_is_a_pin_and_needs_a_price(self):
+        config = {**CONFIG, "tiers": {**CONFIG["tiers"], "api": {"balanced": "claude-sonnet-5"}},
+                  "report": {"budget_usd": 5, "batch_prices": self.PRICES}}
+        with self.assertRaisesRegex(cairn.CairnError, "^no price for claude-sonnet-5; add it to .cairn/config.json$"):
+            report.drift(FakeApi({}), Path("."), [], config)
 
 
 class OverrideTests(unittest.TestCase):

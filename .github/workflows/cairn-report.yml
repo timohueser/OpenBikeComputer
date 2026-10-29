@@ -38,4 +38,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python3 tools/cairn/cairn.py report --publish
+        run: python3 tools/cairn/cairn.py report --publish --drift

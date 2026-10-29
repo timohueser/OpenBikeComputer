@@ -64,6 +64,16 @@ def parse(value: str) -> Mode:
                      "change #N, prototype or override: <reason>")
 
 
+def read(value: str | None, source: str) -> tuple[Mode | None, str | None]:
+    """The mode of a `Mode:` value from `source`, or None and the reason."""
+    if not value:
+        return None, f"no `Mode:` line in {source}"
+    try:
+        return parse(value), None
+    except ValueError as error:
+        return None, str(error)
+
+
 def declaration(kind: str, value: str | None, over_limit: str | None) -> Mode:
     """The mode that `cairn mode KIND [VALUE] [--over-limit REASON]` declares."""
     if over_limit is not None and kind != "fix":
@@ -238,8 +248,8 @@ def size_problems(number: int, issue: str, diff: Diff, limits: dict) -> list[str
     found, signals = size(diff, limits)
     if SIZES.index(found) <= SIZES.index(declared):
         return []
-    return [(f"`change #{number}` is sized {declared}, but the diff is {found}: {', '.join(signals)}. "
-             "Shrink the pull request, amend the issue (which needs a new approval), or override with a reason")]
+    return [f"`change #{number}` is sized {declared}, but the diff is {found}: {', '.join(signals)}. "
+            "Shrink the pull request, amend the issue (which needs a new approval), or override with a reason"]
 
 
 def violations(mode: Mode, diff: Diff, rules: dict, issue: str | None = None, names: dict[str, str] | None = None,
