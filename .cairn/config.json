@@ -1,0 +1,42 @@
+{
+  "docs": "docs/design",
+  "baseline": ".cairn/baseline.json",
+  "sources": {
+    "extensions": [".rs", ".ts", ".svelte", ".py", ".swift", ".wgsl", ".js", ".mjs", ".sh", ".h", ".c", ".kt"],
+    "files": ["tools/obc"]
+  },
+  "adapters": {
+    "cargo": {
+      "manifests": [
+        "Cargo.toml",
+        "firmware/obc-fw-nrf54l/Cargo.toml",
+        "firmware/obc-boot/Cargo.toml",
+        "firmware/obc-sensor-sim/Cargo.toml",
+        "builder/desktop/Cargo.toml"
+      ]
+    }
+  },
+  "runtimes": {
+    "firmware/": "device",
+    "firmware/tools/": "host",
+    "host/": "host",
+    "planner/": "host",
+    "sim/": "host",
+    "tools/": "host",
+    "builder/web/": "web",
+    "builder/wasm/": "web",
+    "companion-ios/": "ios"
+  },
+  "shell_glue": {
+    "max_lines": 5000,
+    "source": "proposed with the first cairn check, for the owner to confirm"
+  },
+  "tooling": {
+    "path": "tools/",
+    "area": "Tooling"
+  },
+  "fix": {
+    "max_changed_lines": 1000,
+    "source": "chosen by the owner in the cairn design: changed lines outside tests in a `Mode: fix` pull request"
+  }
+}
