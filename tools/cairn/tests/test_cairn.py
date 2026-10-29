@@ -76,6 +76,35 @@ class DependencyTests(unittest.TestCase):
         self.assertEqual(ids(result, "dependency"), ["test dependency b -> a"])
 
 
+class MapTests(unittest.TestCase):
+    def test_the_map_shows_a_cycle_an_undeclared_edge_and_a_missing_edge(self):
+        docs = [doc("a", ["a/**"], depends_on=["b"]), doc("b", ["b/**"], depends_on=["a"]),
+                doc("c", ["c/**"], area="Apps", depends_on=["d"]), doc("d", ["d/**"], kind="shell")]
+        units = DependencyTests.UNITS
+        edges = [("ca", "cb", False), ("cb", "ca", False), ("cc", "ca", False)]
+        page = cairn.system_map(docs, analyse(docs, ["a/src/lib.rs", "b/src/lib.rs", "c/src/lib.rs"], units, edges)).splitlines()
+        self.assertEqual(page[page.index('  subgraph area0["Apps"]') + 1], '    c["c"]')
+        self.assertIn('  subgraph area2["Shells"]', page)
+        self.assertEqual(page[page.index("  a --> b"):page.index("```", page.index("  a --> b"))],
+                         ["  a --> b", "  b --> a", "  c --> a", "  c -.-> d", "  linkStyle 0,1,2 stroke:#d1242f,stroke-width:2px"])
+        self.assertIn("| [a](a.md) |  | draft | b | b, c |", page)
+        tangles = page[page.index("## Tangles") + 2:-2]
+        self.assertEqual(tangles, ["- A cycle between a, b: a -> b, b -> a", "- c -> a is not in the doc of c"])
+
+    def test_map_keeps_the_owners_text_and_check_fails_on_a_stale_block(self):
+        with tempfile.TemporaryDirectory() as folder, redirect_stdout(io.StringIO()):
+            page = Path(folder) / "README.md"
+            self.assertEqual(cairn.write_map(page, cairn.MAP_BEGIN + "\nold\n" + cairn.MAP_END, False), 0)
+            page.write_text(page.read_text().replace("The owner writes this paragraph.", "Mine."))
+            with mock.patch("sys.stderr", io.StringIO()) as err:
+                self.assertEqual(cairn.write_map(page, cairn.MAP_BEGIN + "\nnew\n" + cairn.MAP_END, True), 1)
+            self.assertIn("obc cairn map", err.getvalue())
+            self.assertIn("\nold\n", page.read_text())
+            cairn.write_map(page, cairn.MAP_BEGIN + "\nnew\n" + cairn.MAP_END, False)
+            self.assertEqual(page.read_text(), f"# Systems at a glance\n\nMine.\n\n{cairn.MAP_BEGIN}\nnew\n{cairn.MAP_END}\n")
+            self.assertEqual(cairn.write_map(page, cairn.MAP_BEGIN + "\nnew\n" + cairn.MAP_END, True), 0)
+
+
 class CargoAdapterTests(unittest.TestCase):
     def package(self, name, dependencies=(), targets=None):
         return {

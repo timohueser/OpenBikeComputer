@@ -23,6 +23,7 @@ owns:
   - tools/fixture_catalog.py
   - tools/check_fixture_policy.py
   - tools/cairn/**
+  - docs/design/README.md
   - .cairn/**
   - tools/ci/**
   - tools/licenses/**

@@ -156,8 +156,8 @@ jobs:
       - name: Large fixture policy
         run: python3 tools/check_fixture_policy.py
 
-  # Report only until a system doc is approved. The Rust adapter reads `cargo metadata`, so the
-  # job needs the toolchain but builds nothing.
+  # The check reports only until a system doc is approved. The Rust adapter reads
+  # `cargo metadata`, so the job needs the toolchain but builds nothing.
   cairn:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'cairn')
@@ -179,6 +179,8 @@ jobs:
         env:
           BASE: ${{ needs.selection.outputs.base }}
         run: python3 tools/cairn/cairn.py check --base "$BASE"
+      - name: System map is current
+        run: python3 tools/cairn/cairn.py map --check
 
   # cargo fmt --check for all Cargo roots. rustfmt walks up from each file and finds the
   # shared .rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace

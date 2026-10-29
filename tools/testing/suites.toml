@@ -638,13 +638,14 @@ command = "python3 tools/prose.py --check"
 jobs = ["guards"]
 triggers = ["tools/prose.py", "tools/testing/prose-baseline.json"]
 
-# Report only: `cairn check` fails only for a new violation of a system whose doc is approved.
-# It reads source paths (ownership), source lines (R3) and Cargo manifests (dependencies), so any
+# `cairn check` fails only for a new violation of a system whose doc is approved; `cairn map --check`
+# fails when the system map is out of date.
+# They read source paths (ownership), source lines (R3) and Cargo manifests (dependencies), so any
 # change to one of them selects it, and a documentation-only or data-only change does not.
 [[suite]]
 id = "ci.cairn"
 route = "ordinary"
-command = "python3 -m unittest discover -s tools/cairn/tests && python3 tools/cairn/cairn.py check"
+command = "python3 -m unittest discover -s tools/cairn/tests && python3 tools/cairn/cairn.py check && python3 tools/cairn/cairn.py map --check"
 jobs = ["cairn"]
 triggers = [
   "tools/cairn/**", ".cairn/**", "docs/design/**",

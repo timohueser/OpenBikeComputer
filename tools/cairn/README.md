@@ -8,6 +8,8 @@ obc cairn check            # print the report
 obc cairn check --update   # remove gone entries from the baseline, and lower sizes that shrank
 obc cairn check --base origin/develop   # also fail when the baseline grew since the merge base
 obc cairn check --pr --base origin/develop   # check only the diff against the mode
+obc cairn map              # write the system map in docs/design/README.md
+obc cairn map --check      # fail when the system map is out of date
 obc cairn mode change 3012 # declare the mode of the current branch
 obc cairn mode             # print the mode and the `Mode:` line for the pull request body
 obc cairn hash issue.md    # print the approval hash of an issue body (- reads stdin)
@@ -18,6 +20,7 @@ python3 -m unittest discover -s tools/cairn/tests
 
 | File | Holds |
 | --- | --- |
+| `docs/design/README.md` | the system map. `cairn map` writes the block between its two comments: a Mermaid figure of the dependencies, a table for each area and the tangles. The owner writes the text above the block. A new dependency changes a doc header, so the map changes in the same pull request. |
 | `docs/design/<system>.md` | the header of one system or shell: `kind`, `area` (systems only), `purpose`, `owns`, `depends_on`, `test_depends_on`, `status` |
 | `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4, the size limit of a fix, the globs of test files and the size thresholds of a change |
 | `.cairn/baseline.json` | the known violations, by ID, with a size |
