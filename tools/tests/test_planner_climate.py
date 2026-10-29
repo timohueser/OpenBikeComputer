@@ -4,10 +4,12 @@ the bytes of the climate tile spec."""
 import datetime as dt
 import gzip
 import hashlib
+import json
 from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
+import urllib.error
 
 import numpy as np
 
@@ -301,6 +303,45 @@ class FetchTest(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError):
                 climate.fetch("https://arco.test/b")
         self.assertEqual(urlopen.call_count, 1)
+
+
+class StoresTest(unittest.TestCase):
+    def test_a_newest_time_chunk_that_the_daily_update_has_not_written_yet_is_read_again_after_a_wait(self):
+        hours = climate.TIME_CHUNK + 24  # the store's daily update starts time chunk 1
+        array = {"dtype": "<f4", "shape": [hours, climate.GRID_ROWS, climate.GRID_COLS], "order": "C", "filters": None,
+                 "chunks": [climate.TIME_CHUNK, climate.CHUNK_ROWS, climate.CHUNK_COLS], "compressor": {"id": "blosc"}}
+        meta = {"time/.zarray": {"chunks": [climate.TIME_CHUNK]}, "time/.zattrs": {"units": "hours since 1970-01-01"},
+                **{f"{variable}/.zarray": array for variable in climate.SOURCE}}
+        first = (climate.EPOCH - dt.datetime(1970, 1, 1)) // dt.timedelta(hours=1)
+
+        def missing(url, values):
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+        def stale(url, values):
+            values[23:] = 0  # the fill value in the slots that the update has not written yet
+            return values.tobytes()
+
+        for old_chunk in (missing, stale):
+            asked = []
+
+            def answer(url, key=None):
+                name = url.split("geoChunked.zarr/")[1]
+                asked.append(name)
+                if name.startswith("time/"):
+                    values = (first + int(name[5:]) * climate.TIME_CHUNK + np.arange(climate.TIME_CHUNK)).astype("<i8")
+                    return old_chunk(url, values) if name == "time/1" and asked.count(name) == 1 else values.tobytes()
+                return {".zmetadata": json.dumps({"metadata": meta}).encode(),
+                        "latitude/0": (np.arange(climate.GRID_ROWS) / 10 - 90).tobytes(),
+                        "longitude/0": (np.arange(1, climate.GRID_COLS + 1) / 10 - 180).tobytes()}[name]
+
+            with self.subTest(old_chunk.__name__), mock.patch.object(climate, "fetch", answer), \
+                    mock.patch("time.sleep") as sleep, \
+                    mock.patch.object(climate, "blosc", lambda data, dtype: np.frombuffer(data, dtype)):
+                layout = climate.stores("KEY")
+                self.assertEqual({variable: count for variable, (_, count) in layout.items()},
+                                 dict.fromkeys(climate.SOURCE, hours))
+                self.assertEqual([call.args[0] for call in sleep.call_args_list], [climate.RETRY_SECONDS[0]])
+                self.assertEqual(asked[:3], [".zmetadata", "time/1", ".zmetadata"])
 
 
 class OracleSource(climate.Source):
