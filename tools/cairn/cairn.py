@@ -304,10 +304,17 @@ def new_violations(violations: list[Violation], baseline: dict[str, int]) -> lis
     return [v for v in violations if v.size > baseline.get(v.id, 0)]
 
 
-def fails(violation: Violation, approved: set[str]) -> bool:
-    """A new violation fails when it touches an approved system. An unowned file touches none, so
-    it fails as soon as any system is approved."""
-    return bool(violation.systems & approved) if violation.systems else bool(approved)
+def fails(systems: frozenset[str], approved: set[str]) -> bool:
+    """A change fails when it touches an approved system. An unowned file touches none, so it
+    fails as soon as any system is approved."""
+    return bool(systems & approved) if systems else bool(approved)
+
+
+def touched(key: str, violations: list[Violation], names: set[str]) -> frozenset[str]:
+    """The systems of a baseline entry: those of its violation, or the system names in its ID
+    when the violation is gone."""
+    found = next((v.systems for v in violations if v.id == key), None)
+    return found if found is not None else frozenset(set(key.split()) & names)
 
 
 def updated(violations: list[Violation], baseline: dict[str, int]) -> dict[str, int]:
@@ -371,12 +378,19 @@ def gather(root: Path, config: dict) -> tuple[list[Doc], list[str], list[dict], 
 RULES = ("ownership", "dependency", "cycle", "R1", "R2", "R3", "R4")
 
 
-def report(result: Result, baseline: dict[str, int], docs: list[Doc], approved: set[str]) -> list[Violation]:
-    """Print the report and return the violations that fail."""
+def report(result: Result, baseline: dict[str, int], docs: list[Doc], approved: set[str]) -> list[str]:
+    """Print the report and return what fails.
+
+    A new or grown violation fails when it touches an approved system. So does a baseline entry
+    that shrank or disappeared: the baseline must follow it, or the violation could grow back
+    unseen. For a draft system, the entry is only a hint to run `--update`.
+    """
+    names = {doc.system for doc in docs}
     fresh = new_violations(result.violations, baseline)
-    failing = [v for v in fresh if fails(v, approved)]
+    failing = [v.message for v in fresh if fails(v.systems, approved)]
     sizes = {v.id: v.size for v in result.violations}
-    shrunk = [f"{key}: {size} -> {sizes.get(key, 0)}" for key, size in sorted(baseline.items()) if sizes.get(key, 0) < size]
+    shrunk = [key for key, size in sorted(baseline.items()) if sizes.get(key, 0) < size]
+    stale = [key for key in shrunk if fails(touched(key, result.violations, names), approved)]
     systems = sum(doc.kind == "system" for doc in docs)
     print(f"cairn: {systems} systems, {len(docs) - systems} shells, {len(approved)} approved")
     for rule in RULES:
@@ -388,15 +402,14 @@ def report(result: Result, baseline: dict[str, int], docs: list[Doc], approved: 
     if fresh:
         print("\nnew or grown since the baseline:")
         for v in fresh:
-            mark = "FAIL" if v in failing else "    "
-            print(f"  {mark} {v.message}")
+            print(f"  {'FAIL' if v.message in failing else '    '} {v.message}")
     if shrunk:
         print("\nshrunk or gone; `obc cairn check --update` records them in the baseline:")
-        for line in shrunk:
-            print(f"  {line}")
+        for key in shrunk:
+            print(f"  {'FAIL' if key in stale else '    '} {key}: {baseline[key]} -> {sizes.get(key, 0)}")
     print(f"\ncairn: {len(result.violations)} violation(s), baseline {len(baseline)}, "
-          f"{len(fresh)} new, {len(failing)} fail")
-    return failing
+          f"{len(fresh)} new, {len(shrunk)} shrunk, {len(failing) + len(stale)} fail")
+    return failing + stale
 
 
 def main(argv: list[str] | None = None) -> int:

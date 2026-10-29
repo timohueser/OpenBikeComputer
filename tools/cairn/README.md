@@ -40,8 +40,9 @@ lines) is above its baseline size is also new. A new violation fails only when i
 whose doc has `status: approved`. An unowned file touches no system, so it fails when any doc has
 `status: approved`. While no doc is approved, the check only reports.
 
-A baseline entry that shrank or disappeared does not fail. The report lists it, and `--update`
-records it. `--update` never adds an entry and never raises a size. `--accept` writes the first
+A baseline entry that shrank or disappeared must be recorded with `--update`. For an approved
+system it fails like a new violation, so that the violation cannot grow back unseen. For a draft
+system the report only lists it. A gone entry touches the systems that its ID names. `--update` never adds an entry and never raises a size. `--accept` writes the first
 baseline and refuses when the file exists.
 
 `--base REF` fails when the baseline has an entry or a size that the baseline at the merge base

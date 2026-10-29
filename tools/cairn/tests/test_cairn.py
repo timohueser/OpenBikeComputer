@@ -126,19 +126,27 @@ class RuleTests(unittest.TestCase):
 class RatchetTests(unittest.TestCase):
     def failing(self, violations, baseline, approved):
         with redirect_stdout(io.StringIO()):
-            return cairn.report(cairn.Result(violations), baseline, [], approved)
+            docs = [doc("maps", []), doc("app", [], kind="shell")]
+            return cairn.report(cairn.Result(violations), baseline, docs, approved)
 
     def test_a_new_violation_fails_only_for_an_approved_system(self):
-        new = cairn.Violation("R4", "R4 maps", frozenset({"maps"}), "", 3)
+        new = cairn.Violation("R4", "R4 maps", frozenset({"maps"}), "maps in tools", 3)
         self.assertEqual(self.failing([new], {}, set()), [])
-        self.assertEqual(self.failing([new], {}, {"maps"}), [new])
+        self.assertEqual(self.failing([new], {}, {"maps"}), ["maps in tools"])
         self.assertEqual(self.failing([new], {"R4 maps": 3}, {"maps"}), [])
-        self.assertEqual(self.failing([new], {"R4 maps": 2}, {"maps"}), [new])
+        self.assertEqual(self.failing([new], {"R4 maps": 2}, {"maps"}), ["maps in tools"])
 
     def test_an_unowned_file_fails_once_any_system_is_approved(self):
-        unowned = cairn.Violation("ownership", "unowned x.rs", frozenset(), "")
+        unowned = cairn.Violation("ownership", "unowned x.rs", frozenset(), "x.rs has no owner")
         self.assertEqual(self.failing([unowned], {}, set()), [])
-        self.assertEqual(self.failing([unowned], {}, {"maps"}), [unowned])
+        self.assertEqual(self.failing([unowned], {}, {"maps"}), ["x.rs has no owner"])
+
+    def test_a_shrunk_or_gone_entry_fails_only_for_an_approved_system(self):
+        shrunk = cairn.Violation("R4", "R4 maps", frozenset({"maps"}), "", 2)
+        baseline = {"R4 maps": 3, "R3 app": 40}
+        self.assertEqual(self.failing([shrunk], baseline, set()), [])
+        self.assertEqual(self.failing([shrunk], baseline, {"maps"}), ["R4 maps"])
+        self.assertEqual(self.failing([shrunk], baseline, {"app"}), ["R3 app"])
 
     def test_update_never_grows_the_baseline(self):
         violations = [
