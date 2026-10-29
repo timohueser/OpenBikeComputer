@@ -70,9 +70,8 @@ DOCS = "docs/"
 #: This known delegate renders with stdlib Python and does not build a product.
 DOCS_CHECK = "just check-docs"
 
-#: The system docs against the code. It reports, and fails only for an approved system. The map
-#: fails whenever it is out of date.
-CAIRN = "python3 tools/cairn/cairn.py check && python3 tools/cairn/cairn.py map --check"
+#: The system docs against the code. It reports, and fails only for an approved system.
+CAIRN = "python3 tools/cairn/cairn.py check"
 
 #: The diff against the branch's declared mode. It fails only for an approved system or a prototype.
 CAIRN_MODE = "python3 tools/cairn/cairn.py check --pr --base {base}"

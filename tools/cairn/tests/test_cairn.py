@@ -77,32 +77,46 @@ class DependencyTests(unittest.TestCase):
 
 
 class MapTests(unittest.TestCase):
-    def test_the_map_shows_a_cycle_an_undeclared_edge_and_a_missing_edge(self):
+    def test_the_figure_shows_the_tangles_and_drops_shells_and_implied_edges(self):
         docs = [doc("a", ["a/**"], depends_on=["b"]), doc("b", ["b/**"], depends_on=["a"]),
-                doc("c", ["c/**"], area="Apps", depends_on=["d"]), doc("d", ["d/**"], kind="shell")]
-        units = DependencyTests.UNITS
-        edges = [("ca", "cb", False), ("cb", "ca", False), ("cc", "ca", False)]
-        page = cairn.system_map(docs, analyse(docs, ["a/src/lib.rs", "b/src/lib.rs", "c/src/lib.rs"], units, edges)).splitlines()
-        self.assertEqual(page[page.index('  subgraph area0["Apps"]') + 1], '    c["c"]')
-        self.assertIn('  subgraph area2["Shells"]', page)
-        self.assertEqual(page[page.index("  a --> b"):page.index("```", page.index("  a --> b"))],
-                         ["  a --> b", "  b --> a", "  c --> a", "  c -.-> d", "  linkStyle 0,1,2 stroke:#d1242f,stroke-width:2px"])
-        self.assertIn("| [a](a.md) |  | draft | b | b, c |", page)
+                doc("c", ["c/**"], area="Apps", depends_on=["e"]), doc("e", ["e/**"], depends_on=["a", "f"]),
+                doc("f", ["f/**"], depends_on=["a"]), doc("s", ["s/**"], kind="shell", depends_on=["a"])]
+        units = [unit(f"c{name}", f"{name}/src/lib.rs") for name in "abcefs"]
+        edges = [("ca", "cb", False), ("cb", "ca", False), ("cc", "ca", False),
+                 ("ce", "ca", False), ("ce", "cf", False), ("cf", "ca", False), ("cs", "ca", False)]
+        result = analyse(docs, [u["entry"] for u in units], units, edges)
+        page = cairn.system_map(docs, result).splitlines()
+        self.assertEqual(page[page.index('  subgraph area0["Apps"]') + 1], '    s_c["c"]')
+        self.assertEqual(page[page.index("  s_a ==> s_b"):page.index("```", page.index("  s_a ==> s_b"))],
+                         ["  s_a ==> s_b", "  s_b ==> s_a", "  s_c ==> s_a", "  s_c -.-> s_e", "  s_e --> s_f", "  s_f --> s_a"])
+        self.assertIn("| [a](a.md) |  | draft | b | b, c, e, f, s |", page)
+        self.assertIn("### Shells", page)
         tangles = page[page.index("## Tangles") + 2:-2]
         self.assertEqual(tangles, ["- A cycle between a, b: a -> b, b -> a", "- c -> a is not in the doc of c"])
+        self.assertNotIn("### Shells", cairn.system_map(docs[:-1], analyse(docs[:-1], [], units[:-1], edges[:-1])))
 
-    def test_map_keeps_the_owners_text_and_check_fails_on_a_stale_block(self):
-        with tempfile.TemporaryDirectory() as folder, redirect_stdout(io.StringIO()):
-            page = Path(folder) / "README.md"
-            self.assertEqual(cairn.write_map(page, cairn.MAP_BEGIN + "\nold\n" + cairn.MAP_END, False), 0)
-            page.write_text(page.read_text().replace("The owner writes this paragraph.", "Mine."))
-            with mock.patch("sys.stderr", io.StringIO()) as err:
-                self.assertEqual(cairn.write_map(page, cairn.MAP_BEGIN + "\nnew\n" + cairn.MAP_END, True), 1)
-            self.assertIn("obc cairn map", err.getvalue())
-            self.assertIn("\nold\n", page.read_text())
-            cairn.write_map(page, cairn.MAP_BEGIN + "\nnew\n" + cairn.MAP_END, False)
-            self.assertEqual(page.read_text(), f"# Systems at a glance\n\nMine.\n\n{cairn.MAP_BEGIN}\nnew\n{cairn.MAP_END}\n")
-            self.assertEqual(cairn.write_map(page, cairn.MAP_BEGIN + "\nnew\n" + cairn.MAP_END, True), 0)
+    def test_check_fails_on_a_stale_map_and_map_keeps_the_owners_text(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".cairn").mkdir()
+            (root / cairn.CONFIG).write_text(json.dumps(Repository.CONFIG))
+            (root / "docs/design").mkdir(parents=True)
+            page = root / "docs/design" / cairn.MAP
+            page.write_text(f"# Map\n\nMine.\n\n{cairn.MAP_BEGIN}\nold\n{cairn.MAP_END}\n")
+            docs = [doc("routing", ["route/**"])]
+            with mock.patch.object(cairn, "ROOT", root), \
+                    mock.patch.object(cairn, "gather", return_value=(docs, [], [], [], {})), \
+                    redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cairn.main(["check"]), 1)
+                self.assertIn("run `obc cairn map`", out.getvalue())
+                self.assertEqual(cairn.main(["map"]), 0)
+                self.assertEqual(cairn.main(["check"]), 0)
+            self.assertTrue(page.read_text().startswith("# Map\n\nMine.\n\n"))
+            self.assertIn("| [routing](routing.md) |", page.read_text())
+        block = f"{cairn.MAP_BEGIN}\n{cairn.MAP_END}"
+        for broken in ("# Map\n", cairn.MAP_BEGIN, block + cairn.MAP_END, cairn.MAP_BEGIN + block, cairn.MAP_END + cairn.MAP_BEGIN):
+            with self.assertRaises(cairn.CairnError, msg=broken):
+                cairn.with_map(broken, block)
 
 
 class CargoAdapterTests(unittest.TestCase):
@@ -285,6 +299,14 @@ class PullRequestDiffTests(unittest.TestCase):
         self.assertEqual(diff.specs, ("specs/route.md",))
         # The tests do not count: route/a.rs 2, the routing doc 2, the search doc 1, the terrain doc 9, the spec 1.
         self.assertEqual(diff.lines, 15)
+        # A new dependency changes the code, the doc header and the map, and the map counts for nothing.
+        with tempfile.TemporaryDirectory() as folder:
+            repository = Repository(folder)
+            base = repository.commit({"docs/design/routing.md": header("routing", "route/**"), "route/a.rs": "a\n"})
+            repository.commit({"docs/design/routing.md": header("routing", "route/**").replace("status:", "depends_on: [search]\nstatus:"),
+                               "route/a.rs": "a\nb\n", "docs/design/README.md": "map\n" * 40})
+            diff = cairn.pr_diff(repository.root, base, docs, config, set())
+        self.assertEqual((diff.touched, diff.lines), ({"routing"}, 2))
 
     def test_a_test_pattern_with_no_folder_matches_the_file_name_only(self):
         patterns = json.loads((cairn.ROOT / cairn.CONFIG).read_text())["fix"]["tests"]
