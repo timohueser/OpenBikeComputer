@@ -20,9 +20,10 @@ export const INSIDE = 1 << 30;
  * the ground under its deck, and a tunnel holds the ground over its bore. A track holds its bed as a road
  * does, and counts its sleepers where a road has its tilts. A pad holds the ground inside its edges under
  * its level, as a platform does. An area, a building or a river area, holds no ground: the mask takes its
- * inside, where nothing stands.
+ * inside, where nothing stands. The sea holds the ground inside it under its bed, as a lake does, and
+ * leaves the land as it is.
  */
-export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6, STREAM = 7, BRIDGE = 8, TUNNEL = 9, RAIL = 10, PAD = 11, AREA = 12;
+export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6, STREAM = 7, BRIDGE = 8, TUNNEL = 9, RAIL = 10, PAD = 11, AREA = 12, SEA = 13;
 /** Road flags: a ford, the round caps of the core and the cone at the start and the end, and of the paint where the through road runs on into another line. */
 export const FORD = 1, CORE_A = 2, CORE_B = 4, CONE_A = 8, CONE_B = 16, JOIN_A = 32, JOIN_B = 64;
 /** No stamp reaches further than the feature tiles' buffer, so a primitive goes to each cell within it. */
@@ -164,21 +165,25 @@ export interface Line {
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
 /**
- * The shapes of a tile: lines and lakes with heights, the sea, which shapes no terrain, the river areas,
- * which lie on the drawn surface, the pads under the platforms, and the buildings.
+ * The shapes of a tile: lines, lakes and the sea with heights, the river areas, which lie on the drawn
+ * surface, the pads under the platforms, and the buildings.
  */
 export interface Shapes { lines: Line[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Omit<Lake, 'level'>[] }
 
 /**
- * The numbers of stamp-core.wgsl that the gates of a line, the shore samples of the audit and the edges
- * of the water mesh use. bins.test.ts holds them equal to the shader's.
+ * The numbers of stamp-core.wgsl that the gates of a line, the shore samples of the audit, the edges
+ * of the water mesh and the reach of the sea use. bins.test.ts holds them equal to the shader's.
  */
-export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678, SHORE_CELLS: 1.5, PORTAL_CELLS: 2, LIFT_M: 0.03, LIFT: 0.02 } as const;
+export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678, SHORE_CELLS: 1.5, PORTAL_CELLS: 2, LIFT_M: 0.03, LIFT: 0.02, SHORE_SLOPE: 0.5, BED_DEPTH: 4 } as const;
+/** The bed of a lake and of the sea slopes over this many metres to its depth. */
+const BED_M = RULES.BED_DEPTH / RULES.SHORE_SLOPE;
 /** As MASK_RANGE of stamp.wgsl: the mask reads a road this far past its edge. */
 const MASK_RANGE_M = 12.75;
 
 /** As gate_texel of stamp-core.wgsl: the texel of a level at 45° N, for the gates that decide what a level stamps. */
 export const gateTexel = (level: number) => 2 * Math.PI * EARTH_RADIUS * RULES.GATE_COS / 2 ** (level + 8);
+/** As sea_shows of stamp-core.wgsl: whether a level cuts the sea. */
+export const seaShows = (level: number) => RULES.LIFT_M + RULES.LIFT * RULES.MESH_TEXELS * gateTexel(level) < RULES.BED_DEPTH;
 
 export function shows({ kind, h, profile }: Line, texel: number): boolean {
     const limit = RULES.BUFFER_M - 2 * texel - 1, { reach, least } = Object.values(PROFILES)[profile];
@@ -486,6 +491,42 @@ export function insideRings(rings: number[][], x: number, y: number): boolean {
     return inside;
 }
 
+/** As crosses() of stamp-core.wgsl: whether the way from origin o to p crosses edge a-b, with p moved by ε(1, ε). */
+export function crosses([ox, oy]: number[], [px, py]: number[], [ax, ay, bx, by]: number[]): boolean {
+    const left = (ux: number, uy: number, wx: number, wy: number) => ux * wy > uy * wx || (ux * wy === uy * wx && (uy < 0 || (uy === 0 && ux > 0)));
+    const one = (bx - ax) * (oy - ay) - (by - ay) * (ox - ax) > 0;
+    return left(ax - ox, ay - oy, px - ox, py - oy) !== left(bx - ox, by - oy, px - ox, py - oy) && one !== left(bx - ax, by - ay, px - ax, py - ay);
+}
+
+/**
+ * The cell of world point (x, y) in the stamp data of a node, as stamp_at finds it: its entries and the
+ * origin of its lake crossings.
+ */
+export function cellAt(data: Uint32Array, node: Node, x: number, y: number): { entries: Uint32Array; origin: [number, number] } {
+    const shift = 22 - node.level, cell = CELL * 2 ** shift, x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell;
+    const index = (v: number, base: number) => Math.min(GRID - 1, Math.max(0, Math.floor((v - base) / cell)));
+    const c = index(y, y0) * GRID + index(x, x0), offset = data[HEAD + c];
+    const held = (v: number, base: number) => Math.min(Math.max(v, base + cell), base + cell + PAGE * 2 ** shift - 1);
+    const origin: [number, number] = [held(x0 + (c % GRID + 0.5) * cell, x0) + ((offset >>> 24) & 15) - 8, held(y0 + (Math.floor(c / GRID) + 0.5) * cell, y0) + (offset >>> 28) - 8];
+    return { entries: data.subarray(HEAD + OFFSETS + (offset & 0xffffff), HEAD + OFFSETS + (data[HEAD + c + 1] & 0xffffff)), origin };
+}
+
+/** The highest level of the lakes and the sea that hold world point (x, y) in the stamp data of a node, as `water` of stamp_at; -Infinity in none. */
+export function waterAt(data: Uint32Array, node: Node, x: number, y: number): number {
+    const { entries, origin } = cellAt(data, node, x, y), records = HEAD + OFFSETS + data[1], levels = new Float32Array(data.buffer, data.byteOffset);
+    let crossed = false, level = -Infinity;
+    for (const entry of entries) {
+        const r = records + RECORD * (entry & ~INSIDE), kind = data[r + 4];
+        if (kind === EDGE) {
+            crossed = crossed !== crosses(origin, [x, y], Array.from(data.subarray(r, r + 4), w => w | 0));
+            continue;
+        }
+        if ((kind === LAKE || kind === SEA) && ((entry & INSIDE) !== 0) !== crossed) level = Math.max(level, levels[r + 6]);
+        crossed = false;
+    }
+    return level;
+}
+
 /** The distance from a point to the nearest edge of rings, in the units of the points. */
 export function ringsDistance(rings: number[][], x: number, y: number): number {
     let best = Infinity;
@@ -503,8 +544,10 @@ export function ringsDistance(rings: number[][], x: number, y: number): number {
 export interface NodeStamps {
     /** The words of stamp-core.wgsl: counts, cell offsets, cell entries, records. Null when nothing is near. */
     data: Uint32Array<ArrayBuffer> | null;
-    /** A road, a path or a lake is near: the node may stamp heights. */
+    /** A road, a path, a lake or the sea is near: the node may stamp heights. */
     heights: boolean;
+    /** A line, an area or a shore lies in the node: on a near level it holds a feature mask. */
+    mask: boolean;
 }
 
 /**
@@ -513,7 +556,7 @@ export interface NodeStamps {
  * order of stamp-core.wgsl: a lake's edges before its marker, a line's segments together.
  */
 export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps {
-    const { lines, lakes, pads, areas, buildings } = features(list, tile);
+    const { lines, lakes, seas, pads, areas, buildings } = features(list, tile);
     const shift = 22 - node.level, cell = CELL * 2 ** shift;
     const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, span = GRID * cell;
     // Units per metre grow toward the pole: the node's poleward edge bounds them.
@@ -569,24 +612,39 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             heights ||= stamps;
         }
     });
-    // Per lake, pad and area near the node, its edges in each cell that they reach.
-    const outlines = [...lakes.map(lake => ({ lake, kind: LAKE })), ...(node.level >= PAD_LEVEL ? pads.map(lake => ({ lake, kind: PAD })) : []),
+    // The stamps of a node read only the cells inside its apron.
+    const inner = (c: number) => c % GRID > 0 && c % GRID < GRID - 1 && c >= GRID && c < GRID * (GRID - 1);
+    let mask = [cells[0], cells[2]].some(lists => lists.some((list, c) => inner(c) && list.length > 0));
+    // Per lake, sea polygon, pad and area near the node, its edges in each cell that they reach.
+    const outlines = [...lakes.map(lake => ({ lake, kind: LAKE })), ...(seaShows(node.level) ? seas.map(lake => ({ lake, kind: SEA })) : []),
+        ...(node.level >= PAD_LEVEL ? pads.map(lake => ({ lake, kind: PAD })) : []),
         ...(node.level >= NEAR ? [...areas, ...buildings].map(area => ({ lake: { level: 0, ...area }, kind: AREA })) : [])];
     const all = Array.from({ length: GRID * GRID }, (_, c) => c);
     const near = outlines.flatMap(({ lake, kind }) => {
-        const xs = lake.rings.flatMap(ring => ring.filter((_, i) => i % 2 === 0)), ys = lake.rings.flatMap(ring => ring.filter((_, i) => i % 2 === 1));
-        // An area acts only inside it: its edges go to the cells that they cross, so a village's cells stay short.
-        const metres = kind === AREA ? 0 : REACH_M, reach = metres * units;
-        if (Math.max(...xs) < x0 - reach || Math.min(...xs) > x0 + span + reach || Math.max(...ys) < y0 - reach || Math.min(...ys) > y0 + span + reach) return [];
+        // Not a spread: a sea polygon has more vertices than a call takes arguments.
+        const box = [Infinity, Infinity, -Infinity, -Infinity];
+        for (const ring of lake.rings) for (let i = 0; i < ring.length; i += 2) {
+            box[0] = Math.min(box[0], ring[i]);
+            box[1] = Math.min(box[1], ring[i + 1]);
+            box[2] = Math.max(box[2], ring[i]);
+            box[3] = Math.max(box[3], ring[i + 1]);
+        }
+        // An area acts only inside it: its edges go to the cells that they cross, so a village's cells stay
+        // short. The sea acts no farther than the end of its bed's slope from its coast, so its long coasts
+        // stay short too: BED_M past sea_band of stamp-core.wgsl, in units at most a shore band and the
+        // buffer less BED_M, a metre and two texels.
+        const band = Math.min(RULES.SHORE_CELLS * RULES.MESH_TEXELS * 2 ** shift, Math.max(0, (RULES.BUFFER_M - 1 - BED_M) * units - 2 * 2 ** shift));
+        const metres = kind === AREA ? 0 : kind === SEA ? BED_M + band / units : REACH_M, reach = metres * units;
+        if (box[2] < x0 - reach || box[0] > x0 + span + reach || box[3] < y0 - reach || box[1] > y0 + span + reach) return [];
         const edges = new Map<number, number[]>();
         for (const ring of lake.rings) for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
             const [ax, ay, bx, by] = [ring[j], ring[j + 1], ring[i], ring[i + 1]];
             const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], metres);
             if (!touched.length) continue;
             const at = record([ax, ay, bx, by, EDGE]);
-            for (const c of touched) edges.set(c, [...(edges.get(c) ?? []), at]);
+            for (const c of touched) (edges.get(c) ?? edges.set(c, []).get(c)!).push(at);
         }
-        const cells = kind === AREA ? within([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], 0) : all;
+        const cells = kind === AREA ? within(box, 0) : all;
         return [{ lake, kind, edges, cells }];
     });
     // The origin of the lake crossings of a cell: its centre, held inside the node, as stamp-core.wgsl
@@ -609,15 +667,22 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     const origins = Array.from({ length: GRID * GRID }, (_, c): [number, number] => (near.length ? origin(c) : [0, 0]));
     for (const { lake, kind, edges, cells: reached } of near) {
         // A cell lists the lake after its edges, where an edge is near or where its origin lies inside it.
+        // Without an edge in the node, every cell lies on the side of the first.
         const marker = record([0, 0, 0, 0, kind, 0, f(lake.level)]);
+        const side = edges.size || !reached.length ? undefined : insideRings(lake.rings, ...origins[reached[0]]);
+        let used = false;
         for (const c of reached) {
-            const inside = insideRings(lake.rings, ...origins[c]);
+            const inside = side ?? insideRings(lake.rings, ...origins[c]);
             if (!inside && !edges.has(c)) continue;
             cells[1][c].push(...(edges.get(c) ?? []), marker | (inside ? INSIDE : 0));
+            used ||= inner(c);
+            // A lake takes its inside, where nothing grows; the open sea needs no mask.
+            mask ||= inner(c) && (edges.has(c) || kind === AREA || kind === LAKE);
         }
-        heights ||= kind !== AREA;
+        // The box of a sea polygon covers much land, where it stamps nothing.
+        heights ||= used && kind !== AREA;
     }
-    if (!records.length || (!heights && node.level < NEAR)) return { data: null, heights: false };
+    if (!records.length || (!heights && (!mask || node.level < NEAR))) return { data: null, heights: false, mask: false };
     const entries = cells[0].map((_, c) => [...cells[0][c], ...cells[1][c], ...cells[2][c]]);
     const count = entries.reduce((sum, list) => sum + list.length, 0);
     const data = new Uint32Array(HEAD + OFFSETS + count + RECORD * records.length);
@@ -631,7 +696,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     });
     data[HEAD + GRID * GRID] = count;
     records.forEach((words, r) => data.set(words.map(w => w >>> 0), HEAD + OFFSETS + count + RECORD * r));
-    return { data, heights };
+    return { data, heights, mask };
 }
 
 /** The moves of a cell's origin that the worker tries, in world units, as a signed nibble each. */

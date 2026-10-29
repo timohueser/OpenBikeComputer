@@ -221,6 +221,10 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
         check(IN_WATER, abs(drawn - q.expected), rule.tol + along + ROUNDING, false, s, level, drawn, q.expected, q.shore);
         return;
     }
+    // A sea sample counts where both levels cut the sea, and only past the start of the bed's slope.
+    if ((q.kind >> 8u) == SEA && !(sea_shows(level) && sea_shows(coarse) && q.shore >= read)) {
+        return;
+    }
     if (kind == IN_WATER && q.shore >= read) {
         // Half the bed's depth is the promise: a 16-bit page over an alpine range rounds by centimetres.
         check(IN_WATER, drawn - (q.expected - 0.5 * min(BED_DEPTH, SHORE_SLOPE * (q.shore - read))), ROUNDING, false, s, level, drawn, q.expected, q.shore);
