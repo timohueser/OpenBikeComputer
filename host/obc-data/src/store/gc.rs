@@ -22,6 +22,8 @@ pub struct Roots {
     pub sha256s: BTreeMap<String, &'static str>,
     /// `(source, version)` that `obc data source refresh` took: the next update reads it.
     pub refreshed: BTreeSet<(String, String)>,
+    /// The SHA-256 of each file that the archive lists; `None` keeps every unpacked copy.
+    pub archived: Option<HashSet<String>>,
 }
 
 impl Roots {
@@ -72,14 +74,19 @@ pub struct Plan {
     pub snapshots: Vec<String>,
     /// SHA-256 and size of each object that nothing reaches.
     pub objects: Vec<(String, u64)>,
-    /// The size of `objects`.
+    /// The size of `objects` and `unpacked`.
     pub remove_bytes: u64,
-    /// The objects that stay, and their size.
+    /// The objects that stay.
     pub keep_objects: u64,
+    /// The unpacked copies that stay.
+    pub keep_copies: u64,
+    /// The size of the objects and the unpacked copies that stay.
     pub keep_bytes: u64,
     /// The size of `partial/`: unfinished downloads and the work of steps that stopped. A
     /// collection removes it.
     pub partial_bytes: u64,
+    /// The SHA-256 and size of each unpacked copy of an archive file that the archive no longer lists.
+    pub unpacked: Vec<(String, u64)>,
 }
 
 /// A snapshot record, the layers of one step, or the objects that one kind of root names and no
@@ -91,7 +98,7 @@ pub struct Kept {
     /// The size of its files.
     pub bytes: u64,
     /// `served by TARGET, …`, `newest of the source`, `newest of a request`, `refreshed`, `inputs
-    /// kept`, `release` or `fixture`.
+    /// kept`, `release`, `fixture`, `in the archive` or `archive not read`.
     pub because: Vec<String>,
 }
 
@@ -217,6 +224,24 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     }
     plan.objects.sort();
     plan.snapshots.sort();
+    let (mut copies, mut bytes) = (0, 0);
+    for sha256 in names(&store.root().join("unpacked"), "")? {
+        let size = size(&store.unpacked(&sha256))?;
+        match &roots.archived {
+            Some(archived) if !archived.contains(&sha256) => {
+                plan.remove_bytes += size;
+                plan.unpacked.push((sha256, size));
+            }
+            _ => (copies, bytes) = (copies + 1, bytes + size),
+        }
+    }
+    plan.unpacked.sort();
+    if copies > 0 {
+        let why = if roots.archived.is_some() { "in the archive" } else { "archive not read" };
+        let entry = format!("{copies} unpacked cop{}", if copies == 1 { "y" } else { "ies" });
+        plan.kept.push(Kept { entry, bytes, because: vec![why.into()] });
+        (plan.keep_copies, plan.keep_bytes) = (copies, plan.keep_bytes + bytes);
+    }
     for name in names(&store.root().join("partial"), "")? {
         let path = store.partial(&name);
         plan.partial_bytes += size(&path)?;
@@ -246,8 +271,8 @@ pub fn apply(store: &Store, roots: &Roots, confirmed: &Plan) -> Result<Option<Pl
         return Ok(None);
     };
     let plan = plan(store, roots)?;
-    if (&confirmed.snapshots, &confirmed.objects, confirmed.partial_bytes)
-        != (&plan.snapshots, &plan.objects, plan.partial_bytes)
+    if (&confirmed.snapshots, &confirmed.objects, confirmed.partial_bytes, &confirmed.unpacked)
+        != (&plan.snapshots, &plan.objects, plan.partial_bytes, &plan.unpacked)
     {
         return Err("the store changed after the plan; nothing was deleted".into());
     }
@@ -258,6 +283,12 @@ pub fn apply(store: &Store, roots: &Roots, confirmed: &Plan) -> Result<Option<Pl
     }
     for (sha256, _) in &plan.objects {
         remove(&store.object(sha256))?;
+    }
+    for (sha256, _) in &plan.unpacked {
+        let path = store.unpacked(sha256);
+        // First, so that a stopped collection leaves no damaged copy marked whole.
+        remove(&path.join(".complete"))?;
+        fs::remove_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     // No fetch or step writes there while the collection holds the store alone.
     for name in names(&store.root().join("partial"), "")? {
@@ -585,5 +616,29 @@ mod tests {
                 "1 object: release"
             ]
         );
+    }
+
+    #[test]
+    fn a_collection_deletes_an_unpacked_copy_only_when_the_archive_lists_no_file_with_its_sha256() {
+        let scratch = Scratch::new("gc-unpacked");
+        let store = Store::at(scratch.0.join("store"));
+        for sha256 in ["aa", "bb"] {
+            fs::create_dir_all(store.unpacked(sha256).join("map.gdb")).unwrap();
+            fs::write(store.unpacked(sha256).join("map.gdb/table"), b"xyz").unwrap();
+        }
+        let kept =
+            |plan: &Plan| plan.kept.iter().map(|k| format!("{}: {}", k.entry, k.because.join(""))).collect::<Vec<_>>();
+        let unread = plan(&store, &Roots::default()).unwrap();
+        assert_eq!((unread.unpacked.len(), kept(&unread)), (0, vec!["2 unpacked copies: archive not read".into()]));
+        assert_eq!((unread.keep_copies, unread.keep_bytes), (2, 6), "the kept copies count as kept");
+        let roots = Roots { archived: Some(HashSet::from(["aa".to_string()])), ..Roots::default() };
+        let plan = plan(&store, &roots).unwrap();
+        assert_eq!(
+            (plan.unpacked.clone(), kept(&plan)),
+            (vec![("bb".into(), 3)], vec!["1 unpacked copy: in the archive".into()])
+        );
+        assert_eq!((plan.remove_bytes, plan.keep_bytes), (3, 3));
+        apply(&store, &roots, &plan).unwrap().unwrap();
+        assert!(store.unpacked("aa").is_dir() && !store.unpacked("bb").exists());
     }
 }

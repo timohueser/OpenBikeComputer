@@ -60,10 +60,10 @@ it("Clean shows the plan, and its confirm posts exactly `clean --apply --yes`", 
         button("Clean…").click();
         await vi.waitFor(() => expect(button("Clean now")).toBeDefined());
         const text = document.body.textContent?.replace(/\s+/g, " ");
-        expect(text).toContain("A clean removes 437 MB: 1 record, 1 object and 50 MB of unfinished work.");
+        expect(text).toContain("A clean removes 737 MB: 1 record, 1 object, 1 unpacked map and 50 MB of unfinished work.");
         expect(text).toContain("It keeps 3.4 GB: served by local, newest of a request, served by prod, and inputs kept.");
         button("Clean now").click();
-        await vi.waitFor(() => expect(document.body.textContent).toContain("Removed 437 MB from the store."));
+        await vi.waitFor(() => expect(document.body.textContent).toContain("Removed 737 MB from the store."));
         const posted = fetch.mock.calls.map(([, init]) => JSON.parse(init.body).args);
         expect(posted.filter((args) => args[0] === "clean")).toEqual([["clean"], ["clean", "--apply", "--yes"]]);
     } finally {
