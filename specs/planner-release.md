@@ -3,11 +3,11 @@
 A planner release joins map, routing, search and model data. `release.json` is its UTF-8 JSON
 manifest. This contract also defines the grid storage, the tile API paths and the catalogue. The
 release and its files are immutable. A release of `obc data update` has the ID of the [named files
-of the planner](obc-data.md#planner). The standalone publisher uses the SHA-256 of `release.json`.
+of the planner](obc-data.md#planner).
 
 - Version: manifest `format` `1`; catalogue `format: 1`; `public/grid.json` `format: 3`. A client
   refuses a catalogue `format` that it does not know.
-- Writers: `obc data update` (`host/obc-data`), the standalone publisher.
+- Writers: `obc data update` (`host/obc-data`).
 - Readers: the web planner (`builder/web/src/lib/planner/release.ts`), the map builder, the tile
   service ([`planner/tiles`](../planner/tiles/README.md)), `obc data serve`, the companion app.
 - Related: [offline bundle](planner-offline.md), [route package](route-package.md), [route
@@ -39,10 +39,7 @@ tool identities and layer receipts. These are not client files.
 
 ## Objects and services
 
-The standalone publisher stores release files under `planner/releases/ID/` of R2. It stores source
-mirrors under `planner/sources/`, without the local `sources/` path prefix. A source name starts
-with its SHA-256. Source mirrors can be shared by releases. A grid release of `obc data` uses the
-layout of [Canonical grid storage](#canonical-grid-storage).
+A release of `obc data` uses the layout of [Canonical grid storage](#canonical-grid-storage).
 
 `maps/` contains `basemap.pmtiles`, `places.pmtiles`, `overlays.pmtiles`, `terrain.pmtiles`, map
 assets, and their manifest. When the region recipe names a snow source, it also contains

@@ -84,9 +84,10 @@ the service. Bounds use west, south, east, north.
 | `GET /bundles/ID/release.json` | Selected release manifest |
 | `GET /bundles/ID/objects/SHA256` | Transport bytes or HTTP 307 to the immutable object pool |
 
-The ID hashes the publication catalog, rounded bounds, and selection format. Repeated selections
-reuse metadata. Cancellation stops the client request. Error responses contain `message`. Selections
-outside source coverage are rejected.
+The ID hashes the selection format, the publication catalog, the bounds of the grid cells that
+the request overlaps, and the URL of the object pool. Repeated selections reuse metadata.
+Cancellation stops the client request. Error responses contain `message`. Selections outside source
+coverage are rejected.
 
 Objects support HEAD and byte ranges. The service stores the publication origin with each cached
 selection. Least recently used selections can expire from its bounded metadata cache. A missing

@@ -1175,7 +1175,7 @@ reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the arch
 | `planner/places` | `planner/search/pois` | None | `places.pmtiles`: the rider places of the POI database, at zoom 11 |
 | `planner/climate` | The files of [`climate`](#climate) of the blocks of the outline of the region, as `climate` defines the blocks of a region: the orography and the ten years from `climate.first_year`. A version that lacks one of them refuses | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10; `climate`: the version that it reads | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md). A cell of a block that the step does not read is missing |
 | `planner/snow` | `hr-wsi` when its `extent` meets the bounds and its fetch has files, and `modis-snow`, each `bbox=<bounds>`, `seasons=<snow.seasons>`; `hansen-gfc`, `tile=` of each 10° tile that the bounds touch | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when it reads it, `modis-snow` and `hansen-gfc`; `year`: the year of the `hr-wsi` version, which fills its `{year}`, or null | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md): HR-WSI where it has data, and MODIS elsewhere |
-| `planner/trailview-features` | `planner/osm`, `planner/terrain/grid` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 13 |
+| `planner/trailview-features` | `planner/osm`, `planner/terrain/grid`, `water-polygons` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `roads`: the road classes of `data/trailview/roads.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 13 |
 | `planner/trailview-rules` | `data/trailview/` of the repository | `ruleset`: the digest of its JSON files by their paths in it. The step fails when the files differ | `rules.json`: [the TrailView rules](trailview-tiles.md#rules); `regions.json`, `materials.json` and `ground.json`: the region ids, the region areas, the ecoregions, the places, the vocabulary and the ground sources that the ground steps read |
 | `planner/trailview-material` | `materials.json` and `ground.json` of `planner/trailview-rules`; `lithology.pmtiles` of `planner/trailview-lithology`; each [material source](trailview-tiles.md#ground-sources) that meets the bounds: `osm.pbf` of `planner/osm` for `osm-planet`; `esa-worldcover`, `tile=` of each 3° tile that the bounds touch and that `esa-worldcover-grid` lists; `sentinel-2-mosaics`, `bbox=<bounds>`, `year=<trailview.colour_year>`; a `capture` source with `bbox=<bounds>`, another without params | `layer`: `material`; `bounds` | `material.pmtiles`: the material bytes and the barren shares of [the ground](trailview-tiles.md#ground) |
 | `planner/trailview-lithology` | `materials.json` and `ground.json` of `planner/trailview-rules`; each lithology source that meets the bounds, as for the material | `layer`: `lithology`; `bounds` | `lithology.pmtiles`: the lithology bytes |
@@ -1261,7 +1261,7 @@ Worker on Cloudflare.
 
 The [download service](planner-offline.md#download-service) returns a ready quote with an
 absolute pinned `source` URL. The client reads the bundle, release and objects through that
-source. The private selection key binds the object pool as well as the catalog and bounds. A
+source. The job ID hashes the URL of the object pool as well as the catalog and the bounds. A
 quote stays valid while its bundle exists; a missing bundle requires a new quote. Job creation
 completes synchronously; there is no polling path.
 
@@ -2428,18 +2428,14 @@ nothing.
 
 | Code | Exit | When | Fix |
 | --- | --- | --- | --- |
-| `usage` | 2 | An argument is not valid, an id names nothing, the command runs outside the repository, or
-another command must run first. | Correct the command. `obc data --help` lists the commands and their arguments. |
+| `usage` | 2 | An argument is not valid, an id names nothing, the command runs outside the repository, or another command must run first. | Correct the command. `obc data --help` lists the commands and their arguments. |
 | `no_terminal` | 2 | A command that asks has no terminal to ask in, and no `--yes`. | Show the question to a person. When they agree, run the command again with `--yes`. |
 | `not_confirmed` | 1 | The person did not answer yes. | Nothing changed. Run the command again when you want the change. |
 | `invalid_data` | 1 | A file under `data/` is not valid. | Correct the file that the message names. `specs/obc-data.md` gives its format. |
 | `fetch_failed` | 1 | A fetch or an upstream check failed. | Run the command again. A download continues where it stopped. |
-| `blocked` | 4 | A credential is missing: a fetch failed without the credential of its source, or the R2
-variables are not set. Or a layer cannot be planned, the target cannot take the command, or
-this machine cannot do the work. | Set the credential that the message or `obc data sources` names, or correct what the message says a product needs, then run again. |
+| `blocked` | 4 | A credential is missing: a fetch failed without the credential of its source, or the R2 variables are not set. Or a layer cannot be planned, the target cannot take the command, or this machine cannot do the work. | Set the credential that the message or `obc data sources` names, or correct what the message says a product needs, then run again. |
 | `r2_failed` | 1 | R2 or rclone failed, or refused a key. | Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again. |
-| `verify_failed` | 5 | A release failed its check before a target serves it, or after an upload the object in the
-bucket is not the file. | Upload the file again. |
+| `verify_failed` | 5 | A release failed its check before a target serves it, or after an upload the object in the bucket is not the file. | Upload the file again. |
 | `run_failed` | 1 | A run failed: the build, or the run that `runs RUN --follow` shows. | `obc data runs RUN` shows the step that failed and its error. |
 | `failed` | 1 | The store or the file system failed. | Correct the file or the directory that the message names, then run again. |
 
