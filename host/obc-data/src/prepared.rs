@@ -237,13 +237,17 @@ pub struct Manifest {
     /// `null`: every place that the source covers.
     pub scope: Option<Scope>,
     /// The scopes of the earlier versions that this version extends, oldest first: it keeps their
-    /// files outside its own scope.
+    /// content. A tile producer keeps their files outside its own scope; `wiki` rewrites their
+    /// shards with one form of each fact.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extends: Vec<Option<Scope>>,
     /// Article languages included in this version; empty for a source without articles. A manifest
     /// of a version made before the field has none.
     #[serde(default)]
     pub languages: Vec<String>,
+    /// The `publish_text` of the row in `data/sources.toml`; absent for a row without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_text: Option<bool>,
     /// The licence and the credit of the source in `data/sources.toml`.
     pub licence: Option<String>,
     pub attribution: Option<String>,

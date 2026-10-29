@@ -1756,8 +1756,9 @@ is compact JSON with the keys of each object in byte order:
 | `files` | Sorted by `path`. A path is relative, and is not `manifest.json` |
 | `reused` | Absent, or each path of `files` that an earlier version of the same source holds, with that version: the file is at `<that version>/<path>`. A version that extends the one before keeps its files without a copy |
 | `scope` | `null` for every place that the source covers, or `{"region", "definitions"}` as in the [settings of a target](#settings-of-a-target) |
-| `extends` | Absent, or the scopes of the earlier versions that this version extends, oldest first: the version keeps their files outside its own `scope` |
+| `extends` | Absent, or the scopes of the earlier versions that this version extends, oldest first: the version keeps their content, as its producer says. A tile producer keeps their files outside its own `scope`; [`wiki`](#wiki) rewrites their shards with one form of each fact |
 | `languages` | Article language codes in supported order, each once; empty for a source without articles |
+| `publish_text` | Absent, or the `publish_text` of the row in `data/sources.toml` |
 | `licence`, `attribution` | The licence and the credit of the row in `data/sources.toml` |
 | `machine`, `time` | The machine that made the version, and when the version was complete |
 | `cost` | The wall time of the last run of the version, and the peak memory of its process or, when that is more, of the largest program that it ran times the most programs that ran at once (`null` when the system does not report it) |
@@ -2102,9 +2103,9 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   `wikidatawiki-<day>-page.sql.gz` and `-redirect.sql.gz`, and for each selected article language
   `<lang>wiki-<day>-langlinks.sql.gz` and the Wikimedia Enterprise HTML
   `<lang>wiki-NS0-<day>-ENTERPRISE-HTML.json.tar.gz`. A preparation without a region, or with
-  a box, reads `planet-<yymmdd>.osm.pbf`. One Geofabrik area reads
+  a box, reads `planet-<yymmdd>.osm.pbf`. Each Geofabrik area of a region reads
   `<area>-<yymmdd>.osm.pbf` under the dump directory, such as `europe/dach-261009.osm.pbf`.
-  The path of the area supplies the subdirectories. This extract selects the regional subjects
+  The path of the area supplies the subdirectories. These extracts select the regional subjects
   before article selection or Commons acquisition. For a missing kind, the review discovers a
   completed upstream version through metadata only. SQL jobs must be `done`; Wikidata JSON must
   have a checksum entry. Wikipedia HTML uses the Enterprise Snapshot API. The review shows each
@@ -2140,8 +2141,22 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   with a resolved link of a node that the map takes as a summit. Only their articles are read, and only the photos that the compilers
   choose for them come from Commons, as [Shared Wikimedia content](wikimedia-content.md#the-wiki-source)
   says.
-- A box keeps the subjects whose box meets it. A Geofabrik scope accepts one area and reads
-  its extract. Other scopes refuse.
+- A box keeps the subjects whose box meets it. A region whose leaves are all Geofabrik regions
+  reads the extract of each of their areas. An object in two extracts is the object of its
+  highest version; extracts with one version give the box around their boxes. Other scopes, such
+  as a union of a box and a Geofabrik region, refuse.
+- A version of a region extends the newest complete version of `wiki` in the home, in the same
+  format, and the manifest names the scopes of that version in `extends`. The version holds each
+  shard of the version before, and each shard of its run. A shard of both holds the facts of the
+  run and the earlier facts. A fact has one form in every shard of the version: the form of the
+  run, unless the run lacks the fact, has an older revision of it, or has it only as an article
+  of a language that the run did not prepare. Then the fact keeps its earlier bytes and its asset,
+  also its languages. A shard writes its facts in the order of kind and key, and an earlier shard
+  whose members do not change stays in `reused`. So `common.tar.zst` keeps earlier facts until a
+  version of everything replaces them. A version of everything extends no version.
+- An extension whose row has another `publish_text` than the version before refuses before its
+  first step: the kept articles would not match the manifest. The fix is the `publish_text` of the
+  version before, or a version of everything. Without published text, no shard has article text.
 - The run moves the shards into the home in batches of 64, then `index.json`. A resume names the
   shards in the home to `shards`, which does not write them again.
 - With `publish_text = false`, each article in the shards is a fact with its key and the status
