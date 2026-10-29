@@ -25,7 +25,7 @@ describe('the rules of the ground', () => {
         expect(SLOT.traits).toBe(33 + 3);
         expect(SLOT.lithologies).toBe(33 + 6);
         expect([SLOT.patches, SLOT.terrain, SLOT.bedding, SLOT.snap, SLOT.sea, SLOT.shapes, SLOT.turf, SLOT.roads].map(slot => slot - SLOT.cliff)).toEqual([1, 3, 4, 5, 6, 8, 9, 10]);
-        expect(SLOT.kinds).toBe(SLOT.cliff + 17);
+        expect([SLOT.roadLine, SLOT.kinds].map(slot => slot - SLOT.cliff)).toEqual([19, 20]);
         expect(SLOT.hardness).toBe(SLOT.kinds + 3);
         expect(SLOT.rows).toBe(SLOT.hardness + vocabulary.lithologies.length);
     });

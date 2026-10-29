@@ -1,4 +1,3 @@
-diagnostic(off, derivative_uniformity);
 // The structures: the meshes of mesh.ts and the anchored meshes of anchored.ts, drawn before the terrain
 // as opaque flat faces in their vertex colours. A vertex stands at its height from the bake, or on the
 // drawn surface (plain_height), or hangs from an anchor. A road face takes the road paint of the ground,
@@ -239,11 +238,6 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     var n = normalize(cross(dpdx(in.relative), dpdy(in.relative)));
     n *= -sign(dot(n, in.relative));
     let flags = u32(round(in.colour.a * 255.0));
-    // PROTOTYPE: a road's skirt takes the look of the ground under it (GROUND_LOOK of ground-roads.ts).
-    if (all(round(in.colour.rgb * 255.0) == vec3f(1.0, 2.0, 3.0))) {
-        let su = lod_space(in.u);
-        return vec4f(ground_colour(su, in.relative, in.altitude, u32(ceil(lod(su)))), 1.0);
-    }
     var albedo = in.colour.rgb * in.colour.rgb;
     let w = max(length(dpdx(in.relative)), length(dpdy(in.relative)));
     // A pixel's span along a track: the rate of its count of sleepers.
