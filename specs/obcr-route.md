@@ -1,22 +1,23 @@
-# OBCR File Format Specification (v5)
+# OBCR route format
 
-OBCR (OpenStreetMap Binary Chunked Route) is the binary **route** format, the sibling of
-the [`OBCM`](obcm-map.md) map format. A route is one ordered polyline with per-point
-elevation, precomputed ride statistics, an optional table of **waypoints** pinned along
-the route, and an optional accepted-visit descriptor. The device and the simulator produce
-it from an uploaded GPX file; the companion app produces it from imported GPX/TCX before a
-BLE upload (see [`flat-store-protocol.md`](flat-store-protocol.md)).
+A route: one ordered polyline with per-point elevation and surface, ride statistics, optional
+waypoints pinned along it, and an optional accepted-visit descriptor.
 
-This document is the normative byte contract. `firmware/obc-formats/src/obcr.rs` is its
-code authority for versions, fixed lengths, magic, and sentinels;
-`firmware/obc-formats/src/io.rs` owns the byte-source/sink traits and the checked
-little-endian primitives used by both producer and reader.
+- Version: 5 (`0x05`). A reader refuses every other version. Re-import older routes from their
+  source files.
+- Writers: `firmware/obc-route` (`convert.rs`, GPX import on the device and the simulator); the
+  companion app (GPX and TCX import before a [protocol v4](flat-store-protocol.md) upload).
+- Readers: `firmware/obc-route` (`reader.rs`), the companion app.
+- Code authority: `firmware/obc-formats/src/obcr.rs` (version, fixed lengths, magic,
+  sentinels); `firmware/obc-formats/src/io.rs` (byte source and sink, little-endian primitives).
+- Test vectors: [`vectors/`](vectors/README.md) (`route-*.obcr`, [`eta.csv`](vectors/eta.csv)).
+- Related: [OBCM](obcm-map.md).
 
-**Versions.** v5 is the only accepted version. Re-import older routes from their source files.
+## Conventions
 
-All multi-byte integers are **little-endian**. Coordinates are **microdegrees**
-(1e-6 degrees). Distances and elevations are whole **meters**. Every section is reached
-through an explicit offset and every count is stored.
+- Multi-byte integers are little-endian.
+- Coordinates are microdegrees (1e-6 degrees). Distances and elevations are whole metres.
+- Every section is reached through an explicit offset and every count is stored.
 
 ## File layout
 
@@ -28,11 +29,8 @@ through an explicit offset and every count is stored.
 [Visit descriptor]       (optional: 80 bytes)
 ```
 
-Every section is reached by an **explicit offset** (`Index Offset`, `Data Offset`,
-`Waypoint Offset`, per-chunk `Byte Offset`), so the physical order is not load-bearing:
-the reader accepts any arrangement. The canonical writer emits the index and the waypoint
-table **last**, because their sizes and positions are not known until the chunks have
-streamed out (§5).
+A reader accepts any physical order of the sections. The canonical writer emits the index and
+the waypoint table last (§5).
 
 ---
 
@@ -63,8 +61,7 @@ streamed out (§5).
 | 64 | Name | 48 | `char[48]` | UTF-8 route name, null-padded |
 
 With the canonical layout, `Data Offset == 160` (chunks follow the header) and
-`Index Offset == Data Offset + total chunk-data bytes`. The UI derives km/m from these
-meters fields (`distance_km = round(total_distance / 1000)`).
+`Index Offset == Data Offset + total chunk-data bytes`.
 
 Readers validate the complete fixed header, including the optional-section envelopes.
 
@@ -83,7 +80,7 @@ Readers validate the complete fixed header, including the optional-section envel
 An absent map key is all zero. A present key names the installed map used for surface
 attribution; its object ID and revision are nonzero. A file path or a default ID does not
 establish map identity. Facts from a different map revision are stale; facts without a key
-are unbound. Historical surfaces can still be displayed.
+are unbound.
 
 A descriptor must fit inside the object and must not overlap the index or the waypoint
 table. Unsupported versions and nonzero absent-section fields are errors.
@@ -188,9 +185,8 @@ for each record:
 Consecutive chunks MUST share their boundary vertex: chunk `k`'s last decoded point equals
 chunk `k+1`'s anchor. `Point Count` in the header counts that vertex once.
 
-> **Densification:** the converter inserts intermediate points on any decimated segment
-> whose Δlon or Δlat would exceed the `int16` range (±32767 µdeg ≈ 3.6 km), so readers need
-> no wide-delta path.
+A producer inserts intermediate points on any segment whose Δlon or Δlat exceeds the `int16`
+range (±32767 µdeg, about 3.6 km). A reader has no wide-delta path.
 
 ---
 
@@ -309,15 +305,11 @@ durable checkpoint CRC/length are separate.
 
 ## Reference implementation
 
-`firmware/obc-formats` (`no_std`): `obcr.rs` (normative version, sizes, magic, and
-sentinels) and `io.rs` ([`ByteSource`](#bytesource)/`ByteSink` + endian primitives).
-`firmware/obc-route` (`no_std`): `reader.rs` (`RouteReader`, `RouteSummary`, `ChunkMeta`,
-`Waypoint` + `for_each_waypoint`), `convert.rs` (GPX → OBCR), `gpx.rs` (streaming `<trkpt>`
-+ `<wpt>` scans), and `symbol.rs` (§4.1's table). Format-contract tests build synthetic
-`.obcr` bytes by hand, mirroring this layout (`obc-route/tests/format.rs` +
-`tests/waypoints.rs`); shared phone↔firmware fixtures live in `specs/vectors/`.
-`route-visit.obcr` has a valid descriptor envelope. Both codecs MUST reject
-`route-visit-waypoint-overlap.obcr` and `route-visit-index-overlap.obcr`; each shares the
+`firmware/obc-route`: `reader.rs` (`RouteReader`, `RouteSummary`, `ChunkMeta`, `Waypoint`),
+`convert.rs` (GPX to OBCR), `gpx.rs` (`<trkpt>` and `<wpt>` scans) and `symbol.rs` (§4.1).
+`obc-route/tests/format.rs` and `tests/waypoints.rs` build `.obcr` bytes by hand from this
+layout. `route-visit.obcr` has a valid descriptor envelope. Both codecs MUST reject
+`route-visit-waypoint-overlap.obcr` and `route-visit-index-overlap.obcr`: each shares the
 descriptor's last four reserved-zero bytes with another section.
 
 ### ByteSource
@@ -329,5 +321,4 @@ pub trait ByteSource {
 }
 ```
 
-The shared borrow lets the host implementation copy from a `&[u8]` and the device implementation
-read a held flat-store object. `RouteReader` holds `&dyn ByteSource`, so it stays monomorphic.
+`RouteReader` holds `&dyn ByteSource`.
