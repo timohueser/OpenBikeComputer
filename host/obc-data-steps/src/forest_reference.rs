@@ -56,6 +56,10 @@ impl Prepared for ForestReference {
         1
     }
 
+    fn reads(&self, source: &Source) -> bool {
+        source.id.starts_with("canopy-")
+    }
+
     /// The models that meet the region, and the leaf type. The tiles of each model in the boxes of
     /// the region are the files at most.
     fn plan(

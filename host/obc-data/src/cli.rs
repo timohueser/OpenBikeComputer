@@ -80,18 +80,18 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// Every source with licence, how this machine holds it, and the policy, versions and state
-    /// for each target.
+    /// Every source with its licence, how this machine holds it, and its state for each target;
+    /// with `--layer` or a region, the sources of each layer or of a bake of the region.
     Sources {
         /// Check upstream now, not from a check of the last hour.
         #[arg(long)]
         check_now: bool,
-        /// For each layer, or LAYER only: the sources that it reads, and whether it is ready.
+        /// For each layer, or LAYER only: the sources that it reads, and how this machine holds them.
         #[arg(long, value_name = "LAYER", num_args = 0..=1, default_missing_value = "")]
         #[arg(conflicts_with_all = ["check_now", "region", "bbox"])]
         layer: Option<String>,
-        /// The sources that a bake of this region needs: a region of `data/regions/`, or Geofabrik
-        /// paths joined by `,`.
+        /// The sources that a bake of this region reads, and what it still downloads or prepares: a
+        /// region of `data/regions/`, or Geofabrik paths joined by `,`.
         #[arg(long, value_name = "ID|PATH", conflicts_with_all = ["check_now", "bbox"])]
         region: Option<String>,
         /// The sources that a bake of this box needs: west, south, east, north.
@@ -202,7 +202,7 @@ fn run(cli: Cli, products: &[&dyn Product], prepared: &[&dyn Prepared], ui: Opti
                 (_, None, None) => View::All { check_now },
                 (_, region, bbox) => View::Region(region, bbox),
             };
-            sources_command(&root, prepared, view, json)
+            sources_command(&root, (products, prepared), view, json)
         }
         Command::Source { command } => source_cli::run(&root()?, prepared, command, json),
         Command::Fetch { target, params } => {
@@ -555,7 +555,12 @@ fn in_store(store: &Store, id: &str) -> Result<holding::InStore, Error> {
     Ok(holding::InStore { snapshots, requests, retrieved })
 }
 
-fn sources_command(root: &Path, prepared: &[&dyn Prepared], view: View, json: bool) -> Result<(), Error> {
+fn sources_command(
+    root: &Path,
+    (products, prepared): (&[&dyn Product], &[&dyn Prepared]),
+    view: View,
+    json: bool,
+) -> Result<(), Error> {
     let (store, http) = (Store::open()?, Http::new());
     let registry = registry(root)?;
     let mut stored = BTreeMap::new();
@@ -579,7 +584,12 @@ fn sources_command(root: &Path, prepared: &[&dyn Prepared], view: View, json: bo
             Ok(())
         }
         View::Region(region, bbox) => {
-            let region = holding::region(&holdings, &registry.sources, (root, region.as_deref(), bbox.as_deref()))?;
+            let region = holding::region(
+                (&holdings, &store, http.roots()),
+                (products, prepared),
+                &registry.sources,
+                (root, region.as_deref(), bbox.as_deref()),
+            )?;
             if json {
                 return print_json(&region);
             }
@@ -641,7 +651,7 @@ fn print_sources(
         return print_json(&Sources { sources: rows });
     }
     let names: Vec<&str> = all.keys().map(String::as_str).collect();
-    let head = cells(["SOURCE", "RULE", "COVERS", "STATUS", "WHERE", "SIZE", "DATE"]);
+    let head = cells(["SOURCE", "LICENCE", "RULE", "COVERS", "STATUS", "WHERE", "SIZE", "DATE"]);
     let mut table = vec![[head, names.iter().map(|n| n.to_uppercase()).collect()].concat()];
     let mut tools = false;
     for row in &rows {
@@ -651,8 +661,10 @@ fn print_sources(
             table.push(vec![String::new()]);
             table.push(vec!["tools".into()]);
         }
+        let none = if s.kind == Kind::Tool { "—" } else { "not recorded" };
+        let licence = s.licence.clone().unwrap_or_else(|| none.into());
         let states = names.iter().map(|name| row.targets[*name].state.to_string());
-        table.push([vec![s.id.clone()], holding::held_cells(&row.held), states.collect()].concat());
+        table.push([vec![s.id.clone(), licence], holding::held_cells(&row.held), states.collect()].concat());
     }
     print_table(&table);
     Ok(())

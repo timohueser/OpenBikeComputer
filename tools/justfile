@@ -284,8 +284,9 @@ inspect *args:
 # Data targets and the store: a bare `obc data` shows what each target serves and what to run
 # next. `obc data update TARGET` bakes what is stale and switches the target to the new release;
 # `--region`, `--box`, `--add`, `--remove` and `--refresh` change its settings, and `--only LAYER`
-# bakes a layer again. `obc data sources` lists every source with licence, R2 copy, and policy,
-# versions and state per target; `obc data areas` lists regions and Geofabrik areas;
+# bakes a layer again. `obc data sources` lists every source with licence, how this machine holds
+# it and its state per target, and with `--layer` or `--region` what a layer or a region bake
+# reads and still needs; `obc data areas` lists regions and Geofabrik areas;
 # `obc data fetch` puts a source version in the store; `obc data clean` cleans the store.
 # `obc data serve` serves `local` to the apps and follows its updates. `obc data setup` shows
 # what this machine can do; `obc data ui` serves its page, and `obc data open MACHINE` opens the

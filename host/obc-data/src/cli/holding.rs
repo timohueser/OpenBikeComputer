@@ -1,19 +1,23 @@
 //! The source overview of `obc data sources`: how this machine holds the copy of each source that
-//! a bake reads, by source, by layer and for a region. It reads only the archive status, the homes
-//! of the prepared sources, the records of the store and the cached Geofabrik index.
+//! a bake reads, by source, by layer and for a region. It reads only the archive manifests, the
+//! homes of the prepared sources, the records of the store and the cached Geofabrik index, and it
+//! fetches nothing.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use super::{bytes, overview, table, Code, Error, Stored, StoredRequest};
+use super::{bytes, listing, overview, table, Code, Error, Stored, StoredRequest};
 use crate::datasets::{ArchiveDataset, DatasetState};
-use crate::prepared::{Prepared, Scope, Version};
-use crate::regions::{geofabrik, Area, Bbox, Regions};
+use crate::engine::Input;
+use crate::prepared::{Prepared, Read, Scope, Version};
+use crate::product::{Inputs, Product, RequestKey, Wanted};
+use crate::regions::{geofabrik, Bbox, Regions};
 use crate::settings::Settings;
 use crate::sources::{FetchKind, Keep, Kind, Refresh, Registry, Source};
+use crate::store::Store;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -24,10 +28,11 @@ pub enum Rule {
     Prepare,
     /// `keep = "store"`.
     Store,
-    /// Not prepared, with a `refresh` in days: the OSM sources.
+    /// `keep = "store"` with a `refresh` in days: the OSM sources.
     Live,
 }
 
+/// How this machine holds a source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SourceStatus {
@@ -37,7 +42,9 @@ pub enum SourceStatus {
     Prepared,
     /// A bake reads it upstream when it is due.
     Live,
-    /// The archive or the store holds some of it.
+    /// The store has a version of a source that a fetch takes whole.
+    Held,
+    /// The archive holds some files of its dataset, or the store some requests of it.
     Partial,
     /// Nothing is held.
     Missing,
@@ -65,8 +72,24 @@ pub struct Held {
     /// `YYYY-MM-DD`: the last `archive get`, the newest version that holds it, or the newest file
     /// in the store.
     pub date: Option<String>,
-    /// How much a partial source holds, or why a missing one has no copy.
-    pub note: Option<String>,
+    /// The verified and the listed files of its dataset; `null` while no manifest lists a file.
+    pub archive_files: Option<Files>,
+    /// The versions of the source in the store.
+    pub store_versions: usize,
+    /// The requests of the source with params in the store, the newest of each set of params.
+    pub store_requests: usize,
+    /// A national terrain model that nothing holds: the terrain there is GLO-30 only.
+    pub gap: bool,
+    /// `keep = "archive"`, and no dataset of `data/archive/` has the source.
+    pub no_dataset: bool,
+    /// Why its dataset or its prepared versions cannot be read.
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct Files {
+    pub verified: usize,
+    pub listed: usize,
 }
 
 /// What the store holds of a source.
@@ -85,14 +108,26 @@ struct Home {
     newest: Version,
     /// The scopes of the newest version: those that it extends, then its own.
     scopes: Vec<Option<Scope>>,
-    /// Each source that a version reads, with the newest version that reads it.
+    /// Each source that the newest version or a version that it extends reads, with the newest
+    /// such version.
     inputs: BTreeMap<String, String>,
+}
+
+/// A file that an archive manifest lists.
+struct ArchiveFile {
+    bytes: Option<u64>,
+    /// In `files`, not in `missing`.
+    verified: bool,
 }
 
 /// What this machine holds, read once.
 pub(super) struct Holdings {
     datasets: Vec<ArchiveDataset>,
+    /// The files of the manifests, by their path under the root.
+    archive: HashMap<String, ArchiveFile>,
     homes: BTreeMap<String, Result<Home, String>>,
+    /// The prepared source whose producer reads each source that only a prepare reads.
+    readers: BTreeMap<String, String>,
     pub stored: BTreeMap<String, InStore>,
     index: Option<BTreeMap<String, geofabrik::Area>>,
 }
@@ -107,14 +142,29 @@ impl Holdings {
     ) -> Result<Self, Error> {
         let datasets = crate::datasets::load(root, registry).map_err(|e| Code::InvalidData.error(e))?;
         let datasets = crate::datasets::status(&datasets, registry, roots).datasets;
-        let mut homes = BTreeMap::new();
-        for source in registry.sources.iter().filter(|source| source.fetch.kind == FetchKind::Prepared) {
-            let format = crate::prepared::producer(producers, &source.id).map(|producer| producer.format());
-            if let Some(home) = home(roots, &source.id, format).transpose() {
-                homes.insert(source.id.clone(), home);
+        let mut archive = HashMap::new();
+        for dataset in &datasets {
+            let Some(root) = &dataset.root else { continue };
+            let path = Path::new(root).join("manifest").join(format!("{}.json", dataset.dataset));
+            let Ok(manifest) = crate::fetch::archive::Manifest::read(&path) else { continue };
+            for file in manifest.files {
+                archive.insert(file.path, ArchiveFile { bytes: Some(file.bytes), verified: true });
+            }
+            for file in manifest.missing {
+                archive.insert(file.path, ArchiveFile { bytes: file.bytes, verified: false });
             }
         }
-        Ok(Holdings { datasets, homes, stored, index })
+        let (mut homes, mut readers) = (BTreeMap::new(), BTreeMap::new());
+        for source in registry.sources.iter().filter(|source| source.fetch.kind == FetchKind::Prepared) {
+            let producer = crate::prepared::producer(producers, &source.id);
+            if let Some(home) = home(roots, &source.id, producer.map(|producer| producer.format())).transpose() {
+                homes.insert(source.id.clone(), home);
+            }
+            for input in registry.sources.iter().filter(|input| producer.is_some_and(|p| p.reads(input))) {
+                readers.insert(input.id.clone(), source.id.clone());
+            }
+        }
+        Ok(Holdings { datasets, archive, homes, readers, stored, index })
     }
 
     pub fn held(&self, source: &Source) -> Held {
@@ -133,8 +183,8 @@ impl Holdings {
                     held.bytes = Some(home.newest.bytes);
                     held.date = Some(crate::prepared::day(&home.newest.version).into());
                 }
-                Some(Err(error)) => held.note = Some(error.clone()),
-                None => held.note = Some(format!("no version: `obc data source prepare {}` makes one", source.id)),
+                Some(Err(error)) => held.error = Some(error.clone()),
+                None => {}
             }
             return Some(held);
         }
@@ -157,6 +207,9 @@ impl Holdings {
     fn kept(&self, source: &Source) -> Held {
         let mut held = self.empty(source);
         let stored = self.stored.get(&source.id).filter(|stored| !stored.snapshots.is_empty());
+        if let Some(stored) = stored {
+            (held.store_versions, held.store_requests) = (stored.snapshots.len(), stored.requests.len());
+        }
         let in_store = |held: &mut Held| {
             if let Some(stored) = stored {
                 held.place = Some("store".into());
@@ -175,10 +228,12 @@ impl Holdings {
         let dataset = self.datasets.iter().find(|dataset| dataset.sources.contains(&source.id));
         if let Some(dataset) = dataset {
             held.dataset = Some(dataset.dataset.clone());
-            held.place = dataset.root.clone();
-            held.date = dataset.got.clone();
+            held.archive_files =
+                (dataset.listed > 0).then_some(Files { verified: dataset.verified, listed: dataset.listed });
+            held.error = dataset.error.clone();
             if dataset.state == DatasetState::Complete {
-                held.status = SourceStatus::Archived;
+                (held.status, held.place, held.date) =
+                    (SourceStatus::Archived, dataset.root.clone(), dataset.got.clone());
                 held.bytes = Some(dataset.bytes);
                 return held;
             }
@@ -187,31 +242,19 @@ impl Holdings {
                 _ => Some(dataset.listed_bytes.saturating_sub(dataset.bytes)),
             };
             if dataset.verified > 0 {
-                held.status = SourceStatus::Partial;
+                (held.status, held.place, held.date) =
+                    (SourceStatus::Partial, dataset.root.clone(), dataset.got.clone());
                 held.bytes = Some(dataset.bytes);
-                held.note = Some(format!("{} of {} files in the archive", dataset.verified, dataset.listed));
                 return held;
             }
-            (held.place, held.date) = (None, None);
         }
-        if let Some(stored) = stored {
-            held.status = SourceStatus::Partial;
+        if stored.is_some() {
+            held.status = if whole(source) { SourceStatus::Held } else { SourceStatus::Partial };
             in_store(&mut held);
-            held.note = Some(match stored.requests.len() {
-                0 => count(stored.snapshots.len(), "version", "in the store"),
-                requests => count(requests, "request", "in the store"),
-            });
             return held;
         }
-        held.note = if source.id.starts_with("dtm-") {
-            Some("gap: GLO-30 only".into())
-        } else if source.keep == Keep::Archive && dataset.is_none() {
-            Some("no dataset in data/archive/".into())
-        } else if let Some(dataset) = dataset.filter(|dataset| dataset.state == DatasetState::Unreadable) {
-            dataset.error.clone()
-        } else {
-            None
-        };
+        held.gap = source.id.starts_with("dtm-");
+        held.no_dataset = source.keep == Keep::Archive && dataset.is_none();
         held
     }
 
@@ -226,12 +269,17 @@ impl Holdings {
             bytes: None,
             download_bytes: None,
             date: None,
-            note: None,
+            archive_files: None,
+            store_versions: 0,
+            store_requests: 0,
+            gap: false,
+            no_dataset: false,
+            error: None,
         }
     }
 
-    /// The prepared sources whose versions read `source` when only a prepare reads it, with the
-    /// newest version that reads it, in the order of their ids.
+    /// The prepared sources whose newest version or a version that it extends reads `source`
+    /// when only a prepare reads it, with the newest such version, in the order of their ids.
     fn readers(&self, source: &Source) -> Vec<(&str, &str, &Home)> {
         if !prepare_input(source) {
             return Vec::new();
@@ -271,28 +319,51 @@ impl Holdings {
         }
     }
 
-    /// Whether a scope of `home` covers each of `boxes`: a `null` scope, or a box of a scope
-    /// that holds it.
-    fn covers_boxes(&self, home: &Home, boxes: &[Bbox]) -> bool {
-        let mut scopes = Vec::new();
+    /// Whether the scopes of `home` cover the region of `boxes` and `countries`: a `null` scope, or
+    /// for each box a scope box that holds it, of a scope that names no countries or each of
+    /// `countries`. `None` when a scope has a Geofabrik area that the cached index lacks.
+    fn covers_region(&self, home: &Home, boxes: &[Bbox], countries: &[String]) -> Option<bool> {
+        let (mut covering, mut unknown) = (Vec::new(), false);
         for scope in &home.scopes {
-            let Some(scope) = scope else { return true };
+            let Some(scope) = scope else { return Some(true) };
             let settings = Settings {
                 region: scope.region.clone(),
                 definitions: scope.definitions.clone(),
                 ..Settings::default()
             };
             let Ok(regions) = settings.regions() else { continue };
-            scopes.extend(overview::area(&regions, &scope.region, &|| Ok(self.index.as_ref())).map(|area| area.boxes));
+            let Some(area) = overview::area(&regions, &scope.region, &|| Ok(self.index.as_ref())) else { continue };
+            unknown |= area.missing.is_some();
+            let named = region_countries(&regions, &scope.region).unwrap_or_default();
+            let inside = countries.iter().all(|country| named.contains(country));
+            if named.is_empty() || !countries.is_empty() && inside {
+                covering.extend(area.boxes);
+            }
         }
-        let inside =
+        let held =
             |b: &Bbox, s: &Bbox| s.west <= b.west && s.south <= b.south && s.east >= b.east && s.north >= b.north;
-        boxes.iter().all(|b| scopes.iter().flatten().any(|s| inside(b, s)))
+        let all = boxes.iter().all(|b| covering.iter().any(|s| held(b, s)));
+        if all {
+            Some(true)
+        } else {
+            (!unknown).then_some(false)
+        }
     }
 }
 
-/// The versions of the prepared source `id` in the format `format`, or else of the newest
-/// version; `None` while no root has a home with such a version.
+/// The parts of a version manifest that the overview reads; serde skips the others, such as
+/// `files`.
+#[derive(Deserialize)]
+struct Chain {
+    inputs: Vec<Read>,
+    scope: Option<Scope>,
+    #[serde(default)]
+    extends: Vec<Option<Scope>>,
+}
+
+/// The newest version of the prepared source `id` in the format `format`, or else in the format
+/// of its newest version, with the versions that it extends; `None` while no root has a home with
+/// such a version.
 fn home(roots: &[PathBuf], id: &str, format: Option<u32>) -> Result<Option<Home>, String> {
     let Some(root) = crate::prepared::home(roots, id) else { return Ok(None) };
     let folder = crate::prepared::folder(root, id);
@@ -300,15 +371,21 @@ fn home(roots: &[PathBuf], id: &str, format: Option<u32>) -> Result<Option<Home>
     let Some(format) = format.or(versions.last().map(|version| version.format)) else { return Ok(None) };
     versions.retain(|version| version.format == format);
     let Some(newest) = versions.last().cloned() else { return Ok(None) };
-    let (mut inputs, mut scopes) = (BTreeMap::new(), Vec::new());
-    for version in &versions {
-        let manifest = crate::prepared::manifest(&folder, id, &version.version)?
-            .ok_or_else(|| format!("{id}/{}: no manifest", version.version))?;
-        for read in manifest.inputs {
-            inputs.insert(read.source, version.version.clone());
+    let chain = |version: &str| -> Result<Chain, String> {
+        let path = format!("{version}/{}", crate::prepared::MANIFEST);
+        let bytes = folder.get(&path)?.ok_or_else(|| format!("{id}/{path}: no manifest"))?;
+        serde_json::from_slice(&bytes).map_err(|e| format!("{id}/{path}: {e}"))
+    };
+    let last = chain(&newest.version)?;
+    let scopes: Vec<Option<Scope>> = last.extends.iter().cloned().chain([last.scope.clone()]).collect();
+    let mut inputs = BTreeMap::new();
+    for version in &versions[..versions.len() - 1] {
+        let earlier = chain(&version.version)?;
+        if last.extends.contains(&earlier.scope) {
+            inputs.extend(earlier.inputs.into_iter().map(|read| (read.source, version.version.clone())));
         }
-        scopes = manifest.extends.into_iter().chain([manifest.scope]).collect();
     }
+    inputs.extend(last.inputs.into_iter().map(|read| (read.source, newest.version.clone())));
     Ok(Some(Home { folder: crate::prepared::path(root, id), newest, scopes, inputs }))
 }
 
@@ -325,8 +402,12 @@ fn host(url: &str) -> Option<&str> {
     url.strip_prefix("https://")?.split('/').next()
 }
 
-fn count(n: usize, what: &str, place: &str) -> String {
-    format!("{n} {what}{} {place}", if n == 1 { "" } else { "s" })
+/// Whether a fetch takes `source` whole: it has no params, and is no capture, GLO-30, national
+/// model, installed tool or prepared source.
+fn whole(source: &Source) -> bool {
+    use FetchKind::{Capture, Dtm, Glo30, Installed, Prepared};
+    crate::fetch::params(source).is_empty()
+        && !matches!(source.fetch.kind, Capture | Glo30 | Dtm | Installed | Prepared)
 }
 
 /// A source that only a prepare reads: the prepared source that reads it stands for it in a bake.
@@ -339,11 +420,31 @@ fn word(value: impl Serialize) -> String {
     serde_json::to_value(value).ok().and_then(|value| value.as_str().map(str::to_string)).unwrap_or_default()
 }
 
-/// The status of a source, with its note and what a get still takes.
+fn count(n: usize, what: &str) -> String {
+    format!("{n} {what}{}", if n == 1 { "" } else { "s" })
+}
+
+/// The status of a source, with what it holds or lacks and what a get still takes.
 fn status_text(held: &Held) -> String {
     let mut text = word(held.status);
-    if let Some(note) = &held.note {
-        text += &format!(", {note}");
+    match (held.status, held.archive_files) {
+        (SourceStatus::Partial, Some(files)) if files.verified > 0 => {
+            text += &format!(", {} of {} files in the archive", files.verified, files.listed)
+        }
+        (SourceStatus::Partial, _) if held.store_requests > 0 => {
+            text += &format!(", {} in the store", count(held.store_requests, "request"))
+        }
+        (SourceStatus::Partial, _) => text += &format!(", {} in the store", count(held.store_versions, "version")),
+        _ => {}
+    }
+    if held.gap {
+        text += ", gap: GLO-30 only";
+    }
+    if held.no_dataset {
+        text += ", no dataset in data/archive/";
+    }
+    if let Some(error) = &held.error {
+        text += &format!(", {error}");
     }
     if let Some(download) = held.download_bytes.filter(|bytes| *bytes > 0) {
         text += &format!(", {} to get", bytes(download));
@@ -351,20 +452,21 @@ fn status_text(held: &Held) -> String {
     text
 }
 
+fn place_text(held: &Held) -> String {
+    match (&held.place, &held.dataset) {
+        (Some(place), Some(dataset)) if place != "store" => format!("{place} · {dataset}"),
+        (Some(place), _) => place.clone(),
+        (None, _) => "—".into(),
+    }
+}
+
 /// RULE, COVERS, STATUS, WHERE, SIZE and DATE.
 pub(super) fn held_cells(held: &Held) -> Vec<String> {
-    let place = match (&held.place, &held.dataset, held.status) {
-        (Some(place), Some(dataset), SourceStatus::Archived | SourceStatus::Partial) if place != "store" => {
-            format!("{place} · {dataset}")
-        }
-        (Some(place), _, _) => place.clone(),
-        (None, _, _) => "—".into(),
-    };
     vec![
         word(held.rule),
         held.covers.clone(),
         status_text(held),
-        place,
+        place_text(held),
         held.bytes.map_or("—".into(), bytes),
         held.date.clone().unwrap_or_else(|| "—".into()),
     ]
@@ -376,13 +478,11 @@ pub struct SourceLayers {
     pub layers: Vec<LayerSources>,
 }
 
-/// A name of `used_by` and the sources that it reads.
+/// A name of `used_by` and the sources that it reads. Whether a bake of a region still downloads
+/// or prepares is in `sources --region`.
 #[derive(Serialize, JsonSchema)]
 pub struct LayerSources {
     pub layer: String,
-    /// Each source is `archived`, `prepared` or `live`: a bake on this machine reads only OSM
-    /// upstream.
-    pub ready: bool,
     /// The `data` sources and assets whose `used_by` has the layer, but no source that only a
     /// prepare reads.
     pub sources: Vec<HeldSource>,
@@ -404,12 +504,8 @@ pub(super) fn layers(holdings: &Holdings, sources: &[Source], only: Option<&str>
         let reads = sources.iter().filter(|source| {
             source.kind != Kind::Tool && !prepare_input(source) && source.used_by.iter().any(|used| used == layer)
         });
-        let sources: Vec<HeldSource> =
-            reads.map(|source| HeldSource { source: source.id.clone(), held: holdings.held(source) }).collect();
-        let ready = sources
-            .iter()
-            .all(|s| matches!(s.held.status, SourceStatus::Archived | SourceStatus::Prepared | SourceStatus::Live));
-        LayerSources { layer: layer.into(), ready, sources }
+        let sources = reads.map(|source| HeldSource { source: source.id.clone(), held: holdings.held(source) });
+        LayerSources { layer: layer.into(), sources: sources.collect() }
     });
     Ok(SourceLayers { layers: layers.collect() })
 }
@@ -417,13 +513,7 @@ pub(super) fn layers(holdings: &Holdings, sources: &[Source], only: Option<&str>
 pub(super) fn print_layers(layers: &SourceLayers) {
     let mut rows = vec![super::cells(["  SOURCE", "RULE", "COVERS", "STATUS", "WHERE", "SIZE", "DATE"])];
     for layer in &layers.layers {
-        let waiting =
-            layer.sources.iter().filter(|s| matches!(s.held.status, SourceStatus::Partial | SourceStatus::Missing));
-        let state = match waiting.count() {
-            0 => "ready".to_string(),
-            n => format!("not ready, {} of {} sources are partial or missing", n, layer.sources.len()),
-        };
-        rows.push(vec![format!("{}: {state}", layer.layer)]);
+        rows.push(vec![layer.layer.clone()]);
         for source in &layer.sources {
             rows.push([vec![format!("  {}", source.source)], held_cells(&source.held)].concat());
         }
@@ -431,13 +521,19 @@ pub(super) fn print_layers(layers: &SourceLayers) {
     print!("{}", table(&rows));
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+/// What a bake of a region still needs of a source or a layer, from the least to the most.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
-pub enum Todo {
-    /// A fetch downloads it, in a bake or in the prepare that reads it.
+pub enum Need {
+    /// The store, the archive or a prepared version holds what the bake reads.
+    Held,
+    /// A fetch downloads a part, in the bake or in the prepare that reads it.
     Download,
     /// `obc data source prepare` makes a version that covers the region.
     Prepare,
+    /// Unknown: a step list needs a snapshot that the store lacks, or the cached index lacks an
+    /// area of a scope.
+    Unknown,
 }
 
 /// What `sources --region` and `sources --box` write.
@@ -449,80 +545,262 @@ pub struct RegionSources {
     pub boxes: Vec<Bbox>,
     /// The countries that select the national models; empty selects each that meets a box.
     pub countries: Vec<String>,
+    /// The layers of the products with each optional part on.
+    pub layers: Vec<RegionLayer>,
+    /// The sources that the step lists read, and the sources that only a prepare reads of the
+    /// prepared sources among them.
     pub sources: Vec<RegionSource>,
-    /// The sum of the known `bytes` of each `download`.
+    /// The sum of the known bytes to download.
     pub download_bytes: u64,
-    /// The sources to download whose size is unknown.
+    /// The sources with a download of unknown size, or whose need is unknown.
     pub unknown: Vec<String>,
-    /// The sources to prepare.
+    /// The prepared sources to prepare.
     pub prepare: Vec<String>,
 }
 
-/// A source that a bake of the region needs.
+/// A layer and what a bake of the region still needs for it: the most of its sources.
+#[derive(Serialize, JsonSchema)]
+pub struct RegionLayer {
+    pub layer: String,
+    pub need: Need,
+    /// The sources that its steps read.
+    pub sources: Vec<String>,
+    /// Why its step list cannot be listed: then `need` is the most of the fetches that the store
+    /// lacks for it, and the steps after them are unknown.
+    pub reason: Option<String>,
+}
+
+/// A source that a bake of the region reads.
 #[derive(Serialize, JsonSchema)]
 pub struct RegionSource {
     pub source: String,
-    /// Its status for the region.
-    pub status: SourceStatus,
-    /// What a bake of the region still does; `null` when the region is held.
-    pub todo: Option<Todo>,
-    /// The bytes of a `download`; `null` when unknown.
-    pub bytes: Option<u64>,
-    /// How this machine holds the source, as its status for the region reads it.
+    /// How this machine holds the source.
     pub held: Held,
+    pub for_region: ForRegion,
+}
+
+/// What a bake of the region reads of a source, and what it still needs.
+#[derive(Debug, PartialEq, Serialize, JsonSchema)]
+pub struct ForRegion {
+    pub need: Need,
+    /// The fetches of the source that the step lists read: one per set of params.
+    pub requests: usize,
+    /// Of them, those that the store or the archive holds.
+    pub held_requests: usize,
+    /// The known bytes of the held ones.
+    pub held_bytes: u64,
+    /// The known bytes to download.
+    pub download_bytes: u64,
+    /// The fetches to download of unknown size.
+    pub unknown_requests: usize,
+    /// For a source that only a prepare reads: the prepared source whose need it has.
+    pub read_by: Option<String>,
+}
+
+impl ForRegion {
+    fn of(need: Need) -> Self {
+        ForRegion {
+            need,
+            requests: 0,
+            held_requests: 0,
+            held_bytes: 0,
+            download_bytes: 0,
+            unknown_requests: 0,
+            read_by: None,
+        }
+    }
 }
 
 pub(super) fn region(
-    holdings: &Holdings,
+    (holdings, store, roots): (&Holdings, &Store, &[PathBuf]),
+    (products, producers): (&[&dyn Product], &[&dyn Prepared]),
     sources: &[Source],
     (root, region, bbox): (&Path, Option<&str>, Option<&str>),
 ) -> Result<RegionSources, Error> {
     let mut settings = Settings::default();
     super::update_cli::select(root, (region, bbox), &mut settings)?;
+    let mut layers: Vec<String> = products.iter().flat_map(|p| p.optional().iter().map(|l| l.to_string())).collect();
+    layers.sort();
+    layers.dedup();
+    settings.layers = layers;
     let regions = settings.regions().map_err(|e| Code::Usage.error(e))?;
     let id = settings.region.clone();
     let area = overview::area(&regions, &id, &|| Ok(holdings.index.as_ref())).expect("the region was selected");
     if let Some(missing) = area.missing {
-        return Err(Code::Usage.error(format!("region `{id}`: {missing}")));
+        return Err(Code::Usage
+            .error(format!("region `{id}`: {missing}"))
+            .fix("Run `obc data fetch geofabrik-index`."));
     }
-    let countries = countries(&regions, &id)?;
-    let leaves = regions.leaves(&id).map_err(|e| Code::Usage.error(e))?;
-    let areas: Option<Vec<&String>> = leaves
+    let countries = region_countries(&regions, &id)?;
+
+    let mut inputs = Inputs { settings, ..Inputs::default() };
+    let prepared: BTreeSet<RequestKey> = sources
         .iter()
-        .map(|leaf| match &regions.get(leaf).expect("a leaf is a region").area {
-            Area::Geofabrik { areas } => Some(areas),
-            _ => None,
-        })
-        .try_fold(Vec::new(), |mut all, areas| {
-            all.extend(areas?);
-            Some(all)
-        });
+        .filter(|source| source.fetch.kind == FetchKind::Prepared)
+        .map(|source| (source.id.clone(), Vec::new()))
+        .collect();
+    crate::prepared::resolve(roots, (sources, &prepared, producers), &mut inputs).map_err(|e| Code::Failed.error(e))?;
+    let refuse = |wanted: &Wanted| -> Result<String, Error> {
+        let params: String = wanted.params.iter().map(|(name, value)| format!(" {name}={value}")).collect();
+        Err(Code::Blocked
+            .error(format!("the store lacks `{}`{params}", wanted.source))
+            .fix(format!("`obc data fetch {}{params}` gets it.", wanted.source)))
+    };
+    let listed = listing::steps(root, products, &mut inputs, &regions, store, true, refuse)?;
+    // The fetches that the steps read, and those that a step list asked for before it stopped. A
+    // fetch without params of a source that the steps read with params only picks its version.
+    let mut requests: BTreeMap<String, BTreeSet<Vec<(String, String)>>> = BTreeMap::new();
+    let read = listed.steps.iter().flat_map(|step| &step.inputs).filter_map(|input| match input {
+        Input::Snapshot { source, params, .. } => Some((source.clone(), crate::store::sorted(params))),
+        Input::Step { .. } => None,
+    });
+    for (source, params) in inputs.requests.borrow().iter().cloned().chain(read) {
+        requests.entry(source).or_default().insert(params);
+    }
+    for params in requests.values_mut().filter(|params| params.len() > 1) {
+        params.remove(&Vec::new());
+    }
+
     let mut out = RegionSources {
         region: id,
         name: area.name,
         boxes: area.boxes,
         countries,
+        layers: Vec::new(),
         sources: Vec::new(),
         download_bytes: 0,
         unknown: Vec::new(),
         prepare: Vec::new(),
     };
-    for source in sources.iter().filter(|source| needs(holdings, source, &out.boxes, &out.countries)) {
-        let (status, todo, bytes, held) = here(holdings, source, (&out.boxes, areas.as_deref()));
-        match (todo, bytes) {
-            (Some(Todo::Prepare), _) => out.prepare.push(source.id.clone()),
-            (Some(Todo::Download), Some(bytes)) => out.download_bytes += bytes,
-            (Some(Todo::Download), None) => out.unknown.push(source.id.clone()),
-            (None, _) => {}
+    let mut needs: BTreeMap<String, Need> = BTreeMap::new();
+    for source in sources.iter().filter(|source| requests.contains_key(&source.id)) {
+        let for_region = match source.fetch.kind {
+            FetchKind::Prepared => {
+                let need = match holdings.homes.get(&source.id) {
+                    Some(Ok(home)) => match holdings.covers_region(home, &out.boxes, &out.countries) {
+                        Some(true) => Need::Held,
+                        Some(false) => Need::Prepare,
+                        None => Need::Unknown,
+                    },
+                    _ => Need::Prepare,
+                };
+                ForRegion { requests: 1, held_requests: usize::from(need == Need::Held), ..ForRegion::of(need) }
+            }
+            _ => fetches(holdings, store, &inputs, source, requests[&source.id].iter())?,
+        };
+        needs.insert(source.id.clone(), for_region.need);
+        out.sources.push(RegionSource { source: source.id.clone(), held: holdings.held(source), for_region });
+    }
+    // A source that only a prepare reads has the need of the prepared source that reads it.
+    for source in sources.iter().filter(|source| prepare_input(source)) {
+        let Some(reader) = holdings.readers.get(&source.id) else { continue };
+        let Some(&need) = needs.get(reader) else { continue };
+        if !meets(holdings, source, &out.boxes, &out.countries) {
+            continue;
         }
-        out.sources.push(RegionSource { source: source.id.clone(), status, todo, bytes, held });
+        let for_region = ForRegion { read_by: Some(reader.clone()), ..ForRegion::of(need) };
+        out.sources.push(RegionSource { source: source.id.clone(), held: holdings.held(source), for_region });
+    }
+
+    let mut by_layer: BTreeMap<String, RegionLayer> = BTreeMap::new();
+    for step in &listed.steps {
+        let layer = by_layer.entry(step.layer.name.to_string()).or_insert_with(|| RegionLayer {
+            layer: step.layer.name.to_string(),
+            need: Need::Held,
+            sources: Vec::new(),
+            reason: None,
+        });
+        for input in &step.inputs {
+            let Input::Snapshot { source, .. } = input else { continue };
+            if !layer.sources.contains(source) {
+                layer.sources.push(source.clone());
+            }
+            layer.need = layer.need.max(needs.get(source).copied().unwrap_or(Need::Unknown));
+        }
+    }
+    // A layer that cannot be listed needs at least what the store lacks for its step list.
+    let lacks = inputs.fetch_failures.iter().map(|(wanted, _)| needs.get(&wanted.source).copied());
+    let lacks = lacks.map(|need| need.unwrap_or(Need::Unknown)).max().unwrap_or(Need::Unknown);
+    for blocked in &listed.blocked {
+        let layer = by_layer.entry(blocked.layer.clone()).or_insert_with(|| RegionLayer {
+            layer: blocked.layer.clone(),
+            need: Need::Held,
+            sources: Vec::new(),
+            reason: None,
+        });
+        (layer.need, layer.reason) = (layer.need.max(lacks), Some(blocked.reason.clone()));
+    }
+    out.layers = by_layer.into_values().collect();
+    for source in &out.sources {
+        let need = &source.for_region;
+        out.download_bytes += need.download_bytes;
+        if need.unknown_requests > 0 || need.need == Need::Unknown {
+            out.unknown.push(source.source.clone());
+        }
+        if need.need == Need::Prepare && need.read_by.is_none() {
+            out.prepare.push(source.source.clone());
+        }
     }
     Ok(out)
 }
 
+/// What the store and the archive hold of the fetches of `source` with each of `params`.
+fn fetches<'a>(
+    holdings: &Holdings,
+    store: &Store,
+    inputs: &Inputs,
+    source: &Source,
+    params: impl Iterator<Item = &'a Vec<(String, String)>>,
+) -> Result<ForRegion, Error> {
+    let mut need = ForRegion::of(Need::Held);
+    for params in params {
+        need.requests += 1;
+        let version = crate::product::version(inputs, store, &source.id, params)?.ok();
+        let stored = match &version {
+            Some(version) => stored_bytes(store, &source.id, version, params)?,
+            None => None,
+        };
+        // A fetch reads the archive file of each URL before it downloads.
+        let urls =
+            source.fetch.url.as_deref().and_then(|url| crate::fetch::expand(url, version.as_deref(), params).ok());
+        let listed: Option<Vec<&ArchiveFile>> = urls
+            .filter(|_| matches!(source.fetch.kind, FetchKind::Http | FetchKind::Glo30 | FetchKind::Github))
+            .and_then(|urls| {
+                urls.iter().map(|url| holdings.archive.get(&crate::fetch::archive::mirror_path(url)?)).collect()
+            });
+        match (stored, listed) {
+            (Some(bytes), _) => {
+                (need.held_requests, need.held_bytes) = (need.held_requests + 1, need.held_bytes + bytes)
+            }
+            (None, Some(files)) if files.iter().all(|file| file.verified) => {
+                need.held_requests += 1;
+                need.held_bytes += files.iter().filter_map(|file| file.bytes).sum::<u64>();
+            }
+            (None, Some(files)) if files.iter().all(|file| file.bytes.is_some()) => {
+                need.download_bytes +=
+                    files.iter().filter(|file| !file.verified).filter_map(|file| file.bytes).sum::<u64>();
+            }
+            (None, _) => need.unknown_requests += 1,
+        }
+    }
+    if need.held_requests < need.requests {
+        need.need = Need::Download;
+    }
+    Ok(need)
+}
+
+/// The bytes of the files of the fetch of `source` with `params` at `version` in the store;
+/// `None` while the store lacks them.
+fn stored_bytes(store: &Store, source: &str, version: &str, params: &[(String, String)]) -> Result<Option<u64>, Error> {
+    let Some(files) = crate::engine::snapshot_files(store, source, version, params, &[])? else { return Ok(None) };
+    let snapshot = store.snapshot(source, version)?;
+    let records = snapshot.iter().flat_map(|snapshot| &snapshot.files);
+    Ok(Some(records.filter(|file| files.contains_key(&file.name)).map(|file| file.size).sum()))
+}
+
 /// The countries of region `id`: its own, or else those of each leaf when each names some.
-fn countries(regions: &Regions, id: &str) -> Result<Vec<String>, Error> {
-    let own = &regions.get(id).expect("the region was selected").countries;
+fn region_countries(regions: &Regions, id: &str) -> Result<Vec<String>, Error> {
+    let own = &regions.get(id).ok_or_else(|| Code::Usage.error(format!("no region `{id}`")))?.countries;
     if !own.is_empty() {
         return Ok(own.clone());
     }
@@ -537,10 +815,12 @@ fn countries(regions: &Regions, id: &str) -> Result<Vec<String>, Error> {
     Ok(countries.into_iter().collect())
 }
 
-/// Whether a bake of the region of `boxes` and `countries` needs `source`.
-fn needs(holdings: &Holdings, source: &Source, boxes: &[Bbox], countries: &[String]) -> bool {
+/// Whether a source that only a prepare reads has data for the region of `boxes` and
+/// `countries`: by its `extent`, the bounds of its `areas` in the cached index, and for a
+/// national model (`dtm-<cc>…`, `canopy-<cc>`) its country.
+fn meets(holdings: &Holdings, source: &Source, boxes: &[Bbox], countries: &[String]) -> bool {
     let meets = |[w, s, e, n]: [f64; 4]| boxes.iter().any(|b| b.west < e && w < b.east && b.south < n && s < b.north);
-    if source.kind == Kind::Tool || source.extent.is_some_and(|extent| !meets(extent)) {
+    if source.extent.is_some_and(|extent| !meets(extent)) {
         return false;
     }
     let index = holdings.index.as_ref();
@@ -553,45 +833,27 @@ fn needs(holdings: &Holdings, source: &Source, boxes: &[Bbox], countries: &[Stri
     country.is_none_or(|country| countries.is_empty() || countries.contains(&country))
 }
 
-/// The status of `source` for the region of `boxes` and of the Geofabrik `areas` (`None` when a
-/// part is a box), what a bake still does, the bytes of a download, and the holding that the
-/// status reads.
-fn here(
-    holdings: &Holdings,
-    source: &Source,
-    (boxes, areas): (&[Bbox], Option<&[&String]>),
-) -> (SourceStatus, Option<Todo>, Option<u64>, Held) {
-    let held = holdings.held(source);
-    let r2 = held.status == SourceStatus::Prepared && source.kind == Kind::Asset;
-    if matches!(held.status, SourceStatus::Archived | SourceStatus::Live) || r2 {
-        return (held.status, None, None, held);
+fn need_text(need: &ForRegion) -> String {
+    let mut text = word(need.need);
+    if let Some(reader) = &need.read_by {
+        return text + &format!(" (read by {reader})");
     }
-    if source.fetch.kind == FetchKind::Prepared {
-        let (status, todo) = match holdings.homes.get(&source.id) {
-            Some(Ok(home)) if holdings.covers_boxes(home, boxes) => (SourceStatus::Prepared, None),
-            Some(Ok(_)) => (SourceStatus::Partial, Some(Todo::Prepare)),
-            _ => (SourceStatus::Missing, Some(Todo::Prepare)),
-        };
-        return (status, todo, None, held);
+    if need.need == Need::Download {
+        text += &format!(": {} of {} fetches held", need.held_requests, need.requests);
+    } else if need.requests > 1 {
+        text += &format!(": {} fetches", need.requests);
     }
-    if holdings.readers(source).iter().any(|(_, _, home)| holdings.covers_boxes(home, boxes)) {
-        return (SourceStatus::Prepared, None, None, held);
+    if need.held_bytes > 0 {
+        let held = if need.need == Need::Held { "" } else { " held" };
+        text += &format!(", {}{held}", bytes(need.held_bytes));
     }
-    let held = holdings.kept(source);
-    let params = crate::fetch::params(source);
-    let whole =
-        params.is_empty() && !matches!(source.fetch.kind, FetchKind::Capture | FetchKind::Glo30 | FetchKind::Dtm);
-    let stored = holdings.stored.get(&source.id).filter(|stored| !stored.snapshots.is_empty());
-    let has_area = |area: &&String| {
-        let requests = stored.iter().flat_map(|stored| &stored.requests);
-        requests.flat_map(|request| &request.params).any(|(name, value)| name == "area" && value == *area)
-    };
-    let each_area = params == ["area"] && areas.is_some_and(|areas| areas.iter().all(has_area));
-    if stored.is_some() && (whole || each_area) {
-        return (held.status, None, None, held);
+    if need.download_bytes > 0 {
+        text += &format!(", {} to download", bytes(need.download_bytes));
     }
-    let bytes = held.download_bytes.filter(|_| whole);
-    (held.status, Some(Todo::Download), bytes, held)
+    if need.unknown_requests > 0 {
+        text += &format!(", {} of unknown size", need.unknown_requests);
+    }
+    text
 }
 
 pub(super) fn print_region(region: &RegionSources) {
@@ -602,27 +864,23 @@ pub(super) fn print_region(region: &RegionSources) {
     let boxes: Vec<String> =
         region.boxes.iter().map(|b| format!("{},{},{},{}", b.west, b.south, b.east, b.north)).collect();
     println!("{} ({}): box {}, {countries}", region.region, region.name, boxes.join(" + "));
-    let mut rows = vec![super::cells(["SOURCE", "STATUS", "WHERE", "TODO"])];
+    let mut rows = vec![super::cells(["LAYER", "NEEDS"])];
+    for layer in &region.layers {
+        let reason = layer.reason.as_ref().map(|reason| format!(": {reason}")).unwrap_or_default();
+        rows.push(vec![layer.layer.clone(), word(layer.need) + &reason]);
+    }
+    rows.push(vec![String::new()]);
+    rows.push(super::cells(["SOURCE", "FOR THE REGION", "STATUS ON THIS MACHINE", "WHERE"]));
     for source in &region.sources {
-        let place = held_cells(&source.held).swap_remove(3);
-        let todo = match (source.todo, source.bytes) {
-            (None, _) => "—".to_string(),
-            (Some(Todo::Prepare), _) => "prepare".into(),
-            (Some(Todo::Download), Some(size)) => format!("download, {}", bytes(size)),
-            (Some(Todo::Download), None) => "download, unknown".into(),
-        };
-        rows.push(vec![source.source.clone(), word(source.status), place, todo]);
+        let held = &source.held;
+        rows.push(vec![source.source.clone(), need_text(&source.for_region), status_text(held), place_text(held)]);
     }
     print!("{}", table(&rows));
-    if region.download_bytes == 0 && region.unknown.is_empty() && region.prepare.is_empty() {
-        println!("A bake of the region downloads only what is live, and prepares nothing.");
-        return;
-    }
     if region.download_bytes > 0 {
         println!("A bake of the region downloads {} of known size.", bytes(region.download_bytes));
     }
     if !region.unknown.is_empty() {
-        println!("Unknown size: {}.", region.unknown.join(", "));
+        println!("Unknown size or need: {}.", region.unknown.join(", "));
     }
     if !region.prepare.is_empty() {
         println!("To prepare: {}.", region.prepare.join(", "));
@@ -632,9 +890,34 @@ pub(super) fn print_region(region: &RegionSources) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::tests::{fixture, step};
+    use crate::engine::Run;
+    use crate::product::{Pointer, Steps, Unplanned};
+    use crate::regions::{Area, Region};
+    use crate::store::tests::Scratch;
 
     fn source(id: &str) -> &'static Source {
         crate::sources::all().iter().find(|source| source.id == id).unwrap()
+    }
+
+    fn bbox(edges: [f64; 4]) -> Bbox {
+        Bbox::new(edges).unwrap()
+    }
+
+    fn region(id: &str, area: Area, countries: &[&str]) -> Region {
+        let countries = countries.iter().map(|code| code.to_string()).collect();
+        Region { id: id.into(), name: id.into(), area, countries, time_zone: None }
+    }
+
+    /// The scope of the region `id` of `regions`.
+    fn scope(regions: Vec<Region>, id: &str) -> Option<Scope> {
+        let mut settings = Settings::default();
+        settings.select(&Regions::new(regions).unwrap(), id).unwrap();
+        Some(Scope { region: settings.region, definitions: settings.definitions })
+    }
+
+    fn box_scope(edges: [f64; 4], countries: &[&str]) -> Option<Scope> {
+        scope(vec![region("box", Area::Box { bbox: bbox(edges) }, countries)], "box")
     }
 
     fn dataset(id: &str, state: DatasetState, (listed, verified): (usize, usize)) -> ArchiveDataset {
@@ -655,33 +938,29 @@ mod tests {
         }
     }
 
-    /// The archive holds `land-polygons` and one of three files of `egdi-geology`; `terrain` has a
-    /// version of a box in Switzerland that read `dtm-ch` and GLO-30; the store has one Swiss OSM
-    /// extract of `terrain-osm`.
-    fn holdings() -> Holdings {
-        let bbox = Bbox::new([8.0, 46.0, 9.0, 47.0]).unwrap();
-        let region = crate::regions::Region {
-            id: "box".into(),
-            name: "Box".into(),
-            area: Area::Box { bbox },
-            countries: Vec::new(),
-            time_zone: None,
-        };
-        let mut scope = Settings::default();
-        scope.select(&Regions::new(vec![region]).unwrap(), "box").unwrap();
-        let newest = Version {
-            version: "2026-10-28".into(),
+    fn version(name: &str, format: u32) -> Version {
+        Version {
+            version: name.into(),
             manifest_sha256: "aa".into(),
-            format: 3,
+            format,
             bytes: 7,
             time: "2026-10-28T00:00:00Z".into(),
-            region: Some("box".into()),
-        };
-        let inputs = ["dtm-ch", "copernicus-glo-30"].map(|id| (id.to_string(), newest.version.clone()));
+            region: None,
+        }
+    }
+
+    const HANSEN: &str = "mirror/storage.googleapis.com/earthenginepartners-hansen/GFC-2023-v1.11/\
+                          Hansen_GFC-2023-v1.11_treecover2000_50N_000E.tif";
+
+    /// The archive holds `land-polygons`, one of three files of `egdi-geology` and lists a Hansen
+    /// tile that it lacks; `terrain` has a version of a box in Switzerland that read `dtm-ch` and
+    /// GLO-30; the store has one Swiss extract of `terrain-osm` and the file of `qrank`.
+    fn holdings() -> Holdings {
+        let inputs = ["dtm-ch", "copernicus-glo-30"].map(|id| (id.to_string(), "2026-10-28".to_string()));
         let home = Home {
             folder: "/archive/prepared/terrain".into(),
-            newest,
-            scopes: vec![Some(Scope { region: scope.region, definitions: scope.definitions })],
+            newest: version("2026-10-28", 3),
+            scopes: vec![box_scope([8.0, 46.0, 9.0, 47.0], &[])],
             inputs: inputs.into(),
         };
         let request = StoredRequest {
@@ -690,14 +969,9 @@ mod tests {
             bytes: 40,
             fetched: Some("2026-10-01T08:00:00Z".into()),
         };
-        let osm = InStore {
-            snapshots: vec![Stored { version: "2026-10-01".into(), bytes: 40 }],
-            requests: vec![request],
-            retrieved: Some("2026-10-01T08:00:00Z".into()),
-        };
-        let qrank = InStore {
-            snapshots: vec![Stored { version: "a".repeat(64), bytes: 9 }],
-            requests: Vec::new(),
+        let stored = |version: &str, requests| InStore {
+            snapshots: vec![Stored { version: version.into(), bytes: 40 }],
+            requests,
             retrieved: Some("2026-10-01T08:00:00Z".into()),
         };
         let mut glo30 = dataset("copernicus-glo-30", DatasetState::Absent, (0, 0));
@@ -708,8 +982,14 @@ mod tests {
                 dataset("egdi-geology", DatasetState::Incomplete, (3, 1)),
                 glo30,
             ],
+            archive: [(HANSEN.to_string(), ArchiveFile { bytes: Some(100), verified: false })].into(),
             homes: [("terrain".to_string(), Ok(home))].into(),
-            stored: [("terrain-osm".to_string(), osm), ("qrank".to_string(), qrank)].into(),
+            readers: [("dtm-ch".to_string(), "terrain".to_string())].into(),
+            stored: [
+                ("terrain-osm".to_string(), stored("2026-10-01", vec![request])),
+                ("qrank".to_string(), stored(&"a".repeat(64), Vec::new())),
+            ]
+            .into(),
             index: None,
         }
     }
@@ -720,14 +1000,14 @@ mod tests {
         let held = |id| holdings.held(source(id));
         let status = |id| {
             let held = held(id);
-            (held.status, held.place, held.note, held.download_bytes)
+            (held.status, held.place, held.download_bytes)
         };
-        assert_eq!(status("land-polygons"), (SourceStatus::Archived, Some("/archive".into()), None, None));
-        let partial = Some("1 of 3 files in the archive".into());
-        assert_eq!(status("egdi-geology"), (SourceStatus::Partial, Some("/archive".into()), partial, Some(200)));
+        assert_eq!(status("land-polygons"), (SourceStatus::Archived, Some("/archive".into()), None));
+        assert_eq!(status("egdi-geology"), (SourceStatus::Partial, Some("/archive".into()), Some(200)));
+        assert_eq!(held("egdi-geology").archive_files, Some(Files { verified: 1, listed: 3 }));
         assert_eq!(
             status("copernicus-glo-30"),
-            (SourceStatus::Missing, None, None, Some(500)),
+            (SourceStatus::Missing, None, Some(500)),
             "a prepared version that reads a source of a bake is no copy of it"
         );
         let terrain = held("terrain");
@@ -735,49 +1015,210 @@ mod tests {
         let dtm = held("dtm-ch");
         assert_eq!((dtm.status, dtm.prepared_by.as_deref()), (SourceStatus::Prepared, Some("terrain")));
         assert_eq!(dtm.covers, "europe/switzerland, europe/liechtenstein", "the area paths without an index");
-        assert_eq!(status("dtm-fr"), (SourceStatus::Missing, None, Some("gap: GLO-30 only".into()), None));
-        let stored = Some("1 request in the store".into());
-        assert_eq!(status("terrain-osm"), (SourceStatus::Partial, Some("store".into()), stored, None));
+        let dtm = held("dtm-fr");
+        assert_eq!((dtm.status, dtm.gap), (SourceStatus::Missing, true));
+        let osm = held("terrain-osm");
+        assert_eq!((osm.status, osm.store_requests, osm.place.as_deref()), (SourceStatus::Partial, 1, Some("store")));
+        assert_eq!(held("qrank").status, SourceStatus::Held, "the store has it whole");
         assert_eq!(held("osm-planet").status, SourceStatus::Live);
-        assert_eq!(status("nasa-svs-moon").2.as_deref(), Some("no dataset in data/archive/"));
-        assert_eq!(status("qrank").2.as_deref(), Some("1 version in the store"));
+        assert!(held("nasa-svs-moon").no_dataset);
         assert_eq!(held("query-model").status, SourceStatus::Prepared, "R2 keeps our own asset");
     }
 
     #[test]
-    fn a_region_needs_the_sources_that_meet_it_and_says_what_a_bake_still_does() {
-        let holdings = holdings();
-        let inside = [Bbox::new([8.2, 46.2, 8.5, 46.5]).unwrap()];
-        let outside = [Bbox::new([6.5, 46.2, 7.0, 46.5]).unwrap()];
-        let swiss = ["CH".to_string()];
-        assert!(needs(&holdings, source("dtm-ch"), &inside, &swiss));
-        assert!(!needs(&holdings, source("dtm-fr"), &outside, &swiss), "a national model of another country");
-        assert!(
-            needs(&holdings, source("dtm-fr"), &outside, &[]),
-            "a region without countries reads each that meets it"
-        );
-        assert!(!needs(&holdings, source("land-cover-ie"), &inside, &swiss), "an extent that does not meet it");
-        assert!(!needs(&holdings, source("planetiler"), &inside, &swiss), "a tool");
-
-        let area = "europe/switzerland".to_string();
-        let todo = |id, boxes: &[Bbox], areas: Option<&[&String]>| {
-            let (status, todo, bytes, _) = here(&holdings, source(id), (boxes, areas));
-            (status, todo, bytes)
-        };
-        assert_eq!(todo("terrain", &inside, None), (SourceStatus::Prepared, None, None));
-        assert_eq!(todo("dtm-ch", &inside, None), (SourceStatus::Prepared, None, None));
-        assert_eq!(todo("terrain", &outside, None), (SourceStatus::Partial, Some(Todo::Prepare), None));
-        assert_eq!(todo("dtm-ch", &outside, None), (SourceStatus::Missing, Some(Todo::Download), None));
-        assert_eq!(todo("terrain-osm", &outside, Some(&[&area])), (SourceStatus::Partial, None, None));
-        assert_eq!(todo("terrain-osm", &outside, None), (SourceStatus::Partial, Some(Todo::Download), None));
-        assert_eq!(todo("egdi-geology", &outside, None), (SourceStatus::Partial, Some(Todo::Download), Some(200)));
+    fn a_home_reads_the_newest_version_of_the_format_and_the_versions_that_it_extends() {
+        let dir = Scratch::new("holding-home");
+        let folder = dir.0.join("prepared/terrain");
+        let (a, b, c) = (box_scope([0.0, 0.0, 1.0, 1.0], &[]), box_scope([1.0, 0.0, 2.0, 1.0], &[]), None);
+        let versions = [
+            ("v1", 2, None, &a, vec![]),
+            ("v2", 3, None, &a, vec![]),
+            ("v3", 3, None, &c, vec![]),
+            ("v4", 3, Some("dtm-d"), &b, vec![a.clone()]),
+        ];
+        let mut listed = Vec::new();
+        for (name, format, extra, scope, extends) in versions {
+            std::fs::create_dir_all(folder.join(name)).unwrap();
+            let inputs: Vec<_> = [format!("dtm-{name}")].into_iter().chain(extra.map(str::to_string)).collect();
+            let inputs: Vec<_> =
+                inputs.iter().map(|id| serde_json::json!({"source": id, "version": "1", "digest": "x"})).collect();
+            let manifest =
+                serde_json::json!({"inputs": inputs, "scope": scope, "extends": extends, "files": [{"path": "a"}]});
+            std::fs::write(folder.join(name).join("manifest.json"), manifest.to_string()).unwrap();
+            listed.push(version(name, format));
+        }
+        std::fs::write(folder.join("versions.json"), serde_json::to_vec(&listed).unwrap()).unwrap();
+        let found = home(std::slice::from_ref(&dir.0), "terrain", Some(3)).unwrap().unwrap();
+        assert_eq!(found.newest.version, "v4");
+        assert_eq!(found.scopes, [a, b]);
+        let inputs: Vec<(&str, &str)> = found.inputs.iter().map(|(id, v)| (id.as_str(), v.as_str())).collect();
         assert_eq!(
-            todo("copernicus-glo-30", &outside, None),
-            (SourceStatus::Missing, Some(Todo::Download), None),
-            "tiles"
+            inputs,
+            [("dtm-d", "v4"), ("dtm-v2", "v2"), ("dtm-v4", "v4")],
+            "not v1 (format 2) nor v3 (no chain)"
         );
-        assert_eq!(todo("land-polygons", &outside, None), (SourceStatus::Archived, None, None));
-        assert_eq!(todo("qrank", &outside, None), (SourceStatus::Partial, None, None), "the store has it whole");
-        assert_eq!(todo("nasa-svs-moon", &outside, None), (SourceStatus::Missing, Some(Todo::Download), None));
+        assert!(home(std::slice::from_ref(&dir.0), "terrain", Some(4)).unwrap().is_none(), "no version of the format");
+    }
+
+    #[test]
+    fn a_scope_covers_a_region_by_its_boxes_its_countries_and_the_index() {
+        let holdings = holdings();
+        let home = |scopes| Home { folder: "/h".into(), newest: version("v", 1), scopes, inputs: BTreeMap::new() };
+        let inside = [bbox([8.2, 46.2, 8.5, 46.5])];
+        let ch = ["CH".to_string()];
+        let covers = |scopes, countries: &[String]| holdings.covers_region(&home(scopes), &inside, countries);
+        assert_eq!(covers(vec![None], &ch), Some(true), "a null scope");
+        assert_eq!(covers(vec![box_scope([8.0, 46.0, 9.0, 47.0], &["CH"])], &ch), Some(true));
+        assert_eq!(covers(vec![box_scope([8.0, 46.0, 9.0, 47.0], &["DE"])], &ch), Some(false), "another country");
+        assert_eq!(
+            covers(vec![box_scope([8.0, 46.0, 9.0, 47.0], &["CH"])], &[]),
+            Some(false),
+            "a region of no country"
+        );
+        let union = vec![
+            region("west", Area::Box { bbox: bbox([7.0, 46.0, 8.0, 47.0]) }, &[]),
+            region("east", Area::Box { bbox: bbox([8.0, 46.0, 9.0, 47.0]) }, &[]),
+            region("both", Area::Union { union: vec!["west".into(), "east".into()] }, &[]),
+        ];
+        assert_eq!(covers(vec![scope(union, "both")], &ch), Some(true), "a box of a member of a union");
+        let geofabrik = vec![region("ch", Area::Geofabrik { areas: vec!["europe/switzerland".into()] }, &[])];
+        assert_eq!(covers(vec![scope(geofabrik, "ch")], &ch), None, "an area without an index");
+    }
+
+    #[test]
+    fn a_layer_reads_its_sources_but_not_those_that_only_a_prepare_reads() {
+        let holdings = holdings();
+        let layers = layers(&holdings, crate::sources::all(), Some("search")).unwrap();
+        let ids: Vec<&str> = layers.layers[0].sources.iter().map(|source| source.source.as_str()).collect();
+        assert!(ids.contains(&"wiki") && !ids.contains(&"wikidata"), "{ids:?}");
+        let all = super::layers(&holdings, crate::sources::all(), None).unwrap();
+        assert_eq!(
+            all.layers.iter().map(|layer| layer.layer.as_str()).collect::<Vec<_>>(),
+            ["device", "planner", "search", "trailview"]
+        );
+        assert!(
+            !all.layers.iter().flat_map(|layer| &layer.sources).any(|source| source.source == "planetiler"),
+            "a tool"
+        );
+        assert_eq!(super::layers(&holdings, crate::sources::all(), Some("nope")).err().unwrap().code, Code::Usage);
+    }
+
+    #[test]
+    fn the_countries_of_a_union_are_those_of_its_members_when_each_names_some() {
+        let member = |id: &str, countries| region(id, Area::Box { bbox: bbox([7.0, 46.0, 8.0, 47.0]) }, countries);
+        let union = |members: &[&str]| {
+            region("both", Area::Union { union: members.iter().map(|m| m.to_string()).collect() }, &[])
+        };
+        let regions =
+            Regions::new(vec![member("a", &["DE"]), member("b", &["CH", "DE"]), member("c", &[]), union(&["a", "b"])])
+                .unwrap();
+        assert_eq!(region_countries(&regions, "both").unwrap(), ["CH", "DE"]);
+        let regions = Regions::new(vec![member("a", &["DE"]), member("c", &[]), union(&["a", "c"])]).unwrap();
+        assert!(region_countries(&regions, "both").unwrap().is_empty(), "a member without countries");
+    }
+
+    #[test]
+    fn a_source_that_only_a_prepare_reads_meets_a_region_by_extent_areas_and_country() {
+        let mut holdings = holdings();
+        let inside = [bbox([8.2, 46.2, 8.5, 46.5])];
+        let swiss = ["CH".to_string()];
+        assert!(meets(&holdings, source("dtm-ch"), &inside, &swiss));
+        assert!(!meets(&holdings, source("dtm-fr"), &[bbox([6.5, 46.2, 7.0, 46.5])], &swiss), "another country");
+        assert!(meets(&holdings, source("dtm-fr"), &[bbox([6.5, 46.2, 7.0, 46.5])], &[]), "a region of no country");
+        assert!(!meets(&holdings, source("dtm-it"), &[bbox([20.0, 47.5, 20.5, 48.0])], &[]), "outside its extent");
+        // The extent of `dtm-it-21` meets the box; the bounds of its area do not.
+        let area = geofabrik::Area {
+            id: "europe/italy/nord-ovest".into(),
+            name: "Nord-Ovest".into(),
+            parent: None,
+            countries: vec!["IT".into()],
+            polygons: Vec::new(),
+            bounds: bbox([7.5, 44.0, 9.3, 46.0]),
+        };
+        let edge = [bbox([6.7, 46.2, 7.0, 46.4])];
+        assert!(meets(&holdings, source("dtm-it-21"), &edge, &[]));
+        holdings.index = Some([(area.id.clone(), area)].into());
+        assert!(!meets(&holdings, source("dtm-it-21"), &edge, &[]), "the bounds of its area");
+    }
+
+    /// Reads `natural-earth` whole, one Hansen tile and `terrain`, in one step.
+    struct Reads;
+
+    impl Product for Reads {
+        fn name(&self) -> &'static str {
+            "reads"
+        }
+
+        fn steps(&self, _: &Path, inputs: &Inputs, _: &Regions, store: &Store) -> Result<Steps, Unplanned> {
+            let tile = vec![("tile".to_string(), "50N_000E".to_string())];
+            for (id, params) in [("natural-earth", Vec::new()), ("hansen-gfc", tile.clone()), ("terrain", Vec::new())] {
+                let _ = crate::product::version(inputs, store, id, &params).map_err(Unplanned::Failed)?;
+            }
+            let snapshot = |id: &str, params| Input::Snapshot {
+                source: id.into(),
+                version: "1".into(),
+                params,
+                files: Vec::new(),
+            };
+            let inputs = vec![
+                snapshot("natural-earth", Vec::new()),
+                snapshot("hansen-gfc", tile),
+                snapshot("terrain", Vec::new()),
+            ];
+            Ok(vec![step("reads/a", inputs, "a", Run::Command(Vec::new()))].into())
+        }
+
+        fn pointer(&self) -> Pointer {
+            Pointer { key: crate::release::POINTERS[0], step: "reads/a", path: "a" }
+        }
+    }
+
+    /// Needs a `.poly` that the store lacks.
+    struct Lacks;
+
+    impl Product for Lacks {
+        fn name(&self) -> &'static str {
+            "lacks"
+        }
+
+        fn steps(&self, _: &Path, _: &Inputs, _: &Regions, _: &Store) -> Result<Steps, Unplanned> {
+            let params = vec![("area".to_string(), "europe/x".to_string())];
+            Err(Unplanned::NeedsFetch(vec![Wanted { source: "geofabrik-poly".into(), version: None, params }]))
+        }
+
+        fn pointer(&self) -> Pointer {
+            Pointer { key: crate::release::POINTERS[1], step: "lacks/a", path: "a" }
+        }
+    }
+
+    #[test]
+    fn a_region_lists_what_its_steps_read_and_what_a_bake_still_needs() {
+        let fixture = fixture("holding-region");
+        fixture.fetched_version("natural-earth", "c", "earth.zip", b"earth\n");
+        let holdings = holdings();
+        let products: [&dyn Product; 2] = [&Reads, &Lacks];
+        let place = (&holdings, &fixture.store, &[][..]);
+        let out = super::region(
+            place,
+            (&products, &[]),
+            crate::sources::all(),
+            (&fixture.root(), None, Some("8.2,46.2,8.5,46.5")),
+        )
+        .unwrap();
+        let need = |id: &str| &out.sources.iter().find(|source| source.source == id).unwrap().for_region;
+        assert_eq!((need("natural-earth").need, need("natural-earth").held_bytes), (Need::Held, 6));
+        let hansen = need("hansen-gfc");
+        assert_eq!(
+            (hansen.need, hansen.download_bytes, hansen.unknown_requests),
+            (Need::Download, 100, 0),
+            "the manifest lists it"
+        );
+        assert_eq!(need("terrain").need, Need::Held, "its scope covers the box");
+        assert_eq!((need("dtm-ch").need, need("dtm-ch").read_by.as_deref()), (Need::Held, Some("terrain")));
+        assert!(!out.sources.iter().any(|source| source.source == "dtm-fr" || source.source == "nasa-svs-moon"));
+        let layers: Vec<(&str, Need)> = out.layers.iter().map(|layer| (layer.layer.as_str(), layer.need)).collect();
+        assert_eq!(layers, [("lacks", Need::Unknown), ("test", Need::Download)]);
+        assert!(out.layers[0].reason.as_deref().unwrap().contains("the store lacks `geofabrik-poly` area=europe/x"));
+        assert_eq!((out.download_bytes, out.prepare.len()), (100, 0));
     }
 }

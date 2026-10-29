@@ -440,7 +440,7 @@ mod tests {
     /// The operator page's tests read these examples in place of `obc data --json`.
     #[test]
     fn each_example_of_the_page_has_the_schema_of_its_command() {
-        const EXAMPLES: [(&str, &str); 15] = [
+        const EXAMPLES: [(&str, &str); 17] = [
             ("areas.json", "Areas"),
             ("clean.json", "CleanPlan"),
             ("deploy-plan.json", "DeployPlan"),
@@ -454,6 +454,8 @@ mod tests {
             ("run-running.json", "View"),
             ("runs.json", "RunList"),
             ("setup.json", "Setup"),
+            ("sources-layers.json", "SourceLayers"),
+            ("sources-region.json", "RegionSources"),
             ("sources.json", "Sources"),
             ("status.json", "Overview"),
         ];
