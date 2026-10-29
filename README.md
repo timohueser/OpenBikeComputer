@@ -138,7 +138,8 @@ This is the current direction, not a release schedule.
 
 The hardware build uses the Nordic nRF54LM20 development kit and a Sharp LS021B7DD02 240 × 320
 reflective memory LCD. It reads maps and routes from microSD and connects to the companion software
-over BLE and USB. The custom PCB and enclosure are still under development. KiCad sources can be found in the repository, CAD sources for the enclosure will be made available later.
+over BLE and USB. The custom PCB and enclosure are still under development. KiCad sources are in
+[`hardware/`](hardware/README.md); CAD sources for the enclosure follow later.
 
 ## Repository layout
 

@@ -16,79 +16,6 @@ each change; blue dots mean unwritten. Settings persist across power cycles.
 3. **VCOM hardware flow control → OFF.** `debug-uart` never asserts RTS.
    With HWFC on, telemetry works but injected fixes and buttons do not.
 
-## Full pin map
-
-**Port P2 — MCU/fast domain.** All 11 pins are used: the microSD bus and the panel's source bus,
-two of them shared. The card's six pads are fixed by Nordic's sEMMC soft peripheral.
-
-| Pin   | sEMMC | Display | Notes                                                        |
-|-------|-------|---------|--------------------------------------------------------------|
-| P2.00 | D3    | **B0**  | shared — `CTRLSEL` per mode; internal pull-up in storage mode |
-| P2.01 | CLK   | —       | card only; parked as an input in display mode                 |
-| P2.02 | D0    | —       | card only; parked as an input in display mode                 |
-| P2.03 | D2    | —       | card only; parked as an input in display mode                 |
-| P2.04 | D1    | **B1**  | shared — `CTRLSEL` per mode; internal pull-up in storage mode |
-| P2.05 | CMD   | —       | card only; parked as an input in display mode                 |
-| P2.06 | —     | R0      | source data (even-`x` R)                                      |
-| P2.07 | —     | BCK     | source shift clock                                            |
-| P2.08 | —     | R1      | source data (odd-`x` R)                                       |
-| P2.09 | —     | G0      | source data (even-`x` G)                                      |
-| P2.10 | —     | G1      | source data (odd-`x` G)                                       |
-
-The packed wire word is `DATA_MASK = 0x751` (`B0`→0, `B1`→4, `R0`→6, `R1`→8, `G0`→9, `G1`→10).
-`even`/`odd` is 0-based `x`, so the `*0` lines carry `x = 0, 2, 4, …`; the panel datasheet numbers
-columns from 1 and calls that same line the *odd* column.
-
-**Pad configuration per mode** (`src/semmc.rs`, `configure_storage_pads` / `configure_display_pads`):
-
-| | the six card pads | the four card-only pads |
-|---|---|---|
-| **storage** | Output, input Disconnect, E0/E1 drive, `CTRLSEL = VPR`, `GPIOHSPADCTRL.BIAS = 2`; internal pull-up on `D3`/`D1` only | same — all six are the card's |
-| **display** | `P2.00`/`P2.04` → Output, S drive, no pull, `CTRLSEL = GPIO`, `GPIOHSPADCTRL.BIAS = 2` | Input, no pull, `CTRLSEL = GPIO`; the external pull-ups hold the bus idle-high and the card stays inert |
-
-`GPIOHSPADCTRL.BIAS` is port-global, not per-pin, so both modes set the same constant 2
-(`semmc::HS_PAD_BIAS`). Only `D3`/`D1` get an internal pull-up, because this desk breakout carries
-its own resistors on the rest. **The production board should fit external 10–100 kΩ pull-ups on
-`CMD`/`DAT0–3` (none on `CLK`) and turn all internal pulls off.**
-
-**Port P1 — PERI domain, ≤8 MHz** (gate/BSP, sensors, COM, VCOM and buttons):
-
-| Pin   | Signal       | Notes                                                     |
-|-------|--------------|-----------------------------------------------------------|
-| P1.03 | I²C SCL      | shared GPS + altimeter + compass bus (TWIM22)             |
-| P1.04 | I²C SDA      | same bus                                                   |
-| P1.05 | GPS TX-Ready | optional DDC data-ready IRQ (active-high)                  |
-| P1.06 | unused PWM pad | held low; do not wire |
-| P1.07 | unused PWM pad | held low; do not wire |
-| P1.08 | BTN2         | BACK                                                       |
-| P1.09 | BTN1         | DOWN                                                       |
-| P1.10 | GSP          | gate start pulse                                           |
-| P1.11 | GCK          | gate clock                                                 |
-| P1.12 | GEN          | gate enable                                                |
-| P1.13 | INTB         | frame envelope                                             |
-| P1.14 | BSP          | source sub-line start (the lone P1 source line)            |
-| P1.16 | VCOM TX      | UARTE20 → host (`debug-uart` builds only)                  |
-| P1.17 | VCOM RX      | UARTE20 ← host (`debug-uart` only; needs HWFC OFF)         |
-| P1.22 | VCOM (COM)   | COM electrode, HighDrive                                   |
-| P1.23 | VB           | COM electrode                                              |
-| P1.24 | VA           | COM electrode (inverse phase)                              |
-| P1.25 | LED1         | liveness heartbeat                                         |
-| P1.26 | BTN0         | UP                                                         |
-| P1.27 | backlight    | **PROVISIONAL** — PWM20 ch0, 1 kHz; also DK LED2           |
-
-**Ports P0 and P3:**
-
-| Pin   | Signal  | Notes |
-|-------|---------|-------|
-| P0.05 | BTN3    | SELECT; low-power domain |
-| P3.00 | piezo A | **PROVISIONAL** — PWM21 ch0; header P5 |
-| P3.01 | piezo B | **PROVISIONAL** — PWM21 ch1; header P5; wire a passive piezo between A and B, not to ground |
-
-**Schematic-time: the backlight gate needs an external pull-down.** P1.27 idles low, but only
-after `PanelBacklight::new` has run (`src/panel_power.rs`). Before that, and through all of
-`obc-boot`, the pin is input, no pull, high impedance, and System OFF stops the PWM wherever the
-waveform left the line. A floating MOSFET gate is not a defined lamp state.
-
 ## Build and flash
 
 Flash [`obc-boot`](../obc-boot/README.md) first: run `obc flash-boot` from the
@@ -114,6 +41,45 @@ are refused. Set `OBC_DEMO_RIDE_FILE` to an absolute path for another marked dem
 | `factory-demo-ride` | Write a demo ride, then stay idle. |
 | `resource-report` | `.obc_resources` for the resource guard; never flash or package this diagnostic image. |
 | `flat-store-reset` | Destructive `flat_store_bench` maintenance mode. |
+
+## Host input and firmware update
+
+Flash `debug-uart` and disable VCOM HWFC. From the repository root:
+
+```sh
+obc flash debug-uart
+obc uart                              # optional: path/to/ride.gpx
+obc debug                             # flash and open the feeder
+```
+
+The feeder sends buttons and sensor values, and displays telemetry.
+`--list` shows serial ports. Disconnect J3 if the test also needs BLE.
+On macOS, use `cu.usbmodem*133`, not `*131` or `tty.*`. Use pyserial;
+`stty` with `printf` or `cat` loses termios settings across opens.
+
+For a [signed update package](../README.md#firmware-update-images-obcu) in the store, send
+`dfu-install\n` to the live CDC port and read the `D` status lines:
+
+```sh
+uv venv /tmp/dfu-venv && uv pip install --python /tmp/dfu-venv/bin/python pyserial
+/tmp/dfu-venv/bin/python -c "import serial; p = serial.Serial('/dev/cu.usbmodem<...>133', 115200, \
+  rtscts=False, timeout=90); p.write(b'dfu-install\n'); [print(p.readline()) for _ in range(40)]"
+```
+
+The device resets into `obc-boot` to install it; see its README for LED codes.
+Unsigned packages and triggers during recording are refused. If VCOM returns
+nothing and RTT has no `dfu:` line, power-cycle the DK to clear the CDC bridge.
+
+## Flat store bench
+
+```sh
+cargo run --release --bin flat_store_bench
+cargo run --release --bin flat_store_bench --features flat-store-reset
+```
+
+**Both commands destroy the partition table and every object from raw LBA 0.**
+The bench refuses another `StoreId` unless `FORCE_REINIT` overrides it.
+See the [bench module](src/bin/flat_store_bench.rs) for phases and output.
 
 ## Display and microSD
 
@@ -202,6 +168,87 @@ Prototype VID/PID is `1209:0001`. MS OS 2.0 descriptors bind WinUSB on Windows.
 | Plug is not detected | Both VREGUSB interrupt handlers remain bound. |
 | Enumeration at 12 Mb/s | Full-speed fallback; 512 B bulk descriptors are invalid. |
 
+## Peak View
+
+The menu appears when the selected map (lowest-ID Map object) has indexed terrain.
+See [simulator controls](../../sim/desktop/README.md). Generation uses the shared
+128 KiB scratch arena; Back must release it before navigation, rendering or USB.
+`obc-bake bake` writes the surface index. Convert standalone native terrain with
+`obc-dem surface native.obcd indexed.obcd`.
+
+## Full pin map
+
+**Port P2 — MCU/fast domain.** All 11 pins are used: the microSD bus and the panel's source bus,
+two of them shared. The card's six pads are fixed by Nordic's sEMMC soft peripheral.
+
+| Pin   | sEMMC | Display | Notes                                                        |
+|-------|-------|---------|--------------------------------------------------------------|
+| P2.00 | D3    | **B0**  | shared — `CTRLSEL` per mode; internal pull-up in storage mode |
+| P2.01 | CLK   | —       | card only; parked as an input in display mode                 |
+| P2.02 | D0    | —       | card only; parked as an input in display mode                 |
+| P2.03 | D2    | —       | card only; parked as an input in display mode                 |
+| P2.04 | D1    | **B1**  | shared — `CTRLSEL` per mode; internal pull-up in storage mode |
+| P2.05 | CMD   | —       | card only; parked as an input in display mode                 |
+| P2.06 | —     | R0      | source data (even-`x` R)                                      |
+| P2.07 | —     | BCK     | source shift clock                                            |
+| P2.08 | —     | R1      | source data (odd-`x` R)                                       |
+| P2.09 | —     | G0      | source data (even-`x` G)                                      |
+| P2.10 | —     | G1      | source data (odd-`x` G)                                       |
+
+The packed wire word is `DATA_MASK = 0x751` (`B0`→0, `B1`→4, `R0`→6, `R1`→8, `G0`→9, `G1`→10).
+`even`/`odd` is 0-based `x`, so the `*0` lines carry `x = 0, 2, 4, …`; the panel datasheet numbers
+columns from 1 and calls that same line the *odd* column.
+
+**Pad configuration per mode** (`src/semmc.rs`, `configure_storage_pads` / `configure_display_pads`):
+
+| | the six card pads | the four card-only pads |
+|---|---|---|
+| **storage** | Output, input Disconnect, E0/E1 drive, `CTRLSEL = VPR`, `GPIOHSPADCTRL.BIAS = 2`; internal pull-up on `D3`/`D1` only | same — all six are the card's |
+| **display** | `P2.00`/`P2.04` → Output, S drive, no pull, `CTRLSEL = GPIO`, `GPIOHSPADCTRL.BIAS = 2` | Input, no pull, `CTRLSEL = GPIO`; the external pull-ups hold the bus idle-high and the card stays inert |
+
+`GPIOHSPADCTRL.BIAS` is port-global, not per-pin, so both modes set the same constant 2
+(`semmc::HS_PAD_BIAS`). Only `D3`/`D1` get an internal pull-up, because this desk breakout carries
+its own resistors on the rest. **The production board should fit external 10–100 kΩ pull-ups on
+`CMD`/`DAT0–3` (none on `CLK`) and turn all internal pulls off.**
+
+**Port P1 — PERI domain, ≤8 MHz** (gate/BSP, sensors, COM, VCOM and buttons):
+
+| Pin   | Signal       | Notes                                                     |
+|-------|--------------|-----------------------------------------------------------|
+| P1.03 | I²C SCL      | shared GPS + altimeter + compass bus (TWIM22)             |
+| P1.04 | I²C SDA      | same bus                                                   |
+| P1.05 | GPS TX-Ready | optional DDC data-ready IRQ (active-high)                  |
+| P1.06 | unused PWM pad | held low; do not wire |
+| P1.07 | unused PWM pad | held low; do not wire |
+| P1.08 | BTN2         | BACK                                                       |
+| P1.09 | BTN1         | DOWN                                                       |
+| P1.10 | GSP          | gate start pulse                                           |
+| P1.11 | GCK          | gate clock                                                 |
+| P1.12 | GEN          | gate enable                                                |
+| P1.13 | INTB         | frame envelope                                             |
+| P1.14 | BSP          | source sub-line start (the lone P1 source line)            |
+| P1.16 | VCOM TX      | UARTE20 → host (`debug-uart` builds only)                  |
+| P1.17 | VCOM RX      | UARTE20 ← host (`debug-uart` only; needs HWFC OFF)         |
+| P1.22 | VCOM (COM)   | COM electrode, HighDrive                                   |
+| P1.23 | VB           | COM electrode                                              |
+| P1.24 | VA           | COM electrode (inverse phase)                              |
+| P1.25 | LED1         | liveness heartbeat                                         |
+| P1.26 | BTN0         | UP                                                         |
+| P1.27 | backlight    | **PROVISIONAL** — PWM20 ch0, 1 kHz; also DK LED2           |
+
+**Ports P0 and P3:**
+
+| Pin   | Signal  | Notes |
+|-------|---------|-------|
+| P0.05 | BTN3    | SELECT; low-power domain |
+| P3.00 | piezo A | **PROVISIONAL** — PWM21 ch0; header P5 |
+| P3.01 | piezo B | **PROVISIONAL** — PWM21 ch1; header P5; wire a passive piezo between A and B, not to ground |
+
+**Schematic-time: the backlight gate needs an external pull-down.** P1.27 idles low, but only
+after `PanelBacklight::new` has run (`src/panel_power.rs`). Before that, and through all of
+`obc-boot`, the pin is input, no pull, high impedance, and System OFF stops the PWM wherever the
+waveform left the line. A floating MOSFET gate is not a defined lamp state.
+
 ## Board connection and recovery
 
 `obc board doctor` reports probes, serial owners and USB enumeration on macOS
@@ -226,50 +273,3 @@ resetting. Use the exact installed ELF, features and `DEFMT_LOG` for decoding.
 | J3 does not enumerate | Check native cable, VID/PID and RTT VBUS lines. J4 serial does not prove native USB works. |
 | J3 enumerates but connection fails | Close the desktop or browser interface owner, then reconnect. |
 | Restart and capture boot logs | `obc board run ELF --preverify` verifies, resets and streams RTT. It programs only if the installed image differs. `--preverify` applies to `run` and `download`. |
-
-## Host input and firmware update
-
-Flash `debug-uart` and disable VCOM HWFC. From the repository root:
-
-```sh
-obc flash debug-uart
-obc uart                              # optional: path/to/ride.gpx
-obc debug                             # flash and open the feeder
-```
-
-The feeder sends buttons and sensor values, and displays telemetry.
-`--list` shows serial ports. Disconnect J3 if the test also needs BLE.
-On macOS, use `cu.usbmodem*133`, not `*131` or `tty.*`. Use pyserial;
-`stty` with `printf` or `cat` loses termios settings across opens.
-
-For a [signed update package](../README.md) in the store, send `dfu-install\n`
-to the live CDC port and read the `D` status lines:
-
-```sh
-uv venv /tmp/dfu-venv && uv pip install --python /tmp/dfu-venv/bin/python pyserial
-/tmp/dfu-venv/bin/python -c "import serial; p = serial.Serial('/dev/cu.usbmodem<...>133', 115200, \
-  rtscts=False, timeout=90); p.write(b'dfu-install\n'); [print(p.readline()) for _ in range(40)]"
-```
-
-The device resets into `obc-boot` to install it; see its README for LED codes.
-Unsigned packages and triggers during recording are refused. If VCOM returns
-nothing and RTT has no `dfu:` line, power-cycle the DK to clear the CDC bridge.
-
-## Flat store bench
-
-```sh
-cargo run --release --bin flat_store_bench
-cargo run --release --bin flat_store_bench --features flat-store-reset
-```
-
-**Both commands destroy the partition table and every object from raw LBA 0.**
-The bench refuses another `StoreId` unless `FORCE_REINIT` overrides it.
-See the [bench module](src/bin/flat_store_bench.rs) for phases and output.
-
-## Peak View
-
-The menu appears when the selected map (lowest-ID Map object) has indexed terrain.
-See [simulator controls](../../sim/desktop/README.md). Generation uses the shared
-128 KiB scratch arena; Back must release it before navigation, rendering or USB.
-`obc-bake bake` writes the surface index. Convert standalone native terrain with
-`obc-dem surface native.obcd indexed.obcd`.

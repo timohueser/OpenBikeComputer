@@ -10,16 +10,16 @@ This file records only the choices an iOS contributor needs while reading the im
 
 ## Versioning and store identity
 
-Protocol version `4`. `protocolVersion` is exactly one little-endian `u16`. The client issues
-`LIST` before its first object operation and takes the exact 128-bit `StoreId` from that response.
-Durable phone state is scoped to `(device serial, StoreId)`, so a reset or a card swap cannot
-alias an old object id. **A version mismatch is surfaced, never decoded optimistically.**
+The client checks `protocolVersion` (`ble-interface.md` §3.3). It issues `LIST` before its first
+object operation and takes the exact 128-bit `StoreId` from that response. Durable phone state is
+scoped to `(device serial, StoreId)`, so a reset or a card swap cannot alias an old object id.
+**A version mismatch is surfaced, never decoded optimistically.**
 
 ## Transport
 
-The app discovers DIS (`0x180A`), BAS (`0x180F`) and OBC Control (`3C920000-…`). The DIS Firmware
-Revision String is either an installed OBCU version or a bare Git hash; **a hash is never parsed
-as a release version**, so it never produces an automatic update offer.
+The app discovers DIS, BAS and OBC Control (`ble-interface.md` §3). It follows the §3.1
+firmware-revision dialect: **a bare Git hash is never parsed as a release version**, so it never
+produces an automatic update offer.
 
 Bulk objects move over one encrypted L2CAP CoC. `L2CAPByteChannel` owns bytes, `BLEChannel`
 preserves v4 stream-record boundaries, `TransferClient` owns request ids and the
@@ -35,39 +35,28 @@ request and stream record at the link.
 
 ## Object formats
 
-- Routes are OBCR v5 files. GPX and TCX conversion happens on the phone, and the device stores the
-  OBCR bytes verbatim. The device never parses XML.
+- Routes are OBCR v5 files. The device stores the OBCR bytes verbatim and never parses XML.
 - Ride bytes are recorded samples plus an OBRF footer. The phone decodes them to `Ride` before
   archiving or exporting GPX.
 - Route, ride and trip catalogs are v4 `LIST` entries. Catalog flag bit 3 (`assistantAccepted`)
   marks an accepted Assistant route; the decoder accepts it and rejects undefined flag bits.
-- Trips hold route object ids, not route bytes. Upload the stages first and the trip last.
-  Deleting a trip does not implicitly delete its routes.
+- Trips reference route objects (`ble-interface.md` §7.7). Upload the stages first and the trip
+  last. Deleting a trip does not implicitly delete its routes.
 - Firmware images are signed OBCU containers carried as update objects.
 
 The wire codecs are under `OBCTransport/Codecs/`; interchange-file parsing is in `OBCFormats`.
 
 ## Ride archives
 
-The catalog and download path preserve StoreId, ObjectId, the served Revision, the verified length
-and the CRC. The archive publishes the canonical summary, samples, source and local sync state in
-one transaction, and **file and directory persistence barriers must succeed before a local archive
-receipt is returned**. An in-memory save cannot produce a receipt.
-
-The coordinator sends ARCHIVE_RIDE after a durable commit, and for a revalidated matching archive
-even when no download is needed. **Only the matching ARCHIVE_RIDE response confirms proof**;
-STATUS and local save counts cannot. The device uses archive proof for the synced indicator, and
-rides stay on the device until the user deletes them.
-
-A ten-second receipt-response deadline cancels the parked receive. A timeout or a failed receipt
-leaves the local archive intact and the device confirmation pending in the sync banner; resume or
-reconnect revalidates and retries without downloading saved rides. A changed source is terminal
-for that receipt.
+`ride-archive-receipts.md` owns the archive commit, the receipt, its deadline and the retry rules.
+The coordinator sends ARCHIVE_RIDE; **only the matching ARCHIVE_RIDE response confirms proof**.
+Rides stay on the device until the user deletes them.
 
 ## Names and imports
 
 - **The device name lives in Config.** Renaming is a `Config` object write; there is no rename
-  command. The UTF-8 name is capped at 48 bytes and truncated only at a Character boundary.
+  command (`ble-interface.md` §7.3). The app truncates the UTF-8 name to the 48-byte cap only at a
+  Character boundary.
 - **The phone accepts GPX and TCX.** Either decodes into `ImportedRoute`, which is encoded as OBCR
   before upload. `RouteSource` and the import UI expose the same two-format boundary.
 

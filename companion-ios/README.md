@@ -1,44 +1,24 @@
 # OpenBikeComputer iOS companion
 
-An on-ramp. The canonical wire contract is
-[`../specs/ble-interface.md`](../specs/ble-interface.md);
+The app imports planned routes, pushes them to the device, and syncs recorded rides back. The
+canonical wire contract is [`../specs/ble-interface.md`](../specs/ble-interface.md);
 [`OBCProtocol.md`](OBCProtocol.md) records the iOS-facing mappings.
 
-The app imports planned routes, pushes them to the device, and syncs recorded rides back.
+## Setup
 
-## Architecture
+Install Xcode 26.x, an iOS simulator runtime, XcodeGen, Node.js 22 or later, and the Rust
+toolchain. Personal signing belongs in `project.local.yml`: it is tracked with an empty team id,
+and its header says how to keep your edit out of git.
 
-View models depend on capability-sized protocols declared by `OBCTransport`, so the same UI runs
-against CoreBluetooth on a device and against the deterministic mock in tests and the simulator.
-Use the broad `DeviceTransport` aggregate only for true aggregate consumers and composition-root
-wiring. CoreBluetooth stays in `OBCTransport/BLE/`, and mock code stays in `OBCMock` behind
-`#if DEBUG`. Tests enforce these boundaries.
+## Build
 
-```text
-OBCDomain -> OBCTransport -> OBCMock
-         \-> OBCFormats
-OBCUI -> OBCDomain + OBCTransport + OBCPlanner + MapLibre (iOS)
-OBCPlanner -> OBCDomain (online client, offline installation and selection)
-```
-
-`OBCCompanion/` is the composition root and the only target that chooses a concrete transport and planner provider.
-`PlannerDataSource` supplies one release for maps, search, routes, and viewport layers.
-`obcPlannerSource` passes that provider to map views. The app uses `LocalFirstPlanner`.
-`OfflinePlanner` connects installed releases to native routing, search and map files.
-Offline maps live in Settings, with a shortcut in the planner's map menu.
-`project.yml` is the Xcode project source of truth; **never edit or commit the generated
-pbxproj.**
-
-## Build and test
-
-Needs Xcode 26.x, an iOS simulator runtime, XcodeGen, Node.js 22 or later, and the Rust toolchain.
 XcodeGen installs the pinned replay renderer and builds native map styles and search with npm.
-App builds link `OBCHost` and compile `planner-service` for the selected Rust iOS target.
-Map styles and POI kinds come from the web planner sources. Before package tests without XcodeGen, run
-`npm ci --prefix companion-ios/ReplayAssets` from the repository root.
-The existing host build script also connects the package to the Rust framework.
+Map styles and POI kinds come from the web planner sources. App builds link `OBCHost` and compile
+`planner-service` for the selected Rust iOS target. The host build script also connects the
+package to the Rust framework.
 
-For a simulator, prepare the framework before XcodeGen resolves the package:
+For a simulator, prepare the framework before XcodeGen resolves the package, then use the
+`OBCCompanion` scheme:
 
 ```sh
 tools/build-ios-host.sh --sim-only
@@ -46,7 +26,16 @@ cd companion-ios
 xcodegen generate
 ```
 
-For package tests, start at the repository root and prepare the macOS slice:
+`obc ios-companion` builds Release with real Bluetooth and installs it on the paired iPhone;
+`obc ios-device` does the same for the `OBCDevice` shell.
+
+`project.yml` is the Xcode project source of truth; **never edit or commit the generated
+pbxproj.**
+
+## Test
+
+Before package tests without XcodeGen, run `npm ci --prefix companion-ios/ReplayAssets` from the
+repository root. Then, from the repository root, prepare the macOS slice:
 
 ```sh
 tools/build-ios-host.sh --mac-only
@@ -54,11 +43,7 @@ cd companion-ios/Packages/OBCKit
 swift test --disable-keychain --disable-netrc
 ```
 
-CI runs the package tests plus Debug and Release simulator builds. For a simulator, generate the
-project and use the `OBCCompanion` scheme. `obc ios-companion` builds Release with real Bluetooth
-and installs it on the paired iPhone; `obc ios-device` does the same for the `OBCDevice` shell.
-Personal signing belongs in `project.local.yml`: it is tracked with an empty team id, and its
-header says how to keep your edit out of git.
+CI runs the package tests plus Debug and Release simulator builds.
 
 ## Mock and captures
 
@@ -79,3 +64,24 @@ catalogue, such as the one that `obc data serve` prints.
   Offline downloads use the downloads service of the active release in that catalogue.
 - On a device, accept the Local Network alert. To answer it again, use Settings › Privacy &
   Security › Local Network.
+
+## Architecture
+
+View models depend on capability-sized protocols declared by `OBCTransport`, so the same UI runs
+against CoreBluetooth on a device and against the deterministic mock in tests and the simulator.
+Use the broad `DeviceTransport` aggregate only for true aggregate consumers and composition-root
+wiring. CoreBluetooth stays in `OBCTransport/BLE/`, and mock code stays in `OBCMock` behind
+`#if DEBUG`. Tests enforce these boundaries.
+
+```text
+OBCDomain -> OBCTransport -> OBCMock
+         \-> OBCFormats
+OBCUI -> OBCDomain + OBCTransport + OBCPlanner + MapLibre (iOS)
+OBCPlanner -> OBCDomain (online client, offline installation and selection)
+```
+
+`OBCCompanion/` is the composition root and the only target that chooses a concrete transport and
+planner provider. `PlannerDataSource` supplies one release for maps, search, routes, and viewport
+layers. `obcPlannerSource` passes that provider to map views. The app uses `LocalFirstPlanner`.
+`OfflinePlanner` connects installed releases to native routing, search and map files. Offline maps
+live in Settings, with a shortcut in the planner's map menu.
