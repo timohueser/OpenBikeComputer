@@ -8,22 +8,26 @@ holds finer national DTM heights on the OBCT lattice, and the bakery lifts a cre
 
 ## Run it
 
-`obc data source prepare terrain --region R` adds a region to the version before: per tile,
-`ingest.py fetch <keys> --tile <ti>-<tj> --base …` folds each model into the tile before, then
-`index-terrain` runs per pool. `merge.py --step` is `device/reference/<leaf>` and
-`planner/reference`: the tiles of the version, cut to the leaf.
+`obc data source prepare terrain --region R` adds a region to the version before: per block of
+4 × 4 tiles, `ingest.py fetch --block <bi>-<bj> <ti>-<tj>=<keys> …` pools and folds the models of
+each tile, then `index-terrain` writes the one index of the version. `merge.py --step` is
+`device/reference/<leaf>` and `planner/reference`: the tiles of the version, cut out of their
+blocks into an archive of this contract.
 
-The steps need the uv group `terrain-reference` of the root `pyproject.toml`. One tile by hand:
+The steps need the uv group `terrain-reference` of the root `pyproject.toml`. One block by hand:
 
 ```sh
 uv run --group terrain-reference python3 host/obc-dem/reference/ingest.py \
-    fetch ch --tile 4812-4223 --work /tmp/ch-work --out /tmp/ch
+    fetch --block 1203-1055 4812-4223=ch --work /tmp/ch-work --out /tmp/ch
 ```
 
 ## The tile contract
 
 `write_tile` in `ingest/archive.py` writes it, and `tile_problems` in `tests/test_ingest.py`
-holds a tile to it.
+holds a tile to it. A prepared version of `terrain` packs the tiles 4 × 4 into blocks
+`18/<bi:04>/<bj:04>.tif` with the same encoding and one `index.json` of `contributors` and
+`sources` (`specs/obc-data.md` §`terrain`); `merge.py` cuts a tile out of its block, and writes
+`tiles` and `sha256` into the index of the archive.
 
 - **Lattice**: OBCT `GRID_ORIGIN` (−2^28 µdeg on both axes), step `2^6` µdeg
   (`REFERENCE_STEP_LOG2 = 6`, about 7.1 m latitude and 4.9 m longitude at 47° N).
@@ -84,7 +88,7 @@ the model is used: a model whose highest height within about 1 km is more than 1
 refused. An ellipsoidal product must be converted to orthometric first; only the `sk`
 adapter does, with its agency's quasigeoid.
 
-Memory is one source raster plus the tile. A **monolithic** raster, such as a
+Memory is one source raster plus the two pools of a block, about 100 MB. A **monolithic** raster, such as a
 whole-state DGM of several gigabytes, is held whole: cut it up with `gdal_retile` first.
 
 ### Credentials

@@ -47,6 +47,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "net", "process", "fs
 flate2 = "1"
 obc-elevation = { path = "../../firmware/obc-elevation" }
 obc-fixtures = { path = "../obc-fixtures" }
+# Writes a mean block of `terrain` for the bias test.
+tiff = { version = "0.11", default-features = false }
 # The empty `wiki` shard of the planner build test.
 zstd = "0.14"
 # Reads the search databases of the planner build test.
