@@ -66,7 +66,7 @@ Rides stay on the device until the user deletes them.
 | --- | --- |
 | `OBCProtocol` | Pinned version and feature-bit constants |
 | `DeviceInfo` | DIS plus the v4 StoreId learned through `LIST` |
-| `DeviceConfig` | Append-only Config blob, including name and raw refresh byte |
+| `DeviceConfig` | Append-only Config blob: device name and units |
 | `RouteBlob` / `RouteDetail` | Opaque OBCR upload and decoded route-object detail |
 | `Ride` / `RidePoint` | Canonical decoded ride and export input |
 | `ImportedRoute` / `RoutePoint` | Canonical GPX and TCX import model |

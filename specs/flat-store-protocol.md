@@ -482,9 +482,10 @@ Every stream record carries one 16-byte frame and no payload checksum:
 | 12 | 2 | payload length, nonzero |
 | 14 | 2 | zero |
 
-A stream record is this 16-byte frame immediately followed by exactly `payload length` payload bytes,
-and one record is one link record: one CoC SDU on BLE, one length-prefixed record on USB. The frame
-carries no direction byte: the `RequestId` names a `PUT` or a `GET`, which settles the direction.
+A stream record is this 16-byte frame immediately followed by exactly `payload length` payload
+bytes. On USB one record is one length-prefixed link record. On BLE the CoC is a byte stream, and
+the frame header sets the record boundaries (§5.1). The frame carries no direction byte: the
+`RequestId` names a `PUT` or a `GET`, which settles the direction.
 
 Frames are contiguous and ascending; the offset equals the receiver's next expected offset. A gap, an
 overlap, a zero length, a length disagreeing with the record, or a length above the link's ceiling
@@ -723,7 +724,7 @@ Request, 16 bytes: package `ObjectId u64`, expected `Revision u64`. The device t
    update kind's detail and changes nothing.
 2. **Allocates and commits the rollback reserve**: one entry of kind `8` with the `RESERVED` flag and
    enough extents for the running image. This is the one commit `ARM` makes; the bootloader cannot
-   allocate, only write where it is told.
+   allocate, and it only reads the extents the boot handoff names.
 3. **Writes the boot handoff**: both extent lists, resolved to absolute 512-byte block runs, into the
    RRAM boot-state page, then reads it back and verifies. The page format and the bootloader's
    decision logic are [`obcu-update.md`](obcu-update.md) §2; its `Extent { start_block, blocks }` is
@@ -745,8 +746,9 @@ reserve is then an ordinary object the next boot removes. A cut after step 3 is 
 business: its trial boot and rollback are [`obcu-update.md`](obcu-update.md) §2.
 
 The rollback reserve is the single exception to the format's rule that the store writes an object's
-bytes: the bootloader writes into those extents. The entry exists to keep them out of the allocator,
-and post-install reconciliation removes it with one commit.
+bytes: the device's update path writes the running image into those extents, and the bootloader
+reads them. The entry exists to keep them out of the allocator, and post-install reconciliation
+removes it with one commit.
 
 There is no card-sideload path. The card is not user-accessible and the only delivery routes are
 BLE, USB and the builder.

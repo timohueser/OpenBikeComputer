@@ -176,10 +176,10 @@ over the raw extents, and always leave a bootable image. Signature verification 
 
 ## 2. Boot-state page
 
-One CRC-framed blob written to a dedicated **4 KB RRAM page** (`PAGE_LEN = 4096`). It is the only
-channel between the app and the bootloader. RRAMC writes 16-byte lines, so the **encoded length is
-always a multiple of 16** (guaranteed by construction and a compile-time assert), and the armer
-writes whole lines with no read-modify-write.
+One CRC-framed blob written to a dedicated **4 KB RRAM page** (`PAGE_LEN = 4096`). It is one of
+the two channels between the app and the bootloader; the other is the §3 stage carve. RRAMC writes
+16-byte lines, so the **encoded length is always a multiple of 16** (guaranteed by construction and
+a compile-time assert), and the armer writes whole lines with no read-modify-write.
 
 The blob is a fixed 16-byte header, a tag-specific payload, zero padding, and a trailing whole-blob
 CRC-32. `blob_len` (offset 8) is the total encoded length including the CRC; the CRC covers bytes
@@ -393,14 +393,15 @@ Decode follows the crate-wide rule: **valid CRC ⇒ staged blob, anything else �
 
 ### 3.3 Armer ordering (normative)
 
-The stage is written **before** the `Armed` page, on the costs-nothing side of §1.4's commit point:
-blob body first (16-byte lines, zero-padded tail), the CRC-framed header line **last**,
-readback-verified through the same validator the bootloader uses, and only then the boot-state page
-write. A power cut anywhere before the page write leaves nothing armed; a torn stage fails its CRC
-and reads as "never staged". Corollary: **a valid `Armed` or `Trial`/`Rollback` page implies a valid
-stage carve.** The stage is idempotent — a re-arm with the same app image skips the write — and
-inert without a boot-state record, like the rollback snapshot. A stage that cannot be written or
-verified aborts the arm (`ArmError::BlobStage`) with the page untouched.
+The stage is written **before** the `Armed` page (§2), on the costs-nothing side of the arm's commit
+point, which is that page write: blob body first (16-byte lines, zero-padded tail), the CRC-framed
+header line **last**, readback-verified through the same validator the bootloader uses, and only
+then the boot-state page write. A power cut anywhere before the page write leaves nothing armed; a
+torn stage fails its CRC and reads as "never staged". Corollary: **a valid `Armed` or
+`Trial`/`Rollback` page implies a valid stage carve.** The stage is idempotent — a re-arm with the
+same app image skips the write — and inert without a boot-state record, like the rollback snapshot.
+A stage that cannot be written or verified aborts the arm (`ArmError::BlobStage`) with the page
+untouched.
 
 ### 3.4 Bootloader validation (normative)
 

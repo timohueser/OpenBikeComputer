@@ -83,7 +83,8 @@ takes a new meaning.
 The device requests, and the app accepts where the OS allows: **2M PHY**, data length extension
 (**251-byte PDUs**), ATT MTU **247**. The L2CAP CoC MPS is aligned to the PDU so one SDU chunk of
 **244 bytes** rides in one packet. These are preferences, not requirements — the protocol is
-correct at any negotiated MTU, just slower.
+correct at any negotiated MTU at or above the floor of
+[`flat-store-protocol.md`](flat-store-protocol.md) §5.1, just slower.
 
 ## 4. Commands and status
 
