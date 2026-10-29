@@ -73,6 +73,28 @@ fn code_distance(code: f32) -> f32 {
     return MASK_KNEE * sinh((2.0 * code - 1.0) * asinh(MASK_RANGE / MASK_KNEE));
 }
 
+// PROTOTYPE (road study): where a road's cut or fill slope meets the natural ground, the ground rounds over
+// DAYLIGHT_M of height instead of a crease: a soft minimum with the cut's bound, a soft maximum with the fill's.
+// Near the road the slope keeps its crease: the rounding grows in from SOFT_FROM_M to SOFT_FULL_M past the core.
+const DAYLIGHT_M: f32 = 0.8;
+const SOFT_FROM_M: f32 = 1.5;
+const SOFT_FULL_M: f32 = 4.0;
+
+fn soft_bounds(base: f32, s: Stamp) -> f32 {
+    var h = base;
+    if (s.cut) {
+        let r = DAYLIGHT_M * smoothstep(SOFT_FROM_M, SOFT_FULL_M, s.cut_x);
+        let k = max(r - abs(h - s.hi), 0.0) / max(r, 1e-3);
+        h = min(h, s.hi) - k * k * r * 0.25;
+    }
+    if (s.fill) {
+        let r = DAYLIGHT_M * smoothstep(SOFT_FROM_M, SOFT_FULL_M, s.fill_x);
+        let k = max(r - abs(h - s.lo), 0.0) / max(r, 1e-3);
+        h = max(h, s.lo) + k * k * r * 0.25;
+    }
+    return h;
+}
+
 @compute @workgroup_size(8, 8)
 fn stamp(@builtin(global_invocation_id) id: vec3u) {
     let job = stamp_jobs[id.z];
@@ -90,7 +112,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         } else {
             base = slot_height(job.base, t);
         }
-        h = select(NONE, clamp(base, s.lo, s.hi), known(base));
+        h = select(NONE, clamp(soft_bounds(base, s), s.lo, s.hi), known(base));
         out[at] = select(UNKNOWN32, bitcast<u32>(h), known(h));
         if (known(h)) {
             atomicMin(&extent[2u * job.out], ordered(h));

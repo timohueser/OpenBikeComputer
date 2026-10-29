@@ -593,12 +593,12 @@ const tiltAt = (word: number, metres: number) => (word & BANK_WORD ? 0 : ((word 
  */
 const BANK_WORD = 0x80000000;
 const bankOfWord = (word: number) => (word & BANK_WORD ? ((word << 16) >> 16) * 1e-4 : 0);
-/** PROTOTYPE: the banking of segment v of a road a share t of the way along it, as `along` in stamp-core.wgsl reads it. */
+/** PROTOTYPE: the banking of segment v of a road a share t of the way along it, as `along` in stamp-core.wgsl reads it: a slope as a tilt's. */
 export function bankAt(line: Line, v: number, t: number): number {
     return line.tilt ? bankOfWord(line.tilt[2 * v]) + (bankOfWord(line.tilt[2 * v + 1]) - bankOfWord(line.tilt[2 * v])) * Math.min(1, Math.max(0, t)) : 0;
 }
 
-/** PROTOTYPE: the banking of each road's vertices as words at the ends of its segments, where no junction's tilt is. */
+/** PROTOTYPE: the banking of each road's vertices (rise per metre to the left) as words at the ends of its segments, where no junction's tilt is. */
 function bankWords(lines: Line[]): void {
     for (const line of lines) {
         if (line.kind !== ROAD || !line.tilt || !line.bank) continue;
@@ -607,7 +607,8 @@ function bankWords(lines: Line[]): void {
             const words = [2 * v - 1, 2 * v].filter(w => w >= 0 && w < tilt.length);
             const bank = Math.max(-0.3, Math.min(0.3, line.bank[v]));
             if (!bank || words.some(w => tilt[w] !== 0)) continue;
-            for (const w of words) tilt[w] = (BANK_WORD | (Math.round(bank * 1e4) & 0xffff)) >>> 0;
+            // A tilt word's slope rises toward the side where `cross` of stamp-core.wgsl is positive: the right, as y runs south.
+            for (const w of words) tilt[w] = (BANK_WORD | (Math.round(-bank * 1e4) & 0xffff)) >>> 0;
         }
     }
 }

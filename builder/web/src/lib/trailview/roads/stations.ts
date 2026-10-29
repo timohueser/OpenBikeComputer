@@ -2,7 +2,7 @@
 // (a C1 cubic Hermite curve through its points with the fit's tangents and grades, curve.ts), at most
 // STEP_M and MAX_TURN apart, each with its height, its unit vector across to the left in world units per
 // metre, its metres from the start, its segment, its bank, its half-width and, on a track, its sleepers.
-import { bankAt, metresPerUnit, type Line } from '../terrain/bins';
+import { crossSlope, metresPerUnit, type Line } from '../terrain/bins';
 import { bessel, hermite } from './curve';
 
 /** The longest step between two stations: the band anchors to the drawn mesh at each. */
@@ -24,7 +24,7 @@ export interface Station {
     along: number;
     /** The segment of the line that the station lies on, for the per-segment data (sidewalks). */
     v: number;
-    /** The surface's slope across, rise per metre to the left: crossfall in bends. */
+    /** The surface's slope across, rise per metre to the left: a bend's banking, or a junction's plane on a side road, as the stamp holds it (whose tilts rise to the right). */
     bank: number;
     /** The carriageway's half-width here: wider on a tight bend, tapered to a partner's at a joint. */
     h: number;
@@ -61,7 +61,7 @@ export function stationsOf(line: Line, step = STEP_M, half: (v: number) => numbe
         // Fine samples of the curve, about FINE_M apart; a station before the next one would pass `step` metres or MAX_TURN from the last station.
         const fine = Math.max(8, Math.ceil(metres / FINE_M)), at = (u: number) => hermite(p0, p1, t0, t1, line.z[v], line.z[v + 1], grade[v], grade[v + 1], metres, u);
         let c = at(0), run = 0, kept = c;
-        if (v === 0) out.push(station(line, v, 0, c, 0, h0, h1, out.length));
+        if (v === 0) out.push(station(line, v, 0, metres, c, 0, h0, h1, out.length));
         for (let k = 1; k <= fine; k++) {
             const next = at(k / fine), d = Math.hypot(next.x - c.x, next.y - c.y) * metresPerUnit(next.y);
             along += d;
@@ -73,20 +73,20 @@ export function stationsOf(line: Line, step = STEP_M, half: (v: number) => numbe
             }
             run = 0;
             kept = c;
-            out.push(station(line, v, k / fine, k === fine ? { ...c, x: p1[0], y: p1[1], z: line.z[v + 1] } : c, along, h0, h1, out.length));
+            out.push(station(line, v, k / fine, metres, k === fine ? { ...c, x: p1[0], y: p1[1], z: line.z[v + 1] } : c, along, h0, h1, out.length));
         }
     }
     return out;
 }
 
 /** Curve samples are this far apart, in metres. */
-const FINE_M = 0.1;
+const FINE_M = 0.25;
 
 /** The station a share u along segment v of a line, at point c of its curve. */
-function station(line: Line, v: number, u: number, c: ReturnType<typeof hermite>, along: number, h0: number, h1: number, j: number): Station {
+function station(line: Line, v: number, u: number, metres: number, c: ReturnType<typeof hermite>, along: number, h0: number, h1: number, j: number): Station {
     const m = metresPerUnit(c.y), sl = line.sleepers;
     return {
-        x: c.x, y: c.y, z: c.z, ax: c.ty / m, ay: -c.tx / m, along, v, bank: bankAt(line, v, u), h: h0 + (h1 - h0) * u,
+        x: c.x, y: c.y, z: c.z, ax: c.ty / m, ay: -c.tx / m, along, v, bank: -crossSlope(line, v, u * metres, (1 - u) * metres), h: h0 + (h1 - h0) * u,
         sleepers: sl ? sl[v] + (sl[v + 1] - sl[v]) * u : undefined, j,
     };
 }
