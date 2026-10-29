@@ -539,7 +539,7 @@ fn make(context: &Context, home: &Path, planned: Planned, (run, held): (&mut Run
         prepared::forget(context.store, id, abandoned)?;
     }
     if fresh {
-        // Nothing resumes an older version without a manifest: a stopped run left it.
+        // Nothing resumes this version or an older one without a manifest: a stopped run left it.
         for (at, key) in prepared::incomplete(&folder, id, version)?.iter().enumerate() {
             if at % 100 == 0 && !held.beat(None, None, crate::date::now())? {
                 return Err(update_cli::lost(lock.0));

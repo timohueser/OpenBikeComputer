@@ -1095,9 +1095,10 @@ pub(crate) fn named(steps: &[crate::engine::Step], sources: &[Source]) -> Result
     Ok(())
 }
 
-/// The keys of `folder`, the home of the source `id`, of the versions before `version` that have no
-/// manifest: a stopped run left them, and no run of this machine resumes them. Refused when
-/// `versions.json` lists such a version: it was complete, and its manifest went.
+/// The keys of `folder`, the home of the source `id`, of `version` and the versions before it that
+/// have no manifest: a stopped run left them, and no run of this machine resumes them. A fresh run
+/// can take the name of a stopped version, and an upload keeps a key that has bytes. Refused when
+/// `versions.json` lists a version without a manifest: it was complete, and its manifest went.
 pub(crate) fn incomplete(folder: &Target, id: &str, version: &str) -> Result<Vec<String>, String> {
     let listed = folder.list()?;
     let keys: BTreeSet<&str> = listed.iter().map(|listed| listed.key.as_str()).collect();
@@ -1109,12 +1110,12 @@ pub(crate) fn incomplete(folder: &Target, id: &str, version: &str) -> Result<Vec
             ));
         }
     }
-    let older = |key: &str| {
+    let left = |key: &str| {
         let Some((name, _)) = key.split_once('/') else { return false };
         let complete = keys.contains(format!("{name}/{MANIFEST}").as_str());
-        order(name).is_some() && order(name) < order(version) && !complete
+        order(name).is_some() && order(name) <= order(version) && !complete
     };
-    Ok(listed.iter().filter(|listed| older(&listed.key)).map(|listed| listed.key.clone()).collect())
+    Ok(listed.iter().filter(|listed| left(&listed.key)).map(|listed| listed.key.clone()).collect())
 }
 
 #[cfg(test)]
@@ -1132,5 +1133,22 @@ mod tests {
         let sha256 = "0".repeat(64);
         assert_eq!(unpin(&format!("2026-10-28/{sha256}")), Some(("2026-10-28", sha256.as_str())));
         assert_eq!(unpin(&format!("2026-10-28.2/{sha256}")), Some(("2026-10-28.2", sha256.as_str())));
+    }
+
+    #[test]
+    fn a_fresh_run_removes_the_leftover_keys_of_its_own_version_and_keeps_complete_ones() {
+        let scratch = crate::store::tests::Scratch::new("prepared-incomplete");
+        let folder = Target::Dir(scratch.0.clone());
+        for key in [
+            "2026-10-28/a.bin",
+            "2026-10-29/a.bin",
+            "2026-10-29/manifest.json",
+            "2026-10-29.2/a.bin",
+            "2026-10-29.3/a.bin",
+        ] {
+            folder.put(key, b"x", &Condition::Any).unwrap();
+        }
+        let left = incomplete(&folder, "sample", "2026-10-29.2").unwrap();
+        assert_eq!(left, ["2026-10-28/a.bin", "2026-10-29.2/a.bin"]);
     }
 }
