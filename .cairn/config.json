@@ -33,5 +33,31 @@
   "tooling": {
     "path": "tools/",
     "area": "Tooling"
+  },
+  "roles": {
+    "goldfish-comprehension": { "tier": "balanced", "effort": "medium" },
+    "goldfish-critic":        { "tier": "strong",   "effort": "medium" },
+    "goldfish-readiness":     { "tier": "strong",   "effort": "medium" },
+    "code-review":            { "tier": "strong",   "effort": "high" },
+    "doc-peanut":             { "tier": "balanced", "effort": "medium" },
+    "doc-hay":                { "tier": "balanced", "effort": "medium" },
+    "implementer":            { "tier": "inherit" },
+    "drift":                  { "tier": "balanced", "effort": "low" }
+  },
+  "tiers": {
+    "claude-code": { "strong": "opus",   "balanced": "sonnet", "fast": "haiku" },
+    "api":         { "strong": "claude-opus", "balanced": "claude-sonnet", "fast": "claude-haiku" },
+    "codex":       { "strong": "6.1 Sol", "balanced": "6.1 Terra", "fast": "6 Luna" }
+  },
+  "report": {
+    "budget_usd": 5,
+    "max_input_chars": 40000,
+    "max_tokens": 16000,
+    "timeout_minutes": 180,
+    "batch_prices": {
+      "claude-opus": { "input": 2, "output": 10 },
+      "claude-sonnet": { "input": 1, "output": 5 },
+      "claude-haiku": { "input": 0.05, "output": 0.25 }
+    }
   }
 }

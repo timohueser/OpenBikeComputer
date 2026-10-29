@@ -164,12 +164,18 @@ def issue_body(number: int, data: dict) -> str:
     return data.get("body") or ""
 
 
-def api(root: Path, path: str) -> dict:
-    """`gh api repos/{owner}/{repo}/PATH`, which reads `GH_TOKEN` and `GH_REPO` in CI."""
-    done = subprocess.run(["gh", "api", f"repos/{{owner}}/{{repo}}/{path}"], cwd=root, capture_output=True, text=True)
+def gh(root: Path, endpoint: str, method: str = "GET", payload: dict | None = None):
+    """`gh api ENDPOINT`, which reads `GH_TOKEN` and `GH_REPO` in CI. A payload is the JSON body."""
+    body = ["--input", "-"] if payload is not None else []
+    done = subprocess.run(["gh", "api", "--method", method, endpoint, *body], cwd=root, capture_output=True, text=True,
+                          input=json.dumps(payload) if payload is not None else None)
     if done.returncode:
         raise OSError(done.stderr.strip() or "gh api failed")
-    return json.loads(done.stdout)
+    return json.loads(done.stdout) if done.stdout.strip() else None
+
+
+def api(root: Path, path: str, method: str = "GET", payload: dict | None = None):
+    return gh(root, f"repos/{{owner}}/{{repo}}/{path}", method, payload)
 
 
 def fetch_issue(root: Path, number: int) -> str:
@@ -232,8 +238,8 @@ def size_problems(number: int, issue: str, diff: Diff, limits: dict) -> list[str
     found, signals = size(diff, limits)
     if SIZES.index(found) <= SIZES.index(declared):
         return []
-    return [f"`change #{number}` is sized {declared}, but the diff is {found}: {', '.join(signals)}. "
-            "Shrink the pull request, amend the issue (which needs a new approval), or override with a reason"]
+    return [(f"`change #{number}` is sized {declared}, but the diff is {found}: {', '.join(signals)}. "
+             "Shrink the pull request, amend the issue (which needs a new approval), or override with a reason")]
 
 
 def violations(mode: Mode, diff: Diff, rules: dict, issue: str | None = None, names: dict[str, str] | None = None,

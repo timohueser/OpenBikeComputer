@@ -1,0 +1,41 @@
+name: cairn report
+
+# The weekly report on overrides, the ratchet and drift. It replaces the body of the open issue
+# labelled cairn-report. Only this workflow's environment holds the Anthropic API key.
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: cairn-report
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    environment: cairn-report
+    # The batch may take up to `report.timeout_minutes` in .cairn/config.json.
+    timeout-minutes: 200
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Step 1 reads the history since each approved doc last changed.
+          fetch-depth: 0
+          persist-credentials: false
+      # The Rust adapter reads `cargo metadata`; the report builds nothing.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - name: Write the report to its issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python3 tools/cairn/cairn.py report --publish

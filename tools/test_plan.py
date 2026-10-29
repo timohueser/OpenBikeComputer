@@ -140,6 +140,7 @@ TEST_POLICY_PATTERNS = (
 # stay on the full policy route.
 PUBLICATION_WORKFLOWS = {
     ".github/workflows/bake.yml",
+    ".github/workflows/cairn-report.yml",
     ".github/workflows/deploy-site.yml",
     ".github/workflows/deploy-verification.yml",
 }

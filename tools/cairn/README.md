@@ -12,6 +12,8 @@ obc cairn map              # rewrite the generated block of docs/design/README.m
 obc cairn mode change 3012 # declare the mode of the current branch
 obc cairn mode             # print the mode and the `Mode:` line for the pull request body
 obc cairn hash issue.md    # print the approval hash of an issue body (- reads stdin)
+obc cairn model code-review   # print the model and effort of a role in this harness
+obc cairn report           # print the weekly report; --publish writes it to its issue
 python3 -m unittest discover -s tools/cairn/tests
 ```
 
@@ -21,9 +23,11 @@ python3 -m unittest discover -s tools/cairn/tests
 | --- | --- |
 | `docs/design/README.md` | the system map. `cairn map` rewrites the block between its two comments. `check` fails when the block is stale. Two merged pull requests can leave it stale on `develop`; `obc cairn map` fixes it. The mode gate does not count the map. |
 | `docs/design/<system>.md` | the header of one system or shell: `kind`, `area` (systems only), `purpose`, `owns`, `depends_on`, `test_depends_on`, `status` |
-| `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4, the size limit of a fix, the globs of test files and the size thresholds of a change |
+| `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4, the size limit of a fix, the globs of test files, the size thresholds of a change, the model roles and tiers, and the report settings |
 | `.cairn/baseline.json` | the known violations, by ID, with a size |
 | `mode.py` | the modes, the approval hash, the rules of the mode gate and the edit hook |
+| `report.py` | `cairn report` |
+| `.github/workflows/cairn-report.yml` | runs `cairn report --publish` each week. Its environment `cairn-report` holds the `ANTHROPIC_API_KEY` secret. |
 | `adapters/cargo.py` | the Rust crates and their path dependencies. Each tracked `Cargo.toml` with a `[workspace]` table is a Cargo root. Every other tracked `Cargo.toml` outside `ignore` must be a member of a root. |
 
 `owns` uses the glob rule of the test plan: `*` also matches `/`, and `**/` also matches no folder.
@@ -124,3 +128,25 @@ The approval hash is the first 12 hex digits of SHA-256 over the body without it
 tool call. It blocks an edit of a source file inside the repository while the branch has no
 declared mode, and asks the agent to get the mode from the user. A detached HEAD passes. Edits made
 through Bash bypass the hook; AGENTS.md and the mode gate cover them.
+
+## Models
+
+| Key or input | Gives |
+| --- | --- |
+| `roles.<role>` | the `tier` (`strong`, `balanced`, `fast` or `inherit`) and the `effort` of a job |
+| `tiers.<harness>` | the model of each tier for `claude-code`, `codex` and `api`. An `api` model is a family prefix, or `{"family": ..., "pin": "<model ID>"}`. |
+| the harness | `--harness`, else `claude-code` when `CLAUDECODE=1`. Codex sets no such variable. An unknown harness or the tier `inherit` prints `inherit`. |
+
+## Report
+
+| Part | Source |
+| --- | --- |
+| Overrides | the pull requests merged in the last 7 days with `Mode: override: <reason>`, read through `gh api` |
+| Ratchet, files with no owner | the analysis of `cairn check` |
+| Drift, step 1 | for each doc with `status: approved`, each `Merge pull request #N` commit on the first-parent line of HEAD after the last change of the doc that touches files of the system outside `fix.tests` and the map. A `change` gives the TL;DR of its issue, another mode its diff on those files. `report.max_input_chars` caps the input of a system. |
+| Drift, step 2 | one Message Batch for the `drift` role in the `api` tier, skipped without `ANTHROPIC_API_KEY`. The family resolves to its newest model ID through the Models API, unless `pin` is set. The fixed instructions and `docs/design/glossary.md` come first, with a cache breakpoint. |
+| Budget | the token-counting endpoint counts each request before it joins the batch. The worst case is the input at twice the input price (a one-hour cache write) plus `report.max_tokens` of output. The batch stops at `report.budget_usd`, and the report names the skipped systems. |
+| `report.batch_prices` | the Message Batches price in USD per million tokens of the newest model of each family. Change it when a family gets a new model. |
+| `report.timeout_minutes` | the longest wait for the batch. The batch is then canceled. |
+| `--publish` | replaces the body of the open issue labelled `cairn-report`, or creates the label and the issue and pins it. Pinning uses GraphQL; a failed pin adds a note to the body. |
+| Exit code | 1 when a part cannot be read |
