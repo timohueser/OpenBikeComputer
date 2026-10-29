@@ -102,6 +102,11 @@ export class MeshBuilder {
         this.indices.push(...(facing ? [v[0], v[1], v[2], v[0], v[2], v[3]] : [v[0], v[2], v[1], v[0], v[3], v[2]]));
     }
 
+    /** PROTOTYPE (road study): a face of vertices already in counter-clockwise order, seen from its front. */
+    face(...v: number[]): void {
+        for (let k = 1; k + 1 < v.length; k++) this.indices.push(v[0], v[k], v[k + 1]);
+    }
+
     triangle(a: number, b: number, c: number, out: [number, number, number]): void {
         this.indices.push(...(this.facing(a, b, c, c, out) ? [a, b, c] : [a, c, b]));
     }

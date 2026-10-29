@@ -238,6 +238,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     const area = (parts: Feature['parts']) => ({ rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
     const buildings: Building[] = list.filter(({ kind }) => kind === 'building').map(({ tags, parts }) => ({ ...area(parts), cars: CARS.includes(tags.building) }));
     const town = townOf(buildings), beds = bedsOf(list, world);
+    const towns = new Map<Line, TownWay>();
     for (const [feature, { kind, tags, parts }] of list.entries()) {
         if (kind === 'lake' || kind === 'sea') {
             const level = parts[0]?.z?.[0];
@@ -275,19 +276,13 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
             let run: number[] = [], heights: number[] = [];
             const flush = () => {
                 if (heights.length >= 2) {
-                    const [shape, sides] = sidewalk || paving ? townPieces(smoothed(run, heights), town, sidewalk ? clearOf(beds, feature, h, sidewalk) : undefined) : [smoothed(run, heights), []];
-                    const n = shape.z.length, paved = (v: number) => paving && sides[v] !== 0;
-                    for (let from = 0, to = 1; to < n; to++) {
-                        if (to < n - 1 && paved(to) === paved(from)) continue;
-                        const line: Line = {
-                            kind: type, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1),
-                            h: paved(from) ? halfWidth(tags, 'paving') : h, code: paved(from) ? PAVING_CODE : code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
-                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined,
-                        };
-                        if (type === RAIL) line.sleepers = sleepers(line);
-                        lines.push(line);
-                        from = to;
-                    }
+                    // PROTOTYPE: a road, a path or a track as it comes; `rebend` fits it, then a town cuts it in pieces.
+                    const line: Line = {
+                        kind: type, ...(river ? smoothed(run, heights) : { xy: run, z: heights, anchors: heights.map(() => true) }), h, code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
+                        gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire,
+                    };
+                    lines.push(line);
+                    if (sidewalk || paving) towns.set(line, { tags, sidewalk, paving, clear: sidewalk ? clearOf(beds, feature, h, sidewalk) : undefined });
                 }
                 run = [];
                 heights = [];
@@ -302,9 +297,30 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
             flush();
         }
     }
-    junctionPlanes(lines);
-    abutments(lines);
-    return { lines, lakes, seas, areas, pads, buildings, walks: walks(lines, buildings, town) };
+    rebend(lines, [ox * scale, oy * scale, (ox + EXTENT) * scale, (oy + EXTENT) * scale]);
+    const cut = lines.flatMap(line => (towns.has(line) ? townLines(line, town, towns.get(line)!) : [line]));
+    for (const line of cut) if (line.kind === RAIL) line.sleepers = sleepers(line);
+    junctionPlanes(cut);
+    abutments(cut);
+    return { lines: cut, lakes, seas, areas, pads, buildings, walks: walks(cut, buildings, town) };
+}
+
+/** What a town road or footway needs for its pieces: its tags, its sidewalks' width, whether it is paved in a town, and its sidewalk test. */
+interface TownWay { tags: Record<string, string>; sidewalk: number; paving: boolean; clear?: Clear }
+
+/** A fitted town road or footway in pieces: its sidewalks per segment, and a footway cut where its paving starts and stops. */
+function townLines(line: Line, town: Town, { tags, sidewalk, paving, clear }: TownWay): Line[] {
+    const [shape, sides] = townPieces({ xy: line.xy, z: line.z, anchors: line.anchors ?? line.z.map(() => true) }, town, clear);
+    const n = shape.z.length, paved = (v: number) => paving && sides[v] !== 0, out: Line[] = [];
+    for (let from = 0, to = 1; to < n; to++) {
+        if (to < n - 1 && paved(to) === paved(from)) continue;
+        out.push({
+            ...line, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1),
+            h: paved(from) ? halfWidth(tags, 'paving') : line.h, code: paved(from) ? PAVING_CODE : line.code, sidewalks: sidewalk ? sides.slice(from, to) : undefined,
+        });
+        from = to;
+    }
+    return out;
 }
 
 /**
@@ -658,6 +674,323 @@ function catmullRom(a: number[], b: number[], c: number[], d: number[]): (u: num
         const a1 = lerp(a, b, 0, t1, t), a2 = lerp(b, c, t1, t2, t), a3 = lerp(c, d, t2, t3, t);
         return lerp(lerp(a1, a2, 0, t2, t), lerp(a2, a3, t1, t3, t), t1, t2, t);
     };
+}
+
+/**
+ * PROTOTYPE (road-quality study): the lateral tolerance of the plan fit per class in metres. A class of
+ * SECONDARY_UP holds 1.5 m, any other class 0.5 m.
+ */
+const PLAN_TOL_M: Record<string, number> = {
+    rail: 0.3, light_rail: 0.3, narrow_gauge: 0.3, rack: 0.3, funicular: 0.3,
+    path: 0.3, footway: 0.3, cycleway: 0.3, steps: 0.3, bridleway: 0.3, pedestrian: 0.3, via_ferrata: 0.3,
+    service: 0.5, residential: 0.5, living_street: 0.5, road: 0.5,
+    unclassified: 1, track: 1, tertiary: 1, tertiary_link: 1,
+};
+const SECONDARY_UP = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link'];
+/**
+ * The samples of a stroke lie about SAMPLE_M apart. The smoothing length of the plan is PLAN_LENGTH times
+ * its tolerance. A sample may leave the tile heights by PROFILE_TOL_M before a round of IRLS holds it, and
+ * ROUNDS rounds at most follow the first solve. PIN weighs a pinned sample. A spacing under LEAST_STEP_M
+ * counts as LEAST_STEP_M in the difference stencils, so near-duplicate OSM vertices do not blow them up.
+ */
+const SAMPLE_M = 2, PLAN_LENGTH = 25, PROFILE_TOL_M = 0.25, ROUNDS = 3, PIN = 1e6, LEAST_STEP_M = 0.5;
+/**
+ * Within CUT_M along a stroke of an end that touches nothing, where a tile cut the line, the samples hold
+ * their data up to CUT_HOLD times harder, so two tiles that hold a segment fit it alike.
+ */
+const CUT_M = 60, CUT_HOLD = 100;
+/**
+ * A way on the ground that crosses under a bridge with less than its clearance and UNDER_SLACK_M more,
+ * where the solver sank it: within UNDER_REACH_M of the crossing its profile is free, and it passes the
+ * deck by its clearance, as the solver's: for a road, a path and a track, and the deck of a road and of a path.
+ */
+const UNDER_REACH_M = 80, UNDER_SLACK_M = 1.5, CLEAR_ROAD_M = 4.5, CLEAR_PATH_M = 2.5, CLEAR_RAIL_M = 6, DECK_ROAD_M = 1, DECK_PATH_M = 0.4;
+/** Douglas–Peucker keeps a stroke sample that leaves its chord by more than these, in the plan and in height. */
+const KEEP_PLAN_M = 0.02, KEEP_Z_M = 0.01;
+
+/** A bridge's road as it comes, for the crossings under it. */
+interface Deck { line: Line; xy: number[]; z: number[]; keys: Set<string>; box: number[] }
+
+/**
+ * PROTOTYPE (road-quality study): each road, path and track as a least-squares fit. The ways that run
+ * on from each other at a vertex, as the junctions pair them, chain into a stroke. Its samples about
+ * every 2 m fit the OSM line within the tolerance of their class with a third-difference penalty, and
+ * the tile heights within 0.25 m with a second-difference penalty. Junctions, the vertices of bridges
+ * and tunnels, the ends of approaches and the ends of a stroke stay exactly where the tile puts them.
+ * Water keeps the rounded bends of `smoothed`.
+ */
+function rebend(lines: Line[], square: number[]): void {
+    const key = (line: Line, v: number) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
+    const ground = (line: Line) => line.kind !== RIVER && line.kind !== STREAM;
+    type End = { line: Line; v: number };
+    const ends = new Map<string, End[]>(), at = new Map<string, End[]>();
+    for (const line of lines) {
+        const n = line.z.length;
+        for (let v = 0; v < n; v++) {
+            (at.get(key(line, v)) ?? at.set(key(line, v), []).get(key(line, v))!).push({ line, v });
+            if (ground(line) && (v === 0 || v === n - 1)) (ends.get(key(line, v)) ?? ends.set(key(line, v), []).get(key(line, v))!).push({ line, v });
+        }
+    }
+    // At each vertex the two line ends that run most nearly straight on, within 60°, pair up: of the best class there, as the junctions rank them.
+    const pairs = new Map<Line, [End | undefined, End | undefined]>();
+    const pair = (a: End, b: End) => {
+        const both = pairs.get(a.line) ?? [undefined, undefined];
+        both[a.v === 0 ? 0 : 1] = b;
+        pairs.set(a.line, both);
+    };
+    for (const meeting of ends.values()) {
+        const arms = meeting.map(({ line, v }) => {
+            const w = v === 0 ? 1 : line.z.length - 2, dx = line.xy[2 * w] - line.xy[2 * v], dy = line.xy[2 * w + 1] - line.xy[2 * v + 1], l = Math.hypot(dx, dy) || 1;
+            return { line, v, dx: dx / l, dy: dy / l };
+        });
+        let best: [typeof arms[0], typeof arms[0]] | undefined, score = Infinity;
+        for (let i = 0; i < arms.length; i++) for (let k = i + 1; k < arms.length; k++) {
+            const [a, b] = [arms[i], arms[k]], straight = a.dx * b.dx + a.dy * b.dy;
+            if (a.line === b.line || straight > -0.5) continue;
+            const rank = Math.max(a.line.profile, b.line.profile) * 4 + straight;
+            if (rank < score) [score, best] = [rank, [a, b]];
+        }
+        if (best) {
+            pair(best[0], best[1]);
+            pair(best[1], best[0]);
+        }
+    }
+    const partner = (line: Line, v: number) => pairs.get(line)?.[v === 0 ? 0 : 1];
+    // A vertex stays where the tile puts it at a junction (another line, or the same line again, meets
+    // it, but for the line that runs on from it), on a bridge or a tunnel, and at the end of the approach
+    // that the solver puts on the surface of the through road: the first vertex within APPROACH_M of a
+    // junction at an end of the line.
+    const junction = (line: Line, v: number) => {
+        const n = line.z.length, onward = v === 0 || v === n - 1 ? partner(line, v) : undefined;
+        return (at.get(key(line, v)) ?? []).some(o => (o.line !== line || o.v !== v) && !(onward && o.line === onward.line && o.v === onward.v));
+    };
+    const approach = (line: Line, v: number) => {
+        const n = line.z.length, unit = metresPerUnit(line.xy[2 * v + 1]);
+        const from = (end: number) => Math.hypot(line.xy[2 * v] - line.xy[2 * end], line.xy[2 * v + 1] - line.xy[2 * end + 1]) * unit;
+        return (v === 1 && junction(line, 0) && from(0) <= APPROACH_M + 0.5) || (v === n - 2 && junction(line, n - 1) && from(n - 1) <= APPROACH_M + 0.5);
+    };
+    const pinned = (line: Line, v: number) => line.kind === BRIDGE || line.kind === TUNNEL || junction(line, v) || approach(line, v);
+    // An end that touches nothing: where the tile cut the line, or a dead end.
+    const loose = (line: Line, v: number) => (at.get(key(line, v)) ?? []).length === 1;
+    const decks: Deck[] = lines.filter(line => line.kind === BRIDGE).map(line => {
+        const xs = line.xy.filter((_, i) => i % 2 === 0), ys = line.xy.filter((_, i) => i % 2 === 1);
+        return { line, xy: [...line.xy], z: [...line.z], keys: new Set(line.z.map((_, v) => key(line, v))), box: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] };
+    });
+    type Piece = { line: Line; forward: boolean };
+    const used = new Set<Line>();
+    for (const first of lines) {
+        if (!ground(first) || used.has(first)) continue;
+        let head: Piece = { line: first, forward: true };
+        const seen = new Set<Line>([first]);
+        for (;;) {
+            const p = partner(head.line, head.forward ? 0 : head.line.z.length - 1);
+            if (!p || seen.has(p.line) || used.has(p.line)) break;
+            seen.add(p.line);
+            head = { line: p.line, forward: p.v === p.line.z.length - 1 };
+        }
+        const pieces: Piece[] = [];
+        for (let piece: Piece | undefined = head; piece && !used.has(piece.line);) {
+            used.add(piece.line);
+            pieces.push(piece);
+            const p = partner(piece.line, piece.forward ? piece.line.z.length - 1 : 0);
+            piece = p && !used.has(p.line) ? { line: p.line, forward: p.v === 0 } : undefined;
+        }
+        const last = pieces[pieces.length - 1], cut: [boolean, boolean] = [loose(head.line, head.forward ? 0 : head.line.z.length - 1), loose(last.line, last.forward ? last.line.z.length - 1 : 0)];
+        fitStroke(pieces, pinned, cut, square, decks.filter(deck => pieces.every(({ line }) => line.z.every((_, v) => !deck.keys.has(key(line, v))))));
+    }
+}
+
+/**
+ * PROTOTYPE: the least-squares fit of one stroke, written back into each of its lines (see `rebend`).
+ * `cut` tells which ends of the stroke touch nothing; `decks` are the bridges that it may pass under.
+ */
+function fitStroke(pieces: { line: Line; forward: boolean }[], pinned: (line: Line, v: number) => boolean, cut: [boolean, boolean], square: number[], decks: Deck[]): void {
+    const xs: number[] = [], ys: number[] = [], zs: number[] = [], pins: boolean[] = [], names: string[] = [], kinds: number[] = [], vertexSample: number[][] = [];
+    pieces.forEach(({ line, forward }, k) => {
+        const n = line.z.length, name = CLASSES[line.profile] ?? 'road', index: number[] = new Array(n);
+        const order = Array.from({ length: n }, (_, j) => (forward ? j : n - 1 - j));
+        order.forEach((v, j) => {
+            const x = line.xy[2 * v], y = line.xy[2 * v + 1], z = line.z[v];
+            if (j === 0 && k > 0) {
+                index[v] = xs.length - 1;
+                pins[xs.length - 1] ||= pinned(line, v);
+                return;
+            }
+            if (j > 0) {
+                const w = order[j - 1], px = line.xy[2 * w], py = line.xy[2 * w + 1], pz = line.z[w];
+                const steps = Math.max(1, Math.round(Math.hypot(x - px, y - py) * metresPerUnit(y) / SAMPLE_M));
+                for (let i = 1; i < steps; i++) {
+                    xs.push(px + (x - px) * i / steps);
+                    ys.push(py + (y - py) * i / steps);
+                    zs.push(pz + (z - pz) * i / steps);
+                    pins.push(false);
+                    names.push(name);
+                    kinds.push(line.kind);
+                }
+            }
+            index[v] = xs.length;
+            xs.push(x);
+            ys.push(y);
+            zs.push(z);
+            pins.push(pinned(line, v));
+            names.push(name);
+            kinds.push(line.kind);
+        });
+        vertexSample.push(index);
+    });
+    const n = xs.length;
+    pins[0] = pins[n - 1] = true;
+    // Local metres about the first sample: one scale for the stroke, so the way back is exact.
+    const m0 = metresPerUnit(ys[n >> 1]), tx = Float64Array.from(xs, x => (x - xs[0]) * m0), ty = Float64Array.from(ys, y => (y - ys[0]) * m0), tz = Float64Array.from(zs);
+    const s = new Float64Array(n);
+    for (let i = 1; i < n; i++) s[i] = s[i - 1] + Math.hypot(tx[i] - tx[i - 1], ty[i] - ty[i - 1]);
+    const tolerance = names.map(name => PLAN_TOL_M[name] ?? (SECONDARY_UP.includes(name) ? 1.5 : 0.5));
+    const lambdaPlan = Float64Array.from(tolerance, tol => (PLAN_LENGTH * tol / (2 * Math.PI)) ** 6);
+    const lambdaZ = Float64Array.from(names, name => ((CLASS_RULES as Record<string, { smooth_m: number }>)[name]?.smooth_m ?? 15) ** 4 / 16);
+    // Near a cut end the data hold harder, up to CUT_HOLD at the end.
+    // Near the border of the tile's square, which a neighbouring tile sees alike, the data hold up to CUT_HOLD at the border and past it.
+    const hold = Float64Array.from(s, (d, i) => {
+        const inside = Math.min(xs[i] - square[0], square[2] - xs[i], ys[i] - square[1], square[3] - ys[i]) * metresPerUnit(ys[i]);
+        const t = Math.min(1, Math.max(0, 1 - Math.min(cut[0] ? d : Infinity, cut[1] ? s[n - 1] - d : Infinity) / CUT_M, 1 - inside / CUT_M));
+        return 1 + (CUT_HOLD - 1) * t * t;
+    });
+    const share = (i: number) => hold[i] * Math.max(LEAST_STEP_M, ((i > 0 ? s[i] - s[i - 1] : 0) + (i + 1 < n ? s[i + 1] - s[i] : 0)) / 2);
+    // The crossings under decks that keep less than their clearance: the nearest sample and the most height there.
+    const under: { i: number; top: number }[] = [];
+    for (const deck of decks) {
+        if (deck.box[2] < Math.min(...xs) || deck.box[0] > Math.max(...xs) || deck.box[3] < Math.min(...ys) || deck.box[1] > Math.max(...ys)) continue;
+        for (let i = 0; i + 1 < n; i++) {
+            if (kinds[i] === BRIDGE || kinds[i] === TUNNEL) continue;
+            for (let j = 0; j + 3 < deck.xy.length; j += 2) {
+                const [ax, ay, bx, by] = [xs[i], ys[i], xs[i + 1], ys[i + 1]], [cx, cy, dx, dy] = [deck.xy[j], deck.xy[j + 1], deck.xy[j + 2], deck.xy[j + 3]];
+                const den = (bx - ax) * (dy - cy) - (by - ay) * (dx - cx);
+                if (!den) continue;
+                const t = ((cx - ax) * (dy - cy) - (cy - ay) * (dx - cx)) / den, u = ((cx - ax) * (by - ay) - (cy - ay) * (bx - ax)) / den;
+                if (t < 0 || t > 1 || u < 0 || u > 1) continue;
+                const top = deck.z[j / 2] + (deck.z[j / 2 + 1] - deck.z[j / 2]) * u, road = zs[i] + (zs[i + 1] - zs[i]) * t;
+                const clearance = (kinds[i] === PATH ? CLEAR_PATH_M : kinds[i] === RAIL ? CLEAR_RAIL_M : CLEAR_ROAD_M) + (isPath(deck.line) ? DECK_PATH_M : DECK_ROAD_M);
+                if (top - road > 0.5 && top - road < clearance + UNDER_SLACK_M) under.push({ i: t < 0.5 ? i : i + 1, top: top - clearance });
+            }
+        }
+    }
+    const free = Uint8Array.from(s, d => (under.some(({ i }) => Math.abs(d - s[i]) <= UNDER_REACH_M) ? 1 : 0));
+    // Each fit holds a sample harder, by ten each round, while it leaves its target by more than its tolerance.
+    // A sample near a crossing under a deck is free, and the crossing passes under the deck by its clearance.
+    const irls = (targets: Float64Array[], tol: (i: number) => number, lambda: Float64Array, order: 2 | 3, bounds: { i: number; top: number }[]) => {
+        const held = new Float64Array(n).fill(1), w = new Float64Array(n), goal = targets.map(t => Float64Array.from(t)), fixed = new Uint8Array(n);
+        let fits: Float64Array[] = [];
+        for (let round = 0; round <= ROUNDS + bounds.length; round++) {
+            for (let i = 0; i < n; i++) w[i] = pins[i] || fixed[i] ? PIN : bounds.length && free[i] ? 1e-6 * share(i) : share(i) * held[i];
+            fits = goal.map(t => penalised(t, w, lambda, s, order));
+            let again = false;
+            for (const { i, top } of bounds) {
+                if (pins[i] || fixed[i] || fits[0][i] <= top) continue;
+                fixed[i] = 1;
+                goal[0][i] = top;
+                again = true;
+            }
+            if (round < ROUNDS) for (let i = 0; i < n; i++) {
+                if (pins[i] || fixed[i] || (bounds.length && free[i]) || Math.hypot(...fits.map((f, c) => f[i] - targets[c][i])) <= tol(i)) continue;
+                held[i] *= 10;
+                again = true;
+            }
+            if (!again) break;
+        }
+        for (let i = 0; i < n; i++) if (pins[i]) fits.forEach((f, c) => (f[i] = targets[c][i]));
+        return fits;
+    };
+    const [X, Y] = irls([tx, ty], i => tolerance[i], lambdaPlan, 3, []);
+    const [Z] = irls([tz], () => PROFILE_TOL_M, lambdaZ, 2, under);
+    // The samples between a and b that Douglas–Peucker keeps, in order from a to b.
+    const simplify = (a: number, b: number): number[] => {
+        const keep: number[] = [];
+        const split = (p: number, q: number) => {
+            const lo = Math.min(p, q), hi = Math.max(p, q);
+            if (hi - lo < 2) return;
+            const dx = X[q] - X[p], dy = Y[q] - Y[p], l2 = dx * dx + dy * dy;
+            let worst = 1, at = -1;
+            for (let i = lo + 1; i < hi; i++) {
+                const t = l2 > 0 ? Math.max(0, Math.min(1, ((X[i] - X[p]) * dx + (Y[i] - Y[p]) * dy) / l2)) : 0;
+                const e = Math.max(Math.hypot(X[i] - X[p] - t * dx, Y[i] - Y[p] - t * dy) / KEEP_PLAN_M, Math.abs(Z[i] - Z[p] - t * (Z[q] - Z[p])) / KEEP_Z_M);
+                if (e > worst) [worst, at] = [e, i];
+            }
+            if (at < 0) return;
+            split(p, at);
+            keep.push(at);
+            split(at, q);
+        };
+        split(a, b);
+        return keep;
+    };
+    pieces.forEach(({ line }, k) => {
+        const index = vertexSample[k], xy: number[] = [], z: number[] = [], anchors: boolean[] = [];
+        // Heights to 0.1 mm, so that the solve's rounding leaves a level road level to the bit.
+        const height = (i: number) => (pins[i] ? zs[i] : Math.round(Z[i] * 1e4) / 1e4);
+        const push = (i: number, anchor: boolean) => {
+            const x = pins[i] ? xs[i] : Math.round(xs[0] + X[i] / m0), y = pins[i] ? ys[i] : Math.round(ys[0] + Y[i] / m0), last = anchors.length - 1;
+            if (last >= 0 && xy[2 * last] === x && xy[2 * last + 1] === y) {
+                // A point that rounds onto the one before: an OSM vertex replaces a sample, else it goes.
+                if (!anchor || anchors[last]) return;
+                z[last] = height(i);
+                anchors[last] = true;
+                return;
+            }
+            xy.push(x, y);
+            z.push(height(i));
+            anchors.push(anchor);
+        };
+        for (let v = 0; v < line.z.length; v++) {
+            if (v > 0) for (const i of simplify(index[v - 1], index[v])) push(i, false);
+            push(index[v], true);
+        }
+        line.xy = xy;
+        line.z = z;
+        line.anchors = anchors;
+    });
+}
+
+/**
+ * PROTOTYPE: the f that minimises Σ wᵢ(fᵢ − tᵢ)² + Σ λ·d·D², where D is the divided difference of `order`
+ * (2 or 3) at the samples s (metres) and d its span: a banded Cholesky solve, O(n).
+ */
+function penalised(t: Float64Array, w: Float64Array, lambda: Float64Array, s: Float64Array, order: 2 | 3): Float64Array {
+    const n = t.length, m = 3, width = m + 1, band = new Float64Array(n * width), f = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+        band[i * width] = w[i];
+        f[i] = w[i] * t[i];
+    }
+    const add = (first: number, c: number[], weight: number) => {
+        for (let p = 0; p < c.length; p++) for (let q = 0; q <= p; q++) band[(first + p) * width + p - q] += weight * c[p] * c[q];
+    };
+    const h = (i: number) => Math.max(LEAST_STEP_M, s[i + 1] - s[i]);
+    const second = (i: number) => {
+        const h0 = h(i - 1), h1 = h(i), a0 = 2 / ((h0 + h1) * h0), a2 = 2 / ((h0 + h1) * h1);
+        return [a0, -(a0 + a2), a2];
+    };
+    if (order === 2) for (let i = 1; i + 1 < n; i++) add(i - 1, second(i), lambda[i] * (h(i - 1) + h(i)) / 2);
+    else for (let i = 1; i + 2 < n; i++) {
+        const [a0, a1, a2] = second(i), [b0, b1, b2] = second(i + 1), d = (h(i - 1) + h(i) + h(i + 1)) / 3;
+        add(i - 1, [-a0 / d, (b0 - a1) / d, (b1 - a2) / d, b2 / d], lambda[i] * d);
+    }
+    // L·Lᵀ in place: band[i·width + d] holds L[i][i − d].
+    for (let i = 0; i < n; i++) {
+        for (let j = Math.max(0, i - m); j <= i; j++) {
+            let sum = band[i * width + i - j];
+            for (let k = Math.max(0, i - m); k < j; k++) sum -= band[i * width + i - k] * band[j * width + j - k];
+            band[i * width + i - j] = j === i ? Math.sqrt(Math.max(sum, 1e-300)) : sum / band[j * width];
+        }
+    }
+    for (let i = 0; i < n; i++) {
+        let sum = f[i];
+        for (let k = Math.max(0, i - m); k < i; k++) sum -= band[i * width + i - k] * f[k];
+        f[i] = sum / band[i * width];
+    }
+    for (let i = n - 1; i >= 0; i--) {
+        let sum = f[i];
+        for (let k = i + 1; k <= Math.min(n - 1, i + m); k++) sum -= band[k * width + k - i] * f[k];
+        f[i] = sum / band[i * width];
+    }
+    return f;
 }
 
 /**

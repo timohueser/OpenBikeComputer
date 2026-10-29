@@ -152,6 +152,11 @@ fn unit_metres(y: i32) -> f32 {
     return 2.0 * PI * RADIUS / 1073741824.0 / cosh(PI * (1.0 - f32(y) / 536870912.0));
 }
 
+// PROTOTYPE (road study): the shoulder of a road by its surface code, as SHOULDER_M of roads/section.ts.
+fn shoulder_of(code: u32) -> f32 {
+    return array<f32, 16>(0.0, 0.6, 0.4, 0.3, 0.25, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)[min(code, 15u)];
+}
+
 fn reach_limit(texel: f32) -> f32 {
     return BUFFER_M - 2.0 * texel - 1.0;
 }
@@ -567,7 +572,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             // corner, and a side road's mouth cuts through the through road's sidewalk.
             let x = g.lateral - h;
             let rank = select(select(x - walk, x - walk - 1000.0, walk > 0.0 && x < walk), x - 2000.0, paved && x < 0.0);
-            if (g.paint && rank < paint_rank) {
+            // PROTOTYPE (road study): a bridge's road on its abutments paints nothing: its deck draws it, and no corridor hole opens there.
+            if (g.paint && rank < paint_rank && !bridge) {
                 paint_rank = rank;
                 out.road = x;
                 out.across = g.side * g.lateral;
@@ -591,7 +597,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             }
             if (paved && road_shows(own, rule, level)) {
                 let tol = rule.tol;
-                let core_half = select(h, wall, gallery) + walk;
+                // PROTOTYPE (road study): a road without a sidewalk holds its shoulder flat, as section.ts draws it.
+                let core_half = select(h, wall, gallery) + walk + select(shoulder_of(word(r + 5u) & SURFACE_BITS), 0.0, walk > 0.0 || gallery || kind != ROAD);
                 if (g.core && g.lateral <= core_half) {
                     let bucket = select(ROAD_CORE, PORTAL_CORE, kind == TUNNEL);
                     lo[bucket] = max(lo[bucket], g.z - tol);

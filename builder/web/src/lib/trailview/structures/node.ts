@@ -9,7 +9,7 @@ import { bridges, deckHalf } from './bridges';
 import { galleries } from './galleries';
 import { MeshBuilder, type StructureMesh } from './mesh';
 import { rails } from './rails';
-import { sidewalks } from './sidewalks';
+import { corridors } from '../roads/corridor';
 import { boreHalf, portalBox, tunnels, twins } from './tunnels';
 
 /**
@@ -85,7 +85,8 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
     const owns: Owns = (x, y) => x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
     const words: number[] = [], far = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) }, near = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) };
     const { lines, buildings } = features(list, tile);
-    sidewalks(near.mesh, lines, [x0, y0, x0 + side, y0 + side]);
+    // PROTOTYPE (road study): the corridors draw the roads near the eye, with their kerbs and sidewalks.
+    corridors(near.mesh, lines, owns);
     bridges(far.mesh, list, tile, lines, owns);
     tunnels(far.mesh, lines, owns);
     galleries(far.mesh, lines, owns);

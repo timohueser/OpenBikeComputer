@@ -1,3 +1,4 @@
+diagnostic(off, derivative_uniformity);
 // The structures: the meshes of mesh.ts and the anchored meshes of anchored.ts, drawn before the terrain
 // as opaque flat faces in their vertex colours. A vertex stands at its height from the bake, or on the
 // drawn surface (plain_height), or hangs from an anchor. A road face takes the road paint of the ground,
@@ -6,6 +7,7 @@
 // #include ../terrain/drawn-mesh.wgsl
 // #include ../terrain/portal-box.wgsl
 // #include ../ground/look.wgsl
+// #include ../roads/corridor.wgsl
 
 // As Frame and Node of terrain.wgsl, which share their buffers.
 struct Frame {
@@ -101,14 +103,18 @@ fn structure_vertex(v: StructureIn) -> StructureOut {
     let flags = u32(round(v.colour.a * 255.0));
     var out: StructureOut;
     var z = v.z;
-    if ((flags & ON_GROUND) != 0u) {
+    // PROTOTYPE (road study): a corridor's band stands on the ground, and corridors sink past their range.
+    if (is_corridor(v.colour)) {
+        z = corridor_height(v.at, v.z, v.colour, s, frame.eye - surface.above);
+    } else if ((flags & ON_GROUND) != 0u) {
         // Where no page knows the ground yet, the ground under the eye.
         let h = plain_height(s);
         z += select(frame.eye - surface.above, h, known(h));
     }
     var p = vec3f(to_render(s), z - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
-    out.clip = frame.view_proj * vec4f(p, 1.0);
+    // A corridor draws a little toward the eye; it shades where it stands.
+    out.clip = frame.view_proj * vec4f(select(p, corridor_biased(p), is_corridor(v.colour)), 1.0);
     // The crack and surface views show the terrain alone: past the near plane, the triangle clips.
     if (frame.debug == 3u || frame.debug == 4u) {
         out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
@@ -237,6 +243,9 @@ fn stones(p: vec3f, n: vec3f, pixel: f32) -> f32 {
 fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     var n = normalize(cross(dpdx(in.relative), dpdy(in.relative)));
     n *= -sign(dot(n, in.relative));
+    if (is_corridor(in.colour)) {
+        return corridor_fragment(in.u, in.relative, in.altitude, in.colour, in.road, in.sleepers, n);
+    }
     let flags = u32(round(in.colour.a * 255.0));
     var albedo = in.colour.rgb * in.colour.rgb;
     let w = max(length(dpdx(in.relative)), length(dpdy(in.relative)));

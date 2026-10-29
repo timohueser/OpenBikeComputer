@@ -131,12 +131,15 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
     var d: array<f32, 4>;
     var road = true;
     var walk = 0.0;
+    // PROTOTYPE (road study): the core reaches past a road's shoulder too (shoulder_of): the crease lies there.
+    var shoulder = 0.0;
     for (var i = 0; i < 4; i++) {
         let texel = textureLoad(mask_in, in_layer(job.mask, low + vec2i(i % 2, i / 2)), job.mask >> 6u, 0);
         let surface = u32(round(texel.w * 255.0)) & 15u;
         road = road && surface != 0u;
         d[i] = code_distance(texel.x);
         walk = max(walk, select(round(texel.y * 255.0) * WALK_STEP_M, 0.0, surface >= TRACK_CODE));
+        shoulder = max(shoulder, shoulder_of(surface));
     }
     let shift = 22u - job.level;
     let unit = unit_metres(corner.y << shift);
@@ -144,7 +147,7 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
     // The gradient of the distance per metre, and the distance at the corner.
     let g = vec2f(d[1] + d[3] - d[0] - d[2], d[2] + d[3] - d[0] - d[1]) * 0.5 / metres;
     let to_edge = 0.25 * (d[0] + d[1] + d[2] + d[3]) + dot(g, vec2f(corner - low - vec2i(1))) * metres;
-    let at = to_edge - walk;
+    let at = to_edge - select(shoulder, walk, walk > 0.0);
     let g2 = dot(g, g);
     let reach_m = SNAP_TEXELS * metres;
     var moved = vec2i(0);

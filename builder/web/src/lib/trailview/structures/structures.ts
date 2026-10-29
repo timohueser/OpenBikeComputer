@@ -14,7 +14,8 @@ import { FLOOR, OWNER, type NodeMeshes } from './node';
  * The structure meshes and the anchored meshes on the GPU, fixed pools; the anchors of the anchored
  * meshes that a frame draws, and their heights.
  */
-const VERTEX_BYTES = 8 * 2 ** 20, INDEX_BYTES = 4 * 2 ** 20, ANCHORED_BYTES = 6 * 2 ** 20, ANCHORED_INDEX_BYTES = 3 * 2 ** 20, ANCHORS = 2 ** 16;
+// PROTOTYPE (road study): room for the corridor meshes of the near owners.
+const VERTEX_BYTES = 64 * 2 ** 20, INDEX_BYTES = 32 * 2 ** 20, ANCHORED_BYTES = 6 * 2 ** 20, ANCHORED_INDEX_BYTES = 3 * 2 ** 20, ANCHORS = 2 ** 16;
 /**
  * A floor reaches this far past the ends of its segments: off a deck or out of a tunnel the ground holds
  * the road's height, and the probe of the ground under the eye, a few frames late, catches up meanwhile.
