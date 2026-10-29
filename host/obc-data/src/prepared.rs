@@ -1136,7 +1136,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_run_removes_the_leftover_keys_of_its_own_version_and_keeps_complete_ones() {
+    fn incomplete_holds_the_leftovers_of_its_own_version_and_older_ones_but_no_complete_or_newer_one() {
         let scratch = crate::store::tests::Scratch::new("prepared-incomplete");
         let folder = Target::Dir(scratch.0.clone());
         for key in [
