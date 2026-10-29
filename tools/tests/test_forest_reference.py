@@ -1,10 +1,17 @@
 """The forest reference counts one stem per visible tree crown of a canopy height model."""
 
+import argparse
+import tempfile
 import unittest
+import unittest.mock
+from pathlib import Path
 
 import numpy as np
+import rasterio
+from rasterio.errors import RasterioIOError
 
 from tools import forest_reference as forest
+from tools import planner_snow
 
 
 class TreeTopTest(unittest.TestCase):
@@ -103,16 +110,6 @@ class BlockTest(unittest.TestCase):
         self.assertTrue((cells(2141, 1440) == nodata).all())
 
     def test_a_dlt_tile_that_clms_does_not_publish_is_no_leaf_type_when_gdal_reports_a_plain_404(self):
-        import argparse
-        import tempfile
-        import unittest.mock
-        from pathlib import Path
-
-        import rasterio
-        from rasterio.errors import RasterioIOError
-
-        from tools import planner_snow
-
         real_open, opened = rasterio.open, []
 
         def open_dlt(path, *args, **kwargs):
