@@ -1,9 +1,15 @@
 # TrailView tiles
 
-TrailView reads the raster layers of the planner release: the ground and the colour of each
-texel, and the ruleset that the ground indexes. The layers are the optional planner layers
-`trailview-rules`, `trailview-ground` and `trailview-colour` of [obc-data.md](obc-data.md). The
-bakes are `tools/trailview/rules.py`, `tools/trailview/ground.py` and `tools/trailview/colour.py`.
+The raster layers of the planner release that TrailView reads: the ground, the colour, the snow
+days and the canopy of each texel or cell, and the ruleset that the ground indexes.
+
+- Version: `trailview_format` 3 (ground, snow days) and 2 (colour); `canopy_format` 1; `format` 3
+  of `rules.json`. A reader reads only the format that it knows.
+- Writers: `tools/trailview/rules.py`, `tools/trailview/ground.py`, `tools/trailview/colour.py`,
+  `tools/trailview/snow.py`, `tools/planner_trailview_canopy.py`.
+- Readers: the TrailView engine (`builder/web/src/lib/trailview/`), `tools/planner_verify.py`.
+- Related: the optional planner layers `trailview-*` of [obc-data.md](obc-data.md),
+  [the planner snow archive](planner-snow-tiles.md), [TrailView feature tiles](trailview-features.md).
 
 ## Archives
 
@@ -33,7 +39,7 @@ The archive metadata is a JSON object:
 
 | Key | Value |
 | --- | --- |
-| `trailview_format` | `3` in the ground archive, `2` in a colour archive. A reader reads only the format that it knows |
+| `trailview_format` | `3` in the ground archive, `2` in a colour archive |
 | `archive` | The name of the archive: `ground`, or `q1` to `q4` |
 | `variant` | Only in a colour archive: the variant of the table in [Colour](#colour) |
 | `attribution` | Text to show with the layer |
@@ -122,9 +128,9 @@ A class matches by its `match`:
 
 A `word` legend may have a `qualifier`: `word`, `within` and `class`. Where its word follows the
 word of the found class within `within` characters, or the value holds its word and no class, the
-value names its `class`. A value without a class names nothing. `authority` takes each class that the source names, but a
-material source keeps `inland-water`. `refine` takes a class only where `refines` lists the
-texel's code for that class.
+value names its `class`. A value without a class names nothing. `authority` takes each class that
+the source names, but a material source keeps `inland-water`. `refine` takes a class only where
+`refines` lists the texel's code for that class.
 
 The entry with `rule: satellite-heath` reads `sentinel-2-mosaics`. It makes `material` of each
 texel whose material it lists in `on`, where the summer quarter, or spring where summer saw
@@ -151,17 +157,17 @@ round(255 × refl^(1/2.2)).
 The NDVI has half the resolution of the texels: a texel with a code of 2 or more takes the mean code
 m of the texels with a code of 2 or more in its aligned 2 × 2 block, which starts at even texel
 coordinates. m is rounded half to even and stored as 128 + 4 × floor((m − 128) / 4) + 2. So a stored
-code is a multiple of 4 plus 2, and it is below 128 when m is below 128. Codes 0 and 1 stay as they are. This is the last step of the bake, on
-each tile of each zoom.
+code is a multiple of 4 plus 2, and it is below 128 when m is below 128. Codes 0 and 1 stay as they
+are. This is the last step of the bake, on each tile of each zoom.
 
 A tile is two images, one after the other:
 
 1. The NDVI tile: a lossless WebP of 256 × 256 pixels, one pixel per aligned 2 × 2 block of texels.
    Red is the code that the measured texels of the block share, or 0 where no texel is measured.
-   Green holds a mark of 2 bits for each of the four texels, in reading order from bit 0: north-west,
-   north-east, south-west, south-east. A mark is 0 or 1, the code of the texel, or 2: the texel
-   has the code in red. The length of the image is 8 + the RIFF size in bytes 4 to 7, little
-   endian.
+   Green holds a mark of 2 bits for each of the four texels, in reading order from bit 0:
+   north-west, north-east, south-west, south-east. A mark is 0 or 1, the code of the texel, or 2:
+   the texel has the code in red. The length of the image is 8 + the RIFF size in bytes 4 to 7,
+   little endian.
 2. The colour: an RGB image of 512 × 512 texels in the codec of the variant.
 
 In the first and the last quarter, a texel darker than 0.025 in visible reflectance is terrain
@@ -243,10 +249,8 @@ with these rules:
 
 `trailview-canopy` holds the forest of each cell of zoom 12 at 256 × 256 cells, 26 m at 47° N:
 the canopy height, the cover, a class of the stems per hectare and the leaf type. It holds no tree
-position: the engine places trees that match these values. The layer is the optional planner layer
-`trailview-canopy` of [obc-data.md](obc-data.md). Its bake, `tools/planner_trailview_canopy.py`,
-reads the zoom 12 tiles out of the blocks of the prepared source [`forest`](obc-data.md#forest),
-one window each.
+position. Its bake reads the zoom 12 tiles out of the blocks of the prepared source
+[`forest`](obc-data.md#forest), one window each.
 
 | Field | Value |
 | --- | --- |
@@ -257,13 +261,13 @@ one window each.
 | Bounds | The region bounds |
 
 Cell (column, row) of tile 12/x/y covers that cell of the 256 × 256 grid of the tile. Row 0 is the
-north edge and column 0 is the west edge. A tile that the archive does not hold is unknown: no
-cell of its window in `forest` is known. The release packs the archive in PMTiles per zoom 11 parent:
+north edge and column 0 is the west edge. A tile that the archive does not hold is unknown: no cell
+of its window in `forest` is known. The release packs the archive in PMTiles per zoom 11 parent:
 `maps/tiles/trailview-canopy/<z>-<x>-<y>.pmtiles`, with the TileJSON `maps/trailview-canopy.json`.
 
 | Metadata | Value |
 | --- | --- |
-| `canopy_format` | `1`. A reader reads only the format that it knows |
+| `canopy_format` | `1` |
 | `archive` | `trailview-canopy` |
 | `attribution` | Text to show with the layer |
 
