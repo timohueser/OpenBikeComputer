@@ -51,3 +51,12 @@ areas = [
   "europe/switzerland",
   "europe/ukraine",
 ]
+# The index names no country for some areas, such as `europe/great-britain`. The first is the
+# country of a place outside every country polygon of the planner search.
+countries = [
+  "DE",
+  "AD", "AL", "AT", "AX", "BA", "BE", "BG", "BY", "CH", "CY", "CZ", "DK", "EE", "ES", "FI", "FO",
+  "FR", "GB", "GG", "GI", "GR", "HR", "HU", "IE", "IM", "IS", "IT", "JE", "LI", "LT", "LU", "LV",
+  "MC", "MD", "ME", "MK", "MT", "NL", "NO", "PL", "PT", "RO", "RS", "SE", "SI", "SJ", "SK", "SM",
+  "UA", "VA", "XK",
+]
