@@ -152,6 +152,9 @@ fn masonry(stone: vec3f, along: f32, altitude: f32, w: f32) -> vec3f {
 // metres, a pixel `w` metres wide, `distance` metres from the eye. A road narrower than a pixel draws one pixel wide, as
 // faint as its share of it. The paint fades out before the reach of the mask pool and in the outer
 // half of the morph band of the coarsest level with masks.
+// PROTOTYPE (road looks): set while a corridor's look reads the ground beside or through it.
+var<private> corridor_ground: bool = false;
+
 fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) -> Road {
     if (!DETAIL) {
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0);
@@ -200,6 +203,9 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
         edge += 0.36 * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5);
     }
     let thin = max(0.0, 0.5 * cross_w - half);
-    let cover = (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
+    // PROTOTYPE (road looks): well inside the corridors' range (CORRIDOR_SHARE and HOLE_MARGIN_M of hole.wgsl) a
+    // corridor draws each way but a house's walk, and the paint would show where the terrain rises through it.
+    let corridor = corridor_ground || (distance < 0.7 * masks.reach - 40.0 && code != PAVING_CODE);
+    let cover = select(1.0, 0.0, corridor) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
     return Road(surface.rgb, cover, surface.w, wall, shaped);
 }

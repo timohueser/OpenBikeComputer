@@ -26,6 +26,14 @@ export const MAT = {
     CONCRETE: 10,
 } as const;
 
+/** The looks of the ways, materials 20 to 39, as LOOK_* of looks.wgsl; from TREAD on, the detail meshes of details.ts. */
+export const LOOK = {
+    ASPHALT: 20, MAIN: 21, MOTORWAY: 22, CONCRETE: 23, SETT: 24, PAVERS: 25, GRAVEL: 26, DIRT: 27, TRAIL: 28, BALLAST: 29,
+    TREAD: 30, RISER: 31, SLEEPER: 32, SLEEPER_WOOD: 33, RAIL: 34, RAIL_HEAD: 35, RACK: 36, CABLE: 37,
+} as const;
+/** The top of a track's ballast over its line, and the width of its slope on each side. */
+export const BED_M = 0.25, BED_SLOPE_M = 0.4;
+
 /** Vertex flags of a corridor face, as CF_* of corridor.wgsl: the height is an offset over the sampled stamped ground, or over the drawn mesh. */
 export const CF = { SAMPLE: 1, MESH: 2, BARRIER: 4 } as const;
 
@@ -54,11 +62,34 @@ export interface Part { a: number; dz: number; mat: number; flags?: number }
 export const corridorLine = (line: Line) => (line.kind === ROAD || line.kind === RAIL || line.kind === PATH) && !line.gallery;
 
 const PAVED_ROAD = ['main', 'road', 'oneway', 'paving'];
+const MOTORWAYS = ['motorway', 'motorway_link', 'trunk', 'trunk_link'];
+const MAINS = ['primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link'];
+const SETTS = ['sett', 'cobblestone', 'unhewn_cobblestone', 'stone'];
 
-/** The carriageway's points across, from left (+a) to right: its edges and its crown. */
+/** The look of a line's carriageway, by its class, its surface code and its OSM surface. */
+export function lookOf(line: Line): number {
+    if (line.kind === RAIL || line.code >= RAIL_CODE) return LOOK.BALLAST;
+    const tag = line.surface ?? '', name = surfaceName(line), cls = classOf(line);
+    if (SETTS.includes(tag)) return LOOK.SETT;
+    if (tag === 'paving_stones' || name === 'paving' || cls === 'pedestrian') return LOOK.PAVERS;
+    if (tag.startsWith('concrete')) return LOOK.CONCRETE;
+    if (name === 'gravel') return LOOK.GRAVEL;
+    if (name === 'dirt' || name === 'grass') return line.kind === PATH ? LOOK.TRAIL : LOOK.DIRT;
+    if (name === 'path') return LOOK.TRAIL;
+    return MOTORWAYS.includes(cls) ? LOOK.MOTORWAY : MAINS.includes(cls) ? LOOK.MAIN : LOOK.ASPHALT;
+}
+
+/** The carriageway's points across, from left (+a) to right: its edges, its crown, a track's ruts or ballast bed. */
 export function carriageway(line: Line): Part[] {
-    const h = line.h, crown = line.kind === ROAD && PAVED_ROAD.includes(surfaceName(line)) ? CROWN * h : 0;
-    return [{ a: h, dz: LIFT_M, mat: MAT.PAINT }, { a: 0, dz: LIFT_M + crown, mat: MAT.PAINT }, { a: -h, dz: LIFT_M, mat: MAT.PAINT }];
+    const h = line.h, mat = lookOf(line);
+    const half = (pts: [number, number][]): Part[] => [...pts.map(([a, dz]) => ({ a, dz: LIFT_M + dz, mat })), ...pts.slice(0, -1).reverse().map(([a, dz]) => ({ a: -a, dz: LIFT_M + dz, mat }))];
+    // A bed of ballast: its top BED_M over the line, its slopes down to the core at the edges.
+    if (mat === LOOK.BALLAST) return half([[h, 0], [h - BED_SLOPE_M, BED_M], [0, BED_M]]);
+    // Ruts worn into a track, the middle left higher.
+    if (mat === LOOK.DIRT && h >= 1.2) return half([[h, 0], [1.0, 0], [0.75, -0.04], [0.5, 0], [0, 0.025]]);
+    if (mat === LOOK.GRAVEL && h >= 1.3) return half([[h, 0], [1.05, 0], [0.78, -0.025], [0.5, 0], [0, 0.01]]);
+    const crown = line.kind === ROAD && PAVED_ROAD.includes(surfaceName(line)) ? CROWN * h : 0;
+    return half([[h, 0], [0, crown]]);
 }
 
 /** The points of one side past the carriageway's edge, then the band; `side` 1 is left, -1 right, at segment v. */
@@ -70,13 +101,17 @@ export function sideOf(line: Line, side: 1 | -1, v: number): Part[] {
         a += walk;
         dz += KERB_RISE_M;
     } else if (line.kind === RAIL || line.code >= RAIL_CODE) {
-        out.push({ a: a + 0.6, dz: -0.3, mat: MAT.BALLAST });
-        a += 0.6;
-        dz = -0.3;
+        // The formation beside the bed: ballast spilt into the ground (looks.wgsl past the half-width).
+        out.push({ a: a + 0.35, dz: LIFT_M - 0.02, mat: LOOK.BALLAST });
+        a += 0.35;
+        dz = LIFT_M - 0.02;
     } else {
         const shoulder = line.kind === ROAD ? SHOULDER_M[surfaceName(line)] ?? 0 : 0;
         if (shoulder > 0) {
-            out.push({ a: a + shoulder, dz: dz - 0.02, mat: MAT.SHOULDER });
+            // A paved strip beside a main road, a gravel verge beside a minor one (both in the road's look past
+            // its half-width); a track has none: the stamp's flat shoulder is ground.
+            const look = lookOf(line), paved = look === LOOK.MAIN || look === LOOK.MOTORWAY || look === LOOK.ASPHALT;
+            out.push({ a: a + shoulder, dz: dz - 0.02, mat: paved ? look : look === LOOK.CONCRETE || look === LOOK.SETT || look === LOOK.PAVERS ? LOOK.ASPHALT : MAT.GROUND });
             a += shoulder;
             dz -= 0.02;
         }

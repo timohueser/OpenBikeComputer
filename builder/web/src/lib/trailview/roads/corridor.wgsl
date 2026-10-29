@@ -3,6 +3,7 @@
 // includes it and calls corridor_height in its vertex stage and corridor_fragment in its fragment stage.
 // #include hole.wgsl
 // #include ../ground/look.wgsl
+// #include looks.wgsl
 
 // The flags in a vertex colour's alpha that mark a corridor vertex, as CORRIDOR of corridor.ts.
 const CORRIDOR_MARK: u32 = 12u;
@@ -62,7 +63,7 @@ fn corridor_height(at: vec2i, z: f32, colour: vec4f, s: vec2f, fallback: f32) ->
     if (!corridor_drawn(s)) {
         h -= CORRIDOR_SINK_M;
     }
-    return h;
+    return h - look_sink(colour, length(s));
 }
 
 // The colour of a corridor fragment: `u` units about the anchor, `relative` render space about the eye,
@@ -75,6 +76,9 @@ fn corridor_fragment(u: vec2f, relative: vec3f, altitude: f32, colour: vec4f, ro
     let level = u32(ceil(lod(su)));
     if (mat == MAT_GROUND) {
         return vec4f(ground_colour(su, relative, altitude, level), 1.0);
+    }
+    if (mat >= 20u && mat < 40u) {
+        return look_fragment(mat, code, su, relative, altitude, road, along, n, level);
     }
     let region = region_at(su);
     let p = look.place.xy + relative.xy;
