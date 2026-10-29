@@ -638,6 +638,22 @@ command = "python3 tools/prose.py --check"
 jobs = ["guards"]
 triggers = ["tools/prose.py", "tools/testing/prose-baseline.json"]
 
+# Report only: `cairn check` fails only for a new violation of a system whose doc is approved.
+# It reads source paths (ownership), source lines (R3) and Cargo manifests (dependencies), so any
+# change to one of them selects it, and a documentation-only or data-only change does not.
+[[suite]]
+id = "ci.cairn"
+route = "ordinary"
+command = "python3 -m unittest discover -s tools/cairn/tests && python3 tools/cairn/cairn.py check"
+jobs = ["cairn"]
+triggers = [
+  "tools/cairn/**", ".cairn/**", "docs/design/**",
+  "**/Cargo.toml", "**/Cargo.lock",
+  "tools/obc",
+  "**/*.rs", "**/*.ts", "**/*.svelte", "**/*.py", "**/*.swift", "**/*.wgsl",
+  "**/*.js", "**/*.mjs", "**/*.sh", "**/*.h", "**/*.c",
+]
+
 [[suite]]
 id = "ci.ios-host-portability"
 route = "required"

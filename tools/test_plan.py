@@ -49,6 +49,7 @@ class Job:
 JOBS: dict[str, Job] = {
     "selection": Job(unconditional=True),
     "guards": Job(unconditional=True),
+    "cairn": Job(needs=("selection",)),
     "fmt": Job(needs=("selection",), roots=PRODUCT_ROOTS),
     "clippy": Job(needs=("selection",), roots=(ROOT_WORKSPACE,)),
     "test": Job(needs=("selection",), roots=(ROOT_WORKSPACE,), script="tools/ci/test.sh"),

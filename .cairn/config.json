@@ -1,0 +1,28 @@
+{
+  "docs": "docs/design",
+  "baseline": ".cairn/baseline.json",
+  "sources": {
+    "extensions": [".rs", ".ts", ".svelte", ".py", ".swift", ".wgsl", ".js", ".mjs", ".sh", ".h", ".c"],
+    "files": ["tools/obc"]
+  },
+  "adapters": {
+    "cargo": {
+      "ignore": ["**/vendor/**"]
+    }
+  },
+  "runtimes": {
+    "firmware/": "device",
+    "firmware/tools/": "host",
+    "host/": "host",
+    "planner/": "host",
+    "sim/": "host",
+    "tools/": "host",
+    "builder/web/": "web",
+    "builder/wasm/": "web",
+    "companion-ios/": "ios"
+  },
+  "tooling": {
+    "path": "tools/",
+    "area": "Tooling"
+  }
+}
