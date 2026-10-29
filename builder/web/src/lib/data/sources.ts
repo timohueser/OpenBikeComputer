@@ -1,5 +1,6 @@
 // What `obc data sources --json` and `source prepare --dry-run --json` write.
-import { list, size, type Holder } from "./shapes";
+import type { Held } from "./holding";
+import { list, size, type Holder, type Status } from "./shapes";
 
 export type SourceState = "blocked" | "stale" | "ok" | "unused";
 
@@ -22,6 +23,7 @@ export interface SourceRow {
     hosts?: string[];
     version: string;
     refresh: number | "manual";
+    keep: "archive" | "prepared" | "store";
     credential?: { env?: string[]; file?: string | null };
     credential_missing: boolean;
     /** Whether `source refresh` moves the source. */
@@ -49,6 +51,7 @@ export interface SourceRow {
      *  there, and the run that prepares it. `error` says why they cannot be read. `null` for another
      *  source. */
     prepared: { root: string | null; versions: PreparedVersion[]; lock: Holder | null; error: string | null } | null;
+    held: Held;
 }
 
 export interface StoredRequest {
@@ -94,11 +97,26 @@ export const policy = (refresh: number | "manual"): string => (refresh === "manu
 /** A reference: `obc data source prepare` makes its versions. Every other source is a download. */
 export const isReference = (row: SourceRow): boolean => row.fetch.kind === "prepared";
 
-/** The headings of Downloads, in order, as `group` in data/sources.toml names them. */
-export const GROUPS = ["OpenStreetMap", "Elevation", "Wikimedia", "Climate and snow", "Land cover and imagery", "Map styles and tools"];
+/** The headings of the source list, in order: the references, then each `group` of
+ *  data/sources.toml. */
+export const GROUPS = ["Prepared", "OpenStreetMap", "Elevation", "Wikimedia", "Climate and snow", "Land cover and imagery", "Map styles and tools"];
+
+export const groupOf = (row: SourceRow): string => row.group ?? (isReference(row) ? "Prepared" : "Other");
 
 /** The parts of a bake, as `used_by` names them. */
 export const PARTS: Record<string, string> = { device: "Bike computer maps", planner: "Planner", search: "Search", trailview: "Trail View" };
+
+/** Where `target` is, as a person names it. */
+export const placeOf = (target: string, status: Status | null): string =>
+    (status?.targets.find((at) => at.target === target)?.kind ?? (target === "prod" ? "r2" : "dir")) === "r2" ? "Production" : "This computer";
+
+/** What a person acts on: a release that reads an old or blocked version, by where it is. */
+export const due = (row: SourceRow, status: Status | null): string[] =>
+    Object.entries(row.targets).flatMap(([target, at]) =>
+        at.requests
+            .filter((request) => request.state === "stale" || request.state === "blocked")
+            .map((request) => `Due again for ${placeOf(target, status).toLowerCase()}: ${request.reason ?? request.state}`),
+    );
 
 /** The hosts that a fetch of `row` reaches. */
 export function hostsOf(row: SourceRow): string[] {
@@ -146,7 +164,7 @@ export function requestLabel(request: StoredRequest, areaName: (id: string) => s
         .join(" · ");
 }
 
-/** The references, as the References screen names them. Each version covers an area. A version of
+/** The references, as the page names them. Each version covers an area. A version of
  *  a reference of national models, the downloads `<models><country>`, adds its area to the one before. */
 export const REFERENCES: { id: string; title: string; about: string; add: string; models?: { prefix: string; noun: string } }[] = [
     { id: "wiki", title: "Wiki", about: "Facts, article text and photos of landmarks and peaks, from the Wikimedia dumps", add: "Prepare a newer version" },

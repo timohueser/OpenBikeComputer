@@ -9,6 +9,13 @@
     --focus: var(--forest);
     --link: var(--forest);
     --shadow: 0 6px 18px rgb(28 27 20 / 0.12);
+    /* How this machine holds a source, from `obc data sources`. */
+    --status-archived: var(--ready);
+    --status-prepared: #1d6a72;
+    --status-held: #56661c;
+    --status-partial: var(--stale);
+    --status-missing: var(--missing);
+    --status-live: #6a4896;
 }
 :root[data-theme="dark"] {
     --ready: #86c9a0;
@@ -17,6 +24,9 @@
     --stale: #e9ad62;
     --link: var(--wood);
     --shadow: 0 6px 18px rgb(0 0 0 / 0.4);
+    --status-prepared: #7cc8cf;
+    --status-held: #c2cf86;
+    --status-live: #c6abec;
 }
 * {
     box-sizing: border-box;
@@ -217,4 +227,40 @@ body {
 }
 :where(main tbody tr:hover) {
     background: color-mix(in srgb, var(--parchment-2) 50%, transparent);
+}
+/* A status of a source, or what a bake of a region still needs of it, sets the tone of a pill. */
+:where(main) [data-status="archived"],
+:where(main) [data-need="held"] {
+    --tone: var(--status-archived);
+}
+:where(main) [data-status="prepared"] {
+    --tone: var(--status-prepared);
+}
+:where(main) [data-status="held"] {
+    --tone: var(--status-held);
+}
+:where(main) :is([data-status="partial"], [data-need="download"]) {
+    --tone: var(--status-partial);
+}
+:where(main) :is([data-status="missing"], [data-need="prepare"]) {
+    --tone: var(--status-missing);
+}
+:where(main) [data-status="live"] {
+    --tone: var(--status-live);
+}
+:where(main) .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 0;
+    padding: 0 8px;
+    background: color-mix(in srgb, var(--tone, var(--ink-faint)) 14%, var(--panel));
+    color: var(--tone, var(--ink-soft));
+    border: 1px solid color-mix(in srgb, var(--tone, var(--ink-faint)) 45%, transparent);
+    border-radius: 999px;
+    font-size: 12px;
+    line-height: 20px;
+    font-weight: 650;
+    text-decoration: none;
+    white-space: nowrap;
 }

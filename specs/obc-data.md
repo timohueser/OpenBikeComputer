@@ -2300,7 +2300,7 @@ addition:
   `{"exit": STATUS, "output": JSON}`, the exit status and the JSON that the command wrote. When
   the command writes no JSON, `output` is a `failed` [error](#errors) and the status is not 0.
   A command runs to its end, and its output is read, also when the request ends first. The page
-  runs only `obc data` without a command, `obc data setup`, `obc data areas`, `obc data sources`, `obc data runs`, `obc data runs RUN`,
+  runs only `obc data` without a command, `obc data setup`, `obc data areas`, `obc data sources`, `obc data sources --region ID`, `obc data runs`, `obc data runs RUN`,
   `obc data runs RUN --stop`, `obc data router TARGET`, `obc data serve TARGET --detach`, `obc data update TARGET` with settings flags and then `--dry-run`,
   `--plan` or `--expect ID` (with `--accept-format-change` and `--yes`), `obc data rollback TARGET --expect ID`
   (with `--yes`), `obc data unlock TARGET --from MACHINE --yes`, `obc data source refresh ID`, and

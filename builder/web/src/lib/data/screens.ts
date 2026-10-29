@@ -8,21 +8,17 @@ export const SCREENS = [
     { id: "overview", label: "Overview", hash: "#/overview" },
     { id: "prod", label: "prod", hash: "#/prod" },
     { id: "local", label: "local", hash: "#/local" },
-    { id: "downloads", label: "Downloads", hash: "#/downloads" },
-    { id: "references", label: "References", hash: "#/references" },
+    { id: "sources", label: "Sources", hash: "#/sources" },
     { id: "runs", label: "Runs", hash: "#/runs" },
     { id: "machine", label: "Machine", hash: "#/machine" },
 ] as const;
 
 export type Screen = (typeof SCREENS)[number];
 
-/** The screen of a hash such as `#/runs/ID`: its first segment names the screen. The Bake screen
- *  links a prepare as `#/sources/ID/prepare`, which References shows; Downloads shows the rest of
- *  `#/sources`. */
+/** The screen of a hash such as `#/runs/ID`: its first segment names the screen. */
 export function screenAt(hash: string): Screen {
     const first = hash.replace(/^#\/?/, "").split(/[/?]/)[0];
-    const id = first === "sources" ? (hash.split("?")[0].endsWith("/prepare") ? "references" : "downloads") : first;
-    return SCREENS.find((screen) => screen.id === id) ?? SCREENS[0];
+    return SCREENS.find((screen) => screen.id === first) ?? SCREENS[0];
 }
 
 /** The run of a hash such as `#/runs/ID`, or null on the list of runs. */
@@ -31,28 +27,39 @@ export function runAt(hash: string): string | null {
     return first === "runs" && id ? id : null;
 }
 
-/** What Downloads and References show: the list `#/downloads`, a source `#/downloads/ID`, or the
- *  review of a prepare `#/references/ID/prepare?region=ID|box=W,S,E,N`. An id can hold `/`, so it
- *  is encoded. */
+export type SourceView = "source" | "layer" | "region";
+
+/** What the Sources screen shows: a view of every source `#/sources?by=source|layer|region` (with
+ *  `&region=ID` for a region), a source `#/sources/ID`, or the review of a prepare
+ *  `#/sources/ID/prepare?region=ID|box=W,S,E,N`. An id can hold `/`, so it is encoded. */
 export function sourceAt(hash: string): {
     id: string | null;
     prepare: boolean;
+    by: SourceView;
     area: { flag: "--region" | "--box"; value: string } | null;
 } {
     const [path, query = ""] = hash.replace(/^#\/?/, "").split("?");
     const [, id, prepare] = path.split("/");
     const params = new URLSearchParams(query);
-    const [region, box] = [params.get("region"), params.get("box")];
+    const [region, box, by] = [params.get("region"), params.get("box"), params.get("by")];
     return {
         id: id ? decodeURIComponent(id) : null,
         prepare: prepare === "prepare",
+        by: by === "layer" || by === "region" ? by : "source",
         area: region ? { flag: "--region", value: region } : box ? { flag: "--box", value: box } : null,
     };
 }
 
+const encoded = (value: string) => encodeURIComponent(value).replaceAll("%2F", "/").replaceAll("%2C", ",");
+
 export function prepareHash(id: string, area: { flag: "--region" | "--box"; value: string } | null = null): string {
-    const at = area ? `?${area.flag === "--region" ? "region" : "box"}=${encodeURIComponent(area.value).replaceAll("%2F", "/").replaceAll("%2C", ",")}` : "";
-    return `#/references/${encodeURIComponent(id)}/prepare${at}`;
+    const at = area ? `?${area.flag === "--region" ? "region" : "box"}=${encoded(area.value)}` : "";
+    return `#/sources/${encodeURIComponent(id)}/prepare${at}`;
+}
+
+export function viewHash(by: SourceView, region: string | null = null): string {
+    if (by === "source") return "#/sources";
+    return `#/sources?by=${by}${region ? `&region=${encoded(region)}` : ""}`;
 }
 
 /** What the Bake screen shows, from
