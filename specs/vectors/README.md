@@ -6,11 +6,11 @@ Binary fixtures pinning the byte layouts of
 object, and the OBCT terrain raster ([`obct-terrain.md`](../obct-terrain.md)), consumed by
 three implementations:
 
-- **Firmware**: `cargo test -p obc-vectors` (workspace `firmware/`) verifies every
-  file byte-for-byte against builders written straight from the spec text, and
-  loads the route vectors through the production `obc-route` reader.
-- **App**: the `OBCKit` Swift tests pin the config, command, route, ride, trip and update
-  codecs to the same files.
+- **Rust**: `cargo test -p obc-vectors` verifies every file it builds byte-for-byte against
+  builders written straight from the spec text, and loads the route vectors through the
+  production `obc-route` reader. The rows below name the other Rust readers.
+- **App**: the `OBCKit` Swift tests pin the command, route, ride, trip and update codecs to the
+  same files.
 - **Browser**: the wasm conversion bridge (`builder/wasm`) must reproduce the
   route and finished-ride fixtures byte-for-byte from the same inputs —
   `builder/web/src/lib/convert/bridge.test.ts`.
@@ -30,6 +30,7 @@ The files are the contract: a drift on any side fails that side's tests.
 | `track-export.gpx` | GPX 1.1, `obc_route::track_to_gpx` | the export of finished `ride-v6.bin` as "Schauinsland & back" — the name's `&` pins XML escaping. Not spec-derived: the exporter's serialization is the contract, and this file is its output |
 | `ride-v6.bin` | ride object v6 (spec §7.2) | "Sensor Ride": three exact 20-byte recorded samples (including segment flags and mixed sensor presence), followed by the fixed 154-byte summary footer with 95 m of descent and 756 kJ. The ride started on day index 1 of 3 of the `trip-v3.bin` trip ("Alpen Traverse", key `0x0123_4567_89AB_CDEF`), on a Gravel bike, with max HR 185, FTP 250 and the demo flag set |
 | `status-command-result.bin` | `status` msg 3 §4.3 | the answer to an accepted `installFw`: `cmd` 3, `ok`, `detail` 0. Pins the four-byte layout and the position of `detail` |
+| `config-v1.bin` | `config` §7.3 | name `OBC Tourer`, `units` 0 (metric). `obc-ble` decodes and re-encodes it (`firmware/obc-ble/tests/cases/vectors.rs`) |
 | `command-set-clock.bin` | `setClock` §4.4 cmd 5 | `utc` 1783598400 (2026-07-09T12:00:00Z) · `offset_min` 120 |
 | `update-container-v1.bin` | OBCU container ([`obcu-update.md`](../obcu-update.md) §1), **unsigned/v1** | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader`. It is the shape of a fielded container and of the device-written rollback snapshot. With the v2 file below, it pins the offset compatibility across implementations |
 | `update-container-v2.bin` | OBCU container (§1), **Ed25519-signed/v2** | the *same* header table and the *same* 128-byte image as v1 — `header_version` still `1` (§1.2) — with `sig_scheme`/`sig_len` in v1's reserved bytes `48..52` and a 64-byte signature trailer after the image. Signed with the committed **test** key (`firmware/obc-dfu/keys/test/`); signing is deterministic. A decoder must read every v1 field from it byte-identically |
@@ -38,10 +39,11 @@ The files are the contract: a drift on any side fails that side's tests.
 | `route-answer.json` | route answer ([`route-api.md`](../route-api.md)) | two routes before (`routes`) and after (`answer`) encoding. The primary route has six points, one unknown height, two legs and four edge channels: two `surfaces` runs, three `pushing` runs, three `closures` runs and three `sac_scale` runs. The corridor route has five points, one leg and a `via` point. The `planner-router` encoder test and the decoder tests of the web planner and `OBCKit` read it |
 | `signed-routes.json` | route catalog records ([`route-catalog.md`](../route-catalog.md)) and signed-route search queries | 13 records around one start at 47.87°N 8.15°E: hiking and foot routes graded T1 to T5, an ungraded loop, an S2 mountain-bike loop, a bicycle loop, a long route with two stages whose start is 30 km away, a route across a cell edge, and a loop that reaches a cell outside the offline download. A 14th record, a loop that turns back at its own start, lies outside every query and serves only its plan. `grid` lists the cells that have a file; the loader answers null for every other cell. Each query has the cells that the search loads and the expected matches in order. The distance model is a flat projection at the start latitude on a sphere of R = 6371 km. The cell box is the start ± the radius on each axis, and each box edge is at least 0.05 tiles from a tile edge. A route matches when its distance is not more than the radius. `distance_m` is rounded to the metre. Each plan has the plan points and the turnarounds as plan indices (index 0 when a loop turns back at its start). The web planner search test reads it; the phone port reads the same file |
 | `trailview-features.json`, `trailview-features.bin` | TrailView feature tile ([`trailview-features.md`](../trailview-features.md)) | one tile decoded and its bytes: a line into the buffer, a line with two parts, solved heights and two heights that are not solved, an area of two polygons with a hole, a point outside the tile square, a non-ASCII tag value and a feature without tags. The encoder test of the bake (`host/obc-trailview-features/src/tiles.rs`) and the engine decoder test (`builder/web/src/lib/trailview/stream/features.test.ts`) read both |
-
-The `place-train-v15.bin` record pins the OBCM v15 service metadata: Train subtype 20,
-source identity, explicit approach node and coordinate, and profile mask. Its 64 bytes come
-from a separate spec builder and pass through the production metadata decoder.
+| `place-train-v15.bin` | OBCM POI record ([`obcm-map.md`](../obcm-map.md) §7.3) | one 64-byte Train record, subtype 20, with its source identity, an explicit approach node and coordinate, and a profile mask. `obc-vectors` passes it through the production metadata decoder |
+| `landmark-section-v16.bin` | OBCM landmark section (`obcm-map.md` §9) | one landmark, Wikidata item 123 `Burg` at 8°E 47°N, with a German article bundle, no OSM identity and no photo. `obc-vectors` passes the record through the production record decoder |
+| `peak-section-v17.bin` | OBCM peak section (`obcm-map.md` §10) | three summit SourceIds and two article identities. Two summits share one English/German article; the third has French text only. The `obc-reader` peak suite (`firmware/obc-reader/tests/cases/peaks.rs`) uses these bytes for language fallback, generation changes, bounded binary search, malformed indexes and valid-range content-reference swaps |
+| `flat-store-v4/` | protocol v4 records ([`flat-store-protocol.md`](../flat-store-protocol.md) §3.11) | one JSON file per record in `controls/`, `streams/`, `errors/` and `negative/`, each listed with its SHA-256 in the directory's own `manifest.json`. The `obc-link` unit tests check it against its producer; the `OBCKit` `FlatStoreVectorTests` read it |
+| `ride-archive-metadata/two-rides.bin` | `OBRM` v2 ([`ride-archive-metadata.md`](../ride-archive-metadata.md)) | two proof rows on StoreId `42` repeated 16 times. The `obc-storage` metadata tests build the same bytes and refuse corrupted copies; the `obc-link` `flat_engine` test serves it as a device-owned Metadata object |
 
 ## Build
 
@@ -57,12 +59,10 @@ Then update `manifest.json` to match and flag the app side **and** the web
 builder's two consumers — the conversion bridge and the USB protocol client. All
 of them pin the same bytes.
 
-Two builder inputs are **not** literals. `update-container-v2.bin`'s 64-byte trailer comes
+One builder input is **not** a literal. `update-container-v2.bin`'s 64-byte trailer comes
 from `obc_dfu::sign_image`; that signer is deterministic, so the fixture does not change on
 regeneration.
 
-`peak-section-v17.bin` is an authored OBCM §10 section with three summit SourceIds and two
-article identities. Two summits share one English/German article; the third has French text only.
-The reader suite uses these bytes for language fallback, generation changes, bounded binary
-search, malformed indexes and valid-range content-reference swaps. The web assembly fixture
-passes a separate authored catalogue through the ordinary cutter and native assembler.
+`flat-store-v4/` has its own producer:
+`cargo run -p obc-link --features std --example flat_vectors --locked`. `two-rides.bin` has no
+producer; the `obc-storage` metadata test states its bytes.

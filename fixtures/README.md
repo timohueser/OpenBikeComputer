@@ -62,9 +62,10 @@ Generated design-review screenshots belong in a pull request, not in a runtime a
 
 ## Package provenance
 
-Every registered map is an OBCM v19 file with Light and Dark styles. The geographic payload comes
-from a canonical bbox that is never self-sourced from a header. Each one has a build record in
-`sources/ride-assistant/` that pins its source and output digests.
+Every registered map is an OBCM v19 file with Light and Dark style tables. The Dark table holds the
+authored Dusk skin. The geographic payload comes from a canonical bbox that is never self-sourced
+from a header. Each one has a build record in `sources/ride-assistant/` that pins its source and
+output digests.
 
 | Package | Source | Build record |
 | --- | --- | --- |

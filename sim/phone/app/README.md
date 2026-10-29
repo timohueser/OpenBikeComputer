@@ -50,7 +50,7 @@ reports the bytes in use, not 32 GB.
 ```sh
 xcrun simctl boot "iPhone 17 Pro"
 open -a Simulator
-tools/build-ios-host.sh --sim-only
+obc ios-host --sim-only
 cd companion-ios && xcodegen generate
 xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCDevice \
   -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \

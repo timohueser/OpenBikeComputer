@@ -189,7 +189,7 @@ Photo order starts with explicit P18, then identity-checked Wikipedia lead image
 position or matching filename is not subject evidence.
 
 Fallback uses one directly claimed P373 category, one nonrecursive category response and at most the
-file bound in `photo_policy.fallback` of `policy.json`. Continuation beyond that candidate bound is
+file bound in `fallback` of [`photo-pools.json`](photo-pools.json). Continuation beyond that bound is
 a complete bounded outcome. The record states the limit reached. Files require subject evidence and
 valid credits.
 

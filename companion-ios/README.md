@@ -21,7 +21,7 @@ For a simulator, prepare the framework before XcodeGen resolves the package, the
 `OBCCompanion` scheme:
 
 ```sh
-tools/build-ios-host.sh --sim-only
+obc ios-host --sim-only
 cd companion-ios
 xcodegen generate
 ```
@@ -38,7 +38,7 @@ Before package tests without XcodeGen, run `npm ci --prefix companion-ios/Replay
 repository root. Then, from the repository root, prepare the macOS slice:
 
 ```sh
-tools/build-ios-host.sh --mac-only
+obc ios-host --mac-only
 cd companion-ios/Packages/OBCKit
 swift test --disable-keychain --disable-netrc
 ```
