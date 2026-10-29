@@ -741,7 +741,7 @@ export class TrailView {
             camera: { right: right.map(v => v * tx), up: up.map(v => v * ty), forward },
             codes: this.groundLook.codes,
             debug: DEBUG_VIEWS.indexOf(this.extras.debug), sample,
-            jitter, scale,
+            jitter, scale, detail: this.instances.detail,
         });
     }
 

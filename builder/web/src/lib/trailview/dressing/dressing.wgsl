@@ -126,7 +126,7 @@ fn rocks_of(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let cell = cell_at(s, u32(ceil(lod(s))));
-    let pick = rock_pick(point, h);
+    let pick = rock_pick(h, rock_side(point.y));
     if (pick > rock_density(cell, -1.0)) {
         return;
     }

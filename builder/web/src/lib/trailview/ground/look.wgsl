@@ -771,9 +771,10 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     albedo = patched(albedo, rule(region, slot_cliff() + 2), shapes.zw, g.patches.y, world, n.y, r, surface_size);
     // The strewn rocks that their instances no longer show (rocks.wgsl).
     let far = length(relative);
-    if (far > (1.0 - ROCK_HANDOFF) * ROCK_REACH_M) {
+    let end = ROCK_REACH_M * look.screen.w;
+    if (far > (1.0 - ROCK_HANDOFF) * end) {
         let rise = sqrt(max(1.0 - drawn.z * drawn.z, 0.0)) / max(drawn.z, 0.1);
-        albedo = mix(albedo, rock_seen(relative / far, n), rocks_painted(s, vec4u(g.material, g.lithology, region, 0u), rise, far, footprint));
+        albedo = mix(albedo, rock_seen(relative / far, n), rocks_painted(s, vec4u(g.material, g.lithology, region, 0u), rise, far, end, footprint));
     }
     albedo = mix(albedo, road.colour, road.cover * (1.0 - road.share));
     if (DETAIL && masoned > 0.0) {

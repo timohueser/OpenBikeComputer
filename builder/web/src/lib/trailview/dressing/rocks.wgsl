@@ -1,8 +1,7 @@
 // Strewn rocks, as their instances (rocks_of of dressing.wgsl) and the ground (look.wgsl) share them.
 // A rock stands at a point of a jittered grid of ROCK_SHIFT, kept by the density of the ground there.
-// Past the inner share 1 − ROCK_HANDOFF of the reach the ground paints each rock's footprint under it, and
-// each instance ends at its own distance in that band: the rock stays as its footprint, and no edge
-// shows where the instances end.
+// Each instance ends at its own distance in the outer ROCK_HANDOFF of the reach, and past it the ground
+// paints the rock's footprint: no edge shows where the instances end, and no rock shows twice.
 // look.wgsl includes it, and it reads `rule()` of look.wgsl.
 // #include ../ground/look.wgsl
 // #include ../instances/hash.wgsl
@@ -54,12 +53,17 @@ fn rock_hash(point: vec2i) -> u32 {
     return mix_bits3(point.x, point.y, 77u);
 }
 
-// A rock point keeps a rock where this is below the density: a share of 1 over its cell's area, at the
-// cell's own latitude (as texel_metres of features.wgsl). Where the density times the area passes 1, as a
-// rules' share above ROCK_POINT_M2 / (12.5 m² × cos² of the latitude) does, every point keeps one and
-// the ground holds fewer rocks than its rules ask.
-fn rock_pick(point: vec2i, h: u32) -> f32 {
-    let side = 2.0 * 3.14159265 * 6371000.0 / 8388608.0 / cosh(3.14159265 * (1.0 - f32(point.y) / 4194304.0));
+// Metres along a rock point's cell in row `y` of points, at the row's own latitude (as texel_metres of
+// features.wgsl).
+fn rock_side(y: i32) -> f32 {
+    return 2.0 * 3.14159265 * 6371000.0 / 8388608.0 / cosh(3.14159265 * (1.0 - f32(y) / 4194304.0));
+}
+
+// A rock point keeps a rock where this is below the density: a share of 1 over its cell's area, `side`
+// metres a side. Where the density times the area passes 1, as a rules' share above ROCK_POINT_M2 /
+// (12.5 m² × cos² of the latitude) does, every point keeps one and the ground holds fewer rocks than its
+// rules ask.
+fn rock_pick(h: u32, side: f32) -> f32 {
     return unit_float(mix_bits(h + 3u)) / (side * side);
 }
 
@@ -87,35 +91,41 @@ fn rock_end(end: f32, h: u32) -> f32 {
 }
 
 // The share of a pixel at `s`, `far` metres from the eye and `footprint` metres wide, that the ground
-// paints as the rocks' footprints. The ground's `cell` and `slope` at `s` stand for those of the rocks
-// about it. A footprint is sampled at the pixel's middle with an edge of at most 0.3 of its size, as the
-// instances are rasterised, so a far field of rocks stays a speckle as the instances make it. Pixels 8
-// to 16 m wide fade to the mean, which wider pixels take.
-fn rocks_painted(s: vec2f, cell: vec4u, slope: f32, far: f32, footprint: f32) -> f32 {
+// paints as the footprints of the rocks whose instances have ended there, the instances ending at
+// `end` (ROCK_REACH_M times the instances' detail). The ground's `cell` and `slope` at `s` stand for
+// those of the rocks about it. A footprint is sampled at the pixel's middle with an edge of at most 0.3
+// of its size, as the instances are rasterised, so a far field of rocks stays a speckle as the instances
+// make it. Pixels 8 to 16 m wide fade to the mean, which wider pixels take.
+fn rocks_painted(s: vec2f, cell: vec4u, slope: f32, far: f32, end: f32, footprint: f32) -> f32 {
+    // The share of the instances that have ended, as rock_end spreads their ends.
+    let ended = clamp((far / end - (1.0 - ROCK_HANDOFF)) / ROCK_HANDOFF, 0.0, 1.0);
     let density = rock_density(cell, slope);
-    if (density <= 0.0 || far < (1.0 - ROCK_HANDOFF) * ROCK_REACH_M) {
+    if (density <= 0.0 || ended <= 0.0) {
         return 0.0;
     }
-    let mean = min(density * ROCK_AREA_M2 * PAINTED * PAINTED, 1.0);
+    let mean = min(density * ROCK_AREA_M2 * PAINTED * PAINTED, 1.0) * ended;
     if (footprint > 16.0) {
         return mean;
     }
-    // The pixel's point cell; a rock reaches at most one cell past its own.
+    // The pixel's point cell; a painted rock reaches at most one cell past its own.
     let base = surface.anchor >> vec2u(ROCK_SHIFT);
     let home = base + vec2i(floor((units_of(s) + vec2f(surface.anchor - (base << vec2u(ROCK_SHIFT)))) / f32(1 << ROCK_SHIFT)));
     var painted = 0.0;
-    for (var k = 0; k < 9; k++) {
-        let point = home + vec2i(k % 3 - 1, k / 3 - 1);
-        let h = rock_hash(point);
-        if (rock_pick(point, h) > density) {
-            continue;
+    for (var row = -1; row <= 1; row++) {
+        let side = rock_side(home.y + row);
+        for (var column = -1; column <= 1; column++) {
+            let point = home + vec2i(column, row);
+            let h = rock_hash(point);
+            if (rock_pick(h, side) > density || far <= rock_end(end, h)) {
+                continue;
+            }
+            let d = s - lod_space(vec2f(rock_at(point, h) - surface.anchor));
+            let yaw = rock_yaw(h);
+            let along = vec2f(dot(d, vec2f(cos(yaw), sin(yaw))), dot(d, vec2f(-sin(yaw), cos(yaw))));
+            let axes = min(select(vec2f(BOULDER_RADIUS), SLAB_AXES, rock_slab(h)) * PAINTED * rock_height(h), vec2f(side));
+            let edge = min(footprint / min(axes.x, axes.y), 0.3);
+            painted = max(painted, 1.0 - smoothstep(1.0 - edge, 1.0 + edge, length(along / axes)));
         }
-        let d = s - lod_space(vec2f(rock_at(point, h) - surface.anchor));
-        let yaw = rock_yaw(h);
-        let along = vec2f(dot(d, vec2f(cos(yaw), sin(yaw))), dot(d, vec2f(-sin(yaw), cos(yaw))));
-        let axes = min(select(vec2f(BOULDER_RADIUS), SLAB_AXES, rock_slab(h)) * PAINTED * rock_height(h), vec2f(3.0));
-        let edge = min(footprint / min(axes.x, axes.y), 0.3);
-        painted = max(painted, 1.0 - smoothstep(1.0 - edge, 1.0 + edge, length(along / axes)));
     }
     return mix(painted, mean, smoothstep(8.0, 16.0, footprint));
 }

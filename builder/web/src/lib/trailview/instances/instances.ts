@@ -189,8 +189,7 @@ export class Instances {
     private readonly sunTally: number[][] = [];
     private quad: [number, number, number] = [0, 0, 0];
     private uploaded = false;
-    /** The tier distances' factor of the detail: below 1 while the staged instances fill the pool. */
-    private detail = 1;
+    private detail_ = 1;
     /** The factor of the tier distances in the last frame. */
     private lod = 1;
     private frame = 0;
@@ -209,6 +208,11 @@ export class Instances {
     /** The day of the year (0 is 1 January), which sets the phase of each tree. */
     day = 0;
 
+    /** The tier distances' factor of the detail: below 1 while the staged instances fill the pool. */
+    get detail(): number {
+        return this.detail_;
+    }
+
     get stats(): InstanceStats {
         return this.stats_;
     }
@@ -224,7 +228,7 @@ export class Instances {
     }
 
     private lodFor(pixels: number): number {
-        return this.detail * pixels / REFERENCE_PIXELS;
+        return this.detail_ * pixels / REFERENCE_PIXELS;
     }
 
     /** Layout entries 0 to 7 of a producer's group 0, for its compute stage. */
@@ -359,7 +363,7 @@ export class Instances {
             r.gpu.device.queue.writeBuffer(r.coarse, 0, this.casterTables[sun.proxies ? 1 : 0]);
         }
         const params = new ArrayBuffer(PARAMS_BYTES), v = r.views[view];
-        new Float32Array(params).set([this.lod, 0, this.detail, this.day, 0, sun.least]);
+        new Float32Array(params).set([this.lod, 0, this.detail_, this.day, 0, sun.least]);
         const words = new Uint32Array(params);
         words[1] = view === SUN ? SUN_CAPACITY : CAPACITY;
         words[4] = view;
@@ -493,7 +497,7 @@ export class Instances {
             this.stats_ = { staged: tally[0], dropped: tally[1], lod: this.lod, perTier, impostors: this.atlas.size, casters };
             // A full pool draws its tiers nearer, until it has room again.
             const used = tally[0] / CAPACITY;
-            this.detail = used > ROOM[1] ? this.detail * 0.9 : used < ROOM[0] ? Math.min(1, this.detail / 0.97) : this.detail;
+            this.detail_ = used > ROOM[1] ? this.detail_ * 0.9 : used < ROOM[0] ? Math.min(1, this.detail_ / 0.97) : this.detail_;
             this.specs.forEach((spec, m) => {
                 if (spec.impostor && tally[4 + m * TIERS + spec.tiers.length] > 0) this.wantImpostor(r, m, frame);
             });
