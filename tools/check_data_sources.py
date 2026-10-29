@@ -64,6 +64,8 @@ NOT_SOURCES = {
     # The deploy of the tiles Worker; no bake reads it.
     "api.cloudflare.com": "token check of `obc data deploy tiles`",
     "dash.cloudflare.com": "token creation link",
+    # The drift step of the weekly `cairn report`; no bake reads it.
+    "api.anthropic.com": "cairn report drift calls",
     # The bucket of the AWS Signature Version 4 documentation, a test vector of the S3 signer.
     "examplebucket.s3.amazonaws.com": "SigV4 documentation vector",
 }

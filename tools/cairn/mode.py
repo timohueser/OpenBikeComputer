@@ -64,6 +64,16 @@ def parse(value: str) -> Mode:
                      "change #N, prototype or override: <reason>")
 
 
+def read(value: str | None, source: str) -> tuple[Mode | None, str | None]:
+    """The mode of a `Mode:` value from `source`, or None and the reason."""
+    if not value:
+        return None, f"no `Mode:` line in {source}"
+    try:
+        return parse(value), None
+    except ValueError as error:
+        return None, str(error)
+
+
 def declaration(kind: str, value: str | None, over_limit: str | None) -> Mode:
     """The mode that `cairn mode KIND [VALUE] [--over-limit REASON]` declares."""
     if over_limit is not None and kind != "fix":
@@ -164,12 +174,18 @@ def issue_body(number: int, data: dict) -> str:
     return data.get("body") or ""
 
 
-def api(root: Path, path: str) -> dict:
-    """`gh api repos/{owner}/{repo}/PATH`, which reads `GH_TOKEN` and `GH_REPO` in CI."""
-    done = subprocess.run(["gh", "api", f"repos/{{owner}}/{{repo}}/{path}"], cwd=root, capture_output=True, text=True)
+def gh(root: Path, endpoint: str, method: str = "GET", payload: dict | None = None):
+    """`gh api ENDPOINT`, which reads `GH_TOKEN` and `GH_REPO` in CI. A payload is the JSON body."""
+    body = ["--input", "-"] if payload is not None else []
+    done = subprocess.run(["gh", "api", "--method", method, endpoint, *body], cwd=root, capture_output=True, text=True,
+                          input=json.dumps(payload) if payload is not None else None)
     if done.returncode:
         raise OSError(done.stderr.strip() or "gh api failed")
-    return json.loads(done.stdout)
+    return json.loads(done.stdout) if done.stdout.strip() else None
+
+
+def api(root: Path, path: str, method: str = "GET", payload: dict | None = None):
+    return gh(root, f"repos/{{owner}}/{{repo}}/{path}", method, payload)
 
 
 def fetch_issue(root: Path, number: int) -> str:
