@@ -76,6 +76,49 @@ class DependencyTests(unittest.TestCase):
         self.assertEqual(ids(result, "dependency"), ["test dependency b -> a"])
 
 
+class MapTests(unittest.TestCase):
+    def test_the_figure_shows_the_tangles_and_drops_shells_and_implied_edges(self):
+        docs = [doc("a", ["a/**"], depends_on=["b"]), doc("b", ["b/**"], depends_on=["a"]),
+                doc("c", ["c/**"], area="Apps", depends_on=["e"]), doc("e", ["e/**"], depends_on=["a", "f"]),
+                doc("f", ["f/**"], depends_on=["a"]), doc("s", ["s/**"], kind="shell", depends_on=["a"])]
+        units = [unit(f"c{name}", f"{name}/src/lib.rs") for name in "abcefs"]
+        edges = [("ca", "cb", False), ("cb", "ca", False), ("cc", "ca", False),
+                 ("ce", "ca", False), ("ce", "cf", False), ("cf", "ca", False), ("cs", "ca", False)]
+        result = analyse(docs, [u["entry"] for u in units], units, edges)
+        page = cairn.system_map(docs, result).splitlines()
+        self.assertEqual(page[page.index('  subgraph area0["Apps"]') + 1], '    s_c["c"]')
+        self.assertEqual(page[page.index("  s_a ==> s_b"):page.index("```", page.index("  s_a ==> s_b"))],
+                         ["  s_a ==> s_b", "  s_b ==> s_a", "  s_c ==> s_a", "  s_c -.-> s_e", "  s_e --> s_f", "  s_f --> s_a"])
+        self.assertIn("| [a](a.md) |  | draft | b | b, c, e, f, s |", page)
+        self.assertIn("### Shells", page)
+        tangles = page[page.index("## Tangles") + 2:-2]
+        self.assertEqual(tangles, ["- A cycle between a, b: a -> b, b -> a", "- c -> a is not in the doc of c"])
+        self.assertNotIn("### Shells", cairn.system_map(docs[:-1], analyse(docs[:-1], [], units[:-1], edges[:-1])))
+
+    def test_check_fails_on_a_stale_map_and_map_keeps_the_owners_text(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".cairn").mkdir()
+            (root / cairn.CONFIG).write_text(json.dumps(Repository.CONFIG))
+            (root / "docs/design").mkdir(parents=True)
+            page = root / "docs/design" / cairn.MAP
+            page.write_text(f"# Map\n\nMine.\n\n{cairn.MAP_BEGIN}\nold\n{cairn.MAP_END}\n")
+            docs = [doc("routing", ["route/**"])]
+            with mock.patch.object(cairn, "ROOT", root), \
+                    mock.patch.object(cairn, "gather", return_value=(docs, [], [], [], {})), \
+                    redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cairn.main(["check"]), 1)
+                self.assertIn("run `obc cairn map`", out.getvalue())
+                self.assertEqual(cairn.main(["map"]), 0)
+                self.assertEqual(cairn.main(["check"]), 0)
+            self.assertTrue(page.read_text().startswith("# Map\n\nMine.\n\n"))
+            self.assertIn("| [routing](routing.md) |", page.read_text())
+        block = f"{cairn.MAP_BEGIN}\n{cairn.MAP_END}"
+        for broken in ("# Map\n", cairn.MAP_BEGIN, block + cairn.MAP_END, cairn.MAP_BEGIN + block, cairn.MAP_END + cairn.MAP_BEGIN):
+            with self.assertRaisesRegex(cairn.CairnError, "^docs/design/README.md: ", msg=broken):
+                cairn.with_map(broken, block, "docs/design/README.md")
+
+
 class CargoAdapterTests(unittest.TestCase):
     def package(self, name, dependencies=(), targets=None):
         return {
@@ -256,6 +299,17 @@ class PullRequestDiffTests(unittest.TestCase):
         self.assertEqual(diff.specs, ("specs/route.md",))
         # The tests do not count: route/a.rs 2, the routing doc 2, the search doc 1, the terrain doc 9, the spec 1.
         self.assertEqual(diff.lines, 15)
+
+    def test_the_map_counts_for_no_system_and_no_lines(self):
+        docs = [doc("routing", ["route/**"]), doc("website", ["docs/**"], kind="shell")]
+        config = {"docs": "docs/design", "specs": "specs", "fix": {"tests": []}}
+        with tempfile.TemporaryDirectory() as folder:
+            repository = Repository(folder)
+            base = repository.commit({"docs/design/routing.md": header("routing", "route/**"), "route/a.rs": "a\n"})
+            repository.commit({"docs/design/routing.md": header("routing", "route/**").replace("status:", "depends_on: [search]\nstatus:"),
+                               "route/a.rs": "a\nb\n", "docs/design/README.md": "map\n" * 40})
+            diff = cairn.pr_diff(repository.root, base, docs, config, set())
+        self.assertEqual((diff.touched, diff.lines), ({"routing"}, 2))
 
     def test_a_test_pattern_with_no_folder_matches_the_file_name_only(self):
         patterns = json.loads((cairn.ROOT / cairn.CONFIG).read_text())["fix"]["tests"]

@@ -8,6 +8,7 @@ obc cairn check            # print the report
 obc cairn check --update   # remove gone entries from the baseline, and lower sizes that shrank
 obc cairn check --base origin/develop   # also fail when the baseline grew since the merge base
 obc cairn check --pr --base origin/develop   # check only the diff against the mode
+obc cairn map              # rewrite the generated block of docs/design/README.md
 obc cairn mode change 3012 # declare the mode of the current branch
 obc cairn mode             # print the mode and the `Mode:` line for the pull request body
 obc cairn hash issue.md    # print the approval hash of an issue body (- reads stdin)
@@ -18,6 +19,7 @@ python3 -m unittest discover -s tools/cairn/tests
 
 | File | Holds |
 | --- | --- |
+| `docs/design/README.md` | the system map. `cairn map` rewrites the block between its two comments. `check` fails when the block is stale. Two merged pull requests can leave it stale on `develop`; `obc cairn map` fixes it. The mode gate does not count the map. |
 | `docs/design/<system>.md` | the header of one system or shell: `kind`, `area` (systems only), `purpose`, `owns`, `depends_on`, `test_depends_on`, `status` |
 | `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4, the size limit of a fix, the globs of test files and the size thresholds of a change |
 | `.cairn/baseline.json` | the known violations, by ID, with a size |
@@ -43,11 +45,10 @@ python3 -m unittest discover -s tools/cairn/tests
 A violation that is not in the baseline is new. An R1, R3 or R4 violation whose size (files or
 lines) is above its baseline size is also new. A new violation fails only when it touches a system
 whose doc has `status: approved`. An unowned file touches no system, so it fails when any doc has
-`status: approved`. While no doc is approved, the check only reports.
+`status: approved`. While no doc is approved, the check only reports, but a stale map fails.
 
 A baseline entry that shrank or disappeared must be recorded with `--update`. For an approved
-system it fails like a new violation, so that the violation cannot grow back unseen. For a draft
-system the report only lists it. A gone entry touches the systems that its ID names. `--update` never adds an entry and never raises a size. `--accept` writes the first
+system it fails like a new violation. For a draft system the report only lists it. A gone entry touches the systems that its ID names. `--update` never adds an entry and never raises a size. `--accept` writes the first
 baseline and refuses when the file exists.
 
 `--base REF` fails when the baseline has an entry or a size that the baseline at the merge base
