@@ -1,9 +1,13 @@
 # Regional route builder
 
-`obc data` builds the `planner/routing` layer of a region with this crate
-(`step::step`). The step reads the OSM PBF files of the region and clips the graph
-at the region bounds. It does not fetch missing data. `data/planner.toml` lists
-the profiles. To build the layer again after a code change, run:
+`obc data` builds the `planner/routing` layer of a region with this crate (`step::step`). The
+[package contract](../../specs/route-package.md) defines the output.
+
+## Build
+
+The step reads the OSM PBF files of the region and clips the graph at the region bounds. It does
+not fetch missing data. `data/planner.toml` lists the profiles. To build the layer again after a
+code change, run:
 
 ```sh
 obc data update local --only planner/routing
@@ -11,12 +15,16 @@ obc data update local --only planner/routing
 
 The step writes a new layer directory. Do not edit an installed package in place.
 
+```sh
+obc test -p planner-router-build
+cargo clippy -p planner-router-build --all-targets --all-features -- -D warnings
+```
+
 The builder also writes `overlays.sqlite` into the package directory: the route
 networks and access restrictions of the source data, bound to the new manifest
-identity. The [planner release contract](../../specs/planner-release.md) gives
-its layout. The source OSM objects stay in memory only; the package does not
-keep them. The index omits proposed routes. Access markings are snapshot data,
-not live closures.
+identity. The [planner release contract](../../specs/planner-release.md) gives its layout. The
+package does not keep the source OSM objects. The index omits proposed routes. Access markings are
+snapshot data, not live closures.
 
 | Overlay feature | Minimum zoom |
 | --- | --- |
@@ -31,22 +39,19 @@ not live closures.
 ## Route catalog
 
 The builder also writes `route-catalog.json`, the signed routes in the format of
-[the catalog contract](../../specs/route-catalog.md). The step metrics are its
-report: the counts, the dropped relations by reason and the shaping points. The
-catalog needs the `touring`, `road`, `gravel`, `mtb/technical` and
-`hiking/alpine` profiles. Name the region's countries, so that the catalog can
-omit route marks in France. When France is the only country, no record has a route
-mark. A region with France and another country fails. The builder checks the
-profiles and countries before the import.
+[the catalog contract](../../specs/route-catalog.md). The step metrics are its report: the counts,
+the dropped relations by reason and the shaping points. The catalog needs the `touring`, `road`,
+`gravel`, `mtb/technical` and `hiking/alpine` profiles. Name the region's countries, so that the
+catalog can omit route marks in France. When France is the only country, no record has a route
+mark. A region with France and another country fails. The builder checks the profiles and
+countries before the import.
 
 ## Terrain
 
-`terrain::apply` takes a height callback. The step reads heights from the
-Copernicus GLO-30 tiles of the bounds through `obc-dem`. Preserve their source
-credits with the package. Terrain samples are at most 20 m apart. A symmetric
-20 m filter leaves junction heights and missing samples intact. Bridges and
-tunnels interpolate between their endpoints. Without a height, climb and slope
-remain unknown.
+`terrain::apply` takes a height callback. The step reads heights from the Copernicus GLO-30 tiles
+of the bounds through `obc-dem`. Terrain samples are at most 20 m apart. A symmetric 20 m filter
+leaves junction heights and missing samples intact. Bridges and tunnels interpolate between their
+endpoints. Without a height, climb and slope remain unknown.
 
 ## Supported import policy
 
@@ -69,15 +74,13 @@ remain unknown.
 | Source data | All tags, way node IDs, relation members and roles feed costs, closures, overlays and the catalog |
 | Road suitability | Highway, surface, smoothness, tracktype and difficulty remain distinct |
 
-Read the manifest warnings before publishing. The importer does not yet model
-all OSM semantics. It has no ferry schedule, opening-time evaluator or general
-via-way automaton. Defaults stop at the country: state and local rules need
-explicit tags.
+The importer does not model all OSM semantics. It has no ferry schedule, opening-time evaluator
+or general via-way automaton. Defaults stop at the country: state and local rules need explicit
+tags.
 
 ## Profiles
 
 The `profiles` option names the profile IDs, or `all` for all 17 metrics.
-Rebuild packages after changing the profile code. Rider validation is required.
 
 | Road profile | Preference |
 | --- | --- |
@@ -89,7 +92,7 @@ Road weights derive from the MIT-licensed BRouter
 [fastbike](https://github.com/abrensch/brouter/blob/29898106b555e342ff3ade7ae3e9c1ae6644a43b/misc/profiles2/fastbike.brf),
 [trekking](https://github.com/abrensch/brouter/blob/29898106b555e342ff3ade7ae3e9c1ae6644a43b/misc/profiles2/trekking.brf)
 and [gravel](https://github.com/abrensch/brouter/blob/29898106b555e342ff3ade7ae3e9c1ae6644a43b/misc/profiles2/gravel.brf)
-profiles. Preserve [the licence notice](LICENSE.brouter) when redistributing them.
+profiles.
 
 | Adaptation | Behavior |
 | --- | --- |
@@ -104,24 +107,23 @@ profiles. Preserve [the licence notice](LICENSE.brouter) when redistributing the
 | Pushing | Allowed where permitted, with distance and entry costs; no cycling permission implied |
 | Steps and via ferrata | Cycling profiles never use steps; no profile uses a via ferrata |
 
-Touring, gravel, MTB and hiking use separate surface and road-class tables, and
-add smoothness, track grade, trail grade and traffic. Hiking also adds trail
-visibility. Each has shorter and less-climbing variants. Shorter ignores climb
-preferences and signed cycle routes but keeps road and surface preferences.
-A signed cycle route discounts only the preference above the physical and
-traffic cost, in the direction that its member role gives. Access rules apply
-to every variant. MTB permits S2 at most and `mtb/technical` every grade; hiking
-permits T2 at most and `hiking/alpine` T4. Alternatives keep the difficulty
-limit of the request.
+Touring, gravel, MTB and hiking use separate surface and road-class tables, and add smoothness,
+track grade, trail grade and traffic. Hiking also adds trail visibility. Each has shorter and
+less-climbing variants. Shorter ignores climb preferences and signed cycle routes but keeps road
+and surface preferences. A signed cycle route discounts only the preference above the physical and
+traffic cost, in the direction that its member role gives. Access rules apply to every variant.
+MTB permits S2 at most and `mtb/technical` every grade; hiking permits T2 at most and
+`hiking/alpine` T4. Alternatives keep the difficulty limit of the request.
 
-The package includes geometry, snap cells, a shared directed graph, profile
-costs and snap bits, possible closures, and compressed landmark bounds. A
-profile's snap bits mark the roads in a large strongly connected part of its
-graph (`connectivity`); the build log counts the roads in fragments and prints
-the landmark scale. It is separate from map tiles. See [the package contract](../../specs/route-package.md).
-Preserve OpenStreetMap attribution and ODbL notices when distributing the data.
+The package holds geometry, snap cells, a shared directed graph, profile costs and snap bits,
+possible closures and compressed landmark bounds, separate from map tiles. A profile's snap bits
+mark the roads in a large strongly connected part of its graph (`connectivity`); the build log
+counts the roads in fragments and prints the landmark scale.
 
-```sh
-obc test -p planner-router-build
-cargo clippy -p planner-router-build --all-targets --all-features -- -D warnings
-```
+## Pitfalls
+
+- Rebuild packages after you change the profile code. Rider validation is required.
+- Read the manifest warnings before publishing.
+- Preserve the Copernicus source credits with the package, OpenStreetMap attribution and ODbL
+  notices with the data, and [the BRouter licence notice](LICENSE.brouter) when you redistribute
+  the BRouter weights.

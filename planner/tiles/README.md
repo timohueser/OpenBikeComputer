@@ -1,11 +1,12 @@
 # Planner tiles
 
-Serve the map packs of grid planner releases from the `obc-maps` R2 bucket. The
-Worker uses the upstream PMTiles reader. It caches tile responses at the
-Cloudflare edge. It reads `releases/ID/public/` and `objects/SHA256` of the bucket:
-the layout of a target of `obc data`. Deploy it only to a bucket that serves such a release.
+A Cloudflare Worker that serves the map packs of grid planner releases from the `obc-maps` R2
+bucket with the upstream PMTiles reader, and caches tile responses at the edge. It reads
+`releases/ID/public/` and `objects/SHA256` of the bucket: the layout of a target of `obc data`.
+Deploy it only to a bucket that serves such a release. The
+[release contract](../../specs/planner-release.md#canonical-grid-storage) defines those paths.
 
-## Build and deploy
+## Build
 
 Install Node 24 or later. Run from the repository root:
 
@@ -15,14 +16,7 @@ npm test --prefix planner/tiles
 npm run build --prefix planner/tiles
 ```
 
-For dashboard deployment, create the `obc-planner-tiles` Worker. Paste
-`dist/worker.js` into its code editor. Add an R2 binding named `BUCKET` for
-`obc-maps`. Add the custom domain `tiles.openbikecomputer.com`.
-The Worker needs no bucket access key.
-Start with Workers Free for private tests. Check cold tile requests for CPU
-limit failures before a public launch. Upgrade if the fixed limit is too low.
-Workers Free has a fixed `10` ms limit. The configuration does not request
-a paid CPU allowance.
+## Deploy
 
 Deploy from the prod screen of `obc data ui`, Services, or with `obc data deploy tiles --dry-run`
 and the command that it shows. It runs `npm run deploy --prefix planner/tiles -- --var COMMIT:SHA`
@@ -30,6 +24,18 @@ with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. Create the token with t
 "Edit Cloudflare Workers", for the account and the zone `openbikecomputer.com`. The screen sets both
 values, or `obc data deploy credential tiles` from standard input. `wrangler deploy` reads the files
 of the checkout, so the deploy refuses changes in `planner/tiles` that the commit does not hold.
+
+Only `npm run deploy` applies `wrangler.toml`. It turns off `workers.dev` and preview URLs and
+adds the `LIMITER` binding. The Worker answers `429` to a client address that exceeds the limit
+on cache misses. Cache hits are never counted. Counters are per data centre. Raise the limit when
+many riders share one address.
+
+For dashboard deployment, create the `obc-planner-tiles` Worker. Paste `dist/worker.js` into its
+code editor. Add an R2 binding named `BUCKET` for `obc-maps`. Add the custom domain
+`tiles.openbikecomputer.com`. The Worker needs no bucket access key. A dashboard paste has no
+`LIMITER` binding, and the Worker then applies no limit.
+
+## Reference
 
 | Path | Result |
 | --- | --- |
@@ -46,27 +52,18 @@ of the checkout, so the deploy refuses changes in `planner/tiles` that the commi
 | `/releases/ID/LAYER/Z/X/Y` | Data layer tile; `application/octet-stream` for a type other than MVT or WebP |
 | `/releases/ID/routes/tiles/9-X-Y.json` | Route catalog cell of a grid release; 404 for a cell outside the grid |
 
-The pack header gives the zoom levels and the tile type. A tile extension is
-optional and must match the tile type. TileJSON tile URLs have no extension.
-Tiles keep stored gzip bytes when the client accepts gzip. Other clients receive
-decoded bytes. The edge cache stores these responses separately.
+The service also serves release font, sprite and device catalog paths. `ID` is the SHA-256 of
+`release.json`. Packs come from the canonical object pool through the pointers in their block
+indexes. `/version` names the grid formats that the Worker reads.
 
-`ID` is the SHA-256 of `release.json`. Packs come from the canonical object pool
-through the pointers in their block indexes. `/version` names the grid formats that the
-Worker reads. The
-[release contract](../../specs/planner-release.md#canonical-grid-storage)
-defines those paths. Queries and unknown paths
-return 404. An absent tile returns 204. A tile without a pack is absent.
-A release without `public/grid.json`, or an archive without a TileJSON pointer, returns 404.
-Read failures return 503 with no cache. The domain root returns 404.
+The pack header gives the zoom levels and the tile type. A tile extension is optional and must
+match the tile type. TileJSON tile URLs have no extension. Tiles keep stored gzip bytes when the
+client accepts gzip; other clients receive decoded bytes. The edge cache stores these responses
+separately.
 
-The service also serves release font, sprite, and device catalog paths.
-
-Only `npm run deploy` applies `wrangler.toml`. It turns off `workers.dev` and preview URLs and
-adds the `LIMITER` binding. The Worker answers `429` to a client address that exceeds the limit
-on cache misses. Cache hits are never counted. A dashboard paste has no binding, and the Worker
-then applies no limit. Counters are per data centre. Raise the limit when many riders share one
-address. Configure the zone rules below for the public domains.
+Queries and unknown paths return 404. An absent tile returns 204; a tile without a pack is
+absent. A release without `public/grid.json`, or an archive without a TileJSON pointer, returns
+404. Read failures return 503 with no cache. The domain root returns 404.
 
 Offline payload downloads use the bucket's public domain. See the
 [planner instructions](../../builder/web/src/components/planner/README.md).
@@ -77,11 +74,14 @@ These zone settings are not in `wrangler.toml`. Check them after an account chan
 
 ### What costs money
 
-The tile Worker is the only part with a real per-request price. It serves tiles, fonts, sprites and
-the device catalog. Cloudflare bills each Worker request, also when the edge cache answers it. A
+The tile Worker is the only part with a per-request price. It serves tiles, fonts, sprites and the
+device catalog. Cloudflare bills each Worker request, also when the edge cache answers it. A
 request that misses the cache adds R2 reads. Egress from R2 is free. A request to `maps.` or
-`updates.` costs one R2 read and no Worker request.
-The VPS has a fixed price.
+`updates.` costs one R2 read and no Worker request. The VPS has a fixed price.
+
+Workers Free has a fixed `10` ms CPU limit, and the configuration does not request a paid CPU
+allowance. Start with Workers Free for private tests. Before a public launch, check cold tile
+requests for CPU limit failures, and upgrade if the limit is too low.
 
 ### Budget alert
 
@@ -100,16 +100,14 @@ IP address over 10 seconds, with a 10 second block.
 | Requests per 10 seconds | 3000 |
 | Action | Block for 10 seconds |
 
-The limit allows planner tile bursts. A blocked request never starts the Worker,
-so Cloudflare does not bill it.
+The limit allows planner tile bursts. A blocked request never starts the Worker, so Cloudflare
+does not bill it.
 
 ### Cache Rule for `maps.` and `updates.`
 
 Cloudflare caches by file extension. It does not cache `.json`, `.pbf` or `.sqlite`, or any
 extension that is not in its list, unless a Cache Rule allows it. Without the rule, every request
-reads R2.
-
-Create the rule in Caching > Cache Rules:
+reads R2. Create the rule in Caching > Cache Rules:
 
 | Field | Value |
 | --- | --- |
@@ -117,7 +115,7 @@ Create the rule in Caching > Cache Rules:
 | Cache eligibility | Eligible for cache |
 | Edge TTL | Use cache-control header if present, bypass cache if not |
 
-Uploads set `Cache-Control`. An object uploaded before it did stays uncached until it is uploaded
+Uploads set `Cache-Control`. An object uploaded without it stays uncached until it is uploaded
 again.
 
 ### Check

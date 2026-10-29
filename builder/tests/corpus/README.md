@@ -1,6 +1,6 @@
 # obc-pack test fixtures
 
-Hand-authored OSM extracts for the `host/obc-pack` packer tests, whose ingest outcome is known by
+Hand-authored OSM extracts for the `host/obc-pack` packer tests. Each ingest outcome is known by
 construction.
 
 | Fixture | What it pins | Test |
@@ -14,16 +14,13 @@ construction.
 `area=yes` or an area tag, and never when it carries `area=no`. Relations are always areas. So a
 closed `highway=residential` loop is a line and not also a filled blob.
 
-## Rebuild the `.pbf` files
+## Build
 
 ```sh
 ./build_corpus.sh
 ```
 
-It converts each source to `data/*.osm.pbf` with `osmium cat`. **The derived `.pbf` files are
-committed too, and the tests hard-fail without them**, so re-run the script and commit the
-regenerated `.pbf` whenever a source `.osm` changes.
-
-This script is the last thing in the tree that wants `osmium-tool` (`brew install osmium-tool`),
-and only as an XML-to-PBF converter. Nothing here packs a map, and the packer itself needs no
-osmium.
+The script converts each source to `data/*.osm.pbf` with `osmium cat`. It needs `osmium-tool`
+(`brew install osmium-tool`) only as an XML-to-PBF converter; the packer needs no osmium.
+**The derived `.pbf` files are committed too, and the tests hard-fail without them**, so re-run the
+script and commit the regenerated `.pbf` whenever a source `.osm` changes.
