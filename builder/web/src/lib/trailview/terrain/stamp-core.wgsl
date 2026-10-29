@@ -134,6 +134,7 @@ const GALLERY_BACK_M: f32 = 1.0;
 const GALLERY_FILL: f32 = 0.6;
 const GALLERY_REACH_M: f32 = 15.0;
 const GALLERY_VALLEY_CUT: f32 = 0.2;
+const PROTO_SINK_M: f32 = 0.08;
 
 // Metres per world unit at world row y.
 fn unit_metres(y: i32) -> f32 {
@@ -504,17 +505,19 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             }
             if (paved && road_shows(h, rule, level)) {
                 let tol = rule.tol;
+                // PROTOTYPE: a road or a track on the ground draws as a mesh (ground-roads.ts): the terrain lies under it.
+                let gz = g.z - select(0.0, PROTO_SINK_M, kind == ROAD || kind == RAIL);
                 let core_half = select(h, wall, gallery);
                 if (g.core && g.lateral <= core_half) {
                     let bucket = select(ROAD_CORE, PORTAL_CORE, kind == TUNNEL);
-                    lo[bucket] = max(lo[bucket], g.z - tol);
-                    hi[bucket] = min(hi[bucket], g.z + tol);
+                    lo[bucket] = max(lo[bucket], gz - tol);
+                    hi[bucket] = min(hi[bucket], gz + tol);
                 }
                 let x = max(0.0, g.lateral - core_half);
                 let reach = cone_reach(core_half, rule, texel);
                 if (g.cone && x < reach) {
-                    let l = g.z - (tol + widen(x, reach, rule.fill));
-                    let u = g.z + (tol + widen(x, reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery)));
+                    let l = gz - (tol + widen(x, reach, rule.fill));
+                    let u = gz + (tol + widen(x, reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery)));
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
                         cone_lo_x = x;

@@ -6,6 +6,7 @@ import { AnchoredBuilder, anchorBytes, type AnchoredMesh } from './anchored';
 import { BRIDGE, features, metresPerUnit, PATH, ROAD, TUNNEL, type Node } from '../terrain/bins';
 import { bridges, deckHalf } from './bridges';
 import { galleries } from './galleries';
+import { groundRoads } from './ground-roads';
 import { MeshBuilder, type StructureMesh } from './mesh';
 import { rails } from './rails';
 import { boreHalf, portalBox, tunnels, twins } from './tunnels';
@@ -87,6 +88,7 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
     tunnels(far.mesh, lines, owns);
     galleries(far.mesh, lines, owns);
     rails(far.mesh, far.anchored, list, tile, lines, owns, [x0, y0, x0 + side, y0 + side]);
+    groundRoads(near.mesh, lines, owns);
     const points: Point[] = [];
     let kind = '';
     const place = ({ model, tint = 1, ...at }: Placement) => points.push({ ...at, tint, model: POINT_MODELS.indexOf(`${kind}/${model}`) });
