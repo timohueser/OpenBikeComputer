@@ -4,7 +4,8 @@
 Each doc under `docs/design/` has a header that names the files its system or shell owns and the
 systems it depends on. `check` finds the violations of the ownership rule, the dependency rule and
 the rules R1 to R4, and compares them with the baseline. A violation that is not in the baseline,
-or that grew, fails only when it touches a system whose doc has `status: approved`.
+or that grew, fails only when it touches a system whose doc has `status: approved`. A stale map
+always fails.
 
 `--base REF` also fails when the baseline grew since the merge base with REF. `--pr` checks only
 the diff from that merge base against the rules of its mode, which `mode.py` holds.
@@ -544,12 +545,12 @@ def system_map(docs: list[Doc], result: Result) -> str:
     return "\n".join([*lines, "", MAP_END])
 
 
-def with_map(page: str, block: str) -> str:
-    """The page with its generated block replaced by `block`."""
+def with_map(page: str, block: str, name: str) -> str:
+    """The page with its generated block replaced by `block`. `name` is the page's path."""
     head, *rest = page.split(MAP_BEGIN)
     tail = rest[0].split(MAP_END) if len(rest) == 1 else []
     if len(tail) != 2 or MAP_END in head:
-        raise CairnError(f"the map needs one `{MAP_BEGIN}` comment, followed by one `{MAP_END}` comment")
+        raise CairnError(f"{name}: the map needs one {MAP_BEGIN} comment, followed by one {MAP_END} comment")
     return head + block + tail[1]
 
 
@@ -766,7 +767,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if mode_gate(ROOT, Tree(docs, config, result.edges), args.base) else 0
         page = ROOT / config["docs"] / MAP
         drawn = page.read_text(encoding="utf-8")
-        current = with_map(drawn, system_map(docs, result))
+        current = with_map(drawn, system_map(docs, result), str(page.relative_to(ROOT)))
         if args.command == "map":
             page.write_text(current, encoding="utf-8")
             print(f"cairn: wrote {page.relative_to(ROOT)}")

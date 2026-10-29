@@ -115,8 +115,8 @@ class MapTests(unittest.TestCase):
             self.assertIn("| [routing](routing.md) |", page.read_text())
         block = f"{cairn.MAP_BEGIN}\n{cairn.MAP_END}"
         for broken in ("# Map\n", cairn.MAP_BEGIN, block + cairn.MAP_END, cairn.MAP_BEGIN + block, cairn.MAP_END + cairn.MAP_BEGIN):
-            with self.assertRaises(cairn.CairnError, msg=broken):
-                cairn.with_map(broken, block)
+            with self.assertRaisesRegex(cairn.CairnError, "^docs/design/README.md: ", msg=broken):
+                cairn.with_map(broken, block, "docs/design/README.md")
 
 
 class CargoAdapterTests(unittest.TestCase):
@@ -299,7 +299,10 @@ class PullRequestDiffTests(unittest.TestCase):
         self.assertEqual(diff.specs, ("specs/route.md",))
         # The tests do not count: route/a.rs 2, the routing doc 2, the search doc 1, the terrain doc 9, the spec 1.
         self.assertEqual(diff.lines, 15)
-        # A new dependency changes the code, the doc header and the map, and the map counts for nothing.
+
+    def test_the_map_counts_for_no_system_and_no_lines(self):
+        docs = [doc("routing", ["route/**"]), doc("website", ["docs/**"], kind="shell")]
+        config = {"docs": "docs/design", "specs": "specs", "fix": {"tests": []}}
         with tempfile.TemporaryDirectory() as folder:
             repository = Repository(folder)
             base = repository.commit({"docs/design/routing.md": header("routing", "route/**"), "route/a.rs": "a\n"})

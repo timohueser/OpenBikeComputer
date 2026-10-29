@@ -19,15 +19,12 @@ python3 -m unittest discover -s tools/cairn/tests
 
 | File | Holds |
 | --- | --- |
-| `docs/design/README.md` | the system map. `cairn map` rewrites the block between its two comments. `check` fails when the block is stale, also while no doc is approved. The mode gate does not count the map. |
+| `docs/design/README.md` | the system map. `cairn map` rewrites the block between its two comments. `check` fails when the block is stale. Two merged pull requests can leave it stale on `develop`; `obc cairn map` fixes it. The mode gate does not count the map. |
 | `docs/design/<system>.md` | the header of one system or shell: `kind`, `area` (systems only), `purpose`, `owns`, `depends_on`, `test_depends_on`, `status` |
 | `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4, the size limit of a fix, the globs of test files and the size thresholds of a change |
 | `.cairn/baseline.json` | the known violations, by ID, with a size |
 | `mode.py` | the modes, the approval hash, the rules of the mode gate and the edit hook |
 | `adapters/cargo.py` | the Rust crates and their path dependencies. Each tracked `Cargo.toml` with a `[workspace]` table is a Cargo root. Every other tracked `Cargo.toml` outside `ignore` must be a member of a root. |
-
-Two merged pull requests that each change the graph can leave the map stale on `develop`;
-`obc cairn map` fixes it.
 
 `owns` uses the glob rule of the test plan: `*` also matches `/`, and `**/` also matches no folder.
 
@@ -48,7 +45,7 @@ Two merged pull requests that each change the graph can leave the map stale on `
 A violation that is not in the baseline is new. An R1, R3 or R4 violation whose size (files or
 lines) is above its baseline size is also new. A new violation fails only when it touches a system
 whose doc has `status: approved`. An unowned file touches no system, so it fails when any doc has
-`status: approved`. While no doc is approved, the check only reports.
+`status: approved`. While no doc is approved, the check only reports, but a stale map fails.
 
 A baseline entry that shrank or disappeared must be recorded with `--update`. For an approved
 system it fails like a new violation. For a draft system the report only lists it. A gone entry touches the systems that its ID names. `--update` never adds an entry and never raises a size. `--accept` writes the first
@@ -107,7 +104,7 @@ The gate takes the letter after `**Size:**` on its line in the issue, outside co
 comments. An issue with no such line is a violation. A diff larger than the issue is a violation
 that names both sizes and the signals that decide. The way out is to shrink the pull request, amend
 the issue and approve it again, or override with a reason. The gate cannot see a breaking contract
-change, so its issue is L.
+change, so the people who size the issue make it L.
 
 ### Epics
 
