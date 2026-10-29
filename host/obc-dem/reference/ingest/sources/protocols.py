@@ -19,7 +19,7 @@ from rasterio.crs import CRS
 from rasterio.warp import transform_bounds
 
 from ..lattice import Refuse, WGS84
-from .base import TIFF_MAGIC, Source, http_get, redact
+from .base import TIFF_MAGIC, Source, decode_tiff, http_get, redact
 
 # One request per sub-box. A failed 4000 x 4000 request wastes far more time than four
 # 2000 x 2000 ones, and every service here caps the pixels it will answer with.
@@ -131,7 +131,7 @@ def raster_bytes(url: str, what: str) -> bytes:
     reads its token out of the URL, so the URL is not something to put in a message.
     """
 
-    body = http_get(url, what=what)
+    body = http_get(url, what=what, check=decode_tiff)
     if body[:4] not in TIFF_MAGIC:
         # These services answer an error with a 200 and an XML document that quotes the
         # request, token and all, so the body is redacted like any other message.
