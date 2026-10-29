@@ -235,7 +235,7 @@ producer of each prepared source names the sources that it can read.
 | Status | When |
 | --- | --- |
 | `archived` | The dataset of the source is `complete` |
-| `prepared` | A prepared source whose home has a version in the format of its producer; a source that only a prepare reads, which the newest such version or a version that it extends reads (its `inputs`); or an asset with `keep = "prepared"`, which R2 keeps |
+| `prepared` | A prepared source whose home has a version in the format of its producer; a source that only a prepare reads, which the newest such version, or a version whose region and scope its `extends` names, reads (its `inputs`; a manifest of such a version that cannot be read gives none); or an asset with `keep = "prepared"`, which R2 keeps |
 | `live` | The `rule` is `live`: a bake reads it upstream when it is due |
 | `held` | The store has a version of a source that a fetch takes whole: no params, and no `capture`, `glo30`, `dtm`, `installed` or `prepared` fetch |
 | `partial` | The archive holds some files of its dataset, or the store holds requests or versions of another source |
@@ -250,11 +250,21 @@ whose `used_by` has it, but no source that only a prepare reads. It gives no ver
 bake still downloads depends on the region, which `--region` tells.
 
 `--region ID|PATH[,PATH…]` and `--box W,S,E,N` name a region as `update` does, with each optional
-part on. A Geofabrik area that the cached index lacks refuses. The output lists the step lists of
+part on. They need the products of `obc data`: `obc-data-plumbing` refuses. A Geofabrik area that the cached index lacks refuses. The output lists the step lists of
 the products for the region, as the [overview](#overview) does, but with no fetch: the sources are
 the fetches that the step lists read, and the sources that only a prepare reads of the prepared
 sources among them, by their `extent`, the bounds of their `areas` in the index, and for a national
-model (`dtm-<cc>…`, `canopy-<cc>`) of a region that names countries, its country `<CC>`.
+model (`dtm-<cc>…`, `canopy-<cc>`) of a region that names countries, its country `<CC>`. A fetch
+without params of a source that a fetch takes with params only picks a version, and is not listed.
+A region that names no countries, such as a box, takes the countries of the areas of one country in
+the cached index whose polygons hold a corner or the centre of one of its boxes. Only the overview
+reads these countries; the step lists read the region as it is.
+
+A product whose step list stops, because it needs a snapshot that the store lacks or does not suit
+the region, is `incomplete`, with the reason. Its layer has the need `unknown`. Each source that
+the product can read (`Product::reads`), that the listing did not reach and that meets the region
+as above, is listed with `after_stop`: its need is `unknown`, but a prepared source keeps the need
+of its coverage.
 
 `for_region` gives what a bake of the region still needs of each source (`need`):
 
@@ -263,14 +273,12 @@ model (`dtm-<cc>…`, `canopy-<cc>`) of a region that names countries, its count
 | `held` | The store has each fetch at the version that the step list reads, or the archive lists each of its files as verified; for a prepared source, a version in the format of its producer covers the region; for a source that only a prepare reads, the prepared source that reads it is `held` |
 | `download` | A fetch is not held. Its bytes are known when the manifest of an archive dataset lists each of its files with bytes |
 | `prepare` | No version of the prepared source covers the region, or the prepared source that reads it needs a prepare |
-| `unknown` | A scope of the newest version has a Geofabrik area that the cached index lacks |
+| `unknown` | A scope of the newest version has a Geofabrik area that the cached index lacks, or the step list stopped before it read the source (`after_stop`) |
 
 A version covers the region when one of its scopes is `null`, or each box of the region is inside
 one box of a scope that names no countries or each country of the region. `for_region` also counts
 the fetches, the held fetches and their known bytes, the known bytes to download and the fetches
-of unknown size. A step list that needs a snapshot that the store lacks cannot be listed: its
-layer has the `reason`, and the most of the needs of the fetches that the store lacks. Each layer
-has the most of the needs of the sources that its steps read. The output sums the known bytes to
+of unknown size. Each layer has the most of the needs of the sources that its steps read. The output sums the known bytes to
 download, and names the sources of unknown size or need and the sources to prepare.
 
 ## Store
@@ -3555,6 +3563,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "ForRegion": {
       "description": "What a bake of the region reads of a source, and what it still needs.",
       "properties": {
+        "after_stop": {
+          "description": "The step list of a product that reads it stopped before it read the source: its fetches\nare not known, and `need` is `unknown` but for a prepared source.",
+          "type": "boolean"
+        },
         "download_bytes": {
           "description": "The known bytes to download.",
           "format": "uint64",
@@ -3603,7 +3615,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "held_bytes",
         "download_bytes",
         "unknown_requests",
-        "read_by"
+        "read_by",
+        "after_stop"
       ],
       "type": "object"
     },
@@ -5372,7 +5385,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "$ref": "#/$defs/Need"
         },
         "reason": {
-          "description": "Why its step list cannot be listed: then `need` is the most of the fetches that the store\nlacks for it, and the steps after them are unknown.",
+          "description": "Why its step list cannot be listed: then `need` is `unknown`.",
           "type": [
             "string",
             "null"
@@ -5390,6 +5403,31 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layer",
         "need",
         "sources",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "RegionProduct": {
+      "description": "A product of the region.",
+      "properties": {
+        "incomplete": {
+          "description": "Its step list stopped: a snapshot that it needs is not in the store, or it does not suit\nthe region. Its other sources come from the table of what it can read.",
+          "type": "boolean"
+        },
+        "product": {
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why it stopped.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "product",
+        "incomplete",
         "reason"
       ],
       "type": "object"
@@ -5439,7 +5477,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "integer"
         },
         "layers": {
-          "description": "The layers of the products with each optional part on.",
+          "description": "The layers of the products.",
           "items": {
             "$ref": "#/$defs/RegionLayer"
           },
@@ -5452,6 +5490,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "The prepared sources to prepare.",
           "items": {
             "type": "string"
+          },
+          "type": "array"
+        },
+        "products": {
+          "description": "The products with each optional part on, and whether their step lists are complete.",
+          "items": {
+            "$ref": "#/$defs/RegionProduct"
           },
           "type": "array"
         },
@@ -5478,6 +5523,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "name",
         "boxes",
         "countries",
+        "products",
         "layers",
         "sources",
         "download_bytes",

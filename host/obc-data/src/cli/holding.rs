@@ -378,9 +378,14 @@ fn home(roots: &[PathBuf], id: &str, format: Option<u32>) -> Result<Option<Home>
     };
     let last = chain(&newest.version)?;
     let scopes: Vec<Option<Scope>> = last.extends.iter().cloned().chain([last.scope.clone()]).collect();
+    // Only the versions whose region a scope of `extends` names; one that cannot be read gives no
+    // inputs, and the newest version still serves.
+    let extended = |version: &&Version| {
+        last.extends.iter().any(|scope| scope.as_ref().map(|scope| scope.region.as_str()) == version.region.as_deref())
+    };
     let mut inputs = BTreeMap::new();
-    for version in &versions[..versions.len() - 1] {
-        let earlier = chain(&version.version)?;
+    for version in versions[..versions.len() - 1].iter().filter(extended) {
+        let Ok(earlier) = chain(&version.version) else { continue };
         if last.extends.contains(&earlier.scope) {
             inputs.extend(earlier.inputs.into_iter().map(|read| (read.source, version.version.clone())));
         }
@@ -545,7 +550,9 @@ pub struct RegionSources {
     pub boxes: Vec<Bbox>,
     /// The countries that select the national models; empty selects each that meets a box.
     pub countries: Vec<String>,
-    /// The layers of the products with each optional part on.
+    /// The products with each optional part on, and whether their step lists are complete.
+    pub products: Vec<RegionProduct>,
+    /// The layers of the products.
     pub layers: Vec<RegionLayer>,
     /// The sources that the step lists read, and the sources that only a prepare reads of the
     /// prepared sources among them.
@@ -558,6 +565,17 @@ pub struct RegionSources {
     pub prepare: Vec<String>,
 }
 
+/// A product of the region.
+#[derive(Serialize, JsonSchema)]
+pub struct RegionProduct {
+    pub product: String,
+    /// Its step list stopped: a snapshot that it needs is not in the store, or it does not suit
+    /// the region. Its other sources come from the table of what it can read.
+    pub incomplete: bool,
+    /// Why it stopped.
+    pub reason: Option<String>,
+}
+
 /// A layer and what a bake of the region still needs for it: the most of its sources.
 #[derive(Serialize, JsonSchema)]
 pub struct RegionLayer {
@@ -565,8 +583,7 @@ pub struct RegionLayer {
     pub need: Need,
     /// The sources that its steps read.
     pub sources: Vec<String>,
-    /// Why its step list cannot be listed: then `need` is the most of the fetches that the store
-    /// lacks for it, and the steps after them are unknown.
+    /// Why its step list cannot be listed: then `need` is `unknown`.
     pub reason: Option<String>,
 }
 
@@ -595,6 +612,9 @@ pub struct ForRegion {
     pub unknown_requests: usize,
     /// For a source that only a prepare reads: the prepared source whose need it has.
     pub read_by: Option<String>,
+    /// The step list of a product that reads it stopped before it read the source: its fetches
+    /// are not known, and `need` is `unknown` but for a prepared source.
+    pub after_stop: bool,
 }
 
 impl ForRegion {
@@ -607,6 +627,7 @@ impl ForRegion {
             download_bytes: 0,
             unknown_requests: 0,
             read_by: None,
+            after_stop: false,
         }
     }
 }
@@ -617,6 +638,11 @@ pub(super) fn region(
     sources: &[Source],
     (root, region, bbox): (&Path, Option<&str>, Option<&str>),
 ) -> Result<RegionSources, Error> {
+    if products.is_empty() {
+        return Err(Code::Usage
+            .error("this binary links no product, so it has no step list of a region")
+            .fix("Run `obc data sources --region` with `obc data`, not with `obc-data-plumbing`."));
+    }
     let mut settings = Settings::default();
     super::update_cli::select(root, (region, bbox), &mut settings)?;
     let mut layers: Vec<String> = products.iter().flat_map(|p| p.optional().iter().map(|l| l.to_string())).collect();
@@ -631,7 +657,10 @@ pub(super) fn region(
             .error(format!("region `{id}`: {missing}"))
             .fix("Run `obc data fetch geofabrik-index`."));
     }
-    let countries = region_countries(&regions, &id)?;
+    let mut countries = region_countries(&regions, &id)?;
+    if countries.is_empty() {
+        countries = box_countries(holdings.index.as_ref(), &area.boxes);
+    }
 
     let mut inputs = Inputs { settings, ..Inputs::default() };
     let prepared: BTreeSet<RequestKey> = sources
@@ -648,24 +677,43 @@ pub(super) fn region(
     };
     let listed = listing::steps(root, products, &mut inputs, &regions, store, true, refuse)?;
     // The fetches that the steps read, and those that a step list asked for before it stopped. A
-    // fetch without params of a source that the steps read with params only picks its version.
+    // fetch without params of a source that a fetch takes with params only picks its version.
     let mut requests: BTreeMap<String, BTreeSet<Vec<(String, String)>>> = BTreeMap::new();
     let read = listed.steps.iter().flat_map(|step| &step.inputs).filter_map(|input| match input {
         Input::Snapshot { source, params, .. } => Some((source.clone(), crate::store::sorted(params))),
         Input::Step { .. } => None,
     });
     for (source, params) in inputs.requests.borrow().iter().cloned().chain(read) {
-        requests.entry(source).or_default().insert(params);
+        let named = sources.iter().find(|s| s.id == source).is_some_and(|s| !crate::fetch::params(s).is_empty());
+        if !(named && params.is_empty()) {
+            requests.entry(source).or_default().insert(params);
+        }
     }
     for params in requests.values_mut().filter(|params| params.len() > 1) {
         params.remove(&Vec::new());
     }
+    // A product whose step list stopped names the sources that its later steps can read.
+    let stopped: Vec<(&dyn Product, &str)> = products
+        .iter()
+        .filter_map(|product| {
+            let blocked = listed.blocked.iter().find(|blocked| blocked.layer == product.name())?;
+            Some((*product, blocked.reason.as_str()))
+        })
+        .collect();
+    let later: BTreeSet<String> = stopped.iter().flat_map(|(product, _)| product.reads(root)).collect();
 
     let mut out = RegionSources {
         region: id,
         name: area.name,
         boxes: area.boxes,
         countries,
+        products: products
+            .iter()
+            .map(|product| {
+                let reason = stopped.iter().find(|(p, _)| p.name() == product.name()).map(|(_, r)| r.to_string());
+                RegionProduct { product: product.name().into(), incomplete: reason.is_some(), reason }
+            })
+            .collect(),
         layers: Vec::new(),
         sources: Vec::new(),
         download_bytes: 0,
@@ -673,9 +721,14 @@ pub(super) fn region(
         prepare: Vec::new(),
     };
     let mut needs: BTreeMap<String, Need> = BTreeMap::new();
-    for source in sources.iter().filter(|source| requests.contains_key(&source.id)) {
-        let for_region = match source.fetch.kind {
-            FetchKind::Prepared => {
+    for source in sources.iter().filter(|source| source.kind != Kind::Tool || requests.contains_key(&source.id)) {
+        let read = requests.get(&source.id);
+        let after_stop = read.is_none() && later.contains(&source.id);
+        if read.is_none() && !(after_stop && meets(holdings, source, &out.boxes, &out.countries)) {
+            continue;
+        }
+        let mut for_region = match (source.fetch.kind, read) {
+            (FetchKind::Prepared, _) => {
                 let need = match holdings.homes.get(&source.id) {
                     Some(Ok(home)) => match holdings.covers_region(home, &out.boxes, &out.countries) {
                         Some(true) => Need::Held,
@@ -686,8 +739,10 @@ pub(super) fn region(
                 };
                 ForRegion { requests: 1, held_requests: usize::from(need == Need::Held), ..ForRegion::of(need) }
             }
-            _ => fetches(holdings, store, &inputs, source, requests[&source.id].iter())?,
+            (_, Some(read)) => fetches(holdings, store, &inputs, source, read.iter())?,
+            (_, None) => ForRegion::of(Need::Unknown),
         };
+        for_region.after_stop = after_stop;
         needs.insert(source.id.clone(), for_region.need);
         out.sources.push(RegionSource { source: source.id.clone(), held: holdings.held(source), for_region });
     }
@@ -718,17 +773,14 @@ pub(super) fn region(
             layer.need = layer.need.max(needs.get(source).copied().unwrap_or(Need::Unknown));
         }
     }
-    // A layer that cannot be listed needs at least what the store lacks for its step list.
-    let lacks = inputs.fetch_failures.iter().map(|(wanted, _)| needs.get(&wanted.source).copied());
-    let lacks = lacks.map(|need| need.unwrap_or(Need::Unknown)).max().unwrap_or(Need::Unknown);
     for blocked in &listed.blocked {
         let layer = by_layer.entry(blocked.layer.clone()).or_insert_with(|| RegionLayer {
             layer: blocked.layer.clone(),
-            need: Need::Held,
+            need: Need::Unknown,
             sources: Vec::new(),
             reason: None,
         });
-        (layer.need, layer.reason) = (layer.need.max(lacks), Some(blocked.reason.clone()));
+        (layer.need, layer.reason) = (Need::Unknown, Some(blocked.reason.clone()));
     }
     out.layers = by_layer.into_values().collect();
     for source in &out.sources {
@@ -742,6 +794,38 @@ pub(super) fn region(
         }
     }
     Ok(out)
+}
+
+/// The countries of the cached index whose area holds a corner or the centre of one of `boxes`:
+/// the areas of one country each, by their polygons.
+fn box_countries(index: Option<&BTreeMap<String, geofabrik::Area>>, boxes: &[Bbox]) -> Vec<String> {
+    let points: Vec<[f64; 2]> = boxes
+        .iter()
+        .flat_map(|b| {
+            let centre = [(b.west + b.east) / 2.0, (b.south + b.north) / 2.0];
+            [[b.west, b.south], [b.east, b.south], [b.west, b.north], [b.east, b.north], centre]
+        })
+        .collect();
+    let mut countries = BTreeSet::new();
+    for area in index.into_iter().flat_map(BTreeMap::values) {
+        let [country] = &area.countries[..] else { continue };
+        if points.iter().any(|point| area.polygons.iter().any(|polygon| inside(polygon, *point))) {
+            countries.insert(country.clone());
+        }
+    }
+    countries.into_iter().collect()
+}
+
+/// Whether `point` is in the exterior ring of `polygon` and in none of its holes, by the even-odd
+/// rule.
+fn inside(polygon: &[Vec<[f64; 2]>], [x, y]: [f64; 2]) -> bool {
+    let in_ring = |ring: &Vec<[f64; 2]>| {
+        let edges = ring.iter().zip(ring.iter().cycle().skip(1));
+        edges.filter(|([x0, y0], [x1, y1])| (y0 > &y) != (y1 > &y) && x < x0 + (y - y0) / (y1 - y0) * (x1 - x0)).count()
+            % 2
+            == 1
+    };
+    polygon.first().is_some_and(in_ring) && !polygon[1..].iter().any(in_ring)
 }
 
 /// What the store and the archive hold of the fetches of `source` with each of `params`.
@@ -838,6 +922,9 @@ fn need_text(need: &ForRegion) -> String {
     if let Some(reader) = &need.read_by {
         return text + &format!(" (read by {reader})");
     }
+    if need.after_stop {
+        return text + " (after a missing input)";
+    }
     if need.need == Need::Download {
         text += &format!(": {} of {} fetches held", need.held_requests, need.requests);
     } else if need.requests > 1 {
@@ -864,6 +951,10 @@ pub(super) fn print_region(region: &RegionSources) {
     let boxes: Vec<String> =
         region.boxes.iter().map(|b| format!("{},{},{},{}", b.west, b.south, b.east, b.north)).collect();
     println!("{} ({}): box {}, {countries}", region.region, region.name, boxes.join(" + "));
+    for product in region.products.iter().filter(|product| product.incomplete) {
+        let reason = product.reason.as_deref().unwrap_or_default();
+        println!("{}: incomplete: the list stops at {reason}", product.product);
+    }
     let mut rows = vec![super::cells(["LAYER", "NEEDS"])];
     for layer in &region.layers {
         let reason = layer.reason.as_ref().map(|reason| format!(": {reason}")).unwrap_or_default();
@@ -982,7 +1073,11 @@ mod tests {
                 dataset("egdi-geology", DatasetState::Incomplete, (3, 1)),
                 glo30,
             ],
-            archive: [(HANSEN.to_string(), ArchiveFile { bytes: Some(100), verified: false })].into(),
+            archive: [
+                (HANSEN.to_string(), ArchiveFile { bytes: Some(100), verified: false }),
+                (HANSEN.replace("50N", "40N"), ArchiveFile { bytes: Some(30), verified: true }),
+            ]
+            .into(),
             homes: [("terrain".to_string(), Ok(home))].into(),
             readers: [("dtm-ch".to_string(), "terrain".to_string())].into(),
             stored: [
@@ -1031,6 +1126,7 @@ mod tests {
         let folder = dir.0.join("prepared/terrain");
         let (a, b, c) = (box_scope([0.0, 0.0, 1.0, 1.0], &[]), box_scope([1.0, 0.0, 2.0, 1.0], &[]), None);
         let versions = [
+            ("v0", 3, None, &a, vec![]),
             ("v1", 2, None, &a, vec![]),
             ("v2", 3, None, &a, vec![]),
             ("v3", 3, None, &c, vec![]),
@@ -1045,8 +1141,10 @@ mod tests {
             let manifest =
                 serde_json::json!({"inputs": inputs, "scope": scope, "extends": extends, "files": [{"path": "a"}]});
             std::fs::write(folder.join(name).join("manifest.json"), manifest.to_string()).unwrap();
-            listed.push(version(name, format));
+            listed.push(Version { region: scope.as_ref().map(|scope| scope.region.clone()), ..version(name, format) });
         }
+        // An earlier version whose manifest cannot be read gives no inputs, and the newest serves.
+        std::fs::write(folder.join("v0/manifest.json"), "{").unwrap();
         std::fs::write(folder.join("versions.json"), serde_json::to_vec(&listed).unwrap()).unwrap();
         let found = home(std::slice::from_ref(&dir.0), "terrain", Some(3)).unwrap().unwrap();
         assert_eq!(found.newest.version, "v4");
@@ -1055,7 +1153,7 @@ mod tests {
         assert_eq!(
             inputs,
             [("dtm-d", "v4"), ("dtm-v2", "v2"), ("dtm-v4", "v4")],
-            "not v1 (format 2) nor v3 (no chain)"
+            "not v0 (unreadable), v1 (format 2) nor v3 (no chain)"
         );
         assert!(home(std::slice::from_ref(&dir.0), "terrain", Some(4)).unwrap().is_none(), "no version of the format");
     }
@@ -1150,8 +1248,10 @@ mod tests {
         }
 
         fn steps(&self, _: &Path, inputs: &Inputs, _: &Regions, store: &Store) -> Result<Steps, Unplanned> {
-            let tile = vec![("tile".to_string(), "50N_000E".to_string())];
-            for (id, params) in [("natural-earth", Vec::new()), ("hansen-gfc", tile.clone()), ("terrain", Vec::new())] {
+            let tile = |name: &str| vec![("tile".to_string(), name.to_string())];
+            // A fetch of GLO-30 without params only picks the version of its tiles.
+            let reads = [("natural-earth", Vec::new()), ("terrain", Vec::new()), ("copernicus-glo-30", Vec::new())];
+            for (id, params) in reads {
                 let _ = crate::product::version(inputs, store, id, &params).map_err(Unplanned::Failed)?;
             }
             let snapshot = |id: &str, params| Input::Snapshot {
@@ -1162,7 +1262,8 @@ mod tests {
             };
             let inputs = vec![
                 snapshot("natural-earth", Vec::new()),
-                snapshot("hansen-gfc", tile),
+                snapshot("hansen-gfc", tile("50N_000E")),
+                snapshot("hansen-gfc", tile("40N_000E")),
                 snapshot("terrain", Vec::new()),
             ];
             Ok(vec![step("reads/a", inputs, "a", Run::Command(Vec::new()))].into())
@@ -1189,6 +1290,10 @@ mod tests {
         fn pointer(&self) -> Pointer {
             Pointer { key: crate::release::POINTERS[1], step: "lacks/a", path: "a" }
         }
+
+        fn reads(&self, _: &Path) -> Vec<String> {
+            ["land-polygons", "climate", "land-cover-ie"].map(str::to_string).into()
+        }
     }
 
     #[test]
@@ -1197,28 +1302,62 @@ mod tests {
         fixture.fetched_version("natural-earth", "c", "earth.zip", b"earth\n");
         let holdings = holdings();
         let products: [&dyn Product; 2] = [&Reads, &Lacks];
+        let region = |bbox| {
+            let place = (&holdings, &fixture.store, &[][..]);
+            super::region(place, (&products, &[]), crate::sources::all(), (&fixture.root(), None, Some(bbox))).unwrap()
+        };
         let place = (&holdings, &fixture.store, &[][..]);
-        let out = super::region(
-            place,
-            (&products, &[]),
-            crate::sources::all(),
-            (&fixture.root(), None, Some("8.2,46.2,8.5,46.5")),
-        )
-        .unwrap();
+        let plumbing =
+            super::region(place, (&[], &[]), crate::sources::all(), (&fixture.root(), None, Some("8,46,9,47")));
+        assert_eq!(plumbing.err().unwrap().code, Code::Usage, "a binary without products");
+        let out = region("8.2,46.2,8.5,46.5");
         let need = |id: &str| &out.sources.iter().find(|source| source.source == id).unwrap().for_region;
         assert_eq!((need("natural-earth").need, need("natural-earth").held_bytes), (Need::Held, 6));
         let hansen = need("hansen-gfc");
-        assert_eq!(
-            (hansen.need, hansen.download_bytes, hansen.unknown_requests),
-            (Need::Download, 100, 0),
-            "the manifest lists it"
-        );
+        let counts =
+            (hansen.need, hansen.held_requests, hansen.held_bytes, hansen.download_bytes, hansen.unknown_requests);
+        assert_eq!(counts, (Need::Download, 1, 30, 100, 0), "the manifest has one tile verified and lists the other");
         assert_eq!(need("terrain").need, Need::Held, "its scope covers the box");
         assert_eq!((need("dtm-ch").need, need("dtm-ch").read_by.as_deref()), (Need::Held, Some("terrain")));
-        assert!(!out.sources.iter().any(|source| source.source == "dtm-fr" || source.source == "nasa-svs-moon"));
+        let listed = |id: &str| out.sources.iter().any(|source| source.source == id);
+        assert!(!listed("dtm-fr") && !listed("nasa-svs-moon") && !listed("copernicus-glo-30"));
+
+        // `lacks` stopped: what it can read comes after the missing input.
+        assert!(!out.products[0].incomplete && out.products[1].incomplete);
+        let land = need("land-polygons");
+        assert_eq!((land.need, land.after_stop), (Need::Unknown, true));
+        assert_eq!((need("climate").need, need("climate").after_stop), (Need::Prepare, true), "no version");
+        assert!(!listed("land-cover-ie"), "its extent does not meet the box");
         let layers: Vec<(&str, Need)> = out.layers.iter().map(|layer| (layer.layer.as_str(), layer.need)).collect();
         assert_eq!(layers, [("lacks", Need::Unknown), ("test", Need::Download)]);
         assert!(out.layers[0].reason.as_deref().unwrap().contains("the store lacks `geofabrik-poly` area=europe/x"));
-        assert_eq!((out.download_bytes, out.prepare.len()), (100, 0));
+        assert_eq!((out.download_bytes, out.prepare.as_slice()), (100, ["climate".to_string()].as_slice()));
+
+        // Outside the scope of `terrain`: a prepare, which its national model follows.
+        let out = region("7.0,46.2,7.5,46.5");
+        let need = |id: &str| &out.sources.iter().find(|source| source.source == id).unwrap().for_region;
+        assert_eq!(need("terrain").need, Need::Prepare);
+        assert_eq!(need("dtm-ch").need, Need::Prepare);
+        assert_eq!(out.prepare, ["terrain", "climate"], "not the national model, which the prepare of terrain reads");
+    }
+
+    #[test]
+    fn a_box_without_countries_takes_those_of_the_areas_that_hold_it() {
+        let area = |id: &str, country: &str, [w, s, e, n]: [f64; 4]| geofabrik::Area {
+            id: id.into(),
+            name: id.into(),
+            parent: None,
+            countries: vec![country.into()],
+            polygons: vec![vec![vec![[w, s], [e, s], [e, n], [w, n], [w, s]]]],
+            bounds: bbox([w, s, e, n]),
+        };
+        let index: BTreeMap<String, geofabrik::Area> = [
+            ("ch".to_string(), area("ch", "CH", [6.0, 46.0, 10.0, 47.5])),
+            ("fr".to_string(), area("fr", "FR", [-5.0, 42.0, 6.0, 51.0])),
+        ]
+        .into();
+        assert_eq!(box_countries(Some(&index), &[bbox([8.2, 46.2, 8.5, 46.5])]), ["CH"]);
+        assert_eq!(box_countries(Some(&index), &[bbox([5.5, 46.2, 6.5, 46.5])]), ["CH", "FR"], "across a border");
+        assert!(box_countries(None, &[bbox([8.2, 46.2, 8.5, 46.5])]).is_empty(), "without an index");
     }
 }

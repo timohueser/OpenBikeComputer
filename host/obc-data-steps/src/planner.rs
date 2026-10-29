@@ -164,6 +164,51 @@ impl Product for Planner {
         Pointer { key: "planner/catalog.json", step: catalog::STEP, path: "catalog.json" }
     }
 
+    /// The sources of the step table of `specs/obc-data.md`, and the ground sources that are
+    /// fetched: `osm-planet` of the ground chain is `planner/osm`.
+    fn reads(&self, root: &Path) -> Vec<String> {
+        let mut reads: Vec<String> = [
+            "geofabrik-extracts",
+            "geofabrik-poly",
+            "geofabrik-index",
+            "terrain-osm",
+            "protomaps-basemaps",
+            "natural-earth",
+            "water-polygons",
+            "land-polygons",
+            "daylight-landcover",
+            "qrank",
+            "pgf-encoding",
+            "terrain",
+            GLO30,
+            TILE_LIST,
+            "protomaps-assets",
+            "tangrams-icons",
+            "query-model",
+            "nominatim-country-data",
+            "wiki",
+            "climate",
+            "hr-wsi",
+            "modis-snow",
+            "hansen-gfc",
+            "esa-worldcover",
+            WORLDCOVER_GRID,
+            crate::forest_reference::ID,
+        ]
+        .map(str::to_string)
+        .into();
+        let ground = obc_data::ground::Ground::load(root).map(|ground| {
+            let chains = ground.material.sources.into_iter().chain(ground.lithology.sources);
+            chains.map(|step| step.source).filter(|id| id != "osm-planet").collect::<Vec<_>>()
+        });
+        for id in ground.unwrap_or_default() {
+            if !reads.contains(&id) {
+                reads.push(id);
+            }
+        }
+        reads
+    }
+
     fn named(&self, outputs: &[Output]) -> Result<Vec<(String, LayerFile)>, String> {
         catalog::named(outputs.iter().map(|output| (output.step.as_str(), output.files.as_slice())))
     }

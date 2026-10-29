@@ -8,6 +8,7 @@
 //! from the `wiki` shards.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::path::Path;
 
 use obc_bake::coverage::Coverage;
 use obc_bake::step::LAND;
@@ -87,6 +88,11 @@ impl Product for Device {
 
     fn pointer(&self) -> Pointer {
         Pointer { key: "cell-catalog/catalog.json", step: catalog::LAYER, path: "catalog.json" }
+    }
+
+    fn reads(&self, _: &Path) -> Vec<String> {
+        let reads = [EXTRACTS, POLY, catalog::INDEX, LAND, TILE_LIST, GLO30, "terrain", "wiki"];
+        reads.map(str::to_string).into()
     }
 
     fn named(&self, outputs: &[Output]) -> Result<Vec<(String, LayerFile)>, String> {

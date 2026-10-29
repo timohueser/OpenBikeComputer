@@ -12,6 +12,18 @@
   "countries": [
     "CH"
   ],
+  "products": [
+    {
+      "product": "device",
+      "incomplete": false,
+      "reason": null
+    },
+    {
+      "product": "planner",
+      "incomplete": true,
+      "reason": "the store lacks `sentinel-2-mosaics` bbox=8.15034,46.48261,8.46007,46.7207 year=2025; 6 fetches failed: climate 1, hr-wsi 1, modis-snow 1, sentinel-2-mosaics 2, terrain 1; `obc data fetch sentinel-2-mosaics bbox=8.15034,46.48261,8.46007,46.7207 year=2025` gets it."
+    }
+  ],
   "layers": [
     {
       "layer": "device/terrain",
@@ -24,7 +36,7 @@
     },
     {
       "layer": "planner",
-      "need": "prepare",
+      "need": "unknown",
       "sources": [],
       "reason": "the store lacks `sentinel-2-mosaics` bbox=8.15034,46.48261,8.46007,46.7207 year=2025; 6 fetches failed: climate 1, hr-wsi 1, modis-snow 1, sentinel-2-mosaics 2, terrain 1; `obc data fetch sentinel-2-mosaics bbox=8.15034,46.48261,8.46007,46.7207 year=2025` gets it."
     }
@@ -56,7 +68,8 @@
         "held_bytes": 549114239,
         "download_bytes": 0,
         "unknown_requests": 0,
-        "read_by": null
+        "read_by": null,
+        "after_stop": false
       }
     },
     {
@@ -85,7 +98,8 @@
         "held_bytes": 252286558,
         "download_bytes": 0,
         "unknown_requests": 0,
-        "read_by": null
+        "read_by": null,
+        "after_stop": false
       }
     },
     {
@@ -114,7 +128,8 @@
         "held_bytes": 0,
         "download_bytes": 0,
         "unknown_requests": 0,
-        "read_by": null
+        "read_by": null,
+        "after_stop": false
       }
     },
     {
@@ -143,7 +158,8 @@
         "held_bytes": 0,
         "download_bytes": 0,
         "unknown_requests": 0,
-        "read_by": null
+        "read_by": null,
+        "after_stop": false
       }
     },
     {
@@ -175,7 +191,8 @@
         "held_bytes": 374428822,
         "download_bytes": 0,
         "unknown_requests": 0,
-        "read_by": null
+        "read_by": null,
+        "after_stop": false
       }
     },
     {
@@ -204,7 +221,8 @@
         "held_bytes": 0,
         "download_bytes": 0,
         "unknown_requests": 1,
-        "read_by": null
+        "read_by": null,
+        "after_stop": false
       }
     },
     {
@@ -233,7 +251,8 @@
         "held_bytes": 125991450,
         "download_bytes": 0,
         "unknown_requests": 0,
-        "read_by": null
+        "read_by": null,
+        "after_stop": false
       }
     },
     {
@@ -262,7 +281,8 @@
         "held_bytes": 0,
         "download_bytes": 0,
         "unknown_requests": 0,
-        "read_by": "terrain"
+        "read_by": "terrain",
+        "after_stop": false
       }
     },
     {
@@ -291,7 +311,8 @@
         "held_bytes": 0,
         "download_bytes": 0,
         "unknown_requests": 0,
-        "read_by": "climate"
+        "read_by": "climate",
+        "after_stop": false
       }
     }
   ],
