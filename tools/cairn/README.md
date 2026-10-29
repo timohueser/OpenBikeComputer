@@ -14,7 +14,7 @@ python3 -m unittest discover -s tools/cairn/tests
 | File | Holds |
 | --- | --- |
 | `docs/design/<system>.md` | the header of one system or shell: `kind`, `area`, `purpose`, `owns`, `depends_on`, `test_depends_on`, `status` |
-| `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the R3 limit, the tooling folder for R4 |
+| `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4 |
 | `.cairn/baseline.json` | the known violations, by ID, with a size |
 | `adapters/cargo.py` | the Rust crates and their path dependencies, from every configured Cargo root |
 
@@ -29,7 +29,7 @@ In `owns`, `**` matches any characters and `*` matches any characters except `/`
 | Cycle | each production edge inside a cycle between systems. A cycle is a violation even when the docs declare its edges. |
 | R1 | a Rust crate that holds files of a system other than the owner of its entry file |
 | R2 | a system with code under two roots of the same runtime in the `runtimes` table. The longest matching root applies. The check ignores a file under no root. |
-| R3 | a shell whose own files hold more lines than `shell_glue.max_lines` |
+| R3 | each shell's own lines: the lines of the files that no system owns. Each shell's doc sets its target size in Phase 2. |
 | R4 | a file under `tooling.path` whose owner is outside `tooling.area` |
 
 ## Ratchet

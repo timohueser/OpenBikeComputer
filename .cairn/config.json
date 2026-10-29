@@ -2,7 +2,7 @@
   "docs": "docs/design",
   "baseline": ".cairn/baseline.json",
   "sources": {
-    "extensions": [".rs", ".ts", ".svelte", ".py", ".swift", ".wgsl", ".js", ".mjs", ".sh", ".h", ".c", ".kt"],
+    "extensions": [".rs", ".ts", ".svelte", ".py", ".swift", ".wgsl", ".js", ".mjs", ".sh", ".h", ".c"],
     "files": ["tools/obc"]
   },
   "adapters": {
@@ -26,10 +26,6 @@
     "builder/web/": "web",
     "builder/wasm/": "web",
     "companion-ios/": "ios"
-  },
-  "shell_glue": {
-    "max_lines": 5000,
-    "source": "proposed with the first cairn check, for the owner to confirm"
   },
   "tooling": {
     "path": "tools/",

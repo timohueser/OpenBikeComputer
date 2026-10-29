@@ -14,7 +14,6 @@ SPEC.loader.exec_module(cairn)
 
 CONFIG = {
     "runtimes": {"tools/": "host"},
-    "shell_glue": {"max_lines": 100},
     "tooling": {"path": "tools/", "area": "Tooling"},
 }
 
@@ -77,6 +76,14 @@ class RuleTests(unittest.TestCase):
         result = analyse(docs, ["tools/ci.py", "tools/maps.py", "tools/tiles.py"])
         [violation] = [v for v in result.violations if v.rule == "R4"]
         self.assertEqual((violation.id, violation.size), ("R4 maps", 2))
+
+
+    def test_r3_records_every_shell_with_code_of_its_own(self):
+        docs = [doc("app", ["app/**"], kind="shell"), doc("web", ["web/**"], kind="shell"), doc("nav", ["app/src/nav.rs"])]
+        files = ["app/src/main.rs", "app/src/nav.rs", "web/page.ts"]
+        lines = {"app/src/main.rs": 40, "app/src/nav.rs": 500, "web/page.ts": 0}
+        result = cairn.analyse(docs, files, [], [], lines, CONFIG)
+        self.assertEqual([(v.id, v.size) for v in result.violations if v.rule == "R3"], [("R3 app", 40)])
 
 
 class RatchetTests(unittest.TestCase):

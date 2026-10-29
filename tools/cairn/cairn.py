@@ -281,13 +281,13 @@ def analyse(
             for root in sorted(found_roots):
                 out.append(Violation("R2", f"R2 {system} {runtime} {root}", frozenset({system}), f"{system} has {runtime} code in {listed}"))
 
-    # R3: a shell's own lines, which are the files that no system owns.
-    limit = config["shell_glue"]["max_lines"]
+    # R3: a shell's own lines, which are the files that no system owns. The baseline records each
+    # count, and a count may not grow.
     for doc in docs:
         if doc.kind == "shell":
             count = sum(lines.get(path, 0) for path, system in owner.items() if system == doc.system)
-            if count > limit:
-                out.append(Violation("R3", f"R3 {doc.system}", frozenset({doc.system}), f"shell {doc.system} holds {count:,} lines of its own (limit {limit:,})", count))
+            if count:
+                out.append(Violation("R3", f"R3 {doc.system}", frozenset({doc.system}), f"shell {doc.system} holds {count:,} lines of its own", count))
 
     # R4: only the tooling area keeps files in the tooling folder.
     folder, area = config["tooling"]["path"], config["tooling"]["area"]
