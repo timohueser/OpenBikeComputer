@@ -604,7 +604,7 @@ class ShippedPlanTests(unittest.TestCase):
             with self.subTest(path=path):
                 chosen = plan.select(self.units, self.graph, [path])
                 self.assertEqual(chosen.errors, [])
-                self.assertEqual(plan.required_jobs(chosen), ["guards", "selection"])
+                self.assertEqual(plan.required_jobs(chosen), ["cairn", "guards", "selection"])
                 self.assertIn("python.repository-tools", {item.id for item in chosen.selected})
 
     def test_ios_steps_follow_the_plan_and_build_screenshot_prerequisites(self) -> None:
@@ -694,6 +694,7 @@ class ShippedPlanTests(unittest.TestCase):
         self.assertEqual(
             missing,
             [
+                "ci.cairn",
                 "ci.data-sources-guard",
                 "ci.fixture-policy",
                 "ci.ios-host-portability",

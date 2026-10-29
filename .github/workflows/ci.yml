@@ -154,6 +154,23 @@ jobs:
       - name: Large fixture policy
         run: python3 tools/check_fixture_policy.py
 
+  # Report only until a system doc is approved. The Rust adapter reads `cargo metadata`, so the
+  # job needs the toolchain but builds nothing.
+  cairn:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - name: cairn unit tests
+        run: python3 -m unittest discover -s tools/cairn/tests -v
+      - name: System docs against the code
+        run: python3 tools/cairn/cairn.py check
+
   # cargo fmt --check for all Cargo roots. rustfmt walks up from each file and finds the
   # shared .rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace
   # manifest needs `--all`, the board crate + bootloader are checked on their own.
@@ -1307,7 +1324,7 @@ jobs:
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, desktop-frontend, desktop, verification, planner-search]
+    needs: [selection, guards, cairn, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, desktop-frontend, desktop, verification, planner-search]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

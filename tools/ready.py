@@ -68,6 +68,9 @@ DOCS = "docs/"
 #: This known delegate renders with stdlib Python and does not build a product.
 DOCS_CHECK = "just check-docs"
 
+#: The system docs against the code. It reports, and fails only for an approved system.
+CAIRN = "python3 tools/cairn/cairn.py check"
+
 #: The declared suite that owns the snapshot sweep. Its triggers define the rendering inputs.
 SWEEP = "ci.ui-snapshots"
 
@@ -233,6 +236,8 @@ def plan(
             bool(policy),
         )
     )
+    # Any new source file or Cargo edge can change the result, so the check runs on every change.
+    gates.append(Gate(CAIRN, "every change: system ownership and dependencies", True, covered_by="ci.cairn"))
     gates.append(
         Gate(
             DOCS_CHECK,

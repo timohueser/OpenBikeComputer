@@ -638,6 +638,14 @@ command = "python3 tools/prose.py --check"
 jobs = ["guards"]
 triggers = ["tools/prose.py", "tools/testing/prose-baseline.json"]
 
+# Report only: `cairn check` fails only for a new violation of a system whose doc is approved.
+[[suite]]
+id = "ci.cairn"
+route = "required"
+command = "python3 -m unittest discover -s tools/cairn/tests && python3 tools/cairn/cairn.py check"
+jobs = ["cairn"]
+triggers = ["tools/cairn/**", ".cairn/**", "docs/design/**"]
+
 [[suite]]
 id = "ci.ios-host-portability"
 route = "required"
