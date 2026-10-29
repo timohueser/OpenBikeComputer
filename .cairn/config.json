@@ -58,7 +58,7 @@
                "*.kicad_mod", "*.kicad_pcb", "*.kicad_sch", "*.gpx", "*.sha256"],
     "batch_prices": {
       "claude-opus-5-5": { "input": 2, "output": 10, "cache_read": 0.1 },
-      "claude-sonnet-5-5": { "input": 1, "output": 5, "cache_read": 0.1 },
+      "claude-sonnet-5-5": { "input": 1, "output": 5, "cache_read": 0.05 },
       "claude-haiku-5-5": { "input": 0.05, "output": 0.25, "cache_read": 0.005 }
     }
   }

@@ -167,6 +167,7 @@ class DriftCallTests(unittest.TestCase):
         self.assertEqual(len(sleeps), 2)
         counted = api.paths("messages/count_tokens")
         self.assertEqual(len(counted), 4)
+        self.assertEqual(counted[0]["output_config"], counted[1]["output_config"])
         self.assertNotIn("max_tokens", counted[1])
         [batch] = api.paths("messages/batches")
         self.assertEqual([r["custom_id"] for r in batch["requests"]], ["a", "b"])
@@ -186,6 +187,11 @@ class DriftCallTests(unittest.TestCase):
         self.assertEqual(found.found["a"], {"false_statements": [], "missing_behaviour": []})
         self.assertRegex(found.found["b"], "^the request canceled")
         self.assertAlmostEqual(found.spent, 500 / 1e6)
+
+    def test_a_permanent_http_error_while_polling_stops_the_run_and_names_the_batch(self):
+        revoked = report.ApiError(401, "GET messages/batches/b1: HTTP 401: invalid x-api-key")
+        with self.assertRaisesRegex(cairn.CairnError, "^batch b1: .*HTTP 401"):
+            self.run_drift(FakeApi({}, statuses=[report.ApiError(503, "overloaded"), revoked]), "a")
 
     def test_an_errored_row_has_no_findings_and_no_cost(self):
         error = {"type": "error", "error": {"type": "invalid_request_error", "message": "bad schema"}}

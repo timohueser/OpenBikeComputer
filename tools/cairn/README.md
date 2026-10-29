@@ -147,7 +147,7 @@ through Bash bypass the hook; AGENTS.md and the mode gate cover them.
 | Drift, step 2 | Runs only with `--drift`, because it spends tokens. It needs `ANTHROPIC_API_KEY`. It sends one Message Batch for the `drift` role in the `api` tier. A family prefix resolves to its newest model ID through the Models API. The fixed instructions and `docs/design/glossary.md` come first, with a cache breakpoint. |
 | Budget | The token-counting endpoint counts each request before it joins the batch. The worst case is the shared prefix at the one-hour cache write price (twice the input price), the rest at the input price, and `report.max_tokens` at the output price. The batch stops at `report.budget_usd`, and the report names the skipped systems. The report also gives the real cost from the usage of the results. |
 | `report.batch_prices` | The Message Batches prices in USD per million tokens, by exact model ID. Step 2 refuses a model with no price. |
-| `report.timeout_minutes` | The longest wait for the batch. Then the batch is canceled, and the report still reads the results of the requests that ran. |
+| `report.timeout_minutes` | The longest wait for the batch. Then the batch is canceled, and the report still reads the results of the requests that ran. While it waits, a network error, HTTP 429 or HTTP 5xx tries again. Any other HTTP error stops the run and names the batch. |
 | Mentions | Each `@` in a title, a reason or a finding gets a zero-width space after it, so the issue notifies nobody. |
 | `--publish` | Replaces the body of the open issue labelled `cairn-report`, or creates the label and the issue and pins it. Pinning uses GraphQL; a failed pin adds a note to the body. |
 | Exit code | 1 when a part fails |

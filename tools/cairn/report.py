@@ -140,7 +140,7 @@ def evidence(root: Path, read: Api, number: int, commit: str, files: list[str]) 
     pull request gives its diff on the files."""
     pull = read(f"pulls/{number}")
     mode = pull_mode(pull)
-    head = f"## Pull request #{number}: {untrusted(pull.get('title', ''))}\nMode: {mode.line() if mode else 'none'}\n\n"
+    head = f"## Pull request #{number}: {' '.join(pull.get('title', '').split())}\nMode: {mode.line() if mode else 'none'}\n\n"
     if mode and mode.kind == "change":
         return head + tldr(modes.issue_body(mode.issue, read(f"issues/{mode.issue}")))
     return head + (modes.git(root, "diff", "--no-renames", f"{commit}^1", commit, "--", *files) or "")
@@ -173,6 +173,14 @@ def drift_inputs(root: Path, docs: list[cairn.Doc], config: dict, api: Api) -> l
 # ── step 2: one batch ────────────────────────────────────────────────────────
 
 
+class ApiError(OSError):
+    """An HTTP error answer of the Anthropic API."""
+
+    def __init__(self, code: int, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 def sender(key: str) -> Send:
     def send(method: str, url: str, body: dict | None) -> str:
         data = None if body is None else json.dumps(body).encode()
@@ -181,7 +189,7 @@ def sender(key: str) -> Send:
             with urllib.request.urlopen(urllib.request.Request(url, data, headers, method=method), timeout=120) as answer:
                 return answer.read().decode()
         except urllib.error.HTTPError as error:
-            raise OSError(f"{method} {url}: HTTP {error.code}: {error.read().decode(errors='replace')[:500]}") from error
+            raise ApiError(error.code, f"{method} {url}: HTTP {error.code}: {error.read().decode(errors='replace')[:500]}") from error
         except http.client.HTTPException as error:
             raise OSError(f"{method} {url}: {error!r}") from error
 
@@ -201,6 +209,19 @@ def resolve(send: Send, name: str) -> str:
     if not family:
         raise cairn.CairnError(f"the Models API lists no model {name} and no model whose ID starts with {name}-")
     return max(family, key=lambda m: m["created_at"])["id"]
+
+
+def attempt(batch: str, action: Callable[[], object]) -> object | None:
+    """The result of `action`, or None after an error that can pass: a network error, HTTP 429 or
+    HTTP 5xx. Any other HTTP error is permanent, such as a revoked key, so it stops the run."""
+    try:
+        return action()
+    except ApiError as error:
+        if error.code != 429 and error.code < 500:
+            raise cairn.CairnError(f"batch {batch}: {error}") from error
+    except OSError:
+        pass
+    return None
 
 
 def cost(usage: dict, price: dict) -> float:
@@ -267,8 +288,9 @@ def drift(send: Send, root: Path, inputs: list[Inputs], config: dict,
     glossary = root / config["docs"] / GLOSSARY
     system = [{"type": "text", "cache_control": CACHE,
                "text": INSTRUCTIONS + (f"\n\n<glossary>\n{glossary.read_text()}\n</glossary>" if glossary.exists() else "")}]
-    prefix = call(send, "POST", "messages/count_tokens",
-                  {"model": out.model, "system": system, "messages": [{"role": "user", "content": "."}]})["input_tokens"]
+    output = {"effort": chosen[1], "format": {"type": "json_schema", "schema": SCHEMA}}
+    prefix = call(send, "POST", "messages/count_tokens", {"model": out.model, "system": system, "output_config": output,
+                                                          "messages": [{"role": "user", "content": "."}]})["input_tokens"]
     requests = []
     for i, item in enumerate(inputs):
         doc = (root / item.doc).read_text(encoding="utf-8")
@@ -278,7 +300,7 @@ def drift(send: Send, root: Path, inputs: list[Inputs], config: dict,
             "system": system,
             "messages": [{"role": "user", "content": f'<system_doc path="{item.doc}">\n{doc}\n</system_doc>\n\n'
                                                      f"<changes>\n{item.text}\n</changes>"}],
-            "output_config": {"effort": chosen[1], "format": {"type": "json_schema", "schema": SCHEMA}},
+            "output_config": output,
         }
         tokens = call(send, "POST", "messages/count_tokens", {k: v for k, v in params.items() if k != "max_tokens"})["input_tokens"]
         worst = cost({"cache_creation_input_tokens": prefix, "input_tokens": max(tokens - prefix, 0),
@@ -291,23 +313,20 @@ def drift(send: Send, root: Path, inputs: list[Inputs], config: dict,
     if not requests:
         return out
     batch = call(send, "POST", "messages/batches", {"requests": requests})
-    path = f"messages/batches/{batch['id']}"
+    identity, path = batch["id"], f"messages/batches/{batch['id']}"
     deadline = clock() + settings["timeout_minutes"] * 60
-    # A failed request tries again at the next poll. A canceled batch still ends, and its results
-    # hold the requests that ran, which are paid for.
+    # A canceled batch still ends, and its results hold the requests that ran, which are paid for.
     while batch["processing_status"] != "ended":
         if clock() > deadline and not out.canceled:
-            try:
-                call(send, "POST", f"{path}/cancel")
-                out.canceled = True
-            except OSError:
-                pass
+            out.canceled = attempt(identity, lambda: call(send, "POST", f"{path}/cancel")) is not None
         sleep(POLL_SECONDS)
-        try:
-            batch = call(send, "GET", path)
-        except OSError:
-            continue
-    for line in send("GET", batch["results_url"], None).splitlines():
+        batch = attempt(identity, lambda: call(send, "GET", path)) or batch
+    results = None
+    while results is None:
+        results = attempt(identity, lambda: send("GET", batch["results_url"], None))
+        if results is None:
+            sleep(POLL_SECONDS)
+    for line in results.splitlines():
         if line.strip():
             row = json.loads(line)
             out.found[row["custom_id"]] = outcome(row["result"])
