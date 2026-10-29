@@ -509,7 +509,7 @@ def pr_diff(root: Path, commit: str, docs: list[Doc], rules: dict, new_edges: se
     lines = diff_lines(root, commit)
     folder = rules["docs"].rstrip("/") + "/"
     base, head = shown_at(root, commit), shown_at(root, "HEAD")
-    changed_docs, headers = {}, set()
+    changed_docs, headers, new = {}, set(), set()
     for path in lines:
         name = path[len(folder):-len(".md")]
         if path.startswith(folder) and path.endswith(".md") and "/" not in name:
@@ -518,6 +518,8 @@ def pr_diff(root: Path, commit: str, docs: list[Doc], rules: dict, new_edges: se
                 changed_docs[path] = name
                 if before != after:
                     headers.add(name)
+                if not before:
+                    new.add(name)
     others = sorted(set(lines) - set(changed_docs))
     return modes.Diff(
         touched=frozenset({s for hits in owners(others, docs).values() for s in hits} | set(changed_docs.values())),
@@ -526,6 +528,7 @@ def pr_diff(root: Path, commit: str, docs: list[Doc], rules: dict, new_edges: se
         docs=frozenset(changed_docs.values()),
         headers=frozenset(headers),
         specs=tuple(sorted(p for p in lines if p.startswith(rules["specs"].rstrip("/") + "/"))),
+        new_docs=frozenset(new),
     )
 
 
@@ -533,8 +536,8 @@ def mode_gate(root: Path, head: Tree, ref: str) -> bool:
     """Print the mode gate's report and return whether it fails.
 
     The mode comes from the pull request body in CI, and from the branch's declared mode locally.
-    The fix rules and the approvals come from the base too, so a change cannot loosen the rules
-    it is checked against.
+    The fix and size rules and the approvals come from the base too, so a change cannot loosen the
+    rules it is checked against.
     """
     event = os.environ.get("GITHUB_EVENT_PATH")
     if event:
@@ -551,20 +554,21 @@ def mode_gate(root: Path, head: Tree, ref: str) -> bool:
         base, unread = tree_at(root, commit), ""
     except (CairnError, OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:
         base = None
-        unread = f"the base {commit[:12]} cannot be read, so its graph, approvals and fix rules are unknown: {error}"
+        unread = f"the base {commit[:12]} cannot be read, so its graph, approvals and rules are unknown: {error}"
         print(f"cairn: {unread}")
-    rules = {**head.config, **{key: base.config[key] for key in ("fix", "specs") if base and key in base.config}}
+    rules = {**head.config, **modes.DEFAULTS,
+             **{key: base.config[key] for key in ("fix", "size", "specs") if base and key in base.config}}
     new_edges = added_edges(head.edges, base.edges) if base else set()
     diff = pr_diff(root, commit, head.docs, rules, new_edges)
-    issue = None
+    issue = epic = None
     if mode is not None and mode.kind == "change":
         try:
-            issue = modes.fetch_issue(root, mode.issue)
+            issue, epic = modes.fetch_issue(root, mode.issue), modes.fetch_epic(root, mode.issue)
         except (OSError, ValueError) as error:
             found = [f"issue #{mode.issue} cannot be read: {error}"]
     if mode is not None and not found:
         names = {doc.system: doc.name for doc in head.docs}
-        found = modes.violations(mode, diff, rules["fix"]["max_lines"], issue, names)
+        found = modes.violations(mode, diff, rules, issue, names, epic)
     if mode is not None and mode.kind in ("fix", "change") and unread:
         found.append(unread)
     approved = {doc.system for doc in head.docs + (base.docs if base else []) if doc.status == "approved"}

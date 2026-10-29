@@ -15,6 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 KINDS = ("fix", "change", "prototype", "override")
+SIZES = ("S", "M", "L")
+#: The rules when the base config does not have them. HEAD never sets them.
+DEFAULTS = {
+    "fix": {"max_lines": 1000, "tests": ["**/tests/**", "tests.rs", "*_tests.rs", "*_test.py", "*Tests.swift", "*.test.ts"]},
+    "size": {"S": {"systems": 1, "lines": 500}, "M": {"systems": 3, "lines": 1500}},
+}
 KEY = "cairnMode"
 FORMS = (
     re.compile(r"(?P<kind>fix)(?:, over limit: (?P<reason>\S.*))?"),
@@ -22,7 +28,8 @@ FORMS = (
     re.compile(r"(?P<kind>prototype)"),
     re.compile(r"(?P<kind>override): (?P<reason>\S.*)"),
 )
-COMMENT = re.compile(r"<!--.*?-->", re.S)
+#: GitHub hides an unclosed comment up to the end of the body.
+COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
 FENCE = re.compile(r"^```.*?^```", re.S | re.M)
 ASK = (
     "cairn: the branch `{branch}` has no declared mode. Ask the user which mode applies: "
@@ -116,10 +123,20 @@ def approval_hash(body: str) -> str:
     return hashlib.sha256("\n".join(kept).rstrip().encode()).hexdigest()[:12]
 
 
+def visible(body: str) -> str:
+    """The body without HTML comments and code blocks."""
+    return FENCE.sub("", COMMENT.sub("", body))
+
+
+def issue_size(body: str) -> str | None:
+    """The first letter after `**Size:**` on its line, when it is S, M or L."""
+    match = re.search(r"^\*\*Size:\*\*[ \t]*([SML])", visible(body), re.M)
+    return match.group(1) if match else None
+
+
 def listed(body: str, names: dict[str, str]) -> set[str]:
-    """The systems on the `**Systems:**` line outside code blocks, by slug or by name, with notes in
-    brackets removed."""
-    match = re.search(r"^\*\*Systems:\*\*(.*)$", FENCE.sub("", body), re.M)
+    """The systems on the `**Systems:**` line, by slug or by name, with notes in brackets removed."""
+    match = re.search(r"^\*\*Systems:\*\*(.*)$", visible(body), re.M)
     items = re.sub(r"\([^)]*\)", "", match.group(1)).split(",") if match else []
     wanted = {item.strip().lower() for item in items}
     return {slug for slug, name in names.items() if slug.lower() in wanted or name.lower() in wanted}
@@ -147,13 +164,31 @@ def issue_body(number: int, data: dict) -> str:
     return data.get("body") or ""
 
 
-def fetch_issue(root: Path, number: int) -> str:
-    """The issue body through `gh api`, which reads `GH_TOKEN` and `GH_REPO` in CI."""
-    done = subprocess.run(["gh", "api", f"repos/{{owner}}/{{repo}}/issues/{number}"],
-                          cwd=root, capture_output=True, text=True)
+def api(root: Path, path: str) -> dict:
+    """`gh api repos/{owner}/{repo}/PATH`, which reads `GH_TOKEN` and `GH_REPO` in CI."""
+    done = subprocess.run(["gh", "api", f"repos/{{owner}}/{{repo}}/{path}"], cwd=root, capture_output=True, text=True)
     if done.returncode:
         raise OSError(done.stderr.strip() or "gh api failed")
-    return issue_body(number, json.loads(done.stdout))
+    return json.loads(done.stdout)
+
+
+def fetch_issue(root: Path, number: int) -> str:
+    return issue_body(number, api(root, f"issues/{number}"))
+
+
+def fetch_epic(root: Path, number: int) -> tuple[int, str] | None:
+    """The number and body of the parent issue from GitHub's sub-issue relation, or None. For an
+    issue with no parent, the endpoint answers 404 with the message `No parent issue found`."""
+    try:
+        data = api(root, f"issues/{number}/parent")
+    except OSError as error:
+        if "No parent issue found" in str(error):
+            return None
+        raise
+    parent = data.get("number") if isinstance(data, dict) else None
+    if not isinstance(parent, int):
+        raise ValueError(f"the parent of issue #{number} has no number")
+    return parent, issue_body(parent, data)
 
 
 # ── the rules ────────────────────────────────────────────────────────────────
@@ -167,15 +202,46 @@ class Diff:
     lines: int = 0
     #: The dependencies between systems that HEAD has and the base does not.
     new_edges: frozenset[tuple[str, str]] = frozenset()
-    #: The systems whose doc changed, and those whose doc header changed.
+    #: The systems whose doc changed, those whose doc header changed, and those whose doc is new.
     docs: frozenset[str] = frozenset()
     headers: frozenset[str] = frozenset()
     specs: tuple[str, ...] = ()
+    new_docs: frozenset[str] = frozenset()
 
 
-def violations(mode: Mode, diff: Diff, limit: int, issue: str | None = None, names: dict[str, str] | None = None) -> list[str]:
-    """What the diff does that the mode does not allow. `issue` is the body of a change's issue."""
+def size(diff: Diff, limits: dict) -> tuple[str, list[str]]:
+    """The size of the diff and the signals that decide it. Each signal gives the smallest size
+    that allows it, and the largest of those is the size."""
+    def fit(count: int, key: str) -> str:
+        return next((s for s in SIZES[:2] if count <= limits[s][key]), "L")
+
+    systems = len(diff.touched)
+    signals = [(fit(systems, "systems"), f"{systems} system{'' if systems == 1 else 's'}"),
+               (fit(diff.lines, "lines"), f"{diff.lines:,} changed lines outside tests")]
+    signals += [("M", f"a contract change in {', '.join(diff.specs)}")] if diff.specs else []
+    signals += [("M", f"a new dependency {a} -> {b}") for a, b in sorted(diff.new_edges)]
+    signals += [("L", f"a new system doc for {name}") for name in sorted(diff.new_docs)]
+    found = max((s for s, _ in signals), key=SIZES.index)
+    return found, [text for s, text in signals if s == found]
+
+
+def size_problems(number: int, issue: str, diff: Diff, limits: dict) -> list[str]:
+    declared = issue_size(issue)
+    if declared is None:
+        return [f"issue #{number} has no `**Size:** S|M|L` line"]
+    found, signals = size(diff, limits)
+    if SIZES.index(found) <= SIZES.index(declared):
+        return []
+    return [f"`change #{number}` is sized {declared}, but the diff is {found}: {', '.join(signals)}. "
+            "Shrink the pull request, amend the issue (which needs a new approval), or override with a reason"]
+
+
+def violations(mode: Mode, diff: Diff, rules: dict, issue: str | None = None, names: dict[str, str] | None = None,
+               epic: tuple[int, str] | None = None) -> list[str]:
+    """What the diff does that the mode does not allow. `issue` is the body of a change's issue,
+    and `epic` the number and body of its parent. The epic's approval replaces the issue's own."""
     out = []
+    limit = rules["fix"]["max_lines"]
     if mode.kind == "fix":
         if len(diff.touched) > 1:
             out.append(f"a fix touches one system, and this one touches {', '.join(sorted(diff.touched))}")
@@ -189,12 +255,24 @@ def violations(mode: Mode, diff: Diff, limit: int, issue: str | None = None, nam
     elif mode.kind == "change":
         if issue is None:
             return [f"issue #{mode.issue} could not be read"]
-        out += issue_problems(mode.issue, issue)
         allowed = listed(issue, names or {})
+        if epic is None:
+            out += issue_problems(mode.issue, issue)
+        else:
+            number, body = epic
+            out += issue_problems(number, body)
+            # A list item only, so that prose such as "Depends on #8" does not count, and #80 is not #8.
+            if not re.search(rf"^[ \t]*[-*+][ \t]+(?:\[[ xX]\][ \t]+)?#{mode.issue}\b", visible(body), re.M):
+                out.append(f"issue #{mode.issue} is not on the list of its epic #{number}")
+            if issue_size(issue) == "L":
+                out.append(f"issue #{mode.issue} is sized L, but a sub-issue is one pull request: size S or M")
+            out += [f"issue #{mode.issue} lists {system} on its Systems line, and its epic #{number} does not"
+                    for system in sorted(allowed - listed(body, names or {}))]
         out += [f"issue #{mode.issue} does not list {system} on its Systems line"
                 for system in sorted(diff.touched - allowed)]
         out += [f"the change adds {a} -> {b}, so it changes docs/design/{a}.md too"
                 for a, b in sorted(diff.new_edges) if a not in diff.docs]
+        out += size_problems(mode.issue, issue, diff, rules["size"])
     elif mode.kind == "prototype":
         out.append("a prototype never merges")
     return out
