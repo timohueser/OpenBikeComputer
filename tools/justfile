@@ -568,6 +568,15 @@ prose *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/prose.py" "$@"
 
+[doc("System docs against the code: ownership, dependencies, R1-R4, ratchet. Args: check [--update]")]
+[group('docs')]
+cairn *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run python3 "$OBC_TOOLS/cairn/cairn.py" "$@"
+
 # Serve the static hosted tier — the no-backend site (phase C of #894), as deployed.
 # Builds and serves it on :4173. Args: [PORT]. It reads the device catalogue of the
 # active planner release, as deployed; OBC_CATALOG_URL=… points it at another one.
