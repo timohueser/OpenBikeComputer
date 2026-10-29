@@ -168,5 +168,14 @@ class RatchetTests(unittest.TestCase):
         self.assertEqual(cairn.grown({"R3 app": 95}, None, current), ["R3 app: 95"])
 
 
+    def test_the_base_baseline_path_comes_from_the_base_config(self):
+        files = {
+            ".cairn/config.json": '{"baseline": "old/baseline.json"}',
+            "old/baseline.json": '{"R3 app": 80}',
+        }
+        self.assertEqual(cairn.base_baseline(files.get), {"R3 app": 80})
+        self.assertIsNone(cairn.base_baseline({}.get))
+
+
 if __name__ == "__main__":
     unittest.main()

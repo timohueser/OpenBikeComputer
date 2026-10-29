@@ -22,6 +22,7 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -343,14 +344,29 @@ def tracked_sources(root: Path, sources: dict) -> list[str]:
     return [f for f in out.splitlines() if (f.endswith(extensions) or f in sources["files"]) and (root / f).is_file()]
 
 
-def base_baseline(root: Path, ref: str, path: str) -> dict[str, int] | None:
-    """The baseline at the merge base of REF and HEAD, or None when it has none."""
+def base_baseline(show: Callable[[str], str | None]) -> dict[str, int] | None:
+    """The baseline at the base commit, or None when it has none.
+
+    The path comes from the base commit's own config, so a change that moves the baseline cannot
+    hide the old one.
+    """
+    config = show(CONFIG)
+    text = show(json.loads(config)["baseline"]) if config is not None else None
+    return json.loads(text) if text is not None else None
+
+
+def shown_at_merge_base(root: Path, ref: str) -> Callable[[str], str | None]:
+    """A reader of files at the merge base of REF and HEAD; it gives None for a missing file."""
     git = ["git", "-C", str(root)]
     merge = subprocess.run([*git, "merge-base", ref, "HEAD"], capture_output=True, text=True)
     if merge.returncode:
         raise CairnError(f"no merge base with {ref}: {merge.stderr.strip()}")
-    shown = subprocess.run([*git, "show", f"{merge.stdout.strip()}:{path}"], capture_output=True, text=True)
-    return json.loads(shown.stdout) if shown.returncode == 0 else None
+
+    def show(path: str) -> str | None:
+        shown = subprocess.run([*git, "show", f"{merge.stdout.strip()}:{path}"], capture_output=True, text=True)
+        return shown.stdout if shown.returncode == 0 else None
+
+    return show
 
 
 def line_count(path: Path) -> int:
@@ -426,7 +442,7 @@ def main(argv: list[str] | None = None) -> int:
         config = json.loads((ROOT / CONFIG).read_text())
         docs, files, units, edges, lines = gather(ROOT, config)
         result = analyse(docs, files, units, edges, lines, config)
-        base = base_baseline(ROOT, args.base, config["baseline"]) if args.base else None
+        base = base_baseline(shown_at_merge_base(ROOT, args.base)) if args.base else None
     except (CairnError, OSError, RuntimeError, KeyError, ValueError) as error:
         print(f"cairn: {error}", file=sys.stderr)
         return 1
