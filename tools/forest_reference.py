@@ -46,6 +46,9 @@ CHM_SCALE, CHM_OFFSET_M, STEMS_SHARE = 0.982, 3.73, 0.417
 DLT_YEAR = 2024
 DLT = ("/vsis3/eodata/CLMS/landcover_landuse/dominant_leaf_type/clms_vlcc_dominant-leaf-type_europe_10m_yearly_v1/"
        f"{DLT_YEAR}/01/01/{{name}}/{{name}}.tif")
+# The DLT tiles that CDSE S3 answered NoSuchKey. GDAL caches the miss and reports a later open of the
+# path as a plain HTTP 404, which a wrong bucket also gives.
+ABSENT = set()
 
 
 @njit(nogil=True, cache=True)
@@ -285,6 +288,8 @@ def leaf_type(x, y):
     def read(name):
         """The classes of tile `name` on the grid, or None where CLMS publishes none. The waits
         ride out a refused connection, which the GDAL retries do not cover."""
+        if name in ABSENT:
+            return None
         for delay in (5, 30, 120, 600, None):
             try:
                 with rasterio.open(DLT.format(name=name)) as source, WarpedVRT(source, **grid) as warped:
@@ -292,6 +297,7 @@ def leaf_type(x, y):
             except RasterioIOError as error:
                 # CLMS publishes no tile without land; CDSE S3 answers NoSuchKey.
                 if "NoSuchKey" in str(error):
+                    ABSENT.add(name)
                     return None
                 if delay is None:
                     raise
@@ -302,7 +308,7 @@ def leaf_type(x, y):
     with rasterio.Env(**{**GDAL, "GDAL_HTTP_MAX_RETRY": 8, "GDAL_HTTP_RETRY_DELAY": 3}):
         for e in range(int(left // 100_000), int(right // 100_000) + 1):
             for n in range(int(bottom // 100_000), int(upper // 100_000) + 1):
-                part = read(f"CLMS_HRLVLCC_DLT_S{DLT_YEAR}_R10m_E{e}N{n}_03035_V01_R00")
+                part = read(f"CLMS_HRLVLCC_DLT_S{DLT_YEAR}_R10m_E{e:02d}N{n:02d}_03035_V01_R00")
                 if part is not None:
                     classes = np.where(part != 255, part, classes)
     classes = classes.reshape(SIZE, 4, SIZE, 4)
