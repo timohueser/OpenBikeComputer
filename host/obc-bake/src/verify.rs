@@ -519,7 +519,9 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
             for id in ids {
                 if !index.contains(id) {
                     problem(
-                        format!("{rel}: names cell `{id}` in band `{band}`, which is not published (obcc-catalog.md §6)"),
+                        format!(
+                            "{rel}: names cell `{id}` in band `{band}`, which is not published (obcc-catalog.md §6)"
+                        ),
                         &mut report.problems,
                     );
                 }
