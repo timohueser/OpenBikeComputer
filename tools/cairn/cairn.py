@@ -79,8 +79,8 @@ class Violation:
 class Result:
     violations: list[Violation]
     cycles: list[list[str]] = field(default_factory=list)
-    #: The dependencies between systems, test or production, as (user, used).
-    edges: set[tuple[str, str]] = field(default_factory=set)
+    #: The dependencies between systems as (user, used, test only).
+    edges: set[tuple[str, str, bool]] = field(default_factory=set)
 
 
 # ── system docs ──────────────────────────────────────────────────────────────
@@ -308,7 +308,7 @@ def analyse(
     for system, count in sorted(counts.items()):
         out.append(Violation("R4", f"R4 {system}", frozenset({system}), f"{system} ({by_name[system].area}) has {count} file(s) under {folder}", count))
 
-    return Result(out, loops, set(pairs))
+    return Result(out, loops, {(a, b, test) for (a, b), test in pairs.items()})
 
 
 # ── the ratchet ──────────────────────────────────────────────────────────────
@@ -459,19 +459,43 @@ def diff_lines(root: Path, commit: str) -> dict[str, int]:
     return found
 
 
-def edges_at(root: Path, commit: str) -> set[tuple[str, str]]:
-    """The dependencies between systems at a commit, read from a temporary worktree."""
+@dataclass(frozen=True)
+class Tree:
+    """The docs, the config and the dependencies between systems of one checkout."""
+
+    docs: list[Doc]
+    config: dict
+    edges: set[tuple[str, str, bool]]
+
+
+def tree_at(root: Path, commit: str) -> Tree:
+    """The tree of a commit, read from a temporary worktree."""
     git = ["git", "-C", str(root), "worktree"]
     with tempfile.TemporaryDirectory() as folder:
         tree = Path(folder) / "base"
         subprocess.run([*git, "add", "--detach", "--quiet", str(tree), commit], capture_output=True, check=True)
         try:
             if not (tree / CONFIG).exists():
-                raise CairnError(f"the base {commit[:12]} has no {CONFIG}, so it has no graph to compare")
+                raise CairnError(f"it has no {CONFIG}")
             config = json.loads((tree / CONFIG).read_text())
-            return analyse(*gather(tree, config), config).edges
+            docs, files, units, edges, lines = gather(tree, config)
+            return Tree(docs, config, analyse(docs, files, units, edges, lines, config).edges)
         finally:
             subprocess.run([*git, "remove", "--force", str(tree)], capture_output=True)
+
+
+def added_edges(head: set[tuple[str, str, bool]], base: set[tuple[str, str, bool]]) -> set[tuple[str, str]]:
+    """The dependencies between systems that HEAD has and the base does not. A test dependency
+    that becomes a production dependency is new."""
+    known = {(a, b) for a, b, _ in base}
+    production = {(a, b) for a, b, test in base if not test}
+    return {(a, b) for a, b, test in head if (a, b) not in (known if test else production)}
+
+
+def is_test(path: str, patterns: list[str]) -> bool:
+    """A pattern with no `/` matches the file name only, so `*` cannot cross a folder."""
+    name = path.rsplit("/", 1)[-1]
+    return any(glob_matches(path if "/" in pattern else name, pattern) for pattern in patterns)
 
 
 def header_of(text: str | None) -> str | None:
@@ -479,34 +503,39 @@ def header_of(text: str | None) -> str | None:
     return match.group(1) if match else None
 
 
-def pr_diff(root: Path, config: dict, docs: list[Doc], edges: set[tuple[str, str]], commit: str, compare_edges: bool) -> modes.Diff:
-    """What the diff from the commit to HEAD touches. `compare_edges` reads the base graph too."""
+def pr_diff(root: Path, commit: str, docs: list[Doc], rules: dict, new_edges: set[tuple[str, str]]) -> modes.Diff:
+    """What the diff from the commit to HEAD touches. A system doc touches only its own system,
+    whatever owns its folder."""
     lines = diff_lines(root, commit)
-    folder = config["docs"].rstrip("/") + "/"
+    folder = rules["docs"].rstrip("/") + "/"
     base, head = shown_at(root, commit), shown_at(root, "HEAD")
-    changed_docs, headers = set(), set()
+    changed_docs, headers = {}, set()
     for path in lines:
         name = path[len(folder):-len(".md")]
         if path.startswith(folder) and path.endswith(".md") and "/" not in name:
             before, after = header_of(base(path)), header_of(head(path))
             if before or after:
-                changed_docs.add(name)
+                changed_docs[path] = name
                 if before != after:
                     headers.add(name)
-    tests = config["fix"]["tests"]
+    others = sorted(set(lines) - set(changed_docs))
     return modes.Diff(
-        touched=frozenset({s for hits in owners(sorted(lines), docs).values() for s in hits} | changed_docs),
-        lines=sum(n for path, n in lines.items() if not any(glob_matches(path, t) for t in tests)),
-        new_edges=frozenset(edges - edges_at(root, commit)) if compare_edges else frozenset(),
-        docs=frozenset(changed_docs),
+        touched=frozenset({s for hits in owners(others, docs).values() for s in hits} | set(changed_docs.values())),
+        lines=sum(n for path, n in lines.items() if not is_test(path, rules["fix"]["tests"])),
+        new_edges=frozenset(new_edges),
+        docs=frozenset(changed_docs.values()),
         headers=frozenset(headers),
-        specs=tuple(sorted(p for p in lines if p.startswith(config["specs"].rstrip("/") + "/"))),
+        specs=tuple(sorted(p for p in lines if p.startswith(rules["specs"].rstrip("/") + "/"))),
     )
 
 
-def mode_gate(root: Path, config: dict, docs: list[Doc], edges: set[tuple[str, str]], ref: str) -> bool:
-    """Print the mode gate's report and return whether it fails. The mode comes from the pull
-    request body in CI, and from the branch's declared mode locally."""
+def mode_gate(root: Path, head: Tree, ref: str) -> bool:
+    """Print the mode gate's report and return whether it fails.
+
+    The mode comes from the pull request body in CI, and from the branch's declared mode locally.
+    The fix rules and the approvals come from the base too, so a change cannot loosen the rules
+    it is checked against.
+    """
     event = os.environ.get("GITHUB_EVENT_PATH")
     if event:
         pull = json.loads(Path(event).read_text()).get("pull_request") or {}
@@ -517,17 +546,28 @@ def mode_gate(root: Path, config: dict, docs: list[Doc], edges: set[tuple[str, s
         mode, found = (modes.parse(value), []) if value else (None, [f"no `Mode:` line in {source}"])
     except ValueError as error:
         mode, found = None, [str(error)]
-    diff = pr_diff(root, config, docs, edges, merge_base(root, ref), mode is not None and mode.kind in ("fix", "change"))
-    if mode is not None:
-        issue = None
-        if mode.kind == "change":
-            try:
-                issue = modes.fetch_issue(root, mode.issue)
-            except (OSError, ValueError) as error:
-                print(f"cairn: cannot read issue #{mode.issue}: {error}")
-        names = {doc.system: doc.name for doc in docs}
-        found = modes.violations(mode, diff, config["fix"]["max_lines"], issue, names)
-    approved = {doc.system for doc in docs if doc.status == "approved"}
+    commit = merge_base(root, ref)
+    try:
+        base, unread = tree_at(root, commit), ""
+    except (CairnError, OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:
+        base = None
+        unread = f"the base {commit[:12]} cannot be read, so its graph, approvals and fix rules are unknown: {error}"
+        print(f"cairn: {unread}")
+    rules = {**head.config, **{key: base.config[key] for key in ("fix", "specs") if base and key in base.config}}
+    new_edges = added_edges(head.edges, base.edges) if base else set()
+    diff = pr_diff(root, commit, head.docs, rules, new_edges)
+    issue = None
+    if mode is not None and mode.kind == "change":
+        try:
+            issue = modes.fetch_issue(root, mode.issue)
+        except (OSError, ValueError) as error:
+            found = [f"issue #{mode.issue} cannot be read: {error}"]
+    if mode is not None and not found:
+        names = {doc.system: doc.name for doc in head.docs}
+        found = modes.violations(mode, diff, rules["fix"]["max_lines"], issue, names)
+    if mode is not None and mode.kind in ("fix", "change") and unread:
+        found.append(unread)
+    approved = {doc.system for doc in head.docs + (base.docs if base else []) if doc.status == "approved"}
     failing = modes.fails(mode, found, diff.touched, approved)
     print(f"\nmode: {mode.line() if mode else 'none'}, from {source}")
     print(f"  touches {', '.join(sorted(diff.touched)) or 'no system'}; {diff.lines:,} changed line(s) outside tests")
@@ -607,7 +647,7 @@ def main(argv: list[str] | None = None) -> int:
         docs, files, units, edges, lines = gather(ROOT, config)
         result = analyse(docs, files, units, edges, lines, config)
         if args.pr:
-            return 1 if mode_gate(ROOT, config, docs, result.edges, args.base) else 0
+            return 1 if mode_gate(ROOT, Tree(docs, config, result.edges), args.base) else 0
         base = base_baseline(shown_at(ROOT, merge_base(ROOT, args.base))) if args.base else None
     except (CairnError, OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:
         print(f"cairn: {error}", file=sys.stderr)

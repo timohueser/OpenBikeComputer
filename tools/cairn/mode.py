@@ -11,7 +11,6 @@ import json
 import os
 import re
 import subprocess
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +23,7 @@ FORMS = (
     re.compile(r"(?P<kind>override): (?P<reason>\S.*)"),
 )
 COMMENT = re.compile(r"<!--.*?-->", re.S)
+FENCE = re.compile(r"^```.*?^```", re.S | re.M)
 ASK = (
     "cairn: the branch `{branch}` has no declared mode. Ask the user which mode applies: "
     "fix, change N (N is an approved issue), prototype, or override with a reason. Then declare "
@@ -117,8 +117,9 @@ def approval_hash(body: str) -> str:
 
 
 def listed(body: str, names: dict[str, str]) -> set[str]:
-    """The systems on the `**Systems:**` line, by slug or by name, with notes in brackets removed."""
-    match = re.search(r"^\*\*Systems:\*\*(.*)$", body, re.M)
+    """The systems on the `**Systems:**` line outside code blocks, by slug or by name, with notes in
+    brackets removed."""
+    match = re.search(r"^\*\*Systems:\*\*(.*)$", FENCE.sub("", body), re.M)
     items = re.sub(r"\([^)]*\)", "", match.group(1)).split(",") if match else []
     wanted = {item.strip().lower() for item in items}
     return {slug for slug, name in names.items() if slug.lower() in wanted or name.lower() in wanted}
@@ -126,8 +127,9 @@ def listed(body: str, names: dict[str, str]) -> set[str]:
 
 def issue_problems(number: int, body: str) -> list[str]:
     problems = []
-    if not re.search(r"^Status: approved\b", body, re.M):
-        problems.append(f"issue #{number} has no `Status: approved` line")
+    status = next((line for line in body.splitlines() if line.startswith("Status:")), "")
+    if not re.match(r"Status: approved\b", status):
+        problems.append(f"the first `Status:` line of issue #{number} is not `Status: approved`")
     approved = re.search(r"^Approved: ([0-9a-f]{12})\s*$", body, re.M)
     if not approved:
         problems.append(f"issue #{number} has no `Approved: <hash>` line")
@@ -137,22 +139,21 @@ def issue_problems(number: int, body: str) -> list[str]:
     return problems
 
 
+def issue_body(number: int, data: dict) -> str:
+    """The body of an issue from the API. The issues API also gives pull requests, and a pull
+    request cannot approve a change, so it is refused."""
+    if "pull_request" in data:
+        raise ValueError(f"#{number} is a pull request, not an issue")
+    return data.get("body") or ""
+
+
 def fetch_issue(root: Path, number: int) -> str:
-    """The issue body, through the REST API with `GITHUB_TOKEN` in CI, or through `gh api`."""
-    token, repository = os.environ.get("GITHUB_TOKEN"), os.environ.get("GITHUB_REPOSITORY")
-    if token and repository:
-        api = os.environ.get("GITHUB_API_URL", "https://api.github.com")
-        request = urllib.request.Request(
-            f"{api}/repos/{repository}/issues/{number}",
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
-        )
-        with urllib.request.urlopen(request, timeout=20) as response:
-            return json.load(response).get("body") or ""
+    """The issue body through `gh api`, which reads `GH_TOKEN` and `GH_REPO` in CI."""
     done = subprocess.run(["gh", "api", f"repos/{{owner}}/{{repo}}/issues/{number}"],
                           cwd=root, capture_output=True, text=True)
     if done.returncode:
         raise OSError(done.stderr.strip() or "gh api failed")
-    return json.loads(done.stdout).get("body") or ""
+    return issue_body(number, json.loads(done.stdout))
 
 
 # ── the rules ────────────────────────────────────────────────────────────────
@@ -213,11 +214,11 @@ def fails(mode: Mode | None, found: list[str], touched: frozenset[str], approved
 def hook_message(event: dict, root: Path, sources: dict) -> str | None:
     """The reason to block an edit, or None. The hook blocks an edit of a source file inside the
     repository while its branch has no declared mode. A detached HEAD has no branch, so it passes."""
-    tool_input = event.get("tool_input") or {}
-    target = tool_input.get("file_path") or tool_input.get("notebook_path")
+    tool_input, cwd = event.get("tool_input"), event.get("cwd")
+    target = (tool_input.get("file_path") or tool_input.get("notebook_path")) if isinstance(tool_input, dict) else None
     if not isinstance(target, str) or not target:
         return None
-    path = (Path(event.get("cwd") or os.getcwd()) / target).resolve()
+    path = (Path(cwd if isinstance(cwd, str) and cwd else os.getcwd()) / target).resolve()
     root = root.resolve()
     if not path.is_relative_to(root):
         return None

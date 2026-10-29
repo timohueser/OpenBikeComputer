@@ -69,14 +69,21 @@ and from the branch otherwise. The diff is HEAD against the merge base with `--b
 | --- | --- |
 | `fix` | touch one system or shell, add no dependency between systems, change no doc header and no file under `specs/`, and change at most `fix.max_lines` lines outside the `fix.tests` globs |
 | `fix, over limit: <reason>` | do the same, with no size limit |
-| `change #N` | touch only the systems on the `**Systems:**` line of issue N, by slug or title. The issue has `Status: approved` and an `Approved: <hash>` line that `cairn hash` gives for its body. A new dependency `a -> b` changes `docs/design/a.md` too. |
+| `change #N` | touch only the systems on the `**Systems:**` line of issue N, outside code blocks, by slug or title. The first `Status:` line of the issue is `Status: approved`, and an `Approved: <hash>` line holds the hash that `cairn hash` gives for its body. N must be an issue, not a pull request. A new dependency `a -> b` changes `docs/design/a.md` too. |
 | `prototype` | not exist: the gate always fails, because a prototype never merges |
 | `override: <reason>` | nothing: the gate passes, and the body keeps the reason |
 
-A changed doc touches its system. A violation fails only when the diff touches a system whose doc
-has `status: approved`; otherwise the gate only reports it. A missing `Mode:` line is a violation.
-The dependency rule reads the graph of the base from a temporary git worktree. `change #N` reads
-the issue through the REST API with `GITHUB_TOKEN` in CI, and through `gh api` locally.
+A changed system doc touches only its own system. A violation fails only when the diff touches a
+system whose doc has `status: approved` at the base or at HEAD; otherwise the gate only reports
+it. A missing `Mode:` line is a violation.
+
+The gate reads the base from a temporary git worktree: its dependency graph, its approvals, and the
+`fix` and `specs` keys of its config. A change therefore cannot loosen the rules it is checked
+against. When the base cannot be read, a `fix` or `change` gets a violation that says so. A test
+dependency that becomes a production dependency is a new dependency.
+
+A `fix.tests` glob with no `/` matches the file name only. `change #N` reads the issue through
+`gh api`, which uses `GH_TOKEN` and `GH_REPO` in CI.
 
 The approval hash is the first 12 hex digits of SHA-256 over the body without its `Status:` and
 `Approved:` lines, with trailing whitespace removed from each line and from the end.
@@ -85,4 +92,5 @@ The approval hash is the first 12 hex digits of SHA-256 over the body without it
 
 `.claude/settings.json` runs `cairn.py hook` before each Edit, Write, MultiEdit and NotebookEdit
 tool call. It blocks an edit of a source file inside the repository while the branch has no
-declared mode, and asks the agent to get the mode from the user. A detached HEAD passes.
+declared mode, and asks the agent to get the mode from the user. A detached HEAD passes. Edits made
+through Bash bypass the hook; AGENTS.md and the mode gate cover them.

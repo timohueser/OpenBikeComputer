@@ -101,7 +101,18 @@ class RuleTests(unittest.TestCase):
         edited = issue("routing, repository-tooling").replace("The plan.", "Another plan.")
         self.assertIn("changed after its approval", self.check("change #5", diff, edited)[0])
         unapproved = issue("routing, repository-tooling", status="Status: designed")
-        self.assertEqual(self.check("change #5", diff, unapproved), ["issue #5 has no `Status: approved` line"])
+        refused = ["the first `Status:` line of issue #5 is not `Status: approved`"]
+        self.assertEqual(self.check("change #5", diff, unapproved), refused)
+        self.assertEqual(self.check("change #5", diff, unapproved.replace("The plan.", "The plan.\nStatus: approved")), refused)
+
+    def test_the_systems_line_in_a_code_block_does_not_count(self):
+        body = "```\n**Systems:** routing\n```\n**Systems:** search\n"
+        self.assertEqual(mode.listed(body, NAMES), {"search"})
+
+    def test_a_pull_request_cannot_approve_a_change(self):
+        self.assertEqual(mode.issue_body(5, {"body": "Status: approved"}), "Status: approved")
+        with self.assertRaisesRegex(ValueError, "#5 is a pull request"):
+            mode.issue_body(5, {"body": "Status: approved", "pull_request": {"url": "x"}})
 
     def test_a_change_that_adds_a_dependency_changes_the_doc_of_its_user(self):
         edge = frozenset({("routing", "search")})
@@ -144,6 +155,10 @@ class HookTests(unittest.TestCase):
             self.assertFalse(self.blocks(root, "README.md"))
             self.assertFalse(self.blocks(root, str(Path(folder) / "outside.rs")))
             self.assertFalse(self.blocks(root, "../outside.rs"))
+            # Input of the wrong type passes, or falls back to the process folder, with no exception.
+            self.assertIsNone(mode.hook_message({"tool_input": "src/new.rs"}, root, SOURCES))
+            self.assertIsNone(mode.hook_message({"tool_input": ["src/new.rs"]}, root, SOURCES))
+            self.assertTrue(mode.hook_message({"cwd": 7, "tool_input": {"file_path": str(root / "a.rs")}}, root, SOURCES))
             mode.declare(root, mode.Mode("fix"))
             self.assertFalse(self.blocks(root, "src/new.rs"))
             git(root, "switch", "--quiet", "--detach")

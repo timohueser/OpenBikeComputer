@@ -16,7 +16,6 @@ concurrency:
 permissions:
   contents: read
   issues: read
-  pull-requests: read
 
 jobs:
   mode:
@@ -24,8 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The gate reads the dependency graph of the base from a git worktree.
-          fetch-depth: 0
+          # HEAD is the merge commit and HEAD^1 is the base. The gate reads the base from a worktree.
+          fetch-depth: 2
           persist-credentials: false
       # The Rust adapter reads `cargo metadata`; the gate builds nothing.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -33,6 +32,6 @@ jobs:
           cache: false
       - name: The diff against the mode
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python3 tools/cairn/cairn.py check --pr --base "$BASE"
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 tools/cairn/cairn.py check --pr --base HEAD^1
