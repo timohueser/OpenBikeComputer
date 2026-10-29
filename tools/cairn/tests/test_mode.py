@@ -171,6 +171,7 @@ class SizeTests(unittest.TestCase):
                          ["issue #5 has no `**Size:** S|M|L` line"])
         self.assertIsNone(mode.issue_size("**Size:**\nS\n"))
         self.assertIsNone(mode.issue_size("<!--\n**Size:** S\n-->\n"))
+        self.assertIsNone(mode.issue_size("<!--\n**Size:** S\n"))
 
 
 class EpicTests(unittest.TestCase):
@@ -188,7 +189,7 @@ class EpicTests(unittest.TestCase):
 
     def test_a_sub_issue_is_on_the_epic_list_and_one_pull_request(self):
         sub = "**Size:** S\n**Systems:** routing\n"
-        for plan in ("The plan.", "- #80", "```\n- #8\n```", "<!-- #8 -->"):
+        for plan in ("The plan.", "- #80", "Depends on #8", "```\n- #8\n```", "<!-- - #8 -->", "<!--\n- #8"):
             self.assertEqual(self.check(sub, issue("routing", plan=plan), number=8),
                              ["issue #8 is not on the list of its epic #5"], plan)
         large = "**Size:** L\n**Systems:** routing\n"

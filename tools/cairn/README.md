@@ -110,9 +110,9 @@ change, so the people who size the issue make it L.
 `change #N` asks GitHub for the parent of issue N through the sub-issue relation
 (`GET /repos/{owner}/{repo}/issues/N/parent`). When N has a parent, the parent is the epic: the
 epic, not issue N, must be approved and unchanged, and each system on the Systems line of N must be
-on the Systems line of the epic. The epic must be an issue, not a pull request. The epic body names
-`#N` outside code blocks and HTML comments, so its approval also approves its list of sub-issues.
-The body of N is not approved, so its `**Size:**` line is S or M: a sub-issue is one pull request.
+on the Systems line of the epic. The epic must be an issue, not a pull request. The epic lists `#N`
+as an item (`- #N`, `- [ ] #N`) outside code blocks and HTML comments, also unclosed ones, so its
+approval covers the list. A sub-issue is one pull request, so its `**Size:**` line is S or M.
 
 The approval hash is the first 12 hex digits of SHA-256 over the body without its `Status:` and
 `Approved:` lines, with trailing whitespace removed from each line and from the end.

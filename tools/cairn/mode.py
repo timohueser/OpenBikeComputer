@@ -28,7 +28,8 @@ FORMS = (
     re.compile(r"(?P<kind>prototype)"),
     re.compile(r"(?P<kind>override): (?P<reason>\S.*)"),
 )
-COMMENT = re.compile(r"<!--.*?-->", re.S)
+#: GitHub hides an unclosed comment up to the end of the body.
+COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
 FENCE = re.compile(r"^```.*?^```", re.S | re.M)
 ASK = (
     "cairn: the branch `{branch}` has no declared mode. Ask the user which mode applies: "
@@ -260,8 +261,8 @@ def violations(mode: Mode, diff: Diff, rules: dict, issue: str | None = None, na
         else:
             number, body = epic
             out += issue_problems(number, body)
-            # A token match, so that #8 is not found in #80.
-            if not re.search(rf"(?<!\w)#{mode.issue}\b", visible(body)):
+            # A list item only, so that prose such as "Depends on #8" does not count, and #80 is not #8.
+            if not re.search(rf"^[ \t]*[-*+][ \t]+(?:\[[ xX]\][ \t]+)?#{mode.issue}\b", visible(body), re.M):
                 out.append(f"issue #{mode.issue} is not on the list of its epic #{number}")
             if issue_size(issue) == "L":
                 out.append(f"issue #{mode.issue} is sized L, but a sub-issue is one pull request: size S or M")
