@@ -445,7 +445,7 @@ class Redaction(unittest.TestCase):
         self.addCleanup(setattr, ingest.sources.protocols, "http_get", real)
         escaped = urllib.parse.quote(self.SECRET, safe="")
         quoted = f"<ExceptionReport>bad token in api-key={escaped}</ExceptionReport>"
-        ingest.sources.protocols.http_get = lambda url, what=None: quoted.encode()
+        ingest.sources.protocols.http_get = lambda url, **kw: quoted.encode()
         with self.assertRaises(ingest.Refuse) as refusal:
             self.source.request(self.box)
         message = str(refusal.exception)

@@ -1,9 +1,9 @@
 """What every adapter is: the manifest facts, and a way to obtain rasters for a box.
 
 Every request in the registry goes through `with_retry`, so one rule covers all of them: a
-dropped connection, a 408, a 429, a 5xx and an OWS code of `SERVER_FAULTS` are retried; every
-other 4xx is the server's final answer and is refused at once, with its body, because that body is the only thing that
-says what happened.
+dropped connection, a 408, a 429, a 5xx, an OWS code of `SERVER_FAULTS` and a TIFF that does
+not decode are retried; every other 4xx is the server's final answer and is refused at once,
+with its body, because that body is the only thing that says what happened.
 
 Two rules hold a credential. A refusal quotes what came off the wire, and a URL with a
 token in it is a URL with a secret in it, so every message goes through `redact` first and
@@ -15,6 +15,7 @@ and a redirect that leaves the host loses the `Authorization` header.
 import base64
 import hashlib
 import http.client
+import io
 import os
 import shutil
 import sys
@@ -25,7 +26,9 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+import rasterio
 from rasterio.crs import CRS
+from rasterio.errors import RasterioError
 
 from ..lattice import Refuse
 
@@ -192,17 +195,45 @@ def with_retry(attempt, what: str, absent=()):
     raise AssertionError("unreachable")
 
 
-def http_get(url: str, headers=None, what: str | None = None, data: bytes | None = None) -> bytes:
+def decode_tiff(raster: bytes | Path) -> None:
+    """Read every block of a TIFF, given as its bytes or its path; anything else is left alone.
+
+    A server can answer a 200 with a whole body that opens but holds a truncated tile, and only
+    the read of that tile fails. The failure is an `OSError`, so `with_retry` retries it like any
+    other fault of the server.
+    """
+
+    if isinstance(raster, bytes):
+        head, raster = raster[:4], io.BytesIO(raster)
+    else:
+        with raster.open("rb") as handle:
+            head = handle.read(4)
+    if head not in TIFF_MAGIC:
+        return
+    try:
+        with rasterio.open(raster) as src:
+            for _, window in src.block_windows():
+                src.read(window=window)
+    except RasterioError as error:
+        # The error itself says only "Read failed"; the GDAL error it comes from names the block.
+        raise OSError(f"the TIFF does not decode: {error.__cause__ or error}") from error
+
+
+def http_get(url: str, headers=None, what: str | None = None, data: bytes | None = None,
+             check=None) -> bytes:
     """One response body, whole; a POST of `data` when it is given.
 
     `what` is what a refusal calls this request. A keyed service reads its token out of
-    the URL, so the URL is not it.
+    the URL, so the URL is not it. `check` runs on the body inside the retry.
     """
 
     def once():
         request = urllib.request.Request(url, data=data, headers=headers or {})
         with OPENER.open(request, timeout=HTTP_TIMEOUT) as response:
-            return response.read()
+            body = response.read()
+        if check:
+            check(body)
+        return body
 
     return with_retry(once, what or url)
 
@@ -238,6 +269,7 @@ def http_download(url: str, path: Path, optional: bool = False, headers=None,
                 raise OSError(f"{path.name}: {done} of the {total} bytes the server announced")
         if total:
             print()
+        decode_tiff(part)
         os.replace(part, path)
         return path
 

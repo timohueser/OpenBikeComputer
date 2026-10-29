@@ -1129,13 +1129,61 @@ class Registry(unittest.TestCase):
         self.assertEqual(ingest.sources.base.with_retry(attempt, "short"), b"ok")
         self.assertEqual(len(attempts), 2)
 
+    def serve_truncated_then_valid(self):
+        """A server that answers a tiled TIFF with a truncated tile, then the valid TIFF; no retry
+        waits. It returns the URL, the valid TIFF and the answers not yet sent."""
+
+        with rasterio.MemoryFile() as memory:
+            with memory.open(driver="GTiff", width=64, height=64, count=1, dtype="float32",
+                             tiled=True, blockxsize=32, blockysize=32, crs="EPSG:4326",
+                             transform=Affine(0.001, 0, 0, 0, -0.001, 51)) as dst:
+                dst.write(np.ones((1, 64, 64), dtype="float32"))
+            valid = memory.read()
+        answers = [valid[:-1000], valid]
+
+        class Truncated(SimpleHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                body = answers.pop(0)
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = serve(self, Truncated)
+        real = ingest.sources.base.RETRY_DELAYS
+        ingest.sources.base.RETRY_DELAYS = (0,)
+        self.addCleanup(setattr, ingest.sources.base, "RETRY_DELAYS", real)
+        return f"http://127.0.0.1:{server.server_address[1]}/tile.tif", valid, answers
+
+    def test_a_tiff_with_a_truncated_tile_is_retried_and_never_returned(self):
+        """A service can answer a 200 with a whole body whose header opens and whose tile is cut
+        short; only the read of that block fails, so the fetch has to read every block."""
+
+        url, valid, answers = self.serve_truncated_then_valid()
+        body = ingest.sources.protocols.raster_bytes(url, "cut")
+        self.assertEqual(body, valid)
+        self.assertEqual(answers, [])
+
+    def test_a_downloaded_tiff_with_a_truncated_tile_is_retried_and_never_kept(self):
+        url, _, answers = self.serve_truncated_then_valid()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "tile.tif"
+            self.assertEqual(ingest.sources.base.http_download(url, path), path)
+            with rasterio.open(path) as src:
+                self.assertTrue((src.read(1) == 1).all())
+            self.assertEqual(list(Path(directory).iterdir()), [path])
+        self.assertEqual(answers, [])
+
     def test_a_service_that_answers_xml_instead_of_a_raster_is_refused_by_name(self):
         """Out of coverage, renamed, or down: every one of them arrives as a 200 and XML."""
 
         real = ingest.sources.protocols.http_get
         self.addCleanup(lambda: setattr(ingest.sources.protocols, "http_get", real))
         ingest.sources.protocols.http_get = (
-            lambda url, what=None: b"<ExceptionReport>no such coverage</ExceptionReport>")
+            lambda url, **kw: b"<ExceptionReport>no such coverage</ExceptionReport>")
         with self.assertRaises(ingest.Refuse) as refusal:
             ingest.SOURCES["de-nw"].request(BOX)
         self.assertIn("no such coverage", str(refusal.exception))
