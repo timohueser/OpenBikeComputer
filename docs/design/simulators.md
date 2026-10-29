@@ -1,7 +1,6 @@
 ---
 system: simulators
 kind: shell
-area: Shells
 purpose: "Runs the device core away from the board, for development and demonstration."
 owns:
   - sim/desktop/**
@@ -28,4 +27,4 @@ status: draft
 
 # Simulators
 
-Phase 2 of the cairn plan writes the body of this document.
+The body of this document is not written yet.

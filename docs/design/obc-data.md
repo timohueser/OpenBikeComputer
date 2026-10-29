@@ -1,7 +1,6 @@
 ---
 system: obc-data
 kind: shell
-area: Shells
 purpose: "Runs the `obc data` command and its operator page."
 owns:
   - host/obc-data-steps/**
@@ -22,4 +21,4 @@ status: draft
 
 # obc data
 
-Phase 2 of the cairn plan writes the body of this document.
+The body of this document is not written yet.

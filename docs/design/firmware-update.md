@@ -18,4 +18,4 @@ status: draft
 
 # Firmware update
 
-Phase 2 of the cairn plan writes the body of this document.
+The body of this document is not written yet.

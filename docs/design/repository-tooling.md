@@ -5,7 +5,11 @@ area: Tooling
 purpose: "Keeps the development workflow running: the `obc` command, test selection, CI gates, fixtures."
 owns:
   - tools/obc
-  - tools/*.sh
+  - tools/build-ios-host.sh
+  - tools/build-planner-ios.sh
+  - tools/install-geos.sh
+  - tools/install-riscv.sh
+  - tools/obc-dev.sh
   - tools/ready.py
   - tools/test_plan.py
   - tools/ci_*.py
@@ -24,7 +28,9 @@ owns:
   - tools/vps/**
   - tools/tests/**
   - tools/testing/**
-  - firmware/tools/*
+  - firmware/tools/check_dependencies.py
+  - firmware/tools/resource_guard.py
+  - firmware/tools/strict_align_probe.rs
   - firmware/tools/tests/__init__.py
   - firmware/tools/tests/test_resource_guard.py
   - firmware/tools/tests/test_dependencies.py
@@ -46,4 +52,4 @@ status: draft
 
 # Repository tooling
 
-Phase 2 of the cairn plan writes the body of this document.
+The body of this document is not written yet.

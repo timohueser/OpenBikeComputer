@@ -1,10 +1,10 @@
 ---
 system: device-map-builder
 kind: shell
-area: Shells
 purpose: "Runs the map builder that a rider opens in the browser or on the desktop."
 owns:
-  - builder/web/*
+  - builder/web/vite.config.ts
+  - builder/web/svelte.config.js
   - builder/web/src/main.ts
   - builder/web/src/App.svelte
   - builder/web/src/lib/**
@@ -15,8 +15,8 @@ owns:
   - builder/web/scripts/**
   - builder/web/vite/**
   - builder/desktop/**
-  - builder/*.py
-  - builder/*.sh
+  - builder/__init__.py
+  - builder/build-wasm-bridges.sh
 depends_on:
   - device-link
 test_depends_on: []
@@ -25,4 +25,4 @@ status: draft
 
 # Device map builder
 
-Phase 2 of the cairn plan writes the body of this document.
+The body of this document is not written yet.

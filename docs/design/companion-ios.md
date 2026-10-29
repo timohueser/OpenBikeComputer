@@ -1,7 +1,6 @@
 ---
 system: companion-ios
 kind: shell
-area: Shells
 purpose: "Runs the companion app on the rider's phone."
 owns:
   - companion-ios/**
@@ -12,4 +11,4 @@ status: draft
 
 # Companion iOS
 
-Phase 2 of the cairn plan writes the body of this document.
+The body of this document is not written yet.
