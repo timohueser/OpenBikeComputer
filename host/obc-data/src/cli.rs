@@ -6,6 +6,7 @@ mod archive_cli;
 mod copy_cli;
 mod deploy_cli;
 mod freshness;
+mod holding;
 mod listing;
 mod open_cli;
 mod overview;
@@ -79,11 +80,23 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// Every source with licence, and the policy, versions and state for each target.
+    /// Every source with its licence, how this machine holds it, and its state for each target;
+    /// with `--layer` or a region, the sources of each layer or of a bake of the region.
     Sources {
         /// Check upstream now, not from a check of the last hour.
         #[arg(long)]
         check_now: bool,
+        /// For each layer, or LAYER only: the sources that it reads, and how this machine holds them.
+        #[arg(long, value_name = "LAYER", num_args = 0..=1, default_missing_value = "")]
+        #[arg(conflicts_with_all = ["check_now", "region", "bbox"])]
+        layer: Option<String>,
+        /// The sources that a bake of this region reads, and what it still downloads or prepares: a
+        /// region of `data/regions/`, or Geofabrik paths joined by `,`.
+        #[arg(long, value_name = "ID|PATH", conflicts_with_all = ["check_now", "bbox"])]
+        region: Option<String>,
+        /// The sources that a bake of this box needs: west, south, east, north.
+        #[arg(long = "box", value_name = "W,S,E,N", conflicts_with = "check_now")]
+        bbox: Option<String>,
     },
     /// Act on one source of `data/sources.toml`.
     Source {
@@ -182,7 +195,15 @@ fn run(cli: Cli, products: &[&dyn Product], prepared: &[&dyn Prepared], ui: Opti
         Command::Unlock { target, from, source, yes } => {
             unlock_cli::command(&root()?, (target.as_deref(), source.as_deref()), &from, yes, json)
         }
-        Command::Sources { check_now } => print_sources(&root()?, check_now, json),
+        Command::Sources { check_now, layer, region, bbox } => {
+            let root = root()?;
+            let view = match (layer, region, bbox) {
+                (Some(layer), _, _) => View::Layer(Some(layer).filter(|layer| !layer.is_empty())),
+                (_, None, None) => View::All { check_now },
+                (_, region, bbox) => View::Region(region, bbox),
+            };
+            sources_command(&root, (products, prepared), view, json)
+        }
         Command::Source { command } => source_cli::run(&root()?, prepared, command, json),
         Command::Fetch { target, params } => {
             let registry = registry(&root()?)?;
@@ -438,6 +459,8 @@ struct SourceRow {
     /// For a prepared source: its home in the archive, its complete versions there, and the run
     /// that holds its lock. `null` for another source.
     prepared: Option<PreparedIn>,
+    /// How this machine holds the copy that a bake reads.
+    held: holding::Held,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -518,11 +541,86 @@ fn stored_requests(store: &Store, source: &str, snapshots: &[Snapshot]) -> Resul
     Ok(newest.into_values().collect())
 }
 
-fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> {
+/// The views of `obc data sources`.
+enum View {
+    All {
+        check_now: bool,
+    },
+    /// `--layer`, with LAYER or for each.
+    Layer(Option<String>),
+    /// `--region` or `--box`.
+    Region(Option<String>, Option<String>),
+}
+
+/// What the store holds of the source `id`.
+fn in_store(store: &Store, id: &str) -> Result<holding::InStore, Error> {
+    let mut snapshots = store.snapshots(id)?;
+    let requests = stored_requests(store, id, &snapshots)?;
+    let retrieved = snapshots.iter().flat_map(|s| s.files.iter().map(|f| f.retrieved.clone())).max();
+    snapshots.sort_by_cached_key(|s| std::cmp::Reverse(s.files.iter().map(|f| f.retrieved.clone()).max()));
+    let snapshots = snapshots
+        .into_iter()
+        .map(|s| Stored { bytes: s.files.iter().map(|f| f.size).sum(), version: s.version })
+        .collect();
+    Ok(holding::InStore { snapshots, requests, retrieved })
+}
+
+fn sources_command(
+    root: &Path,
+    (products, prepared): (&[&dyn Product], &[&dyn Prepared]),
+    view: View,
+    json: bool,
+) -> Result<(), Error> {
     let (store, http) = (Store::open()?, Http::new());
-    let mut sorted = registry(root)?.sources;
+    let registry = registry(root)?;
+    let mut stored = BTreeMap::new();
+    for source in &registry.sources {
+        stored.insert(source.id.clone(), in_store(&store, &source.id)?);
+    }
+    // Only a region needs the index; the other views name areas by their paths without it.
+    let index = match view {
+        View::Region(..) => cached_index(&store)?,
+        _ => cached_index(&store).ok().flatten(),
+    };
+    let index = index.map(|(_, index)| index);
+    let mut holdings = holding::Holdings::read((root, http.roots()), &registry, prepared, stored, index)?;
+    match view {
+        View::Layer(layer) => {
+            let layers = holding::layers(&holdings, &registry.sources, layer.as_deref())?;
+            if json {
+                return print_json(&layers);
+            }
+            holding::print_layers(&layers);
+            Ok(())
+        }
+        View::Region(region, bbox) => {
+            let region = holding::region(
+                (&holdings, &store, http.roots()),
+                (products, prepared),
+                &registry.sources,
+                (root, region.as_deref(), bbox.as_deref()),
+            )?;
+            if json {
+                return print_json(&region);
+            }
+            holding::print_region(&region);
+            Ok(())
+        }
+        View::All { check_now } => print_sources(root, (&store, &http), &mut holdings, registry, check_now, json),
+    }
+}
+
+fn print_sources(
+    root: &Path,
+    (store, http): (&Store, &Http),
+    holdings: &mut holding::Holdings,
+    registry: Registry,
+    check_now: bool,
+    json: bool,
+) -> Result<(), Error> {
+    let mut sorted = registry.sources;
     sorted.sort_by_key(|source| source.kind);
-    let served: Vec<(String, Release)> = releases(root, &store)?
+    let served: Vec<(String, Release)> = releases(root, store)?
         .into_iter()
         .filter_map(|(name, releases)| match releases {
             Ok(mut releases) if !releases.is_empty() => Some((name, releases.swap_remove(0))),
@@ -533,7 +631,7 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             }
         })
         .collect();
-    let all = crate::target::load(root, &store).map_err(|e| Code::InvalidData.error(e))?;
+    let all = crate::target::load(root, store).map_err(|e| Code::InvalidData.error(e))?;
     let mut rows = Vec::new();
     for source in sorted {
         let mut targets = BTreeMap::new();
@@ -545,31 +643,26 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             settings.policies(&mut policy).map_err(|e| Code::InvalidData.error(e))?;
             let versions = release.map(Release::versions).unwrap_or_default();
             let keys = versions.keys().filter(|(id, _)| *id == source.id).cloned().collect();
-            let requests = freshness::requests(&store, &http, &policy[0], &keys, &versions, check_now);
+            let requests = freshness::requests(store, http, &policy[0], &keys, &versions, check_now);
             let state = requests.iter().map(|request| request.state).min().unwrap_or(State::Unused);
             targets.insert(name.clone(), SourceTarget { refresh: policy[0].refresh, state, requests });
         }
-        let mut snapshots = store.snapshots(&source.id)?;
-        let requests = stored_requests(&store, &source.id, &snapshots)?;
-        snapshots.sort_by_cached_key(|s| std::cmp::Reverse(s.files.iter().map(|f| f.retrieved.clone()).max()));
-        let snapshots = snapshots
-            .into_iter()
-            .map(|s| Stored { bytes: s.files.iter().map(|f| f.size).sum(), version: s.version })
-            .collect();
+        let held = holdings.held(&source);
+        let holding::InStore { snapshots, requests, .. } = holdings.stored.remove(&source.id).unwrap_or_default();
         let credential_missing = source.credential.as_ref().is_some_and(|credential| !credential.present());
         let prepared = match source.fetch.kind {
-            crate::sources::FetchKind::Prepared => Some(prepared_in(&store, http.roots(), &source.id)),
+            crate::sources::FetchKind::Prepared => Some(prepared_in(store, http.roots(), &source.id)),
             _ => None,
         };
         let refreshable = source_cli::moves(&source);
-        rows.push(SourceRow { source, targets, snapshots, requests, credential_missing, refreshable, prepared });
+        rows.push(SourceRow { source, targets, snapshots, requests, credential_missing, refreshable, prepared, held });
     }
     if json {
         return print_json(&Sources { sources: rows });
     }
     let names: Vec<&str> = all.keys().map(String::as_str).collect();
-    let mut table =
-        vec![[vec!["SOURCE".to_string(), "LICENCE".into()], names.iter().map(|n| n.to_uppercase()).collect()].concat()];
+    let head = cells(["SOURCE", "LICENCE", "RULE", "COVERS", "STATUS", "WHERE", "SIZE", "DATE"]);
+    let mut table = vec![[head, names.iter().map(|n| n.to_uppercase()).collect()].concat()];
     let mut tools = false;
     for row in &rows {
         let s = &row.source;
@@ -579,20 +672,11 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             table.push(vec!["tools".into()]);
         }
         let none = if s.kind == Kind::Tool { "—" } else { "not recorded" };
-        let mut cells = vec![s.id.clone(), s.licence.clone().unwrap_or_else(|| none.into())];
-        for name in &names {
-            let target = &row.targets[*name];
-            let versions: Vec<String> =
-                target.requests.iter().filter_map(|r| r.serving.as_deref()).map(crate::prepared::show).collect();
-            let versions = if versions.is_empty() { "—".to_string() } else { versions.join(", ") };
-            cells.push(format!("{versions} · {} · {}", target.refresh, target.state));
-        }
-        table.push(cells);
+        let licence = s.licence.clone().unwrap_or_else(|| none.into());
+        let states = names.iter().map(|name| row.targets[*name].state.to_string());
+        table.push([vec![s.id.clone(), licence], holding::held_cells(&row.held), states.collect()].concat());
     }
     print_table(&table);
-    if rows.iter().any(|row| row.source.fetch.kind == crate::sources::FetchKind::Prepared) {
-        println!("A prepared version shows its date and the start of its manifest SHA-256: the full pin is in --json.");
-    }
     Ok(())
 }
 

@@ -54,6 +54,10 @@ impl Prepared for TerrainReference {
         2
     }
 
+    fn reads(&self, source: &Source) -> bool {
+        source.id.starts_with("dtm-")
+    }
+
     /// The models that meet the region, and the polygons of their areas. The two pools of the tiles
     /// of each model in the box of the region, and the two `index.json`, are the files at most.
     fn plan(

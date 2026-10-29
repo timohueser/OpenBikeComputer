@@ -442,7 +442,11 @@ pub(crate) fn params(source: &Source) -> Vec<&str> {
 
 /// The URLs of `template` with every `{name}` filled: `{version}` from the version, `{yymmdd}`
 /// from a date version, every other name from `params`.
-fn expand(template: &str, version: Option<&str>, params: &[(String, String)]) -> Result<Vec<String>, String> {
+pub(crate) fn expand(
+    template: &str,
+    version: Option<&str>,
+    params: &[(String, String)],
+) -> Result<Vec<String>, String> {
     let names = placeholders(template);
     if let Some((name, _)) = params.iter().find(|(name, _)| fixed(name) || !names.contains(&name.as_str())) {
         return Err(format!("`{name}=` names no placeholder of {template}"));

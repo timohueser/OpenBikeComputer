@@ -205,6 +205,82 @@ version. A failed probe keeps the last success. A capture result has no probe ti
 policy is not evidence of a network check. The source row gives missing credentials, but a
 credential blocks only a new fetch.
 
+### Source overview
+
+`obc data sources` also tells how this machine holds the copy of each source that a bake reads.
+It reads only the [status of the archive](#status) and its manifests, the versions and the
+manifests in the homes of the [prepared sources](#prepared-sources), the records of the store and
+the cached Geofabrik index. It fetches nothing. The state of the table above stays the judgement
+of the targets.
+
+A source that only a prepare reads is a `data` source with `keep = "prepared"` that is not
+prepared, such as a `dtm-*` row. The prepared source that reads it stands for it in a bake. The
+producer of each prepared source names the sources that it can read.
+
+| Field of `held` | Meaning |
+| --- | --- |
+| `rule` | `keep` for `keep = "archive"`, `prepare` for `keep = "prepared"`, `live` for `keep = "store"` with a `refresh` in days (the OSM sources), else `store` |
+| `covers` | Where the source has data, in words: the region of each scope of the newest version of a prepared source, or `World`; else the `coverage` of its dataset; else the countries of its `areas` in the cached Geofabrik index, or the paths without an index; else the box of its `extent`, or `World` |
+| `status` | The first that applies of the table below |
+| `where` | The archive root of its dataset, the home of the prepared source that holds it, `store`, or the host of an asset that R2 keeps; `null` when nothing is held |
+| `bytes` | The bytes held: the verified files of the dataset, the newest version of a prepared source, or the newest record of each request or the newest version in the store |
+| `download_bytes` | For `partial` and `missing`: the bytes that an `archive get` still takes, from the listed files of the manifest or else the `bytes_estimate` of the dataset; `null` when unknown |
+| `date` | The day of the last `archive get`, of the newest version that holds it, or of the newest file in the store |
+| `archive_files` | The verified and the listed files of its dataset; `null` while no manifest lists a file |
+| `store_versions`, `store_requests` | The versions of the source in the store, and its sets of params |
+| `gap` | A `dtm-*` row that nothing holds: the terrain there is GLO-30 only |
+| `no_dataset` | `keep = "archive"`, and no dataset of `data/archive/` has the source |
+| `error` | Why its dataset or its prepared versions cannot be read |
+
+| Status | When |
+| --- | --- |
+| `archived` | The dataset of the source is `complete` |
+| `prepared` | A prepared source whose home has a version in the format of its producer; a source that only a prepare reads, which the newest such version, or a version whose region and scope its `extends` names, reads (its `inputs`; a manifest of such a version that cannot be read gives none); or an asset with `keep = "prepared"`, which R2 keeps |
+| `live` | The `rule` is `live`: a bake reads it upstream when it is due |
+| `held` | The store has a version of a source that a fetch takes whole: no params, and no `capture`, `glo30`, `dtm`, `installed` or `prepared` fetch |
+| `partial` | The archive holds some files of its dataset, or the store holds requests or versions of another source |
+| `missing` | Nothing is held |
+
+The text output has one row per source in kind order, the tools under a heading of their own,
+with the columns SOURCE, LICENCE, RULE, COVERS, STATUS, WHERE, SIZE and DATE, and then the state of
+the source for each target.
+
+`--layer [LAYER]` gives each name of `used_by`, or LAYER only, with the `data` sources and assets
+whose `used_by` has it, but no source that only a prepare reads. It gives no verdict: whether a
+bake still downloads depends on the region, which `--region` tells.
+
+`--region ID|PATH[,PATH…]` and `--box W,S,E,N` name a region as `update` does, with each optional
+part on. They need the products of `obc data`: `obc-data-plumbing` refuses. A Geofabrik area that the cached index lacks refuses. The output lists the step lists of
+the products for the region, as the [overview](#overview) does, but with no fetch: the sources are
+the fetches that the step lists read, and the sources that only a prepare reads of the prepared
+sources among them, by their `extent`, the bounds of their `areas` in the index, and for a national
+model (`dtm-<cc>…`, `canopy-<cc>`) of a region that names countries, its country `<CC>`. A fetch
+without params of a source that a fetch takes with params only picks a version, and is not listed.
+A region that names no countries, such as a box, takes the countries of the areas of one country in
+the cached index whose polygons hold a corner or the centre of one of its boxes. Only the overview
+reads these countries; the step lists read the region as it is.
+
+A product whose step list stops, because it needs a snapshot that the store lacks or does not suit
+the region, is `incomplete`, with the reason. Its layer has the need `unknown`. Each source that
+the product can read (`Product::reads`), that the listing did not reach and that meets the region
+as above, is listed with `after_stop`: its need is `unknown`, but a prepared source keeps the need
+of its coverage.
+
+`for_region` gives what a bake of the region still needs of each source (`need`):
+
+| `need` | When |
+| --- | --- |
+| `held` | The store has each fetch at the version that the step list reads, or the archive lists each of its files as verified; for a prepared source, a version in the format of its producer covers the region; for a source that only a prepare reads, the prepared source that reads it is `held` |
+| `download` | A fetch is not held. Its bytes are known when the manifest of an archive dataset lists each of its files with bytes |
+| `prepare` | No version of the prepared source covers the region, or the prepared source that reads it needs a prepare |
+| `unknown` | A scope of the newest version has a Geofabrik area that the cached index lacks, or the step list stopped before it read the source (`after_stop`) |
+
+A version covers the region when one of its scopes is `null`, or each box of the region is inside
+one box of a scope that names no countries or each country of the region. `for_region` also counts
+the fetches, the held fetches and their known bytes, the known bytes to download and the fetches
+of unknown size. Each layer has the most of the needs of the sources that its steps read. The output sums the known bytes to
+download, and names the sources of unknown size or need and the sources to prepare.
+
 ## Store
 
 The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomputer/store/`.
@@ -461,6 +537,7 @@ One file for each dataset. The name of the file is the id of the dataset.
 | `s3` | array of tables | no | `bucket`, `prefix` and `match`. See below |
 | `kept` | boolean | no | `true`: the files of the dataset are the files under `kept/<dataset>/`, and nothing downloads |
 | `clms` | table | no | `dataset` and `file`: the prepackaged CLMS file of which the dataset holds the zip |
+| `bytes_estimate` | integer | no | The bytes of the files of the dataset, from a listing of upstream, for the [source overview](#source-overview) while no manifest lists them |
 | `notes` | string | no | For people |
 
 An `s3` table lists each object of an S3 `ListObjectsV2` of `bucket` under `prefix`. `bucket` is
@@ -548,7 +625,8 @@ place. The verify fails when a file differs or is not in place.
 
 `obc data archive status` gives each root with its free space, and each dataset of
 `data/archive/`: its sources, coverage, root, state, version, the day of the last get, the files
-that the last get listed, the verified files and their bytes. It also names each source with
+that the last get listed and their known bytes, the verified files and their bytes, and the
+`bytes_estimate`. It also names each source with
 `keep = "archive"` that no dataset has. It reads only the manifests and the sizes of the files.
 
 | State | When |
@@ -2192,7 +2270,9 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data rollback TARGET [--yes] [--json]` | The [rollback](#rollback) of a target. Writes the release that the target serves and its rollback |
 | `obc data router TARGET [--json]` | For an R2 target, asks the follower once, as [Router ready](#router-ready) says, for the planner release of the serving release and of the rollback. Writes each answer, and the release that `planner/next.json` names. Changes nothing. Refuses a `dir` target |
 | `obc data unlock (TARGET \| --source ID) --from MACHINE [--yes] [--json]` | Frees the [lock](#lock) of a target, or with `--source` the lock of a [prepared source](#prepared-sources) in the archive, that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
-| `obc data sources [--check-now] [--json]` | Every source with licence, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); the versions in the local store; and for a prepared source the root of its home, its versions there and the run that holds its lock. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
+| `obc data sources [--check-now] [--json]` | Every source with licence, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); the versions in the local store; for a prepared source the root of its home, its versions there and the run that holds its lock; and how this machine holds it, as the [source overview](#source-overview) says. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
+| `obc data sources --layer [LAYER] [--json]` | For each layer, or LAYER, the sources that it reads with their status, as the [source overview](#source-overview) says |
+| `obc data sources (--region ID\|PATH[,PATH…] \| --box W,S,E,N) [--json]` | The sources that a bake of the region reads, what each layer and each source still needs, and what a bake still downloads or prepares, as the [source overview](#source-overview) says. Fetches nothing |
 | `obc data source refresh ID [--json]` | Fetches upstream's newest version of a `digest` source without `start` or params, and writes `refreshed/<source>.json` of the store with the versions that the targets serve: the next update of a target that serves one of them, or none, reads it, as [Versions](#versions) says. Refuses another source. The fetch is a detached [run](#runs): a terminal follows it, and `--json` writes `{run}` and ends |
 | `obc data source prepare ID [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--languages L,…] [--dry-run \| --expect ID] [--json]` | [Prepares](#prepare) a version of a prepared source in the archive. `--dry-run` writes the review. Else it starts a detached run and writes its log until it ends; with `--json`, it writes the run and the review id |
 | `obc data source copy ID --from TARGET [--dry-run] [--json]` | [Copies](#copy) the versions of a prepared source from the legacy folder `sources/<id>/` of a target into the archive. `--dry-run` writes the plan. Else it starts a detached run and writes its log until it ends; with `--json`, it writes `{run}` |
@@ -2381,6 +2461,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `router` | `Router` |
 | `unlock` | `Unlocked` |
 | `sources` | `Sources` |
+| `sources --layer` | `SourceLayers` |
+| `sources --region`, `sources --box` | `RegionSources` |
 | `source refresh`, `source copy`, `serve --detach`, `deploy WHAT --expect`, `r2 legacy --delete` | `Detached` |
 | `source prepare` | `Started` |
 | `source prepare --dry-run` | `PrepareReview` |
@@ -2464,6 +2546,15 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "minimum": 0,
           "type": "integer"
         },
+        "bytes_estimate": {
+          "description": "The `bytes_estimate` of the definition.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "coverage": {
           "type": "string"
         },
@@ -2487,6 +2578,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "listed": {
           "description": "The files that the last get listed.",
           "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "listed_bytes": {
+          "description": "Their bytes, as far as the manifest knows them.",
+          "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
@@ -2530,8 +2627,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "version",
         "got",
         "listed",
+        "listed_bytes",
         "verified",
-        "bytes"
+        "bytes",
+        "bytes_estimate"
       ],
       "type": "object"
     },
@@ -3459,6 +3558,85 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
+    "Files": {
+      "properties": {
+        "listed": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "verified": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "verified",
+        "listed"
+      ],
+      "type": "object"
+    },
+    "ForRegion": {
+      "description": "What a bake of the region reads of a source, and what it still needs.",
+      "properties": {
+        "after_stop": {
+          "description": "The step list of a product that reads it stopped before it read the source: its fetches\nare not known, and `need` is `unknown` but for a prepared source.",
+          "type": "boolean"
+        },
+        "download_bytes": {
+          "description": "The known bytes to download.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "held_bytes": {
+          "description": "The known bytes of the held ones.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "held_requests": {
+          "description": "Of them, those that the store or the archive holds.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "need": {
+          "$ref": "#/$defs/Need"
+        },
+        "read_by": {
+          "description": "For a source that only a prepare reads: the prepared source whose need it has.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requests": {
+          "description": "The fetches of the source that the step lists read: one per set of params.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unknown_requests": {
+          "description": "The fetches to download of unknown size.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "need",
+        "requests",
+        "held_requests",
+        "held_bytes",
+        "download_bytes",
+        "unknown_requests",
+        "read_by",
+        "after_stop"
+      ],
+      "type": "object"
+    },
     "FormatChange": {
       "properties": {
         "from": {
@@ -3630,6 +3808,138 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "parent",
         "countries",
         "bounds"
+      ],
+      "type": "object"
+    },
+    "Held": {
+      "description": "How this machine holds a source.",
+      "properties": {
+        "archive_files": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Files"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The verified and the listed files of its dataset; `null` while no manifest lists a file."
+        },
+        "bytes": {
+          "description": "The bytes held; `null` when the source holds none of its own.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "covers": {
+          "description": "Where the source has data, in words.",
+          "type": "string"
+        },
+        "dataset": {
+          "description": "The dataset of `data/archive/` of the source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "date": {
+          "description": "`YYYY-MM-DD`: the last `archive get`, the newest version that holds it, or the newest file\nin the store.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "download_bytes": {
+          "description": "What an `archive get` still takes; `null` when unknown or nothing is to get.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "Why its dataset or its prepared versions cannot be read.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gap": {
+          "description": "A national terrain model that nothing holds: the terrain there is GLO-30 only.",
+          "type": "boolean"
+        },
+        "no_dataset": {
+          "description": "`keep = \"archive\"`, and no dataset of `data/archive/` has the source.",
+          "type": "boolean"
+        },
+        "prepared_by": {
+          "description": "The prepared source whose versions hold it: itself, or the one that reads it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rule": {
+          "$ref": "#/$defs/Rule"
+        },
+        "status": {
+          "$ref": "#/$defs/SourceStatus"
+        },
+        "store_requests": {
+          "description": "The requests of the source with params in the store, the newest of each set of params.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "store_versions": {
+          "description": "The versions of the source in the store.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "where": {
+          "description": "The archive root of its dataset, the home of the prepared source that holds it, `store`, or\nthe host of an asset that R2 keeps; `null` when nothing is held.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "rule",
+        "covers",
+        "status",
+        "where",
+        "dataset",
+        "prepared_by",
+        "bytes",
+        "download_bytes",
+        "date",
+        "archive_files",
+        "store_versions",
+        "store_requests",
+        "gap",
+        "no_dataset",
+        "error"
+      ],
+      "type": "object"
+    },
+    "HeldSource": {
+      "properties": {
+        "held": {
+          "$ref": "#/$defs/Held"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "held"
       ],
       "type": "object"
     },
@@ -3926,6 +4236,26 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
+    },
+    "LayerSources": {
+      "description": "A name of `used_by` and the sources that it reads. Whether a bake of a region still downloads\nor prepares is in `sources --region`.",
+      "properties": {
+        "layer": {
+          "type": "string"
+        },
+        "sources": {
+          "description": "The `data` sources and assets whose `used_by` has the layer, but no source that only a\nprepare reads.",
+          "items": {
+            "$ref": "#/$defs/HeldSource"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "layer",
+        "sources"
+      ],
+      "type": "object"
     },
     "LayerState": {
       "additionalProperties": false,
@@ -4333,6 +4663,31 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "time"
       ],
       "type": "object"
+    },
+    "Need": {
+      "description": "What a bake of a region still needs of a source or a layer, from the least to the most.",
+      "oneOf": [
+        {
+          "const": "held",
+          "description": "The store, the archive or a prepared version holds what the bake reads.",
+          "type": "string"
+        },
+        {
+          "const": "download",
+          "description": "A fetch downloads a part, in the bake or in the prepare that reads it.",
+          "type": "string"
+        },
+        {
+          "const": "prepare",
+          "description": "`obc data source prepare` makes a version that covers the region.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Unknown: a step list needs a snapshot that the store lacks, or the cached index lacks an\narea of a scope.",
+          "type": "string"
+        }
+      ]
     },
     "Note": {
       "additionalProperties": false,
@@ -5065,6 +5420,163 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "RegionLayer": {
+      "description": "A layer and what a bake of the region still needs for it: the most of its sources.",
+      "properties": {
+        "layer": {
+          "type": "string"
+        },
+        "need": {
+          "$ref": "#/$defs/Need"
+        },
+        "reason": {
+          "description": "Why its step list cannot be listed: then `need` is `unknown`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sources": {
+          "description": "The sources that its steps read.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "layer",
+        "need",
+        "sources",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "RegionProduct": {
+      "description": "A product of the region.",
+      "properties": {
+        "incomplete": {
+          "description": "Its step list stopped: a snapshot that it needs is not in the store, or it does not suit\nthe region. Its other sources come from the table of what it can read.",
+          "type": "boolean"
+        },
+        "product": {
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why it stopped.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "product",
+        "incomplete",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "RegionSource": {
+      "description": "A source that a bake of the region reads.",
+      "properties": {
+        "for_region": {
+          "$ref": "#/$defs/ForRegion"
+        },
+        "held": {
+          "$ref": "#/$defs/Held",
+          "description": "How this machine holds the source."
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "held",
+        "for_region"
+      ],
+      "type": "object"
+    },
+    "RegionSources": {
+      "description": "What `sources --region` and `sources --box` write.",
+      "properties": {
+        "boxes": {
+          "description": "Its boxes, and the bounds of its Geofabrik areas in the cached index.",
+          "items": {
+            "$ref": "#/$defs/Bbox"
+          },
+          "type": "array"
+        },
+        "countries": {
+          "description": "The countries that select the national models; empty selects each that meets a box.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "download_bytes": {
+          "description": "The sum of the known bytes to download.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "layers": {
+          "description": "The layers of the products.",
+          "items": {
+            "$ref": "#/$defs/RegionLayer"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "prepare": {
+          "description": "The prepared sources to prepare.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "products": {
+          "description": "The products with each optional part on, and whether their step lists are complete.",
+          "items": {
+            "$ref": "#/$defs/RegionProduct"
+          },
+          "type": "array"
+        },
+        "region": {
+          "type": "string"
+        },
+        "sources": {
+          "description": "The sources that the step lists read, and the sources that only a prepare reads of the\nprepared sources among them.",
+          "items": {
+            "$ref": "#/$defs/RegionSource"
+          },
+          "type": "array"
+        },
+        "unknown": {
+          "description": "The sources with a download of unknown size, or whose need is unknown.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "region",
+        "name",
+        "boxes",
+        "countries",
+        "products",
+        "layers",
+        "sources",
+        "download_bytes",
+        "unknown",
+        "prepare"
+      ],
+      "type": "object"
+    },
     "RequestStatus": {
       "properties": {
         "age_days": {
@@ -5378,6 +5890,30 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "next"
       ],
       "type": "object"
+    },
+    "Rule": {
+      "oneOf": [
+        {
+          "const": "keep",
+          "description": "`keep = \"archive\"`.",
+          "type": "string"
+        },
+        {
+          "const": "prepare",
+          "description": "`keep = \"prepared\"`.",
+          "type": "string"
+        },
+        {
+          "const": "store",
+          "description": "`keep = \"store\"`.",
+          "type": "string"
+        },
+        {
+          "const": "live",
+          "description": "`keep = \"store\"` with a `refresh` in days: the OSM sources.",
+          "type": "string"
+        }
+      ]
     },
     "RunError": {
       "properties": {
@@ -5805,6 +6341,21 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "SourceLayers": {
+      "description": "What `sources --layer` writes.",
+      "properties": {
+        "layers": {
+          "items": {
+            "$ref": "#/$defs/LayerSources"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "layers"
+      ],
+      "type": "object"
+    },
     "SourceMove": {
       "properties": {
         "from": {
@@ -5896,6 +6447,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "string",
             "null"
           ]
+        },
+        "held": {
+          "$ref": "#/$defs/Held",
+          "description": "How this machine holds the copy that a bake reads."
         },
         "hosts": {
           "description": "Hosts the fetch reaches besides the host of `fetch.url`. `*.example.org` is any subdomain.",
@@ -6020,9 +6575,45 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "requests",
         "credential_missing",
         "refreshable",
-        "prepared"
+        "prepared",
+        "held"
       ],
       "type": "object"
+    },
+    "SourceStatus": {
+      "description": "How this machine holds a source.",
+      "oneOf": [
+        {
+          "const": "archived",
+          "description": "The dataset of the source is complete in the archive.",
+          "type": "string"
+        },
+        {
+          "const": "prepared",
+          "description": "A prepared version holds it, or R2 keeps our own asset.",
+          "type": "string"
+        },
+        {
+          "const": "live",
+          "description": "A bake reads it upstream when it is due.",
+          "type": "string"
+        },
+        {
+          "const": "held",
+          "description": "The store has a version of a source that a fetch takes whole.",
+          "type": "string"
+        },
+        {
+          "const": "partial",
+          "description": "The archive holds some files of its dataset, or the store some requests of it.",
+          "type": "string"
+        },
+        {
+          "const": "missing",
+          "description": "Nothing is held.",
+          "type": "string"
+        }
+      ]
     },
     "SourceTarget": {
       "properties": {

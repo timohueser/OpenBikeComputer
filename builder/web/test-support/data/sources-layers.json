@@ -1,0 +1,109 @@
+{
+  "layers": [
+    {
+      "layer": "search",
+      "sources": [
+        {
+          "source": "osm-planet",
+          "held": {
+            "rule": "live",
+            "covers": "World",
+            "status": "live",
+            "where": null,
+            "dataset": null,
+            "prepared_by": null,
+            "bytes": null,
+            "download_bytes": null,
+            "date": null,
+            "archive_files": null,
+            "store_versions": 0,
+            "store_requests": 0,
+            "gap": false,
+            "no_dataset": false,
+            "error": null
+          }
+        },
+        {
+          "source": "geofabrik-extracts",
+          "held": {
+            "rule": "live",
+            "covers": "World",
+            "status": "live",
+            "where": "store",
+            "dataset": null,
+            "prepared_by": null,
+            "bytes": 19385488683,
+            "download_bytes": null,
+            "date": "2026-10-28",
+            "archive_files": null,
+            "store_versions": 5,
+            "store_requests": 11,
+            "gap": false,
+            "no_dataset": false,
+            "error": null
+          }
+        },
+        {
+          "source": "wiki",
+          "held": {
+            "rule": "prepare",
+            "covers": "europe/dach",
+            "status": "prepared",
+            "where": "/media/archive/prepared/wiki",
+            "dataset": null,
+            "prepared_by": "wiki",
+            "bytes": 158050015,
+            "download_bytes": null,
+            "date": "2026-10-13",
+            "archive_files": null,
+            "store_versions": 0,
+            "store_requests": 0,
+            "gap": false,
+            "no_dataset": false,
+            "error": null
+          }
+        },
+        {
+          "source": "query-model",
+          "held": {
+            "rule": "prepare",
+            "covers": "World",
+            "status": "prepared",
+            "where": "R2 maps.openbikecomputer.com",
+            "dataset": null,
+            "prepared_by": null,
+            "bytes": null,
+            "download_bytes": null,
+            "date": null,
+            "archive_files": null,
+            "store_versions": 0,
+            "store_requests": 0,
+            "gap": false,
+            "no_dataset": false,
+            "error": null
+          }
+        },
+        {
+          "source": "nominatim-country-data",
+          "held": {
+            "rule": "keep",
+            "covers": "World",
+            "status": "held",
+            "where": "store",
+            "dataset": null,
+            "prepared_by": null,
+            "bytes": 15276758,
+            "download_bytes": null,
+            "date": "2026-10-16",
+            "archive_files": null,
+            "store_versions": 1,
+            "store_requests": 0,
+            "gap": false,
+            "no_dataset": false,
+            "error": null
+          }
+        }
+      ]
+    }
+  ]
+}
