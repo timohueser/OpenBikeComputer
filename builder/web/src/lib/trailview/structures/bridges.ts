@@ -4,7 +4,9 @@
 import { EXTENT, unitScale, type Feature } from '../stream/features';
 import { BRIDGE, isPath, metresPerUnit, PATH, RAIL_CODE, ROAD, type Line, type Node } from '../terrain/bins';
 import type { Owns } from './node';
-import { GROUND, MeshBuilder, mix, PAINT, posts, rgb, stationsOf, type Corner, type Station } from './mesh';
+import { deckSleepers, GROUND, MeshBuilder, mix, PAINT, posts, rgb, type Corner, type Station } from './mesh';
+import { stationsOf as smoothStations } from '../roads/stations';
+import { CROWN } from '../roads/section';
 
 /** The deck's road lies this far above the abutment's ground, which holds the road's height under it. */
 const LIFT_M = 0.03;
@@ -20,8 +22,8 @@ const PIER_M = { road: 1.6, path: 0.5 }, PIER_WIDTH = 0.6, PIER_SINK_M = 1.5;
 const ABUTMENT_M = 1.0;
 /** A deck that leaves a road or a deck at a T starts at its edge, if its two ends together lose at most this share of its length. */
 const TEE_SHARE = 0.5;
-/** A deck that runs on another deck's road within MEET_M of its height joins it there; it is tested every PIECE_M. */
-const MEET_M = 1.0, PIECE_M = 1.0;
+/** A deck that runs on another deck's road within MEET_M of its height joins it there. */
+const MEET_M = 1.0;
 /** A pier stands on the nearest bridge line within this many metres. */
 const PIER_REACH_M = 3;
 
@@ -58,27 +60,25 @@ export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[]
         for (let v = 1; v < n; v++) along.push(along[v - 1] + Math.hypot(line.xy[2 * v] - line.xy[2 * v - 2], line.xy[2 * v + 1] - line.xy[2 * v - 1]) * metresPerUnit(line.xy[2 * v + 1]));
         const total = along[n - 1], cuts = [through.get(endKey(line, 0)) ?? 0, through.get(endKey(line, n - 1)) ?? 0];
         const [from, to] = cuts[0] + cuts[1] < TEE_SHARE * total ? [cuts[0], total - cuts[1]] : [0, total];
-        const at = stationsOf(line);
+        // PROTOTYPE (road study): the deck follows the smooth curve of the corridors (roads/stations.ts), so it runs on
+        // from the road on the ground without a kink; `along` of a station is metres on that curve, scaled to the chords'.
+        const smooth = smoothStations(line), scale = total / (smooth[smooth.length - 1].along || 1);
+        const ds = smooth.map(st => st.along * scale), track = line.code >= RAIL_CODE;
+        const at = (k: number): Station => ({ ...smooth[k], sleepers: track ? deckSleepers(line, ds[k], total) : undefined });
         const point = (d: number) => {
-            let v = 0;
-            while (v + 2 < n && along[v + 1] < d) v++;
-            return mix(at(v), at(v + 1), (d - along[v]) / (along[v + 1] - along[v] || 1));
+            let k = 0;
+            while (k + 2 < smooth.length && ds[k + 1] < d) k++;
+            return mix(at(k), at(k + 1), (d - ds[k]) / (ds[k + 1] - ds[k] || 1));
         };
-        const end = (v: number) => (v ? (to < total ? point(to) : at(v)) : from > 0 ? point(from) : at(v));
+        const end = (v: number) => (v ? (to < total ? point(to) : at(smooth.length - 1)) : from > 0 ? point(from) : at(0));
         const decks = wider(line, lines, endKey);
-        for (let v = 0; v + 1 < n; v++) {
-            const lo = Math.max(along[v], from), hi = Math.min(along[v + 1], to);
-            if (lo >= hi || !owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
-            const stop = (d: number) => (d === along[v] ? at(v) : d === along[v + 1] ? at(v + 1) : point(d));
+        for (let k = 0; k + 1 < smooth.length; k++) {
+            const lo = Math.max(ds[k], from), hi = Math.min(ds[k + 1], to);
+            if (lo >= hi || !owns(smooth[k].x, smooth[k].y)) continue;
+            const s = lo === ds[k] ? at(k) : point(lo), e = hi === ds[k + 1] ? at(k + 1) : point(hi);
             // Where the deck runs on a wider deck's road at its height, that deck carries it: it draws nothing there.
-            const pieces = decks.length ? Math.ceil((hi - lo) / PIECE_M) : 0;
-            let run = lo;
-            for (let k = 1; k <= pieces; k++) {
-                const a = lo + (hi - lo) * (k - 1) / pieces, c = lo + (hi - lo) * k / pieces, carried = onDeck(point((a + c) / 2), decks);
-                if (carried && run < a) segment(b, stop(run), stop(a), line, t, a - run);
-                if (carried) run = c;
-            }
-            if (run < hi) segment(b, stop(run), stop(hi), line, t, hi - run);
+            if (decks.length && onDeck(mix(s, e, 0.5), decks)) continue;
+            segment(b, s, e, line, t, hi - lo);
         }
         for (const v of [0, n - 1]) {
             if (ends.get(endKey(line, v)) !== 1 || !owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
@@ -162,10 +162,18 @@ function segment(b: MeshBuilder, s: Station, t: Station, line: Line, depth: numb
     railing(b, s, t, h, length, WOOD, BAR_M);
 }
 
-/** The road on a deck, painted as the road on the ground. */
+/**
+ * The road on a deck, painted as the road on the ground. PROTOTYPE (road study): with the crown of a paved
+ * road and the lift of its class, as the corridor's carriageway (roads/section.ts, roads/corridor.ts), so the
+ * deck's road runs on from the road on the ground without a step.
+ */
 function roadway(b: MeshBuilder, s: Station, t: Station, line: Line): void {
-    const h = line.h, paint = rgb('#000000', PAINT) | line.code;
-    b.quad([b.at(s, [-h, LIFT_M], paint, -h, h), b.at(s, [h, LIFT_M], paint, h, h), b.at(t, [h, LIFT_M], paint, h, h), b.at(t, [-h, LIFT_M], paint, -h, h)], b.outward(s, t, [0, 1]));
+    const h = line.h, paint = rgb('#000000', PAINT) | line.code, lift = LIFT_M + Math.max(0, 30 - line.profile) * 0.001;
+    const crown = isPaved(line) && !isTrack(line) ? CROWN * h : 0;
+    for (const [a, c] of [[-h, -h / 2], [-h / 2, 0], [0, h / 2], [h / 2, h]]) {
+        const up = (x: number) => lift + crown * (1 - (x / h) ** 2);
+        b.quad([b.at(s, [a, up(a)], paint, a, h), b.at(s, [c, up(c)], paint, c, h), b.at(t, [c, up(c)], paint, c, h), b.at(t, [a, up(a)], paint, a, h)], b.outward(s, t, [0, 1]));
+    }
 }
 
 /** A road's deck from station s to t: the road, a parapet on each side, the deck's faces and its underside. */

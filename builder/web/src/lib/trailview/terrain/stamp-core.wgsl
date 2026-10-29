@@ -261,7 +261,18 @@ struct Along {
 // The slope across a segment from one of its ends, `s` metres from it, as packTilt of bins.ts packs it:
 // the rise per metre in steps of 1e-4, held up to WARP_M before its reach in cm, and zero past the reach.
 fn end_tilt(w: u32, s: f32) -> f32 {
+    if ((w & BANK_WORD) != 0u) {
+        return 0.0;
+    }
     return f32(bitcast<i32>(w << 16u) >> 16u) * 1e-4 * clamp((f32(w >> 16u) * 0.01 - s) / WARP_M, 0.0, 1.0);
+}
+
+// PROTOTYPE (road study): a tilt word with its top bit holds a bend's banking at that end, as BANK_WORD of
+// bins.ts: the rise per metre to the left in steps of 1e-4; it runs linearly along the segment.
+const BANK_WORD: u32 = 0x80000000u;
+
+fn end_bank(w: u32) -> f32 {
+    return select(0.0, f32(bitcast<i32>(w << 16u) >> 16u) * 1e-4, (w & BANK_WORD) != 0u);
 }
 
 fn along(r: u32, p: vec2i, unit: f32) -> Along {
@@ -279,7 +290,8 @@ fn along(r: u32, p: vec2i, unit: f32) -> Along {
     let db = -dot(bp, mb) / max(dot(dir, mb), 0.1);
     let cross = dir.x * ap.y - dir.y * ap.x;
     // Bridges, tunnels and galleries hold their ends' metres in those words, not tilts.
-    let tilt = select(cross * unit * (end_tilt(word(r + 14u), da * unit) + end_tilt(word(r + 15u), db * unit)), 0.0, word(r + 4u) >= BRIDGE || (word(r + 5u) >> 24u) != 0u);
+    let banked = mix(end_bank(word(r + 14u)), end_bank(word(r + 15u)), clamp(da / max(da + db, 1e-6), 0.0, 1.0));
+    let tilt = select(cross * unit * (end_tilt(word(r + 14u), da * unit) + end_tilt(word(r + 15u), db * unit) + banked), 0.0, word(r + 4u) >= BRIDGE || (word(r + 5u) >> 24u) != 0u);
     let foot = dot(ap, dir);
     let beside = select(INF, abs(cross) * unit, foot >= 0.0 && foot <= length(ab));
     if (da >= 0.0 && db >= 0.0) {
