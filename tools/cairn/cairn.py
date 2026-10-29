@@ -556,7 +556,7 @@ def mode_gate(root: Path, head: Tree, ref: str) -> bool:
         base = None
         unread = f"the base {commit[:12]} cannot be read, so its graph, approvals and rules are unknown: {error}"
         print(f"cairn: {unread}")
-    rules = {**modes.DEFAULTS, **head.config,
+    rules = {**head.config, **modes.DEFAULTS,
              **{key: base.config[key] for key in ("fix", "size", "specs") if base and key in base.config}}
     new_edges = added_edges(head.edges, base.edges) if base else set()
     diff = pr_diff(root, commit, head.docs, rules, new_edges)

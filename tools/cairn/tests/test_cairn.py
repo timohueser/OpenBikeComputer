@@ -314,12 +314,20 @@ class ModeGateTests(unittest.TestCase):
         config = json.loads((cairn.ROOT / cairn.CONFIG).read_text())
         self.assertEqual(cairn.modes.DEFAULTS, {key: config[key] for key in cairn.modes.DEFAULTS})
         bare = json.dumps({key: value for key, value in Repository.CONFIG.items() if key != "fix"})
+        body = "Status: approved\n**Size:** S\n**Systems:** routing\n"
+        body = body.replace("\n", f"\nApproved: {cairn.modes.approval_hash(body)}\n", 1)
+        loose = {"S": {"systems": 9, "lines": 10**6}, "M": {"systems": 9, "lines": 10**6}}
         with tempfile.TemporaryDirectory() as folder:
             repository = Repository(folder)
             base = repository.commit({".cairn/config.json": bare, "route/a.rs": "a\n"})
-            repository.commit({"route/a.rs": "a\n" * 1002})
+            # HEAD cannot loosen a rule that the base config does not have.
+            repository.commit({"route/a.rs": "a\n" * 1002}, fix={"max_lines": 10**6, "tests": []}, size=loose)
             fails, report = repository.gate(base, "fix")
-        self.assertIn("a fix changes at most 1,000 lines outside tests, and this one changes 1,001", report)
+            self.assertIn("a fix changes at most 1,000 lines outside tests, and this one changes 1,003", report)
+            with mock.patch.object(cairn.modes, "fetch_issue", return_value=body), \
+                    mock.patch.object(cairn.modes, "fetch_epic", return_value=None):
+                fails, report = repository.gate(base, "change #5")
+            self.assertIn("`change #5` is sized S, but the diff is M: 1,003 changed lines outside tests", report)
 
     def test_check_pr_fails_a_fix_over_the_limit_in_an_approved_system(self):
         docs = [doc("routing", ["route/**"], status="approved")]

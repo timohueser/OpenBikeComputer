@@ -23,8 +23,9 @@ def repository(folder):
     return folder
 
 
-def issue(systems="routing (new: cairn), documentation", status="Status: approved", size="**Size:** M (2 systems)"):
-    body = f"## TL;DR\n\n{size}\n**Systems:** {systems}\n\nThe plan.   \n"
+def issue(systems="routing (new: cairn), documentation", status="Status: approved", size="**Size:** M (2 systems)",
+          plan="The plan."):
+    body = f"## TL;DR\n\n{size}\n**Systems:** {systems}\n\n{plan}   \n"
     return f"{status}\nApproved: {mode.approval_hash(body)}\n{body}"
 
 
@@ -168,20 +169,31 @@ class SizeTests(unittest.TestCase):
             "amend the issue (which needs a new approval), or override with a reason"])
         self.assertEqual(self.check(mode.Diff(frozenset({"routing"})), issue("routing", size="")),
                          ["issue #5 has no `**Size:** S|M|L` line"])
+        self.assertIsNone(mode.issue_size("**Size:**\nS\n"))
+        self.assertIsNone(mode.issue_size("<!--\n**Size:** S\n-->\n"))
 
 
 class EpicTests(unittest.TestCase):
-    def check(self, sub, epic):
+    def check(self, sub, epic, number=7):
         diff = mode.Diff(frozenset({"routing"}))
-        return mode.violations(mode.parse("change #7"), diff, mode.DEFAULTS, sub, NAMES, (5, epic))
+        return mode.violations(mode.parse(f"change #{number}"), diff, mode.DEFAULTS, sub, NAMES, (5, epic))
 
     def test_a_sub_issue_passes_with_its_approved_epic_inside_its_scope(self):
         sub = "**Size:** S\n**Systems:** routing\n"
-        self.assertEqual(self.check(sub, issue("routing, search")), [])
-        self.assertEqual(self.check(sub, issue("routing", status="Status: designed")),
+        self.assertEqual(self.check(sub, issue("routing, search", plan="- [ ] #7")), [])
+        self.assertEqual(self.check(sub, issue("routing", status="Status: designed", plan="- #7")),
                          ["the first `Status:` line of issue #5 is not `Status: approved`"])
-        self.assertEqual(self.check("**Size:** S\n**Systems:** routing, search\n", issue("routing")),
+        self.assertEqual(self.check("**Size:** S\n**Systems:** routing, search\n", issue("routing", plan="- #7")),
                          ["issue #7 lists search on its Systems line, and its epic #5 does not"])
+
+    def test_a_sub_issue_is_on_the_epic_list_and_one_pull_request(self):
+        sub = "**Size:** S\n**Systems:** routing\n"
+        for plan in ("The plan.", "- #80", "```\n- #8\n```", "<!-- #8 -->"):
+            self.assertEqual(self.check(sub, issue("routing", plan=plan), number=8),
+                             ["issue #8 is not on the list of its epic #5"], plan)
+        large = "**Size:** L\n**Systems:** routing\n"
+        self.assertEqual(self.check(large, issue("routing", plan="- #8"), number=8),
+                         ["issue #8 is sized L, but a sub-issue is one pull request: size S or M"])
 
     def test_the_epic_is_the_parent_from_the_sub_issue_relation(self):
         with mock.patch.object(mode, "api", side_effect=OSError("gh: No parent issue found (HTTP 404)")):
@@ -192,6 +204,9 @@ class EpicTests(unittest.TestCase):
             self.assertEqual(mode.fetch_epic(Path("."), 7), (5, "Epic."))
         with mock.patch.object(mode, "api", return_value={"number": 5, "body": "", "pull_request": {}}), \
                 self.assertRaisesRegex(ValueError, "#5 is a pull request"):
+            mode.fetch_epic(Path("."), 7)
+        with mock.patch.object(mode, "api", return_value={"body": "Epic."}), \
+                self.assertRaisesRegex(ValueError, "the parent of issue #7 has no number"):
             mode.fetch_epic(Path("."), 7)
 
 

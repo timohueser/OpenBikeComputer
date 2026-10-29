@@ -16,7 +16,7 @@ from pathlib import Path
 
 KINDS = ("fix", "change", "prototype", "override")
 SIZES = ("S", "M", "L")
-#: The rules when neither the base config nor the HEAD config has them.
+#: The rules when the base config does not have them. HEAD never sets them.
 DEFAULTS = {
     "fix": {"max_lines": 1000, "tests": ["**/tests/**", "tests.rs", "*_tests.rs", "*_test.py", "*Tests.swift", "*.test.ts"]},
     "size": {"S": {"systems": 1, "lines": 500}, "M": {"systems": 3, "lines": 1500}},
@@ -122,16 +122,20 @@ def approval_hash(body: str) -> str:
     return hashlib.sha256("\n".join(kept).rstrip().encode()).hexdigest()[:12]
 
 
+def visible(body: str) -> str:
+    """The body without HTML comments and code blocks."""
+    return FENCE.sub("", COMMENT.sub("", body))
+
+
 def issue_size(body: str) -> str | None:
-    """The first letter after `**Size:**` outside code blocks, when it is S, M or L."""
-    match = re.search(r"^\*\*Size:\*\*\s*([SML])", FENCE.sub("", body), re.M)
+    """The first letter after `**Size:**` on its line, when it is S, M or L."""
+    match = re.search(r"^\*\*Size:\*\*[ \t]*([SML])", visible(body), re.M)
     return match.group(1) if match else None
 
 
 def listed(body: str, names: dict[str, str]) -> set[str]:
-    """The systems on the `**Systems:**` line outside code blocks, by slug or by name, with notes in
-    brackets removed."""
-    match = re.search(r"^\*\*Systems:\*\*(.*)$", FENCE.sub("", body), re.M)
+    """The systems on the `**Systems:**` line, by slug or by name, with notes in brackets removed."""
+    match = re.search(r"^\*\*Systems:\*\*(.*)$", visible(body), re.M)
     items = re.sub(r"\([^)]*\)", "", match.group(1)).split(",") if match else []
     wanted = {item.strip().lower() for item in items}
     return {slug for slug, name in names.items() if slug.lower() in wanted or name.lower() in wanted}
@@ -180,7 +184,10 @@ def fetch_epic(root: Path, number: int) -> tuple[int, str] | None:
         if "No parent issue found" in str(error):
             return None
         raise
-    return data["number"], issue_body(data["number"], data)
+    parent = data.get("number") if isinstance(data, dict) else None
+    if not isinstance(parent, int):
+        raise ValueError(f"the parent of issue #{number} has no number")
+    return parent, issue_body(parent, data)
 
 
 # ── the rules ────────────────────────────────────────────────────────────────
@@ -253,6 +260,11 @@ def violations(mode: Mode, diff: Diff, rules: dict, issue: str | None = None, na
         else:
             number, body = epic
             out += issue_problems(number, body)
+            # A token match, so that #8 is not found in #80.
+            if not re.search(rf"(?<!\w)#{mode.issue}\b", visible(body)):
+                out.append(f"issue #{mode.issue} is not on the list of its epic #{number}")
+            if issue_size(issue) == "L":
+                out.append(f"issue #{mode.issue} is sized L, but a sub-issue is one pull request: size S or M")
             out += [f"issue #{mode.issue} lists {system} on its Systems line, and its epic #{number} does not"
                     for system in sorted(allowed - listed(body, names or {}))]
         out += [f"issue #{mode.issue} does not list {system} on its Systems line"

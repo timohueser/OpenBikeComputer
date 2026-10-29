@@ -69,7 +69,7 @@ and from the branch otherwise. The diff is HEAD against the merge base with `--b
 | --- | --- |
 | `fix` | touch one system or shell, add no dependency between systems, change no doc header and no file under `specs/`, and change at most `fix.max_lines` lines outside the `fix.tests` globs |
 | `fix, over limit: <reason>` | do the same, with no size limit |
-| `change #N` | touch only the systems on the `**Systems:**` line of issue N, outside code blocks, by slug or title. The first `Status:` line of the issue is `Status: approved`, and an `Approved: <hash>` line holds the hash that `cairn hash` gives for its body. N must be an issue, not a pull request. A new dependency `a -> b` changes `docs/design/a.md` too. The size of the diff is not larger than the `**Size:**` line of issue N. |
+| `change #N` | touch only the systems on the `**Systems:**` line of issue N, outside code blocks and HTML comments, by slug or title. The first `Status:` line of the issue is `Status: approved`, and an `Approved: <hash>` line holds the hash that `cairn hash` gives for its body. N must be an issue, not a pull request. A new dependency `a -> b` changes `docs/design/a.md` too. The size of the diff is not larger than the `**Size:**` line of issue N. |
 | `prototype` | not exist: the gate always fails, because a prototype never merges |
 | `override: <reason>` | nothing: the gate passes, and the body keeps the reason |
 
@@ -78,10 +78,11 @@ system whose doc has `status: approved` at the base or at HEAD; otherwise the ga
 it. A missing `Mode:` line is a violation.
 
 The gate reads the base from a temporary git worktree: its dependency graph, its approvals, and the
-`fix`, `size` and `specs` keys of its config. When neither config has `fix` or `size`, the gate uses
-the defaults in `mode.py`, which equal the config of this repository. A change therefore cannot loosen the rules it is checked
-against. When the base cannot be read, a `fix` or `change` gets a violation that says so. A test
-dependency that becomes a production dependency is a new dependency.
+`fix`, `size` and `specs` keys of its config. When the base config has no `fix` or `size`, the gate
+uses the defaults in `mode.py`, which equal the config of this repository, never the HEAD config. A
+change therefore cannot loosen the rules it is checked against. When the base cannot be read, a
+`fix` or `change` gets a violation that says so. A test dependency that becomes a production
+dependency is a new dependency.
 
 A `fix.tests` glob with no `/` matches the file name only. `change #N` reads the issue through
 `gh api`, which uses `GH_TOKEN` and `GH_REPO` in CI.
@@ -98,19 +99,20 @@ The size of the diff is the largest size that one of its signals gives:
 | a new dependency between systems | at least M |
 | a new system doc | L |
 
-The gate takes the first letter after `**Size:**` in the issue, outside code blocks. An issue with
-no such line is a violation. A diff larger than the issue is a violation that names both sizes and
-the signals that decide. The way out is to shrink the pull request, amend the issue and approve it
-again, or override with a reason. The gate cannot see a breaking contract change, so the people
-who size the issue make it L.
+The gate takes the letter after `**Size:**` on its line in the issue, outside code blocks and HTML
+comments. An issue with no such line is a violation. A diff larger than the issue is a violation
+that names both sizes and the signals that decide. The way out is to shrink the pull request, amend
+the issue and approve it again, or override with a reason. The gate cannot see a breaking contract
+change, so the people who size the issue make it L.
 
 ### Epics
 
 `change #N` asks GitHub for the parent of issue N through the sub-issue relation
 (`GET /repos/{owner}/{repo}/issues/N/parent`). When N has a parent, the parent is the epic: the
 epic, not issue N, must be approved and unchanged, and each system on the Systems line of N must be
-on the Systems line of the epic. The epic must be an issue, not a pull request. The size check uses
-the `**Size:**` line of N.
+on the Systems line of the epic. The epic must be an issue, not a pull request. The epic body names
+`#N` outside code blocks and HTML comments, so its approval also approves its list of sub-issues.
+The body of N is not approved, so its `**Size:**` line is S or M: a sub-issue is one pull request.
 
 The approval hash is the first 12 hex digits of SHA-256 over the body without its `Status:` and
 `Approved:` lines, with trailing whitespace removed from each line and from the end.
