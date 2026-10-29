@@ -1,6 +1,6 @@
 // What `obc data sources --json` and `source prepare --dry-run --json` write.
 import type { Held } from "./holding";
-import { list, size, type Holder, type Status } from "./shapes";
+import { list, type Holder, type Status } from "./shapes";
 
 export type SourceState = "blocked" | "stale" | "ok" | "unused";
 
@@ -103,9 +103,6 @@ export const GROUPS = ["Prepared", "OpenStreetMap", "Elevation", "Wikimedia", "C
 
 export const groupOf = (row: SourceRow): string => row.group ?? (isReference(row) ? "Prepared" : "Other");
 
-/** The parts of a bake, as `used_by` names them. */
-export const PARTS: Record<string, string> = { device: "Bike computer maps", planner: "Planner", search: "Search", trailview: "Trail View" };
-
 /** Where `target` is, as a person names it. */
 export const placeOf = (target: string, status: Status | null): string =>
     (status?.targets.find((at) => at.target === target)?.kind ?? (target === "prod" ? "r2" : "dir")) === "r2" ? "Production" : "This computer";
@@ -133,23 +130,10 @@ export function daysOld(version: string, now = Date.now()): number | null {
 /** What the first param of a request names, singular and plural. */
 const NOUNS: Record<string, [string, string]> = { area: ["area", "areas"], bbox: ["box", "boxes"], tile: ["tile", "tiles"] };
 
-const days = (n: number) => `${n} ${n === 1 ? "day" : "days"}`;
+export const daysText = (n: number) => `${n} ${n === 1 ? "day" : "days"}`;
 
 /** The age in days of `request`: since its fetch, else since its date version. */
 export const requestAge = (request: StoredRequest, now = Date.now()): number | null => daysOld(request.fetched?.slice(0, 10) ?? request.version, now);
-
-/** `16 areas · 8–16 days old · 6.3 GB`: the requests of a source in the store, and the `bytes` of
- *  its versions there. Requests can share files, so their sizes do not add up. */
-export function requestsLine(requests: StoredRequest[], bytes: number, now = Date.now()): string {
-    const key = requests[0].params[0]?.[0];
-    const [one, many] = NOUNS[key] ?? ["request", "requests"];
-    const values = new Set(requests.flatMap((request) => request.params.filter(([name]) => name === key).map(([, value]) => value)));
-    const count = NOUNS[key] ? values.size : requests.length;
-    const ages = requests.map((request) => requestAge(request, now)).filter((age) => age !== null);
-    const [young, old] = [Math.min(...ages), Math.max(...ages)];
-    const age = ages.length ? [`${young === old ? days(old) : `${young}–${days(old)}`} old`] : [];
-    return [`${count} ${count === 1 ? one : many}`, ...age, size(bytes)].join(" · ");
-}
 
 /** What a request fetches: area names, a box as W,S,E,N, tiles as a count with the first few. */
 export function requestLabel(request: StoredRequest, areaName: (id: string) => string): string {

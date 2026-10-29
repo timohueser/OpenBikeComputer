@@ -1,7 +1,7 @@
 <script lang="ts">
     import { counts, matches, sizeOf, STATUSES, statusNote, whereOf, type HeldStatus } from "../../lib/data/holding";
     import { list, type Status } from "../../lib/data/shapes";
-    import { coverage, due, GROUPS, groupOf, type SourceRow } from "../../lib/data/sources";
+    import { coverage, daysOld, daysText, due, GROUPS, groupOf, type SourceRow } from "../../lib/data/sources";
 
     // Every source, by group, with how this machine holds it. A status of the summary filters the
     // list; what needs a hand comes first in its group.
@@ -28,7 +28,7 @@
 
 <div class="filters">
     <div class="summary" role="group" aria-label="Status">
-        {#each counts(found) as [at, n] (at)}
+        {#each counts(found.map((row) => row.held)) as [at, n] (at)}
             <button type="button" class="pill" data-status={at} aria-pressed={shown.includes(at)} onclick={() => toggle(at)}>{STATUSES[at]} <b>{n}</b></button>
         {/each}
     </div>
@@ -60,7 +60,10 @@
                                 <td>{row.held.covers}</td>
                                 <td class="place">{whereOf(row.held)}</td>
                                 <td>{sizeOf(row.held)}</td>
-                                <td>{row.held.date ?? "—"}</td>
+                                <td>
+                                    {row.held.date ?? "—"}
+                                    {#if row.held.date && daysOld(row.held.date) !== null}<span class="soft note">{daysText(daysOld(row.held.date)!)} old</span>{/if}
+                                </td>
                             </tr>
                         {/each}
                     </tbody>

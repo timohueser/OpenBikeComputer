@@ -1,26 +1,29 @@
 <script lang="ts">
-    import { counts, layersOf, STATUSES } from "../../lib/data/holding";
-    import { PARTS, type SourceRow } from "../../lib/data/sources";
+    import { onMount } from "svelte";
+    import { counts, STATUSES, type SourceLayers } from "../../lib/data/holding";
+    import { CliQuery } from "../../lib/data/query.svelte";
+    import Failure from "./Failure.svelte";
 
-    // Each product and layer of `used_by` with a chip for each source that it reads, in the colour
-    // of its status, as `obc data sources --layer` lists them. A prepared source stands for the
-    // sources that only its prepare reads.
-    let { rows }: { rows: SourceRow[] } = $props();
-
-    const layers = $derived(layersOf(rows));
+    // Each name of `used_by` with a chip for each source that it reads, in the colour of its
+    // status, from `obc data sources --layer`.
+    const query = new CliQuery<SourceLayers>(["sources", "--layer"]);
+    onMount(() => void query.refresh());
 </script>
 
+{#if query.error}<Failure error={query.error} />{/if}
 <p class="soft">Whether a bake still downloads depends on its region: By region tells.</p>
 <div class="layers">
-    {#each layers as { layer, rows: read } (layer)}
+    {#each query.output?.layers ?? [] as { layer, sources } (layer)}
         <section class="card" aria-labelledby="layer-{layer}">
             <div class="title">
-                <h2 id="layer-{layer}">{PARTS[layer] ?? layer}</h2>
-                <span class="soft">{counts(read).filter(([, n]) => n).map(([status, n]) => `${n} ${STATUSES[status].toLowerCase()}`).join(" · ")}</span>
+                <h2 id="layer-{layer}">{layer}</h2>
+                <span class="soft">{counts(sources.map((at) => at.held)).filter(([, n]) => n).map(([status, n]) => `${n} ${STATUSES[status].toLowerCase()}`).join(" · ")}</span>
             </div>
             <ul class="chips">
-                {#each read as row (row.id)}
-                    <li><a class="pill" data-status={row.held.status} href="#/sources/{encodeURIComponent(row.id)}" title="{row.use ?? row.id} · {STATUSES[row.held.status]}">{row.id}</a></li>
+                {#each sources as { source, held } (source)}
+                    <li>
+                        <a class="pill" data-status={held.status} href="#/sources/{encodeURIComponent(source)}">{source}<span class="visually-hidden">, {STATUSES[held.status]}</span></a>
+                    </li>
                 {/each}
             </ul>
         </section>

@@ -1,10 +1,10 @@
 <script lang="ts">
     import { boundsOf, nameOf, type Areas } from "../../lib/data/areas";
     import { command } from "../../lib/data/cli";
-    import { neededFor, NEEDS, osmPerUpdate, STATUSES, type RegionSources } from "../../lib/data/holding";
+    import { bytesNote, neededFor, needNote, NEEDS, totals, VERSION_CELLS, versionCells, type RegionSources } from "../../lib/data/holding";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { prepareHash, viewHash } from "../../lib/data/screens";
-    import { list, size } from "../../lib/data/shapes";
+    import { list } from "../../lib/data/shapes";
     import type { SourceRow } from "../../lib/data/sources";
     import DataMap from "./DataMap.svelte";
     import Failure from "./Failure.svelte";
@@ -18,19 +18,9 @@
     const query = $derived(region ? new CliQuery<RegionSources>(["sources", "--region", region]) : null);
     $effect(() => void query?.refresh());
     const answer = $derived(query?.output ?? null);
-    const [HELD, GAP] = ["var(--status-archived)", "var(--status-missing)"];
     const held = $derived(answer?.sources.filter((at) => at.for_region.need === "held").length ?? 0);
-    const cells = $derived(
-        (answer?.sources ?? []).flatMap(({ source, for_region }) =>
-            (rows.find((row) => row.id === source)?.prepared?.versions ?? []).flatMap((version) => {
-                const box = version.region && areas ? boundsOf(version.region, areas) : null;
-                const color = for_region.need === "held" ? HELD : GAP;
-                return box ? [{ bounds: [[box.south, box.west], [box.north, box.east]] as [[number, number], [number, number]], color, label: `${source} ${version.version} · ${nameOf(version.region!, areas)}` }] : [];
-            }),
-        ),
-    );
-    const downloadOf = (at: RegionSources["sources"][number]) =>
-        at.for_region.download_bytes ? size(at.for_region.download_bytes) : at.for_region.unknown_requests ? "size unknown" : "—";
+    const sum = $derived(answer ? totals(answer) : null);
+    const cells = $derived(answer && areas ? versionCells(answer, rows, (id) => boundsOf(id, areas)) : []);
 </script>
 
 <form class="pick" onsubmit={(event) => (event.preventDefault(), picked.trim() && (location.hash = viewHash("region", picked.trim())))}>
@@ -53,21 +43,25 @@
     <h2>{answer.name}{answer.countries.length ? ` · ${answer.countries.join(", ")}` : ""}</h2>
     <dl class="counters">
         <div><dt>Sources held</dt><dd>{held} of {answer.sources.length}</dd></div>
-        <div><dt>Prepares needed</dt><dd>{answer.prepare.length}</dd>{#if answer.prepare.length}<span class="soft">{list(answer.prepare)}</span>{/if}</div>
+        <div><dt>Prepares needed</dt><dd>{answer.prepare.length} <span class="soft">{list(answer.prepare)}</span></dd></div>
         <div>
-            <dt>To download once</dt><dd>{size(answer.download_bytes)}</dd>
-            {#if answer.unknown.length}<span class="soft">and {answer.unknown.length} of unknown size</span>{/if}
+            <dt>To download once</dt>
+            <dd>{bytesNote(sum!.once.bytes, sum!.once.unknown)} {#if sum!.unknownNeed}<span class="soft">{sum!.unknownNeed} {sum!.unknownNeed === 1 ? "source" : "sources"} of unknown need</span>{/if}</dd>
         </div>
-        <div><dt>OSM per update</dt><dd>{size(osmPerUpdate(answer))}</dd></div>
+        <div><dt>OSM per update</dt><dd>{bytesNote(sum!.osm.bytes, sum!.osm.unknown)}</dd></div>
     </dl>
     {#each answer.products.filter((product) => product.incomplete) as product (product.product)}
         <p class="warn incomplete"><b>{product.product} is incomplete</b>: its step list stops at {product.reason}</p>
     {/each}
-    <DataMap {cells} outline={answer.boxes.map((box) => [[box.south, box.west], [box.north, box.east]])} />
+    <DataMap
+        cells={cells.map((cell) => ({ bounds: [[cell.box.south, cell.box.west], [cell.box.north, cell.box.east]], color: VERSION_CELLS[cell.kind].color, label: cell.label }))}
+        outline={answer.boxes.map((box) => [[box.south, box.west], [box.north, box.east]])}
+    />
     <ul class="legend" aria-label="Map key">
         <li><span class="swatch outline"></span>The region</li>
-        {#if cells.some((cell) => cell.color === HELD)}<li><span class="swatch" style:background={HELD}></span>A prepared version of a source that covers it</li>{/if}
-        {#if cells.some((cell) => cell.color === GAP)}<li><span class="swatch" style:background={GAP}></span>A prepared version of a source to prepare</li>{/if}
+        {#each Object.entries(VERSION_CELLS).filter(([kind]) => cells.some((cell) => cell.kind === kind)) as [kind, { color, label }] (kind)}
+            <li><span class="swatch" style:background={color}></span>{label}</li>
+        {/each}
     </ul>
 
     <section class="card" aria-labelledby="region-layers">
@@ -80,7 +74,7 @@
                         <tr>
                             <td class="layer"><code>{layer.layer}</code></td>
                             <td><span class="pill" data-need={layer.need}>{NEEDS[layer.need]}</span></td>
-                            <td>{layer.reason ? "Its step list stops, as the note above says." : list(layer.sources)}</td>
+                            <td>{layer.reason ?? list(layer.sources)}</td>
                         </tr>
                     {/each}
                 </tbody>
@@ -92,26 +86,19 @@
         <h2 id="region-sources">Sources</h2>
         <div class="table">
             <table>
-                <thead><tr><th>Source</th><th>Held here</th><th>Needed for</th><th>Gap</th><th>Download</th></tr></thead>
+                <thead><tr><th>Source</th><th>Held here</th><th>Needed for</th><th>Download</th></tr></thead>
                 <tbody>
                     {#each answer.sources as at (at.source)}
                         {@const need = at.for_region.need}
+                        {@const reader = at.for_region.read_by ?? at.source}
                         <tr>
                             <td><a href="#/sources/{encodeURIComponent(at.source)}">{at.source}</a></td>
-                            <td>
-                                <span class="pill" data-status={at.held.status}>{STATUSES[at.held.status]}</span>
-                                <span class="soft">
-                                    {at.for_region.read_by
-                                        ? `through ${at.for_region.read_by}`
-                                        : `${at.for_region.held_requests} of ${at.for_region.requests}${at.for_region.held_bytes ? ` · ${size(at.for_region.held_bytes)}` : ""}`}
-                                </span>
-                            </td>
-                            <td>{at.for_region.after_stop ? "after a missing input" : neededFor(answer, at.source).join(", ") || "—"}</td>
-                            <td>{#if need === "held"}—{:else}<span class="pill" data-need={need}>{NEEDS[need]}</span>{/if}</td>
+                            <td><span class="pill" data-need={need}>{NEEDS[need]}</span> <span class="soft">{needNote(at)}</span></td>
+                            <td>{neededFor(answer, at).join(", ") || "—"}</td>
                             <td>
                                 {#if need === "prepare"}
-                                    <a href={prepareHash(at.for_region.read_by ?? at.source, { flag: "--region", value: answer.region })}>Prepare {at.for_region.read_by ?? at.source}…</a>
-                                {:else if need === "download"}{downloadOf(at)}{:else}—{/if}
+                                    <a href={prepareHash(reader, { flag: "--region", value: region })}>Prepare {reader}…</a>
+                                {:else if need === "download"}{bytesNote(at.for_region.download_bytes, at.for_region.unknown_requests)}{:else}—{/if}
                             </td>
                         </tr>
                     {/each}
@@ -166,31 +153,14 @@
         font-weight: 700;
         font-variant-numeric: tabular-nums;
     }
-    .counters span {
+    dd .soft {
+        display: block;
         font-size: 13px;
+        line-height: 18px;
+        font-weight: 400;
     }
     .incomplete {
         padding: 10px 14px;
-    }
-    .legend {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px 16px;
-        margin: 0;
-        padding: 0;
-        list-style: none;
-        font-size: 13px;
-    }
-    .legend li {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
-    .swatch {
-        width: 14px;
-        height: 14px;
-        border-radius: 3px;
-        opacity: 0.7;
     }
     .swatch.outline {
         border: 2px dashed var(--water);

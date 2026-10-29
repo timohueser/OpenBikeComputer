@@ -1,7 +1,7 @@
 <script lang="ts">
     import { boundsOf, nameOf, type Areas } from "../../lib/data/areas";
     import { command } from "../../lib/data/cli";
-    import { fill, onlyPrepareReads, preparedBy, RULES, sizeOf, STATUSES, statusNote, whereOf } from "../../lib/data/holding";
+    import { fill, RULES, sizeOf, STATUSES, statusNote, whereOf } from "../../lib/data/holding";
     import type { CliQuery } from "../../lib/data/query.svelte";
     import { bakeHash, bakeOf, prepareHash, served } from "../../lib/data/screens";
     import { list, size, when, type Status } from "../../lib/data/shapes";
@@ -12,8 +12,8 @@
         groupOf,
         hostsOf,
         isReference,
+        daysText,
         modelsOf,
-        PARTS,
         placeOf,
         policy,
         referenceOf,
@@ -56,9 +56,9 @@
             })
             .sort((a, b) => (b.age ?? -1) - (a.age ?? -1)),
     );
-    const parts = $derived((row.used_by ?? []).map((part) => PARTS[part] ?? part));
     const readers = $derived([...new Set((status.output?.targets ?? []).flatMap((target) => (target.layers ?? []).filter((layer) => layer.reads.includes(row.id)).map((layer) => layer.layer)))]);
-    const by = $derived(onlyPrepareReads(row) ? preparedBy(row) : null);
+    /** The prepared source that reads it, when it is not itself. */
+    const by = $derived(held.prepared_by !== row.id ? held.prepared_by : null);
 
     let days = $state<Record<string, string>>({});
     /** The policy that `--refresh` takes: whole days or `manual`; `null` for another text. */
@@ -79,7 +79,7 @@
     {#if held.archive_files}<p><b>Archive</b> · {held.archive_files.verified} of {held.archive_files.listed} files verified</p>{/if}
     {#each requests as { request, age, due }, i (i)}
         <p>
-            {requestLabel(request, (id) => nameOf(id, areas))} · {request.version}{age === null ? "" : ` · ${age} ${age === 1 ? "day" : "days"} old`} · {size(request.bytes)}{#if due}{" · "}<span class="stale">older than its refresh of {policy(row.refresh)}</span>{/if}
+            {requestLabel(request, (id) => nameOf(id, areas))} · {request.version}{age === null ? "" : ` · ${daysText(age)} old`} · {size(request.bytes)}{#if due}{" · "}<span class="stale">older than its refresh of {policy(row.refresh)}</span>{/if}
         </p>
     {:else}
         {#each row.snapshots as snapshot (snapshot.version)}<p>{snapshot.version} · {size(snapshot.bytes)} in the store</p>{/each}
@@ -87,7 +87,6 @@
     {#if gap}
         <div class="warn gap">
             <p>{gap.text}</p>
-            {#if gap.prepare}<a class="button" href={prepareHash(gap.prepare)}>Prepare {gap.prepare}…</a>{/if}
             {#if gap.command}<code>{command(gap.command)}</code>{/if}
         </div>
     {/if}
@@ -138,7 +137,7 @@
 <section class="card" aria-labelledby="readers">
     <h2 id="readers">Read by</h2>
     {#if by}<p>The prepare of <a href="#/sources/{encodeURIComponent(by)}">{by}</a>; bakes read {by}.</p>{/if}
-    {#if parts.length}<p><b>Products</b> · {list(parts)}</p>{/if}
+    {#if row.used_by?.length}<p><b>Products</b> · {list(row.used_by)}</p>{/if}
     {#if readers.length}<p><b>Layers</b> · {list(readers)}</p>{/if}
 </section>
 
@@ -189,26 +188,6 @@
         margin: 0;
         padding-left: 20px;
         font-variant-numeric: tabular-nums;
-    }
-    .legend {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px 16px;
-        margin: 0;
-        padding: 0;
-        list-style: none;
-        font-size: 13px;
-    }
-    .legend li {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
-    .swatch {
-        width: 14px;
-        height: 14px;
-        border-radius: 3px;
-        opacity: 0.7;
     }
     .target {
         display: flex;

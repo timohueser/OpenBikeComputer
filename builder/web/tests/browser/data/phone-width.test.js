@@ -10,6 +10,7 @@ const ANSWERS = {
   '["runs"]': fixture('runs'),
   '["areas"]': fixture('areas'),
   '["sources"]': fixture('sources'),
+  '["sources","--layer"]': fixture('sources-layers'),
   '["sources","--region","grimsel"]': fixture('sources-region'),
   '["router","prod"]': fixture('router'),
   '["deploy"]': fixture('deploy'),

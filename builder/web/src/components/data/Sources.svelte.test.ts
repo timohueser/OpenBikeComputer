@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import areasExample from "../../../test-support/data/areas.json";
 import review from "../../../test-support/data/prepare-review.json";
+import layers from "../../../test-support/data/sources-layers.json";
 import regionExample from "../../../test-support/data/sources-region.json";
 import sources from "../../../test-support/data/sources.json";
 import example from "../../../test-support/data/status.json";
@@ -45,14 +46,16 @@ const region = {
 };
 
 /** The server answers the reads, a prepare review and a start; the page posts are kept. */
-function screen(hash: string) {
+function screen(hash: string, answer: object = region) {
     const fetch = vi.fn(async (_url: string, init: { body: string }) => {
         const args: string[] = JSON.parse(init.body).args;
         const output =
             args[0] === "sources"
                 ? args[1] === "--region"
-                    ? region
-                    : sources
+                    ? answer
+                    : args[1] === "--layer"
+                      ? layers
+                      : sources
                 : args[0] === "areas"
                   ? areas
                   : args.includes("--dry-run")
@@ -101,7 +104,7 @@ it("lists every source by group with its status, what needs a hand first, and fi
         const osm = [...document.querySelectorAll("details")[1].querySelectorAll("tbody tr")];
         expect(text(osm[0]), "a stale source comes first, with why").toContain("Due again for this computer: 7 days old; the policy is 7 days");
         const glo = cells(rows().find((row) => row.textContent?.includes("copernicus-glo-30"))!);
-        expect(glo).toBe("Terrain of the world at 30 m copernicus-glo-30 Partial 12 requests in the store World store · copernicus-glo-30 48 MB · 549 GB to get 2026-10-02");
+        expect(glo).toBe("Terrain of the world at 30 m copernicus-glo-30 Partial 12 requests in the store World store 48 MB · 549 GB to get 2026-10-02 10 days old");
         const tool = rows().find((row) => row.textContent?.includes("planetiler"))!;
         expect(tool.querySelector<HTMLAnchorElement>('a[href="#/machine"]')?.textContent).toContain("Needs a login: GITHUB_TOKEN");
         expect(text(rows().find((row) => row.textContent?.includes("forest"))!)).toContain("A run stopped without freeing the lock.");
@@ -149,11 +152,15 @@ it("a card gives the requests of a download the oldest first, and the command th
     expect(glo.slice(-2)).toEqual(["Get the rest of its dataset into the archive.", "obc data archive get copernicus-glo-30"]);
     const canopy = screen("#/sources/canopy-ch");
     try {
-        await vi.waitFor(() => expect(text()).toContain("A prepare of forest for its area reads it."));
-        expect(section("On this machine").querySelector("a.button")?.getAttribute("href")).toBe("#/sources/forest/prepare");
-        expect(text(section("Read by"))).toContain("The prepare of forest; bakes read forest.");
+        await vi.waitFor(() => expect(text()).toContain("The prepare of the source that reads it fetches it."));
     } finally {
         await unmount(canopy.shown);
+    }
+    const dtm = screen("#/sources/dtm-ch");
+    try {
+        await vi.waitFor(() => expect(text(section("Read by"))).toContain("The prepare of terrain; bakes read terrain."));
+    } finally {
+        await unmount(dtm.shown);
     }
 });
 
@@ -241,14 +248,19 @@ it("a wiki review pins the region and languages, and changing them hides Start",
     }
 });
 
-it("by layer, each product has a chip for each source that it reads, and no source that only a prepare reads", async () => {
-    const { shown } = screen("#/sources?by=layer");
+it("by layer, each layer of `obc data sources --layer` has a chip for each source, with its status in words", async () => {
+    const { shown, posted } = screen("#/sources?by=layer");
     try {
-        await vi.waitFor(() => expect(document.querySelectorAll("a.pill").length).toBeGreaterThan(0));
-        const chips = (title: string) => [...section(title).querySelectorAll("a.pill")].map((chip) => `${chip.textContent} ${chip.getAttribute("data-status")}`);
-        expect([...document.querySelectorAll("section h2")].map((h2) => h2.textContent)).toEqual(["Bike computer maps", "Planner", "Search", "Trail View"]);
-        expect(chips("Trail View")).toEqual(["geofabrik-extracts live", "copernicus-glo-30 partial", "forest prepared", "terrain prepared", "natural-earth archived"]);
-        expect(text(section("Trail View"))).toContain("1 archived · 2 prepared · 1 partial · 1 live");
+        await vi.waitFor(() => expect(document.querySelectorAll("section a.pill").length).toBe(5));
+        expect(posted()).toEqual([["sources", "--layer"]]);
+        expect([...section("search").querySelectorAll("a.pill")].map((chip) => `${chip.textContent} ${chip.getAttribute("data-status")}`)).toEqual([
+            "osm-planet, Live live",
+            "geofabrik-extracts, Live live",
+            "wiki, Prepared prepared",
+            "query-model, Prepared prepared",
+            "nominatim-country-data, Held held",
+        ]);
+        expect(text(section("search"))).toContain("2 prepared · 1 held · 2 live");
     } finally {
         await unmount(shown);
     }
@@ -262,18 +274,39 @@ it("by region, it runs only the region listing, and gives the counters and what 
         expect([...document.querySelectorAll(".counters div")].map(cells)).toEqual([
             "Sources held 6 of 10",
             "Prepares needed 1 climate",
-            "To download once 0 B and 1 of unknown size",
+            "To download once 1 fetch of unknown size 1 source of unknown need",
             "OSM per update 524 MB",
         ]);
-        const row = (source: string) => cells([...section("Sources").querySelectorAll("tbody tr")].find((tr) => tr.querySelector("a")?.textContent === source)!);
-        expect(row("copernicus-glo-30")).toBe("copernicus-glo-30 Partial 2 of 2 · 241 MB device/terrain — —");
-        expect(row("sentinel-2-mosaics")).toBe("sentinel-2-mosaics Partial 0 of 1 — Download size unknown");
-        expect(row("era5-land")).toBe("era5-land Prepared through climate — Prepare Prepare climate…");
-        expect(row("hr-wsi"), "a source after the stop of its step list").toBe("hr-wsi Partial 0 of 0 after a missing input Unknown —");
-        const prepare = [...section("Sources").querySelectorAll<HTMLAnchorElement>("tbody a")].find((a) => a.textContent === "Prepare climate…")!;
-        expect(prepare.getAttribute("href")).toBe("#/sources/climate/prepare?region=grimsel");
         expect(text(document.querySelector(".incomplete")!)).toMatch(/^planner is incomplete: its step list stops at the store lacks `sentinel-2-mosaics`/);
-        expect([...section("Layers").querySelectorAll("tbody tr")].map(cells)[1]).toBe("planner Unknown Its step list stops, as the note above says.");
+        expect([...section("Layers").querySelectorAll("tbody tr")].map(cells)[1]).toMatch(/^planner Unknown the store lacks `sentinel-2-mosaics`/);
+        const row = (source: string) => cells([...section("Sources").querySelectorAll("tbody tr")].find((tr) => tr.querySelector("a")?.textContent === source)!);
+        expect(row("copernicus-glo-30")).toBe("copernicus-glo-30 Held 2 fetches, 241 MB device/terrain —");
+        expect(row("sentinel-2-mosaics")).toBe("sentinel-2-mosaics Download 0 of 1 fetches held — 1 fetch of unknown size");
+        expect(row("era5-land")).toBe("era5-land Prepare read by climate — Prepare climate…");
+        expect(row("hr-wsi"), "a source after the stop of its step list").toBe("hr-wsi Unknown after a missing input — —");
+        expect([...document.querySelectorAll(".legend li")].map((li) => li.textContent), "terrain covers Grimsel with its version of Central Switzerland").toEqual([
+            "The region",
+            "A version that covers the region",
+        ]);
+    } finally {
+        await unmount(shown);
+    }
+});
+
+it("a region of several areas links its prepare with its own value, and an OSM size it cannot know is not 0 B", async () => {
+    const osm = region.sources.map((at) =>
+        at.source === "geofabrik-extracts" ? { ...at, for_region: { ...at.for_region, need: "download", held_requests: 0, held_bytes: 0, unknown_requests: 1 } } : at,
+    );
+    const areas = "europe/germany,europe/austria";
+    const { shown, posted } = screen(`#/sources?by=region&region=${areas}`, { ...region, region: "areas", sources: osm });
+    try {
+        await vi.waitFor(() => expect(text()).toContain("OSM per update"));
+        expect(posted()).toEqual([["sources", "--region", areas]]);
+        const prepare = [...document.querySelectorAll<HTMLAnchorElement>("tbody a")].find((a) => a.textContent === "Prepare climate…")!;
+        expect(prepare.getAttribute("href")).toBe(`#/sources/climate/prepare?region=${areas}`);
+        const counter = (title: string) => cells([...document.querySelectorAll(".counters div")].find((at) => at.textContent?.startsWith(title))!);
+        expect(counter("OSM per update")).toBe("OSM per update 1 fetch of unknown size");
+        expect(counter("To download once"), "OSM is read again each update, not once").toBe("To download once 1 fetch of unknown size 1 source of unknown need");
     } finally {
         await unmount(shown);
     }

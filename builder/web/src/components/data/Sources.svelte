@@ -50,7 +50,7 @@
         </div>
     </div>
     {#if route.by === "layer"}
-        <SourceLayers {rows} />
+        <SourceLayers />
     {:else if route.by === "region"}
         {#key route.area?.value}<SourceRegion region={route.area?.flag === "--region" ? route.area.value : null} {rows} areas={areas.output} />{/key}
     {:else}

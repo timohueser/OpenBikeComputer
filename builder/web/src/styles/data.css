@@ -248,7 +248,10 @@ body {
 :where(main) [data-status="live"] {
     --tone: var(--status-live);
 }
-:where(main) .pill {
+:where(main) [data-need="unknown"] {
+    --tone: var(--running);
+}
+:where(main) .pill:is([data-status], [data-need]) {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -263,4 +266,37 @@ body {
     font-weight: 650;
     text-decoration: none;
     white-space: nowrap;
+}
+/* Partial and missing are both warm: a missing source also has a dashed edge. */
+:where(main) .pill[data-status="missing"] {
+    border-style: dashed;
+}
+:where(main) .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+/* The key of a map. */
+:where(main .legend) {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: 13px;
+}
+:where(main .legend li) {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+:where(main .swatch) {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    opacity: 0.7;
 }

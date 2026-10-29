@@ -15,10 +15,12 @@ export const SCREENS = [
 
 export type Screen = (typeof SCREENS)[number];
 
-/** The screen of a hash such as `#/runs/ID`: its first segment names the screen. */
+/** The screen of a hash such as `#/runs/ID`: its first segment names the screen. The links of
+ *  the old Downloads and References screens open Sources. */
 export function screenAt(hash: string): Screen {
     const first = hash.replace(/^#\/?/, "").split(/[/?]/)[0];
-    return SCREENS.find((screen) => screen.id === first) ?? SCREENS[0];
+    const id = first === "downloads" || first === "references" ? "sources" : first;
+    return SCREENS.find((screen) => screen.id === id) ?? SCREENS[0];
 }
 
 /** The run of a hash such as `#/runs/ID`, or null on the list of runs. */
