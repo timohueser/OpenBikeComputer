@@ -293,6 +293,21 @@ class ModeGateTests(unittest.TestCase):
             fails, report = repository.gate(base, "fix")
             self.assertTrue(fails, report)
 
+    def test_check_pr_fails_a_fix_over_the_limit_in_an_approved_system(self):
+        docs = [doc("routing", ["route/**"], status="approved")]
+        diff = cairn.modes.Diff(frozenset({"routing"}), lines=1001)
+        with tempfile.TemporaryDirectory() as folder:
+            event = Path(folder) / "event.json"
+            event.write_text(json.dumps({"pull_request": {"body": "Mode: fix"}}))
+            with mock.patch.dict(os.environ, {"GITHUB_EVENT_PATH": str(event)}), \
+                    mock.patch.object(cairn, "gather", return_value=(docs, [], [], [], {})), \
+                    mock.patch.object(cairn, "merge_base", return_value="0" * 40), \
+                    mock.patch.object(cairn, "pr_diff", return_value=diff), \
+                    redirect_stdout(io.StringIO()) as out:
+                code = cairn.main(["check", "--pr", "--base", "develop"])
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertIn("a fix changes at most 1,000 lines outside tests", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
