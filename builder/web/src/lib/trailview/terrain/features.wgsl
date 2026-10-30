@@ -171,9 +171,9 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
 // a track, or nearer to their outer edge than `clear` metres.
 fn kept_off(s: vec2f, clear: f32) -> bool {
     let mask = mask_at(s, u32(ceil(lod(s))), true);
-    // PROTOTYPE (road looks): an unpaved path's trodden tread keeps to within 0.6 m of its middle (trail_look of
+    // PROTOTYPE (road looks): an unpaved path's trodden tread keeps to within 0.7 m of its middle (trail_look of
     // roads/looks.wgsl), so plants grow beside it.
     let trail = mask.kind.x >= 4u && mask.kind.x <= 6u && mask.half < 1.2;
-    let edge = select(mask.edge - mask.walk, mask.edge + mask.half - 0.6, trail);
+    let edge = select(mask.edge - mask.walk, mask.edge + mask.half - 0.7, trail);
     return mask.level != 0u && ((mask.kind.y & TAKEN) != 0u || (mask.kind.x != 0u && edge < select(clear, clear - 0.25, trail)));
 }

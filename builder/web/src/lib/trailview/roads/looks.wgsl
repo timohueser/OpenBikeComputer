@@ -396,10 +396,10 @@ fn trail_look(region: u32, su: vec2f, p: vec2f, across: f32, half: f32, along: f
     let cell = cell_at(su, u32(ceil(lod(su))));
     let rock = rule(cell.b, slot_lithologies() + i32(cell.g)).rgb;
     let soil = mix(mix(rule(region, slot_roads() + 3).rgb, rule(region, slot_roads() + 5).rgb, 0.4), rock * 0.75, 0.85 * rocky);
-    // The tread keeps within 0.55 m of the middle, where kept_off of features.wgsl lets plants grow.
+    // The tread keeps within 0.7 m of the middle, where kept_off of features.wgsl lets plants grow.
     let room = min(max(half - 0.35, 0.05), 0.65);
     let centre = room * 0.45 * (noise(vec2f(along / 13.0, 1.0)) - 0.5) + 0.08 * (noise(vec2f(along / 4.0, 2.0)) - 0.5);
-    let tread = min(0.18 + 0.12 * noise(vec2f(along / 5.0, 3.0)) + 0.08 * rocky, half - 0.05);
+    let tread = min(0.23 + 0.16 * noise(vec2f(along / 5.0, 3.0)) + 0.1 * rocky, half - 0.05);
     let d = frayed(p, tread - abs(across - centre), 0.22);
     // Soil, darker where feet dig in, with grit and small stones.
     let peb = pebbles(p, 0.03, pw);
