@@ -1,5 +1,5 @@
 // PROTOTYPE road system (a study; never merges). The looks of the ways, materials 20 to 39 of the
-// corridors (LOOK of section.ts): asphalt with its grain, wear, repairs, cracks and markings by class;
+// corridors (LOOK of section.ts): asphalt with its grain and tone and markings by class;
 // concrete, setts and pavers; gravel, dirt and grass tracks; trodden trails; steps; a track's ballast,
 // sleepers, rails, rack and cable. Each detail fades to its mean once a pixel spans it, so the far
 // look keeps the colour of the mask's paint. corridor.wgsl calls `look_fragment`, `look_sink` and
@@ -104,63 +104,17 @@ fn asphalt_grain(p: vec2f, pw: f32) -> f32 {
     return t;
 }
 
-// Tar-sealed cracks of asphalt at p, along and across a road `half` metres wide: a share of the pixel.
-fn cracks(p: vec2f, across: f32, half: f32, along: f32, pw: f32, cw: f32, aw: f32) -> f32 {
-    let vis = seen(0.08, pw);
-    if (vis <= 0.0) {
-        return 0.0;
+// The asphalt of a carriageway and of a junction's faces: a function of the place alone, so the ways at a
+// junction and its faces show one surface. Main roads, minor roads and one-way roads share one base near the
+// eye, which turns to each class's own paint of the mask toward the corridors' range.
+fn asphalt(code: u32, region: u32, p: vec2f, pw: f32) -> vec3f {
+    let own = rule(region, slot_roads() + i32(select(code, 1u, code == 7u)) - 1).rgb;
+    var base = own;
+    if (code == 1u || code == 2u || code == 7u) {
+        let mean = 0.5 * (rule(region, slot_roads()).rgb + rule(region, slot_roads() + 1).rgb);
+        base = mix(mean, own, smoothstep(0.4 * corridor_range(), 0.9 * corridor_range(), length(p - look.place.xy)));
     }
-    // The joint in the middle, sealed in stretches.
-    let seam_x = across - 0.03 * (noise(vec2f(along / 3.0, 5.0)) - 0.5);
-    var c = 0.7 * band(seam_x, -0.01, 0.01, cw) * smoothstep(0.45, 0.5, noise(vec2f(along / 25.0, 1.0)));
-    // Cracks across, about every 7 m in some cells.
-    let cell = floor(along / 7.0);
-    let hc = hash(vec2f(cell, 3.0));
-    if (hc < 0.45) {
-        let at = (cell + 0.2 + 0.6 * hash(vec2f(cell, 9.0))) * 7.0 + 0.25 * (noise(vec2f(across / 0.8, cell)) - 0.5) + 0.1 * across * (hc - 0.2);
-        let reach = mix(0.3, 1.0, hash(vec2f(cell, 13.0))) * half;
-        c = max(c, band(along, at - 0.01, at + 0.01, aw) * step(abs(across - (hc - 0.2) * half), reach));
-    }
-    // Map cracks: lines of a noise field where it crosses its mean, in patches.
-    let field = noise(p / 1.6 + 31.0);
-    let fw = max(fwidth(field), 1e-4);
-    let patchy = smoothstep(0.62, 0.7, noise(p / 13.0 + 2.0)) + 0.6 * smoothstep(0.5, 0.15, half - abs(across)) * step(0.5, noise(p / 5.0));
-    c = max(c, min(patchy, 1.0) * (1.0 - smoothstep(0.0, 1.5 * fw + 0.004, abs(field - 0.5))));
-    return c * vis;
-}
-
-// A repair of asphalt along a road: 1 inside a patch, its seal on the edge; x the patch, y its seal.
-fn repairs(across: f32, half: f32, along: f32, cw: f32, aw: f32) -> vec2f {
-    let cell = floor(along / 23.0);
-    let h = hash(vec2f(cell, 41.0));
-    if (h > 0.4) {
-        return vec2f(0.0);
-    }
-    let start = (cell + 0.1 + 0.4 * hash(vec2f(cell, 42.0))) * 23.0;
-    var a0 = start;
-    var a1 = start + 2.0 + 9.0 * hash(vec2f(cell, 43.0));
-    var x0 = 0.0;
-    var x1 = half;
-    let kind = hash(vec2f(cell, 44.0));
-    if (kind < 0.35) {
-        // A trench for a pipe along the road.
-        let at = (hash(vec2f(cell, 45.0)) - 0.5) * 1.4 * half;
-        x0 = at - 0.35;
-        x1 = at + 0.35;
-        a1 = start + 8.0 + 14.0 * hash(vec2f(cell, 46.0));
-    } else if (kind < 0.6) {
-        // A square over a pothole or a manhole's dig.
-        let at = (hash(vec2f(cell, 47.0)) - 0.5) * 1.5 * half;
-        x0 = at - 0.6;
-        x1 = at + 0.6;
-        a1 = start + 1.2;
-    } else if (kind < 0.8) {
-        x0 = -half;
-        x1 = 0.0;
-    }
-    let inside = band(across, x0, x1, cw) * band(along, a0, a1, aw);
-    let seal = inside * (1.0 - band(across, x0 + 0.03, x1 - 0.03, cw) * band(along, a0 + 0.03, a1 - 0.03, aw));
-    return vec2f(inside, seal);
+    return base * asphalt_grain(p, pw);
 }
 
 // The road paint by class: `mat` 21 main roads, 22 motorways and trunks; `oneway` without a middle line.
@@ -197,22 +151,10 @@ fn markings(mat: u32, oneway: bool, across: f32, half: f32, along: f32, cw: f32,
     return m;
 }
 
-// A paved road: `base` its colour, the wheel paths of its lanes polished, the crown lighter, the edges
-// dirtier, repairs, sealed cracks and, by class, markings. Past `half` it is the shoulder: a paved strip
-// on a main road, a gravel verge on a minor one, each fraying into the ground at its outer edge.
-// The asphalt of a junction's faces (roads/junctions.ts): the grain and the map cracks of paved_look, without
-// the lanes, repairs and lines that follow one way.
-fn junction_asphalt(code: u32, region: u32, p: vec2f, pw: f32) -> vec3f {
-    let base = rule(region, slot_roads() + i32(select(code, 1u, code == 7u)) - 1).rgb;
-    let field = noise(p / 1.6 + 31.0);
-    let fw = max(fwidth(field), 1e-4);
-    let tar = smoothstep(0.62, 0.7, noise(p / 13.0 + 2.0)) * (1.0 - smoothstep(0.0, 1.5 * fw + 0.004, abs(field - 0.5))) * seen(0.08, pw);
-    return mix(base * asphalt_grain(p, pw), vec3f(0.035, 0.034, 0.033), 0.85 * tar);
-}
-
+// A paved road: the asphalt of the place and, by class, markings. Past `half` it is the shoulder: a paved
+// strip on a main road, a gravel verge on a minor one, each fraying into the ground at its outer edge.
 fn paved_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, half: f32, along: f32, pw: f32, cw: f32, aw: f32, flags: u32) -> WayLook {
     var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
-    let base = rule(region, slot_roads() + i32(select(code, 1u, code == 7u)) - 1).rgb;
     let x = abs(across);
     let edge = half - x;
     if (edge < 0.0) {
@@ -224,37 +166,15 @@ fn paved_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, half: f32
             out.ground = smoothstep(0.05, 0.45, out_m + 0.18 * (noise(p / 0.6) - 0.5) + 0.1 * (noise(p / 0.17) - 0.5));
         } else {
             // A paved shoulder: the road's asphalt, dustier, with grit; grass creeps over its outer edge.
-            out.albedo = base * 1.08 * asphalt_grain(p, pw) * (1.0 + 0.1 * (noise(p / 0.4) - 0.5));
+            out.albedo = asphalt(code, region, p, pw) * 1.08 * (1.0 + 0.1 * (noise(p / 0.4) - 0.5));
             out.ground = smoothstep(0.42, 0.62, out_m + 0.12 * (noise(p / 0.5) - 0.5) + 0.06 * (noise(p / 0.11) - 0.5));
         }
         return out;
     }
-    var t = asphalt_grain(p, pw);
-    // Stretches resurfaced in different years, each its own tone about the mean that a junction's asphalt takes.
-    let stretch = floor(along / 70.0 + 0.6 * noise(vec2f(along / 70.0, 4.0)));
-    t *= 0.95 + 0.1 * hash(vec2f(stretch, 21.0));
-    // Lanes: two on a road wider than 4.8 m, one elsewhere; the wheels run 0.8 m either side of a lane's middle.
-    let lanes = select(1.0, max(2.0, round(2.0 * half / 3.5)), half >= 2.4);
-    let lane = 2.0 * half / lanes;
-    let in_lane = fract((across + half) / lane) * lane - 0.5 * lane;
-    let wob = 0.06 * (noise(vec2f(along / 11.0, across)) - 0.5);
-    let wheels = smoothstep(0.4, 0.12, abs(abs(in_lane + wob) - 0.85));
-    // Polished wheel paths: darker and smoother; oil down a lane's middle; the crown between lanes lighter.
-    t *= 1.0 - 0.15 * wheels - 0.07 * smoothstep(0.3, 0.0, abs(in_lane)) * (0.6 + 0.8 * noise(vec2f(along / 2.0, across))) * seen(0.5, pw);
-    t *= 1.0 + 0.05 * smoothstep(0.6, 0.0, abs(abs(in_lane) - 0.5 * lane)) * step(1.5, lanes);
-    // The edges: dust and grit, browner.
-    let dirt = smoothstep(0.6, 0.0, edge + 0.15 * (noise(p / 0.8) - 0.5));
-    var c = base * t;
-    c = mix(c, c * vec3f(1.12, 1.06, 0.95) * 1.05, 0.55 * dirt);
-    // Repairs: a darker, finer patch with a tar seal on its edge.
-    let fix = repairs(across, half, along, cw, aw);
-    c = mix(c, base * 0.86 * (0.97 + 0.06 * noise(p / 0.3)), fix.x * 0.8);
-    let tar = max(cracks(p, across, half, along, pw, cw, aw), 0.4 * fix.y);
-    c = mix(c, vec3f(0.035, 0.034, 0.033), 0.85 * tar);
-    out.spec = 0.25 * tar + 0.06 * wheels;
+    var c = asphalt(code, region, p, pw);
     if (mat != LOOK_ASPHALT) {
         let paint = markings(mat, code == 7u, across, half, along, cw, aw, flags);
-        let worn = 1.0 - 0.45 * seen(0.02, pw) * smoothstep(0.6, 0.7, noise(p / 0.018) * 0.6 + noise(p / 0.4) * 0.5) - 0.25 * wheels;
+        let worn = 1.0 - 0.45 * seen(0.02, pw) * smoothstep(0.6, 0.7, noise(p / 0.018) * 0.6 + noise(p / 0.4) * 0.5);
         c = mix(c, rule(region, slot_road_line()).rgb * 1.08, paint * worn);
     }
     out.albedo = c;

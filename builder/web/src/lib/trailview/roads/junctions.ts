@@ -6,13 +6,16 @@
 // sidewalk and the band wrap round it. Each way's side toward a corner stops at the arc's end; a side arm's
 // carriageway starts on the through road's edge. A path that meets a road stops at the road's outer edge;
 // one that crosses a paved town road gets a zebra across it and lowered kerbs at both ends. A minor road
-// that meets a main road gets a give-way line across its mouth.
+// that meets a main road gets a give-way line across its mouth. A road bridge's end is a way of the junction
+// there that its deck draws (structures/bridges.ts): its corners stay sharp, and a side arm's mouth runs from
+// the deck's edge.
 //
 // The plan is made once per tile's lines: each line's stations with cuts (the faces that the sweep leaves
 // out between two stations) and the junction faces that replace them.
-import { metresPerUnit, PATH, PAVED_CODES, PAVING_CODE, ROAD, type Line } from '../terrain/bins';
+import { BRIDGE, isPath, metresPerUnit, PATH, PAVED_CODES, PAVING_CODE, RAIL_CODE, ROAD, type Line } from '../terrain/bins';
 import { cornersOf, halfAt, partnersOf, type Corner as StampCorner } from '../terrain/corners';
 import { gridOf, near } from '../terrain/town';
+import { deckOuter } from '../structures/bridges';
 import type { MeshBuilder } from '../structures/mesh';
 import type { Owns } from '../structures/node';
 import { classLift, corridorColour, quad, vertex, type Ctx, type V } from './corridor';
@@ -52,6 +55,9 @@ interface Way { line: Line; v: number; step: 1 | -1; u: [number, number]; angle:
 /** A corner between ways p and q: the arc's centre, radius and ends (metres about the junction), the edges' meeting point, the normals toward it; each way's side of its line toward it. */
 interface Corner { p: Way; q: Way; o: number[]; r: number; a: number[]; b: number[]; P: number[]; np: number[]; nq: number[]; sp: 1 | -1; sq: 1 | -1; ep?: number[][]; eq?: number[][]; Pp?: number; Pq?: number }
 export interface Junction { x: number; y: number; unit: number; ways: Way[]; corners: Corner[] }
+
+/** A road bridge: a way of the junctions at its ends, which its deck draws, not a corridor. */
+export const isDeck = (line: Line) => line.kind === BRIDGE && !isPath(line) && line.code < RAIL_CODE && line.z.length >= 2;
 
 /** Per line: alongs of its vertices, and what the plan does to it. */
 interface LinePlan {
@@ -104,9 +110,10 @@ function makePlan(lines: Line[]): Plan {
     const usable = (line: Line) => corridorLine(line) && line.z.length >= 2 && (line.kind === ROAD || line.kind === PATH);
     const at = new Map<string, { line: Line; v: number }[]>();
     for (const line of lines) {
-        if (!usable(line)) continue;
+        const deck = isDeck(line);
+        if (!usable(line) && !deck) continue;
         for (let v = 0; v < line.z.length; v++) {
-            if (!(line.anchors?.[v] ?? true)) continue;
+            if ((deck && v > 0 && v + 1 < line.z.length) || !(line.anchors?.[v] ?? true)) continue;
             const key = `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
             (at.get(key) ?? at.set(key, []).get(key)!).push({ line, v });
         }
@@ -117,12 +124,12 @@ function makePlan(lines: Line[]): Plan {
         if (here.length < 2) continue;
         const x = here[0].line.xy[2 * here[0].v], y = here[0].line.xy[2 * here[0].v + 1], unit = metresPerUnit(y);
         const ways = here.flatMap(({ line, v }) => ([-1, 1] as const).filter(step => v + step >= 0 && v + step < line.z.length).map(step => wayOut(line, v, step, unit)));
-        const roads = ways.filter(w => w.line.kind === ROAD), paths = ways.filter(w => w.line.kind === PATH);
-        if (roads.length >= 3) {
+        const roads = ways.filter(w => w.line.kind === ROAD || isDeck(w.line)), ground = roads.filter(w => w.line.kind === ROAD), paths = ways.filter(w => w.line.kind === PATH);
+        if (roads.length >= 3 && ground.length >= 2) {
             const J = roadJunction(x, y, unit, roads, planOf, stamped);
             if (J) junctions.push(J);
         }
-        if (roads.length >= 2 && paths.length >= 1) pathsAt(x, y, unit, roads, paths, planOf);
+        if (ground.length >= 2 && paths.length >= 1) pathsAt(x, y, unit, ground, paths, planOf);
     }
     crossings(lines, usable, planOf);
     // Joins where OSM splits a road and no junction is: the two ends take the mitre of their bend.
@@ -188,6 +195,14 @@ function makePlan(lines: Line[]): Plan {
     const finish = () => {
         if (finished) return;
         finished = true;
+        // A side arm's first metres lie on the through road's surface, banked as it is, so its mouth meets the
+        // through road's edge level; the fit's heights hold the through road's middle only. Where that edge lies
+        // under the side arm, it rises to it first.
+        for (const [s, [left, right]] of raises(info, stations, ids)) {
+            s.z += (left + right) / 2;
+            s.bank += (left - right) / (2 * s.h);
+        }
+        for (const [line, lp] of info) for (const mouth of lp.mouths) conform(line, stations(line), lp.alongs, mouth, stations, ids, lines);
         for (const [line, lp] of info) {
             if (!lp.mouths.length && !lp.ends.length) continue;
             const list = stations(line);
@@ -220,7 +235,7 @@ function makePlan(lines: Line[]): Plan {
             finish();
             for (const J of junctions) {
                 if (!owns(J.x, J.y)) continue;
-                for (const c of J.corners) cornerFaces(J, c, ctxOf, stations, ids, mouthT);
+                for (const c of J.corners) if (!isDeck(c.p.line) && !isDeck(c.q.line)) cornerFaces(J, c, ctxOf, stations, ids, mouthT);
             }
             for (const [line, lp] of info) {
                 const ctx = ctxOf(line);
@@ -287,7 +302,7 @@ function roadJunction(x: number, y: number, unit: number, all: Way[], planOf: (l
     if (!pair) return undefined;
     for (const w of ways) w.through = pair.includes(w);
     // A driveway (a service road or a track without sidewalks) crosses the sidewalk of a town road on a lowered kerb.
-    const drives = ways.filter(w => !w.through && DRIVES.includes(CLASS_NAMES[w.line.profile]) && !w.line.sidewalks?.some(Boolean) && pair!.some(p => kerbedToward(p, w)));
+    const drives = ways.filter(w => !w.through && DRIVES.includes(CLASS_NAMES[w.line.profile]) && !w.line.sidewalks?.some(Boolean) && !pair!.some(p => isDeck(p.line)) && pair!.some(p => kerbedToward(p, w)));
     if (drives.length) {
         ways = ways.filter(w => !drives.includes(w));
         pathsAt(x, y, unit, ways, drives, planOf);
@@ -319,13 +334,15 @@ function roadJunction(x: number, y: number, unit: number, all: Way[], planOf: (l
             if (c.r === 0) c.a = c.b = c.o = P;
             c.P = P;
         }
+        // A deck's edge has its kerb or parapet: no arc rounds it.
+        if (isDeck(p.line) || isDeck(q.line)) Object.assign(c, { r: 0, a: c.P, b: c.P, o: c.P });
         J.corners.push(c);
     }
     // A side arm whose both neighbours are corners with the through road gets its mouth.
     for (const s of ways) {
         if (s.through) continue;
         const left = J.corners.find(c => c.q === s), right = J.corners.find(c => c.p === s);
-        s.side = !!left && !!right;
+        s.side = !isDeck(s.line) && !!left && !!right;
     }
     J.corners = J.corners.filter(c => (c.p.through || c.p.side) && (c.q.through || c.q.side));
     for (const c of J.corners) {
@@ -591,6 +608,107 @@ function surfaceAt(line: Line, list: Station[], ids: Map<Line, number>, x: numbe
     return best;
 }
 
+/** A side arm leaves the through road's surface over this many metres past its mouth. */
+const CONFORM_M = 10;
+/**
+ * The stamped ground holds a side arm at its own heights: its surface never sinks under them. Where the through
+ * road's banked edge lies lower, that edge rises (at most RAISE_M) about its other edge instead, fully within
+ * FLAT_M of the junction and back over FLATTEN_M more.
+ */
+const RAISE_M = 0.3, FLAT_M = 4, FLATTEN_M = 10;
+
+/** The height of a road's surface at a point near it, from its stations: its banked plane, held level past its edges. */
+function planeAt(line: Line, list: Station[], ids: Map<Line, number>, x: number, y: number): { z: number; lat: number } | undefined {
+    let best: { z: number; lat: number } | undefined, least = Infinity;
+    const unit = metresPerUnit(y);
+    for (let k = 0; k + 1 < list.length; k++) {
+        const s = list[k], t = list[k + 1], dx = (t.x - s.x) * unit, dy = (t.y - s.y) * unit, l2 = dx * dx + dy * dy || 1;
+        const ex = (x - s.x) * unit, ey = (y - s.y) * unit, u = Math.max(0, Math.min(1, (ex * dx + ey * dy) / l2));
+        const d = Math.hypot(ex - u * dx, ey - u * dy);
+        if (d >= least) continue;
+        least = d;
+        const lat = (ex * dy - ey * dx) / Math.sqrt(l2), h = lerp(s.h, t.h, u);
+        best = { z: lerp(s.z, t.z, u) + LIFT_M + lerp(s.bank, t.bank, u) * Math.max(-h, Math.min(h, lat)) + classLift(line, ids.get(line) ?? 0), lat };
+    }
+    return best;
+}
+
+/** A mouth's side arm: the along of its junction's station, its direction away from it, and its station at the mouth's far end. */
+function armOf(line: Line, list: JStation[], alongs: number[], mouth: LinePlan['mouths'][number]) {
+    // The junction's station by its place, and the mouth's metres from it on the plan's chords.
+    const { x: jx, y: jy } = mouth.J, base = list.reduce((a, s) => (Math.hypot(s.x - jx, s.y - jy) < Math.hypot(a.x - jx, a.y - jy) ? s : a), list[0]).along;
+    const dir = mouth.end === 0 ? 1 : -1, v = Array.from({ length: line.z.length }, (_, k) => k).find(k => line.xy[2 * k] === jx && line.xy[2 * k + 1] === jy) ?? 0;
+    const far = Math.abs(mouth.far - alongs[v]), at = (d: number) => list.reduce((a, s) => (Math.abs((s.along - base) * dir - d) < Math.abs((a.along - base) * dir - d) ? s : a), list[0]);
+    return { base, dir, far, at };
+}
+
+/** The rise of each through road's edges near the mouths whose side arms lie higher than them: per station, left and right. */
+function raises(info: Map<Line, LinePlan>, stations: (line: Line) => JStation[], ids: Map<Line, number>): Map<Station, [number, number]> {
+    const out = new Map<Station, [number, number]>();
+    for (const [line, lp] of info) for (const mouth of lp.mouths) {
+        const list = stations(line), arm = armOf(line, list, lp.alongs, mouth), at = arm.at(arm.far), lift = classLift(line, ids.get(line) ?? 0);
+        for (const t of new Set(mouth.J.ways.filter(w => w.through && !isDeck(w.line)).map(w => w.line))) {
+            const tl = stations(t), p = planeAt(t, tl, ids, at.x, at.y);
+            const need = p && at.z + LIFT_M + lift - p.z;
+            if (!p || !need || need <= 0) continue;
+            const rise = Math.min(RAISE_M, need), side = p.lat > 0 ? 0 : 1, { x: jx, y: jy } = mouth.J;
+            const tb = tl.reduce((a, s) => (Math.hypot(s.x - jx, s.y - jy) < Math.hypot(a.x - jx, a.y - jy) ? s : a), tl[0]).along;
+            for (const s of tl) {
+                const w = 1 - smooth(Math.max(0, Math.min(1, (Math.abs(s.along - tb) - FLAT_M) / FLATTEN_M)));
+                if (w <= 0) continue;
+                const r = out.get(s) ?? out.set(s, [0, 0]).get(s)!;
+                r[side] = Math.max(r[side], rise * w);
+            }
+        }
+    }
+    return out;
+}
+
+/**
+ * Moves a side arm's stations at a mouth onto the through roads' surface, and back to its own heights over
+ * CONFORM_M past the mouth. Where its core still lies on a through deck's footprint, it stays on the deck's level.
+ */
+function conform(line: Line, list: JStation[], alongs: number[], mouth: LinePlan['mouths'][number], stations: (line: Line) => JStation[], ids: Map<Line, number>, lines: Line[]): void {
+    const through = [...new Set(mouth.J.ways.filter(w => w.through).map(w => w.line))], lift = classLift(line, ids.get(line) ?? 0);
+    const arm = armOf(line, list, alongs, mouth), { base, dir } = arm;
+    const target = (s: Station) => {
+        let best: { z: number; lat: number } | undefined;
+        for (const t of through) {
+            const p = planeAt(t, stations(t), ids, s.x, s.y);
+            if (p && (!best || Math.abs(p.lat) < Math.abs(best.lat))) best = p;
+        }
+        return best && best.z - LIFT_M - lift;
+    };
+    const decks = through.filter(isDeck).map(t => ({ list: stations(t), outer: deckOuter(t, lines) })), core = line.h + 0.6;
+    let far = arm.far;
+    for (const s of dir > 0 ? list : [...list].reverse()) {
+        const d = (s.along - base) * dir;
+        if (d > far && d < far + CONFORM_M && decks.some(k => [-core, 0, core].some(a => onDeck(k.list, k.outer, s.x + s.ax * a, s.y + s.ay * a)))) far = d;
+    }
+    const at = arm.at(far), zFar = target(at);
+    if (zFar === undefined) return;
+    const shift = Math.max(0, Math.min(0.5, zFar - at.z));
+    for (const s of list) {
+        const d = (s.along - base) * dir;
+        if (d < 0 || d > far + CONFORM_M) continue;
+        const z = d <= far ? target(s) : undefined;
+        s.z = z !== undefined ? Math.max(z, s.z) : s.z + shift * (1 - smooth(Math.min(1, (d - far) / CONFORM_M)));
+    }
+}
+
+/** Whether a point lies on a deck between its ends and within its outer edges (left, right), by its stations. */
+function onDeck(list: Station[], outer: [number, number], x: number, y: number): boolean {
+    const unit = metresPerUnit(y);
+    for (let k = 0; k + 1 < list.length; k++) {
+        const s = list[k], t = list[k + 1], dx = (t.x - s.x) * unit, dy = (t.y - s.y) * unit, l2 = dx * dx + dy * dy || 1;
+        const ex = (x - s.x) * unit, ey = (y - s.y) * unit, u = (ex * dx + ey * dy) / l2;
+        if (u < 0 || u > 1) continue;
+        const lat = (ex * dy - ey * dx) / Math.sqrt(l2);
+        if (lat <= outer[0] && -lat <= outer[1]) return true;
+    }
+    return false;
+}
+
 /** The world point of a junction's local metres. */
 const world = (J: { x: number; y: number; unit: number }, p: number[]) => [J.x + p[0] / J.unit, J.y + p[1] / J.unit];
 
@@ -654,14 +772,14 @@ function cornerFaces(J: Junction, c: Corner, ctxOf: (line: Line) => Ctx | undefi
     };
     // The ring's parts at f, with a ring at the arc's centre where the parts pass it.
     const partsAt = (f: number): Part[] => A.map((pa, i) => ({ a: lerp(pa.a, B[i].a, f), dz: lerp(pa.dz, B[i].dz, f), mat: (ka ? pa : B[i]).mat, flags: pa.flags }));
-    const za = zOf(cp, sa, c.sp * c.p.line.h, LIFT_M), zb = zOf(cq, sb, c.sq * c.q.line.h, LIFT_M);
+    const za = zOf(cp, sa, c.sp * sa.h, LIFT_M), zb = zOf(cq, sb, c.sq * sb.h, LIFT_M);
     const prio = Math.max(cp.prio, cq.prio), code = c.p.through ? c.p.line.code : c.q.through ? c.q.line.code : Math.min(c.p.line.code, c.q.line.code);
     const half_ = Math.min(c.p.line.h, c.q.line.h);
     // A ring's vertex at f in material `mat`: at the ends, the ways' own (so the faces meet theirs exactly); between, the arc's.
     // The ways' edges curve away from the straight lines that the arc was fitted to: the arc's columns shift
     // by the miss at each end, blended along it, so its ends meet the ways' own sections.
     const local = (s: Station, a: number) => [(s.x + s.ax * a - J.x) * J.unit, (s.y + s.ay * a - J.y) * J.unit];
-    const la = local(sa, c.sp * c.p.line.h), lb = local(sb, c.sq * c.q.line.h), e0 = [la[0] - c.a[0], la[1] - c.a[1]], e1 = [lb[0] - c.b[0], lb[1] - c.b[1]];
+    const la = local(sa, c.sp * sa.h), lb = local(sb, c.sq * sb.h), e0 = [la[0] - c.a[0], la[1] - c.a[1]], e1 = [lb[0] - c.b[0], lb[1] - c.b[1]];
     const shifted = (p: number[], f: number) => {
         const t = smooth(f);
         return [p[0] + lerp(e0[0], e1[0], t), p[1] + lerp(e0[1], e1[1], t)];
@@ -683,10 +801,12 @@ function cornerFaces(J: Junction, c: Corner, ctxOf: (line: Line) => Ctx | undefi
         heights.set(f, z - LIFT_M);
         return z - LIFT_M;
     };
+    // Each ring vertex tells the look its metres past the edge with a positive `across`: the two ends lie on
+    // opposite sides of their lines, and a strip between signed ends would cross the carriageway's middle.
     const at = (f: number, part: Part, mat: number): W => {
         const flags = part.flags ?? 0, sampled = (flags & 3) !== 0;
-        if (f === 0) return { ...vertex(cp, sa, c.sp * (c.p.line.h + part.a), part.dz, mat, flags), z: sampled ? part.dz : zOf(cp, sa, c.sp * (c.p.line.h + part.a), part.dz) };
-        if (f === 1) return { ...vertex(cq, sb, c.sq * (c.q.line.h + part.a), part.dz, mat, flags), z: sampled ? part.dz : zOf(cq, sb, c.sq * (c.q.line.h + part.a), part.dz) };
+        if (f === 0) return { ...vertex(cp, sa, c.sp * (sa.h + part.a), part.dz, mat, flags, sa.h + part.a), z: sampled ? part.dz : zOf(cp, sa, c.sp * (sa.h + part.a), part.dz) };
+        if (f === 1) return { ...vertex(cq, sb, c.sq * (sb.h + part.a), part.dz, mat, flags, sb.h + part.a), z: sampled ? part.dz : zOf(cq, sb, c.sq * (sb.h + part.a), part.dz) };
         const [px, py] = world(J, shifted(ring(part.a, f), f)), z = sampled ? part.dz : baseZ(f) + part.dz;
         // A band vertex holds the road's height (as vertex of corridor.ts).
         return { i: b.vertex(px, py, sampled ? baseZ(f) : z, corridorColour(mat, code, flags, prio), half_ + part.a, half_, 0), x: px, y: py, z };
@@ -708,13 +828,13 @@ function cornerFaces(J: Junction, c: Corner, ctxOf: (line: Line) => Ctx | undefi
         // One way's edge from its arc end to the edges' meeting point P: a through way's stations up to its station at P; a
         // side arm's up to its first whole station T, then the through way's vertex at P.
         const along = c.p.through ? c.Pp : c.Pq;
-        const P = along === undefined ? undefined : edgeChain(c.p.through ? cp : cq, c.p.through ? lpA : lpB, c.p.through ? c.sp : c.sq, along, along, JMAT.FILLET)[0];
+        const P = along === undefined ? undefined : edgeChain(c.p.through ? cp : cq, c.p.through ? lpA : lpB, c.p.through ? c.sp : c.sq, along, along, JMAT.FILLET, code)[0];
         const half = (w: Way, ctx: Ctx, list: Station[], side: 1 | -1, se: Station, along: number | undefined): W[] | undefined => {
-            if (w.through) return along === undefined ? undefined : edgeChain(ctx, list, side, se.along, along, JMAT.FILLET);
+            if (w.through) return along === undefined ? undefined : edgeChain(ctx, list, side, se.along, along, JMAT.FILLET, code);
             const T = mouthT(w);
             if (!T || !P) return undefined;
             const beyond = w.step > 0 ? se.along > T.along : se.along < T.along;
-            return [...edgeChain(ctx, list, side, se.along, beyond ? T.along : se.along, JMAT.FILLET), P];
+            return [...edgeChain(ctx, list, side, se.along, beyond ? T.along : se.along, JMAT.FILLET, code), P];
         };
         const hp = half(c.p, cp, lpA, c.sp, sa, c.Pp), hq = half(c.q, cq, lpB, c.sq, sb, c.Pq);
         if (hp && hq && hp.length && hq.length) {
@@ -737,13 +857,13 @@ function alongOfVertex(line: Line, v: number): number {
     return along;
 }
 
-/** The edge vertices of a planned line on side `side`, from along `from` to `to` (both ends included), in material `mat`. */
-function edgeChain(ctx: Ctx, list: Station[], side: 1 | -1, from: number, to: number, mat: number): W[] {
+/** The edge vertices of a planned line on side `side`, from along `from` to `to` (both ends included), in material `mat` on a surface of `code`. */
+function edgeChain(ctx: Ctx, list: Station[], side: 1 | -1, from: number, to: number, mat: number, code: number): W[] {
     const lo = Math.min(from, to) - 0.011, hi = Math.max(from, to) + 0.011, out: W[] = [];
     for (const st of list) {
         if (st.along < lo || st.along > hi) continue;
-        const a = side * ctx.line.h;
-        out.push({ ...vertex(ctx, st, a, LIFT_M, mat), z: st.z + LIFT_M + st.bank * a + ctx.lift });
+        const a = side * st.h;
+        out.push({ ...vertex(ctx, st, a, LIFT_M, mat, 0, a, code), z: st.z + LIFT_M + st.bank * a + ctx.lift });
     }
     return from <= to ? out : out.reverse();
 }
@@ -771,24 +891,30 @@ function zipper(b: MeshBuilder, A: W[], B: W[]): void {
 
 /** A side arm's mouth: its carriageway from the through road's own edge vertices to its first whole station T. */
 function mouthFaces(ctx: Ctx, mouth: LinePlan['mouths'][number], ctxOf: (line: Line) => Ctx | undefined, stations: (line: Line) => JStation[]): void {
-    const T = mouth.T!, chain: W[] = [];
+    // The mouth is the through road's surface, as its corners' fillets are.
+    const T = mouth.T!, chain: W[] = [], code = (mouth.edge[1].p.through ? mouth.edge[1].p : mouth.edge[1].q).line.code;
     // The through road's edge from the mouth's left corner to its right one, along one line or two that meet at the junction.
     for (const side of [1, -1] as const) {
         const c = mouth.edge[side], onP = c.p.through, t = onP ? c.p : c.q, along = onP ? c.Pp : c.Pq, tc = ctxOf(t.line);
         if (along === undefined || !tc) return;
-        const list = stations(t.line), j = list.find(st => Math.abs(st.along - alongOfVertex(t.line, t.v)) < 0.011)?.along ?? along;
-        const part = edgeChain(tc, list, onP ? c.sp : c.sq, side > 0 ? along : j, side > 0 ? j : along, JMAT.FILLET);
+        // The junction's station, by its place: a station's along is metres on the curve, the plan's on the chords.
+        const list = stations(t.line), vx = t.line.xy[2 * t.v], vy = t.line.xy[2 * t.v + 1];
+        const j = list.reduce((a, st) => (Math.hypot(st.x - vx, st.y - vy) < Math.hypot(a.x - vx, a.y - vy) ? st : a), list[0]).along;
+        const part = edgeChain(tc, list, onP ? c.sp : c.sq, side > 0 ? along : j, side > 0 ? j : along, JMAT.FILLET, code);
         if (!part.length) return;
         chain.push(...(chain.length && Math.hypot(chain[chain.length - 1].x - part[0].x, chain[chain.length - 1].y - part[0].y) < 1 ? part.slice(1) : part));
     }
-    const road = carriageway(ctx.line), across = road.map(p => ({ ...vertex(ctx, T, p.a, p.dz, JMAT.FILLET), z: 0 }));
+    const road = carriageway(ctx.line, T.h, T.bank), across = road.map(p => ({ ...vertex(ctx, T, p.a, p.dz, JMAT.FILLET, 0, p.a, code), z: 0 }));
     if (chain.length < 2) return;
     zipper(ctx.b, chain, across);
 }
 
-/** A line's zebras, lowered kerbs and give-way lines: the faces that its cuts left out, in their own materials. */
+/**
+ * A line's zebras, lowered kerbs and give-way lines: the faces that its cuts left out, in their own materials, on
+ * each station's own cross-section (its half-width, and the crown that its banking flattens), as the sweep's.
+ */
 function markings(ctx: Ctx, lp: LinePlan, owns: Owns): void {
-    const list = lp.stations!, { line } = ctx, road = carriageway(line);
+    const list = lp.stations!, { line } = ctx, road = (st: Station) => carriageway(line, st.h, st.bank), n = road(list[0]).length;
     const own = (s: Station) => owns(s.x, s.y);
     for (const at of lp.zebras) {
         // The stripes run straight across a bend: each vertex carries its metres across the zebra's own straight middle line.
@@ -796,14 +922,14 @@ function markings(ctx: Ctx, lp: LinePlan, owns: Owns): void {
         if (k0 < 0) continue;
         const s0 = k0 > 0 && list[k0].along > at + 1e-3 ? mixStation(list[k0 - 1], list[k0], (at - list[k0 - 1].along) / (list[k0].along - list[k0 - 1].along)) : list[k0];
         const nl = Math.hypot(s0.ax, s0.ay), N = [s0.ax / nl, s0.ay / nl], m = metresPerUnit(s0.y);
-        const zv = (st: Station, part: Part): V => {
-            const x = st.x + st.ax * part.a, y = st.y + st.ay * part.a, z = st.z + part.dz + st.bank * part.a + ctx.lift;
-            return { i: ctx.b.vertex(x, y, z, corridorColour(JMAT.ZEBRA, line.code, 0, ctx.prio), part.a, line.h, ((x - s0.x) * N[0] + (y - s0.y) * N[1]) * m), x, y };
+        const zv = (st: Station, i: number): V => {
+            const part = road(st)[i], x = st.x + st.ax * part.a, y = st.y + st.ay * part.a, z = st.z + part.dz + st.bank * part.a + ctx.lift;
+            return { i: ctx.b.vertex(x, y, z, corridorColour(JMAT.ZEBRA, line.code, 0, ctx.prio), part.a, st.h, ((x - s0.x) * N[0] + (y - s0.y) * N[1]) * m), x, y };
         };
         for (let k = 0; k + 1 < list.length; k++) {
             const s = list[k], t = list[k + 1], mid = (s.along + t.along) / 2;
             if (Math.abs(mid - at) > ZEBRA_HALF_M || !own(s)) continue;
-            for (let i = 0; i + 1 < road.length; i++) quad(ctx.b, [zv(s, road[i]), zv(s, road[i + 1]), zv(t, road[i + 1]), zv(t, road[i])], 1);
+            for (let i = 0; i + 1 < n; i++) quad(ctx.b, [zv(s, i), zv(s, i + 1), zv(t, i + 1), zv(t, i)], 1);
         }
     }
     for (const { lo, hi, sides } of lp.lowered) {
@@ -817,9 +943,9 @@ function markings(ctx: Ctx, lp: LinePlan, owns: Owns): void {
             };
             for (const side of [1, -1] as const) {
                 if (!(sides & (side > 0 ? 1 : 2))) continue;
-                const lowered = (st: Station) => sideOf(line, side, s.v).map(p => ({ ...p, a: side * p.a, dz: p.mat === MAT.KERB ? p.dz - KERB_RISE_M + rise(st) : p.dz }));
+                const lowered = (st: Station) => sideOf(line, side, t.v, st.h).map(p => ({ ...p, a: side * p.a, dz: p.mat === MAT.KERB ? p.dz - KERB_RISE_M + rise(st) : p.dz }));
                 const ps = lowered(s), pt = lowered(t);
-                let is: Part = { a: side * line.h, dz: road[0].dz, mat: MAT.PAINT }, it = is;
+                let is: Part = { a: side * s.h, dz: road(s)[0].dz, mat: MAT.PAINT }, it: Part = { a: side * t.h, dz: road(t)[0].dz, mat: MAT.PAINT };
                 for (let i = 0; i < ps.length; i++) {
                     const v = (st: Station, part: Part, mat: number) => vertex(ctx, st, part.a, part.dz, mat, part.flags ?? 0);
                     quad(ctx.b, [v(s, is, ps[i].mat), v(s, ps[i], ps[i].mat), v(t, pt[i], ps[i].mat), v(t, it, ps[i].mat)], side);
@@ -833,14 +959,14 @@ function markings(ctx: Ctx, lp: LinePlan, owns: Owns): void {
         // Each vertex carries its metres back from the line; the colour's parameter says which side the approaching lane is
         // on (traffic keeps right: the left of a line that leaves the junction).
         const code = line.code | ((dir > 0 ? 0 : 1) << 4) | ((reach > GIVE_WAY_M ? 1 : 0) << 5);
-        const gv = (st: Station, part: Part): V => {
-            const x = st.x + st.ax * part.a, y = st.y + st.ay * part.a, z = st.z + part.dz + st.bank * part.a + ctx.lift;
-            return { i: ctx.b.vertex(x, y, z, corridorColour(JMAT.GIVE_WAY, code, 0, ctx.prio), part.a, line.h, Math.abs(st.along - at)), x, y };
+        const gv = (st: Station, i: number): V => {
+            const part = road(st)[i], x = st.x + st.ax * part.a, y = st.y + st.ay * part.a, z = st.z + part.dz + st.bank * part.a + ctx.lift;
+            return { i: ctx.b.vertex(x, y, z, corridorColour(JMAT.GIVE_WAY, code, 0, ctx.prio), part.a, st.h, Math.abs(st.along - at)), x, y };
         };
         for (let k = 0; k + 1 < list.length; k++) {
             const s = list[k], t = list[k + 1], mid = (s.along + t.along) / 2;
             if (mid < lo || mid > hi || !own(s)) continue;
-            for (let i = 0; i + 1 < road.length; i++) quad(ctx.b, [gv(s, road[i]), gv(s, road[i + 1]), gv(t, road[i + 1]), gv(t, road[i])], 1);
+            for (let i = 0; i + 1 < n; i++) quad(ctx.b, [gv(s, i), gv(s, i + 1), gv(t, i + 1), gv(t, i)], 1);
         }
     }
 }

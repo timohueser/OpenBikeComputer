@@ -26,8 +26,8 @@ const TRIANGLE_STROKE_M: f32 = 0.15;
 fn junction_surface(mat: u32, region: u32, param: u32, road: vec2f, along: f32, p: vec2f, w: f32, along_w: f32) -> vec4f {
     let code = param & 15u;
     // The asphalt of the ways about it, without their lines.
-    var c = junction_asphalt(code, region, p, w * look.screen.z);
-    // Worn paint: thinner where the wheels run.
+    var c = asphalt(code, region, p, w * look.screen.z);
+    // Worn paint, in patches.
     let wear = 0.82 + 0.18 * noise(p / 0.7);
     if (mat == MAT_ZEBRA) {
         // A zebra's faces carry their metres across its straight middle line in `along`.
