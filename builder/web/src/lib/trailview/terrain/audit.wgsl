@@ -239,8 +239,8 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
-// The stamps of the two nodes of a pair at a texel of each side of their border: equal intervals give
-// equal heights from any base.
+// The stamps of the two nodes of a pair at a texel of each side of their border: equal intervals and
+// equal bounds to round give equal heights from any base.
 @compute @workgroup_size(64)
 fn apron(@builtin(global_invocation_id) id: vec3u) {
     let pair = pairs[id.y];
@@ -253,7 +253,8 @@ fn apron(@builtin(global_invocation_id) id: vec3u) {
     let a = stamp_at(pair.level, pair.first_a, pair.data_a, p);
     let b = stamp_at(pair.level, pair.first_b, pair.data_b, p);
     atomicAdd(&counts[APRON_CHECKS], 1u);
-    if (bitcast<u32>(a.lo) != bitcast<u32>(b.lo) || bitcast<u32>(a.hi) != bitcast<u32>(b.hi) || a.conflict != b.conflict || bitcast<u32>(a.water) != bitcast<u32>(b.water)) {
+    let rounds = a.cut != b.cut || a.fill != b.fill || (a.cut && bitcast<u32>(a.cut_x) != bitcast<u32>(b.cut_x)) || (a.fill && bitcast<u32>(a.fill_x) != bitcast<u32>(b.fill_x));
+    if (bitcast<u32>(a.lo) != bitcast<u32>(b.lo) || bitcast<u32>(a.hi) != bitcast<u32>(b.hi) || a.conflict != b.conflict || bitcast<u32>(a.water) != bitcast<u32>(b.water) || rounds) {
         atomicAdd(&counts[APRON_CHECKS + 1u], 1u);
         let n = atomicAdd(&counts[FOUND], 1u);
         if (n < FOUND_MAX) {

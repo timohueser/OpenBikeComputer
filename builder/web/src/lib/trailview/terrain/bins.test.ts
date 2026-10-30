@@ -23,15 +23,22 @@ function cellOf(data: Uint32Array, node: { level: number; x: number; y: number }
     return { entries, origin };
 }
 
-/** The gates of stamp-core.wgsl in JavaScript: its f32 constants and the functions that the gates call, as written there. */
-function shaderGates(): Record<'road_shows' | 'path_shows' | 'sea_shows', (h: number, ...rest: unknown[]) => boolean> {
-    const constants = [...shader.matchAll(/^const (\w+): f32 = ([^;]+);/gm)].map(([, name, value]) => `const ${name} = ${value};`);
-    const functions = ['reach_limit', 'gate_texel', 'road_shows', 'path_shows', 'water_lift', 'sea_shows'].map(name => {
-        const [, args, body] = new RegExp(`fn ${name}\\(([^)]*)\\) -> \\w+ \\{([^}]*)\\}`).exec(shader)!;
-        return `function ${name}(${args.replace(/: \w+/g, '')}) {${body.replace(/\blet\b/g, 'const').replace(/\b(max|min)\(/g, 'Math.$1(').replace(/\bf32\(/g, '(').replace(/(\d)u\b/g, '$1')}}`;
+/** Functions of a shader in JavaScript, as written there, with its f32 constants. */
+function shaderFunctions<T>(source: string, names: string[]): T {
+    const constants = [...source.matchAll(/^const (\w+): f32 = ([^;]+);/gm)].map(([, name, value]) => `const ${name} = ${value};`);
+    const functions = names.map(name => {
+        const start = source.indexOf(`fn ${name}(`), open = source.indexOf('{', start), args = /\(([^)]*)\)/.exec(source.slice(start))![1];
+        let at = open + 1;
+        for (let depth = 1; depth > 0; at++) depth += source[at] === '{' ? 1 : source[at] === '}' ? -1 : 0;
+        const body = source.slice(open + 1, at - 1).replace(/\blet\b/g, 'const').replace(/\bvar\b/g, 'let').replace(/\b(max|min|abs)\(/g, 'Math.$1(').replace(/\bf32\(/g, '(').replace(/(\d)u\b/g, '$1');
+        return `function ${name}(${args.replace(/: \w+/g, '')}) {${body}}`;
     });
-    return new Function(`${constants.join('\n')}\n${functions.join('\n')}\nreturn { road_shows, path_shows, sea_shows };`)();
+    const smoothstep = 'function smoothstep(a, b, x) { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); }';
+    return new Function(`${smoothstep}\n${constants.join('\n')}\n${functions.join('\n')}\nreturn { ${names.join(', ')} };`)();
 }
+
+/** The gates of stamp-core.wgsl in JavaScript. */
+const shaderGates = () => shaderFunctions<Record<'road_shows' | 'path_shows' | 'sea_shows', (h: number, ...rest: unknown[]) => boolean>>(shader, ['reach_limit', 'gate_texel', 'road_shows', 'path_shows', 'water_lift', 'sea_shows']);
 
 const lakeNode = () => {
     const { rings } = features(fixture(TILE.level, TILE.x, TILE.y), TILE).lakes[0], xs = rings[0].filter((_, i) => i % 2 === 0), ys = rings[0].filter((_, i) => i % 2 === 1);
@@ -80,6 +87,37 @@ describe('the stamp data of a node', () => {
         expect([(word(13) << 8) >> 24, (word(13) | 0) >> 24]).toEqual([25, 25]);
         const unit = metresPerUnit(line.xy[1]), left = [line.xy[0] + (100 + 2 * Math.SQRT1_2 / unit), line.xy[1] + (100 - 2 * Math.SQRT1_2 / unit)] as [number, number];
         expect(roadHeight(line, left, 3 / unit, unit)).toBeCloseTo(1000.1, 3);
+    });
+
+    it('reads the mitres and the bank in the words that a record packs them in', () => {
+        expect([/let ma = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/, /let mb = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/, /let bank = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/].map(word => Number(word.exec(shader)?.[1]))).toEqual([9, 10, 11]);
+    });
+
+    it('stamps a ditch only on the level with two texels in it, as deep as the class says at its bottom', () => {
+        const { ditch_depth: depth, gate_texel: texel } = shaderFunctions<{ ditch_depth: (x: number, depth: number) => number; gate_texel: (level: number) => number }>(shader, ['ditch_depth', 'gate_texel']);
+        const end = Number(/const DITCH_END_M: f32 = ([\d.]+);/.exec(shader)?.[1]);
+        expect([depth(0, 0.3), depth(0.4, 0.3), depth(0.7, 0.3), depth(end, 0.3)]).toEqual([0, 0.3, 0.3, 0]);
+        expect([18, 17].map(level => 2 * texel(level) <= end)).toEqual([true, false]);
+    });
+
+    it('rounds the top of a cut and the foot of a fill far from the road, and keeps the crease beside it', () => {
+        const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8');
+        const { rounded } = shaderFunctions<{ rounded: (base: number, s: object) => number }>(stamp, ['rounded']);
+        const cut = (x: number) => ({ cut: true, hi: 10, cut_x: x, fill: false }), fill = (x: number) => ({ fill: true, lo: 10, fill_x: x, cut: false });
+        // Beside the road the slope meets the ground in a crease: the bound and nothing else.
+        expect([rounded(12, cut(1)), rounded(9, cut(1)), rounded(8, fill(1)), rounded(11, fill(1))]).toEqual([10, 9, 10, 11]);
+        // Past SOFT_FULL_M it rounds over DAYLIGHT_M: a fifth of a metre at the crease, nothing at the ends of the arc.
+        expect(rounded(10, cut(5))).toBeCloseTo(9.8, 6);
+        expect(rounded(10, fill(5))).toBeCloseTo(10.2, 6);
+        expect([rounded(10.8, cut(5)), rounded(9.2, fill(5))]).toEqual([10, 10]);
+        // It never falls as the base rises.
+        for (let base = 8; base < 12; base += 0.05) expect(rounded(base + 0.05, cut(5))).toBeGreaterThanOrEqual(rounded(base, cut(5)) - 1e-9);
+    });
+
+    it('marks a shoulder in a bit of the mask that no sidewalk reaches, and both shaders know the bit', () => {
+        const bit = (name: string) => Number(/const SHOULDER_BIT: u32 = (\d+)u;/.exec(readFileSync(new URL(name, import.meta.url), 'utf8'))?.[1]);
+        expect(bit('./stamp.wgsl')).toBe(bit('./features.wgsl'));
+        expect(Math.max(...Object.values(PROFILES).map(({ walk }) => walk)) / 0.1).toBeLessThan(bit('./stamp.wgsl'));
     });
 
     it('shows a line on the levels where the gates of stamp-core.wgsl show it', () => {
