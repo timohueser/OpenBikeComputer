@@ -3,7 +3,7 @@
 // requests.
 //
 //   npm run pretest:trailview --prefix builder/web/tests/browser     # build against the fixture
-//   node builder/web/tests/browser/trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--cracks N] [--audit N]
+//   node builder/web/tests/browser/trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--cracks N] [--audit N] [--resolve MS]
 //
 // A pass prints its median, p95 and max over the frames that ran it, their number, and `amortized`,
 // its time summed over the flight per frame: the `ground` compute runs only on frames with arriving pages.
@@ -18,8 +18,10 @@
 // dense village node is one such page), and the jobs by kind. --lab adds `lab=LAB` to each view. --cracks N
 // draws with the red clear colour and counts the red pixels of every Nth frame as it is, pages in
 // flight too: the flight must look down on known terrain. --audit N waits until every Nth frame is
-// idle and adds up its invariant audit (`trailView.audit()`). --gpu draws 2560 × 1600 pixels on the machine's GPU in a browser window,
-// with exact timestamps. Without it SwiftShader draws on the CPU, and its times say nothing about a GPU.
+// idle and adds up its invariant audit (`trailView.audit()`). --resolve names the expected median of the
+// `resolve` pass, a fixed load per pixel: a flight past RESOLVE_DRIFT_MS prints `valid: false`. --gpu
+// draws 2560 × 1600 pixels on the machine's GPU, headless on Linux and in a window on macOS, with exact
+// timestamps. Without it SwiftShader draws on the CPU, and its times say nothing about a GPU.
 
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -35,14 +37,17 @@ const { values } = parseArgs({
         lab: { type: 'string' },
         cracks: { type: 'string' },
         audit: { type: 'string' },
+        resolve: { type: 'string' },
         gpu: { type: 'boolean' },
     },
 });
+/** The owner's limit: past it, the GPU clock moved or another job ran, and the flight does not count. */
+const RESOLVE_DRIFT_MS = 0.02;
 const flights = JSON.parse(readFileSync(values.flights, 'utf8'));
 const { origin, close } = await serve();
 const browser = await launch(values.gpu);
 /**
- * Keeps the GPU at its high clock: macOS lowers the clock while a frame leaves the GPU time to spare, so
+ * Keeps the GPU at its high clock: macOS and the NVIDIA driver lower the clock while a frame leaves the GPU time to spare, so
  * a pass then measures much longer than its work. Before each submit of the engine, a compute load
  * writes the node buffer without a change, so the terrain pass waits for it and never overlaps it. It reaches into the engine, so it lives here and not in the engine.
  */
@@ -52,7 +57,7 @@ function heat() {
 @group(0) @binding(0) var<storage, read_write> nodes: array<u32>;
 @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id: vec3u) {
     var x = f32(id.x) * 1e-6;
-    for (var i = 0u; i < 20000u; i++) { x = fma(x, 0.999999, 1e-7); }
+    for (var i = 0u; i < 80000u; i++) { x = fma(x, 0.999999, 1e-7); }
     nodes[id.x % 1024u] = nodes[id.x % 1024u] | select(0u, 1u, x < -1.0);
 }` });
     const pipeline = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } });
@@ -136,9 +141,13 @@ try {
         const passes = [...new Set(frames.flatMap(frame => Object.keys(frame.gpu)))];
         const last = frames.at(-1), stats = await page.evaluate(() => ({ ...window.trailView.stats(), pools: [...window.trailView.stats().pools] }));
         const of = key => frames.map(frame => frame.terrain[key]);
+        const gpu = Object.fromEntries(passes.map(pass => [pass, timed(frames.map(frame => frame.gpu[pass]).filter(ms => ms !== undefined), frames.length)]));
+        // The rounding keeps 0.81 - 0.79 within a limit of 0.02. A flight with no `resolve` is not valid.
+        const valid = +Math.abs(gpu.resolve?.median - Number(values.resolve)).toFixed(2) <= RESOLVE_DRIFT_MS;
         console.log(JSON.stringify({
             flight: flight.name, adapter: stats.adapter, frames: frames.length,
-            gpu: Object.fromEntries(passes.map(pass => [pass, timed(frames.map(frame => frame.gpu[pass]).filter(ms => ms !== undefined), frames.length)])),
+            ...(values.resolve ? { valid } : {}),
+            gpu,
             stamp: stampLine(frames),
             cpu: summary(frames.map(frame => frame.cpu)), selection: summary(of('selection')),
             nodes: summary(of('nodes')), triangles: summary(of('triangles')), quality: summary(of('quality')),

@@ -8,16 +8,16 @@ import { PMTiles } from 'pmtiles';
 export const SWIFTSHADER = ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader'];
 /** A Chromium other than the one Playwright installed, such as /opt/pw-browsers/chromium. */
 export const EXECUTABLE = process.env.OBC_CHROMIUM || undefined;
+/** WebGPU on the machine's GPU. Chromium on Linux gives no adapter without Vulkan. */
+const GPU = ['--enable-webgpu-developer-features', ...(process.platform === 'linux' ? ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-angle=vulkan', '--ignore-gpu-blocklist'] : [])];
 /**
- * The browser of a script: with `gpu`, the machine's GPU in a window, else SwiftShader headless. With
- * OBC_BROWSER_WS set, it connects to that Playwright browser server instead, so GPU runs reuse one
- * window; closing it then only disconnects.
+ * The browser of a script: with `gpu` the machine's GPU, else SwiftShader. Only a GPU `window` is not
+ * headless, and macOS keeps one by default: its GPU is proven in a window only. With OBC_BROWSER_WS set,
+ * it connects to that Playwright browser server instead; closing it then only disconnects.
  */
-export function launch(gpu) {
+export function launch(gpu, window = process.platform !== 'linux') {
     if (process.env.OBC_BROWSER_WS) return chromium.connect(process.env.OBC_BROWSER_WS);
-    // Chromium on Linux gives no WebGPU adapter without Vulkan.
-    const linux = process.platform === 'linux' ? ['--enable-unsafe-webgpu', '--enable-features=Vulkan'] : [];
-    return chromium.launch({ executablePath: EXECUTABLE, headless: !gpu, args: gpu ? ['--enable-webgpu-developer-features', ...linux] : SWIFTSHADER });
+    return chromium.launch({ executablePath: EXECUTABLE, headless: !(gpu && window), args: gpu ? GPU : SWIFTSHADER });
 }
 export const DIST = new URL('../../../dist/trailview/', import.meta.url).pathname;
 const FIXTURE = new URL('./fixture/terrain/', import.meta.url).pathname;
