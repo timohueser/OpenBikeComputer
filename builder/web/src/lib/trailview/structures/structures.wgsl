@@ -98,7 +98,7 @@ const ROAD_RANGE_M: f32 = 16.0;
 
 @vertex
 fn structure_vertex(v: StructureIn) -> StructureOut {
-    let u = vec2f(v.at - surface.anchor) + corridor_fine(v.colour, v.road);
+    let u = vec2f(v.at - surface.anchor) + corridor_fine(v.colour, v.road) + detail_offset(v.at, v.colour, v.road * ROAD_RANGE_M, v.sleepers);
     let s = lod_space(u);
     let flags = u32(round(v.colour.a * 255.0));
     var out: StructureOut;

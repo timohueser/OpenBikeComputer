@@ -3,14 +3,15 @@
 // and the kerb profile of a town street with its lowered kerbs at driveways.
 //
 // The worker knows no terrain heights, so the CPU builds every candidate rail, post and wall, and the vertex
-// stage (details.wgsl) decides from the stamped ground whether it stands: a barrier vertex samples the ground
-// beside and along the road, and collapses under the band where the drop or the cut is not there. Ends ramp
-// down smoothly, as real terminals do.
+// stage (details.wgsl) decides from the stamped ground whether it stands: per station, from the ground beside
+// and along the road, so a detail stands whole or sinks whole under the band. Ends ramp down smoothly, as real
+// terminals do.
 //
-// A barrier vertex (CF.BARRIER) holds: x, y its plan position; z the road edge's height at its station;
-// `across` its metres past the reference edge E (outer edge of the shoulder); `half` its height code (metres
-// over the road edge; under -5, metres over the ground at the vertex minus 10; over 5, metres over the wall
-// top plus 6); `along` the packed outward angle and grade; the colour's parameter byte the CPU's ramp.
+// A barrier vertex (CF.BARRIER) holds: x, y its station's point on the reference edge E (outer edge of the
+// shoulder), so every vertex of a station samples the same ground; z the road edge's height there; `across`
+// its metres past E; `half` its height code (metres over the road edge; under -5, metres over the ground
+// under the detail minus 10; over 5, metres over the wall top plus 6); `along` the packed outward angle, grade
+// and centimetres along; the colour's parameter byte the CPU's ramp.
 import { metresPerUnit, ROAD, walkOf, type Building, type Line } from '../terrain/bins';
 import { LEFT, near, RIGHT, townOf, type Town } from '../terrain/town';
 import type { MeshBuilder } from '../structures/mesh';
@@ -36,17 +37,28 @@ const RAMP_M = 5, MOUTH_M = 5;
 /** A town: this many buildings within TOWN_M. */
 const TOWN_BUILDINGS = 3, TOWN_M = 40;
 
-/** The W-beam, closed: metres past E and metres over the road edge, the face toward the road first. */
-const BEAM: [number, number][] = [[0.42, 0.44], [0.36, 0.49], [0.4, 0.595], [0.36, 0.7], [0.42, 0.75], [0.45, 0.595]];
-/** A post: its middle past E, half its depth across and its width along, its top over the road edge; the blockout between it and the beam. */
-const POST_A = 0.5, POST_HALF = [0.05, 0.04], POST_TOP = 0.71;
-/** A delineator: its middle past E, half its depth and width, its heights over the ground. */
-const DELI_A = 0.55, DELI_HALF = [0.05, 0.06], DELI_Z = [0, 0.74, 0.9, 1.0];
-/** The wall's face past E, its foot under the road edge; its capstone; the ledge of ground behind it, and how far past it the ledge dives under the ground. */
-const WALL_A = 0.03, WALL_FOOT = -0.25, CAP_A = [-0.01, 0.37], LEDGE_M = 1.0, LEDGE_DIVE = [0.2, 0.6];
-
 /** Height codes of `half`: over the ground, over the wall top. */
 const OVER_GROUND = -10, OVER_WALL = 6;
+
+/** The W-beam, closed: metres past E and metres over the road edge, the face toward the road first. Its top is RAIL_TOP_M of details.wgsl. */
+const BEAM: [number, number][] = [[0.42, 0.44], [0.36, 0.49], [0.4, 0.595], [0.36, 0.7], [0.42, 0.75], [0.45, 0.595]];
+/**
+ * A post and the blockout that holds the beam off it, one L in metres past E and height codes, counter-clockwise:
+ * the post's foot in the ground, its top (POST_TOP_M of details.wgsl), the blockout from inside the beam's back
+ * to the post. Half its width along.
+ */
+const POST: [number, number, number][] = [
+    [0.57, OVER_GROUND - 0.3, DM.RAIL_POST], [0.67, OVER_GROUND - 0.3, DM.RAIL_POST], [0.67, 0.71, DM.RAIL_POST],
+    [0.44, 0.71, DM.RAIL_BLOCK], [0.44, 0.5, DM.RAIL_BLOCK], [0.57, 0.5, DM.RAIL_POST],
+];
+const POST_HALF = 0.04;
+/** A delineator: its middle past E, half its depth and width, its heights over the ground. */
+const DELI_A = 0.55, DELI_HALF = [0.05, 0.06], DELI_Z = [0, 0.74, 0.9, 1.0];
+/**
+ * The wall's face past E, its foot under the road edge, its top inside the capstone; the capstone; the ledge of
+ * ground behind it, and how far past it the ledge dives under the ground (WALL_GROUND_M of details.wgsl).
+ */
+const WALL_A = 0.03, WALL_FOOT = -0.25, WALL_TOP = -0.02, CAP_A = [-0.01, 0.37], LEDGE_M = 1.0, LEDGE_DIVE = [0.2, 0.6];
 
 /** The kerb of a town street: its face, its bevel, its top; the sidewalk; the edging stone at the sidewalk's outer edge. */
 export function kerbParts(a: number, dz: number, walk: number): Part[] {
@@ -167,10 +179,11 @@ function townish(town: Town, x: number, y: number, unit: number): boolean {
     return count >= TOWN_BUILDINGS;
 }
 
-/** The packed outward angle and grade of `along`, as details.wgsl unpacks them. */
-function packed(ox: number, oy: number, grade: number): number {
-    const angle = Math.round(((Math.atan2(oy, ox) + Math.PI) / (2 * Math.PI)) * 4096) & 4095;
-    return angle * 4096 + Math.max(0, Math.min(4095, Math.round(grade * 4096 + 2048)));
+/** The packed outward angle, grade and centimetres along (-7..7) of `along`, as detail_frame of details.wgsl unpacks them: 24 bits, whole in an f32. */
+function packed(ox: number, oy: number, grade: number, al: number): number {
+    const angle = Math.round(((Math.atan2(oy, ox) + Math.PI) / (2 * Math.PI)) * 1024) & 1023;
+    const g = Math.max(0, Math.min(1023, Math.round(grade * 1024 + 512))), cm = Math.max(0, Math.min(15, Math.round(al * 100) + 8));
+    return (angle * 1024 + g) * 16 + cm;
 }
 
 /** A point of a detail on the CPU: its vertex, and its place in metres east, north, up of an origin. */
@@ -186,7 +199,9 @@ function dv(sd: Side, s: Station, ramp: number, grade: number, a: number, al: nu
     if (!v) {
         const ox = side * s.ax, oy = side * s.ay, fx = -s.ay, fy = s.ax;
         const x = s.x + ox * (E + a) + fx * al, y = s.y + oy * (E + a) + fy * al, edge = s.z + LIFT_M + s.bank * side * E;
-        v = { i: b.vertex(x, y, edge, corridorColour(mat, Math.round(255 * ramp), CF.BARRIER), a, dz, packed(ox, oy, side * grade)), x, y };
+        // The vertex holds its station's point; details.wgsl's frame runs along `side` times the line's direction.
+        const word = packed(ox, oy, side * grade, side * al);
+        v = { i: b.vertex(s.x + ox * E, s.y + oy * E, edge, corridorColour(mat, Math.round(255 * ramp), CF.BARRIER), a, dz, word), x, y };
         if (key !== undefined) sd.made.set(key, v);
     }
     const { i, x, y } = v;
@@ -256,7 +271,7 @@ export function roadside(b: MeshBuilder, line: Line, st: Station[], j: number, p
             beam(sd, s, t, rs, rt, gs, gt);
             for (let p = Math.ceil(s.along / POST_M) * POST_M; p < t.along; p += POST_M) {
                 const u = (p - s.along) / Math.max(t.along - s.along, 1e-6), at = lerp(s, t, u), r = rs + (rt - rs) * u, g = gs + (gt - gs) * u;
-                box(sd, at, r, g, [POST_A - POST_HALF[0], POST_A + POST_HALF[0]], POST_HALF[1], [OVER_GROUND - 0.3, POST_TOP], DM.RAIL_POST);
+                post(sd, at, r, g);
             }
         }
         if (delineated && c.mouth[j] >= 1 && c.mouth[j + 1] >= 1) {
@@ -290,6 +305,23 @@ function beam(sd: Side, s: Station, t: Station, rs: number, rt: number, gs: numb
     }
 }
 
+/** A guardrail's post with its blockout: the L of POST swept across its width, its foot open. */
+function post(sd: Side, s: Station, r: number, g: number): void {
+    const v = (al: number) => POST.map(([a, dz, mat]) => dv(sd, s, r, g, a, al, dz, mat, s)), lo = v(-POST_HALF), hi = v(POST_HALF), n = POST.length;
+    for (let k = 1; k < n; k++) {
+        const [a0, z0] = POST[k], [a1, z1] = POST[(k + 1) % n];
+        // Counter-clockwise in (across, up): the outward normal is (dz, -da).
+        face(sd.b, [lo[k], lo[(k + 1) % n], hi[(k + 1) % n], hi[k]], outOf(sd, s, z1 - z0, -(a1 - a0)));
+    }
+    // The ends: the L as two quads about its inner corner.
+    const fx = -s.ay, fy = s.ax, l = Math.hypot(fx, fy) || 1;
+    for (const [p, dir] of [[lo, -1], [hi, 1]] as const) {
+        const out: [number, number, number] = [(dir * fx) / l, (-dir * fy) / l, 0];
+        face(sd.b, [p[5], p[0], p[1], p[2]], out);
+        face(sd.b, [p[5], p[2], p[3], p[4]], out);
+    }
+}
+
 /** A delineator post: white, a black band with an amber reflector toward the road, a white cap. */
 function delineator(sd: Side, s: Station, r: number, g: number): void {
     const a: [number, number] = [DELI_A - DELI_HALF[0], DELI_A + DELI_HALF[0]], h = DELI_HALF[1], z = DELI_Z.map(v => v + OVER_GROUND);
@@ -303,7 +335,7 @@ function delineator(sd: Side, s: Station, r: number, g: number): void {
 
 /** The retaining wall between stations s and t: a vertical masonry face, its capstone, and a ledge of the ground it holds back. */
 function wall(sd: Side, s: Station, t: Station, rs: number, rt: number, gs: number, gt: number): void {
-    const prof: [number, number, number][] = [[WALL_A, WALL_FOOT, DM.WALL], [WALL_A, OVER_WALL - 0.08, DM.WALL]];
+    const prof: [number, number, number][] = [[WALL_A, WALL_FOOT, DM.WALL], [WALL_A, OVER_WALL + WALL_TOP, DM.WALL]];
     const cap: [number, number, number][] = [[CAP_A[0], OVER_WALL - 0.08, DM.CAP], [CAP_A[0], OVER_WALL + 0.04, DM.CAP], [CAP_A[1], OVER_WALL + 0.04, DM.CAP], [CAP_A[1], OVER_WALL - 0.03, DM.CAP]];
     // The ground behind the wall: a ledge at its top, then down under the stamped ground. A cut that climbs past
     // the wall's top covers the ledge; a ledge that ran back up the cut would lie on it and fight it.
