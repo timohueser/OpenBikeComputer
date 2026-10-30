@@ -140,28 +140,34 @@ pub fn selected_by(entry: &Entry, tags: &Tags) -> BTreeSet<(String, String)> {
     matching.flat_map(|s| s.iter().map(|(key, _)| (key.clone(), tags[key].clone()))).collect()
 }
 
-/// The road classes of the step's options: the fields of `CLASS_FIELDS` of each class of the table, in
-/// its order. The stamp profile is not an option, so a change to it does not bake again.
+/// The road classes of the step's options: the name and the fields of `CLASS_FIELDS` of each class of
+/// the table. The stamp profile is not an option, so a change to it does not bake again. The rows are an
+/// array, because the key of a step sorts the keys of an object and the junctions rank by this order.
 pub fn solver_rows(table: &Value) -> Value {
     let rows = table.as_object().into_iter().flatten().map(|(name, row)| {
         let fields = row.as_object().into_iter().flatten().filter(|(field, _)| CLASS_FIELDS.contains(&field.as_str()));
-        (name.clone(), Value::Object(fields.map(|(field, value)| (field.clone(), value.clone())).collect()))
+        let name = ("class".to_string(), Value::from(name.as_str()));
+        Value::Object(fields.map(|(field, value)| (field.clone(), value.clone())).chain([name]).collect())
     });
-    Value::Object(rows.collect())
+    Value::Array(rows.collect())
 }
 
 /// The road classes of `solver_rows`, or an error that names the first row that breaks a rule. The table lists the
 /// classes from the most important down, as the junctions rank them; `path` and `road` are the rows
 /// of a way whose class the table lacks.
 pub fn classes(table: &Value) -> Result<(Vec<String>, Classes), String> {
-    let rows = table.as_object().filter(|t| t.contains_key("road") && t.contains_key("path"));
-    let rows = rows.ok_or("The road classes are an object with the rows road and path")?;
+    let name_of = |row: &Value| row["class"].as_str().unwrap_or_default().to_string();
+    let names: Vec<String> = table.as_array().into_iter().flatten().map(name_of).collect();
+    if !names.iter().any(|n| n == "road") || !names.iter().any(|n| n == "path") {
+        return Err("The road classes are an array with the rows road and path".into());
+    }
+    let rows = table.as_array().unwrap();
     let number = |v: &Value| v.as_f64().is_some_and(|n| n >= 0.0);
     let mut out = Vec::new();
-    for (name, row) in rows {
+    for (name, row) in names.iter().zip(rows) {
         let fields = row
             .as_object()
-            .is_some_and(|r| r.len() == CLASS_FIELDS.len() && CLASS_FIELDS.iter().all(|f| r.contains_key(*f)));
+            .is_some_and(|r| r.len() == CLASS_FIELDS.len() + 1 && CLASS_FIELDS.iter().all(|f| r.contains_key(*f)));
         let grade = &row["grade"];
         let ok = fields
             && CLASS_FIELDS.iter().filter(|f| **f != "grade").all(|f| number(&row[*f]))
@@ -174,7 +180,6 @@ pub fn classes(table: &Value) -> Result<(Vec<String>, Classes), String> {
         let grade = grade.as_f64().unwrap_or(f64::INFINITY);
         out.push(Class { grade, smooth_m: row["smooth_m"].as_f64().unwrap(), rail: RAILS.contains(&name.as_str()) });
     }
-    let names: Vec<String> = rows.keys().cloned().collect();
     let path = names.iter().position(|n| n == "path").unwrap();
     Ok((names, Classes { rows: out, path }))
 }
@@ -215,6 +220,9 @@ mod tests {
         assert_eq!((names[0].as_str(), names[classes.path].as_str()), ("rail", "path"));
         table["path"]["tilt"] = 0.3.into();
         assert_eq!(solver_rows(&table), rows, "the stamp profile is not an option of the step");
+        let reversed =
+            Value::Object(table.as_object().unwrap().iter().rev().map(|(k, v)| (k.clone(), v.clone())).collect());
+        assert_ne!(solver_rows(&reversed), rows, "the order of the classes is part of the options");
         table["road"]["grade"] = 1.0.into();
         assert!(super::classes(&solver_rows(&table)).is_err());
     }
