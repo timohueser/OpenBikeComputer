@@ -21,6 +21,8 @@ const PIER_GAP_M: f64 = 2.0;
 const MIN_SPAN_M: f64 = 6.0;
 /// A pier keeps this far from a waterway's edge and a road's.
 const BANK_M: f64 = 1.0;
+/// A line farther than this from a bridge does not hold a pier off it.
+pub const REACH_M: f64 = 50.0;
 /// The half-width of a way without a `width` tag, the widest of its class in the engine (PAVED and
 /// PATH_HALF of bins.ts).
 const MAIN: [&str; 7] = ["motorway", "trunk", "primary", "secondary", "motorway_link", "trunk_link", "primary_link"];
@@ -197,7 +199,7 @@ fn lines<'a>(items: &[(f64, &'a [[f64; 2]])]) -> Boxed<(f64, &'a [[f64; 2]])> {
 fn runs(xy: &[[f64; 2]], lines: &Boxed<(f64, &[[f64; 2]])>, areas: &Boxed<&[&[[f64; 2]]]>) -> Vec<(usize, usize)> {
     let mut wet = vec![false; xy.len()];
     let scale: Vec<f64> = xy.iter().map(|p| metres(p[1])).collect();
-    let reach = 50.0 / scale.iter().copied().fold(f64::INFINITY, f64::min);
+    let reach = REACH_M / scale.iter().copied().fold(f64::INFINITY, f64::min);
     let [x0, y0, x1, y1] = bounds(xy);
     let (lo, hi) = ([x0 - reach, y0 - reach], [x1 + reach, y1 + reach]);
     for &(half, line) in lines.near(lo, hi) {

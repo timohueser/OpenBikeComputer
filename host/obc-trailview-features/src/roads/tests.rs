@@ -60,11 +60,16 @@ impl Place {
         }
     }
 
-    /// Metres along the curve of a solved way and its heights.
-    pub(super) fn profile(&self, part: &Option<Way>) -> (Vec<f64>, Vec<f64>) {
+    /// The curve of a solved way.
+    fn curve(&self, part: &Option<Way>) -> crate::Part {
         let way = part.as_ref().unwrap();
         let (points, z, plan) = (way.points.clone(), Some(way.z.clone()), Some(way.plan.clone()));
-        let curve = polyline(&crate::Part { outer: false, points, z, plan });
+        polyline(&crate::Part { outer: false, points, z, plan })
+    }
+
+    /// Metres along the curve of a solved way and its heights.
+    pub(super) fn profile(&self, part: &Option<Way>) -> (Vec<f64>, Vec<f64>) {
+        let curve = self.curve(part);
         let mut along = vec![0.0];
         for pair in curve.points.windows(2) {
             let d = [pair[1][0] - pair[0][0], pair[1][1] - pair[0][1]];
@@ -129,13 +134,16 @@ fn a_hairpin_climbs_within_the_grade_of_its_class() {
     let corners = [(0.0, 0.0), (300.0, 36.0), (312.0, 41.0), (316.0, 46.0), (312.0, 51.0), (300.0, 56.0), (0.0, 92.0)];
     let road = way("tertiary", place.line(&corners, Some(20.0)), plain);
     let solved = run(&[road], &terrain, &[]);
-    let (along, z) = place.profile(&solved.ways[0][0]);
-    let grades: Vec<f64> = (1..z.len()).map(|i| (z[i] - z[i - 1]) / (along[i] - along[i - 1])).collect();
-    // The fit shortens the tip of the hairpin, and the heights stay: the grade there passes the limit.
-    assert!(grades.iter().all(|&g| g <= 0.15 * 1.25 && g > 0.0));
-    let tip: Vec<usize> = (0..grades.len()).filter(|&i| grades[i] > 0.15 + 1e-4).collect();
-    let middle = (along[tip[0]] + along[tip[tip.len() - 1]]) / 2.0;
-    assert!(tip.iter().all(|&i| (along[i] - middle).abs() < 20.0), "{tip:?}");
+    let curve = place.curve(&solved.ways[0][0]);
+    let z = curve.z.unwrap();
+    for k in 1..z.len() {
+        let (a, b) = (place.east_north(curve.points[k - 1]), place.east_north(curve.points[k]));
+        let grade = (z[k] - z[k - 1]) / (b.0 - a.0).hypot(b.1 - a.1);
+        assert!(grade > 0.0);
+        // The solve holds the grade on the line of OSM. The fit shortens the tip, and the heights stay.
+        let tip = ((a.0 + b.0) / 2.0 - 316.0).hypot((a.1 + b.1) / 2.0 - 46.0);
+        assert!(tip < 25.0 || grade <= 0.15 + 1e-4, "{grade} at {tip} m from the tip");
+    }
     assert!((z[0] - 1000.0).abs() < 0.5);
     assert!((z[z.len() - 1] - (1000.0 + 0.30 * 92.0)).abs() < 0.5);
 }

@@ -191,6 +191,60 @@ fn two_bake_areas_meet_within_2_cm_and_half_a_degree_across_classes_and_ways_aga
     }
 }
 
+/// The distance from `point` to the polyline `line`, in metres.
+fn off_line(place: &Place, point: [f64; 2], line: &[[f64; 2]]) -> f64 {
+    let gap = |a: [f64; 2], b: [f64; 2]| {
+        let (d, e) = ([b[0] - a[0], b[1] - a[1]], [point[0] - a[0], point[1] - a[1]]);
+        let t = ((e[0] * d[0] + e[1] * d[1]) / (d[0] * d[0] + d[1] * d[1]).max(1e-30)).clamp(0.0, 1.0);
+        (e[0] - t * d[0]).hypot(e[1] - t * d[1]) / place.unit
+    };
+    line.windows(2).map(|s| gap(s[0], s[1])).fold(f64::INFINITY, f64::min)
+}
+
+#[test]
+fn the_ways_over_a_seam_keep_their_tolerances_though_the_two_jobs_round_apart() {
+    let place = engelberg();
+    let (_, classes) = table();
+    let (_, mut tight) = table();
+    tight.rows.iter_mut().for_each(|row| row.keep_m = 0.005);
+    for layout in 0..48 {
+        // Long ways: a job holds a stroke that its neighbour cuts elsewhere, so a tangent can round apart.
+        let (ways, length) = (7, 900.0);
+        let from = seam(&place) - 3.5 * length + 13.0 * layout as f64;
+        let shape = (5.0 + 0.25 * layout as f64, 400.0 + 11.0 * layout as f64);
+        let features = wavy(&place, from, (ways, length), shape, &["secondary"], |_| false);
+        let refs: Vec<&Feature> = features.iter().collect();
+        let apart = solve_by_area(&refs, &[], &flat, &[], &classes, usize::MAX);
+        let fit = solve(&refs, &flat, &[], &tight, None);
+        for (f, way) in apart.ways.iter().enumerate() {
+            let way = way[0].as_ref().unwrap();
+            let fit = fit.ways[f][0].as_ref().unwrap();
+            let fit = polyline(&crate::Part {
+                outer: false,
+                points: fit.points.clone(),
+                z: Some(fit.z.clone()),
+                plan: Some(fit.plan.clone()),
+            })
+            .points;
+            let plan: Vec<Plan> = way.plan.iter().map(|p| Plan { tangent: rounded_tangent(p.tangent), ..*p }).collect();
+            let curve = polyline(&crate::Part {
+                outer: false,
+                points: way.points.clone(),
+                z: Some(way.z.clone()),
+                plan: Some(plan),
+            });
+            for &p in &curve.points {
+                let off = off_line(&place, p, &fit);
+                assert!(off < 0.32, "layout {layout}, way {f}: the curve leaves the fit by {off} m");
+            }
+            for &p in fit.iter() {
+                let sag = off_line(&place, p, &way.points);
+                assert!(sag < 2.1, "layout {layout}, way {f}: a chord leaves the fit by {sag} m");
+            }
+        }
+    }
+}
+
 #[test]
 fn each_end_of_a_run_of_known_heights_stays_a_vertex() {
     let place = engelberg();

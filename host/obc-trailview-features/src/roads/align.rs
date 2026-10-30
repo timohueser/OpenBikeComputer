@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::area::area_of;
 use super::curve::{arc, bessel, hermite, lengths, penalised, smooth_along, tangents, LEAST_STEP_M};
 use super::network::{dot, hypot, sub, Network};
 use super::{Classes, Way, SAMPLE_M};
@@ -462,11 +463,17 @@ pub(crate) fn align(
         for (&(w, forward), list) in pieces.iter().zip(&lists) {
             let order: Vec<usize> = list.iter().map(|l| l.0).collect();
             let unknown = |k: usize| samples.z[order[k]].is_nan();
+            // Each job keeps its part of a way alone: a stop at the first vertex of OSM in each area lets
+            // the job that owns a chord test it, whatever the job past its end keeps.
+            let area = |&(i, _): &(usize, bool)| area_of([samples.x[i], samples.y[i]]);
+            let osm: Vec<&(usize, bool)> = list.iter().filter(|l| l.1).collect();
+            let entries: HashSet<usize> = osm.windows(2).filter(|p| area(p[0]) != area(p[1])).map(|p| p[1].0).collect();
             let stops: Vec<usize> = (0..order.len())
                 .filter(|&k| {
                     k == 0
                         || k + 1 == order.len()
                         || samples.pin[order[k]]
+                        || entries.contains(&order[k])
                         || unknown(k - 1) != unknown(k)
                         || unknown(k + 1) != unknown(k)
                 })

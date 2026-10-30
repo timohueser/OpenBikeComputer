@@ -15,7 +15,7 @@ use crate::roads::{self, Classes, River};
 use crate::structures::{self, class_of, is_bridge, is_track, leading_number, road_half};
 use crate::tiles::{simplified, Geometry, Tiles, BUFFER_M, EXTENT, FORMAT, MAX_ZOOM, MIN_ZOOM, TOLERANCE};
 use crate::water::{self, Kind, Level};
-use crate::{lifts, rails, sea, world, Part, Tags, Terrain};
+use crate::{lifts, metres, rails, sea, world, Part, Tags, Terrain};
 
 const EARTH_RADIUS_KM: f64 = 6371.0088;
 /// The waterways and lakes that the water solver sets, and the falls, weirs and dams that keep the
@@ -269,14 +269,11 @@ pub fn bake(
                 .collect();
             // A pier stands on the curve of its deck, and beside the curve of a road under it.
             let deck_curves: Vec<Part> = decks.iter().map(|&n| roads::polyline(&ways[n].2[0])).collect();
-            let deck_boxes = Boxes::new(&deck_curves.iter().map(|p| bounds(&p.points)).collect::<Vec<_>>());
-            let under: Vec<(f64, Part)> = ways
+            let grounded = ways
                 .iter()
                 .filter(|(e, tags, _)| !is_bridge(&kinds[*e].kind, tags))
-                .flat_map(|(_, tags, parts)| parts.iter().map(move |p| (road_half(tags), p)))
-                .filter(|(_, p)| !deck_boxes.overlapping(bounds(&p.points)).is_empty())
-                .map(|(half, p)| (half, roads::polyline(p)))
-                .collect();
+                .flat_map(|(_, tags, parts)| parts.iter().map(move |p| (road_half(tags), p)));
+            let under = near_decks(&deck_curves, grounded);
             let under: Vec<(f64, &[[f64; 2]])> = under.iter().map(|(half, p)| (*half, p.points.as_slice())).collect();
             let deck_ways: Vec<structures::Way> = decks
                 .iter()
@@ -378,6 +375,20 @@ pub fn bake(
     out.insert("bytes_per_km2".into(), (size as f64 / area_km2(options.bounds)).round_ties_even().into());
     out.extend(metrics.into_iter().filter(|(_, v)| !v.as_object().is_some_and(Map::is_empty)));
     Ok(Value::Object(out))
+}
+
+/// The curves of the `ways`, (half-width, part), that can hold a pier off a deck. Only these get a
+/// polyline: the ways of a region would take gigabytes of them.
+fn near_decks<'a>(decks: &[Part], ways: impl Iterator<Item = (f64, &'a Part)>) -> Vec<(f64, Part)> {
+    let reach = |p: &Part| {
+        let [x0, y0, x1, y1] = bounds(&p.points);
+        let r = structures::REACH_M / metres(y0);
+        [x0 - r, y0 - r, x1 + r, y1 + r]
+    };
+    let boxes = Boxes::new(&decks.iter().map(reach).collect::<Vec<_>>());
+    ways.filter(|(_, p)| !boxes.overlapping(bounds(&p.points)).is_empty())
+        .map(|(half, p)| (half, roads::polyline(p)))
+        .collect()
 }
 
 fn track((_, tags, part): &(String, Tags, Part)) -> rails::Track<'_> {
@@ -595,6 +606,25 @@ mod tests {
             z: None,
             plan: None,
         }]
+    }
+
+    #[test]
+    fn a_road_beside_a_deck_holds_its_piers_off_and_one_far_away_gets_no_polyline() {
+        let y = 0.3218;
+        let unit = 1.0 / metres(y);
+        let line = |north: f64, east: f64| Part {
+            points: vec![[0.25, y - north * unit], [0.25 + east * unit, y - north * unit]],
+            ..Part::default()
+        };
+        let deck = line(0.0, 120.0);
+        let (beside, far) = (line(3.5, 120.0), line(300.0, 120.0));
+        let near = near_decks(std::slice::from_ref(&deck), [(3.0, &beside), (3.0, &far)].into_iter());
+        assert_eq!(near.len(), 1);
+        let none = Tags::new();
+        let ways = [("road", &none, deck.points.as_slice(), &[510.0, 510.0][..])];
+        let under = [(near[0].0, near[0].1.points.as_slice())];
+        let flat = |_: f64, _: f64| 500.0;
+        assert!(structures::bridges(&ways, &[], &[], &flat, &under).1.is_empty(), "the road takes the whole deck");
     }
 
     #[test]

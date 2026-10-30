@@ -133,8 +133,9 @@ options of the step, so a change to them does not bake the features again. The r
 - samples the master terrain every 2 m along each way,
 - fits a smooth height line to the samples, with weights that let a spike or a gully of the terrain
   go, so that it does not move the road,
-- holds each segment within the grade of its class, but not the approach of a side road, so that a
-  side road does not move the through road,
+- holds each segment within the grade of its class on the line of OSM, but not the approach of a
+  side road, so that a side road does not move the through road. The fit of the plan can shorten the
+  tip of a hairpin, and the heights stay, so the curve can pass the grade there,
 - gives ways that share a vertex one height there, and puts the first 4 m of a side road on the
   surface of the through road of a junction (1.5 m where paths meet), but not past the middle of a
   way between two junctions. The through road is the first class of the table at the junction, and
@@ -233,7 +234,8 @@ A class with a `design_kmh` banks and widens in a bend of signed curvature `k`, 
 - The widening moves the curve to the inside of the bend by half of it, so that the outer edge keeps
   its line, but not within 14 m of a vertex that does not move. The rest is the field `widen`.
 
-The tiles keep the vertices that do not move and each end of a run of known heights. After a kept
+The tiles keep the vertices that do not move, each end of a run of known heights, and the first
+vertex of OSM in each area along a way, so that the solve that owns a span has tested it. After a kept
 vertex, the next one is the farthest point of the fit for which the curve below holds the fit and
 the solved heights within `keep_m` of the class table, with its tangents and grades as this format
 rounds them, and its chord holds the fit within 2 m and between its ends. A tile cuts a way by its
