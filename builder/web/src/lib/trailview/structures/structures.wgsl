@@ -245,6 +245,12 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     var n = normalize(cross(dpdx(in.relative), dpdy(in.relative)));
     n *= -sign(dot(n, in.relative));
     if (is_corridor(in.colour)) {
+        if (frame.debug == 5u) {
+            // DEBUGHUE: a corridor face's material as a hue.
+            let m = f32(u32(round(in.colour.r * 255.0)));
+            let fl = u32(round(in.colour.b * 255.0));
+            return vec4f(m / 64.0, f32(fl & 7u) / 7.0, f32(fl >> 4u) / 7.0, 1.0);
+        }
         return corridor_fragment(in.u, in.relative, in.altitude, in.colour, in.road, in.sleepers, n);
     }
     let flags = u32(round(in.colour.a * 255.0));

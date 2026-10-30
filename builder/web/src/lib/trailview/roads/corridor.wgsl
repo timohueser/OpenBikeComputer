@@ -25,6 +25,10 @@ const MAT_STEEL: u32 = 7u;
 const MAT_POST: u32 = 8u;
 const MAT_WALL: u32 = 9u;
 const MAT_CONCRETE: u32 = 10u;
+// A band's row dives this far under the drawn mesh where the ground stands from BAND_STEEP_M.x to .y over or
+// under the road's plane.
+const BAND_DIVE_M: f32 = 1.5;
+const BAND_STEEP_M: vec2f = vec2f(0.6, 1.2);
 // A band's row over another road's carriageway sinks this far, so that road draws over it.
 const BAND_UNDER_M: f32 = 0.2;
 // Past the corridors' range a corridor sinks this far under the ground, where the mask paints its road.
@@ -52,8 +56,11 @@ fn corridor_height(at: vec2i, z: f32, colour: vec4f, s: vec2f, fallback: f32) ->
     let flags = u32(round(colour.b * 255.0));
     var h = z;
     if ((flags & CF_SAMPLE) != 0u) {
-        let ground = units_height(at, surface.finest);
-        h = select(fallback, ground, known(ground)) + z + f32(flags >> 4u) * 0.004;
+        // `z` is the road's plane here: on a steep cut or fill face, where the stamped ground stands far over or
+        // under it, the drawn mesh cannot follow the ground the band samples, and the two would fight; there the band
+        // dives under the mesh, which shows alone.
+        let ground = select(fallback, units_height(at, surface.finest), known(units_height(at, surface.finest)));
+        h = ground + f32(flags >> 4u) * 0.004 - BAND_DIVE_M * smoothstep(BAND_STEEP_M.x, BAND_STEEP_M.y, abs(ground - z));
         let m = mask_at(s, u32(ceil(lod(s))), true);
         if (m.level != 0u && m.kind.x != 0u && m.edge < -0.05) {
             h -= BAND_UNDER_M;
@@ -77,6 +84,8 @@ fn corridor_fragment(u: vec2f, relative: vec3f, altitude: f32, colour: vec4f, ro
     let su = lod_space(u);
     let level = u32(ceil(lod(su)));
     if (mat == MAT_GROUND) {
+        // The band and a wall's backfill are the ground beside the way, without the mask's paint of it.
+        corridor_ground = true;
         return vec4f(ground_colour(su, relative, altitude, level), 1.0);
     }
     if (mat >= 40u && mat < 60u) {

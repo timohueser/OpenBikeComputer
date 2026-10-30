@@ -9,7 +9,7 @@
 import { junctions, RAIL, type Line } from '../terrain/bins';
 import { NO_SLEEPERS, type MeshBuilder } from '../structures/mesh';
 import type { Owns } from '../structures/node';
-import { carriageway, corridorLine, MAT, sideOf, type Part } from './section';
+import { carriageway, CF, corridorLine, MAT, sideOf, type Part } from './section';
 import { tracks } from './tracks';
 import { CUT, junctionPlan, type JStation } from './junctions';
 import type { Station } from './stations';
@@ -59,9 +59,10 @@ export function corridors(b: MeshBuilder, lines: Line[], owns: Owns, env?: Detai
 export function vertex(ctx: Ctx, s: Station, a: number, dz: number, mat: number, flags = 0): V {
     const key = s.j === undefined ? undefined : `${s.j}|${a}|${dz}|${mat}|${flags}`, known = key === undefined ? undefined : ctx.made.get(key);
     if (known) return known;
-    const { b, line, lift, prio } = ctx, sampled = (flags & 3) !== 0, along = line.kind === RAIL ? (s.sleepers ?? NO_SLEEPERS) : s.along;
-    // A sampled height is an offset over the ground; else the station's height, its bank across and the lift.
-    const z = sampled ? dz : s.z + dz + s.bank * a + lift, x = s.x + s.ax * a, y = s.y + s.ay * a;
+    const { b, line, lift, prio } = ctx, along = line.kind === RAIL ? (s.sleepers ?? NO_SLEEPERS) : s.along;
+    // A band vertex on the sampled ground holds the road's plane there, so the shader tells a steep cut or fill
+    // face; one on the drawn mesh holds its offset under it; else the station's height, its bank across and the lift.
+    const plane = s.z + s.bank * a + lift, z = flags & CF.SAMPLE ? plane : flags & CF.MESH ? dz : plane + dz, x = s.x + s.ax * a, y = s.y + s.ay * a;
     const made = { i: b.vertex(x, y, z, corridorColour(mat, line.code, flags, prio), a, s.h, along), x, y };
     if (key !== undefined) ctx.made.set(key, made);
     return made;

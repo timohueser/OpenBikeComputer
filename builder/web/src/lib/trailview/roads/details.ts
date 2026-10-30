@@ -42,8 +42,8 @@ const BEAM: [number, number][] = [[0.42, 0.44], [0.36, 0.49], [0.4, 0.595], [0.3
 const POST_A = 0.5, POST_HALF = [0.05, 0.04], POST_TOP = 0.71;
 /** A delineator: its middle past E, half its depth and width, its heights over the ground. */
 const DELI_A = 0.55, DELI_HALF = [0.05, 0.06], DELI_Z = [0, 0.74, 0.9, 1.0];
-/** The wall's face past E, its foot under the road edge; its capstone. */
-const WALL_A = 0.03, WALL_FOOT = -0.25, CAP_A = [-0.01, 0.37], BACKFILL_M = 3.0;
+/** The wall's face past E, its foot under the road edge; its capstone; the ledge of ground behind it, and how far past it the ledge dives under the ground. */
+const WALL_A = 0.03, WALL_FOOT = -0.25, CAP_A = [-0.01, 0.37], LEDGE_M = 1.0, LEDGE_DIVE = [0.2, 0.6];
 
 /** Height codes of `half`: over the ground, over the wall top. */
 const OVER_GROUND = -10, OVER_WALL = 6;
@@ -301,12 +301,13 @@ function delineator(sd: Side, s: Station, r: number, g: number): void {
     face(sd.b, [v(-0.03, z[1] + 0.03), v(0.03, z[1] + 0.03), v(0.03, z[2] - 0.03), v(-0.03, z[2] - 0.03)], outOf(sd, s, -1, 0));
 }
 
-/** The retaining wall between stations s and t: a vertical masonry face, its capstone, and the ground it holds back to BACKFILL_M. */
+/** The retaining wall between stations s and t: a vertical masonry face, its capstone, and a ledge of the ground it holds back. */
 function wall(sd: Side, s: Station, t: Station, rs: number, rt: number, gs: number, gt: number): void {
     const prof: [number, number, number][] = [[WALL_A, WALL_FOOT, DM.WALL], [WALL_A, OVER_WALL - 0.08, DM.WALL]];
     const cap: [number, number, number][] = [[CAP_A[0], OVER_WALL - 0.08, DM.CAP], [CAP_A[0], OVER_WALL + 0.04, DM.CAP], [CAP_A[1], OVER_WALL + 0.04, DM.CAP], [CAP_A[1], OVER_WALL - 0.03, DM.CAP]];
-    // The ground behind the wall, from its capstone back to the stamped ground.
-    const fill: [number, number, number][] = [[CAP_A[1], OVER_WALL - 0.03, MAT.GROUND], [BACKFILL_M, OVER_GROUND - 0.05, MAT.GROUND]];
+    // The ground behind the wall: a ledge at its top, then down under the stamped ground. A cut that climbs past
+    // the wall's top covers the ledge; a ledge that ran back up the cut would lie on it and fight it.
+    const fill: [number, number, number][] = [[CAP_A[1], OVER_WALL - 0.03, MAT.GROUND], [LEDGE_M, OVER_WALL - 0.03, MAT.GROUND], [LEDGE_M + LEDGE_DIVE[0], OVER_GROUND - LEDGE_DIVE[1], MAT.GROUND]];
     for (const pr of [prof, cap, fill]) {
         const ps = pr.map(([a, dz, mat]) => dv(sd, s, rs, gs, a, 0, dz, mat, s)), pt = pr.map(([a, dz, mat]) => dv(sd, t, rt, gt, a, 0, dz, mat, s));
         for (let k = 0; k + 1 < pr.length; k++) {

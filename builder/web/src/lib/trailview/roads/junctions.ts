@@ -16,7 +16,7 @@ import { gridOf, near } from '../terrain/town';
 import type { MeshBuilder } from '../structures/mesh';
 import type { Owns } from '../structures/node';
 import { classLift, corridorColour, quad, vertex, type Ctx, type V } from './corridor';
-import { carriageway, CLASS_NAMES, corridorLine, KERB_RISE_M, LIFT_M, MAT, sideOf, type Part } from './section';
+import { carriageway, CF, CLASS_NAMES, corridorLine, KERB_RISE_M, LIFT_M, MAT, sideOf, type Part } from './section';
 import { stationsOf, type Station } from './stations';
 
 /** Materials of the junctions, as MAT_ZEBRA and the others of junctions.wgsl. */
@@ -688,7 +688,8 @@ function cornerFaces(J: Junction, c: Corner, ctxOf: (line: Line) => Ctx | undefi
         if (f === 0) return { ...vertex(cp, sa, c.sp * (c.p.line.h + part.a), part.dz, mat, flags), z: sampled ? part.dz : zOf(cp, sa, c.sp * (c.p.line.h + part.a), part.dz) };
         if (f === 1) return { ...vertex(cq, sb, c.sq * (c.q.line.h + part.a), part.dz, mat, flags), z: sampled ? part.dz : zOf(cq, sb, c.sq * (c.q.line.h + part.a), part.dz) };
         const [px, py] = world(J, shifted(ring(part.a, f), f)), z = sampled ? part.dz : baseZ(f) + part.dz;
-        return { i: b.vertex(px, py, z, corridorColour(mat, code, flags, prio), half_ + part.a, half_, 0), x: px, y: py, z };
+        // A band vertex on the sampled ground holds the road's height (as vertex of corridor.ts).
+        return { i: b.vertex(px, py, flags & CF.SAMPLE ? baseZ(f) : z, corridorColour(mat, code, flags, prio), half_ + part.a, half_, 0), x: px, y: py, z };
     };
     // Strips between columns, each in its outer part's material (the face takes its first vertex's).
     const edgePart: Part = { a: 0, dz: LIFT_M, mat: MAT.PAINT };

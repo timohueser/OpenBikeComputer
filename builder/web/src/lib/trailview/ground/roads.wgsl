@@ -173,7 +173,10 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
     // The paint and the road's cut and fill reach past its sidewalk on this side.
     let walk = mask.walk;
     // A wall stands under a road's or a track's paint, never under paving: a footway's or a forecourt's.
-    var wall = select(0.0, reach * mask.face, code <= 2u || code == 7u || code >= RAIL_CODE);
+    // PROTOTYPE (road study): within the corridors' range (CORRIDOR_SHARE of roads/hole.wgsl) the walls stand as
+    // meshes (roads/details.ts), and a cut face over them is ground; the paint takes over past the range.
+    let meshed = 1.0 - smoothstep(0.7 * masks.reach - 40.0, 0.7 * masks.reach, distance);
+    var wall = select(0.0, reach * mask.face * (1.0 - meshed), (code <= 2u || code == 7u || code >= RAIL_CODE) && !corridor_ground);
     // A face is a wall from the road's edge out where it is still a face WALL_M out, where its cone is
     // steeper than 75°; elsewhere the slope stays ground.
     if (wall > 0.0) {
