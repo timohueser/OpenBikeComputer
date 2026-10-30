@@ -7,7 +7,8 @@ import type { WaterMesh } from './water-mesh';
 import { stopped } from '../stream/terrain';
 
 /** The bytes of the binned nodes and their water meshes kept; an entry costs ENTRY_BYTES more. */
-const NODE_BYTES = 64 * 2 ** 20, ENTRY_BYTES = 64;
+// PROTOTYPE (road study): the near corridor meshes need room, or the eye's owner nodes are evicted.
+const NODE_BYTES = 192 * 2 ** 20, ENTRY_BYTES = 64;
 /** Requests to the worker in flight at most. */
 const REQUESTS = 8;
 

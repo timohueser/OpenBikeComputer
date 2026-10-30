@@ -33,6 +33,8 @@ export const LOOK = {
 } as const;
 /** The top of a track's ballast over its line, and the width of its slope on each side. */
 export const BED_M = 0.25, BED_SLOPE_M = 0.4;
+/** The bed of paving over the core. */
+export const PAVED_BED_M = 0.05;
 
 /** Vertex flags of a corridor face, as CF_* of corridor.wgsl: the height is an offset over the sampled stamped ground, or over the drawn mesh. */
 export const CF = { SAMPLE: 1, MESH: 2, BARRIER: 4 } as const;
@@ -88,8 +90,11 @@ export function carriageway(line: Line): Part[] {
     // Ruts worn into a track, the middle left higher.
     if (mat === LOOK.DIRT && h >= 1.2) return half([[h, 0], [1.0, 0], [0.75, -0.04], [0.5, 0], [0, 0.025]]);
     if (mat === LOOK.GRAVEL && h >= 1.3) return half([[h, 0], [1.05, 0], [0.78, -0.025], [0.5, 0], [0, 0.01]]);
+    // Paving and narrow paved paths lie on their own bed over the core: seen at a grazing angle, the drawn
+    // terrain's mesh across a narrow core would rise through them.
+    const bed = classOf(line) === 'steps' ? 0 : mat === LOOK.PAVERS || mat === LOOK.SETT || mat === LOOK.CONCRETE || (line.kind === PATH && mat !== LOOK.TRAIL) ? PAVED_BED_M : 0;
     const crown = line.kind === ROAD && PAVED_ROAD.includes(surfaceName(line)) ? CROWN * h : 0;
-    return half([[h, 0], [0, crown]]);
+    return half([[h, bed], [0, bed + crown]]);
 }
 
 /** The points of one side past the carriageway's edge, then the band; `side` 1 is left, -1 right, at segment v. */
