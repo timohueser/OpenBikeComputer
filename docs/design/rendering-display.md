@@ -102,7 +102,7 @@ Now the rider holds a button. The hold feedback, the bulge, lives on the input p
 | The row store tracks the clean frame, also for excluded rows. | `diff_clipped_updates_the_store_for_excluded_rows` in [`rowdiff.rs`](../../firmware/obc-display/src/ls021/rowdiff.rs) |
 | A change in one byte lane of a row changes its hash. | `byte_lane_confined_changes_never_collide` in [`rowdiff.rs`](../../firmware/obc-display/src/ls021/rowdiff.rs) |
 | The stored byte matches the quantization of the previews. | `device64_matches_reader_quantization_exhaustively` in [`framebuffer.rs`](../../firmware/obc-display/src/framebuffer.rs) |
-| The Rust wire layout and its C port match bit for bit. | `flpr_blob_carries_the_same_pin_map` in [`wire.rs`](../../firmware/obc-display/src/ls021/wire.rs); a change to `flpr_scan.c` selects it through a trigger in [`suites.toml`](../../tools/testing/suites.toml) |
+| The Rust wire pack and its C port use the same pin map. | `flpr_blob_carries_the_same_pin_map` in [`wire.rs`](../../firmware/obc-display/src/ls021/wire.rs); a change to `flpr_scan.c` selects it through a trigger in [`suites.toml`](../../tools/testing/suites.toml) |
 | The frame geometry, the wire row and the scan program agree. | The `const` asserts in [`ls021/mod.rs`](../../firmware/obc-display/src/ls021/mod.rs) and [`ls021_flpr.rs`](../../firmware/obc-fw-nrf54l/src/ls021_flpr.rs) |
 
 ## Decisions

@@ -112,7 +112,7 @@ impl RenderScratch {
     ///
     /// `arrows_at` is the rider's matched route distance in metres, or `None` to skip chevrons.
     /// When set, chevrons are drawn in a second pass, so they sit on top where the route doubles
-    /// back, within a window around that distance.
+    /// back, within a window ahead of that distance.
     ///
     /// Returns `(chunks, points, drawn)`: chunks decoded, points across them, and vertices
     /// actually stroked after the view clip and subpixel simplify.
