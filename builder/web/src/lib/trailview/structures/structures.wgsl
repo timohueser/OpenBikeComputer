@@ -105,8 +105,12 @@ fn structure_vertex(v: StructureIn) -> StructureOut {
     var z = v.z;
     // PROTOTYPE (road study): a corridor's band stands on the ground, and corridors sink past their range.
     if (is_corridor(v.colour)) {
-        z = corridor_height(v.at, v.z, v.colour, s, frame.eye - surface.above);
-        z = detail_height(v.at, v.z, z, v.colour, v.road * ROAD_RANGE_M, v.sleepers, s);
+        if (corridor_dropped(v.colour, length(s))) {
+            z = v.z - CORRIDOR_DROP_M;
+        } else {
+            z = corridor_height(v.at, v.z, v.colour, s, v.road * ROAD_RANGE_M, frame.eye - surface.above);
+            z = detail_height(v.at, v.z, z, v.colour, v.road * ROAD_RANGE_M, v.sleepers, s);
+        }
     } else if ((flags & ON_GROUND) != 0u) {
         // Where no page knows the ground yet, the ground under the eye.
         let h = plain_height(s);

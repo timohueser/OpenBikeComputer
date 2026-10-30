@@ -16,7 +16,7 @@ import { gridOf, near } from '../terrain/town';
 import type { MeshBuilder } from '../structures/mesh';
 import type { Owns } from '../structures/node';
 import { classLift, corridorColour, quad, vertex, type Ctx, type V } from './corridor';
-import { carriageway, CF, CLASS_NAMES, corridorLine, KERB_RISE_M, LIFT_M, MAT, sideOf, type Part } from './section';
+import { carriageway, CLASS_NAMES, corridorLine, KERB_RISE_M, LIFT_M, MAT, sideOf, type Part } from './section';
 import { stationsOf, type Station } from './stations';
 
 /** Materials of the junctions, as MAT_ZEBRA and the others of junctions.wgsl. */
@@ -688,8 +688,8 @@ function cornerFaces(J: Junction, c: Corner, ctxOf: (line: Line) => Ctx | undefi
         if (f === 0) return { ...vertex(cp, sa, c.sp * (c.p.line.h + part.a), part.dz, mat, flags), z: sampled ? part.dz : zOf(cp, sa, c.sp * (c.p.line.h + part.a), part.dz) };
         if (f === 1) return { ...vertex(cq, sb, c.sq * (c.q.line.h + part.a), part.dz, mat, flags), z: sampled ? part.dz : zOf(cq, sb, c.sq * (c.q.line.h + part.a), part.dz) };
         const [px, py] = world(J, shifted(ring(part.a, f), f)), z = sampled ? part.dz : baseZ(f) + part.dz;
-        // A band vertex on the sampled ground holds the road's height (as vertex of corridor.ts).
-        return { i: b.vertex(px, py, flags & CF.SAMPLE ? baseZ(f) : z, corridorColour(mat, code, flags, prio), half_ + part.a, half_, 0), x: px, y: py, z };
+        // A band vertex holds the road's height (as vertex of corridor.ts).
+        return { i: b.vertex(px, py, sampled ? baseZ(f) : z, corridorColour(mat, code, flags, prio), half_ + part.a, half_, 0), x: px, y: py, z };
     };
     // Strips between columns, each in its outer part's material (the face takes its first vertex's).
     const edgePart: Part = { a: 0, dz: LIFT_M, mat: MAT.PAINT };
@@ -777,11 +777,11 @@ function mouthFaces(ctx: Ctx, mouth: LinePlan['mouths'][number], ctxOf: (line: L
         const c = mouth.edge[side], onP = c.p.through, t = onP ? c.p : c.q, along = onP ? c.Pp : c.Pq, tc = ctxOf(t.line);
         if (along === undefined || !tc) return;
         const list = stations(t.line), j = list.find(st => Math.abs(st.along - alongOfVertex(t.line, t.v)) < 0.011)?.along ?? along;
-        const part = edgeChain(tc, list, onP ? c.sp : c.sq, side > 0 ? along : j, side > 0 ? j : along, MAT.PAINT);
+        const part = edgeChain(tc, list, onP ? c.sp : c.sq, side > 0 ? along : j, side > 0 ? j : along, JMAT.FILLET);
         if (!part.length) return;
         chain.push(...(chain.length && Math.hypot(chain[chain.length - 1].x - part[0].x, chain[chain.length - 1].y - part[0].y) < 1 ? part.slice(1) : part));
     }
-    const road = carriageway(ctx.line), across = road.map(p => ({ ...vertex(ctx, T, p.a, p.dz, MAT.PAINT), z: 0 }));
+    const road = carriageway(ctx.line), across = road.map(p => ({ ...vertex(ctx, T, p.a, p.dz, JMAT.FILLET), z: 0 }));
     if (chain.length < 2) return;
     zipper(ctx.b, chain, across);
 }

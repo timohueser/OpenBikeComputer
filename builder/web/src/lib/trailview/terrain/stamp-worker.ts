@@ -16,8 +16,8 @@ self.onmessage = async ({ data: { id, tile, node, body, what } }: MessageEvent<{
             self.postMessage({ id, result }, { transfer: [result.samples.buffer] });
         } else {
             const result = { ...nodeStamps(features, tile, node), water: waterMesh(features, tile, node), meshes: structureMeshes(features, tile, node), floors: floorsOf(features, tile, node), portals: portalBoxes(features, tile, node) };
-            const { far, near, anchors } = result.meshes;
-            const meshes = [result.water, far.structures, far.anchored, near.structures, near.anchored].flatMap(mesh => (mesh ? [mesh.vertices, mesh.indices.buffer] : []));
+            const { far, near, corridor, anchors } = result.meshes;
+            const meshes = [result.water, far.structures, far.anchored, near.structures, near.anchored, corridor].flatMap(mesh => (mesh ? [mesh.vertices, mesh.indices.buffer] : []));
             if (anchors) meshes.push(anchors);
             if (result.meshes.points) meshes.push(result.meshes.points.buffer);
             self.postMessage({ id, result }, { transfer: [...(result.data ? [result.data.buffer] : []), ...meshes, ...[result.floors, result.portals].flatMap(words => (words ? [words.buffer] : []))] });

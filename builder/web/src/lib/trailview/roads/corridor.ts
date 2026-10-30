@@ -60,9 +60,10 @@ export function vertex(ctx: Ctx, s: Station, a: number, dz: number, mat: number,
     const key = s.j === undefined ? undefined : `${s.j}|${a}|${dz}|${mat}|${flags}`, known = key === undefined ? undefined : ctx.made.get(key);
     if (known) return known;
     const { b, line, lift, prio } = ctx, along = line.kind === RAIL ? (s.sleepers ?? NO_SLEEPERS) : s.along;
-    // A band vertex on the sampled ground holds the road's plane there, so the shader tells a steep cut or fill
-    // face; one on the drawn mesh holds its offset under it; else the station's height, its bank across and the lift.
-    const plane = s.z + s.bank * a + lift, z = flags & CF.SAMPLE ? plane : flags & CF.MESH ? dz : plane + dz, x = s.x + s.ax * a, y = s.y + s.ay * a;
+    // A band vertex on the sampled ground or the drawn mesh holds the road's plane there: the shader tells a steep
+    // cut or fill face by it, and drops a vertex that cannot show under it. Else the station's height, its bank
+    // across and the lift.
+    const plane = s.z + s.bank * a + lift, z = flags & (CF.SAMPLE | CF.MESH) ? plane : plane + dz, x = s.x + s.ax * a, y = s.y + s.ay * a;
     const made = { i: b.vertex(x, y, z, corridorColour(mat, line.code, flags, prio), a, s.h, along), x, y };
     if (key !== undefined) ctx.made.set(key, made);
     return made;

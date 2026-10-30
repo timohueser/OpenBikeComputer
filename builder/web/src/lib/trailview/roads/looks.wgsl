@@ -198,6 +198,16 @@ fn markings(mat: u32, oneway: bool, across: f32, half: f32, along: f32, cw: f32,
 // A paved road: `base` its colour, the wheel paths of its lanes polished, the crown lighter, the edges
 // dirtier, repairs, sealed cracks and, by class, markings. Past `half` it is the shoulder: a paved strip
 // on a main road, a gravel verge on a minor one, each fraying into the ground at its outer edge.
+// The asphalt of a junction's faces (roads/junctions.ts): the grain and the map cracks of paved_look, without
+// the lanes, repairs and lines that follow one way.
+fn junction_asphalt(code: u32, region: u32, p: vec2f, pw: f32) -> vec3f {
+    let base = rule(region, slot_roads() + i32(select(code, 1u, code == 7u)) - 1).rgb;
+    let field = noise(p / 1.6 + 31.0);
+    let fw = max(fwidth(field), 1e-4);
+    let tar = smoothstep(0.62, 0.7, noise(p / 13.0 + 2.0)) * (1.0 - smoothstep(0.0, 1.5 * fw + 0.004, abs(field - 0.5))) * seen(0.08, pw);
+    return mix(base * asphalt_grain(p, pw), vec3f(0.035, 0.034, 0.033), 0.85 * tar);
+}
+
 fn paved_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, half: f32, along: f32, pw: f32, cw: f32, aw: f32) -> WayLook {
     var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let base = rule(region, slot_roads() + i32(select(code, 1u, code == 7u)) - 1).rgb;
@@ -218,9 +228,9 @@ fn paved_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, half: f32
         return out;
     }
     var t = asphalt_grain(p, pw);
-    // Stretches resurfaced in different years, each its own tone, the newer darker.
+    // Stretches resurfaced in different years, each its own tone about the mean that a junction's asphalt takes.
     let stretch = floor(along / 70.0 + 0.6 * noise(vec2f(along / 70.0, 4.0)));
-    t *= 0.9 + 0.17 * hash(vec2f(stretch, 21.0));
+    t *= 0.95 + 0.1 * hash(vec2f(stretch, 21.0));
     // Lanes: two on a road wider than 4.8 m, one elsewhere; the wheels run 0.8 m either side of a lane's middle.
     let lanes = select(1.0, max(2.0, round(2.0 * half / 3.5)), half >= 2.4);
     let lane = 2.0 * half / lanes;

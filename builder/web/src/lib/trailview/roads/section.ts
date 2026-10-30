@@ -56,7 +56,7 @@ export const KERB_RISE_M = 0.12, KERB_TOP_M = 0.18;
  * the road; the last row sinks under the drawn mesh, where the terrain takes over. corridor.wgsl draws the
  * corridor a little toward the eye, so the band wins over the terrain where the two coincide.
  */
-export const BAND_M = [0.35, 1.0, 2.0], BAND_OUTER_M = 3.2, PATH_BAND_M = [0.3, 0.8], PATH_BAND_OUTER_M = 1.6, BAND_SINK_M = 0.05;
+export const BAND_M = [0.35, 1.0, 2.0], BAND_OUTER_M = 3.2, PATH_BAND_M = [0.3, 0.8], PATH_BAND_OUTER_M = 1.6;
 
 /** A point across a side: metres out from the line's middle, metres up from its height, and the material and flags of the face that ends at it. */
 export interface Part { a: number; dz: number; mat: number; flags?: number }
@@ -130,6 +130,6 @@ export function sideOf(line: Line, side: 1 | -1, v: number, h = line.h): Part[] 
     }
     const path = line.kind === PATH;
     for (const d of path ? PATH_BAND_M : BAND_M) out.push({ a: a + d, dz: 0, mat: MAT.GROUND, flags: CF.SAMPLE });
-    out.push({ a: a + (path ? PATH_BAND_OUTER_M : BAND_OUTER_M), dz: -BAND_SINK_M, mat: MAT.GROUND, flags: CF.MESH });
+    out.push({ a: a + (path ? PATH_BAND_OUTER_M : BAND_OUTER_M), dz: 0, mat: MAT.GROUND, flags: CF.MESH });
     return out;
 }

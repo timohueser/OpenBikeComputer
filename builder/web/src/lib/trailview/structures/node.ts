@@ -73,20 +73,21 @@ export interface Meshes { structures: StructureMesh | null; anchored: AnchoredMe
 /**
  * A node's meshes: those that draw at any distance, those that draw only near the eye, and the anchors of
  * both; and the models on the surface of its kinds, as `packPoints` packs them, the model the number of
- * POINT_MODELS.
+ * POINT_MODELS. PROTOTYPE (road study): and its corridors, which draw only within the corridors' range.
  */
-export interface NodeMeshes { far: Meshes; near: Meshes; anchors: ArrayBuffer | null; points: Uint32Array<ArrayBuffer> | null }
+export interface NodeMeshes { far: Meshes; near: Meshes; corridor: StructureMesh | null; anchors: ArrayBuffer | null; points: Uint32Array<ArrayBuffer> | null }
 
 /** The meshes of a node of the OWNER level from the features of its feature tile: the structures, then the kinds of the registry. */
 export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMeshes {
     const none = { structures: null, anchored: null };
-    if (node.level !== OWNER) return { far: none, near: none, anchors: null, points: null };
+    if (node.level !== OWNER) return { far: none, near: none, corridor: null, anchors: null, points: null };
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side;
     const owns: Owns = (x, y) => x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
     const words: number[] = [], far = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) }, near = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) };
     const { lines, buildings, walks } = features(list, tile);
     // PROTOTYPE (road study): the corridors draw the roads near the eye, with their kerbs and sidewalks.
-    corridors(near.mesh, lines, owns, { walks, buildings });
+    const corridor = new MeshBuilder();
+    corridors(corridor, lines, owns, { walks, buildings });
     bridges(far.mesh, list, tile, lines, owns);
     tunnels(far.mesh, lines, owns);
     galleries(far.mesh, lines, owns);
@@ -100,5 +101,5 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
         KINDS.get(kind)?.build(placed(feature, tile), out);
     }
     const meshes = ({ mesh, anchored }: typeof far): Meshes => ({ structures: mesh.mesh(), anchored: anchored.mesh() });
-    return { far: meshes(far), near: meshes(near), anchors: words.length ? anchorBytes(words) : null, points: points.length ? packPoints(points.filter(p => p.model >= 0)) : null };
+    return { far: meshes(far), near: meshes(near), corridor: corridor.mesh(), anchors: words.length ? anchorBytes(words) : null, points: points.length ? packPoints(points.filter(p => p.model >= 0)) : null };
 }

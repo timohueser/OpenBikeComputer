@@ -23,6 +23,8 @@ const VERTEX_BYTES = 96 * 2 ** 20, INDEX_BYTES = 48 * 2 ** 20, ANCHORED_BYTES = 
 const REACH_M = 3;
 /** An OWNER node is near while a node of this level or finer draws in it: within about 2 km. */
 const NEAR_LEVEL = 17;
+/** PROTOTYPE (road study): an OWNER node draws its corridors while its box lies this near the eye, as CORRIDOR_RANGE_M of features.wgsl. */
+const CORRIDOR_RANGE_M = 600;
 /** Anchor ends per workgroup of `anchor_heights`. */
 const ANCHOR_GROUP = 64;
 
@@ -102,7 +104,7 @@ export class Structures {
     /** The models on the surface of the kinds of the drawn nodes, a list per node. */
     points: Uint32Array[] = [];
     /** The meshes of the drawn owners, and whether each is near: the last frame's, to compare. */
-    private drawn: { meshes: NodeMeshes; near: boolean }[] = [];
+    private drawn: { meshes: NodeMeshes; near: boolean; corridor: boolean }[] = [];
     /** The anchored meshes of the frame whose anchors did not fit. */
     private unanchored = 0;
     /** Whether the anchors of the frame are not on the GPU yet. */
@@ -153,12 +155,13 @@ export class Structures {
         for (let y = Math.floor((eye.y - reach) / side); y <= Math.floor((eye.y + reach) / side); y++) {
             for (let x = Math.floor((eye.x - reach) / side); x <= Math.floor((eye.x + reach) / side); x++) owners.set(key({ level: OWNER, x, y }), { node: { level: OWNER, x, y }, near: true });
         }
-        const now: { meshes: NodeMeshes; near: boolean }[] = [];
+        const now: { meshes: NodeMeshes; near: boolean; corridor: boolean }[] = [];
         for (const { node, near } of owners.values()) {
-            const meshes = this.stamps.get(node)?.meshes;
-            if (meshes) now.push({ meshes, near });
+            const meshes = this.stamps.get(node)?.meshes, x0 = node.x * side, y0 = node.y * side;
+            const off = Math.hypot(Math.max(x0 - eye.x, 0, eye.x - x0 - side), Math.max(y0 - eye.y, 0, eye.y - y0 - side)) * eye.unit;
+            if (meshes) now.push({ meshes, near, corridor: near && off < CORRIDOR_RANGE_M });
         }
-        if (now.length === this.drawn.length && now.every((o, i) => o.meshes === this.drawn[i].meshes && o.near === this.drawn[i].near)) return false;
+        if (now.length === this.drawn.length && now.every((o, i) => o.meshes === this.drawn[i].meshes && o.near === this.drawn[i].near && o.corridor === this.drawn[i].corridor)) return false;
         this.drawn = now;
         this.fresh = true;
         const words: Uint32Array[] = [];
@@ -167,11 +170,12 @@ export class Structures {
         this.hung = [];
         this.points = [];
         this.unanchored = 0;
-        for (const { meshes, near } of now) {
+        for (const { meshes, near, corridor } of now) {
             const parts = near ? [meshes.far, meshes.near] : [meshes.far];
             // The models on the surface reach no farther than the near meshes.
             if (near && meshes.points) this.points.push(meshes.points);
             for (const { structures } of parts) if (structures) this.draws.push(structures);
+            if (corridor && meshes.corridor) this.draws.push(meshes.corridor);
             const count = (meshes.anchors?.byteLength ?? 0) / (ANCHOR_WORDS * 4), hung = parts.map(({ anchored }) => anchored).filter(mesh => mesh !== null);
             if (!meshes.anchors) continue;
             if (anchor + count > ANCHORS) {

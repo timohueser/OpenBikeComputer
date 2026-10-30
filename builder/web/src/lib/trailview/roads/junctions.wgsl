@@ -1,7 +1,7 @@
 // PROTOTYPE road system (a study; never merges). The paint of the junctions' faces (roads/junctions.ts):
 // the zebras, the give-way lines and the corners' asphalt. corridor.wgsl calls junction_surface for the
 // materials from MAT_JUNCTION_FIRST on.
-// #include ../ground/roads.wgsl
+// #include looks.wgsl
 
 // Materials, as JMAT of junctions.ts.
 const MAT_JUNCTION_FIRST: u32 = 60u;
@@ -25,9 +25,8 @@ const TRIANGLE_STROKE_M: f32 = 0.15;
 // face's flags; `road` is metres across and the half-width, `p` the place in metres, `w` a pixel's width.
 fn junction_surface(mat: u32, region: u32, param: u32, road: vec2f, along: f32, p: vec2f, w: f32, along_w: f32) -> vec4f {
     let code = param & 15u;
-    // The carriageway's own surface, without its lines.
-    let base = road_surface(region, code, 1.0, 0.0, 0.0, along, p, w, w, along_w);
-    var c = base.rgb;
+    // The asphalt of the ways about it, without their lines.
+    var c = junction_asphalt(code, region, p, w * look.screen.z);
     // Worn paint: thinner where the wheels run.
     let wear = 0.82 + 0.18 * noise(p / 0.7);
     if (mat == MAT_ZEBRA) {
@@ -45,5 +44,5 @@ fn junction_surface(mat: u32, region: u32, param: u32, road: vec2f, along: f32, 
         let triangle = select(0.0, band(d, 0.0, TRIANGLE_STROKE_M, w), ((param >> 5u) & 1u) != 0u && u < TRIANGLE_LENGTH_M);
         c = mix(c, line, max(dash, triangle) * wear);
     }
-    return vec4f(c, base.a);
+    return vec4f(c, 0.0);
 }

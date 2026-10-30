@@ -12,17 +12,13 @@ const HOLE_PATH_M: f32 = 3.0;
 // Mask surface codes, as SURFACES of bins.ts: a path, and paving, which a house's walk paints without a corridor.
 const HOLE_PATH_CODE: u32 = 6u;
 const HOLE_PAVING_CODE: u32 = 8u;
-// The corridors reach this share of the mask pool's reach; the hole stops HOLE_MARGIN_M before them.
-const CORRIDOR_SHARE: f32 = 0.7;
+// The hole stops this far before the corridors' range (corridor_range of features.wgsl).
 const HOLE_MARGIN_M: f32 = 40.0;
 
-fn corridor_range() -> f32 {
-    return CORRIDOR_SHARE * masks.reach;
-}
-
-// Whether the corridors draw at a point of LOD space.
+// Whether the corridors draw at a point of LOD space: by the LOD of its distance, not the drawn level, which
+// walks the LOD map for each vertex.
 fn corridor_drawn(s: vec2f) -> bool {
-    return length(s) < corridor_range() && drawn_level(s) >= CORRIDOR_LEVEL;
+    return length(s) < corridor_range() && lod(s) >= f32(CORRIDOR_LEVEL);
 }
 
 // Whether the terrain at a point of LOD space lies under a corridor's band: near a road, a track, a path

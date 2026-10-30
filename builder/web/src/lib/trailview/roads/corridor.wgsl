@@ -25,10 +25,10 @@ const MAT_STEEL: u32 = 7u;
 const MAT_POST: u32 = 8u;
 const MAT_WALL: u32 = 9u;
 const MAT_CONCRETE: u32 = 10u;
-// A band's row dives this far under the drawn mesh where the ground stands from BAND_STEEP_M.x to .y over or
-// under the road's plane.
+// A band's row dives this far under the drawn mesh where the face from the carriageway's edge out to it climbs or
+// falls from BAND_STEEP.x to .y per metre: a cut or a fill face far steeper than a hillside's.
 const BAND_DIVE_M: f32 = 1.5;
-const BAND_STEEP_M: vec2f = vec2f(0.6, 1.2);
+const BAND_STEEP: vec2f = vec2f(0.9, 1.4);
 // A band's row over another road's carriageway sinks this far, so that road draws over it.
 const BAND_UNDER_M: f32 = 0.2;
 // Past the corridors' range a corridor sinks this far under the ground, where the mask paints its road.
@@ -49,25 +49,44 @@ fn is_corridor(colour: vec4f) -> bool {
     return (u32(round(colour.a * 255.0)) & CORRIDOR_MARK) == CORRIDOR_MARK;
 }
 
-// The height of a corridor vertex at `at` (whole world units) and LOD-space `s`: its own height, or an
-// offset over the stamped ground (the finest level that knows it) or over the drawn mesh. `fallback` is
-// the ground under the eye, where no page knows the ground yet.
-fn corridor_height(at: vec2i, z: f32, colour: vec4f, s: vec2f, fallback: f32) -> f32 {
+// Corridor vertices that cannot show skip the ground's samples: past the corridors' range, a track's meshes
+// past their fade, and the thin barriers (guardrails, posts, delineators) past BARRIER_RANGE_M. They drop
+// CORRIDOR_DROP_M under their own height, where the terrain hides the faces that reach them.
+const CORRIDOR_DROP_M: f32 = 50.0;
+const CORRIDOR_MARGIN_M: f32 = 30.0;
+const BARRIER_RANGE_M: f32 = 350.0;
+// The outer row of a band lies this far under the stamped ground, under the drawn mesh, where the terrain takes
+// over: as far as a cell of the finest mesh leaves the ground at a crease.
+const BAND_SINK_M: f32 = 0.3;
+
+fn corridor_dropped(colour: vec4f, d: f32) -> bool {
+    let mat = u32(round(colour.r * 255.0));
+    let barrier = (u32(round(colour.b * 255.0)) & CF_BARRIER) != 0u && mat != DM_WALL && mat != DM_CAP && mat != MAT_GROUND;
+    return d > corridor_range() + CORRIDOR_MARGIN_M || (is_detail(mat) && d > DETAIL_END_M + CORRIDOR_MARGIN_M) || (barrier && d > BARRIER_RANGE_M);
+}
+
+// The height of a corridor vertex at `at` (whole world units) and LOD-space `s` from its own height `z`: a band's
+// row lies on the stamped ground (the finest level that knows it) or under the drawn mesh, and `z` is the road's
+// plane there; `road` its metres across and the carriageway's half-width. `fallback` is the ground under the eye,
+// where no page knows the ground yet.
+fn corridor_height(at: vec2i, z: f32, colour: vec4f, s: vec2f, road: vec2f, fallback: f32) -> f32 {
     let flags = u32(round(colour.b * 255.0));
     var h = z;
     if ((flags & CF_SAMPLE) != 0u) {
-        // `z` is the road's plane here: on a steep cut or fill face, where the stamped ground stands far over or
-        // under it, the drawn mesh cannot follow the ground the band samples, and the two would fight; there the band
-        // dives under the mesh, which shows alone.
-        let ground = select(fallback, units_height(at, surface.finest), known(units_height(at, surface.finest)));
-        h = ground + f32(flags >> 4u) * 0.004 - BAND_DIVE_M * smoothstep(BAND_STEEP_M.x, BAND_STEEP_M.y, abs(ground - z));
+        // On a steep cut or fill face, where the stamped ground stands far over or under the road's plane, the drawn
+        // mesh cannot follow the ground the band samples, and the two would fight: there the band dives under the
+        // mesh, which shows alone.
+        let sampled = units_height(at, surface.finest);
+        let ground = select(fallback, sampled, known(sampled));
+        let out = max(abs(road.x) - road.y, 0.3);
+        h = ground + f32(flags >> 4u) * 0.004 - BAND_DIVE_M * smoothstep(BAND_STEEP.x, BAND_STEEP.y, abs(ground - z) / out);
         let m = mask_at(s, u32(ceil(lod(s))), true);
         if (m.level != 0u && m.kind.x != 0u && m.edge < -0.05) {
             h -= BAND_UNDER_M;
         }
     } else if ((flags & CF_MESH) != 0u) {
-        let ground = plain_height(s);
-        h = select(fallback, ground, known(ground)) + z;
+        let sampled = units_height(at, surface.finest);
+        h = select(fallback, sampled, known(sampled)) - BAND_SINK_M;
     }
     if (!corridor_drawn(s)) {
         h -= CORRIDOR_SINK_M;

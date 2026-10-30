@@ -8,6 +8,13 @@ struct Masks {
     layer: array<u32>,
 }
 @group(3) @binding(0) var<storage, read> masks: Masks;
+// PROTOTYPE (road study): the corridors of roads/ draw within this many metres of the eye, and within a share of
+// the mask paint's reach, which takes over past them (as CORRIDOR_RANGE_M of structures/structures.ts).
+const CORRIDOR_RANGE_M: f32 = 600.0;
+
+fn corridor_range() -> f32 {
+    return min(0.7 * masks.reach, CORRIDOR_RANGE_M);
+}
 // Per texel: the distance to the edge of the painted road's carriageway (negative inside), ±MASK_M metres
 // as 0..1 on the asinh scale of stamp.wgsl, filtered; the fraction of a track's sleepers from its start
 // there, or else the width of that road's sidewalk on the texel's side in WALK_STEP_M,
