@@ -5,6 +5,7 @@
 // #include ../ground/look.wgsl
 // #include details.wgsl
 // #include looks.wgsl
+// #include junctions.wgsl
 
 // The flags in a vertex colour's alpha that mark a corridor vertex, as CORRIDOR of corridor.ts.
 const CORRIDOR_MARK: u32 = 12u;
@@ -111,6 +112,11 @@ fn corridor_fragment(u: vec2f, relative: vec3f, altitude: f32, colour: vec4f, ro
         }
         default: {
             albedo = colour.rgb * colour.rgb;
+            if (mat >= MAT_JUNCTION_FIRST && mat <= MAT_JUNCTION_LAST) {
+                let j = junction_surface(mat, region, u32(round(colour.g * 255.0)), road, along, p, w, along_w);
+                albedo = j.rgb;
+                share = j.a;
+            }
         }
     }
     let lit = light_up(albedo, n, sun_share(sun_at(su), relative, n, LIFT_SOLID), 1.0, look.horizon.w);

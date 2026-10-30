@@ -7,18 +7,16 @@
 // The band's heights are offsets over the ground, known only on the GPU, so faces are wound here from
 // their plan (seen from above, counter-clockwise), not from their heights.
 import { junctions, RAIL, type Line } from '../terrain/bins';
-import { halfAt, partnersOf } from '../terrain/corners';
 import { NO_SLEEPERS, type MeshBuilder } from '../structures/mesh';
 import type { Owns } from '../structures/node';
 import { carriageway, corridorLine, MAT, sideOf, type Part } from './section';
 import { tracks } from './tracks';
-import { stationsOf, type Station } from './stations';
+import { CUT, junctionPlan, type JStation } from './junctions';
+import type { Station } from './stations';
 import { kerbDrop, prepareDetails, roadside, type DetailEnv } from './details';
 
 /** Vertex flags in the colour's alpha that mark a corridor vertex: VOID and INSIDE of mesh.ts, which no other face has together. */
 const CORRIDOR = 12;
-/** The stations of each line, made once. */
-const made = new WeakMap<Line, Station[]>();
 /** Steps of a dead end's half circle. */
 const CAP_STEPS = 10;
 
@@ -26,24 +24,22 @@ const CAP_STEPS = 10;
 export const corridorColour = (mat: number, param: number, flags = 0, prio = 0) => (mat | (param << 8) | ((flags | (prio << 4)) << 16) | (CORRIDOR << 24)) >>> 0;
 
 /** Lifts that keep the carriageways of two lines at a junction apart: the better class higher. */
-const classLift = (line: Line, id: number) => Math.max(0, 30 - line.profile) * 0.001 + (id % 2) * 0.0005;
+export const classLift = (line: Line, id: number) => Math.max(0, 30 - line.profile) * 0.001 + (id % 2) * 0.0005;
 /** The band of the better class draws over the other where two bands overlap. */
 const bandPrio = (line: Line) => Math.max(0, Math.min(7, 7 - (line.profile >> 2)));
 
 /** The vertices of a line made so far, by station, place across, height, material and flags: neighbouring quads share them. */
-interface Ctx { b: MeshBuilder; line: Line; lift: number; prio: number; made: Map<string, V> }
+export interface Ctx { b: MeshBuilder; line: Line; lift: number; prio: number; made: Map<string, V> }
 /** A vertex and its plan position in world units. */
-interface V { i: number; x: number; y: number }
+export interface V { i: number; x: number; y: number }
 
 export function corridors(b: MeshBuilder, lines: Line[], owns: Owns, env?: DetailEnv): void {
-    const shared = junctions(lines), partners = partnersOf(lines), prep = prepareDetails(lines.filter(corridorLine), env), cache = new Map();
+    const shared = junctions(lines), plan = junctionPlan(lines), prep = prepareDetails(lines.filter(corridorLine), env), cache = new Map(), ctxs = new Map<Line, Ctx>();
     lines.forEach((line, id) => {
         if (!corridorLine(line) || line.z.length < 2) return;
-        // The half-width as the stamp has it: tapered to a partner's at a joint, widened in a tight bend.
-        const half = (v: number) => halfAt(line, v, partners) + (line.widen?.[v] ?? 0);
-        const ctx: Ctx = { b, line, lift: classLift(line, id), prio: bandPrio(line), made: new Map() };
-        // The owner nodes of a tile share its lines: each line's stations are made once.
-        const stations = made.get(line) ?? made.set(line, stationsOf(line, undefined, half)).get(line)!;
+        // The plan's stations are made once per tile's lines (its owner nodes share them).
+        const ctx: Ctx = { b, line, lift: classLift(line, id), prio: bandPrio(line), made: new Map() }, stations = plan.stations(line);
+        ctxs.set(line, ctx);
         for (let j = 0; j + 1 < stations.length; j++) {
             if (owns(stations[j].x, stations[j].y)) {
                 sweep(ctx, stations[j], stations[j + 1]);
@@ -56,10 +52,11 @@ export function corridors(b: MeshBuilder, lines: Line[], owns: Owns, env?: Detai
             if (!shared.has(`${line.xy[2 * end]},${line.xy[2 * end + 1]}`) && owns(s.x, s.y)) cap(ctx, s, dir);
         }
     });
+    plan.faces(line => ctxs.get(line), owns);
 }
 
 /** A vertex at station s, `a` metres across (left positive), `dz` up, in material `mat`. */
-function vertex(ctx: Ctx, s: Station, a: number, dz: number, mat: number, flags = 0): V {
+export function vertex(ctx: Ctx, s: Station, a: number, dz: number, mat: number, flags = 0): V {
     const key = s.j === undefined ? undefined : `${s.j}|${a}|${dz}|${mat}|${flags}`, known = key === undefined ? undefined : ctx.made.get(key);
     if (known) return known;
     const { b, line, lift, prio } = ctx, sampled = (flags & 3) !== 0, along = line.kind === RAIL ? (s.sleepers ?? NO_SLEEPERS) : s.along;
@@ -74,7 +71,7 @@ function vertex(ctx: Ctx, s: Station, a: number, dz: number, mat: number, flags 
  * A quad seen from above, counter-clockwise. A vertical face (no area in plan) stands on side `side` of its
  * line (1 left, -1 right) and faces the line's middle, as a kerb faces its road.
  */
-function quad(b: MeshBuilder, q: [V, V, V, V], side: number): void {
+export function quad(b: MeshBuilder, q: [V, V, V, V], side: number): void {
     // World y runs south: the signed area of the plan with y flipped.
     let area = 0;
     for (let k = 0; k < 4; k++) area += q[k].x * -q[(k + 1) % 4].y - q[(k + 1) % 4].x * -q[k].y;
@@ -83,11 +80,12 @@ function quad(b: MeshBuilder, q: [V, V, V, V], side: number): void {
     else b.face(q[0].i, q[3].i, q[2].i, q[1].i);
 }
 
-/** The faces between stations s and t: the carriageway, then each side out to the end of its band. Each station has its own half-width and banking. */
-function sweep(ctx: Ctx, s: Station, t: Station): void {
-    const { line } = ctx, road = [carriageway(line, s.h, s.bank), carriageway(line, t.h, t.bank)];
-    for (let k = 0; k + 1 < road[0].length; k++) strip(ctx, s, t, [road[0][k], road[1][k]], [road[0][k + 1], road[1][k + 1]], 1);
+/** The faces between stations s and t: the carriageway, then each side out to the end of its band, but for the plan's cuts. Each station has its own half-width and banking. */
+function sweep(ctx: Ctx, s: JStation, t: Station): void {
+    const { line } = ctx, road = [carriageway(line, s.h, s.bank), carriageway(line, t.h, t.bank)], cut = s.cut ?? 0;
+    if (!(cut & CUT.ROAD)) for (let k = 0; k + 1 < road[0].length; k++) strip(ctx, s, t, [road[0][k], road[1][k]], [road[0][k + 1], road[1][k + 1]], 1);
     for (const side of [1, -1] as const) {
+        if (cut & (side > 0 ? CUT.LEFT : CUT.RIGHT)) continue;
         const parts = [sideOf(line, side, t.v, s.h), sideOf(line, side, t.v, t.h)];
         let inner: [Part, Part] = [{ a: side * s.h, dz: road[0][0].dz, mat: MAT.PAINT }, { a: side * t.h, dz: road[1][0].dz, mat: MAT.PAINT }];
         for (let k = 0; k < parts[0].length; k++) {
