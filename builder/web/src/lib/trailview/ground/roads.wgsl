@@ -26,6 +26,12 @@ const WALL_M: f32 = 5.2;
 const SHAPED_M: f32 = 10.0;
 const PATH_SHAPED_M: f32 = 3.0;
 const PATH_HALF_M: f32 = 1.2;
+// A sidewalk's granite kerb: its top, its dark face on the road side and its soft shadow on the road, in metres across.
+const KERB_M: f32 = 0.18;
+const KERB_FACE_M: f32 = 0.06;
+const KERB_SHADOW_M: f32 = 0.35;
+// Paving lies in square slabs of SLAB_M; their joints show only near the eye.
+const SLAB_M: f32 = 0.6;
 
 // The tracks, from RAIL_CODE on as SURFACES of bins.ts: standard and narrow gauge, each without and with
 // a rack. A track painted where nothing counts its sleepers, on a deck or in a bore, takes NO_SLEEPERS
@@ -67,17 +73,43 @@ fn band(x: f32, a: f32, b: f32, w: f32) -> f32 {
     return clamp((min(x + 0.5 * w, b) - max(x - 0.5 * w, a)) / w, 0.0, 1.0);
 }
 
+// A town's paving at p, seen by a pixel w metres wide: slabs on the world's axes, each its own tone, in
+// faint joints that fade to their share as a pixel grows past them.
+fn paving(region: u32, p: vec2f, w: f32) -> vec3f {
+    var c = rule(region, slot_roads() + i32(PAVING_CODE) - 1).rgb * (0.95 + 0.1 * noise(p / 5.0));
+    let near = 1.0 - smoothstep(0.02, 0.08, w);
+    if (near > 0.0) {
+        let slab = p / SLAB_M;
+        let joint = (0.5 - max(abs(fract(slab.x) - 0.5), abs(fract(slab.y) - 0.5))) * SLAB_M;
+        c *= 1.0 + near * (0.08 * (hash(floor(slab)) - 0.5) - 0.15 * band(joint, -0.008, 0.008, w));
+    }
+    return c;
+}
+
+// A road's surface with its sidewalk, `walk` metres wide past its edge, at `edge` metres out from the edge:
+// the paving, a granite kerb at the edge with its dark face on the road side, and its shadow on the road.
+fn kerbed(region: u32, road: vec3f, edge: f32, walk: f32, p: vec2f, w: f32, cross_w: f32) -> vec3f {
+    let kerb = rule(region, slot_kerb()).rgb;
+    var c = road * (1.0 - 0.3 * clamp(1.0 + edge / KERB_SHADOW_M, 0.0, 1.0) * band(edge, -KERB_SHADOW_M, 0.0, cross_w));
+    c = mix(c, 0.4 * kerb, band(edge, -KERB_FACE_M, 0.0, cross_w));
+    c = mix(c, paving(region, p, w), band(edge, KERB_M, walk, cross_w));
+    return mix(c, kerb * (0.94 + 0.12 * noise(p / 0.9)), band(edge, 0.0, KERB_M, cross_w));
+}
+
 // A road's surface at `inside` metres in from its edge and `across` metres from its middle, `half`
 // metres wide on each side, seen by a pixel w metres wide that spans `cross_w` metres across the road, with the share of the ground beside it that shows through. Paved main roads
-// keep a line along each edge and one in the middle; lanes and tracks wear two wheel ruts, grass and
-// dirt ones with grass between; gravel lies in grains. Codes as SURFACES of bins.ts: main, road,
-// gravel, dirt, grass, path, and oneway: a one-way main road, no line in its middle; then the tracks.
+// keep a line along each edge and one in the middle; asphalt wears no ruts, gravel, dirt and grass
+// tracks wear two, the dirt and grass ones with grass between; gravel lies in grains. Codes as SURFACES of bins.ts: main, road,
+// gravel, dirt, grass, path, oneway: a one-way main road, no line in its middle; paving; then the tracks.
 fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, sleepers: f32, p: vec2f, w: f32, cross_w: f32, along_w: f32) -> vec4f {
     if (code >= RAIL_CODE) {
         return vec4f(track_surface(code, across, sleepers, p, w, cross_w, along_w), 0.0);
     }
+    if (code == PAVING_CODE) {
+        return vec4f(paving(region, p, w), 0.0);
+    }
     let oneway = code == 7u;
-    var c = rule(region, slot_roads() + i32(select(code, 1u, oneway)) - 1).rgb;
+    var c = rule(region, slot_roads() + i32(code) - 1).rgb;
     // Patched asphalt, compacted gravel: broad tone, too faint to alias far off, and a grain near by.
     c *= 0.94 + 0.1 * noise(p / 4.0) + 0.06 * (noise(p / 0.35) - 0.5) * (1.0 - smoothstep(0.05, 0.3, w));
     // Only roads of two full lanes carry lines. The middle one is solid: the mask holds no metres
@@ -86,14 +118,9 @@ fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, sle
         let line = rule(region, slot_road_line()).rgb;
         c = mix(c, line, max(band(inside, 0.25, 0.37, cross_w), select(band(across, -0.06, 0.06, cross_w), 0.0, oneway)));
     }
-    if (code == 3u) {
-        c *= 0.93 + 0.14 * mix(0.5, noise(p / 0.18), 1.0 - smoothstep(0.05, 0.25, w));
-    }
     let ruts = band(across, 0.55, 1.05, cross_w);
-    // One car wide.
-    let lane = half < 2.6;
-    if ((code == 2u && lane) || code == 3u) {
-        c *= 1.0 - 0.08 * ruts;
+    if (code == 3u) {
+        c *= (0.93 + 0.14 * mix(0.5, noise(p / 0.18), 1.0 - smoothstep(0.05, 0.25, w))) * (1.0 - 0.08 * ruts);
     }
     if (code == 4u) {
         return vec4f(c * (1.0 - 0.18 * ruts), band(across, -1.0, 0.3 + 0.12 * noise(p / 0.6), cross_w) * 0.85);
@@ -139,19 +166,22 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0);
     }
     let code = mask.kind.x;
-    let paved = code <= 2u || code == 7u;
-    var wall = select(0.0, reach * mask.shape.w, paved || code >= RAIL_CODE);
+    let paved = code <= 2u || code == 7u || code == PAVING_CODE;
+    // The paint and the road's cut and fill reach past its sidewalk on this side.
+    let walk = mask.walk;
+    // A wall stands under a road's or a track's paint, never under paving: a footway's or a forecourt's.
+    var wall = select(0.0, reach * mask.face, code <= 2u || code == 7u || code >= RAIL_CODE);
     // A face is a wall from the road's edge out where it is still a face WALL_M out, where its cone is
     // steeper than 75°; elsewhere the slope stays ground.
     if (wall > 0.0) {
-        let out = mask_at(s + mask.away * (WALL_M - mask_metres(mask.shape.x)), mask.level, false);
-        wall *= out.shape.w;
+        let out = mask_at(s + mask.away * (WALL_M + walk - mask.edge), mask.level, false);
+        wall *= out.face;
     }
-    var edge = mask_metres(mask.shape.x);
+    var edge = mask.edge;
     let half = max(mask.half, 0.05);
     let shaped_m = select(SHAPED_M, PATH_SHAPED_M, half < PATH_HALF_M);
-    let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, edge));
-    if (edge > w + 0.5) {
+    let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, edge - walk));
+    if (edge - walk > w + 0.5) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped);
     }
     let across = abs(mask.across);
@@ -161,12 +191,15 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
     let cross_w = select(w, max(length(vec2f(dot(ds[0], mask.axis), dot(ds[1], mask.axis))), 1e-3), known);
     let ahead = vec2f(-mask.axis.y, mask.axis.x);
     let along_w = select(w, max(length(vec2f(dot(ds[0], ahead), dot(ds[1], ahead))), 1e-3), known);
-    let surface = road_surface(region, code, max(-edge, 0.0), across, half, mask.sleepers, p, w, cross_w, along_w);
+    var surface = road_surface(region, code, max(-edge, 0.0), across, half, mask.sleepers, p, w, cross_w, along_w);
+    if (walk > 0.0) {
+        surface = vec4f(kerbed(region, surface.rgb, edge, walk, p, w, cross_w), surface.w);
+    }
     // Unpaved edges fray into the ground.
     if (!paved) {
         edge += 0.36 * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5);
     }
     let thin = max(0.0, 0.5 * cross_w - half);
-    let cover = (1.0 - smoothstep(-cross_w, cross_w, edge - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
+    let cover = (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
     return Road(surface.rgb, cover, surface.w, wall, shaped);
 }

@@ -120,8 +120,9 @@ fn slot_traits() -> i32 { return 33 + i32(look.codes.y); }
 fn slot_lithologies() -> i32 { return 33 + 2 * i32(look.codes.y); }
 fn slot_cliff() -> i32 { return slot_lithologies() + i32(look.codes.z); }
 fn slot_roads() -> i32 { return slot_cliff() + 10; }
-fn slot_road_line() -> i32 { return slot_cliff() + 16; }
-fn slot_kinds() -> i32 { return slot_cliff() + 17; }
+fn slot_kerb() -> i32 { return slot_cliff() + 18; }
+fn slot_road_line() -> i32 { return slot_cliff() + 19; }
+fn slot_kinds() -> i32 { return slot_cliff() + 20; }
 fn slot_hardness() -> i32 { return slot_kinds() + i32(look.codes.y); }
 fn slot_rows() -> i32 { return slot_hardness() + i32(look.codes.z); }
 
