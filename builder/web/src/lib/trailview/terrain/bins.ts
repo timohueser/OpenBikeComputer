@@ -193,6 +193,8 @@ export interface Line {
      * grade, the banking (rise per metre to the left) and the widening of each side of a tight bend's carriageway.
      */
     dir?: number[]; grade?: number[]; bank?: number[]; widen?: number[];
+    /** PROTOTYPE (road looks): the OSM `surface` of a road or path, for its look (lookOf of roads/section.ts). */
+    surface?: string;
 }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
@@ -285,7 +287,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
                     // PROTOTYPE: a road, a path or a track as it comes; `rebend` fits it, then a town cuts it in pieces.
                     const line: Line = {
                         kind: type, ...(river ? smoothed(run, heights) : { xy: run, z: heights, anchors: heights.map(() => true) }), h, code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
-                        gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire,
+                        gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, surface: tags.surface,
                     };
                     lines.push(line);
                     if (sidewalk || paving) towns.set(line, { tags, sidewalk, paving, clear: sidewalk ? clearOf(beds, feature, h, sidewalk) : undefined });

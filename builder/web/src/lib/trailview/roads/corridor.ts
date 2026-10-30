@@ -11,6 +11,7 @@ import { halfAt, partnersOf } from '../terrain/corners';
 import { NO_SLEEPERS, type MeshBuilder } from '../structures/mesh';
 import type { Owns } from '../structures/node';
 import { carriageway, corridorLine, MAT, sideOf, type Part } from './section';
+import { tracks } from './tracks';
 import { stationsOf, type Station } from './stations';
 import { kerbDrop, prepareDetails, roadside, type DetailEnv } from './details';
 
@@ -49,6 +50,7 @@ export function corridors(b: MeshBuilder, lines: Line[], owns: Owns, env?: Detai
                 roadside(b, line, stations, j, prep, cache);
             }
         }
+        tracks(b, line, stations, j => owns(stations[j].x, stations[j].y), ctx.prio);
         const n = line.z.length;
         for (const [end, s, dir] of [[0, stations[0], -1], [n - 1, stations[stations.length - 1], 1]] as const) {
             if (!shared.has(`${line.xy[2 * end]},${line.xy[2 * end + 1]}`) && owns(s.x, s.y)) cap(ctx, s, dir);
@@ -104,17 +106,17 @@ function strip(ctx: Ctx, s: Station, t: Station, p: [Part, Part], q: [Part, Part
 
 /** A dead end's half circle: the carriageway's end as a fan, then the band's rings, so the hole under it is covered. */
 function cap(ctx: Ctx, s: Station, dir: number): void {
-    const { b, line } = ctx, rings = sideOf(line, 1, s.v, s.h), dz = carriageway(line, s.h)[0].dz;
+    const { b, line } = ctx, rings = sideOf(line, 1, s.v, s.h), { dz, mat } = carriageway(line, s.h)[0];
     // Ahead past the end, in world units per metre: the left vector turned a quarter.
     const fx = -s.ay * dir, fy = s.ax * dir;
     // The station `r` metres from the end at angle `t` from the left (0) through ahead (π/2) to the right (π).
     const at = (r: number, t: number): Station => ({ ...s, j: undefined, x: s.x + (s.ax * Math.cos(t) + fx * Math.sin(t)) * r, y: s.y + (s.ay * Math.cos(t) + fy * Math.sin(t)) * r });
-    const centre = vertex(ctx, s, 0, dz, MAT.PAINT);
+    const centre = vertex(ctx, s, 0, dz, mat);
     for (let k = 0; k < CAP_STEPS; k++) {
         const t0 = (Math.PI * k) / CAP_STEPS, t1 = (Math.PI * (k + 1)) / CAP_STEPS;
-        const e0 = vertex(ctx, at(s.h, t0), 0, dz, MAT.PAINT), e1 = vertex(ctx, at(s.h, t1), 0, dz, MAT.PAINT);
+        const e0 = vertex(ctx, at(s.h, t0), 0, dz, mat), e1 = vertex(ctx, at(s.h, t1), 0, dz, mat);
         quad(b, [centre, e0, e1, e1], 1);
-        let inner: Part = { a: s.h, dz, mat: MAT.PAINT };
+        let inner: Part = { a: s.h, dz, mat };
         for (const outer of rings) {
             const v = (tt: number, part: Part) => vertex(ctx, at(part.a, tt), 0, part.dz, outer.mat, part.flags ?? 0);
             quad(b, [v(t0, inner), v(t0, outer), v(t1, outer), v(t1, inner)], 1);
