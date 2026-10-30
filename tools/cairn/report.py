@@ -1,4 +1,5 @@
-"""The weekly report: the overrides, the ratchet, and drift between the approved system docs and the code.
+"""The weekly report: the overrides, the size estimates, the ratchet, and drift between the approved
+system docs and the code.
 
 Step 1 reads git and GitHub and costs no tokens. For each approved doc, it collects the pull
 requests merged since the doc last changed that touch the files of its system. Step 2 sends one
@@ -92,20 +93,66 @@ def pull_mode(pull: dict) -> modes.Mode | None:
 # ── step 1: no tokens ────────────────────────────────────────────────────────
 
 
-def overrides(api: Api, now: datetime) -> list[tuple[int, str, str]]:
-    """The pull requests merged in the 7 days before `now` whose mode is an override, as (number,
-    title, reason). The list is newest update first, so it stops at a page that ends before the
-    window."""
+def merged(api: Api, now: datetime) -> list[dict]:
+    """The pull requests merged in the 7 days before `now`, by number. The list is newest update
+    first, so it stops at a page that ends before the window."""
     since = now - timedelta(days=7)
     found = []
     for page in itertools.count(1):
         pulls = api(f"pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}")
-        for pull in pulls:
-            mode = pull_mode(pull)
-            if pull.get("merged_at") and datetime.fromisoformat(pull["merged_at"]) >= since and mode and mode.kind == "override":
-                found.append((pull["number"], pull["title"], mode.reason))
+        found += [pull for pull in pulls if pull.get("merged_at") and datetime.fromisoformat(pull["merged_at"]) >= since]
         if len(pulls) < 100 or datetime.fromisoformat(pulls[-1]["updated_at"]) < since:
-            return sorted(found)
+            return sorted(found, key=lambda pull: pull["number"])
+
+
+def overrides(pulls: list[dict]) -> list[tuple[int, str, str]]:
+    """The pull requests whose mode is an override, as (number, title, reason)."""
+    return [(pull["number"], pull["title"], mode.reason) for pull in pulls
+            if (mode := pull_mode(pull)) and mode.kind == "override"]
+
+
+def estimate(root: Path, config: dict, docs: list[cairn.Doc], api: Api, merge: str, issue: int) -> tuple[str, str, list[str]]:
+    """The planned and the measured size of a change, and the signals of the measured size. A size
+    that cannot be read is `unknown`, and the signals say why. The measured size uses the rules of
+    the merge's first parent, as the mode gate does, but not new dependencies: they need the
+    dependency graph of both commits."""
+    planned, measured, why = "unknown", "unknown", []
+    try:
+        planned = modes.issue_size(modes.issue_body(issue, api(f"issues/{issue}"))) or "unknown"
+        if planned == "unknown":
+            why.append(f"issue #{issue} has no Size line")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        why.append(f"issue #{issue} cannot be read: {error}")
+    if not merge or modes.git(root, "rev-parse", "--verify", "--quiet", f"{merge}^1") is None:
+        return planned, measured, [*why, f"the merge commit {merge[:12]} is not in this checkout"]
+    try:
+        base = cairn.shown_at(root, f"{merge}^1")(cairn.CONFIG)
+        rules = cairn.gate_rules(config, json.loads(base) if base else None)
+        measured, signals = modes.size(cairn.pr_diff(root, f"{merge}^1", docs, rules, set(), merge), rules["size"])
+        why += signals
+    except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+        why.append(f"the merge commit {merge[:12]} cannot be read: {error}")
+    return planned, measured, why
+
+
+def size_lines(root: Path, config: dict, docs: list[cairn.Doc], api: Api, pulls: list[dict]) -> list[str]:
+    rows, counts = [], Counter()
+    for pull in pulls:
+        mode = pull_mode(pull)
+        if not mode or mode.kind != "change":
+            continue
+        planned, measured, why = estimate(root, config, docs, api, pull.get("merge_commit_sha") or "", mode.issue)
+        if "unknown" in (planned, measured):
+            counts["unknown"] += 1
+        else:
+            order = modes.SIZES.index(measured) - modes.SIZES.index(planned)
+            counts["as planned" if order == 0 else "larger" if order > 0 else "smaller"] += 1
+        rows.append(f"| #{pull['number']} | #{mode.issue} | {planned} | {measured} | {untrusted('; '.join(why)).replace('|', '/')} |")
+    if not rows:
+        return ["None."]
+    kinds = ["as planned", "larger", "smaller"] + (["unknown"] if counts["unknown"] else [])
+    return [f"{len(rows)} PR(s): {', '.join(f'{counts[kind]} {kind}' for kind in kinds)}.", "",
+            "| Pull request | Issue | Planned | Measured | Signals |", "| --- | --- | --- | --- | --- |", *rows]
 
 
 @dataclass(frozen=True)
@@ -368,9 +415,10 @@ def write(root: Path, config: dict, docs: list[cairn.Doc], result: cairn.Result,
     lines = ["# cairn report", "", f"Written on {now:%Y-%m-%d} at {modes.git(root, 'rev-parse', '--short', 'HEAD')}.",
              "", "## Overrides merged in the last 7 days", ""]
     try:
-        found = overrides(api, now)
-        rows = [f"| #{n} | {untrusted(t).replace('|', '/')} | {untrusted(r).replace('|', '/')} |" for n, t, r in found]
+        pulls = merged(api, now)
+        rows = [f"| #{n} | {untrusted(t).replace('|', '/')} | {untrusted(r).replace('|', '/')} |" for n, t, r in overrides(pulls)]
         lines += ["| Pull request | Title | Reason |", "| --- | --- | --- |", *rows] if rows else ["None."]
+        lines += ["", "## Size estimates of the changes merged in the last 7 days", "", *size_lines(root, config, docs, api, pulls)]
     except (OSError, ValueError, KeyError, TypeError) as error:
         failed = True
         lines.append(f"The pull requests cannot be read: {error}")

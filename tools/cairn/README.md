@@ -74,7 +74,7 @@ and from the branch otherwise. The diff is HEAD against the merge base with `--b
 | --- | --- |
 | `fix` | touch one system or shell, add no dependency between systems, change no doc header and no file under `specs/`, and change at most `fix.max_lines` lines outside the `fix.tests` globs |
 | `fix, over limit: <reason>` | do the same, with no size limit |
-| `change #N` | touch only the systems on the `**Systems:**` line of issue N, outside code blocks and HTML comments, by slug or title. The first `Status:` line of the issue is `Status: approved`, and an `Approved: <hash>` line holds the hash that `cairn hash` gives for its body. N must be an issue, not a pull request. A new dependency `a -> b` changes `docs/design/a.md` too. The size of the diff is not larger than the `**Size:**` line of issue N. |
+| `change #N` | touch only the systems on the `**Systems:**` line of issue N, outside code blocks and HTML comments, by slug or title. The first `Status:` line of the issue is `Status: approved`, and an `Approved: <hash>` line holds the hash that `cairn hash` gives for its body. N must be an issue, not a pull request. A new dependency `a -> b` changes `docs/design/a.md` too. Issue N has a `**Size:**` line. |
 | `prototype` | not exist: the gate always fails, because a prototype never merges |
 | `override: <reason>` | nothing: the gate passes, and the body keeps the reason |
 
@@ -105,10 +105,11 @@ The size of the diff is the largest size that one of its signals gives:
 | a new system doc | L |
 
 The gate takes the letter after `**Size:**` on its line in the issue, outside code blocks and HTML
-comments. An issue with no such line is a violation. A diff larger than the issue is a violation
-that names both sizes and the signals that decide. The way out is to shrink the pull request, amend
-the issue and approve it again, or override with a reason. The gate cannot see a breaking contract
-change, so the people who size the issue make it L.
+comments. An issue with no such line is a violation. A diff larger than the issue is only a note:
+the gate prints it after the violations, with both sizes and the deciding signals. A note never
+changes the exit code. The `**Systems:**` line and the `fix` limits still fail. The weekly report
+compares the planned and the measured sizes. The gate cannot see a breaking contract change, so
+the people who size the issue make it L.
 
 ### Epics
 
@@ -142,6 +143,7 @@ through Bash bypass the hook; AGENTS.md and the mode gate cover them.
 | Part | Source |
 | --- | --- |
 | Overrides | the pull requests merged in the last 7 days with `Mode: override: <reason>`, read through `gh api` |
+| Size estimates | each `change #N` pull request merged in the last 7 days: the `**Size:**` line of issue N, and the size of the merge commit against its first parent, with its rules. New dependencies do not count. An unreadable size is `unknown`, with the reason. |
 | Ratchet, files with no owner | the analysis of `cairn check` |
 | Drift, step 1 | For each doc with `status: approved`: the `Merge pull request #N` commits on the first-parent line of HEAD after the last change to the doc. A commit counts when it changes files of the system outside `fix.tests`, `report.ignore` and the map. A `change` gives the TL;DR of its issue. Another mode gives its diff on those files. `report.max_input_chars` caps the input of a system. |
 | Drift, step 2 | Runs only with `--drift`, because it spends tokens. It needs `ANTHROPIC_API_KEY`. It sends one Message Batch for the `drift` role in the `api` tier. A family prefix resolves to its newest model ID through the Models API. The fixed instructions and `docs/design/glossary.md` come first, with a cache breakpoint. |

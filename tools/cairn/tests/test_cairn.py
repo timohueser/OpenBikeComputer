@@ -349,20 +349,25 @@ class ModeGateTests(unittest.TestCase):
             fails, report = repository.gate(base, "fix")
             self.assertTrue(fails, report)
 
-    def test_a_change_larger_than_its_issue_fails_only_for_an_approved_system(self):
+    def test_a_change_larger_than_its_issue_passes_with_a_note_and_one_outside_its_systems_fails(self):
         body = "Status: approved\n**Size:** S\n**Systems:** routing\n"
         body = body.replace("\n", f"\nApproved: {cairn.modes.approval_hash(body)}\n", 1)
-        for status, failing in (("approved", True), ("draft", False)):
-            with tempfile.TemporaryDirectory() as folder:
-                repository = Repository(folder)
-                base = repository.commit({"docs/design/routing.md": header("routing", "route/**", status=status),
-                                          "route/a.rs": "a\n"}, fix={"max_lines": 1000, "tests": []})
-                repository.commit({"route/a.rs": "a\n" * 502})
-                with mock.patch.object(cairn.modes, "fetch_issue", return_value=body), \
-                        mock.patch.object(cairn.modes, "fetch_epic", return_value=None):
-                    fails, report = repository.gate(base, "change #5")
-            self.assertEqual(fails, failing, report)
-            self.assertIn("`change #5` is sized S, but the diff is M: 501 changed lines outside tests", report)
+        with tempfile.TemporaryDirectory() as folder:
+            repository = Repository(folder)
+            base = repository.commit({"docs/design/routing.md": header("routing", "route/**", status="approved"),
+                                      "docs/design/search.md": header("search", "search/**"),
+                                      "route/a.rs": "a\n"}, fix={"max_lines": 1000, "tests": []})
+            repository.commit({"route/a.rs": "a\n" * 502})
+            with mock.patch.object(cairn.modes, "fetch_issue", return_value=body), \
+                    mock.patch.object(cairn.modes, "fetch_epic", return_value=None):
+                fails, report = repository.gate(base, "change #5")
+                self.assertFalse(fails, report)
+                self.assertIn("mode: 0 violation(s), pass\ncairn: note: `change #5` is sized S, but the diff is M: "
+                              "501 changed lines outside tests", report)
+                repository.commit({"search/b.rs": "b\n"})
+                fails, report = repository.gate(base, "change #5")
+        self.assertTrue(fails, report)
+        self.assertIn("issue #5 does not list search on its Systems line", report)
 
     def test_the_rules_fall_back_to_the_defaults(self):
         config = json.loads((cairn.ROOT / cairn.CONFIG).read_text())

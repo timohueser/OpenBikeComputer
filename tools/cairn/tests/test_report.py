@@ -28,8 +28,8 @@ class Repository:
         self.git("init", "--quiet", "--initial-branch=develop")
 
     def git(self, *args):
-        subprocess.run(["git", "-C", str(self.root), "-c", "user.name=t", "-c", "user.email=t@t", *args],
-                       check=True, capture_output=True)
+        return subprocess.run(["git", "-C", str(self.root), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                              check=True, capture_output=True, text=True).stdout.strip()
 
     def write(self, files):
         for path, text in files.items():
@@ -38,12 +38,14 @@ class Repository:
         self.git("add", "-A")
 
     def merge(self, number, files):
-        """Merge a pull request the way GitHub does: a merge commit on the first-parent line."""
+        """Merge a pull request the way GitHub does: a merge commit on the first-parent line. Gives
+        the merge commit."""
         self.git("checkout", "--quiet", "-b", f"pr{number}")
         self.write(files)
         self.git("commit", "--quiet", "-m", f"pull request {number}")
         self.git("checkout", "--quiet", "develop")
         self.git("merge", "--quiet", "--no-ff", "-m", f"Merge pull request #{number} from someone/pr{number}", f"pr{number}")
+        return self.git("rev-parse", "HEAD")
 
 
 class DriftInputTests(unittest.TestCase):
@@ -219,9 +221,42 @@ class OverrideTests(unittest.TestCase):
             pull(14, "<!-- Mode: override: hidden -->\nMode: fix", "2026-10-27T09:00:00Z"),
         ]
         api = mock.Mock(return_value=pulls)
-        found = report.overrides(api, datetime(2026, 10, 29, tzinfo=timezone.utc))
+        found = report.overrides(report.merged(api, datetime(2026, 10, 29, tzinfo=timezone.utc)))
         self.assertEqual(found, [(10, "PR 10", "a release fix")])
         api.assert_called_once()
+
+
+class SizeEstimateTests(unittest.TestCase):
+    def test_each_change_compares_its_planned_size_with_its_merge_or_says_why_it_cannot(self):
+        issues = {"issues/7": {"body": "**Size:** S"}, "issues/8": {"body": "**Size:** M"}, "issues/9": {"body": "**Size:** M"}}
+
+        def api(path):
+            if path not in issues:
+                raise OSError("gh: Not Found (HTTP 404)")
+            return issues[path]
+
+        with tempfile.TemporaryDirectory() as folder:
+            repository = Repository(folder)
+            repository.write({"docs/design/routing.md": header("routing", "route/**", "draft"),
+                              "docs/design/search.md": header("search", "search/**", "draft"), "route/a.rs": "a\n"})
+            repository.git("commit", "--quiet", "-m", "start")
+            pulls = [
+                {"number": 2, "body": "Mode: change #7", "merge_commit_sha": repository.merge(2, {"route/a.rs": "a\n" * 601})},
+                {"number": 3, "body": "Mode: change #8", "merge_commit_sha": repository.merge(3, {"route/b.rs": "b\n"})},
+                {"number": 4, "body": "Mode: change #9",
+                 "merge_commit_sha": repository.merge(4, {"route/c.rs": "c\n", "search/d.rs": "d\n"})},
+                {"number": 5, "body": "Mode: fix", "merge_commit_sha": repository.merge(5, {"route/e.rs": "e\n"})},
+                {"number": 6, "body": "Mode: change #10", "merge_commit_sha": "0" * 40},
+            ]
+            lines = report.size_lines(repository.root, CONFIG, cairn.load_docs(repository.root, "docs/design"), api, pulls)
+        self.assertEqual(lines[0], "4 PR(s): 1 as planned, 1 larger, 1 smaller, 1 unknown.")
+        self.assertEqual(lines[4:], [
+            "| #2 | #7 | S | M | 600 changed lines outside tests |",
+            "| #3 | #8 | M | S | 1 system; 1 changed lines outside tests |",
+            "| #4 | #9 | M | M | 2 systems |",
+            "| #6 | #10 | unknown | unknown | issue #10 cannot be read: gh: Not Found (HTTP 404); "
+            "the merge commit 000000000000 is not in this checkout |",
+        ])
 
 
 class PublishTests(unittest.TestCase):
