@@ -15,8 +15,9 @@ export const LOOK = { ASPHALT: 20, MAIN: 21, MOTORWAY: 22, CONCRETE: 23, SETT: 2
 /**
  * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a band's row on the stamped ground. MESH: a band's row
  * under the drawn mesh. UNDER: a band's row over another way's carriageway, which it passes under.
+ * NO_LEFT_LINE, NO_RIGHT_LINE: a carriageway without its edge line on that side, at a junction's mouth.
  */
-export const CF = { SAMPLE: 1, MESH: 2, UNDER: 4 } as const;
+export const CF = { SAMPLE: 1, MESH: 2, UNDER: 4, NO_LEFT_LINE: 8, NO_RIGHT_LINE: 16 } as const;
 
 /** The top of a track's ballast over its line, and the width of its slope on each side. */
 const BED_M = 0.25, BED_SLOPE_M = 0.4;

@@ -34,6 +34,10 @@ const MASK_M: f32 = 12.75;
 const MASK_KNEE: f32 = 0.5;
 // Paint hands over to the corridors this far inside what they hold.
 const CORRIDOR_FADE_M: f32 = 40.0;
+// Plants and stones keep this far off a trodden way's middle, and a little less off its tread (trail_look of
+// roads/looks.wgsl), which keeps within this reach.
+const TREAD_CLEAR_M: f32 = 0.7;
+const TREAD_GRACE_M: f32 = 0.25;
 // As RAIL_CODE and SLEEPER_M of bins.ts: the tracks from this surface code on, and the spacing of their
 // sleepers; the code of `paving` in SURFACES of bins.ts.
 const RAIL_CODE: u32 = 9u;
@@ -99,6 +103,8 @@ struct Mask {
     // The width of the sidewalk of the nearest texel's road on its side: the paint reaches this far past the
     // edge.
     walk: f32,
+    // Whether the nearest texel's way is trodden: only its tread is bare, and plants grow over its margin.
+    trodden: bool,
 }
 
 // Metres across a texel of a level in texel row `row`, as unit_metres of stamp-core.wgsl.
@@ -165,16 +171,22 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
             let axis = select(away, normalize(vec2f(middle.x, -middle.y)), dot(middle, middle) > 0.0);
             let y = nearest.y;
             let sleepers = y + dot(t.part - round(t.part), ahead) * texel_metres(level, whole.y) / SLEEPER_SPACING_M;
-            let walk = select(walk_metres(u32(round(y * 255.0))), 0.0, (byte & 15u) >= RAIL_CODE);
-            return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, walk);
+            let past = select(u32(round(y * 255.0)), 0u, (byte & 15u) >= RAIL_CODE);
+            return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, walk_metres(past), is_trodden(past));
         }
     }
-    return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0);
+    return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0, false);
 }
 
 // Whether the mask keeps a thing off a point: in water or in a building, on a road, its sidewalk, a path or
 // a track, or nearer to their outer edge than `clear` metres.
 fn kept_off(s: vec2f, clear: f32) -> bool {
     let mask = mask_at(s, u32(ceil(lod(s))), true);
-    return mask.level != 0u && ((mask.kind.y & TAKEN) != 0u || (mask.kind.x != 0u && mask.edge - mask.walk < clear));
+    let edge = select(mask.edge - mask.walk, abs(mask.across) - TREAD_CLEAR_M + TREAD_GRACE_M, mask.trodden);
+    return mask.level != 0u && ((mask.kind.y & TAKEN) != 0u || (mask.kind.x != 0u && edge < clear));
+}
+
+// The share of a way that the paint draws at `distance` metres from the eye: past what corridors hold, all of it.
+fn paint_share(distance: f32) -> f32 {
+    return select(1.0, smoothstep(masks.corridors - CORRIDOR_FADE_M, masks.corridors, distance), masks.corridors > 0.0);
 }

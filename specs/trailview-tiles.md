@@ -239,6 +239,8 @@ with these rules:
 - `look.ramps` of a cover comes whole from the nearest region of the chain that names it.
 - A value by place, `{"es-ga": …, "es": …, "*": …}`, takes the entry of the place of the region id,
   else of its country, else `"*"`. The values by place are `style` of the pack and `look.roadLine`.
+- In a look, `concrete` and `setts` are optional colours: the concrete of a paved way and the mean
+  of its setts. A ruleset without them draws with the colours of the engine.
 - In a pack, `trees`, `ground` and `herds` are keyed by species, and in a look, `patches` by
   name. A child adds or changes one, and `null` drops one. The patches draw dots first, then
   blotches, each form in the order of the names; the order of keys means nothing.

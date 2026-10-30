@@ -25,9 +25,17 @@ describe('the rules of the ground', () => {
         expect(SLOT.traits).toBe(33 + 3);
         expect(SLOT.lithologies).toBe(33 + 6);
         expect([SLOT.patches, SLOT.terrain, SLOT.bedding, SLOT.snap, SLOT.sea, SLOT.shapes, SLOT.turf, SLOT.roads].map(slot => slot - SLOT.cliff)).toEqual([1, 3, 4, 5, 6, 8, 9, 10]);
-        expect([SLOT.roadLine, SLOT.kinds].map(slot => slot - SLOT.cliff)).toEqual([19, 20]);
+        expect([SLOT.roadLine, SLOT.concrete, SLOT.setts, SLOT.kinds].map(slot => slot - SLOT.cliff)).toEqual([19, 20, 21, 22]);
         expect(SLOT.hardness).toBe(SLOT.kinds + 3);
         expect(SLOT.rows).toBe(SLOT.hardness + vocabulary.lithologies.length);
+    });
+
+    it('takes the concrete and the setts that a region names, else those of the engine', () => {
+        const SLOT = slots(vocabulary), at = (look: Region['look'], i: number) => Array.from(packRulesOn([{ ...region, look }], vocabulary, 318).subarray(4 * i, 4 * i + 3));
+        const named = { ...region.look, concrete: '#102030', setts: '#405060' };
+        expect(at(named, SLOT.concrete)).toEqual(linear('#102030').map(c => Math.fround(c)));
+        expect(at(named, SLOT.setts)).toEqual(linear('#405060').map(c => Math.fround(c)));
+        expect(at(region.look, SLOT.concrete)).toEqual(linear('#9c9a97').map(c => Math.fround(c)));
     });
 
     it('fades in a paint that one season leaves out, at its own colour', () => {

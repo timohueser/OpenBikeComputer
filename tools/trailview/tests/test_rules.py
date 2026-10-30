@@ -21,6 +21,7 @@ CASES = [
     ("regions/alps.insubric", ["where"], DELETE, "regions/alps.insubric.json: where: a subregion needs its areas"),
     ("regions/world", ["extends"], "alps.insubric", "regions/world.json: extends: a loop world › alps.insubric › alps › world"),
     ("regions/alps", ["look", "roadLine"], {"ch": "#ffffff"}, 'regions/alps.json: look.roadLine: has no "*" entry'),
+    ("regions/alps", ["look", "setts"], "#fff", 'regions/alps.json: look.setts: "#fff" is not a #rrggbb colour'),
     ("regions/alps.insubric", ["where"], [[[8, 46], [9, 46]]],
      "regions/alps.insubric.json: where[0]: [[8,46],[9,46]] is not a box [west, south, east, north] or a ring of 3 or more [lon, lat]"),
     ("regions/alps", ["look", "ramps"], {"grass": ["#fff", "#000000", "#000000"]},

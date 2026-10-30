@@ -26,10 +26,19 @@ const WALL_M: f32 = 5.2;
 const SHAPED_M: f32 = 10.0;
 const PATH_SHAPED_M: f32 = 3.0;
 const PATH_HALF_M: f32 = 1.2;
+// Only a road this wide on each side carries lines.
+const MARKED_HALF_M: f32 = 2.75;
 // A sidewalk's granite kerb: its top, its dark face on the road side and its soft shadow on the road, in metres across.
 const KERB_M: f32 = 0.18;
 const KERB_FACE_M: f32 = 0.06;
 const KERB_SHADOW_M: f32 = 0.35;
+// The metres of each side of a way that stay bare: ruts of soil, ruts that grass grows over, a trodden tread.
+const RUTS_MEAN_M: f32 = 0.75;
+const GRASSED_MEAN_M: f32 = 0.55;
+const TREAD_MEAN_M: f32 = 0.36;
+// A middle line's dashes, as DASH_ON_M and DASH_PERIOD_M of roads/looks.wgsl.
+const DASH_M: f32 = 3.0;
+const DASH_SHARE: f32 = 0.33333334;
 // Paving lies in square slabs of SLAB_M; their joints show only near the eye.
 const SLAB_M: f32 = 0.6;
 
@@ -43,6 +52,25 @@ const SLEEPER: vec3f = vec3f(0.3, 0.285, 0.255);
 const RAIL_HEAD: vec3f = vec3f(0.5, 0.505, 0.51);
 const RAIL_SIDE: vec3f = vec3f(0.09, 0.06, 0.045);
 const RACK: vec3f = vec3f(0.06, 0.055, 0.05);
+
+// How far a dash `on` metres long has turned to its share of a line, seen by a pixel `along_w` metres long.
+fn dash_mean(on: f32, along_w: f32) -> f32 {
+    return smoothstep(0.15 * on, 0.6 * on, along_w);
+}
+
+// Whether the paint draws this pixel of a way that a corridor draws, at `distance` metres from the eye. The
+// corridor discards exactly these pixels, so the two hand over without a pixel drawn twice or left out.
+fn paint_draws(distance: f32, pixel: vec2f) -> bool {
+    return dither(pixel) < paint_share(distance);
+}
+
+// The share of the ground in a way of soil or grass far off, where a pixel spans its ruts or its tread: what a
+// corridor shows at the end of its reach (dirt_look and trail_look of roads/looks.wgsl), which the metres of
+// each side that stay bare give.
+fn ground_mean(code: u32, half: f32, trodden: bool) -> f32 {
+    let bare = select(select(TREAD_MEAN_M, RUTS_MEAN_M, code == 4u), GRASSED_MEAN_M, code == 5u);
+    return clamp(1.0 - select(bare, TREAD_MEAN_M, trodden) / half, 0.0, 1.0);
+}
 
 // A track `across` metres from its middle, its sleepers counted `sleepers` from its start, seen by a
 // pixel w metres wide that spans `cross_w` metres across it and `along_w` along it: ballast, sleepers
@@ -112,11 +140,12 @@ fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, sle
     var c = rule(region, slot_roads() + i32(code) - 1).rgb;
     // Patched asphalt, compacted gravel: broad tone, too faint to alias far off, and a grain near by.
     c *= 0.94 + 0.1 * noise(p / 4.0) + 0.06 * (noise(p / 0.35) - 0.5) * (1.0 - smoothstep(0.05, 0.3, w));
-    // Only roads of two full lanes carry lines. The middle one is solid: the mask holds no metres
-    // along the road for dashes.
-    if ((code == 1u || oneway) && half >= 3.5) {
+    // The mask holds no metres along the road for dashes: the middle line is solid, and far off takes the share of
+    // the dashes of a corridor.
+    if ((code == 1u || oneway) && half >= MARKED_HALF_M) {
         let line = rule(region, slot_road_line()).rgb;
-        c = mix(c, line, max(band(inside, 0.25, 0.37, cross_w), select(band(across, -0.06, 0.06, cross_w), 0.0, oneway)));
+        let middle = band(across, -0.06, 0.06, cross_w) * mix(1.0, DASH_SHARE, dash_mean(DASH_M, along_w));
+        c = mix(c, line, max(band(inside, 0.2, 0.35, cross_w), select(middle, 0.0, oneway)));
     }
     let ruts = band(across, 0.55, 1.05, cross_w);
     if (code == 3u) {
@@ -151,8 +180,8 @@ fn masonry(stone: vec3f, along: f32, altitude: f32, w: f32) -> vec3f {
 // The road at a point of the ground: `s` in LOD space with its screen derivatives `ds`, `p` in world
 // metres, a pixel `w` metres wide, `distance` metres from the eye. A road narrower than a pixel draws one pixel wide, as
 // faint as its share of it. The paint fades out before the reach of the mask pool and in the outer
-// half of the morph band of the coarsest level with masks.
-fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) -> Road {
+// half of the morph band of the coarsest level with masks. `pixel` is the pixel on the screen.
+fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f) -> Road {
     if (!DETAIL) {
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0);
     }
@@ -171,8 +200,7 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
     let walk = mask.walk;
     // A wall stands under a road's or a track's paint, never under paving: a footway's or a forecourt's. Inside
     // the corridors' reach its masonry fades out, or a mesh wall shows a translucent ghost.
-    let painted = select(1.0, smoothstep(masks.corridors - CORRIDOR_FADE_M, masks.corridors, distance), masks.corridors > 0.0);
-    var wall = select(0.0, reach * mask.face * painted, code <= 2u || code == 7u || code >= RAIL_CODE);
+    var wall = select(0.0, reach * mask.face * paint_share(distance), code <= 2u || code == 7u || code >= RAIL_CODE);
     // A face is a wall from the road's edge out where it is still a face WALL_M out, where its cone is
     // steeper than 75°; elsewhere the slope stays ground.
     if (wall > 0.0) {
@@ -194,6 +222,9 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
     let ahead = vec2f(-mask.axis.y, mask.axis.x);
     let along_w = select(w, max(length(vec2f(dot(ds[0], ahead), dot(ds[1], ahead))), 1e-3), known);
     var surface = road_surface(region, code, max(-edge, 0.0), across, half, mask.sleepers, p, w, cross_w, along_w);
+    if (code >= 4u && code <= 6u) {
+        surface.w = mix(surface.w, ground_mean(code, half, mask.trodden), smoothstep(0.1, 0.4, cross_w));
+    }
     if (walk > 0.0) {
         surface = vec4f(kerbed(region, surface.rgb, edge, walk, p, w, cross_w), surface.w);
     }
@@ -202,9 +233,10 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
         edge += 0.36 * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5);
     }
     let thin = max(0.0, 0.5 * cross_w - half);
-    // A corridor draws an unpaved way here, and its paint would show where the terrain rises through it. A paved
-    // way keeps its paint: where the stamped ground lies over its corridor, the paint is the way.
-    let corridor = distance < masks.corridors - CORRIDOR_FADE_M && code >= 3u && code <= 6u;
+    // A corridor draws an unpaved way, and the ground shows through it: its paint keeps only the pixels that the
+    // corridor leaves it. A paved way keeps its paint: where the stamped ground lies over its corridor, the paint
+    // is the way.
+    let corridor = code >= 3u && code <= 6u && !paint_draws(distance, pixel);
     let cover = select(1.0, 0.0, corridor) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
     return Road(surface.rgb, cover, surface.w, wall, shaped);
 }

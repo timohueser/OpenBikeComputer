@@ -1,8 +1,11 @@
 diagnostic(off, derivative_uniformity);
 // The corridors of roads/: swept meshes of each road, track and path within the range, drawn before the
 // terrain. A band's rows stand on the stamped ground, read in the vertex stage; every other vertex stands
-// at its height from the bake. A face takes its material from its first vertex.
+// at its height from the bake. A face takes its material from its first vertex. The share of a pixel that a look
+// leaves to the ground, and the share that the paint takes near the end of the corridors' reach, discard: the
+// terrain draws those pixels once. The two shares draw by separate dithers, and the frames resolve them.
 // #include ../ground/look.wgsl
+// #include looks.wgsl
 
 // As Frame of terrain.wgsl, which shares its buffer.
 struct Frame {
@@ -23,13 +26,11 @@ const ACROSS_STEP_M: f32 = 0.0078163;
 const ALONG_STEP: f32 = 0.015625;
 const CODE_SHIFT: u32 = 7u;
 const FLAGS_SHIFT: u32 = 11u;
+const FLAGS_BITS: u32 = 31u;
 const PRIO_SHIFT: u32 = 16u;
 const HALF_SHIFT: u32 = 19u;
 // As MAT, LOOK and CF of section.ts.
 const MAT_GROUND: u32 = 1u;
-const MAT_KERB: u32 = 2u;
-const MAT_SIDEWALK: u32 = 3u;
-const LOOK_FIRST: u32 = 20u;
 const CF_SAMPLE: u32 = 1u;
 const CF_MESH: u32 = 2u;
 const CF_UNDER: u32 = 4u;
@@ -52,6 +53,8 @@ const BAND_PRIO_M: f32 = 0.004;
 // hold the same ground the band wins, and a hill in front of a road still hides it.
 const CORRIDOR_BIAS_M: f32 = 0.06;
 const CORRIDOR_BIAS_SHARE: f32 = 0.003;
+// Moves the look's dither off the paint's, so the two shares are independent.
+const FRAY_DITHER: vec2f = vec2f(19.0, 53.0);
 
 struct CorridorIn {
     // Steps of CORRIDOR_STEP units about `middle`.
@@ -128,7 +131,7 @@ fn corridor_at(v: CorridorIn) -> vec2f {
 fn corridor_vertex(v: CorridorIn) -> CorridorOut {
     let u = corridor_at(v);
     let s = lod_space(u);
-    let flags = (v.word >> FLAGS_SHIFT) & 31u;
+    let flags = (v.word >> FLAGS_SHIFT) & FLAGS_BITS;
     let across = across_of(v.place);
     let half = half_of(v.word);
     let z = select(v.z, band_height(s, v.z, v.word, flags, across, half), (flags & (CF_SAMPLE | CF_MESH)) != 0u);
@@ -159,24 +162,24 @@ fn corridor_caster(v: CorridorIn) -> @builtin(position) vec4f {
 
 @fragment
 fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
+    if (paint_draws(length(in.relative.xy), in.clip.xy)) {
+        discard;
+    }
     let mat = in.word & 127u;
     let su = lod_space(in.u);
     if (mat == MAT_GROUND) {
-        return vec4f(ground_colour(su, in.relative, in.altitude, u32(ceil(lod(su)))), 1.0);
+        return vec4f(ground_colour(su, in.relative, in.altitude, u32(ceil(lod(su))), in.clip.xy), 1.0);
     }
     var n = normalize(cross(dpdx(in.relative), dpdy(in.relative)));
     n *= -sign(dot(n, in.relative));
-    let region = region_at(su);
     let p = look.place.xy + in.relative.xy;
-    let w = max(length(dpdx(in.relative)), length(dpdy(in.relative)));
-    var albedo = rule(region, slot_kerb()).rgb * (0.94 + 0.12 * noise(p / 0.9));
-    if (mat == MAT_SIDEWALK) {
-        albedo = paving(region, p, w);
-    } else if (mat >= LOOK_FIRST) {
-        let across = abs(in.road.x);
-        let along_w = max(abs(dpdx(in.along)), abs(dpdy(in.along))) * SLEEPER_SPACING_M;
-        albedo = road_surface(region, (in.word >> CODE_SHIFT) & 15u, max(in.road.y - across, 0.0), across, in.road.y, in.along, p, w, w, along_w).rgb;
+    let pw = max(length(dpdx(in.relative)), length(dpdy(in.relative))) * look.screen.z;
+    let cw = max(length(vec2f(dpdx(in.road.x), dpdy(in.road.x))), 1e-4);
+    let aw = max(length(vec2f(dpdx(in.along), dpdy(in.along))), 1e-4);
+    let way = WayPixel(p, in.road.x, in.road.y, in.along, pw, cw, aw);
+    let l = way_look(mat, (in.word >> CODE_SHIFT) & 15u, region_at(su), su, way, (in.word >> FLAGS_SHIFT) & FLAGS_BITS, n.z, in.altitude);
+    if (dither(in.clip.xy + FRAY_DITHER) < l.ground) {
+        discard;
     }
-    let lit = light_up(albedo, n, sun_share(sun_at(su), in.relative, n, LIFT_SOLID), 1.0, look.horizon.w);
-    return vec4f(atmosphere(lit, in.relative, in.altitude), 1.0);
+    return vec4f(way_lit(l, n, su, in.relative, in.altitude), 1.0);
 }

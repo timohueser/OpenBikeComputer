@@ -42,6 +42,8 @@ const PAVING = '#a9a59d';
 /** A slot per surface code up to the tracks, as SURFACES of bins.ts (a one-way road paints as a main road), then the kerb. */
 const ROAD_SLOTS = ROADS.length + 3;
 const ROAD_LINE = '#d6d4cc';
+/** Paved ways that a region may name: concrete, and the mean of its setts. */
+const CONCRETE = '#9c9a97', SETTS = '#8e8c89';
 /** The bands of variegated rock, such as Keuper clays: red, gypsum white, green-grey. */
 export const VARIEGATED = ['#9e6252', '#ddd2bc', '#869690'];
 
@@ -69,17 +71,17 @@ const lerp = (a: number[], b: number[], t: number) => a.map((v, i) => v + (b[i] 
  * (alpha 1 where named), the colour of each patch (alpha its share), the terrain scalars (outcrops,
  * cos turf_deg, snow_share), the bedding normal (alpha the season's bare_luma, 0 for none) and the
  * palette snap; the sea's deep and shallow colours; per patch its size and 1 for dots; the paint of
- * the turf (alpha 1 where it has one); the road surfaces with the kerb and the edge line of main
- * roads. Then the vocabulary: per material its cover, the patches over it as bits, rocky and rough;
+ * the turf (alpha 1 where it has one); the road surfaces with the kerb, the edge line of main roads, concrete
+ * and setts. Then the vocabulary: per material its cover, the patches over it as bits, rocky and rough;
  * per lithology its hardness; per material the metres across its rows and along them (fields.wgsl), 0 where it has none.
  */
 export function slots(vocabulary: Vocabulary) {
     const materials = 3 * COVER_ORDER.length, m = vocabulary.materials.length, l = vocabulary.lithologies.length;
     const traits = materials + m, lithologies = traits + m, cliff = lithologies + l, roads = cliff + 10;
-    const kinds = roads + ROAD_SLOTS + 1, hardness = kinds + m, rows = hardness + l;
+    const roadLine = roads + ROAD_SLOTS, kinds = roadLine + 3, hardness = kinds + m, rows = hardness + l;
     return {
         materials, traits, lithologies, cliff, patches: cliff + 1, terrain: cliff + 3, bedding: cliff + 4, snap: cliff + 5,
-        sea: cliff + 6, shapes: cliff + 8, turf: cliff + 9, roads, roadLine: roads + ROAD_SLOTS, kinds, hardness, rows, count: rows + m,
+        sea: cliff + 6, shapes: cliff + 8, turf: cliff + 9, roads, roadLine, concrete: roadLine + 1, setts: roadLine + 2, kinds, hardness, rows, count: rows + m,
     };
 }
 
@@ -145,6 +147,8 @@ export function packRules(regions: Region[], vocabulary: Vocabulary, season: num
         const roads = look.roads ?? ROADS;
         [...roads, roads[0], PAVING, KERB].forEach((hex, i) => set(SLOT.roads + i, linear(hex), 1));
         set(SLOT.roadLine, linear(look.roadLine ?? ROAD_LINE), 1);
+        set(SLOT.concrete, linear(look.concrete ?? CONCRETE), 1);
+        set(SLOT.setts, linear(look.setts ?? SETTS), 1);
     });
     return data;
 }

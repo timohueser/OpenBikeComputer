@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { shaderFunctions } from '../gpu/shader-functions';
+import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { features, metresPerUnit, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, type Line } from '../terrain/bins';
 import { decodeFeatures, DEEPEST } from '../stream/features';
 import { LEFT } from '../terrain/town';
@@ -15,6 +15,7 @@ import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
 
 const shader = readFileSync(new URL('./corridor.wgsl', import.meta.url), 'utf8');
+const looks = readFileSync(new URL('./looks.wgsl', import.meta.url), 'utf8');
 const root = new URL('../../../../tests/browser/trailview/fixture/features/', import.meta.url);
 
 /** The tiles of the fixture, each with the corridor mesh of its owners. */
@@ -256,15 +257,23 @@ describe('the cross-section', () => {
 
 describe('corridor.wgsl', () => {
     it('reads the vertex as piece.ts packs it', () => {
-        const number = (name: string) => Number(new RegExp(`const ${name}: [fu]32 = ([\\d.]+)u?;`).exec(shader)![1]);
+        const number = (name: string) => Number(new RegExp(`const ${name}: [fu]32 = ([\\d.]+)u?;`).exec(shader + looks)![1]);
         expect(number('CORRIDOR_STEP')).toBeCloseTo(1 / 3, 6);
         expect(number('ACROSS_STEP_M')).toBeCloseTo(16 / 2047, 6);
         expect(number('ALONG_STEP')).toBe(1 / 64);
         expect(lookWord(5, 9, 3, 2, number('HALF_STEP_M') * 80)).toBe((5 | (9 << number('CODE_SHIFT')) | (3 << number('FLAGS_SHIFT')) | (2 << number('PRIO_SHIFT')) | (80 << number('HALF_SHIFT'))) >>> 0);
         expect(number('MAT_GROUND')).toBe(MAT.GROUND);
+        expect(number('MAT_KERB')).toBe(MAT.KERB);
         expect(number('MAT_SIDEWALK')).toBe(MAT.SIDEWALK);
-        expect(number('LOOK_FIRST')).toBe(LOOK.ASPHALT);
         for (const [name, value] of Object.entries(CF)) expect(number(`CF_${name}`)).toBe(value);
+        for (const [name, value] of Object.entries(LOOK)) expect(number(`LOOK_${name}`)).toBe(value);
+    });
+
+    it('hands over to the paint pixel by pixel: the corridor discards the pixels that the paint of an unpaved way takes', () => {
+        const paint = readFileSync(new URL('../ground/roads.wgsl', import.meta.url), 'utf8'), ground = readFileSync(new URL('../ground/look.wgsl', import.meta.url), 'utf8');
+        expect(functionOf(shader, 'corridor_fragment')).toContain('paint_draws(length(in.relative.xy), in.clip.xy)');
+        expect(functionOf(paint, 'road_at')).toContain('!paint_draws(distance, pixel)');
+        expect(functionOf(ground, 'ground_colour')).toContain('length(relative.xy), region, pixel');
     });
 
     it('dives a band only on a face steeper than the cones, measured from the core\'s edge', () => {

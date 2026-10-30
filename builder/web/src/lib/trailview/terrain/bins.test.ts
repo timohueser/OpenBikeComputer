@@ -114,17 +114,18 @@ describe('the stamp data of a node', () => {
 
     it('marks a shoulder in the byte of a sidewalk, and the paint and the snap each read the part that is theirs', () => {
         const source = readFileSync(new URL('./mask-walk.wgsl', import.meta.url), 'utf8');
-        const { walk_byte: pack, walk_metres: metres, holds_shoulder: holds } = shaderFunctions<{ walk_byte: (walk: number, shoulder: boolean) => number; walk_metres: (byte: number) => number; holds_shoulder: (byte: number) => boolean }>(source, ['walk_byte', 'walk_metres', 'holds_shoulder']);
-        for (const walk of [...Object.values(PROFILES).map(({ walk }) => walk), 0]) for (const shoulder of [false, true]) {
-            const byte = pack(walk, shoulder);
+        const { walk_byte: pack, walk_metres: metres, holds_shoulder: holds, is_trodden: trodden } = shaderFunctions<{ walk_byte: (walk: number, shoulder: boolean, trodden: boolean) => number; walk_metres: (byte: number) => number; holds_shoulder: (byte: number) => boolean; is_trodden: (byte: number) => boolean }>(source, ['walk_byte', 'walk_metres', 'holds_shoulder', 'is_trodden']);
+        for (const walk of [...Object.values(PROFILES).map(({ walk }) => walk), 0]) for (const shoulder of [false, true]) for (const worn of [false, true]) {
+            const byte = pack(walk, shoulder, worn);
             expect(byte).toBeLessThan(256);
             expect(metres(byte)).toBeCloseTo(walk, 6);
             expect(holds(byte)).toBe(shoulder);
+            expect(trodden(byte)).toBe(worn);
         }
         const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'), mask = readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8');
-        expect(functionOf(stamp, 'stamp')).toContain('walk_byte(s.walk, s.shoulder)');
+        expect(functionOf(stamp, 'stamp')).toContain('walk_byte(s.walk, s.shoulder, s.trodden)');
         expect(functionOf(stamp, 'snap')).toMatch(/walk = max\(walk, walk_metres\(wide\)\);\s+shoulder = max\(shoulder, select\(0\.0, shoulder_of\(surface\), holds_shoulder\(wide\)\)\);/);
-        expect(functionOf(mask, 'mask_at')).toContain('walk_metres(u32(round(y * 255.0)))');
+        expect(functionOf(mask, 'mask_at')).toMatch(/walk_metres\(past\), is_trodden\(past\)/);
         // Only a plain road marks it, and a corner's arc takes it away.
         const body = functionOf(shader, 'stamp_at');
         expect(body).toContain('let plain = kind == ROAD && walk == 0.0 && !gallery && road_shows(own, rule, level);');
