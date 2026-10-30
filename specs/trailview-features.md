@@ -101,7 +101,8 @@ buffer is below 0 or above 16384. For tile column `c` and row `r` at zoom `z`, a
 coordinates `wx`, `wy` in [0, 1] has `x = round(wx × 2^z × 16384) − 16384c` and
 `y = round(wy × 2^z × 16384) − 16384r`, so neighbouring tiles round a point the same way. A feature
 with `has_plan` 1 counts in quarters of a tile unit: `x = round(wx × 2^z × 65536) − 65536c`, and the
-same for `y`. A tile unit would move a smooth curve by up to 10 cm at each vertex.
+same for `y`. A tile unit would move a smooth curve by up to 10 cm at each vertex. A vertex that such
+a feature shares with a river or a stream lies on a whole tile unit, so the two hold one point.
 
 `dx` and `dy` are the difference from the vertex before, across the parts of the feature. The
 first vertex of a feature is the difference from (0, 0).
@@ -125,9 +126,9 @@ grade and a smoothing length. A track is a way with a `railway` of `rail`, `narr
 `light_rail` or `funicular` and no `highway`. The class of a track is its `railway`, or `rack` when
 it has a `rack` tag other than `no`; the class of another way is its `highway`. The table lists the
 tracks first, so at a level crossing the road meets the track. The options of the step hold the
-grade and the smoothing length of each class, in the order of the table. The other fields of the
-table are the stamp profile of the engine. They are not options of the step, so a change to them
-does not bake the features again. The road solver:
+grade, the smoothing length and the fields of the alignment (see Alignment) of each class, in the
+order of the table. The other fields of the table are the stamp profile of the engine. They are not
+options of the step, so a change to them does not bake the features again. The road solver:
 
 - samples the master terrain every 2 m along each way,
 - fits a smooth height line to the samples, with weights that let a spike or a gully of the terrain
@@ -204,7 +205,9 @@ meet.
 A stroke is a chain of ways that run on from each other. Where ways end at one point, two ends
 within 60° of straight on join: of the pairs, the one whose lower class comes first in the table,
 then the one that runs most nearly straight on. The two ways can differ in class, and another way
-can pass through the point. The two ways share the tangent at their join.
+can pass through the point. The two ways share the tangent at their join, and the sample there has
+the class of the two that comes first in the table. The fit does not depend on the direction of a
+stroke: the penalty on three steps takes the mean of the classes of its two middle samples.
 
 The fit takes a sample of each stroke about every 2 m, and minimises the square of the distance to
 the line of OSM plus a penalty on the third difference of the samples. The smoothing length is 25
@@ -215,6 +218,7 @@ than `plan_tol_m`. These vertices do not move:
 - a vertex of OSM of a bridge or a tunnel,
 - the end of the approach of a side road,
 - a vertex that a way shares with a river or a stream, and each vertex of a ford's crossing,
+- the vertices about a place where a clearance or a pass holds, so that it holds on the curve,
 - the two ends of a stroke.
 
 A class with a `design_kmh` banks and widens in a bend of signed curvature `k`, from the fitted line:
@@ -223,15 +227,17 @@ A class with a `design_kmh` banks and widens in a bend of signed curvature `k`, 
 - The widening is `widen_m` of the class in a radius of 10 m or less, and zero from 25 m, linear
   between.
 - Both run in along the stroke: a triangle filter of ±22 m for the bank and ±12 m for the widening.
-  Both are zero within 14 m of a bridge, a tunnel, or a junction with a way that is not of a lower
-  class, and reach their full value 18 m past that.
+  Both are zero within 14 m of a bridge, a tunnel, or a junction with a road of its class or of a
+  class before it, and reach their full value 18 m past that. A path or a track at a junction does
+  not count, so a road banks through a level crossing.
 - The widening moves the curve to the inside of the bend by half of it, so that the outer edge keeps
   its line, but not within 14 m of a vertex that does not move. The rest is the field `widen`.
 
 The tiles keep the vertices that do not move and each end of a run of known heights. After a kept
 vertex, the next one is the farthest point of the fit for which the curve below holds the fit and
-the solved heights within `keep_m` of the class table, and its chord holds the fit within 2 m. A tile
-cuts a way by its chords, so this leaves 38 m of the buffer. Other vertices of OSM do not stay.
+the solved heights within `keep_m` of the class table, with its tangents and grades as this format
+rounds them, and its chord holds the fit within 2 m and between its ends. A tile cuts a way by its
+chords, so this leaves 38 m of the buffer. Other vertices of OSM do not stay.
 
 Between two vertices of a part, with the positions `p0`, `p1`, the unit tangents `t0`, `t1`, the
 heights `z0`, `z1`, the grades `g0`, `g1` and the chord `c` in metres, the curve at `u` from 0 to 1
@@ -265,7 +271,7 @@ The bake adds these to the features of the road solver:
 | tag `deck` | each way of a bridge | The depth of its deck in metres, one decimal: 1/30 of its longest span within 0.5 to 2.5 m, for a path 1/40 within 0.3 to 1 m |
 | tag `bridge:structure` | each way of a bridge that hangs | `simple-suspension`, where OSM does not tag a cable bridge: a path bridge longer than 40 m that runs more than 25 m over the terrain |
 | tag `uphill` | each `gallery` | `left` or `right` of its way: the side where the terrain 10 m from it lies higher on average |
-| point `bridge-pier` | each pier of a bridge | Its height is the bridge's road there. Its kind has the `min_zoom` of its bridge |
+| point `bridge-pier` | each pier of a bridge | Its height is the bridge's road there, on the curve of its deck (see Alignment). Its kind has the `min_zoom` of its bridge |
 | tag `stations` | each `aerialway` with an end that has no station of its own | `start`, `end` or `none`: the ends that have one |
 | point `catenary-mast` | each mast of the contact wire of a `railway` tagged `electrified` `contact_line` or `yes`, but not a funicular | Its height is its track's rail there. Tag `on` `deck` on a bridge |
 

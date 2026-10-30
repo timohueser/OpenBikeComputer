@@ -70,6 +70,8 @@ pub struct Plan {
     pub widen: f64,
     /// Metres along its stroke. It falls along a way that runs against its stroke.
     pub along: f64,
+    /// A vertex that a river or a stream shares: it lies on a whole tile unit, as theirs do.
+    pub whole: bool,
 }
 
 /// A point, a line or a ring of a feature, in world coordinates, with a height per point (NaN where

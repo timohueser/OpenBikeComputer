@@ -2,6 +2,7 @@
 //! and their encoding (`features_format` of `specs/trailview-features.md`).
 
 use std::collections::{BTreeSet, HashMap};
+use std::f64::consts::TAU;
 
 use crate::geometry::bounds;
 use crate::{world, Part, Plan, Tags, EQUATOR_M};
@@ -522,12 +523,22 @@ fn twice_area(ring: &[[i64; 2]]) -> i128 {
         .sum()
 }
 
+/// A tangent in radians as a tile rounds it.
+pub fn rounded_tangent(tangent: f64) -> f64 {
+    (tangent * TURN as f64 / TAU).round_ties_even() * TAU / TURN as f64
+}
+
+/// A grade as a tile rounds it.
+pub fn rounded_grade(grade: f64) -> f64 {
+    (grade * GRADE).round_ties_even() / GRADE
+}
+
 /// The codes of the alignment of the vertices `indices` of a part.
 fn aligned(plan: &[Plan], indices: &[usize]) -> Aligned {
     let (first, last) = (plan[indices[0]].along, plan[indices[indices.len() - 1]].along);
     let code = |value: f64, scale: f64| (value * scale).round_ties_even() as i64;
     let column = |value: fn(&Plan) -> f64, scale: f64| indices.iter().map(|&i| code(value(&plan[i]), scale)).collect();
-    let turn = TURN as f64 / std::f64::consts::TAU;
+    let turn = TURN as f64 / TAU;
     Aligned {
         along: code(first, 10.0) as u64 * 2 + u64::from(last < first),
         tangent: indices.iter().map(|&i| code(plan[i].tangent, turn).rem_euclid(TURN)).collect(),
@@ -548,7 +559,11 @@ fn quantized(geometry: Geometry, parts: &[Part], left: i64, top: i64) -> Vec<Qua
         let (mut xy, mut heights): (Vec<[i64; 2]>, Vec<f64>) = (Vec::new(), Vec::new());
         let mut indices = Vec::new();
         for (n, &[x, y]) in part.points.iter().enumerate() {
-            let round = |value: f64| (value * unit as f64).round_ties_even() as i64;
+            let whole = part.plan.as_ref().is_some_and(|plan| plan[n].whole);
+            let round = |value: f64| {
+                let fine = if whole { value.round_ties_even() * unit as f64 } else { value * unit as f64 };
+                fine.round_ties_even() as i64
+            };
             let point = [round(x) - left * unit, round(y) - top * unit];
             if xy.last() != Some(&point) {
                 xy.push(point);
@@ -842,6 +857,7 @@ mod tests {
                     bank: 0.03 - k * 0.001,
                     widen: k * 0.02,
                     along: 3000.0 - k * 60.0,
+                    whole: k == 2.0,
                 }
             })
             .collect();
@@ -870,6 +886,9 @@ mod tests {
             assert_eq!(codes(west_plan, i), codes(east_plan, k));
             assert_eq!(west.z.as_ref().unwrap()[i], east.z.as_ref().unwrap()[k]);
         }
+        // The vertex that a river shares lies on a whole tile unit, as the river's does.
+        assert!(west.xy[2].iter().all(|c| c % FINE == 0));
+        assert!(west.xy[3].iter().any(|c| c % FINE != 0));
         // The metres along fall along this line. Each piece names them at its own first vertex.
         assert_eq!(west_plan.along, 3000 * 10 * 2 + 1);
         assert_eq!(west_plan.along & 1, east_plan.along & 1);

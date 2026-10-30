@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use super::curve::{arc, bessel, hermite, lengths, penalised, smooth_along, tangents, LEAST_STEP_M};
 use super::network::{dot, hypot, sub, Network};
 use super::{Classes, Way, SAMPLE_M};
+use crate::tiles::{rounded_grade, rounded_tangent};
 use crate::{metres, Part, Plan};
 
 /// A chord of a way leaves its curve by at most this: a tile keeps a segment by its chord, against a
@@ -183,18 +184,21 @@ struct Samples {
     z: Vec<f64>,
     pin: Vec<bool>,
     calm: Vec<bool>,
+    /// A vertex that a way shares with a river or a stream.
+    water: Vec<bool>,
     rule: Vec<usize>,
     /// The samples of the vertices of the solve.
     vertex: Vec<usize>,
 }
 
 impl Samples {
-    fn push(&mut self, [x, y]: [f64; 2], z: f64, pin: bool, calm: bool, rule: usize) {
+    fn push(&mut self, [x, y]: [f64; 2], z: f64, pin: bool, calm: bool, water: bool, rule: usize) {
         self.x.push(x);
         self.y.push(y);
         self.z.push(z);
         self.pin.push(pin);
         self.calm.push(calm);
+        self.water.push(water);
         self.rule.push(rule);
     }
 }
@@ -324,15 +328,21 @@ fn fitted(samples: &Samples, classes: &Classes) -> Curve {
 
 /// The positions in `list`, samples of one way, of the vertices that it keeps: each of `stops`, and
 /// from each kept vertex the farthest one whose curve holds the samples between them within `keep_m`
-/// in the plan and in height, and whose chord holds them within KEEP_CHORD_M. `sign` turns the tangents
-/// and the grades of a way against its stroke.
+/// in the plan and in height, and whose chord holds them within KEEP_CHORD_M and between its ends. The
+/// test reads the tangents and the grades as a tile rounds them: over a long chord that moves the
+/// curve by metres. `sign` turns the tangents and the grades of a way against its stroke.
 fn kept(list: &[usize], stops: &[usize], curve: &Curve, z: &[f64], keep_m: f64, sign: f64) -> Vec<usize> {
     let holds = |p: usize, q: usize| {
         let (a, b) = (list[p], list[q]);
         let scale = metres(curve.y[a]);
         let chord = [(curve.x[b] - curve.x[a]) * scale, (curve.y[b] - curve.y[a]) * scale];
         let length = hypot(chord);
-        let [ta, tb] = [a, b].map(|i| [sign * curve.tangent[i][0], sign * curve.tangent[i][1]]);
+        let tangent = |i: usize| {
+            let heading = rounded_tangent((sign * curve.tangent[i][1]).atan2(sign * curve.tangent[i][0]));
+            [heading.cos(), heading.sin()]
+        };
+        let (ta, tb) = (tangent(a), tangent(b));
+        let (ga, gb) = (rounded_grade(sign * curve.grade[a]), rounded_grade(sign * curve.grade[b]));
         (p + 1..q).all(|k| {
             let i = list[k];
             let off = [(curve.x[i] - curve.x[a]) * scale, (curve.y[i] - curve.y[a]) * scale];
@@ -343,12 +353,13 @@ fn kept(list: &[usize], stops: &[usize], curve: &Curve, z: &[f64], keep_m: f64, 
                 h10 * ta[1] * length + h01 * chord[1] + h11 * tb[1] * length,
             ];
             let off_curve = (on[0] - off[0]) * curve.tangent[i][1] - (on[1] - off[1]) * curve.tangent[i][0];
-            let height =
-                h00 * z[a] + h10 * sign * curve.grade[a] * length + h01 * z[b] + h11 * sign * curve.grade[b] * length;
+            let height = h00 * z[a] + h10 * ga * length + h01 * z[b] + h11 * gb * length;
             let off_chord = chord[0] * off[1] - chord[1] * off[0];
+            let on_chord = chord[0] * off[0] + chord[1] * off[1];
             let off_height = (z[i] - height).abs();
             off_curve.abs() <= keep_m
                 && off_chord.abs() <= KEEP_CHORD_M * length
+                && (-keep_m * length..=(length + keep_m) * length).contains(&on_chord)
                 && (off_height.is_nan() || off_height <= keep_m)
         })
     };
@@ -375,19 +386,21 @@ fn kept(list: &[usize], stops: &[usize], curve: &Curve, z: &[f64], keep_m: f64, 
 }
 
 /// Per way, its kept vertices and alignment, and the joins of the strokes at the vertices of `mine`.
-/// `heights` and `known` are per variable of the solve, and `wet` holds the variables of the fords.
+/// `heights` and `known` are per variable of the solve. `stay` holds the variables whose height a row
+/// fixes, and `water` those that a way shares with a river or a stream.
 pub(crate) fn align(
     net: &Network,
     heights: &[f64],
     known: &[bool],
-    wet: &[bool],
+    stay: &[bool],
+    water: &[bool],
     classes: &Classes,
     mine: &[bool],
 ) -> (Vec<Way>, Vec<Join>) {
     let links = joins(net);
     let mut marks = marks(net, &links, classes);
     for (pin, &var) in marks.pin.iter_mut().zip(&net.vertex_var) {
-        *pin |= wet[var];
+        *pin |= stay[var] || water[var];
     }
     let height = |v: usize| if known[net.vertex_var[v]] { heights[net.vertex_var[v]] } else { f64::NAN };
     let mut ways = vec![Way::default(); links.len()];
@@ -407,9 +420,11 @@ pub(crate) fn align(
             };
             for (j, &v) in order.iter().enumerate() {
                 let (xy, z, pin, calm) = (net.vertex_xy[v], height(v), marks.pin[v], marks.calm[v]);
+                let wet = water[net.vertex_var[v]];
                 if j == 0 && !samples.x.is_empty() {
                     samples.pin[first] |= pin;
                     samples.calm[first] |= calm;
+                    samples.rule[first] = samples.rule[first].min(rule);
                     list.push((first, true));
                     continue;
                 }
@@ -417,16 +432,16 @@ pub(crate) fn align(
                     let u = order[j - 1];
                     let (a, b) = (net.vertex_xy[u], height(u));
                     let d = sub(xy, a);
-                    let steps = (hypot(d) * metres(a[1]) / SAMPLE_M).round().max(1.0) as usize;
+                    let steps = (hypot(d) * metres(a[1] + d[1] / 2.0) / SAMPLE_M).round().max(1.0) as usize;
                     for i in 1..steps {
                         let t = i as f64 / steps as f64;
                         list.push((samples.x.len(), false));
-                        samples.push([a[0] + d[0] * t, a[1] + d[1] * t], b + (z - b) * t, false, free, rule);
+                        samples.push([a[0] + d[0] * t, a[1] + d[1] * t], b + (z - b) * t, false, free, false, rule);
                     }
                 }
                 samples.vertex.push(samples.x.len());
                 list.push((samples.x.len(), net.vertex_osm[v]));
-                samples.push(xy, z, pin, calm, rule);
+                samples.push(xy, z, pin, calm, wet, rule);
             }
             if !forward {
                 list.reverse();
@@ -446,13 +461,14 @@ pub(crate) fn align(
         }
         for (&(w, forward), list) in pieces.iter().zip(&lists) {
             let order: Vec<usize> = list.iter().map(|l| l.0).collect();
+            let unknown = |k: usize| samples.z[order[k]].is_nan();
             let stops: Vec<usize> = (0..order.len())
                 .filter(|&k| {
-                    let i = order[k];
                     k == 0
                         || k + 1 == order.len()
-                        || samples.pin[i]
-                        || samples.z[order[k - 1]].is_nan() != samples.z[i].is_nan()
+                        || samples.pin[order[k]]
+                        || unknown(k - 1) != unknown(k)
+                        || unknown(k + 1) != unknown(k)
                 })
                 .collect();
             // A piece against the stroke turns its tangent, its grade and its left side about.
@@ -474,6 +490,7 @@ pub(crate) fn align(
                         bank: sign * curve.bank[i],
                         widen: curve.widen[i],
                         along: 0.0,
+                        whole: samples.water[i],
                     });
                     way.osm.push(osm);
                 }
@@ -509,12 +526,15 @@ pub fn polyline(part: &Part) -> Part {
         let tangent = |p: &Plan| [p.tangent.cos(), p.tangent.sin()];
         let (t0, t1) = (tangent(&plan[k - 1]), tangent(&plan[k]));
         let steps = (length / CHORD_M).ceil().max(1.0) as usize;
-        for step in 1..=steps {
+        for step in 1..steps {
             let [h00, h10, h01, h11] = hermite(step as f64 / steps as f64);
             let along = |axis: usize| h10 * t0[axis] * length + h01 * chord[axis] + h11 * t1[axis] * length;
             out.points.push([a[0] + along(0) / scale, a[1] + along(1) / scale]);
             heights.push(h00 * z[k - 1] + h10 * plan[k - 1].grade * length + h01 * z[k] + h11 * plan[k].grade * length);
         }
+        // The end itself: a way's ends meet other ways, and a height next to an unknown one stays known.
+        out.points.push(b);
+        heights.push(z[k]);
     }
     out
 }

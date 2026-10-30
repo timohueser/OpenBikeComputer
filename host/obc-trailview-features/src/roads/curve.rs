@@ -25,7 +25,9 @@ pub(super) fn arc(chord: [f64; 2], t0: [f64; 2], t1: [f64; 2]) -> f64 {
 }
 
 /// The f that minimises Σ wᵢ(fᵢ − tᵢ)² + Σ λ·d·D², for each t of `targets`: D is the third divided
-/// difference at the samples s, in metres, and d its span. A banded Cholesky solve.
+/// difference at the samples s, in metres, and d its span. A banded Cholesky solve. A difference takes
+/// the mean λ of its two middle samples, so the fit of a stroke does not depend on its direction: two
+/// jobs can run one stroke in opposite directions.
 pub(super) fn penalised<const N: usize>(targets: [&[f64]; N], w: &[f64], lambda: &[f64], s: &[f64]) -> [Vec<f64>; N] {
     const M: usize = 3;
     let (n, width) = (w.len(), M + 1);
@@ -45,7 +47,7 @@ pub(super) fn penalised<const N: usize>(targets: [&[f64]; N], w: &[f64], lambda:
         let c = [-a0 / d, (b0 - a1) / d, (b1 - a2) / d, b2 / d];
         for p in 0..c.len() {
             for q in 0..=p {
-                band[(i - 1 + p) * width + p - q] += lambda[i] * d * c[p] * c[q];
+                band[(i - 1 + p) * width + p - q] += (lambda[i] + lambda[i + 1]) / 2.0 * d * c[p] * c[q];
             }
         }
     }

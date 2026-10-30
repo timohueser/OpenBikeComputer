@@ -70,7 +70,7 @@ mod tests {
     /// A zoom-13 tile in Engelberg. Each node is (id, u, v) in its tile units.
     const COLUMN: u32 = 4286;
     const ROW: u32 = 2889;
-    const NODES: [(u32, u32, u32); 39] = [
+    const NODES: [(u32, u32, u32); 43] = [
         (1, 7000, 4000),
         (2, 17500, 4000),
         (3, 3000, 3000),
@@ -110,6 +110,10 @@ mod tests {
         (37, 3500, 2900),
         (38, 3500, 3500),
         (39, 2900, 3500),
+        (40, 9300, 8500),
+        (41, 9300, 9500),
+        (42, 9000, 9000),
+        (43, 9600, 9000),
     ];
 
     type Way = (u32, Vec<u32>, Vec<(&'static str, &'static str)>);
@@ -130,6 +134,8 @@ mod tests {
             (110, vec![31, 32], vec![("waterway", "dam")]),
             (111, vec![33, 34], vec![("highway", "construction"), ("tunnel", "yes")]),
             (112, vec![36, 37, 38, 39, 36], vec![("landuse", "farmyard")]),
+            (113, vec![40, 41], vec![("highway", "residential")]),
+            (114, vec![42, 43], vec![("highway", "residential"), ("bridge", "yes")]),
         ]
     }
 
@@ -286,6 +292,8 @@ mod tests {
             kinds
         };
         let expected = [
+            "bridge-pier",
+            "bridge-pier",
             "building",
             "dam",
             "dam-area",
@@ -295,6 +303,8 @@ mod tests {
             "main-road",
             "railway",
             "river",
+            "road",
+            "road",
             "road",
             "ruin",
         ];
@@ -340,6 +350,42 @@ mod tests {
         let stream = find(left, "river").parts[0].z.clone().unwrap();
         assert!(stream.windows(2).all(|w| w[1] <= w[0]));
         assert!((stream[stream.len() - 1] - level[0]).abs() < 0.05);
+        // A pier stands under the curve of its deck, which rises over the road: not under its chord.
+        let deck = left.iter().find(|f| f.tags.contains_key("bridge")).unwrap();
+        let top = |pier: &Feature| pier.parts[0].z.as_ref().unwrap()[0];
+        let piers: Vec<&Feature> = left.iter().filter(|f| f.kind == "bridge-pier").collect();
+        let part = &deck.parts[0];
+        let world = |p: &[i64; 2]| {
+            let n = (1u64 << MAX_ZOOM) as f64 * EXTENT as f64 * FINE as f64;
+            [
+                (p[0] + COLUMN as i64 * EXTENT as i64 * FINE) as f64 / n,
+                (p[1] + ROW as i64 * EXTENT as i64 * FINE) as f64 / n,
+            ]
+        };
+        let plan = part.plan.as_ref().unwrap();
+        let curve = crate::roads::polyline(&crate::Part {
+            outer: false,
+            points: part.xy.iter().map(world).collect(),
+            z: part.z.clone(),
+            plan: Some(
+                (0..part.xy.len())
+                    .map(|k| crate::Plan {
+                        tangent: plan.tangent[k] as f64 * std::f64::consts::TAU / 1024.0,
+                        grade: plan.grade[k] as f64 / 250.0,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        });
+        let along: Vec<f64> = curve.points.iter().map(|p| p[0]).collect();
+        let on_curve = |pier: &Feature| {
+            let x = (pier.parts[0].xy[0][0] + COLUMN as i64 * EXTENT as i64) as f64;
+            crate::geometry::interp(x / ((1u64 << MAX_ZOOM) as f64 * EXTENT as f64), &along, curve.z.as_ref().unwrap())
+        };
+        assert!(!piers.is_empty());
+        for pier in piers {
+            assert!((top(pier) - on_curve(pier)).abs() < 0.03, "pier {} on {}", top(pier), on_curve(pier));
+        }
         assert_eq!(building.parts.iter().map(|p| p.outer).collect::<Vec<_>>(), [true, false]);
         assert_eq!(building.parts[1].xy.len(), 4);
         // Above zoom 13 a tile holds the water and the main roads only, and the river still ends on the

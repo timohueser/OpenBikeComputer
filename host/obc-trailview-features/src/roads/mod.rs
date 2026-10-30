@@ -26,7 +26,7 @@ mod rows;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 pub use align::polyline;
 pub use area::{context, solve_by_area};
@@ -34,7 +34,7 @@ use fit::{fit, Block, Graph, Rows, Term};
 use network::{hypot, sub, Network};
 use rows::union;
 
-use crate::geometry::percentile;
+use crate::geometry::{key, percentile};
 use crate::structures::{BORE_M, BORE_PATH_M, BORE_RAIL_M};
 use crate::{metres, Plan, Terrain};
 
@@ -578,9 +578,16 @@ pub fn solve(
     }
 
     let culvert = culverts(&net, &z, &seg, &t, &h, &finite);
-    let mut wet = vec![false; n];
-    fords.variables.iter().flatten().for_each(|&v| wet[v] = true);
-    let (ways, joins) = align::align(&net, &z, &known, &wet, classes, &mine);
+    // A clearance and a ford hold on the curve only where their vertices stay in the tiles.
+    let mut stay = vec![false; n];
+    let crossed = above.variables.iter().flatten().chain(under.upper.iter().chain(&under.lower).flat_map(|row| &row.0));
+    fords.variables.iter().flatten().chain(crossed).for_each(|&v| stay[v] = true);
+    let shores: HashSet<[u64; 2]> = rivers.iter().flat_map(|river| &river.points).map(|&p| key(p)).collect();
+    let mut water = vec![false; n];
+    for (o, &xy) in net.osm_xy.iter().enumerate() {
+        water[net.osm_var[o]] = shores.contains(&key(xy));
+    }
+    let (ways, joins) = align::align(&net, &z, &known, &stay, &water, classes, &mine);
     for (way, &(f, p)) in ways.into_iter().zip(&net.way_feature) {
         solved.ways[f][p] = Some(way);
     }

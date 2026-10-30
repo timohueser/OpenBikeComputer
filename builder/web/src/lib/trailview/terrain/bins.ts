@@ -270,7 +270,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         const sidewalk = type === ROAD && kind !== 'gallery' ? sidewalkOf(tags, surface) : 0;
         const paving = type === PATH && kind !== 'gallery' && surfaceOf(tags, true) !== surface;
         for (const part of parts) {
-            const { xy, z } = polyline(part, scale * metresPerUnit(world(part.xy, 0)[1]));
+            const { xy, z } = polyline(part, y => scale * metresPerUnit((oy + y) * scale));
             if (!z) continue;
             // A line splits where a vertex has no height: a missing height is unknown, never 0 m. A footway splits
             // where it enters or leaves a town.

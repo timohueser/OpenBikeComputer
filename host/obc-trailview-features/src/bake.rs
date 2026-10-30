@@ -267,16 +267,23 @@ pub fn bake(
                 .map(|(_, _, parts)| parts.iter().map(|p| p.points.as_slice()).collect())
                 .chain(river_areas.iter().map(|rings| rings.iter().map(Vec::as_slice).collect()))
                 .collect();
-            let under: Vec<(f64, &[[f64; 2]])> = ways
+            // A pier stands on the curve of its deck, and beside the curve of a road under it.
+            let deck_curves: Vec<Part> = decks.iter().map(|&n| roads::polyline(&ways[n].2[0])).collect();
+            let deck_boxes = Boxes::new(&deck_curves.iter().map(|p| bounds(&p.points)).collect::<Vec<_>>());
+            let under: Vec<(f64, Part)> = ways
                 .iter()
                 .filter(|(e, tags, _)| !is_bridge(&kinds[*e].kind, tags))
-                .flat_map(|(_, tags, parts)| parts.iter().map(move |p| (road_half(tags), p.points.as_slice())))
+                .flat_map(|(_, tags, parts)| parts.iter().map(move |p| (road_half(tags), p)))
+                .filter(|(_, p)| !deck_boxes.overlapping(bounds(&p.points)).is_empty())
+                .map(|(half, p)| (half, roads::polyline(p)))
                 .collect();
+            let under: Vec<(f64, &[[f64; 2]])> = under.iter().map(|(half, p)| (*half, p.points.as_slice())).collect();
             let deck_ways: Vec<structures::Way> = decks
                 .iter()
-                .map(|&n| {
-                    let (e, tags, parts) = &ways[n];
-                    (kinds[*e].kind.as_str(), tags, parts[0].points.as_slice(), parts[0].z.as_deref().unwrap())
+                .zip(&deck_curves)
+                .map(|(&n, curve)| {
+                    let (e, tags, _) = &ways[n];
+                    (kinds[*e].kind.as_str(), tags, curve.points.as_slice(), curve.z.as_deref().unwrap())
                 })
                 .collect();
             let (added, piers, bridge_metrics) = structures::bridges(&deck_ways, &waterways, &areas, terrain, &under);
