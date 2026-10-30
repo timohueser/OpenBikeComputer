@@ -32,9 +32,9 @@ Choose the command from the request. If two commands fit, ask once. Read the com
 | Command | Use it when | Reference |
 | --- | --- | --- |
 | `init` | once per project: the config, an empty map, a glossary draft | not written yet |
-| `explore` | the problem or the direction is still open | not written yet |
-| `design #N` | the direction is clear and the change needs a plan | not written yet |
-| `build #N` | the design is approved | not written yet |
+| `explore` | the problem or the direction is still open | [explore.md](reference/explore.md) |
+| `design #N` | the direction is clear and the change needs a plan | [design.md](reference/design.md) |
+| `build #N` | the design is approved | [build.md](reference/build.md) |
 | `fix` | a bug, a small tweak, or the small findings of a findings issue | [fix.md](reference/fix.md) |
 | `prototype` | an idea needs a quick test, with no quality bar | not written yet |
 | `improve-architecture` | structural problems: cycles, mixed roles, code in the wrong place | not written yet |
