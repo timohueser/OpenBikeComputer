@@ -37,8 +37,12 @@ export const BED_M = 0.25, BED_SLOPE_M = 0.4;
 /** The bed of paving over the core. */
 export const PAVED_BED_M = 0.05;
 
-/** Vertex flags of a corridor face, as CF_* of corridor.wgsl: the height is an offset over the sampled stamped ground, or over the drawn mesh. */
-export const CF = { SAMPLE: 1, MESH: 2, BARRIER: 4 } as const;
+/**
+ * Vertex flags of a corridor face, as CF_* of corridor.wgsl: a band's row on the sampled stamped ground, or under
+ * the drawn mesh; a roadside detail; a carriageway without its edge line on the left or the right (a junction's
+ * mouth). The band's priority takes the bits between.
+ */
+export const CF = { SAMPLE: 1, MESH: 2, BARRIER: 4, NO_LEFT_LINE: 8, NO_RIGHT_LINE: 128 } as const;
 
 /**
  * The paved shoulder or verge strip past a carriageway without a sidewalk, by surface; the stamp holds the

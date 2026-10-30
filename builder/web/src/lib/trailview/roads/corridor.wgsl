@@ -115,7 +115,7 @@ fn corridor_fragment(u: vec2f, relative: vec3f, altitude: f32, colour: vec4f, ro
         return detail_fragment(mat, su, relative, altitude, along, n);
     }
     if (mat >= 20u && mat < 40u) {
-        return look_fragment(mat, code, su, relative, altitude, road, along, n, level);
+        return look_fragment(mat, code, su, relative, altitude, road, along, n, level, u32(round(colour.b * 255.0)));
     }
     let region = region_at(su);
     let p = look.place.xy + relative.xy;

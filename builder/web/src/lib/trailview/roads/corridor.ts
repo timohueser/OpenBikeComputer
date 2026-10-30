@@ -85,7 +85,9 @@ export function quad(b: MeshBuilder, q: [V, V, V, V], side: number): void {
 /** The faces between stations s and t: the carriageway, then each side out to the end of its band, but for the plan's cuts. Each station has its own half-width and banking. */
 function sweep(ctx: Ctx, s: JStation, t: Station): void {
     const { line } = ctx, road = [carriageway(line, s.h, s.bank), carriageway(line, t.h, t.bank)], cut = s.cut ?? 0;
-    if (!(cut & CUT.ROAD)) for (let k = 0; k + 1 < road[0].length; k++) strip(ctx, s, t, [road[0][k], road[1][k]], [road[0][k + 1], road[1][k + 1]], 1);
+    // Where a side is cut for a junction's mouth or corner, the carriageway's edge line stops on that side.
+    const lines = (cut & CUT.LEFT ? CF.NO_LEFT_LINE : 0) | (cut & CUT.RIGHT ? CF.NO_RIGHT_LINE : 0);
+    if (!(cut & CUT.ROAD)) for (let k = 0; k + 1 < road[0].length; k++) strip(ctx, s, t, [road[0][k], road[1][k]], [road[0][k + 1], road[1][k + 1]], 1, lines);
     for (const side of [1, -1] as const) {
         if (cut & (side > 0 ? CUT.LEFT : CUT.RIGHT)) continue;
         const parts = [sideOf(line, side, t.v, s.h), sideOf(line, side, t.v, t.h)];
@@ -98,9 +100,9 @@ function sweep(ctx: Ctx, s: JStation, t: Station): void {
     }
 }
 
-/** The quad from part p to part q (signed metres across; at station s, then at t) between stations s and t, in q's material. */
-function strip(ctx: Ctx, s: Station, t: Station, p: [Part, Part], q: [Part, Part], side: number): void {
-    const v = (st: Station, part: Part) => vertex(ctx, st, part.a, part.dz - kerbDrop(ctx.line, st, side, part), q[0].mat, part.flags ?? 0);
+/** The quad from part p to part q (signed metres across; at station s, then at t) between stations s and t, in q's material, with the `extra` flags. */
+function strip(ctx: Ctx, s: Station, t: Station, p: [Part, Part], q: [Part, Part], side: number, extra = 0): void {
+    const v = (st: Station, part: Part) => vertex(ctx, st, part.a, part.dz - kerbDrop(ctx.line, st, side, part), q[0].mat, (part.flags ?? 0) | extra);
     quad(ctx.b, [v(s, p[0]), v(s, q[0]), v(t, q[1]), v(t, p[1])], side);
 }
 

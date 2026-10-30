@@ -164,11 +164,13 @@ fn repairs(across: f32, half: f32, along: f32, cw: f32, aw: f32) -> vec2f {
 }
 
 // The road paint by class: `mat` 21 main roads, 22 motorways and trunks; `oneway` without a middle line.
-fn markings(mat: u32, oneway: bool, across: f32, half: f32, along: f32, cw: f32, aw: f32) -> f32 {
+// The lines of a way; `flags` are the face's (CF of section.ts), which stop an edge line at a junction's mouth.
+fn markings(mat: u32, oneway: bool, across: f32, half: f32, along: f32, cw: f32, aw: f32, flags: u32) -> f32 {
     let inside = half - abs(across);
+    let edge = select(1.0, 0.0, (across > 0.0 && (flags & 8u) != 0u) || (across < 0.0 && (flags & 128u) != 0u));
     var m = 0.0;
     if (mat == LOOK_MOTORWAY) {
-        m = band(inside, 0.25, 0.45, cw);
+        m = band(inside, 0.25, 0.45, cw) * edge;
         let lanes = max(1.0, round(2.0 * half / select(3.6, 3.5, oneway)));
         if (oneway) {
             let lane = 2.0 * half / lanes;
@@ -179,7 +181,7 @@ fn markings(mat: u32, oneway: bool, across: f32, half: f32, along: f32, cw: f32,
             m = max(m, band(across, -0.075, 0.075, cw));
         }
     } else if (half >= 2.75) {
-        m = band(inside, 0.2, 0.35, cw);
+        m = band(inside, 0.2, 0.35, cw) * edge;
         if (!oneway) {
             m = max(m, band(across, -0.06, 0.06, cw) * dashes(along, DASH_ON_M, DASH_PERIOD_M, 0.0, aw));
         } else {
@@ -208,7 +210,7 @@ fn junction_asphalt(code: u32, region: u32, p: vec2f, pw: f32) -> vec3f {
     return mix(base * asphalt_grain(p, pw), vec3f(0.035, 0.034, 0.033), 0.85 * tar);
 }
 
-fn paved_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, half: f32, along: f32, pw: f32, cw: f32, aw: f32) -> WayLook {
+fn paved_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, half: f32, along: f32, pw: f32, cw: f32, aw: f32, flags: u32) -> WayLook {
     var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let base = rule(region, slot_roads() + i32(select(code, 1u, code == 7u)) - 1).rgb;
     let x = abs(across);
@@ -251,7 +253,7 @@ fn paved_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, half: f32
     c = mix(c, vec3f(0.035, 0.034, 0.033), 0.85 * tar);
     out.spec = 0.25 * tar + 0.06 * wheels;
     if (mat != LOOK_ASPHALT) {
-        let paint = markings(mat, code == 7u, across, half, along, cw, aw);
+        let paint = markings(mat, code == 7u, across, half, along, cw, aw, flags);
         let worn = 1.0 - 0.45 * seen(0.02, pw) * smoothstep(0.6, 0.7, noise(p / 0.018) * 0.6 + noise(p / 0.4) * 0.5) - 0.25 * wheels;
         c = mix(c, rule(region, slot_road_line()).rgb * 1.08, paint * worn);
     }
@@ -491,7 +493,7 @@ fn step_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, along: f32
 }
 
 // The colour of a corridor fragment of materials 20 to 39, lit, in the haze, with the ground through it.
-fn look_fragment(mat: u32, code: u32, su: vec2f, relative: vec3f, altitude: f32, road: vec2f, along: f32, n: vec3f, level: u32) -> vec4f {
+fn look_fragment(mat: u32, code: u32, su: vec2f, relative: vec3f, altitude: f32, road: vec2f, along: f32, n: vec3f, level: u32, flags: u32) -> vec4f {
     let region = region_at(su);
     let p = look.place.xy + relative.xy;
     let pw = max(length(dpdx(relative)), length(dpdy(relative))) * look.screen.z;
@@ -503,7 +505,7 @@ fn look_fragment(mat: u32, code: u32, su: vec2f, relative: vec3f, altitude: f32,
     var spec_size = 40.0;
     switch mat {
         case 20u, 21u, 22u: {
-            l = paved_look(mat, code, region, p, across, half, along, pw, cw, aw_raw);
+            l = paved_look(mat, code, region, p, across, half, along, pw, cw, aw_raw, flags);
         }
         case 23u: {
             l = concrete_look(region, p, across, half, along, pw, cw, aw_raw);
