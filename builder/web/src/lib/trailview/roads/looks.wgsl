@@ -45,6 +45,8 @@ struct WayLook {
     ground: f32,
     // Gloss: polished steel, wet mud, tar.
     spec: f32,
+    // The share of a mirror: a puddle.
+    mirror: f32,
 }
 
 fn is_detail(mat: u32) -> bool {
@@ -197,7 +199,7 @@ fn markings(mat: u32, oneway: bool, across: f32, half: f32, along: f32, cw: f32,
 // dirtier, repairs, sealed cracks and, by class, markings. Past `half` it is the shoulder: a paved strip
 // on a main road, a gravel verge on a minor one, each fraying into the ground at its outer edge.
 fn paved_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, half: f32, along: f32, pw: f32, cw: f32, aw: f32) -> WayLook {
-    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0);
+    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let base = rule(region, slot_roads() + i32(select(code, 1u, code == 7u)) - 1).rgb;
     let x = abs(across);
     let edge = half - x;
@@ -253,7 +255,7 @@ fn paved_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, half: f32
 
 // Concrete: slabs 5 m long with sealed joints; on a track two strips with grass between them.
 fn concrete_look(region: u32, p: vec2f, across: f32, half: f32, along: f32, pw: f32, cw: f32, aw: f32) -> WayLook {
-    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0);
+    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let base = vec3f(0.33, 0.325, 0.31);
     let slab = vec2f(floor(along / 5.0), select(0.0, sign(across), half > 2.2));
     var c = base * (0.95 + 0.1 * hash(slab)) * (0.95 + 0.1 * noise(p / 3.0));
@@ -278,7 +280,7 @@ fn concrete_look(region: u32, p: vec2f, across: f32, half: f32, along: f32, pw: 
 
 // Setts: granite cubes about 11 cm in rows across the way, each its own tone and domed, in sandy joints.
 fn sett_look(p: vec2f, across: f32, along: f32, pw: f32) -> WayLook {
-    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0);
+    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let s = seen(0.1, pw);
     let row = floor(along / 0.115);
     let q = vec2f(across / 0.11 + 0.5 * (row % 2.0) + 0.3 * hash(vec2f(row, 1.0)), fract(along / 0.115));
@@ -295,7 +297,7 @@ fn sett_look(p: vec2f, across: f32, along: f32, pw: f32) -> WayLook {
 
 // Pavers: concrete blocks 22 by 11 cm in a running bond, grey with a warm tint, bevelled.
 fn pavers_look(region: u32, p: vec2f, across: f32, along: f32, pw: f32) -> WayLook {
-    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0);
+    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let base = rule(region, slot_roads() + i32(PAVING_CODE) - 1).rgb;
     let s = seen(0.06, pw);
     let row = floor(along / 0.11);
@@ -319,7 +321,7 @@ fn frayed(p: vec2f, edge: f32, amount: f32) -> f32 {
 // A gravel track: compacted wheel tracks, loose stones between and beside them, grass in the middle of a
 // little-used one, and an edge that frays into the ground. A gravel path is one tread.
 fn gravel_look(region: u32, p: vec2f, across: f32, half: f32, along: f32, pw: f32) -> WayLook {
-    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0);
+    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let base = rule(region, slot_roads() + 2).rgb;
     let x = abs(across);
     let track = half > 1.3;
@@ -337,14 +339,14 @@ fn gravel_look(region: u32, p: vec2f, across: f32, half: f32, along: f32, pw: f3
     out.albedo = c;
     out.bump = loose * 0.35 * (big.y - 1.0) * (vec2f(noise(p / 0.05), noise(p / 0.05 + 9.0)) - 0.5);
     let middle = select(0.0, smoothstep(0.35, 0.12, x + 0.12 * (noise(p / 0.3) - 0.5)) * smoothstep(0.4, 0.6, noise(p / 0.5 + 3.0)) * smoothstep(0.3, 0.6, noise(vec2f(along / 20.0, 6.0))), track);
-    out.ground = max(1.0 - smoothstep(0.0, 0.3, frayed(p, half - x, 0.35)), 0.7 * middle);
+    out.ground = max(1.0 - smoothstep(0.0, 0.3, frayed(p, half - x, 0.35)), 0.45 * middle * smoothstep(0.3, 0.7, noise(p / 0.12)));
     return out;
 }
 
 // Dirt and grass tracks: two worn ruts of soil, grass in the middle and beside them, mud in some
 // stretches; on a grass track the ruts are grassed over in part.
 fn dirt_look(code: u32, region: u32, p: vec2f, across: f32, half: f32, along: f32, pw: f32) -> WayLook {
-    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0);
+    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let soil = rule(region, slot_roads() + 3).rgb;
     let x = abs(across);
     let grassy = code == 5u;
@@ -361,6 +363,8 @@ fn dirt_look(code: u32, region: u32, p: vec2f, across: f32, half: f32, along: f3
     c = mix(c, soil * vec3f(0.45, 0.42, 0.4), wet * deep);
     out.albedo = c;
     out.spec = 0.5 * wet * deep;
+    // Puddles where the ruts are wettest.
+    out.mirror = smoothstep(0.55, 0.75, wet * deep * (0.7 + 0.6 * noise(p / 0.8)));
     out.bump = vec2f(-sign(across) * sign(x - 0.75 + wob) * 0.25 * rut * (1.0 - deep), 0.0);
     // Grass covers what is not rut; on a grass track the ruts too, in part.
     let grassed = select(0.0, 0.85 * smoothstep(0.5, 0.75, noise(p / 0.45 + 5.0)), grassy);
@@ -374,7 +378,7 @@ fn dirt_look(code: u32, region: u32, p: vec2f, across: f32, half: f32, along: f3
 // A trodden trail: a tread of soil narrower than the way, wandering across it, with stones in it and
 // rocks set in it; a trampled margin of grass; on steep or high ground stonier and greyer.
 fn trail_look(region: u32, su: vec2f, p: vec2f, across: f32, half: f32, along: f32, pw: f32, slope: f32, altitude: f32) -> WayLook {
-    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0);
+    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let rocky = clamp(smoothstep(0.92, 0.7, slope) + smoothstep(1700.0, 2300.0, altitude), 0.0, 1.0);
     let cell = cell_at(su, u32(ceil(lod(su))));
     let rock = rule(cell.b, slot_lithologies() + i32(cell.g)).rgb;
@@ -402,7 +406,7 @@ fn trail_look(region: u32, su: vec2f, p: vec2f, across: f32, half: f32, along: f
 // A track's bed: crushed stone, rusty between and beside the rails, oily in the middle; on its slopes and
 // past them dirtier, fraying into the ground; far off the sleepers and rails that the detail meshes drew near.
 fn ballast_look(code: u32, p: vec2f, across: f32, half: f32, sleepers: f32, pw: f32, cw: f32, aw: f32) -> WayLook {
-    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0);
+    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let narrow = ((code - RAIL_CODE) & 1u) != 0u;
     let gauge = select(0.7525, 0.53, narrow);
     let x = abs(across);
@@ -425,7 +429,18 @@ fn ballast_look(code: u32, p: vec2f, across: f32, half: f32, sleepers: f32, pw: 
     // The paint of the sleepers and rails where their meshes have sunk.
     let far = smoothstep(DETAIL_M, DETAIL_END_M, length(p - look.place.xy));
     if (far > 0.0 && x < half - 0.3) {
-        out.albedo = mix(out.albedo, track_surface(code, across, sleepers, p, pw, cw, aw * SLEEPER_SPACING_M), far);
+        // As the meshes of details.ts: sleepers 0.26 m wide, rail heads 6 cm, rusty sides, a rack between.
+        let sleeper_half = select(1.3, 0.9, narrow);
+        let off = (fract(sleepers + 0.5) - 0.5) * SLEEPER_SPACING_M;
+        let along_m = aw * SLEEPER_SPACING_M;
+        let lying = mix(band(off, -0.13, 0.13, along_m), 0.26 / SLEEPER_SPACING_M, smoothstep(0.1, 0.4, along_m));
+        var t = mix(out.albedo, vec3f(0.2, 0.195, 0.185), lying * band(across, -sleeper_half, sleeper_half, cw));
+        t = mix(t, vec3f(0.13, 0.075, 0.045), band(abs(across) - gauge, -0.05, 0.05, cw));
+        t = mix(t, vec3f(0.42, 0.43, 0.44), band(abs(across) - gauge, -0.031, 0.031, cw));
+        if (code >= RAIL_CODE + 2u) {
+            t = mix(t, vec3f(0.1), band(across, -0.08, 0.08, cw));
+        }
+        out.albedo = mix(out.albedo, t, far);
     }
     return out;
 }
@@ -433,7 +448,7 @@ fn ballast_look(code: u32, p: vec2f, across: f32, half: f32, sleepers: f32, pw: 
 // Steps: concrete or stone treads in a town, each its own tone with a lighter worn middle and a nosing; on a
 // trail, treads of soil behind timber beams. A tread's `along` is metres back from its nosing.
 fn step_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, along: f32, pw: f32, n: vec3f) -> WayLook {
-    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0);
+    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let trail = code == 4u || code == 5u || code == 6u;
     if (trail) {
         if (mat == LOOK_RISER) {
@@ -473,7 +488,7 @@ fn look_fragment(mat: u32, code: u32, su: vec2f, relative: vec3f, altitude: f32,
     let aw_raw = max(length(vec2f(dpdx(along), dpdy(along))), 1e-4);
     let across = road.x;
     let half = road.y;
-    var l = WayLook(vec3f(0.5), vec2f(0.0), 0.0, 0.0);
+    var l = WayLook(vec3f(0.5), vec2f(0.0), 0.0, 0.0, 0.0);
     var spec_size = 40.0;
     switch mat {
         case 20u, 21u, 22u: {
@@ -547,6 +562,10 @@ fn look_fragment(mat: u32, code: u32, su: vec2f, relative: vec3f, altitude: f32,
         let r = reflect(normalize(relative), nn);
         lit += look.sun_colour.rgb * l.spec * share * pow(max(dot(r, look.sun.xyz), 0.0), spec_size) * 0.5;
         lit = mix(lit, sky(r), 0.12 * min(l.spec, 1.0) * (1.0 - max(r.z, 0.0) * 0.5));
+    }
+    if (l.mirror > 0.0) {
+        let r = reflect(normalize(relative), vec3f(0.0, 0.0, 1.0));
+        lit = mix(lit, 0.6 * sky(r) * (0.6 + 0.4 * share) + look.sun_colour.rgb * share * pow(max(dot(r, look.sun.xyz), 0.0), 200.0), l.mirror * 0.8);
     }
     var out = atmosphere(lit, relative, altitude);
     if (l.ground > 0.0) {
