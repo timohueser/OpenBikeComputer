@@ -120,20 +120,24 @@ class MapTests(unittest.TestCase):
 
 class LeafTests(unittest.TestCase):
     def test_leaves_keep_modules_whole_stay_in_one_crate_and_list_the_crate_uses(self):
-        docs = [doc("a", ["a/**", "tools/a.py"]), doc("b", ["b/**"]), doc("c", ["c/**"])]
-        lines = {"a/src/big.rs": 2000, "a/src/lib.rs": 100, "a/src/mod_x.rs": 50, "a/src/mod_x/inner.rs": 50,
-                 "a/src/small.rs": 10, "a/tests/t.rs": 30, "tools/a.py": 20, "b/src/lib.rs": 1, "c/src/lib.rs": 1}
-        units = [unit("ra", "a/src/lib.rs"), unit("rb", "b/src/lib.rs"), unit("rc", "c/src/lib.rs")]
-        edges = [("ra", "rb", False), ("ra", "rc", True), ("rb", "rc", False)]
-        found = cairn.leaves("a", docs, list(lines), units, edges, lines, 200)
-        self.assertEqual([(leaf.crate, leaf.files) for leaf in found], [
-            (None, ("tools/a.py",)),
-            ("ra", ("a/src/big.rs",)),
-            ("ra", ("a/src/lib.rs", "a/src/mod_x.rs", "a/src/mod_x/inner.rs")),
-            ("ra", ("a/src/small.rs",)),
-            ("ra", ("a/tests/t.rs",)),
+        docs = [doc("a", ["a/**", "a2/**", "tools/a.py"]), doc("b", ["b/**"]), doc("c", ["c/**"])]
+        lines = {"a/src/big.rs": 2000, "a/src/lib.rs": 100, "a/src/mod_x.rs": 150, "a/src/mod_x/inner.rs": 100,
+                 "a/src/mod_x/more.rs": 100, "a/src/small.rs": 10, "a/tests/t.rs": 30, "a/vendor/v.rs": 5,
+                 "tools/a.py": 20, "a2/src/lib.rs": 1, "b/src/lib.rs": 1, "c/src/lib.rs": 1}
+        units = [unit(name, f"{folder}/src/lib.rs") for name, folder in (("ra", "a"), ("ra2", "a2"), ("rb", "b"), ("rc", "c"))]
+        edges = [("ra", "ra2", False), ("ra", "rb", False), ("ra", "rc", True), ("rb", "rc", False)]
+        found = cairn.leaves("a", docs, list(lines), units, edges, lines, 200, ["**/tests/**", "**/vendor/**"])
+        self.assertEqual([(leaf.level, leaf.crate, leaf.files) for leaf in found], [
+            ("", None, ("tools/a.py",)),
+            ("a/src/", "ra", ("a/src/big.rs",)),
+            ("a/src/", "ra", ("a/src/lib.rs",)),
+            # A module file and its folder that are too large together are cut at the folder.
+            ("a/src/mod_x/", "ra", ("a/src/mod_x.rs",)),
+            ("a/src/mod_x/", "ra", ("a/src/mod_x/inner.rs", "a/src/mod_x/more.rs")),
+            ("a/src/", "ra", ("a/src/small.rs",)),
+            ("a2/", "ra2", ("a2/src/lib.rs",)),
         ])
-        self.assertEqual((found[2].lines, found[2].uses, found[2].test_uses), (200, ("b (rb)",), ("c (rc)",)))
+        self.assertEqual((found[4].lines, found[4].uses, found[4].test_uses), (200, ("ra2 (a)", "rb (b)"), ("rc (c)",)))
 
 
 class SkillBudgetTests(unittest.TestCase):

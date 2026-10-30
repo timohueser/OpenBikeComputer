@@ -1,17 +1,15 @@
 ---
 name: cairn
-description: Moves each change in this repository through its GitHub issue, and keeps one design document for each system of the code. Use it whenever the user asks to implement or build an issue (#N), fix a bug or make a small tweak, plan or design a change, explore a problem or an idea, prototype something, document a system, review a document or a design, or improve the architecture. Use it also when the request does not name cairn.
+description: Keeps one design document for each system of this repository, and moves a designed change through the `Status:` line of its GitHub issue. Use it whenever the user asks to document a system or write a system doc; to review a document, a design or an issue design (not code and not a pull request); or to explore a problem, plan or design a change, approve a design, or implement or build an issue (#N). Use it also when the request does not name cairn.
 ---
 
 # cairn
 
 ## Rules for every command
 
-These rules come first, so that they survive compaction.
-
-1. **The issue holds the state.** Read it with `gh api repos/{owner}/{repo}/issues/N --jq .body` and find its `Status:` line. Write each result into the issue, not only into the conversation.
+1. **A change's issue holds the state.** Read it with `gh api repos/{owner}/{repo}/issues/N --jq .body` and find its `Status:` line. Write each result into the issue, not only into the conversation.
 2. **The workflow never blocks.** When the user skips a step, say so once, in one line, and name the step you suggest. If the user wants to go ahead, go ahead. The pull request then records `Mode: skip: <reason>`.
-3. **You propose, and the user corrects.** Each question stands alone: what you found, why it matters, the options and your recommendation. Ask all open questions together, in one round.
+3. **You propose, and the user corrects.** Each question stands alone: what you found, why it matters, the options and your recommendation. Ask all open questions together, not one at a time.
 4. **Each subagent starts fresh and has a role.** See "Subagents" below.
 5. **After compaction, read your command's reference again.** The reference files do not come back after compaction.
 
@@ -42,7 +40,7 @@ Choose the command from the request. If two commands fit, ask once. Read the com
 | `document <system>` | a system doc needs to be written or reworked | [document.md](reference/document.md) |
 | `review-doc <doc>` | a document needs a test by fresh readers | [review-doc.md](reference/review-doc.md) |
 
-For a command with no reference, do the task with your own judgment. Tell the user in one line that the cairn guidance for this command does not exist yet.
+For a command with no reference, do the task with your own judgment.
 
 ## Subagents
 
@@ -50,7 +48,7 @@ For a command with no reference, do the task with your own judgment. Tell the us
 - Give a subagent only what its role needs, never the conversation. On Codex, start it with `fork_turns: "none"`.
 - Tell each subagent that its report has at most 400 words.
 - Start independent subagents in parallel.
-- If you cannot start a subagent, do its work yourself, from its inputs only. Start your output with `DEGRADED: <review> did not run independently.`
+- If you cannot start a subagent, do its work yourself, from its inputs only. Start your output with `DEGRADED: <role> did not run independently.`
 
 A Goldfish is a fresh subagent that tests one document. [goldfish.md](reference/goldfish.md) has its three tests. `design`, `document` and `review-doc` use it.
 

@@ -4,17 +4,17 @@ Tests one document with Goldfish: a system doc, an issue design, a guide page or
 
 ## 1. Find the document
 
-The document is a path, or an issue `#N`. For an issue, the document is its body: `gh api repos/{owner}/{repo}/issues/N --jq .body`.
+The document is a path, or an issue `#N`. `#N` must be an issue, not a pull request. For an issue, the document is its body: `gh api repos/{owner}/{repo}/issues/N --jq .body`.
 
 ## 2. Choose the tests
 
 | Document | Tests |
 | --- | --- |
 | a system doc in `docs/design/` | comprehension |
-| an issue design, by its `Size:` line | S: none; M: comprehension; L: comprehension, critic and readiness |
+| an issue design, by its `Size:` line | S or M: comprehension; L: comprehension, critic and readiness |
 | any other document | comprehension |
 
-The user can ask for any test. When a design has size S, say in one line that no test runs, and offer comprehension. When a design has no `Size:` line, run comprehension and say that the line is missing.
+The user can ask for any test. When a design has no `Size:` line, run comprehension and say that the line is missing. An S design gets no test only in the automatic run at the end of `design`; this command runs comprehension on it.
 
 ## 3. Run the tests
 

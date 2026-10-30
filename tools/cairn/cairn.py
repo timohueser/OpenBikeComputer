@@ -163,6 +163,12 @@ def validate(docs: list[Doc]) -> None:
 # ── ownership ────────────────────────────────────────────────────────────────
 
 
+def is_test(path: str, patterns: list[str]) -> bool:
+    """A pattern with no `/` matches the file name only, so `*` cannot cross a folder."""
+    name = path.rsplit("/", 1)[-1]
+    return any(glob_matches(path if "/" in pattern else name, pattern) for pattern in patterns)
+
+
 def owners(files: list[str], docs: list[Doc]) -> dict[str, list[str]]:
     """Each file's owners. A system beats a shell: a shell owns only what no system claims."""
     found = {}
@@ -329,10 +335,12 @@ def analyse(
 
 @dataclass(frozen=True)
 class Leaf:
+    #: The folder at which `cut` made the leaf.
+    level: str
     crate: str | None
     files: tuple[str, ...]
     lines: int
-    #: The other systems that the crate uses, as "system (crate, crate)".
+    #: The repository crates that the leaf's crate uses, as "crate (system)".
     uses: tuple[str, ...]
     test_uses: tuple[str, ...]
 
@@ -349,68 +357,67 @@ def entry_key(path: str, base: str, folders: set[str]) -> str:
     return folder if folder in folders else path
 
 
-def cut(paths: list[str], lines: dict[str, int], limit: int, base: str) -> list[list[str]]:
-    """The files below the folder `base` in leaves of at most `limit` lines. A folder that is too
-    large is cut by its entries, and small entries of one folder share a leaf. A file that is too
-    large is a leaf of its own."""
+def cut(paths: list[str], lines: dict[str, int], limit: int, base: str) -> list[tuple[str, list[str]]]:
+    """The files below the folder `base` in leaves of at most `limit` lines, each with the folder
+    that made it. A folder that is too large is cut by its entries, and small entries of one folder
+    share a leaf. A file that is too large is a leaf of its own."""
     if sum(lines[p] for p in paths) <= limit:
-        return [paths]
+        return [(base, paths)]
     folders = {entry_key(p, base, set()) for p in paths if p.startswith(base) and "/" in p[len(base):]}
     entries: dict[str, list[str]] = {}
     for path in paths:
         entries.setdefault(entry_key(path, base, folders), []).append(path)
-    out: list[list[str]] = []
+    out: list[tuple[str, list[str]]] = []
     pack: list[str] = []
     size = 0
     for key, members in sorted(entries.items()):
         count = sum(lines[p] for p in members)
-        if count > limit and key in folders:
+        big = count > limit and key in folders
+        if pack and (big or size + count > limit):
+            out.append((base, pack))
+            pack, size = [], 0
+        if big:
             out += cut(members, lines, limit, key)
             continue
-        if pack and size + count > limit:
-            out.append(pack)
-            pack, size = [], 0
         pack += members
         size += count
-    return out + [pack] if pack else out
+    return out + [(base, pack)] if pack else out
 
 
 def leaves(system: str, docs: list[Doc], files: list[str], units: list[dict],
-           edges: list[tuple[str, str, bool]], lines: dict[str, int], limit: int) -> list[Leaf]:
+           edges: list[tuple[str, str, bool]], lines: dict[str, int], limit: int,
+           skip: list[str]) -> list[Leaf]:
     """The system's files in leaves, each inside one crate. A file in no crate is cut from the
-    repository root."""
+    repository root. The files that match a `skip` glob are left out."""
     owner = {path: hits[0] for path, hits in owners(files, docs).items() if hits}
     unit_owner = {u["name"]: owner.get(u["entry"]) for u in units}
     names = {u["dir"]: u["name"] for u in units}
     dirs = crate_dirs(units)
     crates: dict[str, list[str]] = {}
-    for path in sorted(p for p in files if owner.get(p) == system):
+    for path in sorted(p for p in files if owner.get(p) == system and not is_test(p, skip)):
         crates.setdefault(crate_dir(path, dirs) or "", []).append(path)
     out = []
     for folder, paths in sorted(crates.items()):
         crate = names.get(folder)
-        used: dict[bool, dict[str, list[str]]] = {False: {}, True: {}}
-        for source, target, test in edges:
-            other = unit_owner.get(target)
-            if crate and source == crate and other and other != system:
-                used[test].setdefault(other, []).append(target)
-        named = {test: tuple(f"{s} ({', '.join(sorted(c))})" for s, c in sorted(found.items()))
-                 for test, found in used.items()}
-        for group in cut(paths, lines, limit, folder + "/" if folder else ""):
-            out.append(Leaf(crate, tuple(group), sum(lines[p] for p in group), named[False], named[True]))
+        used = {test: tuple(f"{b} ({unit_owner.get(b) or 'no owner'})" for a, b, t in sorted(edges) if a == crate and t == test)
+                for test in (False, True)}
+        for level, group in cut(paths, lines, limit, folder + "/" if folder else ""):
+            out.append(Leaf(level, crate, tuple(group), sum(lines[p] for p in group), used[False], used[True]))
     return out
 
 
-def print_leaves(system: str, found: list[Leaf], lines: dict[str, int], limit: int) -> None:
+def print_leaves(system: str, found: list[Leaf], units: list[dict], lines: dict[str, int], limit: int) -> None:
     total = sum(leaf.lines for leaf in found)
     print(f"{system}: {total:,} lines in {len(found)} leaves; a leaf holds at most {limit:,} lines, or one larger file")
+    print(f"repository crates: {', '.join(sorted(u['name'] for u in units))}")
     for i, leaf in enumerate(found, 1):
         where = leaf.files[0] if len(leaf.files) == 1 else os.path.commonpath(leaf.files) + "/"
         print(f"\nleaf {i}: {where} ({leaf.lines:,} lines)")
+        print(f"  level: {leaf.level or './'}")
         if leaf.crate:
             print(f"  crate: {leaf.crate}")
-            print(f"  uses: {', '.join(leaf.uses) or 'no other system'}")
-            print(f"  tests use: {', '.join(leaf.test_uses) or 'no other system'}")
+            print(f"  uses: {', '.join(leaf.uses) or 'none'}")
+            print(f"  tests use: {', '.join(leaf.test_uses) or 'none'}")
         else:
             print("  crate: none, so no adapter measures its uses")
         for path in leaf.files:
@@ -736,8 +743,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "leaves":
             if args.system not in {doc.system for doc in docs}:
                 raise CairnError(f"no system doc for `{args.system}`")
-            found = leaves(args.system, docs, files, units, edges, lines, config["leaf_lines"])
-            print_leaves(args.system, found, lines, config["leaf_lines"])
+            if "leaf_lines" not in config:
+                raise CairnError(f"{CONFIG} has no `leaf_lines`")
+            skip = config["tests"] + [glob for settings in config["adapters"].values() for glob in settings.get("ignore", [])]
+            found = leaves(args.system, docs, files, units, edges, lines, config["leaf_lines"], skip)
+            print_leaves(args.system, found, units, lines, config["leaf_lines"])
             return 0
         result = analyse(docs, files, units, edges, lines, config)
         page = ROOT / config["docs"] / MAP

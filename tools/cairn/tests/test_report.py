@@ -282,9 +282,9 @@ class SizeEstimateTests(unittest.TestCase):
 
     def test_a_test_pattern_with_no_folder_matches_the_file_name_only(self):
         for path in ("tools/cairn/tests/test_report.py", "a/src/tests.rs", "a/src/peaks_tests.rs", "web/A.svelte.test.ts"):
-            self.assertTrue(report.is_test(path, CONFIG["tests"]), path)
+            self.assertTrue(cairn.is_test(path, CONFIG["tests"]), path)
         for path in ("tools/test_plan.py", "a/tests_b/lib.rs", "tests.rs.orig"):
-            self.assertFalse(report.is_test(path, CONFIG["tests"]), path)
+            self.assertFalse(cairn.is_test(path, CONFIG["tests"]), path)
 
 
 class PublishTests(unittest.TestCase):

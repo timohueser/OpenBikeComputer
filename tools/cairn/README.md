@@ -66,17 +66,24 @@ between its own crate groups, which do not follow the system cut.
 
 ## Leaves
 
-`leaves` cuts the files that a system owns into leaves of at most `leaf_lines` lines. A leaf stays
-inside one crate. A folder that is too large is cut by its entries, and small entries of one folder
-share a leaf. A file `x.rs` stays with its folder `x/`. A file larger than the limit is a leaf of its
-own. Each leaf lists the other systems that its crate uses, from the cargo adapter. A file in no
-crate has no such list.
+`leaves` cuts the files that a system owns into leaves of at most `leaf_lines` lines. It leaves
+out the files that match the `tests` globs or an adapter's `ignore` globs: the doc describes the
+system, and the tests are evidence that the hay can name. A leaf stays inside one crate. A folder
+that is too large is cut by its entries, and small entries of one folder share a leaf. A file
+`x.rs` stays with its folder `x/`. A file larger than the limit is a leaf of its own.
+
+The output names every repository crate on one line. Each leaf gives its `level`, the folder at
+which it was cut, and the repository crates that its crate uses, from the cargo adapter. A file in
+no crate has no such list.
 
 ## Skill budget
 
 `check` fails when a skill file is over its budget in `skill`: `router_tokens` for `SKILL.md`,
 `reference_tokens` for each file in `reference/`. A token is four bytes. `tools/prose.py` does not
 budget the skill files; it checks only their links.
+
+Both keys are optional. Without `skill`, `check` skips the budget. Without `leaf_lines`, `leaves`
+stops with an error.
 
 ## The `Mode:` line
 

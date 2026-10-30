@@ -12,10 +12,7 @@ There are three tests. The command that calls Goldfish says which ones run:
 
 ## Run the tests
 
-1. Get each role's model and effort with `cairn model <role>`.
-2. Start one fresh subagent for each test, in parallel. Give it no part of the conversation.
-3. Write its prompt as below. The full text of the document comes first, before any word of yours, so nothing you say can anchor the reader. Add no summary and no opinion. For an issue, the document is the issue body.
-4. If you cannot start a subagent, run the test yourself from the document and its links only. Start your output with `DEGRADED: Goldfish <test> did not run independently.`
+Start one subagent for each test, in parallel, as the [Subagents](../SKILL.md#subagents) rules of the router say. Write its prompt as below. The full text of the document comes first, before any word of yours, so nothing you say can anchor the reader. Add no summary and no opinion. For an issue, the document is the issue body.
 
 ### Comprehension
 
@@ -88,4 +85,4 @@ Sort each finding of every test into one of three piles:
 - **Minor:** a careful builder can decide it, and the decision does not change the result. Decide it, write it into the document, and list it as your call for the user.
 - **For the user:** only the user can decide it, and the decision changes the result.
 
-Only the third pile goes to the user, as questions in one round. Give the user the list of your calls too, so they can check them while they read.
+Only the third pile goes to the user, as questions asked together, not one at a time. Give the user the list of your calls too, so they can check them while they read.
