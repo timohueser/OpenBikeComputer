@@ -1,5 +1,7 @@
 # Goldfish
 
+<!-- Changed from the Elephant-Goldfish Model prompts (Apache-2.0); see ../NOTICE. -->
+
 A Goldfish is a fresh subagent with no memory of the conversation. It gets one document and the files that the document links to, and nothing else. If it cannot understand or use the document, a later reader cannot either.
 
 There are three tests. The command that calls Goldfish says which ones run:

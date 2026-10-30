@@ -12,9 +12,9 @@ Run `cairn check` and `cairn leaves <system>`. Keep both outputs. The leaves lea
 
 The system's violations are its entries in `.cairn/baseline.json` (the IDs that name it) and the `cycle between` lines of `cairn check` that name it. They go on the weakness list. So does each leaf over the leaf limit.
 
-If the system has no leaves, skip steps 2 to 4. Write the doc from the top-down view of step 5, and tell the user why.
+If the system has no leaves, skip steps 2 to 4. Read the files that the system owns (for example a registry or a config file), write the doc from them and the top-down view of step 5, and tell the user why.
 
-On a rework, a leaf needs no peanut when each of its modules has a purpose comment and no file changed since the last commit of the system doc. Its purpose comments are its summary.
+On a rework, a leaf needs no peanut when each of its modules has a purpose comment and no file changed since the last commit of the system doc, committed or not. Its purpose comments are its summary; its rules are already in the doc.
 
 ## 2. Peanuts
 
