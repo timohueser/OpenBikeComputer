@@ -85,9 +85,10 @@ function stampLine(frames) {
     };
 }
 
+const median = (list) => [...list].sort((a, b) => a - b)[Math.floor(list.length / 2)];
 const summary = (list) => {
     const sorted = [...list].sort((a, b) => a - b), at = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
-    return sorted.length ? { median: +at(0.5).toFixed(2), p95: +at(0.95).toFixed(2), max: +sorted.at(-1).toFixed(2) } : null;
+    return sorted.length ? { median: +median(list).toFixed(2), p95: +at(0.95).toFixed(2), max: +sorted.at(-1).toFixed(2) } : null;
 };
 /** A pass that not every frame runs: its times on the frames that ran it, how many, and their sum per frame of the flight. */
 const timed = (list, frames) => list.length ? { ...summary(list), frames: list.length, amortized: +(list.reduce((a, b) => a + b, 0) / frames).toFixed(3) } : null;
@@ -141,13 +142,13 @@ try {
         const passes = [...new Set(frames.flatMap(frame => Object.keys(frame.gpu)))];
         const last = frames.at(-1), stats = await page.evaluate(() => ({ ...window.trailView.stats(), pools: [...window.trailView.stats().pools] }));
         const of = key => frames.map(frame => frame.terrain[key]);
-        const gpu = Object.fromEntries(passes.map(pass => [pass, timed(frames.map(frame => frame.gpu[pass]).filter(ms => ms !== undefined), frames.length)]));
-        // The rounding keeps 0.81 - 0.79 within a limit of 0.02. A flight with no `resolve` is not valid.
-        const valid = +Math.abs(gpu.resolve?.median - Number(values.resolve)).toFixed(2) <= RESOLVE_DRIFT_MS;
+        const ran = pass => frames.map(frame => frame.gpu[pass]).filter(ms => ms !== undefined);
+        // A flight with no `resolve` is not valid.
+        const valid = Math.abs(median(ran('resolve')) - Number(values.resolve)) <= RESOLVE_DRIFT_MS;
         console.log(JSON.stringify({
             flight: flight.name, adapter: stats.adapter, frames: frames.length,
             ...(values.resolve ? { valid } : {}),
-            gpu,
+            gpu: Object.fromEntries(passes.map(pass => [pass, timed(ran(pass), frames.length)])),
             stamp: stampLine(frames),
             cpu: summary(frames.map(frame => frame.cpu)), selection: summary(of('selection')),
             nodes: summary(of('nodes')), triangles: summary(of('triangles')), quality: summary(of('quality')),
