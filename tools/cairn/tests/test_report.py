@@ -322,7 +322,7 @@ class PublishTests(unittest.TestCase):
 class ModelTests(unittest.TestCase):
     def test_each_harness_has_its_model_and_an_unknown_harness_inherits(self):
         self.assertEqual(cairn.model_for(CONFIG, "code-review", "claude-code"), ("opus", "high"))
-        self.assertEqual(cairn.model_for(CONFIG, "drift", "codex"), ("6.1 Terra", "low"))
+        self.assertEqual(cairn.model_for(CONFIG, "drift", "codex"), ("gpt-6.1-sol", "low"))
         self.assertEqual(cairn.model_for(CONFIG, "drift", "api"), ("claude-sonnet", "low"))
         self.assertIsNone(cairn.model_for(CONFIG, "drift", None))
         self.assertIsNone(cairn.model_for(CONFIG, "implementer", "claude-code"))
@@ -340,7 +340,7 @@ class ModelTests(unittest.TestCase):
 
         self.assertEqual(run("doc-hay", claude_code=True), "model: sonnet\neffort: medium\n")
         self.assertEqual(run("doc-hay", claude_code=False), "inherit\n")
-        self.assertEqual(run("doc-hay", "--harness", "codex", claude_code=True), "model: 6.1 Terra\neffort: medium\n")
+        self.assertEqual(run("doc-hay", "--harness", "codex", claude_code=True), "model: gpt-6.1-sol\neffort: medium\n")
 
 
 if __name__ == "__main__":

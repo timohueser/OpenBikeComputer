@@ -10,6 +10,7 @@ always fails. `--base REF` also fails when the baseline grew since the merge bas
 Usage: python3 tools/cairn/cairn.py
          check [--base REF] [--update | --accept]
          map
+         leaves SYSTEM
          model ROLE [--harness claude-code|codex]
          report [--publish] [--drift]
 """
@@ -214,6 +215,15 @@ def cyclic(loops: list[list[str]], a: str, b: str) -> bool:
 # ── the rules ────────────────────────────────────────────────────────────────
 
 
+def crate_dirs(units: list[dict]) -> list[str]:
+    return sorted((u["dir"] for u in units), key=len, reverse=True)
+
+
+def crate_dir(path: str, dirs: list[str]) -> str | None:
+    """The deepest crate folder that holds the file. `dirs` comes from `crate_dirs`."""
+    return next((d for d in dirs if path.startswith(d + "/")), None)
+
+
 def runtime_root(path: str, runtimes: dict[str, str]) -> str | None:
     matches = [root for root in runtimes if path.startswith(root)]
     return max(matches, key=len) if matches else None
@@ -264,13 +274,12 @@ def analyse(
         elif (a, b, test) in undeclared:
             out.append(Violation("dependency", f"test dependency {a} -> {b}", frozenset({a}), f"{a} tests use {b} but test_depends_on does not list it: {crates}"))
 
-    # R1: a crate's files belong to the system that owns its entry file. A file belongs to the
-    # deepest crate folder that holds it.
-    dirs = sorted((u["dir"] for u in units), key=len, reverse=True)
+    # R1: a crate's files belong to the system that owns its entry file.
+    dirs = crate_dirs(units)
     home = {u["dir"]: u for u in units}
     foreign: dict[tuple[str, str], int] = {}
     for path in files:
-        crate = next((d for d in dirs if path.startswith(d + "/")), None)
+        crate = crate_dir(path, dirs)
         if crate is None or path not in owner:
             continue
         unit = home[crate]
@@ -313,6 +322,110 @@ def analyse(
         out.append(Violation("R4", f"R4 {system}", frozenset({system}), f"{system} ({by_name[system].area}) has {count} file(s) under {folder}", count))
 
     return Result(out, loops, {(a, b, test) for (a, b), test in pairs.items()}, undeclared)
+
+
+# ── leaves ───────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Leaf:
+    crate: str | None
+    files: tuple[str, ...]
+    lines: int
+    #: The other systems that the crate uses, as "system (crate, crate)".
+    uses: tuple[str, ...]
+    test_uses: tuple[str, ...]
+
+
+def entry_key(path: str, base: str, folders: set[str]) -> str:
+    """The entry of the folder `base` that holds the file. A file `x.rs` joins its folder `x/`,
+    because the two are one module. A file outside `base` is the module file of `base` itself."""
+    if not path.startswith(base):
+        return path
+    head, slash, _ = path[len(base):].partition("/")
+    if slash:
+        return base + head + "/"
+    folder = base + head.rsplit(".", 1)[0] + "/"
+    return folder if folder in folders else path
+
+
+def cut(paths: list[str], lines: dict[str, int], limit: int, base: str) -> list[list[str]]:
+    """The files below the folder `base` in leaves of at most `limit` lines. A folder that is too
+    large is cut by its entries, and small entries of one folder share a leaf. A file that is too
+    large is a leaf of its own."""
+    if sum(lines[p] for p in paths) <= limit:
+        return [paths]
+    folders = {entry_key(p, base, set()) for p in paths if p.startswith(base) and "/" in p[len(base):]}
+    entries: dict[str, list[str]] = {}
+    for path in paths:
+        entries.setdefault(entry_key(path, base, folders), []).append(path)
+    out: list[list[str]] = []
+    pack: list[str] = []
+    size = 0
+    for key, members in sorted(entries.items()):
+        count = sum(lines[p] for p in members)
+        if count > limit and key in folders:
+            out += cut(members, lines, limit, key)
+            continue
+        if pack and size + count > limit:
+            out.append(pack)
+            pack, size = [], 0
+        pack += members
+        size += count
+    return out + [pack] if pack else out
+
+
+def leaves(system: str, docs: list[Doc], files: list[str], units: list[dict],
+           edges: list[tuple[str, str, bool]], lines: dict[str, int], limit: int) -> list[Leaf]:
+    """The system's files in leaves, each inside one crate. A file in no crate is cut from the
+    repository root."""
+    owner = {path: hits[0] for path, hits in owners(files, docs).items() if hits}
+    unit_owner = {u["name"]: owner.get(u["entry"]) for u in units}
+    names = {u["dir"]: u["name"] for u in units}
+    dirs = crate_dirs(units)
+    crates: dict[str, list[str]] = {}
+    for path in sorted(p for p in files if owner.get(p) == system):
+        crates.setdefault(crate_dir(path, dirs) or "", []).append(path)
+    out = []
+    for folder, paths in sorted(crates.items()):
+        crate = names.get(folder)
+        used: dict[bool, dict[str, list[str]]] = {False: {}, True: {}}
+        for source, target, test in edges:
+            other = unit_owner.get(target)
+            if crate and source == crate and other and other != system:
+                used[test].setdefault(other, []).append(target)
+        named = {test: tuple(f"{s} ({', '.join(sorted(c))})" for s, c in sorted(found.items()))
+                 for test, found in used.items()}
+        for group in cut(paths, lines, limit, folder + "/" if folder else ""):
+            out.append(Leaf(crate, tuple(group), sum(lines[p] for p in group), named[False], named[True]))
+    return out
+
+
+def print_leaves(system: str, found: list[Leaf], lines: dict[str, int], limit: int) -> None:
+    total = sum(leaf.lines for leaf in found)
+    print(f"{system}: {total:,} lines in {len(found)} leaves; a leaf holds at most {limit:,} lines, or one larger file")
+    for i, leaf in enumerate(found, 1):
+        where = leaf.files[0] if len(leaf.files) == 1 else os.path.commonpath(leaf.files) + "/"
+        print(f"\nleaf {i}: {where} ({leaf.lines:,} lines)")
+        if leaf.crate:
+            print(f"  crate: {leaf.crate}")
+            print(f"  uses: {', '.join(leaf.uses) or 'no other system'}")
+            print(f"  tests use: {', '.join(leaf.test_uses) or 'no other system'}")
+        else:
+            print("  crate: none, so no adapter measures its uses")
+        for path in leaf.files:
+            print(f"  {lines[path]:>6,}  {path}")
+
+
+# ── the skill budget ─────────────────────────────────────────────────────────
+
+
+def skill_tokens(root: Path, settings: dict) -> list[tuple[str, int, int]]:
+    """Each skill file as (path, tokens, limit). Four bytes count as one token."""
+    folder = root / settings["path"]
+    files = [(folder / "SKILL.md", settings["router_tokens"])]
+    files += [(path, settings["reference_tokens"]) for path in sorted((folder / "reference").glob("*.md"))]
+    return [(path.relative_to(folder).as_posix(), path.stat().st_size // 4, limit) for path, limit in files]
 
 
 # ── the ratchet ──────────────────────────────────────────────────────────────
@@ -599,6 +712,8 @@ def main(argv: list[str] | None = None) -> int:
     write.add_argument("--update", action="store_true", help="remove gone entries and lower shrunk sizes in the baseline")
     write.add_argument("--accept", action="store_true", help="write the first baseline from the current state")
     commands.add_parser("map", help="rewrite the generated block of the system map")
+    leaf = commands.add_parser("leaves", help="print a system's files in leaves, with the systems that each leaf's crate uses")
+    leaf.add_argument("system")
     model = commands.add_parser("model", help="print the model and effort of a role in the current harness")
     model.add_argument("role")
     model.add_argument("--harness", choices=HARNESSES, help="the harness, instead of the one the environment shows")
@@ -618,6 +733,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = json.loads((ROOT / CONFIG).read_text())
         docs, files, units, edges, lines = gather(ROOT, config)
+        if args.command == "leaves":
+            if args.system not in {doc.system for doc in docs}:
+                raise CairnError(f"no system doc for `{args.system}`")
+            found = leaves(args.system, docs, files, units, edges, lines, config["leaf_lines"])
+            print_leaves(args.system, found, lines, config["leaf_lines"])
+            return 0
         result = analyse(docs, files, units, edges, lines, config)
         page = ROOT / config["docs"] / MAP
         drawn = page.read_text(encoding="utf-8")
@@ -630,6 +751,7 @@ def main(argv: list[str] | None = None) -> int:
         base = base_baseline(shown_at(ROOT, commit)) if commit else None
         # An approval at the base still holds, so a change cannot lift it to hide its own violation.
         was_approved = approved_at(ROOT, commit, config["docs"].rstrip("/")) if commit else set()
+        skill = skill_tokens(ROOT, config["skill"]) if "skill" in config else []
     except (CairnError, OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:
         print(f"cairn: {error}", file=sys.stderr)
         return 1
@@ -655,9 +777,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\ncairn: the baseline grew since the merge base with {args.base}; only `--update` changes it:")
         for line in added:
             print(f"  {line}")
+    over = [name for name, tokens, limit in skill if tokens > limit]
+    if skill:
+        print(f"\ncairn: skill tokens (bytes / 4) in {config['skill']['path']}:")
+        for name, tokens, limit in skill:
+            print(f"  {'FAIL' if name in over else '    '} {name}: {tokens:,} of {limit:,}")
     if current != drawn:
         print(f"\ncairn: {page.relative_to(ROOT)} is out of date; run `obc cairn map` or `python3 tools/cairn/cairn.py map`")
-    return 1 if failing or added or current != drawn else 0
+    return 1 if failing or added or over or current != drawn else 0
 
 
 if __name__ == "__main__":

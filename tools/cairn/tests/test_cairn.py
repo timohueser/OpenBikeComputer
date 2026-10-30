@@ -118,6 +118,48 @@ class MapTests(unittest.TestCase):
                 cairn.with_map(broken, block, "docs/design/README.md")
 
 
+class LeafTests(unittest.TestCase):
+    def test_leaves_keep_modules_whole_stay_in_one_crate_and_list_the_crate_uses(self):
+        docs = [doc("a", ["a/**", "tools/a.py"]), doc("b", ["b/**"]), doc("c", ["c/**"])]
+        lines = {"a/src/big.rs": 2000, "a/src/lib.rs": 100, "a/src/mod_x.rs": 50, "a/src/mod_x/inner.rs": 50,
+                 "a/src/small.rs": 10, "a/tests/t.rs": 30, "tools/a.py": 20, "b/src/lib.rs": 1, "c/src/lib.rs": 1}
+        units = [unit("ra", "a/src/lib.rs"), unit("rb", "b/src/lib.rs"), unit("rc", "c/src/lib.rs")]
+        edges = [("ra", "rb", False), ("ra", "rc", True), ("rb", "rc", False)]
+        found = cairn.leaves("a", docs, list(lines), units, edges, lines, 200)
+        self.assertEqual([(leaf.crate, leaf.files) for leaf in found], [
+            (None, ("tools/a.py",)),
+            ("ra", ("a/src/big.rs",)),
+            ("ra", ("a/src/lib.rs", "a/src/mod_x.rs", "a/src/mod_x/inner.rs")),
+            ("ra", ("a/src/small.rs",)),
+            ("ra", ("a/tests/t.rs",)),
+        ])
+        self.assertEqual((found[2].lines, found[2].uses, found[2].test_uses), (200, ("b (rb)",), ("c (rc)",)))
+
+
+class SkillBudgetTests(unittest.TestCase):
+    def test_check_fails_when_a_skill_file_is_over_its_token_budget(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            skill = root / "skill"
+            (skill / "reference").mkdir(parents=True)
+            (skill / "SKILL.md").write_text("r" * 40)
+            (skill / "reference/doc.md").write_text("d" * 44)
+            (root / ".cairn").mkdir()
+            config = {**CONFIG, "docs": "docs/design", "baseline": ".cairn/baseline.json",
+                      "skill": {"path": "skill", "router_tokens": 10, "reference_tokens": 10}}
+            (root / cairn.CONFIG).write_text(json.dumps(config))
+            (root / "docs/design").mkdir(parents=True)
+            (root / "docs/design" / cairn.MAP).write_text(f"{cairn.MAP_BEGIN}\n{cairn.MAP_END}\n")
+            with mock.patch.object(cairn, "ROOT", root), \
+                    mock.patch.object(cairn, "gather", return_value=([], [], [], [], {})), \
+                    redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cairn.main(["map"]), 0)
+                self.assertEqual(cairn.main(["check"]), 1)
+                self.assertIn("     SKILL.md: 10 of 10\n  FAIL reference/doc.md: 11 of 10\n", out.getvalue())
+                (skill / "reference/doc.md").write_text("d" * 43)
+                self.assertEqual(cairn.main(["check"]), 0)
+
+
 class CargoAdapterTests(unittest.TestCase):
     def package(self, name, dependencies=(), targets=None):
         return {

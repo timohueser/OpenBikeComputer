@@ -2,6 +2,8 @@
   "docs": "docs/design",
   "baseline": ".cairn/baseline.json",
   "specs": "specs",
+  "leaf_lines": 1500,
+  "skill": {"path": "tools/cairn/skill/cairn", "router_tokens": 2000, "reference_tokens": 2000},
   "tests": ["**/tests/**", "tests.rs", "*_tests.rs", "*_test.py", "*Tests.swift", "*.test.ts"],
   "size": {
     "S": {"systems": 1, "lines": 500},
@@ -44,7 +46,7 @@
   "tiers": {
     "claude-code": { "strong": "opus",   "balanced": "sonnet", "fast": "haiku" },
     "api":         { "strong": "claude-opus", "balanced": "claude-sonnet", "fast": "claude-haiku" },
-    "codex":       { "strong": "6.1 Sol", "balanced": "6.1 Terra", "fast": "6 Luna" }
+    "codex":       { "strong": "gpt-6-astra", "balanced": "gpt-6.1-sol", "fast": "gpt-6-luna" }
   },
   "report": {
     "budget_usd": 5,
