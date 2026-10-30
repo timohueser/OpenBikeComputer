@@ -338,8 +338,9 @@ fn gravel_look(region: u32, p: vec2f, across: f32, half: f32, along: f32, pw: f3
     c = mix(c, base * vec3f(0.86, 0.83, 0.78) * (0.96 + 0.08 * noise(p / 0.3)), 0.5 * wheels);
     out.albedo = c;
     out.bump = loose * 0.35 * (big.y - 1.0) * (vec2f(noise(p / 0.05), noise(p / 0.05 + 9.0)) - 0.5);
-    let middle = select(0.0, smoothstep(0.35, 0.12, x + 0.12 * (noise(p / 0.3) - 0.5)) * smoothstep(0.4, 0.6, noise(p / 0.5 + 3.0)) * smoothstep(0.3, 0.6, noise(vec2f(along / 20.0, 6.0))), track);
-    out.ground = max(1.0 - smoothstep(0.0, 0.3, frayed(p, half - x, 0.35)), 0.45 * middle * smoothstep(0.3, 0.7, noise(p / 0.12)));
+    // A few tufts in the middle of a track, never a patch: a patch of shaded meadow reads as a hole.
+    let middle = select(0.0, smoothstep(0.3, 0.1, x + 0.1 * (noise(p / 0.3) - 0.5)) * smoothstep(0.45, 0.7, noise(vec2f(along / 20.0, 6.0))), track);
+    out.ground = max(1.0 - smoothstep(0.0, 0.3, frayed(p, half - x, 0.35)), 0.35 * middle * smoothstep(0.55, 0.75, noise(p / 0.07)));
     return out;
 }
 
