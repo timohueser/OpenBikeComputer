@@ -22,7 +22,7 @@ Run the chosen tests as [goldfish.md](goldfish.md) says, and sort the findings i
 
 ## 4. Fix and report
 
-Fix the gaps in facts in the document yourself. For an issue, write the edited body back with `gh api -X PATCH repos/{owner}/{repo}/issues/N -F body=@FILE`.
+Fix the gaps in facts in the document yourself, as [writing.md](writing.md) says. For an issue, write the edited body back with `gh api -X PATCH repos/{owner}/{repo}/issues/N -F body=@FILE`.
 
 Then give the user a short findings list, in this format:
 

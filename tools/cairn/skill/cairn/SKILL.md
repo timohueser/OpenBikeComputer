@@ -12,6 +12,7 @@ description: Keeps one design document for each system of this repository, and m
 3. **You propose, and the user corrects.** Each question stands alone: what you found, why it matters, the options and your recommendation. Ask all open questions together, not one at a time.
 4. **Each subagent starts fresh and has a role.** See "Subagents" below.
 5. **After compaction, read your command's reference again.** The reference files do not come back after compaction.
+6. **Write plainly.** Before you write a doc, an issue, or a message that explains code, read [writing.md](reference/writing.md).
 
 ## The flow
 
