@@ -250,7 +250,7 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     n *= -sign(dot(n, in.relative));
     if (is_corridor(in.colour)) {
         if (frame.debug == 5u) {
-            // DEBUGHUE: a corridor face's material as a hue.
+            // PROTOTYPE (road study): the material debug view shows a corridor face's material (red, /64), flags (green, /7) and band priority (blue, /7).
             let m = f32(u32(round(in.colour.r * 255.0)));
             let fl = u32(round(in.colour.b * 255.0));
             return vec4f(m / 64.0, f32(fl & 7u) / 7.0, f32(fl >> 4u) / 7.0, 1.0);
