@@ -1,13 +1,14 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { functionOf, shaderFunctions } from '../gpu/shader-functions';
-import { features, metresPerUnit, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, type Line } from '../terrain/bins';
+import { shaderFunctions } from '../gpu/shader-functions';
+import { features, FORD, marked, MARKED, metresPerUnit, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, type Line } from '../terrain/bins';
 import { decodeFeatures, DEEPEST } from '../stream/features';
 import { LEFT } from '../terrain/town';
 import { halfAt, partnersOf } from '../terrain/corners';
 import { CHILD, OWNER, size } from '../terrain/lod';
 import { meshBytes, roadMesh } from './mesh';
+import { RANGE_M } from './roads';
 import { lookWord, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 import { CF, corridorLine, LOOK, lookOf, MAT, sideOf } from './section';
 import { farStations, reachOf, stationsOf, type Station } from './stations';
@@ -167,6 +168,14 @@ describe('the sweep', () => {
         return { indices: [...b.near], vertices: decoded(b.piece(0)) };
     };
 
+    it('lays a trail on the stamped ground, which rises across it on a hillside, and never under another way', () => {
+        const line = straight(40, { kind: PATH, code: 6, h: 1 });
+        expect(lookOf(line)).toBe(LOOK.TRAIL);
+        const faces = swept(line, [straight(40)]).vertices.filter(v => v.mat === LOOK.TRAIL);
+        expect(faces.length).toBeGreaterThan(0);
+        expect(faces.every(v => v.flags === CF.SAMPLE)).toBe(true);
+    });
+
     it('winds each face counter-clockwise from above, or to the line where it stands upright, and takes its material from its first vertex', () => {
         const line = straight(40, { sidewalks: [LEFT], profile: Object.keys(PROFILES).indexOf('residential') }), { indices, vertices } = swept(line);
         for (let t = 0; t < indices.length; t += 3) {
@@ -266,14 +275,24 @@ describe('corridor.wgsl', () => {
         expect(number('MAT_KERB')).toBe(MAT.KERB);
         expect(number('MAT_SIDEWALK')).toBe(MAT.SIDEWALK);
         for (const [name, value] of Object.entries(CF)) expect(number(`CF_${name}`)).toBe(value);
-        for (const [name, value] of Object.entries(LOOK)) expect(number(`LOOK_${name}`)).toBe(value);
+        for (const [, name, value] of looks.matchAll(/^const LOOK_(\w+): u32 = (\d+)u;/gm)) expect(LOOK[name as keyof typeof LOOK]).toBe(Number(value));
     });
 
-    it('hands over to the paint pixel by pixel: the corridor discards the pixels that the paint of an unpaved way takes', () => {
-        const paint = readFileSync(new URL('../ground/roads.wgsl', import.meta.url), 'utf8'), ground = readFileSync(new URL('../ground/look.wgsl', import.meta.url), 'utf8');
-        expect(functionOf(shader, 'corridor_fragment')).toContain('paint_draws(length(in.relative.xy), in.clip.xy)');
-        expect(functionOf(paint, 'road_at')).toContain('!paint_draws(distance, pixel)');
-        expect(functionOf(ground, 'ground_colour')).toContain('length(relative.xy), region, pixel');
+    it('holds the values of the other sides of the shaders', () => {
+        const number = (source: string, name: string) => Number(new RegExp(`const ${name}: [fu]32 = ([\\d.]+)u?;`).exec(source)![1]);
+        const code = (surface: keyof typeof SURFACES) => Object.keys(SURFACES).indexOf(surface) + 1;
+        const paint = readFileSync(new URL('../ground/roads.wgsl', import.meta.url), 'utf8'), stamp = readFileSync(new URL('../terrain/stamp-core.wgsl', import.meta.url), 'utf8');
+        for (const [name, surface] of [['GRAVEL', 'gravel'], ['DIRT', 'dirt'], ['GRASS', 'grass'], ['PATH', 'path'], ['ONEWAY', 'oneway']] as const) expect(number(paint, `CODE_${name}`)).toBe(code(surface));
+        expect([number(stamp, 'DIRT_CODE'), number(stamp, 'PATH_CODE')]).toEqual([code('dirt'), code('path')]);
+        expect(number(stamp, 'MARKED')).toBe(MARKED);
+        expect(number(stamp, 'FORD')).toBe(FORD);
+        expect(number(looks, 'CORRIDOR_RANGE_M')).toBe(RANGE_M);
+    });
+
+    it('marks in the stamp exactly the roads that a corridor draws with lines', () => {
+        for (const { tile, list } of tiles) for (const line of features(list, tile).lines.filter(({ kind }) => kind === ROAD)) {
+            expect(marked(line)).toBe(lookOf(line) === LOOK.MAIN || lookOf(line) === LOOK.MOTORWAY);
+        }
     });
 
     it('dives a band only on a face steeper than the cones, measured from the core\'s edge', () => {

@@ -1,7 +1,7 @@
 // The cross-section of a road, track, path or railway: per side, the points across it from the
 // carriageway's edge outward, then the rows of its band. The sweep (sweep.ts) joins the points of two
 // stations into faces, and corridor.wgsl reads their materials and flags.
-import { LIFT_M, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
+import { LIFT_M, marked, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 
 const CLASS_NAMES = Object.keys(PROFILES), SURFACE_NAMES = Object.keys(SURFACES) as (keyof typeof SURFACES)[];
@@ -10,10 +10,10 @@ const surfaceName = (line: Line) => SURFACE_NAMES[(line.code & 15) - 1];
 
 /** Face materials, as MAT_* of corridor.wgsl: the ground under the face, then the stone of a town street. */
 export const MAT = { GROUND: 1, KERB: 2, SIDEWALK: 3 } as const;
-/** The looks of the ways, from LOOK_FIRST of corridor.wgsl on. */
+/** The looks of the ways, as LOOK_* of looks.wgsl. */
 export const LOOK = { ASPHALT: 20, MAIN: 21, MOTORWAY: 22, CONCRETE: 23, SETT: 24, PAVERS: 25, GRAVEL: 26, DIRT: 27, TRAIL: 28, BALLAST: 29 } as const;
 /**
- * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a band's row on the stamped ground. MESH: a band's row
+ * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a band's row or a trail's face on the stamped ground. MESH: a band's row
  * under the drawn mesh. UNDER: a band's row over another way's carriageway, which it passes under.
  * NO_LEFT_LINE, NO_RIGHT_LINE: a carriageway without its edge line on that side, at a junction's mouth.
  */
@@ -44,9 +44,6 @@ export interface Part { a: number; dz: number; mat: number; flags: number; far: 
 export const corridorLine = (line: Line) => (line.kind === ROAD || line.kind === RAIL || line.kind === PATH) && !line.gallery;
 
 const PAVED_ROAD = ['main', 'road', 'oneway', 'paving'];
-const MOTORWAYS = ['motorway', 'motorway_link', 'trunk', 'trunk_link'];
-const MAINS = ['primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link'];
-const SETTS = ['sett', 'cobblestone', 'unhewn_cobblestone', 'stone'];
 
 /** The look of a line's carriageway, by its class, its surface code and its OSM surface. */
 export function lookOf(line: Line): number {
@@ -58,7 +55,7 @@ export function lookOf(line: Line): number {
     if (name === 'gravel') return LOOK.GRAVEL;
     if (name === 'dirt' || name === 'grass') return line.kind === PATH ? LOOK.TRAIL : LOOK.DIRT;
     if (name === 'path') return LOOK.TRAIL;
-    return MOTORWAYS.includes(cls) ? LOOK.MOTORWAY : MAINS.includes(cls) ? LOOK.MAIN : LOOK.ASPHALT;
+    return !marked(line) ? LOOK.ASPHALT : MOTORWAYS.includes(cls) ? LOOK.MOTORWAY : LOOK.MAIN;
 }
 
 /** A shape's points from an edge to the middle, mirrored to the other edge. The far range keeps the edges and the middle. */
@@ -75,6 +72,8 @@ function mirrored(points: [number, number][], mat: number): Part[] {
 export function carriageway(line: Line, h: number, bank: number): Part[] {
     const mat = lookOf(line), r = Math.min(1, h / line.h);
     if (mat === LOOK.BALLAST) return mirrored([[h, 0], [h - BED_SLOPE_M * r, BED_M], [0, BED_M]], mat);
+    // A path's bench tilts with the hillside (`tilt` of roads.json): a trail lies on it, or the hill covers its uphill side.
+    if (mat === LOOK.TRAIL) return mirrored([[h, 0], [0, 0]], mat).map(part => ({ ...part, flags: CF.SAMPLE }));
     // Ruts worn into a track, the middle left higher; a narrower station pulls them in.
     if (mat === LOOK.DIRT && line.h >= 1.2) return mirrored([[h, 0], [1.0 * r, 0], [0.75 * r, -0.04], [0.5 * r, 0], [0, 0.025]], mat);
     if (mat === LOOK.GRAVEL && line.h >= 1.3) return mirrored([[h, 0], [1.05 * r, 0], [0.78 * r, -0.025], [0.5 * r, 0], [0, 0.01]], mat);

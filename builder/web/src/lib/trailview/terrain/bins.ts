@@ -28,8 +28,8 @@ export const INSIDE = 1 << 30;
  * and holds the ground of its asphalt and its sidewalk, as corners.ts makes it.
  */
 export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6, STREAM = 7, BRIDGE = 8, TUNNEL = 9, RAIL = 10, PAD = 11, AREA = 12, SEA = 13, CORNER = 14, WALK = 15;
-/** Road flags: a ford, the round caps of the core and the cone at the start and the end, and of the paint where the through road runs on into another line. */
-export const FORD = 1, CORE_A = 2, CORE_B = 4, CONE_A = 8, CONE_B = 16, JOIN_A = 32, JOIN_B = 64;
+/** Road flags: a ford, the round caps of the core and the cone at the start and the end, and of the paint where the through road runs on into another line, and lines on the road. */
+export const FORD = 1, CORE_A = 2, CORE_B = 4, CONE_A = 8, CONE_B = 16, JOIN_A = 32, JOIN_B = 64, MARKED = 128;
 /** No stamp reaches further than the feature tiles' buffer, so a primitive goes to each cell within it. */
 const REACH_M = 40;
 /** The levels whose pages get the feature mask: they bin every road, also one that their level cannot show. */
@@ -159,6 +159,15 @@ export function halfWidth(tags: Record<string, string>, surface: Surface): numbe
     if (Number.isFinite(width)) return Math.max(width / 2, 0.4);
     const half = ['main', 'oneway', 'road'].includes(surface) && PAVED[tags.highway] ? PAVED[tags.highway] : SURFACES[surface];
     return Math.min(half, PATH_HALF[tags.highway] ?? half);
+}
+
+/** The classes of road that wear lines, and the OSM surfaces that hide a road's class. */
+export const MOTORWAYS = ['motorway', 'motorway_link', 'trunk', 'trunk_link'], MAINS = ['primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link'];
+export const SETTS = ['sett', 'cobblestone', 'unhewn_cobblestone', 'stone'];
+/** Whether a road wears lines: one of those classes on asphalt. Its corridor (lookOf of roads/section.ts) and its paint read this one fact. */
+export function marked(line: Line): boolean {
+    const tag = line.surface ?? '', surface = Object.keys(SURFACES)[(line.code & 15) - 1] as Surface;
+    return [...MOTORWAYS, ...MAINS].includes(CLASSES[line.profile]) && PAVED_ROADS.includes(surface) && !SETTS.includes(tag) && tag !== 'paving_stones' && !tag.startsWith('concrete');
 }
 
 /** The width of a line's sidewalks where it has them. */
@@ -897,8 +906,8 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             const [mx, my] = mitre(line, v), [nx, ny] = mitre(line, v + 1);
             const dead = (w: number) => end(w) && !joins.has(`${line.xy[2 * w]},${line.xy[2 * w + 1]}`);
             const join = (w: number) => !!line.join?.[w === 0 ? 0 : 1] && end(w);
-            const flags = line.kind === BRIDGE || line.kind === TUNNEL || line.kind === WALK ? 0 : (line.ford ? FORD : 0) | (dead(v) ? CORE_A : 0) | (dead(v + 1) ? CORE_B : 0) | (end(v) ? CONE_A : 0) | (end(v + 1) ? CONE_B : 0)
-                | (join(v) ? JOIN_A : 0) | (join(v + 1) ? JOIN_B : 0);
+            const flags = (line.kind === BRIDGE || line.kind === TUNNEL || line.kind === WALK ? 0 : (line.ford ? FORD : 0) | (dead(v) ? CORE_A : 0) | (dead(v + 1) ? CORE_B : 0) | (end(v) ? CONE_A : 0) | (end(v + 1) ? CONE_B : 0)
+                | (join(v) ? JOIN_A : 0) | (join(v + 1) ? JOIN_B : 0)) | (marked(line) ? MARKED : 0);
             // The deck, the bore or the roof in decimetres; the top bit marks a gallery whose hill is on its right.
             const deck = Math.min(line.gallery ? 127 : 255, Math.round(10 * (line.deck ?? 0))) | (line.gallery === -1 ? 128 : 0);
             // A bridge's or a tunnel's metres from its ends where they meet the ground, a gallery's from its ends, a track's sleepers; else a road's tilts.

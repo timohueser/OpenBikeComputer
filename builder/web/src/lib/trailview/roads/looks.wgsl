@@ -2,15 +2,14 @@
 // and pavers; gravel, dirt and grass tracks; trodden trails; a track's ballast; a town street's kerb and sidewalk. Each detail
 // fades to its mean once a pixel spans it, so the far look keeps the colour of the paint. A look says the share
 // of the ground that shows through it, and corridor.wgsl draws that share of its pixels as the ground.
-// What wanders along a way reads its count, which takes a new base at most once in REPEAT of sweep.ts: a step
-// of a few centimetres where it does, at the border of an owner.
+// What moves a way's shape reads the place, so it runs on over any border. Only what shades reads the way's count,
+// which takes a new base at most once in REPEAT of sweep.ts: a puddle or a streak can stop at an owner's border.
 // #include ../ground/look.wgsl
 
 // As MAT and LOOK of section.ts.
 const MAT_KERB: u32 = 2u;
 const MAT_SIDEWALK: u32 = 3u;
 const LOOK_ASPHALT: u32 = 20u;
-const LOOK_MAIN: u32 = 21u;
 const LOOK_MOTORWAY: u32 = 22u;
 const LOOK_CONCRETE: u32 = 23u;
 const LOOK_SETT: u32 = 24u;
@@ -22,16 +21,10 @@ const LOOK_BALLAST: u32 = 29u;
 // As CF of section.ts.
 const CF_NO_LEFT_LINE: u32 = 8u;
 const CF_NO_RIGHT_LINE: u32 = 16u;
-// As SURFACES of bins.ts.
-const CODE_GRAVEL: u32 = 3u;
-const CODE_DIRT: u32 = 4u;
-const CODE_GRASS: u32 = 5u;
-const CODE_PATH: u32 = 6u;
-const CODE_ONEWAY: u32 = 7u;
-// A centre line 3 m on, 6 m off; a lane line on a motorway 6 m on, 12 m off. Each period divides REPEAT of
-// sweep.ts, so a dash keeps its phase where a way's count takes a new base.
-const DASH_ON_M: f32 = 3.0;
-const DASH_PERIOD_M: f32 = 9.0;
+// As RANGE_M of roads.ts: asphalt turns to each class's paint toward it. Not the word `corridors`, which falls
+// while an owner is on its way.
+const CORRIDOR_RANGE_M: f32 = 600.0;
+// A lane line on a motorway 6 m on, 12 m off; as DASH_PERIOD_M, its period divides REPEAT of sweep.ts.
 const LANE_ON_M: f32 = 6.0;
 const LANE_PERIOD_M: f32 = 18.0;
 
@@ -105,7 +98,7 @@ fn asphalt(code: u32, region: u32, p: vec2f, pw: f32) -> vec3f {
     var base = surface_colour(region, code);
     if (code <= 2u || code == CODE_ONEWAY) {
         let mean = 0.5 * (surface_colour(region, 1u) + surface_colour(region, 2u));
-        base = mix(mean, base, smoothstep(0.4 * masks.corridors, 0.9 * masks.corridors, length(p - look.place.xy)));
+        base = mix(mean, base, smoothstep(0.4 * CORRIDOR_RANGE_M, 0.9 * CORRIDOR_RANGE_M, length(p - look.place.xy)));
     }
     return base * asphalt_grain(p, pw);
 }
@@ -179,8 +172,8 @@ fn paved_look(mat: u32, code: u32, region: u32, w: WayPixel, flags: u32) -> WayL
     return out;
 }
 
-// Concrete: slabs 5 m long with sealed joints; on a track two strips with grass between them.
-fn concrete_look(region: u32, w: WayPixel) -> WayLook {
+// Concrete: slabs 5 m long with sealed joints; on a narrow way two strips on the way's asphalt.
+fn concrete_look(code: u32, region: u32, w: WayPixel) -> WayLook {
     var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let p = w.p;
     let across = w.across;
@@ -199,9 +192,8 @@ fn concrete_look(region: u32, w: WayPixel) -> WayLook {
     c *= 1.0 - 0.15 * smoothstep(0.5, 0.0, w.half - abs(across));
     out.albedo = c;
     if (!wide) {
-        // Two strips 0.55 m wide, their middles 0.75 m out.
-        out.ground = 1.0 - band(abs(across), 0.48, 1.03, w.cw);
-        out.albedo *= 0.95 + 0.1 * smoothstep(0.2, 0.0, abs(abs(across) - 0.75));
+        // 0.55 m wide, their middles 0.75 m out.
+        out.albedo = mix(asphalt(code, region, p, w.pw), out.albedo * (0.95 + 0.1 * smoothstep(0.2, 0.0, abs(abs(across) - 0.75))), band(abs(across), 0.48, 1.03, w.cw));
     }
     return out;
 }
@@ -261,7 +253,7 @@ fn gravel_look(region: u32, w: WayPixel) -> WayLook {
         return out;
     }
     let base = surface_colour(region, CODE_GRAVEL);
-    let wheels = select(smoothstep(w.half * 0.7, 0.0, x), smoothstep(0.32, 0.1, abs(x - 0.78 + 0.05 * (noise(vec2f(w.along / 9.0, 2.0)) - 0.5))), track);
+    let wheels = select(smoothstep(w.half * 0.7, 0.0, x), smoothstep(0.32, 0.1, abs(x - 0.78 + 0.05 * (noise(p / 9.0 + 2.0) - 0.5))), track);
     let loose = 1.0 - wheels;
     let peb = pebbles(p, mix(0.022, 0.04, loose), w.pw);
     let big = pebbles(p + 17.0, 0.09, w.pw);
@@ -284,8 +276,8 @@ fn dirt_look(code: u32, region: u32, w: WayPixel) -> WayLook {
     let p = w.p;
     let x = abs(w.across);
     let grassy = code == CODE_GRASS;
-    let wob = 0.08 * (noise(vec2f(w.along / 7.0, sign(w.across) * 3.0)) - 0.5);
-    let rut_w = select(0.25, 0.19, grassy) + 0.06 * noise(vec2f(w.along / 3.0, sign(w.across)));
+    let wob = 0.08 * (noise(p / 7.0 + sign(w.across) * 3.0) - 0.5);
+    let rut_w = select(0.25, 0.19, grassy) + 0.06 * noise(p / 3.0 + sign(w.across));
     let d = abs(x - 0.75 + wob);
     let rut = 1.0 - smoothstep(rut_w - 0.04, rut_w + 0.06, d + 0.05 * (noise(p / 0.2) - 0.5));
     // Grass covers what is not rut; on a grass track the ruts too, in streaks along them.
@@ -320,8 +312,8 @@ fn trail_look(region: u32, su: vec2f, w: WayPixel, slope: f32, altitude: f32) ->
     let rocky = clamp(smoothstep(0.92, 0.7, slope) + smoothstep(1700.0, 2300.0, altitude), 0.0, 1.0);
     // The tread keeps within TREAD_CLEAR_M of the middle, where kept_off of features.wgsl lets plants grow.
     let room = min(max(w.half - 0.35, 0.05), 0.65);
-    let centre = room * 0.45 * (noise(vec2f(w.along / 13.0, 1.0)) - 0.5) + 0.08 * (noise(vec2f(w.along / 4.0, 2.0)) - 0.5);
-    let tread = min(0.23 + 0.16 * noise(vec2f(w.along / 5.0, 3.0)) + 0.1 * rocky, w.half - 0.05);
+    let centre = room * 0.45 * (noise(p / 13.0 + 1.0) - 0.5) + 0.08 * (noise(p / 4.0 + 2.0) - 0.5);
+    let tread = min(0.23 + 0.16 * noise(p / 5.0 + 3.0) + 0.1 * rocky, w.half - 0.05);
     let d = frayed(p, tread - abs(w.across - centre), 0.22);
     // A trampled margin: grass with soil showing through.
     let solid = smoothstep(-0.03, 0.05, d);
@@ -394,7 +386,7 @@ fn way_look(mat: u32, code: u32, region: u32, su: vec2f, w: WayPixel, flags: u32
             return WayLook(paving(region, w.p, w.pw), vec2f(0.0), 0.0, 0.0, 0.0);
         }
         case LOOK_CONCRETE: {
-            return concrete_look(region, w);
+            return concrete_look(code, region, w);
         }
         case LOOK_SETT: {
             return sett_look(region, w);

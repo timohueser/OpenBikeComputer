@@ -105,6 +105,8 @@ struct Mask {
     walk: f32,
     // Whether the nearest texel's way is trodden: only its tread is bare, and plants grow over its margin.
     trodden: bool,
+    // Whether the nearest texel's road wears lines.
+    marked: bool,
 }
 
 // Metres across a texel of a level in texel row `row`, as unit_metres of stamp-core.wgsl.
@@ -172,17 +174,17 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
             let y = nearest.y;
             let sleepers = y + dot(t.part - round(t.part), ahead) * texel_metres(level, whole.y) / SLEEPER_SPACING_M;
             let past = select(u32(round(y * 255.0)), 0u, (byte & 15u) >= RAIL_CODE);
-            return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, walk_metres(past), is_trodden(past));
+            return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, walk_metres(past), is_trodden(past), is_marked(past));
         }
     }
-    return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0, false);
+    return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0, false, false);
 }
 
 // Whether the mask keeps a thing off a point: in water or in a building, on a road, its sidewalk, a path or
 // a track, or nearer to their outer edge than `clear` metres.
 fn kept_off(s: vec2f, clear: f32) -> bool {
     let mask = mask_at(s, u32(ceil(lod(s))), true);
-    let edge = select(mask.edge - mask.walk, abs(mask.across) - TREAD_CLEAR_M + TREAD_GRACE_M, mask.trodden);
+    let edge = select(mask.edge - mask.walk, abs(mask.across) - TREAD_CLEAR_M + TREAD_GRACE_M, mask.trodden && masks.corridors > 0.0);
     return mask.level != 0u && ((mask.kind.y & TAKEN) != 0u || (mask.kind.x != 0u && edge < clear));
 }
 

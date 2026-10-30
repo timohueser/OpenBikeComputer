@@ -98,14 +98,16 @@ fn band_dive(ground: f32, plane: f32, out: f32) -> f32 {
     return BAND_DIVE_M * smoothstep(BAND_STEEP_LOW, BAND_STEEP_HIGH, abs(ground - plane) / max(out, BAND_LEAST_M));
 }
 
-// The height of a band's row. `edge` is the metres of the core's outer edge from the middle.
+// The height of a band's row or a trail's face, which never dives. `edge` is the metres of the core's outer edge
+// from the middle.
 fn band_height(s: vec2f, plane: f32, word: u32, flags: u32, across: f32, edge: f32) -> f32 {
     let ground = band_ground(s, plane);
     if ((flags & CF_MESH) != 0u) {
         return ground - BAND_SINK_M;
     }
     let prio = f32((word >> PRIO_SHIFT) & 7u);
-    return ground + prio * BAND_PRIO_M - band_dive(ground, plane, abs(across) - edge) - select(0.0, BAND_UNDER_M, (flags & CF_UNDER) != 0u);
+    let dive = select(0.0, band_dive(ground, plane, abs(across) - edge), (word & 127u) == MAT_GROUND);
+    return ground + prio * BAND_PRIO_M - dive - select(0.0, BAND_UNDER_M, (flags & CF_UNDER) != 0u);
 }
 
 // A point at render-space `p` about the eye, moved toward the eye.
@@ -172,6 +174,10 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     }
     var n = normalize(cross(dpdx(in.relative), dpdy(in.relative)));
     n *= -sign(dot(n, in.relative));
+    // A path's bench folds along its middle: its faces lie on the fold, and would each take a light of their own.
+    if (mat == LOOK_TRAIL) {
+        n = render_normal(drawn_normal(su));
+    }
     let p = look.place.xy + in.relative.xy;
     let pw = max(length(dpdx(in.relative)), length(dpdy(in.relative))) * look.screen.z;
     let cw = max(length(vec2f(dpdx(in.road.x), dpdy(in.road.x))), 1e-4);

@@ -36,9 +36,16 @@ const KERB_SHADOW_M: f32 = 0.35;
 const RUTS_MEAN_M: f32 = 0.75;
 const GRASSED_MEAN_M: f32 = 0.55;
 const TREAD_MEAN_M: f32 = 0.36;
-// A middle line's dashes, as DASH_ON_M and DASH_PERIOD_M of roads/looks.wgsl.
-const DASH_M: f32 = 3.0;
-const DASH_SHARE: f32 = 0.33333334;
+// A centre line 3 m on, 6 m off: each period divides REPEAT of sweep.ts, so a dash keeps its phase where a way's
+// count takes a new base.
+const DASH_ON_M: f32 = 3.0;
+const DASH_PERIOD_M: f32 = 9.0;
+// As SURFACES of bins.ts.
+const CODE_GRAVEL: u32 = 3u;
+const CODE_DIRT: u32 = 4u;
+const CODE_GRASS: u32 = 5u;
+const CODE_PATH: u32 = 6u;
+const CODE_ONEWAY: u32 = 7u;
 // Paving lies in square slabs of SLAB_M; their joints show only near the eye.
 const SLAB_M: f32 = 0.6;
 
@@ -68,7 +75,7 @@ fn paint_draws(distance: f32, pixel: vec2f) -> bool {
 // corridor shows at the end of its reach (dirt_look and trail_look of roads/looks.wgsl), which the metres of
 // each side that stay bare give.
 fn ground_mean(code: u32, half: f32, trodden: bool) -> f32 {
-    let bare = select(select(TREAD_MEAN_M, RUTS_MEAN_M, code == 4u), GRASSED_MEAN_M, code == 5u);
+    let bare = select(select(TREAD_MEAN_M, RUTS_MEAN_M, code == CODE_DIRT), GRASSED_MEAN_M, code == CODE_GRASS);
     return clamp(1.0 - select(bare, TREAD_MEAN_M, trodden) / half, 0.0, 1.0);
 }
 
@@ -129,35 +136,37 @@ fn kerbed(region: u32, road: vec3f, edge: f32, walk: f32, p: vec2f, w: f32, cros
 // keep a line along each edge and one in the middle; asphalt wears no ruts, gravel, dirt and grass
 // tracks wear two, the dirt and grass ones with grass between; gravel lies in grains. Codes as SURFACES of bins.ts: main, road,
 // gravel, dirt, grass, path, oneway: a one-way main road, no line in its middle; paving; then the tracks.
-fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, sleepers: f32, p: vec2f, w: f32, cross_w: f32, along_w: f32) -> vec4f {
+fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, sleepers: f32, p: vec2f, w: f32, cross_w: f32, along_w: f32, marked: bool) -> vec4f {
     if (code >= RAIL_CODE) {
         return vec4f(track_surface(code, across, sleepers, p, w, cross_w, along_w), 0.0);
     }
     if (code == PAVING_CODE) {
         return vec4f(paving(region, p, w), 0.0);
     }
-    let oneway = code == 7u;
+    let oneway = code == CODE_ONEWAY;
     var c = rule(region, slot_roads() + i32(code) - 1).rgb;
     // Patched asphalt, compacted gravel: broad tone, too faint to alias far off, and a grain near by.
     c *= 0.94 + 0.1 * noise(p / 4.0) + 0.06 * (noise(p / 0.35) - 0.5) * (1.0 - smoothstep(0.05, 0.3, w));
-    // The mask holds no metres along the road for dashes: the middle line is solid, and far off takes the share of
-    // the dashes of a corridor.
-    if ((code == 1u || oneway) && half >= MARKED_HALF_M) {
+    // The mask holds no metres along the road for dashes: the middle line is solid. With corridors the paint takes
+    // their lines, so the two hand over unseen: `marked`, their widths, and far off the share of their dashes.
+    let held = masks.corridors > 0.0;
+    if (select((code == 1u || oneway) && half >= 3.5, marked && half >= MARKED_HALF_M, held)) {
         let line = rule(region, slot_road_line()).rgb;
-        let middle = band(across, -0.06, 0.06, cross_w) * mix(1.0, DASH_SHARE, dash_mean(DASH_M, along_w));
-        c = mix(c, line, max(band(inside, 0.2, 0.35, cross_w), select(middle, 0.0, oneway)));
+        let edge = select(band(inside, 0.25, 0.37, cross_w), band(inside, 0.2, 0.35, cross_w), held);
+        let dashes = select(1.0, mix(1.0, DASH_ON_M / DASH_PERIOD_M, dash_mean(DASH_ON_M, along_w)), held);
+        c = mix(c, line, max(edge, select(band(across, -0.06, 0.06, cross_w) * dashes, 0.0, oneway)));
     }
     let ruts = band(across, 0.55, 1.05, cross_w);
-    if (code == 3u) {
+    if (code == CODE_GRAVEL) {
         c *= (0.93 + 0.14 * mix(0.5, noise(p / 0.18), 1.0 - smoothstep(0.05, 0.25, w))) * (1.0 - 0.08 * ruts);
     }
-    if (code == 4u) {
+    if (code == CODE_DIRT) {
         return vec4f(c * (1.0 - 0.18 * ruts), band(across, -1.0, 0.3 + 0.12 * noise(p / 0.6), cross_w) * 0.85);
     }
     // Grass with the dirt of the ruts in it.
-    if (code == 5u) {
+    if (code == CODE_GRASS) {
         let r = ruts * 0.8;
-        return vec4f((0.35 * (1.0 - r) * c + r * rule(region, slot_roads() + 3).rgb) / (0.35 + 0.65 * r), 0.65 * (1.0 - r));
+        return vec4f((0.35 * (1.0 - r) * c + r * rule(region, slot_roads() + i32(CODE_DIRT) - 1).rgb) / (0.35 + 0.65 * r), 0.65 * (1.0 - r));
     }
     return vec4f(c, 0.0);
 }
@@ -221,8 +230,8 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     let cross_w = select(w, max(length(vec2f(dot(ds[0], mask.axis), dot(ds[1], mask.axis))), 1e-3), known);
     let ahead = vec2f(-mask.axis.y, mask.axis.x);
     let along_w = select(w, max(length(vec2f(dot(ds[0], ahead), dot(ds[1], ahead))), 1e-3), known);
-    var surface = road_surface(region, code, max(-edge, 0.0), across, half, mask.sleepers, p, w, cross_w, along_w);
-    if (code >= 4u && code <= 6u) {
+    var surface = road_surface(region, code, max(-edge, 0.0), across, half, mask.sleepers, p, w, cross_w, along_w, mask.marked);
+    if (masks.corridors > 0.0 && code >= CODE_DIRT && code <= CODE_PATH) {
         surface.w = mix(surface.w, ground_mean(code, half, mask.trodden), smoothstep(0.1, 0.4, cross_w));
     }
     if (walk > 0.0) {
@@ -236,7 +245,7 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     // A corridor draws an unpaved way, and the ground shows through it: its paint keeps only the pixels that the
     // corridor leaves it. A paved way keeps its paint: where the stamped ground lies over its corridor, the paint
     // is the way.
-    let corridor = code >= 3u && code <= 6u && !paint_draws(distance, pixel);
+    let corridor = code >= CODE_GRAVEL && code <= CODE_PATH && !paint_draws(distance, pixel);
     let cover = select(1.0, 0.0, corridor) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
     return Road(surface.rgb, cover, surface.w, wall, shaped);
 }
