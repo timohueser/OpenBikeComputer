@@ -135,15 +135,45 @@ fn detail_height(at: vec2i, edge: f32, z: f32, colour: vec4f, road: vec2f, packe
     return h;
 }
 
+// The stone of rubble masonry at q (cell units): x its hash, y the gap to its edge (cell units), z the
+// height of the point above the stone's middle over the stone's reach (-1 at its foot, 1 at its top).
+fn detail_stone(q: vec2f) -> vec3f {
+    let i = floor(q);
+    let f = q - i;
+    var d1 = 8.0;
+    var d2 = 8.0;
+    var id = i;
+    var to = vec2f(0.0);
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let o = vec2f(f32(x), f32(y));
+            let r = o + vec2f(hash(i + o), hash(i + o + 17.0)) * 0.8 + 0.1 - f;
+            let d = length(r);
+            if (d < d1) {
+                d2 = d1;
+                d1 = d;
+                id = i + o;
+                to = r;
+            } else if (d < d2) {
+                d2 = d;
+            }
+        }
+    }
+    return vec3f(hash(id + 3.7), 0.5 * (d2 - d1), clamp(-to.y / 0.5, -1.0, 1.0));
+}
+
 // Rubble masonry: stones about `size` metres, laid flat (wider than high), each its own tone between a
-// cool and a warm grey, in dark recessed joints; on a face, mapped onto the vertical plane it is nearest.
-// Where a pixel spans a stone, the stones fade to their mean.
+// cool and a warm grey, rounded (lit from above, shaded at their feet), in dark recessed joints; on a
+// face, mapped onto the vertical plane it is nearest. Where a pixel spans a stone, they fade to their mean.
 fn detail_masonry(p: vec3f, n: vec3f, pixel: f32, size: f32) -> vec3f {
-    let q = select(vec2f(select(p.x, p.y, abs(n.x) > abs(n.y)), p.z * 1.8), p.xy, abs(n.z) > 0.7);
-    let c = voronoi(q, size);
-    let tone = mix(vec3f(0.36, 0.355, 0.345), vec3f(0.44, 0.41, 0.36), c.x) * (0.75 + 0.5 * c.z);
-    let rust = mix(vec3f(1.0), vec3f(1.08, 0.95, 0.8), step(0.85, fract(c.x * 7.0)));
-    let stone = tone * rust * (0.9 + 0.2 * noise(q / 0.05)) * mix(0.25, 1.0, smoothstep(0.0, 0.16, c.y));
+    let q = select(vec2f(0.75 * select(p.x, p.y, abs(n.x) > abs(n.y)), p.z * 1.6), p.xy, abs(n.z) > 0.7) / size;
+    let c = detail_stone(q);
+    let h2 = hash(vec2f(c.x * 91.0, 7.0));
+    let tone = mix(vec3f(0.35, 0.345, 0.335), vec3f(0.45, 0.42, 0.37), h2) * (0.8 + 0.4 * c.x);
+    let rust = mix(vec3f(1.0), vec3f(1.1, 0.94, 0.78), step(0.88, fract(c.x * 7.0)));
+    let round = 1.0 + 0.22 * c.z * smoothstep(0.0, 0.35, 1.0 - c.y * 2.0);
+    let joint = mix(0.3, 1.0, smoothstep(0.02, 0.09, c.y));
+    let stone = tone * rust * round * joint * (0.92 + 0.16 * noise(q * 6.0));
     return mix(stone, vec3f(0.33, 0.32, 0.30), smoothstep(0.25, 0.7, pixel / size));
 }
 
@@ -160,7 +190,7 @@ fn detail_fragment(mat: u32, su: vec2f, relative: vec3f, altitude: f32, along: f
         case DM_RAIL, DM_RAIL_POST, DM_RAIL_BLOCK: {
             // Galvanised steel: pale grey, mottled with spangle and dull patches.
             let mottle = 0.86 + 0.1 * noise(p / 0.6) + 0.06 * noise(p / 0.07);
-            albedo = vec3f(0.42, 0.44, 0.45) * mottle;
+            albedo = vec3f(0.34, 0.355, 0.365) * mottle;
             if (mat != DM_RAIL) {
                 albedo *= 0.8;
             }

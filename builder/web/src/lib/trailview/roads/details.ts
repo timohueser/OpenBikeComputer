@@ -259,7 +259,7 @@ export function roadside(b: MeshBuilder, line: Line, st: Station[], j: number, p
                 box(sd, at, r, g, [POST_A - POST_HALF[0], POST_A + POST_HALF[0]], POST_HALF[1], [OVER_GROUND - 0.3, POST_TOP], DM.RAIL_POST);
             }
         }
-        if (delineated) {
+        if (delineated && c.mouth[j] >= 1 && c.mouth[j + 1] >= 1) {
             const spacing = bendy(st, j) ? DELI_BEND_M : DELI_M;
             for (let p = Math.ceil(s.along / spacing) * spacing; p < t.along; p += spacing) {
                 const u = (p - s.along) / Math.max(t.along - s.along, 1e-6), at = lerp(s, t, u), r = rs + (rt - rs) * u, g = gs + (gt - gs) * u;
