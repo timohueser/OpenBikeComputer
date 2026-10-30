@@ -1,6 +1,6 @@
 # document <system>
 
-Writes or reworks `docs/design/<system>.md` bottom-up: peanuts, then hay. A subagent that misreads the code shows unclear code: a finding, not a failure.
+Writes or reworks `docs/design/<system>.md` bottom-up: peanuts, then hay.
 
 **This command writes documentation only.** It writes the system doc, its header (`purpose:`, and `status:` at the end), the map and the one-sentence purpose comments. It never edits code, other comments, guides or specs. It does not critique: what it notices goes into the findings issue.
 
@@ -130,6 +130,6 @@ When the user approves the doc, set `status: approved`, then run `cairn map` and
 
 Write the findings to a file, in Simplified Technical English, grouped by kind, each with its `file:line`, description and action. Open the issue with `gh api repos/{owner}/{repo}/issues -X POST -f title="Findings from documenting <system>" -F body=@FILE`.
 
-Then open one pull request with the doc, the map and the purpose comments. Its body links the findings issue. Its `Mode:` line is `change #N` when an issue asked for the doc, otherwise `fix`.
+Run `cairn map`. Then open one pull request with the doc, the map and the purpose comments. Its body links the findings issue. Its `Mode:` line is `change #N` when an issue asked for the doc, otherwise `fix`.
 
 End with two lines: the pull request link and the issue link.
