@@ -53,8 +53,8 @@ export class Stamps implements StampSource {
     private next = 0;
     failed = 0;
 
-    /** An abort of `stop` ends the worker. */
-    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal) {
+    /** An abort of `stop` ends the worker. Where `corridors` draw the roads near the eye, they hold the sidewalks. */
+    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal, private readonly corridors = false) {
         if (!tiles) return;
         const worker = this.worker = new Worker(new URL('./stamp-worker.ts', import.meta.url), { type: 'module' });
         stop.addEventListener('abort', () => worker.terminate());
@@ -133,7 +133,7 @@ export class Stamps implements StampSource {
         const id = this.next++;
         return new Promise<T>((resolve, reject) => {
             this.waiting.set(id, { resolve: resolve as (result: unknown) => void, reject });
-            this.worker!.postMessage({ id, tile, node, body, what }, [body]);
+            this.worker!.postMessage({ id, tile, node, body, what, corridors: this.corridors }, [body]);
         });
     }
 }

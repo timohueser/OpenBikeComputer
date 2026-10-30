@@ -8,14 +8,14 @@ import { floorsOf, portalBoxes, structureMeshes } from '../structures/node';
 
 export type Request = 'stamps' | 'samples';
 
-self.onmessage = async ({ data: { id, tile, node, body, what } }: MessageEvent<{ id: number; tile: Node; node: Node; body: ArrayBuffer; what: Request }>) => {
+self.onmessage = async ({ data: { id, tile, node, body, what, corridors } }: MessageEvent<{ id: number; tile: Node; node: Node; body: ArrayBuffer; what: Request; corridors: boolean }>) => {
     try {
         const features = await decodedTile(`${tile.level}/${tile.x}/${tile.y}`, body);
         if (what === 'samples') {
             const result = { samples: auditSamples(features, tile, node), ...waterLevels(features, tile) };
             self.postMessage({ id, result }, { transfer: [result.samples.buffer] });
         } else {
-            const result = { ...nodeStamps(features, tile, node), water: waterMesh(features, tile, node), meshes: structureMeshes(features, tile, node), floors: floorsOf(features, tile, node), portals: portalBoxes(features, tile, node) };
+            const result = { ...nodeStamps(features, tile, node), water: waterMesh(features, tile, node), meshes: structureMeshes(features, tile, node, corridors), floors: floorsOf(features, tile, node), portals: portalBoxes(features, tile, node) };
             const { far, near, anchors } = result.meshes;
             const meshes = [result.water, far.structures, far.anchored, near.structures, near.anchored].flatMap(mesh => (mesh ? [mesh.vertices, mesh.indices.buffer] : []));
             if (anchors) meshes.push(anchors);

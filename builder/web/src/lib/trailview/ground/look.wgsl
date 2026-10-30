@@ -36,6 +36,8 @@
 // (0.18 m). The dots of a patch fade at 0.1 × size_m: the 3 m that rules.py allows fade before such a
 // node up to 64° N. Blotches do not fade: rules.py keeps them two such pixels across.
 override DETAIL: bool = true;
+// A corridor's band: the ground beside a road, shaped by it, under no paint and with facets of its own.
+override BAND: bool = false;
 
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
@@ -634,13 +636,16 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     var n = render_normal(drawn);
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
     // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
-    let skirt = smoothstep(0.25, 0.5, n.z - facet.z);
+    let skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, BAND);
     let sloped = n.z < 0.95 || skirt > 0.0;
     let g = ground_at(level, s, world, footprint, sloped);
     var open = g.open;
     let region = g.region;
     // The road paint first, so that only the Road stays live through the rest.
-    let road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region);
+    var road = Road(vec3f(0.0), 0.0, 0.0, 0.0, 1.0);
+    if (!BAND) {
+        road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region);
+    }
     // A road's retaining wall, but for a cut in bare rock, and in woodland, as rock walls.
     let masoned = road.wall * (1.0 - road.cover) * (1.0 - g.barren) * (1.0 - g.tree);
     // The masonry runs along the world axis nearer to the wall, cross-faded within about 6° of 45°. By

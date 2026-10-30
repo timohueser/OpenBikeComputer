@@ -3,9 +3,11 @@
 // #include drawn-height.wgsl
 // #include mask-walk.wgsl
 
-// Metres from the eye that the mask pool holds the near pages to, and per page layer the mask layer + 1, 0 for none.
+// Metres from the eye that the mask pool holds the near pages to, metres from the eye that corridors draw
+// every way to, and per page layer the mask layer + 1, 0 for none.
 struct Masks {
     reach: f32,
+    corridors: f32,
     layer: array<u32>,
 }
 @group(3) @binding(0) var<storage, read> masks: Masks;

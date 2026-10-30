@@ -540,11 +540,11 @@ export class Pages {
         return map;
     }
 
-    /** As `Masks` in features.wgsl: the reach of the paint, then per layer the mask layer + 1, 0 for none. */
+    /** As `Masks` in features.wgsl: the reach of the paint, a word that terrain.ts writes, then per layer the mask layer + 1, 0 for none. */
     private masks(): Uint32Array<ArrayBuffer> {
-        const masks = new Uint32Array(1 + this.capacity.stored + this.capacity.synth);
+        const masks = new Uint32Array(2 + this.capacity.stored + this.capacity.synth);
         new Float32Array(masks.buffer, 0, 1)[0] = this.maskReach;
-        for (const page of this.pages.values()) if (page.drawn !== undefined && page.mask !== undefined) masks[1 + page.drawn] = page.mask + 1;
+        for (const page of this.pages.values()) if (page.drawn !== undefined && page.mask !== undefined) masks[2 + page.drawn] = page.mask + 1;
         return masks;
     }
 }

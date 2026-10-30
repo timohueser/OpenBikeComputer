@@ -153,6 +153,7 @@ try {
             cpu: summary(frames.map(frame => frame.cpu)), selection: summary(of('selection')),
             nodes: summary(of('nodes')), triangles: summary(of('triangles')), quality: summary(of('quality')),
             pages: { stored: Math.max(...of('resident').map(r => r.stored)), synth: Math.max(...of('resident').map(r => r.synth)), capacity: last.terrain.capacity },
+            ...(last.terrain.roads ? { roads: { first: frames[0].terrain.roads, vertices: summary(of('roads').map(r => r.vertices)), triangles: summary(of('roads').map(r => r.triangles)), dropped: Math.max(...of('roads').map(r => r.dropped)) } } : {}),
             ground: { wanted: summary(frames.map(frame => frame.ground.wanted)), short: summary(frames.map(frame => frame.ground.shortage)), capacity: last.ground.capacity, colour: last.ground.colour },
             poolMegabytes: Object.fromEntries(stats.pools.map(([pool, bytes]) => [pool, +(bytes / 2 ** 20).toFixed(1)])),
             requests: last.requests, megabytes: +(last.bytes / 2 ** 20).toFixed(2),
