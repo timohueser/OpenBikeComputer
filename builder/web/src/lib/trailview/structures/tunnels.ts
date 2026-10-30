@@ -5,7 +5,8 @@
 // between. Where the terrain draws coarser than level 17, that slope reaches past the box, and a dark
 // void fills the opening.
 import { metresPerUnit, RAIL_CODE, RULES, TUNNEL, type Line } from '../terrain/bins';
-import { BORE, LAMP, MeshBuilder, PAINT, posts, rgb, stationsOf, VOID, type Corner, type Station } from './mesh';
+import { BORE, deckSleepers, LAMP, MeshBuilder, PAINT, posts, rgb, VOID, type Corner, type Station } from './mesh';
+import { stationsOf as smoothStations } from '../roads/stations';
 import type { Owns } from './node';
 
 /** A portal of a road and of a path: the bore's margin past the road and the facade's wings past the opening. */
@@ -127,10 +128,12 @@ export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns): void {
     for (const line of lines) {
         if (line.kind !== TUNNEL || !line.abut) continue;
         const n = line.z.length, road = line.deck! > 3, size = road ? ROAD_PORTAL : PATH_PORTAL;
-        const at = stationsOf(line);
-        for (let v = 0; v + 1 < n; v++) {
-            if (!owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
-            bore(b, at(v), at(v + 1), line, boreHalf(line), road, segment(line, v));
+        // PROTOTYPE (road study): the bore follows the corridors' smooth curve (roads/stations.ts), as the road into it does.
+        const at = smoothStations(line), total = at[at.length - 1].along, track = line.code >= RAIL_CODE;
+        const sleepers = (k: number) => (track ? deckSleepers(line, at[k].along, total) : undefined);
+        for (let k = 0; k + 1 < at.length; k++) {
+            if (!owns(at[k].x, at[k].y)) continue;
+            bore(b, { ...at[k], sleepers: sleepers(k) }, { ...at[k + 1], sleepers: sleepers(k + 1) }, line, boreHalf(line), road, at[k + 1].along - at[k].along);
         }
         for (const [end, from, to] of [[0, 0, n - 1], [1, n - 1, 0]]) {
             const x = line.xy[2 * from], y = line.xy[2 * from + 1];

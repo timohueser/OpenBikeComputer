@@ -157,6 +157,25 @@ fn shoulder_of(code: u32) -> f32 {
     return array<f32, 16>(0.0, 0.6, 0.4, 0.3, 0.25, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)[min(code, 15u)];
 }
 
+// PROTOTYPE (road study): a rural road's cut has a shallow ditch beside its shoulder: DITCH_M deep, its
+// bottom from DITCH_IN_M to DITCH_OUT_M past the shoulder, where the cut's slope starts, and filled in by
+// DITCH_END_M. It binds only where the ground stands at or over the road: beside a cutting, on the uphill side
+// of a mountain road, on level ground; never on an embankment.
+const DITCH_M: f32 = 0.3;
+const DITCH_IN_M: f32 = 0.4;
+const DITCH_OUT_M: f32 = 0.7;
+const DITCH_END_M: f32 = 1.2;
+
+fn ditch_depth(x: f32) -> f32 {
+    return DITCH_M * smoothstep(0.0, DITCH_IN_M, x) * (1.0 - smoothstep(DITCH_OUT_M, DITCH_END_M, x));
+}
+
+// Whether a road class (its row of roads.json, as PROFILES of bins.ts orders them) is rural: motorway to
+// unclassified, and tracks. Residential, living and service streets have none.
+fn rural(profile: u32) -> bool {
+    return (profile >= 5u && profile <= 15u) || profile == 20u;
+}
+
 fn reach_limit(texel: f32) -> f32 {
     return BUFFER_M - 2.0 * texel - 1.0;
 }
@@ -261,7 +280,18 @@ struct Along {
 // The slope across a segment from one of its ends, `s` metres from it, as packTilt of bins.ts packs it:
 // the rise per metre in steps of 1e-4, held up to WARP_M before its reach in cm, and zero past the reach.
 fn end_tilt(w: u32, s: f32) -> f32 {
+    if ((w & BANK_WORD) != 0u) {
+        return 0.0;
+    }
     return f32(bitcast<i32>(w << 16u) >> 16u) * 1e-4 * clamp((f32(w >> 16u) * 0.01 - s) / WARP_M, 0.0, 1.0);
+}
+
+// PROTOTYPE (road study): a tilt word with its top bit holds a bend's banking at that end, as BANK_WORD of
+// bins.ts: a slope as a junction's tilt has it, in steps of 1e-4; it runs linearly along the segment.
+const BANK_WORD: u32 = 0x80000000u;
+
+fn end_bank(w: u32) -> f32 {
+    return select(0.0, f32(bitcast<i32>(w << 16u) >> 16u) * 1e-4, (w & BANK_WORD) != 0u);
 }
 
 fn along(r: u32, p: vec2i, unit: f32) -> Along {
@@ -279,7 +309,8 @@ fn along(r: u32, p: vec2i, unit: f32) -> Along {
     let db = -dot(bp, mb) / max(dot(dir, mb), 0.1);
     let cross = dir.x * ap.y - dir.y * ap.x;
     // Bridges, tunnels and galleries hold their ends' metres in those words, not tilts.
-    let tilt = select(cross * unit * (end_tilt(word(r + 14u), da * unit) + end_tilt(word(r + 15u), db * unit)), 0.0, word(r + 4u) >= BRIDGE || (word(r + 5u) >> 24u) != 0u);
+    let banked = mix(end_bank(word(r + 14u)), end_bank(word(r + 15u)), clamp(da / max(da + db, 1e-6), 0.0, 1.0));
+    let tilt = select(cross * unit * (end_tilt(word(r + 14u), da * unit) + end_tilt(word(r + 15u), db * unit) + banked), 0.0, word(r + 4u) >= BRIDGE || (word(r + 5u) >> 24u) != 0u);
     let foot = dot(ap, dir);
     let beside = select(INF, abs(cross) * unit, foot >= 0.0 && foot <= length(ab));
     if (da >= 0.0 && db >= 0.0) {
@@ -348,12 +379,15 @@ struct Stamp {
     cut: bool,
     // Whether p lies in water or in a building, where nothing stands.
     taken: bool,
+    // PROTOTYPE (road study): the metres past the road's core of the cut and the fill that hold the bounds.
+    cut_x: f32,
+    fill_x: f32,
 }
 
 // The stamp of world point p, a texel centre of a node of `level` whose first texel is `first`, from
 // the node's data at `data`.
 fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
-    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, 0.0, false, 0.0, INF, false, false, false);
+    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, 0.0, false, 0.0, INF, false, false, false, INF, INF);
     if (data == NO_DATA) {
         return out;
     }
@@ -608,7 +642,10 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 let reach = cone_reach(core_half, rule, texel);
                 if (g.cone && x < reach) {
                     let l = g.z - (tol + widen(x, reach, rule.fill));
-                    let u = g.z + (tol + widen(x, reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery)));
+                    // A rural road's cut starts past its ditch.
+                    let ditched = kind == ROAD && walk == 0.0 && !gallery && rural((word(r + 5u) >> 16u) & 0xffu) && reach > 2.0 * DITCH_END_M;
+                    let xc = select(x, max(0.0, x - DITCH_OUT_M), ditched);
+                    let u = g.z + (tol + widen(xc, reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery))) - select(0.0, ditch_depth(x), ditched);
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
                         cone_lo_x = x;
@@ -718,10 +755,12 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         if (l > out.lo) {
             out.lo = l;
             out.fill = b == CONES && cone_lo_road && !ramp;
+            out.fill_x = cone_lo_x;
         }
         if (u < out.hi) {
             out.hi = u;
             out.cut = b == CONES && cone_hi_road && !ramp;
+            out.cut_x = cone_hi_x;
         }
     }
     return out;

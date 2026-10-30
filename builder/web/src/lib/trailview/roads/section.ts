@@ -37,8 +37,8 @@ export const CF = { SAMPLE: 1, MESH: 2, BARRIER: 4 } as const;
 export const SHOULDER_M: Partial<Record<keyof typeof SURFACES, number>> = { main: 0.6, road: 0.4, gravel: 0.3, dirt: 0.25, grass: 0.2, oneway: 0.6 };
 /** A carriageway lies this far over the stamped core (its tolerance is 2 cm), so it covers the ground where no hole is cut. */
 export const LIFT_M = 0.03;
-/** The crown of a paved carriageway: its middle over its edges, per metre of half-width. */
-export const CROWN = 0.02;
+/** The crown of a paved carriageway: its middle over its edges, per metre of half-width. A bend's banking takes it over (`carriageway`). */
+export const CROWN = 0.025;
 /** A town road's kerb: its rise and the width of its granite top, as RISE_M and KERB_M of sidewalks.ts. */
 export const KERB_RISE_M = 0.12, KERB_TOP_M = 0.18;
 /**
@@ -56,15 +56,20 @@ export const corridorLine = (line: Line) => (line.kind === ROAD || line.kind ===
 
 const PAVED_ROAD = ['main', 'road', 'oneway', 'paving'];
 
-/** The carriageway's points across, from left (+a) to right: its edges and its crown. */
-export function carriageway(line: Line): Part[] {
-    const h = line.h, crown = line.kind === ROAD && PAVED_ROAD.includes(surfaceName(line)) ? CROWN * h : 0;
-    return [{ a: h, dz: LIFT_M, mat: MAT.PAINT }, { a: 0, dz: LIFT_M + crown, mat: MAT.PAINT }, { a: -h, dz: LIFT_M, mat: MAT.PAINT }];
+/**
+ * The carriageway's points across, from left (+a) to right: its edges and its crown, `h` metres each side.
+ * The edges lie on the plane of the bend's banking (the sweep adds it); the crown's outer half rotates
+ * with the banking until it is one plane, as a road's runoff does.
+ */
+export function carriageway(line: Line, h = line.h, bank = 0): Part[] {
+    const crown = line.kind === ROAD && PAVED_ROAD.includes(surfaceName(line)) ? CROWN * h * Math.max(0, 1 - Math.abs(bank) / CROWN) : 0;
+    // A parabola, in four facets on a wide road, so the flat-shaded faces show no sharp ridge in the middle.
+    return (line.h >= 3 ? [1, 0.5, 0, -0.5, -1] : [1, 0, -1]).map(f => ({ a: f * h, dz: LIFT_M + crown * (1 - f * f), mat: MAT.PAINT }));
 }
 
 /** The points of one side past the carriageway's edge, then the band; `side` 1 is left, -1 right, at segment v. */
-export function sideOf(line: Line, side: 1 | -1, v: number): Part[] {
-    const h = line.h, out: Part[] = [], walk = (line.sidewalks?.[v] ?? 0) & (side > 0 ? LEFT : RIGHT) ? walkOf(line) : 0;
+export function sideOf(line: Line, side: 1 | -1, v: number, h = line.h): Part[] {
+    const out: Part[] = [], walk = (line.sidewalks?.[v] ?? 0) & (side > 0 ? LEFT : RIGHT) ? walkOf(line) : 0;
     let a = h, dz = LIFT_M;
     if (walk > 0) {
         out.push(...kerbParts(a, dz, walk));

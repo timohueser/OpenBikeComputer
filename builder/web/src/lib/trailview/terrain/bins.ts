@@ -6,6 +6,7 @@ import { PAGE } from '../stream/heights';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
 import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
+import { bankOf, bessel, hermite, smoothAlong, widenOf } from '../roads/curve';
 
 /** Words of a primitive record. */
 export const RECORD = 16;
@@ -187,6 +188,11 @@ export interface Line {
     sleepers?: number[]; wire?: boolean;
     /** A town road's sides with a sidewalk per segment, LEFT and RIGHT of town.ts, as townPieces decides them. */
     sidewalks?: number[];
+    /**
+     * PROTOTYPE (road study), per vertex from the stroke fit: the unit tangent in world units (two numbers), the
+     * grade, the banking (rise per metre to the left) and the widening of each side of a tight bend's carriageway.
+     */
+    dir?: number[]; grade?: number[]; bank?: number[]; widen?: number[];
 }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
@@ -301,6 +307,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     const cut = lines.flatMap(line => (towns.has(line) ? townLines(line, town, towns.get(line)!) : [line]));
     for (const line of cut) if (line.kind === RAIL) line.sleepers = sleepers(line);
     junctionPlanes(cut);
+    bankWords(cut);
     abutments(cut);
     return { lines: cut, lakes, seas, areas, pads, buildings, walks: walks(cut, buildings, town) };
 }
@@ -310,12 +317,13 @@ interface TownWay { tags: Record<string, string>; sidewalk: number; paving: bool
 
 /** A fitted town road or footway in pieces: its sidewalks per segment, and a footway cut where its paving starts and stops. */
 function townLines(line: Line, town: Town, { tags, sidewalk, paving, clear }: TownWay): Line[] {
-    const [shape, sides] = townPieces({ xy: line.xy, z: line.z, anchors: line.anchors ?? line.z.map(() => true) }, town, clear);
+    const [shape, sides] = townPieces({ xy: line.xy, z: line.z, anchors: line.anchors ?? line.z.map(() => true) }, town, clear, line);
     const n = shape.z.length, paved = (v: number) => paving && sides[v] !== 0, out: Line[] = [];
     for (let from = 0, to = 1; to < n; to++) {
         if (to < n - 1 && paved(to) === paved(from)) continue;
         out.push({
             ...line, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1),
+            dir: shape.dir?.slice(2 * from, 2 * to + 2), grade: shape.grade?.slice(from, to + 1), bank: shape.bank?.slice(from, to + 1), widen: shape.widen?.slice(from, to + 1),
             h: paved(from) ? halfWidth(tags, 'paving') : line.h, code: paved(from) ? PAVING_CODE : line.code, sidewalks: sidewalk ? sides.slice(from, to) : undefined,
         });
         from = to;
@@ -365,8 +373,11 @@ const PIECE_M = 8;
  * each tile that holds the segment decides alike. A segment is cut where the sides of its pieces
  * change; the cuts keep its shape.
  */
-function townPieces({ xy, z, anchors }: ReturnType<typeof smoothed>, town: Town, clear?: Clear): [ReturnType<typeof smoothed>, number[]] {
-    const out = { xy: [xy[0], xy[1]], z: [z[0]], anchors: [anchors[0]] }, sides: number[] = [];
+function townPieces({ xy, z, anchors }: ReturnType<typeof smoothed>, town: Town, clear?: Clear, curve?: Line): [ReturnType<typeof smoothed> & Pick<Line, 'dir' | 'grade' | 'bank' | 'widen'>, number[]] {
+    const out: ReturnType<typeof smoothed> & Pick<Line, 'dir' | 'grade' | 'bank' | 'widen'> = { xy: [xy[0], xy[1]], z: [z[0]], anchors: [anchors[0]] }, sides: number[] = [];
+    // PROTOTYPE: a cut on a fitted line lies on its curve, with the curve's tangent and grade.
+    const { dir, grade, bank, widen } = curve ?? {};
+    if (dir && grade && bank && widen) Object.assign(out, { dir: [dir[0], dir[1]], grade: [grade[0]], bank: [bank[0]], widen: [widen[0]] });
     for (let v = 0; v + 1 < z.length; v++) {
         const [ax, ay, bx, by] = xy.slice(2 * v, 2 * v + 4), dx = bx - ax, dy = by - ay, unit = metresPerUnit(ay), count = Math.max(1, Math.ceil(Math.hypot(dx, dy) * unit / PIECE_M));
         const pieces = Array.from({ length: count }, (_, k) => {
@@ -377,8 +388,26 @@ function townPieces({ xy, z, anchors }: ReturnType<typeof smoothed>, town: Town,
         for (let k = 1; k <= count; k++) {
             if (k < count && pieces[k] === pieces[k - 1]) continue;
             sides.push(pieces[k - 1]);
-            out.xy.push(k === count ? bx : Math.round(ax + dx * k / count), k === count ? by : Math.round(ay + dy * k / count));
-            out.z.push(z[v] + (z[v + 1] - z[v]) * k / count);
+            const u = k / count;
+            if (out.dir && k < count) {
+                const c = hermite([ax, ay], [bx, by], [dir![2 * v], dir![2 * v + 1]], [dir![2 * v + 2], dir![2 * v + 3]], z[v], z[v + 1], grade![v], grade![v + 1], Math.hypot(dx, dy) * unit, u);
+                out.xy.push(Math.round(c.x), Math.round(c.y));
+                // The height runs on linearly, as the stamp has it between the vertices: a level road stays level to the bit.
+                out.z.push(z[v] + (z[v + 1] - z[v]) * u);
+                out.dir.push(c.tx, c.ty);
+                out.grade!.push(grade![v] + (grade![v + 1] - grade![v]) * u);
+                out.bank!.push(bank![v] + (bank![v + 1] - bank![v]) * u);
+                out.widen!.push(widen![v] + (widen![v + 1] - widen![v]) * u);
+            } else {
+                out.xy.push(k === count ? bx : Math.round(ax + dx * u), k === count ? by : Math.round(ay + dy * u));
+                out.z.push(z[v] + (z[v + 1] - z[v]) * u);
+                if (out.dir) {
+                    out.dir.push(dir![2 * v + 2], dir![2 * v + 3]);
+                    out.grade!.push(grade![v + 1]);
+                    out.bank!.push(bank![v + 1]);
+                    out.widen!.push(widen![v + 1]);
+                }
+            }
             out.anchors.push(k === count && anchors[v + 1]);
         }
     }
@@ -557,7 +586,33 @@ export const WARP_M = 6;
  * junction stamps the rest of the segment as the tile with it does.
  */
 const packTilt = (slope: number, reach: number) => ((Math.max(-32768, Math.min(32767, Math.round(slope * 1e4))) & 0xffff) | (Math.min(65535, Math.round(reach * 100)) << 16)) >>> 0;
-const tiltAt = (word: number, metres: number) => ((word << 16) >> 16) * 1e-4 * Math.min(1, Math.max(0, ((word >>> 16) * 0.01 - metres) / WARP_M));
+const tiltAt = (word: number, metres: number) => (word & BANK_WORD ? 0 : ((word << 16) >> 16) * 1e-4 * Math.min(1, Math.max(0, ((word >>> 16) * 0.01 - metres) / WARP_M)));
+/**
+ * PROTOTYPE (road study): a tilt word with its top bit set holds a bend's banking at that end of the segment
+ * instead, in its low 16 bits as packTilt has the slope; the banking runs linearly along the segment
+ * between its ends. A junction's tilt and a banking never share a vertex: the fit fades banking out near junctions.
+ */
+const BANK_WORD = 0x80000000;
+const bankOfWord = (word: number) => (word & BANK_WORD ? ((word << 16) >> 16) * 1e-4 : 0);
+/** PROTOTYPE: the banking of segment v of a road a share t of the way along it, as `along` in stamp-core.wgsl reads it: a slope as a tilt's. */
+export function bankAt(line: Line, v: number, t: number): number {
+    return line.tilt ? bankOfWord(line.tilt[2 * v]) + (bankOfWord(line.tilt[2 * v + 1]) - bankOfWord(line.tilt[2 * v])) * Math.min(1, Math.max(0, t)) : 0;
+}
+
+/** PROTOTYPE: the banking of each road's vertices (rise per metre to the left) as words at the ends of its segments, where no junction's tilt is. */
+function bankWords(lines: Line[]): void {
+    for (const line of lines) {
+        if (line.kind !== ROAD || !line.tilt || !line.bank) continue;
+        const tilt = line.tilt, n = line.z.length;
+        for (let v = 0; v < n; v++) {
+            const words = [2 * v - 1, 2 * v].filter(w => w >= 0 && w < tilt.length);
+            const bank = Math.round(Math.max(-0.3, Math.min(0.3, line.bank[v])) * 1e4) / 1e4;
+            if (!bank || words.some(w => tilt[w] !== 0)) continue;
+            // A tilt word's slope rises toward the side where `cross` of stamp-core.wgsl is positive: the right, as y runs south.
+            for (const w of words) tilt[w] = (BANK_WORD | (Math.round(-bank * 1e4) & 0xffff)) >>> 0;
+        }
+    }
+}
 
 /**
  * The plane of the through road at each junction of roads, on the side roads. At a junction the
@@ -609,7 +664,9 @@ function junctionPlanes(lines: Line[]): void {
         for (const side of ways) {
             if (through.includes(side)) continue;
             const lean = through.reduce((most, way) => (dot(way.dir, side.dir) > dot(most.dir, side.dir) ? way : most));
-            const plane = [lean.grade * lean.dir[0], lean.grade * lean.dir[1]], { line, step } = side, tilt = line.tilt!;
+            // PROTOTYPE: the through road's banking tilts its plane: rise per metre to the left of its line's own direction.
+            const bank = lean.line.bank?.[lean.v] ?? 0, forward = [lean.step * lean.dir[0], lean.step * lean.dir[1]];
+            const plane = [lean.grade * lean.dir[0] + bank * forward[1], lean.grade * lean.dir[1] - bank * forward[0]], { line, step } = side, tilt = line.tilt!;
             // Each segment within the reach takes the plane from its end nearer the junction.
             for (let v = side.v, along = 0; along < reach && v + step >= 0 && v + step < line.z.length; v += step) {
                 const s = Math.min(v, v + step), end = 2 * s + (step === 1 ? 0 : 1);
@@ -624,7 +681,7 @@ function junctionPlanes(lines: Line[]): void {
 
 /** The slope across segment v of a road, `sa` metres from its start and `sb` from its end, as `along` in stamp-core.wgsl reads it. */
 export function crossSlope(line: Line, v: number, sa: number, sb: number): number {
-    return line.tilt ? tiltAt(line.tilt[2 * v], sa) + tiltAt(line.tilt[2 * v + 1], sb) : 0;
+    return line.tilt ? tiltAt(line.tilt[2 * v], sa) + tiltAt(line.tilt[2 * v + 1], sb) + bankAt(line, v, sa / Math.max(sa + sb, 1e-6)) : 0;
 }
 
 /** The most that a chord of a rounded bend leaves the curve, in world units (about 10 cm), and the most chords per segment. */
@@ -760,16 +817,20 @@ function rebend(lines: Line[], square: number[]): void {
     // it, but for the line that runs on from it), on a bridge or a tunnel, and at the end of the approach
     // that the solver puts on the surface of the through road: the first vertex within APPROACH_M of a
     // junction at an end of the line.
-    const junction = (line: Line, v: number) => {
+    // PROTOTYPE: with `calm`, only a junction where the line may be the side road counts: a bridge, a tunnel, or a road of its class or better.
+    const junction = (line: Line, v: number, calm = false) => {
         const n = line.z.length, onward = v === 0 || v === n - 1 ? partner(line, v) : undefined;
-        return (at.get(key(line, v)) ?? []).some(o => (o.line !== line || o.v !== v) && !(onward && o.line === onward.line && o.v === onward.v));
+        return (at.get(key(line, v)) ?? []).some(o => (o.line !== line || o.v !== v) && !(onward && o.line === onward.line && o.v === onward.v)
+            && (!calm || o.line.kind === BRIDGE || o.line.kind === TUNNEL || (o.line.kind === ROAD && o.line.profile <= line.profile)));
     };
-    const approach = (line: Line, v: number) => {
+    const approach = (line: Line, v: number, calm = false) => {
         const n = line.z.length, unit = metresPerUnit(line.xy[2 * v + 1]);
         const from = (end: number) => Math.hypot(line.xy[2 * v] - line.xy[2 * end], line.xy[2 * v + 1] - line.xy[2 * end + 1]) * unit;
-        return (v === 1 && junction(line, 0) && from(0) <= APPROACH_M + 0.5) || (v === n - 2 && junction(line, n - 1) && from(n - 1) <= APPROACH_M + 0.5);
+        return (v === 1 && junction(line, 0, calm) && from(0) <= APPROACH_M + 0.5) || (v === n - 2 && junction(line, n - 1, calm) && from(n - 1) <= APPROACH_M + 0.5);
     };
     const pinned = (line: Line, v: number) => line.kind === BRIDGE || line.kind === TUNNEL || junction(line, v) || approach(line, v);
+    // PROTOTYPE: a road banks and widens nowhere near a bridge, a tunnel or a junction where it is a side road.
+    const quiet = (line: Line, v: number) => line.kind === BRIDGE || line.kind === TUNNEL || junction(line, v, true) || approach(line, v, true);
     // An end that touches nothing: where the tile cut the line, or a dead end.
     const loose = (line: Line, v: number) => (at.get(key(line, v)) ?? []).length === 1;
     const decks: Deck[] = lines.filter(line => line.kind === BRIDGE).map(line => {
@@ -796,7 +857,7 @@ function rebend(lines: Line[], square: number[]): void {
             piece = p && !used.has(p.line) ? { line: p.line, forward: p.v === 0 } : undefined;
         }
         const last = pieces[pieces.length - 1], cut: [boolean, boolean] = [loose(head.line, head.forward ? 0 : head.line.z.length - 1), loose(last.line, last.forward ? last.line.z.length - 1 : 0)];
-        fitStroke(pieces, pinned, cut, square, decks.filter(deck => pieces.every(({ line }) => line.z.every((_, v) => !deck.keys.has(key(line, v))))));
+        fitStroke(pieces, pinned, quiet, cut, square, decks.filter(deck => pieces.every(({ line }) => line.z.every((_, v) => !deck.keys.has(key(line, v))))));
     }
 }
 
@@ -804,8 +865,8 @@ function rebend(lines: Line[], square: number[]): void {
  * PROTOTYPE: the least-squares fit of one stroke, written back into each of its lines (see `rebend`).
  * `cut` tells which ends of the stroke touch nothing; `decks` are the bridges that it may pass under.
  */
-function fitStroke(pieces: { line: Line; forward: boolean }[], pinned: (line: Line, v: number) => boolean, cut: [boolean, boolean], square: number[], decks: Deck[]): void {
-    const xs: number[] = [], ys: number[] = [], zs: number[] = [], pins: boolean[] = [], names: string[] = [], kinds: number[] = [], vertexSample: number[][] = [];
+function fitStroke(pieces: { line: Line; forward: boolean }[], pinned: (line: Line, v: number) => boolean, quiet: (line: Line, v: number) => boolean, cut: [boolean, boolean], square: number[], decks: Deck[]): void {
+    const xs: number[] = [], ys: number[] = [], zs: number[] = [], pins: boolean[] = [], names: string[] = [], kinds: number[] = [], vertexSample: number[][] = [], calm: boolean[] = [];
     pieces.forEach(({ line, forward }, k) => {
         const n = line.z.length, name = CLASSES[line.profile] ?? 'road', index: number[] = new Array(n);
         const order = Array.from({ length: n }, (_, j) => (forward ? j : n - 1 - j));
@@ -814,6 +875,7 @@ function fitStroke(pieces: { line: Line; forward: boolean }[], pinned: (line: Li
             if (j === 0 && k > 0) {
                 index[v] = xs.length - 1;
                 pins[xs.length - 1] ||= pinned(line, v);
+                calm[xs.length - 1] ||= quiet(line, v);
                 return;
             }
             if (j > 0) {
@@ -824,6 +886,7 @@ function fitStroke(pieces: { line: Line; forward: boolean }[], pinned: (line: Li
                     ys.push(py + (y - py) * i / steps);
                     zs.push(pz + (z - pz) * i / steps);
                     pins.push(false);
+                    calm.push(line.kind === BRIDGE || line.kind === TUNNEL);
                     names.push(name);
                     kinds.push(line.kind);
                 }
@@ -833,6 +896,7 @@ function fitStroke(pieces: { line: Line; forward: boolean }[], pinned: (line: Li
             ys.push(y);
             zs.push(z);
             pins.push(pinned(line, v));
+            calm.push(quiet(line, v));
             names.push(name);
             kinds.push(line.kind);
         });
@@ -901,6 +965,7 @@ function fitStroke(pieces: { line: Line; forward: boolean }[], pinned: (line: Li
     };
     const [X, Y] = irls([tx, ty], i => tolerance[i], lambdaPlan, 3, []);
     const [Z] = irls([tz], () => PROFILE_TOL_M, lambdaZ, 2, under);
+    const { dir, grade, bank, widen } = design(X, Y, Z, names, kinds, calm, pins);
     // The samples between a and b that Douglas–Peucker keeps, in order from a to b.
     const simplify = (a: number, b: number): number[] => {
         const keep: number[] = [];
@@ -922,8 +987,10 @@ function fitStroke(pieces: { line: Line; forward: boolean }[], pinned: (line: Li
         split(a, b);
         return keep;
     };
-    pieces.forEach(({ line }, k) => {
-        const index = vertexSample[k], xy: number[] = [], z: number[] = [], anchors: boolean[] = [];
+    pieces.forEach(({ line, forward }, k) => {
+        const index = vertexSample[k], xy: number[] = [], z: number[] = [], anchors: boolean[] = [], dirs: number[] = [], grades: number[] = [], banks: number[] = [], widens: number[] = [];
+        // A piece that runs against the stroke turns its tangent, its grade and its left side about.
+        const sign = forward ? 1 : -1;
         // Heights to 0.1 mm, so that the solve's rounding leaves a level road level to the bit.
         const height = (i: number) => (pins[i] ? zs[i] : Math.round(Z[i] * 1e4) / 1e4);
         const push = (i: number, anchor: boolean) => {
@@ -938,6 +1005,10 @@ function fitStroke(pieces: { line: Line; forward: boolean }[], pinned: (line: Li
             xy.push(x, y);
             z.push(height(i));
             anchors.push(anchor);
+            dirs.push(sign * dir[2 * i], sign * dir[2 * i + 1]);
+            grades.push(sign * grade[i]);
+            banks.push(sign * bank[i]);
+            widens.push(widen[i]);
         };
         for (let v = 0; v < line.z.length; v++) {
             if (v > 0) for (const i of simplify(index[v - 1], index[v])) push(i, false);
@@ -946,7 +1017,63 @@ function fitStroke(pieces: { line: Line; forward: boolean }[], pinned: (line: Li
         line.xy = xy;
         line.z = z;
         line.anchors = anchors;
+        Object.assign(line, { dir: dirs, grade: grades, bank: banks, widen: widens });
     });
+}
+
+/** PROTOTYPE: how far banking and widening fade in from a junction, a bridge or a tunnel, and over how many metres they run in and out. */
+const CALM_M = 14, CALM_RAMP_M = 18, RUNOFF_M = 22, WIDEN_SMOOTH_M = 12, CURVE_SMOOTH_M = 6;
+
+/**
+ * PROTOTYPE: the design of a fitted stroke at its samples (local metres, x east, y south): the unit
+ * tangents, the grades, the banking of each road class and the widening of the inside of its tight bends.
+ * A widening moves the stroke's middle toward the inside by half of it, so the outer edge keeps its line.
+ */
+function design(X: Float64Array, Y: Float64Array, Z: Float64Array, names: string[], kinds: number[], calm: boolean[], pins: boolean[]) {
+    const n = X.length, s = new Float64Array(n);
+    for (let i = 1; i < n; i++) s[i] = s[i - 1] + Math.hypot(X[i] - X[i - 1], Y[i] - Y[i - 1]);
+    const tangents = () => {
+        const dx = bessel(X, s), dy = bessel(Y, s), out = new Float64Array(2 * n);
+        for (let i = 0; i < n; i++) {
+            const l = Math.hypot(dx[i], dy[i]) || 1;
+            out[2 * i] = dx[i] / l;
+            out[2 * i + 1] = dy[i] / l;
+        }
+        return out;
+    };
+    let dir = tangents();
+    // The heading, unwound, and its rate: the curvature, positive to the left (y runs south, so a left turn turns the heading down).
+    const heading = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+        const a = Math.atan2(dir[2 * i + 1], dir[2 * i]);
+        heading[i] = i ? heading[i - 1] + ((a - heading[i - 1] + 3 * Math.PI) % (2 * Math.PI) - Math.PI) : a;
+    }
+    const curvature = smoothAlong(Float64Array.from(bessel(heading, s), k => -k), s, CURVE_SMOOTH_M);
+    // The fade-in from the nearest calm sample, both ways. A widening moves the line, so it also keeps off every inner pin.
+    const fadeOf = (still: (i: number) => boolean) => {
+        const away = new Float64Array(n).fill(Infinity);
+        for (let i = 0, last = -Infinity; i < n; i++) away[i] = s[i] - (last = still(i) ? s[i] : last);
+        for (let i = n - 1, next = Infinity; i >= 0; i--) away[i] = Math.min(away[i], (next = still(i) ? s[i] : next) - s[i]);
+        return away.map(d => Math.min(1, Math.max(0, (d - CALM_M) / CALM_RAMP_M)));
+    };
+    const calmFade = fadeOf(i => calm[i]), pinFade = fadeOf(i => calm[i] || (pins[i] && i > 0 && i < n - 1));
+    const road = (i: number) => kinds[i] === ROAD;
+    const bank = smoothAlong(Float64Array.from(curvature, (k, i) => (road(i) ? bankOf(names[i], k) : 0)), s, RUNOFF_M).map((e, i) => e * calmFade[i]);
+    const signed = smoothAlong(Float64Array.from(curvature, (k, i) => (road(i) ? Math.sign(k) * widenOf(names[i], k) : 0)), s, WIDEN_SMOOTH_M).map((w, i) => w * calmFade[i]);
+    // The middle moves toward the inside by half the widening, but not at a pin, which stays where the tile puts it:
+    // there both sides widen, so the inner edge still widens by all of it.
+    const shift = signed.map((w, i) => (w / 2) * pinFade[i]);
+    if (shift.some(w => w !== 0)) {
+        // Left of the tangent is (ty, -tx).
+        for (let i = 0; i < n; i++) {
+            X[i] += dir[2 * i + 1] * shift[i];
+            Y[i] -= dir[2 * i] * shift[i];
+        }
+        for (let i = 1; i < n; i++) s[i] = s[i - 1] + Math.hypot(X[i] - X[i - 1], Y[i] - Y[i - 1]);
+        dir = tangents();
+    }
+    // The tangents in world units: y runs south as in the local metres.
+    return { dir, grade: bessel(Z, s), bank, widen: signed.map((w, i) => Math.abs(w) - Math.abs(shift[i])) };
 }
 
 /**
@@ -1179,7 +1306,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
                     : [line.tilt?.[2 * v] ?? 0, line.tilt?.[2 * v + 1] ?? 0];
             // The surface code in the low 4 bits, the sides with a sidewalk above it. Beside the line's index, in
             // steps of 2 cm, how far its edge lies out at the start and the end, where it tapers to a partner's.
-            const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) - line.h) / 0.02))) & 0xff;
+            const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) + (line.widen?.[w] ?? 0) - line.h) / 0.02))) & 0xff;
             const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h), f(mx), f(my), f(nx), f(ny),
                 id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);
