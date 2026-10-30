@@ -72,7 +72,7 @@ and from the branch otherwise. The diff is HEAD against the merge base with `--b
 
 | `Mode:` line | The diff must |
 | --- | --- |
-| `fix` | touch one system or shell, add no dependency between systems, change no doc header and no file under `specs/`, and change at most `fix.max_lines` lines outside the `fix.tests` globs |
+| `fix` | add no dependency between systems, change no doc header and no file under `specs/`, and change at most `fix.max_lines` lines outside the `fix.tests` globs |
 | `fix, over limit: <reason>` | do the same, with no size limit |
 | `change #N` | touch only the systems on the `**Systems:**` line of issue N, outside code blocks and HTML comments, by slug or title. The first `Status:` line of the issue is `Status: approved`, and an `Approved: <hash>` line holds the hash that `cairn hash` gives for its body. N must be an issue, not a pull request. A new dependency `a -> b` changes `docs/design/a.md` too. Issue N has a `**Size:**` line. |
 | `prototype` | not exist: the gate always fails, because a prototype never merges |

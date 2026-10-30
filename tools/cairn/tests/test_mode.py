@@ -84,12 +84,12 @@ class RuleTests(unittest.TestCase):
         rules = {**mode.DEFAULTS, "fix": {"max_lines": limit}}
         return mode.violations(mode.parse(line), diff, rules, body, NAMES, epic)
 
-    def test_a_fix_stays_inside_one_system_and_its_size(self):
-        self.assertEqual(self.check("fix", mode.Diff(frozenset({"routing"}), lines=1000)), [])
+    def test_a_fix_keeps_its_dependencies_headers_specs_and_size(self):
+        self.assertEqual(self.check("fix", mode.Diff(frozenset({"routing", "search"}), lines=1000)), [])
         found = self.check("fix", mode.Diff(
             frozenset({"routing", "search"}), lines=1001, new_edges=frozenset({("routing", "search")}),
             headers=frozenset({"routing"}), specs=("specs/obcr-route.md",)))
-        self.assertEqual(len(found), 5, found)
+        self.assertEqual(len(found), 4, found)
         # The over-limit reason lifts the size limit and nothing else.
         found = self.check("fix, over limit: a generated table", mode.Diff(
             frozenset({"routing"}), lines=5000, specs=("specs/obcr-route.md",)))

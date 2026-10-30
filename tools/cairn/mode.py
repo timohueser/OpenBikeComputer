@@ -258,8 +258,6 @@ def violations(mode: Mode, diff: Diff, rules: dict, issue: str | None = None, na
     out = []
     limit = rules["fix"]["max_lines"]
     if mode.kind == "fix":
-        if len(diff.touched) > 1:
-            out.append(f"a fix touches one system, and this one touches {', '.join(sorted(diff.touched))}")
         out += [f"a fix adds no dependency between systems: {a} -> {b}" for a, b in sorted(diff.new_edges)]
         if diff.headers:
             out.append(f"a fix changes no doc header, and this one changes {', '.join(sorted(diff.headers))}")
