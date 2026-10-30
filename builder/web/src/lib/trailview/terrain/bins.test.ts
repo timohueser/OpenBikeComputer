@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { decodeFeatures, EXTENT, unitScale, type Feature } from '../stream/features';
+import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
 import { BRIDGE, CELL, cellAt, CORNER, crosses, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WALK, WARP_M, waterAt, type Line, type Profile } from './bins';
-import { cornersOf } from './corners';
+import { cornersOf, halfAt, partnersOf } from './corners';
 import { LEFT, RIGHT } from './town';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
@@ -281,16 +281,22 @@ describe('the sleepers of a track', () => {
     });
 });
 
-describe('the plane of a junction', () => {
+describe('a junction', () => {
+    const tile = { level: 13, x: 4287, y: 2889 }, unit = metresPerUnit((tile.y * EXTENT + 4000) * unitScale(tile.level));
+    /** A way with no alignment; with `side`, the alignment of a straight way that marks those ways out as sides. */
+    const way = (kind: string, tags: Record<string, string>, xy: number[], z: number[], side?: number[]) => {
+        const column = (value: number) => Float32Array.from(z, () => value), heading = Math.atan2(xy[3] - xy[1], xy[2] - xy[0]);
+        const plan = side && { along: 0, backward: false, tangent: column(heading), grade: column(0), bank: column(0), widen: column(0), side: Float32Array.from(side) };
+        return { kind, tags, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from(xy), z: Float32Array.from(z), plan }] };
+    };
+
     it('tilts a side road across its mouth to the surface of the through road, and not past the fade', () => {
         // A secondary road climbs east at 8 % through a junction; a residential road leaves it to the north.
-        const tile = { level: 13, x: 4287, y: 2889 }, unit = metresPerUnit((tile.y * EXTENT + 4000) * unitScale(tile.level));
         const metres = unitScale(tile.level) * unit, at = (x: number) => 1000 + 0.08 * (x - 3000) * metres;
-        const road = (kind: string, highway: string, xy: number[], z: number[]) => ({ kind, tags: { highway }, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from(xy), z: Float32Array.from(z) }] });
         const { lines } = features([
-            road('main-road', 'secondary', [1000, 4000, 3000, 4000, 5000, 4000], [at(1000), at(3000), at(5000)]),
+            way('main-road', { highway: 'secondary' }, [1000, 4000, 3000, 4000, 5000, 4000], [at(1000), at(3000), at(5000)]),
             // Its vertex at the approach distance of the solver, 20 units (4.1 m) from the junction.
-            road('road', 'residential', [3000, 4000, 3000, 3980, 3000, 2000], [at(3000), at(3000) + 0.1, at(3000) + 20]),
+            way('road', { highway: 'residential' }, [3000, 4000, 3000, 3980, 3000, 2000], [at(3000), at(3000) + 0.1, at(3000) + 20], [SIDE_ON, 0, 0]),
         ], tile);
         const side = lines.find(line => line.profile === Object.keys(PROFILES).indexOf('residential'))!;
         // 2 m east of the side road's middle and 1 m north of the junction, inside the through road.
@@ -299,6 +305,43 @@ describe('the plane of a junction', () => {
         // 50 m along, on the long segment that a tile without the junction stamps too: no tilt.
         const far = (east: number): [number, number] => [side.xy[0] + east / unit, side.xy[1] - 50 / unit];
         expect(roadHeight(side, far(2), 3 / unit, unit)).toBeCloseTo(roadHeight(side, far(0), 3 / unit, unit), 9);
+    });
+
+    it('runs a road on onto a bridge and not into the side road at the end of the bridge, and tapers it there', () => {
+        const flat = [1000, 1000], road = { highway: 'secondary', width: '6' };
+        const { lines } = features([
+            way('main-road', road, [1000, 4000, 3000, 4000], flat),
+            way('main-road', { ...road, bridge: 'yes', width: '8' }, [3000, 4000, 5000, 4000], flat),
+            way('road', { highway: 'service' }, [3000, 4000, 3000, 2000], flat, [SIDE_ON, 0]),
+        ], tile);
+        const [main, bridge, service] = lines, partners = partnersOf(lines);
+        expect(bridge.kind).toBe(BRIDGE);
+        expect(partners.get(main)).toEqual([undefined, bridge]);
+        expect(partners.has(service)).toBe(false);
+        expect(halfAt(main, 1, partners)).toBeCloseTo((main.h + bridge.h) / 2, 6);
+        expect(main.join).toEqual(undefined);
+    });
+
+    it('takes two ways of two classes as one road, and a way that passes through has no partner', () => {
+        const flat = [1000, 1000];
+        const split = features([way('road', { highway: 'tertiary' }, [1000, 4000, 3000, 4000], flat), way('road', { highway: 'service' }, [3000, 4000, 5000, 4100], flat)], tile).lines;
+        expect(partnersOf(split).get(split[1])).toEqual([split[0], undefined]);
+        // A tertiary passes through the vertex where a service road ends.
+        const passes = features([
+            way('road', { highway: 'tertiary' }, [1000, 4000, 3000, 4000, 5000, 4000], [1000, 1000, 1000]),
+            way('road', { highway: 'service' }, [3000, 4000, 3000, 2000], flat, [SIDE_ON, 0]),
+        ], tile).lines;
+        expect(partnersOf(passes).size).toBe(0);
+    });
+
+    it('lets a track run through a road at a level crossing, and the road end there has no partner', () => {
+        const flat = [1000, 1000], road = { highway: 'tertiary' };
+        const lines = features([
+            way('road', road, [1000, 4000, 3000, 4000], flat, [0, SIDE_BACK]),
+            way('road', road, [3000, 4000, 5000, 4000], flat, [SIDE_ON, 0]),
+            way('railway', { railway: 'rail' }, [3000, 2000, 3000, 4000, 3000, 6000], [1000, 1000, 1000]),
+        ], tile).lines;
+        expect(partnersOf(lines).size).toBe(0);
     });
 });
 

@@ -1,7 +1,7 @@
 // The stamp data of a terrain node from the feature tile above it: the segments, lake edges and
 // junctions near the node, binned into a grid of cells, as stamp.wgsl reads them. A worker uses it.
 import { EARTH_RADIUS } from '../frame/frame';
-import { DEEPEST, EXTENT, unitScale, type Feature } from '../stream/features';
+import { DEEPEST, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { polyline } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
@@ -188,6 +188,8 @@ export interface Line {
     sleepers?: number[]; wire?: boolean;
     /** A town road's sides with a sidewalk per segment, LEFT and RIGHT of town.ts, as townPieces decides them. */
     sidewalks?: number[];
+    /** By vertex as `x,y`, the ways out of it that leave its junction as a side: SIDE_BACK and SIDE_ON. All lines of a part share the map. */
+    sideWays?: Map<string, number>;
 }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
@@ -270,7 +272,11 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         const sidewalk = type === ROAD && kind !== 'gallery' ? sidewalkOf(tags, surface) : 0;
         const paving = type === PATH && kind !== 'gallery' && surfaceOf(tags, true) !== surface;
         for (const part of parts) {
-            const { xy, z } = polyline(part, y => scale * metresPerUnit((oy + y) * scale));
+            const { xy, z } = polyline(part, y => scale * metresPerUnit((oy + y) * scale)), sideWays = new Map<string, number>();
+            part.plan?.side.forEach((bits, v) => {
+                const name = world(part.xy, v).join();
+                if (bits) sideWays.set(name, (sideWays.get(name) ?? 0) | bits);
+            });
             if (!z) continue;
             // A line splits where a vertex has no height: a missing height is unknown, never 0 m. A footway splits
             // where it enters or leaves a town.
@@ -284,7 +290,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
                         const line: Line = {
                             kind: type, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1),
                             h: paved(from) ? halfWidth(tags, 'paving') : h, code: paved(from) ? PAVING_CODE : code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
-                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined,
+                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined, sideWays,
                         };
                         if (type === RAIL) line.sleepers = sleepers(line);
                         lines.push(line);
@@ -545,55 +551,62 @@ export const WARP_M = 6;
 const packTilt = (slope: number, reach: number) => ((Math.max(-32768, Math.min(32767, Math.round(slope * 1e4))) & 0xffff) | (Math.min(65535, Math.round(reach * 100)) << 16)) >>> 0;
 const tiltAt = (word: number, metres: number) => ((word << 16) >> 16) * 1e-4 * Math.min(1, Math.max(0, ((word >>> 16) * 0.01 - metres) / WARP_M));
 
+/** A way out of a vertex of a line, step 1 or -1 along it. The bake marks it a side of its junction, or it runs through. */
+export interface JunctionWay { line: Line; v: number; step: 1 | -1; side: boolean }
+
 /**
- * The plane of the through road at each junction of roads, on the side roads. At a junction the
- * through road is the first class of roads.json there, and of two ways of that class, the pair that
- * runs most nearly straight on, as in the road solver of the bake; the solver puts each side road's
- * first metres on the surface of the through direction that it leans along most. Its core takes the
- * slope of that surface across it. Only the vertices and heights at a junction decide, so every tile
- * that holds a junction gets the same planes.
+ * The ways out of each vertex that lines of roads and tracks share. Of a junction, the bake marks the ways that
+ * are no through road as sides. Where two ways end at a point or a tile holds no sides, as below zoom 13, each way runs through.
  */
-function junctionPlanes(lines: Line[]): void {
-    const at = new Map<string, { line: Line; v: number }[]>();
-    for (const line of lines) {
-        if (line.kind !== ROAD) continue;
-        line.tilt = new Array(2 * (line.z.length - 1)).fill(0);
+export function junctionWays(lines: Line[]): JunctionWay[][] {
+    const at = new Map<string, JunctionWay[]>();
+    for (const line of cores(lines)) {
+        if (isPath(line)) continue;
         line.z.forEach((_, v) => {
             if (!(line.anchors?.[v] ?? true)) return;
-            const name = `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
-            at.set(name, [...(at.get(name) ?? []), { line, v }]);
+            const name = `${line.xy[2 * v]},${line.xy[2 * v + 1]}`, bits = line.sideWays?.get(name) ?? 0, ways = at.get(name) ?? at.set(name, []).get(name)!;
+            for (const [step, bit] of [[-1, SIDE_BACK], [1, SIDE_ON]] as const) if (v + step >= 0 && v + step < line.z.length) ways.push({ line, v, step, side: !!(bits & bit) });
         });
     }
+    return [...at.values()].filter(ways => ways.some(({ line, v }) => line !== ways[0].line || v !== ways[0].v));
+}
+
+/** The two ways of a through road that OSM splits at a junction: both end there. */
+export function splitThrough(ways: JunctionWay[]): JunctionWay[] | undefined {
+    const through = ways.filter(({ side }) => !side);
+    return through.length === 2 && through.every(({ line, v }) => v === 0 || v === line.z.length - 1) ? through : undefined;
+}
+
+/**
+ * The plane of the through road at each junction of roads, on the side roads: the road solver of the
+ * bake puts each side road's first metres on the surface of the through direction that it leans along
+ * most. Its core takes the slope of that surface across it. Only the vertices and heights at a junction
+ * decide, so every tile that holds a junction gets the same planes.
+ */
+function junctionPlanes(lines: Line[]): void {
+    for (const line of lines) if (line.kind === ROAD) line.tilt = new Array(2 * (line.z.length - 1)).fill(0);
     const next = (line: Line, v: number, step: number) => {
         let w = v + step;
         while (w > 0 && w < line.z.length - 1 && !(line.anchors?.[w] ?? true)) w += step;
-        return w >= 0 && w < line.z.length ? w : -1;
+        return w;
     };
     const metres = (line: Line, a: number, b: number) => Math.hypot(line.xy[2 * b] - line.xy[2 * a], line.xy[2 * b + 1] - line.xy[2 * a + 1]) * metresPerUnit(line.xy[2 * a + 1]);
     const dot = (p: number[], q: number[]) => p[0] * q[0] + p[1] * q[1];
-    for (const meeting of at.values()) {
-        if (meeting.length < 2) continue;
-        const ways = meeting.flatMap(({ line, v }) => [-1, 1].map(step => ({ line, v, step, w: next(line, v, step) })).filter(({ w }) => w >= 0)).map(way => {
-            const { line, v, w } = way, length = Math.hypot(line.xy[2 * w] - line.xy[2 * v], line.xy[2 * w + 1] - line.xy[2 * v + 1]) || 1;
+    for (const meeting of junctionWays(lines)) {
+        const ways = meeting.map(way => {
+            const { line, v, step } = way, w = next(line, v, step), length = Math.hypot(line.xy[2 * w] - line.xy[2 * v], line.xy[2 * w + 1] - line.xy[2 * v + 1]) || 1;
             return { ...way, dir: [(line.xy[2 * w] - line.xy[2 * v]) / length, (line.xy[2 * w + 1] - line.xy[2 * v + 1]) / length], grade: (line.z[w] - line.z[v]) / metres(line, v, w) };
         });
-        if (ways.length < 2) continue;
-        const best = Math.min(...ways.map(({ line }) => line.profile)), top = ways.filter(({ line }) => line.profile === best);
-        let through = [top[0]];
-        if (top.length >= 2) {
-            let least = Infinity;
-            for (let i = 0; i < top.length; i++) for (let k = i + 1; k < top.length; k++) {
-                if (dot(top[i].dir, top[k].dir) < least) [least, through] = [dot(top[i].dir, top[k].dir), [top[i], top[k]]];
-            }
-        }
-        if (through.length === 2 && through.every(({ line, v }) => v === 0 || v === line.z.length - 1)) {
+        const split = splitThrough(ways) as typeof ways | undefined, through = ways.filter(({ side }) => !side);
+        if (split?.every(({ line }) => line.kind === ROAD)) {
             // Where OSM splits the through road at a bend, the round cap of one end paints the outer wedge.
-            const [cap] = [...through].sort((p, q) => p.dir[0] - q.dir[0] || p.dir[1] - q.dir[1]);
+            const [cap] = [...split].sort((p, q) => p.dir[0] - q.dir[0] || p.dir[1] - q.dir[1]);
             (cap.line.join ??= [false, false])[cap.v === 0 ? 0 : 1] = true;
         }
+        if (!through.length) continue;
         const reach = Math.max(APPROACH_M, ...through.map(({ line }) => line.h)) + WARP_M;
         for (const side of ways) {
-            if (through.includes(side)) continue;
+            if (!side.side || side.line.kind !== ROAD) continue;
             const lean = through.reduce((most, way) => (dot(way.dir, side.dir) > dot(most.dir, side.dir) ? way : most));
             const plane = [lean.grade * lean.dir[0], lean.grade * lean.dir[1]], { line, step } = side, tilt = line.tilt!;
             // Each segment within the reach takes the plane from its end nearer the junction.

@@ -15,7 +15,7 @@ const plain = ({ kind, tags, geometry, parts }: Feature) => ({
         ...(z ? { z: Array.from(z, h => (Number.isNaN(h) ? null : Math.round(h * 100) / 100)) } : {}),
         ...(plan ? {
             along: Math.round(plan.along * 10) * 2 + (plan.backward ? 1 : 0),
-            tangent: codes(plan.tangent, 1024 / (2 * Math.PI)), grade: codes(plan.grade, 250), bank: codes(plan.bank, 1000), widen: codes(plan.widen, 100),
+            tangent: codes(plan.tangent, 1024 / (2 * Math.PI)), grade: codes(plan.grade, 250), bank: codes(plan.bank, 1000), widen: codes(plan.widen, 100), side: Array.from(plan.side),
         } : {}),
     })),
 });

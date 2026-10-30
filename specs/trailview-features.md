@@ -74,17 +74,22 @@ LEB128 number. A signed value `n` is stored as the varint of its zigzag code: `2
 `−2n − 1` for `n < 0`.
 
 ```
-tile    = varint string_count, string × string_count, varint feature_count, feature × feature_count
+tile    = varint string_count, string × string_count, varint feature_count,
+          heads, tags, parts, vertices, along, tangent, grade, bank, words
 string  = varint byte_length, UTF-8 bytes
-feature = varint kind, varint tag_count, (varint key, varint value) × tag_count,
-          varint header, part × part_count
+heads   = (varint kind, varint header) per feature
+tags    = (varint tag_count, (varint key, varint value) × tag_count) per feature
+parts   = varint (vertex_count × 2 + outer) per part
+vertices = (zigzag dx, zigzag dy, then varint z_code when has_z is 1) per vertex
+along   = (varint 0 for a part with no alignment, or varint along_code) per part of a feature with
+          has_plan 1
+tangent, grade, bank = zigzag value per vertex of a part with an alignment
+words   = varint word per vertex of a part with an alignment
 header  = part_count × 16 + has_plan × 8 + has_z × 4 + geometry
-part    = varint (vertex_count × 2 + outer), vertex × vertex_count, then plan when has_plan is 1
-vertex  = zigzag dx, zigzag dy, then varint z_code when has_z is 1
-plan    = varint 0 for a part with no alignment, or varint along_code,
-          zigzag tangent × vertex_count, zigzag grade × vertex_count,
-          zigzag bank × vertex_count, varint widen × vertex_count
 ```
+
+Each stream holds one field in the order of the features, their parts and their vertices, so gzip
+finds the runs of that field. A stream has no length: the streams before it give its count.
 
 `kind`, `key` and `value` are indices from 0 into the strings of the tile. The tags of a feature are
 sorted by key. `geometry` is 0 for a point, 1 for a line and 2 for an area. The features of a tile
@@ -259,10 +264,18 @@ The fields follow the direction of the part:
 | `tangent` | The difference from the vertex before, 0 before the first vertex of a part, in 1/1024 of a turn from +x to +y, wrapped to −512 to 511. A reader takes the sum modulo 1024 |
 | `grade` | The difference from the vertex before, 0 before the first vertex of a part, in 1/250. The rise per metre: from the solved heights, not fitted a second time |
 | `bank` | In 1/1000. The rise per metre to the left of the direction |
+| `word` | 4 × `widen` + `side` |
 | `widen` | In centimetres. What the half-width of the road gains at the vertex |
+| `side` | The ways out of the vertex that leave its junction as a side: 1 for the way back along the part, 2 for the way on, 3 for both |
 
 Thus the tiles that hold a vertex hold one alignment there, and the metres along run on through a
 stroke across tiles and ways.
+
+A way out is a way of a road or a track that leaves a point. Where three or more ways out leave a
+point, the through road of the solver (see Heights) is one or two of them, and `side` marks each
+other one. Two ways out both run through, also across a change of class: `side` is 0. A path has
+`side` 0, and it is never a way out. The tiles keep each vertex that has a `side`. Below zoom 13 a
+tile has no `side`, so each way there runs through.
 
 ### Structures
 

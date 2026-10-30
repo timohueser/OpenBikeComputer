@@ -3,6 +3,7 @@
 use super::tests::{bridge, engelberg, plain, run, table, way, Place, KEEP_M};
 use super::*;
 use crate::tiles::{rounded_grade, rounded_tangent};
+use crate::{SIDE_BACK, SIDE_ON};
 
 const TAU: f64 = std::f64::consts::TAU;
 
@@ -90,6 +91,48 @@ fn a_junction_a_deck_and_the_end_of_an_approach_stay_where_osm_has_them() {
     // The first vertex of the side road after its junction is the end of its approach.
     let (e, n) = place.east_north(ways[1].points[1]);
     assert!((e.hypot(n) - 4.0).abs() < 0.1 && (e - n * 0.05).abs() < 1e-6, "{e} {n}");
+}
+
+#[test]
+fn a_way_that_leaves_a_junction_as_a_side_is_marked_on_its_way_out() {
+    let place = engelberg();
+    let line = |corners: &[(f64, f64)]| place.line(corners, Some(10.0));
+    let side_at = |solved: &Solved, f: usize, at: (f64, f64)| {
+        let way = solved.ways[f][0].as_ref().unwrap();
+        let k = way.points.iter().position(|p| *p == place.at(at.0, at.1)).unwrap();
+        (way.plan[k].side, way.plan.iter().filter(|p| p.side != 0).count())
+    };
+    // A tertiary runs through a vertex. A residential road ends there, a second one runs across, drawn
+    // as one way, and a path ends there: the tertiary has no side.
+    let features = [
+        way("tertiary", line(&[(-200.0, 0.0), (0.0, 0.0), (200.0, 0.0)]), plain),
+        way("residential", line(&[(0.0, 0.0), (0.0, 200.0)]), plain),
+        way("residential", line(&[(-100.0, -100.0), (0.0, 0.0), (100.0, -100.0)]), plain),
+        way("path", line(&[(0.0, 0.0), (100.0, 100.0)]), plain),
+    ];
+    let solved = run(&features, &flat, &[]);
+    assert_eq!(side_at(&solved, 0, (0.0, 0.0)), (0, 0));
+    assert_eq!(side_at(&solved, 1, (0.0, 0.0)), (SIDE_ON, 1));
+    assert_eq!(side_at(&solved, 2, (0.0, 0.0)), (SIDE_BACK | SIDE_ON, 1));
+    assert_eq!(side_at(&solved, 3, (0.0, 0.0)), (0, 0));
+    // The same side road drawn toward the junction. At a level crossing, the track runs through.
+    let features = [
+        way("tertiary", line(&[(-200.0, 0.0), (0.0, 0.0), (200.0, 0.0)]), plain),
+        way("residential", line(&[(0.0, 200.0), (0.0, 0.0)]), plain),
+        way("rail", line(&[(0.0, -200.0), (100.0, 0.0), (0.0, 200.0)]), plain),
+    ];
+    let solved = run(&features, &flat, &[]);
+    assert_eq!(side_at(&solved, 1, (0.0, 0.0)).0, SIDE_BACK);
+    assert_eq!(side_at(&solved, 0, (100.0, 0.0)), (SIDE_BACK | SIDE_ON, 1));
+    assert_eq!(side_at(&solved, 2, (100.0, 0.0)), (0, 0));
+    // Two ways run on, also across a change of class and past a path.
+    let features = [
+        way("tertiary", line(&[(-200.0, 0.0), (0.0, 0.0)]), plain),
+        way("residential", line(&[(0.0, 0.0), (200.0, 0.0)]), plain),
+        way("path", line(&[(0.0, 0.0), (0.0, 200.0)]), plain),
+    ];
+    let solved = run(&features, &flat, &[]);
+    assert!(solved.ways.iter().flatten().flatten().flat_map(|w| &w.plan).all(|p| p.side == 0));
 }
 
 #[test]

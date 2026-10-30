@@ -15,7 +15,7 @@ use super::curve::{arc, bessel, hermite, lengths, penalised, smooth_along, tange
 use super::network::{dot, hypot, sub, Network};
 use super::{Classes, Way, SAMPLE_M};
 use crate::tiles::{rounded_grade, rounded_tangent};
-use crate::{metres, Part, Plan};
+use crate::{metres, Part, Plan, SIDE_BACK, SIDE_ON};
 
 /// A chord of a way leaves its curve by at most this: a tile keeps a segment by its chord, against a
 /// buffer of 40 m.
@@ -174,6 +174,19 @@ fn marks(net: &Network, links: &[[Option<(usize, bool)>; 2]], classes: &Classes)
         }
     }
     Marks { pin, calm }
+}
+
+/// Per vertex of the network, the ways out of it that leave its junction as a side: of a road or a
+/// track, where more than two of these meet. Two run on, whatever their classes, and a path never
+/// runs through a junction of roads.
+fn side_ways(net: &Network, classes: &Classes) -> Vec<u8> {
+    let mut side = vec![0; net.vertex_xy.len()];
+    for (i, &o) in net.sides.occurrence.iter().enumerate() {
+        if net.sides.ways[i] > 2 && net.rule[net.osm_way[o]] < classes.path {
+            side[net.osm_position[o]] |= if net.sides.step[i] == 1 { SIDE_ON } else { SIDE_BACK };
+        }
+    }
+    side
 }
 
 /// The samples of a stroke.
@@ -399,6 +412,7 @@ pub(crate) fn align(
     mine: &[bool],
 ) -> (Vec<Way>, Vec<Join>) {
     let links = joins(net);
+    let side = side_ways(net, classes);
     let mut marks = marks(net, &links, classes);
     for (pin, &var) in marks.pin.iter_mut().zip(&net.vertex_var) {
         *pin |= stay[var] || water[var];
@@ -407,8 +421,9 @@ pub(crate) fn align(
     let mut ways = vec![Way::default(); links.len()];
     for pieces in strokes(&links) {
         let mut samples = Samples::default();
-        // Per piece, the samples of its way in the order of the stroke, with whether each is of OSM.
-        let mut lists: Vec<Vec<(usize, bool)>> = Vec::with_capacity(pieces.len());
+        // Per piece, the samples of its way in the order of the stroke, with whether each is of OSM and
+        // the side ways of its vertex.
+        let mut lists: Vec<Vec<(usize, bool, u8)>> = Vec::with_capacity(pieces.len());
         for &(w, forward) in &pieces {
             let rule = net.rule[w];
             let free = net.free[w];
@@ -426,7 +441,7 @@ pub(crate) fn align(
                     samples.pin[first] |= pin;
                     samples.calm[first] |= calm;
                     samples.rule[first] = samples.rule[first].min(rule);
-                    list.push((first, true));
+                    list.push((first, true, side[v]));
                     continue;
                 }
                 if j > 0 {
@@ -436,12 +451,12 @@ pub(crate) fn align(
                     let steps = (hypot(d) * metres(a[1] + d[1] / 2.0) / SAMPLE_M).round().max(1.0) as usize;
                     for i in 1..steps {
                         let t = i as f64 / steps as f64;
-                        list.push((samples.x.len(), false));
+                        list.push((samples.x.len(), false, 0));
                         samples.push([a[0] + d[0] * t, a[1] + d[1] * t], b + (z - b) * t, false, free, false, rule);
                     }
                 }
                 samples.vertex.push(samples.x.len());
-                list.push((samples.x.len(), net.vertex_osm[v]));
+                list.push((samples.x.len(), net.vertex_osm[v], side[v]));
                 samples.push(xy, z, pin, calm, wet, rule);
             }
             if !forward {
@@ -465,8 +480,8 @@ pub(crate) fn align(
             let unknown = |k: usize| samples.z[order[k]].is_nan();
             // Each job keeps its part of a way alone: a stop at the first vertex of OSM in each area lets
             // the job that owns a chord test it, whatever the job past its end keeps.
-            let area = |&(i, _): &(usize, bool)| area_of([samples.x[i], samples.y[i]]);
-            let osm: Vec<&(usize, bool)> = list.iter().filter(|l| l.1).collect();
+            let area = |&(i, ..): &(usize, bool, u8)| area_of([samples.x[i], samples.y[i]]);
+            let osm: Vec<_> = list.iter().filter(|l| l.1).collect();
             let entries: HashSet<usize> = osm.windows(2).filter(|p| area(p[0]) != area(p[1])).map(|p| p[1].0).collect();
             let stops: Vec<usize> = (0..order.len())
                 .filter(|&k| {
@@ -484,7 +499,7 @@ pub(crate) fn align(
             let mut osm = 0;
             let mut way = Way::default();
             let mut next = keep.iter().peekable();
-            for (k, &(i, of_osm)) in list.iter().enumerate() {
+            for (k, &(i, of_osm, side)) in list.iter().enumerate() {
                 osm += usize::from(of_osm && k > 0);
                 if next.peek() == Some(&&k) {
                     next.next();
@@ -498,6 +513,7 @@ pub(crate) fn align(
                         widen: curve.widen[i],
                         along: 0.0,
                         whole: samples.water[i],
+                        side,
                     });
                     way.osm.push(osm);
                 }

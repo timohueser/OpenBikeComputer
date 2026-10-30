@@ -43,14 +43,16 @@ pub(crate) struct Network {
     pub length: Vec<f64>,
 }
 
-/// The side directions of the junctions: per side its occurrence, step and approach metres, and the
-/// through directions of its junction as (occurrence, step), the second one None where there is one.
+/// The side directions of the junctions: per side its occurrence, step and approach metres, the
+/// through directions of its junction as (occurrence, step), the second one None where there is one,
+/// and the count of the ways out of its junction that are no path.
 #[derive(Default)]
 pub(crate) struct Sides {
     pub occurrence: Vec<usize>,
     pub step: Vec<i64>,
     pub distance: Vec<f64>,
     pub through: Vec<[Option<(usize, i64)>; 2]>,
+    pub ways: Vec<usize>,
 }
 
 /// The points of a part without a vertex that repeats the one before it: it has no length to solve along.
@@ -298,6 +300,7 @@ impl Network {
                 vec![top[0]]
             };
             let distance = if best >= classes.path { APPROACH_PATH_M } else { APPROACH_M };
+            let ways = group.iter().filter(|&&i| rank[i] < classes.path).count();
             let t1 = (rows[through[0]].0, rows[through[0]].1);
             let t2 = through.get(1).map(|&i| (rows[i].0, rows[i].1));
             if let Some(t2) = t2 {
@@ -311,6 +314,7 @@ impl Network {
                     self.sides.step.push(rows[i].1);
                     self.sides.distance.push(distance);
                     self.sides.through.push([Some(t1), t2]);
+                    self.sides.ways.push(ways);
                 }
             }
             s = e;

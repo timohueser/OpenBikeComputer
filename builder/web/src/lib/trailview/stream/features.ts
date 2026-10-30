@@ -1,5 +1,5 @@
-// Feature tiles decoded per specs/trailview-features.md: a string table, then features, each a
-// kind with tags and parts in tile units, and a height per vertex once a solver has set one.
+// Feature tiles decoded per specs/trailview-features.md: a string table and a stream per field, into
+// features, each a kind with tags and parts in tile units, and a height per vertex once a solver has set one.
 
 export type Geometry = 'point' | 'line' | 'area';
 
@@ -20,6 +20,8 @@ export const FORMAT = 3;
 const FINE = 4;
 /** The codes of a turn of a tangent, and of a rise per metre in a grade and a bank. */
 const TURN = 1024, GRADE = 250, BANK = 1000;
+/** The bits of `side`: the way back along a part, and the way on. */
+export const SIDE_BACK = 1, SIDE_ON = 2;
 
 /**
  * Decoded bytes a worker keeps: four of the largest zoom 13 tile of the box bake, 279 kB of gzip
@@ -64,7 +66,7 @@ function decodedBytes(features: Feature[]): number {
     let bytes = 0;
     for (const feature of features) {
         bytes += 300;
-        for (const part of feature.parts) bytes += 400 + part.xy.byteLength + (part.z?.byteLength ?? 0) + 4 * (part.plan?.tangent.byteLength ?? 0);
+        for (const part of feature.parts) bytes += 400 + part.xy.byteLength + (part.z?.byteLength ?? 0) + 5 * (part.plan?.tangent.byteLength ?? 0);
     }
     return bytes;
 }
@@ -83,6 +85,8 @@ export interface Alignment {
     bank: Float32Array;
     /** Metres that the half-width gains. */
     widen: Float32Array;
+    /** Which ways out of a vertex leave its junction as a side: SIDE_BACK and SIDE_ON. */
+    side: Float32Array;
 }
 
 export interface FeaturePart {
@@ -133,47 +137,59 @@ export function decodeFeatures(bytes: Uint8Array): Feature[] {
         if (value === undefined) throw new Error('A feature names a string that the tile does not have.');
         return value;
     };
-    /** The columns of a part of `vertices` vertices. */
-    const alignment = (vertices: number): Alignment | null => {
-        const code = read();
-        if (!code) return null;
-        const column = (decoded: (value: number) => number) => Float32Array.from({ length: vertices }, () => decoded(read()));
-        let turned = 0, grade = 0;
-        return {
-            along: Math.floor((code - 1) / 2) / 10, backward: (code - 1) % 2 === 1,
-            tangent: column(value => (turned = (turned + signed(value) + TURN) % TURN) * (2 * Math.PI / TURN)),
-            grade: column(value => (grade += signed(value)) / GRADE),
-            bank: column(value => signed(value) / BANK),
-            widen: column(value => value / 100),
-        };
-    };
-    const features: Feature[] = [];
-    for (let count = read(); count > 0; count--) {
-        const kind = string();
+    const heads = Array.from({ length: read() }, () => ({ kind: string(), header: read() }));
+    const features: Feature[] = heads.map(({ kind, header }) => {
         const tags: [string, string][] = [];
         for (let pairs = read(); pairs > 0; pairs--) tags.push([string(), string()]);
-        const header = read();
         const geometry = GEOMETRIES[header % 4];
         if (!geometry) throw new Error('A feature has an unknown geometry.');
+        // fromEntries keeps a key such as `__proto__` as an own property.
+        return { kind, tags: Object.fromEntries(tags), geometry, parts: [] };
+    });
+    heads.forEach(({ header }, f) => {
         const solved = Math.floor(header / 4) % 2 === 1, planned = Math.floor(header / 8) % 2 === 1;
-        const parts: FeaturePart[] = [];
-        let x = 0, y = 0, height = 0;
         for (let remaining = Math.floor(header / 16); remaining > 0; remaining--) {
             const head = read(), vertices = Math.floor(head / 2);
-            const xy = planned ? new Float32Array(2 * vertices) : new Int32Array(2 * vertices), z = solved ? new Float32Array(vertices) : null;
-            for (let v = 0; v < vertices; v++) {
-                xy[2 * v] = (x += signed(read())) / (planned ? FINE : 1);
-                xy[2 * v + 1] = (y += signed(read())) / (planned ? FINE : 1);
+            features[f].parts.push({ outer: head % 2 === 1, xy: planned ? new Float32Array(2 * vertices) : new Int32Array(2 * vertices), z: solved ? new Float32Array(vertices) : null, plan: null });
+        }
+    });
+    for (const [f, { parts }] of features.entries()) {
+        const fine = Math.floor(heads[f].header / 8) % 2 === 1 ? FINE : 1;
+        let x = 0, y = 0, height = 0;
+        for (const { xy, z } of parts) {
+            for (let v = 0; v < xy.length / 2; v++) {
+                xy[2 * v] = (x += signed(read())) / fine;
+                xy[2 * v + 1] = (y += signed(read())) / fine;
                 if (!z) continue;
                 const code = read();
                 if (code) height += signed(code - 1);
                 z[v] = code ? height / 100 : NaN;
             }
-            parts.push({ outer: head % 2 === 1, xy, z, plan: planned ? alignment(vertices) : null });
         }
-        // fromEntries keeps a key such as `__proto__` as an own property.
-        features.push({ kind, tags: Object.fromEntries(tags), geometry, parts });
     }
+    const aligned: { part: FeaturePart; code: number }[] = [];
+    for (const [f, { parts }] of features.entries()) {
+        if (Math.floor(heads[f].header / 8) % 2 === 0) continue;
+        for (const part of parts) {
+            const code = read();
+            if (code) aligned.push({ part, code });
+        }
+    }
+    /** The values of a stream of the alignment, per part with one, each the sum of the codes of its part so far when `running`. */
+    const column = (decoded: (value: number) => number, running = false) => aligned.map(({ part }) => {
+        const values = new Float32Array(part.xy.length / 2);
+        let sum = 0;
+        for (let v = 0; v < values.length; v++) values[v] = decoded(running ? (sum += signed(read())) : read());
+        return values;
+    });
+    const tangents = column(value => ((value % TURN) + TURN) % TURN * (2 * Math.PI / TURN), true), grades = column(value => value / GRADE, true);
+    const banks = column(value => signed(value) / BANK), words = column(value => value);
+    aligned.forEach(({ part, code }, n) => {
+        part.plan = {
+            along: Math.floor((code - 1) / 2) / 10, backward: (code - 1) % 2 === 1, tangent: tangents[n], grade: grades[n], bank: banks[n],
+            widen: words[n].map(word => Math.floor(word / 4) / 100), side: words[n].map(word => word % 4),
+        };
+    });
     if (at !== bytes.length) throw new Error('The feature tile has bytes after its last feature.');
     return features;
 }
