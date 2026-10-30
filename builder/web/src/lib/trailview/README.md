@@ -75,6 +75,7 @@ From `builder/web/tests/browser`:
 ```sh
 npm run pretest:trailview                  # the page against the fixture
 node trailview/shoot.mjs [--views FILE] [--out DIR] [--width PX] [--height PX] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--hud] [--gpu] [--audit]
+node trailview/shoot.mjs --gpu --views trailview/road-views.json --width 1920 --height 960  # these views need this size: the default is 1280 × 800
 node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--cracks N] [--audit N] [--resolve MS]
 node trailview/skyline.mjs [--tiles FILE] [--lab LAB] [--gpu]
 trailview/box.sh [view | flight ARGS]       # bake the Engelberg box without obc data; open it; time it
@@ -82,15 +83,16 @@ node trailview/network.mjs [--view V] [--mbit 25] [--rtt 40] [--web DIR]  # a co
 npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
 ```
 
-`shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs can differ in
-a few pixels by a few levels: compare shots by their difference. `flight.mjs` prints the GPU time
-per pass, the CPU selection time, and the nodes, triangles and pages of each flight of
-`flights.json`. The `ground` pass runs only when ground pages arrive: read its `amortized` time.
-Run it on the M1 Pro with `--gpu`: Chrome then draws 2560 × 1600 pixels and reports exact
-timestamps. `--tiles` serves a `planner-dem` MBTiles instead of the fixture, and `--features` a
-folder `z/x/y.bin`; build the page with a config whose `bounds` are its box. `--lab NAME:VARIANT`
-adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
-`debug=cracks`; such a flight looks down on known terrain only, as `cracks.json` does over the box.
+`shoot.mjs` writes one PNG per view after `waitForIdle()`, once the structure draws hold and the
+still view has its frames. Two runs can differ in a few pixels by a few levels: compare shots by
+their difference. `flight.mjs` prints the GPU time per pass, the CPU selection time, and the nodes,
+triangles and pages of each flight of `flights.json`. The `ground` pass runs only when ground pages
+arrive: read its `amortized` time. `--gpu` draws 2560 × 1600 pixels with exact timestamps. With
+`--resolve MS`, a flight whose `resolve` median drifts prints `valid: false`. `zoom-out` always reads
+invalid: its pass is too small to hold the clock, so only walk and drive count. With `--tiles` or
+`--features`, build the page with a config whose `bounds` are its box. `--cracks 10` counts the red
+pixels of every tenth frame with `debug=cracks`; such a flight looks down on known terrain only, as
+`cracks.json` does.
 
 `--ground DIR` serves the bakes of `tools/trailview` and `tools/planner_snow.py` as the tile service
 does: `DIR/rules.json`, `DIR/{ground,trailview-canopy}.pmtiles`, `DIR/snow-days/<band>.pmtiles` and
@@ -98,9 +100,8 @@ does: `DIR/rules.json`, `DIR/{ground,trailview-canopy}.pmtiles`, `DIR/snow-days/
 the page with a config whose `layers` name `https://tiles.test/<name>.json` and whose
 `trailview_rules` is `https://tiles.test/trailview/rules.json`.
 
-`skyline.mjs` draws each photograph of `peak-view-photos` from 1.6 m above its `ground_m` and
-prints the RMS of the drawn skyline against the photograph's, per quarter-degree column. It exits 1
-past an `rms_limit_deg`.
+`skyline.mjs` draws each photograph of `peak-view-photos` and prints the RMS of the drawn skyline
+against the photograph's, per quarter-degree column. It exits 1 past an `rms_limit_deg`.
 
 ## Test
 
@@ -128,7 +129,7 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 ## Pitfalls
 
 - SwiftShader times are not GPU times. Measure on a GPU.
-- macOS lowers the GPU clock when a frame has time to spare, so a pass measures long;
+- A GPU lowers its clock when a frame has time to spare, so a pass measures long;
   `flight.mjs --gpu` keeps the clock high.
 - Tag a browser test that draws for minutes on SwiftShader `{ tag: '@gpu' }`: pull requests skip
   it, `test-weekly.yml` runs it each Monday.
