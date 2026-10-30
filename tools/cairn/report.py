@@ -1,4 +1,5 @@
-"""The weekly report: the overrides, the ratchet, and drift between the approved system docs and the code.
+"""The weekly report: the overrides, the size estimates, the ratchet, and drift between the approved
+system docs and the code.
 
 Step 1 reads git and GitHub and costs no tokens. For each approved doc, it collects the pull
 requests merged since the doc last changed that touch the files of its system. Step 2 sends one
@@ -81,8 +82,9 @@ SCHEMA = {
 
 def untrusted(text: str) -> str:
     """Text from a pull request or the model, on one line. A zero-width space after each `@` keeps
-    GitHub from notifying the user that it names."""
-    return " ".join(str(text).split()).replace("@", "@\u200b")
+    GitHub from notifying the user that it names, and `&lt;` keeps `<!--` from hiding the rest of the
+    report."""
+    return " ".join(str(text).split()).replace("@", "@\u200b").replace("<", "&lt;")
 
 
 def pull_mode(pull: dict) -> modes.Mode | None:
@@ -92,20 +94,71 @@ def pull_mode(pull: dict) -> modes.Mode | None:
 # ── step 1: no tokens ────────────────────────────────────────────────────────
 
 
-def overrides(api: Api, now: datetime) -> list[tuple[int, str, str]]:
-    """The pull requests merged in the 7 days before `now` whose mode is an override, as (number,
-    title, reason). The list is newest update first, so it stops at a page that ends before the
-    window."""
+def merged(api: Api, now: datetime) -> list[dict]:
+    """The pull requests merged in the 7 days before `now`, by number. The list is newest update
+    first, so it stops at a page that ends before the window."""
     since = now - timedelta(days=7)
     found = []
     for page in itertools.count(1):
         pulls = api(f"pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}")
-        for pull in pulls:
-            mode = pull_mode(pull)
-            if pull.get("merged_at") and datetime.fromisoformat(pull["merged_at"]) >= since and mode and mode.kind == "override":
-                found.append((pull["number"], pull["title"], mode.reason))
+        found += [pull for pull in pulls if pull.get("merged_at") and datetime.fromisoformat(pull["merged_at"]) >= since]
         if len(pulls) < 100 or datetime.fromisoformat(pulls[-1]["updated_at"]) < since:
-            return sorted(found)
+            return sorted(found, key=lambda pull: pull["number"])
+
+
+def overrides(pulls: list[dict]) -> list[tuple[int, str, str]]:
+    """The pull requests whose mode is an override, as (number, title, reason)."""
+    return [(pull["number"], pull["title"], mode.reason) for pull in pulls
+            if (mode := pull_mode(pull)) and mode.kind == "override"]
+
+
+def estimate(root: Path, config: dict, docs: list[cairn.Doc], api: Api, merge: str, issue: int) -> tuple[str, str, list[str]]:
+    """The planned and the measured size of a change, and the signals of the measured size. A size
+    that cannot be read is `unknown`, and the signals say why. The measured size uses the rules of
+    the merge's first parent, as the mode gate does, but not new dependencies: they need the
+    dependency graph of both commits. System ownership comes from today's docs, not from the merge."""
+    planned, measured, why = "unknown", "unknown", []
+    try:
+        planned = modes.issue_size(modes.issue_body(issue, api(f"issues/{issue}"))) or "unknown"
+        if planned == "unknown":
+            why.append(f"issue #{issue} has no Size line")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        why.append(f"issue #{issue} cannot be read: {error}")
+    if not merge:
+        return planned, measured, [*why, "the pull request has no merge commit"]
+    if modes.git(root, "rev-parse", "--verify", "--quiet", f"{merge}^1") is None:
+        return planned, measured, [*why, f"the merge commit {merge[:12]} is not in this checkout"]
+    try:
+        base = cairn.shown_at(root, f"{merge}^1")(cairn.CONFIG)
+        rules = cairn.gate_rules(config, json.loads(base) if base else None)
+        measured, signals = modes.size(cairn.pr_diff(root, f"{merge}^1", docs, rules, set(), merge), rules["size"])
+        why += signals
+    except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+        why.append(f"the merge commit {merge[:12]} cannot be read: {error}")
+    return planned, measured, why
+
+
+def size_lines(root: Path, config: dict, docs: list[cairn.Doc], api: Api, pulls: list[dict]) -> list[str]:
+    rows, counts = [], Counter()
+    for pull in pulls:
+        mode = pull_mode(pull)
+        if not mode or mode.kind != "change":
+            continue
+        planned, measured, why = estimate(root, config, docs, api, pull.get("merge_commit_sha") or "", mode.issue)
+        # A pull request that cites an L issue is one part of an epic, so it cannot be larger.
+        if planned == "L":
+            counts["against an epic"] += 1
+        elif "unknown" in (planned, measured):
+            counts["unknown"] += 1
+        else:
+            order = modes.SIZES.index(measured) - modes.SIZES.index(planned)
+            counts["as planned" if order == 0 else "larger" if order > 0 else "smaller"] += 1
+        rows.append(f"| #{pull['number']} | #{mode.issue} | {planned} | {measured} | {untrusted('; '.join(why)).replace('|', '/')} |")
+    if not rows:
+        return ["None."]
+    kinds = ["as planned", "larger", "smaller"] + [kind for kind in ("against an epic", "unknown") if counts[kind]]
+    return [f"{len(rows)} pull request(s): {', '.join(f'{counts[kind]} {kind}' for kind in kinds)}.", "",
+            "| Pull request | Issue | Planned | Measured | Signals |", "| --- | --- | --- | --- | --- |", *rows]
 
 
 @dataclass(frozen=True)
@@ -146,12 +199,11 @@ def evidence(root: Path, read: Api, number: int, commit: str, files: list[str]) 
     return head + (modes.git(root, "diff", "--no-renames", f"{commit}^1", commit, "--", *files) or "")
 
 
-def drift_inputs(root: Path, docs: list[cairn.Doc], config: dict, api: Api) -> list[Inputs]:
+def drift_inputs(root: Path, docs: list[cairn.Doc], config: dict, read: Api) -> list[Inputs]:
     """For each approved doc, the pull requests merged since the doc last changed that touch the
     files of its system outside the `fix.tests` and `report.ignore` globs and the map, newest first."""
     folder = config["docs"].rstrip("/")
     dropped, limit = config["fix"]["tests"] + config["report"]["ignore"], config["report"]["max_input_chars"]
-    read = functools.cache(api)
     found = []
     for doc in docs:
         path = f"{folder}/{doc.system}.md"
@@ -365,12 +417,15 @@ def write(root: Path, config: dict, docs: list[cairn.Doc], result: cairn.Result,
           api: Api, drifting: bool, key: str | None, now: datetime) -> tuple[str, bool]:
     """The report, and whether a part of it failed. Step 2 runs only when `drifting`."""
     failed = False
+    # The size estimates and the drift inputs read the same pull requests and issues.
+    read = functools.cache(api)
     lines = ["# cairn report", "", f"Written on {now:%Y-%m-%d} at {modes.git(root, 'rev-parse', '--short', 'HEAD')}.",
              "", "## Overrides merged in the last 7 days", ""]
     try:
-        found = overrides(api, now)
-        rows = [f"| #{n} | {untrusted(t).replace('|', '/')} | {untrusted(r).replace('|', '/')} |" for n, t, r in found]
+        pulls = merged(read, now)
+        rows = [f"| #{n} | {untrusted(t).replace('|', '/')} | {untrusted(r).replace('|', '/')} |" for n, t, r in overrides(pulls)]
         lines += ["| Pull request | Title | Reason |", "| --- | --- | --- |", *rows] if rows else ["None."]
+        lines += ["", "## Size estimates of the changes merged in the last 7 days", "", *size_lines(root, config, docs, read, pulls)]
     except (OSError, ValueError, KeyError, TypeError) as error:
         failed = True
         lines.append(f"The pull requests cannot be read: {error}")
@@ -384,7 +439,7 @@ def write(root: Path, config: dict, docs: list[cairn.Doc], result: cairn.Result,
 
     lines += ["", "## Drift", ""]
     try:
-        inputs = drift_inputs(root, docs, config, api)
+        inputs = drift_inputs(root, docs, config, read)
     except (OSError, ValueError, KeyError, TypeError) as error:
         return "\n".join([*lines, f"The inputs cannot be read: {error}"]), True
     if not inputs:

@@ -560,10 +560,10 @@ def with_map(page: str, block: str, name: str) -> str:
 # ── the mode gate ────────────────────────────────────────────────────────────
 
 
-def diff_lines(root: Path, commit: str) -> dict[str, int]:
-    """Each path that changed between the commit and HEAD, with its added and removed lines. A
+def diff_lines(root: Path, commit: str, head: str = "HEAD") -> dict[str, int]:
+    """Each path that changed between the commit and the head, with its added and removed lines. A
     binary file counts 0."""
-    out = subprocess.run(["git", "-C", str(root), "diff", "--numstat", "--no-renames", "-z", commit, "HEAD"],
+    out = subprocess.run(["git", "-C", str(root), "diff", "--numstat", "--no-renames", "-z", commit, head],
                          capture_output=True, text=True, check=True).stdout
     found = {}
     for record in filter(None, out.split("\0")):
@@ -616,22 +616,29 @@ def header_of(text: str | None) -> str | None:
     return match.group(1) if match else None
 
 
-def pr_diff(root: Path, commit: str, docs: list[Doc], rules: dict, new_edges: set[tuple[str, str]]) -> modes.Diff:
-    """What the diff from the commit to HEAD touches. A system doc touches only its own system,
+def gate_rules(head: dict, base: dict | None) -> dict:
+    """The config of the mode gate: the `fix`, `size` and `specs` keys come from the base config,
+    else from the defaults, never from HEAD."""
+    return {**head, **modes.DEFAULTS, **{key: base[key] for key in ("fix", "size", "specs") if base and key in base}}
+
+
+def pr_diff(root: Path, commit: str, docs: list[Doc], rules: dict, new_edges: set[tuple[str, str]],
+            head: str = "HEAD") -> modes.Diff:
+    """What the diff from the commit to the head touches. A system doc touches only its own system,
     whatever owns its folder."""
     folder = rules["docs"].rstrip("/") + "/"
-    lines = diff_lines(root, commit)
+    lines = diff_lines(root, commit, head)
     # The map follows from the docs and the code, so it counts for no system and adds no lines.
     lines.pop(folder + MAP, None)
-    base, head = shown_at(root, commit), shown_at(root, "HEAD")
+    base, after = shown_at(root, commit), shown_at(root, head)
     changed_docs, headers, new = {}, set(), set()
     for path in lines:
         name = path[len(folder):-len(".md")]
         if path.startswith(folder) and path.endswith(".md") and "/" not in name:
-            before, after = header_of(base(path)), header_of(head(path))
-            if before or after:
+            before, now = header_of(base(path)), header_of(after(path))
+            if before or now:
                 changed_docs[path] = name
-                if before != after:
+                if before != now:
                     headers.add(name)
                 if not before:
                     new.add(name)
@@ -669,11 +676,10 @@ def mode_gate(root: Path, head: Tree, ref: str) -> bool:
         base = None
         unread = f"the base {commit[:12]} cannot be read, so its graph, approvals and rules are unknown: {error}"
         print(f"cairn: {unread}")
-    rules = {**head.config, **modes.DEFAULTS,
-             **{key: base.config[key] for key in ("fix", "size", "specs") if base and key in base.config}}
+    rules = gate_rules(head.config, base.config if base else None)
     new_edges = added_edges(head.edges, base.edges) if base else set()
     diff = pr_diff(root, commit, head.docs, rules, new_edges)
-    issue = epic = None
+    issue = epic = note = None
     if mode is not None and mode.kind == "change":
         try:
             issue, epic = modes.fetch_issue(root, mode.issue), modes.fetch_epic(root, mode.issue)
@@ -682,6 +688,8 @@ def mode_gate(root: Path, head: Tree, ref: str) -> bool:
     if mode is not None and not found:
         names = {doc.system: doc.name for doc in head.docs}
         found = modes.violations(mode, diff, rules, issue, names, epic)
+    if issue is not None:
+        note = modes.size_note(mode.issue, issue, diff, rules["size"])
     if mode is not None and mode.kind in ("fix", "change") and unread:
         found.append(unread)
     approved = {doc.system for doc in head.docs + (base.docs if base else []) if doc.status == "approved"}
@@ -691,6 +699,8 @@ def mode_gate(root: Path, head: Tree, ref: str) -> bool:
     for line in found:
         print(f"  {'FAIL' if failing else '    '} {line}")
     print(f"mode: {len(found)} violation(s), {'fail' if failing else 'pass'}")
+    if note:
+        print(f"::notice::{note}" if event else f"cairn: note: {note}")
     return failing
 
 

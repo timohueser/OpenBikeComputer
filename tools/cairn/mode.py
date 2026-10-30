@@ -20,6 +20,7 @@ SIZES = ("S", "M", "L")
 DEFAULTS = {
     "fix": {"max_lines": 1000, "tests": ["**/tests/**", "tests.rs", "*_tests.rs", "*_test.py", "*Tests.swift", "*.test.ts"]},
     "size": {"S": {"systems": 1, "lines": 500}, "M": {"systems": 3, "lines": 1500}},
+    "specs": "specs",
 }
 KEY = "cairnMode"
 FORMS = (
@@ -241,15 +242,13 @@ def size(diff: Diff, limits: dict) -> tuple[str, list[str]]:
     return found, [text for s, text in signals if s == found]
 
 
-def size_problems(number: int, issue: str, diff: Diff, limits: dict) -> list[str]:
+def size_note(number: int, issue: str, diff: Diff, limits: dict) -> str | None:
+    """A note when the diff is larger than the `**Size:**` line of the issue. It never fails."""
     declared = issue_size(issue)
-    if declared is None:
-        return [f"issue #{number} has no `**Size:** S|M|L` line"]
     found, signals = size(diff, limits)
-    if SIZES.index(found) <= SIZES.index(declared):
-        return []
-    return [f"`change #{number}` is sized {declared}, but the diff is {found}: {', '.join(signals)}. "
-            "Shrink the pull request, amend the issue (which needs a new approval), or override with a reason"]
+    if declared is None or SIZES.index(found) <= SIZES.index(declared):
+        return None
+    return f"`change #{number}` is sized {declared}, but the diff is {found}: {', '.join(signals)}"
 
 
 def violations(mode: Mode, diff: Diff, rules: dict, issue: str | None = None, names: dict[str, str] | None = None,
@@ -288,7 +287,8 @@ def violations(mode: Mode, diff: Diff, rules: dict, issue: str | None = None, na
                 for system in sorted(diff.touched - allowed)]
         out += [f"the change adds {a} -> {b}, so it changes docs/design/{a}.md too"
                 for a, b in sorted(diff.new_edges) if a not in diff.docs]
-        out += size_problems(mode.issue, issue, diff, rules["size"])
+        if issue_size(issue) is None:
+            out.append(f"issue #{mode.issue} has no `**Size:** S|M|L` line")
     elif mode.kind == "prototype":
         out.append("a prototype never merges")
     return out

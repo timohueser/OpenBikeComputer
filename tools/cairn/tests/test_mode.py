@@ -161,12 +161,13 @@ class SizeTests(unittest.TestCase):
         self.assertEqual(self.size(new_edges=frozenset({("routing", "search")})), ("M", ["a new dependency routing -> search"]))
         self.assertEqual(self.size(new_docs=frozenset({"search"})), ("L", ["a new system doc for search"]))
 
-    def test_a_change_larger_than_its_issue_is_a_violation(self):
+    def test_a_change_larger_than_its_issue_is_a_note_and_a_missing_size_is_a_violation(self):
         body = issue("routing", size="**Size:** S (one system)")
-        self.assertEqual(self.check(mode.Diff(frozenset({"routing"}), lines=500), body), [])
-        self.assertEqual(self.check(mode.Diff(frozenset({"routing"}), lines=640), body), [
-            "`change #5` is sized S, but the diff is M: 640 changed lines outside tests. Shrink the pull request, "
-            "amend the issue (which needs a new approval), or override with a reason"])
+        larger = mode.Diff(frozenset({"routing"}), lines=640)
+        self.assertEqual(self.check(larger, body), [])
+        self.assertEqual(mode.size_note(5, body, larger, mode.DEFAULTS["size"]),
+                         "`change #5` is sized S, but the diff is M: 640 changed lines outside tests")
+        self.assertIsNone(mode.size_note(5, body, mode.Diff(frozenset({"routing"}), lines=500), mode.DEFAULTS["size"]))
         self.assertEqual(self.check(mode.Diff(frozenset({"routing"})), issue("routing", size="")),
                          ["issue #5 has no `**Size:** S|M|L` line"])
         self.assertIsNone(mode.issue_size("**Size:**\nS\n"))
