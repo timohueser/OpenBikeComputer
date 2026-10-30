@@ -224,9 +224,9 @@ fn paved_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, half: f32
     let lane = 2.0 * half / lanes;
     let in_lane = fract((across + half) / lane) * lane - 0.5 * lane;
     let wob = 0.06 * (noise(vec2f(along / 11.0, across)) - 0.5);
-    let wheels = smoothstep(0.32, 0.12, abs(abs(in_lane + wob) - 0.82));
+    let wheels = smoothstep(0.4, 0.12, abs(abs(in_lane + wob) - 0.85));
     // Polished wheel paths: darker and smoother; oil down a lane's middle; the crown between lanes lighter.
-    t *= 1.0 - 0.1 * wheels - 0.05 * smoothstep(0.35, 0.0, abs(in_lane)) * seen(0.5, pw);
+    t *= 1.0 - 0.15 * wheels - 0.07 * smoothstep(0.3, 0.0, abs(in_lane)) * (0.6 + 0.8 * noise(vec2f(along / 2.0, across))) * seen(0.5, pw);
     t *= 1.0 + 0.05 * smoothstep(0.6, 0.0, abs(abs(in_lane) - 0.5 * lane)) * step(1.5, lanes);
     // The edges: dust and grit, browner.
     let dirt = smoothstep(0.6, 0.0, edge + 0.15 * (noise(p / 0.8) - 0.5));
@@ -378,7 +378,7 @@ fn trail_look(region: u32, su: vec2f, p: vec2f, across: f32, half: f32, along: f
     let rocky = clamp(smoothstep(0.92, 0.7, slope) + smoothstep(1700.0, 2300.0, altitude), 0.0, 1.0);
     let cell = cell_at(su, u32(ceil(lod(su))));
     let rock = rule(cell.b, slot_lithologies() + i32(cell.g)).rgb;
-    let soil = mix(rule(region, slot_roads() + 3).rgb * vec3f(1.05, 1.0, 0.95), rock * 0.75, 0.45 * rocky);
+    let soil = mix(mix(rule(region, slot_roads() + 3).rgb, rule(region, slot_roads() + 5).rgb, 0.4), rock * 0.75, 0.85 * rocky);
     // The tread keeps within 0.55 m of the middle, where kept_off of features.wgsl lets plants grow.
     let room = min(max(half - 0.35, 0.05), 0.65);
     let centre = room * 0.45 * (noise(vec2f(along / 13.0, 1.0)) - 0.5) + 0.08 * (noise(vec2f(along / 4.0, 2.0)) - 0.5);
@@ -389,9 +389,9 @@ fn trail_look(region: u32, su: vec2f, p: vec2f, across: f32, half: f32, along: f
     var c = soil * (0.85 + 0.25 * noise(p / 0.5) + 0.1 * noise(p / 2.0)) * (1.0 - 0.12 * smoothstep(0.15, 0.0, abs(across - centre)));
     c *= (1.0 + 0.5 * peb.x) * mix(0.8, 1.0, peb.y);
     // Rocks set in the tread, more on rocky ground: domed, in the colour of the rock under it.
-    let r = voronoi(p, mix(0.14, 0.2, rocky));
-    let set_in = step(1.0 - mix(0.08, 0.22, rocky), r.x) * smoothstep(0.03, 0.12, r.y) * seen(0.2, pw);
-    c = mix(c, rock * (0.85 + 0.3 * r.z) * mix(0.5, 1.05, smoothstep(0.03, 0.35, r.y)), set_in);
+    let r = voronoi(p, mix(0.12, 0.17, rocky));
+    let set_in = step(1.0 - mix(0.08, 0.25, rocky), r.x) * smoothstep(0.05, 0.16, r.y) * seen(0.2, pw);
+    c = mix(c, rock * (0.95 + 0.3 * r.z) * mix(0.8, 1.08, smoothstep(0.05, 0.4, r.y)), set_in);
     out.albedo = c;
     out.bump = set_in * 1.2 * (vec2f(hash(floor(p / 0.2) + 1.0), r.z) - 0.5);
     // A trampled margin: grass with soil showing through.
