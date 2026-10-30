@@ -3,6 +3,7 @@ import type { Gpu } from '../gpu/device';
 import { CHILD, size } from '../terrain/lod';
 import type { RoadMesh } from './mesh';
 import type { RoadPiece } from './piece';
+import { Pool } from '../structures/pool';
 import { RANGE_M, Roads } from './roads';
 
 /** Metres per world unit about the eye, and the owner that holds it. */
@@ -86,6 +87,14 @@ describe('the last owner to arrive', () => {
             await new Promise(resolve => setTimeout(resolve));
         }
         expect(reach).toBe(RANGE_M);
+    });
+});
+
+describe('a mesh that the cache evicts', () => {
+    it('leaves the pool too, so its bytes do not outlive the budget', async () => {
+        const forget = vi.spyOn(Pool.prototype, 'forget'), big = pieceAt(0, 0, 33 * 2 ** 20), { roads } = await roadsWith({ pieces: [big] });
+        roads.update({ ...eye, x: eye.x + 4 * size(CHILD) * 4 }, () => true, false);
+        expect(forget).toHaveBeenCalledWith(big);
     });
 });
 

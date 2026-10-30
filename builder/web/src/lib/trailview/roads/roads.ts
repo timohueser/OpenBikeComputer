@@ -150,7 +150,7 @@ export class Roads {
         const middles = new Int32Array(2 * Math.min(DRAWS, this.pieces.length));
         for (let slot = 0; 2 * slot < middles.length; slot++) middles.set([this.pieces[slot].piece.x, this.pieces[slot].piece.y], 2 * slot);
         if (middles.length) r.device.queue.writeBuffer(r.middles, 0, middles);
-        return Math.min(this.built, ...this.pieces.filter(({ piece }) => !r.pool.at(piece)).map(({ d }) => d));
+        return Math.min(this.built, ...this.pieces.filter(({ piece }, slot) => slot >= DRAWS || !r.pool.at(piece)).map(({ d }) => d));
     }
 
     /** Before the terrain: early depth then rejects the terrain under a road. */

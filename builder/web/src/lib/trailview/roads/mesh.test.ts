@@ -84,8 +84,10 @@ describe('the corridor meshes of the fixture', () => {
     });
 
     it('hold 16 bytes per vertex, indices in range, and a far range of about a fifth of the near one', () => {
-        for (const { vertices, indices, near, far, casters } of pieces) {
+        for (const { vertices, indices, near, far, casters, over } of pieces) {
             expect(vertices.byteLength % ROAD_VERTEX).toBe(0);
+            // The frustum test counts all that a piece reaches past its square.
+            expect(new Int16Array(vertices).reduce((most, step, i) => (i % 8 < 2 ? Math.max(most, Math.abs(step) / 3) : most), 0)).toBeLessThanOrEqual(size(CHILD) / 2 + over + 1);
             expect(vertices.byteLength / ROAD_VERTEX).toBeLessThanOrEqual(65536);
             expect(indices.every(index => index < vertices.byteLength / ROAD_VERTEX)).toBe(true);
             expect(indices.byteLength % 4).toBe(0);
