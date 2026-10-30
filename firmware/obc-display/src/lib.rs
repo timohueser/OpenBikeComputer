@@ -6,7 +6,7 @@
 //! backend at the same contracts.
 //!
 //! [`framebuffer`] owns the board-owned draw targets the renderer draws into, [`panel`] the
-//! [`Band`] frame-absolute band view and the overlay composite helper, [`display_contracts`] the
+//! [`Band`] frame-absolute window view and the overlay composite helper, [`display_contracts`] the
 //! generic native-frame and presentation contracts with their conformance suite, and [`ls021`]
 //! everything specific to the shipping panel: its geometry, the row-hash damage strategy, the
 //! source-bus wire pack and the mutate-and-restore overlay engine.

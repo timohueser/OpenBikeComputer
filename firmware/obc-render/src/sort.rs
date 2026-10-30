@@ -1,6 +1,8 @@
+//! The one comparator for sorting `f32` scanline crossings.
+
 use core::cmp::Ordering;
 
-/// One comparator type shares the core sorter across the fill paths.
+/// Order two crossings. A crossing is never NaN.
 #[inline]
 pub(crate) fn crossings(a: &f32, b: &f32) -> Ordering {
     a.partial_cmp(b).unwrap()

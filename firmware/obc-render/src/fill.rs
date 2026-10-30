@@ -6,8 +6,6 @@ use embedded_graphics::{prelude::*, primitives::Rectangle};
 
 use crate::{collect::ScreenPoint, MAX_CROSSINGS, MAX_DECODE_RINGS, MAX_SCREEN_POINTS};
 
-#[cfg(test)]
-use crate::viewport::Viewport;
 /// One non-horizontal polygon edge in the exact `i`/previous-`j` orientation [`fill_polygon`]
 /// uses. Four packed panel coordinates keep a whole feature's edge table in the same phase-shared
 /// backing as the point buffer, so no arena bytes are added.
@@ -138,28 +136,6 @@ pub(crate) fn fill_polygon_edges<D, L>(
         }
     }
     flush_span(target, &mut run, color);
-}
-
-/// Project a feature's microdegree rings into `screen` and scanline-fill them. Retained as the
-/// framebuffer-equivalence oracle for the collector's screen-space compaction tests.
-#[cfg(test)]
-pub(crate) fn fill_polygon_proj<D, L>(
-    target: &mut D,
-    vp: &Viewport,
-    pts: &[(i32, i32)],
-    ring_lens: &[L],
-    color: D::Color,
-    screen: &mut Vec<Point, MAX_SCREEN_POINTS>,
-    xs: &mut Vec<f32, MAX_CROSSINGS>,
-) where
-    D: DrawTarget,
-    L: Copy + Into<usize>,
-{
-    screen.clear();
-    for &(lon, lat) in pts {
-        let _ = screen.push(vp.project(lon, lat));
-    }
-    fill_polygon(target, screen, ring_lens, color, vp.w as i32, vp.h as i32, xs);
 }
 
 /// Scanline even-odd polygon fill. `screen` holds every ring's projected points concatenated and
