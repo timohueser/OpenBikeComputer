@@ -68,24 +68,27 @@ const RIGHT_WALK: u32 = 32u;
 
 // The buckets, from the top.
 const WATER_CORE: u32 = 0u;
+// PROTOTYPE (road study): the ground at a river's or a lake's edge, which no road or path outranks
+// (edge_cap): a way along the bank gives way to the water, so the mesh across the edge keeps its shape.
+const WATER_EDGE: u32 = 1u;
 // Nothing on the ground rises through the road of a deck.
-const DECK: u32 = 1u;
-const ROAD_CORE: u32 = 2u;
+const DECK: u32 = 2u;
+const ROAD_CORE: u32 = 3u;
 // A junction's corner yields to the roads, whose own heights hold their carriageways and sidewalks.
-const CORNER_CORE: u32 = 3u;
+const CORNER_CORE: u32 = 4u;
 // A tunnel's road into its portal yields to every road over it, as under a road on an embankment.
-const PORTAL_CORE: u32 = 4u;
+const PORTAL_CORE: u32 = 5u;
 // A path's tread outranks the slopes of the roads beside it.
-const PATH_CORE: u32 = 5u;
+const PATH_CORE: u32 = 6u;
 // The sea's bed yields to the cores of a pier or a quay in it, and holds against the slopes and the cover of a tunnel.
-const SEA_BED: u32 = 6u;
-const BANKS: u32 = 7u;
+const SEA_BED: u32 = 7u;
+const BANKS: u32 = 8u;
 // The slopes of the roads and the paths.
-const CONES: u32 = 8u;
+const CONES: u32 = 9u;
 // The ground under a deck yields to every road beside it and under it.
-const TROUGH: u32 = 9u;
-const COVER: u32 = 10u;
-const BUCKETS: u32 = 11u;
+const TROUGH: u32 = 10u;
+const COVER: u32 = 11u;
+const BUCKETS: u32 = 12u;
 // As KERB_M of roads.wgsl: a corner's slab keeps its kerb where its sidewalk narrows to nothing.
 const CORNER_KERB_M: f32 = 0.18;
 
@@ -231,6 +234,13 @@ fn water_lift(texel: f32) -> f32 {
 fn shore_cap(d: f32, texel: f32) -> f32 {
     let band = shore_band(texel);
     return SHORE_SLOPE * d + widen(max(0.0, d - band), reach_limit(texel) - band, 1.0);
+}
+
+// PROTOTYPE (road study): how far the ground may leave the water's level d metres past its edge, whatever
+// way holds it: a bank's slope at the edge that steepens to nothing at the end of the shore band. It is
+// looser than a river's banks and a lake's ramp, so it binds only where a way held the ground beyond them.
+fn edge_cap(d: f32, texel: f32) -> f32 {
+    return widen(d, shore_band(texel), SHORE_SLOPE);
 }
 
 // How far a junction's cores reach, with the widest half-width of its roads: twice that is its reach.
@@ -429,6 +439,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     var cone_hi_road = false;
     // Whether p lies under the road of a deck.
     var under_deck = false;
+    // Whether p lies on a bridge's abutment.
+    var abutment = false;
     // The rank of the paint so far: a carriageway outranks all else, then a junction's corner, then a road's
     // sidewalk, then the nearest outer edge.
     // The nearest corner's distance to its arc and its sidewalk's width, INF where no corner holds the texel.
@@ -527,6 +539,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             } else if (lake) {
                 if (shore_shows(level)) {
                     hi[BANKS] = min(hi[BANKS], water + shore_cap(shore, texel));
+                    hi[WATER_EDGE] = min(hi[WATER_EDGE], water + edge_cap(shore, texel));
                 }
                 out.lake = min(out.lake, shore);
             }
@@ -552,6 +565,10 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             if (g.cone && max(x, 0.0) < reach) {
                 lo[BANKS] = max(lo[BANKS], g.z - (rule.tol + widen(max(x, 0.0), reach, rule.fill)));
                 hi[BANKS] = min(hi[BANKS], g.z + (rule.tol + widen(max(x, 0.0), reach, rule.cut)));
+            }
+            if (g.cone && x > 0.0 && shore_shows(level)) {
+                lo[WATER_EDGE] = max(lo[WATER_EDGE], g.z - rule.tol - edge_cap(x, texel));
+                hi[WATER_EDGE] = min(hi[WATER_EDGE], g.z + rule.tol + edge_cap(x, texel));
             }
         } else {
             if ((word(r + 13u) & 0xffffu) != line) {
@@ -637,6 +654,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                     let bucket = select(ROAD_CORE, PORTAL_CORE, kind == TUNNEL);
                     lo[bucket] = max(lo[bucket], g.z - tol);
                     hi[bucket] = min(hi[bucket], g.z + tol);
+                    abutment = abutment || bridge;
                 }
                 let x = max(0.0, g.lateral - core_half);
                 let reach = cone_reach(core_half, rule, texel);
@@ -696,7 +714,12 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     if (under_deck) {
         lo[CONES] = -INF;
     }
-    // Under water no bank holds: where a river meets a lake or another river.
+    // Under water no bank holds: where a river meets a lake or another river. A bridge's abutment keeps its
+    // ground against the water's edge: its deck hides the step, and its road meets the deck.
+    if (hi[WATER_CORE] < INF || abutment) {
+        lo[WATER_EDGE] = -INF;
+        hi[WATER_EDGE] = INF;
+    }
     if (hi[WATER_CORE] < INF) {
         lo[BANKS] = -INF;
         hi[BANKS] = INF;
