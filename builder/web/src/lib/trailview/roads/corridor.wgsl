@@ -46,6 +46,18 @@ fn corridor_biased(p: vec3f) -> vec3f {
     return p * max(0.0, 1.0 - (CORRIDOR_BIAS_M + CORRIDOR_BIAS_SHARE * d) / max(d, 1e-3));
 }
 
+// Whether a corridor face lies on the ground: the band, a carriageway and its paint, a shoulder, a kerb, a sidewalk,
+// a bed. It casts nothing, as the ground beside it does not; walls with the ground they hold back, barriers and a
+// track's details cast.
+fn corridor_on_ground(colour: vec4f) -> bool {
+    let mat = u32(round(colour.r * 255.0));
+    if ((u32(round(colour.b * 255.0)) & CF_BARRIER) != 0u) {
+        return false;
+    }
+    return mat <= MAT_BALLAST || (mat >= LOOK_ASPHALT && mat < LOOK_TREAD) || mat == DM_KERB || mat == DM_EDGING
+        || (mat >= MAT_JUNCTION_FIRST && mat <= MAT_JUNCTION_LAST);
+}
+
 fn is_corridor(colour: vec4f) -> bool {
     return (u32(round(colour.a * 255.0)) & CORRIDOR_MARK) == CORRIDOR_MARK;
 }
