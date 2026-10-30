@@ -169,8 +169,10 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
     let paved = code <= 2u || code == 7u || code == PAVING_CODE;
     // The paint and the road's cut and fill reach past its sidewalk on this side.
     let walk = mask.walk;
-    // A wall stands under a road's or a track's paint, never under paving: a footway's or a forecourt's.
-    var wall = select(0.0, reach * mask.face, code <= 2u || code == 7u || code >= RAIL_CODE);
+    // A wall stands under a road's or a track's paint, never under paving: a footway's or a forecourt's. Inside
+    // the corridors' reach its masonry fades out, or a mesh wall shows a translucent ghost.
+    let painted = select(1.0, smoothstep(masks.corridors - CORRIDOR_FADE_M, masks.corridors, distance), masks.corridors > 0.0);
+    var wall = select(0.0, reach * mask.face * painted, code <= 2u || code == 7u || code >= RAIL_CODE);
     // A face is a wall from the road's edge out where it is still a face WALL_M out, where its cone is
     // steeper than 75°; elsewhere the slope stays ground.
     if (wall > 0.0) {
@@ -200,6 +202,9 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
         edge += 0.36 * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5);
     }
     let thin = max(0.0, 0.5 * cross_w - half);
-    let cover = (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
+    // A corridor draws an unpaved way here, and its paint would show where the terrain rises through it. A paved
+    // way keeps its paint: where the stamped ground lies over its corridor, the paint is the way.
+    let corridor = distance < masks.corridors - CORRIDOR_FADE_M && code >= 3u && code <= 6u;
+    let cover = select(1.0, 0.0, corridor) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
     return Road(surface.rgb, cover, surface.w, wall, shaped);
 }

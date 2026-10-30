@@ -27,27 +27,46 @@ export const SIDE_BACK = 1, SIDE_ON = 2;
  * Decoded bytes a worker keeps: four of the largest zoom 13 tile of the box bake, 279 kB of gzip
  * that decodes to about 8 MB. The four quarters of a tile reach a worker far apart in its queue.
  */
-const BUDGET = 32 * 2 ** 20;
-const kept = new Map<string, { features: Promise<Feature[]>; bytes: number }>();
+let budget = 32 * 2 ** 20;
+const kept = new Map<string, { features: Promise<Feature[]>; bytes: number; charged: number }>();
 let held = 0;
 
-/** The features of tile body `body`, gzip or not, named `name`: decoded once while it is among the last BUDGET bytes. */
+/** Sets the bytes that this worker keeps, for a worker that hangs more than decoded features on its tiles. */
+export function tileBudget(bytes: number): void {
+    budget = bytes;
+}
+
+/** Past the budget, the tiles that have gone longest without use go, but for `newest`. */
+function trim(newest: { bytes: number; charged: number }): void {
+    for (const [old, item] of kept) {
+        if (held <= budget) break;
+        if (item === newest) continue;
+        kept.delete(old);
+        held -= item.bytes + item.charged;
+    }
+}
+
+/** Counts `bytes` that hang from the features of a kept tile, in place of what was counted for it before. */
+export function chargeTile(name: string, bytes: number): void {
+    const entry = kept.get(name);
+    if (!entry) return;
+    held += bytes - entry.charged;
+    entry.charged = bytes;
+    trim(entry);
+}
+
+/** The features of tile body `body`, gzip or not, named `name`: decoded once while it is among the last bytes of the budget. */
 export function decodedTile(name: string, body: ArrayBuffer): Promise<Feature[]> {
     let entry = kept.get(name);
     if (entry) kept.delete(name);
     else {
         // The Promise is kept at once, so a second message for the tile waits for this decode.
-        const created = entry = { features: decodeBody(body), bytes: 0 };
+        const created = entry = { features: decodeBody(body), bytes: 0, charged: 0 };
         created.features.then(features => {
             if (kept.get(name) !== created) return;
             created.bytes = decodedBytes(features);
             held += created.bytes;
-            for (const [old, item] of kept) {
-                if (held <= BUDGET) break;
-                if (item === created) continue;
-                kept.delete(old);
-                held -= item.bytes;
-            }
+            trim(created);
         }, () => { if (kept.get(name) === created) kept.delete(name); });
     }
     kept.set(name, entry);

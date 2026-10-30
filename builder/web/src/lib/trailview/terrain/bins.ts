@@ -194,6 +194,8 @@ export interface Line {
     sidewalks?: number[];
     /** Per vertex, the ways out of it that leave its junction as a side: SIDE_BACK and SIDE_ON. */
     sideWays?: number[];
+    /** The `surface` tag of its way. */
+    surface?: string;
 }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
@@ -301,7 +303,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
                         const line: Line = {
                             kind: type, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1), plan: shape.plan && planPart(shape.plan, from, to + 1),
                             h: paved(from) ? halfWidth(tags, 'paving') : h, code: paved(from) ? PAVING_CODE : code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
-                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined, sideWays: sideWays?.slice(from, to + 1),
+                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined, sideWays: sideWays?.slice(from, to + 1), surface: tags.surface,
                         };
                         if (type === RAIL) line.sleepers = sleepers(line);
                         lines.push(line);
@@ -377,6 +379,8 @@ function abutments(lines: Line[]): void {
     }
 }
 
+/** A road's face lies this far over the stamped core, whose tolerance is 2 cm. */
+export const LIFT_M = 0.03;
 /** A town's road and footway decide their sidewalks and paving in pieces about this long. */
 const PIECE_M = 8;
 

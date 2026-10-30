@@ -4,7 +4,7 @@
 // hill over the bore behind it, and the terrain draws no ground in the box: the box hides the slope
 // between. Where the terrain draws coarser than level 17, that slope reaches past the box, and a dark
 // void fills the opening.
-import { metresPerUnit, RAIL_CODE, RULES, TUNNEL, type Line } from '../terrain/bins';
+import { LIFT_M, metresPerUnit, RAIL_CODE, RULES, TUNNEL, type Line } from '../terrain/bins';
 import { BORE, LAMP, MeshBuilder, PAINT, posts, rgb, stationsOf, VOID, type Corner, type Station } from './mesh';
 import type { Owns } from './node';
 
@@ -18,8 +18,8 @@ const ROAD_PORTAL = { margin: 0.6, wings: 3 }, PATH_PORTAL = { margin: 0.3, wing
 const boxDepth = (y: number) => (RULES.PORTAL_CELLS + Math.SQRT2) * RULES.MESH_TEXELS * 32 * metresPerUnit(y) + 1;
 /** A road's bore: the kerb's height, and its lamps' length and spacing. */
 const KERB_M = 0.15, LAMP_M = 1.2, LAMPS_M = 10;
-/** The arch springs at this share of the bore's height; the void stands this far in. The bore's road lies this far over the ground that runs into the portal. */
-const SPRING = 0.6, VOID_M = 0.7, LIFT_M = 0.03;
+/** The arch springs at this share of the bore's height; the void stands this far in. */
+const SPRING = 0.6, VOID_M = 0.7;
 /**
  * The facade's thickness, the box's walls and roof, and how deep the facade stands in the ground. The
  * facade's top is flush with the roof, under COVER_M of the road solver: a road over a tunnel hides both.

@@ -11,6 +11,7 @@ import { moonAt, starFrame, sunAt, type Mat3 } from './light/celestial';
 import { coronaSeed, coronaShare, drawnMoon, solarActivity, sunlightLeft } from './light/eclipse';
 import { airColour, eclipsed, eyeLook, lightAt, moonlit, moonShare, weatherLight, WEATHERS, type EyeLook } from './light/light';
 import { LOOK_BYTES, lookUniform } from './light/look';
+import { labsOf, type Labs } from './labs';
 import { Shadow } from './light/shadow';
 import { DARK_SKY, nightSky } from './light/night';
 import { Sky, SKY_CREDITS, skyPipeline } from './light/sky';
@@ -157,7 +158,7 @@ export class TrailView {
      */
     private skyMagnitude = DARK_SKY;
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number, labs: Labs) {
         // `destroy()` aborts it: it ends the tile requests, the workers and the listeners.
         const { signal } = stop;
         this.context = canvas.getContext('webgpu')!;
@@ -165,7 +166,7 @@ export class TrailView {
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
         const { features } = tiles;
-        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal);
+        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, labs.roads === 'corridors');
         this.groundLook = new Ground(ground, () => this.request());
         this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal);
         this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), signal);
@@ -199,10 +200,10 @@ export class TrailView {
      * are in, or after EYE_WAIT_MS: on a slow link the other loads would share it with them. The other
      * passes draw once they attach after the first frame. `scale` is the render scale.
      */
-    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number): Promise<TrailView> {
+    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number, labs: Labs = labsOf('')): Promise<TrailView> {
         const stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], stop.signal);
         const ground = await GroundSource.open(config, view.date, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
-        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale);
+        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, labs);
         // No caller holds an engine whose start fails, so it ends itself: its workers and listeners run already.
         await engine.attach(gpu).catch(error => {
             engine.destroy();
@@ -253,7 +254,7 @@ export class TrailView {
         const { gpu, times } = this.gpuState, { pages } = this.terrain, terrain = this.terrain.stats, ground = this.groundLook.stats, forest = this.forest.requests;
         return {
             adapter: gpu.adapter, gpu: { ...times.ms }, timed: times.tag, cpu: this.cpu, pools: new Map(gpu.pools),
-            requests: pages.requests + ground.requests + forest.requests, bytes: pages.bytes + ground.bytes + forest.bytes, failed: pages.failed + ground.failed + forest.failed + this.terrain.stamps.failed,
+            requests: pages.requests + ground.requests + forest.requests, bytes: pages.bytes + ground.bytes + forest.bytes, failed: pages.failed + ground.failed + forest.failed + this.terrain.failed,
             drawn: this.drawn, scale: this.scaleNow, resident: terrain.resident.stored + terrain.resident.synth, recoveries: this.recoveries, terrain, ground, houses: this.houses.stats, instances: this.instances.stats,
         };
     }
@@ -327,7 +328,7 @@ export class TrailView {
         await this.rest;
         await this.nextFrame();
         // A tile or a probe that arrives draws the next frame.
-        while (!this.destroyed && !this.idle()) await this.afterFrame();
+        while (!this.destroyed && (!this.idle() || this.terrain.roadsLoading)) await this.afterFrame();
         if (!this.destroyed) await this.gpu.device.queue.onSubmittedWorkDone();
     }
 

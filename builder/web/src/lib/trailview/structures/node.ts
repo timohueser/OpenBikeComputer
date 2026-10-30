@@ -3,7 +3,8 @@ import { placed, type Build, type Placement } from '../kinds/kind';
 import { packPoints, type Point } from '../instances/points';
 import type { Feature } from '../stream/features';
 import { AnchoredBuilder, anchorBytes, type AnchoredMesh } from './anchored';
-import { BRIDGE, features, metresPerUnit, PATH, ROAD, TUNNEL, type Node } from '../terrain/bins';
+import { BRIDGE, features, LIFT_M, metresPerUnit, PATH, ROAD, TUNNEL, type Node } from '../terrain/bins';
+import { OWNER } from '../terrain/lod';
 import { cornerAt } from '../terrain/corners';
 import { bridges, deckHalf } from './bridges';
 import { galleries } from './galleries';
@@ -12,12 +13,6 @@ import { rails } from './rails';
 import { sidewalks } from './sidewalks';
 import { boreHalf, portalBox, tunnels, twins } from './tunnels';
 
-/**
- * The level of the nodes that hold the structures: each piece belongs to the one whose square holds its
- * anchor (a segment's first vertex, a pier, a portal), so every piece draws once and no node clips.
- * Coarser nodes hold none: farther off a deck spans a few pixels.
- */
-export const OWNER = 15;
 /** A portal's box reaches this far from it. */
 const REACH_M = 20;
 
@@ -26,8 +21,6 @@ export type Owns = (x: number, y: number) => boolean;
 
 /** Words of a floor segment: its ends in world units, their heights, and its half-width in metres: out to a deck's parapets, to a bore's walls. */
 export const FLOOR = 7;
-/** A deck's road lies this far over its line's height, as LIFT_M of bridges.ts. */
-const DECK_LIFT_M = 0.03;
 
 /**
  * The floors that stand in an OWNER node's square: each segment of a deck's road and of a tunnel's road
@@ -38,7 +31,7 @@ export function floorsOf(list: Feature[], tile: Node, node: Node): Float64Array<
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side, m = REACH_M / metresPerUnit(y0 + side / 2), out: number[] = [];
     for (const line of features(list, tile).lines) {
         if (line.kind !== BRIDGE && line.kind !== TUNNEL) continue;
-        const lift = line.kind === BRIDGE ? DECK_LIFT_M : 0;
+        const lift = line.kind === BRIDGE ? LIFT_M : 0;
         for (let v = 0; v + 1 < line.z.length; v++) {
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4);
             if (Math.max(ax, bx) < x0 - m || Math.min(ax, bx) > x0 + side + m || Math.max(ay, by) < y0 - m || Math.min(ay, by) > y0 + side + m) continue;
@@ -77,15 +70,15 @@ export interface Meshes { structures: StructureMesh | null; anchored: AnchoredMe
  */
 export interface NodeMeshes { far: Meshes; near: Meshes; anchors: ArrayBuffer | null; points: Uint32Array<ArrayBuffer> | null }
 
-/** The meshes of a node of the OWNER level from the features of its feature tile: the structures, then the kinds of the registry. */
-export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMeshes {
+/** The meshes of a node of the OWNER level from the features of its feature tile: the structures, then the kinds of the registry. `corridors` hold the sidewalks themselves. */
+export function structureMeshes(list: Feature[], tile: Node, node: Node, corridors = false): NodeMeshes {
     const none = { structures: null, anchored: null };
     if (node.level !== OWNER) return { far: none, near: none, anchors: null, points: null };
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side;
     const owns: Owns = (x, y) => x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
     const words: number[] = [], far = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) }, near = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) };
     const { lines, buildings } = features(list, tile);
-    sidewalks(near.mesh, lines, [x0, y0, x0 + side, y0 + side]);
+    if (!corridors) sidewalks(near.mesh, lines, [x0, y0, x0 + side, y0 + side]);
     bridges(far.mesh, list, tile, lines, owns);
     tunnels(far.mesh, lines, owns);
     galleries(far.mesh, lines, owns);

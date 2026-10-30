@@ -2,12 +2,10 @@
 // a railing for a path, cables for a bridge that hangs and walls and a roof for a covered one, and a pier
 // at each `bridge-pier` point of the bake, down into the drawn surface.
 import { EXTENT, unitScale, type Feature } from '../stream/features';
-import { BRIDGE, isPath, metresPerUnit, PATH, RAIL_CODE, ROAD, type Line, type Node } from '../terrain/bins';
+import { BRIDGE, isPath, LIFT_M, metresPerUnit, PATH, RAIL_CODE, ROAD, type Line, type Node } from '../terrain/bins';
 import type { Owns } from './node';
 import { GROUND, MeshBuilder, mix, PAINT, posts, rgb, stationsOf, type Corner, type Station } from './mesh';
 
-/** The deck's road lies this far above the abutment's ground, which holds the road's height under it. */
-const LIFT_M = 0.03;
 /** A road's parapet: width and height above the road. */
 const PARAPET: Corner = [0.35, 1.0];
 /** A railing: its height, the side of its rail and its posts, and the posts' spacing; a cable and its hangers are thinner. */
