@@ -3,7 +3,7 @@
 import { EARTH_RADIUS } from '../frame/frame';
 import { DEEPEST, EXTENT, unitScale, type Feature, type FeaturePart } from '../stream/features';
 import { PAGE } from '../stream/heights';
-import { addPlan, curveOf, planPart, type Curve, type Plan } from '../stream/curve';
+import { addPlan, curveOf, PATH_SAG, planPart, ROAD_SAG, type Curve, type Plan } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
 import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
@@ -240,10 +240,12 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     const scale = unitScale(tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
     const world = (xy: ArrayLike<number>, v: number) => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
     const curves = new Map<FeaturePart, Curve>();
-    /** A part of half-width `h` as its line: the chords of its curve where it has an alignment. */
-    const drawn = (part: FeaturePart, h: number): Curve | FeaturePart => {
+    /** A part of a line feature as its line: the chords of its curve where it has an alignment, for the outer edge of its sidewalks. */
+    const drawn = (part: FeaturePart, kind: string, tags: Record<string, string>): Curve | FeaturePart => {
         if (!part.plan || !part.z) return part;
-        return curves.get(part) ?? curves.set(part, curveOf(part, h, scale, y => scale * metresPerUnit((oy + y) * scale))).get(part)!;
+        const edge = halfOf(kind, tags) + sidewalkOf(tags, surfaceOf(tags));
+        const sag = Object.hasOwn(PATH_HALF, tags.highway) ? PATH_SAG : ROAD_SAG;
+        return curves.get(part) ?? curves.set(part, curveOf(part, edge, sag, scale, y => scale * metresPerUnit((oy + y) * scale))).get(part)!;
     };
     const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [];
     const area = (parts: Feature['parts']) => ({ rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
@@ -280,7 +282,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         const sidewalk = type === ROAD && kind !== 'gallery' ? sidewalkOf(tags, surface) : 0;
         const paving = type === PATH && kind !== 'gallery' && surfaceOf(tags, true) !== surface;
         for (const part of parts) {
-            const curve = drawn(part, h), { xy, z } = curve;
+            const curve = drawn(part, kind, tags), { xy, z } = curve;
             if (!z) continue;
             // A line splits where a vertex has no height: a missing height is unknown, never 0 m. A footway splits
             // where it enters or leaves a town.
@@ -400,7 +402,7 @@ function halfOf(kind: string, tags: Record<string, string>): number {
     return isTrack(tags) ? SURFACES[trackSurface(tags)] : halfWidth(tags, surfaceOf(tags));
 }
 
-function bedsOf(list: Feature[], world: (xy: ArrayLike<number>, v: number) => number[], drawn: (part: FeaturePart, h: number) => Curve | FeaturePart): Beds {
+function bedsOf(list: Feature[], world: (xy: ArrayLike<number>, v: number) => number[], drawn: (part: FeaturePart, kind: string, tags: Record<string, string>) => Curve | FeaturePart): Beds {
     const segments: Beds['segments'] = [], vertices = new Map<string, number[]>(), points: number[][][] = [];
     list.forEach(({ kind, tags, parts }, feature) => {
         // A bridge's and a tunnel's beds are off the ground.
@@ -409,7 +411,7 @@ function bedsOf(list: Feature[], world: (xy: ArrayLike<number>, v: number) => nu
         points[feature] = [];
         // As in the stamp, a part or a segment without heights, as a culvert's, holds no ground.
         for (const part of parts) {
-            const { xy, z } = drawn(part, h);
+            const { xy, z } = drawn(part, kind, tags);
             if (!z) continue;
             const at = Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v));
             for (const point of at) {
