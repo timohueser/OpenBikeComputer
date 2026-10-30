@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, EXTENT, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CELL, cellAt, CORNER, crosses, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WALK, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WALK, WARP_M, waterAt, type Line, type Profile } from './bins';
 import { cornersOf } from './corners';
 import { LEFT, RIGHT } from './town';
 
@@ -48,6 +48,10 @@ describe('the stamp data of a node', () => {
         expect(Number(/const WARP_M: f32 = ([\d.]+);/.exec(shader)?.[1])).toBe(WARP_M);
         expect(Number(/const MASK_LEVEL: u32 = (\d+)u;/.exec(readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8'))?.[1])).toBe(NEAR);
         rows.forEach((row, i) => expect(Array.from(table.subarray(PROFILE_FLOATS * i, PROFILE_FLOATS * i + fields.length))).toEqual(fields.map(field => Math.fround(row[field]))));
+        // The shoulders follow the rows, one per surface code, as `Rules` of stamp-core.wgsl has them.
+        expect(Number(/shoulders: array<vec4f, (\d+)>/.exec(shader)?.[1]) * 4).toBe(SURFACE_CODES);
+        expect(table.length).toBe(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES);
+        for (const [surface, code] of [['main', 1], ['grass', 5], ['path', 6], ['oneway', 7]] as const) expect(table[PROFILE_ROWS * PROFILE_FLOATS + code]).toBeCloseTo(SHOULDER_M[surface] ?? 0, 6);
         for (const [name, row] of Object.entries(PROFILES)) for (const field of fields) expect(row[field], `${name}.${field}`).toBeGreaterThanOrEqual(0);
         // The shaders know the surfaces by their codes, and the mask holds a code in 4 bits.
         expect(Object.keys(SURFACES)).toEqual(['main', 'road', 'gravel', 'dirt', 'grass', 'path', 'oneway', 'paving', 'rail', 'narrow', 'rack', 'narrow-rack']);
@@ -59,6 +63,23 @@ describe('the stamp data of a node', () => {
         expect(['TRACK_M', 'MASK_M', 'MASK_KNEE', 'WALK_STEP_M'].map(name => value(mask, name))).toEqual(['TRACK_RANGE', 'MASK_RANGE', 'MASK_KNEE', 'WALK_STEP_M'].map(name => value(stamp, name)));
         const [rail, narrow] = ['RAIL_HALF_M', 'NARROW_HALF_M'].map(name => Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(mask)?.[1]));
         expect(Object.values(SURFACES).slice(RAIL_CODE - 1)).toEqual([rail, narrow, rail, narrow]);
+    });
+
+    it('holds the tangent, the bank and the widening of an alignment in each record of a line', () => {
+        const tile = { level: 13, x: 4287, y: 2889 }, tangent = Math.PI / 4, xy = [4000, 4000, 4400, 4400].map(v => v * 4);
+        const plan = { along: 0, backward: false, tangent: Float32Array.of(tangent, tangent), grade: new Float32Array(2), bank: Float32Array.of(0.05, 0.05), widen: Float32Array.of(0.5, 0.5) };
+        const list = [{ kind: 'road', tags: { highway: 'tertiary' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.from(xy, v => v / 4), z: Float32Array.of(1000, 1000), plan }] }];
+        const [line] = features(list, tile).lines, shift = 22 - 17, node = { level: 17, x: Math.floor(line.xy[0] / (PAGE * 2 ** shift)), y: Math.floor(line.xy[1] / (PAGE * 2 ** shift)) };
+        const { data } = nodeStamps(list, tile, node);
+        const records = 2 + GRID * GRID + 1 + data![1], word = (i: number) => data![records + RECORD * (data![0] - 1) + i];
+        const snorm = (w: number) => [(w << 16) >> 16, w >> 16].map(v => v / 32767);
+        expect(word(4)).toBe(ROAD);
+        for (const end of [9, 10]) for (const value of snorm(word(end) | 0)) expect(value).toBeCloseTo(Math.SQRT1_2, 3);
+        // The rise to the right: x runs east and y south, so the left of the line is its higher side.
+        for (const value of snorm(word(11) | 0)) expect(value).toBeCloseTo(-0.05, 3);
+        expect([(word(13) << 8) >> 24, (word(13) | 0) >> 24]).toEqual([25, 25]);
+        const unit = metresPerUnit(line.xy[1]), left = [line.xy[0] + (100 + 2 * Math.SQRT1_2 / unit), line.xy[1] + (100 - 2 * Math.SQRT1_2 / unit)] as [number, number];
+        expect(roadHeight(line, left, 3 / unit, unit)).toBeCloseTo(1000.1, 3);
     });
 
     it('shows a line on the levels where the gates of stamp-core.wgsl show it', () => {
@@ -299,6 +320,22 @@ describe('the plane of a junction', () => {
         // 50 m along, on the long segment that a tile without the junction stamps too: no tilt.
         const far = (east: number): [number, number] => [side.xy[0] + east / unit, side.xy[1] - 50 / unit];
         expect(roadHeight(side, far(2), 3 / unit, unit)).toBeCloseTo(roadHeight(side, far(0), 3 / unit, unit), 9);
+    });
+
+    it('tilts a side road to the banked surface of the through road', () => {
+        // A level secondary road banks east along y = 4000, its left to the north.
+        const tile = { level: 13, x: 4287, y: 2889 }, unit = metresPerUnit((tile.y * EXTENT + 4000) * unitScale(tile.level));
+        const plan = { along: 0, backward: false, tangent: new Float32Array(2), grade: new Float32Array(2), bank: Float32Array.of(0.05, 0.05), widen: new Float32Array(2) };
+        const { lines } = features([
+            { kind: 'main-road', tags: { highway: 'secondary' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.of(1000, 4000, 3000, 4000), z: Float32Array.of(1000, 1000), plan }] },
+            { kind: 'main-road', tags: { highway: 'secondary' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.of(3000, 4000, 5000, 4000), z: Float32Array.of(1000, 1000), plan }] },
+            { kind: 'road', tags: { highway: 'residential' }, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from([3000, 4000, 4000, 3000]), z: Float32Array.of(1000, 1000) }] },
+        ], tile);
+        const side = lines.find(line => line.profile === Object.keys(PROFILES).indexOf('residential'))!;
+        // The side road runs north-east: its right side lies south-east, 0.05 × √½ lower per metre.
+        const p: [number, number] = [side.xy[0] + (Math.SQRT2 + Math.SQRT1_2) / unit, side.xy[1] + (Math.SQRT1_2 - Math.SQRT2) / unit];
+        expect(crossSlope(side, 0, 2, 100)).toBeCloseTo(-0.05 * Math.SQRT1_2, 3);
+        expect(roadHeight(side, p, 3 / unit, unit)).toBeCloseTo(1000 - 0.05 * Math.SQRT1_2, 3);
     });
 });
 

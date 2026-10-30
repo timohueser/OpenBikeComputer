@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { polyline } from './curve';
+import { curveOf } from './curve';
 import type { FeaturePart } from './features';
 
 const part = (xy: number[], tangent: number[], z: number[], grade: number[]): FeaturePart => ({
@@ -8,34 +8,58 @@ const part = (xy: number[], tangent: number[], z: number[], grade: number[]): Fe
 });
 
 describe('the curve of a part', () => {
-    it('leaves a straight level part alone, and returns a part with no alignment as it is', () => {
-        expect(Array.from(polyline(part([0, 0, 500, 0], [0, 0], [10, 10], [0, 0]), () => 0.2).xy)).toEqual([0, 0, 500, 0]);
-        const plain: FeaturePart = { outer: false, xy: Int32Array.from([0, 0, 5, 5]), z: null, plan: null };
-        expect(polyline(plain, () => 0.2)).toEqual({ xy: plain.xy, z: null });
+    it('leaves a straight level part alone', () => {
+        expect(curveOf(part([0, 0, 500, 0], [0, 0], [10, 10], [0, 0]), 0, 8, () => 0.2).xy).toEqual([0, 0, 500, 0]);
     });
 
     it('follows a quarter circle and the grades over a hill, and ends on the vertices', () => {
         // A radius of 500 tile units from east to south, in world y down.
-        const { xy, z } = polyline(part([0, 0, 500, 500], [0, Math.PI / 2], [100, 100], [0.1, -0.1]), () => 0.2);
-        const n = z!.length;
+        const { xy, z } = curveOf(part([0, 0, 500, 500], [0, Math.PI / 2], [100, 100], [0.1, -0.1]), 0, 8, () => 0.2);
+        const n = z.length;
         expect(n).toBeGreaterThan(5);
-        expect([xy[2 * n - 2], xy[2 * n - 1], z![n - 1]]).toEqual([500, 500, 100]);
+        expect([xy[2 * n - 2], xy[2 * n - 1], z[n - 1]]).toEqual([500, 500, 100]);
         for (let v = 1; v < n - 1; v++) expect(Math.abs(Math.hypot(xy[2 * v], xy[2 * v + 1] - 500) - 500)).toBeLessThan(40);
-        expect(Math.max(...Array.from({ length: n }, (_, v) => z![v]))).toBeGreaterThan(100 + 0.1 * 0.2 * 707 / 4 * 0.9);
+        expect(Math.max(...Array.from({ length: n }, (_, v) => z[v]))).toBeGreaterThan(100 + 0.1 * 0.2 * 707 / 4 * 0.9);
+    });
+
+    it('cuts a bend finer for a wider road, so that a chord of its edge stays within the sag', () => {
+        const bend = part([0, 0, 500, 500], [0, Math.PI / 2], [100, 100], [0, 0]), width = 6;
+        const { xy, anchors } = curveOf(bend, width, 8, () => 0.2);
+        expect(xy.length).toBeGreaterThan(curveOf(bend, 0, 8, () => 0.2).xy.length);
+        expect(anchors.filter(Boolean).length).toBe(2);
+        const heading = (v: number) => Math.atan2(xy[2 * v + 3] - xy[2 * v + 1], xy[2 * v + 2] - xy[2 * v]);
+        for (let v = 1; 2 * v + 3 < xy.length; v++) {
+            const turn = heading(v) - heading(v - 1), chord = Math.hypot(xy[2 * v + 2] - xy[2 * v], xy[2 * v + 3] - xy[2 * v + 1]) * 0.2;
+            expect((chord + width * turn) * turn / 8).toBeLessThan(0.07);
+        }
+    });
+
+    it('carries the plan along the curve: its tangent and grade, and a bank and a widening that run from vertex to vertex', () => {
+        const bend = part([0, 0, 500, 500], [0, Math.PI / 2], [100, 100], [0.1, -0.1]);
+        bend.plan!.bank.set([0, 0.06]);
+        bend.plan!.widen.set([1, 0]);
+        const { xy, z, plan } = curveOf(bend, 3, 8, () => 0.2), n = z.length;
+        expect([plan.tangent.length, plan.grade.length, plan.bank.length, plan.widen.length]).toEqual([n, n, n, n]);
+        for (let v = 1; v + 1 < n; v++) {
+            const dx = xy[2 * v + 2] - xy[2 * v - 2], dy = xy[2 * v + 3] - xy[2 * v - 1];
+            expect(Math.abs(Math.atan2(dy, dx) - plan.tangent[v])).toBeLessThan(0.02);
+            expect(plan.grade[v]).toBeCloseTo((z[v + 1] - z[v - 1]) / (Math.hypot(dx, dy) * 0.2), 2);
+            expect(plan.bank[v] / 0.06 + plan.widen[v]).toBeCloseTo(1, 5);
+        }
     });
 
     it('keeps the height of a vertex beside one with no height', () => {
-        const { z } = polyline(part([0, 0, 500, 0, 1000, 0, 1500, 0], [0, 0, 0, 0], [NaN, 100, 100, NaN], [0, 0, 0, 0]), () => 0.2);
-        expect(Array.from(z!)).toEqual([NaN, 100, 100, NaN]);
+        const { z } = curveOf(part([0, 0, 500, 0, 1000, 0, 1500, 0], [0, 0, 0, 0], [NaN, 100, 100, NaN], [0, 0, 0, 0]), 0, 8, () => 0.2);
+        expect(z).toEqual([NaN, 100, 100, NaN]);
     });
 
     it('cuts a segment alike in each tile that holds it, whichever vertex comes first', () => {
         // A curved segment, alone and after a segment far to the north: the scale grows to the north.
         const metres = (y: number) => 0.2 * (1 + y / 200000);
         const bend = (ax: number, ay: number) => [ax, ay, ax + 900, ay + 300];
-        const alone = polyline(part(bend(0, 50000), [0.1, 0.5], [100, 110], [0.05, -0.02]), metres);
-        const after = polyline(part([0, 0, ...bend(0, 50000)], [0, 0.1, 0.5], [90, 100, 110], [0, 0.05, -0.02]), metres);
-        expect(Array.from(after.z!).slice(-alone.z!.length)).toEqual(Array.from(alone.z!));
-        expect(Array.from(after.xy).slice(-alone.xy.length)).toEqual(Array.from(alone.xy));
+        const alone = curveOf(part(bend(0, 50000), [0.1, 0.5], [100, 110], [0.05, -0.02]), 0, 8, metres);
+        const after = curveOf(part([0, 0, ...bend(0, 50000)], [0, 0.1, 0.5], [90, 100, 110], [0, 0.05, -0.02]), 0, 8, metres);
+        expect(after.z.slice(-alone.z.length)).toEqual(alone.z);
+        expect(after.xy.slice(-alone.xy.length)).toEqual(alone.xy);
     });
 });

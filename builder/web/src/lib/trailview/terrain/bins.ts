@@ -1,9 +1,9 @@
 // The stamp data of a terrain node from the feature tile above it: the segments, lake edges and
 // junctions near the node, binned into a grid of cells, as stamp.wgsl reads them. A worker uses it.
 import { EARTH_RADIUS } from '../frame/frame';
-import { DEEPEST, EXTENT, unitScale, type Feature } from '../stream/features';
+import { DEEPEST, EXTENT, unitScale, type Feature, type FeaturePart } from '../stream/features';
 import { PAGE } from '../stream/heights';
-import { polyline } from '../stream/curve';
+import { addPlan, curveOf, planPart, type Curve, type Plan } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
 import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
@@ -46,6 +46,8 @@ const UNITS = 2 ** 30;
 export const SURFACES = { main: 4.5, road: 3.0, gravel: 1.75, dirt: 1.5, grass: 1.25, path: 0.6, oneway: 4.5, paving: 1.25, rail: 1.9, narrow: 1.5, rack: 1.9, 'narrow-rack': 1.5 } as const;
 type Surface = keyof typeof SURFACES;
 const codeOf = (surface: Surface) => Object.keys(SURFACES).indexOf(surface) + 1;
+/** The flat shoulder past a road's edge by its surface, where it has no sidewalk. */
+export const SHOULDER_M: Partial<Record<Surface, number>> = { main: 0.6, road: 0.4, gravel: 0.3, dirt: 0.25, grass: 0.2, oneway: 0.6 };
 /** The surface code of the first track, and of paving. */
 export const RAIL_CODE = codeOf('rail'), PAVING_CODE = codeOf('paving');
 /** The road surfaces that a sidewalk can run beside and a junction's corner rounds, and their codes. */
@@ -84,14 +86,14 @@ const CABLES = ['suspension', 'simple-suspension', 'cable-stayed'];
  * core, or for a path past its edge: its bench. A level stamps a road only where
  * `least` metres of its cut and fill fit inside the buffer. A path's bench may follow the hillside
  * across it by `tilt` metres per metre. A road in a town has a sidewalk `walk` metres wide on each side where a
- * building is near, at the height of its edge.
+ * building is near, at the height of its edge. A rural road has a ditch `ditch` metres deep beside its cut.
  */
-export interface Profile { tol: number; reach: number; least: number; cut: number; fill: number; tilt: number; walk: number }
+export interface Profile { tol: number; reach: number; least: number; cut: number; fill: number; tilt: number; walk: number; ditch: number }
 /** A river's water lies flat on its core; banks of 27° near the water stay under its ribbon's edge. */
-const RIVER_BANKS: Profile = { tol: 0.02, reach: 15, least: 2, cut: 0.5, fill: 0.5, tilt: 0, walk: 0 };
+const RIVER_BANKS: Profile = { tol: 0.02, reach: 15, least: 2, cut: 0.5, fill: 0.5, tilt: 0, walk: 0, ditch: 0 };
 /** One row per `highway` class of the road and path kinds, from the class rules that the road solver of the bake reads too, and the rivers. */
 export const PROFILES: Record<string, Profile> = {
-    ...Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill, tilt }]) => [name, { tol, reach, least, cut, fill, tilt, walk: SIDEWALK_M[name] ?? 0 }])),
+    ...Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill, tilt, ditch_m }]) => [name, { tol, reach, least, cut, fill, tilt, walk: SIDEWALK_M[name] ?? 0, ditch: ditch_m }])),
     river: RIVER_BANKS,
 };
 const CLASSES = Object.keys(PROFILES);
@@ -102,12 +104,13 @@ const isTrack = (tags: Record<string, string>) => TRACKS.includes(tags.railway) 
 const classOf = (tags: Record<string, string>) => (isTrack(tags) ? (tags.rack && tags.rack !== 'no' ? 'rack' : tags.railway) : tags.highway ?? '');
 /** The row of a line's class; a class that the table lacks takes the row of its kind. */
 const profileOf = (kind: string, name = '') => CLASSES.indexOf(kind === 'river' ? 'river' : Object.hasOwn(PROFILES, name) ? name : kind === 'path' ? 'path' : 'road');
-/** The table as stamp-core.wgsl reads it: PROFILE_ROWS rows of 8 floats. */
-export const PROFILE_ROWS = 32, PROFILE_FLOATS = 8;
+/** The table as stamp-core.wgsl reads it: PROFILE_ROWS rows of 8 floats, then the shoulder of each of the SURFACE_CODES surface codes. */
+export const PROFILE_ROWS = 32, PROFILE_FLOATS = 8, SURFACE_CODES = 16;
 export function profileTable(): Float32Array<ArrayBuffer> {
-    const rows = Object.values(PROFILES), table = new Float32Array(PROFILE_ROWS * PROFILE_FLOATS);
+    const rows = Object.values(PROFILES), table = new Float32Array(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES);
     if (rows.length > PROFILE_ROWS) throw new Error(`stamp-core.wgsl holds ${PROFILE_ROWS} profiles, not ${rows.length}.`);
-    rows.forEach(({ tol, reach, least, cut, fill, tilt, walk }, i) => table.set([tol, reach, least, cut, fill, tilt, walk], PROFILE_FLOATS * i));
+    rows.forEach(({ tol, reach, least, cut, fill, tilt, walk, ditch }, i) => table.set([tol, reach, least, cut, fill, tilt, walk, ditch], PROFILE_FLOATS * i));
+    for (const [surface, metres] of Object.entries(SHOULDER_M)) table[PROFILE_ROWS * PROFILE_FLOATS + codeOf(surface as Surface)] = metres;
     return table;
 }
 /** The half-width of a waterway without a `width` tag. */
@@ -172,13 +175,14 @@ export const isPath = (line: Line) => Object.hasOwn(PATH_HALF, CLASSES[line.prof
 export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS / Math.cosh(Math.PI * (1 - 2 * y / UNITS));
 
 /**
- * A line; `anchors` marks its OSM vertices among the points of its rounded bends. `tilt` holds, per
+ * A line; `anchors` marks its vertices of the tile among the points of its bends, and `plan` holds its
+ * alignment per point where the tile has one. `tilt` holds, per
  * segment of a road, the slopes that its core takes across it from its start and from its end, as
  * `packTilt` packs them: the through road's surface near a junction, zero elsewhere. `join` marks the
  * first and the last vertex where the line runs on into the next line of the through road at a bend.
  */
 export interface Line {
-    kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; profile: number; anchors?: boolean[]; tilt?: number[]; join?: [boolean, boolean];
+    kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; profile: number; anchors?: boolean[]; plan?: Plan; tilt?: number[]; join?: [boolean, boolean];
     /**
      * A bridge's deck depth, a tunnel's bore height or the height of a gallery's roof at its hill, a
      * bridge's look, the side of a gallery's hill (1 left, -1 right of the line), and whether the start and the end of a bridge or a tunnel meet the ground, as `abutments` has it.
@@ -235,10 +239,16 @@ export function features(list: Feature[], tile: Node): Shapes {
 function shapesOf(list: Feature[], tile: Node): Shapes {
     const scale = unitScale(tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
     const world = (xy: ArrayLike<number>, v: number) => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
+    const curves = new Map<FeaturePart, Curve>();
+    /** A part of half-width `h` as its line: the chords of its curve where it has an alignment. */
+    const drawn = (part: FeaturePart, h: number): Curve | FeaturePart => {
+        if (!part.plan || !part.z) return part;
+        return curves.get(part) ?? curves.set(part, curveOf(part, h, scale, y => scale * metresPerUnit((oy + y) * scale))).get(part)!;
+    };
     const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [];
     const area = (parts: Feature['parts']) => ({ rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
     const buildings: Building[] = list.filter(({ kind }) => kind === 'building').map(({ tags, parts }) => ({ ...area(parts), cars: CARS.includes(tags.building) }));
-    const town = townOf(buildings), beds = bedsOf(list, world);
+    const town = townOf(buildings), beds = bedsOf(list, world, drawn);
     for (const [feature, { kind, tags, parts }] of list.entries()) {
         if (kind === 'lake' || kind === 'sea') {
             const level = parts[0]?.z?.[0];
@@ -270,19 +280,21 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         const sidewalk = type === ROAD && kind !== 'gallery' ? sidewalkOf(tags, surface) : 0;
         const paving = type === PATH && kind !== 'gallery' && surfaceOf(tags, true) !== surface;
         for (const part of parts) {
-            const { xy, z } = polyline(part, y => scale * metresPerUnit((oy + y) * scale));
+            const curve = drawn(part, h), { xy, z } = curve;
             if (!z) continue;
             // A line splits where a vertex has no height: a missing height is unknown, never 0 m. A footway splits
             // where it enters or leaves a town.
             let run: number[] = [], heights: number[] = [];
-            const flush = () => {
+            const flush = (end: number) => {
                 if (heights.length >= 2) {
-                    const [shape, sides] = sidewalk || paving ? townPieces(smoothed(run, heights), town, sidewalk ? clearOf(beds, feature, h, sidewalk) : undefined) : [smoothed(run, heights), []];
+                    const start = end - heights.length;
+                    const whole: Shape = 'anchors' in curve ? { xy: run, z: heights, anchors: curve.anchors.slice(start, end), plan: planPart(curve.plan, start, end) } : smoothed(run, heights);
+                    const [shape, sides] = sidewalk || paving ? townPieces(whole, town, sidewalk ? clearOf(beds, feature, h, sidewalk) : undefined) : [whole, []];
                     const n = shape.z.length, paved = (v: number) => paving && sides[v] !== 0;
                     for (let from = 0, to = 1; to < n; to++) {
                         if (to < n - 1 && paved(to) === paved(from)) continue;
                         const line: Line = {
-                            kind: type, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1),
+                            kind: type, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1), plan: shape.plan && planPart(shape.plan, from, to + 1),
                             h: paved(from) ? halfWidth(tags, 'paving') : h, code: paved(from) ? PAVING_CODE : code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
                             gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined,
                         };
@@ -295,13 +307,13 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
                 heights = [];
             };
             for (let v = 0; v < z.length; v++) {
-                if (Number.isNaN(z[v])) flush();
+                if (Number.isNaN(z[v])) flush(v);
                 else {
                     run.push(...world(xy, v));
                     heights.push(z[v]);
                 }
             }
-            flush();
+            flush(z.length);
         }
     }
     junctionPlanes(lines);
@@ -351,8 +363,8 @@ const PIECE_M = 8;
  * each tile that holds the segment decides alike. A segment is cut where the sides of its pieces
  * change; the cuts keep its shape.
  */
-function townPieces({ xy, z, anchors }: ReturnType<typeof smoothed>, town: Town, clear?: Clear): [ReturnType<typeof smoothed>, number[]] {
-    const out = { xy: [xy[0], xy[1]], z: [z[0]], anchors: [anchors[0]] }, sides: number[] = [];
+function townPieces({ xy, z, anchors, plan }: Shape, town: Town, clear?: Clear): [Shape, number[]] {
+    const out: Shape = { xy: [xy[0], xy[1]], z: [z[0]], anchors: [anchors[0]], plan: plan && planPart(plan, 0, 1) }, sides: number[] = [];
     for (let v = 0; v + 1 < z.length; v++) {
         const [ax, ay, bx, by] = xy.slice(2 * v, 2 * v + 4), dx = bx - ax, dy = by - ay, unit = metresPerUnit(ay), count = Math.max(1, Math.ceil(Math.hypot(dx, dy) * unit / PIECE_M));
         const pieces = Array.from({ length: count }, (_, k) => {
@@ -366,6 +378,7 @@ function townPieces({ xy, z, anchors }: ReturnType<typeof smoothed>, town: Town,
             out.xy.push(k === count ? bx : Math.round(ax + dx * k / count), k === count ? by : Math.round(ay + dy * k / count));
             out.z.push(z[v] + (z[v + 1] - z[v]) * k / count);
             out.anchors.push(k === count && anchors[v + 1]);
+            if (plan) addPlan(out.plan!, plan, v, k / count);
         }
     }
     return [out, sides];
@@ -387,7 +400,7 @@ function halfOf(kind: string, tags: Record<string, string>): number {
     return isTrack(tags) ? SURFACES[trackSurface(tags)] : halfWidth(tags, surfaceOf(tags));
 }
 
-function bedsOf(list: Feature[], world: (xy: ArrayLike<number>, v: number) => number[]): Beds {
+function bedsOf(list: Feature[], world: (xy: ArrayLike<number>, v: number) => number[], drawn: (part: FeaturePart, h: number) => Curve | FeaturePart): Beds {
     const segments: Beds['segments'] = [], vertices = new Map<string, number[]>(), points: number[][][] = [];
     list.forEach(({ kind, tags, parts }, feature) => {
         // A bridge's and a tunnel's beds are off the ground.
@@ -395,7 +408,8 @@ function bedsOf(list: Feature[], world: (xy: ArrayLike<number>, v: number) => nu
         const h = halfOf(kind, tags);
         points[feature] = [];
         // As in the stamp, a part or a segment without heights, as a culvert's, holds no ground.
-        for (const { xy, z } of parts) {
+        for (const part of parts) {
+            const { xy, z } = drawn(part, h);
             if (!z) continue;
             const at = Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v));
             for (const point of at) {
@@ -574,7 +588,8 @@ function junctionPlanes(lines: Line[]): void {
     for (const meeting of at.values()) {
         if (meeting.length < 2) continue;
         const ways = meeting.flatMap(({ line, v }) => [-1, 1].map(step => ({ line, v, step, w: next(line, v, step) })).filter(({ w }) => w >= 0)).map(way => {
-            const { line, v, w } = way, length = Math.hypot(line.xy[2 * w] - line.xy[2 * v], line.xy[2 * w + 1] - line.xy[2 * v + 1]) || 1;
+            const { line, v, w, step } = way, length = Math.hypot(line.xy[2 * w] - line.xy[2 * v], line.xy[2 * w + 1] - line.xy[2 * v + 1]) || 1;
+            if (line.plan) return { ...way, dir: [step * Math.cos(line.plan.tangent[v]), step * Math.sin(line.plan.tangent[v])], grade: step * line.plan.grade[v] };
             return { ...way, dir: [(line.xy[2 * w] - line.xy[2 * v]) / length, (line.xy[2 * w + 1] - line.xy[2 * v + 1]) / length], grade: (line.z[w] - line.z[v]) / metres(line, v, w) };
         });
         if (ways.length < 2) continue;
@@ -595,7 +610,9 @@ function junctionPlanes(lines: Line[]): void {
         for (const side of ways) {
             if (through.includes(side)) continue;
             const lean = through.reduce((most, way) => (dot(way.dir, side.dir) > dot(most.dir, side.dir) ? way : most));
-            const plane = [lean.grade * lean.dir[0], lean.grade * lean.dir[1]], { line, step } = side, tilt = line.tilt!;
+            // The through road's bank tilts its plane: a rise to the left of its line's direction.
+            const bank = lean.step * (lean.line.plan?.bank[lean.v] ?? 0);
+            const plane = [lean.grade * lean.dir[0] + bank * lean.dir[1], lean.grade * lean.dir[1] - bank * lean.dir[0]], { line, step } = side, tilt = line.tilt!;
             // Each segment within the reach takes the plane from its end nearer the junction.
             for (let v = side.v, along = 0; along < reach && v + step >= 0 && v + step < line.z.length; v += step) {
                 const s = Math.min(v, v + step), end = 2 * s + (step === 1 ? 0 : 1);
@@ -608,23 +625,27 @@ function junctionPlanes(lines: Line[]): void {
     }
 }
 
-/** The slope across segment v of a road, `sa` metres from its start and `sb` from its end, as `along` in stamp-core.wgsl reads it. */
+/** The rise per metre to the right of segment v of a line, `sa` metres from its start and `sb` from its end, as `along` in stamp-core.wgsl reads it. */
 export function crossSlope(line: Line, v: number, sa: number, sb: number): number {
-    return line.tilt ? tiltAt(line.tilt[2 * v], sa) + tiltAt(line.tilt[2 * v + 1], sb) : 0;
+    const bank = line.plan ? line.plan.bank[v] + (line.plan.bank[v + 1] - line.plan.bank[v]) * Math.min(1, Math.max(0, sa / Math.max(sa + sb, 1e-6))) : 0;
+    return (line.tilt ? tiltAt(line.tilt[2 * v], sa) + tiltAt(line.tilt[2 * v + 1], sb) : 0) - bank;
 }
+
+/** A line as `smoothed` and `townPieces` hand it on. */
+type Shape = Pick<Line, 'xy' | 'z' | 'plan'> & { anchors: boolean[] };
 
 /** The most that a chord of a rounded bend leaves the curve, in world units (about 10 cm), and the most chords per segment. */
 const SAGITTA = 4, CHORDS = 16;
 
 /**
- * A line through its vertices with its bends rounded: each segment between two other segments follows
+ * A line with no alignment through its vertices with its bends rounded: each segment between two other segments follows
  * the centripetal Catmull-Rom curve through the four vertices about it, in chords of whole world
  * units, with the height linear along it. The first and last segments stay straight, also of a
  * closed way: the feature tiles cut a ring into open pieces, so every line is open. They cut a line
  * one vertex past the segments that meet a tile's buffer, so every segment that a tile's nodes stamp
  * gets the same curve in each tile that holds it; and every vertex stays, so junctions stay where they are.
  */
-export function smoothed(xy: number[], z: number[]): { xy: number[]; z: number[]; anchors: boolean[] } {
+export function smoothed(xy: number[], z: number[]): Shape {
     const n = z.length, segments = n - 1;
     if (n < 3) return { xy, z, anchors: z.map(() => true) };
     const point = (i: number): [number, number] => [xy[2 * i], xy[2 * i + 1]];
@@ -682,11 +703,13 @@ export function junctions(lines: Line[]): Map<string, { x: number; y: number; h:
 }
 
 /**
- * The unit mitre normal at vertex v of a line: along the line at an end, the bisector of the two segments
- * inside. At an OSM vertex the segments run to the OSM vertices about it, not to the points of a rounded
- * bend: a tile rounds only the segments with a vertex on both sides, so this is the same in every tile.
+ * The unit mitre normal at vertex v of a line: its tangent where it has an alignment, else along the line
+ * at an end, the bisector of the two segments inside. At an OSM vertex the segments run to the OSM vertices
+ * about it, not to the points of a rounded bend: a tile rounds only the segments with a vertex on both
+ * sides, so this is the same in every tile.
  */
 export function mitre(line: Line, v: number): [number, number] {
+    if (line.plan) return [Math.cos(line.plan.tangent[v]), Math.sin(line.plan.tangent[v])];
     const n = line.z.length, anchored = line.anchors?.[v], dir = (a: number, b: number) => {
         const dx = line.xy[2 * b] - line.xy[2 * a], dy = line.xy[2 * b + 1] - line.xy[2 * a + 1], l = Math.hypot(dx, dy) || 1;
         return [dx / l, dy / l];
@@ -803,6 +826,8 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     const record = (words: number[]) => records.push(words) - 1;
     const floats = new Float32Array(1), ints = new Uint32Array(floats.buffer);
     const f = (value: number) => ((floats[0] = value), ints[0]);
+    /** Two numbers within ±1 as unpack2x16snorm reads them. */
+    const pair = (a: number, b: number) => (Math.round(a * 32767) & 0xffff) | (Math.round(b * 32767) << 16);
 
     const joins = junctions(cores(lines));
     for (const { x, y, h } of joins.values()) {
@@ -849,8 +874,10 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             // The surface code in the low 4 bits, the sides with a sidewalk above it. Beside the line's index, in
             // steps of 2 cm, how far its edge lies out at the start and the end, where it tapers to a partner's.
             const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) - line.h) / 0.02))) & 0xff;
-            const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h), f(mx), f(my), f(nx), f(ny),
-                id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
+            // The mitres of the two ends, then the rise of the bank to the right at each. One word stays free.
+            const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
+            const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
+                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), 0, id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);
             heights ||= stamps;
         }

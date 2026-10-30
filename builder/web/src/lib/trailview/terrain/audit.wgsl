@@ -176,7 +176,7 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     }
     if (kind == CROSS_FALL || kind == ROAD_HEIGHT) {
         // The mesh shows a carriageway over its middle only, a read inside its edges.
-        let rule = profiles[q.kind >> 8u];
+        let rule = stamp_rules.profiles[q.kind >> 8u];
         let inner = q.half - read;
         if (!road_shows(q.half, rule, level) || !road_shows(q.half, rule, coarse) || inner <= 0.0) {
             return;
@@ -205,7 +205,7 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     // Under a deck, past its abutments as far as a read: no ground above its underside, on the levels that
     // show it with a trough wider than a read.
     if (kind == UNDER_DECK) {
-        let rule = profiles[q.kind >> 8u];
+        let rule = stamp_rules.profiles[q.kind >> 8u];
         if (road_shows(q.half, rule, level) && road_shows(q.half, rule, coarse) && q.half + TROUGH_M > read && q.shore >= ABUTMENT_CELLS * MESH_TEXELS * wide + read) {
             check(UNDER_DECK, drawn - q.expected, ROUNDING, false, s, level, drawn, q.expected, q.shore);
         }
@@ -213,7 +213,7 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     }
     if (q.half > 0.0) {
         // A river holds its level over its middle, a read inside its edges, on the levels that show it.
-        let rule = profiles[q.kind >> 8u];
+        let rule = stamp_rules.profiles[q.kind >> 8u];
         if (!road_shows(q.half, rule, level) || !road_shows(q.half, rule, coarse) || q.half <= read) {
             return;
         }

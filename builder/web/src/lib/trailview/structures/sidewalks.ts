@@ -55,7 +55,7 @@ function stationAt(line: Line, v: number, partner?: Line): Station {
     const w = partner === line ? (v ? 1 : pn - 2) : partner.xy[0] === x && partner.xy[1] === y ? 1 : pn - 2, other = [partner.xy[2 * w], partner.xy[2 * w + 1]];
     const near = v ? [line.xy[2 * v - 2], line.xy[2 * v - 1]] : [line.xy[2], line.xy[3]];
     const xy = v ? [...near, x, y, ...other] : [...other, x, y, ...near];
-    return { ...station({ ...line, xy, z: [0, line.z[v], 0], anchors: undefined }, 1), z: line.z[v] };
+    return { ...station({ ...line, xy, z: [0, line.z[v], 0], anchors: undefined, plan: undefined }, 1), z: line.z[v] };
 }
 
 /**

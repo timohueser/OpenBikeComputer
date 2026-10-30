@@ -57,6 +57,12 @@ const TAKEN_FLAG: u32 = 8u;
 // A mesh vertex moves onto a road edge within this many texels of its level: 3/4 of a mesh cell, so
 // that on every level with masks each triangle along an edge has a vertex on it.
 const SNAP_TEXELS: f32 = 3.0;
+// Where a road's cut or fill meets the ground, the ground rounds over DAYLIGHT_M of height instead of a
+// crease. Near the road the slope keeps its crease: the rounding grows from SOFT_FROM_M to SOFT_FULL_M past
+// the core.
+const DAYLIGHT_M: f32 = 0.8;
+const SOFT_FROM_M: f32 = 1.5;
+const SOFT_FULL_M: f32 = 4.0;
 
 // As in pages.wgsl: the ordered bits of a height, so that unsigned atomics take the least and the greatest.
 fn ordered(h: f32) -> u32 {
@@ -71,6 +77,22 @@ fn distance_code(d: f32) -> f32 {
 // As mask_metres of features.wgsl.
 fn code_distance(code: f32) -> f32 {
     return MASK_KNEE * sinh((2.0 * code - 1.0) * asinh(MASK_RANGE / MASK_KNEE));
+}
+
+// The ground before the clamp: a soft minimum with the top of a cut, a soft maximum with the foot of a fill.
+fn rounded(base: f32, s: Stamp) -> f32 {
+    var h = base;
+    if (s.cut) {
+        let r = DAYLIGHT_M * smoothstep(SOFT_FROM_M, SOFT_FULL_M, s.cut_x);
+        let k = max(r - abs(h - s.hi), 0.0) / max(r, 1e-3);
+        h = min(h, s.hi) - k * k * r * 0.25;
+    }
+    if (s.fill) {
+        let r = DAYLIGHT_M * smoothstep(SOFT_FROM_M, SOFT_FULL_M, s.fill_x);
+        let k = max(r - abs(h - s.lo), 0.0) / max(r, 1e-3);
+        h = max(h, s.lo) + k * k * r * 0.25;
+    }
+    return h;
 }
 
 @compute @workgroup_size(8, 8)
@@ -90,7 +112,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         } else {
             base = slot_height(job.base, t);
         }
-        h = select(NONE, clamp(base, s.lo, s.hi), known(base));
+        h = select(NONE, clamp(rounded(base, s), s.lo, s.hi), known(base));
         out[at] = select(UNKNOWN32, bitcast<u32>(h), known(h));
         if (known(h)) {
             atomicMin(&extent[2u * job.out], ordered(h));
@@ -112,10 +134,10 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
-// The move of a mesh vertex of a mask's page onto the outer edge of a carriageway, or of its sidewalk where
-// it has one, in whole units: from the distance to the edge at the four texels about its corner, a quarter
-// texel inside, where the texels about it hold the road's height. The ground is flat across a sidewalk, so
-// its outer edge is the ground's only crease there. None where a texel holds no road. A vertex on the
+// The move of a mesh vertex of a mask's page onto the outer edge of a carriageway's shoulder, or of its
+// sidewalk where it has one, in whole units: from the distance to the edge at the four texels about its corner, a quarter
+// texel inside, where the texels about it hold the road's height. The ground is flat across a sidewalk or a
+// shoulder, so its outer edge is the ground's only crease there. None where a texel holds no road. A vertex on the
 // lower or the left edge of the page reads the four texels beside it inside the page, so that no page
 // reads another. A vertex on an edge of its node moves only along it: every border between two
 // levels lies on an edge of the coarser node, so each node draws exactly its own area.
@@ -131,12 +153,14 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
     var d: array<f32, 4>;
     var road = true;
     var walk = 0.0;
+    var shoulder = 0.0;
     for (var i = 0; i < 4; i++) {
         let texel = textureLoad(mask_in, in_layer(job.mask, low + vec2i(i % 2, i / 2)), job.mask >> 6u, 0);
         let surface = u32(round(texel.w * 255.0)) & 15u;
         road = road && surface != 0u;
         d[i] = code_distance(texel.x);
         walk = max(walk, select(round(texel.y * 255.0) * WALK_STEP_M, 0.0, surface >= TRACK_CODE));
+        shoulder = max(shoulder, shoulder_of(surface));
     }
     let shift = 22u - job.level;
     let unit = unit_metres(corner.y << shift);
@@ -144,7 +168,7 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
     // The gradient of the distance per metre, and the distance at the corner.
     let g = vec2f(d[1] + d[3] - d[0] - d[2], d[2] + d[3] - d[0] - d[1]) * 0.5 / metres;
     let to_edge = 0.25 * (d[0] + d[1] + d[2] + d[3]) + dot(g, vec2f(corner - low - vec2i(1))) * metres;
-    let at = to_edge - walk;
+    let at = to_edge - select(shoulder, walk, walk > 0.0);
     let g2 = dot(g, g);
     let reach_m = SNAP_TEXELS * metres;
     var moved = vec2i(0);
