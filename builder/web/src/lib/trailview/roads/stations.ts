@@ -57,19 +57,23 @@ export function stationsOf(line: Line, step = STEP_M, half: (v: number) => numbe
     for (let v = 0; v + 1 < n; v++) {
         const p0: [number, number] = [line.xy[2 * v], line.xy[2 * v + 1]], p1: [number, number] = [line.xy[2 * v + 2], line.xy[2 * v + 3]];
         const t0: [number, number] = [dir[2 * v], dir[2 * v + 1]], t1: [number, number] = [dir[2 * v + 2], dir[2 * v + 3]];
-        const metres = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) * metresPerUnit(p0[1]), h0 = half(v), h1 = half(v + 1);
-        // Fine samples of the curve, about FINE_M apart; a station before the next one would pass `step` metres or MAX_TURN from the last station.
-        const fine = Math.max(8, Math.ceil(metres / FINE_M)), at = (u: number) => hermite(p0, p1, t0, t1, line.z[v], line.z[v + 1], grade[v], grade[v + 1], metres, u);
-        let c = at(0), run = 0, kept = c;
+        const unit = metresPerUnit(p0[1]), chord = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) || 1, metres = chord * unit, h0 = half(v), h1 = half(v + 1);
+        // Fine samples of the curve, about FINE_M apart (a straight segment needs none); a station before the
+        // next sample would pass `step` metres, or MAX_TURN past MIN_STEP_M, from the last station.
+        const cx = (p1[0] - p0[0]) / chord, cy = (p1[1] - p0[1]) / chord, straight = turn(t0[0], t0[1], cx, cy) + turn(cx, cy, t1[0], t1[1]) < 1e-3;
+        const fine = straight ? Math.max(1, Math.ceil(metres / step)) : Math.max(8, Math.ceil(metres / FINE_M));
+        const at = (u: number) => hermite(p0, p1, t0, t1, line.z[v], line.z[v + 1], grade[v], grade[v + 1], metres, u);
+        let c = at(0), run = 0, kept = c, next = at(1 / fine);
         if (v === 0) out.push(station(line, v, 0, metres, c, 0, h0, h1, out.length));
         for (let k = 1; k <= fine; k++) {
-            const next = at(k / fine), d = Math.hypot(next.x - c.x, next.y - c.y) * metresPerUnit(next.y);
+            const d = Math.hypot(next.x - c.x, next.y - c.y) * unit;
             along += d;
             run += d;
             c = next;
             if (k < fine) {
-                const after = at((k + 1) / fine), ahead = run + Math.hypot(after.x - c.x, after.y - c.y) * metresPerUnit(c.y);
-                if (ahead <= step && (ahead <= MIN_STEP_M || turn(kept.tx, kept.ty, after.tx, after.ty) <= MAX_TURN)) continue;
+                next = at((k + 1) / fine);
+                const ahead = run + Math.hypot(next.x - c.x, next.y - c.y) * unit;
+                if (ahead <= step && (ahead <= MIN_STEP_M || turn(kept.tx, kept.ty, next.tx, next.ty) <= MAX_TURN)) continue;
             }
             run = 0;
             kept = c;

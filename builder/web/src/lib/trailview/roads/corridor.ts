@@ -15,6 +15,8 @@ import { stationsOf, type Station } from './stations';
 
 /** Vertex flags in the colour's alpha that mark a corridor vertex: VOID and INSIDE of mesh.ts, which no other face has together. */
 const CORRIDOR = 12;
+/** The stations of each line, made once. */
+const made = new WeakMap<Line, Station[]>();
 /** Steps of a dead end's half circle. */
 const CAP_STEPS = 10;
 
@@ -37,7 +39,9 @@ export function corridors(b: MeshBuilder, lines: Line[], owns: Owns): void {
         if (!corridorLine(line) || line.z.length < 2) return;
         // The half-width as the stamp has it: tapered to a partner's at a joint, widened in a tight bend.
         const half = (v: number) => halfAt(line, v, partners) + (line.widen?.[v] ?? 0);
-        const ctx: Ctx = { b, line, lift: classLift(line, id), prio: bandPrio(line), made: new Map() }, stations = stationsOf(line, undefined, half);
+        const ctx: Ctx = { b, line, lift: classLift(line, id), prio: bandPrio(line), made: new Map() };
+        // The owner nodes of a tile share its lines: each line's stations are made once.
+        const stations = made.get(line) ?? made.set(line, stationsOf(line, undefined, half)).get(line)!;
         for (let j = 0; j + 1 < stations.length; j++) {
             if (owns(stations[j].x, stations[j].y)) sweep(ctx, stations[j], stations[j + 1]);
         }
