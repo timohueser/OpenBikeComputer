@@ -611,11 +611,11 @@ function surfaceAt(line: Line, list: Station[], ids: Map<Line, number>, x: numbe
 /** A side arm leaves the through road's surface over this many metres past its mouth. */
 const CONFORM_M = 10;
 /**
- * The stamped ground holds a side arm at its own heights: its surface sinks at most SINK_M under them. Where the
- * through road's banked edge lies lower, that edge rises (at most RAISE_M) about its other edge instead, fully
- * within FLAT_M of the junction and back over FLATTEN_M more.
+ * The stamped ground holds a side arm at its own heights: its surface never sinks under them. Where the through
+ * road's banked edge lies lower, that edge rises (at most RAISE_M) about its other edge instead, fully within
+ * FLAT_M of the junction and back over FLATTEN_M more.
  */
-const SINK_M = 0.05, RAISE_M = 0.3, FLAT_M = 4, FLATTEN_M = 10;
+const RAISE_M = 0.3, FLAT_M = 4, FLATTEN_M = 10;
 
 /** The height of a road's surface at a point near it, from its stations: its banked plane, held level past its edges. */
 function planeAt(line: Line, list: Station[], ids: Map<Line, number>, x: number, y: number): { z: number; lat: number } | undefined {
@@ -650,7 +650,7 @@ function raises(info: Map<Line, LinePlan>, stations: (line: Line) => JStation[],
         for (const t of new Set(mouth.J.ways.filter(w => w.through && !isDeck(w.line)).map(w => w.line))) {
             const tl = stations(t), p = planeAt(t, tl, ids, at.x, at.y);
             const need = p && at.z + LIFT_M + lift - p.z;
-            if (!p || !need || need <= SINK_M) continue;
+            if (!p || !need || need <= 0) continue;
             const rise = Math.min(RAISE_M, need), side = p.lat > 0 ? 0 : 1, { x: jx, y: jy } = mouth.J;
             const tb = tl.reduce((a, s) => (Math.hypot(s.x - jx, s.y - jy) < Math.hypot(a.x - jx, a.y - jy) ? s : a), tl[0]).along;
             for (const s of tl) {
@@ -687,12 +687,12 @@ function conform(line: Line, list: JStation[], alongs: number[], mouth: LinePlan
     }
     const at = arm.at(far), zFar = target(at);
     if (zFar === undefined) return;
-    const shift = Math.max(-SINK_M, Math.min(0.5, zFar - at.z));
+    const shift = Math.max(0, Math.min(0.5, zFar - at.z));
     for (const s of list) {
         const d = (s.along - base) * dir;
         if (d < 0 || d > far + CONFORM_M) continue;
         const z = d <= far ? target(s) : undefined;
-        s.z = z !== undefined ? Math.max(z, s.z - SINK_M) : s.z + shift * (1 - smooth(Math.min(1, (d - far) / CONFORM_M)));
+        s.z = z !== undefined ? Math.max(z, s.z) : s.z + shift * (1 - smooth(Math.min(1, (d - far) / CONFORM_M)));
     }
 }
 
