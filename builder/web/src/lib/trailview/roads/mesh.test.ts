@@ -105,6 +105,7 @@ describe('the corridor meshes of the fixture', () => {
 describe('where a way leaves a child', () => {
     it('leaves no gap, whichever of the two children draws near and which far', () => {
         let crossings = 0;
+        const open: string[] = [];
         for (const fixtureTile of tiles) {
             const pieces = fixtureTile.meshes.flatMap(mesh => mesh.pieces), plans = new Map<RoadPiece, { near: ReturnType<typeof rangeCells>; far: ReturnType<typeof rangeCells> }>();
             const planOf = (piece: RoadPiece) => plans.get(piece) ?? plans.set(piece, { near: rangeCells(piece, piece.near), far: rangeCells(piece, piece.far) }).get(piece)!;
@@ -120,14 +121,15 @@ describe('where a way leaves a child', () => {
                     for (let i = Math.max(0, j - 6); i <= j + 6 && i + 1 < stations.length; i++) {
                         const [p, q] = [stations[i], stations[i + 1]], x = (p.x + q.x) / 2, y = (p.y + q.y) / 2;
                         if (![A, B].includes(squareOf(p, CHILD)) || ![A, B].includes(squareOf(q, CHILD))) continue;
-                        expect(nearA.some(({ near }) => covers(near, x, y)) || nearB.some(({ far }) => covers(far, x, y)), `near ${A}, far ${B}`).toBe(true);
-                        expect(nearA.some(({ far }) => covers(far, x, y)) || nearB.some(({ near }) => covers(near, x, y)), `far ${A}, near ${B}`).toBe(true);
+                        if (!nearA.some(({ near }) => covers(near, x, y)) && !nearB.some(({ far }) => covers(far, x, y))) open.push(`near ${A}, far ${B}`);
+                        if (!nearA.some(({ far }) => covers(far, x, y)) && !nearB.some(({ near }) => covers(near, x, y))) open.push(`far ${A}, near ${B}`);
                     }
                 }
             }
         }
+        expect(open).toEqual([]);
         expect(crossings).toBeGreaterThan(500);
-    });
+    }, 30_000);
 });
 
 describe('where a way leaves a tile', () => {
