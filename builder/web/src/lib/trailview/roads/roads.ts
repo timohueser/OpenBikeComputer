@@ -19,11 +19,8 @@ const FAR_FROM_M = 200;
 const PAINT_INSIDE_M = 40;
 /** An owner builds this far before it comes into range: about 20 s at the speed of a car in a valley. */
 const AHEAD_M = 300;
-/**
- * The GPU pools: 48 MiB in all, chosen by the owner. The vertices and the indices of the fixture's largest
- * owner take 2.8 and 2.5 MiB.
- */
-const VERTEX_BYTES = 28 * 2 ** 20, INDEX_BYTES = 20 * 2 ** 20;
+/** The GPU pools, with the middles of the draws under the owner's budget of 48 MiB. */
+const VERTEX_BYTES = 27 * 2 ** 20, INDEX_BYTES = 20 * 2 ** 20;
 /** Bytes of meshes kept on the CPU: with the stamps' 64 MiB, the 96 MiB of the owner's budget. */
 const MESH_BYTES = 32 * 2 ** 20;
 /** Requests to the worker in flight at most. */

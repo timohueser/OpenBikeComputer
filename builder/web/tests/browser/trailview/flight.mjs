@@ -1,6 +1,6 @@
 // Flies scripted paths through the built TrailView page, one frame per step, and prints per flight
-// the GPU time per pass, the CPU time, the terrain selection, nodes, triangles and pages, and the
-// requests.
+// the GPU time per pass, the CPU time, the terrain selection, nodes, triangles and pages, the
+// corridors that the lab draws, and the requests.
 //
 //   npm run pretest:trailview --prefix builder/web/tests/browser     # build against the fixture
 //   node builder/web/tests/browser/trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--cracks N] [--audit N] [--resolve MS]

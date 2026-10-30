@@ -116,19 +116,22 @@ describe('the sweep', () => {
         expect(swept(line).vertices.some(v => v.flags & CF.UNDER)).toBe(false);
     });
 
-    it('rounds a dead end with rings that hold their radial metres', () => {
-        const line = straight(40), b = new PieceBuilder(line.xy[0], line.xy[1]), run = runOf(line);
-        cap(b, b.near, run, 0, -1, false);
-        const vertices = decoded(b.piece(0)), band = vertices.filter(v => v.flags & CF.SAMPLE), edge = coreOf(line, 1, 0, line.h);
-        for (const v of band) {
-            expect(v.across).toBeGreaterThan(edge);
-            expect(Math.hypot(v.x - line.xy[0], v.y - line.xy[1]) * metres).toBeCloseTo(v.across, 0);
-        }
-        // The end of the line is at its start: the cap lies west of it.
-        expect(Math.max(...vertices.map(v => v.x))).toBeLessThanOrEqual(line.xy[0] + 1);
-        for (let t = 0; t < b.near.length; t += 3) {
-            const [p, q, r] = [b.near[t], b.near[t + 1], b.near[t + 2]].map(i => vertices[i]);
-            expect((q.x - p.x) * -(r.y - p.y) + (q.y - p.y) * (r.x - p.x), `face ${t / 3}`).toBeGreaterThan(-1e-3);
+    it('rounds a dead end at either end with rings that hold their radial metres, wound as the sweep', () => {
+        const line = straight(40), run = runOf(line), edge = coreOf(line, 1, 0, line.h);
+        for (const [j, dir] of [[0, -1], [run.stations.length - 1, 1]] as const) {
+            const s = run.stations[j], b = new PieceBuilder(s.x, s.y);
+            cap(b, b.near, run, j, dir, false);
+            const vertices = decoded(b.piece(0));
+            for (const v of vertices.filter(({ flags }) => flags & CF.SAMPLE)) {
+                expect(v.across).toBeGreaterThan(edge);
+                expect(Math.hypot(v.x - s.x, v.y - s.y) * metres).toBeCloseTo(v.across, 0);
+            }
+            // The cap lies past the end, along the way out.
+            for (const v of vertices) expect((v.x - s.x) * dir).toBeGreaterThanOrEqual(-1);
+            for (let t = 0; t < b.near.length; t += 3) {
+                const [p, q, r] = [b.near[t], b.near[t + 1], b.near[t + 2]].map(i => vertices[i]);
+                expect((q.x - p.x) * -(r.y - p.y) + (q.y - p.y) * (r.x - p.x), `face ${t / 3}`).toBeGreaterThan(-1e-3);
+            }
         }
     });
 });

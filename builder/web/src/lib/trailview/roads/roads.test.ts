@@ -56,7 +56,7 @@ describe('the corridors under pressure', () => {
     });
 
     it('lose the far ranges first, count them, and keep the paint of every way past what is left', async () => {
-        // The index pool of 20 MiB, over 64, holds two pieces of 128 KiB. The nearest stays.
+        // The index pool, over 64, holds two pieces of 128 KiB. The nearest stays.
         const big = 128 * 1024, first = pieceAt(0, 0, big), { roads } = await roadsWith({ pieces: [pieceAt(1, 1, big), pieceAt(0, 1, big), first, pieceAt(1, 0, big)] });
         const reach = roads.write();
         expect(roads.stats).toMatchObject({ pieces: 2, near: 1, far: 1, dropped: 2 });
