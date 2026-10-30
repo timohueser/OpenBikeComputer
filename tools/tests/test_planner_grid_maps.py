@@ -135,6 +135,7 @@ class MapGrid(unittest.TestCase):
         vectors = Path(__file__).resolve().parents[2] / "specs/vectors"
         decoded = json.loads((vectors / "trailview-features.json").read_text())
         self.assertEqual(planner_verify.features((vectors / "trailview-features.bin").read_bytes()), decoded)
+        self.assertEqual(planner_verify.features(b"\x00\x00"), [])
         with self.assertRaisesRegex(ValueError, "bytes after"):
             planner_verify.features((vectors / "trailview-features.bin").read_bytes() + b"\x00")
 

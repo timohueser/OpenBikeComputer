@@ -3,6 +3,11 @@
 use super::{Classes, Feature, APPROACH_M, APPROACH_PATH_M, VERTEX_M};
 use crate::metres;
 
+/// Two ways out run on in the look when they open at least this far: the cosine of their angle.
+const LOOK_COS: f64 = -0.3;
+/// A way out runs toward its point this far along it: the first segment of OSM can be a stub.
+const LOOK_M: f64 = 8.0;
+
 /// The ways as arrays. An OSM vertex is an occurrence of a point in a way; ways that share a point
 /// share its variable. Between two occurrences a way gets vertices so that no segment is longer
 /// than VERTEX_M, and one at the approach distance of a side road. `vertex_*` lists every vertex of
@@ -28,6 +33,8 @@ pub(crate) struct Network {
     pub sides: Sides,
     /// The through roads of two ways: (occurrence, step) of each.
     pub pairs: Vec<[(usize, i64); 2]>,
+    /// The ways out, (occurrence, step), that no through pair of the look holds.
+    pub arms: Vec<(usize, i64)>,
     pub osm_position: Vec<usize>,
     pub vertex_xy: Vec<[f64; 2]>,
     pub vertex_var: Vec<usize>,
@@ -43,8 +50,9 @@ pub(crate) struct Network {
     pub length: Vec<f64>,
 }
 
-/// The side directions of the junctions: per side its occurrence, step and approach metres, and the
-/// through directions of its junction as (occurrence, step), the second one None where there is one.
+/// The side directions of the junctions: per side its occurrence, step and approach metres,
+/// and the through directions of its junction as (occurrence, step), the second one None where there
+/// is one.
 #[derive(Default)]
 pub(crate) struct Sides {
     pub occurrence: Vec<usize>,
@@ -160,6 +168,7 @@ impl Network {
             junction,
             sides: Sides::default(),
             pairs: Vec::new(),
+            arms: Vec::new(),
             osm_position: Vec::new(),
             vertex_xy: Vec::new(),
             vertex_var: Vec::new(),
@@ -313,7 +322,57 @@ impl Network {
                     self.sides.through.push([Some(t1), t2]);
                 }
             }
+            let roads: Vec<(usize, i64, usize)> =
+                group.iter().filter(|&&i| rank[i] < classes.path).map(|&i| (rows[i].0, rows[i].1, rank[i])).collect();
+            self.look_arms(&roads);
             s = e;
+        }
+    }
+
+    /// The direction of a way out of occurrence `o`.
+    fn way_out(&self, o: usize, step: i64) -> [f64; 2] {
+        let (way, start) = (self.osm_way[o], self.osm_xy[o]);
+        let (mut k, mut left, mut end) = (o, LOOK_M, start);
+        loop {
+            let next = k as i64 + step;
+            if next < 0 || next as usize >= self.osm_xy.len() || self.osm_way[next as usize] != way {
+                break;
+            }
+            let (a, b) = (self.osm_xy[k], self.osm_xy[next as usize]);
+            let length = hypot(sub(b, a)) * metres(a[1]);
+            if length >= left {
+                end = [a[0] + (b[0] - a[0]) * left / length, a[1] + (b[1] - a[1]) * left / length];
+                break;
+            }
+            (k, left, end) = (next as usize, left - length, b);
+        }
+        let d = sub(end, start);
+        let norm = hypot(d).max(1e-300);
+        [d[0] / norm, d[1] / norm]
+    }
+
+    /// The arms of a junction of `roads` (occurrence, step, class). Its through pair in the look holds
+    /// the best class that has a pair, then the best class beside that, then runs most nearly straight
+    /// on. So a road runs on into a lesser class, and a stem that ends on a straight road leaves it as
+    /// an arm. Two ways run on, and a junction with no pair has no arms.
+    fn look_arms(&mut self, roads: &[(usize, i64, usize)]) {
+        if roads.len() <= 2 {
+            return;
+        }
+        let out: Vec<[f64; 2]> = roads.iter().map(|&(o, step, _)| self.way_out(o, step)).collect();
+        let mut best: Option<((usize, usize, f64), usize, usize)> = None;
+        for i in 0..roads.len() {
+            for k in i + 1..roads.len() {
+                let (straight, (a, b)) = (dot(out[i], out[k]), (roads[i].2, roads[k].2));
+                let rank = (a.min(b), a.max(b), straight);
+                if straight <= LOOK_COS && best.is_none_or(|(most, _, _)| rank < most) {
+                    best = Some((rank, i, k));
+                }
+            }
+        }
+        if let Some((_, i, k)) = best {
+            let arms = (0..roads.len()).filter(|&n| n != i && n != k);
+            self.arms.extend(arms.map(|n| (roads[n].0, roads[n].1)));
         }
     }
 }
