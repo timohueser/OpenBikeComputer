@@ -10,6 +10,7 @@ import { galleries } from './galleries';
 import { MeshBuilder, type StructureMesh } from './mesh';
 import { rails } from './rails';
 import { corridors } from '../roads/corridor';
+import { shoreOf } from '../roads/shore';
 import { boreHalf, portalBox, tunnels, twins } from './tunnels';
 
 /**
@@ -84,10 +85,10 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side;
     const owns: Owns = (x, y) => x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
     const words: number[] = [], far = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) }, near = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) };
-    const { lines, buildings, walks } = features(list, tile);
+    const { lines, buildings, walks, lakes, areas } = features(list, tile);
     // PROTOTYPE (road study): the corridors draw the roads near the eye, with their kerbs and sidewalks.
     const corridor = new MeshBuilder();
-    corridors(corridor, lines, owns, { walks, buildings });
+    corridors(corridor, lines, owns, { walks, buildings }, shoreOf(lines, [...lakes, ...areas]));
     bridges(far.mesh, list, tile, lines, owns);
     tunnels(far.mesh, lines, owns);
     galleries(far.mesh, lines, owns);
