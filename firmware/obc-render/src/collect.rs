@@ -953,11 +953,27 @@ const _: () = assert!(core::mem::size_of::<Span>() == 12, "Span must stay 12 byt
 #[cfg(test)]
 mod viewport_compaction_tests {
     use super::*;
-    use crate::fill::{fill_polygon, fill_polygon_proj};
+    use crate::fill::fill_polygon;
     use crate::{MAX_CROSSINGS, MAX_SCREEN_POINTS};
     use embedded_graphics::mock_display::MockDisplay;
     use embedded_graphics::pixelcolor::BinaryColor;
     use embedded_graphics::prelude::Point;
+
+    /// Project every ring into `screen` and fill it: the framebuffer-equivalence oracle.
+    fn fill_uncompacted(
+        target: &mut MockDisplay<BinaryColor>,
+        viewport: &Viewport,
+        points: &[(i32, i32)],
+        ring_lens: &[usize],
+        screen: &mut Vec<Point, MAX_SCREEN_POINTS>,
+        xs: &mut Vec<f32, MAX_CROSSINGS>,
+    ) {
+        screen.clear();
+        for &(lon, lat) in points {
+            let _ = screen.push(viewport.project(lon, lat));
+        }
+        fill_polygon(target, screen, ring_lens, BinaryColor::On, viewport.w as i32, viewport.h as i32, xs);
+    }
 
     fn map_ring(viewport: &Viewport, screen: &[(i32, i32)]) -> std::vec::Vec<(i32, i32)> {
         screen.iter().map(|&(x, y)| viewport.to_map(x as f32, y as f32)).collect()
@@ -1013,7 +1029,7 @@ mod viewport_compaction_tests {
         let mut after = MockDisplay::<BinaryColor>::new();
         let mut screen: Vec<Point, MAX_SCREEN_POINTS> = Vec::new();
         let mut xs: Vec<f32, MAX_CROSSINGS> = Vec::new();
-        fill_polygon_proj(&mut before, &viewport, &points, &ring_lens, BinaryColor::On, &mut screen, &mut xs);
+        fill_uncompacted(&mut before, &viewport, &points, &ring_lens, &mut screen, &mut xs);
         draw_compacted(&mut after, &viewport, &compact_points, &compact_rings, &mut screen, &mut xs);
         assert_eq!(before, after, "viewport compaction must be framebuffer-identical");
     }
@@ -1032,7 +1048,7 @@ mod viewport_compaction_tests {
         let mut after = MockDisplay::<BinaryColor>::new();
         let mut screen: Vec<Point, MAX_SCREEN_POINTS> = Vec::new();
         let mut xs: Vec<f32, MAX_CROSSINGS> = Vec::new();
-        fill_polygon_proj(&mut before, &viewport, &points, &ring_lens, BinaryColor::On, &mut screen, &mut xs);
+        fill_uncompacted(&mut before, &viewport, &points, &ring_lens, &mut screen, &mut xs);
         draw_compacted(&mut after, &viewport, &compact_points, &compact_rings, &mut screen, &mut xs);
         assert_eq!(before, after, "screen-collinear compaction must be framebuffer-identical");
     }

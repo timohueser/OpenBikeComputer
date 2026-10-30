@@ -11,7 +11,7 @@ use crate::viewport::round_pt;
 use crate::{DrawScratch, RenderScratch, Viewport, MAX_CROSSINGS};
 
 // Route direction chevrons are anchored to route distance, not to the screen, so each stays pinned
-// to a ground spot, and they are drawn only in a window around the rider. Spacing and window are
+// to a ground spot, and they are drawn only in a window ahead of the rider. Spacing and window are
 // screen-relative, a fixed pixel cadence and a chevron count, so they keep an even spread across
 // the zoom range; the ground spacing is derived per frame from the camera's m/px.
 
@@ -19,9 +19,8 @@ use crate::{DrawScratch, RenderScratch, Viewport, MAX_CROSSINGS};
 /// `ARROW_SPACING_PX × m/px` each frame, so chevrons stay evenly spread at any zoom.
 const ARROW_SPACING_PX: f32 = 66.0;
 /// How many chevrons lead ahead of the rider: a count, so the look-ahead tracks the screen cadence.
+/// None trail the rider, because the breadcrumb shows the travelled line.
 const ARROW_AHEAD_COUNT: u32 = 9;
-/// How many chevrons trail behind the rider. Zero: the breadcrumb shows the travelled line.
-const ARROW_BEHIND_COUNT: u32 = 0;
 /// Chevron tip reach ahead of its centre (px).
 const ARROW_TIP: f32 = 8.0;
 /// Chevron base reach behind its centre (px).
@@ -154,7 +153,7 @@ impl RenderScratch {
             });
         }
 
-        // Pass 2 — chevrons, anchored to route distance and windowed around the rider.
+        // Pass 2 — chevrons, anchored to route distance and windowed ahead of the rider.
         let Some(progress_m) = arrows_at else {
             return (route_chunks, route_points, route_drawn);
         };
@@ -162,7 +161,7 @@ impl RenderScratch {
         // Ground spacing for this frame: a fixed screen cadence scaled by m/px, with `.max`
         // guarding divide-by-zero at absurd zoom-in.
         let spacing_m = (ARROW_SPACING_PX * vp.meters_per_pixel()).max(1e-3);
-        let lo = (progress_m as f32 - ARROW_BEHIND_COUNT as f32 * spacing_m).max(0.0);
+        let lo = progress_m as f32;
         let hi = (progress_m as f32 + ARROW_AHEAD_COUNT as f32 * spacing_m).min(total as f32);
         for k in 0..route.chunk_count() {
             // Skip chunks whose cumulative-distance span misses the window (then the view).

@@ -3,7 +3,7 @@
 //! wall of `embedded-graphics` builders.
 //!
 //! The drawing vocabulary lives on the [`Surface`](crate::Surface) trait, which `Canvas` is the
-//! one implementor of, so helpers take `&mut impl Surface` and never see the generics. The host
+//! one production implementor of, so helpers take `&mut impl Surface` and never see the generics. The host
 //! constructs one [`Canvas`] per frame.
 
 use core::cell::Cell;
@@ -16,8 +16,8 @@ pub fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle {
     Rectangle::new(Point::new(x, y), Size::new(w.max(0) as u32, h.max(0) as u32))
 }
 
-/// A drawing surface bundling a target with the host colour policy, the one implementor of
-/// [`Surface`](crate::Surface). Every colour argument is a palette RGB565.
+/// A drawing surface bundling a target with the host colour policy, the one production
+/// implementor of [`Surface`](crate::Surface). Every colour argument is a palette RGB565.
 pub struct Canvas<'a, D, F> {
     target: &'a mut D,
     color_fn: &'a F,
@@ -73,8 +73,8 @@ impl<'a, D, F> Canvas<'a, D, F> {
         self.clip.is_some_and(|c| hole.intersection(&c) == c)
     }
 
-    /// The raw-target escape hatch, for the one consumer that must hand the target and colour
-    /// policy to [`RenderScratch`](crate::RenderScratch) directly.
+    /// The raw-target escape hatch, for a screen that must hand the target and colour policy to
+    /// [`RenderScratch`](crate::RenderScratch) directly.
     pub fn split(&mut self) -> (&mut D, &F) {
         (self.target, self.color_fn)
     }

@@ -1,29 +1,22 @@
-//! [`Band`], a frame-absolute draw view of one band or window of the frame, plus the
+//! [`Band`], a frame-absolute draw view of one window of the frame, plus the
 //! [`composite_overlay_window`] overlay helper.
 //!
-//! A frame, or a partial overlay window, is reformatted a band of a few rows at a time. Each
-//! board's presenter backend owns the push to glass; this module supplies the pieces they share.
+//! An overlay is composited in a small RGB565 window. Each presenter backend owns the push to
+//! glass; this module supplies the pieces they share.
 //!
-//! [`Band`] makes "render the whole frame, band at a time" invisible to the drawing code: it
-//! wraps one band's scratch slice as a [`Framebuffer565`] with the band's `y0` baked in, yet
-//! reports the full frame size. A whole-frame generator draws in absolute coordinates, and
-//! [`Band`] shifts each draw up by `y0` and clips away whatever falls outside this band's rows,
-//! so the frame reassembles seam-free.
+//! [`Band`] makes the window invisible to the drawing code: it wraps the window's scratch slice as
+//! a [`Framebuffer565`], yet reports the full frame size. An overlay draws in absolute coordinates,
+//! and [`Band`] shifts each draw by the window's origin and clips whatever falls outside.
 
 use embedded_graphics::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
 
 use crate::framebuffer::{device64_to_rgb565, Framebuffer565};
 
-/// A frame-absolute [`DrawTarget`] view of one band's scratch slice, or of any rectangular window
-/// of the frame.
+/// A frame-absolute [`DrawTarget`] view of one rectangular window of the frame.
 ///
 /// It wraps the scratch as a [`Framebuffer565`] sized to just this window, but reports the full
 /// frame size and offsets every draw by `(-x0, -y0)`, so a generator laying out the whole frame
 /// lands its pixels for this window in the scratch and has the rest clipped away.
-///
-/// A full-width band ([`new`](Band::new)) is the common present-loop case. A narrow window
-/// ([`new_window`](Band::new_window)) lets a backend re-push just a sub-rectangle, which is how
-/// the hold bulge re-fills only the right-edge columns it touches.
 pub struct Band<'a> {
     /// The window's own RGB565 buffer, `w × rows`. Draws land here in window-local coords.
     fb: Framebuffer565<'a>,
@@ -38,16 +31,10 @@ pub struct Band<'a> {
 }
 
 impl<'a> Band<'a> {
-    /// View `scratch` as the full-width frame band at `y0`. Panics if `scratch` is shorter than
-    /// `frame.width * rows`, which is a backend wiring bug.
-    pub fn new(scratch: &'a mut [u16], frame: Size, y0: u16, rows: u16) -> Self {
-        Self::new_window(scratch, frame, 0, y0, frame.width as u16, rows)
-    }
-
     /// View `scratch` as the frame window at `(x0, y0)`, sized `w × rows`, reporting the full
     /// `frame`. Frame-absolute draws land offset by `(-x0, -y0)` and anything outside the window
     /// clips. Panics if `scratch` is shorter than `w * rows`.
-    pub fn new_window(scratch: &'a mut [u16], frame: Size, x0: u16, y0: u16, w: u16, rows: u16) -> Self {
+    pub fn new(scratch: &'a mut [u16], frame: Size, x0: u16, y0: u16, w: u16, rows: u16) -> Self {
         Self { fb: Framebuffer565::new(scratch, w as u32, rows as u32), x0: x0 as i32, y0: y0 as i32, frame }
     }
 }
@@ -81,18 +68,17 @@ impl DrawTarget for Band<'_> {
         self.fb.fill_solid(&shifted, color)
     }
 
-    /// Clear this window's pixels to `color`. The generator calls it once per band, and the
-    /// pixels it does not draw afterwards stay this colour, matching the full-frame clear.
+    /// Clear this window's pixels to `color`, matching the full-frame clear.
     fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
         self.fb.clear(color)
     }
 }
 
 /// Composite a transient overlay over the clean RGB222 framebuffer backdrop into `scratch`: the
-/// one piece of the partial-update path that is byte-for-byte identical on every banded backend.
+/// one piece of the partial-update path that is byte-for-byte identical on every backend.
 ///
 /// It fills `scratch[..w * rows]` with the framebuffer window expanded device-64 to RGB565, then
-/// runs `draw_overlay` over it through a frame-absolute [`Band::new_window`]. `fb`, the resident
+/// runs `draw_overlay` over it through a frame-absolute [`Band`]. `fb`, the resident
 /// clean map, is never written, so the overlay costs no map re-render to clear again.
 ///
 /// Panics if `scratch` is shorter than `window`'s area, or if the window runs past `frame`.
@@ -113,7 +99,7 @@ pub fn composite_overlay_window(
             *px = device64_to_rgb565(byte);
         }
     }
-    let mut band = Band::new_window(&mut scratch[..wu * rows as usize], frame, x0, y0, w, rows);
+    let mut band = Band::new(&mut scratch[..wu * rows as usize], frame, x0, y0, w, rows);
     draw_overlay(&mut band);
 }
 
@@ -126,23 +112,7 @@ mod tests {
         Rgb565::from(RawU16::new(raw))
     }
 
-    /// A `Band` reports the whole frame but writes only its own rows: a frame-absolute fill that
-    /// straddles the band's top edge lands offset by `-y0` and is clipped to the band.
-    #[test]
-    fn band_reports_full_frame_offsets_and_clips() {
-        // Frame 4×8; band covers rows [4, 8) (y0=4, rows=4), scratch = 4×4.
-        let mut scratch = [0u16; 4 * 4];
-        {
-            let mut band = Band::new(&mut scratch, Size::new(4, 8), 4, 4);
-            assert_eq!(band.size(), Size::new(4, 8), "reports the FULL frame, not the band");
-            // Absolute rows 2..6 → only frame rows 4,5 fall in this band → band-local rows 0,1.
-            band.fill_solid(&Rectangle::new(Point::new(0, 2), Size::new(4, 4)), rgb(0x07E0)).unwrap();
-        }
-        assert!(scratch[0..8].iter().all(|&p| p == 0x07E0), "frame rows 4-5 filled (band-local 0-1)");
-        assert!(scratch[8..16].iter().all(|&p| p == 0x0000), "frame rows 6-7 untouched (rect ended at 5)");
-    }
-
-    /// A narrow [`Band::new_window`] reports the whole frame but writes only its own sub-rect: a
+    /// A [`Band`] reports the whole frame but writes only its own sub-rect: a
     /// frame-absolute fill straddling the window's bounds lands offset by `(-x0, -y0)` and clips
     /// to the window.
     #[test]
@@ -150,7 +120,7 @@ mod tests {
         // Frame 8×8; window covers cols [4,8) × rows [2,6) (x0=4,y0=2,w=4,rows=4), scratch = 4×4.
         let mut scratch = [0u16; 4 * 4];
         {
-            let mut win = Band::new_window(&mut scratch, Size::new(8, 8), 4, 2, 4, 4);
+            let mut win = Band::new(&mut scratch, Size::new(8, 8), 4, 2, 4, 4);
             assert_eq!(win.size(), Size::new(8, 8), "reports the FULL frame, not the window");
             // Absolute cols 6..10 × rows 4..8 → only cols 6,7 / rows 4,5 fall in the window →
             // window-local cols 2,3 / rows 2,3.
@@ -160,46 +130,6 @@ mod tests {
         assert_eq!(at(1, 1), 0x0000, "outside the filled sub-rect → untouched");
         assert_eq!(at(2, 2), 0xF800, "frame (6,4) → window-local (2,2) filled");
         assert_eq!(at(3, 3), 0xF800, "frame (7,5) → window-local (3,3), last in-window pixel");
-    }
-
-    /// The load-bearing property: drawing a whole-frame generator band by band reconstructs the
-    /// exact image a single full-frame draw produces, with no band seams.
-    #[test]
-    fn bands_reconstruct_full_frame() {
-        const W: u32 = 4;
-        const H: u32 = 8;
-
-        // A whole-frame generator that sizes off the target and draws in absolute coordinates:
-        // clear, then paint each row a distinct colour, so a y-offset bug or a seam shows up.
-        fn gen<D: DrawTarget<Color = Rgb565>>(t: &mut D) {
-            t.clear(rgb(0x1234)).ok();
-            let size = t.bounding_box().size;
-            for y in 0..size.height as i32 {
-                let c = rgb((y as u16 + 1) * 0x0101);
-                t.fill_solid(&Rectangle::new(Point::new(0, y), Size::new(size.width, 1)), c).ok();
-            }
-        }
-
-        let mut full = [0u16; (W * H) as usize];
-        gen(&mut Framebuffer565::new(&mut full, W, H));
-
-        let mut assembled = [0u16; (W * H) as usize];
-        let mut scratch = [0u16; (W * 4) as usize]; // one 4-row band at a time
-        let rows = 4u16;
-        let mut y0 = 0u16;
-        while (y0 as u32) < H {
-            let r = rows.min(H as u16 - y0);
-            let n = (W * r as u32) as usize;
-            {
-                let mut band = Band::new(&mut scratch[..n], Size::new(W, H), y0, r);
-                gen(&mut band);
-            }
-            let start = (y0 as u32 * W) as usize;
-            assembled[start..start + n].copy_from_slice(&scratch[..n]);
-            y0 += r;
-        }
-
-        assert_eq!(full, assembled, "banded render must be byte-identical to the full-frame render");
     }
 
     /// [`composite_overlay_window`] fills the scratch with the clean framebuffer window expanded

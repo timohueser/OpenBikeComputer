@@ -28,7 +28,8 @@ fn points_bbox(pts: &[Point]) -> Rectangle {
     rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1)
 }
 
-/// A drawing surface in the palette-565 vocabulary. [`Canvas`] is the one implementor.
+/// A drawing surface in the palette-565 vocabulary. [`Canvas`] is the one production implementor;
+/// tests implement it to record draws.
 pub trait Surface {
     fn clear(&mut self, color: u16);
 

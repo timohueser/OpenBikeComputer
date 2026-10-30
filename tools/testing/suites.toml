@@ -118,6 +118,11 @@ triggers = [
 name = "obc-bench"
 triggers = ["sim/bench/golden.txt"]
 
+# Its wire test reads the FLPR C source with `include_str!`, which gives no Cargo edge.
+[[package]]
+name = "obc-display"
+triggers = ["firmware/obc-fw-nrf54l/src/flpr/flpr_scan.c"]
+
 # Both write credits from data/sources.toml, which obc-data embeds without a Cargo edge to it.
 [[package]]
 name = "obc-pack"
