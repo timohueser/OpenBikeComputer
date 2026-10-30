@@ -31,23 +31,34 @@ const RAIL_RAMP_M: f32 = 6.0;
 // with the road's grade and not with every bump of the cut.
 const CUT_M: f32 = 1.55;
 const WALL_OUT_M: f32 = 2.2;
-const WALL_STEP_M: f32 = 2.0;
-const WALL_DILATE_M: f32 = 3.0;
-const WALL_RAMP_M: f32 = 5.0;
+const WALL_STEP_M: f32 = 3.0;
+const WALL_DILATE_M: f32 = 5.0;
+const WALL_RAMP_M: f32 = 7.0;
 const WALL_OVER_M: f32 = 0.3;
 const WALL_MIN_M: f32 = 0.6;
 const WALL_MAX_M: f32 = 3.5;
+// The backfill behind a wall slopes from its top down to this far under the cut WALL_OUT_M past E.
+const FILL_UNDER_M: f32 = 0.25;
 // Where each detail meets the ground, past E: a rail's posts, a delineator, the far end of a wall's backfill
 // (the lowest ground under a wall on a fill).
 const RAIL_GROUND_M: f32 = 0.62;
 const DELI_GROUND_M: f32 = 0.55;
-const WALL_GROUND_M: f32 = 1.2;
+const WALL_GROUND_M: f32 = 2.5;
 // The tops of a rail's beam and posts over the road edge and of a delineator over the ground, as details.ts.
 const RAIL_TOP_M: f32 = 0.75;
 const POST_TOP_M: f32 = 0.71;
 const DELI_TOP_M: f32 = 1.0;
 // A detail that does not stand sinks whole, until its top lies this far under the lower of the ground and the road edge.
 const DETAIL_SINK_M: f32 = 0.6;
+// A vertex's parameter byte holds its station's metres along to the nearest junction mouth or town, in steps of
+// ZONE_STEP_M up to ZONE_FAR_M (`zones` of details.ts). A detail ramps down over ZONE_RAMP_M before one, and
+// reads no ground that far along, so a cut or a drop in a mouth raises nothing beside it.
+const ZONE_STEP_M: f32 = 0.05;
+const ZONE_FAR_M: f32 = 12.75;
+const ZONE_RAMP_M: f32 = 5.0;
+// A detail vertex this far outside the sides of the view (or of a shadow map) skips the ground's samples: no face
+// of it reaches the view, however it stands, as a face spans 3.2 m and a detail rises 4.2 m at most.
+const DETAIL_UNSEEN_M: f32 = 10.0;
 
 // Metres per world unit at world row y.
 fn detail_unit_m(y: i32) -> f32 {
@@ -91,24 +102,29 @@ fn detail_offset(at: vec2i, colour: vec4f, road: vec2f, packed: f32) -> vec2f {
 }
 
 // From a station: metres along to the nearest point where the ground `out` metres past E lies `level` metres or
-// more under (dir 1) or over (dir -1) the road edge's grade line, within 4 steps either way (1e9 if none); and the
-// weighted mean of that depth (or rise), clamped to 0..`top`. A crossing between two samples is interpolated, so
-// the distance runs on smoothly as the samples move with the station.
-fn detail_reach(at: vec2i, f: DetailFrame, edge: f32, out: f32, dir: f32, level: f32, step: f32, top: f32) -> vec2f {
+// more under (dir 1) or over (dir -1) the road edge's grade line, within 4 steps either way and short of a zone
+// `zone` metres along (1e9 if none); the weighted mean of that depth (or rise), clamped to 0..`top`; and the
+// ground at the station (1e9 if unknown). A crossing between two samples is interpolated, so the distance runs on
+// smoothly as the samples move with the station.
+fn detail_reach(at: vec2i, f: DetailFrame, edge: f32, out: f32, dir: f32, level: f32, step: f32, top: f32, zone: f32) -> vec3f {
     var d = 1e9;
     var last = -1.0;
     var sum = 0.0;
     var weights = 0.0;
+    var here = 1e9;
     for (var k = -4; k <= 4; k++) {
         let x = f32(k) * step;
         let g = units_height(at + vec2i(round(f.o * out + f.t * x)), surface.finest);
         var v = -1.0;
-        if (known(g)) {
+        if (known(g) && (abs(x) < zone || zone > ZONE_FAR_M - ZONE_STEP_M)) {
             let r = dir * (edge + f.grade * x - g);
             v = r - level;
             let w = 5.0 - abs(f32(k));
             sum += w * clamp(r, 0.0, top);
             weights += w;
+            if (k == 0) {
+                here = g;
+            }
         }
         if (v > 0.0) {
             d = min(d, abs(x));
@@ -118,41 +134,59 @@ fn detail_reach(at: vec2i, f: DetailFrame, edge: f32, out: f32, dir: f32, level:
         }
         last = v;
     }
-    return vec2f(d, sum / max(weights, 1e-6));
+    return vec3f(d, sum / max(weights, 1e-6), here);
 }
 
 // How far a detail stands, 0..1, `d` metres along from where it must: whole within `dilate`, eased down over
-// `ramp`, and no more than the CPU's ramp at junctions and in towns. Never in part over a long run: a share
+// `ramp`, and down over ZONE_RAMP_M before a zone `zone` metres along. Never in part over a long run: a share
 // under 1 is a ramp.
-fn detail_share(d: f32, dilate: f32, ramp: f32, cpu: f32) -> f32 {
-    return smoothstep(0.0, 1.0, min(clamp((dilate + ramp - d) / ramp, 0.0, 1.0), cpu));
+fn detail_share(d: f32, dilate: f32, ramp: f32, zone: f32) -> f32 {
+    return smoothstep(0.0, 1.0, min(clamp((dilate + ramp - d) / ramp, 0.0, 1.0), zone / ZONE_RAMP_M));
 }
 
-fn rail_share(at: vec2i, f: DetailFrame, edge: f32, cpu: f32) -> f32 {
-    if (cpu <= 0.0) {
+fn rail_share(at: vec2i, f: DetailFrame, edge: f32, zone: f32) -> f32 {
+    if (zone <= 0.0) {
         return 0.0;
     }
-    return detail_share(detail_reach(at, f, edge, DROP_OUT_M, 1.0, DROP_M, RAIL_STEP_M, 1.0).x, RAIL_DILATE_M, RAIL_RAMP_M, cpu);
+    return detail_share(detail_reach(at, f, edge, DROP_OUT_M, 1.0, DROP_M, RAIL_STEP_M, 1.0, zone).x, RAIL_DILATE_M, RAIL_RAMP_M, zone);
 }
 
-// How far a wall stands, and its height over the road edge.
-fn wall_share(at: vec2i, f: DetailFrame, edge: f32, cpu: f32) -> vec2f {
-    if (cpu <= 0.0) {
-        return vec2f(0.0, WALL_MIN_M);
+// How far a wall stands, its height over the road edge, and the ground WALL_OUT_M past E (1e9 if unknown).
+fn wall_share(at: vec2i, f: DetailFrame, edge: f32, zone: f32) -> vec3f {
+    if (zone <= 0.0) {
+        return vec3f(0.0, WALL_MIN_M, 1e9);
     }
-    let w = detail_reach(at, f, edge, WALL_OUT_M, -1.0, CUT_M, WALL_STEP_M, WALL_MAX_M);
-    return vec2f(detail_share(w.x, WALL_DILATE_M, WALL_RAMP_M, cpu), clamp(w.y + WALL_OVER_M, WALL_MIN_M, WALL_MAX_M));
+    let w = detail_reach(at, f, edge, WALL_OUT_M, -1.0, CUT_M, WALL_STEP_M, WALL_MAX_M, zone);
+    return vec3f(detail_share(w.x, WALL_DILATE_M, WALL_RAMP_M, zone), clamp(w.y + WALL_OVER_M, WALL_MIN_M, WALL_MAX_M), w.z);
+}
+
+// Whether render-space point `p` lies more than DETAIL_UNSEEN_M outside a side of the view `view_proj`.
+fn detail_unseen(view_proj: mat4x4f, p: vec3f) -> bool {
+    let q = vec4f(p, 1.0);
+    let w = vec4f(view_proj[0].w, view_proj[1].w, view_proj[2].w, view_proj[3].w);
+    let x = vec4f(view_proj[0].x, view_proj[1].x, view_proj[2].x, view_proj[3].x);
+    let y = vec4f(view_proj[0].y, view_proj[1].y, view_proj[2].y, view_proj[3].y);
+    let planes = array<vec4f, 4>(w + x, w - x, w + y, w - y);
+    var out = -1e9;
+    for (var i = 0; i < 4; i++) {
+        out = max(out, -dot(planes[i], q) / max(length(planes[i].xyz), 1e-9));
+    }
+    return out > DETAIL_UNSEEN_M;
 }
 
 // The height of a detail vertex (CF.BARRIER) of the station at `at` (whole world units) with its road edge
 // `edge`, its metres past E and height code (`road`), its packed frame (`packed`) and its colour; others keep
 // `z`. A detail stands or sinks whole: each vertex of a station sinks by the same share of the same depth.
-fn detail_height(at: vec2i, edge: f32, z: f32, colour: vec4f, road: vec2f, packed: f32, s: vec2f) -> f32 {
+// `view_proj` and `eye` (metres above sea level) are the frame's.
+fn detail_height(at: vec2i, edge: f32, z: f32, colour: vec4f, road: vec2f, packed: f32, s: vec2f, view_proj: mat4x4f, eye: f32) -> f32 {
     if (!is_barrier(colour)) {
         return z;
     }
+    if (detail_unseen(view_proj, vec3f(to_render(s), edge - eye))) {
+        return edge - DETAIL_SINK_M;
+    }
     let mat = u32(round(colour.r * 255.0));
-    let cpu = colour.g;
+    let zone = colour.g * 255.0 * ZONE_STEP_M;
     let f = detail_frame(at, packed);
     let code = road.y;
     let is_wall = mat == DM_WALL || mat == DM_CAP || mat == 1u;
@@ -163,10 +197,15 @@ fn detail_height(at: vec2i, edge: f32, z: f32, colour: vec4f, road: vec2f, packe
     let low = min(ground, edge) - DETAIL_SINK_M;
     var h = z;
     if (is_wall) {
-        let w = wall_share(at, f, edge, cpu);
+        let w = wall_share(at, f, edge, zone);
         let top = mix(low, edge + w.y, w.x);
         if (code > 4.0) {
             h = top + code - 6.0;
+            if (road.x > 1.0) {
+                // The backfill's far edge, under the cut where that lies under the wall's top: under the drawn
+                // mesh, which strays from the stamped ground between its vertices.
+                h = min(h, w.z - FILL_UNDER_M);
+            }
         } else if (code < -5.0) {
             // The backfill dives under the ground, or under the wall's top where the ground lies lower.
             h = min(ground, top) + code + 10.0;
@@ -175,10 +214,10 @@ fn detail_height(at: vec2i, edge: f32, z: f32, colour: vec4f, road: vec2f, packe
         }
     } else if (is_deli) {
         // A delineator stands where neither a rail nor a whole wall does: a cut that only nears a wall's keeps it.
-        let share = (1.0 - rail_share(at, f, edge, cpu)) * (1.0 - smoothstep(0.6, 0.95, wall_share(at, f, edge, 1.0).x));
+        let share = (1.0 - rail_share(at, f, edge, zone)) * (1.0 - smoothstep(0.6, 0.95, wall_share(at, f, edge, ZONE_FAR_M).x));
         h = ground + code + 10.0 - (1.0 - share) * (DELI_TOP_M + ground - low);
     } else {
-        let sink = (1.0 - rail_share(at, f, edge, cpu)) * (edge + RAIL_TOP_M - low);
+        let sink = (1.0 - rail_share(at, f, edge, zone)) * (edge + RAIL_TOP_M - low);
         h = edge + code - sink;
         if (code < -5.0) {
             // A post's foot, in the ground and under its top.

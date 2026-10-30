@@ -11,7 +11,8 @@
 // shoulder), so every vertex of a station samples the same ground; z the road edge's height there; `across`
 // its metres past E; `half` its height code (metres over the road edge; under -5, metres over the ground
 // under the detail minus 10; over 5, metres over the wall top plus 6); `along` the packed outward angle, grade
-// and centimetres along; the colour's parameter byte the CPU's ramp.
+// and centimetres along; the colour's parameter byte the metres along to the nearest junction mouth or town
+// (`zones`), in steps of ZONE_STEP_M.
 import { metresPerUnit, ROAD, walkOf, type Building, type Line } from '../terrain/bins';
 import { LEFT, near, RIGHT, townOf, type Town } from '../terrain/town';
 import type { MeshBuilder } from '../structures/mesh';
@@ -30,10 +31,18 @@ const RAILED = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secon
 const DELINEATED = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified']);
 const WALLED = new Set([...RAILED, 'residential', 'living_street']);
 
-/** A guardrail's post spacing; the delineators' spacing on a straight and in a bend. */
-const POST_M = 2, DELI_M = 40, DELI_BEND_M = 22;
-/** The ramp of a run's end at a junction or a town, and the corner past a junction road's edge that stays open. */
-const RAMP_M = 5, MOUTH_M = 5;
+/**
+ * A guardrail's least post spacing: a post stands at a station, so it stands and sinks with the beam there, at the
+ * first station this far past the last post (2 m apart on a straight, every other station in a bend). The
+ * delineators' spacing on a straight and in a bend.
+ */
+const POST_M = 1.75, DELI_M = 40, DELI_BEND_M = 22;
+/**
+ * The ramp of a run's end at a junction or a town (ZONE_RAMP_M of details.wgsl), and the corner past a junction
+ * road's edge that stays open. A station's metres to the nearest one go to the GPU in steps of ZONE_STEP_M, up to
+ * ZONE_FAR_M: the vertex stage reads no ground past it, so a cut or a drop in a mouth raises nothing.
+ */
+const RAMP_M = 5, MOUTH_M = 5, ZONE_STEP_M = 0.05, ZONE_FAR_M = 255 * ZONE_STEP_M;
 /** A town: this many buildings within TOWN_M. */
 const TOWN_BUILDINGS = 3, TOWN_M = 40;
 
@@ -55,10 +64,11 @@ const POST_HALF = 0.04;
 /** A delineator: its middle past E, half its depth and width, its heights over the ground. */
 const DELI_A = 0.55, DELI_HALF = [0.05, 0.06], DELI_Z = [0, 0.74, 0.9, 1.0];
 /**
- * The wall's face past E, its foot under the road edge, its top inside the capstone; the capstone; the ledge of
- * ground behind it, and how far past it the ledge dives under the ground (WALL_GROUND_M of details.wgsl).
+ * The wall's face past E, its foot under the road edge, its top inside the capstone; the capstone; the backfill
+ * behind it out to where the wall's samples read the cut (WALL_OUT_M of details.wgsl), and how far past that and
+ * how deep it dives under the ground (to WALL_GROUND_M).
  */
-const WALL_A = 0.03, WALL_FOOT = -0.25, WALL_TOP = -0.02, CAP_A = [-0.01, 0.37], LEDGE_M = 1.0, LEDGE_DIVE = [0.2, 0.6];
+const WALL_A = 0.03, WALL_FOOT = -0.25, WALL_TOP = -0.02, CAP_A = [-0.01, 0.37], FILL_M = 2.2, FILL_DIVE = [0.3, 0.6];
 
 /** The kerb of a town street: its face, its bevel, its top; the sidewalk; the edging stone at the sidewalk's outer edge. */
 export function kerbParts(a: number, dz: number, walk: number): Part[] {
@@ -95,8 +105,8 @@ export interface DetailPrep { mouths: Map<string, number>; town: Town | null }
 
 /** The prep of a tile's lines, made once: the lines of a tile are the same objects for each of its nodes. */
 const preps = new WeakMap<object, DetailPrep>();
-/** The ramps and grades of a line, made once. */
-const lineData = new WeakMap<Line, { ramp: number[]; mouth: number[]; grade: number[] }>();
+/** Per station of a line, made once: its metres to a mouth or a town and to a mouth (`zones`), its grade, whether a guardrail post stands there. */
+const lineData = new WeakMap<Line, { zone: number[]; mouth: number[]; grade: number[]; post: boolean[] }>();
 
 export function prepareDetails(lines: Line[], env: DetailEnv | undefined): DetailPrep {
     const known = env && preps.get(env.walks);
@@ -147,8 +157,8 @@ function lowerFor(lines: Line[], walk: Line): void {
 /** The reference edge E of a side: the carriageway's half-width plus its shoulder. */
 const edgeOf = (line: Line) => line.h + (SHOULDER_M[surfaceName(line)] ?? 0);
 
-/** Per station of a line, its ramp 0..1 for rails and posts: zero in a junction's mouth and in a town, ramping up over RAMP_M. */
-function ramps(line: Line, st: Station[], prep: DetailPrep, towns: boolean): number[] {
+/** Per station of a line, its metres along to the nearest junction's mouth (or town), up to ZONE_FAR_M: zero in one. */
+function zones(line: Line, st: Station[], prep: DetailPrep, towns: boolean): number[] {
     const n = line.z.length, joins: { x: number; y: number; gap: number }[] = [];
     for (let v = 0; v < n; v++) {
         const x = line.xy[2 * v], y = line.xy[2 * v + 1], h = prep.mouths.get(`${x},${y}`);
@@ -169,7 +179,7 @@ function ramps(line: Line, st: Station[], prep: DetailPrep, towns: boolean): num
         if (!ok[j]) last = st[j].along;
         dist[j] = Math.min(dist[j], last - st[j].along);
     }
-    return dist.map(d => Math.max(0, Math.min(1, d / RAMP_M)));
+    return dist.map(d => Math.min(ZONE_FAR_M, d));
 }
 
 /** Whether TOWN_BUILDINGS buildings stand within TOWN_M of a point. */
@@ -193,7 +203,7 @@ interface P { i: number; e: number; n: number; u: number }
 interface Side { b: MeshBuilder; side: 1 | -1; E: number; made: Map<string, { i: number; x: number; y: number }> }
 
 /** A detail vertex at a station (or a point between stations) `a` metres past E and `al` metres along, at height code `dz`. */
-function dv(sd: Side, s: Station, ramp: number, grade: number, a: number, al: number, dz: number, mat: number, origin: Station): P {
+function dv(sd: Side, s: Station, zone: number, grade: number, a: number, al: number, dz: number, mat: number, origin: Station): P {
     const { b, side, E } = sd, key = s.j === undefined || al ? undefined : `${s.j}|${side}|${a}|${dz}|${mat}`;
     let v = key === undefined ? undefined : sd.made.get(key);
     if (!v) {
@@ -201,7 +211,7 @@ function dv(sd: Side, s: Station, ramp: number, grade: number, a: number, al: nu
         const x = s.x + ox * (E + a) + fx * al, y = s.y + oy * (E + a) + fy * al, edge = s.z + LIFT_M + s.bank * side * E;
         // The vertex holds its station's point; details.wgsl's frame runs along `side` times the line's direction.
         const word = packed(ox, oy, side * grade, side * al);
-        v = { i: b.vertex(s.x + ox * E, s.y + oy * E, edge, corridorColour(mat, Math.round(255 * ramp), CF.BARRIER), a, dz, word), x, y };
+        v = { i: b.vertex(s.x + ox * E, s.y + oy * E, edge, corridorColour(mat, Math.round(zone / ZONE_STEP_M), CF.BARRIER), a, dz, word), x, y };
         if (key !== undefined) sd.made.set(key, v);
     }
     const { i, x, y } = v;
@@ -235,8 +245,8 @@ function lerp(s: Station, t: Station, u: number): Station {
  * A box between stations' heights: corners `a0..a1` past E, `al` ± half along, heights `z0..z1` (codes); its
  * four sides and its top, each in material `mat`, or `mats` from the bottom up.
  */
-function box(sd: Side, s: Station, ramp: number, grade: number, a: [number, number], half: number, z: [number, number], mat: number, top = true): void {
-    const v = (aa: number, al: number, zz: number) => dv(sd, s, ramp, grade, aa, al, zz, mat, s);
+function box(sd: Side, s: Station, zone: number, grade: number, a: [number, number], half: number, z: [number, number], mat: number, top = true): void {
+    const v = (aa: number, al: number, zz: number) => dv(sd, s, zone, grade, aa, al, zz, mat, s);
     const lo = [v(a[0], -half, z[0]), v(a[1], -half, z[0]), v(a[1], half, z[0]), v(a[0], half, z[0])];
     const hi = [v(a[0], -half, z[1]), v(a[1], -half, z[1]), v(a[1], half, z[1]), v(a[0], half, z[1])];
     const fx = -s.ay, fy = s.ax, l = Math.hypot(fx, fy) || 1, along: [number, number, number] = [fx / l, -fy / l, 0];
@@ -259,22 +269,25 @@ export function roadside(b: MeshBuilder, line: Line, st: Station[], j: number, p
             const p = st[Math.max(0, k - 1)], q = st[Math.min(st.length - 1, k + 1)];
             return q.along > p.along ? (q.z - p.z) / (q.along - p.along) : 0;
         });
-        lineData.set(line, (c = { ramp: ramps(line, st, prep, true), mouth: ramps(line, st, prep, false), grade }));
+        let last = -Infinity;
+        const post = st.map(p => {
+            if (p.along - last < POST_M) return false;
+            last = p.along;
+            return true;
+        });
+        lineData.set(line, (c = { zone: zones(line, st, prep, true), mouth: zones(line, st, prep, false), grade, post }));
     }
     const made = cache.get(line) ?? cache.set(line, new Map()).get(line)!;
     const s = st[j], t = st[j + 1];
     for (const side of [1, -1] as const) {
         if ((line.sidewalks?.[s.v] ?? 0) & (side > 0 ? LEFT : RIGHT)) continue;
         const sd: Side = { b, side, E: edgeOf(line), made };
-        const rs = c.ramp[j], rt = c.ramp[j + 1], gs = c.grade[j], gt = c.grade[j + 1];
+        const rs = c.zone[j], rt = c.zone[j + 1], gs = c.grade[j], gt = c.grade[j + 1];
         if (railed && (rs > 0 || rt > 0)) {
             beam(sd, s, t, rs, rt, gs, gt);
-            for (let p = Math.ceil(s.along / POST_M) * POST_M; p < t.along; p += POST_M) {
-                const u = (p - s.along) / Math.max(t.along - s.along, 1e-6), at = lerp(s, t, u), r = rs + (rt - rs) * u, g = gs + (gt - gs) * u;
-                post(sd, at, r, g);
-            }
+            if (c.post[j]) post(sd, s, rs, gs);
         }
-        if (delineated && c.mouth[j] >= 1 && c.mouth[j + 1] >= 1) {
+        if (delineated && c.mouth[j] >= RAMP_M && c.mouth[j + 1] >= RAMP_M) {
             const spacing = bendy(st, j) ? DELI_BEND_M : DELI_M;
             for (let p = Math.ceil(s.along / spacing) * spacing; p < t.along; p += spacing) {
                 const u = (p - s.along) / Math.max(t.along - s.along, 1e-6), at = lerp(s, t, u), r = rs + (rt - rs) * u, g = gs + (gt - gs) * u;
@@ -333,13 +346,14 @@ function delineator(sd: Side, s: Station, r: number, g: number): void {
     face(sd.b, [v(-0.03, z[1] + 0.03), v(0.03, z[1] + 0.03), v(0.03, z[2] - 0.03), v(-0.03, z[2] - 0.03)], outOf(sd, s, -1, 0));
 }
 
-/** The retaining wall between stations s and t: a vertical masonry face, its capstone, and a ledge of the ground it holds back. */
+/** The retaining wall between stations s and t: a vertical masonry face, its capstone, and the backfill of the ground it holds back. */
 function wall(sd: Side, s: Station, t: Station, rs: number, rt: number, gs: number, gt: number): void {
     const prof: [number, number, number][] = [[WALL_A, WALL_FOOT, DM.WALL], [WALL_A, OVER_WALL + WALL_TOP, DM.WALL]];
     const cap: [number, number, number][] = [[CAP_A[0], OVER_WALL - 0.08, DM.CAP], [CAP_A[0], OVER_WALL + 0.04, DM.CAP], [CAP_A[1], OVER_WALL + 0.04, DM.CAP], [CAP_A[1], OVER_WALL - 0.03, DM.CAP]];
-    // The ground behind the wall: a ledge at its top, then down under the stamped ground. A cut that climbs past
-    // the wall's top covers the ledge; a ledge that ran back up the cut would lie on it and fight it.
-    const fill: [number, number, number][] = [[CAP_A[1], OVER_WALL - 0.03, MAT.GROUND], [LEDGE_M, OVER_WALL - 0.03, MAT.GROUND], [LEDGE_M + LEDGE_DIVE[0], OVER_GROUND - LEDGE_DIVE[1], MAT.GROUND]];
+    // The ground behind the wall: from the capstone at the wall's top out to the cut, where it meets the stamped
+    // ground (or lies under it, where the cut climbs past the top), then down under it. A backfill that ran back up
+    // the cut would lie on it and fight it.
+    const fill: [number, number, number][] = [[CAP_A[1], OVER_WALL - 0.03, MAT.GROUND], [FILL_M, OVER_WALL - 0.03, MAT.GROUND], [FILL_M + FILL_DIVE[0], OVER_GROUND - FILL_DIVE[1], MAT.GROUND]];
     for (const pr of [prof, cap, fill]) {
         const ps = pr.map(([a, dz, mat]) => dv(sd, s, rs, gs, a, 0, dz, mat, s)), pt = pr.map(([a, dz, mat]) => dv(sd, t, rt, gt, a, 0, dz, mat, s));
         for (let k = 0; k + 1 < pr.length; k++) {
