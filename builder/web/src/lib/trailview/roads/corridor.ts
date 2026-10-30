@@ -9,7 +9,7 @@
 import { junctions, RAIL, type Line } from '../terrain/bins';
 import { NO_SLEEPERS, type MeshBuilder } from '../structures/mesh';
 import type { Owns } from '../structures/node';
-import { carriageway, CF, corridorLine, MAT, sideOf, type Part } from './section';
+import { carriageway, CF, coreOf, corridorLine, MAT, sideOf, type Part } from './section';
 import { tracks } from './tracks';
 import { CUT, junctionPlan, type JStation } from './junctions';
 import type { Station } from './stations';
@@ -28,8 +28,11 @@ export const classLift = (line: Line, id: number) => Math.max(0, 30 - line.profi
 /** The band of the better class draws over the other where two bands overlap. */
 const bandPrio = (line: Line) => Math.max(0, Math.min(7, 7 - (line.profile >> 2)));
 
-/** The vertices of a line made so far, by station, place across, height, material and flags: neighbouring quads share them. */
-export interface Ctx { b: MeshBuilder; line: Line; lift: number; prio: number; made: Map<string, V> }
+/**
+ * The vertices of a line made so far, by station, place across, height, material and flags: neighbouring quads share
+ * them. `rims`: the metres from the carriageway's edge out to the core's, by side and segment.
+ */
+export interface Ctx { b: MeshBuilder; line: Line; lift: number; prio: number; made: Map<string, V>; rims?: Map<number, number> }
 /** A vertex and its plan position in world units. */
 export interface V { i: number; x: number; y: number }
 
@@ -60,13 +63,22 @@ export function vertex(ctx: Ctx, s: Station, a: number, dz: number, mat: number,
     const key = s.j === undefined ? undefined : `${s.j}|${a}|${dz}|${mat}|${flags}`, known = key === undefined ? undefined : ctx.made.get(key);
     if (known) return known;
     const { b, line, lift, prio } = ctx, along = line.kind === RAIL ? (s.sleepers ?? NO_SLEEPERS) : s.along;
-    // A band vertex on the sampled ground or the drawn mesh holds the road's plane there: the shader tells a steep
-    // cut or fill face by it, and drops a vertex that cannot show under it. Else the station's height, its bank
-    // across and the lift.
-    const plane = s.z + s.bank * a + lift, z = flags & (CF.SAMPLE | CF.MESH) ? plane : plane + dz, x = s.x + s.ax * a, y = s.y + s.ay * a;
-    const made = { i: b.vertex(x, y, z, corridorColour(mat, line.code, flags, prio), a, s.h, along), x, y };
+    // A band vertex on the sampled ground or the drawn mesh holds the road's plane there and, for its half-width,
+    // the core's outer edge: the shader tells a steep cut or fill face by its rise from that edge, and drops a
+    // vertex that cannot show under it. Else the station's height, its bank across and the lift.
+    const band = (flags & (CF.SAMPLE | CF.MESH)) !== 0, plane = s.z + s.bank * a + lift, z = band ? plane : plane + dz, x = s.x + s.ax * a, y = s.y + s.ay * a;
+    const half = band ? s.h + rim(ctx, a < 0 ? -1 : 1, s.v) : s.h;
+    const made = { i: b.vertex(x, y, z, corridorColour(mat, line.code, flags, prio), a, half, along), x, y };
     if (key !== undefined) ctx.made.set(key, made);
     return made;
+}
+
+/** The metres from the carriageway's edge out to the core's outer edge on a side at segment v. */
+function rim(ctx: Ctx, side: 1 | -1, v: number): number {
+    ctx.rims ??= new Map();
+    let r = ctx.rims.get(side * (v + 1));
+    if (r === undefined) ctx.rims.set(side * (v + 1), (r = coreOf(ctx.line, side, v, 0)));
+    return r;
 }
 
 /**
@@ -113,6 +125,8 @@ function cap(ctx: Ctx, s: Station, dir: number): void {
     const fx = -s.ay * dir, fy = s.ax * dir;
     // The station `r` metres from the end at angle `t` from the left (0) through ahead (π/2) to the right (π).
     const at = (r: number, t: number): Station => ({ ...s, j: undefined, x: s.x + (s.ax * Math.cos(t) + fx * Math.sin(t)) * r, y: s.y + (s.ay * Math.cos(t) + fy * Math.sin(t)) * r });
+    // The end's station with its left turned to angle `t`, level: a ring's vertex holds its metres out from the end, as a side's does.
+    const toward = (t: number): Station => ({ ...s, j: undefined, bank: 0, ax: s.ax * Math.cos(t) + fx * Math.sin(t), ay: s.ay * Math.cos(t) + fy * Math.sin(t) });
     const centre = vertex(ctx, s, 0, dz, mat);
     for (let k = 0; k < CAP_STEPS; k++) {
         const t0 = (Math.PI * k) / CAP_STEPS, t1 = (Math.PI * (k + 1)) / CAP_STEPS;
@@ -120,7 +134,7 @@ function cap(ctx: Ctx, s: Station, dir: number): void {
         quad(b, [centre, e0, e1, e1], 1);
         let inner: Part = { a: s.h, dz, mat };
         for (const outer of rings) {
-            const v = (tt: number, part: Part) => vertex(ctx, at(part.a, tt), 0, part.dz, outer.mat, part.flags ?? 0);
+            const v = (tt: number, part: Part) => vertex(ctx, toward(tt), part.a, part.dz, outer.mat, part.flags ?? 0);
             quad(b, [v(t0, inner), v(t0, outer), v(t1, outer), v(t1, inner)], 1);
             inner = outer;
         }

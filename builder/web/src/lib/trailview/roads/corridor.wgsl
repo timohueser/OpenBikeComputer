@@ -25,10 +25,10 @@ const MAT_STEEL: u32 = 7u;
 const MAT_POST: u32 = 8u;
 const MAT_WALL: u32 = 9u;
 const MAT_CONCRETE: u32 = 10u;
-// A band's row dives this far under the drawn mesh where the face from the carriageway's edge out to it climbs or
-// falls from BAND_STEEP.x to .y per metre: a cut or a fill face far steeper than a hillside's.
+// A band's row dives this far under the drawn mesh where the face from the core's outer edge out to it climbs or
+// falls from BAND_STEEP.x to .y per metre: a cut or a fill face, whose cones start at 0.85 (roads.json).
 const BAND_DIVE_M: f32 = 1.5;
-const BAND_STEEP: vec2f = vec2f(0.9, 1.4);
+const BAND_STEEP: vec2f = vec2f(0.6, 0.8);
 // A band's row over another road's carriageway sinks this far, so that road draws over it, within this range.
 const BAND_UNDER_M: f32 = 0.2;
 const BAND_UNDER_RANGE_M: f32 = 150.0;
@@ -80,8 +80,8 @@ fn corridor_dropped(colour: vec4f, d: f32) -> bool {
 
 // The height of a corridor vertex at `at` (whole world units) and LOD-space `s` from its own height `z`: a band's
 // row lies on the stamped ground (the finest level that knows it) or under the drawn mesh, and `z` is the road's
-// plane there; `road` its metres across and the carriageway's half-width. `fallback` is the ground under the eye,
-// where no page knows the ground yet.
+// plane there; `road` its metres across and the carriageway's half-width, on a band's row the core's outer edge.
+// `fallback` is the ground under the eye, where no page knows the ground yet.
 fn corridor_height(at: vec2i, z: f32, colour: vec4f, s: vec2f, road: vec2f, fallback: f32) -> f32 {
     let flags = u32(round(colour.b * 255.0));
     var h = z;

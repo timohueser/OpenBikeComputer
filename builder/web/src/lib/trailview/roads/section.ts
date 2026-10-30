@@ -110,6 +110,17 @@ export function carriageway(line: Line, h = line.h, bank = 0): Part[] {
 
 /** The points of one side past the carriageway's edge, then the band; `side` 1 is left, -1 right, at segment v. */
 export function sideOf(line: Line, side: 1 | -1, v: number, h = line.h): Part[] {
+    const { out, a } = core(line, side, v, h), path = line.kind === PATH;
+    for (const d of path ? PATH_BAND_M : BAND_M) out.push({ a: a + d, dz: 0, mat: MAT.GROUND, flags: CF.SAMPLE });
+    out.push({ a: a + (path ? PATH_BAND_OUTER_M : BAND_OUTER_M), dz: 0, mat: MAT.GROUND, flags: CF.MESH });
+    return out;
+}
+
+/** Metres from a line's middle out to its core's outer edge on a side, which the stamp holds flat: where the band starts. */
+export const coreOf = (line: Line, side: 1 | -1, v: number, h = line.h) => core(line, side, v, h).a;
+
+/** The points of one side from the carriageway's edge out to the core's outer edge `a`. */
+function core(line: Line, side: 1 | -1, v: number, h: number): { out: Part[]; a: number } {
     const out: Part[] = [], walk = (line.sidewalks?.[v] ?? 0) & (side > 0 ? LEFT : RIGHT) ? walkOf(line) : 0;
     let a = h, dz = LIFT_M;
     if (walk > 0) {
@@ -132,8 +143,5 @@ export function sideOf(line: Line, side: 1 | -1, v: number, h = line.h): Part[] 
             dz -= 0.02;
         }
     }
-    const path = line.kind === PATH;
-    for (const d of path ? PATH_BAND_M : BAND_M) out.push({ a: a + d, dz: 0, mat: MAT.GROUND, flags: CF.SAMPLE });
-    out.push({ a: a + (path ? PATH_BAND_OUTER_M : BAND_OUTER_M), dz: 0, mat: MAT.GROUND, flags: CF.MESH });
-    return out;
+    return { out, a };
 }
