@@ -35,9 +35,9 @@ Read only these files, and no others:
 Write a summary in exactly this format. `Parts` has one short line for each file. The rest has at most 400 words.
 
 Parts:
-- <file>: <its purpose, one sentence without "and">
+- <file>: <its purpose, one plain sentence>
   or <file>: CANNOT: <why one sentence is not possible>
-Purpose: <the purpose of the whole module, one sentence without "and">
+Purpose: <the purpose of the whole module, one plain sentence>
 Uses:
 - <crate, package or module outside these files>: <what for>
 Rules:
@@ -66,7 +66,7 @@ These are summaries of the parts of <level>. Read them and the files given, and 
 Write a summary in exactly this format, at most 400 words.
 
 Level: <level>
-Purpose: <one sentence without "and">
+Purpose: <one plain sentence>
   or SPLIT: <the purposes that this level mixes>
 Parts:
 - <child>: <its purpose>
@@ -101,7 +101,7 @@ Aim for about 1,200 words; write no filler. Link a spec; do not copy its tables.
 
 A figure is one of three kinds: a generated figure, Mermaid, or a hand-drawn SVG with one line that says why the other two are not enough.
 
-If the hay found a better purpose sentence, correct `purpose:` in the header.
+Write as [writing.md](writing.md) says. If the hay found a better purpose sentence, correct `purpose:` in the header.
 
 ## 7. Purpose comments
 

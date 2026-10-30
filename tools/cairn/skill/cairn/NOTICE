@@ -9,3 +9,7 @@ and at https://www.apache.org/licenses/LICENSE-2.0
 
 The cairn version is changed: it shortens the prompts, rewrites them in
 Simplified Technical English and adds fixed output formats.
+
+reference/writing.md takes ideas, not text, from SimpleEnglish
+(https://github.com/AminBlg/SimpleEnglish, MIT): two registers, terms
+explained at first use, and few rules with examples.
