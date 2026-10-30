@@ -25,8 +25,8 @@ const DROP_OUT_M: f32 = 4.0;
 const DILATE_M: f32 = 6.0;
 const DETAIL_RAMP_M: f32 = 4.0;
 // A wall stands where the ground WALL_OUT_M past E climbs CUT_M over the road edge; it is at most WALL_MAX_M high.
-const CUT_LOW_M: f32 = 1.0;
-const CUT_HIGH_M: f32 = 1.5;
+const CUT_LOW_M: f32 = 1.35;
+const CUT_HIGH_M: f32 = 1.75;
 const WALL_OUT_M: f32 = 2.2;
 const WALL_MAX_M: f32 = 3.5;
 // A detail that does not stand sinks this far under the lower of the ground and the road edge.
@@ -135,13 +135,16 @@ fn detail_height(at: vec2i, edge: f32, z: f32, colour: vec4f, road: vec2f, packe
     return h;
 }
 
-// Rubble masonry: rounded stones about `size` metres, each lighter or darker, in dark joints; on a face,
-// mapped onto the vertical plane it is nearest.
-fn detail_masonry(p: vec3f, n: vec3f, pixel: f32, size: f32) -> f32 {
-    let q = select(vec2f(select(p.x, p.y, abs(n.x) > abs(n.y)), p.z * 1.6), p.xy, abs(n.z) > 0.7);
+// Rubble masonry: stones about `size` metres, laid flat (wider than high), each its own tone between a
+// cool and a warm grey, in dark recessed joints; on a face, mapped onto the vertical plane it is nearest.
+// Where a pixel spans a stone, the stones fade to their mean.
+fn detail_masonry(p: vec3f, n: vec3f, pixel: f32, size: f32) -> vec3f {
+    let q = select(vec2f(select(p.x, p.y, abs(n.x) > abs(n.y)), p.z * 1.8), p.xy, abs(n.z) > 0.7);
     let c = voronoi(q, size);
-    let stone = (0.7 + 0.5 * c.z) * mix(0.3, 1.0, smoothstep(0.0, 0.18, c.y));
-    return mix(stone, 0.78, smoothstep(0.02, 0.1, pixel / size));
+    let tone = mix(vec3f(0.36, 0.355, 0.345), vec3f(0.44, 0.41, 0.36), c.x) * (0.75 + 0.5 * c.z);
+    let rust = mix(vec3f(1.0), vec3f(1.08, 0.95, 0.8), step(0.85, fract(c.x * 7.0)));
+    let stone = tone * rust * (0.9 + 0.2 * noise(q / 0.05)) * mix(0.25, 1.0, smoothstep(0.0, 0.16, c.y));
+    return mix(stone, vec3f(0.33, 0.32, 0.30), smoothstep(0.25, 0.7, pixel / size));
 }
 
 // The colour of a detail fragment: material `mat`, `su` its LOD space, `relative` about the eye, `along`
@@ -176,13 +179,15 @@ fn detail_fragment(mat: u32, su: vec2f, relative: vec3f, altitude: f32, along: f
             glow = vec3f(0.35, 0.14, 0.01);
         }
         case DM_WALL, DM_CAP: {
+            // The local rock's brightness and a hint of its hue.
             let cell = cell_at(su, u32(ceil(lod(su))));
-            let rock = clamp(rule(cell.b, slot_lithologies() + i32(cell.g)).rgb / vec3f(0.3101, 0.3189, 0.2929), vec3f(0.5), vec3f(1.6));
+            let rock = clamp(rule(cell.b, slot_lithologies() + i32(cell.g)).rgb / vec3f(0.3101, 0.3189, 0.2929), vec3f(0.6), vec3f(1.4));
+            let tint = mix(vec3f(dot(rock, vec3f(0.333))), rock, 0.35);
             let q = vec3f(p, altitude);
             if (mat == DM_WALL) {
-                albedo = vec3f(0.30, 0.30, 0.285) * rock * detail_masonry(q, n, w * look.screen.z, 0.22);
+                albedo = tint * detail_masonry(q, n, w, 0.2);
             } else {
-                albedo = vec3f(0.42, 0.41, 0.39) * rock * (0.9 + 0.1 * noise(p / 0.3));
+                albedo = tint * vec3f(0.5, 0.49, 0.46) * (0.9 + 0.1 * noise(p / 0.3));
             }
         }
         case DM_KERB: {

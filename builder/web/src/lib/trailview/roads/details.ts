@@ -43,7 +43,7 @@ const POST_A = 0.5, POST_HALF = [0.05, 0.04], POST_TOP = 0.71;
 /** A delineator: its middle past E, half its depth and width, its heights over the ground. */
 const DELI_A = 0.55, DELI_HALF = [0.05, 0.06], DELI_Z = [0, 0.74, 0.9, 1.0];
 /** The wall's face past E, its foot under the road edge; its capstone. */
-const WALL_A = 0.08, WALL_FOOT = -0.25, CAP_A = [0.04, 0.42], BACKFILL_M = 2.4;
+const WALL_A = 0.08, WALL_FOOT = -0.25, CAP_A = [0.04, 0.42], BACKFILL_M = 3.0;
 
 /** Height codes of `half`: over the ground, over the wall top. */
 const OVER_GROUND = -10, OVER_WALL = 6;
@@ -81,7 +81,14 @@ export function kerbDrop(line: Line, s: Station, side: number, part: Part): numb
 /** The details' shared data of a node's lines: the junction mouths, the town, the lowered kerbs. */
 export interface DetailPrep { mouths: Map<string, number>; town: Town | null }
 
+/** The prep of a tile's lines, made once: the lines of a tile are the same objects for each of its nodes. */
+const preps = new WeakMap<object, DetailPrep>();
+/** The ramps and grades of a line, made once. */
+const lineData = new WeakMap<Line, { ramp: number[]; mouth: number[]; grade: number[] }>();
+
 export function prepareDetails(lines: Line[], env: DetailEnv | undefined): DetailPrep {
+    const known = env && preps.get(env.walks);
+    if (known) return known;
     // Per vertex that two lines share: the widest half-width there, keyed by the vertex.
     const seen = new Map<string, { h: number[]; ways: number }>();
     for (const line of lines) {
@@ -95,7 +102,9 @@ export function prepareDetails(lines: Line[], env: DetailEnv | undefined): Detai
     const mouths = new Map<string, number>();
     for (const [key, e] of seen) if (e.h.length > 1 && e.ways > 2) mouths.set(key, Math.max(...e.h));
     if (env) for (const walk of env.walks) lowerFor(lines, walk);
-    return { mouths, town: env ? townOf(env.buildings) : null };
+    const prep = { mouths, town: env ? townOf(env.buildings) : null };
+    if (env) preps.set(env.walks, prep);
+    return prep;
 }
 
 /** The span of the street where walk `walk` meets it: its outer end lies at the street's outer edge. */
@@ -225,22 +234,23 @@ function box(sd: Side, s: Station, ramp: number, grade: number, a: [number, numb
  * The details between stations j and j+1 of a line (the node owns station j): per side without a sidewalk,
  * the guardrail's beam and posts, the delineators and the retaining wall.
  */
-export function roadside(b: MeshBuilder, line: Line, st: Station[], j: number, prep: DetailPrep, cache: Map<Line, { ramp: number[]; mouth: number[]; grade: number[]; made: Side['made'] }>): void {
+export function roadside(b: MeshBuilder, line: Line, st: Station[], j: number, prep: DetailPrep, cache: Map<Line, Side['made']>): void {
     if (line.kind !== ROAD) return;
     const cls = classOf(line), railed = RAILED.has(cls), walled = WALLED.has(cls), delineated = DELINEATED.has(cls);
     if (!railed && !walled) return;
-    let c = cache.get(line);
+    let c = lineData.get(line);
     if (!c) {
         const grade = st.map((_, k) => {
             const p = st[Math.max(0, k - 1)], q = st[Math.min(st.length - 1, k + 1)];
             return q.along > p.along ? (q.z - p.z) / (q.along - p.along) : 0;
         });
-        cache.set(line, (c = { ramp: ramps(line, st, prep, true), mouth: ramps(line, st, prep, false), grade, made: new Map() }));
+        lineData.set(line, (c = { ramp: ramps(line, st, prep, true), mouth: ramps(line, st, prep, false), grade }));
     }
+    const made = cache.get(line) ?? cache.set(line, new Map()).get(line)!;
     const s = st[j], t = st[j + 1];
     for (const side of [1, -1] as const) {
         if ((line.sidewalks?.[s.v] ?? 0) & (side > 0 ? LEFT : RIGHT)) continue;
-        const sd: Side = { b, side, E: edgeOf(line), made: c.made };
+        const sd: Side = { b, side, E: edgeOf(line), made };
         const rs = c.ramp[j], rt = c.ramp[j + 1], gs = c.grade[j], gt = c.grade[j + 1];
         if (railed && (rs > 0 || rt > 0)) {
             beam(sd, s, t, rs, rt, gs, gt);
@@ -291,11 +301,13 @@ function delineator(sd: Side, s: Station, r: number, g: number): void {
     face(sd.b, [v(-0.03, z[1] + 0.03), v(0.03, z[1] + 0.03), v(0.03, z[2] - 0.03), v(-0.03, z[2] - 0.03)], outOf(sd, s, -1, 0));
 }
 
-/** The retaining wall between stations s and t: a vertical masonry face, its capstone, and the ground it holds up to BACKFILL_M. */
+/** The retaining wall between stations s and t: a vertical masonry face, its capstone, and the ground it holds back to BACKFILL_M. */
 function wall(sd: Side, s: Station, t: Station, rs: number, rt: number, gs: number, gt: number): void {
     const prof: [number, number, number][] = [[WALL_A, WALL_FOOT, DM.WALL], [WALL_A, OVER_WALL - 0.08, DM.WALL]];
-    const cap: [number, number, number][] = [[CAP_A[0], OVER_WALL - 0.08, DM.CAP], [CAP_A[0], OVER_WALL + 0.04, DM.CAP], [CAP_A[1], OVER_WALL + 0.04, DM.CAP], [CAP_A[1], OVER_WALL - 0.03, DM.CAP], [BACKFILL_M, OVER_WALL - 0.12, MAT.GROUND]];
-    for (const pr of [prof, cap]) {
+    const cap: [number, number, number][] = [[CAP_A[0], OVER_WALL - 0.08, DM.CAP], [CAP_A[0], OVER_WALL + 0.04, DM.CAP], [CAP_A[1], OVER_WALL + 0.04, DM.CAP], [CAP_A[1], OVER_WALL - 0.03, DM.CAP]];
+    // The ground behind the wall, from its capstone back to the stamped ground.
+    const fill: [number, number, number][] = [[CAP_A[1], OVER_WALL - 0.03, MAT.GROUND], [BACKFILL_M, OVER_GROUND - 0.05, MAT.GROUND]];
+    for (const pr of [prof, cap, fill]) {
         const ps = pr.map(([a, dz, mat]) => dv(sd, s, rs, gs, a, 0, dz, mat, s)), pt = pr.map(([a, dz, mat]) => dv(sd, t, rt, gt, a, 0, dz, mat, s));
         for (let k = 0; k + 1 < pr.length; k++) {
             const [a0, z0] = pr[k], [a1, z1] = pr[k + 1];

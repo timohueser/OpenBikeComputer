@@ -59,6 +59,7 @@ function streetLamps(out: Build): void {
     for (const line of roads) {
         if (!LIT.has(classOf(line)) || line.gallery) continue;
         const st = stationsOf(line), total = st[st.length - 1].along, walk = walkOf(line);
+        if (!st.some(s => out.owns(s.x, s.y))) continue;
         // Where a lamp may stand at `metres` along: its place, side and yaw, or undefined.
         const spot = (metres: number) => {
             const s = stationAt(st, metres);
@@ -66,10 +67,9 @@ function streetLamps(out: Build): void {
             const unit = metresPerUnit(s.y);
             for (const side of [-1, 1]) {
                 const walked = (line.sidewalks?.[s.v] ?? 0) & (side > 0 ? LEFT : RIGHT);
-                if (!walked && !builtNear(town, s.x, s.y, BUILT_M / unit)) continue;
                 const a = line.h + (walked ? walk * SIDEWALK_SHARE : (SHOULDER_M[surfaceName(line)] ?? 0) + BEHIND_M);
                 const x = s.x + side * s.ax * a, y = s.y + side * s.ay * a;
-                if (!out.owns(x, y) || out.cornered(x, y)) continue;
+                if (!out.owns(x, y) || (!walked && !builtNear(town, s.x, s.y, BUILT_M / unit)) || out.cornered(x, y)) continue;
                 if (joins.some(j => Math.hypot(j.x - x, j.y - y) * unit < j.h + walk + MOUTH_M)) continue;
                 if (walks.some(w => Math.hypot(w.xy[2] - x, w.xy[3] - y) * unit < w.h + walk + DRIVE_M)) continue;
                 if (inTraffic(roads, line, x, y, unit)) continue;
