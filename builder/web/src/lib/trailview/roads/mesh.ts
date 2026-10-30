@@ -7,7 +7,7 @@ import { PieceBuilder, type RoadPiece } from './piece';
 import { corridorLine } from './section';
 import { farStations, reachOf, stationsOf, type Station } from './stations';
 import { baseOf, cap, liftOf, prioOf, sweep, type Run } from './sweep';
-import { waysOf, type Ways } from './ways';
+import { waysOf } from './ways';
 
 /** The level of the owners, and of their children. */
 export const OWNER = 15, CHILD = 16;
@@ -16,13 +16,13 @@ const GROUND_M = 15;
 
 export interface RoadMesh { pieces: RoadPiece[] }
 
-/** What the owners of a tile share. */
-interface Plan { runs: (Run & { far: number[]; ends: [boolean, boolean] })[]; ways: Ways }
+/** A line's corridor as the owners of a tile share it: the stations of its far range, and whether each end is a dead end. */
+type Planned = Run & { far: number[]; ends: [boolean, boolean] };
 
-const plans = new WeakMap<Line[], Plan>();
+const plans = new WeakMap<Line[], Planned[]>();
 
-/** The lines of a tile as runs, made once: its owners share them. */
-function planOf(lines: Line[]): Plan {
+/** The lines of a tile as runs, made once. */
+function planOf(lines: Line[]): Planned[] {
     const known = plans.get(lines);
     if (known) return known;
     const ways = waysOf(lines), shared = junctions(lines), partners = partnersOf(lines);
@@ -32,14 +32,13 @@ function planOf(lines: Line[]): Plan {
         const stations = stationsOf(line, v => halfAt(line, v, partners));
         return [{ id, line, stations, reach: reachOf(stations), lift: liftOf(line, id), prio: prioOf(line), base: 0, ways, far: farStations(line, stations), ends: [open(line, 0), open(line, line.z.length - 1)] as [boolean, boolean] }];
     });
-    const plan = { runs, ways };
-    plans.set(lines, plan);
-    return plan;
+    plans.set(lines, runs);
+    return runs;
 }
 
 /** The corridor mesh of an owner. */
 export function roadMesh(list: Feature[], tile: Node, owner: Node): RoadMesh {
-    const { runs } = planOf(features(list, tile).lines), side = 2 ** (30 - CHILD), pieces: PieceBuilder[][] = [[], [], [], []];
+    const runs = planOf(features(list, tile).lines), side = 2 ** (30 - CHILD), pieces: PieceBuilder[][] = [[], [], [], []];
     const x0 = owner.x * 2 * side, y0 = owner.y * 2 * side;
     const owns = ({ x, y }: Station) => x >= x0 && x < x0 + 2 * side && y >= y0 && y < y0 + 2 * side;
     /** The piece of the child that holds a station, with room for its faces. */

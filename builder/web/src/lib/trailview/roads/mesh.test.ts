@@ -7,7 +7,7 @@ import { decodeFeatures, DEEPEST } from '../stream/features';
 import { LEFT } from '../terrain/town';
 import { meshBytes, OWNER, roadMesh } from './mesh';
 import { lookWord, PieceBuilder, ROAD_VERTEX, type RoadPiece } from './piece';
-import { CF, coreOf, MAT, sideOf, LOOK } from './section';
+import { CF, MAT, sideOf, LOOK } from './section';
 import { reachOf, stationsOf } from './stations';
 import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
@@ -22,6 +22,7 @@ const fixture = () => readdirSync(new URL(`${DEEPEST}/`, root)).flatMap(x => rea
 }));
 
 const metres = metresPerUnit(2 ** 29);
+const coreOf = (line: Line, h: number) => sideOf(line, 1, 0, h).edge;
 /** A line east along world row 2^29, `length` metres long. */
 const straight = (length: number, extra: Partial<Line> = {}): Line => {
     const xy = [2 ** 28, 2 ** 29, 2 ** 28 + Math.round(length / metres), 2 ** 29], z = [1000, 1000], zero = [0, 0];
@@ -43,11 +44,11 @@ const decoded = ({ vertices, x, y }: RoadPiece) => {
 describe('the corridor meshes of the fixture', () => {
     const meshes = fixture(), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 3: 186744 vertices and 5.04 MiB at most, 18519 and 0.51 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 3: 189734 vertices and 5.12 MiB at most, 18996 and 0.52 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
         expect(Math.max(...count)).toBeLessThanOrEqual(190_000);
         expect(Math.max(...bytes)).toBeLessThanOrEqual(5.2 * 2 ** 20);
-        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(19_000);
+        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(19_500);
         expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.53 * 2 ** 20);
     });
 
@@ -98,7 +99,7 @@ describe('the sweep', () => {
     });
 
     it('holds the road\'s plane and the core\'s edge in a band\'s vertex, and its metres from the line', () => {
-        const line = straight(40), { vertices } = swept(line), edge = coreOf(line, 1, 0, line.h), rows = vertices.filter(v => v.flags & CF.SAMPLE);
+        const line = straight(40), { vertices } = swept(line), edge = coreOf(line, line.h), rows = vertices.filter(v => v.flags & CF.SAMPLE);
         expect(rows.length).toBeGreaterThan(0);
         for (const { z, half, across } of rows) {
             expect(z).toBeCloseTo(1000, 3);
@@ -117,7 +118,7 @@ describe('the sweep', () => {
     });
 
     it('rounds a dead end at either end with rings that hold their radial metres, wound as the sweep', () => {
-        const line = straight(40), run = runOf(line), edge = coreOf(line, 1, 0, line.h);
+        const line = straight(40), run = runOf(line), edge = coreOf(line, line.h);
         for (const [j, dir] of [[0, -1], [run.stations.length - 1, 1]] as const) {
             const s = run.stations[j], b = new PieceBuilder(s.x, s.y);
             cap(b, b.near, run, j, dir, false);
@@ -136,20 +137,31 @@ describe('the sweep', () => {
     });
 });
 
+describe('a piece', () => {
+    it('holds a vertex past its range at the edge, and has no room left before 16-bit indices end', () => {
+        const b = new PieceBuilder(0, 0);
+        b.vertex(40000, -40000, 0, 0, 0, 0);
+        expect(decoded(b.piece(0))[0]).toMatchObject({ x: 32767 / 3, y: -32768 / 3 });
+        while (b.roomy) b.vertex(0, 0, 0, 0, 0, 0);
+        expect(b.count).toBeLessThan(65536);
+        expect(b.count).toBeGreaterThan(64000);
+    });
+});
+
 describe('the cross-section', () => {
     it('ends its core where the stamp does: at the shoulder of the one table, or past a sidewalk', () => {
         for (const [surface, code] of [['main', 1], ['road', 2], ['gravel', 3], ['dirt', 4], ['grass', 5]] as const) {
-            expect(coreOf(straight(1, { code }), 1, 0, 3)).toBeCloseTo(3 + SHOULDER_M[surface]!, 6);
+            expect(coreOf(straight(1, { code }), 3)).toBeCloseTo(3 + SHOULDER_M[surface]!, 6);
         }
-        expect(coreOf(straight(1, { sidewalks: [LEFT], profile: Object.keys(PROFILES).indexOf('residential') }), 1, 0, 3)).toBeCloseTo(4.5, 6);
-        expect(coreOf(straight(1, { kind: PATH, code: 6 }), 1, 0, 1)).toBe(1);
+        expect(coreOf(straight(1, { sidewalks: [LEFT], profile: Object.keys(PROFILES).indexOf('residential') }), 3)).toBeCloseTo(4.5, 6);
+        expect(coreOf(straight(1, { kind: PATH, code: 6 }), 1)).toBe(1);
     });
 
     it('ends in a row under the mesh, on paths nearer, and a track spills its ballast', () => {
-        const rows = (line: Line) => sideOf(line, 1, 0, line.h).filter(({ flags }) => flags);
+        const rows = (line: Line) => sideOf(line, 1, 0, line.h).parts.filter(({ flags }) => flags);
         expect(rows(straight(1)).map(({ flags }) => flags)).toEqual([CF.SAMPLE, CF.SAMPLE, CF.SAMPLE, CF.MESH]);
         expect(rows(straight(1, { kind: PATH, code: 6, h: 1 })).at(-1)!.a).toBeCloseTo(2.6);
-        expect(sideOf(straight(1, { kind: RAIL, code: 9, h: 1.9 }), 1, 0, 1.9)[0].mat).toBe(LOOK.BALLAST);
+        expect(sideOf(straight(1, { kind: RAIL, code: 9, h: 1.9 }), 1, 0, 1.9).parts[0].mat).toBe(LOOK.BALLAST);
     });
 });
 

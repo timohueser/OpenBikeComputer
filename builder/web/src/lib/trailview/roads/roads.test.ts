@@ -39,14 +39,25 @@ async function roadsWith(mesh: RoadMesh) {
     await roads.attach(gpu as unknown as Gpu, [{}, {}] as GPUBuffer[]);
     // The requests of the first update come back as microtasks, each a mesh of a tile fetch away.
     const settle = async () => {
-        for (let round = 0; round < 40 && (roads.update(eye, () => true), roads.loading || round < 2); round++) await new Promise(resolve => setTimeout(resolve));
-        roads.update(eye, () => true);
+        for (let round = 0; round < 40 && (roads.update(eye, () => true, true), roads.loading || round < 2); round++) await new Promise(resolve => setTimeout(resolve));
+        roads.update(eye, () => true, true);
     };
     await settle();
     return { roads };
 }
 
 afterEach(() => void vi.unstubAllGlobals());
+
+describe('the corridors', () => {
+    it('ask for no mesh until the first view lets them', () => {
+        vi.stubGlobal('Worker', workerOf({ pieces: [] }));
+        const roads = new Roads(async () => new ArrayBuffer(8), () => {}, new AbortController().signal);
+        roads.update(eye, () => true, false);
+        expect(roads.loading).toBe(false);
+        roads.update(eye, () => true, true);
+        expect(roads.loading).toBe(true);
+    });
+});
 
 describe('the corridors under pressure', () => {
     it('draw the near range under the eye and the far range past 200 m, and count none dropped with room', async () => {

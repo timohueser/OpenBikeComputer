@@ -109,9 +109,9 @@ export class Roads {
 
     /**
      * The pieces of a frame about the eye (world units, and metres per unit), and of them those that `shows`
-     * keeps in view. True when the pieces in range differ from the last frame's.
+     * keeps in view, and whether meshes may build. True when the pieces in range differ from the last frame's.
      */
-    update(eye: { x: number; y: number; unit: number }, shows: (piece: RoadPiece) => boolean): boolean {
+    update(eye: { x: number; y: number; unit: number }, shows: (piece: RoadPiece) => boolean, build: boolean): boolean {
         const side = size(OWNER), reach = RANGE_M + AHEAD_M, owners: { node: Node; d: number }[] = [], cells = Math.ceil(reach / eye.unit / side);
         const [cx, cy] = [Math.floor(eye.x / side), Math.floor(eye.y / side)];
         for (let y = cy - cells; y <= cy + cells; y++) {
@@ -125,7 +125,7 @@ export class Roads {
         this.unbuilt = Infinity;
         for (const { node, d } of owners.sort((a, b) => a.d - b.d)) {
             // The farthest owners give way when the nearer ones fill the cache.
-            const name = key(node), mesh = held < MESH_BYTES ? this.mesh(node, name) : undefined;
+            const name = key(node), mesh = held < MESH_BYTES ? this.mesh(node, name, build) : undefined;
             if (!mesh) {
                 this.unbuilt = Math.min(this.unbuilt, d);
                 continue;
@@ -187,7 +187,7 @@ export class Roads {
     }
 
     /** An owner's mesh, undefined while it is on its way. */
-    private mesh(node: Node, name: string): RoadMesh | undefined {
+    private mesh(node: Node, name: string, build: boolean): RoadMesh | undefined {
         const known = this.meshes.get(name), tile = featureTile(node);
         if (!this.tiles || !tile) return NOTHING;
         if (known) {
@@ -195,7 +195,7 @@ export class Roads {
             this.meshes.set(name, known);
             return known;
         }
-        if (!this.pending.has(name) && this.pending.size < REQUESTS) {
+        if (build && !this.pending.has(name) && this.pending.size < REQUESTS) {
             this.pending.add(name);
             this.ask(tile, node).then(mesh => this.keep(name, mesh), error => {
                 // A tile that fails has no corridors: the paint draws its roads.

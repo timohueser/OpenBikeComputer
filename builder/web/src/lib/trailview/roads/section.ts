@@ -112,13 +112,13 @@ function core(line: Line, side: 1 | -1, v: number, h: number): { out: Part[]; a:
     return { out: [{ a: h + shoulder, dz: LIFT_M - SHOULDER_DROP_M, mat, flags: 0, far: true }], a: h + shoulder };
 }
 
-/** Metres from a line's middle out to its core's outer edge on a side: where the band starts. */
-export const coreOf = (line: Line, side: 1 | -1, v: number, h: number) => core(line, side, v, h).a;
-
-/** The points of one side past the carriageway's edge, then the band; side 1 is left, -1 right. All in metres out from the middle. */
-export function sideOf(line: Line, side: 1 | -1, v: number, h: number): Part[] {
+/**
+ * One side of a line, side 1 its left and -1 its right, in metres out from its middle: the points past the
+ * carriageway's edge, then the band, and `edge`, the core's outer edge where the band starts.
+ */
+export function sideOf(line: Line, side: 1 | -1, v: number, h: number): { parts: Part[]; edge: number } {
     const { out, a } = core(line, side, v, h), path = line.kind === PATH, rows = path ? PATH_BAND_M : BAND_M;
     rows.forEach((d, row) => out.push({ a: a + d, dz: 0, mat: MAT.GROUND, flags: CF.SAMPLE, far: row === 1 }));
     out.push({ a: a + (path ? PATH_BAND_OUTER_M : BAND_OUTER_M), dz: 0, mat: MAT.GROUND, flags: CF.MESH, far: true });
-    return out;
+    return { parts: out, edge: a };
 }

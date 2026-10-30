@@ -164,6 +164,7 @@ export class Terrain {
     private readonly water: Water;
     private readonly structures: Structures;
     private readonly roads?: Roads;
+    private roadsFree = false;
     /**
      * The probed ground under the eye at `lonLat`: NaN where no level knows it, a slope of 0 where no
      * level knows a point about it, and the frame that it comes from.
@@ -221,7 +222,12 @@ export class Terrain {
     }
 
     get idle(): boolean {
-        return this.pages.idle && this.calm > 0 && this.probing === 0 && !this.roads?.loading;
+        return this.pages.idle && this.calm > 0 && this.probing === 0;
+    }
+
+    /** Whether road meshes are on their way. The view about the eye waits for none. */
+    get roadsLoading(): boolean {
+        return !!this.roads?.loading;
     }
 
     /**
@@ -429,7 +435,9 @@ export class Terrain {
         const drawing = this.nodes.map(node => this.pages.drawing(node)!);
         const water = this.water.update(drawing);
         const structures = this.structures.update(this.nodes, { x: ex, y: ey, unit: anchor.unit });
-        const roads = this.roads?.update({ x: ex, y: ey, unit: anchor.unit }, piece => this.boxVisible(piece, eye, forward, view)) ?? false;
+        // The first view about the eye comes first: until then a road's worker would take its share of the CPU.
+        this.roadsFree ||= this.eye || this.pages.idle;
+        const roads = this.roads?.update({ x: ex, y: ey, unit: anchor.unit }, piece => this.boxVisible(piece, eye, forward, view), this.roadsFree) ?? false;
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;

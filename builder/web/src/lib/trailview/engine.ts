@@ -328,7 +328,7 @@ export class TrailView {
         await this.rest;
         await this.nextFrame();
         // A tile or a probe that arrives draws the next frame.
-        while (!this.destroyed && !this.idle()) await this.afterFrame();
+        while (!this.destroyed && (!this.idle() || this.terrain.roadsLoading)) await this.afterFrame();
         if (!this.destroyed) await this.gpu.device.queue.onSubmittedWorkDone();
     }
 

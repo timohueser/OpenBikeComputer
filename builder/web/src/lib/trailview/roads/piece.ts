@@ -59,7 +59,8 @@ export class PieceBuilder {
     /** A vertex at world point x, y, height z, with its `look` word, `across` metres from the line and `along` a repeat count from its base. */
     vertex(x: number, y: number, z: number, look: number, across: number, along: number): number {
         if (4 * (this.count + 1) > this.packed.length) this.grow();
-        const at = 4 * this.count, step = (value: number) => Math.round(value / STEP_UNITS) & 0xffff;
+        // Near the pole a wide way's band can pass the range: it holds at the edge, and never wraps.
+        const at = 4 * this.count, step = (value: number) => Math.max(-32768, Math.min(32767, Math.round(value / STEP_UNITS))) & 0xffff;
         this.packed[at] = (step(x - this.x) | (step(y - this.y) << 16)) >>> 0;
         this.floats[at + 1] = z;
         this.packed[at + 2] = look;
