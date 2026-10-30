@@ -39,7 +39,7 @@ export function corridors(b: MeshBuilder, lines: Line[], owns: Owns, env?: Detai
         for (let j = 0; j + 1 < stations.length; j++) {
             if (owns(stations[j].x, stations[j].y)) {
                 sweep(ctx, stations[j], stations[j + 1]);
-                if (!(globalThis as Record<string, unknown>).NO_DETAILS) roadside(b, line, stations, j, prep, cache);
+                roadside(b, line, stations, j, prep, cache);
             }
         }
         const n = line.z.length;

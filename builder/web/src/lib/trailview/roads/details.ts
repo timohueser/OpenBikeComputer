@@ -43,7 +43,7 @@ const POST_A = 0.5, POST_HALF = [0.05, 0.04], POST_TOP = 0.71;
 /** A delineator: its middle past E, half its depth and width, its heights over the ground. */
 const DELI_A = 0.55, DELI_HALF = [0.05, 0.06], DELI_Z = [0, 0.74, 0.9, 1.0];
 /** The wall's face past E, its foot under the road edge; its capstone. */
-const WALL_A = 0.08, WALL_FOOT = -0.25, CAP_A = [0.04, 0.42], BACKFILL_M = 3.0;
+const WALL_A = 0.03, WALL_FOOT = -0.25, CAP_A = [-0.01, 0.37], BACKFILL_M = 3.0;
 
 /** Height codes of `half`: over the ground, over the wall top. */
 const OVER_GROUND = -10, OVER_WALL = 6;
