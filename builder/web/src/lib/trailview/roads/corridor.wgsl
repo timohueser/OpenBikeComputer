@@ -29,8 +29,9 @@ const MAT_CONCRETE: u32 = 10u;
 // falls from BAND_STEEP.x to .y per metre: a cut or a fill face far steeper than a hillside's.
 const BAND_DIVE_M: f32 = 1.5;
 const BAND_STEEP: vec2f = vec2f(0.9, 1.4);
-// A band's row over another road's carriageway sinks this far, so that road draws over it.
+// A band's row over another road's carriageway sinks this far, so that road draws over it, within this range.
 const BAND_UNDER_M: f32 = 0.2;
+const BAND_UNDER_RANGE_M: f32 = 150.0;
 // Past the corridors' range a corridor sinks this far under the ground, where the mask paints its road.
 const CORRIDOR_SINK_M: f32 = 4.0;
 
@@ -80,9 +81,12 @@ fn corridor_height(at: vec2i, z: f32, colour: vec4f, s: vec2f, road: vec2f, fall
         let ground = select(fallback, sampled, known(sampled));
         let out = max(abs(road.x) - road.y, 0.3);
         h = ground + f32(flags >> 4u) * 0.004 - BAND_DIVE_M * smoothstep(BAND_STEEP.x, BAND_STEEP.y, abs(ground - z) / out);
-        let m = mask_at(s, u32(ceil(lod(s))), true);
-        if (m.level != 0u && m.kind.x != 0u && m.edge < -0.05) {
-            h -= BAND_UNDER_M;
+        // Where bands overlap another way at a junction: a step that shows near the eye only.
+        if (length(s) < BAND_UNDER_RANGE_M) {
+            let m = mask_at(s, u32(ceil(lod(s))), true);
+            if (m.level != 0u && m.kind.x != 0u && m.edge < -0.05) {
+                h -= BAND_UNDER_M;
+            }
         }
     } else if ((flags & CF_MESH) != 0u) {
         let sampled = units_height(at, surface.finest);
