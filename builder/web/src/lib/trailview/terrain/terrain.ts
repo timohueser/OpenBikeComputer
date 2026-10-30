@@ -248,7 +248,7 @@ export class Terrain {
     private painted(nodes: Node[], near: Set<string>, anchor: Anchor): boolean {
         return nodes.every(node => {
             const page = this.pages.pages.get(key(node));
-            return !near.has(key(node)) || page?.drawn === undefined || node.level < NEAR || page.mask !== undefined || !this.stamps.known(node)?.data
+            return !near.has(key(node)) || page?.drawn === undefined || node.level < NEAR || page.mask !== undefined || !this.stamps.known(node)?.mask
                 || distances({ anchor, above: 0 }, node)[0] >= this.pages.maskReach;
         });
     }
