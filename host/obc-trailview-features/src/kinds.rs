@@ -11,7 +11,9 @@ use crate::Tags;
 
 const FIELDS: [&str; 7] = ["kind", "geometry", "match", "keep", "height", "min_zoom", "active"];
 const HEIGHTS: [&str; 4] = ["surface", "pad", "profile", "none"];
-const CLASS_FIELDS: [&str; 8] = ["grade", "smooth_m", "tol", "reach", "least", "cut", "fill", "tilt"];
+/// The fields of a road class that the road solver reads. The other fields of the table are the stamp
+/// profile of the engine, which `builder/web` checks.
+const CLASS_FIELDS: [&str; 2] = ["grade", "smooth_m"];
 /// The classes of the tracks.
 const RAILS: [&str; 5] = ["rail", "light_rail", "narrow_gauge", "rack", "funicular"];
 
@@ -138,7 +140,17 @@ pub fn selected_by(entry: &Entry, tags: &Tags) -> BTreeSet<(String, String)> {
     matching.flat_map(|s| s.iter().map(|(key, _)| (key.clone(), tags[key].clone()))).collect()
 }
 
-/// The road classes, or an error that names the first row that breaks a rule. The table lists the
+/// The road classes of the step's options: the fields of `CLASS_FIELDS` of each class of the table, in
+/// its order. The stamp profile is not an option, so a change to it does not bake again.
+pub fn solver_rows(table: &Value) -> Value {
+    let rows = table.as_object().into_iter().flatten().map(|(name, row)| {
+        let fields = row.as_object().into_iter().flatten().filter(|(field, _)| CLASS_FIELDS.contains(&field.as_str()));
+        (name.clone(), Value::Object(fields.map(|(field, value)| (field.clone(), value.clone())).collect()))
+    });
+    Value::Object(rows.collect())
+}
+
+/// The road classes of `solver_rows`, or an error that names the first row that breaks a rule. The table lists the
 /// classes from the most important down, as the junctions rank them; `path` and `road` are the rows
 /// of a way whose class the table lacks.
 pub fn classes(table: &Value) -> Result<(Vec<String>, Classes), String> {
@@ -198,9 +210,12 @@ mod tests {
     #[test]
     fn the_road_classes_are_valid_and_a_grade_of_one_is_not() {
         let mut table: Value = serde_json::from_str(include_str!("../../../data/trailview/roads.json")).unwrap();
-        let (names, classes) = classes(&table).unwrap();
+        let rows = solver_rows(&table);
+        let (names, classes) = classes(&rows).unwrap();
         assert_eq!((names[0].as_str(), names[classes.path].as_str()), ("rail", "path"));
+        table["path"]["tilt"] = 0.3.into();
+        assert_eq!(solver_rows(&table), rows, "the stamp profile is not an option of the step");
         table["road"]["grade"] = 1.0.into();
-        assert!(super::classes(&table).is_err());
+        assert!(super::classes(&solver_rows(&table)).is_err());
     }
 }
