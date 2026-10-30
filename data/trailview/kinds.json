@@ -193,7 +193,7 @@
     "kind": "retaining-wall",
     "geometry": "line",
     "match": [{"barrier": ["retaining_wall"]}],
-    "keep": [],
+    "keep": ["height"],
     "height": "surface"
   },
   {

@@ -256,6 +256,34 @@ mod tests {
     }
 
     #[test]
+    fn the_table_keeps_what_the_road_furniture_needs() {
+        let table = serde_json::from_str(include_str!("../../../data/trailview/kinds.json")).unwrap();
+        let entries = crate::kinds::validate(&table).unwrap();
+        let of = |geometry: Value, properties: Value| {
+            let (selected, kept, _) =
+                object(&entries, &serde_json::json!({"geometry": geometry, "properties": properties})).unwrap();
+            let Selected::Entry(entry) = selected else { panic!("no entry takes {kept:?}") };
+            (entries[entry].kind.clone(), kept)
+        };
+        let line = || serde_json::json!({"type": "LineString", "coordinates": [[8.0, 46.0], [8.1, 46.1]]});
+        let kept = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Tags>();
+        let rail = of(line(), serde_json::json!({"barrier": "guard_rail"}));
+        assert_eq!(rail, ("guard-rail".to_string(), Tags::new()));
+        let wall = of(line(), serde_json::json!({"barrier": "retaining_wall", "height": "2", "material": "stone"}));
+        assert_eq!(wall, ("retaining-wall".to_string(), kept(&[("height", "2")])));
+        let ring = of(line(), serde_json::json!({"highway": "tertiary", "junction": "roundabout"}));
+        assert_eq!(ring, ("road".to_string(), kept(&[("highway", "tertiary"), ("junction", "roundabout")])));
+        let walk = serde_json::json!({"highway": "footway", "footway": "crossing", "crossing": "marked"});
+        let expected = kept(&[("highway", "footway"), ("footway", "crossing"), ("crossing", "marked")]);
+        assert_eq!(of(line(), walk), ("path".to_string(), expected));
+        let point = serde_json::json!({"type": "Point", "coordinates": [8.0, 46.0]});
+        let zebra =
+            serde_json::json!({"highway": "crossing", "crossing": "uncontrolled", "crossing:markings": "zebra"});
+        let expected = kept(&[("crossing", "uncontrolled"), ("crossing:markings", "zebra")]);
+        assert_eq!(of(point, zebra), ("crossing".to_string(), expected));
+    }
+
+    #[test]
     fn the_input_holds_what_the_region_can_place_and_nothing_past_it() {
         let Some(binary) = test_osmium() else { return };
         let (column, row) = (4286, 2889);

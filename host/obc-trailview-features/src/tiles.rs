@@ -849,6 +849,8 @@ mod tests {
         let features = decode(&encoded).unwrap();
         assert_eq!(Value::Array(features.iter().map(as_json).collect()), decoded);
         assert_eq!(encode(&features), encoded);
+        assert_eq!(Tile::default().bytes(), [0, 0]);
+        assert!(decode(&[0, 0]).unwrap().is_empty());
     }
 
     fn part(outer: bool, points: Vec<[f64; 2]>) -> Part {

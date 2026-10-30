@@ -176,15 +176,11 @@ fn marks(net: &Network, links: &[[Option<(usize, bool)>; 2]], classes: &Classes)
     Marks { pin, calm }
 }
 
-/// Per vertex of the network, the ways out of it that leave its junction as a side: of a road or a
-/// track, where more than two of these meet. Two run on, whatever their classes, and a path never
-/// runs through a junction of roads.
-fn side_ways(net: &Network, classes: &Classes) -> Vec<u8> {
+/// Per vertex of the network, the ways out of it that leave its junction as a side of the look.
+fn side_ways(net: &Network) -> Vec<u8> {
     let mut side = vec![0; net.vertex_xy.len()];
-    for (i, &o) in net.sides.occurrence.iter().enumerate() {
-        if net.sides.ways[i] > 2 && net.rule[net.osm_way[o]] < classes.path {
-            side[net.osm_position[o]] |= if net.sides.step[i] == 1 { SIDE_ON } else { SIDE_BACK };
-        }
+    for &(o, step) in &net.arms {
+        side[net.osm_position[o]] |= if step == 1 { SIDE_ON } else { SIDE_BACK };
     }
     side
 }
@@ -412,7 +408,7 @@ pub(crate) fn align(
     mine: &[bool],
 ) -> (Vec<Way>, Vec<Join>) {
     let links = joins(net);
-    let side = side_ways(net, classes);
+    let side = side_ways(net);
     let mut marks = marks(net, &links, classes);
     for (pin, &var) in marks.pin.iter_mut().zip(&net.vertex_var) {
         *pin |= stay[var] || water[var];

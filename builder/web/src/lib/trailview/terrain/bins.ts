@@ -188,8 +188,8 @@ export interface Line {
     sleepers?: number[]; wire?: boolean;
     /** A town road's sides with a sidewalk per segment, LEFT and RIGHT of town.ts, as townPieces decides them. */
     sidewalks?: number[];
-    /** By vertex as `x,y`, the ways out of it that leave its junction as a side: SIDE_BACK and SIDE_ON. All lines of a part share the map. */
-    sideWays?: Map<string, number>;
+    /** Per vertex, the ways out of it that leave its junction as a side: SIDE_BACK and SIDE_ON. */
+    sideWays?: number[];
 }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
@@ -272,11 +272,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         const sidewalk = type === ROAD && kind !== 'gallery' ? sidewalkOf(tags, surface) : 0;
         const paving = type === PATH && kind !== 'gallery' && surfaceOf(tags, true) !== surface;
         for (const part of parts) {
-            const { xy, z } = polyline(part, y => scale * metresPerUnit((oy + y) * scale)), sideWays = new Map<string, number>();
-            part.plan?.side.forEach((bits, v) => {
-                const name = world(part.xy, v).join();
-                if (bits) sideWays.set(name, (sideWays.get(name) ?? 0) | bits);
-            });
+            const { xy, z } = polyline(part, y => scale * metresPerUnit((oy + y) * scale)), sideWaysOf = sidesAlong(part, world);
             if (!z) continue;
             // A line splits where a vertex has no height: a missing height is unknown, never 0 m. A footway splits
             // where it enters or leaves a town.
@@ -284,13 +280,13 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
             const flush = () => {
                 if (heights.length >= 2) {
                     const [shape, sides] = sidewalk || paving ? townPieces(smoothed(run, heights), town, sidewalk ? clearOf(beds, feature, h, sidewalk) : undefined) : [smoothed(run, heights), []];
-                    const n = shape.z.length, paved = (v: number) => paving && sides[v] !== 0;
+                    const n = shape.z.length, paved = (v: number) => paving && sides[v] !== 0, sideWays = sideWaysOf?.(shape.xy);
                     for (let from = 0, to = 1; to < n; to++) {
                         if (to < n - 1 && paved(to) === paved(from)) continue;
                         const line: Line = {
                             kind: type, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1),
                             h: paved(from) ? halfWidth(tags, 'paving') : h, code: paved(from) ? PAVING_CODE : code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
-                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined, sideWays,
+                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined, sideWays: sideWays?.slice(from, to + 1),
                         };
                         if (type === RAIL) line.sleepers = sleepers(line);
                         lines.push(line);
@@ -313,6 +309,22 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     junctionPlanes(lines);
     abutments(lines);
     return { lines, lakes, seas, areas, pads, buildings, walks: walks(lines, buildings, town) };
+}
+
+/**
+ * What gives each line of a part its `sideWays`, if the part has sides. A way can pass a point twice, so
+ * the vertices of the part with a height are found in their order along the line, not by their place.
+ */
+function sidesAlong({ xy, z, plan }: Feature['parts'][number], world: (xy: ArrayLike<number>, v: number) => number[]): ((shape: number[]) => number[]) | undefined {
+    const side = plan?.side;
+    if (!z || !side?.some(Boolean)) return undefined;
+    const known = Array.from(z.keys()).filter(v => !Number.isNaN(z[v]));
+    let k = 0;
+    return shape => Array.from({ length: shape.length / 2 }, (_, s) => {
+        if (k === known.length) return 0;
+        const [x, y] = world(xy, known[k]);
+        return x === shape[2 * s] && y === shape[2 * s + 1] ? side[known[k++]] : 0;
+    });
 }
 
 /**
@@ -555,8 +567,8 @@ const tiltAt = (word: number, metres: number) => ((word << 16) >> 16) * 1e-4 * M
 export interface JunctionWay { line: Line; v: number; step: 1 | -1; side: boolean }
 
 /**
- * The ways out of each vertex that lines of roads and tracks share. Of a junction, the bake marks the ways that
- * are no through road as sides. Where two ways end at a point or a tile holds no sides, as below zoom 13, each way runs through.
+ * The ways out of each vertex that lines of roads and tracks share. Of a junction of three ways or more, the
+ * bake marks each way but its through pair as a side. Two ways run on, and a tile below zoom 13 holds no sides.
  */
 export function junctionWays(lines: Line[]): JunctionWay[][] {
     const at = new Map<string, JunctionWay[]>();
@@ -564,7 +576,7 @@ export function junctionWays(lines: Line[]): JunctionWay[][] {
         if (isPath(line)) continue;
         line.z.forEach((_, v) => {
             if (!(line.anchors?.[v] ?? true)) return;
-            const name = `${line.xy[2 * v]},${line.xy[2 * v + 1]}`, bits = line.sideWays?.get(name) ?? 0, ways = at.get(name) ?? at.set(name, []).get(name)!;
+            const name = `${line.xy[2 * v]},${line.xy[2 * v + 1]}`, bits = line.sideWays?.[v] ?? 0, ways = at.get(name) ?? at.set(name, []).get(name)!;
             for (const [step, bit] of [[-1, SIDE_BACK], [1, SIDE_ON]] as const) if (v + step >= 0 && v + step < line.z.length) ways.push({ line, v, step, side: !!(bits & bit) });
         });
     }
@@ -578,9 +590,9 @@ export function splitThrough(ways: JunctionWay[]): JunctionWay[] | undefined {
 }
 
 /**
- * The plane of the through road at each junction of roads, on the side roads: the road solver of the
- * bake puts each side road's first metres on the surface of the through direction that it leans along
- * most. Its core takes the slope of that surface across it. Only the vertices and heights at a junction
+ * The plane of the through pair at each junction of roads, on the side roads: the road solver of the
+ * bake puts a side road's first metres on the surface of a through road, and its core takes the slope
+ * of the through way that it leans along most across it. Only the vertices and heights at a junction
  * decide, so every tile that holds a junction gets the same planes.
  */
 function junctionPlanes(lines: Line[]): void {

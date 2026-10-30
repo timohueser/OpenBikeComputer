@@ -8,6 +8,8 @@
    "parts": [{"outer": false, "xy": [[-601, 4000], [5, 4122], [3123, 4098]], "z": [1012.4, 1013.25, 1021.7],
               "along": 24693, "tangent": [1021, 4, 1019], "grade": [12, 3, -5], "bank": [0, -14, 3], "widen": [0, 87, 0], "side": [2, 3, 1]},
              {"outer": false, "xy": [[3200, 4100], [3300, 4100]], "z": [1021.9, 1022.1]}]},
+  {"kind": "road", "tags": {"highway": "service"}, "geometry": "line",
+   "parts": [{"outer": false, "xy": [[100, 200], [140, 260]], "along": 40, "tangent": [170, 171], "grade": [0, 0], "bank": [0, 0], "widen": [0, 0], "side": [0, 1]}]},
   {"kind": "building", "tags": {"building": "church", "roof:shape": "gabled"}, "geometry": "area",
    "parts": [{"outer": true, "xy": [[1000, 1000], [1100, 1000], [1100, 1100], [1000, 1100]],
               "z": [1520.5, 1520.5, 1520.5, 1520.5]},

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CELL, cellAt, CORNER, crosses, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WALK, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WALK, WARP_M, waterAt, type Line, type Profile } from './bins';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { LEFT, RIGHT } from './town';
 
@@ -334,14 +334,25 @@ describe('a junction', () => {
         expect(partnersOf(passes).size).toBe(0);
     });
 
-    it('lets a track run through a road at a level crossing, and the road end there has no partner', () => {
-        const flat = [1000, 1000], road = { highway: 'tertiary' };
+    it('puts a road at a level crossing on the plane of the track, and the road does not run on across it', () => {
+        // A track climbs north at 5 % across a road that OSM splits at the crossing.
+        const metres = unitScale(tile.level) * unit, at = (y: number) => 1000 + 0.05 * (4000 - y) * metres, flat = [at(4000), at(4000)], road = { highway: 'tertiary' };
         const lines = features([
             way('road', road, [1000, 4000, 3000, 4000], flat, [0, SIDE_BACK]),
             way('road', road, [3000, 4000, 5000, 4000], flat, [SIDE_ON, 0]),
-            way('railway', { railway: 'rail' }, [3000, 2000, 3000, 4000, 3000, 6000], [1000, 1000, 1000]),
+            way('railway', { railway: 'rail' }, [3000, 2000, 3000, 4000, 3000, 6000], [at(2000), at(4000), at(6000)]),
         ], tile).lines;
         expect(partnersOf(lines).size).toBe(0);
+        expect(Math.abs(crossSlope(lines[1], 0, 0, 100))).toBeCloseTo(0.05, 3);
+        expect(Math.abs(crossSlope(lines[0], 0, 100, 0))).toBeCloseTo(0.05, 3);
+    });
+
+    it('marks the way out of the visit that the bake marks, where a way passes a point twice', () => {
+        // A stem runs into a loop that ends on the stem's last vertex, as a side of the junction.
+        const xy = [1000, 4000, 3000, 4000, 3500, 3500, 4000, 4000, 3500, 4500, 3000, 4000];
+        const { lines } = features([way('road', { highway: 'service' }, xy, [1000, 1000, 1000, 1000, 1000, 1000], [0, 0, 0, 0, 0, SIDE_BACK])], tile);
+        const [ways] = junctionWays(lines), last = lines[0].z.length - 1;
+        expect(ways.map(({ v, step, side }) => [v === last ? 'end' : 'pass', step, side]).sort()).toEqual([['end', -1, true], ['pass', -1, false], ['pass', 1, false]]);
     });
 });
 

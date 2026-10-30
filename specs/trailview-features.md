@@ -271,11 +271,15 @@ The fields follow the direction of the part:
 Thus the tiles that hold a vertex hold one alignment there, and the metres along run on through a
 stroke across tiles and ways.
 
-A way out is a way of a road or a track that leaves a point. Where three or more ways out leave a
-point, the through road of the solver (see Heights) is one or two of them, and `side` marks each
-other one. Two ways out both run through, also across a change of class: `side` is 0. A path has
-`side` 0, and it is never a way out. The tiles keep each vertex that has a `side`. Below zoom 13 a
-tile has no `side`, so each way there runs through.
+A way out is a way of a road or a track that leaves a point, toward its point 8 m along OSM. Where
+three or more ways out leave a point, `side` marks each one but the through pair of the point. Of
+the pairs that open by at least the angle of cosine −0.3, this is the pair that holds the first
+class of the table, then the first class beside that, then that runs most nearly straight on. So
+a road runs on into a lesser class, and a road that ends on a straight road is a side of it. This
+rule serves the drawing. The heights follow the through road of the solver (see Heights), which can
+differ. A point with no such pair has no `side`, two ways out both run through, and a path has
+`side` 0 and is never a way out. The tiles keep each vertex that has a `side`. Below zoom 13 a tile
+has no `side`, so each way there runs through.
 
 ### Structures
 

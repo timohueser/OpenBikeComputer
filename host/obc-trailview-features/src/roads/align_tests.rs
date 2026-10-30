@@ -93,46 +93,74 @@ fn a_junction_a_deck_and_the_end_of_an_approach_stay_where_osm_has_them() {
     assert!((e.hypot(n) - 4.0).abs() < 0.1 && (e - n * 0.05).abs() < 1e-6, "{e} {n}");
 }
 
-#[test]
-fn a_way_that_leaves_a_junction_as_a_side_is_marked_on_its_way_out() {
+/// The solve of ways of (class, corners), and per way its `side` at the vertex on `at`.
+fn sides_at(ways: &[(&str, &[(f64, f64)])], at: (f64, f64)) -> Vec<u8> {
     let place = engelberg();
-    let line = |corners: &[(f64, f64)]| place.line(corners, Some(10.0));
-    let side_at = |solved: &Solved, f: usize, at: (f64, f64)| {
-        let way = solved.ways[f][0].as_ref().unwrap();
-        let k = way.points.iter().position(|p| *p == place.at(at.0, at.1)).unwrap();
-        (way.plan[k].side, way.plan.iter().filter(|p| p.side != 0).count())
+    let features: Vec<Feature> =
+        ways.iter().map(|(class, corners)| way(class, place.line(corners, Some(10.0)), plain)).collect();
+    let solved = run(&features, &flat, &[]);
+    let side = |w: &Option<Way>| {
+        let way = w.as_ref().unwrap();
+        let of = |k: usize| way.plan[k].side;
+        way.points.iter().enumerate().filter(|(_, p)| **p == place.at(at.0, at.1)).fold(0, |bits, (k, _)| bits | of(k))
     };
-    // A tertiary runs through a vertex. A residential road ends there, a second one runs across, drawn
-    // as one way, and a path ends there: the tertiary has no side.
-    let features = [
-        way("tertiary", line(&[(-200.0, 0.0), (0.0, 0.0), (200.0, 0.0)]), plain),
-        way("residential", line(&[(0.0, 0.0), (0.0, 200.0)]), plain),
-        way("residential", line(&[(-100.0, -100.0), (0.0, 0.0), (100.0, -100.0)]), plain),
-        way("path", line(&[(0.0, 0.0), (100.0, 100.0)]), plain),
-    ];
-    let solved = run(&features, &flat, &[]);
-    assert_eq!(side_at(&solved, 0, (0.0, 0.0)), (0, 0));
-    assert_eq!(side_at(&solved, 1, (0.0, 0.0)), (SIDE_ON, 1));
-    assert_eq!(side_at(&solved, 2, (0.0, 0.0)), (SIDE_BACK | SIDE_ON, 1));
-    assert_eq!(side_at(&solved, 3, (0.0, 0.0)), (0, 0));
-    // The same side road drawn toward the junction. At a level crossing, the track runs through.
-    let features = [
-        way("tertiary", line(&[(-200.0, 0.0), (0.0, 0.0), (200.0, 0.0)]), plain),
-        way("residential", line(&[(0.0, 200.0), (0.0, 0.0)]), plain),
-        way("rail", line(&[(0.0, -200.0), (100.0, 0.0), (0.0, 200.0)]), plain),
-    ];
-    let solved = run(&features, &flat, &[]);
-    assert_eq!(side_at(&solved, 1, (0.0, 0.0)).0, SIDE_BACK);
-    assert_eq!(side_at(&solved, 0, (100.0, 0.0)), (SIDE_BACK | SIDE_ON, 1));
-    assert_eq!(side_at(&solved, 2, (100.0, 0.0)), (0, 0));
+    solved.ways.iter().map(|parts| side(&parts[0])).collect()
+}
+
+#[test]
+fn a_way_out_that_no_through_pair_holds_is_a_side_and_a_path_is_never_marked() {
+    let (west, east, north) = ([(-200.0, 0.0), (0.0, 0.0)], [(0.0, 0.0), (200.0, 0.0)], [(0.0, 0.0), (0.0, 200.0)]);
+    let through = [(-200.0, 0.0), (0.0, 0.0), (200.0, 0.0)];
+    let across = [(-100.0, -100.0), (0.0, 0.0), (100.0, -100.0)];
+    let path = [(0.0, 0.0), (100.0, 100.0)];
+    let ways: [(&str, &[(f64, f64)]); 4] =
+        [("tertiary", &through), ("residential", &north), ("residential", &across), ("path", &path)];
+    assert_eq!(sides_at(&ways, (0.0, 0.0)), [0, SIDE_ON, SIDE_BACK | SIDE_ON, 0]);
+    // The same side road, drawn toward the junction.
+    let toward = [(0.0, 200.0), (0.0, 0.0)];
+    assert_eq!(sides_at(&[("tertiary", &through), ("residential", &toward)], (0.0, 0.0)), [0, SIDE_BACK]);
     // Two ways run on, also across a change of class and past a path.
-    let features = [
-        way("tertiary", line(&[(-200.0, 0.0), (0.0, 0.0)]), plain),
-        way("residential", line(&[(0.0, 0.0), (200.0, 0.0)]), plain),
-        way("path", line(&[(0.0, 0.0), (0.0, 200.0)]), plain),
-    ];
-    let solved = run(&features, &flat, &[]);
-    assert!(solved.ways.iter().flatten().flatten().flat_map(|w| &w.plan).all(|p| p.side == 0));
+    let two: [(&str, &[(f64, f64)]); 3] = [("tertiary", &west), ("residential", &east), ("path", &north)];
+    assert_eq!(sides_at(&two, (0.0, 0.0)), [0, 0, 0]);
+}
+
+#[test]
+fn a_road_runs_on_into_a_lesser_class_and_a_way_at_a_corner_gives_way_to_it() {
+    let (west, east, north) = ([(-200.0, 0.0), (0.0, 0.0)], [(0.0, 0.0), (200.0, 0.0)], [(0.0, 0.0), (0.0, 200.0)]);
+    let ways: [(&str, &[(f64, f64)]); 3] = [("secondary", &west), ("tertiary", &east), ("service", &north)];
+    assert_eq!(sides_at(&ways, (0.0, 0.0)), [0, 0, SIDE_ON]);
+    // Two tertiaries turn a corner where a residential road runs straight on.
+    let ways: [(&str, &[(f64, f64)]); 3] = [("tertiary", &west), ("tertiary", &north), ("residential", &east)];
+    assert_eq!(sides_at(&ways, (0.0, 0.0)), [0, SIDE_ON, 0]);
+}
+
+#[test]
+fn a_road_that_ends_on_a_straight_road_of_a_lesser_class_is_its_side() {
+    let (west, east, stem) = ([(-200.0, 0.0), (0.0, 0.0)], [(0.0, 0.0), (200.0, 0.0)], [(0.0, 200.0), (0.0, 0.0)]);
+    let bar = [(-200.0, 0.0), (0.0, 0.0), (200.0, 0.0)];
+    assert_eq!(sides_at(&[("tertiary", &stem), ("residential", &bar)], (0.0, 0.0)), [SIDE_BACK, 0]);
+    let split: [(&str, &[(f64, f64)]); 3] = [("tertiary", &stem), ("residential", &west), ("residential", &east)];
+    assert_eq!(sides_at(&split, (0.0, 0.0)), [SIDE_BACK, 0, 0]);
+}
+
+#[test]
+fn a_track_runs_through_a_level_crossing_and_a_junction_with_no_pair_has_no_side() {
+    let through = [(-200.0, 0.0), (0.0, 0.0), (200.0, 0.0)];
+    let rail = [(0.0, -200.0), (0.0, 0.0), (0.0, 200.0)];
+    assert_eq!(sides_at(&[("tertiary", &through), ("rail", &rail)], (0.0, 0.0)), [SIDE_BACK | SIDE_ON, 0]);
+    let fan = [[(0.0, 0.0), (200.0, 0.0)], [(0.0, 0.0), (173.0, 100.0)], [(0.0, 0.0), (100.0, 173.0)]];
+    let ways: [(&str, &[(f64, f64)]); 3] = [("tertiary", &fan[0]), ("tertiary", &fan[1]), ("tertiary", &fan[2])];
+    assert_eq!(sides_at(&ways, (0.0, 0.0)), [0, 0, 0]);
+}
+
+#[test]
+fn a_way_out_runs_toward_its_point_8_m_along_past_a_stub_of_osm() {
+    // The first segment of the service road leaves the secondary at a right angle, then it runs straight on.
+    let west = [(-200.0, 0.0), (0.0, 0.0)];
+    let on = [(0.0, 0.0), (0.0, 1.0), (200.0, 1.0)];
+    let north = [(0.0, 0.0), (-60.0, 200.0)];
+    let ways: [(&str, &[(f64, f64)]); 3] = [("secondary", &west), ("service", &on), ("service", &north)];
+    assert_eq!(sides_at(&ways, (0.0, 0.0)), [0, 0, SIDE_ON]);
 }
 
 #[test]

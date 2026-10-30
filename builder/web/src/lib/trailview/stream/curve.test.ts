@@ -4,7 +4,7 @@ import type { FeaturePart } from './features';
 
 const part = (xy: number[], tangent: number[], z: number[], grade: number[]): FeaturePart => ({
     outer: false, xy: Float32Array.from(xy), z: Float32Array.from(z),
-    plan: { along: 0, backward: false, tangent: Float32Array.from(tangent), grade: Float32Array.from(grade), bank: new Float32Array(z.length), widen: new Float32Array(z.length), side: new Float32Array(z.length) },
+    plan: { along: 0, backward: false, tangent: Float32Array.from(tangent), grade: Float32Array.from(grade), bank: new Float32Array(z.length), widen: new Float32Array(z.length) },
 });
 
 describe('the curve of a part', () => {

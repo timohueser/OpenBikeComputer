@@ -85,8 +85,8 @@ export interface Alignment {
     bank: Float32Array;
     /** Metres that the half-width gains. */
     widen: Float32Array;
-    /** Which ways out of a vertex leave its junction as a side: SIDE_BACK and SIDE_ON. */
-    side: Float32Array;
+    /** Which ways out of a vertex leave its junction as a side: SIDE_BACK and SIDE_ON. A tile always holds it. */
+    side?: Float32Array;
 }
 
 export interface FeaturePart {
