@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -221,6 +222,40 @@ class RatchetTests(unittest.TestCase):
         }
         self.assertEqual(cairn.base_baseline(files.get), {"R3 app": 80})
         self.assertIsNone(cairn.base_baseline({}.get))
+
+
+class BaseApprovalTests(unittest.TestCase):
+    def test_a_doc_set_back_to_draft_stays_approved_against_the_base(self):
+        def routing(status):
+            return f"---\nsystem: routing\nkind: system\narea: Device\npurpose: P.\nowns: [route/**]\nstatus: {status}\n---\n"
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+
+            def git(*args):
+                return subprocess.run(["git", "-C", folder, "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            def commit(files):
+                for path, text in files.items():
+                    (root / path).parent.mkdir(parents=True, exist_ok=True)
+                    (root / path).write_text(text)
+                git("add", "-A")
+                self.assertEqual(cairn.main(["map"]), 0)
+                git("add", "-A")
+                git("commit", "--quiet", "-m", "c")
+                return git("rev-parse", "HEAD")
+
+            git("init", "--quiet")
+            config = {**CONFIG, "docs": "docs/design", "baseline": ".cairn/baseline.json", "adapters": {},
+                      "sources": {"extensions": [".rs"], "files": []}}
+            with mock.patch.object(cairn, "ROOT", root), redirect_stdout(io.StringIO()) as out:
+                base = commit({".cairn/config.json": json.dumps(config), "docs/design/routing.md": routing("approved"),
+                               "docs/design/README.md": f"{cairn.MAP_BEGIN}\n{cairn.MAP_END}\n", "route/a.rs": "a\n"})
+                commit({"docs/design/routing.md": routing("draft"), "other/b.rs": "b\n"})
+                self.assertEqual(cairn.main(["check"]), 0)
+                self.assertEqual(cairn.main(["check", "--base", base]), 1, out.getvalue())
+        self.assertIn("FAIL other/b.rs has no owner", out.getvalue())
 
 
 if __name__ == "__main__":

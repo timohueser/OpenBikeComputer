@@ -3,8 +3,7 @@
 `cairn check` compares the code with the system docs in `docs/design/`. It uses the Python standard
 library, the glob rule of `tools/test_plan.py` and `cargo metadata`.
 
-A workflow choice never blocks: no hook, no `obc ready` gate and no CI job checks the mode of a
-change. CI gates only quality, with `cairn check`.
+CI gates only quality, with `cairn check`.
 
 ```sh
 obc cairn check            # print the report
@@ -55,7 +54,10 @@ baseline and refuses when the file exists.
 
 `--base REF` fails when the baseline has an entry or a size that the baseline at the merge base
 does not have. When the merge base has no baseline, the baseline must equal the one `--accept`
-writes. This rule applies also while no doc is approved. The CI job uses it.
+writes. This rule applies also while no doc is approved. The CI job uses `--base`.
+
+With `--base`, a system is approved when its doc has `status: approved` at the merge base or at
+HEAD, so a change cannot set a doc back to draft to hide its own violation.
 
 `firmware/tools/check_dependencies.py` is a separate check. It enforces the production direction
 between its own crate groups, which do not follow the system cut.
@@ -65,9 +67,6 @@ between its own crate groups, which do not follow the system cut.
 The pull request template has a `Mode:` line: `change #N`, `fix` or `skip: <reason>`. It is a record
 for the weekly report, and nothing checks it. The report reads the first `Mode:` line outside code
 blocks and HTML comments, and does not count an unknown value.
-
-A change is approved when its issue has the line `Status: approved`. The agent writes that line
-when the user approves the design in the conversation.
 
 ## Models
 
@@ -82,7 +81,7 @@ when the user approves the design in the conversation.
 | Part | Source |
 | --- | --- |
 | Skips | the pull requests merged in the last 7 days with `Mode: skip: <reason>`, and their reasons, read through `gh api` |
-| Size estimates | each `change #N` pull request merged in the last 7 days: the `**Size:**` line of issue N, outside code blocks and HTML comments, and the size of the merge commit against its first parent. The docs and the config are today's, not those of the merge. An unreadable size is `unknown`, with the reason. |
+| Size estimates | each `change #N` pull request merged in the last 7 days: the `**Size:**` line of issue N, outside code blocks and HTML comments, and the size of the merge commit against its first parent. System ownership and the config are today's, not those of the merge. An unreadable size is `unknown`, with the reason. |
 | Ratchet, files with no owner | the analysis of `cairn check` |
 | Drift, step 1 | For each doc with `status: approved`: the `Merge pull request #N` commits on the first-parent line of HEAD after the last change to the doc. A commit counts when it changes files of the system outside `tests`, `report.ignore` and the map. A `change #N` gives the TL;DR of issue N. Any other pull request gives its diff on those files. `report.max_input_chars` caps the input of a system. |
 | Drift, step 2 | Runs only with `--drift`, because it spends tokens. It needs `ANTHROPIC_API_KEY`. It sends one Message Batch for the `drift` role in the `api` tier. A family prefix resolves to its newest model ID through the Models API. The fixed instructions and `docs/design/glossary.md` come first, with a cache breakpoint. |
@@ -106,4 +105,5 @@ The size of a merge is the largest size that one of its signals gives:
 
 A changed system doc touches only its own system. The map counts for no system and no lines. A
 `tests` glob with no `/` matches the file name only. A pull request that cites an L issue counts as
-"against an epic", because it is one part of that epic.
+"against an epic", because it is one part of that epic. The report does not see a new dependency
+between systems or a breaking contract change.

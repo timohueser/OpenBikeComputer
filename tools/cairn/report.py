@@ -128,6 +128,10 @@ def gh(root: Path, endpoint: str, method: str = "GET", payload: dict | None = No
     return json.loads(done.stdout) if done.stdout.strip() else None
 
 
+def api(root: Path, path: str, method: str = "GET", payload: dict | None = None):
+    return gh(root, f"repos/{{owner}}/{{repo}}/{path}", method, payload)
+
+
 # ── step 1: no tokens ────────────────────────────────────────────────────────
 
 
@@ -202,11 +206,14 @@ def measure(root: Path, config: dict, docs: list[cairn.Doc], merge: str) -> tupl
 
 def estimate(root: Path, config: dict, docs: list[cairn.Doc], api: Api, merge: str, issue: int) -> tuple[str, str, list[str]]:
     """The planned and the measured size of a change, and the signals of the measured size. A size
-    that cannot be read is `unknown`, and the signals say why. The docs and the config are today's,
-    not those of the merge."""
+    that cannot be read is `unknown`, and the signals say why. System ownership and the config are
+    today's, not those of the merge."""
     planned, measured, why = "unknown", "unknown", []
     try:
-        planned = issue_size(api(f"issues/{issue}").get("body") or "") or "unknown"
+        data = api(f"issues/{issue}")
+        if "pull_request" in data:
+            raise ValueError(f"#{issue} is a pull request")
+        planned = issue_size(data.get("body") or "") or "unknown"
         if planned == "unknown":
             why.append(f"issue #{issue} has no Size line")
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
@@ -280,8 +287,9 @@ def evidence(root: Path, read: Api, number: int, commit: str, files: list[str]) 
     pull = read(f"pulls/{number}")
     mode = pull_mode(pull)
     head = f"## Pull request #{number}: {' '.join(pull.get('title', '').split())}\nMode: {mode[0] if mode else 'none'}\n\n"
-    if mode and mode["issue"]:
-        return head + tldr(read(f"issues/{mode['issue']}").get("body") or "")
+    issue = read(f"issues/{mode['issue']}") if mode and mode["issue"] else None
+    if issue and "pull_request" not in issue:
+        return head + tldr(issue.get("body") or "")
     return head + (git(root, "diff", "--no-renames", f"{commit}^1", commit, "--", *files) or "")
 
 
@@ -577,10 +585,8 @@ def main(publishing: bool, drifting: bool) -> int:
         result = cairn.analyse(docs, files, units, edges, lines, config)
         path = root / config["baseline"]
         baseline = json.loads(path.read_text()) if path.exists() else {}
-        def api(path: str, method: str = "GET", payload: dict | None = None):
-            return gh(root, f"repos/{{owner}}/{{repo}}/{path}", method, payload)
-
-        text, failed = write(root, config, docs, result, baseline, api, drifting, os.environ.get("ANTHROPIC_API_KEY"),
+        read = functools.partial(api, root)
+        text, failed = write(root, config, docs, result, baseline, read, drifting, os.environ.get("ANTHROPIC_API_KEY"),
                              datetime.now(timezone.utc))
         print(text)
         if publishing:
@@ -589,7 +595,7 @@ def main(publishing: bool, drifting: bool) -> int:
                 if (answer or {}).get("errors"):
                     raise OSError(json.dumps(answer["errors"]))
 
-            print(f"cairn: wrote {publish(text, api, pin)}", file=sys.stderr)
+            print(f"cairn: wrote {publish(text, read, pin)}", file=sys.stderr)
     except (cairn.CairnError, OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:
         print(f"cairn: {error}", file=sys.stderr)
         return 1

@@ -372,6 +372,15 @@ def base_baseline(show: Callable[[str], str | None]) -> dict[str, int] | None:
     return json.loads(text) if text is not None else None
 
 
+def approved_at(root: Path, commit: str, folder: str) -> set[str]:
+    """The systems whose doc has `status: approved` at the commit."""
+    listed = subprocess.run(["git", "-C", str(root), "ls-tree", "--name-only", f"{commit}:{folder}"],
+                            capture_output=True, text=True).stdout.split()
+    show = shown_at(root, commit)
+    texts = {name.removesuffix(".md"): show(f"{folder}/{name}") or "" for name in listed if name.endswith(".md")}
+    return {name for name, text in texts.items() if FRONT.match(text) and parse_header(text).get("status") == "approved"}
+
+
 def merge_base(root: Path, ref: str) -> str:
     merge = subprocess.run(["git", "-C", str(root), "merge-base", ref, "HEAD"], capture_output=True, text=True)
     if merge.returncode:
@@ -617,7 +626,10 @@ def main(argv: list[str] | None = None) -> int:
             page.write_text(current, encoding="utf-8")
             print(f"cairn: wrote {page.relative_to(ROOT)}")
             return 0
-        base = base_baseline(shown_at(ROOT, merge_base(ROOT, args.base))) if args.base else None
+        commit = merge_base(ROOT, args.base) if args.base else None
+        base = base_baseline(shown_at(ROOT, commit)) if commit else None
+        # An approval at the base still holds, so a change cannot lift it to hide its own violation.
+        was_approved = approved_at(ROOT, commit, config["docs"].rstrip("/")) if commit else set()
     except (CairnError, OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:
         print(f"cairn: {error}", file=sys.stderr)
         return 1
@@ -635,7 +647,7 @@ def main(argv: list[str] | None = None) -> int:
         path.write_text(json.dumps(baseline, indent=2) + "\n")
         print(f"cairn: baseline holds {len(baseline)} entries")
 
-    approved = {doc.system for doc in docs if doc.status == "approved"}
+    approved = {doc.system for doc in docs if doc.status == "approved"} | was_approved
     failing = report(result, baseline, docs, approved)
     # The ratchet protects itself while every system is still a draft.
     added = grown(baseline, base, result.violations) if args.base else []

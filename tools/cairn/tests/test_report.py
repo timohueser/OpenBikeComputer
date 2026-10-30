@@ -50,10 +50,11 @@ class Repository:
 
 class DriftInputTests(unittest.TestCase):
     PULLS = {
-        "pulls/2": {"title": "Fix the snap", "body": "Mode: fix"},
+        "pulls/2": {"title": "Fix the snap", "body": "Mode: change #4"},
         "pulls/3": {"title": "Split the router", "body": "Mode: change #7"},
         "pulls/4": {"title": "Only tests", "body": "Mode: fix"},
         "pulls/5": {"title": "Search", "body": "Mode: fix"},
+        "issues/4": {"body": "## TL;DR\n\nA pull request.", "pull_request": {}},
         "issues/7": {"body": "Status: approved\n\n## TL;DR\n\n**Decision:** split the router.\n\n---\n\n## Plan\n\nSecret."},
     }
 
@@ -82,7 +83,9 @@ class DriftInputTests(unittest.TestCase):
         self.assertEqual((found.system, found.pulls, found.cut), ("routing", (3, 2), 0))
         self.assertIn("**Decision:** split the router.", found.text)
         self.assertNotIn("Secret", found.text)
+        # #2 names a pull request as its issue, so it gives its diff.
         self.assertIn("+snap", found.text)
+        self.assertNotIn("A pull request.", found.text)
         for absent in ("route/tests", "Cargo.lock", "searched", "route/c.rs"):
             self.assertNotIn(absent, found.text)
 
@@ -231,7 +234,7 @@ class SkipTests(unittest.TestCase):
 class SizeEstimateTests(unittest.TestCase):
     def test_each_change_compares_its_planned_size_with_its_merge_or_says_why_it_cannot(self):
         issues = {"issues/7": {"body": "**Size:** S"}, "issues/8": {"body": "**Size:** M"}, "issues/9": {"body": "**Size:** M"},
-                  "issues/11": {"body": "**Size:** L"}}
+                  "issues/10": {"body": "**Size:** S", "pull_request": {}}, "issues/11": {"body": "**Size:** L"}}
 
         def api(path):
             if path not in issues:
@@ -258,7 +261,7 @@ class SizeEstimateTests(unittest.TestCase):
             "| #2 | #7 | S | M | 600 changed lines outside tests |",
             "| #3 | #8 | M | S | 1 system; 1 changed lines outside tests |",
             "| #4 | #9 | M | M | 2 systems |",
-            "| #6 | #10 | unknown | unknown | issue #10 cannot be read: gh: Not Found (HTTP 404); "
+            "| #6 | #10 | unknown | unknown | issue #10 cannot be read: #10 is a pull request; "
             "the merge commit 000000000000 is not in this checkout |",
             "| #7 | #11 | L | unknown | the pull request has no merge commit |",
         ])
