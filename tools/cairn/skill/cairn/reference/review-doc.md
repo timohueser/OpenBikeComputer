@@ -1,6 +1,6 @@
 # review-doc <doc>
 
-Tests one document with Goldfish: a system doc, an issue design, a guide page or any other document. It reviews documents only. Code review is part of `build`.
+Tests one document with Goldfish: a system doc, an issue design, a guide page or any other document. It reviews documents only. Code review is part of `build` and `fix`: see [review.md](review.md).
 
 ## 1. Find the document
 
