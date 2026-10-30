@@ -13,7 +13,7 @@ const FIELDS: [&str; 7] = ["kind", "geometry", "match", "keep", "height", "min_z
 const HEIGHTS: [&str; 4] = ["surface", "pad", "profile", "none"];
 /// The fields of a road class that the road solver reads. The other fields of the table are the stamp
 /// profile of the engine, which `builder/web` checks.
-const CLASS_FIELDS: [&str; 2] = ["grade", "smooth_m"];
+const CLASS_FIELDS: [&str; 7] = ["grade", "smooth_m", "plan_tol_m", "design_kmh", "bank", "widen_m", "keep_m"];
 /// The classes of the tracks.
 const RAILS: [&str; 5] = ["rail", "light_rail", "narrow_gauge", "rack", "funicular"];
 
@@ -178,7 +178,17 @@ pub fn classes(table: &Value) -> Result<(Vec<String>, Classes), String> {
             ));
         }
         let grade = grade.as_f64().unwrap_or(f64::INFINITY);
-        out.push(Class { grade, smooth_m: row["smooth_m"].as_f64().unwrap(), rail: RAILS.contains(&name.as_str()) });
+        let field = |key: &str| row[key].as_f64().unwrap();
+        out.push(Class {
+            grade,
+            smooth_m: field("smooth_m"),
+            rail: RAILS.contains(&name.as_str()),
+            plan_tol_m: field("plan_tol_m"),
+            design_kmh: field("design_kmh"),
+            bank: field("bank"),
+            widen_m: field("widen_m"),
+            keep_m: field("keep_m"),
+        });
     }
     let path = names.iter().position(|n| n == "path").unwrap();
     Ok((names, Classes { rows: out, path }))

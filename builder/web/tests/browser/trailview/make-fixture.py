@@ -1,8 +1,12 @@
 """Writes the TrailView fixture from a `planner-dem` MBTiles of BOX: the tiles with known heights, unknown outside BOX;
 and the tiles of a feature archive of BOX, as it is. Both come from one bake (box.sh): the features hold the heights
-of that terrain, zoom 13 included, and on another terrain the roads and paths float or sink by metres.
+of that terrain, zoom 13 included, and on another terrain the roads and paths float or sink by metres. To bake only
+the features again, `overlay` puts the terrain of the fixture on a GLO-30 MBTiles, which holds the heights outside BOX
+that a bake needs, and `features` writes the tiles of the bake.
 
 uv run --locked --group planner-maps python builder/web/tests/browser/trailview/make-fixture.py TERRAIN.mbtiles FEATURES.pmtiles
+uv run --locked --group planner-maps python builder/web/tests/browser/trailview/make-fixture.py overlay TERRAIN.mbtiles
+uv run --locked --group planner-maps python builder/web/tests/browser/trailview/make-fixture.py features FEATURES.pmtiles
 """
 
 import io
@@ -24,6 +28,33 @@ def world(lon: float, lat: float, n: int) -> tuple[float, float]:
     """The Web Mercator position in a world `n` units wide."""
     y = (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2
     return (lon + 180) / 360 * n, y * n
+
+
+def overlay(mbtiles: str) -> None:
+    db = sqlite3.connect(mbtiles)
+    for path in sorted((OUT / "terrain").glob("*/*/*.webp")):
+        z, x, y = int(path.parts[-3]), int(path.parts[-2]), int(path.stem)
+        row = 2**z - 1 - y
+        tile = Image.open(path).convert("RGBA")
+        found = db.execute("SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?", (z, x, row)).fetchone()
+        if found:
+            image = Image.open(io.BytesIO(found[0])).convert("RGBA")
+            image.paste(tile, mask=tile.getchannel("A"))
+            tile = image
+        data = io.BytesIO()
+        tile.save(data, format="WEBP", lossless=True, quality=100, exact=True)
+        db.execute("INSERT OR REPLACE INTO tiles VALUES (?, ?, ?, ?)", (z, x, row, data.getvalue()))
+    db.commit()
+
+
+def write_features(features: str) -> None:
+    from pmtiles.reader import MmapSource, all_tiles
+
+    with open(features, "rb") as stream:
+        for (z, x, y), data in all_tiles(MmapSource(stream)):
+            path = OUT / f"features/{z}/{x}/{y}.bin"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
 
 
 def main(mbtiles: str, features: str) -> None:
@@ -58,14 +89,8 @@ def main(mbtiles: str, features: str) -> None:
         "layers": {"trailview-features": f"{HOST}/trailview-features.json"},
     }
     (OUT / "config.json").write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-    from pmtiles.reader import MmapSource, all_tiles
-
-    with open(features, "rb") as stream:
-        for (z, x, y), data in all_tiles(MmapSource(stream)):
-            path = OUT / f"features/{z}/{x}/{y}.bin"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(data)
+    write_features(features)
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    {"overlay": overlay, "features": write_features}.get(sys.argv[1], lambda _: main(*sys.argv[1:]))(sys.argv[2])

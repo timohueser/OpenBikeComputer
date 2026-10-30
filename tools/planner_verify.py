@@ -4,6 +4,7 @@ import argparse
 import base64
 from contextlib import contextmanager, nullcontext
 import gzip
+from itertools import accumulate
 import json
 from pathlib import Path
 import struct
@@ -20,7 +21,7 @@ GEOMETRIES = ('point', 'line', 'area')
 def features(data):
     """The features of a TrailView feature tile (specs/trailview-features.md): `kind`, `tags`, `geometry` and
     `parts`. A part has `outer`, `xy` and, when the feature has heights, `z` in metres with None where a height is
-    not solved."""
+    not solved, and the codes `along`, `tangent`, `grade`, `bank` and `widen` of its alignment when it has one."""
     position = 0
 
     def read():
@@ -47,8 +48,8 @@ def features(data):
             key = strings[read()]
             tags[key] = strings[read()]
         header = read()
-        solved, x, y, height, parts = header & 4, 0, 0, 0, []
-        for _ in range(header >> 3):
+        solved, planned, x, y, height, parts = header & 4, header & 8, 0, 0, 0, []
+        for _ in range(header >> 4):
             count = read()
             part = {'outer': bool(count & 1), 'xy': [], **({'z': []} if solved else {})}
             for _ in range(count >> 1):
@@ -58,6 +59,14 @@ def features(data):
                     code = read()
                     height += signed(code - 1) if code else 0
                     part['z'].append(height / 100 if code else None)
+            along = read() if planned else 0
+            if along:
+                column = lambda: [read() for _ in range(count >> 1)]
+                part['along'] = along - 1
+                part['tangent'] = [turn % 1024 for turn in accumulate(map(signed, column()))]
+                part['grade'] = list(accumulate(map(signed, column())))
+                part['bank'] = [signed(value) for value in column()]
+                part['widen'] = column()
             parts.append(part)
         decoded.append({'kind': kind, 'tags': tags, 'geometry': GEOMETRIES[header & 3], 'parts': parts})
     if position != len(data):

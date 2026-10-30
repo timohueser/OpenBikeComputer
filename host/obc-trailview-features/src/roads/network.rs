@@ -33,10 +33,6 @@ pub(crate) struct Network {
     pub vertex_var: Vec<usize>,
     pub vertex_osm: Vec<bool>,
     pub vertex_junction: Vec<bool>,
-    pub vertex_fixed: Vec<bool>,
-    /// The OSM segment of each vertex, None for the last vertex of a way, and its place along it.
-    pub vertex_segment: Vec<Option<usize>>,
-    pub vertex_t: Vec<f64>,
     pub count: usize,
     pub way_first: Vec<usize>,
     pub way_last: Vec<usize>,
@@ -169,9 +165,6 @@ impl Network {
             vertex_var: Vec::new(),
             vertex_osm: Vec::new(),
             vertex_junction: Vec::new(),
-            vertex_fixed: Vec::new(),
-            vertex_segment: Vec::new(),
-            vertex_t: Vec::new(),
             count: 0,
             way_first: Vec::new(),
             way_last: Vec::new(),
@@ -200,8 +193,8 @@ impl Network {
                 kept.push((s, t));
             }
         }
-        // Per OSM segment, its cuts in order: (t, whether at an approach distance).
-        let mut cuts: Vec<Vec<(f64, bool)>> = vec![Vec::new(); sa.len()];
+        // Per OSM segment, its cuts in order.
+        let mut cuts: Vec<Vec<f64>> = vec![Vec::new(); sa.len()];
         let mut at = 0;
         for (s, cut) in cuts.iter_mut().enumerate() {
             let begin = at;
@@ -213,11 +206,11 @@ impl Network {
             for k in 1..regular {
                 let t = k as f64 / regular as f64;
                 if !approaches.iter().any(|&(_, other)| (t - other).abs() * lengths[s] <= 1.0) {
-                    cut.push((t, false));
+                    cut.push(t);
                 }
             }
-            cut.extend(approaches.iter().map(|&(_, t)| (t, true)));
-            cut.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap());
+            cut.extend(approaches.iter().map(|&(_, t)| t));
+            cut.sort_by(|p, q| p.partial_cmp(q).unwrap());
         }
         let cut_count: usize = cuts.iter().map(Vec::len).sum();
         let total = net.osm_xy.len() + cut_count;
@@ -225,28 +218,19 @@ impl Network {
         net.vertex_xy = Vec::with_capacity(total);
         net.vertex_var = Vec::with_capacity(total);
         net.vertex_osm = Vec::with_capacity(total);
-        net.vertex_fixed = Vec::with_capacity(total);
-        net.vertex_segment = Vec::with_capacity(total);
-        net.vertex_t = Vec::with_capacity(total);
         let mut next_var = net.osm_count;
         for (o, &s) in segment_of.iter().enumerate() {
             net.osm_position.push(net.vertex_xy.len());
             net.vertex_xy.push(net.osm_xy[o]);
             net.vertex_var.push(net.osm_var[o]);
             net.vertex_osm.push(true);
-            net.vertex_fixed.push(true);
-            net.vertex_segment.push((s != usize::MAX).then_some(s));
-            net.vertex_t.push(0.0);
             if s != usize::MAX {
-                for &(t, at_approach) in &cuts[s] {
+                for &t in &cuts[s] {
                     let (p, d) = (net.osm_xy[o], d[s]);
                     net.vertex_xy.push([p[0] + t * d[0], p[1] + t * d[1]]);
                     net.vertex_var.push(next_var);
                     next_var += 1;
                     net.vertex_osm.push(false);
-                    net.vertex_fixed.push(at_approach);
-                    net.vertex_segment.push(Some(s));
-                    net.vertex_t.push(t);
                 }
             }
         }

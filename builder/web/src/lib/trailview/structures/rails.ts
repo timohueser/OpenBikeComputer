@@ -39,7 +39,7 @@ export function rails(b: MeshBuilder, wires: AnchoredBuilder, list: Feature[], t
         }
     }
     const scale = unitScale(tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
-    const world = (xy: Int32Array, v: number): [number, number] => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
+    const world = (xy: ArrayLike<number>, v: number): [number, number] => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
     for (const { kind, tags, parts } of list) {
         if (kind === 'catenary-mast') {
             for (const { xy, z } of parts) {

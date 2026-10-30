@@ -2,11 +2,12 @@
 //! and their encoding (`features_format` of `specs/trailview-features.md`).
 
 use std::collections::{BTreeSet, HashMap};
+use std::f64::consts::TAU;
 
 use crate::geometry::bounds;
-use crate::{world, Part, Tags, EQUATOR_M};
+use crate::{world, Part, Plan, Tags, EQUATOR_M};
 
-pub const FORMAT: u32 = 2;
+pub const FORMAT: u32 = 3;
 /// A unit of a zoom-13 tile is about 0.2 m in the Alps, a texel of the finest terrain node.
 pub const EXTENT: u32 = 16384;
 pub const MIN_ZOOM: u8 = 8;
@@ -18,6 +19,13 @@ pub const BUFFER_M: f64 = 40.0;
 pub const TOLERANCE: f64 = EXTENT as f64 / 2048.0;
 
 const EXTENT_F: f64 = EXTENT as f64;
+/// A feature with an alignment counts its coordinates in quarters of a tile unit: a tile unit of 0.2 m
+/// would give a smooth curve a wobble of 10 cm.
+pub const FINE: i64 = 4;
+/// A turn of a tangent in codes, 0.35°: 1.4 cm off the true curve over a chord of 30 m.
+const TURN: i64 = 1024;
+/// The codes of a rise per metre: 0.4 %, or 1 cm of height over a chord of 30 m.
+const GRADE: f64 = 250.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Geometry {
@@ -36,12 +44,29 @@ impl Geometry {
     }
 }
 
-/// A part in integer tile units, with a height per point (NaN where unknown) or none.
+/// The alignment of a part in the codes of the format.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Aligned {
+    /// Decimetres along the stroke at the first vertex, twice, and one more when they fall along the part.
+    pub along: u64,
+    /// Per vertex: 1/TURN of a turn.
+    pub tangent: Vec<i64>,
+    /// Per vertex: 1/GRADE.
+    pub grade: Vec<i64>,
+    /// Per vertex: 1/1000.
+    pub bank: Vec<i64>,
+    /// Per vertex: centimetres.
+    pub widen: Vec<u64>,
+}
+
+/// A part in integer tile units, or in quarters of them in a feature with an alignment, with a height
+/// per point (NaN where unknown) or none.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Quantized {
     pub outer: bool,
     pub xy: Vec<[i64; 2]>,
     pub z: Option<Vec<f64>>,
+    pub plan: Option<Aligned>,
 }
 
 /// A feature of a tile, as `decode` gives it and `encode` takes it.
@@ -98,7 +123,9 @@ impl Tile {
         }
         self.body.extend(head);
         let solved = parts.iter().any(|part| part.z.is_some());
-        varint(&mut self.body, (parts.len() as u64) << 3 | u64::from(solved) << 2 | geometry.code());
+        let planned = parts.iter().any(|part| part.plan.is_some());
+        let flags = u64::from(planned) << 3 | u64::from(solved) << 2 | geometry.code();
+        varint(&mut self.body, (parts.len() as u64) << 4 | flags);
         let (mut x, mut y, mut height) = (0, 0, 0i64);
         for part in parts {
             varint(&mut self.body, (part.xy.len() as u64) << 1 | u64::from(part.outer));
@@ -118,8 +145,30 @@ impl Tile {
                     }
                 }
             }
+            if planned {
+                self.plan(part.plan.as_ref());
+            }
         }
         self.count += 1;
+    }
+
+    /// The alignment of a part, in columns: gzip finds the runs of a straight road. A tangent and a
+    /// grade are the difference from the vertex before.
+    fn plan(&mut self, plan: Option<&Aligned>) {
+        let Some(plan) = plan else { return self.body.push(0) };
+        varint(&mut self.body, plan.along + 1);
+        let mut last = 0;
+        for &tangent in &plan.tangent {
+            varint(&mut self.body, zigzag((tangent - last + TURN / 2).rem_euclid(TURN) - TURN / 2));
+            last = tangent;
+        }
+        last = 0;
+        for &grade in &plan.grade {
+            varint(&mut self.body, zigzag(grade - last));
+            last = grade;
+        }
+        plan.bank.iter().for_each(|&bank| varint(&mut self.body, zigzag(bank)));
+        plan.widen.iter().for_each(|&widen| varint(&mut self.body, widen));
     }
 
     /// The bytes of the tile.
@@ -180,16 +229,16 @@ pub fn decode(data: &[u8]) -> Result<Vec<Feature>, String> {
             tags.insert(key, text(next(&mut at)?)?);
         }
         let header = next(&mut at)?;
-        let solved = header & 4 != 0;
+        let (solved, planned) = (header & 4 != 0, header & 8 != 0);
         let geometry = [Geometry::Point, Geometry::Line, Geometry::Area]
             .get((header & 3) as usize)
             .copied()
             .ok_or("an unknown geometry")?;
         let (mut x, mut y, mut height) = (0i64, 0i64, 0i64);
         let mut parts = Vec::new();
-        for _ in 0..header >> 3 {
+        for _ in 0..header >> 4 {
             let count = next(&mut at)?;
-            let mut part = Quantized { outer: count & 1 == 1, xy: Vec::new(), z: solved.then(Vec::new) };
+            let mut part = Quantized { outer: count & 1 == 1, xy: Vec::new(), z: solved.then(Vec::new), plan: None };
             for _ in 0..count >> 1 {
                 x += signed(next(&mut at)?);
                 y += signed(next(&mut at)?);
@@ -203,6 +252,25 @@ pub fn decode(data: &[u8]) -> Result<Vec<Feature>, String> {
                         z.push(height as f64 / 100.0);
                     }
                 }
+            }
+            let code = if planned { next(&mut at)? } else { 0 };
+            if code != 0 {
+                let vertices = part.xy.len();
+                let column = |at: &mut usize| (0..vertices).map(|_| next(at)).collect::<Result<Vec<u64>, String>>();
+                let (mut tangent, mut grade) = (0, 0);
+                let tangents = column(&mut at)?.into_iter().map(|code| {
+                    tangent = (tangent + signed(code)).rem_euclid(TURN);
+                    tangent
+                });
+                let tangent = tangents.collect();
+                let grades = column(&mut at)?.into_iter().map(|code| {
+                    grade += signed(code);
+                    grade
+                });
+                let grade = grades.collect();
+                let bank = column(&mut at)?.into_iter().map(signed).collect();
+                let widen = column(&mut at)?;
+                part.plan = Some(Aligned { along: code - 1, tangent, grade, bank, widen });
             }
             parts.push(part);
         }
@@ -281,6 +349,7 @@ impl Tiles {
                 outer: part.outer,
                 points: part.points.iter().map(|&[x, y]| [x * scale, y * scale]).collect(),
                 z: part.z.clone(),
+                plan: part.plan.clone(),
             })
             .collect();
         let Some(box_) = extent(&parts) else { return false };
@@ -420,6 +489,7 @@ fn clipped(geometry: Geometry, parts: &[Part], rect: [f64; 4]) -> Vec<Part> {
         outer,
         points: indices.iter().map(|&i| part.points[i]).collect(),
         z: part.z.as_ref().map(|z| indices.iter().map(|&i| z[i]).collect()),
+        plan: part.plan.as_ref().map(|plan| indices.iter().map(|&i| plan[i]).collect()),
     };
     let [x0, y0, x1, y1] = rect;
     match geometry {
@@ -453,19 +523,52 @@ fn twice_area(ring: &[[i64; 2]]) -> i128 {
         .sum()
 }
 
-/// Parts in integer tile units. A part without enough distinct points goes, and the holes of an
-/// outer ring that goes go with it.
+/// A tangent in radians as a tile rounds it.
+pub fn rounded_tangent(tangent: f64) -> f64 {
+    (tangent * TURN as f64 / TAU).round_ties_even() * TAU / TURN as f64
+}
+
+/// A grade as a tile rounds it.
+pub fn rounded_grade(grade: f64) -> f64 {
+    (grade * GRADE).round_ties_even() / GRADE
+}
+
+/// The codes of the alignment of the vertices `indices` of a part.
+fn aligned(plan: &[Plan], indices: &[usize]) -> Aligned {
+    let (first, last) = (plan[indices[0]].along, plan[indices[indices.len() - 1]].along);
+    let code = |value: f64, scale: f64| (value * scale).round_ties_even() as i64;
+    let column = |value: fn(&Plan) -> f64, scale: f64| indices.iter().map(|&i| code(value(&plan[i]), scale)).collect();
+    let turn = TURN as f64 / TAU;
+    Aligned {
+        along: code(first, 10.0) as u64 * 2 + u64::from(last < first),
+        tangent: indices.iter().map(|&i| code(plan[i].tangent, turn).rem_euclid(TURN)).collect(),
+        grade: column(|p| p.grade, GRADE),
+        bank: column(|p| p.bank, 1000.0),
+        widen: indices.iter().map(|&i| code(plan[i].widen, 100.0) as u64).collect(),
+    }
+}
+
+/// Parts in integer tile units, or in quarters of them in a feature with an alignment. A part without
+/// enough distinct points goes, and the holes of an outer ring that goes go with it.
 fn quantized(geometry: Geometry, parts: &[Part], left: i64, top: i64) -> Vec<Quantized> {
+    let unit = if parts.iter().any(|part| part.plan.is_some()) { FINE } else { 1 };
     let (mut result, mut kept) = (Vec::new(), false);
     for part in parts {
         // A part with no heights, or an empty list of them, has none.
         let z = part.z.as_ref().filter(|z| !z.is_empty());
         let (mut xy, mut heights): (Vec<[i64; 2]>, Vec<f64>) = (Vec::new(), Vec::new());
+        let mut indices = Vec::new();
         for (n, &[x, y]) in part.points.iter().enumerate() {
-            let point = [x.round_ties_even() as i64 - left, y.round_ties_even() as i64 - top];
+            let whole = part.plan.as_ref().is_some_and(|plan| plan[n].whole);
+            let round = |value: f64| {
+                let fine = if whole { value.round_ties_even() * unit as f64 } else { value * unit as f64 };
+                fine.round_ties_even() as i64
+            };
+            let point = [round(x) - left * unit, round(y) - top * unit];
             if xy.last() != Some(&point) {
                 xy.push(point);
                 heights.push(z.map_or(f64::NAN, |z| z[n]));
+                indices.push(n);
             }
         }
         match geometry {
@@ -486,12 +589,14 @@ fn quantized(geometry: Geometry, parts: &[Part], left: i64, top: i64) -> Vec<Qua
             _ if xy.is_empty() => continue,
             _ => {}
         }
-        result.push(Quantized { outer: part.outer, xy, z: z.map(|_| heights) });
+        let plan = part.plan.as_ref().map(|plan| aligned(plan, &indices));
+        result.push(Quantized { outer: part.outer, xy, z: z.map(|_| heights), plan });
     }
     result
 }
 
-/// Douglas-Peucker on each part. The `anchors` of each part, the indices of vertices that other
+/// Douglas-Peucker on each part, with no alignment: its vertices stay on the curve, and a chord of a low
+/// zoom is drawn straight. The `anchors` of each part, the indices of vertices that other
 /// features share, and the ends of a line stay: junctions and the joins of rivers and lakes keep
 /// their places. The rings of an area then take back vertices until no two of their edges cross.
 pub fn simplified(geometry: Geometry, parts: &[Part], anchors: &[Vec<usize>], tolerance: f64) -> Vec<Part> {
@@ -535,6 +640,7 @@ pub fn simplified(geometry: Geometry, parts: &[Part], anchors: &[Vec<usize>], to
                 outer: part.outer,
                 points: indices.iter().map(|&i| part.points[i]).collect(),
                 z: part.z.as_ref().map(|z| indices.iter().map(|&i| z[i]).collect()),
+                plan: None,
             }
         })
         .collect()
@@ -658,6 +764,13 @@ mod tests {
                 if let Some(z) = &part.z {
                     out["z"] = z.iter().map(|&h| if h.is_nan() { Value::Null } else { json!(h) }).collect();
                 }
+                if let Some(plan) = &part.plan {
+                    out["along"] = json!(plan.along);
+                    out["tangent"] = json!(plan.tangent);
+                    out["grade"] = json!(plan.grade);
+                    out["bank"] = json!(plan.bank);
+                    out["widen"] = json!(plan.widen);
+                }
                 out
             })
             .collect();
@@ -676,7 +789,7 @@ mod tests {
     }
 
     fn part(outer: bool, points: Vec<[f64; 2]>) -> Part {
-        Part { outer, points, z: None }
+        Part { outer, points, z: None, plan: None }
     }
 
     #[test]
@@ -723,6 +836,64 @@ mod tests {
         // The cut keeps the segment whole: no vertex is added at the tile's edges.
         let width = 7 * i64::from(EXTENT);
         assert_eq!(tile[0].parts[0].xy[1][0] - tile[0].parts[0].xy[0][0], width);
+    }
+
+    #[test]
+    fn two_tiles_that_hold_a_vertex_hold_one_alignment_and_a_low_zoom_holds_none() {
+        let n = (1u64 << MAX_ZOOM) as f64;
+        let (column, row) = (4286.0, 2889.0);
+        let lon = |x: f64| x / n * 360.0 - 180.0;
+        let lat = |y: f64| (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan().to_degrees();
+        let mut tiles = Tiles::new([lon(column), lat(row + 1.0), lon(column + 2.0), lat(row)]);
+        // A line over the border of the two tiles, with a vertex every 2 % of a tile.
+        let count = 40;
+        let at = |k: f64| [(column + 0.6 + k * 0.02) / n, (row + 0.5 + 0.001 * k * k / 40.0) / n];
+        let plan: Vec<Plan> = (0..count)
+            .map(|k| {
+                let k = k as f64;
+                Plan {
+                    tangent: 0.5 + k * 0.03,
+                    grade: -0.04 + k * 0.002,
+                    bank: 0.03 - k * 0.001,
+                    widen: k * 0.02,
+                    along: 3000.0 - k * 60.0,
+                    whole: k == 2.0,
+                }
+            })
+            .collect();
+        let line = Part {
+            points: (0..count).map(|k| at(k as f64)).collect(),
+            z: Some(vec![1000.0; count]),
+            plan: Some(plan),
+            ..Part::default()
+        };
+        assert!(tiles.add(MAX_ZOOM, "road", Geometry::Line, &Tags::new(), std::slice::from_ref(&line)));
+        let tile =
+            |c: f64| decode(&tiles.tiles[&(MAX_ZOOM, c as u32, row as u32)].bytes()).unwrap().remove(0).parts.remove(0);
+        let (west, east) = (tile(column), tile(column + 1.0));
+        let unit = EXTENT as i64 * FINE;
+        let at_east = |p: &[i64; 2]| [p[0] - unit, p[1]];
+        let (west_plan, east_plan) = (west.plan.as_ref().unwrap(), east.plan.as_ref().unwrap());
+        let shared: Vec<(usize, usize)> = west
+            .xy
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| Some((i, east.xy.iter().position(|q| *q == at_east(p))?)))
+            .collect();
+        assert!(shared.len() >= 3, "the buffer of 40 m holds {} vertices of both", shared.len());
+        for (i, k) in shared {
+            let codes = |plan: &Aligned, v: usize| (plan.tangent[v], plan.grade[v], plan.bank[v], plan.widen[v]);
+            assert_eq!(codes(west_plan, i), codes(east_plan, k));
+            assert_eq!(west.z.as_ref().unwrap()[i], east.z.as_ref().unwrap()[k]);
+        }
+        // The vertex that a river shares lies on a whole tile unit, as the river's does.
+        assert!(west.xy[2].iter().all(|c| c % FINE == 0));
+        assert!(west.xy[3].iter().any(|c| c % FINE != 0));
+        // The metres along fall along this line. Each piece names them at its own first vertex.
+        assert_eq!(west_plan.along, 3000 * 10 * 2 + 1);
+        assert_eq!(west_plan.along & 1, east_plan.along & 1);
+        let low = simplified(Geometry::Line, std::slice::from_ref(&line), &[vec![]], TOLERANCE / (n * EXTENT_F));
+        assert!(low[0].plan.is_none());
     }
 
     #[test]
