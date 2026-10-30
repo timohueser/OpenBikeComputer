@@ -244,7 +244,8 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     const drawn = (part: FeaturePart, kind: string, tags: Record<string, string>): Curve | FeaturePart => {
         if (!part.plan || !part.z) return part;
         const edge = halfOf(kind, tags) + sidewalkOf(tags, surfaceOf(tags));
-        const sag = Object.hasOwn(PATH_HALF, tags.highway) ? PATH_SAG : ROAD_SAG;
+        // A paved path has a hard edge, in a town too.
+        const sag = Object.hasOwn(PATH_HALF, tags.highway) && ![...PAVED_ROADS, 'paving'].includes(surfaceOf(tags, true)) ? PATH_SAG : ROAD_SAG;
         return curves.get(part) ?? curves.set(part, curveOf(part, edge, sag, scale, y => scale * metresPerUnit((oy + y) * scale))).get(part)!;
     };
     const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [];

@@ -169,8 +169,17 @@ fn shoulder_of(code: u32) -> f32 {
     return stamp_rules.shoulders[code >> 2u][code & 3u];
 }
 
+fn ditch_shows(level: u32) -> bool {
+    return 2.0 * gate_texel(level) <= DITCH_END_M;
+}
+
 fn ditch_depth(x: f32, depth: f32) -> f32 {
     return depth * smoothstep(0.0, DITCH_IN_M, x) * (1.0 - smoothstep(DITCH_OUT_M, DITCH_END_M, x));
+}
+
+// How far the top of a cut may stand over the road x metres past its core, with a ditch `ditch` metres deep.
+fn cut_top(x: f32, reach: f32, slope: f32, ditch: f32) -> f32 {
+    return widen(max(0.0, x - select(0.0, DITCH_OUT_M, ditch > 0.0)), reach, slope) - ditch_depth(x, ditch);
 }
 
 // Metres per world unit at world row y.
@@ -639,9 +648,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 let reach = cone_reach(core_half, rule, texel);
                 if (g.cone && x < reach) {
                     let l = g.z - (tol + widen(x, reach, rule.fill));
-                    let ditched = plain && rule.ditch > 0.0 && 2.0 * gate_texel(level) <= DITCH_END_M;
-                    let xc = select(x, max(0.0, x - DITCH_OUT_M), ditched);
-                    let u = g.z + (tol + widen(xc, reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery))) - select(0.0, ditch_depth(x, rule.ditch), ditched);
+                    let ditch = select(0.0, rule.ditch, plain && ditch_shows(level));
+                    let u = g.z + tol + cut_top(x, reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery), ditch);
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
                         cone_lo_x = x;
@@ -683,6 +691,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     if (out.road < 0.0 && corner_d < INF) {
         out.road = min(out.road, corner_d);
         out.walk = corner_walk;
+        out.shoulder = false;
     }
     out.water = water_in;
     out.taken = out.taken || water_in > -1e30;

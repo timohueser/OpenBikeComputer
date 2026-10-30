@@ -3,9 +3,10 @@
 import type { FeaturePart } from './features';
 
 /**
- * How far a chord leaves the curve at a line's edge and in height, in metres, within 25%. These set how many
- * segments a stamp holds, and so what the stamp worker and the structures along a road cost. A path has
- * most of the bends and frays at its edge, so it takes more.
+ * How far a chord should leave the curve at a line's edge and in height, in metres. Samples of a span place
+ * its cuts, so a chord can pass this by a fraction. These set how many segments a stamp holds, and so what
+ * the stamp worker and the structures along a road cost. A path that is not paved has most of the bends and
+ * frays at its edge, so it takes more.
  */
 export const ROAD_SAG = { plan: 0.05, height: 0.03 }, PATH_SAG = { plan: 0.15, height: 0.1 };
 
@@ -81,12 +82,13 @@ export function curveOf({ xy, z, plan }: FeaturePart, half: number, sag: typeof 
         const [ax, ay, bx, by] = [xy[2 * v - 2], xy[2 * v - 1], xy[2 * v], xy[2 * v + 1]], dx = bx - ax, dy = by - ay, [z0, z1] = [z[v - 1], z[v]];
         const chord = Math.hypot(dx, dy), length = chord * metres((ay + by) / 2), [t0, t1, g0, g1] = [plan.tangent[v - 1], plan.tangent[v], plan.grade[v - 1], plan.grade[v]];
         const [px, py, qx, qy] = [Math.cos(t0) * chord, Math.sin(t0) * chord, Math.cos(t1) * chord, Math.sin(t1) * chord];
-        const heading = Math.atan2(dy, dx), [a0, a1] = [unwound(t0 - heading), unwound(t1 - heading)], rise = (z1 - z0) / (length || 1), edge = half + Math.max(plan.widen[v - 1], plan.widen[v]);
-        // The second derivative of the curve off its chord, per chord: a chord of du leaves it by a share of du²/8.
-        const bent = (u: number, a: number, b: number) => Math.abs((6 * u - 4) * a + (6 * u - 2) * b);
+        const rise = (z1 - z0) / (length || 1), edge = half + Math.max(plan.widen[v - 1], plan.widen[v]);
+        // A chord of du leaves the curve by du²/8 of its speed times its turn, in metres and radians per unit of u.
         const needed = (u: number) => {
-            const turn = bent(u, a0, a1);
-            return Math.sqrt(Math.max((length + edge * turn) * turn / sag.plan, length * bent(u, g0 - rise, g1 - rise) / sag.height) / 8);
+            const u2 = u * u, d10 = 3 * u2 - 4 * u + 1, d01 = 6 * u - 6 * u2, d11 = 3 * u2 - 2 * u, c10 = 6 * u - 4, c01 = 6 - 12 * u, c11 = 6 * u - 2;
+            const vx = d10 * px + d01 * dx + d11 * qx, vy = d10 * py + d01 * dy + d11 * qy, ax = c10 * px + c01 * dx + c11 * qx, ay = c10 * py + c01 * dy + c11 * qy;
+            const speed = Math.hypot(vx, vy) || 1, turn = Math.abs(vx * ay - vy * ax) / speed / speed, bent = Math.abs(c10 * (g0 - rise) + c11 * (g1 - rise));
+            return Math.sqrt(Math.max((speed * length / chord + edge * turn) * turn / sag.plan, length * bent / sag.height) / 8);
         };
         // Heights of a span that has no height at one end stay unknown.
         for (const u of Number.isNaN(rise) || !length ? [] : cuts(needed)) {

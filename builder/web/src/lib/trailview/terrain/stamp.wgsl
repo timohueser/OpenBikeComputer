@@ -4,6 +4,7 @@
 // upsamples a stamped parent. Near pages get the feature mask.
 // #include drawn-height.wgsl
 // #include stamp-core.wgsl
+// #include mask-walk.wgsl
 
 struct StampJob {
     // The node's first texel at its level.
@@ -44,12 +45,10 @@ const FACE_M: f32 = 0.02;
 // The mask holds the distance to a road's edge within ±MASK_RANGE metres on an asinh scale with its knee
 // at MASK_KNEE: its steps of 1.5 cm at the edge, where a kerb is 18 cm wide, grow to 0.4 m at MASK_RANGE.
 // It holds the metres from a road's middle in 0.1 m steps, and a track's within ±TRACK_RANGE in 2.5 cm
-// steps for its rails; a sidewalk's width in WALK_STEP_M, with SHOULDER_BIT where the road holds a shoulder.
+// steps for its rails; else the byte of mask-walk.wgsl.
 const MASK_RANGE: f32 = 12.75;
 const MASK_KNEE: f32 = 0.5;
 const TRACK_RANGE: f32 = 3.2;
-const WALK_STEP_M: f32 = 0.1;
-const SHOULDER_BIT: u32 = 128u;
 // Mask flags, as features.wgsl reads them.
 const WALL_FLAG: u32 = 1u;
 const CONFLICT_FLAG: u32 = 2u;
@@ -129,7 +128,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
         let surface = select(0u, s.surface, s.road < MASK_RANGE);
         let across = clamp(s.across / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
-        let walk = (round(s.walk / WALK_STEP_M) + select(0.0, f32(SHOULDER_BIT), s.shoulder)) / 255.0;
+        let walk = f32(walk_byte(s.walk, s.shoulder)) / 255.0;
         textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
             vec4f(distance_code(s.road), select(walk, fract(s.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));
     }
@@ -162,8 +161,8 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
         d[i] = code_distance(texel.x);
         // A track holds its sleepers there.
         let wide = select(u32(round(texel.y * 255.0)), 0u, surface >= TRACK_CODE);
-        walk = max(walk, f32(wide & (SHOULDER_BIT - 1u)) * WALK_STEP_M);
-        shoulder = max(shoulder, select(0.0, shoulder_of(surface), (wide & SHOULDER_BIT) != 0u));
+        walk = max(walk, walk_metres(wide));
+        shoulder = max(shoulder, select(0.0, shoulder_of(surface), holds_shoulder(wide)));
     }
     let shift = 22u - job.level;
     let unit = unit_metres(corner.y << shift);

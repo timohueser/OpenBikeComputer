@@ -34,24 +34,30 @@ describe('the curve of a part', () => {
         }
     });
 
-    it('holds a chord within the sag at both ends of a span that bends most at one end, and of an S', () => {
-        const metres = 0.2, c = 800, span = (a: number, b: number) => part([0, 0, c, 0], [a, b], [100, 100 + 40], [0.05 + a, 0.05 + b]);
-        // The curve of the spec, sampled finely; the part runs along x, so y and the height against the grade are what a chord misses.
+    it('holds a chord within the sag on spans that bend at one end, in an S and through most of a turn', () => {
+        const metres = 0.2, c = 800, span = (a: number, b: number) => part([0, 0, c, 0], [a, b], [100, 140], [0.05 + a / 5, 0.05 + b / 5]);
+        // The curve of the spec, sampled finely. The part runs along x, so y is what a chord of the plan misses.
         const exact = (u: number, a: number, b: number) => {
             const h10 = u ** 3 - 2 * u ** 2 + u, h11 = u ** 3 - u ** 2, h00 = 2 * u ** 3 - 3 * u ** 2 + 1, h01 = 3 * u ** 2 - 2 * u ** 3;
-            return { x: 3 * u ** 2 * c - 2 * u ** 3 * c + (h10 * Math.cos(a) + h11 * Math.cos(b)) * c, y: (h10 * Math.sin(a) + h11 * Math.sin(b)) * c, z: h00 * 100 + h01 * 140 + (h10 * (0.05 + a) + h11 * (0.05 + b)) * c * metres };
+            return { x: h01 * c + (h10 * Math.cos(a) + h11 * Math.cos(b)) * c, y: (h10 * Math.sin(a) + h11 * Math.sin(b)) * c, z: h00 * 100 + h01 * 140 + (h10 * (0.05 + a / 5) + h11 * (0.05 + b / 5)) * c * metres };
         };
-        for (const [a, b] of [[0.5, 0], [0, -0.5], [0.3, 0.3], [-0.3, -0.3], [0.4, -0.4]]) {
+        for (const [a, b] of [[0.5, 0], [0, -0.5], [0.3, 0.3], [-0.3, -0.3], [0.4, -0.4], [1.4, -1.4], [1.2, 0], [0, -1.4], [1, 1], [-1.4, 0.7], [1.5, -1.5]]) {
             const { xy, z } = curveOf(span(a, b), 0, ROAD_SAG, 8, () => metres);
-            // Half a world unit of rounding beside the sag.
-            for (let k = 0; k <= 400; k++) {
-                const p = exact(k / 400, a, b);
-                let v = 0;
-                while (2 * v + 2 < xy.length - 2 && xy[2 * v + 2] < p.x) v++;
-                const t = Math.max(0, Math.min(1, (p.x - xy[2 * v]) / (xy[2 * v + 2] - xy[2 * v])));
-                expect(Math.abs(xy[2 * v + 1] + t * (xy[2 * v + 3] - xy[2 * v + 1]) - p.y) * metres, `plan ${a}, ${b}`).toBeLessThan(1.25 * ROAD_SAG.plan + 0.5 / 8 * metres);
-                expect(Math.abs(z[v] + t * (z[v + 1] - z[v]) - p.z), `height ${a}, ${b}`).toBeLessThan(1.25 * ROAD_SAG.height);
+            let plan = 0, height = 0;
+            for (let k = 0; k <= 800; k++) {
+                const p = exact(k / 800, a, b);
+                let nearest = Infinity, level = 0;
+                for (let v = 0; v + 1 < z.length; v++) {
+                    const dx = xy[2 * v + 2] - xy[2 * v], dy = xy[2 * v + 3] - xy[2 * v + 1], t = Math.max(0, Math.min(1, ((p.x - xy[2 * v]) * dx + (p.y - xy[2 * v + 1]) * dy) / (dx * dx + dy * dy)));
+                    const d = Math.hypot(xy[2 * v] + t * dx - p.x, xy[2 * v + 1] + t * dy - p.y);
+                    if (d < nearest) [nearest, level] = [d, z[v] + t * (z[v + 1] - z[v])];
+                }
+                plan = Math.max(plan, nearest * metres);
+                height = Math.max(height, Math.abs(level - p.z));
             }
+            // Half a world unit of rounding beside the sag.
+            expect(plan, `plan ${a}, ${b}`).toBeLessThan(1.25 * ROAD_SAG.plan + 0.5 / 8 * metres);
+            expect(height, `height ${a}, ${b}`).toBeLessThan(1.25 * ROAD_SAG.height);
         }
     });
 

@@ -23,17 +23,23 @@ function cellOf(data: Uint32Array, node: { level: number; x: number; y: number }
     return { entries, origin };
 }
 
-/** Functions of a shader in JavaScript, as written there, with its f32 constants. */
+/** The text of a function of a shader, between its braces. */
+function functionOf(source: string, name: string): string {
+    const start = source.indexOf(`fn ${name}(`), open = source.indexOf('{', start);
+    let at = open + 1;
+    for (let depth = 1; depth > 0; at++) depth += source[at] === '{' ? 1 : source[at] === '}' ? -1 : 0;
+    return source.slice(open + 1, at - 1);
+}
+
+/** Functions of a shader in JavaScript, as written there, with its constants. */
 function shaderFunctions<T>(source: string, names: string[]): T {
-    const constants = [...source.matchAll(/^const (\w+): f32 = ([^;]+);/gm)].map(([, name, value]) => `const ${name} = ${value};`);
+    const constants = [...source.matchAll(/^const (\w+): [fu]32 = ([^;]+);/gm)].map(([, name, value]) => `const ${name} = ${value.replace(/\b(0x[0-9a-f]+|\d+)u\b/g, '$1')};`);
     const functions = names.map(name => {
-        const start = source.indexOf(`fn ${name}(`), open = source.indexOf('{', start), args = /\(([^)]*)\)/.exec(source.slice(start))![1];
-        let at = open + 1;
-        for (let depth = 1; depth > 0; at++) depth += source[at] === '{' ? 1 : source[at] === '}' ? -1 : 0;
-        const body = source.slice(open + 1, at - 1).replace(/\blet\b/g, 'const').replace(/\bvar\b/g, 'let').replace(/\b(max|min|abs)\(/g, 'Math.$1(').replace(/\bf32\(/g, '(').replace(/(\d)u\b/g, '$1');
+        const args = /\(([^)]*)\)/.exec(source.slice(source.indexOf(`fn ${name}(`)))![1];
+        const body = functionOf(source, name).replace(/\blet\b/g, 'const').replace(/\bvar\b/g, 'let').replace(/\b(max|min|abs|round)\(/g, 'Math.$1(').replace(/\b[fu]32\(/g, '(').replace(/(\d)u\b/g, '$1');
         return `function ${name}(${args.replace(/: \w+/g, '')}) {${body}}`;
     });
-    const smoothstep = 'function smoothstep(a, b, x) { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); }';
+    const smoothstep = 'function smoothstep(a, b, x) { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); }\nfunction select(a, b, c) { return c ? b : a; }';
     return new Function(`${smoothstep}\n${constants.join('\n')}\n${functions.join('\n')}\nreturn { ${names.join(', ')} };`)();
 }
 
@@ -67,7 +73,7 @@ describe('the stamp data of a node', () => {
         expect(Number(/const PAVING_CODE: u32 = (\d+)u;/.exec(mask)?.[1])).toBe(Object.keys(SURFACES).indexOf('paving') + 1);
         expect([/const SLEEPER_M: f32 = ([\d.]+);/.exec(shader)?.[1], /const SLEEPER_SPACING_M: f32 = ([\d.]+);/.exec(mask)?.[1]].map(Number)).toEqual([SLEEPER_M, SLEEPER_M]);
         const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'), value = (source: string, name: string) => Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(source)?.[1]);
-        expect(['TRACK_M', 'MASK_M', 'MASK_KNEE', 'WALK_STEP_M'].map(name => value(mask, name))).toEqual(['TRACK_RANGE', 'MASK_RANGE', 'MASK_KNEE', 'WALK_STEP_M'].map(name => value(stamp, name)));
+        expect(['TRACK_M', 'MASK_M', 'MASK_KNEE'].map(name => value(mask, name))).toEqual(['TRACK_RANGE', 'MASK_RANGE', 'MASK_KNEE'].map(name => value(stamp, name)));
         const [rail, narrow] = ['RAIL_HALF_M', 'NARROW_HALF_M'].map(name => Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(mask)?.[1]));
         expect(Object.values(SURFACES).slice(RAIL_CODE - 1)).toEqual([rail, narrow, rail, narrow]);
     });
@@ -93,11 +99,20 @@ describe('the stamp data of a node', () => {
         expect([/let ma = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/, /let mb = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/, /let bank = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/].map(word => Number(word.exec(shader)?.[1]))).toEqual([9, 10, 11]);
     });
 
-    it('stamps a ditch only on the level with two texels in it, as deep as the class says at its bottom', () => {
-        const { ditch_depth: depth, gate_texel: texel } = shaderFunctions<{ ditch_depth: (x: number, depth: number) => number; gate_texel: (level: number) => number }>(shader, ['ditch_depth', 'gate_texel']);
+    it('digs a ditch beside a cut, only on the level with two texels in it, and starts the slope past its bottom', () => {
+        const { ditch_depth: depth, ditch_shows: shows, cut_top: top, widen } = shaderFunctions<{ ditch_depth: (x: number, depth: number) => number; ditch_shows: (level: number) => boolean; cut_top: (x: number, reach: number, slope: number, ditch: number) => number; widen: (x: number, reach: number, slope: number) => number }>(shader, ['ditch_depth', 'ditch_shows', 'gate_texel', 'cut_top', 'widen']);
         const end = Number(/const DITCH_END_M: f32 = ([\d.]+);/.exec(shader)?.[1]);
         expect([depth(0, 0.3), depth(0.4, 0.3), depth(0.7, 0.3), depth(end, 0.3)]).toEqual([0, 0.3, 0.3, 0]);
-        expect([18, 17].map(level => 2 * texel(level) <= end)).toEqual([true, false]);
+        expect([18, 17, 16, 14].map(shows)).toEqual([true, false, false, false]);
+        // Without a ditch the cut rises from the core; with one the ground lies under the road at its bottom, and rises from there.
+        for (const x of [0, 0.5, 2]) expect(top(x, 10, 0.85, 0)).toBe(widen(x, 10, 0.85));
+        expect(top(0, 10, 0.85, 0.3)).toBe(0);
+        expect(top(0.6, 10, 0.85, 0.3)).toBeCloseTo(-0.3, 9);
+        expect(top(2, 10, 0.85, 0.3)).toBeCloseTo(widen(2 - 0.7, 10, 0.85), 9);
+        // The stamp holds its cuts by these, and only a plain road takes a ditch.
+        const body = functionOf(shader, 'stamp_at');
+        expect(body).toMatch(/let ditch = select\(0\.0, rule\.ditch, plain && ditch_shows\(level\)\);/);
+        expect(body).toMatch(/let u = g\.z \+ tol \+ cut_top\(x, reach, select\(rule\.cut, GALLERY_VALLEY_CUT, gallery\), ditch\);/);
     });
 
     it('rounds the top of a cut and the foot of a fill far from the road, and keeps the crease beside it', () => {
@@ -112,12 +127,28 @@ describe('the stamp data of a node', () => {
         expect([rounded(10.8, cut(5)), rounded(9.2, fill(5))]).toEqual([10, 10]);
         // It never falls as the base rises.
         for (let base = 8; base < 12; base += 0.05) expect(rounded(base + 0.05, cut(5))).toBeGreaterThanOrEqual(rounded(base, cut(5)) - 1e-9);
+        // The stamp pass takes the ground from it, then clamps.
+        expect(functionOf(stamp, 'stamp')).toMatch(/h = select\(NONE, clamp\(rounded\(base, s\), s\.lo, s\.hi\), known\(base\)\);/);
     });
 
-    it('marks a shoulder in a bit of the mask that no sidewalk reaches, and both shaders know the bit', () => {
-        const bit = (name: string) => Number(/const SHOULDER_BIT: u32 = (\d+)u;/.exec(readFileSync(new URL(name, import.meta.url), 'utf8'))?.[1]);
-        expect(bit('./stamp.wgsl')).toBe(bit('./features.wgsl'));
-        expect(Math.max(...Object.values(PROFILES).map(({ walk }) => walk)) / 0.1).toBeLessThan(bit('./stamp.wgsl'));
+    it('marks a shoulder in the byte of a sidewalk, and the paint and the snap each read the part that is theirs', () => {
+        const source = readFileSync(new URL('./mask-walk.wgsl', import.meta.url), 'utf8');
+        const { walk_byte: pack, walk_metres: metres, holds_shoulder: holds } = shaderFunctions<{ walk_byte: (walk: number, shoulder: boolean) => number; walk_metres: (byte: number) => number; holds_shoulder: (byte: number) => boolean }>(source, ['walk_byte', 'walk_metres', 'holds_shoulder']);
+        for (const walk of [...Object.values(PROFILES).map(({ walk }) => walk), 0]) for (const shoulder of [false, true]) {
+            const byte = pack(walk, shoulder);
+            expect(byte).toBeLessThan(256);
+            expect(metres(byte)).toBeCloseTo(walk, 6);
+            expect(holds(byte)).toBe(shoulder);
+        }
+        const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'), mask = readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8');
+        expect(functionOf(stamp, 'stamp')).toContain('walk_byte(s.walk, s.shoulder)');
+        expect(functionOf(stamp, 'snap')).toMatch(/walk = max\(walk, walk_metres\(wide\)\);\s+shoulder = max\(shoulder, select\(0\.0, shoulder_of\(surface\), holds_shoulder\(wide\)\)\);/);
+        expect(functionOf(mask, 'mask_at')).toContain('walk_metres(u32(round(y * 255.0)))');
+        // Only a plain road marks it, and a corner's arc takes it away.
+        const body = functionOf(shader, 'stamp_at');
+        expect(body).toContain('let plain = kind == ROAD && walk == 0.0 && !gallery && road_shows(own, rule, level);');
+        expect(body).toContain('out.shoulder = plain;');
+        expect(body.match(/out\.shoulder = false;/g)).toHaveLength(2);
     });
 
     it('shows a line on the levels where the gates of stamp-core.wgsl show it', () => {
