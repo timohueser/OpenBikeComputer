@@ -3,15 +3,13 @@
 `cairn check` compares the code with the system docs in `docs/design/`. It uses the Python standard
 library, the glob rule of `tools/test_plan.py` and `cargo metadata`.
 
+CI gates only quality, with `cairn check`.
+
 ```sh
 obc cairn check            # print the report
 obc cairn check --update   # remove gone entries from the baseline, and lower sizes that shrank
 obc cairn check --base origin/develop   # also fail when the baseline grew since the merge base
-obc cairn check --pr --base origin/develop   # check only the diff against the mode
 obc cairn map              # rewrite the generated block of docs/design/README.md
-obc cairn mode change 3012 # declare the mode of the current branch
-obc cairn mode             # print the mode and the `Mode:` line for the pull request body
-obc cairn hash issue.md    # print the approval hash of an issue body (- reads stdin)
 obc cairn model code-review   # print the model and effort of a role in this harness
 obc cairn report           # print the weekly report; --publish writes it to its issue, --drift runs step 2
 python3 -m unittest discover -s tools/cairn/tests
@@ -21,11 +19,10 @@ python3 -m unittest discover -s tools/cairn/tests
 
 | File | Holds |
 | --- | --- |
-| `docs/design/README.md` | the system map. `cairn map` rewrites the block between its two comments. `check` fails when the block is stale. Two merged pull requests can leave it stale on `develop`; `obc cairn map` fixes it. The mode gate does not count the map. |
+| `docs/design/README.md` | the system map. `cairn map` rewrites the block between its two comments. `check` fails when the block is stale. Two merged pull requests can leave it stale on `develop`; `obc cairn map` fixes it. |
 | `docs/design/<system>.md` | the header of one system or shell: `kind`, `area` (systems only), `purpose`, `owns`, `depends_on`, `test_depends_on`, `status` |
-| `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4, the size limit of a fix, the globs of test files, the size thresholds of a change, the model roles and tiers, and the report settings |
+| `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4, the globs of test files, the `specs` folder, the size thresholds of a change, the model roles and tiers, and the report settings |
 | `.cairn/baseline.json` | the known violations, by ID, with a size |
-| `mode.py` | the modes, the approval hash, the rules of the mode gate and the edit hook |
 | `report.py` | `cairn report` |
 | `.github/workflows/cairn-report.yml` | runs `cairn report --publish` each week. Its environment `cairn-report` holds the `ANTHROPIC_API_KEY` secret. |
 | `adapters/cargo.py` | the Rust crates and their path dependencies. Each tracked `Cargo.toml` with a `[workspace]` table is a Cargo root. Every other tracked `Cargo.toml` outside `ignore` must be a member of a root. |
@@ -57,78 +54,19 @@ baseline and refuses when the file exists.
 
 `--base REF` fails when the baseline has an entry or a size that the baseline at the merge base
 does not have. When the merge base has no baseline, the baseline must equal the one `--accept`
-writes. This rule applies also while no doc is approved. The CI job uses it.
+writes. This rule applies also while no doc is approved. The CI job uses `--base`.
+
+With `--base`, a system is approved when its doc has `status: approved` at the merge base or at
+HEAD, so a change cannot set a doc back to draft to hide its own violation.
 
 `firmware/tools/check_dependencies.py` is a separate check. It enforces the production direction
 between its own crate groups, which do not follow the system cut.
 
-## Mode gate
+## The `Mode:` line
 
-`cairn mode` writes the mode to the local git config as `branch.<name>.cairnMode`. Each worktree
-of the branch reads it, and nothing is committed. `--pr` runs only the mode gate, not the ratchet.
-It reads the mode from the `Mode:` line of the pull request body when `GITHUB_EVENT_PATH` is set,
-and from the branch otherwise. The diff is HEAD against the merge base with `--base`. The workflow
-`.github/workflows/cairn-mode.yml` runs it on each pull request, also when the body changes.
-
-| `Mode:` line | The diff must |
-| --- | --- |
-| `fix` | add no dependency between systems, change no doc header and no file under `specs/`, and change at most `fix.max_lines` lines outside the `fix.tests` globs |
-| `fix, over limit: <reason>` | do the same, with no size limit |
-| `change #N` | touch only the systems on the `**Systems:**` line of issue N, outside code blocks and HTML comments, by slug or title. The first `Status:` line of the issue is `Status: approved`, and an `Approved: <hash>` line holds the hash that `cairn hash` gives for its body. N must be an issue, not a pull request. A new dependency `a -> b` changes `docs/design/a.md` too. Issue N has a `**Size:**` line. |
-| `prototype` | not exist: the gate always fails, because a prototype never merges |
-| `override: <reason>` | nothing: the gate passes, and the body keeps the reason |
-
-A changed system doc touches only its own system. A violation fails only when the diff touches a
-system whose doc has `status: approved` at the base or at HEAD; otherwise the gate only reports
-it. A missing `Mode:` line is a violation.
-
-The gate reads the base from a temporary git worktree: its dependency graph, its approvals, and the
-`fix`, `size` and `specs` keys of its config. When the base config has no `fix`, `size` or `specs`, the gate
-uses the defaults in `mode.py`, which equal the config of this repository, never the HEAD config. A
-change therefore cannot loosen the rules it is checked against. When the base cannot be read, a
-`fix` or `change` gets a violation that says so. A test dependency that becomes a production
-dependency is a new dependency.
-
-A `fix.tests` glob with no `/` matches the file name only. `change #N` reads the issue through
-`gh api`, which uses `GH_TOKEN` and `GH_REPO` in CI.
-
-### Size of a change
-
-The size of the diff is the largest size that one of its signals gives:
-
-| Signal | Size |
-| --- | --- |
-| systems and shells touched | S up to `size.S.systems`, M up to `size.M.systems`, else L |
-| changed lines outside the `fix.tests` globs | S up to `size.S.lines`, M up to `size.M.lines`, else L |
-| a changed file under `specs/` | at least M |
-| a new dependency between systems | at least M |
-| a new system doc | L |
-
-The gate takes the letter after `**Size:**` on its line in the issue, outside code blocks and HTML
-comments. An issue with no such line is a violation. A diff larger than the issue is only a note:
-the gate prints it after the violations, with both sizes and the deciding signals. A note never
-changes the exit code. The weekly report
-compares the planned and the measured sizes. The gate cannot see a breaking contract change, so
-the people who size the issue make it L.
-
-### Epics
-
-`change #N` asks GitHub for the parent of issue N through the sub-issue relation
-(`GET /repos/{owner}/{repo}/issues/N/parent`). When N has a parent, the parent is the epic: the
-epic, not issue N, must be approved and unchanged, and each system on the Systems line of N must be
-on the Systems line of the epic. The epic must be an issue, not a pull request. The epic lists `#N`
-as an item (`- #N`, `- [ ] #N`) outside code blocks and HTML comments, also unclosed ones, so its
-approval covers the list. A sub-issue is one pull request, so its `**Size:**` line is S or M.
-
-The approval hash is the first 12 hex digits of SHA-256 over the body without its `Status:` and
-`Approved:` lines, with trailing whitespace removed from each line and from the end.
-
-## Edit hook
-
-`.claude/settings.json` runs `cairn.py hook` before each Edit, Write, MultiEdit and NotebookEdit
-tool call. It blocks an edit of a source file inside the repository while the branch has no
-declared mode, and asks the agent to get the mode from the user. A detached HEAD passes. Edits made
-through Bash bypass the hook; AGENTS.md and the mode gate cover them.
+The pull request template has a `Mode:` line: `change #N`, `fix` or `skip: <reason>`. It is a record
+for the weekly report, and nothing checks it. The report reads the first `Mode:` line outside code
+blocks and HTML comments, and does not count an unknown value.
 
 ## Models
 
@@ -142,10 +80,10 @@ through Bash bypass the hook; AGENTS.md and the mode gate cover them.
 
 | Part | Source |
 | --- | --- |
-| Overrides | the pull requests merged in the last 7 days with `Mode: override: <reason>`, read through `gh api` |
-| Size estimates | each `change #N` pull request merged in the last 7 days: the `**Size:**` line of issue N, and the size of the merge commit against its first parent, with the rules of the first parent. New dependencies do not count. System ownership comes from today's docs, not from the merge. An unreadable size is `unknown`, with the reason. |
+| Skips | the pull requests merged in the last 7 days with `Mode: skip: <reason>`, and their reasons, read through `gh api` |
+| Size estimates | each `change #N` pull request merged in the last 7 days: the `**Size:**` line of issue N, outside code blocks and HTML comments, and the size of the merge commit against its first parent. System ownership and the config are today's, not those of the merge. An unreadable size is `unknown`, with the reason. |
 | Ratchet, files with no owner | the analysis of `cairn check` |
-| Drift, step 1 | For each doc with `status: approved`: the `Merge pull request #N` commits on the first-parent line of HEAD after the last change to the doc. A commit counts when it changes files of the system outside `fix.tests`, `report.ignore` and the map. A `change` gives the TL;DR of its issue. Another mode gives its diff on those files. `report.max_input_chars` caps the input of a system. |
+| Drift, step 1 | For each doc with `status: approved`: the `Merge pull request #N` commits on the first-parent line of HEAD after the last change to the doc. A commit counts when it changes files of the system outside `tests`, `report.ignore` and the map. A `change #N` gives the TL;DR of issue N. Any other pull request gives its diff on those files. `report.max_input_chars` caps the input of a system. |
 | Drift, step 2 | Runs only with `--drift`, because it spends tokens. It needs `ANTHROPIC_API_KEY`. It sends one Message Batch for the `drift` role in the `api` tier. A family prefix resolves to its newest model ID through the Models API. The fixed instructions and `docs/design/glossary.md` come first, with a cache breakpoint. |
 | Budget | The token-counting endpoint counts each request before it joins the batch. The worst case is the shared prefix at the one-hour cache write price (twice the input price), the rest at the input price, and `report.max_tokens` at the output price. The batch stops at `report.budget_usd`, and the report names the skipped systems. The report also gives the real cost from the usage of the results. |
 | `report.batch_prices` | The Message Batches prices in USD per million tokens, by exact model ID. Step 2 refuses a model with no price. |
@@ -153,3 +91,19 @@ through Bash bypass the hook; AGENTS.md and the mode gate cover them.
 | Mentions | Each `@` in a title, a reason or a finding gets a zero-width space after it, so the issue notifies nobody. |
 | `--publish` | Replaces the body of the open issue labelled `cairn-report`, or creates the label and the issue and pins it. Pinning uses GraphQL; a failed pin adds a note to the body. |
 | Exit code | 1 when a part fails |
+
+### Size of a change
+
+The size of a merge is the largest size that one of its signals gives:
+
+| Signal | Size |
+| --- | --- |
+| systems and shells touched | S up to `size.S.systems`, M up to `size.M.systems`, else L |
+| changed lines outside the `tests` globs | S up to `size.S.lines`, M up to `size.M.lines`, else L |
+| a changed file under `specs/` | at least M |
+| a new system doc | L |
+
+A changed system doc touches only its own system. The map counts for no system and no lines. A
+`tests` glob with no `/` matches the file name only. A pull request that cites an L issue counts as
+"against an epic", because it is one part of that epic. The report does not see a new dependency
+between systems or a breaking contract change.

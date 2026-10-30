@@ -5,17 +5,11 @@ Each doc under `docs/design/` has a header that names the files its system or sh
 systems it depends on. `check` finds the violations of the ownership rule, the dependency rule and
 the rules R1 to R4, and compares them with the baseline. A violation that is not in the baseline,
 or that grew, fails only when it touches a system whose doc has `status: approved`. A stale map
-always fails.
-
-`--base REF` also fails when the baseline grew since the merge base with REF. `--pr` checks only
-the diff from that merge base against the rules of its mode, which `mode.py` holds.
+always fails. `--base REF` also fails when the baseline grew since the merge base with REF.
 
 Usage: python3 tools/cairn/cairn.py
-         check [--base REF [--pr]] [--update | --accept]
+         check [--base REF] [--update | --accept]
          map
-         mode [fix [--over-limit REASON] | change N | prototype | override REASON]
-         hash FILE|-
-         hook
          model ROLE [--harness claude-code|codex]
          report [--publish] [--drift]
 """
@@ -23,7 +17,7 @@ Usage: python3 tools/cairn/cairn.py
 from __future__ import annotations
 
 GOVERNS = ['**']
-RULE = 'Each source file has one owner, each dependency between systems is declared in a system doc, and a pull request stays inside its mode.'
+RULE = 'Each source file has one owner, and each dependency between systems is declared in a system doc.'
 
 import argparse
 import importlib
@@ -32,7 +26,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,8 +43,6 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT / "tools"))
 from test_plan import glob_matches  # noqa: E402
 
-import mode as modes  # noqa: E402
-
 
 class CairnError(RuntimeError):
     pass
@@ -67,8 +58,6 @@ class Doc:
     depends_on: tuple[str, ...] = ()
     test_depends_on: tuple[str, ...] = ()
     status: str = "draft"
-    #: The doc's title, which an issue's Systems line may use instead of the slug.
-    name: str = ""
 
 
 @dataclass(frozen=True)
@@ -144,7 +133,6 @@ def load_docs(root: Path, folder: str) -> list[Doc]:
                 depends_on=tuple(header.get("depends_on", ())),
                 test_depends_on=tuple(header.get("test_depends_on", ())),
                 status=str(header.get("status", "draft")),
-                name=title.group(1).strip() if (title := re.search(r"^# (.+)$", text, re.M)) else "",
             )
         except (CairnError, KeyError, TypeError) as error:
             raise CairnError(f"{path.relative_to(root)}: {error}") from error
@@ -384,6 +372,15 @@ def base_baseline(show: Callable[[str], str | None]) -> dict[str, int] | None:
     return json.loads(text) if text is not None else None
 
 
+def approved_at(root: Path, commit: str, folder: str) -> set[str]:
+    """The systems whose doc has `status: approved` at the commit."""
+    listed = subprocess.run(["git", "-C", str(root), "ls-tree", "--name-only", f"{commit}:{folder}"],
+                            capture_output=True, text=True).stdout.split()
+    show = shown_at(root, commit)
+    texts = {name.removesuffix(".md"): show(f"{folder}/{name}") or "" for name in listed if name.endswith(".md")}
+    return {name for name, text in texts.items() if FRONT.match(text) and parse_header(text).get("status") == "approved"}
+
+
 def merge_base(root: Path, ref: str) -> str:
     merge = subprocess.run(["git", "-C", str(root), "merge-base", ref, "HEAD"], capture_output=True, text=True)
     if merge.returncode:
@@ -557,173 +554,7 @@ def with_map(page: str, block: str, name: str) -> str:
     return head + block + tail[1]
 
 
-# ── the mode gate ────────────────────────────────────────────────────────────
-
-
-def diff_lines(root: Path, commit: str, head: str = "HEAD") -> dict[str, int]:
-    """Each path that changed between the commit and the head, with its added and removed lines. A
-    binary file counts 0."""
-    out = subprocess.run(["git", "-C", str(root), "diff", "--numstat", "--no-renames", "-z", commit, head],
-                         capture_output=True, text=True, check=True).stdout
-    found = {}
-    for record in filter(None, out.split("\0")):
-        added, removed, path = record.split("\t", 2)
-        found[path] = 0 if added == "-" else int(added) + int(removed)
-    return found
-
-
-@dataclass(frozen=True)
-class Tree:
-    """The docs, the config and the dependencies between systems of one checkout."""
-
-    docs: list[Doc]
-    config: dict
-    edges: set[tuple[str, str, bool]]
-
-
-def tree_at(root: Path, commit: str) -> Tree:
-    """The tree of a commit, read from a temporary worktree."""
-    git = ["git", "-C", str(root), "worktree"]
-    with tempfile.TemporaryDirectory() as folder:
-        tree = Path(folder) / "base"
-        subprocess.run([*git, "add", "--detach", "--quiet", str(tree), commit], capture_output=True, check=True)
-        try:
-            if not (tree / CONFIG).exists():
-                raise CairnError(f"it has no {CONFIG}")
-            config = json.loads((tree / CONFIG).read_text())
-            docs, files, units, edges, lines = gather(tree, config)
-            return Tree(docs, config, analyse(docs, files, units, edges, lines, config).edges)
-        finally:
-            subprocess.run([*git, "remove", "--force", str(tree)], capture_output=True)
-
-
-def added_edges(head: set[tuple[str, str, bool]], base: set[tuple[str, str, bool]]) -> set[tuple[str, str]]:
-    """The dependencies between systems that HEAD has and the base does not. A test dependency
-    that becomes a production dependency is new."""
-    known = {(a, b) for a, b, _ in base}
-    production = {(a, b) for a, b, test in base if not test}
-    return {(a, b) for a, b, test in head if (a, b) not in (known if test else production)}
-
-
-def is_test(path: str, patterns: list[str]) -> bool:
-    """A pattern with no `/` matches the file name only, so `*` cannot cross a folder."""
-    name = path.rsplit("/", 1)[-1]
-    return any(glob_matches(path if "/" in pattern else name, pattern) for pattern in patterns)
-
-
-def header_of(text: str | None) -> str | None:
-    match = FRONT.match(text) if text else None
-    return match.group(1) if match else None
-
-
-def gate_rules(head: dict, base: dict | None) -> dict:
-    """The config of the mode gate: the `fix`, `size` and `specs` keys come from the base config,
-    else from the defaults, never from HEAD."""
-    return {**head, **modes.DEFAULTS, **{key: base[key] for key in ("fix", "size", "specs") if base and key in base}}
-
-
-def pr_diff(root: Path, commit: str, docs: list[Doc], rules: dict, new_edges: set[tuple[str, str]],
-            head: str = "HEAD") -> modes.Diff:
-    """What the diff from the commit to the head touches. A system doc touches only its own system,
-    whatever owns its folder."""
-    folder = rules["docs"].rstrip("/") + "/"
-    lines = diff_lines(root, commit, head)
-    # The map follows from the docs and the code, so it counts for no system and adds no lines.
-    lines.pop(folder + MAP, None)
-    base, after = shown_at(root, commit), shown_at(root, head)
-    changed_docs, headers, new = {}, set(), set()
-    for path in lines:
-        name = path[len(folder):-len(".md")]
-        if path.startswith(folder) and path.endswith(".md") and "/" not in name:
-            before, now = header_of(base(path)), header_of(after(path))
-            if before or now:
-                changed_docs[path] = name
-                if before != now:
-                    headers.add(name)
-                if not before:
-                    new.add(name)
-    others = sorted(set(lines) - set(changed_docs))
-    return modes.Diff(
-        touched=frozenset({s for hits in owners(others, docs).values() for s in hits} | set(changed_docs.values())),
-        lines=sum(n for path, n in lines.items() if not is_test(path, rules["fix"]["tests"])),
-        new_edges=frozenset(new_edges),
-        docs=frozenset(changed_docs.values()),
-        headers=frozenset(headers),
-        specs=tuple(sorted(p for p in lines if p.startswith(rules["specs"].rstrip("/") + "/"))),
-        new_docs=frozenset(new),
-    )
-
-
-def mode_gate(root: Path, head: Tree, ref: str) -> bool:
-    """Print the mode gate's report and return whether it fails.
-
-    The mode comes from the pull request body in CI, and from the branch's declared mode locally.
-    The fix and size rules and the approvals come from the base too, so a change cannot loosen the
-    rules it is checked against.
-    """
-    event = os.environ.get("GITHUB_EVENT_PATH")
-    if event:
-        pull = json.loads(Path(event).read_text()).get("pull_request") or {}
-        value, source = modes.body_value(pull.get("body") or ""), "the pull request body"
-    else:
-        value, source = modes.declared(root), "the branch config"
-    mode, problem = modes.read(value, source)
-    found = [problem] if problem else []
-    commit = merge_base(root, ref)
-    try:
-        base, unread = tree_at(root, commit), ""
-    except (CairnError, OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:
-        base = None
-        unread = f"the base {commit[:12]} cannot be read, so its graph, approvals and rules are unknown: {error}"
-        print(f"cairn: {unread}")
-    rules = gate_rules(head.config, base.config if base else None)
-    new_edges = added_edges(head.edges, base.edges) if base else set()
-    diff = pr_diff(root, commit, head.docs, rules, new_edges)
-    issue = epic = note = None
-    if mode is not None and mode.kind == "change":
-        try:
-            issue, epic = modes.fetch_issue(root, mode.issue), modes.fetch_epic(root, mode.issue)
-        except (OSError, ValueError) as error:
-            found = [f"issue #{mode.issue} cannot be read: {error}"]
-    if mode is not None and not found:
-        names = {doc.system: doc.name for doc in head.docs}
-        found = modes.violations(mode, diff, rules, issue, names, epic)
-    if issue is not None:
-        note = modes.size_note(mode.issue, issue, diff, rules["size"])
-    if mode is not None and mode.kind in ("fix", "change") and unread:
-        found.append(unread)
-    approved = {doc.system for doc in head.docs + (base.docs if base else []) if doc.status == "approved"}
-    failing = modes.fails(mode, found, diff.touched, approved)
-    print(f"\nmode: {mode.line() if mode else 'none'}, from {source}")
-    print(f"  touches {', '.join(sorted(diff.touched)) or 'no system'}; {diff.lines:,} changed line(s) outside tests")
-    for line in found:
-        print(f"  {'FAIL' if failing else '    '} {line}")
-    print(f"mode: {len(found)} violation(s), {'fail' if failing else 'pass'}")
-    if note:
-        print(f"::notice::{note}" if event else f"cairn: note: {note}")
-    return failing
-
-
 # ── commands ─────────────────────────────────────────────────────────────────
-
-
-def mode_command(args: argparse.Namespace) -> int:
-    try:
-        if args.kind is None:
-            value = modes.declared(ROOT)
-            if value is None:
-                raise ValueError('the branch has no declared mode; declare it with '
-                                 '`obc cairn mode fix|change N|prototype|override "<reason>"`')
-            print(f"cairn: the branch {modes.branch(ROOT)} has the mode `{value}`. The pull request body needs:")
-        else:
-            mode = modes.declaration(args.kind, args.value, args.over_limit)
-            value = mode.line()
-            print(f"cairn: declared the mode of {modes.declare(ROOT, mode)}. The pull request body needs:")
-    except ValueError as error:
-        print(f"cairn: {error}", file=sys.stderr)
-        return 1
-    print(f"Mode: {value}")
-    return 0
 
 
 HARNESSES = ("claude-code", "codex")
@@ -759,48 +590,23 @@ def model_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def hook_command() -> int:
-    """Exit code 2 blocks the edit, and Claude Code shows the agent the message on stderr. A hook
-    that cannot read its input lets the edit pass."""
-    try:
-        event = json.loads(sys.stdin.read())
-        sources = json.loads((ROOT / CONFIG).read_text())["sources"]
-        message = modes.hook_message(event, ROOT, sources) if isinstance(event, dict) else None
-    except (OSError, ValueError, KeyError):
-        return 0
-    if message:
-        print(message, file=sys.stderr)
-        return 2
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     check = commands.add_parser("check", help="check the code against the system docs")
     check.add_argument("--base", metavar="REF", help="also fail when the baseline grew since the merge base with REF")
-    check.add_argument("--pr", action="store_true", help="check only the diff against the base with the rules of its mode")
     write = check.add_mutually_exclusive_group()
     write.add_argument("--update", action="store_true", help="remove gone entries and lower shrunk sizes in the baseline")
     write.add_argument("--accept", action="store_true", help="write the first baseline from the current state")
-    declare = commands.add_parser("mode", help="declare the mode of the current branch, or print it")
-    declare.add_argument("kind", nargs="?", choices=modes.KINDS)
-    declare.add_argument("value", nargs="?", help="the issue number of a change, or the reason of an override")
-    declare.add_argument("--over-limit", metavar="REASON", help="a fix above the size limit, and why")
-    digest = commands.add_parser("hash", help="print the approval hash of an issue body")
-    digest.add_argument("file", help="the file that holds the body, or - for stdin")
-    commands.add_parser("hook", help="the Claude Code edit hook; it reads the tool input on stdin")
     commands.add_parser("map", help="rewrite the generated block of the system map")
     model = commands.add_parser("model", help="print the model and effort of a role in the current harness")
     model.add_argument("role")
     model.add_argument("--harness", choices=HARNESSES, help="the harness, instead of the one the environment shows")
-    weekly = commands.add_parser("report", help="print the report on overrides, the ratchet and drift")
+    weekly = commands.add_parser("report", help="print the weekly report on skipped pull requests, sizes, the ratchet and drift")
     weekly.add_argument("--publish", action="store_true", help="also write it to the open issue labelled cairn-report")
     weekly.add_argument("--drift", action="store_true", help="run step 2, which spends tokens of the Anthropic API")
     args = parser.parse_args(argv)
 
-    if args.command == "mode":
-        return mode_command(args)
     if args.command == "model":
         return model_command(args)
     if args.command == "report":
@@ -808,20 +614,11 @@ def main(argv: list[str] | None = None) -> int:
         from report import main as weekly
 
         return weekly(args.publish, args.drift)
-    if args.command == "hook":
-        return hook_command()
-    if args.command == "hash":
-        print(modes.approval_hash(sys.stdin.read() if args.file == "-" else Path(args.file).read_text()))
-        return 0
-    if args.command == "check" and args.pr and (not args.base or args.update or args.accept):
-        parser.error("--pr needs --base, and it writes no baseline")
 
     try:
         config = json.loads((ROOT / CONFIG).read_text())
         docs, files, units, edges, lines = gather(ROOT, config)
         result = analyse(docs, files, units, edges, lines, config)
-        if args.command == "check" and args.pr:
-            return 1 if mode_gate(ROOT, Tree(docs, config, result.edges), args.base) else 0
         page = ROOT / config["docs"] / MAP
         drawn = page.read_text(encoding="utf-8")
         current = with_map(drawn, system_map(docs, result), str(page.relative_to(ROOT)))
@@ -829,7 +626,10 @@ def main(argv: list[str] | None = None) -> int:
             page.write_text(current, encoding="utf-8")
             print(f"cairn: wrote {page.relative_to(ROOT)}")
             return 0
-        base = base_baseline(shown_at(ROOT, merge_base(ROOT, args.base))) if args.base else None
+        commit = merge_base(ROOT, args.base) if args.base else None
+        base = base_baseline(shown_at(ROOT, commit)) if commit else None
+        # An approval at the base still holds, so a change cannot lift it to hide its own violation.
+        was_approved = approved_at(ROOT, commit, config["docs"].rstrip("/")) if commit else set()
     except (CairnError, OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:
         print(f"cairn: {error}", file=sys.stderr)
         return 1
@@ -847,7 +647,7 @@ def main(argv: list[str] | None = None) -> int:
         path.write_text(json.dumps(baseline, indent=2) + "\n")
         print(f"cairn: baseline holds {len(baseline)} entries")
 
-    approved = {doc.system for doc in docs if doc.status == "approved"}
+    approved = {doc.system for doc in docs if doc.status == "approved"} | was_approved
     failing = report(result, baseline, docs, approved)
     # The ratchet protects itself while every system is still a draft.
     added = grown(baseline, base, result.violations) if args.base else []

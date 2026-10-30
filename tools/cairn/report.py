@@ -1,5 +1,8 @@
-"""The weekly report: the overrides, the size estimates, the ratchet, and drift between the approved
-system docs and the code.
+"""The weekly report: the skipped pull requests, the size estimates, the ratchet, and drift between
+the approved system docs and the code.
+
+The `Mode:` line of a pull request body is a record: `change #N`, `fix` or `skip: <reason>`. Nothing
+checks it, and the report does not count an unknown value.
 
 Step 1 reads git and GitHub and costs no tokens. For each approved doc, it collects the pull
 requests merged since the doc last changed that touch the files of its system. Step 2 sends one
@@ -27,7 +30,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import cairn
-import mode as modes
 
 API = "https://api.anthropic.com/v1"
 VERSION = "2026-10-21"
@@ -43,6 +45,11 @@ POLL_SECONDS = 60
 # GitHub refuses an issue body longer than 65,536 characters.
 BODY_LIMIT = 65_000
 PIN = "mutation($id: ID!) { pinIssue(input: {issueId: $id}) { issue { number } } }"
+MODE = re.compile(r"change #(?P<issue>[1-9]\d*)|fix|skip: (?P<reason>\S.*)")
+# GitHub hides an unclosed comment up to the end of the body.
+COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
+FENCE = re.compile(r"^```.*?^```", re.S | re.M)
+SIZES = ("S", "M", "L")
 
 #: `api(path, method="GET", payload=None)` on `repos/{owner}/{repo}/`.
 Api = Callable[..., object]
@@ -54,9 +61,9 @@ You check one system document of a software repository against the pull requests
 the document last changed. The document describes the current state of the system and the \
 reasons for it.
 
-Each pull request has a mode. A `change` gives the TL;DR of its approved design issue. A `fix` or \
-an `override` gives its diff, limited to the files of the system, without tests. The input may be \
-cut at a size limit.
+A pull request with the mode `change #N` gives the TL;DR of its design issue N. Any other pull \
+request gives its diff, limited to the files of the system, without tests. The input may be cut at \
+a size limit.
 
 Report only what the pull requests prove:
 - false_statements: a statement in the document that the pull requests make false. Give the exact \
@@ -87,8 +94,42 @@ def untrusted(text: str) -> str:
     return " ".join(str(text).split()).replace("@", "@\u200b").replace("<", "&lt;")
 
 
-def pull_mode(pull: dict) -> modes.Mode | None:
-    return modes.read(modes.body_value(pull.get("body") or ""), "the pull request body")[0]
+def visible(body: str) -> str:
+    """The body without HTML comments and code blocks."""
+    return FENCE.sub("", COMMENT.sub("", body))
+
+
+def pull_mode(pull: dict) -> re.Match | None:
+    """The value of the first `Mode:` line of a pull request body, or None when it is unknown."""
+    for line in visible(pull.get("body") or "").splitlines():
+        if line.startswith("Mode:"):
+            return MODE.fullmatch(line[len("Mode:"):].strip())
+    return None
+
+
+def issue_size(body: str) -> str | None:
+    """The first letter after `**Size:**` on its line, when it is S, M or L."""
+    match = re.search(r"^\*\*Size:\*\*[ \t]*([SML])", visible(body), re.M)
+    return match.group(1) if match else None
+
+
+def git(root: Path, *args: str) -> str | None:
+    done = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def gh(root: Path, endpoint: str, method: str = "GET", payload: dict | None = None):
+    """`gh api ENDPOINT`, which reads `GH_TOKEN` and `GH_REPO` in CI. A payload is the JSON body."""
+    body = ["--input", "-"] if payload is not None else []
+    done = subprocess.run(["gh", "api", "--method", method, endpoint, *body], cwd=root, capture_output=True, text=True,
+                          input=json.dumps(payload) if payload is not None else None)
+    if done.returncode:
+        raise OSError(done.stderr.strip() or "gh api failed")
+    return json.loads(done.stdout) if done.stdout.strip() else None
+
+
+def api(root: Path, path: str, method: str = "GET", payload: dict | None = None):
+    return gh(root, f"repos/{{owner}}/{{repo}}/{path}", method, payload)
 
 
 # ── step 1: no tokens ────────────────────────────────────────────────────────
@@ -106,32 +147,83 @@ def merged(api: Api, now: datetime) -> list[dict]:
             return sorted(found, key=lambda pull: pull["number"])
 
 
-def overrides(pulls: list[dict]) -> list[tuple[int, str, str]]:
-    """The pull requests whose mode is an override, as (number, title, reason)."""
-    return [(pull["number"], pull["title"], mode.reason) for pull in pulls
-            if (mode := pull_mode(pull)) and mode.kind == "override"]
+def skips(pulls: list[dict]) -> list[tuple[int, str, str]]:
+    """The pull requests with `Mode: skip: <reason>`, as (number, title, reason)."""
+    return [(pull["number"], pull["title"], mode["reason"]) for pull in pulls
+            if (mode := pull_mode(pull)) and mode["reason"]]
+
+
+def is_test(path: str, patterns: list[str]) -> bool:
+    """A pattern with no `/` matches the file name only, so `*` cannot cross a folder."""
+    name = path.rsplit("/", 1)[-1]
+    return any(cairn.glob_matches(path if "/" in pattern else name, pattern) for pattern in patterns)
+
+
+def diff_lines(root: Path, commit: str, head: str) -> dict[str, int]:
+    """Each path that changed between the commit and the head, with its added and removed lines. A
+    binary file counts 0."""
+    out = subprocess.run(["git", "-C", str(root), "diff", "--numstat", "--no-renames", "-z", commit, head],
+                         capture_output=True, text=True, check=True).stdout
+    found = {}
+    for record in filter(None, out.split("\0")):
+        added, removed, path = record.split("\t", 2)
+        found[path] = 0 if added == "-" else int(added) + int(removed)
+    return found
+
+
+def measure(root: Path, config: dict, docs: list[cairn.Doc], merge: str) -> tuple[str, list[str]]:
+    """The size of a merge against its first parent, and the signals that decide it. Each signal
+    gives the smallest size that allows it, and the largest of those is the size. A system doc
+    touches only its own system, and the map counts for no system and no lines."""
+    parent, folder, limits = f"{merge}^1", config["docs"].rstrip("/") + "/", config["size"]
+    lines = diff_lines(root, parent, merge)
+    lines.pop(folder + cairn.MAP, None)
+    before, after = cairn.shown_at(root, parent), cairn.shown_at(root, merge)
+    system_docs, new_docs = {}, []
+    for path in lines:
+        name = path[len(folder):-len(".md")]
+        if path.startswith(folder) and path.endswith(".md") and "/" not in name:
+            had, has = (bool(text and cairn.FRONT.match(text)) for text in (before(path), after(path)))
+            if had or has:
+                system_docs[path] = name
+            if has and not had:
+                new_docs.append(name)
+    others = [path for path in lines if path not in system_docs]
+    touched = {s for hits in cairn.owners(others, docs).values() for s in hits} | set(system_docs.values())
+    changed = sum(n for path, n in lines.items() if not is_test(path, config["tests"]))
+    specs = sorted(path for path in lines if path.startswith(config["specs"].rstrip("/") + "/"))
+
+    def fit(count: int, key: str) -> str:
+        return next((s for s in SIZES[:2] if count <= limits[s][key]), "L")
+
+    signals = [(fit(len(touched), "systems"), f"{len(touched)} system{'' if len(touched) == 1 else 's'}"),
+               (fit(changed, "lines"), f"{changed:,} changed lines outside tests")]
+    signals += [("M", f"a contract change in {', '.join(specs)}")] if specs else []
+    signals += [("L", f"a new system doc for {name}") for name in sorted(new_docs)]
+    found = max((s for s, _ in signals), key=SIZES.index)
+    return found, [text for s, text in signals if s == found]
 
 
 def estimate(root: Path, config: dict, docs: list[cairn.Doc], api: Api, merge: str, issue: int) -> tuple[str, str, list[str]]:
     """The planned and the measured size of a change, and the signals of the measured size. A size
-    that cannot be read is `unknown`, and the signals say why. The measured size uses the rules of
-    the merge's first parent, as the mode gate does, but not new dependencies: they need the
-    dependency graph of both commits. System ownership comes from today's docs, not from the merge."""
+    that cannot be read is `unknown`, and the signals say why. System ownership and the config are
+    today's, not those of the merge."""
     planned, measured, why = "unknown", "unknown", []
     try:
-        planned = modes.issue_size(modes.issue_body(issue, api(f"issues/{issue}"))) or "unknown"
+        data = api(f"issues/{issue}")
+        if "pull_request" in data:
+            raise ValueError(f"#{issue} is a pull request")
+        planned = issue_size(data.get("body") or "") or "unknown"
         if planned == "unknown":
             why.append(f"issue #{issue} has no Size line")
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         why.append(f"issue #{issue} cannot be read: {error}")
     if not merge:
         return planned, measured, [*why, "the pull request has no merge commit"]
-    if modes.git(root, "rev-parse", "--verify", "--quiet", f"{merge}^1") is None:
+    if git(root, "rev-parse", "--verify", "--quiet", f"{merge}^1") is None:
         return planned, measured, [*why, f"the merge commit {merge[:12]} is not in this checkout"]
     try:
-        base = cairn.shown_at(root, f"{merge}^1")(cairn.CONFIG)
-        rules = cairn.gate_rules(config, json.loads(base) if base else None)
-        measured, signals = modes.size(cairn.pr_diff(root, f"{merge}^1", docs, rules, set(), merge), rules["size"])
+        measured, signals = measure(root, config, docs, merge)
         why += signals
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         why.append(f"the merge commit {merge[:12]} cannot be read: {error}")
@@ -142,18 +234,19 @@ def size_lines(root: Path, config: dict, docs: list[cairn.Doc], api: Api, pulls:
     rows, counts = [], Counter()
     for pull in pulls:
         mode = pull_mode(pull)
-        if not mode or mode.kind != "change":
+        if not mode or not mode["issue"]:
             continue
-        planned, measured, why = estimate(root, config, docs, api, pull.get("merge_commit_sha") or "", mode.issue)
+        issue = int(mode["issue"])
+        planned, measured, why = estimate(root, config, docs, api, pull.get("merge_commit_sha") or "", issue)
         # A pull request that cites an L issue is one part of an epic, so it cannot be larger.
         if planned == "L":
             counts["against an epic"] += 1
         elif "unknown" in (planned, measured):
             counts["unknown"] += 1
         else:
-            order = modes.SIZES.index(measured) - modes.SIZES.index(planned)
+            order = SIZES.index(measured) - SIZES.index(planned)
             counts["as planned" if order == 0 else "larger" if order > 0 else "smaller"] += 1
-        rows.append(f"| #{pull['number']} | #{mode.issue} | {planned} | {measured} | {untrusted('; '.join(why)).replace('|', '/')} |")
+        rows.append(f"| #{pull['number']} | #{issue} | {planned} | {measured} | {untrusted('; '.join(why)).replace('|', '/')} |")
     if not rows:
         return ["None."]
     kinds = ["as planned", "larger", "smaller"] + [kind for kind in ("against an epic", "unknown") if counts[kind]]
@@ -175,7 +268,7 @@ def merges(root: Path, since: str) -> list[tuple[str, int]]:
     """The merge commits of pull requests after `since` on the first-parent line of HEAD, newest
     first, with their numbers."""
     found = []
-    for line in (modes.git(root, "log", "--first-parent", "--format=%H %s", f"{since}..HEAD") or "").splitlines():
+    for line in (git(root, "log", "--first-parent", "--format=%H %s", f"{since}..HEAD") or "").splitlines():
         commit, _, subject = line.partition(" ")
         match = MERGE.match(subject)
         if match:
@@ -189,29 +282,30 @@ def tldr(body: str) -> str:
 
 
 def evidence(root: Path, read: Api, number: int, commit: str, files: list[str]) -> str:
-    """A `change` gives the TL;DR of its issue, because it had to update the doc already. Any other
+    """A `change #N` gives the TL;DR of issue N, because it had to update the doc already. Any other
     pull request gives its diff on the files."""
     pull = read(f"pulls/{number}")
     mode = pull_mode(pull)
-    head = f"## Pull request #{number}: {' '.join(pull.get('title', '').split())}\nMode: {mode.line() if mode else 'none'}\n\n"
-    if mode and mode.kind == "change":
-        return head + tldr(modes.issue_body(mode.issue, read(f"issues/{mode.issue}")))
-    return head + (modes.git(root, "diff", "--no-renames", f"{commit}^1", commit, "--", *files) or "")
+    head = f"## Pull request #{number}: {' '.join(pull.get('title', '').split())}\nMode: {mode[0] if mode else 'none'}\n\n"
+    issue = read(f"issues/{mode['issue']}") if mode and mode["issue"] else None
+    if issue and "pull_request" not in issue:
+        return head + tldr(issue.get("body") or "")
+    return head + (git(root, "diff", "--no-renames", f"{commit}^1", commit, "--", *files) or "")
 
 
 def drift_inputs(root: Path, docs: list[cairn.Doc], config: dict, read: Api) -> list[Inputs]:
     """For each approved doc, the pull requests merged since the doc last changed that touch the
-    files of its system outside the `fix.tests` and `report.ignore` globs and the map, newest first."""
+    files of its system outside the `tests` and `report.ignore` globs and the map, newest first."""
     folder = config["docs"].rstrip("/")
-    dropped, limit = config["fix"]["tests"] + config["report"]["ignore"], config["report"]["max_input_chars"]
+    dropped, limit = config["tests"] + config["report"]["ignore"], config["report"]["max_input_chars"]
     found = []
     for doc in docs:
         path = f"{folder}/{doc.system}.md"
-        since = modes.git(root, "log", "-1", "--first-parent", "--format=%H", "HEAD", "--", path) if doc.status == "approved" else None
+        since = git(root, "log", "-1", "--first-parent", "--format=%H", "HEAD", "--", path) if doc.status == "approved" else None
         parts, numbers = [], []
         for commit, number in merges(root, since) if since else []:
-            changed = (modes.git(root, "diff", "--name-only", "--no-renames", "-z", f"{commit}^1", commit) or "").split("\0")
-            kept = [f for f in changed if f and f != f"{folder}/{cairn.MAP}" and not cairn.is_test(f, dropped)]
+            changed = (git(root, "diff", "--name-only", "--no-renames", "-z", f"{commit}^1", commit) or "").split("\0")
+            kept = [f for f in changed if f and f != f"{folder}/{cairn.MAP}" and not is_test(f, dropped)]
             files = sorted(f for f, hits in cairn.owners(kept, docs).items() if doc.system in hits)
             if files:
                 numbers.append(number)
@@ -419,11 +513,11 @@ def write(root: Path, config: dict, docs: list[cairn.Doc], result: cairn.Result,
     failed = False
     # The size estimates and the drift inputs read the same pull requests and issues.
     read = functools.cache(api)
-    lines = ["# cairn report", "", f"Written on {now:%Y-%m-%d} at {modes.git(root, 'rev-parse', '--short', 'HEAD')}.",
-             "", "## Overrides merged in the last 7 days", ""]
+    lines = ["# cairn report", "", f"Written on {now:%Y-%m-%d} at {git(root, 'rev-parse', '--short', 'HEAD')}.",
+             "", "## Skips merged in the last 7 days", ""]
     try:
         pulls = merged(read, now)
-        rows = [f"| #{n} | {untrusted(t).replace('|', '/')} | {untrusted(r).replace('|', '/')} |" for n, t, r in overrides(pulls)]
+        rows = [f"| #{n} | {untrusted(t).replace('|', '/')} | {untrusted(r).replace('|', '/')} |" for n, t, r in skips(pulls)]
         lines += ["| Pull request | Title | Reason |", "| --- | --- | --- |", *rows] if rows else ["None."]
         lines += ["", "## Size estimates of the changes merged in the last 7 days", "", *size_lines(root, config, docs, read, pulls)]
     except (OSError, ValueError, KeyError, TypeError) as error:
@@ -491,17 +585,17 @@ def main(publishing: bool, drifting: bool) -> int:
         result = cairn.analyse(docs, files, units, edges, lines, config)
         path = root / config["baseline"]
         baseline = json.loads(path.read_text()) if path.exists() else {}
-        api = functools.partial(modes.api, root)
-        text, failed = write(root, config, docs, result, baseline, api, drifting, os.environ.get("ANTHROPIC_API_KEY"),
+        read = functools.partial(api, root)
+        text, failed = write(root, config, docs, result, baseline, read, drifting, os.environ.get("ANTHROPIC_API_KEY"),
                              datetime.now(timezone.utc))
         print(text)
         if publishing:
             def pin(node: str) -> None:
-                answer = modes.gh(root, "graphql", "POST", {"query": PIN, "variables": {"id": node}})
+                answer = gh(root, "graphql", "POST", {"query": PIN, "variables": {"id": node}})
                 if (answer or {}).get("errors"):
                     raise OSError(json.dumps(answer["errors"]))
 
-            print(f"cairn: wrote {publish(text, api, pin)}", file=sys.stderr)
+            print(f"cairn: wrote {publish(text, read, pin)}", file=sys.stderr)
     except (cairn.CairnError, OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:
         print(f"cairn: {error}", file=sys.stderr)
         return 1

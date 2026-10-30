@@ -1,7 +1,6 @@
 import importlib.util
 import io
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -99,7 +98,7 @@ class MapTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / ".cairn").mkdir()
-            (root / cairn.CONFIG).write_text(json.dumps(Repository.CONFIG))
+            (root / cairn.CONFIG).write_text(json.dumps({**CONFIG, "docs": "docs/design", "baseline": ".cairn/baseline.json"}))
             (root / "docs/design").mkdir(parents=True)
             page = root / "docs/design" / cairn.MAP
             page.write_text(f"# Map\n\nMine.\n\n{cairn.MAP_BEGIN}\nold\n{cairn.MAP_END}\n")
@@ -225,184 +224,38 @@ class RatchetTests(unittest.TestCase):
         self.assertIsNone(cairn.base_baseline({}.get))
 
 
-def header(name, owns, kind="system", status="draft"):
-    area = "area: Device\n" if kind == "system" else ""
-    return f"---\nsystem: {name}\nkind: {kind}\n{area}purpose: P.\nowns: [{owns}]\nstatus: {status}\n---\n# {name.title()}\n"
+class BaseApprovalTests(unittest.TestCase):
+    def test_a_doc_set_back_to_draft_stays_approved_against_the_base(self):
+        def routing(status):
+            return f"---\nsystem: routing\nkind: system\narea: Device\npurpose: P.\nowns: [route/**]\nstatus: {status}\n---\n"
 
-
-class Repository:
-    """A git repository in a temporary folder; `commit` writes files, and None deletes one."""
-
-    CONFIG = {
-        "docs": "docs/design", "baseline": ".cairn/baseline.json", "specs": "specs",
-        "fix": {"max_lines": 1000, "tests": ["**/tests/**"]},
-        "sources": {"extensions": [".rs"], "files": []}, "adapters": {}, "runtimes": {},
-        "tooling": {"path": "tools/", "area": "Tooling"},
-    }
-
-    def __init__(self, folder):
-        self.root = Path(folder)
-        self.git("init", "--quiet", "--initial-branch=topic")
-
-    def git(self, *args):
-        return subprocess.run(["git", "-C", str(self.root), "-c", "user.name=t", "-c", "user.email=t@t", *args],
-                              check=True, capture_output=True, text=True).stdout.strip()
-
-    def commit(self, files, **config):
-        if config:
-            files = {**files, ".cairn/config.json": json.dumps({**self.CONFIG, **config})}
-        for path, text in files.items():
-            target = self.root / path
-            if text is None:
-                target.unlink()
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(text)
-        self.git("add", "-A")
-        self.git("commit", "--quiet", "-m", "c")
-        return self.git("rev-parse", "HEAD")
-
-    def gate(self, base, line):
-        """Run the mode gate on HEAD with a declared mode, and give (fails, report)."""
-        cairn.modes.declare(self.root, cairn.modes.parse(line))
-        config = json.loads((self.root / cairn.CONFIG).read_text())
-        docs, files, units, edges, lines = cairn.gather(self.root, config)
-        head = cairn.Tree(docs, config, cairn.analyse(docs, files, units, edges, lines, config).edges)
-        out = io.StringIO()
-        with mock.patch.dict(os.environ), redirect_stdout(out):
-            os.environ.pop("GITHUB_EVENT_PATH", None)
-            return cairn.mode_gate(self.root, head, base), out.getvalue()
-
-
-class PullRequestDiffTests(unittest.TestCase):
-    def test_the_diff_names_its_systems_doc_headers_specs_and_lines_outside_tests(self):
-        config = {"docs": "docs/design", "specs": "specs", "fix": {"tests": ["**/tests/**"]}}
-        # The website shell owns every doc, but a system doc touches only its own system.
-        docs = [doc("routing", ["route/**"]), doc("search", ["search/**"]), doc("website", ["docs/**"], kind="shell")]
         with tempfile.TemporaryDirectory() as folder:
-            repository = Repository(folder)
-            base = repository.commit({"docs/design/routing.md": header("routing", "route/**"),
-                                      "docs/design/search.md": header("search", "search/**")})
-            repository.commit({
-                "docs/design/routing.md": header("routing", "route/**", status="approved"),
-                "docs/design/search.md": header("search", "search/**") + "Body.\n",
-                "docs/design/terrain.md": header("terrain", "terrain/**"),
-                "route/a.rs": "a\nb\n",
-                "route/tests/a.rs": "t\n" * 50,
-                "specs/route.md": "x\n",
-            })
-            diff = cairn.pr_diff(repository.root, base, docs, config, set())
-        self.assertEqual(diff.touched, {"routing", "search", "terrain"})
-        self.assertEqual(diff.docs, {"routing", "search", "terrain"})
-        self.assertEqual(diff.headers, {"routing", "terrain"})
-        self.assertEqual(diff.new_docs, {"terrain"})
-        self.assertEqual(diff.specs, ("specs/route.md",))
-        # The tests do not count: route/a.rs 2, the routing doc 2, the search doc 1, the terrain doc 9, the spec 1.
-        self.assertEqual(diff.lines, 15)
+            root = Path(folder)
 
-    def test_the_map_counts_for_no_system_and_no_lines(self):
-        docs = [doc("routing", ["route/**"]), doc("website", ["docs/**"], kind="shell")]
-        config = {"docs": "docs/design", "specs": "specs", "fix": {"tests": []}}
-        with tempfile.TemporaryDirectory() as folder:
-            repository = Repository(folder)
-            base = repository.commit({"docs/design/routing.md": header("routing", "route/**"), "route/a.rs": "a\n"})
-            repository.commit({"docs/design/routing.md": header("routing", "route/**").replace("status:", "depends_on: [search]\nstatus:"),
-                               "route/a.rs": "a\nb\n", "docs/design/README.md": "map\n" * 40})
-            diff = cairn.pr_diff(repository.root, base, docs, config, set())
-        self.assertEqual((diff.touched, diff.lines), ({"routing"}, 2))
+            def git(*args):
+                return subprocess.run(["git", "-C", folder, "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                                      check=True, capture_output=True, text=True).stdout.strip()
 
-    def test_a_test_pattern_with_no_folder_matches_the_file_name_only(self):
-        patterns = json.loads((cairn.ROOT / cairn.CONFIG).read_text())["fix"]["tests"]
-        for path in ("tools/cairn/tests/test_mode.py", "a/src/tests.rs", "a/src/peaks_tests.rs", "web/A.svelte.test.ts"):
-            self.assertTrue(cairn.is_test(path, patterns), path)
-        for path in ("tools/test_plan.py", "a/tests_b/lib.rs", "tests.rs.orig"):
-            self.assertFalse(cairn.is_test(path, patterns), path)
+            def commit(files):
+                for path, text in files.items():
+                    (root / path).parent.mkdir(parents=True, exist_ok=True)
+                    (root / path).write_text(text)
+                git("add", "-A")
+                self.assertEqual(cairn.main(["map"]), 0)
+                git("add", "-A")
+                git("commit", "--quiet", "-m", "c")
+                return git("rev-parse", "HEAD")
 
-    def test_a_test_dependency_that_becomes_a_production_dependency_is_new(self):
-        base = {("a", "b", True), ("a", "c", False)}
-        self.assertEqual(cairn.added_edges({("a", "b", False), ("a", "c", False)}, base), {("a", "b")})
-        self.assertEqual(cairn.added_edges({("a", "b", True), ("a", "c", True), ("c", "a", True)}, base), {("c", "a")})
-
-
-class ModeGateTests(unittest.TestCase):
-    def test_the_base_approval_and_fix_rules_hold_against_a_change_that_loosens_them(self):
-        with tempfile.TemporaryDirectory() as folder:
-            repository = Repository(folder)
-            base = repository.commit({"docs/design/routing.md": header("routing", "route/**", status="approved"),
-                                      "route/a.rs": "a\n"}, fix={"max_lines": 1, "tests": []})
-            repository.commit({"docs/design/routing.md": header("routing", "route/**"), "route/a.rs": "b\nc\nd\n"},
-                              fix={"max_lines": 1000, "tests": []})
-            fails, report = repository.gate(base, "fix")
-        self.assertTrue(fails, report)
-        self.assertIn("a fix changes no doc header, and this one changes routing", report)
-        self.assertIn("a fix changes at most 1 lines outside tests", report)
-
-    def test_an_unreadable_base_is_a_violation_that_fails_only_for_an_approved_system(self):
-        with tempfile.TemporaryDirectory() as folder:
-            repository = Repository(folder)
-            base = repository.commit({"route/a.rs": "a\n"})
-            repository.commit({"docs/design/routing.md": header("routing", "route/**"), "route/a.rs": "b\n"}, fix={"max_lines": 1000, "tests": []})
-            fails, report = repository.gate(base, "fix")
-            self.assertFalse(fails, report)
-            self.assertIn(f"the base {base[:12]} cannot be read", report)
-            repository.commit({"docs/design/routing.md": header("routing", "route/**", status="approved")})
-            fails, report = repository.gate(base, "fix")
-            self.assertTrue(fails, report)
-
-    def test_a_change_larger_than_its_issue_passes_with_a_note_and_one_outside_its_systems_fails(self):
-        body = "Status: approved\n**Size:** S\n**Systems:** routing\n"
-        body = body.replace("\n", f"\nApproved: {cairn.modes.approval_hash(body)}\n", 1)
-        with tempfile.TemporaryDirectory() as folder:
-            repository = Repository(folder)
-            base = repository.commit({"docs/design/routing.md": header("routing", "route/**", status="approved"),
-                                      "docs/design/search.md": header("search", "search/**"),
-                                      "route/a.rs": "a\n"}, fix={"max_lines": 1000, "tests": []})
-            repository.commit({"route/a.rs": "a\n" * 502})
-            with mock.patch.object(cairn.modes, "fetch_issue", return_value=body), \
-                    mock.patch.object(cairn.modes, "fetch_epic", return_value=None):
-                fails, report = repository.gate(base, "change #5")
-                self.assertFalse(fails, report)
-                self.assertIn("mode: 0 violation(s), pass\ncairn: note: `change #5` is sized S, but the diff is M: "
-                              "501 changed lines outside tests", report)
-                repository.commit({"search/b.rs": "b\n"})
-                fails, report = repository.gate(base, "change #5")
-        self.assertTrue(fails, report)
-        self.assertIn("issue #5 does not list search on its Systems line", report)
-
-    def test_the_rules_fall_back_to_the_defaults(self):
-        config = json.loads((cairn.ROOT / cairn.CONFIG).read_text())
-        self.assertEqual(cairn.modes.DEFAULTS, {key: config[key] for key in cairn.modes.DEFAULTS})
-        self.assertEqual(cairn.gate_rules({"specs": "loose"}, {"fix": config["fix"]})["specs"], "specs")
-        bare = json.dumps({key: value for key, value in Repository.CONFIG.items() if key != "fix"})
-        body = "Status: approved\n**Size:** S\n**Systems:** routing\n"
-        body = body.replace("\n", f"\nApproved: {cairn.modes.approval_hash(body)}\n", 1)
-        loose = {"S": {"systems": 9, "lines": 10**6}, "M": {"systems": 9, "lines": 10**6}}
-        with tempfile.TemporaryDirectory() as folder:
-            repository = Repository(folder)
-            base = repository.commit({".cairn/config.json": bare, "route/a.rs": "a\n"})
-            # HEAD cannot loosen a rule that the base config does not have.
-            repository.commit({"route/a.rs": "a\n" * 1002}, fix={"max_lines": 10**6, "tests": []}, size=loose)
-            fails, report = repository.gate(base, "fix")
-            self.assertIn("a fix changes at most 1,000 lines outside tests, and this one changes 1,003", report)
-            with mock.patch.object(cairn.modes, "fetch_issue", return_value=body), \
-                    mock.patch.object(cairn.modes, "fetch_epic", return_value=None):
-                fails, report = repository.gate(base, "change #5")
-            self.assertIn("`change #5` is sized S, but the diff is M: 1,003 changed lines outside tests", report)
-
-    def test_check_pr_fails_a_fix_over_the_limit_in_an_approved_system(self):
-        docs = [doc("routing", ["route/**"], status="approved")]
-        diff = cairn.modes.Diff(frozenset({"routing"}), lines=1001)
-        with tempfile.TemporaryDirectory() as folder:
-            event = Path(folder) / "event.json"
-            event.write_text(json.dumps({"pull_request": {"body": "Mode: fix"}}))
-            with mock.patch.dict(os.environ, {"GITHUB_EVENT_PATH": str(event)}), \
-                    mock.patch.object(cairn, "gather", return_value=(docs, [], [], [], {})), \
-                    mock.patch.object(cairn, "merge_base", return_value="0" * 40), \
-                    mock.patch.object(cairn, "pr_diff", return_value=diff), \
-                    redirect_stdout(io.StringIO()) as out:
-                code = cairn.main(["check", "--pr", "--base", "develop"])
-        self.assertEqual(code, 1, out.getvalue())
-        self.assertIn("a fix changes at most 1,000 lines outside tests", out.getvalue())
+            git("init", "--quiet")
+            config = {**CONFIG, "docs": "docs/design", "baseline": ".cairn/baseline.json", "adapters": {},
+                      "sources": {"extensions": [".rs"], "files": []}}
+            with mock.patch.object(cairn, "ROOT", root), redirect_stdout(io.StringIO()) as out:
+                base = commit({".cairn/config.json": json.dumps(config), "docs/design/routing.md": routing("approved"),
+                               "docs/design/README.md": f"{cairn.MAP_BEGIN}\n{cairn.MAP_END}\n", "route/a.rs": "a\n"})
+                commit({"docs/design/routing.md": routing("draft"), "other/b.rs": "b\n"})
+                self.assertEqual(cairn.main(["check"]), 0)
+                self.assertEqual(cairn.main(["check", "--base", base]), 1, out.getvalue())
+        self.assertIn("FAIL other/b.rs has no owner", out.getvalue())
 
 
 if __name__ == "__main__":
