@@ -101,7 +101,7 @@ fn drawn_height(s: vec2f) -> f32 {
 }
 
 // The height of the mesh without the snap: within a few texels of a road edge it may lie a few cm
-// off the drawn mesh, and it reads a ninth of the vertices. The water drapes on it.
+// off the drawn mesh, and it reads a ninth of the vertices. The water away from the roads drapes on it.
 fn plain_height(s: vec2f) -> f32 {
     return mesh_height(s, false);
 }

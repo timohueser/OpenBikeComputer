@@ -14,6 +14,7 @@ import { tracks } from './tracks';
 import { CUT, junctionPlan, type JStation } from './junctions';
 import type { Station } from './stations';
 import { kerbDrop, prepareDetails, roadside, type DetailEnv } from './details';
+import type { Shore } from './shore';
 
 /** Vertex flags in the colour's alpha that mark a corridor vertex: VOID and INSIDE of mesh.ts, which no other face has together. */
 const CORRIDOR = 12;
@@ -29,16 +30,16 @@ export const classLift = (line: Line, id: number) => Math.max(0, 30 - line.profi
 const bandPrio = (line: Line) => Math.max(0, Math.min(7, 7 - (line.profile >> 2)));
 
 /** The vertices of a line made so far, by station, place across, height, material and flags: neighbouring quads share them. */
-export interface Ctx { b: MeshBuilder; line: Line; lift: number; prio: number; made: Map<string, V> }
+export interface Ctx { b: MeshBuilder; line: Line; lift: number; prio: number; made: Map<string, V>; shore?: Shore }
 /** A vertex and its plan position in world units. */
 export interface V { i: number; x: number; y: number }
 
-export function corridors(b: MeshBuilder, lines: Line[], owns: Owns, env?: DetailEnv): void {
+export function corridors(b: MeshBuilder, lines: Line[], owns: Owns, env?: DetailEnv, shore?: Shore): void {
     const shared = junctions(lines), plan = junctionPlan(lines), prep = prepareDetails(lines.filter(corridorLine), env), cache = new Map(), ctxs = new Map<Line, Ctx>();
     lines.forEach((line, id) => {
         if (!corridorLine(line) || line.z.length < 2) return;
         // The plan's stations are made once per tile's lines (its owner nodes share them).
-        const ctx: Ctx = { b, line, lift: classLift(line, id), prio: bandPrio(line), made: new Map() }, stations = plan.stations(line);
+        const ctx: Ctx = { b, line, lift: classLift(line, id), prio: bandPrio(line), made: new Map(), shore }, stations = plan.stations(line);
         ctxs.set(line, ctx);
         for (let j = 0; j + 1 < stations.length; j++) {
             if (owns(stations[j].x, stations[j].y)) {
@@ -102,7 +103,7 @@ function sweep(ctx: Ctx, s: JStation, t: Station): void {
 
 /** The quad from part p to part q (signed metres across; at station s, then at t) between stations s and t, in q's material, with the `extra` flags. */
 function strip(ctx: Ctx, s: Station, t: Station, p: [Part, Part], q: [Part, Part], side: number, extra = 0): void {
-    const v = (st: Station, part: Part) => vertex(ctx, st, part.a, part.dz - kerbDrop(ctx.line, st, side, part), q[0].mat, (part.flags ?? 0) | extra);
+    const v = (st: Station, part: Part) => vertex(ctx, st, ashore(ctx, st, part.a), part.dz - kerbDrop(ctx.line, st, side, part), q[0].mat, (part.flags ?? 0) | extra);
     quad(ctx.b, [v(s, p[0]), v(s, q[0]), v(t, q[1]), v(t, p[1])], side);
 }
 
@@ -114,15 +115,30 @@ function cap(ctx: Ctx, s: Station, dir: number): void {
     // The station `r` metres from the end at angle `t` from the left (0) through ahead (π/2) to the right (π).
     const at = (r: number, t: number): Station => ({ ...s, j: undefined, x: s.x + (s.ax * Math.cos(t) + fx * Math.sin(t)) * r, y: s.y + (s.ay * Math.cos(t) + fy * Math.sin(t)) * r });
     const centre = vertex(ctx, s, 0, dz, mat);
+    // PROTOTYPE (water): a ring stops at the water's edge, as the sides do (ashore).
+    const reach = (r: number, t: number) => (ctx.shore ? ctx.shore(s.x, s.y, s.ax * Math.cos(t) + fx * Math.sin(t), s.ay * Math.cos(t) + fy * Math.sin(t), s.h, r) : r);
     for (let k = 0; k < CAP_STEPS; k++) {
         const t0 = (Math.PI * k) / CAP_STEPS, t1 = (Math.PI * (k + 1)) / CAP_STEPS;
         const e0 = vertex(ctx, at(s.h, t0), 0, dz, mat), e1 = vertex(ctx, at(s.h, t1), 0, dz, mat);
         quad(b, [centre, e0, e1, e1], 1);
         let inner: Part = { a: s.h, dz, mat };
         for (const outer of rings) {
-            const v = (tt: number, part: Part) => vertex(ctx, at(part.a, tt), 0, part.dz, outer.mat, part.flags ?? 0);
+            const v = (tt: number, part: Part) => vertex(ctx, at(reach(part.a, tt), tt), 0, part.dz, outer.mat, part.flags ?? 0);
             quad(b, [v(t0, inner), v(t0, outer), v(t1, outer), v(t1, inner)], 1);
             inner = outer;
         }
     }
+}
+
+/** PROTOTYPE (water): per station, where water starts across its left and its right side, in metres from its middle. */
+const shores = new WeakMap<Station, number[]>();
+/** PROTOTYPE (water): no side of a way reaches this far past its carriageway. */
+const SHORE_REACH_M = 16;
+
+/** PROTOTYPE (water): `a` metres across at station s, held to the water's edge past the carriageway: no face of a way's sides covers water. */
+function ashore(ctx: Ctx, s: Station, a: number): number {
+    if (!ctx.shore || Math.abs(a) <= s.h) return a;
+    let edges = shores.get(s);
+    if (!edges) shores.set(s, (edges = [1, -1].map(side => ctx.shore!(s.x, s.y, side * s.ax, side * s.ay, s.h, s.h + SHORE_REACH_M))));
+    return Math.sign(a) * Math.min(Math.abs(a), edges[a > 0 ? 0 : 1]);
 }
