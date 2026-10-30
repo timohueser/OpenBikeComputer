@@ -12,7 +12,7 @@ export const STEP_M = 2;
  * but stations lie MIN_STEP_M apart at least: a vertex rounds to a whole world unit (2.5 cm here), which tilts
  * the face of a short step, and a kerb's flat-shaded face then flickers from light to shade.
  */
-const MAX_TURN = Math.PI / 180, MIN_STEP_M = 0.8;
+const MAX_TURN = 2 * Math.PI / 180, MIN_STEP_M = 1;
 
 export interface Station {
     x: number;

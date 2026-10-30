@@ -170,7 +170,7 @@ function segment(b: MeshBuilder, s: Station, t: Station, line: Line, depth: numb
 function roadway(b: MeshBuilder, s: Station, t: Station, line: Line): void {
     const h = line.h, paint = rgb('#000000', PAINT) | line.code, lift = LIFT_M + Math.max(0, 30 - line.profile) * 0.001;
     const crown = isPaved(line) && !isTrack(line) ? CROWN * h : 0;
-    for (const [a, c] of [[-h, -h / 2], [-h / 2, 0], [0, h / 2], [h / 2, h]]) {
+    for (const [a, c] of h >= 3 ? [[-h, -h / 2], [-h / 2, 0], [0, h / 2], [h / 2, h]] : [[-h, 0], [0, h]]) {
         const up = (x: number) => lift + crown * (1 - (x / h) ** 2);
         b.quad([b.at(s, [a, up(a)], paint, a, h), b.at(s, [c, up(c)], paint, c, h), b.at(t, [c, up(c)], paint, c, h), b.at(t, [a, up(a)], paint, a, h)], b.outward(s, t, [0, 1]));
     }
