@@ -2,11 +2,12 @@
 // a railing for a path, cables for a bridge that hangs and walls and a roof for a covered one, and a pier
 // at each `bridge-pier` point of the bake, down into the drawn surface.
 import { EXTENT, unitScale, type Feature } from '../stream/features';
-import { BRIDGE, isPath, metresPerUnit, PATH, RAIL_CODE, ROAD, type Line, type Node } from '../terrain/bins';
+import { BRIDGE, isPath, metresPerUnit, PATH, RAIL_CODE, ROAD, walkOf, type Line, type Node } from '../terrain/bins';
 import type { Owns } from './node';
 import { deckSleepers, GROUND, MeshBuilder, mix, PAINT, posts, rgb, type Corner, type Station } from './mesh';
 import { stationsOf as smoothStations } from '../roads/stations';
-import { CROWN } from '../roads/section';
+import { CROWN, KERB_RISE_M, KERB_TOP_M } from '../roads/section';
+import { LEFT, RIGHT } from '../terrain/town';
 
 /** The deck's road lies this far above the abutment's ground, which holds the road's height under it. */
 const LIFT_M = 0.03;
@@ -28,6 +29,7 @@ const MEET_M = 1.0;
 const PIER_REACH_M = 3;
 
 const CONCRETE = rgb('#9a978e'), CAP = rgb('#b3b0a7'), SOFFIT = rgb('#76746d'), WOOD = rgb('#7d5c3d'), WOOD_DARK = rgb('#5d4430');
+const WALKWAY = rgb('#a8a59c');
 const STEEL = rgb('#4a4d50'), ROOF = rgb('#7a3f2c'), ROOF_UNDER = rgb('#3e2a1e');
 const pierColour = (road: boolean) => (road ? CONCRETE : rgb('#8d8a82'));
 
@@ -71,27 +73,31 @@ export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[]
             return mix(at(k), at(k + 1), (d - ds[k]) / (ds[k + 1] - ds[k] || 1));
         };
         const end = (v: number) => (v ? (to < total ? point(to) : at(smooth.length - 1)) : from > 0 ? point(from) : at(0));
-        const decks = wider(line, lines, endKey);
+        const decks = wider(line, lines, endKey), walks = deckWalks(line, all);
         for (let k = 0; k + 1 < smooth.length; k++) {
             const lo = Math.max(ds[k], from), hi = Math.min(ds[k + 1], to);
             if (lo >= hi || !owns(smooth[k].x, smooth[k].y)) continue;
             const s = lo === ds[k] ? at(k) : point(lo), e = hi === ds[k + 1] ? at(k + 1) : point(hi);
             // Where the deck runs on a wider deck's road at its height, that deck carries it: it draws nothing there.
             if (decks.length && onDeck(mix(s, e, 0.5), decks)) continue;
-            segment(b, s, e, line, t, hi - lo);
+            segment(b, s, e, line, t, hi - lo, walks);
         }
         for (const v of [0, n - 1]) {
             if (ends.get(endKey(line, v)) !== 1 || !owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
             // The end of the deck under its road, and of a road's parapets.
             const s = end(v), parapets = line.style === 'beam' && !path && !isTrack(line), w = parapets ? h + PARAPET[0] : h;
+            const [wl, wr] = parapets ? [w + walks[0], w + walks[1]] : [w, w];
             const [ex, ey] = [line.xy[2 * (v ? v : 1)] - line.xy[2 * (v ? v - 1 : 0)], line.xy[2 * (v ? v : 1) + 1] - line.xy[2 * (v ? v - 1 : 0) + 1]];
             const l = Math.hypot(ex, ey) || 1, sign = v ? 1 : -1, out: [number, number, number] = [(sign * ex) / l, (-sign * ey) / l, 0];
             const cap = (a: number, c: number, bottom: number, top: number) => b.quad([b.at(s, [a, bottom], CONCRETE), b.at(s, [c, bottom], CONCRETE), b.at(s, [c, top], CONCRETE), b.at(s, [a, top], CONCRETE)], out);
-            cap(-w, w, -t, LIFT_M);
-            if (parapets) for (const side of [1, -1]) cap(side * h, side * w, LIFT_M, PARAPET[1]);
+            cap(-wr, wl, -t, LIFT_M);
+            if (parapets) for (const [side, walk, edge] of [[1, walks[0], wl], [-1, walks[1], wr]]) {
+                if (walk) cap(side * h, side * (h + walk), LIFT_M, LIFT_M + KERB_RISE_M);
+                cap(side * (h + walk), side * edge, LIFT_M, PARAPET[1]);
+            }
             if (line.abut?.[v ? 1 : 0]) {
                 const depth = Math.min(ABUTMENT_M, (to - from) / 2);
-                abutment(b, s, point(v ? to - depth : from + depth), w, t, out);
+                abutment(b, s, point(v ? to - depth : from + depth), Math.max(wl, wr), t, out);
             }
         }
     }
@@ -148,9 +154,9 @@ function onDeck(s: Station, decks: Line[]): boolean {
 }
 
 /** The deck from station s to t, `length` metres long, in the line's style. */
-function segment(b: MeshBuilder, s: Station, t: Station, line: Line, depth: number, length: number): void {
+function segment(b: MeshBuilder, s: Station, t: Station, line: Line, depth: number, length: number, walks: [number, number]): void {
     const h = line.h, road = !isPath(line), track = isTrack(line);
-    if (line.style === 'beam' && road && !track) return roadBridge(b, s, t, line, depth);
+    if (line.style === 'beam' && road && !track) return roadBridge(b, s, t, line, depth, walks);
     // A plank deck, or a road deck, its edges and its underside.
     const edge = line.style === 'cable' ? STEEL : track ? CONCRETE : WOOD_DARK;
     if (isPaved(line) || track) roadway(b, s, t, line);
@@ -167,25 +173,59 @@ function segment(b: MeshBuilder, s: Station, t: Station, line: Line, depth: numb
  * road and the lift of its class, as the corridor's carriageway (roads/section.ts, roads/corridor.ts), so the
  * deck's road runs on from the road on the ground without a step.
  */
+const roadLift = (line: Line) => LIFT_M + Math.max(0, 30 - line.profile) * 0.001;
+
 function roadway(b: MeshBuilder, s: Station, t: Station, line: Line): void {
-    const h = line.h, paint = rgb('#000000', PAINT) | line.code, lift = LIFT_M + Math.max(0, 30 - line.profile) * 0.001;
+    const h = line.h, paint = rgb('#000000', PAINT) | line.code, lift = roadLift(line);
     const crown = isPaved(line) && !isTrack(line) ? CROWN * h : 0;
-    for (const [a, c] of h >= 3 ? [[-h, -h / 2], [-h / 2, 0], [0, h / 2], [h / 2, h]] : [[-h, 0], [0, h]]) {
+    for (const [a, c] of line.h >= 3 ? [[-h, -h / 2], [-h / 2, 0], [0, h / 2], [h / 2, h]] : [[-h, 0], [0, h]]) {
         const up = (x: number) => lift + crown * (1 - (x / h) ** 2);
         b.quad([b.at(s, [a, up(a)], paint, a, h), b.at(s, [c, up(c)], paint, c, h), b.at(t, [c, up(c)], paint, c, h), b.at(t, [a, up(a)], paint, a, h)], b.outward(s, t, [0, 1]));
     }
 }
 
-/** A road's deck from station s to t: the road, a parapet on each side, the deck's faces and its underside. */
-function roadBridge(b: MeshBuilder, s: Station, t: Station, line: Line, depth: number): void {
-    const h = line.h, [pw, ph] = PARAPET;
+/**
+ * A road's deck from station s to t: the road, a sidewalk behind a kerb where the town roads at its ends have
+ * one (`walks`, left and right), a parapet on each side, the deck's faces and its underside.
+ */
+function roadBridge(b: MeshBuilder, s: Station, t: Station, line: Line, depth: number, walks: [number, number]): void {
+    const h = line.h, [pw, ph] = PARAPET, lift = roadLift(line), kerb = lift + KERB_RISE_M;
     roadway(b, s, t, line);
-    for (const side of [1, -1]) {
-        b.strip(s, t, [side * h, LIFT_M], [side * h, ph], CAP, [-side, 0]);
-        b.strip(s, t, [side * h, ph], [side * (h + pw), ph], CAP, [0, 1]);
-        b.strip(s, t, [side * (h + pw), ph], [side * (h + pw), -depth], CONCRETE, [side, 0]);
+    for (const [side, walk] of [[1, walks[0]], [-1, walks[1]]]) {
+        const inner = h + walk;
+        if (walk) {
+            b.strip(s, t, [side * h, lift], [side * h, kerb], CAP, [-side, 0]);
+            b.strip(s, t, [side * h, kerb], [side * (h + KERB_TOP_M), kerb], CAP, [0, 1]);
+            b.strip(s, t, [side * (h + KERB_TOP_M), kerb], [side * inner, kerb], WALKWAY, [0, 1]);
+        }
+        b.strip(s, t, [side * inner, walk ? kerb : lift], [side * inner, ph], CAP, [-side, 0]);
+        b.strip(s, t, [side * inner, ph], [side * (inner + pw), ph], CAP, [0, 1]);
+        b.strip(s, t, [side * (inner + pw), ph], [side * (inner + pw), -depth], CONCRETE, [side, 0]);
     }
-    b.strip(s, t, [-(h + pw), -depth], [h + pw, -depth], SOFFIT, [0, -1]);
+    b.strip(s, t, [-(h + walks[1] + pw), -depth], [h + walks[0] + pw, -depth], SOFFIT, [0, -1]);
+}
+
+/**
+ * PROTOTYPE (road study): the sidewalks that a road's deck carries, left and right of its line: those that the
+ * town roads meeting its ends have there (roads/section.ts draws them), so the walk runs on over the bridge.
+ */
+function deckWalks(line: Line, all: Line[]): [number, number] {
+    const out: [number, number] = [0, 0], n = line.z.length;
+    for (const end of [0, n - 1]) {
+        const x = line.xy[2 * end], y = line.xy[2 * end + 1];
+        for (const road of all) {
+            if (road.kind !== ROAD || !road.sidewalks) continue;
+            const m = road.z.length;
+            for (const w of [0, m - 1]) {
+                if (road.xy[2 * w] !== x || road.xy[2 * w + 1] !== y) continue;
+                // A road that runs into the deck's start, or out of its end, has the deck's left on its left.
+                const flags = road.sidewalks[w ? m - 2 : 0] ?? 0, same = (w === m - 1) === (end === 0), width = walkOf(road);
+                if (flags & (same ? LEFT : RIGHT)) out[0] = Math.max(out[0], width);
+                if (flags & (same ? RIGHT : LEFT)) out[1] = Math.max(out[1], width);
+            }
+        }
+    }
+    return out;
 }
 
 /** A railing from station s to t on each side: a rail of `bar` metres square at the top, and a post about every POSTS_M. */

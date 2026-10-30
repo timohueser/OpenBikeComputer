@@ -63,7 +63,7 @@ const PAVED_ROAD = ['main', 'road', 'oneway', 'paving'];
 export function carriageway(line: Line, h = line.h, bank = 0): Part[] {
     const crown = line.kind === ROAD && PAVED_ROAD.includes(surfaceName(line)) ? CROWN * h * Math.max(0, 1 - Math.abs(bank) / CROWN) : 0;
     // A parabola, in four facets on a wide road, so the flat-shaded faces show no sharp ridge in the middle.
-    return (h >= 3 ? [1, 0.5, 0, -0.5, -1] : [1, 0, -1]).map(f => ({ a: f * h, dz: LIFT_M + crown * (1 - f * f), mat: MAT.PAINT }));
+    return (line.h >= 3 ? [1, 0.5, 0, -0.5, -1] : [1, 0, -1]).map(f => ({ a: f * h, dz: LIFT_M + crown * (1 - f * f), mat: MAT.PAINT }));
 }
 
 /** The points of one side past the carriageway's edge, then the band; `side` 1 is left, -1 right, at segment v. */
