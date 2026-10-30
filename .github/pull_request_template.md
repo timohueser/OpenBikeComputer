@@ -1,4 +1,4 @@
-<!-- fix, fix, over limit: <reason>, change #N, prototype or override: <reason>. `obc cairn mode` prints this line. -->
+<!-- change #N, fix, or skip: <reason>. A record for the weekly report; nothing checks it. -->
 Mode:
 <!-- The SYS-nnn IDs whose behavior or cited tests change, or none. -->
 Requirements:

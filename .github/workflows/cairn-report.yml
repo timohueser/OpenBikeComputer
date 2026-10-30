@@ -1,6 +1,6 @@
 name: cairn report
 
-# The weekly report on overrides, size estimates, the ratchet and drift. It replaces the body of the open issue
+# The weekly report on skipped pull requests, size estimates, the ratchet and drift. It replaces the body of the open issue
 # labelled cairn-report. Only this workflow's environment holds the Anthropic API key.
 
 on:
