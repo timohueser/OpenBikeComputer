@@ -392,7 +392,8 @@ function townPieces({ xy, z, anchors }: ReturnType<typeof smoothed>, town: Town,
             if (out.dir && k < count) {
                 const c = hermite([ax, ay], [bx, by], [dir![2 * v], dir![2 * v + 1]], [dir![2 * v + 2], dir![2 * v + 3]], z[v], z[v + 1], grade![v], grade![v + 1], Math.hypot(dx, dy) * unit, u);
                 out.xy.push(Math.round(c.x), Math.round(c.y));
-                out.z.push(c.z);
+                // The height runs on linearly, as the stamp has it between the vertices: a level road stays level to the bit.
+                out.z.push(z[v] + (z[v + 1] - z[v]) * u);
                 out.dir.push(c.tx, c.ty);
                 out.grade!.push(grade![v] + (grade![v + 1] - grade![v]) * u);
                 out.bank!.push(bank![v] + (bank![v + 1] - bank![v]) * u);
@@ -605,7 +606,7 @@ function bankWords(lines: Line[]): void {
         const tilt = line.tilt, n = line.z.length;
         for (let v = 0; v < n; v++) {
             const words = [2 * v - 1, 2 * v].filter(w => w >= 0 && w < tilt.length);
-            const bank = Math.max(-0.3, Math.min(0.3, line.bank[v]));
+            const bank = Math.round(Math.max(-0.3, Math.min(0.3, line.bank[v])) * 1e4) / 1e4;
             if (!bank || words.some(w => tilt[w] !== 0)) continue;
             // A tilt word's slope rises toward the side where `cross` of stamp-core.wgsl is positive: the right, as y runs south.
             for (const w of words) tilt[w] = (BANK_WORD | (Math.round(-bank * 1e4) & 0xffff)) >>> 0;
