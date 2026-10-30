@@ -1,6 +1,6 @@
 ---
 name: cairn
-description: Keeps one design document for each system of this repository, and moves a designed change through the `Status:` line of its GitHub issue. Use it whenever the user asks to document a system or write a system doc; to review a document, a design or an issue design (not code and not a pull request); or to explore a problem, plan or design a change, approve a design, or implement or build an issue (#N). Use it also when the request does not name cairn.
+description: Keeps one design document for each system of this repository, and moves a designed change through the `Status:` line of its GitHub issue. Use it whenever the user asks to document a system or write a system doc; to review a document, a design or an issue design (not code and not a pull request); or to explore a problem, plan or design a change, approve a design, implement or build an issue (#N), or fix a bug or the findings of an issue. Use it also when the request does not name cairn.
 ---
 
 # cairn
@@ -35,7 +35,7 @@ Choose the command from the request. If two commands fit, ask once. Read the com
 | `explore` | the problem or the direction is still open | not written yet |
 | `design #N` | the direction is clear and the change needs a plan | not written yet |
 | `build #N` | the design is approved | not written yet |
-| `fix` | a bug or a small tweak | not written yet |
+| `fix` | a bug, a small tweak, or the small findings of a findings issue | [fix.md](reference/fix.md) |
 | `prototype` | an idea needs a quick test, with no quality bar | not written yet |
 | `improve-architecture` | structural problems: cycles, mixed roles, code in the wrong place | not written yet |
 | `document <system>` | a system doc needs to be written or reworked | [document.md](reference/document.md) |

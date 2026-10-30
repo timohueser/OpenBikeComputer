@@ -41,7 +41,7 @@ use stroke::{draw_line, Stroker};
 
 // Per-frame buffer capacities, statically allocated. Growing one costs boot RAM. One profile
 // serves device, simulator and tests, so the simulator drops features at the same zooms the
-// device does. The board crate's resident-set assert is the binding fit check.
+// device does. The `arena_render` gate in `resource_baseline.json` is the binding fit check.
 
 /// Capacity of pass-A's candidate reservoir. Its surplus over a selected frame buys backfill: a
 /// lower-priority candidate can still take a slot after a large feature is skipped on the point
@@ -78,15 +78,14 @@ const _: () = assert!(
 
 const _: () = assert!(MAX_SCREEN_POINTS >= MAX_DECODE_POINTS, "`screen` must hold a whole decoded feature");
 
-/// Static RAM the scratch buffers take on the 32-bit MCU target. `pub` so a board crate's budget
-/// assert can use it without re-deriving the formula.
-pub const MCU_SCRATCH_BYTES: usize = MAX_DECODE_POINTS * 8
+/// Static RAM the scratch buffers take on the 32-bit MCU target.
+const MCU_SCRATCH_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_DECODE_RINGS * 4
     + MAX_FRAME_POINTS * core::mem::size_of::<ScreenPoint>()
     + MAX_FRAME_RINGS * 2
     + MAX_SPANS * core::mem::size_of::<Span>()
     + MAX_CROSSINGS * 4;
-// Loose per-crate ceiling; the board crate's resident-set assert is the binding check.
+// Loose per-crate ceiling; the `arena_render` resource gate is the binding check.
 const _: () = assert!(MCU_SCRATCH_BYTES <= 200 * 1024, "RenderScratch exceeds the 200 KB MCU budget");
 
 /// Ground scale at which a style's `weight` is its nominal pixel width. Set at mid-riding zoom.
@@ -293,7 +292,7 @@ impl Default for RenderConfig {
 /// `&mut` to [`render`](RenderScratch::render) per frame.
 ///
 /// Never construct one by value on a device stack. It holds large `heapless::Vec`s
-/// ([`MCU_SCRATCH_BYTES`]) that only return-value optimization keeps off the stack, and a debug
+/// (`MCU_SCRATCH_BYTES`) that only return-value optimization keeps off the stack, and a debug
 /// build can decline that. The device places it with [`init_zeroed`](RenderScratch::init_zeroed).
 #[derive(Default)]
 pub struct RenderScratch {

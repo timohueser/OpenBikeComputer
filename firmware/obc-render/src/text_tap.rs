@@ -1,5 +1,5 @@
 //! A host-only recorder of the text a frame asks for: every [`Surface::text`](crate::Surface::text)
-//! call on a [`Canvas`](crate::Canvas), as the box it occupies, its face and its string.
+//! and [`Surface::text_ccw`](crate::Surface::text_ccw) call on a [`Canvas`](crate::Canvas), as the box it occupies, its face and its string.
 //!
 //! A recording `DrawTarget` sees loose lit pixels, never a string, so a copy-fit gate cannot be
 //! built above the render path. This tap is that seam. It records what the screen asks to draw,

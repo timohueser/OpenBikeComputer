@@ -101,7 +101,7 @@ Aim for about 1,200 words; write no filler. Link a spec; do not copy its tables.
 
 A figure is one of three kinds: a generated figure, Mermaid, or a hand-drawn SVG with one line that says why the other two are not enough.
 
-Write as [writing.md](writing.md) says. If the hay found a better purpose sentence, correct `purpose:` in the header.
+If the hay found a better purpose sentence, correct `purpose:` in the header.
 
 ## 7. Purpose comments
 
@@ -132,4 +132,4 @@ Write the findings to a file, in Simplified Technical English, grouped by kind, 
 
 Run `cairn map`. Then open one pull request with the doc, the map and the purpose comments. Its body links the findings issue. Its `Mode:` line is `change #N` when an issue asked for the doc, otherwise `fix`.
 
-End with two lines: the pull request link and the issue link.
+End with the pull request link and the issue link. If the issue has findings with the action `fix`, offer once to fix them now in a second pull request, as [fix.md](fix.md) says.

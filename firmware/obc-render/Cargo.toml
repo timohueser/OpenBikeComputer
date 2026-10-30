@@ -16,7 +16,7 @@ text-tap = []
 obc-map-scene = { workspace = true }
 embedded-graphics = { workspace = true }
 heapless = { workspace = true }
-libm = { workspace = true } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
+libm = { workspace = true } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable
 
 [dev-dependencies]
 # Real OBCM fixtures exercise the production adapter, while the seam test below uses only a static

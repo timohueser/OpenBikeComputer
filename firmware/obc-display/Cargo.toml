@@ -3,7 +3,7 @@ name = "obc-display"
 version = "0.1.0"
 edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
-description = "Board-agnostic no_std display seam: the generic native-frame + presentation capability contracts every backend implements, the RGB222/RGB565 framebuffer DrawTargets the shared renderer writes into, the banded Panel window view, and the LS021B7DD02/FLPR pairing (row-hash damage, wire pack, mutate-and-restore overlay composite). embedded-graphics only — no embassy, no board transport, no app state."
+description = "Board-agnostic no_std display seam: the generic native-frame + presentation capability contracts every backend implements, the RGB222/RGB565 framebuffer DrawTargets the shared renderer writes into, the frame-absolute overlay window view, and the LS021B7DD02/FLPR pairing (row-hash damage, wire pack, mutate-and-restore overlay composite). embedded-graphics only — no embassy, no board transport, no app state."
 
 [dependencies]
 # The `DrawTarget` / `Rgb565` the framebuffer implements + the `Point`/`Size`/geometry the
