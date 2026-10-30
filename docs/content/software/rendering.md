@@ -96,9 +96,12 @@ decides what survives; paint order decides what covers what.
 <figcaption>Pass A stores candidate metadata and an opaque token. Pass B decodes selected candidates.</figcaption>
 </figure>
 
-Selection runs in two passes. The first stores only the style, bounds, size, and an opaque token
-for each candidate; the budget is applied in memory; the second decodes only what was admitted.
-Decoding is the expensive step, so nothing is decoded to be thrown away.
+Most frames fit, so the renderer first makes one walk that decodes, projects, and stores each
+candidate. When a buffer fills, that walk cannot keep the priority order, because an early chunk
+may have taken the room that a late chunk's feature needs. The renderer discards the walk and
+selects in two passes. Pass A keeps only the style, size, and an opaque token for each candidate.
+The budget is then applied in memory, and pass B decodes only what was admitted. A dense view
+costs more reads, but its budget always goes to the highest priorities.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -158,9 +161,9 @@ moves.
 <figcaption>The casing pass starts at the road z-band. Road fills then cover casing inside intersections.</figcaption>
 </figure>
 
-A casing is the darker outline of a road. The renderer draws every casing at the start of the road
-paint band and then every road fill, so a casing stays above the land fill and no casing line
-crosses an intersection.
+A casing is the darker outline of a road, drawn at the finest level of detail only. The renderer
+draws every casing at the start of the road paint band and then every road fill, so a casing stays
+above the land fill and no casing line crosses an intersection.
 
 ### Polygon outlines
 
@@ -172,8 +175,9 @@ crosses an intersection.
 <figcaption>The renderer fills every polygon in a z-group before it draws the outlines.</figcaption>
 </figure>
 
-For the same reason, the renderer fills every polygon of a paint group before it outlines them,
-which keeps one shared wall between two adjacent buildings.
+Outlines also appear at the finest level of detail only. For the same reason, the renderer fills
+every polygon of a paint group before it outlines them, which keeps one shared wall between two
+adjacent buildings.
 
 ## Map overlays
 
