@@ -18,7 +18,7 @@ const ROAD_PORTAL = { margin: 0.6, wings: 3 }, PATH_PORTAL = { margin: 0.3, wing
 const boxDepth = (y: number) => (RULES.PORTAL_CELLS + Math.SQRT2) * RULES.MESH_TEXELS * 32 * metresPerUnit(y) + 1;
 /** A road's bore: the kerb's height, and its lamps' length and spacing. */
 const KERB_M = 0.15, LAMP_M = 1.2, LAMPS_M = 10;
-/** The arch springs at this share of the bore's height; the void stands this far in. The bore's road lies this far over the ground that runs into the portal. */
+/** The arch springs at this share of the bore's height; the void stands this far in. */
 const SPRING = 0.6, VOID_M = 0.7;
 /**
  * The facade's thickness, the box's walls and roof, and how deep the facade stands in the ground. The
