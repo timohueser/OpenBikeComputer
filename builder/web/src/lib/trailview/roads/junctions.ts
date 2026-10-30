@@ -11,7 +11,7 @@
 // The plan is made once per tile's lines: each line's stations with cuts (the faces that the sweep leaves
 // out between two stations) and the junction faces that replace them.
 import { crossSlope, metresPerUnit, PATH, PAVED_CODES, PAVING_CODE, ROAD, type Line } from '../terrain/bins';
-import { partnersOf } from '../terrain/corners';
+import { cornersOf, partnersOf, type Corner as StampCorner } from '../terrain/corners';
 import { gridOf, near } from '../terrain/town';
 import type { MeshBuilder } from '../structures/mesh';
 import type { Owns } from '../structures/node';
@@ -24,8 +24,8 @@ export const JMAT = { ZEBRA: 60, GIVE_WAY: 61, FILLET: 62 } as const;
 /** What the sweep leaves out between a station and the next: the carriageway, the left side, the right side. */
 export const CUT = { ROAD: 1, LEFT: 2, RIGHT: 4, ALL: 7 } as const;
 
-/** A station of a planned line: the cuts to the next station, and the carriageway's own ends there where a side arm's mouth replaces them. */
-export interface JStation extends Station { cut?: number; road?: [Station, Station] }
+/** A station of a planned line, with the cuts to the next station. */
+export interface JStation extends Station { cut?: number }
 
 /** Corner radii: a town street's kerb, a rural road's edge, a track's; the least radius that rounds a corner, else it stays sharp. */
 const TOWN_R = 5, RURAL_R = 7, TRACK_R = 4, LEAST_R = 0.8;
@@ -57,7 +57,7 @@ interface LinePlan {
     cuts: { lo: number; hi: number; bits: number }[];
     breaks: number[];
     /** A side arm's mouth: its start (end 0) or end (end 1), the alongs where its edges meet the through road, and its corners by side of the line. */
-    mouths: { end: 0 | 1; m: number; far: number; P: Record<number, number[]>; J: Junction; edge: Record<number, Corner> }[];
+    mouths: { end: 0 | 1; m: number; far: number; P: Record<number, number[]>; J: Junction; edge: Record<number, Corner>; S0?: Station; T?: Station }[];
     /** A path's end on a road's outer edge: the along, and the height of the road's surface there. */
     ends: { at: number; road: Line; side: 1 | -1; walk: boolean; J: { x: number; y: number; unit: number } }[];
     /** Zebras on a road: their middle along it. */
@@ -110,14 +110,14 @@ function makePlan(lines: Line[]): Plan {
         }
     }
     const junctions: Junction[] = [];
-    const partners = partnersOf(lines);
+    const partners = partnersOf(lines), stamped = cornersOf(lines);
     for (const here of at.values()) {
         if (here.length < 2) continue;
         const x = here[0].line.xy[2 * here[0].v], y = here[0].line.xy[2 * here[0].v + 1], unit = metresPerUnit(y);
         const ways = here.flatMap(({ line, v }) => ([-1, 1] as const).filter(step => v + step >= 0 && v + step < line.z.length).map(step => wayOut(line, v, step, unit)));
         const roads = ways.filter(w => w.line.kind === ROAD), paths = ways.filter(w => w.line.kind === PATH);
         if (roads.length >= 3) {
-            const J = roadJunction(x, y, unit, roads, planOf);
+            const J = roadJunction(x, y, unit, roads, planOf, stamped);
             if (J) junctions.push(J);
         }
         if (roads.length >= 2 && paths.length >= 1) pathsAt(x, y, unit, roads, paths, planOf);
@@ -190,18 +190,11 @@ function makePlan(lines: Line[]): Plan {
             for (const mouth of lp.mouths) {
                 const S0 = mouthStation(line, mouth, ids, stations);
                 if (!S0) continue;
-                if (mouth.end === 0) {
-                    const T = list.findIndex(s => s.along >= mouth.far - 1e-3);
-                    if (T <= 0) continue;
-                    list[T - 1].road = [S0, list[T]];
-                    list[T - 1].cut = (list[T - 1].cut ?? 0) & ~CUT.ROAD;
-                } else {
-                    let T = list.length - 1;
-                    while (T > 0 && list[T].along > mouth.far + 1e-3) T--;
-                    if (T >= list.length - 1) continue;
-                    list[T].road = [list[T], S0];
-                    list[T].cut = (list[T].cut ?? 0) & ~CUT.ROAD;
-                }
+                // The carriageway's first station past both edges' meeting points: the mouth's strip runs from S0 to it.
+                let T = -1;
+                if (mouth.end === 0) T = list.findIndex(s => s.along >= mouth.far - 1e-3);
+                else for (let k = list.length - 1; k >= 0 && T < 0; k--) if (list[k].along <= mouth.far + 1e-3) T = k;
+                if (T >= 0) Object.assign(mouth, { S0, T: list[T] });
             }
             for (const end of lp.ends) {
                 const k = list.findIndex(s => Math.abs(s.along - end.at) < 0.011);
@@ -226,6 +219,10 @@ function makePlan(lines: Line[]): Plan {
             for (const J of junctions) {
                 if (!owns(J.x, J.y)) continue;
                 for (const c of J.corners) cornerFaces(J, c, ctxOf, stations, ids);
+            }
+            for (const [line, lp] of info) {
+                const ctx = ctxOf(line);
+                if (ctx) for (const { S0, T, J, end } of lp.mouths) if (S0 && T && owns(J.x, J.y)) mouthFaces(ctx, S0, T, end);
             }
             for (const [line, lp] of info) {
                 const ctx = ctxOf(line);
@@ -275,7 +272,7 @@ const halfOf = (w: Way) => w.line.h;
 const segOf = (w: Way) => (w.step > 0 ? w.v : w.v - 1);
 
 /** A junction of three or more road ways: its through pair, its side arms and corners, and their cuts. */
-function roadJunction(x: number, y: number, unit: number, all: Way[], planOf: (line: Line) => LinePlan): Junction | undefined {
+function roadJunction(x: number, y: number, unit: number, all: Way[], planOf: (line: Line) => LinePlan, stamped: StampCorner[]): Junction | undefined {
     let ways = all.sort((p, q) => p.angle - q.angle);
     // The through pair: the best class, then the straightest.
     let pair: [Way, Way] | undefined, best = [Infinity, Infinity, Infinity];
@@ -309,6 +306,9 @@ function roadJunction(x: number, y: number, unit: number, all: Way[], planOf: (l
         if (!p.through && !q.through) continue;
         const c = cornerOf(p, q);
         if (!c) continue;
+        // Where the stamp rounds this corner (paved roads), take its arc, so the ground under the fillet is held flat.
+        const s = stampCorner(stamped, J, c);
+        if (s) Object.assign(c, s);
         // The edges' meeting point on the ways' own curves, not on their straight lines.
         c.ep = edgeOf(p, c.sp, J);
         c.eq = edgeOf(q, c.sq, J);
@@ -404,6 +404,21 @@ function cornerOf(p: Way, q: Way): Corner | undefined {
     const o = X(r), a = [o[0] - r * np[0], o[1] - r * np[1]], b = [o[0] - r * nq[0], o[1] - r * nq[1]];
     // n_p is p's right seen outward; n_q is q's left.
     return { p, q, o, r, a, b, P, np, nq, sp, sq };
+}
+
+/** The stamp's corner of a corner's two ways, as metres about the junction: its arc's centre and ends and its radius, if it has one. */
+function stampCorner(stamped: StampCorner[], J: { x: number; y: number; unit: number }, c: Corner): Partial<Corner> | undefined {
+    const local = (p: number[]) => [(p[0] - J.x) * J.unit, (p[1] - J.y) * J.unit];
+    // An arc end on a way's edge: about its half-width off its line and ahead of the junction.
+    const onEdge = (pt: number[], w: Way) => Math.abs(Math.abs(pt[0] * -w.u[1] + pt[1] * w.u[0]) - w.line.h) < 0.6 && dot(pt, w.u) > -0.5 && dot(pt, w.u) < 16;
+    for (const sc of stamped) {
+        const a = local(sc.a), b = local(sc.b), o = local(sc.o);
+        if (Math.hypot(o[0], o[1]) > 25 || !onEdge(a, c.p) || !onEdge(b, c.q)) continue;
+        const r = Math.hypot(a[0] - o[0], a[1] - o[1]);
+        if (r < 0.5) continue;
+        return { o, a, b, r, np: [(o[0] - a[0]) / r, (o[1] - a[1]) / r], nq: [(o[0] - b[0]) / r, (o[1] - b[1]) / r] };
+    }
+    return undefined;
 }
 
 /** A way's edge on its line's side `side`, from its junction out about 25 m, in metres about the junction. */
@@ -676,7 +691,6 @@ function cornerFaces(J: Junction, c: Corner, ctxOf: (line: Line) => Ctx | undefi
     // The ring's parts at f, with a ring at the arc's centre where the parts pass it.
     const partsAt = (f: number): Part[] => A.map((pa, i) => ({ a: lerp(pa.a, B[i].a, f), dz: lerp(pa.dz, B[i].dz, f), mat: (ka ? pa : B[i]).mat, flags: pa.flags }));
     const za = zOf(cp, sa, c.sp * c.p.line.h, LIFT_M), zb = zOf(cq, sb, c.sq * c.q.line.h, LIFT_M);
-    const baseZ = (f: number) => lerp(za, zb, smooth(f)) - LIFT_M;
     const prio = Math.max(cp.prio, cq.prio), code = c.p.through ? c.p.line.code : c.q.through ? c.q.line.code : Math.min(c.p.line.code, c.q.line.code);
     const half = Math.min(c.p.line.h, c.q.line.h);
     // A ring's vertex at f in material `mat`: at the ends, the ways' own (so the faces meet theirs exactly); between, the arc's.
@@ -687,6 +701,23 @@ function cornerFaces(J: Junction, c: Corner, ctxOf: (line: Line) => Ctx | undefi
     const shifted = (p: number[], f: number) => {
         const t = smooth(f);
         return [p[0] + lerp(e0[0], e1[0], t), p[1] + lerp(e0[1], e1[1], t)];
+    };
+    // The arc's height at f: each way's surface carried out level from its edge, weighted by the arc point's
+    // distances from the two edges (as heightAt of corners.ts), so it follows both roads' grades.
+    const heights = new Map<number, number>();
+    const baseZ = (f: number) => {
+        if (f <= 0) return za - LIFT_M;
+        if (f >= 1) return zb - LIFT_M;
+        const known = heights.get(f);
+        if (known !== undefined) return known;
+        const [wx, wy] = world(J, shifted(ring(0, f), f)), sp = surfaceAt(c.p.line, lpA, ids, wx, wy), sq = surfaceAt(c.q.line, lpB, ids, wx, wy);
+        let z = lerp(za, zb, smooth(f));
+        if (sp && sq) {
+            const dp = Math.max(0, Math.abs(sp.lat) - c.p.line.h), dq = Math.max(0, Math.abs(sq.lat) - c.q.line.h), w = dp + dq > 1e-6 ? dp / (dp + dq) : f;
+            z = lerp(sp.edge, sq.edge, w);
+        }
+        heights.set(f, z - LIFT_M);
+        return z - LIFT_M;
     };
     const at = (f: number, part: Part, mat: number): W => {
         const flags = part.flags ?? 0, sampled = (flags & 3) !== 0;
@@ -743,6 +774,16 @@ function alongOfVertex(line: Line, v: number): number {
     let along = 0;
     for (let k = 0; k < v; k++) along += Math.hypot(line.xy[2 * k + 2] - line.xy[2 * k], line.xy[2 * k + 3] - line.xy[2 * k + 1]) * metresPerUnit(line.xy[2 * k + 1]);
     return along;
+}
+
+/** A side arm's mouth: its carriageway from the through road's edge (S0, without a crown) to its first whole station T. */
+function mouthFaces(ctx: Ctx, S0: Station, T: Station, end: 0 | 1): void {
+    const road = carriageway(ctx.line), flat = road.map(p => ({ ...p, dz: LIFT_M }));
+    const [s, t, ps, pt] = end === 0 ? [S0, T, flat, road] : [T, S0, road, flat];
+    for (let k = 0; k + 1 < road.length; k++) {
+        const v = (st: Station, part: Part) => vertex(ctx, st, part.a, part.dz, MAT.PAINT);
+        quad(ctx.b, [v(s, ps[k]), v(s, ps[k + 1]), v(t, pt[k + 1]), v(t, pt[k])], 1);
+    }
 }
 
 /** A line's zebras, lowered kerbs and give-way lines: the faces that its cuts left out, in their own materials. */

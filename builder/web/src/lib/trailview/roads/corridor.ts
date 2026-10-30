@@ -75,8 +75,8 @@ export function quad(b: MeshBuilder, q: [V, V, V, V], side: number): void {
 
 /** The faces between stations s and t: the carriageway, then each side out to the end of its band. */
 function sweep(ctx: Ctx, s: JStation, t: Station): void {
-    const { line } = ctx, road = carriageway(line), cut = s.cut ?? 0, [rs, rt] = s.road ?? [s, t];
-    if (!(cut & CUT.ROAD)) for (let k = 0; k + 1 < road.length; k++) strip(ctx, rs, rt, road[k], road[k + 1], 1);
+    const { line } = ctx, road = carriageway(line), cut = s.cut ?? 0;
+    if (!(cut & CUT.ROAD)) for (let k = 0; k + 1 < road.length; k++) strip(ctx, s, t, road[k], road[k + 1], 1);
     for (const side of [1, -1] as const) {
         if (cut & (side > 0 ? CUT.LEFT : CUT.RIGHT)) continue;
         let inner: Part = { a: side * line.h, dz: road[0].dz, mat: MAT.PAINT };
