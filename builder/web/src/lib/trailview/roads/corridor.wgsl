@@ -105,7 +105,7 @@ fn corridor_fragment(u: vec2f, relative: vec3f, altitude: f32, colour: vec4f, ro
         default: {
             albedo = colour.rgb * colour.rgb;
             if (mat >= MAT_JUNCTION_FIRST && mat <= MAT_JUNCTION_LAST) {
-                let j = junction_surface(mat, region, code, road, along, p, w, along_w);
+                let j = junction_surface(mat, region, u32(round(colour.g * 255.0)), road, along, p, w, along_w);
                 albedo = j.rgb;
                 share = j.a;
             }

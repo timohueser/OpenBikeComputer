@@ -15,7 +15,7 @@ import { cornersOf, partnersOf, type Corner as StampCorner } from '../terrain/co
 import { gridOf, near } from '../terrain/town';
 import type { MeshBuilder } from '../structures/mesh';
 import type { Owns } from '../structures/node';
-import { classLift, corridorColour, quad, strip, vertex, type Ctx, type V } from './corridor';
+import { classLift, corridorColour, quad, vertex, type Ctx, type V } from './corridor';
 import { carriageway, CLASS_NAMES, corridorLine, KERB_RISE_M, LIFT_M, MAT, sideOf, type Part } from './section';
 import { stationsOf, type Station } from './stations';
 
@@ -41,6 +41,8 @@ const STRAIGHT_M = 0.6;
 const ZEBRA_HALF_M = 2, RAMP_M = 1.2, LOWERED_M = 0.025;
 /** The give-way line: this far back from the through road's edge, this wide. */
 const GIVE_WAY_BACK_M = 0.4, GIVE_WAY_M = 0.3;
+/** The give-way faces reach this far back from the line: the line, then the triangle in the approaching lane (as GIVE_WAY_REACH_M of junctions.wgsl). */
+const GIVE_WAY_REACH_M = 4.2;
 /** The classes that a minor road gives way to with a line, and the paths that cross a town road on a zebra. */
 const MAIN = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link'];
 const ZEBRA_PATHS = ['footway', 'path', 'cycleway', 'pedestrian', 'bridleway'];
@@ -65,7 +67,7 @@ interface LinePlan {
     /** Lowered kerbs: middle along it and sides. */
     lowered: { lo: number; hi: number; sides: number }[];
     /** Give-way lines on a side arm: along of the line's near edge (toward the junction), and its direction away from the junction. */
-    giveWays: { at: number; dir: 1 | -1 }[];
+    giveWays: { at: number; dir: 1 | -1; reach: number }[];
     stations?: JStation[];
 }
 
@@ -358,10 +360,12 @@ function roadJunction(x: number, y: number, unit: number, all: Way[], planOf: (l
         const main = pairClass(ways);
         if (main && MAIN.includes(main) && PAVED_CODES.includes(s.line.code) && !MAIN.slice(0, MAIN.indexOf(main) + 2).includes(CLASS_NAMES[s.line.profile])) {
             const g = far + s.step * GIVE_WAY_BACK_M;
-            if (m + GIVE_WAY_BACK_M + GIVE_WAY_M + 1 < length) {
-                lp.giveWays.push({ at: g, dir: s.step });
-                lp.breaks.push(g, g + s.step * GIVE_WAY_M);
-                lp.cuts.push({ lo: Math.min(g, g + s.step * GIVE_WAY_M), hi: Math.max(g, g + s.step * GIVE_WAY_M), bits: CUT.ROAD });
+            // Only a triangle that fits: a short arm keeps the line alone.
+            const reach = m + GIVE_WAY_BACK_M + GIVE_WAY_REACH_M + 2 < length ? GIVE_WAY_REACH_M : GIVE_WAY_M;
+            if (m + GIVE_WAY_BACK_M + reach + 1 < length) {
+                lp.giveWays.push({ at: g, dir: s.step, reach });
+                lp.breaks.push(g, g + s.step * reach);
+                lp.cuts.push({ lo: Math.min(g, g + s.step * reach), hi: Math.max(g, g + s.step * reach), bits: CUT.ROAD });
             }
         }
     }
@@ -785,13 +789,20 @@ function mouthFaces(ctx: Ctx, mouth: LinePlan['mouths'][number], ctxOf: (line: L
 function markings(ctx: Ctx, lp: LinePlan, owns: Owns): void {
     const list = lp.stations!, { line } = ctx, road = carriageway(line);
     const own = (s: Station) => owns(s.x, s.y);
-    const withCode = (bits: number): Ctx => ({ ...ctx, line: { ...line, code: line.code | (bits << 4) }, made: new Map() });
     for (const at of lp.zebras) {
-        const zc = withCode(0);
+        // The stripes run straight across a bend: each vertex carries its metres across the zebra's own straight middle line.
+        const k0 = list.findIndex(st => st.along >= at - 1e-3);
+        if (k0 < 0) continue;
+        const s0 = k0 > 0 && list[k0].along > at + 1e-3 ? mixStation(list[k0 - 1], list[k0], (at - list[k0 - 1].along) / (list[k0].along - list[k0 - 1].along)) : list[k0];
+        const nl = Math.hypot(s0.ax, s0.ay), N = [s0.ax / nl, s0.ay / nl], m = metresPerUnit(s0.y);
+        const zv = (st: Station, part: Part): V => {
+            const x = st.x + st.ax * part.a, y = st.y + st.ay * part.a, z = st.z + part.dz + st.bank * part.a + ctx.lift;
+            return { i: ctx.b.vertex(x, y, z, corridorColour(JMAT.ZEBRA, line.code, 0, ctx.prio), part.a, line.h, ((x - s0.x) * N[0] + (y - s0.y) * N[1]) * m), x, y };
+        };
         for (let k = 0; k + 1 < list.length; k++) {
             const s = list[k], t = list[k + 1], mid = (s.along + t.along) / 2;
             if (Math.abs(mid - at) > ZEBRA_HALF_M || !own(s)) continue;
-            for (let i = 0; i + 1 < road.length; i++) strip(zc, s, t, road[i], { ...road[i + 1], mat: JMAT.ZEBRA }, 1);
+            for (let i = 0; i + 1 < road.length; i++) quad(ctx.b, [zv(s, road[i]), zv(s, road[i + 1]), zv(t, road[i + 1]), zv(t, road[i])], 1);
         }
     }
     for (const { lo, hi, sides } of lp.lowered) {
@@ -816,12 +827,19 @@ function markings(ctx: Ctx, lp: LinePlan, owns: Owns): void {
             }
         }
     }
-    for (const { at, dir } of lp.giveWays) {
-        const lo = Math.min(at, at + dir * GIVE_WAY_M), hi = Math.max(at, at + dir * GIVE_WAY_M), gc = withCode(0);
+    for (const { at, dir, reach } of lp.giveWays) {
+        const lo = Math.min(at, at + dir * reach), hi = Math.max(at, at + dir * reach);
+        // Each vertex carries its metres back from the line; the colour's parameter says which side the approaching lane is
+        // on (traffic keeps right: the left of a line that leaves the junction).
+        const code = line.code | ((dir > 0 ? 0 : 1) << 4) | ((reach > GIVE_WAY_M ? 1 : 0) << 5);
+        const gv = (st: Station, part: Part): V => {
+            const x = st.x + st.ax * part.a, y = st.y + st.ay * part.a, z = st.z + part.dz + st.bank * part.a + ctx.lift;
+            return { i: ctx.b.vertex(x, y, z, corridorColour(JMAT.GIVE_WAY, code, 0, ctx.prio), part.a, line.h, Math.abs(st.along - at)), x, y };
+        };
         for (let k = 0; k + 1 < list.length; k++) {
             const s = list[k], t = list[k + 1], mid = (s.along + t.along) / 2;
             if (mid < lo || mid > hi || !own(s)) continue;
-            for (let i = 0; i + 1 < road.length; i++) strip(gc, s, t, road[i], { ...road[i + 1], mat: JMAT.GIVE_WAY }, 1);
+            for (let i = 0; i + 1 < road.length; i++) quad(ctx.b, [gv(s, road[i]), gv(s, road[i + 1]), gv(t, road[i + 1]), gv(t, road[i])], 1);
         }
     }
 }
