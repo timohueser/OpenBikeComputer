@@ -379,8 +379,8 @@ fn dirt_look(code: u32, region: u32, p: vec2f, across: f32, half: f32, along: f3
     // Puddles where the ruts are wettest.
     out.mirror = smoothstep(0.55, 0.75, wet * deep * (0.7 + 0.6 * noise(p / 0.8)));
     out.bump = vec2f(-sign(across) * sign(x - 0.75 + wob) * 0.25 * rut * (1.0 - deep), 0.0);
-    // Grass covers what is not rut; on a grass track the ruts too, in part.
-    let grassed = select(0.0, 0.85 * smoothstep(0.5, 0.75, noise(p / 0.45 + 5.0)), grassy);
+    // Grass covers what is not rut; on a grass track the ruts too, in streaks along them.
+    let grassed = select(0.0, 0.7 * smoothstep(0.58, 0.8, noise(vec2f(along / 2.5, across / 0.3) + 5.0)), grassy);
     // Worn grass beside the ruts: soil shows through.
     let worn = smoothstep(rut_w + 0.3, rut_w, d) * 0.35;
     out.ground = max(1.0 - max(rut, worn), grassed);

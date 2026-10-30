@@ -123,7 +123,11 @@ fn detail_height(at: vec2i, edge: f32, z: f32, colour: vec4f, road: vec2f, packe
         }
     } else {
         let rail = rail_share(at, f, rel, edge) * ramp;
-        share = select(rail, 1.0 - rail, mat == DM_DELI || mat == DM_DELI_BAND || mat == DM_REFLECTOR);
+        share = rail;
+        if (mat == DM_DELI || mat == DM_DELI_BAND || mat == DM_REFLECTOR) {
+            // A delineator stands where neither a rail nor a wall does.
+            share = (1.0 - rail) * (1.0 - wall_share(at, f, rel, edge).x);
+        }
     }
     if (code < -5.0) {
         goal = ground + code + 10.0;
