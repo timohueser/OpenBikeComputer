@@ -4,8 +4,9 @@
 //   npx vite-node scripts/road-meshes.ts
 import { readdirSync, readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
-import { meshBytes, OWNER, roadMesh } from '../src/lib/trailview/roads/mesh';
+import { meshBytes, roadMesh } from '../src/lib/trailview/roads/mesh';
 import { decodeFeatures, DEEPEST } from '../src/lib/trailview/stream/features';
+import { OWNER } from '../src/lib/trailview/terrain/lod';
 
 const root = new URL('../tests/browser/trailview/fixture/features/', import.meta.url);
 const rows = readdirSync(new URL(`${DEEPEST}/`, root)).flatMap(x => readdirSync(new URL(`${DEEPEST}/${x}/`, root)).flatMap(file => {

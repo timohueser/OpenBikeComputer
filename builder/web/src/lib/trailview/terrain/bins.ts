@@ -379,6 +379,8 @@ function abutments(lines: Line[]): void {
     }
 }
 
+/** A road's face lies this far over the stamped core, whose tolerance is 2 cm. */
+export const LIFT_M = 0.03;
 /** A town's road and footway decide their sidewalks and paving in pieces about this long. */
 const PIECE_M = 8;
 

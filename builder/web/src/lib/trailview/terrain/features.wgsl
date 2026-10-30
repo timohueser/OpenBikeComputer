@@ -3,8 +3,8 @@
 // #include drawn-height.wgsl
 // #include mask-walk.wgsl
 
-// Metres from the eye that the mask pool holds the near pages to, metres from the eye that corridors draw
-// every way to, and per page layer the mask layer + 1, 0 for none.
+// Metres from the eye that the mask pool holds the near pages to, metres from the eye that corridors hold
+// every way to (0 without corridors), and per page layer the mask layer + 1, 0 for none.
 struct Masks {
     reach: f32,
     corridors: f32,
@@ -32,6 +32,8 @@ const MASK_LEVEL: u32 = 16u;
 // As MASK_RANGE and MASK_KNEE of stamp.wgsl.
 const MASK_M: f32 = 12.75;
 const MASK_KNEE: f32 = 0.5;
+// Paint hands over to the corridors this far inside what they hold.
+const CORRIDOR_FADE_M: f32 = 40.0;
 // As RAIL_CODE and SLEEPER_M of bins.ts: the tracks from this surface code on, and the spacing of their
 // sleepers; the code of `paving` in SURFACES of bins.ts.
 const RAIL_CODE: u32 = 9u;

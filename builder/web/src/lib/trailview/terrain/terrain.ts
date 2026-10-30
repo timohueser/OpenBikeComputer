@@ -11,11 +11,10 @@ import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import { featureTile, NEAR, profileTable, waterAt } from './bins';
-import { cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
+import { cdlod, CHILD, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
 import { OPAQUE, Water } from './water';
-import { CHILD } from '../roads/mesh';
 import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
 import { Structures } from '../structures/structures';
@@ -223,6 +222,11 @@ export class Terrain {
 
     get idle(): boolean {
         return this.pages.idle && this.calm > 0 && this.probing === 0;
+    }
+
+    /** The feature tiles and road meshes that failed. */
+    get failed(): number {
+        return this.stamps.failed + (this.roads?.failed ?? 0);
     }
 
     /** Whether road meshes are on their way. The view about the eye waits for none. */
@@ -763,18 +767,18 @@ export class Terrain {
     }
 
     /** Whether a corridor piece can show. */
-    private boxVisible({ x, y, low, high }: RoadPiece, eye: { anchor: Anchor; above: number }, forward: Float64Array, view: View): boolean {
+    private boxVisible({ x, y, low, high, over }: RoadPiece, eye: { anchor: Anchor; above: number }, forward: Float64Array, view: View): boolean {
         const s = size(CHILD);
-        return view.z === undefined || this.inFrustum({ level: CHILD, x: Math.floor(x / s), y: Math.floor(y / s) }, low, high, eye, forward, view);
+        return view.z === undefined || this.inFrustum({ level: CHILD, x: Math.floor(x / s), y: Math.floor(y / s) }, low, high, eye, forward, view, over * eye.anchor.unit);
     }
 
-    /** Whether the square of a node between heights `lo` and `hi` meets the frustum. */
-    private inFrustum(node: Node, lo: number, hi: number, eye: { anchor: Anchor; above: number }, forward: Float64Array, view: View): boolean {
+    /** Whether the square of a node, `past` metres wider each way, between heights `lo` and `hi` meets the frustum. */
+    private inFrustum(node: Node, lo: number, hi: number, eye: { anchor: Anchor; above: number }, forward: Float64Array, view: View, past = 0): boolean {
         const z = view.z!, [near, far] = distances({ ...eye, above: 0 }, node).map(d => d * d * CURVATURE);
         const s = size(node.level), [x0, y0] = lodSpace(eye.anchor, node.x * s, node.y * s), [x1, y1] = lodSpace(eye.anchor, (node.x + 1) * s, (node.y + 1) * s);
         const points: number[][] = [];
         for (const fx of [0, 0.5, 1]) for (const fy of [0, 0.5, 1]) {
-            const sx = x0 + (x1 - x0) * fx, sy = y0 + (y1 - y0) * fy, rx = cubic(forward, sx, sy, 0), ry = cubic(forward, sx, sy, 10);
+            const sx = x0 - past + (x1 - x0 + 2 * past) * fx, sy = y0 + past + (y1 - y0 - 2 * past) * fy, rx = cubic(forward, sx, sy, 0), ry = cubic(forward, sx, sy, 10);
             points.push([rx, ry, lo - MARGIN - z - far], [rx, ry, hi + MARGIN - z - near]);
         }
         const m = view.viewProj, row = (i: number) => [m[i], m[4 + i], m[8 + i], m[12 + i]];

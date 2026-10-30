@@ -15,7 +15,7 @@ function bend(radius: number, turn: number, chord: number, y = 2 ** 29): Line {
     const zero = tangent.map(() => 0);
     return { kind: 1, xy, z: zero.map(() => 1000), h: 3, code: 2, ford: false, profile: 0, anchors: tangent.map(() => true), plan: { tangent, grade: zero, bank: zero, widen: zero } };
 }
-const half = () => 3;
+const half = () => 3, side = 2 ** 14;
 
 describe('the stations of a line', () => {
     it('keep to 2 m and 2° and hold 1 m apart inside a line, on the curve that the stamp cuts into chords', () => {
@@ -25,7 +25,8 @@ describe('the stations of a line', () => {
         for (let j = 0; j + 1 < stations.length; j++) {
             const s = stations[j], t = stations[j + 1], step = Math.hypot(t.x - s.x, t.y - s.y) * unit, turn = Math.acos(Math.min(1, (s.ax * t.ax + s.ay * t.ay) / Math.hypot(s.ax, s.ay) / Math.hypot(t.ax, t.ay)));
             expect(step).toBeLessThanOrEqual(STEP_M + 1e-3);
-            if (j > 0 && j + 2 < stations.length) expect(step).toBeGreaterThan(0.9);
+            // A step short of a vertex of the tile may be shorter.
+            if (!line.xy.some((_, i) => i % 2 === 0 && line.xy[i] === t.x && line.xy[i + 1] === t.y)) expect(step).toBeGreaterThan(0.9);
             expect(turn).toBeLessThan(2.2 * Math.PI / 180);
             expect(t.along - s.along).toBeCloseTo(step, 1);
         }
@@ -47,6 +48,16 @@ describe('the stations of a line', () => {
         expect(stationsOf(rising, half)[1].bank).toBeCloseTo(0.05);
     });
 
+    it('start again on each vertex of the tile, so a line cut short at its start keeps the stations of the rest', () => {
+        const line = bend(40, Math.PI / 2, 9), from = 3, rest: Line = {
+            ...line, xy: line.xy.slice(2 * from), z: line.z.slice(from), anchors: line.anchors!.slice(from),
+            plan: { tangent: line.plan!.tangent.slice(from), grade: line.plan!.grade.slice(from), bank: line.plan!.bank.slice(from), widen: line.plan!.widen.slice(from) },
+        };
+        const whole = stationsOf(line, half), part = stationsOf(rest, half), at = whole.findIndex(({ x, y }) => x === rest.xy[0] && y === rest.xy[1]);
+        expect(at).toBeGreaterThan(0);
+        expect(part.map(({ x, y }) => [x, y])).toEqual(whole.slice(at).map(({ x, y }) => [x, y]));
+    });
+
     it('stand at each change of the sidewalks, so a side ends on a station', () => {
         const line = { ...bend(10000, 0.01, 20), sidewalks: [0, 3, 3, 0, 0] };
         const stations = stationsOf(line, half), change = stations.findIndex((s, j) => j > 0 && line.sidewalks[s.v] !== line.sidewalks[stations[j - 1].v]);
@@ -66,14 +77,21 @@ describe('the reach of a station', () => {
 });
 
 describe('the far range', () => {
+    it('keeps the first station in each square, where a near range ends', () => {
+        const stations = stationsOf(bend(1e6, 1e-2, 40), half), far = new Set(farStations({ z: [] } as unknown as Line, stations, side));
+        const entries = stations.flatMap(({ x }, j) => (j > 0 && Math.floor(x / side) !== Math.floor(stations[j - 1].x / side) ? [j] : []));
+        expect(entries.length).toBeGreaterThan(0);
+        for (const j of entries) expect(far.has(j)).toBe(true);
+    });
+
     it('keeps the ends, skips most of a straight, and keeps a bend within its sag', () => {
-        const straight = stationsOf(bend(1e6, 1e-4, 40), half), bent = stationsOf(bend(60, Math.PI / 2, 10), half);
-        const far = farStations({ z: [] } as unknown as Line, straight);
+        const straight = stationsOf(bend(1e6, 1e-4, 40, 2 ** 29 + 1000), half), bent = stationsOf(bend(60, Math.PI / 2, 10), half);
+        const far = farStations({ z: [] } as unknown as Line, straight, 2 ** 20);
         expect(far[0]).toBe(0);
         expect(far.at(-1)).toBe(straight.length - 1);
         expect(far.length).toBeLessThan(straight.length / 4);
-        const curved = farStations({ z: [] } as unknown as Line, bent);
-        expect(curved.length).toBeLessThan(bent.length / 2);
+        const curved = farStations({ z: [] } as unknown as Line, bent, 2 ** 20);
+        expect(curved.length).toBeLessThan(0.6 * bent.length);
         const unit = metresPerUnit(2 ** 29);
         for (let k = 0; k + 1 < curved.length; k++) {
             const [s, t] = [bent[curved[k]], bent[curved[k + 1]]], chord = Math.hypot(t.x - s.x, t.y - s.y);

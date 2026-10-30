@@ -40,7 +40,10 @@ export interface Station {
 
 const angle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 
-/** The stations of a line, in order; `half` gives the half-width at a vertex. */
+/**
+ * The stations of a line, in order; `half` gives the half-width at a vertex. Each span between two vertices
+ * of the tile is sampled alone, from a station on its first vertex, so two tiles that hold a span agree.
+ */
 export function stationsOf(line: Line, half: (v: number) => number): Station[] {
     const n = line.z.length, out: Station[] = [], tangent = (v: number) => { const [x, y] = mitre(line, v); return Math.atan2(y, x); };
     let along = 0, run = 0, kept = tangent(0), before = kept;
@@ -63,13 +66,13 @@ export function stationsOf(line: Line, half: (v: number) => number): Station[] {
             along += d;
             run += d;
             [x, y] = [nx, ny];
-            // A line ends on a station, and each side of a change of its sidewalks has one.
-            const forced = k === fine && (v + 2 === n || line.sidewalks?.[v] !== line.sidewalks?.[v + 1]);
+            // A line ends on a station, as does each vertex of the tile, and each side of a change of its sidewalks has one.
+            const forced = k === fine && (v + 2 === n || (line.anchors?.[v + 1] ?? true) || line.sidewalks?.[v] !== line.sidewalks?.[v + 1]);
             const turn = Math.abs(angle(t - kept)) + Math.abs(angle(t - before));
             before = t;
             if (!forced && run + d <= STEP_M && (run + d <= MIN_STEP_M || turn <= MAX_TURN)) continue;
             run = 0;
-            kept = t;
+            kept = before = t;
             place(v, u, metres, nx, ny, c?.z ?? z1, t);
         }
     }
@@ -100,11 +103,18 @@ function holds(s: Station, t: Station, p: Station): boolean {
     return off <= FAR_SAG_M && Math.abs(s.z + (t.z - s.z) * u - p.z) <= FAR_SAG_Z_M;
 }
 
-/** The indices of the stations that the far range keeps: the ends, each side of a change of the sidewalks, and enough for its chords. */
-export function farStations(line: Line, stations: Station[]): number[] {
-    const out = [0], changes = (j: number) => line.sidewalks?.[stations[j].v] !== line.sidewalks?.[stations[j + 1]?.v];
+/**
+ * The indices of the stations that the far range keeps: the ends, each side of a change of the sidewalks,
+ * the first station in each square of `side` world units, and enough for its chords. A near range ends on
+ * that first station too, so the two ranges meet on it whichever square draws which, and from it on each tile
+ * that holds the way keeps the same stations.
+ */
+export function farStations(line: Line, stations: Station[], side: number): number[] {
+    const square = ({ x, y }: Station) => Math.floor(x / side) * 2 ** 20 + Math.floor(y / side);
+    const stays = (j: number) => line.sidewalks?.[stations[j].v] === line.sidewalks?.[stations[j + 1]?.v] && square(stations[j]) === square(stations[j - 1]);
+    const out = [0];
     for (let from = 0, j = 2; j <= stations.length; j++) {
-        const last = j === stations.length, held = !last && stations[j].along - stations[from].along <= FAR_STEP_M && !changes(j - 1);
+        const last = j === stations.length, held = !last && stations[j].along - stations[from].along <= FAR_STEP_M && stays(j - 1);
         let fits = held;
         for (let k = from + 1; fits && k < j; k++) fits = holds(stations[from], stations[j], stations[k]);
         if (fits) continue;

@@ -3,14 +3,13 @@
 import type { Feature } from '../stream/features';
 import { features, junctions, type Line, type Node } from '../terrain/bins';
 import { halfAt, partnersOf } from '../terrain/corners';
+import { CHILD, size } from '../terrain/lod';
 import { PieceBuilder, type RoadPiece } from './piece';
 import { corridorLine } from './section';
 import { farStations, reachOf, stationsOf, type Station } from './stations';
 import { baseOf, cap, liftOf, prioOf, sweep, type Run } from './sweep';
 import { waysOf } from './ways';
 
-/** The level of the owners, and of their children. */
-export const OWNER = 15, CHILD = 16;
 /** The ground beside a road stands within this many metres of its plane: a piece's heights reach this far past its vertices. */
 const GROUND_M = 15;
 
@@ -30,7 +29,7 @@ function planOf(lines: Line[]): Planned[] {
     const runs = lines.flatMap((line, id) => {
         if (!corridorLine(line) || line.z.length < 2) return [];
         const stations = stationsOf(line, v => halfAt(line, v, partners));
-        return [{ id, line, stations, reach: reachOf(stations), lift: liftOf(line, id), prio: prioOf(line), base: 0, ways, far: farStations(line, stations), ends: [open(line, 0), open(line, line.z.length - 1)] as [boolean, boolean] }];
+        return [{ id, line, stations, reach: reachOf(stations), lift: liftOf(line, id), prio: prioOf(line), base: 0, ways, far: farStations(line, stations, size(CHILD)), ends: [open(line, 0), open(line, line.z.length - 1)] as [boolean, boolean] }];
     });
     plans.set(lines, runs);
     return runs;
@@ -38,14 +37,14 @@ function planOf(lines: Line[]): Planned[] {
 
 /** The corridor mesh of an owner. */
 export function roadMesh(list: Feature[], tile: Node, owner: Node): RoadMesh {
-    const runs = planOf(features(list, tile).lines), side = 2 ** (30 - CHILD), pieces: PieceBuilder[][] = [[], [], [], []];
+    const runs = planOf(features(list, tile).lines), side = size(CHILD), pieces: PieceBuilder[][] = [[], [], [], []];
     const x0 = owner.x * 2 * side, y0 = owner.y * 2 * side;
     const owns = ({ x, y }: Station) => x >= x0 && x < x0 + 2 * side && y >= y0 && y < y0 + 2 * side;
     /** The piece of the child that holds a station, with room for its faces. */
     const pieceAt = ({ x, y }: Station) => {
         const i = Math.floor((x - x0) / side), j = Math.floor((y - y0) / side), list = pieces[j * 2 + i];
         const last = list[list.length - 1];
-        return last?.roomy ? last : list[list.push(new PieceBuilder(x0 + (i + 0.5) * side, y0 + (j + 0.5) * side)) - 1];
+        return last?.roomy ? last : list[list.push(new PieceBuilder(x0 + (i + 0.5) * side, y0 + (j + 0.5) * side, side / 2)) - 1];
     };
     for (const planned of runs) {
         const { stations, far, ends, line } = planned, first = stations.find(owns);
@@ -71,6 +70,14 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node): RoadMesh {
         }
     }
     return { pieces: pieces.flat().map(piece => piece.piece(GROUND_M)) };
+}
+
+/** The heap per station of a plan, and per segment with the tile's shapes, fitted to the V8 heap of fixture tiles. */
+const STATION_BYTES = 240, SEGMENT_BYTES = 430;
+
+/** The heap that hangs from a tile's features once its plan stands. */
+export function planBytes(list: Feature[], tile: Node): number {
+    return planOf(features(list, tile).lines).reduce((sum, { stations, line }) => sum + STATION_BYTES * stations.length + SEGMENT_BYTES * line.z.length, 0);
 }
 
 /** Bytes that a mesh holds. */

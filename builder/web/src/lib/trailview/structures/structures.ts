@@ -4,11 +4,11 @@ import { wgsl } from '../gpu/wgsl';
 import { CASTER_DEPTH, CASTER_PRIMITIVE, NEAR_CASTERS_M } from '../light/shadow';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import { metresPerUnit } from '../terrain/bins';
-import { key, size, type Node } from '../terrain/lod';
+import { key, OWNER, size, type Node } from '../terrain/lod';
 import type { Stamps } from '../terrain/stamps';
 import { ANCHOR_WORDS, ANCHORED_VERTEX } from './anchored';
 import { STRUCTURE_VERTEX } from './mesh';
-import { FLOOR, OWNER, type NodeMeshes } from './node';
+import { FLOOR, type NodeMeshes } from './node';
 import { Pool, type Mesh } from './pool';
 
 /**

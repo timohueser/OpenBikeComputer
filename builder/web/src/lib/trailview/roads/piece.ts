@@ -26,6 +26,8 @@ export interface RoadPiece {
     /** The heights that its vertices can reach. */
     low: number;
     high: number;
+    /** World units that its vertices reach past the child's square. */
+    over: number;
     vertices: ArrayBuffer;
     indices: Uint16Array<ArrayBuffer>;
     near: PieceRange;
@@ -43,13 +45,16 @@ export class PieceBuilder {
     private floats = new Float32Array(this.bytes);
     private low = Infinity;
     private high = -Infinity;
+    /** World units from the middle to the farthest vertex, along x or y. */
+    private out = 0;
     count = 0;
     readonly near: number[] = [];
     readonly far: number[] = [];
     /** The vertices made per station of a line. */
     readonly made = new Map<number, { a: number; dz: number; flags: number; index: number }[]>();
 
-    constructor(private readonly x: number, private readonly y: number) {}
+    /** A piece about a middle, of a square `half` world units each way. */
+    constructor(private readonly x: number, private readonly y: number, private readonly half = 0) {}
 
     /** Whether a cross-section still fits. */
     get roomy(): boolean {
@@ -68,6 +73,7 @@ export class PieceBuilder {
         this.packed[at + 3] = ((Math.round(reach * ACROSS_STEPS) & 0xfff) | (Math.min(ALONG_MOST, Math.max(0, Math.round(along * ALONG_STEPS))) << 12)) >>> 0;
         this.low = Math.min(this.low, z);
         this.high = Math.max(this.high, z);
+        this.out = Math.max(this.out, Math.abs(x - this.x), Math.abs(y - this.y));
         return this.count++;
     }
 
@@ -95,7 +101,7 @@ export class PieceBuilder {
             return vertices;
         };
         return {
-            x: this.x, y: this.y, low: this.low - reach, high: this.high + reach, vertices: this.bytes.slice(0, count * ROAD_VERTEX), indices,
+            x: this.x, y: this.y, low: this.low - reach, high: this.high + reach, over: Math.max(0, this.out - this.half), vertices: this.bytes.slice(0, count * ROAD_VERTEX), indices,
             near: { first: 0, count: near.length, vertices: reached(near) }, far: { first: near.length, count: far.length, vertices: reached(far) }, casters: { first: total, count: 0, vertices: 0 },
         };
     }

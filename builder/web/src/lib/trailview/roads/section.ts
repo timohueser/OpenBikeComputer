@@ -1,7 +1,7 @@
 // The cross-section of a road, track, path or railway: per side, the points across it from the
 // carriageway's edge outward, then the rows of its band. The sweep (sweep.ts) joins the points of two
 // stations into faces, and corridor.wgsl reads their materials and flags.
-import { PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
+import { LIFT_M, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 
 const CLASS_NAMES = Object.keys(PROFILES), SURFACE_NAMES = Object.keys(SURFACES) as (keyof typeof SURFACES)[];
@@ -22,8 +22,6 @@ export const CF = { SAMPLE: 1, MESH: 2, UNDER: 4 } as const;
 const BED_M = 0.25, BED_SLOPE_M = 0.4;
 /** The bed of paving over the core: seen at a grazing angle, the terrain across a narrow core would rise through it. */
 const PAVED_BED_M = 0.05;
-/** A carriageway lies this far over the stamped core, whose tolerance is 2 cm. */
-export const LIFT_M = 0.03;
 /** The crown of a paved carriageway: its middle over its edges, per metre of half-width. A bend's banking takes it over. */
 const CROWN = 0.025;
 /** How far a paved shoulder lies under the carriageway's edge. */
@@ -118,7 +116,7 @@ function core(line: Line, side: 1 | -1, v: number, h: number): { out: Part[]; a:
  */
 export function sideOf(line: Line, side: 1 | -1, v: number, h: number): { parts: Part[]; edge: number } {
     const { out, a } = core(line, side, v, h), path = line.kind === PATH, rows = path ? PATH_BAND_M : BAND_M;
-    rows.forEach((d, row) => out.push({ a: a + d, dz: 0, mat: MAT.GROUND, flags: CF.SAMPLE, far: row === 1 }));
+    rows.forEach((d, row) => out.push({ a: a + d, dz: 0, mat: MAT.GROUND, flags: CF.SAMPLE, far: row === 0 }));
     out.push({ a: a + (path ? PATH_BAND_OUTER_M : BAND_OUTER_M), dz: 0, mat: MAT.GROUND, flags: CF.MESH, far: true });
     return { parts: out, edge: a };
 }

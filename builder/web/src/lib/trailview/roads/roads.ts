@@ -4,19 +4,17 @@ import { wgsl } from '../gpu/wgsl';
 import { CASTER_DEPTH, CASTER_PRIMITIVE } from '../light/shadow';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import { featureTile } from '../terrain/bins';
-import { key, size, type Node } from '../terrain/lod';
+import { CHILD, key, OWNER, size, type Node } from '../terrain/lod';
 import type { FeatureTiles } from '../terrain/stamps';
 import { Pool } from '../structures/pool';
 import { stopped } from '../stream/terrain';
-import { CHILD, meshBytes, OWNER, type RoadMesh } from './mesh';
+import { meshBytes, type RoadMesh } from './mesh';
 import { ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 
 /** Roads draw as corridors this far from the eye; past it the paint draws them. The one value of the range. */
 export const RANGE_M = 600;
 /** A piece draws its far range from this far from the eye. */
 const FAR_FROM_M = 200;
-/** Unpaved paint goes off this far inside the range. */
-const PAINT_INSIDE_M = 40;
 /** An owner builds this far before it comes into range: about 20 s at the speed of a car in a valley. */
 const AHEAD_M = 300;
 /** The GPU pools, with the middles of the draws under the owner's budget of 48 MiB. */
@@ -27,7 +25,7 @@ const MESH_BYTES = 32 * 2 ** 20;
 const REQUESTS = 4;
 /** Pieces that a frame draws at most: more than lie within the range, also with their split towns. */
 const DRAWS = 256;
-const NOTHING: RoadMesh = { pieces: [] };
+const NOTHING: RoadMesh = { pieces: [] }, FAILED: RoadMesh = { pieces: [] };
 /** Half the side of a child in world units. */
 const HALF = size(CHILD) / 2;
 
@@ -63,8 +61,8 @@ export class Roads {
     private next = 0;
     /** The pieces in range, near first, with their metres from the eye. */
     private pieces: { piece: RoadPiece; d: number }[] = [];
-    /** The nearest owner in range without its mesh. */
-    private unbuilt = Infinity;
+    /** The metres from the eye to the nearest owner in range without its mesh, up to the range. */
+    private built = 0;
     /** Of the pieces in view, each one's place in `pieces` and its range. */
     private draws: { slot: number; range: PieceRange }[] = [];
     failed = 0;
@@ -109,7 +107,8 @@ export class Roads {
 
     /**
      * The pieces of a frame about the eye (world units, and metres per unit), and of them those that `shows`
-     * keeps in view, and whether meshes may build. True when the pieces in range differ from the last frame's.
+     * keeps in view, and whether meshes may build. True when the pieces in range or the owners that hold
+     * them differ from the last frame's: either moves what `write` returns.
      */
     update(eye: { x: number; y: number; unit: number }, shows: (piece: RoadPiece) => boolean, build: boolean): boolean {
         const side = size(OWNER), reach = RANGE_M + AHEAD_M, owners: { node: Node; d: number }[] = [], cells = Math.ceil(reach / eye.unit / side);
@@ -121,16 +120,13 @@ export class Roads {
             }
         }
         const pieces: { piece: RoadPiece; d: number }[] = [], wanted = new Set<string>();
-        let held = 0;
-        this.unbuilt = Infinity;
+        let held = 0, built = RANGE_M;
         for (const { node, d } of owners.sort((a, b) => a.d - b.d)) {
             // The farthest owners give way when the nearer ones fill the cache.
             const name = key(node), mesh = held < MESH_BYTES ? this.mesh(node, name, build) : undefined;
-            if (!mesh) {
-                this.unbuilt = Math.min(this.unbuilt, d);
-                continue;
-            }
-            wanted.add(name);
+            if (mesh) wanted.add(name);
+            if (!mesh || mesh === FAILED) built = Math.min(built, d);
+            if (!mesh) continue;
             held += meshBytes(mesh);
             for (const piece of mesh.pieces) {
                 const d = away(piece, eye.x, eye.y, eye.unit);
@@ -139,7 +135,8 @@ export class Roads {
         }
         this.trim(wanted);
         pieces.sort((a, b) => a.d - b.d);
-        const changed = pieces.length !== this.pieces.length || pieces.some(({ piece }, i) => piece !== this.pieces[i].piece);
+        const changed = built !== this.built || pieces.length !== this.pieces.length || pieces.some(({ piece }, i) => piece !== this.pieces[i].piece);
+        this.built = built;
         this.pieces = pieces;
         this.draws = pieces.slice(0, DRAWS).flatMap(({ piece, d }, slot) => (shows(piece) ? [{ slot, range: d < FAR_FROM_M ? piece.near : piece.far }] : []));
         return changed;
@@ -153,7 +150,7 @@ export class Roads {
         const middles = new Int32Array(2 * Math.min(DRAWS, this.pieces.length));
         for (let slot = 0; 2 * slot < middles.length; slot++) middles.set([this.pieces[slot].piece.x, this.pieces[slot].piece.y], 2 * slot);
         if (middles.length) r.device.queue.writeBuffer(r.middles, 0, middles);
-        return Math.min(RANGE_M - PAINT_INSIDE_M, this.unbuilt, ...this.pieces.filter(({ piece }) => !r.pool.at(piece)).map(({ d }) => d));
+        return Math.min(this.built, ...this.pieces.filter(({ piece }) => !r.pool.at(piece)).map(({ d }) => d));
     }
 
     /** Before the terrain: early depth then rejects the terrain under a road. */
@@ -198,10 +195,10 @@ export class Roads {
         if (build && !this.pending.has(name) && this.pending.size < REQUESTS) {
             this.pending.add(name);
             this.ask(tile, node).then(mesh => this.keep(name, mesh), error => {
-                // A tile that fails has no corridors: the paint draws its roads.
+                // An owner that fails has no corridors, and stops what `write` returns: the paint draws its roads.
                 if (!stopped(error)) console.warn(`Road mesh ${name}: ${error instanceof Error ? error.message : error}`);
                 this.failed++;
-                this.keep(name, NOTHING);
+                this.keep(name, FAILED);
             }).finally(() => {
                 this.pending.delete(name);
                 this.changed();
@@ -222,6 +219,7 @@ export class Roads {
             if (wanted.has(name)) continue;
             this.meshes.delete(name);
             this.held -= meshBytes(mesh);
+            for (const piece of mesh.pieces) this.resources?.pool.forget(piece);
         }
     }
 
