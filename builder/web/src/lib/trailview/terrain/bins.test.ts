@@ -347,6 +347,12 @@ describe('a junction', () => {
         expect(Math.abs(crossSlope(lines[0], 0, 100, 0))).toBeCloseTo(0.05, 3);
     });
 
+    it('keeps the marks of a line past a vertex that stands alone between unknown heights', () => {
+        const xy = [1000, 4000, 1500, 4000, 2000, 4000, 2500, 4000, 3000, 4000, 3500, 4000, 4000, 4000];
+        const { lines } = features([way('road', { highway: 'service' }, xy, [1000, NaN, 1000, NaN, 1000, 1000, 1000], [0, 0, 0, 0, 0, SIDE_ON, 0])], tile);
+        expect(lines.map(line => line.sideWays)).toEqual([[0, SIDE_ON, 0]]);
+    });
+
     it('marks the way out of the visit that the bake marks, where a way passes a point twice', () => {
         // A stem runs into a loop that ends on the stem's last vertex, as a side of the junction.
         const xy = [1000, 4000, 3000, 4000, 3500, 3500, 4000, 4000, 3500, 4500, 3000, 4000];

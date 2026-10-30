@@ -318,7 +318,9 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
 function sidesAlong({ xy, z, plan }: Feature['parts'][number], world: (xy: ArrayLike<number>, v: number) => number[]): ((shape: number[]) => number[]) | undefined {
     const side = plan?.side;
     if (!z || !side?.some(Boolean)) return undefined;
-    const known = Array.from(z.keys()).filter(v => !Number.isNaN(z[v]));
+    // A vertex with no known height beside it starts no line, so no shape reaches it.
+    const has = (v: number) => v >= 0 && v < z.length && !Number.isNaN(z[v]);
+    const known = Array.from(z.keys()).filter(v => has(v) && (has(v - 1) || has(v + 1)));
     let k = 0;
     return shape => Array.from({ length: shape.length / 2 }, (_, s) => {
         if (k === known.length) return 0;
