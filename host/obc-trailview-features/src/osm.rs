@@ -205,7 +205,7 @@ fn object(entries: &[Entry], feature: &Value) -> Option<Object> {
     let point = |v: &Value| -> Option<[f64; 2]> { Some(world(v[0].as_f64()?, v[1].as_f64()?)) };
     let coordinates = &geometry["coordinates"];
     let parts = match kind {
-        Geometry::Point => vec![Part { outer: false, points: vec![point(coordinates)?], z: None }],
+        Geometry::Point => vec![Part { outer: false, points: vec![point(coordinates)?], z: None, plan: None }],
         Geometry::Line => {
             let line = coordinates.as_array()?;
             // Osmium gives a closed way as a line and as an area. When one tag selects it for both, as
@@ -217,7 +217,7 @@ fn object(entries: &[Entry], feature: &Value) -> Option<Object> {
                     }
                 }
             }
-            vec![Part { outer: false, points: line.iter().map(point).collect::<Option<_>>()?, z: None }]
+            vec![Part { outer: false, points: line.iter().map(point).collect::<Option<_>>()?, z: None, plan: None }]
         }
         Geometry::Area => {
             let mut parts = Vec::new();
@@ -225,7 +225,7 @@ fn object(entries: &[Entry], feature: &Value) -> Option<Object> {
                 for (index, ring) in polygon.as_array()?.iter().enumerate() {
                     let ring = ring.as_array()?;
                     let points = ring[..ring.len().saturating_sub(1)].iter().map(point).collect::<Option<_>>()?;
-                    parts.push(Part { outer: index == 0, points, z: None });
+                    parts.push(Part { outer: index == 0, points, z: None, plan: None });
                 }
             }
             parts

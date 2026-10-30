@@ -65,7 +65,7 @@ mod tests {
 
     use super::*;
     use crate::pmtiles::{self, Archive, Header};
-    use crate::tiles::{decode, Feature, Tiles, EXTENT, FORMAT, MAX_ZOOM, MIN_ZOOM};
+    use crate::tiles::{decode, Feature, Tiles, EXTENT, FINE, FORMAT, MAX_ZOOM, MIN_ZOOM};
 
     /// A zoom-13 tile in Engelberg. Each node is (id, u, v) in its tile units.
     const COLUMN: u32 = 4286;
@@ -321,9 +321,9 @@ mod tests {
         let road = find(left, "road");
         assert_eq!(road.tags, tags(&[("highway", "track"), ("surface", "gravel")]));
         // A cut keeps the segment whole, so both tiles hold the same one, and its heights follow the terrain.
-        assert_eq!(road.parts[0].xy, [[7000, 4000], [17500, 4000]]);
+        assert_eq!(road.parts[0].xy, [[7000 * FINE, 4000 * FINE], [17500 * FINE, 4000 * FINE]]);
         let shift = EXTENT as i64;
-        assert_eq!(right[0].parts[0].xy, [[7000 - shift, 4000], [17500 - shift, 4000]]);
+        assert_eq!(right[0].parts[0].xy, [[(7000 - shift) * FINE, 4000 * FINE], [(17500 - shift) * FINE, 4000 * FINE]]);
         let cm = |value: f64| (value * 100.0).round_ties_even() / 100.0;
         for feature in [&road, &right[0]] {
             assert_eq!(feature.parts[0].z.as_ref().unwrap(), &[cm(height(7000.0)), cm(height(17500.0))]);

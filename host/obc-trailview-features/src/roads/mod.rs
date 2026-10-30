@@ -13,8 +13,13 @@
 //! passes over the other, at one layer the better class, and of one class the later one. A ford lies
 //! FORD_M below the water it crosses. Tracks side by side, as OSM maps each track of a double line,
 //! lie at one height: their beds are one bed. A track on a ramp beside another keeps its own height.
+//! Each solve ends with the alignment of its ways (`align`): a fitted plan, and the vertices that hold it.
 
+mod align;
+#[cfg(test)]
+mod align_tests;
 mod area;
+mod curve;
 mod fit;
 mod network;
 mod rows;
@@ -23,6 +28,7 @@ mod tests;
 
 use std::collections::BTreeSet;
 
+pub use align::polyline;
 pub use area::{context, solve_by_area};
 use fit::{fit, Block, Graph, Rows, Term};
 use network::{hypot, sub, Network};
@@ -30,13 +36,11 @@ use rows::union;
 
 use crate::geometry::percentile;
 use crate::structures::{BORE_M, BORE_PATH_M, BORE_RAIL_M};
-use crate::{metres, Terrain};
+use crate::{metres, Plan, Terrain};
 
 const SAMPLE_M: f64 = 2.0;
-/// While it solves, a way has a vertex at least every VERTEX_M; the tiles keep one only where the
-/// profile bends by more than KEEP_M there.
+/// While it solves, a way has a vertex at least every VERTEX_M.
 const VERTEX_M: f64 = 10.0;
-const KEEP_M: f64 = 0.2;
 /// A side road lies on the surface of the through road for this far from their junction; a path
 /// that meets a path, for APPROACH_PATH_M.
 const APPROACH_M: f64 = 4.0;
@@ -84,13 +88,19 @@ const TOLERANCE_M: f64 = 1e-3;
 /// The cell of the grid of the crossings in world units, about 100 m.
 const GRID_UNITS: f64 = 2.5e-6;
 
-/// A class of the table: its grade limit (infinite for none), its smoothing length, and whether it
-/// is a track.
+/// A class of the table: its grade limit (infinite for none), its smoothing length, whether it is a
+/// track, and its alignment: the tolerance of the plan, the design speed, the most banking, the most
+/// widening, and how far the curve of its kept vertices may leave the fit.
 #[derive(Clone, Debug)]
 pub struct Class {
     pub grade: f64,
     pub smooth_m: f64,
     pub rail: bool,
+    pub plan_tol_m: f64,
+    pub design_kmh: f64,
+    pub bank: f64,
+    pub widen_m: f64,
+    pub keep_m: f64,
 }
 
 /// The classes from the most important down, as the junctions rank them; a class from `path` on is
@@ -127,9 +137,27 @@ pub struct River {
     pub levels: Vec<f64>,
 }
 
-/// Per feature, per part: its points with the vertices that the solver adds and their heights (NaN
-/// where unknown), or None for a part that the solver leaves alone.
-pub type Heights = Vec<Vec<Option<(Vec<[f64; 2]>, Vec<f64>)>>>;
+/// A way after the solve: its kept vertices on the fitted curve, their heights (NaN where unknown) and
+/// alignment, and the index of the OSM vertex that each follows, which names the job that owns it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Way {
+    pub points: Vec<[f64; 2]>,
+    pub z: Vec<f64>,
+    pub plan: Vec<Plan>,
+    pub osm: Vec<usize>,
+}
+
+impl Way {
+    fn add(&mut self, other: &Way, i: usize) {
+        self.points.push(other.points[i]);
+        self.z.push(other.z[i]);
+        self.plan.push(other.plan[i]);
+        self.osm.push(other.osm[i]);
+    }
+}
+
+/// Per feature, per part: its way, or None for a part that the solver leaves alone.
+pub type Ways = Vec<Vec<Option<Way>>>;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Metrics {
@@ -183,18 +211,18 @@ impl Metrics {
     }
 }
 
-/// The heights of a solve; the features that are culverts; the tunnels that pass under a road or a
-/// path; and the metrics.
+/// The ways of a solve; the ways that run on from each other as (feature, part, at its last vertex);
+/// the features that are culverts; the tunnels that pass under a road or a path; and the metrics.
 #[derive(Debug, Default)]
 pub struct Solved {
-    pub heights: Heights,
+    pub ways: Ways,
+    pub joins: Vec<[(usize, usize, bool); 2]>,
     pub culverts: BTreeSet<usize>,
     pub underpasses: BTreeSet<usize>,
     pub metrics: Metrics,
 }
 
-/// The heights of the features, with vertices added where the profile bends between two of OSM.
-/// `rivers` are the solved waterways, for the fords and the decks. `owned(xy)` marks the OSM vertices
+/// The heights and the alignment of the features. `rivers` are the solved waterways, for the fords and the decks. `owned(xy)` marks the OSM vertices
 /// of the area of a job of `solve_by_area`: the culverts, the tunnels and the metrics count only the
 /// ways that start on one of them, and the vertices from one of them to the next vertex of OSM.
 pub fn solve(
@@ -205,7 +233,7 @@ pub fn solve(
     owned: Option<&dyn Fn([f64; 2]) -> bool>,
 ) -> Solved {
     let mut solved =
-        Solved { heights: features.iter().map(|f| vec![None; f.parts.len()]).collect(), ..Default::default() };
+        Solved { ways: features.iter().map(|f| vec![None; f.parts.len()]).collect(), ..Default::default() };
     let Some(net) = Network::new(features, classes) else { return solved };
     let (n, a, b, length) = (net.count, &net.a, &net.b, &net.length);
     let total = net.vertex_xy.len();
@@ -550,15 +578,14 @@ pub fn solve(
     }
 
     let culvert = culverts(&net, &z, &seg, &t, &h, &finite);
-    let keep = kept(&net, &z, &known);
-    for (w, &(f, p)) in net.way_feature.iter().enumerate() {
-        let span = net.way_first[w]..=net.way_last[w];
-        let vertices: Vec<usize> = span.filter(|&v| keep[v]).collect();
-        let points = vertices.iter().map(|&v| net.vertex_xy[v]).collect();
-        let heights =
-            vertices.iter().map(|&v| if known[net.vertex_var[v]] { z[net.vertex_var[v]] } else { f64::NAN }).collect();
-        solved.heights[f][p] = Some((points, heights));
+    let mut wet = vec![false; n];
+    fords.variables.iter().flatten().for_each(|&v| wet[v] = true);
+    let (ways, joins) = align::align(&net, &z, &known, &wet, classes, &mine);
+    for (way, &(f, p)) in ways.into_iter().zip(&net.way_feature) {
+        solved.ways[f][p] = Some(way);
     }
+    let named = |(w, end): (usize, bool)| (net.way_feature[w].0, net.way_feature[w].1, end);
+    solved.joins = joins.into_iter().map(|join| join.map(named)).collect();
     let way_mine: Vec<bool> = net.way_first.iter().map(|&v| mine[v]).collect();
     solved.culverts = (0..culvert.len()).filter(|&w| culvert[w] && way_mine[w]).map(|w| net.way_feature[w].0).collect();
     let cz = deck(&c_rows, &z);
@@ -640,66 +667,4 @@ fn culverts(net: &Network, z: &[f64], seg: &[usize], t: &[f64], h: &[f64], finit
         }
     }
     (0..ways).map(|w| short[w] && rise[w] > f64::NEG_INFINITY && rise[w] <= CULVERT_RISE_M).collect()
-}
-
-/// Per vertex, whether the tiles keep it: each vertex of OSM and at an approach distance, and an
-/// added vertex where the profile leaves the straight line between its neighbours by more than
-/// KEEP_M (Douglas-Peucker in the plane of distance and height, over each OSM segment).
-fn kept(net: &Network, z: &[f64], known: &[bool]) -> Vec<bool> {
-    let mut keep = net.vertex_fixed.clone();
-    let zv: Vec<f64> = net.vertex_var.iter().map(|&v| if known[v] { z[v] } else { f64::NAN }).collect();
-    let mut v = 0;
-    while v < net.vertex_xy.len() {
-        if net.vertex_osm[v] {
-            v += 1;
-            continue;
-        }
-        // The added vertices of one OSM segment, between the vertices i and j about them.
-        let (i, segment) = (v - 1, net.vertex_segment[v]);
-        while v < net.vertex_xy.len() && !net.vertex_osm[v] && net.vertex_segment[v] == segment {
-            v += 1;
-        }
-        let j = v;
-        let worst = (i + 1..j)
-            .map(|k| {
-                let off = (zv[k] - (zv[i] + (zv[j] - zv[i]) * net.vertex_t[k])).abs();
-                if off.is_finite() {
-                    off
-                } else {
-                    f64::INFINITY
-                }
-            })
-            .fold(f64::NEG_INFINITY, f64::max);
-        if worst <= KEEP_M {
-            continue;
-        }
-        if !zv[i..=j].iter().all(|z| z.is_finite()) {
-            keep[i..=j].fill(true);
-            continue;
-        }
-        let mut stops = vec![i];
-        stops.extend((i + 1..j).filter(|&k| net.vertex_fixed[k]));
-        stops.push(j);
-        let mut spans: Vec<(usize, usize)> = stops.windows(2).map(|s| (s[0], s[1])).collect();
-        while let Some((p, q)) = spans.pop() {
-            if q - p < 2 {
-                continue;
-            }
-            let tp = if p != i { net.vertex_t[p] } else { 0.0 };
-            let tq = if q != j { net.vertex_t[q] } else { 1.0 };
-            let mut far = (p + 1, f64::NEG_INFINITY);
-            for k in p + 1..q {
-                let off = (zv[k] - (zv[p] + (zv[q] - zv[p]) * (net.vertex_t[k] - tp) / (tq - tp))).abs();
-                if off > far.1 {
-                    far = (k, off);
-                }
-            }
-            if far.1 > KEEP_M {
-                keep[far.0] = true;
-                spans.push((p, far.0));
-                spans.push((far.0, q));
-            }
-        }
-    }
-    keep
 }

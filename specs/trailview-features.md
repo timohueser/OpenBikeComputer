@@ -4,7 +4,7 @@ The archive of the layer `planner/trailview-features`: the OSM features that Tra
 their heights. The kind table [`data/trailview/kinds.json`](../data/trailview/kinds.json) selects
 the features and the tags that the tiles keep.
 
-- Version: `features_format` 2. A reader reads only the format that it knows.
+- Version: `features_format` 3. A reader reads only the format that it knows.
 - Writers: the bake `host/obc-trailview-features`. Its step reads the OSM of `planner/osm` and the
   master terrain of the grid of `planner/terrain` in the same release, and the water polygons of
   the source `water-polygons`.
@@ -23,7 +23,7 @@ parent, or of its own tile below zoom 11 ([`obc-data.md`](obc-data.md)).
 
 | Metadata | Value |
 | --- | --- |
-| `features_format` | 2 |
+| `features_format` | 3 |
 | `extent` | 16384: tile units across a tile, about 0.2 m at zoom 13 in the Alps |
 | `buffer_m` | 40: the buffer on the ground, in metres |
 | `attribution` | The credit of OpenStreetMap |
@@ -52,8 +52,9 @@ on a shared edge or in the buffer of two tiles is drawn once.
 
 ### Generalization
 
-Zoom 13 keeps each vertex, and the vertices that the road solver adds (see Heights). Below zoom
-13, the bake simplifies each line and ring with Douglas-Peucker to `extent / 2048` tile units. A
+Zoom 13 keeps each vertex, but on a way that the road solver aligns (see Alignment). Below zoom
+13, the bake simplifies each line and ring with Douglas-Peucker to `extent / 2048` tile units, and
+the features have no alignment: a reader draws the chords, which lie on the curve at each vertex. A
 vertex that two features share stays, and so do the ends of a line. Then each edge of an area that
 crosses another edge of the same feature gets back the vertex at which Douglas-Peucker would
 split it next, until no two edges cross. Thus a ring that does not cross itself in OSM does not
@@ -77,9 +78,12 @@ tile    = varint string_count, string × string_count, varint feature_count, fea
 string  = varint byte_length, UTF-8 bytes
 feature = varint kind, varint tag_count, (varint key, varint value) × tag_count,
           varint header, part × part_count
-header  = part_count × 8 + has_z × 4 + geometry
-part    = varint (vertex_count × 2 + outer), vertex × vertex_count
+header  = part_count × 16 + has_plan × 8 + has_z × 4 + geometry
+part    = varint (vertex_count × 2 + outer), vertex × vertex_count, then plan when has_plan is 1
 vertex  = zigzag dx, zigzag dy, then varint z_code when has_z is 1
+plan    = varint 0 for a part with no alignment, or varint along_code,
+          zigzag tangent × vertex_count, zigzag grade × vertex_count,
+          zigzag bank × vertex_count, varint widen × vertex_count
 ```
 
 `kind`, `key` and `value` are indices from 0 into the strings of the tile. The tags of a feature are
@@ -95,7 +99,9 @@ Coordinates are Web Mercator tile units with the origin at the north-west corner
 to the east and y to the south. The tile square is 0 to 16384 on both axes. A coordinate in the
 buffer is below 0 or above 16384. For tile column `c` and row `r` at zoom `z`, a point with world
 coordinates `wx`, `wy` in [0, 1] has `x = round(wx × 2^z × 16384) − 16384c` and
-`y = round(wy × 2^z × 16384) − 16384r`, so neighbouring tiles round a point the same way.
+`y = round(wy × 2^z × 16384) − 16384r`, so neighbouring tiles round a point the same way. A feature
+with `has_plan` 1 counts in quarters of a tile unit: `x = round(wx × 2^z × 65536) − 65536c`, and the
+same for `y`. A tile unit would move a smooth curve by up to 10 cm at each vertex.
 
 `dx` and `dy` are the difference from the vertex before, across the parts of the feature. The
 first vertex of a feature is the difference from (0, 0).
@@ -179,15 +185,76 @@ culvert, and a tunnel passes under a road, by the solve of the area of its first
 an area does not depend on the other solves, so the heights do not depend on how many solves run at
 once.
 
-The tiles keep the vertices of OSM and the vertex at the end of each approach of a side road, and
-add a vertex between two of them where the solved height leaves the straight line between them by
-more than 20 cm. A bridge shorter than 8 m whose deck lies no more than 1 m above the terrain is a
-culvert: the tiles keep it without its `bridge` tag, as a road. A tunnel whose terrain lies less
+A bridge shorter than 8 m whose deck lies no more than 1 m above the terrain is a culvert: the tiles
+keep it without its `bridge` tag, as a road. A tunnel whose terrain lies less
 than its bore (5 m, 2.6 m for a path, 6.5 m for a track) over it everywhere runs under something
 that the terrain leaves out, such as a building: the tiles keep it without its `tunnel` tag, as a
 way of its class. A `building_passage` and a tunnel under a road, a path or a track stay tunnels.
 The tiles leave out a part of a tunnel that rises more than 5 m over the terrain anywhere farther
 than 20 m from its ends.
+
+### Alignment
+
+The road solver also fits the plan of each way that it sets the heights of. The fit runs in each
+solve of an area, on the ways of that solve, and each vertex takes its alignment from the solve of
+the area that gives it its height. A solve holds the ways within 500 m of its area, and the fit of a
+way reaches only some tens of metres along it, so that two areas agree to 2 cm and 0.5° where they
+meet.
+
+A stroke is a chain of ways that run on from each other. Where ways end at one point, two ends
+within 60° of straight on join: of the pairs, the one whose lower class comes first in the table,
+then the one that runs most nearly straight on. The two ways can differ in class, and another way
+can pass through the point. The two ways share the tangent at their join.
+
+The fit takes a sample of each stroke about every 2 m, and minimises the square of the distance to
+the line of OSM plus a penalty on the third difference of the samples. The smoothing length is 25
+`plan_tol_m` of the class table, and the fit holds a sample harder while it leaves the line by more
+than `plan_tol_m`. These vertices do not move:
+
+- a junction, other than a point where only the two ways of a stroke meet,
+- a vertex of OSM of a bridge or a tunnel,
+- the end of the approach of a side road,
+- a vertex that a way shares with a river or a stream, and each vertex of a ford's crossing,
+- the two ends of a stroke.
+
+A class with a `design_kmh` banks and widens in a bend of signed curvature `k`, from the fitted line:
+
+- The bank is `V² |k| / 254`, at most `bank` of the class, to the inside of the bend.
+- The widening is `widen_m` of the class in a radius of 10 m or less, and zero from 25 m, linear
+  between.
+- Both run in along the stroke: a triangle filter of ±22 m for the bank and ±12 m for the widening.
+  Both are zero within 14 m of a bridge, a tunnel, or a junction with a way that is not of a lower
+  class, and reach their full value 18 m past that.
+- The widening moves the curve to the inside of the bend by half of it, so that the outer edge keeps
+  its line, but not within 14 m of a vertex that does not move. The rest is the field `widen`.
+
+The tiles keep the vertices that do not move and each end of a run of known heights. After a kept
+vertex, the next one is the farthest point of the fit for which the curve below holds the fit and
+the solved heights within `keep_m` of the class table, and its chord holds the fit within 2 m. A tile
+cuts a way by its chords, so this leaves 38 m of the buffer. Other vertices of OSM do not stay.
+
+Between two vertices of a part, with the positions `p0`, `p1`, the unit tangents `t0`, `t1`, the
+heights `z0`, `z1`, the grades `g0`, `g1` and the chord `c` in metres, the curve at `u` from 0 to 1
+is the cubic Hermite curve
+
+```
+h00 = 2u³ − 3u² + 1,  h10 = u³ − 2u² + u,  h01 = −2u³ + 3u²,  h11 = u³ − u²
+p   = h00 p0 + h10 c t0 + h01 p1 + h11 c t1
+z   = h00 z0 + h10 c g0 + h01 z1 + h11 c g1
+```
+
+The fields follow the direction of the part:
+
+| Field | Value |
+| --- | --- |
+| `along_code` | 1 + 2 × (decimetres along its stroke at the first vertex) + 1 when the metres fall along the part: it runs against its stroke. A stroke starts at 0 m at the end of the way that comes first in the bake's order of the chain. The metres are the length of the curve |
+| `tangent` | The difference from the vertex before, 0 before the first vertex of a part, in 1/1024 of a turn from +x to +y, wrapped to −512 to 511. A reader takes the sum modulo 1024 |
+| `grade` | The difference from the vertex before, 0 before the first vertex of a part, in 1/250. The rise per metre: from the solved heights, not fitted a second time |
+| `bank` | In 1/1000. The rise per metre to the left of the direction |
+| `widen` | In centimetres. What the half-width of the road gains at the vertex |
+
+Thus the tiles that hold a vertex hold one alignment there, and the metres along run on through a
+stroke across tiles and ways.
 
 ### Structures
 

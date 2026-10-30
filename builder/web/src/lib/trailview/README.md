@@ -115,15 +115,18 @@ npm run check:wgsl          # cargo install naga-cli --version 30.0.1 --locked
 
 ## The fixture
 
-`tests/browser/trailview/fixture/` holds the planner terrain of a box at Engelberg, from
-Copernicus GLO-30 square N46 E008, its feature tiles and its config. To make it again from OSM.pbf:
+`tests/browser/trailview/fixture/` holds the planner terrain of a box at Engelberg, its feature
+tiles and its config. `box.sh` made the terrain. To bake the features on it, from GLO-30
+square N46 E008 in DIR, with `make-fixture.py` as FIX:
 
 ```sh
+osmium extract -b 8.34961,46.73986,8.48145,46.83013 switzerland.osm.pbf -o osm.pbf
 cargo run --release --locked -p obc-dem --features terrarium --bin planner-dem -- \
   --dem DIR --bounds 8.37,46.765,8.46,46.83 --output terrain.mbtiles
-cargo run --release --locked -p obc-trailview-features -- --osm OSM.pbf \
+uv run --locked --group planner-maps python FIX overlay terrain.mbtiles
+cargo run --release --locked -p obc-trailview-features -- --osm osm.pbf \
   --terrain terrain.mbtiles --bounds 8.37,46.765,8.46,46.83 --output features.pmtiles
-uv run --locked --group planner-maps python builder/web/tests/browser/trailview/make-fixture.py terrain.mbtiles features.pmtiles
+uv run --locked --group planner-maps python FIX features features.pmtiles
 ```
 
 ## Pitfalls

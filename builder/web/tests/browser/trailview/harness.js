@@ -58,7 +58,7 @@ export async function tileService(origin, tiles, ground, colour = 'webp-12', fea
     const json = value => found(Buffer.from(JSON.stringify(value)), 'application/json');
     return async path => {
         if (path === '/trailview-features.json') {
-            return json({ tilejson: '3.0.0', tiles: [`${origin}/trailview-features/{z}/{x}/{y}.bin`], minzoom: 8, maxzoom: 13, bounds: [-180, -85, 180, 85], features_format: 2, extent: 16384 });
+            return json({ tilejson: '3.0.0', tiles: [`${origin}/trailview-features/{z}/{x}/{y}.bin`], minzoom: 8, maxzoom: 13, bounds: [-180, -85, 180, 85], features_format: 3, extent: 16384 });
         }
         const feature = /^\/trailview-features\/(\d+\/\d+\/\d+\.bin)$/.exec(path);
         if (feature) {

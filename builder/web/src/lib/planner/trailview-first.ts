@@ -201,7 +201,7 @@ async function dropFeatures(config: PlannerConfig, at: Coordinate): Promise<Feat
 export function localGeometry(features: Feature[], at: Coordinate): { lines: Xy[][]; houses: House[] } {
     const [x, y] = worldPixel(at, 2 ** FEATURE_ZOOM), tx = Math.floor(x), ty = Math.floor(y);
     const scale = metresPerUnit(at[1], FEATURE_WORLD), u = (x - tx) * EXTENT, v = (y - ty) * EXTENT;
-    const local = (xy: Int32Array): Xy[] => Array.from({ length: xy.length / 2 }, (_, i) => [(xy[2 * i] - u) * scale, (v - xy[2 * i + 1]) * scale]);
+    const local = (xy: ArrayLike<number>): Xy[] => Array.from({ length: xy.length / 2 }, (_, i) => [(xy[2 * i] - u) * scale, (v - xy[2 * i + 1]) * scale]);
     // A house whose box lies farther than this from the drop neither holds the eye, which moves at most MAX_SNAP_M,
     // nor shares the wall that the eye leaves a house by, short of a hall 300 m across.
     const near = (ring: Xy[]) => {

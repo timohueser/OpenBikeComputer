@@ -3,6 +3,7 @@
 import { EARTH_RADIUS } from '../frame/frame';
 import { DEEPEST, EXTENT, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
+import { polyline } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
 import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
@@ -233,7 +234,7 @@ export function features(list: Feature[], tile: Node): Shapes {
 
 function shapesOf(list: Feature[], tile: Node): Shapes {
     const scale = unitScale(tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
-    const world = (xy: Int32Array, v: number) => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
+    const world = (xy: ArrayLike<number>, v: number) => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
     const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [];
     const area = (parts: Feature['parts']) => ({ rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
     const buildings: Building[] = list.filter(({ kind }) => kind === 'building').map(({ tags, parts }) => ({ ...area(parts), cars: CARS.includes(tags.building) }));
@@ -268,7 +269,8 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         // In a town, where a building is near a piece of it: a road has a sidewalk on that side, and a footway is paved.
         const sidewalk = type === ROAD && kind !== 'gallery' ? sidewalkOf(tags, surface) : 0;
         const paving = type === PATH && kind !== 'gallery' && surfaceOf(tags, true) !== surface;
-        for (const { xy, z } of parts) {
+        for (const part of parts) {
+            const { xy, z } = polyline(part, scale * metresPerUnit(world(part.xy, 0)[1]));
             if (!z) continue;
             // A line splits where a vertex has no height: a missing height is unknown, never 0 m. A footway splits
             // where it enters or leaves a town.
@@ -385,7 +387,7 @@ function halfOf(kind: string, tags: Record<string, string>): number {
     return isTrack(tags) ? SURFACES[trackSurface(tags)] : halfWidth(tags, surfaceOf(tags));
 }
 
-function bedsOf(list: Feature[], world: (xy: Int32Array, v: number) => number[]): Beds {
+function bedsOf(list: Feature[], world: (xy: ArrayLike<number>, v: number) => number[]): Beds {
     const segments: Beds['segments'] = [], vertices = new Map<string, number[]>(), points: number[][][] = [];
     list.forEach(({ kind, tags, parts }, feature) => {
         // A bridge's and a tunnel's beds are off the ground.

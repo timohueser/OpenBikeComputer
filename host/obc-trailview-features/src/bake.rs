@@ -73,7 +73,7 @@ impl Placer {
 }
 
 fn line(points: Vec<[f64; 2]>, z: Option<Vec<f64>>) -> Vec<Part> {
-    vec![Part { outer: false, points, z }]
+    vec![Part { outer: false, points, z, plan: None }]
 }
 
 /// Write the archive of the region to `output` from the OSM `pbf` and the `terrain`; the metrics.
@@ -237,10 +237,10 @@ pub fn bake(
         road_metrics.insert("cut_features".into(), cut.len().into());
         let culverts: Vec<usize> = solved.culverts.iter().map(|&i| kept[i]).collect();
         let underpasses: Vec<usize> = solved.underpasses.iter().map(|&i| kept[i]).collect();
-        for (&f, parts) in kept.iter().zip(solved.heights) {
-            for (part, solved) in ways[f].2.iter_mut().zip(parts) {
-                if let Some((points, z)) = solved {
-                    (part.points, part.z) = (points, Some(z));
+        for (&f, parts) in kept.iter().zip(solved.ways) {
+            for (part, way) in ways[f].2.iter_mut().zip(parts) {
+                if let Some(way) = way {
+                    (part.points, part.z, part.plan) = (way.points, Some(way.z), Some(way.plan));
                 }
             }
         }
@@ -314,9 +314,8 @@ pub fn bake(
                 let mut all = tags.clone();
                 all.extend(extra.get(&n).cloned().unwrap_or_default());
                 if is_track(&tags) {
-                    tracks.extend(
-                        parts.iter().filter(|p| p.z.is_some()).map(|p| (entry.kind.clone(), tags.clone(), p.clone())),
-                    );
+                    let curves = parts.iter().filter(|p| p.z.is_some()).map(roads::polyline);
+                    tracks.extend(curves.map(|p| (entry.kind.clone(), tags.clone(), p)));
                 }
                 placer.entry(entry, all, parts);
             }
@@ -583,13 +582,19 @@ mod tests {
     }
 
     fn square(x: f64, y: f64, side: f64) -> Vec<Part> {
-        vec![Part { outer: true, points: vec![[x, y], [x + side, y], [x + side, y + side], [x, y + side]], z: None }]
+        vec![Part {
+            outer: true,
+            points: vec![[x, y], [x + side, y], [x + side, y + side], [x, y + side]],
+            z: None,
+            plan: None,
+        }]
     }
 
     #[test]
     fn a_building_shows_the_strongest_use_of_its_own_its_points_and_the_areas_about_it() {
-        let point =
-            |x: f64, y: f64, u: &str| (tags(&[("use", u)]), vec![Part { outer: false, points: vec![[x, y]], z: None }]);
+        let point = |x: f64, y: f64, u: &str| {
+            (tags(&[("use", u)]), vec![Part { outer: false, points: vec![[x, y]], z: None, plan: None }])
+        };
         // A shop with a pharmacy in it; a building in a hospital's grounds with a kiosk in it; a shop of its
         // own; a building with nothing but a shop at a corner of its outline.
         let (own, plain) = (tags(&[("use", "shop")]), tags(&[]));

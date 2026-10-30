@@ -15,7 +15,11 @@ export function square(tile: { level: number; x: number; y: number }, part: { le
     return [part.x * size - tile.x * EXTENT, part.y * size - tile.y * EXTENT, size];
 }
 /** The archive format of specs/trailview-features.md that this decoder reads. */
-export const FORMAT = 2;
+export const FORMAT = 3;
+/** A feature with an alignment counts its coordinates in FINE parts of a tile unit. */
+const FINE = 4;
+/** The codes of a turn of a tangent, and of a rise per metre in a grade and a bank. */
+const TURN = 1024, GRADE = 250, BANK = 1000;
 
 /**
  * Decoded bytes a worker keeps: four of the largest zoom 13 tile of the box bake, 279 kB of gzip
@@ -60,18 +64,36 @@ function decodedBytes(features: Feature[]): number {
     let bytes = 0;
     for (const feature of features) {
         bytes += 300;
-        for (const part of feature.parts) bytes += 400 + part.xy.byteLength + (part.z?.byteLength ?? 0);
+        for (const part of feature.parts) bytes += 400 + part.xy.byteLength + (part.z?.byteLength ?? 0) + 4 * (part.plan?.tangent.byteLength ?? 0);
     }
     return bytes;
+}
+
+/** The curve of a line per vertex, in the direction of the line (specs/trailview-features.md, Alignment). */
+export interface Alignment {
+    /** Metres along its stroke at the first vertex. */
+    along: number;
+    /** The metres along fall along the line: it runs against its stroke. */
+    backward: boolean;
+    /** Radians from x to y. */
+    tangent: Float32Array;
+    /** Rise per metre. */
+    grade: Float32Array;
+    /** Rise per metre to the left. */
+    bank: Float32Array;
+    /** Metres that the half-width gains. */
+    widen: Float32Array;
 }
 
 export interface FeaturePart {
     /** An outer ring. The rings after it, up to the next outer ring, are its holes. Never set for a point or a line. */
     outer: boolean;
-    /** x, y of each vertex in tile units, y down. A ring does not repeat its first vertex. */
-    xy: Int32Array;
+    /** x, y of each vertex in tile units, y down, in quarters of them in a feature with an alignment. A ring does not repeat its first vertex. */
+    xy: Int32Array | Float32Array;
     /** Metres per vertex, NaN where no solver has set a height; null when the feature has no height. */
     z: Float32Array | null;
+    /** Null for a part that the road solver left alone, and for every part of a tile below zoom 13. */
+    plan?: Alignment | null;
 }
 
 export interface Feature {
@@ -111,6 +133,20 @@ export function decodeFeatures(bytes: Uint8Array): Feature[] {
         if (value === undefined) throw new Error('A feature names a string that the tile does not have.');
         return value;
     };
+    /** The columns of a part of `vertices` vertices. */
+    const alignment = (vertices: number): Alignment | null => {
+        const code = read();
+        if (!code) return null;
+        const column = (decoded: (value: number) => number) => Float32Array.from({ length: vertices }, () => decoded(read()));
+        let turned = 0, grade = 0;
+        return {
+            along: Math.floor((code - 1) / 2) / 10, backward: (code - 1) % 2 === 1,
+            tangent: column(value => (turned = (turned + signed(value) + TURN) % TURN) * (2 * Math.PI / TURN)),
+            grade: column(value => (grade += signed(value)) / GRADE),
+            bank: column(value => signed(value) / BANK),
+            widen: column(value => value / 100),
+        };
+    };
     const features: Feature[] = [];
     for (let count = read(); count > 0; count--) {
         const kind = string();
@@ -119,21 +155,21 @@ export function decodeFeatures(bytes: Uint8Array): Feature[] {
         const header = read();
         const geometry = GEOMETRIES[header % 4];
         if (!geometry) throw new Error('A feature has an unknown geometry.');
-        const solved = Math.floor(header / 4) % 2 === 1;
+        const solved = Math.floor(header / 4) % 2 === 1, planned = Math.floor(header / 8) % 2 === 1;
         const parts: FeaturePart[] = [];
         let x = 0, y = 0, height = 0;
-        for (let remaining = Math.floor(header / 8); remaining > 0; remaining--) {
+        for (let remaining = Math.floor(header / 16); remaining > 0; remaining--) {
             const head = read(), vertices = Math.floor(head / 2);
-            const xy = new Int32Array(2 * vertices), z = solved ? new Float32Array(vertices) : null;
+            const xy = planned ? new Float32Array(2 * vertices) : new Int32Array(2 * vertices), z = solved ? new Float32Array(vertices) : null;
             for (let v = 0; v < vertices; v++) {
-                xy[2 * v] = x += signed(read());
-                xy[2 * v + 1] = y += signed(read());
+                xy[2 * v] = (x += signed(read())) / (planned ? FINE : 1);
+                xy[2 * v + 1] = (y += signed(read())) / (planned ? FINE : 1);
                 if (!z) continue;
                 const code = read();
                 if (code) height += signed(code - 1);
                 z[v] = code ? height / 100 : NaN;
             }
-            parts.push({ outer: head % 2 === 1, xy, z });
+            parts.push({ outer: head % 2 === 1, xy, z, plan: planned ? alignment(vertices) : null });
         }
         // fromEntries keeps a key such as `__proto__` as an own property.
         features.push({ kind, tags: Object.fromEntries(tags), geometry, parts });
