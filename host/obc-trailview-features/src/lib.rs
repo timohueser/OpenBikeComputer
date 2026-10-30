@@ -57,6 +57,10 @@ impl<F: Fn(f64, f64) -> f64 + Sync> Terrain for F {
 /// The OSM tags that a feature keeps.
 pub type Tags = BTreeMap<String, String>;
 
+/// The bits of `Plan::side`: the way from a vertex back along its line, and the way on.
+pub const SIDE_BACK: u8 = 1;
+pub const SIDE_ON: u8 = 2;
+
 /// The alignment of a line at a vertex, in the direction of the line.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Plan {
@@ -72,6 +76,8 @@ pub struct Plan {
     pub along: f64,
     /// A vertex that a river or a stream shares: it lies on a whole tile unit, as theirs do.
     pub whole: bool,
+    /// The ways out of the vertex that leave its junction as a side: `SIDE_BACK` and `SIDE_ON`.
+    pub side: u8,
 }
 
 /// A point, a line or a ring of a feature, in world coordinates, with a height per point (NaN where

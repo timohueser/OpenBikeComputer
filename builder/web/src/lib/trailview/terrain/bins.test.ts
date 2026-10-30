@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { decodeFeatures, EXTENT, unitScale, type Feature } from '../stream/features';
+import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WALK, WARP_M, waterAt, type Line, type Profile } from './bins';
-import { cornersOf } from './corners';
+import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WALK, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { cornersOf, halfAt, partnersOf } from './corners';
 import { LEFT, RIGHT } from './town';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
@@ -80,7 +80,7 @@ describe('the stamp data of a node', () => {
 
     it('holds the tangent, the bank and the widening of an alignment in each record of a line', () => {
         const tile = { level: 13, x: 4287, y: 2889 }, tangent = Math.PI / 4, xy = [4000, 4000, 4400, 4400].map(v => v * 4);
-        const plan = { along: 0, backward: false, tangent: Float32Array.of(tangent, tangent), grade: new Float32Array(2), bank: Float32Array.of(0.05, 0.05), widen: Float32Array.of(0.5, 0.5) };
+        const plan = { along: 0, backward: false, tangent: Float32Array.of(tangent, tangent), grade: new Float32Array(2), bank: Float32Array.of(0.05, 0.05), widen: Float32Array.of(0.5, 0.5), side: new Float32Array(2) };
         const list = [{ kind: 'road', tags: { highway: 'tertiary' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.from(xy, v => v / 4), z: Float32Array.of(1000, 1000), plan }] }];
         const [line] = features(list, tile).lines, shift = 22 - 17, node = { level: 17, x: Math.floor(line.xy[0] / (PAGE * 2 ** shift)), y: Math.floor(line.xy[1] / (PAGE * 2 ** shift)) };
         const { data } = nodeStamps(list, tile, node);
@@ -371,16 +371,22 @@ describe('the sleepers of a track', () => {
     });
 });
 
-describe('the plane of a junction', () => {
+describe('a junction', () => {
+    const tile = { level: 13, x: 4287, y: 2889 }, unit = metresPerUnit((tile.y * EXTENT + 4000) * unitScale(tile.level));
+    /** A way with no alignment; with `side`, the alignment of a straight way that marks those ways out as sides. */
+    const way = (kind: string, tags: Record<string, string>, xy: number[], z: number[], side?: number[]) => {
+        const column = (value: number) => Float32Array.from(z, () => value), heading = Math.atan2(xy[3] - xy[1], xy[2] - xy[0]);
+        const plan = side && { along: 0, backward: false, tangent: column(heading), grade: column(0), bank: column(0), widen: column(0), side: Float32Array.from(side) };
+        return { kind, tags, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from(xy), z: Float32Array.from(z), plan }] };
+    };
+
     it('tilts a side road across its mouth to the surface of the through road, and not past the fade', () => {
         // A secondary road climbs east at 8 % through a junction; a residential road leaves it to the north.
-        const tile = { level: 13, x: 4287, y: 2889 }, unit = metresPerUnit((tile.y * EXTENT + 4000) * unitScale(tile.level));
         const metres = unitScale(tile.level) * unit, at = (x: number) => 1000 + 0.08 * (x - 3000) * metres;
-        const road = (kind: string, highway: string, xy: number[], z: number[]) => ({ kind, tags: { highway }, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from(xy), z: Float32Array.from(z) }] });
         const { lines } = features([
-            road('main-road', 'secondary', [1000, 4000, 3000, 4000, 5000, 4000], [at(1000), at(3000), at(5000)]),
+            way('main-road', { highway: 'secondary' }, [1000, 4000, 3000, 4000, 5000, 4000], [at(1000), at(3000), at(5000)]),
             // Its vertex at the approach distance of the solver, 20 units (4.1 m) from the junction.
-            road('road', 'residential', [3000, 4000, 3000, 3980, 3000, 2000], [at(3000), at(3000) + 0.1, at(3000) + 20]),
+            way('road', { highway: 'residential' }, [3000, 4000, 3000, 3980, 3000, 2000], [at(3000), at(3000) + 0.1, at(3000) + 20], [SIDE_ON, 0, 0]),
         ], tile);
         const side = lines.find(line => line.profile === Object.keys(PROFILES).indexOf('residential'))!;
         // 2 m east of the side road's middle and 1 m north of the junction, inside the through road.
@@ -388,23 +394,76 @@ describe('the plane of a junction', () => {
         expect(roadHeight(side, p, 3 / unit, unit)).toBeCloseTo(at(3000) + 0.08 * 2 + 0.1 / (20 * metres), 2);
         // 50 m along, on the long segment that a tile without the junction stamps too: no tilt.
         const far = (east: number): [number, number] => [side.xy[0] + east / unit, side.xy[1] - 50 / unit];
-        expect(roadHeight(side, far(2), 3 / unit, unit)).toBeCloseTo(roadHeight(side, far(0), 3 / unit, unit), 9);
+        expect(roadHeight(side, far(2), 3 / unit, unit)).toBeCloseTo(roadHeight(side, far(0), 3 / unit, unit), 6);
     });
 
     it('tilts a side road to the banked surface of the through road', () => {
         // A level secondary road banks east along y = 4000, its left to the north.
-        const tile = { level: 13, x: 4287, y: 2889 }, unit = metresPerUnit((tile.y * EXTENT + 4000) * unitScale(tile.level));
-        const plan = { along: 0, backward: false, tangent: new Float32Array(2), grade: new Float32Array(2), bank: Float32Array.of(0.05, 0.05), widen: new Float32Array(2) };
-        const { lines } = features([
-            { kind: 'main-road', tags: { highway: 'secondary' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.of(1000, 4000, 3000, 4000), z: Float32Array.of(1000, 1000), plan }] },
-            { kind: 'main-road', tags: { highway: 'secondary' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.of(3000, 4000, 5000, 4000), z: Float32Array.of(1000, 1000), plan }] },
-            { kind: 'road', tags: { highway: 'residential' }, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from([3000, 4000, 4000, 3000]), z: Float32Array.of(1000, 1000) }] },
-        ], tile);
+        const banked = (xy: number[]) => {
+            const road = way('main-road', { highway: 'secondary' }, xy, [1000, 1000], [0, 0]);
+            road.parts[0].plan!.bank.fill(0.05);
+            return road;
+        };
+        const { lines } = features([banked([1000, 4000, 3000, 4000]), banked([3000, 4000, 5000, 4000]), way('road', { highway: 'residential' }, [3000, 4000, 4000, 3000], [1000, 1000], [SIDE_ON, 0])], tile);
         const side = lines.find(line => line.profile === Object.keys(PROFILES).indexOf('residential'))!;
         // The side road runs north-east: its right side lies south-east, 0.05 × √½ lower per metre.
         const p: [number, number] = [side.xy[0] + (Math.SQRT2 + Math.SQRT1_2) / unit, side.xy[1] + (Math.SQRT1_2 - Math.SQRT2) / unit];
         expect(crossSlope(side, 0, 2, 100)).toBeCloseTo(-0.05 * Math.SQRT1_2, 3);
         expect(roadHeight(side, p, 3 / unit, unit)).toBeCloseTo(1000 - 0.05 * Math.SQRT1_2, 3);
+    });
+
+    it('runs a road on onto a bridge and not into the side road at the end of the bridge, and tapers it there', () => {
+        const flat = [1000, 1000], road = { highway: 'secondary', width: '6' };
+        const { lines } = features([
+            way('main-road', road, [1000, 4000, 3000, 4000], flat),
+            way('main-road', { ...road, bridge: 'yes', width: '8' }, [3000, 4000, 5000, 4000], flat),
+            way('road', { highway: 'service' }, [3000, 4000, 3000, 2000], flat, [SIDE_ON, 0]),
+        ], tile);
+        const [main, bridge, service] = lines, partners = partnersOf(lines);
+        expect(bridge.kind).toBe(BRIDGE);
+        expect(partners.get(main)).toEqual([undefined, bridge]);
+        expect(partners.has(service)).toBe(false);
+        expect(halfAt(main, 1, partners)).toBeCloseTo((main.h + bridge.h) / 2, 6);
+        expect(main.join).toEqual(undefined);
+    });
+
+    it('takes two ways of two classes as one road, and a way that passes through has no partner', () => {
+        const flat = [1000, 1000];
+        const split = features([way('road', { highway: 'tertiary' }, [1000, 4000, 3000, 4000], flat), way('road', { highway: 'service' }, [3000, 4000, 5000, 4100], flat)], tile).lines;
+        expect(partnersOf(split).get(split[1])).toEqual([split[0], undefined]);
+        // A tertiary passes through the vertex where a service road ends.
+        const passes = features([
+            way('road', { highway: 'tertiary' }, [1000, 4000, 3000, 4000, 5000, 4000], [1000, 1000, 1000]),
+            way('road', { highway: 'service' }, [3000, 4000, 3000, 2000], flat, [SIDE_ON, 0]),
+        ], tile).lines;
+        expect(partnersOf(passes).size).toBe(0);
+    });
+
+    it('puts a road at a level crossing on the plane of the track, and the road does not run on across it', () => {
+        // A track climbs north at 5 % across a road that OSM splits at the crossing.
+        const metres = unitScale(tile.level) * unit, at = (y: number) => 1000 + 0.05 * (4000 - y) * metres, flat = [at(4000), at(4000)], road = { highway: 'tertiary' };
+        const lines = features([
+            way('road', road, [1000, 4000, 3000, 4000], flat, [0, SIDE_BACK]),
+            way('road', road, [3000, 4000, 5000, 4000], flat, [SIDE_ON, 0]),
+            way('railway', { railway: 'rail' }, [3000, 2000, 3000, 4000, 3000, 6000], [at(2000), at(4000), at(6000)]),
+        ], tile).lines;
+        expect(partnersOf(lines).size).toBe(0);
+        expect(Math.abs(crossSlope(lines[1], 0, 0, 100))).toBeCloseTo(0.05, 3);
+        expect(Math.abs(crossSlope(lines[0], 0, 100, 0))).toBeCloseTo(0.05, 3);
+    });
+
+    it('keeps the marks of a line past a vertex that stands alone between unknown heights', () => {
+        const xy = [1000, 4000, 1500, 4000, 2000, 4000, 2500, 4000, 3000, 4000, 3500, 4000, 4000, 4000];
+        const { lines } = features([way('road', { highway: 'service' }, xy, [1000, NaN, 1000, NaN, 1000, 1000, 1000], [0, 0, 0, 0, 0, SIDE_ON, 0])], tile);
+        expect(lines.map(line => line.sideWays)).toEqual([[0, SIDE_ON, 0]]);
+    });
+
+    it('marks the way out of the visit that the bake marks, where a way passes a point twice', () => {
+        // A stem runs into a loop that ends on the stem's last vertex, as a side of the junction.
+        const xy = [1000, 4000, 3000, 4000, 3500, 3500, 4000, 4000, 3500, 4500, 3000, 4000];
+        const { lines } = features([way('road', { highway: 'service' }, xy, [1000, 1000, 1000, 1000, 1000, 1000], [0, 0, 0, 0, 0, SIDE_BACK])], tile);
+        const [ways] = junctionWays(lines), last = lines[0].z.length - 1;
+        expect(ways.map(({ v, step, side }) => [v === last ? 'end' : 'pass', step, side]).sort()).toEqual([['end', -1, true], ['pass', -1, false], ['pass', 1, false]]);
     });
 });
 

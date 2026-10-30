@@ -15,7 +15,7 @@ const plain = ({ kind, tags, geometry, parts }: Feature) => ({
         ...(z ? { z: Array.from(z, h => (Number.isNaN(h) ? null : Math.round(h * 100) / 100)) } : {}),
         ...(plan ? {
             along: Math.round(plan.along * 10) * 2 + (plan.backward ? 1 : 0),
-            tangent: codes(plan.tangent, 1024 / (2 * Math.PI)), grade: codes(plan.grade, 250), bank: codes(plan.bank, 1000), widen: codes(plan.widen, 100),
+            tangent: codes(plan.tangent, 1024 / (2 * Math.PI)), grade: codes(plan.grade, 250), bank: codes(plan.bank, 1000), widen: codes(plan.widen, 100), side: Array.from(plan.side!),
         } : {}),
     })),
 });
@@ -27,5 +27,6 @@ describe('feature tiles', () => {
         expect(decodeFeatures(bytes).map(plain)).toEqual(JSON.parse(vector('trailview-features.json').toString()));
         expect(() => decodeFeatures(bytes.subarray(0, bytes.length - 1))).toThrow('ends inside');
         expect(() => decodeFeatures(new Uint8Array([...bytes, 0]))).toThrow('after its last feature');
+        expect(decodeFeatures(new Uint8Array([0, 0]))).toEqual([]);
     });
 });

@@ -57,6 +57,8 @@ pub struct Aligned {
     pub bank: Vec<i64>,
     /// Per vertex: centimetres.
     pub widen: Vec<u64>,
+    /// Per vertex: the bits `SIDE_BACK` and `SIDE_ON`.
+    pub side: Vec<u64>,
 }
 
 /// A part in integer tile units, or in quarters of them in a feature with an alignment, with a height
@@ -79,12 +81,27 @@ pub struct Feature {
     pub parts: Vec<Quantized>,
 }
 
+/// The streams of a tile, in their order in the tile. Each field of its own stream lets gzip find
+/// the runs of that field.
+#[derive(Default)]
+struct Streams {
+    heads: Vec<u8>,
+    tags: Vec<u8>,
+    parts: Vec<u8>,
+    vertices: Vec<u8>,
+    along: Vec<u8>,
+    tangent: Vec<u8>,
+    grade: Vec<u8>,
+    bank: Vec<u8>,
+    words: Vec<u8>,
+}
+
 /// The encoder of one tile.
 #[derive(Default)]
 pub struct Tile {
     strings: HashMap<String, u64>,
     order: Vec<String>,
-    body: Vec<u8>,
+    streams: Streams,
     count: u64,
 }
 
@@ -114,61 +131,43 @@ impl Tile {
     /// Add a feature. A height is in metres; a part without heights in a feature with some has an
     /// unknown height at each point.
     pub fn add(&mut self, kind: &str, tags: &Tags, geometry: Geometry, parts: &[Quantized]) {
-        let mut head = Vec::new();
-        varint(&mut head, self.string(kind));
-        varint(&mut head, tags.len() as u64);
-        for (key, value) in tags {
-            varint(&mut head, self.string(key));
-            varint(&mut head, self.string(value));
-        }
-        self.body.extend(head);
+        let kind = self.string(kind);
+        let tags: Vec<(u64, u64)> = tags.iter().map(|(key, value)| (self.string(key), self.string(value))).collect();
+        let out = &mut self.streams;
         let solved = parts.iter().any(|part| part.z.is_some());
         let planned = parts.iter().any(|part| part.plan.is_some());
         let flags = u64::from(planned) << 3 | u64::from(solved) << 2 | geometry.code();
-        varint(&mut self.body, (parts.len() as u64) << 4 | flags);
+        varint(&mut out.heads, kind);
+        varint(&mut out.heads, (parts.len() as u64) << 4 | flags);
+        varint(&mut out.tags, tags.len() as u64);
+        for (key, value) in tags {
+            varint(&mut out.tags, key);
+            varint(&mut out.tags, value);
+        }
         let (mut x, mut y, mut height) = (0, 0, 0i64);
         for part in parts {
-            varint(&mut self.body, (part.xy.len() as u64) << 1 | u64::from(part.outer));
+            varint(&mut out.parts, (part.xy.len() as u64) << 1 | u64::from(part.outer));
             for (index, &[px, py]) in part.xy.iter().enumerate() {
-                varint(&mut self.body, zigzag(px - x));
-                varint(&mut self.body, zigzag(py - y));
+                varint(&mut out.vertices, zigzag(px - x));
+                varint(&mut out.vertices, zigzag(py - y));
                 (x, y) = (px, py);
                 if !solved {
                     continue;
                 }
                 match part.z.as_ref().map(|z| z[index]).filter(|value| !value.is_nan()) {
-                    None => self.body.push(0),
+                    None => out.vertices.push(0),
                     Some(value) => {
                         let value = (value * 100.0).round_ties_even() as i64;
-                        varint(&mut self.body, zigzag(value - height) + 1);
+                        varint(&mut out.vertices, zigzag(value - height) + 1);
                         height = value;
                     }
                 }
             }
             if planned {
-                self.plan(part.plan.as_ref());
+                out.plan(part.plan.as_ref());
             }
         }
         self.count += 1;
-    }
-
-    /// The alignment of a part, in columns: gzip finds the runs of a straight road. A tangent and a
-    /// grade are the difference from the vertex before.
-    fn plan(&mut self, plan: Option<&Aligned>) {
-        let Some(plan) = plan else { return self.body.push(0) };
-        varint(&mut self.body, plan.along + 1);
-        let mut last = 0;
-        for &tangent in &plan.tangent {
-            varint(&mut self.body, zigzag((tangent - last + TURN / 2).rem_euclid(TURN) - TURN / 2));
-            last = tangent;
-        }
-        last = 0;
-        for &grade in &plan.grade {
-            varint(&mut self.body, zigzag(grade - last));
-            last = grade;
-        }
-        plan.bank.iter().for_each(|&bank| varint(&mut self.body, zigzag(bank)));
-        plan.widen.iter().for_each(|&widen| varint(&mut self.body, widen));
     }
 
     /// The bytes of the tile.
@@ -180,8 +179,32 @@ impl Tile {
             out.extend(text.as_bytes());
         }
         varint(&mut out, self.count);
-        out.extend(&self.body);
+        let Streams { heads, tags, parts, vertices, along, tangent, grade, bank, words } = &self.streams;
+        for stream in [heads, tags, parts, vertices, along, tangent, grade, bank, words] {
+            out.extend(stream);
+        }
         out
+    }
+}
+
+impl Streams {
+    /// The alignment of a part. A tangent and a grade are the difference from the vertex before.
+    fn plan(&mut self, plan: Option<&Aligned>) {
+        let Some(plan) = plan else { return self.along.push(0) };
+        varint(&mut self.along, plan.along + 1);
+        let mut last = 0;
+        for &tangent in &plan.tangent {
+            varint(&mut self.tangent, zigzag((tangent - last + TURN / 2).rem_euclid(TURN) - TURN / 2));
+            last = tangent;
+        }
+        last = 0;
+        for &grade in &plan.grade {
+            varint(&mut self.grade, zigzag(grade - last));
+            last = grade;
+        }
+        plan.bank.iter().for_each(|&bank| varint(&mut self.bank, zigzag(bank)));
+        // Few vertices have a side or a widening, so the two share a word.
+        plan.widen.iter().zip(&plan.side).for_each(|(&widen, &side)| varint(&mut self.words, widen * 4 + side));
     }
 }
 
@@ -220,26 +243,46 @@ pub fn decode(data: &[u8]) -> Result<Vec<Feature>, String> {
         at += length;
     }
     let text = |index: u64| table.get(index as usize).cloned().ok_or("a string index past the table");
+    let heads = (0..next(&mut at)?)
+        .map(|_| {
+            let kind = text(next(&mut at)?)?;
+            let header = next(&mut at)?;
+            let geometry = [Geometry::Point, Geometry::Line, Geometry::Area]
+                .get((header & 3) as usize)
+                .copied()
+                .ok_or("an unknown geometry")?;
+            Ok::<_, String>((kind, header, geometry))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut features = Vec::new();
-    for _ in 0..next(&mut at)? {
-        let kind = text(next(&mut at)?)?;
+    for (kind, _, geometry) in &heads {
         let mut tags = Tags::new();
         for _ in 0..next(&mut at)? {
             let key = text(next(&mut at)?)?;
             tags.insert(key, text(next(&mut at)?)?);
         }
-        let header = next(&mut at)?;
-        let (solved, planned) = (header & 4 != 0, header & 8 != 0);
-        let geometry = [Geometry::Point, Geometry::Line, Geometry::Area]
-            .get((header & 3) as usize)
-            .copied()
-            .ok_or("an unknown geometry")?;
-        let (mut x, mut y, mut height) = (0i64, 0i64, 0i64);
-        let mut parts = Vec::new();
+        features.push(Feature { kind: kind.clone(), tags, geometry: *geometry, parts: Vec::new() });
+    }
+    // The vertices of each part, which the streams after this one do not name.
+    let mut counts: Vec<Vec<u64>> = Vec::new();
+    for (feature, (_, header, _)) in features.iter_mut().zip(&heads) {
+        let (mut sizes, solved) = (Vec::new(), header & 4 != 0);
         for _ in 0..header >> 4 {
-            let count = next(&mut at)?;
-            let mut part = Quantized { outer: count & 1 == 1, xy: Vec::new(), z: solved.then(Vec::new), plan: None };
-            for _ in 0..count >> 1 {
+            let code = next(&mut at)?;
+            sizes.push(code >> 1);
+            feature.parts.push(Quantized {
+                outer: code & 1 == 1,
+                xy: Vec::new(),
+                z: solved.then(Vec::new),
+                plan: None,
+            });
+        }
+        counts.push(sizes);
+    }
+    for (feature, sizes) in features.iter_mut().zip(&counts) {
+        let (mut x, mut y, mut height) = (0i64, 0i64, 0i64);
+        for (part, &size) in feature.parts.iter_mut().zip(sizes) {
+            for _ in 0..size {
                 x += signed(next(&mut at)?);
                 y += signed(next(&mut at)?);
                 part.xy.push([x, y]);
@@ -253,28 +296,46 @@ pub fn decode(data: &[u8]) -> Result<Vec<Feature>, String> {
                     }
                 }
             }
-            let code = if planned { next(&mut at)? } else { 0 };
-            if code != 0 {
-                let vertices = part.xy.len();
-                let column = |at: &mut usize| (0..vertices).map(|_| next(at)).collect::<Result<Vec<u64>, String>>();
-                let (mut tangent, mut grade) = (0, 0);
-                let tangents = column(&mut at)?.into_iter().map(|code| {
-                    tangent = (tangent + signed(code)).rem_euclid(TURN);
-                    tangent
-                });
-                let tangent = tangents.collect();
-                let grades = column(&mut at)?.into_iter().map(|code| {
-                    grade += signed(code);
-                    grade
-                });
-                let grade = grades.collect();
-                let bank = column(&mut at)?.into_iter().map(signed).collect();
-                let widen = column(&mut at)?;
-                part.plan = Some(Aligned { along: code - 1, tangent, grade, bank, widen });
-            }
-            parts.push(part);
         }
-        features.push(Feature { kind, tags, geometry, parts });
+    }
+    // (feature, part, the code of its metres along) of each part with an alignment.
+    let mut aligned = Vec::new();
+    for (f, _) in heads.iter().enumerate().filter(|(_, head)| head.1 & 8 != 0) {
+        for p in 0..counts[f].len() {
+            let code = next(&mut at)?;
+            if code != 0 {
+                aligned.push((f, p, code));
+            }
+        }
+    }
+    let column = |at: &mut usize| -> Result<Vec<Vec<u64>>, String> {
+        let mut out = Vec::with_capacity(aligned.len());
+        for &(f, p, _) in &aligned {
+            out.push((0..counts[f][p]).map(|_| next(at)).collect::<Result<Vec<u64>, String>>()?);
+        }
+        Ok(out)
+    };
+    let (tangents, grades) = (column(&mut at)?, column(&mut at)?);
+    let (banks, words) = (column(&mut at)?, column(&mut at)?);
+    let running = |codes: &[u64]| -> Vec<i64> {
+        let mut sum = 0;
+        codes
+            .iter()
+            .map(|&code| {
+                sum += signed(code);
+                sum
+            })
+            .collect()
+    };
+    for (n, &(f, p, code)) in aligned.iter().enumerate() {
+        features[f].parts[p].plan = Some(Aligned {
+            along: code - 1,
+            tangent: running(&tangents[n]).iter().map(|turn| turn.rem_euclid(TURN)).collect(),
+            grade: running(&grades[n]),
+            bank: banks[n].iter().map(|&code| signed(code)).collect(),
+            widen: words[n].iter().map(|word| word >> 2).collect(),
+            side: words[n].iter().map(|word| word & 3).collect(),
+        });
     }
     if at != data.len() {
         return Err("a feature tile has bytes after its last feature".into());
@@ -545,6 +606,7 @@ fn aligned(plan: &[Plan], indices: &[usize]) -> Aligned {
         grade: column(|p| p.grade, GRADE),
         bank: column(|p| p.bank, 1000.0),
         widen: indices.iter().map(|&i| code(plan[i].widen, 100.0) as u64).collect(),
+        side: indices.iter().map(|&i| u64::from(plan[i].side)).collect(),
     }
 }
 
@@ -770,6 +832,7 @@ mod tests {
                     out["grade"] = json!(plan.grade);
                     out["bank"] = json!(plan.bank);
                     out["widen"] = json!(plan.widen);
+                    out["side"] = json!(plan.side);
                 }
                 out
             })
@@ -786,6 +849,8 @@ mod tests {
         let features = decode(&encoded).unwrap();
         assert_eq!(Value::Array(features.iter().map(as_json).collect()), decoded);
         assert_eq!(encode(&features), encoded);
+        assert_eq!(Tile::default().bytes(), [0, 0]);
+        assert!(decode(&[0, 0]).unwrap().is_empty());
     }
 
     fn part(outer: bool, points: Vec<[f64; 2]>) -> Part {
@@ -858,6 +923,7 @@ mod tests {
                     widen: k * 0.02,
                     along: 3000.0 - k * 60.0,
                     whole: k == 2.0,
+                    side: (k as u8) % 4,
                 }
             })
             .collect();
@@ -882,7 +948,8 @@ mod tests {
             .collect();
         assert!(shared.len() >= 3, "the buffer of 40 m holds {} vertices of both", shared.len());
         for (i, k) in shared {
-            let codes = |plan: &Aligned, v: usize| (plan.tangent[v], plan.grade[v], plan.bank[v], plan.widen[v]);
+            let codes =
+                |plan: &Aligned, v: usize| (plan.tangent[v], plan.grade[v], plan.bank[v], plan.widen[v], plan.side[v]);
             assert_eq!(codes(west_plan, i), codes(east_plan, k));
             assert_eq!(west.z.as_ref().unwrap()[i], east.z.as_ref().unwrap()[k]);
         }
