@@ -357,11 +357,15 @@ def entry_key(path: str, base: str, folders: set[str]) -> str:
     return folder if folder in folders else path
 
 
-def cut(paths: list[str], lines: dict[str, int], limit: int, base: str) -> list[tuple[str, list[str]]]:
-    """The files below the folder `base` in leaves of at most `limit` lines, each with the folder
-    that made it. A folder that is too large is cut by its entries, and small entries of one folder
-    share a leaf. A file that is too large is a leaf of its own."""
-    if sum(lines[p] for p in paths) <= limit:
+def cut(paths: list[str], lines: dict[str, int], limit: int, most: int, base: str) -> list[tuple[str, list[str]]]:
+    """The files below the folder `base` in leaves of at most `limit` lines and `most` files, each
+    with the folder that made it. A folder that is too large is cut by its entries, and small
+    entries of one folder share a leaf. A file that is too large is a leaf of its own."""
+
+    def fits(group: list[str]) -> bool:
+        return sum(lines[p] for p in group) <= limit and len(group) <= most
+
+    if fits(paths):
         return [(base, paths)]
     folders = {entry_key(p, base, set()) for p in paths if p.startswith(base) and "/" in p[len(base):]}
     entries: dict[str, list[str]] = {}
@@ -369,23 +373,20 @@ def cut(paths: list[str], lines: dict[str, int], limit: int, base: str) -> list[
         entries.setdefault(entry_key(path, base, folders), []).append(path)
     out: list[tuple[str, list[str]]] = []
     pack: list[str] = []
-    size = 0
     for key, members in sorted(entries.items()):
-        count = sum(lines[p] for p in members)
-        big = count > limit and key in folders
-        if pack and (big or size + count > limit):
+        big = key in folders and not fits(members)
+        if pack and (big or not fits(pack + members)):
             out.append((base, pack))
-            pack, size = [], 0
+            pack = []
         if big:
-            out += cut(members, lines, limit, key)
+            out += cut(members, lines, limit, most, key)
             continue
         pack += members
-        size += count
     return out + [(base, pack)] if pack else out
 
 
 def leaves(system: str, docs: list[Doc], files: list[str], units: list[dict],
-           edges: list[tuple[str, str, bool]], lines: dict[str, int], limit: int,
+           edges: list[tuple[str, str, bool]], lines: dict[str, int], limit: int, most: int,
            skip: list[str]) -> list[Leaf]:
     """The system's files in leaves, each inside one crate. A file in no crate is cut from the
     repository root. The files that match a `skip` glob are left out."""
@@ -401,14 +402,14 @@ def leaves(system: str, docs: list[Doc], files: list[str], units: list[dict],
         crate = names.get(folder)
         used = {test: tuple(f"{b} ({unit_owner.get(b) or 'no owner'})" for a, b, t in sorted(edges) if a == crate and t == test)
                 for test in (False, True)}
-        for level, group in cut(paths, lines, limit, folder + "/" if folder else ""):
+        for level, group in cut(paths, lines, limit, most, folder + "/" if folder else ""):
             out.append(Leaf(level, crate, tuple(group), sum(lines[p] for p in group), used[False], used[True]))
     return out
 
 
-def print_leaves(system: str, found: list[Leaf], units: list[dict], lines: dict[str, int], limit: int) -> None:
+def print_leaves(system: str, found: list[Leaf], units: list[dict], lines: dict[str, int], limit: int, most: int) -> None:
     total = sum(leaf.lines for leaf in found)
-    print(f"{system}: {total:,} lines in {len(found)} leaves; a leaf holds at most {limit:,} lines, or one larger file")
+    print(f"{system}: {total:,} lines in {len(found)} leaves; a leaf holds at most {limit:,} lines and {most} files, or one larger file")
     print(f"repository crates: {', '.join(sorted(u['name'] for u in units))}")
     for i, leaf in enumerate(found, 1):
         where = leaf.files[0] if len(leaf.files) == 1 else os.path.commonpath(leaf.files) + "/"
@@ -743,11 +744,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "leaves":
             if args.system not in {doc.system for doc in docs}:
                 raise CairnError(f"no system doc for `{args.system}`")
-            if "leaf_lines" not in config:
-                raise CairnError(f"{CONFIG} has no `leaf_lines`")
+            if "leaf_lines" not in config or "leaf_files" not in config:
+                raise CairnError(f"{CONFIG} needs `leaf_lines` and `leaf_files`")
+            limit, most = config["leaf_lines"], config["leaf_files"]
             skip = config["tests"] + [glob for settings in config["adapters"].values() for glob in settings.get("ignore", [])]
-            found = leaves(args.system, docs, files, units, edges, lines, config["leaf_lines"], skip)
-            print_leaves(args.system, found, units, lines, config["leaf_lines"])
+            found = leaves(args.system, docs, files, units, edges, lines, limit, most, skip)
+            print_leaves(args.system, found, units, lines, limit, most)
             return 0
         result = analyse(docs, files, units, edges, lines, config)
         page = ROOT / config["docs"] / MAP

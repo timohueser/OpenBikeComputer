@@ -2,7 +2,8 @@
   "docs": "docs/design",
   "baseline": ".cairn/baseline.json",
   "specs": "specs",
-  "leaf_lines": 1500,
+  "leaf_lines": 4000,
+  "leaf_files": 60,
   "skill": {"path": "tools/cairn/skill/cairn", "router_tokens": 2000, "reference_tokens": 2000},
   "tests": ["**/tests/**", "tests.rs", "*_tests.rs", "*_test.py", "*Tests.swift", "*.test.ts"],
   "size": {

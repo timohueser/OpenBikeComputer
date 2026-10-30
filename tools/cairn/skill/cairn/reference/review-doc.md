@@ -4,7 +4,7 @@ Tests one document with Goldfish: a system doc, an issue design, a guide page or
 
 ## 1. Find the document
 
-The document is a path, or an issue `#N`. `#N` must be an issue, not a pull request. For an issue, the document is its body: `gh api repos/{owner}/{repo}/issues/N --jq .body`.
+The document is a path, or an issue `#N`. If `gh api repos/{owner}/{repo}/issues/N --jq .pull_request` is not `null`, `#N` is a pull request: tell the user that `review-doc` does not review pull requests. For an issue, the document is its body: `gh api repos/{owner}/{repo}/issues/N --jq .body`.
 
 ## 2. Choose the tests
 

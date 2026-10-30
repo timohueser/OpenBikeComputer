@@ -22,7 +22,7 @@ python3 -m unittest discover -s tools/cairn/tests
 | --- | --- |
 | `docs/design/README.md` | the system map. `cairn map` rewrites the block between its two comments. `check` fails when the block is stale. Two merged pull requests can leave it stale on `develop`; `obc cairn map` fixes it. |
 | `docs/design/<system>.md` | the header of one system or shell: `kind`, `area` (systems only), `purpose`, `owns`, `depends_on`, `test_depends_on`, `status` |
-| `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4, the globs of test files, the `specs` folder, the size thresholds of a change, the leaf size, the skill budget, the model roles and tiers, and the report settings |
+| `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4, the globs of test files, the `specs` folder, the size thresholds of a change, the leaf limits, the skill budget, the model roles and tiers, and the report settings |
 | `.cairn/baseline.json` | the known violations, by ID, with a size |
 | `report.py` | `cairn report` |
 | `skill/cairn/` | the agent skill: `SKILL.md` routes to one file in `reference/` for each command. `.claude/skills/cairn` and `.agents/skills/cairn` link to it. |
@@ -66,11 +66,14 @@ between its own crate groups, which do not follow the system cut.
 
 ## Leaves
 
-`leaves` cuts the files that a system owns into leaves of at most `leaf_lines` lines. It leaves
-out the files that match the `tests` globs or an adapter's `ignore` globs: the doc describes the
-system, and the tests are evidence that the hay can name. A leaf stays inside one crate. A folder
-that is too large is cut by its entries, and small entries of one folder share a leaf. A file
-`x.rs` stays with its folder `x/`. A file larger than the limit is a leaf of its own.
+`leaves` cuts the files that a system owns into leaves of at most `leaf_lines` lines and
+`leaf_files` files. It leaves out the files that match the `tests` globs or an adapter's `ignore`
+globs: the doc describes the system, and the draft of `document` links the tests as evidence for
+the rules. A leaf stays inside one crate. A folder that is too large is cut by its entries, and
+small entries of one folder share a leaf. A file `x.rs` stays with its folder `x/`. A file larger
+than the line limit is a leaf of its own.
+
+`skill/cairn/NOTICE` names the source and licence of the adapted Goldfish prompts.
 
 The output names every repository crate on one line. Each leaf gives its `level`, the folder at
 which it was cut, and the repository crates that its crate uses, from the cargo adapter. A file in
@@ -82,8 +85,7 @@ no crate has no such list.
 `reference_tokens` for each file in `reference/`. A token is four bytes. `tools/prose.py` does not
 budget the skill files; it checks only their links.
 
-Both keys are optional. Without `skill`, `check` skips the budget. Without `leaf_lines`, `leaves`
-stops with an error.
+`skill` is optional; `leaves` needs `leaf_lines` and `leaf_files`.
 
 ## The `Mode:` line
 

@@ -126,7 +126,7 @@ class LeafTests(unittest.TestCase):
                  "tools/a.py": 20, "a2/src/lib.rs": 1, "b/src/lib.rs": 1, "c/src/lib.rs": 1}
         units = [unit(name, f"{folder}/src/lib.rs") for name, folder in (("ra", "a"), ("ra2", "a2"), ("rb", "b"), ("rc", "c"))]
         edges = [("ra", "ra2", False), ("ra", "rb", False), ("ra", "rc", True), ("rb", "rc", False)]
-        found = cairn.leaves("a", docs, list(lines), units, edges, lines, 200, ["**/tests/**", "**/vendor/**"])
+        found = cairn.leaves("a", docs, list(lines), units, edges, lines, 200, 60, ["**/tests/**", "**/vendor/**"])
         self.assertEqual([(leaf.level, leaf.crate, leaf.files) for leaf in found], [
             ("", None, ("tools/a.py",)),
             ("a/src/", "ra", ("a/src/big.rs",)),
@@ -138,6 +138,9 @@ class LeafTests(unittest.TestCase):
             ("a2/", "ra2", ("a2/src/lib.rs",)),
         ])
         self.assertEqual((found[4].lines, found[4].uses, found[4].test_uses), (200, ("ra2 (a)", "rb (b)"), ("rc (c)",)))
+        small = {f"m/f{i}.rs": 1 for i in range(5)}
+        self.assertEqual(cairn.cut(sorted(small), small, 200, 2, "m/"),
+                         [("m/", ["m/f0.rs", "m/f1.rs"]), ("m/", ["m/f2.rs", "m/f3.rs"]), ("m/", ["m/f4.rs"])])
 
 
 class SkillBudgetTests(unittest.TestCase):

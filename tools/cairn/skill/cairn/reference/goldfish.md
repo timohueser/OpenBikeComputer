@@ -20,25 +20,29 @@ Start one subagent for each test, in parallel, as the [Subagents](../SKILL.md#su
 <the full text of the document>
 
 ---
-Above is one document. You are new to this project. You may open the files that the document links to, and no others.
+Above is one document. You are new to this project: you know software, but not this project. You may open the files that the document links to, and no others. Change no file.
 
-Answer from the document alone, in exactly this format, at most 400 words:
+First, paraphrase the document from it alone. Then find what stops a new reader:
+- a term of this project that the document does not define or link; a general engineering term is not a gap;
+- a step or a prerequisite that the document assumes but does not state;
+- a vague explanation, such as "the system handles this", that does not say how;
+- a section that you cannot paraphrase: this is a Blocker.
 
-Explanation:
-<what it describes and why, in three sentences or fewer>
-Example:
+Answer in exactly this format, at most 400 words:
+
+What it describes:
+<what it does and why, in two to five sentences>
+How it works, per this document:
 <one concrete case, step by step>
-Parts:
-- <part>: <its job>
-Guesses:
-- <what you had to guess>: "<the sentence that made you guess>"
+Gaps:
+- <Blocker | Major | Nit>: <the gap>: "<the term or sentence>"
 Read twice:
 - "<a sentence that you had to read twice>"
 
 Write "none" under a heading with nothing to report.
 ```
 
-Compare the answer with what you know. Each wrong statement or guess points to a sentence in the document that is missing, unclear or wrong.
+Compare the paraphrase with what you know. A wrong paraphrase is a finding: find the sentence that caused it.
 
 ### Critic
 
@@ -46,15 +50,20 @@ Compare the answer with what you know. Each wrong statement or guess points to a
 <the full text of the document>
 
 ---
-Above is one document. Review it. You may open the files that it links to, and no others.
+Above is one document. You are a skeptical senior engineer. You accept no claim without proof, and you look past the text for hidden risks. You may open the files that the document links to, and no others. Change no file.
 
-Find what is missing or wrong: a claim that a linked file contradicts, a step that does not follow, a case that the document does not handle, a word with two meanings, a section that says nothing. Do not report style.
+Find what is missing or wrong:
+- a claim that a linked file contradicts, or that nothing supports: about another system, the data, or performance;
+- a failure mode, a limit or a risk that the design adds but does not handle;
+- a step that does not follow, or a case that the document does not handle;
+- a word with two meanings, or a section that says nothing.
+Do not report style.
 
 Answer in exactly this format, most important first, at most 400 words:
 
-- MISSING | WRONG | UNCLEAR: <the finding>
+- <Blocker | Major | Nit> <MISSING | WRONG | UNCLEAR>: <the finding>
   Where: <the section, or a short quote>
-  Why it matters: <one line>
+  Change: <what the document must say or do instead>
 
 If nothing important is wrong, write: nothing important.
 ```
@@ -65,13 +74,17 @@ If nothing important is wrong, write: nothing important.
 <the full text of the document>
 
 ---
-Above is one document. You must build what it describes, and you cannot talk to its author. You may open the files that it links to, and no others.
+Above is one document. You are the engineer who must build what it describes, and you cannot talk to its author. Ask yourself: do I know exactly what to change, where, and how? You may open the files that the document links to, and no others. Change no file.
 
-List only the decisions that you would still have to make before you start: places where you would have to guess, and a wrong guess would change the result. Skip what the document leaves to the builder on purpose, and what you can decide yourself.
+List only the decisions that you would still have to make before you start:
+- a design choice that the document leaves to you, such as a data format, an interface, or how to handle an error;
+- a vague step, such as "update the reader", where you need "add field X to type Y in file Z".
+Skip what the document leaves to the builder on purpose, and what you can decide yourself without a change to the result.
 
 Answer in exactly this format, most important first, at most 400 words:
 
-- Decision: <the question>
+- <Blocker | Major | Nit> Decision: <the question>
+  Where: <the section, or a short quote>
   Why it matters: <what changes with the answer>
 
 If nothing important is open, write: nothing important.

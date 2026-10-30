@@ -8,7 +8,7 @@ The system doc must have its header. If `cairn leaves <system>` says there is no
 
 ## 1. Measure
 
-Run `cairn check` and `cairn leaves <system>`. Keep both outputs. The leaves leave out tests and vendored code; the hay can name tests as evidence.
+Run `cairn check` and `cairn leaves <system>`. Keep both outputs. The leaves leave out tests and vendored code; the draft (step 6) links the tests as evidence for the rules.
 
 The system's violations are its entries in `.cairn/baseline.json` (the IDs that name it) and the `cycle between` lines of `cairn check` that name it. They go on the weakness list. So does each leaf over the leaf limit.
 
@@ -24,7 +24,7 @@ Start one `doc-peanut` subagent for each leaf, all in parallel. Give it only thi
 Read only these files, and no others:
 <the files of the leaf>
 
-Write a summary in exactly this format, at most 400 words.
+Write a summary in exactly this format. `Parts` has one short line for each file. The rest has at most 400 words.
 
 Parts:
 - <file>: <its purpose, one sentence without "and">
@@ -85,7 +85,7 @@ Write the body below the header, with these sections in this order:
 2. A picture
 3. A walk-through of one concrete example
 4. Its parts: the top level of the hay
-5. Rules that must hold, each linked to the check that enforces it
+5. Rules that must hold, each linked to the check or test that enforces it
 6. Decisions, each with its reason and the alternative we rejected
 7. Words it introduces
 
