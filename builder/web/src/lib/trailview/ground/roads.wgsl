@@ -203,9 +203,10 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
         edge += 0.36 * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5);
     }
     let thin = max(0.0, 0.5 * cross_w - half);
-    // PROTOTYPE (road looks): well inside the corridors' range (CORRIDOR_SHARE and HOLE_MARGIN_M of hole.wgsl) a
-    // corridor draws each way but a house's walk, and the paint would show where the terrain rises through it.
-    let corridor = corridor_ground || (distance < 0.7 * masks.reach - 40.0 && code != PAVING_CODE);
+    // PROTOTYPE (road looks): well inside the corridors' range (CORRIDOR_SHARE and HOLE_MARGIN_M of hole.wgsl) an
+    // unpaved way's corridor frays into the ground, and its flat paint would show where the terrain rises through it.
+    // A paved way keeps its paint there: where the stamped ground lies over its corridor, the paint is the way.
+    let corridor = corridor_ground || (distance < 0.7 * masks.reach - 40.0 && code >= 3u && code <= 6u);
     let cover = select(1.0, 0.0, corridor) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
     return Road(surface.rgb, cover, surface.w, wall, shaped);
 }

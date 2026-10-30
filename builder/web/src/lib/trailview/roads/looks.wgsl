@@ -110,7 +110,7 @@ fn cracks(p: vec2f, across: f32, half: f32, along: f32, pw: f32, cw: f32, aw: f3
     }
     // The joint in the middle, sealed in stretches.
     let seam_x = across - 0.03 * (noise(vec2f(along / 3.0, 5.0)) - 0.5);
-    var c = band(seam_x, -0.012, 0.012, cw) * step(0.45, noise(vec2f(along / 25.0, 1.0)));
+    var c = 0.7 * band(seam_x, -0.01, 0.01, cw) * smoothstep(0.45, 0.5, noise(vec2f(along / 25.0, 1.0)));
     // Cracks across, about every 7 m in some cells.
     let cell = floor(along / 7.0);
     let hc = hash(vec2f(cell, 3.0));
@@ -216,6 +216,9 @@ fn paved_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, half: f32
         return out;
     }
     var t = asphalt_grain(p, pw);
+    // Stretches resurfaced in different years, each its own tone, the newer darker.
+    let stretch = floor(along / 70.0 + 0.6 * noise(vec2f(along / 70.0, 4.0)));
+    t *= 0.9 + 0.17 * hash(vec2f(stretch, 21.0));
     // Lanes: two on a road wider than 4.8 m, one elsewhere; the wheels run 0.8 m either side of a lane's middle.
     let lanes = select(1.0, max(2.0, round(2.0 * half / 3.5)), half >= 2.4);
     let lane = 2.0 * half / lanes;
@@ -231,8 +234,8 @@ fn paved_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, half: f32
     c = mix(c, c * vec3f(1.12, 1.06, 0.95) * 1.05, 0.55 * dirt);
     // Repairs: a darker, finer patch with a tar seal on its edge.
     let fix = repairs(across, half, along, cw, aw);
-    c = mix(c, base * 0.8 * (0.97 + 0.06 * noise(p / 0.3)), fix.x * 0.85);
-    let tar = max(cracks(p, across, half, along, pw, cw, aw), fix.y);
+    c = mix(c, base * 0.86 * (0.97 + 0.06 * noise(p / 0.3)), fix.x * 0.8);
+    let tar = max(cracks(p, across, half, along, pw, cw, aw), 0.4 * fix.y);
     c = mix(c, vec3f(0.035, 0.034, 0.033), 0.85 * tar);
     out.spec = 0.25 * tar + 0.06 * wheels;
     if (mat != LOOK_ASPHALT) {
@@ -241,6 +244,10 @@ fn paved_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, half: f32
         c = mix(c, rule(region, slot_road_line()).rgb * 1.08, paint * worn);
     }
     out.albedo = c;
+    // A narrow way without a shoulder: grass creeps over its edges.
+    if (half < 2.0) {
+        out.ground = 1.0 - smoothstep(0.0, 0.1, edge + 0.08 * (noise(p / 0.3) - 0.5) + 0.04 * (noise(p / 0.07) - 0.5));
+    }
     return out;
 }
 
@@ -252,8 +259,12 @@ fn concrete_look(region: u32, p: vec2f, across: f32, half: f32, along: f32, pw: 
     var c = base * (0.95 + 0.1 * hash(slab)) * (0.95 + 0.1 * noise(p / 3.0));
     // Brushed across, fine.
     c *= 1.0 + 0.08 * seen(0.03, pw) * (noise(vec2f(along / 0.015, across / 0.5)) - 0.5) + 0.12 * seen(0.02, pw) * (noise(p / 0.009) - 0.5);
-    let joint = max(band(fract(along / 5.0 + 0.5) - 0.5, -0.002, 0.002, aw / 5.0), select(0.0, band(across, -0.006, 0.006, cw), half > 2.2));
-    c = mix(c, vec3f(0.05), 0.8 * joint * seen(0.05, pw));
+    let joint = max(band((fract(along / 5.0 + 0.5) - 0.5) * 5.0, -0.008, 0.008, aw), select(0.0, band(across, -0.008, 0.008, cw), half > 2.2));
+    c = mix(c, vec3f(0.04), 0.85 * joint);
+    // A crack across a corner of some slabs.
+    let local = vec2f(fract(along / 5.0) * 5.0, abs(across));
+    let diag = abs(local.x * 0.6 + local.y - 1.2 - 2.0 * hash(slab + 4.0)) * 0.8;
+    c *= 1.0 - 0.5 * step(hash(slab + 8.0), 0.3) * band(diag + 0.05 * (noise(p / 0.2) - 0.5), -0.005, 0.005, cw + aw) * seen(0.05, pw);
     c *= 1.0 - 0.15 * smoothstep(0.5, 0.0, half - abs(across));
     out.albedo = c;
     if (half <= 2.2) {
@@ -274,7 +285,7 @@ fn sett_look(p: vec2f, across: f32, along: f32, pw: f32) -> WayLook {
     let cell = vec2f(floor(q.x), row);
     let local = vec2f(fract(q.x), q.y) - 0.5 + 0.06 * (vec2f(hash(cell + 3.0), hash(cell + 7.0)) - 0.5);
     let h = hash(cell);
-    let tone = mix(vec3f(0.30, 0.29, 0.28), mix(vec3f(0.36, 0.30, 0.28), vec3f(0.24, 0.25, 0.27), step(0.5, hash(cell + 11.0))), step(0.6, h));
+    let tone = mix(vec3f(0.30, 0.29, 0.28), mix(vec3f(0.33, 0.30, 0.285), vec3f(0.25, 0.255, 0.265), step(0.5, hash(cell + 11.0))), step(0.6, h));
     let joint = smoothstep(0.5, 0.36, max(abs(local.x), abs(local.y)));
     let sand = vec3f(0.24, 0.21, 0.17);
     out.albedo = mix(vec3f(0.27, 0.26, 0.25), mix(sand, tone * (0.85 + 0.3 * hash(cell + 5.0)), joint), s);
@@ -325,8 +336,8 @@ fn gravel_look(region: u32, p: vec2f, across: f32, half: f32, along: f32, pw: f3
     c = mix(c, base * vec3f(0.86, 0.83, 0.78) * (0.96 + 0.08 * noise(p / 0.3)), 0.5 * wheels);
     out.albedo = c;
     out.bump = loose * 0.35 * (big.y - 1.0) * (vec2f(noise(p / 0.05), noise(p / 0.05 + 9.0)) - 0.5);
-    let middle = select(0.0, smoothstep(0.42, 0.18, x) * smoothstep(0.45, 0.75, noise(p / 1.7 + vec2f(along * 0.0, 3.0))), track);
-    out.ground = max(1.0 - smoothstep(0.0, 0.3, frayed(p, half - x, 0.35)), 0.85 * middle);
+    let middle = select(0.0, smoothstep(0.35, 0.12, x + 0.12 * (noise(p / 0.3) - 0.5)) * smoothstep(0.4, 0.6, noise(p / 0.5 + 3.0)) * smoothstep(0.3, 0.6, noise(vec2f(along / 20.0, 6.0))), track);
+    out.ground = max(1.0 - smoothstep(0.0, 0.3, frayed(p, half - x, 0.35)), 0.7 * middle);
     return out;
 }
 
@@ -338,7 +349,7 @@ fn dirt_look(code: u32, region: u32, p: vec2f, across: f32, half: f32, along: f3
     let x = abs(across);
     let grassy = code == 5u;
     let wob = 0.08 * (noise(vec2f(along / 7.0, sign(across) * 3.0)) - 0.5);
-    let rut_w = select(0.22, 0.17, grassy) + 0.06 * noise(vec2f(along / 3.0, sign(across)));
+    let rut_w = select(0.25, 0.19, grassy) + 0.06 * noise(vec2f(along / 3.0, sign(across)));
     let d = abs(x - 0.75 + wob);
     let rut = 1.0 - smoothstep(rut_w - 0.04, rut_w + 0.06, d + 0.05 * (noise(p / 0.2) - 0.5));
     // The bottom of the rut darker and moister; mud where the ruts hold water.
@@ -352,8 +363,10 @@ fn dirt_look(code: u32, region: u32, p: vec2f, across: f32, half: f32, along: f3
     out.spec = 0.5 * wet * deep;
     out.bump = vec2f(-sign(across) * sign(x - 0.75 + wob) * 0.25 * rut * (1.0 - deep), 0.0);
     // Grass covers what is not rut; on a grass track the ruts too, in part.
-    let grassed = select(0.0, smoothstep(0.35, 0.7, noise(p / 0.45 + 5.0)), grassy);
-    out.ground = max(1.0 - rut, grassed);
+    let grassed = select(0.0, 0.85 * smoothstep(0.5, 0.75, noise(p / 0.45 + 5.0)), grassy);
+    // Worn grass beside the ruts: soil shows through.
+    let worn = smoothstep(rut_w + 0.3, rut_w, d) * 0.35;
+    out.ground = max(1.0 - max(rut, worn), grassed);
     out.ground = max(out.ground, 1.0 - smoothstep(0.0, 0.25, frayed(p, half - x, 0.3)));
     return out;
 }
@@ -376,11 +389,11 @@ fn trail_look(region: u32, su: vec2f, p: vec2f, across: f32, half: f32, along: f
     var c = soil * (0.85 + 0.25 * noise(p / 0.5) + 0.1 * noise(p / 2.0)) * (1.0 - 0.12 * smoothstep(0.15, 0.0, abs(across - centre)));
     c *= (1.0 + 0.5 * peb.x) * mix(0.8, 1.0, peb.y);
     // Rocks set in the tread, more on rocky ground: domed, in the colour of the rock under it.
-    let r = voronoi(p, mix(0.16, 0.26, rocky));
-    let set_in = step(1.0 - mix(0.1, 0.4, rocky), r.x) * smoothstep(0.03, 0.12, r.y) * seen(0.2, pw);
-    c = mix(c, rock * 0.75 * (0.75 + 0.35 * r.z) * mix(0.55, 1.0, smoothstep(0.03, 0.3, r.y)), set_in);
+    let r = voronoi(p, mix(0.14, 0.2, rocky));
+    let set_in = step(1.0 - mix(0.08, 0.22, rocky), r.x) * smoothstep(0.03, 0.12, r.y) * seen(0.2, pw);
+    c = mix(c, rock * (0.85 + 0.3 * r.z) * mix(0.5, 1.05, smoothstep(0.03, 0.35, r.y)), set_in);
     out.albedo = c;
-    out.bump = set_in * 0.6 * (vec2f(noise(p / 0.15), noise(p / 0.15 + 4.0)) - 0.5);
+    out.bump = set_in * 1.2 * (vec2f(hash(floor(p / 0.2) + 1.0), r.z) - 0.5);
     // A trampled margin: grass with soil showing through.
     out.ground = clamp(1.0 - smoothstep(-0.03, 0.05, d) - 0.35 * smoothstep(-0.3, -0.03, d) * (1.0 - smoothstep(-0.03, 0.05, d)), 0.0, 1.0);
     return out;
@@ -393,8 +406,11 @@ fn ballast_look(code: u32, p: vec2f, across: f32, half: f32, sleepers: f32, pw: 
     let narrow = ((code - RAIL_CODE) & 1u) != 0u;
     let gauge = select(0.7525, 0.53, narrow);
     let x = abs(across);
-    let peb = pebbles(p, 0.038, pw);
-    var c = BALLAST * (0.9 + 0.15 * noise(p / 2.0)) * (1.0 + 0.55 * peb.x) * mix(0.62, 1.0, peb.y);
+    // Crushed stone: two sizes over each other, each stone its own tone, shallow gaps.
+    let peb = pebbles(p, 0.032, pw);
+    let big = pebbles(p * 1.13 + 7.0, 0.055, pw);
+    let tone = 1.0 + 0.5 * peb.x + 0.35 * big.x;
+    var c = BALLAST * vec3f(1.0 + 0.1 * big.x, 1.0, 1.0 - 0.1 * big.x) * (0.9 + 0.15 * noise(p / 2.0)) * tone * mix(0.72, 1.0, min(peb.y, mix(1.0, big.y, 0.6)));
     // Rust from the rails and brake dust, oil down the middle.
     c = mix(c, c * vec3f(1.25, 0.9, 0.7), 0.6 * smoothstep(0.4, 0.0, abs(x - gauge)));
     c *= 1.0 - 0.25 * smoothstep(0.35, 0.0, x);
@@ -414,18 +430,22 @@ fn ballast_look(code: u32, p: vec2f, across: f32, half: f32, sleepers: f32, pw: 
     return out;
 }
 
-// Steps: concrete or stone treads in a town, each its own tone with a lighter worn middle; on a trail,
-// treads of soil behind risers of timber.
+// Steps: concrete or stone treads in a town, each its own tone with a lighter worn middle and a nosing; on a
+// trail, treads of soil behind timber beams. A tread's `along` is metres back from its nosing.
 fn step_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, along: f32, pw: f32, n: vec3f) -> WayLook {
     var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0);
     let trail = code == 4u || code == 5u || code == 6u;
     if (trail) {
         if (mat == LOOK_RISER) {
             // Timber: brown with its grain along the beam.
-            out.albedo = vec3f(0.24, 0.16, 0.1) * (0.8 + 0.4 * noise(vec2f(across / 0.4, p.y / 0.006 + p.x / 0.006)));
+            out.albedo = vec3f(0.3, 0.24, 0.17) * (0.8 + 0.4 * noise(vec2f(across / 0.4, p.y / 0.006 + p.x / 0.006)));
         } else {
             let peb = pebbles(p, 0.03, pw);
+            let beam = band(along, -1.0, 0.13, max(fwidth(along), 1e-4));
             out.albedo = rule(region, slot_roads() + 3).rgb * 1.2 * (0.85 + 0.25 * noise(p / 0.4)) * (1.0 + 0.4 * peb.x) * mix(0.8, 1.0, peb.y);
+            out.albedo = mix(out.albedo, vec3f(0.34, 0.27, 0.19) * (0.85 + 0.3 * noise(vec2f(across / 0.5, along / 0.01))), beam);
+            // Grass creeps onto the tread from its sides and its back.
+            out.ground = (1.0 - beam) * smoothstep(0.25, 0.55, abs(across) / 0.9 + 0.35 * (noise(p / 0.25) - 0.5) + 0.25 * smoothstep(0.2, 0.6, along));
         }
         return out;
     }
@@ -436,6 +456,9 @@ fn step_look(mat: u32, code: u32, region: u32, p: vec2f, across: f32, along: f32
         c *= 0.85;
     } else {
         c *= 1.0 + 0.08 * smoothstep(0.5, 0.0, abs(across));
+        // The nosing: a lighter worn edge, a dark line where it meets the riser below.
+        let aw = max(fwidth(along), 1e-4);
+        c *= 1.0 + 0.12 * band(along, 0.0, 0.05, aw) - 0.4 * band(along, -1.0, 0.008, aw);
     }
     out.albedo = c;
     return out;
@@ -484,7 +507,7 @@ fn look_fragment(mat: u32, code: u32, su: vec2f, relative: vec3f, altitude: f32,
             // Concrete sleepers, the dark pads and clips of the rails on their top.
             let narrow = ((code - RAIL_CODE) & 1u) != 0u;
             let gauge = select(0.7525, 0.53, narrow);
-            var c = vec3f(0.25, 0.245, 0.23) * (0.9 + 0.15 * noise(p / 0.2)) * mix(vec3f(1.0), vec3f(1.1, 0.92, 0.8), smoothstep(0.35, 0.0, abs(abs(across) - gauge))) * (1.0 + 0.1 * seen(0.02, pw) * (noise(p / 0.01) - 0.5));
+            var c = vec3f(0.2, 0.195, 0.185) * (0.9 + 0.15 * noise(p / 0.2)) * mix(vec3f(1.0), vec3f(1.1, 0.92, 0.8), smoothstep(0.35, 0.0, abs(abs(across) - gauge))) * (1.0 + 0.1 * seen(0.02, pw) * (noise(p / 0.01) - 0.5));
             c = mix(c, vec3f(0.05, 0.045, 0.04), band(abs(across), gauge - 0.11, gauge + 0.11, cw) * step(0.8, n.z));
             l.albedo = c;
         }
@@ -505,8 +528,8 @@ fn look_fragment(mat: u32, code: u32, su: vec2f, relative: vec3f, altitude: f32,
             // A ladder rack: rungs 0.1 m apart on its top; dark steel at its sides.
             let m = along * SLEEPER_SPACING_M;
             let rung = band(fract(m / 0.1 + 0.5) - 0.5, -0.25, 0.25, aw_raw * SLEEPER_SPACING_M / 0.1);
-            l.albedo = mix(vec3f(0.04), vec3f(0.22, 0.21, 0.2), select(0.0, rung, n.z > 0.8));
-            l.spec = 0.4;
+            l.albedo = mix(vec3f(0.035, 0.03, 0.028), vec3f(0.2, 0.19, 0.18), select(0.0, rung, n.z > 0.8));
+            l.spec = 0.15;
         }
         case 37u: {
             l.albedo = vec3f(0.06, 0.06, 0.065);

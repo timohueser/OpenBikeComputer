@@ -154,9 +154,10 @@ function steps(b: MeshBuilder, line: Line, st: Station[], owned: (j: number) => 
             prev = level;
             continue;
         }
-        const at = (p: Station, a: number, z: number, c: number) => fine(b, p.x + p.ax * a, p.y + p.ay * a, z, c, a, p.along);
-        // The tread, with its own vertices at its front edge so the riser keeps its colour.
-        b.quad([at(s, half, level, treadColour), at(s, -half, level, treadColour), at(t, -half, level, treadColour), at(t, half, level, treadColour)], [0, 0, 1]);
+        const at = (p: Station, a: number, z: number, c: number, along = p.along) => fine(b, p.x + p.ax * a, p.y + p.ay * a, z, c, a, along);
+        // The tread: its `along` is metres back from its nosing, at its start going up the line, else at its end.
+        const up = s.z <= t.z, ns = up ? 0 : a1 - a0, nt = up ? a1 - a0 : 0;
+        b.quad([at(s, half, level, treadColour, ns), at(s, -half, level, treadColour, ns), at(t, -half, level, treadColour, nt), at(t, half, level, treadColour, nt)], [0, 0, 1]);
         const [fx, fy] = ahead(s), m = metresPerUnit(s.y), fwd: [number, number, number] = [fx * m, -fy * m, 0];
         if (k > 0 && Math.abs(level - prev) > 0.01) {
             const lo = Math.min(level, prev), hi = Math.max(level, prev), down: [number, number, number] = level > prev ? [-fwd[0], -fwd[1], 0] : fwd;
