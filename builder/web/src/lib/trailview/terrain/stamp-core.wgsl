@@ -158,8 +158,8 @@ fn shoulder_of(code: u32) -> f32 {
 }
 
 // PROTOTYPE (road study): a rural road's cut has a shallow ditch beside its shoulder: DITCH_M deep, its
-// bottom from DITCH_IN_M to DITCH_OUT_M past the shoulder, back up by DITCH_END_M, where the cut's slope
-// starts. It binds only where the ground stands at or over the road: beside a cutting, on the uphill side
+// bottom from DITCH_IN_M to DITCH_OUT_M past the shoulder, where the cut's slope starts, and filled in by
+// DITCH_END_M. It binds only where the ground stands at or over the road: beside a cutting, on the uphill side
 // of a mountain road, on level ground; never on an embankment.
 const DITCH_M: f32 = 0.3;
 const DITCH_IN_M: f32 = 0.4;
@@ -644,7 +644,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                     let l = g.z - (tol + widen(x, reach, rule.fill));
                     // A rural road's cut starts past its ditch.
                     let ditched = kind == ROAD && walk == 0.0 && !gallery && rural((word(r + 5u) >> 16u) & 0xffu) && reach > 2.0 * DITCH_END_M;
-                    let xc = select(x, max(0.0, x - DITCH_END_M), ditched);
+                    let xc = select(x, max(0.0, x - DITCH_OUT_M), ditched);
                     let u = g.z + (tol + widen(xc, reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery))) - select(0.0, ditch_depth(x), ditched);
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
