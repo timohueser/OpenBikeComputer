@@ -153,12 +153,6 @@ def skips(pulls: list[dict]) -> list[tuple[int, str, str]]:
             if (mode := pull_mode(pull)) and mode["reason"]]
 
 
-def is_test(path: str, patterns: list[str]) -> bool:
-    """A pattern with no `/` matches the file name only, so `*` cannot cross a folder."""
-    name = path.rsplit("/", 1)[-1]
-    return any(cairn.glob_matches(path if "/" in pattern else name, pattern) for pattern in patterns)
-
-
 def diff_lines(root: Path, commit: str, head: str) -> dict[str, int]:
     """Each path that changed between the commit and the head, with its added and removed lines. A
     binary file counts 0."""
@@ -190,7 +184,7 @@ def measure(root: Path, config: dict, docs: list[cairn.Doc], merge: str) -> tupl
                 new_docs.append(name)
     others = [path for path in lines if path not in system_docs]
     touched = {s for hits in cairn.owners(others, docs).values() for s in hits} | set(system_docs.values())
-    changed = sum(n for path, n in lines.items() if not is_test(path, config["tests"]))
+    changed = sum(n for path, n in lines.items() if not cairn.is_test(path, config["tests"]))
     specs = sorted(path for path in lines if path.startswith(config["specs"].rstrip("/") + "/"))
 
     def fit(count: int, key: str) -> str:
@@ -305,7 +299,7 @@ def drift_inputs(root: Path, docs: list[cairn.Doc], config: dict, read: Api) -> 
         parts, numbers = [], []
         for commit, number in merges(root, since) if since else []:
             changed = (git(root, "diff", "--name-only", "--no-renames", "-z", f"{commit}^1", commit) or "").split("\0")
-            kept = [f for f in changed if f and f != f"{folder}/{cairn.MAP}" and not is_test(f, dropped)]
+            kept = [f for f in changed if f and f != f"{folder}/{cairn.MAP}" and not cairn.is_test(f, dropped)]
             files = sorted(f for f, hits in cairn.owners(kept, docs).items() if doc.system in hits)
             if files:
                 numbers.append(number)

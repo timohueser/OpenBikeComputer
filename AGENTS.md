@@ -12,7 +12,7 @@ The goal for this codebase is to make this a robust and extendable open source m
 - Prefer small, well-bounded modules over growing monoliths.
 - Make the smallest change that meets the request. Do not add adjacent features without approval.
 - Test are good! But avoid endless smoke thests and too many "regression tests". Write focused, high quality tests, never add tests just for the sake of adding them.
-- **Keep code and comments concise, current, and focused on the present behavior.** A comment states an invariant, a non-obvious reason or a gotcha. It never says what the code plainly does, what the code used to do, or which issue changed it.
+- **Keep code and comments concise, current, and focused on the present behavior.** A comment states an invariant, a non-obvious reason or a gotcha. It never says what the code plainly does, what the code used to do, or which issue changed it. A module's one-sentence purpose comment, written by cairn `document`, states its intent.
 - None of this project is deployed to consumers yet, there is no need to keep backwards compatability, or write migration systems if we change any datastructure or file format. Breaking changes are fine at this stage of developement. "This will break the old format" is never an argument against making a change. The one exception is the settings blob in RRAM: released devices will receive firmware updates that change settings, so its versioned codec stays. It may be simplified, never deleted.
 
 ## Repository layout

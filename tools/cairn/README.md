@@ -10,6 +10,7 @@ obc cairn check            # print the report
 obc cairn check --update   # remove gone entries from the baseline, and lower sizes that shrank
 obc cairn check --base origin/develop   # also fail when the baseline grew since the merge base
 obc cairn map              # rewrite the generated block of docs/design/README.md
+obc cairn leaves rendering-display   # print the leaves of a system, for the skill's `document` command
 obc cairn model code-review   # print the model and effort of a role in this harness
 obc cairn report           # print the weekly report; --publish writes it to its issue, --drift runs step 2
 python3 -m unittest discover -s tools/cairn/tests
@@ -21,9 +22,10 @@ python3 -m unittest discover -s tools/cairn/tests
 | --- | --- |
 | `docs/design/README.md` | the system map. `cairn map` rewrites the block between its two comments. `check` fails when the block is stale. Two merged pull requests can leave it stale on `develop`; `obc cairn map` fixes it. |
 | `docs/design/<system>.md` | the header of one system or shell: `kind`, `area` (systems only), `purpose`, `owns`, `depends_on`, `test_depends_on`, `status` |
-| `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4, the globs of test files, the `specs` folder, the size thresholds of a change, the model roles and tiers, and the report settings |
+| `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4, the globs of test files, the `specs` folder, the size thresholds of a change, the leaf limits, the skill budget, the model roles and tiers, and the report settings |
 | `.cairn/baseline.json` | the known violations, by ID, with a size |
 | `report.py` | `cairn report` |
+| `skill/cairn/` | the agent skill: `SKILL.md` routes to one file in `reference/` for each command. `.claude/skills/cairn` and `.agents/skills/cairn` link to it. |
 | `.github/workflows/cairn-report.yml` | runs `cairn report --publish` each week. Its environment `cairn-report` holds the `ANTHROPIC_API_KEY` secret. |
 | `adapters/cargo.py` | the Rust crates and their path dependencies. Each tracked `Cargo.toml` with a `[workspace]` table is a Cargo root. Every other tracked `Cargo.toml` outside `ignore` must be a member of a root. |
 
@@ -61,6 +63,29 @@ HEAD, so a change cannot set a doc back to draft to hide its own violation.
 
 `firmware/tools/check_dependencies.py` is a separate check. It enforces the production direction
 between its own crate groups, which do not follow the system cut.
+
+## Leaves
+
+`leaves` cuts the files that a system owns into leaves of at most `leaf_lines` lines and
+`leaf_files` files. It leaves out the files that match the `tests` globs or an adapter's `ignore`
+globs: the doc describes the system, and the draft of `document` links the tests as evidence for
+the rules. A leaf stays inside one crate. A folder that is too large is cut by its entries, and
+small entries of one folder share a leaf. A file `x.rs` stays with its folder `x/`. A file larger
+than the line limit is a leaf of its own.
+
+`skill/cairn/NOTICE` names the source and licence of the adapted Goldfish prompts.
+
+The output names every repository crate on one line. Each leaf gives its `level`, the folder at
+which it was cut, and the repository crates that its crate uses, from the cargo adapter. A file in
+no crate has no such list.
+
+## Skill budget
+
+`check` fails when a skill file is over its budget in `skill`: `router_tokens` for `SKILL.md`,
+`reference_tokens` for each file in `reference/`. A token is four bytes. `tools/prose.py` does not
+budget the skill files; it checks only their links.
+
+`skill` is optional; `leaves` needs `leaf_lines` and `leaf_files`.
 
 ## The `Mode:` line
 

@@ -1,0 +1,11 @@
+The Goldfish prompts in reference/goldfish.md adapt the reviewer prompts of
+the Elephant-Goldfish Model: agents/comprehension.md, agents/design_critic.md
+and agents/implementation_readiness.md in
+https://github.com/google/elephant-goldfish-model
+
+Copyright 2026 Google LLC.
+Licensed under the Apache License, Version 2.0. A copy is in LICENSE-EGM,
+and at https://www.apache.org/licenses/LICENSE-2.0
+
+The cairn version is changed: it shortens the prompts, rewrites them in
+Simplified Technical English and adds fixed output formats.
