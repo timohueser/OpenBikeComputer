@@ -44,10 +44,10 @@ export function partnersOf(lines: Line[]): Map<Line, [Line?, Line?]> {
     return partner;
 }
 
-/** A road's half-width at its vertex v: halfway to its partner's at an end that runs on into one, so the paint's and the slab's edges run on across the joint. */
+/** A road's half-width at its vertex v with the widening of a bend: halfway to its partner's at an end that runs on into one, so the paint's and the slab's edges run on across the joint. */
 export function halfAt(line: Line, v: number, partners: Map<Line, [Line?, Line?]>): number {
     const other = v === 0 ? partners.get(line)?.[0] : v === line.z.length - 1 ? partners.get(line)?.[1] : undefined;
-    return other ? (line.h + other.h) / 2 : line.h;
+    return (other ? (line.h + other.h) / 2 : line.h) + (line.plan?.widen[v] ?? 0);
 }
 
 export function cornersOf(lines: Line[]): Corner[] {

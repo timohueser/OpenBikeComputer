@@ -96,3 +96,14 @@ it('places tile units in metres from the drop, leaves out lines below the surfac
     expect(lines[0][1][1]).toBeCloseTo(0, 0);
     expect(houses).toHaveLength(1);
 });
+
+it('follows the curve of a line with an alignment, not its chord', () => {
+    const at: Coordinate = [8.366, 46.958];
+    const [x, y] = worldPixel(at, 2 ** 13), u = (x - Math.floor(x)) * EXTENT, v = (y - Math.floor(y)) * EXTENT;
+    // A bend of 200 units between two tangents 30° off its chord, along y.
+    const turn = Math.PI / 6, plan = { along: 0, backward: false, tangent: Float32Array.of(turn, -turn), grade: new Float32Array(2), bank: new Float32Array(2), widen: new Float32Array(2), side: new Float32Array(2) };
+    const road: Feature = { kind: 'road', tags: {}, geometry: 'line', parts: [{ outer: false, xy: Float32Array.of(u, v, u + 200, v), z: Float32Array.of(1000, 1000), plan }] };
+    const { lines: [line] } = localGeometry([road], at);
+    expect(line.length).toBeGreaterThan(2);
+    expect(Math.min(...line.map(([, north]) => north))).toBeLessThan(-2);
+});

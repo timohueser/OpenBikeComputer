@@ -2,7 +2,8 @@
 // drop, and out of a house. It looks along the route, along the road, or to the farthest view.
 import { WALK_EYE } from '../trailview/frame/camera';
 import { CURVATURE } from '../trailview/frame/frame';
-import { decodeFeatures, EXTENT, type Feature } from '../trailview/stream/features';
+import { curveOf, PATH_SAG } from '../trailview/stream/curve';
+import { decodeFeatures, EXTENT, unitScale, type Feature, type FeaturePart } from '../trailview/stream/features';
 import { featureTiles } from '../trailview/stream/terrain';
 import type { PlannerConfig } from './config';
 import { kilometres, nearestOnLine, type Coordinate } from './geo';
@@ -210,9 +211,10 @@ export function localGeometry(features: Feature[], at: Coordinate): { lines: Xy[
     };
     // An eye on a bridge deck would stand on the ground below it.
     const surface = ({ tags }: Feature) => !(Number(tags.layer) < 0) && (tags.bridge ?? 'no') === 'no';
+    const drawn = (part: FeaturePart) => (part.plan && part.z ? curveOf(part, 0, PATH_SAG, unitScale(FEATURE_ZOOM), () => scale).xy : part.xy);
     const lines: Xy[][] = [], houses: House[] = [];
     for (const feature of features) {
-        if (feature.geometry === 'line' && ROADS.has(feature.kind) && surface(feature)) lines.push(...feature.parts.map(part => local(part.xy)));
+        if (feature.geometry === 'line' && ROADS.has(feature.kind) && surface(feature)) lines.push(...feature.parts.map(part => local(drawn(part))));
         if (feature.geometry === 'area' && feature.kind === 'building') {
             const rings = feature.parts.map(part => local(part.xy));
             if (rings.some(near)) houses.push(rings);

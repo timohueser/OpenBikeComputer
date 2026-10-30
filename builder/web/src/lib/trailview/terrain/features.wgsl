@@ -1,6 +1,7 @@
 // The feature mask of near pages, by the page that draws a texel, in group 3. Include it after
 // drawn-height.wgsl with `// #include features.wgsl`.
 // #include drawn-height.wgsl
+// #include mask-walk.wgsl
 
 // Metres from the eye that the mask pool holds the near pages to, and per page layer the mask layer + 1, 0 for none.
 struct Masks {
@@ -10,8 +11,7 @@ struct Masks {
 @group(3) @binding(0) var<storage, read> masks: Masks;
 // Per texel: the distance to the edge of the painted road's carriageway (negative inside), ±MASK_M metres
 // as 0..1 on the asinh scale of stamp.wgsl, filtered; the fraction of a track's sleepers from its start
-// there, or else the width of that road's sidewalk on the texel's side in WALK_STEP_M,
-// unfiltered; the metres from the middle of that road (signed by side) within ±MASK_M, or ±TRACK_M for
+// there, or else the byte of mask-walk.wgsl, unfiltered; the metres from the middle of that road (signed by side) within ±MASK_M, or ±TRACK_M for
 // a track, filtered; then the road surface code
 // (0 none) in the low 4 bits of a byte and the flags above them, unfiltered.
 @group(3) @binding(1) var mask_texels: texture_2d_array<f32>;
@@ -35,9 +35,8 @@ const MASK_KNEE: f32 = 0.5;
 const RAIL_CODE: u32 = 9u;
 const PAVING_CODE: u32 = 8u;
 const SLEEPER_SPACING_M: f32 = 0.6;
-// As TRACK_RANGE and WALK_STEP_M of stamp.wgsl: a track's paint lies this near its middle, so its rails take finer steps.
+// As TRACK_RANGE of stamp.wgsl: a track's paint lies this near its middle, so its rails take finer steps.
 const TRACK_M: f32 = 3.2;
-const WALK_STEP_M: f32 = 0.1;
 // As SURFACES of bins.ts: the half-widths of a standard and a narrow track, whose codes alternate from RAIL_CODE on.
 const RAIL_HALF_M: f32 = 1.9;
 const NARROW_HALF_M: f32 = 1.5;
@@ -137,7 +136,16 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
             let a = clamp(t.whole, first, first + vec2i(255));
             let b = clamp(t.whole + vec2i(1), first, first + vec2i(255));
             let ab = array(shape_at(page, a), shape_at(page, vec2i(b.x, a.y)), shape_at(page, vec2i(a.x, b.y)), shape_at(page, b));
-            let e = array(mask_metres(ab[0].x), mask_metres(ab[1].x), mask_metres(ab[2].x), mask_metres(ab[3].x));
+            let nearest = shape_at(page, whole);
+            // The paving of a forecourt or a footway takes the texels past a sidewalk. The distances of the two
+            // are to different edges, and a mix of them reads as a road: a texel of the other kind counts as the nearest.
+            let paving = (byte & 15u) == PAVING_CODE;
+            var e = array(mask_metres(ab[0].x), mask_metres(ab[1].x), mask_metres(ab[2].x), mask_metres(ab[3].x));
+            for (var i = 0; i < 4; i++) {
+                if (((u32(round(ab[i].w * 255.0)) & 15u) == PAVING_CODE) != paving) {
+                    e[i] = mask_metres(nearest.x);
+                }
+            }
             let edge = mix(mix(e[0], e[1], t.part.x), mix(e[2], e[3], t.part.x), t.part.y);
             let face = mix(mix(faced(ab[0]), faced(ab[1]), t.part.x), mix(faced(ab[2]), faced(ab[3]), t.part.x), t.part.y);
             // Texel rows run along -y of LOD space.
@@ -151,10 +159,10 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
             let middle = vec2f(mix(m[1] - m[0], m[3] - m[2], t.part.y), mix(m[2] - m[0], m[3] - m[1], t.part.x));
             let ahead = select(vec2f(0.0), normalize(vec2f(middle.y, -middle.x)), dot(middle, middle) > 0.0);
             let axis = select(away, normalize(vec2f(middle.x, -middle.y)), dot(middle, middle) > 0.0);
-            let y = shape_at(page, whole).y;
+            let y = nearest.y;
             let sleepers = y + dot(t.part - round(t.part), ahead) * texel_metres(level, whole.y) / SLEEPER_SPACING_M;
-            let walk = select(u32(round(y * 255.0)), 0u, (byte & 15u) >= RAIL_CODE);
-            return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, f32(walk) * WALK_STEP_M);
+            let walk = select(walk_metres(u32(round(y * 255.0))), 0.0, (byte & 15u) >= RAIL_CODE);
+            return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, walk);
         }
     }
     return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0);

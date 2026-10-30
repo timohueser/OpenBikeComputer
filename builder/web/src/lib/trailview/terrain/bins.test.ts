@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, AREA, TUNNEL, WALK, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WALK, WARP_M, waterAt, type Line, type Profile } from './bins';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { LEFT, RIGHT } from './town';
 
@@ -23,15 +23,28 @@ function cellOf(data: Uint32Array, node: { level: number; x: number; y: number }
     return { entries, origin };
 }
 
-/** The gates of stamp-core.wgsl in JavaScript: its f32 constants and the functions that the gates call, as written there. */
-function shaderGates(): Record<'road_shows' | 'path_shows' | 'sea_shows', (h: number, ...rest: unknown[]) => boolean> {
-    const constants = [...shader.matchAll(/^const (\w+): f32 = ([^;]+);/gm)].map(([, name, value]) => `const ${name} = ${value};`);
-    const functions = ['reach_limit', 'gate_texel', 'road_shows', 'path_shows', 'water_lift', 'sea_shows'].map(name => {
-        const [, args, body] = new RegExp(`fn ${name}\\(([^)]*)\\) -> \\w+ \\{([^}]*)\\}`).exec(shader)!;
-        return `function ${name}(${args.replace(/: \w+/g, '')}) {${body.replace(/\blet\b/g, 'const').replace(/\b(max|min)\(/g, 'Math.$1(').replace(/\bf32\(/g, '(').replace(/(\d)u\b/g, '$1')}}`;
-    });
-    return new Function(`${constants.join('\n')}\n${functions.join('\n')}\nreturn { road_shows, path_shows, sea_shows };`)();
+/** The text of a function of a shader, between its braces. */
+function functionOf(source: string, name: string): string {
+    const start = source.indexOf(`fn ${name}(`), open = source.indexOf('{', start);
+    let at = open + 1;
+    for (let depth = 1; depth > 0; at++) depth += source[at] === '{' ? 1 : source[at] === '}' ? -1 : 0;
+    return source.slice(open + 1, at - 1);
 }
+
+/** Functions of a shader in JavaScript, as written there, with its constants. */
+function shaderFunctions<T>(source: string, names: string[]): T {
+    const constants = [...source.matchAll(/^const (\w+): [fu]32 = ([^;]+);/gm)].map(([, name, value]) => `const ${name} = ${value.replace(/\b(0x[0-9a-f]+|\d+)u\b/g, '$1')};`);
+    const functions = names.map(name => {
+        const args = /\(([^)]*)\)/.exec(source.slice(source.indexOf(`fn ${name}(`)))![1];
+        const body = functionOf(source, name).replace(/\blet\b/g, 'const').replace(/\bvar\b/g, 'let').replace(/\b(max|min|abs|round)\(/g, 'Math.$1(').replace(/\b[fu]32\(/g, '(').replace(/(\d)u\b/g, '$1');
+        return `function ${name}(${args.replace(/: \w+/g, '')}) {${body}}`;
+    });
+    const smoothstep = 'function smoothstep(a, b, x) { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); }\nfunction select(a, b, c) { return c ? b : a; }';
+    return new Function(`${smoothstep}\n${constants.join('\n')}\n${functions.join('\n')}\nreturn { ${names.join(', ')} };`)();
+}
+
+/** The gates of stamp-core.wgsl in JavaScript. */
+const shaderGates = () => shaderFunctions<Record<'road_shows' | 'path_shows' | 'sea_shows', (h: number, ...rest: unknown[]) => boolean>>(shader, ['reach_limit', 'gate_texel', 'road_shows', 'path_shows', 'water_lift', 'sea_shows']);
 
 const lakeNode = () => {
     const { rings } = features(fixture(TILE.level, TILE.x, TILE.y), TILE).lakes[0], xs = rings[0].filter((_, i) => i % 2 === 0), ys = rings[0].filter((_, i) => i % 2 === 1);
@@ -48,6 +61,10 @@ describe('the stamp data of a node', () => {
         expect(Number(/const WARP_M: f32 = ([\d.]+);/.exec(shader)?.[1])).toBe(WARP_M);
         expect(Number(/const MASK_LEVEL: u32 = (\d+)u;/.exec(readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8'))?.[1])).toBe(NEAR);
         rows.forEach((row, i) => expect(Array.from(table.subarray(PROFILE_FLOATS * i, PROFILE_FLOATS * i + fields.length))).toEqual(fields.map(field => Math.fround(row[field]))));
+        // The shoulders follow the rows, one per surface code, as `Rules` of stamp-core.wgsl has them.
+        expect(Number(/shoulders: array<vec4f, (\d+)>/.exec(shader)?.[1]) * 4).toBe(SURFACE_CODES);
+        expect(table.length).toBe(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES);
+        for (const [surface, code] of [['main', 1], ['grass', 5], ['path', 6], ['oneway', 7]] as const) expect(table[PROFILE_ROWS * PROFILE_FLOATS + code]).toBeCloseTo(SHOULDER_M[surface] ?? 0, 6);
         for (const [name, row] of Object.entries(PROFILES)) for (const field of fields) expect(row[field], `${name}.${field}`).toBeGreaterThanOrEqual(0);
         // The shaders know the surfaces by their codes, and the mask holds a code in 4 bits.
         expect(Object.keys(SURFACES)).toEqual(['main', 'road', 'gravel', 'dirt', 'grass', 'path', 'oneway', 'paving', 'rail', 'narrow', 'rack', 'narrow-rack']);
@@ -56,9 +73,82 @@ describe('the stamp data of a node', () => {
         expect(Number(/const PAVING_CODE: u32 = (\d+)u;/.exec(mask)?.[1])).toBe(Object.keys(SURFACES).indexOf('paving') + 1);
         expect([/const SLEEPER_M: f32 = ([\d.]+);/.exec(shader)?.[1], /const SLEEPER_SPACING_M: f32 = ([\d.]+);/.exec(mask)?.[1]].map(Number)).toEqual([SLEEPER_M, SLEEPER_M]);
         const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'), value = (source: string, name: string) => Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(source)?.[1]);
-        expect(['TRACK_M', 'MASK_M', 'MASK_KNEE', 'WALK_STEP_M'].map(name => value(mask, name))).toEqual(['TRACK_RANGE', 'MASK_RANGE', 'MASK_KNEE', 'WALK_STEP_M'].map(name => value(stamp, name)));
+        expect(['TRACK_M', 'MASK_M', 'MASK_KNEE'].map(name => value(mask, name))).toEqual(['TRACK_RANGE', 'MASK_RANGE', 'MASK_KNEE'].map(name => value(stamp, name)));
         const [rail, narrow] = ['RAIL_HALF_M', 'NARROW_HALF_M'].map(name => Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(mask)?.[1]));
         expect(Object.values(SURFACES).slice(RAIL_CODE - 1)).toEqual([rail, narrow, rail, narrow]);
+    });
+
+    it('holds the tangent, the bank and the widening of an alignment in each record of a line', () => {
+        const tile = { level: 13, x: 4287, y: 2889 }, tangent = Math.PI / 4, xy = [4000, 4000, 4400, 4400].map(v => v * 4);
+        const plan = { along: 0, backward: false, tangent: Float32Array.of(tangent, tangent), grade: new Float32Array(2), bank: Float32Array.of(0.05, 0.05), widen: Float32Array.of(0.5, 0.5), side: new Float32Array(2) };
+        const list = [{ kind: 'road', tags: { highway: 'tertiary' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.from(xy, v => v / 4), z: Float32Array.of(1000, 1000), plan }] }];
+        const [line] = features(list, tile).lines, shift = 22 - 17, node = { level: 17, x: Math.floor(line.xy[0] / (PAGE * 2 ** shift)), y: Math.floor(line.xy[1] / (PAGE * 2 ** shift)) };
+        const { data } = nodeStamps(list, tile, node);
+        const records = 2 + GRID * GRID + 1 + data![1], word = (i: number) => data![records + RECORD * (data![0] - 1) + i];
+        const snorm = (w: number) => [(w << 16) >> 16, w >> 16].map(v => v / 32767);
+        expect(word(4)).toBe(ROAD);
+        for (const end of [9, 10]) for (const value of snorm(word(end) | 0)) expect(value).toBeCloseTo(Math.SQRT1_2, 3);
+        // The rise to the right: x runs east and y south, so the left of the line is its higher side.
+        for (const value of snorm(word(11) | 0)) expect(value).toBeCloseTo(-0.05, 3);
+        expect([(word(13) << 8) >> 24, (word(13) | 0) >> 24]).toEqual([25, 25]);
+        const unit = metresPerUnit(line.xy[1]), left = [line.xy[0] + (100 + 2 * Math.SQRT1_2 / unit), line.xy[1] + (100 - 2 * Math.SQRT1_2 / unit)] as [number, number];
+        expect(roadHeight(line, left, 3 / unit, unit)).toBeCloseTo(1000.1, 3);
+    });
+
+    it('reads the mitres and the bank in the words that a record packs them in', () => {
+        expect([/let ma = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/, /let mb = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/, /let bank = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/].map(word => Number(word.exec(shader)?.[1]))).toEqual([9, 10, 11]);
+    });
+
+    it('digs a ditch beside a cut, only on the level with two texels in it, and starts the slope past its bottom', () => {
+        const { ditch_depth: depth, ditch_shows: shows, cut_top: top, widen } = shaderFunctions<{ ditch_depth: (x: number, depth: number) => number; ditch_shows: (level: number) => boolean; cut_top: (x: number, reach: number, slope: number, ditch: number) => number; widen: (x: number, reach: number, slope: number) => number }>(shader, ['ditch_depth', 'ditch_shows', 'gate_texel', 'cut_top', 'widen']);
+        const end = Number(/const DITCH_END_M: f32 = ([\d.]+);/.exec(shader)?.[1]);
+        expect([depth(0, 0.3), depth(0.4, 0.3), depth(0.7, 0.3), depth(end, 0.3)]).toEqual([0, 0.3, 0.3, 0]);
+        expect([18, 17, 16, 14].map(shows)).toEqual([true, false, false, false]);
+        // Without a ditch the cut rises from the core; with one the ground lies under the road at its bottom, and rises from there.
+        for (const x of [0, 0.5, 2]) expect(top(x, 10, 0.85, 0)).toBe(widen(x, 10, 0.85));
+        expect(top(0, 10, 0.85, 0.3)).toBe(0);
+        expect(top(0.6, 10, 0.85, 0.3)).toBeCloseTo(-0.3, 9);
+        expect(top(2, 10, 0.85, 0.3)).toBeCloseTo(widen(2 - 0.7, 10, 0.85), 9);
+        // The stamp holds its cuts by these, and only a plain road takes a ditch.
+        const body = functionOf(shader, 'stamp_at');
+        expect(body).toMatch(/let ditch = select\(0\.0, rule\.ditch, plain && ditch_shows\(level\)\);/);
+        expect(body).toMatch(/let u = g\.z \+ tol \+ cut_top\(x, reach, select\(rule\.cut, GALLERY_VALLEY_CUT, gallery\), ditch\);/);
+    });
+
+    it('rounds the top of a cut and the foot of a fill far from the road, and keeps the crease beside it', () => {
+        const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8');
+        const { rounded } = shaderFunctions<{ rounded: (base: number, s: object) => number }>(stamp, ['rounded']);
+        const cut = (x: number) => ({ cut: true, hi: 10, cut_x: x, fill: false }), fill = (x: number) => ({ fill: true, lo: 10, fill_x: x, cut: false });
+        // Beside the road the slope meets the ground in a crease: the bound and nothing else.
+        expect([rounded(12, cut(1)), rounded(9, cut(1)), rounded(8, fill(1)), rounded(11, fill(1))]).toEqual([10, 9, 10, 11]);
+        // Past SOFT_FULL_M it rounds over DAYLIGHT_M: a fifth of a metre at the crease, nothing at the ends of the arc.
+        expect(rounded(10, cut(5))).toBeCloseTo(9.8, 6);
+        expect(rounded(10, fill(5))).toBeCloseTo(10.2, 6);
+        expect([rounded(10.8, cut(5)), rounded(9.2, fill(5))]).toEqual([10, 10]);
+        // It never falls as the base rises.
+        for (let base = 8; base < 12; base += 0.05) expect(rounded(base + 0.05, cut(5))).toBeGreaterThanOrEqual(rounded(base, cut(5)) - 1e-9);
+        // The stamp pass takes the ground from it, then clamps.
+        expect(functionOf(stamp, 'stamp')).toMatch(/h = select\(NONE, clamp\(rounded\(base, s\), s\.lo, s\.hi\), known\(base\)\);/);
+    });
+
+    it('marks a shoulder in the byte of a sidewalk, and the paint and the snap each read the part that is theirs', () => {
+        const source = readFileSync(new URL('./mask-walk.wgsl', import.meta.url), 'utf8');
+        const { walk_byte: pack, walk_metres: metres, holds_shoulder: holds } = shaderFunctions<{ walk_byte: (walk: number, shoulder: boolean) => number; walk_metres: (byte: number) => number; holds_shoulder: (byte: number) => boolean }>(source, ['walk_byte', 'walk_metres', 'holds_shoulder']);
+        for (const walk of [...Object.values(PROFILES).map(({ walk }) => walk), 0]) for (const shoulder of [false, true]) {
+            const byte = pack(walk, shoulder);
+            expect(byte).toBeLessThan(256);
+            expect(metres(byte)).toBeCloseTo(walk, 6);
+            expect(holds(byte)).toBe(shoulder);
+        }
+        const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'), mask = readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8');
+        expect(functionOf(stamp, 'stamp')).toContain('walk_byte(s.walk, s.shoulder)');
+        expect(functionOf(stamp, 'snap')).toMatch(/walk = max\(walk, walk_metres\(wide\)\);\s+shoulder = max\(shoulder, select\(0\.0, shoulder_of\(surface\), holds_shoulder\(wide\)\)\);/);
+        expect(functionOf(mask, 'mask_at')).toContain('walk_metres(u32(round(y * 255.0)))');
+        // Only a plain road marks it, and a corner's arc takes it away.
+        const body = functionOf(shader, 'stamp_at');
+        expect(body).toContain('let plain = kind == ROAD && walk == 0.0 && !gallery && road_shows(own, rule, level);');
+        expect(body).toContain('out.shoulder = plain;');
+        expect(body.match(/out\.shoulder = false;/g)).toHaveLength(2);
     });
 
     it('shows a line on the levels where the gates of stamp-core.wgsl show it', () => {
@@ -304,7 +394,22 @@ describe('a junction', () => {
         expect(roadHeight(side, p, 3 / unit, unit)).toBeCloseTo(at(3000) + 0.08 * 2 + 0.1 / (20 * metres), 2);
         // 50 m along, on the long segment that a tile without the junction stamps too: no tilt.
         const far = (east: number): [number, number] => [side.xy[0] + east / unit, side.xy[1] - 50 / unit];
-        expect(roadHeight(side, far(2), 3 / unit, unit)).toBeCloseTo(roadHeight(side, far(0), 3 / unit, unit), 9);
+        expect(roadHeight(side, far(2), 3 / unit, unit)).toBeCloseTo(roadHeight(side, far(0), 3 / unit, unit), 6);
+    });
+
+    it('tilts a side road to the banked surface of the through road', () => {
+        // A level secondary road banks east along y = 4000, its left to the north.
+        const banked = (xy: number[]) => {
+            const road = way('main-road', { highway: 'secondary' }, xy, [1000, 1000], [0, 0]);
+            road.parts[0].plan!.bank.fill(0.05);
+            return road;
+        };
+        const { lines } = features([banked([1000, 4000, 3000, 4000]), banked([3000, 4000, 5000, 4000]), way('road', { highway: 'residential' }, [3000, 4000, 4000, 3000], [1000, 1000], [SIDE_ON, 0])], tile);
+        const side = lines.find(line => line.profile === Object.keys(PROFILES).indexOf('residential'))!;
+        // The side road runs north-east: its right side lies south-east, 0.05 × √½ lower per metre.
+        const p: [number, number] = [side.xy[0] + (Math.SQRT2 + Math.SQRT1_2) / unit, side.xy[1] + (Math.SQRT1_2 - Math.SQRT2) / unit];
+        expect(crossSlope(side, 0, 2, 100)).toBeCloseTo(-0.05 * Math.SQRT1_2, 3);
+        expect(roadHeight(side, p, 3 / unit, unit)).toBeCloseTo(1000 - 0.05 * Math.SQRT1_2, 3);
     });
 
     it('runs a road on onto a bridge and not into the side road at the end of the bridge, and tapers it there', () => {

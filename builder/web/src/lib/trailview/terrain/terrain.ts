@@ -357,7 +357,7 @@ export class Terrain {
             ...r, ...pipelines,
             stampGroup: group(L.stamp, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
             snapGroup: device.createBindGroup({
-                layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
+                layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
             }),
             featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps)]),
             emptyGroup: group(L.empty, []),
@@ -838,7 +838,7 @@ function terrainLayouts({ device }: Gpu) {
         ]),
         snap: device.createBindGroupLayout({
             entries: [
-                { binding: 0, visibility: C, buffer: read }, { binding: 6, visibility: C, texture: { sampleType: 'float', viewDimension: '2d-array' } },
+                { binding: 0, visibility: C, buffer: read }, { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 6, visibility: C, texture: { sampleType: 'float', viewDimension: '2d-array' } },
                 { binding: 7, visibility: C, storageTexture: { format: 'r32uint', viewDimension: '2d-array' } },
             ],
         }),
