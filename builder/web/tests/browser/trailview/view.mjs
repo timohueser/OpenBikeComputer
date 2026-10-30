@@ -20,7 +20,7 @@ const { values } = parseArgs({
     },
 });
 const { origin, close } = await serve();
-const browser = await launch(true);
+const browser = await launch(true, true);
 const page = await browser.newPage({ viewport: null });
 await routeFixture(page, values.tiles, values.ground, values.colour, values.features);
 await page.goto(`${origin}/trailview.html${values.view}`);
