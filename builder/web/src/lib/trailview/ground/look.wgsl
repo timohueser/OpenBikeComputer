@@ -634,13 +634,17 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     var n = render_normal(drawn);
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
     // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
-    let skirt = smoothstep(0.25, 0.5, n.z - facet.z);
+    // PROTOTYPE (road study): a corridor's band is not that mesh, and its facets say nothing of the ground.
+    var skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, corridor_ground);
     let sloped = n.z < 0.95 || skirt > 0.0;
     let g = ground_at(level, s, world, footprint, sloped);
     var open = g.open;
     let region = g.region;
     // The road paint first, so that only the Road stays live through the rest.
     let road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region);
+    // PROTOTYPE (road study): a slope that a road shaped is steep at the creases of its cut or fill, which the
+    // mesh cuts across: no cliff, as its band beside the road shows none.
+    skirt *= 1.0 - road.shaped;
     // A road's retaining wall, but for a cut in bare rock, and in woodland, as rock walls.
     let masoned = road.wall * (1.0 - road.cover) * (1.0 - g.barren) * (1.0 - g.tree);
     // The masonry runs along the world axis nearer to the wall, cross-faded within about 6° of 45°. By

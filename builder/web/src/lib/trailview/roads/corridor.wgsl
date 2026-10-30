@@ -25,10 +25,10 @@ const MAT_STEEL: u32 = 7u;
 const MAT_POST: u32 = 8u;
 const MAT_WALL: u32 = 9u;
 const MAT_CONCRETE: u32 = 10u;
-// A band's row dives this far under the drawn mesh where the face from the carriageway's edge out to it climbs or
-// falls from BAND_STEEP.x to .y per metre: a cut or a fill face far steeper than a hillside's.
+// A band's row dives this far under the drawn mesh where the face from the core's outer edge out to it climbs or
+// falls from BAND_STEEP.x to .y per metre: a cut or a fill face, whose cones start at 0.85 (roads.json).
 const BAND_DIVE_M: f32 = 1.5;
-const BAND_STEEP: vec2f = vec2f(0.9, 1.4);
+const BAND_STEEP: vec2f = vec2f(0.6, 0.8);
 // A band's row over another road's carriageway sinks this far, so that road draws over it, within this range.
 const BAND_UNDER_M: f32 = 0.2;
 const BAND_UNDER_RANGE_M: f32 = 150.0;
@@ -44,6 +44,18 @@ const CORRIDOR_BIAS_SHARE: f32 = 0.003;
 fn corridor_biased(p: vec3f) -> vec3f {
     let d = length(p);
     return p * max(0.0, 1.0 - (CORRIDOR_BIAS_M + CORRIDOR_BIAS_SHARE * d) / max(d, 1e-3));
+}
+
+// Whether a corridor face lies on the ground: the band, a carriageway and its paint, a shoulder, a kerb, a sidewalk,
+// a bed. It casts nothing, as the ground beside it does not; walls with the ground they hold back, barriers and a
+// track's details cast.
+fn corridor_on_ground(colour: vec4f) -> bool {
+    let mat = u32(round(colour.r * 255.0));
+    if ((u32(round(colour.b * 255.0)) & CF_BARRIER) != 0u) {
+        return false;
+    }
+    return mat <= MAT_BALLAST || (mat >= LOOK_ASPHALT && mat < LOOK_TREAD) || mat == DM_KERB || mat == DM_EDGING
+        || (mat >= MAT_JUNCTION_FIRST && mat <= MAT_JUNCTION_LAST);
 }
 
 fn is_corridor(colour: vec4f) -> bool {
@@ -68,8 +80,8 @@ fn corridor_dropped(colour: vec4f, d: f32) -> bool {
 
 // The height of a corridor vertex at `at` (whole world units) and LOD-space `s` from its own height `z`: a band's
 // row lies on the stamped ground (the finest level that knows it) or under the drawn mesh, and `z` is the road's
-// plane there; `road` its metres across and the carriageway's half-width. `fallback` is the ground under the eye,
-// where no page knows the ground yet.
+// plane there; `road` its metres across and the carriageway's half-width, on a band's row the core's outer edge.
+// `fallback` is the ground under the eye, where no page knows the ground yet.
 fn corridor_height(at: vec2i, z: f32, colour: vec4f, s: vec2f, road: vec2f, fallback: f32) -> f32 {
     let flags = u32(round(colour.b * 255.0));
     var h = z;

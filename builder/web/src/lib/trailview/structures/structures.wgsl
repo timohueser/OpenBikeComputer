@@ -118,8 +118,14 @@ fn structure_vertex(v: StructureIn) -> StructureOut {
     }
     var p = vec3f(to_render(s), z - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
-    // A corridor draws a little toward the eye; it shades where it stands.
-    out.clip = frame.view_proj * vec4f(select(p, corridor_biased(p), is_corridor(v.colour)), 1.0);
+    // A corridor draws a little toward the eye; it shades where it stands. The casters' frame (shadow.ts) has
+    // no pixel: there a corridor casts where it stands, and its faces on the ground cast nothing, as the ground
+    // beside them.
+    let casting = frame.pixel < 1e-5;
+    out.clip = frame.view_proj * vec4f(select(p, corridor_biased(p), is_corridor(v.colour) && !casting), 1.0);
+    if (casting && is_corridor(v.colour) && corridor_on_ground(v.colour)) {
+        out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
+    }
     // The crack and surface views show the terrain alone: past the near plane, the triangle clips.
     if (frame.debug == 3u || frame.debug == 4u) {
         out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
