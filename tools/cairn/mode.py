@@ -20,6 +20,7 @@ SIZES = ("S", "M", "L")
 DEFAULTS = {
     "fix": {"max_lines": 1000, "tests": ["**/tests/**", "tests.rs", "*_tests.rs", "*_test.py", "*Tests.swift", "*.test.ts"]},
     "size": {"S": {"systems": 1, "lines": 500}, "M": {"systems": 3, "lines": 1500}},
+    "specs": "specs",
 }
 KEY = "cairnMode"
 FORMS = (

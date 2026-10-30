@@ -700,7 +700,7 @@ def mode_gate(root: Path, head: Tree, ref: str) -> bool:
         print(f"  {'FAIL' if failing else '    '} {line}")
     print(f"mode: {len(found)} violation(s), {'fail' if failing else 'pass'}")
     if note:
-        print(f"cairn: note: {note}")
+        print(f"::notice::{note}" if event else f"cairn: note: {note}")
     return failing
 
 

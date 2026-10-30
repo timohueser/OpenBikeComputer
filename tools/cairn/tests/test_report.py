@@ -166,6 +166,7 @@ class DriftCallTests(unittest.TestCase):
         self.assertEqual(found.found["a"], good)
         self.assertRegex(found.found["b"], r"^bad JSON \(stop reason end_turn\)")
         self.assertIn("- **False:** Q @\u200bowner", report.drift_lines(found, 10))
+        self.assertEqual(report.untrusted("a <!-- b"), "a &lt;!-- b")
         self.assertEqual(len(sleeps), 2)
         counted = api.paths("messages/count_tokens")
         self.assertEqual(len(counted), 4)
@@ -228,7 +229,8 @@ class OverrideTests(unittest.TestCase):
 
 class SizeEstimateTests(unittest.TestCase):
     def test_each_change_compares_its_planned_size_with_its_merge_or_says_why_it_cannot(self):
-        issues = {"issues/7": {"body": "**Size:** S"}, "issues/8": {"body": "**Size:** M"}, "issues/9": {"body": "**Size:** M"}}
+        issues = {"issues/7": {"body": "**Size:** S"}, "issues/8": {"body": "**Size:** M"}, "issues/9": {"body": "**Size:** M"},
+                  "issues/11": {"body": "**Size:** L"}}
 
         def api(path):
             if path not in issues:
@@ -247,15 +249,17 @@ class SizeEstimateTests(unittest.TestCase):
                  "merge_commit_sha": repository.merge(4, {"route/c.rs": "c\n", "search/d.rs": "d\n"})},
                 {"number": 5, "body": "Mode: fix", "merge_commit_sha": repository.merge(5, {"route/e.rs": "e\n"})},
                 {"number": 6, "body": "Mode: change #10", "merge_commit_sha": "0" * 40},
+                {"number": 7, "body": "Mode: change #11", "merge_commit_sha": None},
             ]
             lines = report.size_lines(repository.root, CONFIG, cairn.load_docs(repository.root, "docs/design"), api, pulls)
-        self.assertEqual(lines[0], "4 PR(s): 1 as planned, 1 larger, 1 smaller, 1 unknown.")
+        self.assertEqual(lines[0], "5 pull request(s): 1 as planned, 1 larger, 1 smaller, 1 against an epic, 1 unknown.")
         self.assertEqual(lines[4:], [
             "| #2 | #7 | S | M | 600 changed lines outside tests |",
             "| #3 | #8 | M | S | 1 system; 1 changed lines outside tests |",
             "| #4 | #9 | M | M | 2 systems |",
             "| #6 | #10 | unknown | unknown | issue #10 cannot be read: gh: Not Found (HTTP 404); "
             "the merge commit 000000000000 is not in this checkout |",
+            "| #7 | #11 | L | unknown | the pull request has no merge commit |",
         ])
 
 

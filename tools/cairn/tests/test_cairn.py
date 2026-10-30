@@ -372,6 +372,7 @@ class ModeGateTests(unittest.TestCase):
     def test_the_rules_fall_back_to_the_defaults(self):
         config = json.loads((cairn.ROOT / cairn.CONFIG).read_text())
         self.assertEqual(cairn.modes.DEFAULTS, {key: config[key] for key in cairn.modes.DEFAULTS})
+        self.assertEqual(cairn.gate_rules({"specs": "loose"}, {"fix": config["fix"]})["specs"], "specs")
         bare = json.dumps({key: value for key, value in Repository.CONFIG.items() if key != "fix"})
         body = "Status: approved\n**Size:** S\n**Systems:** routing\n"
         body = body.replace("\n", f"\nApproved: {cairn.modes.approval_hash(body)}\n", 1)
