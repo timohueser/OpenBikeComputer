@@ -19,6 +19,11 @@ import { kerbDrop, prepareDetails, roadside, type DetailEnv } from './details';
 const CORRIDOR = 12;
 /** Steps of a dead end's half circle. */
 const CAP_STEPS = 10;
+/**
+ * On the inside of a tight bend, a side's points past the bend's middle would cross those of the next station and fold
+ * its faces into spikes: a side reaches this share of the way to it at most.
+ */
+const FOLD = 0.9;
 
 /** The colour word of a corridor vertex: the material, a parameter (the surface code), the flags and the band's priority. */
 export const corridorColour = (mat: number, param: number, flags = 0, prio = 0) => (mat | (param << 8) | ((flags | (prio << 4)) << 16) | (CORRIDOR << 24)) >>> 0;
@@ -30,9 +35,10 @@ const bandPrio = (line: Line) => Math.max(0, Math.min(7, 7 - (line.profile >> 2)
 
 /**
  * The vertices of a line made so far, by station, place across, height, material and flags: neighbouring quads share
- * them. `rims`: the metres from the carriageway's edge out to the core's, by side and segment.
+ * them. `reach`: the most metres across that a station's sides reach to its left and to its right. `rims`: the metres
+ * from the carriageway's edge out to the core's, by side and segment.
  */
-export interface Ctx { b: MeshBuilder; line: Line; lift: number; prio: number; made: Map<string, V>; rims?: Map<number, number> }
+export interface Ctx { b: MeshBuilder; line: Line; lift: number; prio: number; made: Map<string, V>; reach?: Map<Station, [number, number]>; rims?: Map<number, number> }
 /** A vertex and its plan position in world units. */
 export interface V { i: number; x: number; y: number }
 
@@ -41,7 +47,7 @@ export function corridors(b: MeshBuilder, lines: Line[], owns: Owns, env?: Detai
     lines.forEach((line, id) => {
         if (!corridorLine(line) || line.z.length < 2) return;
         // The plan's stations are made once per tile's lines (its owner nodes share them).
-        const ctx: Ctx = { b, line, lift: classLift(line, id), prio: bandPrio(line), made: new Map() }, stations = plan.stations(line);
+        const stations = plan.stations(line), ctx: Ctx = { b, line, lift: classLift(line, id), prio: bandPrio(line), made: new Map(), reach: reachOf(stations) };
         ctxs.set(line, ctx);
         for (let j = 0; j + 1 < stations.length; j++) {
             if (owns(stations[j].x, stations[j].y)) {
@@ -81,6 +87,30 @@ function rim(ctx: Ctx, side: 1 | -1, v: number): number {
     return r;
 }
 
+/** The reach of each line's stations, made once for the owner nodes that share them. */
+const reaches = new WeakMap<Station[], Map<Station, [number, number]>>();
+
+/** Of each station, the most metres across that its sides reach on its left and its right (FOLD of a bend's radius on its inside). */
+function reachOf(stations: Station[]): Map<Station, [number, number]> {
+    const known = reaches.get(stations);
+    if (known) return known;
+    const out = new Map<Station, [number, number]>();
+    reaches.set(stations, out);
+    for (let j = 0; j + 1 < stations.length; j++) {
+        const s = stations[j], t = stations[j + 1], dx = t.x - s.x, dy = t.y - s.y, l = Math.hypot(dx, dy);
+        // How much the step from s to t shortens per metre across to the left: an offset that shortens it to nothing folds.
+        const d = l > 0 ? ((t.ax - s.ax) * dx + (t.ay - s.ay) * dy) / l : 0;
+        if (Math.abs(d) < 1e-12) continue;
+        const k = d < 0 ? 0 : 1, most = (FOLD * l) / Math.abs(d);
+        for (const st of [s, t]) {
+            const r = out.get(st) ?? [Infinity, Infinity];
+            r[k] = Math.min(r[k], most);
+            out.set(st, r);
+        }
+    }
+    return out;
+}
+
 /**
  * A quad seen from above, counter-clockwise. A vertical face (no area in plan) stands on side `side` of its
  * line (1 left, -1 right) and faces the line's middle, as a kerb faces its road.
@@ -100,11 +130,15 @@ function sweep(ctx: Ctx, s: JStation, t: Station): void {
     // Where a side is cut for a junction's mouth or corner, the carriageway's edge line stops on that side.
     const lines = (cut & CUT.LEFT ? CF.NO_LEFT_LINE : 0) | (cut & CUT.RIGHT ? CF.NO_RIGHT_LINE : 0);
     if (!(cut & CUT.ROAD)) for (let k = 0; k + 1 < road[0].length; k++) strip(ctx, s, t, [road[0][k], road[1][k]], [road[0][k + 1], road[1][k + 1]], 1, lines);
+    const reach = [ctx.reach?.get(s), ctx.reach?.get(t)];
     for (const side of [1, -1] as const) {
         if (cut & (side > 0 ? CUT.LEFT : CUT.RIGHT)) continue;
-        const parts = [sideOf(line, side, t.v, s.h), sideOf(line, side, t.v, t.h)];
+        const parts = [sideOf(line, side, t.v, s.h), sideOf(line, side, t.v, t.h)], r = side > 0 ? 0 : 1;
+        // A side past the reach on the inside of a tight bend would climb round its middle in steep twisted faces:
+        // the terrain and its paint take over there.
+        const most = [reach[0]?.[r] ?? Infinity, reach[1]?.[r] ?? Infinity];
         let inner: [Part, Part] = [{ a: side * s.h, dz: road[0][0].dz, mat: MAT.PAINT }, { a: side * t.h, dz: road[1][0].dz, mat: MAT.PAINT }];
-        for (let k = 0; k < parts[0].length; k++) {
+        for (let k = 0; k < parts[0].length && parts[0][k].a <= most[0] && parts[1][k].a <= most[1]; k++) {
             const outer: [Part, Part] = [{ ...parts[0][k], a: side * parts[0][k].a }, { ...parts[1][k], a: side * parts[1][k].a }];
             strip(ctx, s, t, inner, outer, side);
             inner = outer;
