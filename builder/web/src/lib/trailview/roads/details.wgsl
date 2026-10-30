@@ -125,8 +125,8 @@ fn detail_height(at: vec2i, edge: f32, z: f32, colour: vec4f, road: vec2f, packe
         let rail = rail_share(at, f, rel, edge) * ramp;
         share = rail;
         if (mat == DM_DELI || mat == DM_DELI_BAND || mat == DM_REFLECTOR) {
-            // A delineator stands where neither a rail nor a wall does.
-            share = (1.0 - rail) * (1.0 - wall_share(at, f, rel, edge).x);
+            // A delineator stands where neither a rail nor a whole wall does: a cut that only nears a wall's keeps it.
+            share = (1.0 - rail) * (1.0 - smoothstep(0.6, 0.95, wall_share(at, f, rel, edge).x));
         }
     }
     if (code < -5.0) {
