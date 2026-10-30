@@ -45,9 +45,7 @@
     const blocked = $derived(cards.filter(({ content, needs }) => on.includes(content.id) && !needs.ready));
     const args = $derived(planArgs(to, [[area.flag, area.value], ...layerFlags(on), ...extra]));
     const toggle = (id: string, checked: boolean) => change(toggled(on, id, checked));
-    // A reference goes to R2, where every bake can read it.
-    const prepare = (source: string) => prepareHash(source, "prod", area);
-    const where = (target: string) => (target === "prod" ? "on R2" : "on this computer");
+    const prepare = (source: string) => prepareHash(source, area);
     const country = new Intl.DisplayNames(["en"], { type: "region" });
     /** `Switzerland and Germany`: the countries of the national models of reference `id`. */
     const modelled = (id: string) => list([...new Set(modelsOf(id, sources ?? []).map((at) => at.country))].map((code) => country.of(code) ?? code));
@@ -61,7 +59,7 @@
         {:else if terrain.reference?.version}
             {@const covers = terrain.reference.regions.length ? ` · covers ${terrain.reference.regions.join(", ")}` : ""}
             <span class="ready">
-                {`National LiDAR models · ${terrain.reference.version.version} ${where(terrain.reference.version.target)}${covers}.`}
+                {`National LiDAR models · ${terrain.reference.version.version} in the archive${covers}.`}
                 Where it has no tile, the bake uses Copernicus 30 m, and the review says where.
                 <a href={prepare("terrain")}>Add this area</a>
             </span>
@@ -93,14 +91,14 @@
                 {#if content.reference && bounds}
                     {@const { source, required, without } = content.reference}
                     {@const about = referenceOf(source)}
-                    {#if !needs.models.length}
+                    {#if about?.models && !needs.models.length}
                         <span class={required ? "missing" : "soft"}>
                             No {about?.models?.noun} covers this area{required ? "" : `: uses ${without}`}. Models exist for {modelled(source) || "no country yet"}.
                         </span>
                     {:else if needs.reference?.version}
                         {@const covers = needs.reference.regions.length ? ` · covers ${needs.reference.regions.join(", ")}` : ""}
                         <span class="ready">
-                            {about?.title} · {needs.reference.version.version} {where(needs.reference.version.target)}{covers}.
+                            {about?.title} · {needs.reference.version.version} in the archive{covers}.
                             <a href={prepare(source)}>Add this area</a>
                         </span>
                     {:else}
@@ -135,8 +133,8 @@
         flex-direction: column;
         gap: 2px;
         padding: 12px 16px;
-        border: 1px solid var(--line-strong);
-        border-radius: 10px;
+        background: var(--parchment);
+        border-radius: 8px;
     }
     .cards {
         display: grid;
@@ -146,34 +144,33 @@
     .card-item {
         display: flex;
         flex-direction: column;
-        gap: 6px;
-        padding: 14px 16px;
+        gap: 4px;
+        padding: 12px 14px;
         border: 1px solid var(--line-strong);
-        border-radius: 10px;
+        border-radius: 8px;
         cursor: pointer;
+        transition: background 150ms ease-out, border-color 150ms ease-out;
+    }
+    .card-item:hover:not(.off) {
+        border-color: var(--ink-faint);
     }
     .card-item.on {
-        border-color: var(--ink);
-        box-shadow: inset 0 0 0 1px var(--ink);
+        background: color-mix(in srgb, var(--amber) 12%, var(--panel));
+        border-color: var(--amber);
+        box-shadow: inset 0 0 0 1px var(--amber);
     }
     .card-item.off {
         cursor: not-allowed;
         background: var(--parchment);
+        border-color: var(--line);
+    }
+    .card-item.off :is(b, .about) {
+        color: var(--ink-faint);
     }
     .top {
         display: flex;
         align-items: center;
         gap: 10px;
-    }
-    input[type="checkbox"] {
-        width: 20px;
-        height: 20px;
-        margin: 0;
-        accent-color: var(--ink);
-    }
-    input:focus-visible {
-        outline: 2px solid var(--running);
-        outline-offset: 2px;
     }
     .about {
         color: var(--ink-soft);

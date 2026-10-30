@@ -44,7 +44,7 @@ fn a_credential_from_standard_input_is_set_and_never_shown() {
     std::fs::create_dir_all(dir.path().join("repo/data")).unwrap();
     let source = "[[source]]\nid = \"keyed\"\nkind = \"data\"\nused_by = [\"planner\"]\nuse = \"A test layer\"\n\
                   fetch = { kind = \"http\", url = \"https://127.0.0.1:9/keyed.zip\" }\nversion = \"digest\"\n\
-                  redistribute = false\ncredential = { env = [\"OBC_TEST_TOKEN\"] }\n";
+                  keep = \"store\"\nredistribute = false\ncredential = { env = [\"OBC_TEST_TOKEN\"] }\n";
     std::fs::write(dir.path().join("repo/data/sources.toml"), source).unwrap();
     let state = |dir: &Path| {
         let setup = data(dir, &["--json", "setup"], "");

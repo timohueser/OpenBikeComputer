@@ -1,4 +1,4 @@
-//! The storage-blob stage carve (`OBCU_Spec.md`): how the bootloader gets the sEMMC
+//! The storage-blob stage carve (`obcu-update.md`): how the bootloader gets the sEMMC
 //! soft-peripheral image that the card is only reachable through.
 //!
 //! The app ships that image in its own flash. The 32 KB bootloader cannot carry it, and it cannot

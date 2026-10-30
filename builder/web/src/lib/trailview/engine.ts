@@ -24,8 +24,8 @@ import { Terrain, terrainPipelines, type Audit, type TerrainStats } from './terr
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
 import { TreeModels } from './vegetation/tree-models';
-import { Orchards } from './vegetation/orchards';
 import { Plants } from './vegetation/plants';
+import { Rows } from './vegetation/rows';
 import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
 import { LightPools } from './structures/light-pools';
@@ -108,7 +108,7 @@ export class TrailView {
     private readonly trees: TreeModels;
     private readonly forest: Forest;
     private readonly plants: Plants;
-    private readonly orchards: Orchards;
+    private readonly rows: Rows;
     private readonly kindPoints: KindPoints;
     private readonly lightPools = new LightPools();
     private readonly dressing: Dressing;
@@ -171,7 +171,7 @@ export class TrailView {
         this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), signal);
         this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request(), signal);
         this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request(), signal);
-        this.orchards = new Orchards(this.groundLook.rules, this.trees, this.instances, features, () => this.request(), signal);
+        this.rows = new Rows(this.groundLook.rules, this.trees, this.plants, this.instances);
         this.kindPoints = new KindPoints(this.instances);
         this.dressing = new Dressing(this.groundLook.rules, this.instances);
         this.controls = new Controls(canvas, {
@@ -332,7 +332,7 @@ export class TrailView {
     }
 
     private idle(): boolean {
-        return this.complete && this.terrain.idle && this.groundLook.idle && this.houses.idle && this.trees.idle && this.forest.idle && this.plants.idle && this.orchards.idle && this.instances.idle
+        return this.complete && this.terrain.idle && this.groundLook.idle && this.houses.idle && this.trees.idle && this.forest.idle && this.plants.idle && this.instances.idle
             && this.sky.idle && !this.shadow.pending && this.settled() && !this.converging;
     }
 
@@ -380,7 +380,7 @@ export class TrailView {
 
     private near(): boolean {
         return this.drawing && this.complete && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.idle && this.forest.idle
-            && this.plants.idle && this.orchards.idle && this.instances.idle && this.shadow.nearDrawn;
+            && this.plants.idle && this.instances.idle && this.shadow.nearDrawn;
     }
 
     /**
@@ -450,8 +450,8 @@ export class TrailView {
     }
 
     /**
-     * Asks for a frame. Every arrival (a terrain or ground page, stamps, houses, canopy, models, plants,
-     * orchards) wakes the engine only here and goes to the GPU only in a frame: after `destroy()` none does.
+     * Asks for a frame. Every arrival (a terrain or ground page, stamps, houses, canopy, models, plants)
+     * wakes the engine only here and goes to the GPU only in a frame: after `destroy()` none does.
      */
     private request(): void {
         if (this.pending || this.destroyed) return;
@@ -563,7 +563,7 @@ export class TrailView {
         this.trees.update(this.extras.date);
         this.forest.update(lonLat);
         this.plants.update(lonLat, this.extras.date, place.above);
-        this.orchards.update(lonLat, (lon, lat) => [...this.groundLook.regionsAt(lon, lat)].sort((a, b) => b[1] - a[1])[0]?.[0]);
+        this.rows.update(lonLat);
         this.dressing.update(lonLat);
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
@@ -572,12 +572,12 @@ export class TrailView {
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify([this.extras, this.skyMagnitude]);
             moved = camera.some((value, i) => value !== this.camera[i]);
-            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || extras !== this.drawnExtras;
+            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || extras !== this.drawnExtras;
             this.camera = camera;
             this.drawnExtras = extras;
             this.completed = false;
             lights = this.lights();
-            const light = lights.key, casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent;
+            const light = lights.key, casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent;
             if (this.complete) cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, light, { casters, reshaped: this.terrain.reshaped }, moved);
             this.shadow.write(gpu, [eye.east, eye.north, eye.z], light);
             // A new map changes the frame as new content does.
@@ -741,7 +741,7 @@ export class TrailView {
             camera: { right: right.map(v => v * tx), up: up.map(v => v * ty), forward },
             codes: this.groundLook.codes,
             debug: DEBUG_VIEWS.indexOf(this.extras.debug), sample,
-            jitter, scale,
+            jitter, scale, detail: this.instances.detail,
         });
     }
 

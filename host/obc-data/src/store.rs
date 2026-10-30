@@ -35,6 +35,9 @@ pub struct FileRecord {
     pub sha256: String,
     /// `YYYY-MM-DDTHH:MM:SSZ`
     pub retrieved: String,
+    /// The path in the archive (`OBC_DATA_ARCHIVE`) of the file that gave the bytes instead of `url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<String>,
 }
 
 impl Snapshot {
@@ -187,6 +190,11 @@ impl Store {
         self.root.join("partial").join(name)
     }
 
+    /// The unpacked copy of the archived zip whose SHA-256 is `sha256`.
+    pub fn unpacked(&self, sha256: &str) -> PathBuf {
+        self.root.join("unpacked").join(sha256)
+    }
+
     /// Move `file`, whose SHA-256 is `sha256`, into the objects and make it read-only. `file` must
     /// be in the store: a rename on one file system is atomic, so an object is always whole.
     pub fn insert(&self, file: &Path, sha256: &str) -> Result<PathBuf, String> {
@@ -287,6 +295,18 @@ impl Store {
             }
         }
         Ok(snapshots)
+    }
+
+    /// The snapshot records of `source` that a fetch without params made: no record of a fetch with
+    /// params names their version, so a source that lost its params never reads an older box.
+    pub fn paramless_snapshots(&self, source: &str) -> Result<Vec<Snapshot>, String> {
+        let boxed: std::collections::BTreeSet<String> = self
+            .requests_of(source)?
+            .into_iter()
+            .filter(|request| !request.params.is_empty())
+            .map(|request| request.version)
+            .collect();
+        Ok(self.snapshots(source)?.into_iter().filter(|snapshot| !boxed.contains(&snapshot.version)).collect())
     }
 
     pub fn put_snapshot(&self, snapshot: &Snapshot) -> Result<(), String> {
@@ -522,6 +542,23 @@ pub fn hash_file(path: &Path) -> Result<(String, u64), String> {
             return Ok((hex(&hasher.finalize()), size));
         }
         hasher.update(&buffer[..read]);
+        size += read as u64;
+    }
+}
+
+/// The SHA-256 and the MD5 of a file, in lowercase hex, and its size, from one read.
+pub fn digests(path: &Path) -> Result<(String, String, u64), String> {
+    let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (mut sha256, mut md5) = (Sha256::new(), md5::Md5::new());
+    let mut buffer = vec![0; 1 << 16];
+    let mut size = 0;
+    loop {
+        let read = file.read(&mut buffer).map_err(|e| format!("{}: {e}", path.display()))?;
+        if read == 0 {
+            return Ok((hex(&sha256.finalize()), hex(&md5.finalize()), size));
+        }
+        sha256.update(&buffer[..read]);
+        md5.update(&buffer[..read]);
         size += read as u64;
     }
 }

@@ -2,7 +2,7 @@ import { linear, VARIEGATED } from '../ground/rules';
 import type { EyeLook, Light } from './light';
 
 /** Bytes of `Look` in shade.wgsl, and the offset of its `codes`. */
-export const LOOK_BYTES = 304, LOOK_CODES = 240;
+export const LOOK_BYTES = 320, LOOK_CODES = 240;
 
 export interface LookInput {
     /** Toward the light in render space, and its bearing in turns clockwise from true north: the sun, or the moon at night. */
@@ -24,6 +24,8 @@ export interface LookInput {
     /** This frame's jitter in clip space, and the render scale. */
     jitter: [number, number];
     scale: number;
+    /** The instances' detail this frame (Instances.detail), where the ground's rock paint starts (rocks.wgsl). */
+    detail: number;
 }
 
 /** `Look` of shade.wgsl. */
@@ -43,7 +45,8 @@ export function lookUniform(input: LookInput): ArrayBuffer {
     floats.set([...input.camera.right, 0, ...input.camera.up, 0, ...input.camera.forward, 0], 48);
     words.set(input.codes, LOOK_CODES / 4);
     words.set([input.debug, input.sample, 0, 0], 64);
-    floats.set([...input.jitter, input.scale, 0], 68);
+    floats.set([...input.jitter, input.scale, input.detail], 68);
     floats.set([...input.skySun, light.glow], 72);
+    floats.set([...eye.sea, 0], 76);
     return data;
 }

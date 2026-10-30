@@ -42,26 +42,13 @@ fn wiki(store: &Store) -> String {
         write_atomic(&file, bytes).unwrap();
         store.insert(&file, &sha256).unwrap();
         let (url, size) = (format!("https://example.org/{name}"), bytes.len() as u64);
-        FileRecord { name: name.into(), url, size, sha256, retrieved: String::new() }
+        FileRecord { name: name.into(), url, size, sha256, retrieved: String::new(), archive: None }
     };
     // An empty tar is two blocks of zeros.
     let common = record("common.tar.zst", &zstd::encode_all(&[0u8; 1024][..], 0).unwrap());
     let manifest = Manifest {
-        source: "wiki".into(),
-        version: DAY.into(),
-        format: 1,
-        revision: 1,
-        inputs: Vec::new(),
         files: vec![LayerFile { path: common.name.clone(), size: common.size, sha256: common.sha256.clone() }],
-        reused: Default::default(),
-        extends: Vec::new(),
-        scope: None,
-        languages: Vec::new(),
-        licence: None,
-        attribution: None,
-        machine: "test".into(),
-        time: format!("{DAY}T00:00:00Z"),
-        cost: Cost { wall_ms: 0, peak_rss_bytes: None },
+        ..wiki_manifest()
     };
     let bytes = manifest.canonical();
     let pinned = format!("{DAY}/{}", sha256_hex(&bytes));
@@ -70,13 +57,35 @@ fn wiki(store: &Store) -> String {
     pinned
 }
 
+/// A manifest of `wiki` of [`DAY`] without files.
+fn wiki_manifest() -> Manifest {
+    Manifest {
+        source: "wiki".into(),
+        version: DAY.into(),
+        format: 1,
+        revision: 1,
+        inputs: Vec::new(),
+        files: Vec::new(),
+        reused: Default::default(),
+        extends: Vec::new(),
+        scope: None,
+        languages: Vec::new(),
+        publish_text: None,
+        licence: None,
+        attribution: None,
+        machine: "test".into(),
+        time: format!("{DAY}T00:00:00Z"),
+        cost: Cost { wall_ms: 0, peak_rss_bytes: None },
+    }
+}
+
 /// Record `bytes` as the file `name` of `source@version`, as a fetch with `params` gives it.
 fn fetched(store: &Store, source: &str, version: &str, params: Vec<(String, String)>, name: &str, bytes: &[u8]) {
     let (file, sha256) = (store.partial("file"), sha256_hex(bytes));
     write_atomic(&file, bytes).unwrap();
     store.insert(&file, &sha256).unwrap();
     let (url, size) = (format!("https://example.org/{name}"), bytes.len() as u64);
-    let files = vec![FileRecord { name: name.into(), url, size, sha256, retrieved: String::new() }];
+    let files = vec![FileRecord { name: name.into(), url, size, sha256, retrieved: String::new(), archive: None }];
     store.put_snapshot(&Snapshot { source: source.into(), version: version.into(), files }).unwrap();
     if !params.is_empty() {
         store.put_requested(source, &Requested { version: version.into(), params, files: vec![name.into()] }).unwrap();
@@ -364,6 +373,15 @@ for name, entry in catalog['files'].items():
         panic!("the store has no climate data")
     };
     wanted.iter().for_each(|wanted| climate.resolve(wanted, DAY.into()));
+    // A version of `climate` with the blocks around Freiburg.
+    let blocks = (18..=20).flat_map(|x| (20..=22).map(move |y| (x, y))).collect();
+    let paths =
+        obc_data_steps::climate_reference::files(&blocks, obc_data_steps::planner::climate_first_year().unwrap());
+    let files =
+        paths.into_iter().map(|path| LayerFile { sha256: sha256_hex(path.as_bytes()), path, size: 1 }).collect();
+    let format = obc_data_steps::climate_reference::FORMAT;
+    let manifest = Manifest { source: "climate".into(), format, files, ..wiki_manifest() };
+    fetched(&store, "climate", DAY, Vec::new(), MANIFEST, &manifest.canonical());
     let climate = plan(&store, &steps(true, &climate)).unwrap();
     let builds: std::collections::BTreeSet<&str> = climate.builds().map(|build| build.step.as_str()).collect();
     let expected = ["planner/catalog", "planner/climate", "planner/climate/grid", "planner/index"];

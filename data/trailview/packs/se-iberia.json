@@ -31,6 +31,6 @@
   "goat": { "groups": 2, "size": [10, 40], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
   "sheep": { "groups": 1, "size": [20, 80], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
- "orchard": "holm-oak",
+ "rows": { "orchard": "holm-oak" },
  "style": "canarian-house"
 }

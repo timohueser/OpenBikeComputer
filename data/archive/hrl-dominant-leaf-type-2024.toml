@@ -1,0 +1,5 @@
+name = "CLMS HRL Vegetated Land Cover Characteristics: Dominant Leaf Type 2024, 10 m, tiles of 100 km in EPSG:3035"
+sources = ["hrl-dominant-leaf-type"]
+coverage = "Europe"
+notes = "Each tile directory holds the COG and what upstream keeps beside it: metadata, aux.xml and style files."
+s3 = [{ bucket = "https://eodata.dataspace.copernicus.eu/eodata", prefix = "CLMS/landcover_landuse/dominant_leaf_type/clms_vlcc_dominant-leaf-type_europe_10m_yearly_v1/2024/01/01/" }]

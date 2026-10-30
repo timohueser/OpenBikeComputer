@@ -19,12 +19,8 @@ const areas = {
     ...areasExample,
     regions: [...areasExample.regions, { id: "central-switzerland", name: "Central Switzerland", countries: ["CH"], kind: "box", box: { west: 7.6, south: 46.46, east: 8.95, north: 47.25 } }],
 };
-// The Swiss terrain reference covers the area; no machine has the ERA5 login.
-const sources = {
-    sources: sourcesExample.sources.map((row) =>
-        row.id === "era5-land" ? { ...row, credential_missing: true } : row,
-    ),
-};
+// The Swiss terrain reference covers the area; no target has a version of climate.
+const sources = sourcesExample;
 
 /** The server answers the reads, starts a plan run and a bake; the posts that act are kept. */
 function screen(hash: string) {
@@ -58,13 +54,17 @@ it("walks area, contents, review and bake, each step from its URL", async () => 
     search.value = "central";
     search.dispatchEvent(new Event("input", { bubbles: true }));
     flushSync();
-    button("Central Switzerland").click();
+    search.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    flushSync();
+    expect(location.hash, "Enter picks the first match, and the pick waits for its button").toBe("");
+    expect(text()).toContain("Central Switzerland · 103 × 88 km");
+    button("Use this area").click();
     expect(location.hash).toBe("#/bake?region=central-switzerland");
     await unmount(area.shown);
 
     const contents = screen("#/bake?region=central-switzerland&on=trailview");
-    await vi.waitFor(() => expect(text()).toContain("2026-08-20 on R2 · covers central-switzerland"));
-    expect(text()).toContain("Needs the login for era5-land");
+    await vi.waitFor(() => expect(text()).toContain("2026-08-20 in the archive · covers central-switzerland"));
+    expect(text()).toContain("Climate · not prepared. Prepare this area");
     expect(document.querySelector<HTMLInputElement>('input[type="checkbox"]:disabled')).not.toBeNull();
     button("Make the plan").click();
     await vi.waitFor(() => expect(location.hash).toBe(`#/bake?region=central-switzerland&on=trailview&plan=${planned.id}`));

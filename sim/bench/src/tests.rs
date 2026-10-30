@@ -21,7 +21,7 @@ fn bench_map_bytes_are_deterministic() {
 fn overview_scene_saturates_frame_budget() {
     let map = obcm_testkit::build_bench_map();
     let clock = StdClock(Instant::now());
-    let r = run_scene(&map, "overview", 30.0, 0.0, true, &clock);
+    let r = run_scene(&map, "overview", 30.0, 0.0, true, 1, &clock);
     assert!(r.stats.features_tried > obc_render::MAX_SPANS, "fixture density under the feature ceiling MAX_SPANS");
     assert!(r.stats.features_dropped > 0, "overview must overflow the frame budget");
     // Single-ring features consume one span and one ring each. The rebalanced arena has more
@@ -36,8 +36,8 @@ fn overview_scene_saturates_frame_budget() {
 fn scene_matrix_switches_lod() {
     let map = obcm_testkit::build_bench_map();
     let clock = StdClock(Instant::now());
-    let riding = run_scene(&map, "riding", 0.5, 0.0, true, &clock);
-    let overview = run_scene(&map, "overview", 30.0, 0.0, true, &clock);
+    let riding = run_scene(&map, "riding", 0.5, 0.0, true, 1, &clock);
+    let overview = run_scene(&map, "overview", 30.0, 0.0, true, 1, &clock);
     assert_eq!(riding.stats.lod, 1, "riding must select the fine LOD");
     assert_eq!(overview.stats.lod, 0, "overview must select the coarse LOD");
     assert!(riding.stats.features_drawn > 0, "riding scene must draw features");
@@ -88,7 +88,7 @@ fn route_scene_draws_stroke_and_chevrons() {
 /// `overview`.
 #[test]
 fn only_the_cold_scene_fills_index_blocks() {
-    for r in run_matrix() {
+    for r in run_matrix(1) {
         let s = &r.stats;
         if r.name == COLD_SCENE.0 {
             assert!(s.map_sd_reads > s.map_chunk_misses, "the cold scene must fill quadtree-index blocks");
@@ -103,8 +103,8 @@ fn only_the_cold_scene_fills_index_blocks() {
 fn frame_hash_is_repeatable() {
     let map = obcm_testkit::build_bench_map();
     let clock = StdClock(Instant::now());
-    let a = run_scene(&map, "mid-rot", 4.0, 35.0, true, &clock);
-    let b = run_scene(&map, "mid-rot", 4.0, 35.0, true, &clock);
+    let a = run_scene(&map, "mid-rot", 4.0, 35.0, true, 1, &clock);
+    let b = run_scene(&map, "mid-rot", 4.0, 35.0, true, 1, &clock);
     assert_eq!(a.hash, b.hash);
 }
 
@@ -113,9 +113,9 @@ fn frame_hash_is_repeatable() {
 /// pixel half.
 #[test]
 fn gated_values_are_repeatable_across_runs() {
-    assert_eq!(records(&run_matrix(), &[]), records(&run_matrix(), &[]));
-    let (a, _) = run_corridor_matrix();
-    let (b, _) = run_corridor_matrix();
+    assert_eq!(records(&run_matrix(1), &[]), records(&run_matrix(1), &[]));
+    let (a, _) = run_corridor_matrix(1);
+    let (b, _) = run_corridor_matrix(1);
     assert_eq!(records(&[], &a), records(&[], &b));
 }
 

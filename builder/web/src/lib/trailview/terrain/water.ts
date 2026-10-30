@@ -17,15 +17,16 @@ const VERTEX_BYTES = 4 * 2 ** 20, INDEX_BYTES = 2 * 2 ** 20;
 const DRAPE_BIAS = 2;
 
 /**
- * The kinds of water in the order that they draw. Lakes and river areas are opaque: they draw before the
- * terrain, so the terrain under them fails the depth test, and the water under a lake stays hidden.
- * Water on the drawn surface takes a depth bias with its slope, so that the terrain's triangles between
- * its vertices stay under it; the ribbons blend after the terrain.
+ * The kinds of water in the order that they draw. Lakes, the sea and river areas are opaque: they draw
+ * before the terrain, so the terrain under them fails the depth test, and the water under a lake stays
+ * hidden. Water on the drawn surface takes a depth bias with its slope, so that the terrain's triangles
+ * between its vertices stay under it; the ribbons blend after the terrain. The sea takes the colour of
+ * the regions about the eye.
  */
-const KINDS = ['lakes', 'areas', 'ribbons'] as const;
+const KINDS = ['lakes', 'seas', 'areas', 'ribbons'] as const;
 type Kind = (typeof KINDS)[number];
 /** The kinds that draw before the terrain. */
-export const OPAQUE: readonly Kind[] = ['lakes', 'areas'];
+export const OPAQUE: readonly Kind[] = ['lakes', 'seas', 'areas'];
 
 /** A mesh, the level of the node that it belongs to, and the drawn nodes that draw it. */
 interface Draw { mesh: WaterMesh; level: number; nodes: number[] }
@@ -143,8 +144,9 @@ export class Water {
             for (const { mesh, nodes } of this.draws) {
                 const at = this.placed.get(mesh);
                 if (!at) continue;
+                const surfaces = mesh.ribbons + mesh.lakes + mesh.seas;
                 const [first, count] = ({
-                    ribbons: [0, mesh.ribbons], lakes: [mesh.ribbons, mesh.lakes], areas: [mesh.ribbons + mesh.lakes, mesh.indices.length - mesh.ribbons - mesh.lakes],
+                    ribbons: [0, mesh.ribbons], lakes: [mesh.ribbons, mesh.lakes], seas: [mesh.ribbons + mesh.lakes, mesh.seas], areas: [surfaces, mesh.indices.length - surfaces],
                 } as const)[kind];
                 if (count) pass.drawIndexed(count, nodes.length, at.first + first, at.base, instance);
                 instance += nodes.length;
@@ -166,16 +168,16 @@ async function waterPipelines(gpu: Gpu): Promise<{ pipelines: Record<Kind, GPURe
     const pipeline = (kind: Kind) => device.createRenderPipelineAsync({
         label: kind, layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surface, ground, features] }),
         vertex: {
-            module, entryPoint: 'water_vertex', buffers: [{
+            module, entryPoint: 'water_vertex', constants: { SEA_DRAW: kind === 'seas' ? 1 : 0 }, buffers: [{
                 arrayStride: WATER_VERTEX * 4, attributes: [
                     { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'float32' },
                     { shaderLocation: 2, offset: 12, format: 'float32x2' }, { shaderLocation: 3, offset: 20, format: 'float32' },
                 ],
             }],
         },
-        fragment: { module, entryPoint: 'water_fragment', targets: [{ format: sceneFormat(gpu), ...(kind === 'ribbons' ? { blend: { color: blend, alpha: blend } } : {}) }] },
+        fragment: { module, entryPoint: 'water_fragment', constants: { SEA_DRAW: kind === 'seas' ? 1 : 0 }, targets: [{ format: sceneFormat(gpu), ...(kind === 'ribbons' ? { blend: { color: blend, alpha: blend } } : {}) }] },
         primitive: { topology: 'triangle-list' },
-        depthStencil: { format: DEPTH, depthWriteEnabled: kind !== 'ribbons', depthCompare: kind === 'ribbons' ? 'greater-equal' : 'greater', depthBiasSlopeScale: kind === 'lakes' ? 0 : DRAPE_BIAS },
+        depthStencil: { format: DEPTH, depthWriteEnabled: kind !== 'ribbons', depthCompare: kind === 'ribbons' ? 'greater-equal' : 'greater', depthBiasSlopeScale: kind === 'lakes' || kind === 'seas' ? 0 : DRAPE_BIAS },
     });
     return { pipelines: Object.fromEntries(await Promise.all(KINDS.map(async kind => [kind, await pipeline(kind)]))) as Record<Kind, GPURenderPipeline>, layout };
 }

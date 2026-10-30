@@ -1,5 +1,5 @@
 //! Card geometry, the extent area, and the address arithmetic that is the whole read path
-//! (`FLAT_Store_Format.md`).
+//! (`flat-store-format.md`).
 //!
 //! Every address is arithmetic on these constants and on the one value that is not a constant: the
 //! extent size, which initialization scales to the card and the superblock records. [`Geometry`] is

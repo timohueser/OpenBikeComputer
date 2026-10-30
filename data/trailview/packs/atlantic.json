@@ -47,6 +47,6 @@
   "sheep": { "groups": 2, "size": [10, 60], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath", "salt-marsh"] },
   "horse": { "groups": 2, "size": [1, 6], "on": ["pasture", "grassland", "arable"] }
  },
- "orchard": "hawthorn",
+ "rows": { "orchard": "hawthorn" },
  "style": { "fr-bre": "cottage", "fr-pdl": "cottage", "fr-cvl": "cottage", "fr-naq": "village-house", "fr-occ": "village-house", "dk": "cottage", "gg": "cottage", "je": "cottage", "*": "house" }
 }

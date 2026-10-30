@@ -113,10 +113,10 @@ pub struct AreaBoxes {
 }
 
 /// The areas of the cached Geofabrik index, read when a region first needs them.
-type Index<'a> = &'a dyn Fn() -> Result<Option<&'a BTreeMap<String, geofabrik::Area>>, String>;
+pub(super) type Index<'a> = &'a dyn Fn() -> Result<Option<&'a BTreeMap<String, geofabrik::Area>>, String>;
 
 /// The area of region `id` of `regions`, with the bounds of its Geofabrik areas from `index`.
-fn area(regions: &Regions, id: &str, index: Index) -> Option<AreaBoxes> {
+pub(super) fn area(regions: &Regions, id: &str, index: Index) -> Option<AreaBoxes> {
     let name = regions.get(id)?.name.clone();
     let (mut boxes, mut missing) = (Vec::new(), None);
     for part in regions.leaves(id).ok()?.into_iter().filter_map(|leaf| regions.get(leaf)) {
@@ -355,7 +355,7 @@ fn state(
         let mut inputs =
             Inputs { settings: release.settings.clone(), serving: release.versions(), ..Inputs::default() };
         let read = inputs.serving.keys().cloned().collect();
-        crate::prepared::resolve(root, store, (name, target), (&sources, &read, producers), &mut inputs)?;
+        crate::prepared::resolve(http.roots(), (&sources, &read, producers), &mut inputs)?;
         let list = |inputs: &mut Inputs| {
             let fetch = listing::fetcher(root, store, http, &sources, None, false);
             listing::steps(root, products, inputs, &regions, store, true, fetch)
@@ -365,7 +365,7 @@ fn state(
         // got its first version.
         let asked: BTreeSet<_> = inputs.requests.borrow().difference(&read).cloned().collect();
         let known = inputs.resolved.len() + inputs.due.len();
-        crate::prepared::resolve(root, store, (name, target), (&sources, &asked, producers), &mut inputs)?;
+        crate::prepared::resolve(http.roots(), (&sources, &asked, producers), &mut inputs)?;
         if inputs.resolved.len() + inputs.due.len() > known {
             listed = list(&mut inputs)?;
         }

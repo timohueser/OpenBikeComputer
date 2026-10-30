@@ -1,5 +1,5 @@
 //! The store seam: the five operations, the two members beside them, and the whole vocabulary they
-//! speak (`FLAT_Store_Protocol.md`).
+//! speak (`flat-store-protocol.md`).
 //!
 //! Nothing here names a block, an extent, an LBA, a path or a filename. [`EntryMeta`] is the metadata
 //! half of a catalog entry and [`Allocation`] is an opaque token that stands for reserved extents.
@@ -26,7 +26,7 @@ impl ObjectId {
     pub const NONE: ObjectId = ObjectId(0);
 }
 
-/// `FLAT_Store_Format.md` is the sole authority for these values.
+/// `flat-store-format.md` is the sole authority for these values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ObjectKind {

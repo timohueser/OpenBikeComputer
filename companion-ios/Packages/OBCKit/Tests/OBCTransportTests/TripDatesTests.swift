@@ -2,7 +2,7 @@ import Testing
 import Foundation
 import OBCDomain
 
-/// Dates follow the rides (`obc-ble-interface-spec.md` §7.7 "Day dates").
+/// Dates follow the rides (`ble-interface.md` §7.7 "Day dates").
 struct TripDatesTests {
     private func trip(days: Int, start: Int?) -> Trip {
         let files = (0..<days).map { k in

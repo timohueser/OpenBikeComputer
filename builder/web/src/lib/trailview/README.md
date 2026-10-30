@@ -1,9 +1,10 @@
 # TrailView
 
-TrailView is the 3D view of the planner: TypeScript, raw WebGPU and WGSL, no framework. The page is `builder/web/trailview.html`. The terrain streams with LOD from
-the master terrain tiles: zooms 0 to 12 from the tile service, zoom 13 from its packs. The ground
-look comes from the TrailView layers of the release ([specs/trailview-tiles.md](../../../../../specs/trailview-tiles.md))
-and the planner's snow tiles.
+The 3D view of the planner: TypeScript, raw WebGPU and WGSL, no framework. The page is
+`builder/web/trailview.html`. The terrain streams with LOD from the master terrain tiles: zooms 0
+to 12 from the tile service, zoom 13 from its packs. The ground comes from the TrailView layers of
+the release ([specs/trailview-tiles.md](../../../../../specs/trailview-tiles.md)) and the planner's
+snow tiles.
 
 ## Build and run
 
@@ -15,9 +16,9 @@ VITE_PLANNER_CATALOG=URL npm run dev -- --mode trailview   # open /trailview.htm
 npm run build:trailview                                 # dist/trailview
 ```
 
-The page reads the `active` entry of the planner catalogue, or `VITE_PLANNER_CONFIG`. The ground needs
-`trailview_rules` and the `trailview-*` archives in `layers` of the entry; without them the ground
-is the palette of the `world` region.
+The page reads the `active` entry of the planner catalogue, or `VITE_PLANNER_CONFIG`. The ground
+needs `trailview_rules` and the `trailview-*` archives in `layers` of the entry; without them it is
+the palette of the `world` region.
 
 ## Layout
 
@@ -31,12 +32,12 @@ is the palette of the `world` region.
 | `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh (`drawn-mesh.wgsl`), the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the buildings by place for the town rules (`town.ts`: sidewalks, paved footways, the walks to the houses, the street lamps), the junctions' kerbed corners (`corners.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
 | `structures/` | The bridges (`bridges.ts`), tunnels and their portals (`tunnels.ts`), galleries (`galleries.ts`), the masts, contact wires and platforms of the tracks (`rails.ts`) and the sidewalks' kerbed slabs near the eye (`sidewalks.ts`) as flat faces in vertex colours: one mesh per node from its feature tile, made in the stamp worker (`node.ts`, `mesh.ts`), the anchored meshes of the kinds, whose vertices hang from anchors on the drawn surface (`anchored.ts`); their pools, the heights of the anchors and the draw (`structures.ts`, `structures.wgsl`) |
 | `kinds/` | One module per kind of `data/trailview/kinds.json`, found by its file name (`index.ts`), with the models that it stands on the surface; the shared handlers (`kind.ts`): a line structure on the surface, models at points. The instances draw the models of the kinds' points (`structures/kind-points.ts`). A kind's `near` meshes and points draw only within about 2 km, where a node of level 17 draws; a kind names its models, never their numbers |
-| `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the road paint (`roads.wgsl`), the rules packing and the per-page compute |
+| `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the road paint (`roads.wgsl`), the rows of the material fields (`fields.wgsl`), the rules packing and the per-page compute |
 | `structures/` | The houses: a worker makes a record per building of each zoom 14 quarter of the zoom 13 feature tiles (`house-records.ts`); `houses.wgsl` fits each to the drawn surface with a basement, culls it, picks its level of detail and draws it from a template, and lights its windows at night |
 | `models/` | The house templates: the prototype's buildings as faces whose coordinates name slots that `houses.wgsl` fills per house; the prototype's trees and plants without three.js (`shape.ts`, `trees.ts`, `trees/`, `plant-shape.ts`, `plants/`); the models of flat faces of the kinds and the dressing (`flat.ts`, lifts, landmarks, rocks, animals, crosses) |
 | `instances/` | Instances on the drawn surface: producers emit them (`emit.wgsl`), one indirect draw per model and tier (`sort.wgsl`, `draw.wgsl`), a tree's phase models and crown colours, impostors, culling by the last frame's depth (`hiz.wgsl`), point pools of kinds (`points.ts`) |
-| `vegetation/` | Each tree's phase on the date (`phenology.ts`); the tree models of the phases, shared by the forest, the shrubs and the orchards (`tree-models.ts`); the canopy tiles about the eye (`canopy.ts`) and the forest placed from them each frame (`forest.wgsl`); the ground plants and shrubs about the eye (`plants.wgsl`); the clearing that moves with the eye (`clearing.wgsl`); the orchards' rows from the feature tiles (`orchards.ts`) |
-| `dressing/` | The herds of the packs on the materials that they graze, and rocks on rough and rocky ground, placed each frame (`dressing.wgsl`) |
+| `vegetation/` | Each tree's phase on the date (`phenology.ts`); the tree models of the phases, shared by the forest, the shrubs and the plantings (`tree-models.ts`); the canopy tiles about the eye (`canopy.ts`) and the forest placed from them each frame (`forest.wgsl`); the ground plants and shrubs about the eye (`plants.wgsl`); the clearing that moves with the eye (`clearing.wgsl`); the plants of the materials planted in rows, on the rows of the material fields (`rows.wgsl`, `ground/fields.wgsl`) |
+| `dressing/` | The herds of the packs on the materials that they graze, and rocks on rough and rocky ground, placed each frame (`dressing.wgsl`); the rocks' density and placement, which the ground also paints past their instances (`rocks.wgsl`) |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky with the moon, the stars and the Milky Way, and a solar eclipse where the moon covers the sun (`celestial.ts`, `eclipse.ts`, `night.ts`; `tools/trailview/sky.py` makes `milkyway.webp`, `stars.bin` and `moon.webp`), the object shadow maps near and far from the eye (`shadow.ts`) |
 | `resolve/` | The render targets, the jitter, TAA and `finish()` |
 | `rules/` | The regions of `rules.json`, resolved |
@@ -63,8 +64,9 @@ The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
 ## Labs
 
 A lab is an entry in `LABS` of `labs.ts`, with its variants and the default first; `?lab=` selects
-one. The HUD has a menu per lab, which loads the page again at the same view. The terrain has no lab: CDLOD by distance, bicubic synthesized levels, and 16-bit
-pages with an offset and a scale per page.
+one. The HUD has a menu per lab, which loads the page again at the same view. The terrain has no
+lab: CDLOD by distance, bicubic synthesized levels, and 16-bit pages with an offset and a scale per
+page.
 
 ## Shots and flights
 
@@ -80,13 +82,14 @@ node trailview/network.mjs [--view V] [--mbit 25] [--rtt 40] [--web DIR]  # a co
 npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
 ```
 
-`shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs can differ
-in a few pixels by a few levels: compare shots by their difference. `flight.mjs` prints the GPU
-time per pass, the CPU selection time, the nodes, triangles and pages of each flight of `flights.json`. The `ground` pass runs only when ground pages arrive:
-read its `amortized` time. Run it on the M1 Pro with `--gpu`: Chrome then draws
-2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
-of the fixture, and `--features` a folder `z/x/y.bin`; build the page with a config
-whose `bounds` are its box. `--lab NAME:VARIANT` adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
+`shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs can differ in
+a few pixels by a few levels: compare shots by their difference. `flight.mjs` prints the GPU time
+per pass, the CPU selection time, and the nodes, triangles and pages of each flight of
+`flights.json`. The `ground` pass runs only when ground pages arrive: read its `amortized` time.
+Run it on the M1 Pro with `--gpu`: Chrome then draws 2560 × 1600 pixels and reports exact
+timestamps. `--tiles` serves a `planner-dem` MBTiles instead of the fixture, and `--features` a
+folder `z/x/y.bin`; build the page with a config whose `bounds` are its box. `--lab NAME:VARIANT`
+adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
 `debug=cracks`; such a flight looks down on known terrain only, as `cracks.json` does over the box.
 
 `--ground DIR` serves the bakes of `tools/trailview` and `tools/planner_snow.py` as the tile service
@@ -99,7 +102,7 @@ the page with a config whose `layers` name `https://tiles.test/<name>.json` and 
 prints the RMS of the drawn skyline against the photograph's, per quarter-degree column. It exits 1
 past an `rms_limit_deg`.
 
-## Checks
+## Test
 
 ```sh
 npx vitest run src/lib/trailview
@@ -122,12 +125,12 @@ cargo run --release --locked -p obc-trailview-features -- --osm OSM.pbf \
 uv run --locked --group planner-maps python builder/web/tests/browser/trailview/make-fixture.py terrain.mbtiles features.pmtiles
 ```
 
-## What bites
+## Pitfalls
 
 - SwiftShader times are not GPU times. Measure on a GPU.
 - macOS lowers the GPU clock when a frame has time to spare, so a pass measures long;
   `flight.mjs --gpu` keeps the clock high.
-- A browser test that draws for minutes on SwiftShader takes `{ tag: '@gpu' }`: pull requests skip
+- Tag a browser test that draws for minutes on SwiftShader `{ tag: '@gpu' }`: pull requests skip
   it, `test-weekly.yml` runs it each Monday.
 - Headless Chromium on Linux with no GPU shows a WebGPU canvas only with
   `--use-vulkan=swiftshader` (`SWIFTSHADER` in `harness.js`). Else the device is lost: "A valid
@@ -151,4 +154,5 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
   part of a page) and loads most tile bodies again: a view's bodies exceed the 96 MiB cache.
 - Mountain shadows need the `trailview-ground` layer.
 - The ground noise is in frame metres about the first view: far from it, float32 coarsens its
-  finest grains, and a view that starts elsewhere draws other grains, so compare shots of one first view.
+  finest grains, and a view that starts elsewhere draws other grains. Compare shots of one first
+  view.

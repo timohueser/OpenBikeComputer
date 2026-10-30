@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from .base import Source, http_get
+from .base import Source, decode_tiff, http_get
 from .stac import stac_items
 
 
@@ -40,7 +40,7 @@ class StacSource(Source):
                 # A half-written file in the cache would look complete to the next run, so
                 # the bytes land beside the name and are moved onto it at the end.
                 part = path.with_name(name + ".part")
-                part.write_bytes(http_get(href))
+                part.write_bytes(http_get(href, check=decode_tiff))
                 os.replace(part, path)
                 print(f"  fetch [{i}/{len(assets)}] {name}")
             paths.append(path)

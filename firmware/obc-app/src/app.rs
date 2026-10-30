@@ -2274,7 +2274,7 @@ impl App {
                 self.ui.last_input_ms = self.ui.now_ms;
                 self.ui.idle_return_timing = true;
                 self.ui.cancel_holds();
-                self.ui.reconcile_corridor(self.up_ahead_scope());
+                self.ui.reconcile_corridor(self.state.up_ahead_filter);
                 self.release_unreachable_plans();
                 true
             }
@@ -2324,12 +2324,6 @@ impl App {
             let wake = 1_000 - self.ui.now_ms % 1_000;
             self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(wake, |w| w.min(wake)));
         }
-    }
-
-    /// What the Up-ahead timeline is scoped to right now: the live category filter and the
-    /// persisted source preference. One value, so the two halves cannot reach the runtime apart.
-    pub(crate) fn up_ahead_scope(&self) -> crate::corridor::UpAheadScope {
-        crate::corridor::UpAheadScope { filter: self.state.up_ahead_filter, source: self.settings.up_ahead_source }
     }
 
     /// The [`ContextMenu`](crate::screen::ContextMenu) the base screen declares. It reads the
@@ -2780,7 +2774,7 @@ impl App {
         }
         // The corridor snapshot follows the stack: escaping off the Up-ahead timeline disarms its
         // query exactly as a Back would.
-        self.ui.reconcile_corridor(self.up_ahead_scope());
+        self.ui.reconcile_corridor(self.state.up_ahead_filter);
         if changed {
             self.ui.cancel_holds();
             self.release_unreachable_plans();
@@ -2907,8 +2901,7 @@ impl App {
         // The corridor snapshot follows the stack, not a gesture: the Up-ahead screen on it
         // declares the key it wants and this arms it. With nothing asking, the request is
         // dropped and the reader-build seam goes quiet.
-        let scope = self.up_ahead_scope();
-        self.ui.reconcile_corridor(scope);
+        self.ui.reconcile_corridor(self.state.up_ahead_filter);
         // Returning to the bare Home root re-opens the screensaver, so re-roll its contour seed.
         // Gated on the edge, so it fires once per return and a timed re-render leaves it put.
         if self.ui.stack.len() == 1 && depth_before > 1 {
@@ -3017,9 +3010,13 @@ impl App {
         // Every sweep above can move the stack, so re-point the corridor snapshot at what the
         // stack now wants: a request left armed after its screen was swept away would keep the
         // board building the map `Reader` forever.
-        let scope = self.up_ahead_scope();
         let navigation = self.navigator.route_state();
-        self.ui.reconcile_next_ahead(&self.settings, scope, navigation.active_route, navigation.progress_m);
+        self.ui.reconcile_next_ahead(
+            &self.settings,
+            self.state.up_ahead_filter,
+            navigation.active_route,
+            navigation.progress_m,
+        );
     }
 
     /// The single next-wake deadline the event-driven host arms one timer to: the soonest, in

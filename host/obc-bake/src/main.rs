@@ -62,7 +62,7 @@ usage:
   obc-bake terrain [REGION…] --sources DIR [flags]
       Bake the curated coverage's OBCT terrain cells into the tree's terrain band.
       Terrain has its OWN revision track: this never re-bakes an OBCM cell, and a
-      schema bump never re-bakes a terrain cell (OBCC_Spec.md §13).
+      schema bump never re-bakes a terrain cell (obcc-catalog.md §13).
         --out TREE              output tree (default: ./obc-bake)
         --sources DIR           source DEM GeoTIFFs (default: fetched into <cache>/dem)
         --dataset-id ID         source dataset (default: copernicus-glo-30)
@@ -73,9 +73,9 @@ usage:
         --reference DIR         reference archive mirror: `index.json` plus the tiles of the
                                 box, from host/obc-dem/reference/ingest.py. Where it covers a
                                 crest, the baked samples carry the finer model's height
-                                (OBCT_Spec.md §9), each cell records the sources it used, and
+                                (obct-terrain.md §9), each cell records the sources it used, and
                                 their credits reach the catalog. A reference change is a
-                                terrain revision bump (OBCC_Spec.md §13.2), which
+                                terrain revision bump (obcc-catalog.md §13.2), which
                                 re-stamps every cell and re-bakes only the cells the
                                 changed archive tiles reach. A cell the mirror is short
                                 of tiles for is REFUSED, with the --bbox to mirror: it
@@ -581,7 +581,11 @@ fn run_publish(args: &[String]) -> Result<(), String> {
     let target = flags.get("target").unwrap_or("");
     let dry_run = flags.has("dry-run") || target.is_empty();
     let store: Box<dyn ObjectStore> = match target {
-        "r2" => Box::new(R2Store::from_env()?),
+        "r2" => {
+            // The R2 key lives in the credentials file of `obc data`; a variable of the environment wins.
+            obc_data::credentials::load_home();
+            Box::new(R2Store::from_env()?)
+        }
         t if t.starts_with("dir:") => Box::new(DirStore::new(&t["dir:".len()..])),
         "" => Box::new(DirStore::new(".")), // unused: dry_run is on
         other => return Err(format!("unknown --target `{other}` (expected `r2` or `dir:PATH`)")),

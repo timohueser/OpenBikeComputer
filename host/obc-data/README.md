@@ -10,29 +10,23 @@ The [data contract](../../specs/obc-data.md) defines bytes and admission checks.
 Prepare Rust, Python with `uv`, GEOS and Osmium before an update, and a Java 21 JDK and Maven for
 the planner layers; `obc data` does not install them.
 `obc data setup` shows what this machine can do and the tools and credentials that it has.
-A changed producer does not rebuild its layer. Raise the `revision` of the layer in the change
-that changes its output; a reader that needs new data raises its `format`.
-
-Each step runs in a process of its own. A Rust step shows as `obc-data obc_data_step FUNCTION`
-in `ps`. Add the function of a new Rust step to `host/obc-data-steps/src/functions.rs`: a
-function that is not there fails its step. A test binary that runs a Rust step needs a test
-`obc_data_step` that calls `obc_data::engine::child` with its functions. Without that test, the
-step fails because it did not write its output.
 
 `data/targets.toml` names the targets: `local` is a folder beside the store, and `prod` the
 public bucket. An update or a rollback of `prod` needs the `OBC_R2_*` variables and rclone. The
-settings of a target (region, parts, refresh policies) are in the release that it
-serves, so they need no commit.
+settings of a target (region, parts, refresh policies) are in the release that it serves; they
+need no commit.
 
 | Configuration or credential | Purpose |
 | --- | --- |
 | `data/targets.toml` | Targets and where they are |
 | `data/machines.toml` | The header colour and the SSH host of each machine for the page |
 | `data/regions/` | Region presets |
+| `data/archive/` | The datasets of the archive |
 | `data/sources.toml` | Source declarations and their refresh policies |
 | `data/planner.toml` | Planner producer options |
 | `data/planner-runtime.toml` | Runtime target and publication origins |
 | `OBC_DATA_STORE` | Build store |
+| `OBC_DATA_ARCHIVE` | Archive roots, separated by `:`, see the spec section Archive; unset: no archive. A source with `keep = "archive"` reads its files there before upstream. `obc data archive get DATASET` fills a root from `data/archive/`. `prepared/ID/` of one root holds the versions of a prepared source: a prepare writes there, and a bake reads from there what the store lacks |
 | `OBC_WIKI_DUMPS` | Archive cache; default: `wiki-dumps/` in the store. Existing archives and symlinks are reused |
 | `OBC_WIKIMEDIA_ENTERPRISE_USERNAME`, `OBC_WIKIMEDIA_ENTERPRISE_REFRESH_TOKEN` | Download missing Wikipedia HTML; access tokens refresh automatically |
 | `OBC_WIKIMEDIA_ENTERPRISE_TOKEN` | Access token when no refresh credential is set |
@@ -42,14 +36,14 @@ serves, so they need no commit.
 | `OBC_FIXTURE_R2_*` | Separate fixture bucket and credentials, with the same suffixes as production |
 | `UV_PYTHON` | Selected prepared Python interpreter |
 | `~/.config/openbikecomputer/credentials.env` | `env` credentials of sources; the environment wins |
-| `~/.cdsapirc` | CDS credential for a selected climate fetch |
+| `~/.cdsapirc` | CDS credential for a prepare of `climate` |
 | `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |
 | `~/.config/openbikecomputer/clms-key.json` | CLMS service key for the CORINE fetch; save the JSON of the token whole, mode 0600 |
 
 Set a source credential on the Machine screen, or pipe it to `obc data source credential ID`.
-Keep other secrets in the host environment or ignored `tools/obc.local`, never tracked config.
+Put other secrets, such as the R2 key, in `credentials.env`, never in `tools/obc.local`.
 
-## Daily commands
+## Run
 
 | Command | Action |
 | --- | --- |
@@ -66,13 +60,14 @@ Keep other secrets in the host environment or ignored `tools/obc.local`, never t
 | `obc data update prod --expect ID` | Publish the approved review to riders; asks, or `--yes` without a terminal. It waits up to 24 h until the follower serves the release |
 | `obc data rollback local` | Serve the rollback release again; a second rollback undoes it |
 | `obc data source refresh natural-earth` | Move a `digest` source to upstream's newest version |
-| `obc data source prepare ID --to local` | Make a version of a prepared source; the same command resumes it |
-| `obc data source prepare ID --dry-run` | Review a prepare for `prod`; the owner approves its id |
+| `obc data source prepare ID --dry-run` | Review a prepare; the owner approves its id |
+| `obc data source prepare ID --expect ID` | Make a version of a prepared source in the archive; the same command resumes it |
 | `obc data source prepare wiki --region europe/dach --languages en,de --dry-run` | Review a DACH version with English and German articles |
 | `obc data serve` | Serve `local` to the apps until Ctrl-C |
 | `obc data runs RUN --follow` | Observe progress; Ctrl-C ends only the following |
 | `obc data runs RUN --stop` | Stop a run: it frees the lock and keeps what it baked |
-| `obc data unlock local --from MACHINE` | Free the lock of a run that stopped on that machine; `--source ID` frees the lock of a prepared source |
+| `obc data unlock local --from MACHINE` | Free the lock of a run that stopped on that machine |
+| `obc data unlock --source ID --from MACHINE` | Free the lock of a prepared source in the archive |
 | `obc data clean` | Review unused store bytes before `--apply` |
 | `obc data ui` | Serve the page of this machine at `http://127.0.0.1:8700/` |
 | `obc data open MACHINE` | Open the page of another machine through an SSH tunnel |
@@ -85,12 +80,6 @@ or stops frees the lock. A crash or an out-of-memory kill keeps it; the next run
 machine takes it over. From another machine, `obc data unlock TARGET --from MACHINE` frees it
 after 10 minutes without a heartbeat.
 
-`cargo test -p obc-data --test r2_live -- --ignored` writes the bucket of the `OBC_R2_*` variables
-in a throwaway folder `test/<time>-<pid>/`; it skips without them. A plain test run leaves it out.
-
-On a host with `KillUserProcesses=yes` in logind, an SSH logout ends a detached run, unless
-`loginctl enable-linger USER` is set for the user.
-
 On the page of a target, open **Plan update**, choose the area, then **Plan update on MACHINE**.
 The plan run shows each download, then the plan. **Start bake** runs that plan.
 
@@ -100,8 +89,7 @@ inputs, then prepares the region. A stopped run resumes with the same selection 
 Existing archives stay in place; the [wiki contract](../../specs/obc-data.md#wiki) gives their names.
 Select **Worldwide** only for a global version. Changing the selection requires a new review.
 
-The [page README](../../builder/web/src/components/data/README.md) tells how to run and develop
-the page.
+The [page README](../../builder/web/src/components/data/README.md) covers the page.
 
 ## Serve
 
@@ -134,3 +122,21 @@ It gives only the planner API, on `127.0.0.1`.
   of network, start `obc data serve` again.
 - The services read their files from `<store>/serve/local/`. Serve removes it when it starts and
   when it stops; `obc data clean` does not touch it.
+
+## Test
+
+`cargo test -p obc-data --test r2_live -- --ignored` writes the bucket of the `OBC_R2_*` variables
+in a throwaway folder `test/<time>-<pid>/`; it skips without them. A plain test run leaves it out.
+
+## Pitfalls
+
+- A changed producer does not rebuild its layer. Raise the `revision` of the layer in the change
+  that changes its output; a reader that needs new data raises its `format`.
+- Each step runs in a process of its own. A Rust step shows as `obc-data obc_data_step FUNCTION`
+  in `ps`. Add the function of a new Rust step to `host/obc-data-steps/src/functions.rs`: a
+  function that is not there fails its step.
+- A test binary that runs a Rust step needs a test `obc_data_step` that calls
+  `obc_data::engine::child` with its functions. Without that test, the step fails because it did
+  not write its output.
+- On a host with `KillUserProcesses=yes` in logind, an SSH logout ends a detached run, unless
+  `loginctl enable-linger USER` is set for the user.

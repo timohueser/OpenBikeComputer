@@ -78,7 +78,7 @@ def corpus() -> dict[str, tuple[str, int]]:
                 found[f] = ("guide", words(path.read_text(encoding="utf-8", errors="ignore")))
         elif os.path.basename(f) == "README.md" and "vendor/" not in f:
             found[f] = ("readme", words(path.read_text(encoding="utf-8", errors="ignore")))
-        elif re.fullmatch(r"tools/check_[a-z_]+\.py", f):
+        elif re.fullmatch(r"tools/check_[a-z_]+\.py", f) or f == "tools/cairn/cairn.py":
             m = DOCSTRING.match(path.read_text(encoding="utf-8", errors="ignore"))
             found[f] = ("guard", words(m.group(1)) if m else 0)
     return found

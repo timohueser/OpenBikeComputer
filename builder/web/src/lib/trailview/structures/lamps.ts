@@ -1,12 +1,13 @@
 // Street lamps along the roads of built-up places. The map holds few of them, and not in every region,
 // so a rule stands them: along a lit road, every SPACING_M on its right, where a building is near. A lamp
 // stands on the road's sidewalk where it has one, BEHIND_KERB_M behind its kerb, where the road's piece there
-// has one; on another road, where the town rule finds a building at its foot. None stands within OFF_ROAD_M of
-// a carriageway, in a junction's corner or within JUNCTION_M of a junction, nor in a building or by its walls.
+// has one on its right; on another road, where the town rule finds a building at its foot. None stands within OFF_ROAD_M of
+// a carriageway, in a junction's corner or within JUNCTION_M of a junction of three or more ways, nor in a
+// building or by its walls.
 import { facing, nearestWay, unitModel, type Build, type Kind, type Placed } from '../kinds/kind';
 import { LANTERN, streetLamp } from '../models/amenities';
 import { halfWidth, insideRings, junctions, metresPerUnit, ringsDistance, ROAD, sidewalkOf, surfaceOf, type Line } from '../terrain/bins';
-import { along, BUILT_M, builtNear, near, townOf } from '../terrain/town';
+import { along, BUILT_M, builtNear, near, RIGHT, townOf } from '../terrain/town';
 
 /** The roads that have lamps; a lamp stands this many metres apart from the next, at least CLEAR_M from a building's walls and OFF_ROAD_M from every carriageway, less than its place behind its own kerb. */
 const LIT = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified', 'residential', 'living_street']);
@@ -40,7 +41,7 @@ function lamps({ tags, parts }: Placed, out: Build, side: number): void {
                 const t = (next - done) / length, x = ax + t * dx - dy * across, y = ay + t * dy + dx * across;
                 if (!out.owns(x, y)) continue;
                 const way = sidewalk ? nearestWay(out.ways, ax + t * dx, ay + t * dy) : undefined;
-                if (!(way ? way.line.sidewalks?.[way.v] : builtNear(town, ax + t * dx, ay + t * dy, BUILT_M / unit)) || out.cornered(x, y) || inTraffic(out.ways, x, y, unit)) continue;
+                if (!(way ? (way.line.sidewalks?.[way.v] ?? 0) & RIGHT : builtNear(town, ax + t * dx, ay + t * dy, BUILT_M / unit)) || out.cornered(x, y) || inTraffic(out.ways, x, y, unit)) continue;
                 let walled = false;
                 near(town, x, y, x, y, CLEAR_M / unit, b => (walled ||= insideRings(out.buildings[b].rings, x, y) || ringsDistance(out.buildings[b].rings, x, y) * unit < CLEAR_M));
                 if (walled) continue;
@@ -51,12 +52,12 @@ function lamps({ tags, parts }: Placed, out: Build, side: number): void {
     }
 }
 
-/** Whether a point lies on a road's carriageway or within OFF_ROAD_M of it, or within JUNCTION_M of a junction of roads. */
+/** Whether a point lies on a road's carriageway or within OFF_ROAD_M of it, or within JUNCTION_M of a junction of three or more ways. */
 function inTraffic(ways: Line[], x: number, y: number, unit: number): boolean {
     let known = traffic.get(ways);
     if (!known) {
         const roads = ways.filter(line => line.kind === ROAD);
-        traffic.set(ways, (known = { roads, joins: [...junctions(roads).values()] }));
+        traffic.set(ways, (known = { roads, joins: [...junctions(roads).values()].filter(j => j.ways > 2) }));
     }
     if (known.joins.some(j => Math.hypot(j.x - x, j.y - y) * unit < JUNCTION_M)) return true;
     return known.roads.some(line => {

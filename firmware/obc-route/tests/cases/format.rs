@@ -1,7 +1,7 @@
 //! Format-contract tests for the OBCR reader.
 //!
 //! Each test builds a synthetic `.obcr` byte buffer with the shared handwritten builder, which
-//! mirrors `OBCR_Spec.md`, then asserts the reader parses it back. Hand-emitting the bytes instead
+//! mirrors `obcr-route.md`, then asserts the reader parses it back. Hand-emitting the bytes instead
 //! of going through the converter pins the reader to the spec independently.
 
 use core::cell::Cell;

@@ -17,6 +17,7 @@ fetch = { kind = "http", url = "https://planet.openstreetmap.org/pbf/planet-{yym
 version = "date"
 refresh = 90
 # A planet is about 84 GB, so a new one is seldom worth its download.
+keep = "store"
 redistribute = true
 
 [[source]]
@@ -32,6 +33,7 @@ obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}-{yymmdd}.osm.pbf" }
 version = "date"
 refresh = 7
+keep = "store"
 redistribute = true
 
 [[source]]
@@ -49,6 +51,7 @@ version = "date"
 # The extracts of `geofabrik-extracts`, kept until an operator fetches a newer one, so that the
 # weekly extract does not bake the terrain again.
 refresh = "manual"
+keep = "store"
 redistribute = true
 
 [[source]]
@@ -64,6 +67,7 @@ obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "http", url = "https://download.geofabrik.de/index-v1.json" }
 version = "date"
 refresh = 90
+keep = "store"
 redistribute = true
 
 [[source]]
@@ -79,6 +83,7 @@ obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}.poly" }
 version = "date"
 refresh = 90
+keep = "store"
 redistribute = true
 
 [[source]]
@@ -93,22 +98,22 @@ attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "http", url = "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip" }
 version = "date"
-refresh = 90
+keep = "archive"
 redistribute = true
 
 [[source]]
 id = "water-polygons"
 kind = "data"
 group = "OpenStreetMap"
-used_by = ["planner"]
-use = "Sea areas of the basemap"
+used_by = ["planner", "trailview"]
+use = "Sea areas of the basemap and of TrailView"
 licence = "ODbL-1.0"
 licence_url = "https://osmdata.openstreetmap.de/info/license.html"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "http", url = "https://osmdata.openstreetmap.de/download/water-polygons-split-3857.zip" }
 version = "date"
-refresh = 90
+keep = "archive"
 redistribute = true
 
 
@@ -127,6 +132,7 @@ obligations = "Credit on every product derived from the dataset"
 fetch = { kind = "glo30", url = "https://copernicus-dem-30m.s3.amazonaws.com/{tile}/{tile}.tif" }
 version = "date"
 start = "2022-05-09"
+keep = "archive"
 redistribute = false
 
 # The names of the `copernicus-glo-30` tiles. A square without a tile is sea.
@@ -140,6 +146,7 @@ licence = "LicenseRef-Copernicus-DEM"
 licence_url = "https://spacedata.copernicus.eu/collections/copernicus-digital-elevation-model"
 fetch = { kind = "http", url = "https://copernicus-dem-30m.s3.amazonaws.com/tileList.txt" }
 version = "date"
+keep = "archive"
 redistribute = true
 
 [[source]]
@@ -153,6 +160,7 @@ licence_url = "https://github.com/tilezen/joerd/blob/master/docs/attribution.md"
 attribution = "Mapzen and its elevation data providers"
 fetch = { kind = "http", url = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png" }
 version = "date"
+keep = "store"
 redistribute = false
 
 # The national terrain models, one per product of the reference ingest. A map leaf reads an archive
@@ -170,6 +178,7 @@ fetch = { kind = "dtm", url = "https://data.bev.gv.at/download/ALS/DTM/20250915/
 extent = [9.5, 46.3, 17.2, 49.1]
 areas = ["europe/austria"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -185,6 +194,7 @@ fetch = { kind = "by-hand", url = "https://elevation.fsdf.org.au" }
 extent = [112.0, -44.0, 154.0, -9.0]
 areas = ["australia-oceania/australia"]
 version = "date"
+keep = "prepared"
 redistribute = true
 # The directory of the delivered order, and the vertical datum that its metadata states.
 credential = { env = ["OBC_REFERENCE_AU_INPUT", "OBC_REFERENCE_AU_DATUM"], register = "https://elevation.fsdf.org.au", hint = "Order the area, then give the absolute path of the unpacked delivery and its vertical datum, such as AHD." }
@@ -201,6 +211,7 @@ fetch = { kind = "dtm", url = "https://datacube.services.geo.ca/ows/elevation" }
 extent = [-141.0, 41.6, -52.6, 83.2]
 areas = ["north-america/canada"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -217,6 +228,7 @@ fetch = { kind = "dtm", url = "https://data.geo.admin.ch/api/stac/v0.9/collectio
 extent = [5.9, 45.8, 10.5, 47.9]
 areas = ["europe/switzerland", "europe/liechtenstein"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -231,6 +243,7 @@ fetch = { kind = "dtm", url = "https://ags.cuzk.gov.cz/arcgis2/rest/services/dmr
 extent = [12.0, 48.5, 18.9, 51.1]
 areas = ["europe/czech-republic"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -245,6 +258,7 @@ fetch = { kind = "dtm", url = "https://opengeodata.lgl-bw.de/data/dgm/" }
 extent = [7.5, 47.5, 10.5, 49.8]
 areas = ["europe/germany/baden-wuerttemberg"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -259,6 +273,7 @@ fetch = { kind = "dtm", url = "https://download1.bayernwolke.de/a/dgm/dgm1/" }
 extent = [8.9, 47.2, 13.9, 50.6]
 areas = ["europe/germany/bayern"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -273,6 +288,7 @@ fetch = { kind = "dtm", url = "https://inspire-hessen.de/raster/dgm1/ows" }
 extent = [7.7, 49.3, 10.3, 51.7]
 areas = ["europe/germany/hessen"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -289,6 +305,7 @@ fetch = { kind = "dtm", url = "https://www.geodaten-mv.de/dienste/dgm_wcs" }
 extent = [10.5, 53.0, 14.5, 54.8]
 areas = ["europe/germany/mecklenburg-vorpommern"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -303,6 +320,7 @@ fetch = { kind = "dtm", url = "https://dgm.stac.lgln.niedersachsen.de/search" }
 extent = [6.5, 51.2, 11.7, 54.0]
 areas = ["europe/germany/niedersachsen"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -317,6 +335,7 @@ fetch = { kind = "dtm", url = "https://www.wcs.nrw.de/geobasis/wcs_nw_dgm" }
 extent = [5.8, 50.3, 9.5, 52.6]
 areas = ["europe/germany/nordrhein-westfalen"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -333,6 +352,7 @@ fetch = { kind = "dtm", url = "https://geobasis-rlp.de/data/dgm1/current/tif/" }
 extent = [6.1, 48.9, 8.6, 51.0]
 areas = ["europe/germany/rheinland-pfalz"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -347,6 +367,7 @@ fetch = { kind = "dtm", url = "https://geocloud.landesvermessung.sachsen.de/publ
 extent = [11.8, 50.1, 15.1, 51.7]
 areas = ["europe/germany/sachsen"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -361,6 +382,7 @@ fetch = { kind = "dtm", url = "https://geodatenportal.sachsen-anhalt.de/ows_INSP
 extent = [10.5, 50.9, 13.2, 53.1]
 areas = ["europe/germany/sachsen-anhalt"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -375,6 +397,7 @@ fetch = { kind = "dtm", url = "https://geoportal.geoportal-th.de/hoehendaten/DGM
 extent = [9.8, 50.2, 12.7, 51.7]
 areas = ["europe/germany/thueringen"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -390,6 +413,7 @@ extent = [8.008, 54.435, 15.598, 57.769]
 areas = ["europe/denmark"]
 hosts = ["dataforsyningen.dk"]
 version = "date"
+keep = "prepared"
 redistribute = true
 credential = { env = ["OBC_REFERENCE_DK_TOKEN"], register = "https://dataforsyningen.dk", hint = "Make a free account (Opret bruger), then copy a new token from Administrer token til webservices og API'er." }
 
@@ -398,13 +422,14 @@ id = "dtm-es"
 kind = "data"
 group = "Elevation"
 used_by = ["device", "planner", "trailview"]
-use = "Terrain in Spain and the Canary Islands: MDT05 5 m"
+use = "Terrain in Spain, Andorra and the Canary Islands: MDT05 5 m"
 licence = "CC-BY-4.0"
 attribution = "© Instituto Geográfico Nacional"
 fetch = { kind = "dtm", url = "https://servicios.idee.es/wcs-inspire/mdt" }
 extent = [-18.2, 27.6, 4.4, 43.9]
-areas = ["europe/spain", "africa/canary-islands"]
+areas = ["europe/spain", "europe/andorra", "africa/canary-islands"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -420,6 +445,7 @@ extent = [19.0, 59.7, 31.6, 70.1]
 areas = ["europe/finland"]
 hosts = ["*.maanmittauslaitos.fi"]
 version = "date"
+keep = "prepared"
 redistribute = true
 credential = { env = ["OBC_REFERENCE_FI_TOKEN"], register = "https://omatili.maanmittauslaitos.fi", hint = "Make a free NLS account, then create a key for the open data interfaces under API keys and copy it." }
 
@@ -436,6 +462,7 @@ fetch = { kind = "dtm", url = "https://data.geopf.fr/wms-r/wms" }
 extent = [-5.3, 41.3, 9.6, 51.1]
 areas = ["europe/france"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -450,6 +477,7 @@ fetch = { kind = "dtm", url = "https://environment.data.gov.uk/spatialdata/lidar
 extent = [-6.5, 49.8, 2.0, 55.9]
 areas = ["europe/united-kingdom/england"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -466,6 +494,23 @@ fetch = { kind = "dtm", url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com
 extent = [-8.7, 54.6, -0.7, 60.9]
 areas = ["europe/united-kingdom/scotland"]
 version = "date"
+keep = "prepared"
+redistribute = true
+
+[[source]]
+id = "dtm-gb-wls"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Wales: Welsh Government and NRW LiDAR DTM 1 m"
+licence = "OGL-UK-3.0"
+licence_url = "https://datamap.gov.wales/maps/6969/metadata_detail"
+attribution = "LiDAR of the Welsh Government and Natural Resources Wales. Contains public sector information licensed under the Open Government Licence v3.0."
+fetch = { kind = "dtm", url = "https://dmwproductionblob.blob.core.windows.net/cogs/lidar/wales_dtm_16bit_cog.tif" }
+extent = [-5.6, 51.3, -2.6, 53.5]
+areas = ["europe/united-kingdom/wales"]
+version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -481,6 +526,7 @@ fetch = { kind = "dtm", url = "https://ftp.natt.is/gisdata/raster/IslandsDEMv1.0
 extent = [-24.6, 63.2, -13.4, 66.6]
 areas = ["europe/iceland"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -495,6 +541,41 @@ fetch = { kind = "dtm", url = "https://tinitaly.pi.ingv.it/TINItaly_1_1/wcs" }
 extent = [6.6, 35.4, 18.6, 47.1]
 areas = ["europe/italy"]
 version = "date"
+keep = "prepared"
+redistribute = true
+
+[[source]]
+id = "dtm-it-21"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Piedmont, Italy: DTM 5 m, ICE 2009–2011"
+licence = "CC-BY-4.0"
+licence_url = "https://www.geoportale.piemonte.it/geonetwork/srv/api/records/r_piemon:224de2ac-023e-441c-9ae0-ea493b217a8e"
+attribution = "© Regione Piemonte"
+fetch = { kind = "dtm", url = "https://geomap.reteunitaria.piemonte.it/ws/taims/rp-01/taimsdtmwcs/wcs_ice_2009_2011_dtm" }
+# Piedmont, inside the rectangle of the coverage on EPSG:32632: the WCS refuses a box outside it.
+extent = [6.6, 44.0, 9.3, 46.47]
+areas = ["europe/italy/nord-ovest"]
+version = "date"
+keep = "prepared"
+redistribute = true
+
+[[source]]
+id = "dtm-it-36"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Friuli Venezia Giulia, Italy: DTM 1 m, LiDAR 2006–2010"
+licence = "LicenseRef-IODL-2.0"
+licence_url = "https://www.regione.fvg.it/rafvg/cms/RAFVG/ambiente-territorio/conoscere-ambiente-territorio/FOGLIA4/"
+attribution = "Regione Autonoma Friuli Venezia Giulia"
+obligations = "Credit the region; the Italian Open Data Licence 2.0 asks for attribution only"
+fetch = { kind = "dtm", url = "https://irdat.regione.fvg.it/cartogdownload/DTM_PCR/1M/6708/" }
+extent = [12.2, 45.5, 14.0, 46.7]
+areas = ["europe/italy/nord-est"]
+version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -508,6 +589,7 @@ attribution = "Autonome Provinz Bozen – Provincia autonoma di Bolzano"
 fetch = { kind = "dtm", url = "https://geoservices9.civis.bz.it/geoserver/ows" }
 extent = [10.3, 46.2, 12.5, 47.1]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -521,6 +603,7 @@ attribution = "Provincia autonoma di Trento"
 fetch = { kind = "dtm", url = "https://siatservices.provincia.tn.it/stemdata/2014_lidar_dtm_asc/" }
 extent = [10.4, 45.6, 12.0, 46.6]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -535,6 +618,7 @@ fetch = { kind = "dtm", url = "https://service.pdok.nl/rws/ahn/wcs/v1_0" }
 extent = [3.2, 50.7, 7.3, 53.6]
 areas = ["europe/netherlands"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -549,6 +633,7 @@ fetch = { kind = "dtm", url = "https://wcs.geonorge.no/skwms1/wcs.hoyde-dtm-nhm-
 extent = [4.0, 57.8, 31.5, 71.5]
 areas = ["europe/norway"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -563,6 +648,7 @@ fetch = { kind = "dtm", url = "https://nz-elevation.s3.ap-southeast-2.amazonaws.
 extent = [166.3, -47.4, 178.9, -34.0]
 areas = ["australia-oceania/new-zealand"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -579,6 +665,62 @@ fetch = { kind = "dtm", url = "https://mapy.geoportal.gov.pl/wss/service/PZGIK/N
 extent = [14.1, 49.0, 24.2, 54.9]
 areas = ["europe/poland"]
 version = "date"
+keep = "prepared"
+redistribute = true
+
+[[source]]
+id = "dtm-pt"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in mainland Portugal: LiDAR MDT 2 m"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+attribution = "© Direção-Geral do Território"
+fetch = { kind = "dtm", url = "https://cdd.dgterritorio.gov.pt/dgt-be/v1/search" }
+extent = [-9.6, 36.9, -6.1, 42.2]
+areas = ["europe/portugal"]
+hosts = ["*.dgterritorio.gov.pt"]
+version = "date"
+keep = "prepared"
+redistribute = true
+credential = { env = ["OBC_REFERENCE_PT_USER", "OBC_REFERENCE_PT_PASSWORD"], register = "https://cdd.dgterritorio.gov.pt", hint = "Make a free account of the DGT data centre, then give its e-mail address and password." }
+
+[[source]]
+id = "dtm-pt-20"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in the Azores, Portugal: LiDAR MDE 1 m"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+attribution = "© Governo dos Açores, Direção Regional do Ambiente e Ação Climática"
+fetch = { kind = "dtm", url = "https://cdd.dgterritorio.gov.pt/dgt-be/v1/search" }
+extent = [-31.5, 36.8, -24.7, 39.8]
+areas = ["europe/portugal"]
+hosts = ["*.dgterritorio.gov.pt"]
+version = "date"
+keep = "prepared"
+redistribute = true
+# The account of dtm-pt: one login of the DGT data centre serves both rows.
+credential = { env = ["OBC_REFERENCE_PT_USER", "OBC_REFERENCE_PT_PASSWORD"], register = "https://cdd.dgterritorio.gov.pt", hint = "Make a free account of the DGT data centre, then give its e-mail address and password." }
+
+[[source]]
+id = "dtm-pt-30"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Madeira, Portugal: MDT 5 m 2018/19, used while the project is non-commercial"
+licence = "LicenseRef-DROTe-no-conditions"
+licence_url = "https://irig-catalogo.madeira.gov.pt/geonetwork/srv/api/records/abba9a83-cb1c-4d2c-ad1d-ccb592247754"
+attribution = "© Direção Regional do Ordenamento do Território (DROTe), Região Autónoma da Madeira"
+obligations = "Credit DROTe and the Região Autónoma da Madeira. The record states no named licence, only that no conditions apply to access and use; read it again before a commercial use"
+fetch = { kind = "dtm", url = "https://irig-storage.madeira.gov.pt/irig-catalogo/mdt_5m.zip" }
+# Madeira, Porto Santo and the Desertas: the Selvagens are left out.
+extent = [-17.3, 32.35, -16.2, 33.15]
+areas = ["europe/portugal"]
+version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -594,8 +736,25 @@ extent = [9.08, 55.16, 25.54, 69.07]
 areas = ["europe/sweden"]
 hosts = ["*.lantmateriet.se"]
 version = "date"
+keep = "prepared"
 redistribute = true
 credential = { env = ["OBC_REFERENCE_SE_USER", "OBC_REFERENCE_SE_PASSWORD"], register = "https://geotorget.lantmateriet.se", hint = "Apply for Markhöjdmodell Nedladdning, grid 1+ with Basic authentication, then copy the consumer user name and password." }
+
+[[source]]
+id = "dtm-si"
+kind = "data"
+group = "Elevation"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain in Slovenia: DMR1 1 m, laser scan 2011–2015"
+licence = "CC-BY-4.0"
+licence_url = "https://www.e-prostor.gov.si/fileadmin/struktura/Preberi_me.docx"
+attribution = "Geodetska uprava Republike Slovenije in ARSO, Lasersko skeniranje Slovenije, DMR1 2011–2015"
+fetch = { kind = "dtm", url = "https://gis.arso.gov.si/lidar/dmr1/" }
+extent = [13.3, 45.4, 16.7, 46.9]
+areas = ["europe/slovenia"]
+version = "date"
+keep = "prepared"
+redistribute = true
 
 [[source]]
 id = "dtm-sk"
@@ -611,6 +770,7 @@ areas = ["europe/slovakia"]
 # GKÚ's quasigeoid grid, which moves the service's ellipsoidal heights onto Bpv.
 hosts = ["cdn.proj.org"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -626,6 +786,7 @@ fetch = { kind = "dtm", url = "https://elevation.nationalmap.gov/arcgis/rest/ser
 extent = [-179.0, 17.0, -65.0, 72.0]
 areas = ["north-america/us"]
 version = "date"
+keep = "prepared"
 redistribute = true
 
 # ── TrailView forest ─────────────────────────────────────────────────────────
@@ -643,6 +804,7 @@ hosts = ["data.geo.admin.ch", "dataforgood-fb-data.s3.amazonaws.com", "eodata.da
 extent = [-180.0, -90.0, 180.0, 90.0]
 version = "date"
 refresh = 365
+keep = "prepared"
 redistribute = true
 
 # Only the producer of `forest` reads the next three, through HTTP range requests: the first from its
@@ -661,6 +823,7 @@ fetch = { kind = "capture", url = "https://data.geo.admin.ch/api/stac/v0.9/colle
 extent = [5.9, 45.8, 10.5, 47.9]
 version = "date"
 refresh = "manual"
+keep = "prepared"
 redistribute = true
 
 # The canopy of every country, where no national model has it.
@@ -678,6 +841,7 @@ fetch = { kind = "capture", url = "https://dataforgood-fb-data.s3.amazonaws.com/
 extent = [-180.0, -85.0, 180.0, 85.0]
 version = "date"
 refresh = "manual"
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -696,6 +860,7 @@ hosts = ["eodata.dataspace.copernicus.eu"]
 extent = [-32, 27, 47, 73]
 version = "date"
 refresh = "manual"
+keep = "archive"
 redistribute = true
 credential = { file = "~/.config/openbikecomputer/cdse-s3.env", register = "https://eodata-s3keysmanager.dataspace.copernicus.eu", hint = "Sign in with a free Copernicus Data Space account, add a credential, then copy its access key and secret key." }
 
@@ -713,7 +878,7 @@ obligations = "none"
 fetch = { kind = "capture", url = "https://www.wikidata.org/w/api.php" }
 hosts = ["query.wikidata.org"]
 version = "date"
-refresh = 90
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -728,7 +893,7 @@ attribution = "landmark text from Wikipedia, © the contributors"
 obligations = "Each record states the licence and the notices of its own text"
 fetch = { kind = "capture", url = "https://{language}.wikipedia.org/w/api.php" }
 version = "date"
-refresh = 90
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -744,7 +909,7 @@ obligations = "Each record states the licence and the notices of its own photo"
 fetch = { kind = "capture", url = "https://commons.wikimedia.org/w/api.php" }
 hosts = ["upload.wikimedia.org"]
 version = "date"
-refresh = 90
+keep = "prepared"
 redistribute = true
 
 # The Wikimedia facts, article text and photos of the OSM subjects, prepared from the dumps in the
@@ -763,6 +928,7 @@ fetch = { kind = "prepared" }
 extent = [-180.0, -90.0, 180.0, 90.0]
 version = "date"
 refresh = 365
+keep = "prepared"
 redistribute = true
 
 [[source]]
@@ -778,11 +944,27 @@ fetch = { kind = "prepared" }
 hosts = ["dumps.wikimedia.org", "api.enterprise.wikimedia.com", "auth.enterprise.wikimedia.com", "download.geofabrik.de", "planet.openstreetmap.org", "commons.wikimedia.org", "upload.wikimedia.org"]
 version = "date"
 refresh = 365
+keep = "prepared"
 redistribute = true
 publish_text = true
 
 # ── Climate and snow ─────────────────────────────────────────────────────────
 
+[[source]]
+id = "climate"
+kind = "data"
+used_by = ["planner"]
+use = "Climate layer: daily rain, temperature and wind of ERA5-Land"
+licence = "CC-BY-4.0"
+fetch = { kind = "prepared" }
+hosts = ["arco.datastores.ecmwf.int", "confluence.ecmwf.int"]
+extent = [-180.0, -90.0, 180.0, 90.0]
+version = "date"
+refresh = 365
+keep = "prepared"
+redistribute = true
+
+# Only the producer of `climate` reads it, from the ARCO Zarr stores.
 [[source]]
 id = "era5-land"
 kind = "data"
@@ -794,7 +976,7 @@ attribution = "Contains modified Copernicus Climate Change Service information {
 fetch = { kind = "capture", url = "https://arco.datastores.ecmwf.int/cadl-arco-geo-{bucket}/arco/reanalysis_era5_land/{group}/geoChunked.zarr" }
 hosts = ["confluence.ecmwf.int"]
 version = "date"
-refresh = 365
+keep = "prepared"
 redistribute = true
 credential = { file = "~/.cdsapirc", register = "https://cds.climate.copernicus.eu", hint = "Make a free account, accept the ERA5-Land licence on the dataset page, then copy the personal access token of your profile." }
 
@@ -810,7 +992,7 @@ attribution = "MODIS MOD10A1/MYD10A1 v061, Hall & Riggs, NASA NSIDC DAAC, doi:10
 obligations = "Cite the dataset"
 fetch = { kind = "capture", url = "https://planetarycomputer.microsoft.com/api/stac/v1/search" }
 version = "date"
-refresh = 365
+keep = "store"
 redistribute = true
 
 [[source]]
@@ -828,7 +1010,7 @@ fetch = { kind = "capture", url = "https://catalogue.dataspace.copernicus.eu/oda
 extent = [-32, 26, 46, 72]
 hosts = ["eodata.dataspace.copernicus.eu"]
 version = "date"
-refresh = 365
+keep = "store"
 redistribute = true
 credential = { file = "~/.config/openbikecomputer/cdse-s3.env", register = "https://eodata-s3keysmanager.dataspace.copernicus.eu", hint = "Sign in with a free Copernicus Data Space account, add a credential, then copy its access key and secret key." }
 
@@ -844,6 +1026,7 @@ attribution = "Hansen/UMD/Google/USGS/NASA"
 fetch = { kind = "http", url = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{version}/Hansen_GFC-2023-{version}_treecover2000_{tile}.tif" }
 version = "release"
 start = "v1.11"
+keep = "archive"
 redistribute = true
 
 # ── TrailView ground and colour ─────────────────────────────────────────────
@@ -860,6 +1043,7 @@ attribution = "© ESA WorldCover project 2021 / Contains modified Copernicus Sen
 fetch = { kind = "http", url = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/{version}/2021/map/ESA_WorldCover_10m_2021_{version}_{tile}_Map.tif" }
 version = "release"
 start = "v200"
+keep = "archive"
 redistribute = true
 
 # The tiles of `esa-worldcover`: it has none over open sea.
@@ -875,6 +1059,7 @@ attribution = "© ESA WorldCover project 2021 / Contains modified Copernicus Sen
 fetch = { kind = "http", url = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/{version}/2021/esa_worldcover_grid.geojson" }
 version = "release"
 start = "v200"
+keep = "archive"
 redistribute = true
 
 # The CORINE Land Cover 2018 raster of Europe: the prepackaged GeoTIFF of the Copernicus Land
@@ -896,6 +1081,7 @@ hosts = ["copernicus-fme.eea.europa.eu"]
 extent = [-32, 27, 45, 72]
 version = "date"
 refresh = "manual"
+keep = "archive"
 redistribute = true
 credential = { file = "~/.config/openbikecomputer/clms-key.json", register = "https://land.copernicus.eu", hint = "Sign in, create a token under API Tokens in your profile, then save its JSON as this file with mode 0600." }
 
@@ -913,7 +1099,7 @@ obligations = "Credit the Copernicus Sentinel data and its year; state modificat
 fetch = { kind = "capture", url = "https://stac.dataspace.copernicus.eu/v1/collections/sentinel-2-global-mosaics/items" }
 hosts = ["eodata.dataspace.copernicus.eu"]
 version = "date"
-refresh = 365
+keep = "store"
 redistribute = true
 credential = { file = "~/.config/openbikecomputer/cdse-s3.env", register = "https://eodata-s3keysmanager.dataspace.copernicus.eu", hint = "Sign in with a free Copernicus Data Space account, add a credential, then copy its access key and secret key." }
 
@@ -930,6 +1116,7 @@ fetch = { kind = "http", url = "https://egeologija.si/download/GeologicUnitView.
 # The box of the polygons of the map, in whole degrees.
 extent = [-32, 27, 33, 72]
 version = "digest"
+keep = "archive"
 redistribute = true
 
 # The federal metadata record of IGME 5000 names the geodata ordinance GeoNutzV, with the source note
@@ -948,6 +1135,7 @@ fetch = { kind = "http", url = "https://download.bgr.de/bgr/Geologie/IGME5000/sh
 # The box of the polygons of the map, in whole degrees.
 extent = [-71, 21, 100, 81]
 version = "digest"
+keep = "archive"
 redistribute = true
 
 # The national maps of data/trailview/ground.json. Each box holds its map, in whole degrees.
@@ -962,10 +1150,11 @@ licence = "CC-BY-4.0"
 licence_url = "https://creativecommons.org/licenses/by/4.0/"
 attribution = "National Land Cover Map 2018 © Tailte Éireann and the Environmental Protection Agency"
 obligations = "Credit the source as the attribution says; state modifications"
-fetch = { kind = "capture", url = "https://services-eu1.arcgis.com/FH5XCsx8rYXqnjF5/arcgis/rest/services/MapGenieNationalLandCover2018ITM/FeatureServer/0" }
+fetch = { kind = "capture", url = "https://services-eu1.arcgis.com/FH5XCsx8rYXqnjF5/arcgis/rest/services/MapGenieNationalLandCover2018ITM/FeatureServer/replicafilescache/MapGenieNationalLandCover2018ITM_2196705754881737910.zip" }
 extent = [-11, 51, -5, 56]
 version = "date"
 refresh = "manual"
+keep = "archive"
 redistribute = true
 
 [[source]]
@@ -978,10 +1167,11 @@ licence = "OGL-UK-3.0"
 licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
 attribution = "Contains NatureScot information licensed under the Open Government Licence v3.0"
 obligations = "Credit the source as the attribution says"
-fetch = { kind = "capture", url = "https://ogc.nature.scot/geoserver/ows" }
+fetch = { kind = "capture", url = "https://gis-downloads.nature.scot/HABMOS-NVC-CLEANED_SCOTLAND_GPKG_27700.zip" }
 extent = [-10, 54, 0, 61]
 version = "date"
 refresh = "manual"
+keep = "archive"
 redistribute = true
 
 [[source]]
@@ -999,6 +1189,8 @@ fetch = { kind = "capture", url = "https://mapas.igme.es/gis/rest/services/Carto
 extent = [-10, 35, 5, 44]
 version = "date"
 refresh = "manual"
+# IGME gives the whole GEODE map only on request and against a fee, so the store keeps the captures.
+keep = "store"
 redistribute = true
 
 # The source of data/trailview/ecoregions.json; its borders are Natural Earth's.
@@ -1013,6 +1205,7 @@ licence_url = "https://ecoregions.appspot.com/"
 attribution = "Ecoregions 2017 © Resolve"
 fetch = { kind = "http", url = "https://storage.googleapis.com/teow2016/Ecoregions2017.zip" }
 version = "digest"
+keep = "archive"
 redistribute = true
 
 # ── Planner basemap ──────────────────────────────────────────────────────────
@@ -1029,6 +1222,7 @@ attribution = "Natural Earth"
 obligations = "none"
 fetch = { kind = "http", url = "https://naciscdn.org/naturalearth/packages/natural_earth_vector.gpkg.zip" }
 version = "digest"
+keep = "archive"
 redistribute = true
 
 [[source]]
@@ -1042,6 +1236,7 @@ licence_url = "https://daylightmap.org/2023/10/11/landcover.html"
 attribution = "ESA WorldCover"
 fetch = { kind = "http", url = "https://r2-public.protomaps.com/datasets/daylight-landcover.gpkg" }
 version = "digest"
+keep = "archive"
 redistribute = true
 
 [[source]]
@@ -1055,7 +1250,7 @@ licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
 obligations = "none"
 fetch = { kind = "http", url = "https://qrank.toolforge.org/download/qrank.csv.gz" }
 version = "date"
-refresh = 90
+keep = "archive"
 redistribute = true
 
 [[source]]
@@ -1069,6 +1264,7 @@ licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
 obligations = "none"
 fetch = { kind = "http", url = "https://wipfli.github.io/pgf-encoding/pgf-encoding.zip" }
 version = "digest"
+keep = "archive"
 redistribute = true
 
 # ── Assets that ship to users ────────────────────────────────────────────────
@@ -1087,6 +1283,7 @@ fetch = { kind = "github", url = "https://codeload.github.com/protomaps/basemaps
 hosts = ["api.github.com"]
 version = "commit"
 start = "028c18f713baecad011301ff7a69acc39bcc2ae7"
+keep = "archive"
 redistribute = true
 
 # The MIT notice of the Mapzen icons, which ships with the sprites of `protomaps-assets`.
@@ -1103,6 +1300,7 @@ fetch = { kind = "github", url = "https://raw.githubusercontent.com/tangrams/ico
 hosts = ["api.github.com"]
 version = "commit"
 start = "92510779634f4a006c61ea70e50cb8c52c765a81"
+keep = "archive"
 redistribute = true
 
 [[source]]
@@ -1117,6 +1315,7 @@ obligations = "Keep the MIT notice of mmBERT-small, the model it derives from"
 fetch = { kind = "http", url = "https://maps.openbikecomputer.com/assets/query-model/{version}/query-parser-v2-int8.tar.gz" }
 version = "release"
 start = "v2"
+keep = "prepared"
 redistribute = true
 
 # The night sky of TrailView: `tools/trailview/sky.py` makes the engine's files from these three.
@@ -1134,6 +1333,7 @@ fetch = { kind = "http", url = "https://svs.gsfc.nasa.gov/vis/a000000/a004800/a0
 version = "digest"
 start = "2eb802d6e68d170b410f766c7fec07f7518619f6b6708fdc81e9302d93e74fdb"
 refresh = "manual"
+keep = "archive"
 redistribute = true
 
 [[source]]
@@ -1150,6 +1350,7 @@ fetch = { kind = "http", url = "https://svs.gsfc.nasa.gov/vis/a000000/a004700/a0
 version = "digest"
 start = "b246064f217f8d479df78c49c7c8595a8f5fbda008a72fd539978d2e121e0109"
 refresh = "manual"
+keep = "archive"
 redistribute = true
 
 [[source]]
@@ -1166,6 +1367,7 @@ fetch = { kind = "http", url = "https://cdsarc.cds.unistra.fr/ftp/V/50/catalog.g
 version = "digest"
 start = "3dc44b1e90be8fbe5bcc7656032560f51275f985c7e3f783c9028e1838ec7bed"
 refresh = "manual"
+keep = "archive"
 redistribute = true
 
 # ── Tools: code that steps run; nothing of theirs ships ─────────────────────
@@ -1180,6 +1382,7 @@ licence = "Apache-2.0"
 licence_url = "https://github.com/onthegomap/planetiler"
 fetch = { kind = "installed" }
 version = "release"
+keep = "store"
 redistribute = false
 
 [[source]]
@@ -1194,6 +1397,7 @@ fetch = { kind = "github", url = "https://codeload.github.com/protomaps/basemaps
 hosts = ["api.github.com"]
 version = "commit"
 start = "42ffaaa4a85a41bfcb23e43cc0f5b492a5eca123"
+keep = "store"
 redistribute = false
 
 [[source]]
@@ -1209,4 +1413,5 @@ obligations = "Credit OpenStreetMap; keep the country grid under ODbL and countr
 fetch = { kind = "http", url = "https://files.pythonhosted.org/packages/fc/9e/3f6a9706fdf54241e3adfffcb80f6fdba6d439c7506564cdc0f1b91bc5aa/nominatim_db-{version}-py3-none-any.whl" }
 version = "release"
 start = "5.3.2"
+keep = "archive"
 redistribute = false

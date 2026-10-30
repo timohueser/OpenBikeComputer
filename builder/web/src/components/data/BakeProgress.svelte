@@ -87,7 +87,7 @@
         <b class={live ? "running" : view.state === "ok" ? "ready" : "missing"}>{headline}</b>
         <span class="grow"></span>
         <a href="#/runs/{run}">Log and details</a>
-        {#if live && !stopping}<button type="button" class="stop" onclick={() => (stopping = true)}>Stop…</button>{/if}
+        {#if live && !stopping}<button type="button" class="danger" onclick={() => (stopping = true)}>Stop…</button>{/if}
     </div>
 
     {#if live && stopping}
@@ -193,7 +193,6 @@
     }
     h3 {
         margin: 0 0 6px;
-        font-size: 15px;
     }
     .running-steps {
         margin: 0;
@@ -218,11 +217,8 @@
         flex-direction: column;
         gap: 8px;
         padding: 12px 16px;
-        border: 2px solid var(--missing);
+        background: color-mix(in srgb, var(--missing) 7%, var(--panel));
+        border: 1px solid color-mix(in srgb, var(--missing) 45%, transparent);
         border-radius: 8px;
-    }
-    .stop {
-        color: var(--missing);
-        border-color: var(--missing);
     }
 </style>

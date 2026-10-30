@@ -340,9 +340,9 @@ impl UiRuntime {
 
     /// The visible Assistant query owns the shared corridor scratch. Statistics use it only
     /// when no Assistant query is active. Rows are still read in prepare, never in draw.
-    pub(crate) fn reconcile_corridor(&mut self, scope: crate::corridor::UpAheadScope) {
+    pub(crate) fn reconcile_corridor(&mut self, filter: obc_reader::PoiCategorySet) {
         if self.stack.iter().any(|s| matches!(s, Screen::WhatsNext(_))) {
-            if let Some(key) = self.ahead.request(scope) {
+            if let Some(key) = self.ahead.request(filter) {
                 self.corridor_scratch.arm(key);
             } else {
                 self.corridor_scratch.disarm();
@@ -365,7 +365,7 @@ impl UiRuntime {
     pub(crate) fn reconcile_next_ahead(
         &mut self,
         settings: &Settings,
-        scope: crate::corridor::UpAheadScope,
+        filter: obc_reader::PoiCategorySet,
         active_route: Option<crate::CatalogObjectId>,
         progress_m: u32,
     ) {
@@ -376,7 +376,7 @@ impl UiRuntime {
             }
         }
         self.next_ahead.reconcile(placed, self.stats_grid_shown(), active_route, progress_m);
-        self.reconcile_corridor(scope);
+        self.reconcile_corridor(filter);
     }
 
     /// Whether the Statistics screen, the only place a `Next: <category>` tile draws, is the base

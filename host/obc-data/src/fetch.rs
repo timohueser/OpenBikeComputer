@@ -1,6 +1,7 @@
 //! Fetchers: the only code that uses the network. A fetch puts the files of one source version in
 //! the store and records them in the snapshot of that version.
 
+pub mod archive;
 pub mod capture;
 pub mod http;
 pub mod osm;
@@ -12,6 +13,7 @@ pub use tools::basemap_jar;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use self::archive::Archive;
 use self::http::{Expect, Http};
 use crate::date;
 use crate::sources::{FetchKind, Registry, Source, VersionScheme, WIKI_INPUTS};
@@ -76,14 +78,23 @@ fn fetch_files(
         FetchKind::Capture if WIKI_INPUTS.contains(&source.id.as_str()) => {
             Err(format!("source `{}` is read through `wiki`", source.id))
         }
-        FetchKind::Capture => capture::run(root, store, request),
+        FetchKind::Capture => capture::run(root, store, http.archive(source), request),
         FetchKind::Dtm | FetchKind::ByHand => Err(format!(
             "source `{}`: a person downloads it from {}",
             source.id,
             source.fetch.url.as_deref().unwrap_or_default()
         )),
         FetchKind::Installed => Err(format!("source `{}` is installed, not fetched", source.id)),
-        FetchKind::Prepared => crate::prepared::fetch(root, store, request, names),
+        // A plan names a file that it reads as the param `file`.
+        FetchKind::Prepared => {
+            let files = request.params.iter().filter(|(name, _)| name == "file").map(|(_, path)| path.clone());
+            crate::prepared::fetch(
+                http.roots(),
+                store,
+                request,
+                &names.iter().cloned().chain(files).collect::<Vec<_>>(),
+            )
+        }
     }
 }
 
@@ -156,7 +167,7 @@ impl From<LiveError> for String {
 fn newest_stored(store: &Store, source: &str, params: &[(String, String)]) -> Result<Option<Snapshot>, String> {
     let mut found: Vec<Snapshot> = Vec::new();
     if params.is_empty() {
-        found.extend(store.snapshots(source)?);
+        found.extend(store.paramless_snapshots(source)?);
     } else {
         for request in store.requests(source, params)? {
             let Some(mut snapshot) = store.snapshot(source, &request.version)? else { continue };
@@ -217,14 +228,20 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
     if source.version == VersionScheme::Digest && urls.len() > 1 {
         return Err(format!("source `{}`: a digest version names one file", source.id));
     }
+    // A refresh asks upstream for its newest version.
+    let archive = http.archive(source).filter(|_| !request.refresh);
     // The day of the newest file names a date version, so a file already in the store needs no download.
     let version = match &request.version {
         None if source.version == VersionScheme::Date => {
             // One retry, as a HEAD is cheap and a failure stops the whole fetch.
             let days: Result<Vec<_>, _> = urls
                 .iter()
-                .map(|url| {
-                    http.modified(url).or_else(|e| if http::not_found(&e) { Err(e) } else { http.modified(url) })
+                .map(|url| match archive.and_then(|archive| archive.find(url)).and_then(|held| held.day) {
+                    Some(day) => Ok(Some(day)),
+                    None => {
+                        let modified = |url| http.head(url).map(|head| head.modified);
+                        modified(url).or_else(|e| if http::not_found(&e) { Err(e) } else { modified(url) })
+                    }
                 })
                 .collect();
             Some(
@@ -240,17 +257,20 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
     let modified_by = version.as_deref().filter(|_| source.version == VersionScheme::Date && !named);
     let files = urls
         .iter()
-        .map(|url| get(store, http, source, version.as_deref(), url, only_a_name, modified_by))
+        .map(|url| get(store, http, archive, source, version.as_deref(), url, only_a_name, modified_by))
         .collect::<Result<Vec<_>, _>>()?;
     let version = version.unwrap_or_else(|| files[0].sha256.clone());
     Ok(Snapshot { source: source.id.clone(), version, files })
 }
 
 /// The file at `url` of `version`: from the store when the record of the version has it, or else
-/// downloaded and added to that record. `pinned_only` refuses a file that no record pins.
+/// from the `archive` when it holds that version, or else downloaded; then added to that record.
+/// `pinned_only` refuses a file that no record pins.
+#[allow(clippy::too_many_arguments)]
 fn get(
     store: &Store,
     http: &Http,
+    archive: Option<&Archive>,
     source: &Source,
     version: Option<&str>,
     url: &str,
@@ -279,14 +299,27 @@ fn get(
         modified_by,
         ..Expect::default()
     };
-    eprintln!("obc data: fetching {url}");
-    let got = http.download(store, url, &expect)?;
+    let archived = match archive.and_then(|archive| archive.find(url)) {
+        Some(held) => held.import(store, url, &expect)?.map(|got| (got, held.path)),
+        None => None,
+    };
+    let (got, archive) = match archived {
+        Some((got, path)) => {
+            eprintln!("obc data: took {url} from the archive");
+            (got, Some(path))
+        }
+        None => {
+            eprintln!("obc data: fetching {url}");
+            (http.download(store, url, &expect)?, None)
+        }
+    };
     let file = FileRecord {
         name: file_name(source, version, url),
         url: url.to_string(),
         size: got.size,
         sha256: got.sha256,
         retrieved: date::timestamp(date::now()),
+        archive,
     };
     record(store, &source.id, version.unwrap_or(&file.sha256), std::slice::from_ref(&file))?;
     Ok(file)
@@ -409,7 +442,11 @@ pub(crate) fn params(source: &Source) -> Vec<&str> {
 
 /// The URLs of `template` with every `{name}` filled: `{version}` from the version, `{yymmdd}`
 /// from a date version, every other name from `params`.
-fn expand(template: &str, version: Option<&str>, params: &[(String, String)]) -> Result<Vec<String>, String> {
+pub(crate) fn expand(
+    template: &str,
+    version: Option<&str>,
+    params: &[(String, String)],
+) -> Result<Vec<String>, String> {
     let names = placeholders(template);
     if let Some((name, _)) = params.iter().find(|(name, _)| fixed(name) || !names.contains(&name.as_str())) {
         return Err(format!("`{name}=` names no placeholder of {template}"));
@@ -456,7 +493,7 @@ pub(crate) mod tests {
     /// `Content-Length` that may promise more than it sends.
     pub(crate) struct Reply {
         status: u16,
-        headers: Vec<(&'static str, String)>,
+        pub(crate) headers: Vec<(&'static str, String)>,
         body: Vec<u8>,
         length: usize,
     }
@@ -511,7 +548,7 @@ pub(crate) mod tests {
     pub(crate) fn source(url: &str, version: &str) -> Source {
         let text = format!(
             "[[source]]\nid = \"land\"\nkind = \"data\"\nfetch = {{ kind = \"http\", url = \"https://example.org/x\" }}\n\
-             version = \"{version}\"\nrefresh = \"manual\"\nredistribute = true\n"
+             version = \"{version}\"\nrefresh = \"manual\"\nkeep = \"store\"\nredistribute = true\n"
         );
         let mut source = parse_sources(&text).unwrap().remove(0);
         source.fetch.url = Some(url.to_string());
@@ -832,6 +869,7 @@ pub(crate) mod tests {
             size: 1,
             sha256: sha256.into(),
             retrieved: String::new(),
+            archive: None,
         };
         record(&store, "land", "v1", &[file("https://h/1/a.tif", "aa")]).unwrap();
         let err = record(&store, "land", "v1", &[file("https://h/2/a.tif", "aa")]).unwrap_err();
@@ -903,10 +941,12 @@ pub(crate) mod tests {
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/x", closed.local_addr().unwrap());
         drop(closed);
-        assert!(http::unreachable(&quick().modified(&url).unwrap_err()));
+        assert!(http::unreachable(&quick().head(&url).unwrap_err()));
         let (url, _) = serve(|_, _| Reply { status: 500, headers: vec![], body: vec![], length: 0 });
-        let error = quick().modified(&url).unwrap_err();
+        let error = quick().head(&url).unwrap_err();
         assert!(!http::unreachable(&error) && !http::not_found(&error), "{error}");
+        assert!(http::outage(&error), "a server error is an outage: {error}");
+        assert!(!http::outage("GET https://h/x: HTTP 403") && !http::outage("partial/x: No space left on device"));
     }
 
     /// The dated file of the newest day can come after its `state.txt`. Offline, the newest stored
@@ -947,6 +987,7 @@ pub(crate) mod tests {
             size: 1,
             sha256: sha256_hex(b"other"),
             retrieved: date::timestamp(date::now()),
+            archive: None,
         };
         let held = Snapshot { source: "sea".into(), version: version.clone(), files: vec![old] };
         store.put_snapshot(&held).unwrap();
@@ -958,6 +999,7 @@ pub(crate) mod tests {
             &[&land, &sea],
             |_| &[0, 1],
             false,
+            None,
             |_, out| {
                 let mut command = std::process::Command::new("sh");
                 command.args(["-c", "echo r > \"$1/recipe.json\"", "sh"]).arg(out);
@@ -988,7 +1030,7 @@ pub(crate) mod tests {
         };
         let today = Request { refresh: false, source: &land, version: None, params: vec![] };
         let run = |request: &Request, script: &'static str| {
-            capture::capture(&store, request, "q=1", &sources, owner, false, move |work, out| {
+            capture::capture(&store, request, "q=1", &sources, owner, false, None, move |work, out| {
                 let mut command = std::process::Command::new("sh");
                 command.args(["-c", script, "sh"]).arg(work).arg(out);
                 Ok(command)
@@ -1026,7 +1068,7 @@ pub(crate) mod tests {
         let boxed =
             Request { refresh: false, source: &land, version: None, params: vec![("bbox".into(), "1,2,3,4".into())] };
         let nothing = |request: &Request, empty| {
-            capture::capture(&store, request, "q=2", &sources, owner, empty, |_, _| {
+            capture::capture(&store, request, "q=2", &sources, owner, empty, None, |_, _| {
                 Ok(std::process::Command::new("true"))
             })
         };
@@ -1039,20 +1081,28 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_ground_capture_refuses_a_digest_that_its_entry_lacks() {
+    fn a_ground_capture_refuses_a_digest_that_its_entry_lacks_and_an_archived_map_that_the_archive_lacks() {
         let scratch = Scratch::new("ground-digest");
         let store = Store::at(scratch.0.join("store"));
         let root = scratch.0.join("repository");
-        let mut map = located(FetchKind::Capture, "https://example.org/wfs");
+        let mut map = located(FetchKind::Capture, "https://example.org/map.zip");
         map.id = "map".into();
-        let entry = r#"{"source": "map", "protocol": "wfs", "layer": "a", "field": "F", "sort": "id"}"#;
+        let entry = r#"{"source": "map", "protocol": "archive-features", "layer": "a", "field": "F"}"#;
         std::fs::create_dir_all(root.join("data/trailview")).unwrap();
         let ground = format!(r#"{{"material": {{"sources": [{entry}]}}, "lithology": {{"sources": []}}}}"#);
         std::fs::write(root.join("data/trailview/ground.json"), ground).unwrap();
-        let params = vec![("bbox".into(), "7,46,8,47".into()), ("ground".into(), "000000000000".into())];
-        let request = Request { refresh: false, source: &map, version: None, params };
-        let err = capture::run(&root, &store, &request).unwrap_err();
+        let request = |digest: &str| {
+            let params = vec![("bbox".into(), "7,46,8,47".into()), ("ground".into(), digest.into())];
+            Request { refresh: false, source: &map, version: None, params }
+        };
+        let err = capture::run(&root, &store, None, &request("000000000000")).unwrap_err();
         assert!(err.contains("is not the digest of its entry"), "{err}");
+        let digest = crate::ground::Ground::load(&root).unwrap().entry("map").unwrap().capture_digest();
+        let archive = Archive::new(vec![scratch.0.join("archive")]);
+        for archive in [None, Some(&archive)] {
+            let err = capture::run(&root, &store, archive, &request(&digest)).unwrap_err();
+            assert!(err.contains("reads https://example.org/map.zip from the archive"), "{err}");
+        }
     }
 
     #[cfg(unix)]
@@ -1070,6 +1120,7 @@ pub(crate) mod tests {
                 &[&model],
                 |_| &[0],
                 true,
+                None,
                 |work, out| {
                     let mut command = std::process::Command::new("sh");
                     command.args(["-c", script, "sh"]).arg(work).arg(out);
@@ -1093,26 +1144,170 @@ pub(crate) mod tests {
     fn a_capture_names_its_parameters_and_its_missing_credential() {
         let scratch = Scratch::new("credential");
         let store = Store::at(&scratch.0);
-        let mut era5 = located(FetchKind::Capture, "https://example.org/era5");
-        era5.id = "era5-land".into();
-        era5.credential =
+        let mut mosaics = located(FetchKind::Capture, "https://example.org/mosaics");
+        mosaics.id = "sentinel-2-mosaics".into();
+        mosaics.credential =
             Some(crate::sources::Credential { file: Some("~/.obc-test-no-such-key".into()), ..Default::default() });
         let params = |pairs: &[(&str, &str)]| pairs.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
-        let request = |params| Request { refresh: false, source: &era5, version: None, params };
+        let request = |params| Request { refresh: false, source: &mosaics, version: None, params };
         let err =
             fetch(&tooling_root(), &store, &quick(), &request(params(&[("bbox", "7.6,47.9,8.0,48.1")]))).unwrap_err();
-        assert!(err.contains("takes bbox=… first-year=…"), "{err}");
-        let err = fetch(
-            &tooling_root(),
-            &store,
-            &quick(),
-            &request(params(&[("bbox", "8,48,7,49"), ("first-year", "2015")])),
-        )
-        .unwrap_err();
+        assert!(err.contains("takes bbox=… year=…"), "{err}");
+        let err =
+            fetch(&tooling_root(), &store, &quick(), &request(params(&[("bbox", "8,48,7,49"), ("year", "2015")])))
+                .unwrap_err();
         assert!(err.contains("west < east"), "{err}");
-        let good = params(&[("first-year", "2015"), ("bbox", "7.6,47.9,8.0,48.1")]);
+        let good = params(&[("year", "2015"), ("bbox", "7.6,47.9,8.0,48.1")]);
         let err = fetch(&tooling_root(), &store, &quick(), &request(good)).unwrap_err();
         assert!(err.contains("blocked: credential missing: ~/.obc-test-no-such-key"), "{err}");
+    }
+
+    /// An archive under `root` with `files` at their paths, listed in one manifest with `extra` keys,
+    /// each file with the `modified` day `day` unless it is empty.
+    fn archive(root: &Path, files: &[(&str, &[u8])], extra: &str, day: &str) {
+        let listed: Vec<String> = files
+            .iter()
+            .map(|(path, bytes)| {
+                std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+                std::fs::write(root.join(path), bytes).unwrap();
+                let modified = if day.is_empty() { String::new() } else { format!(r#", "modified": "{day}""#) };
+                format!(
+                    r#"{{"path": "{path}", "bytes": {}, "sha256": "{}"{modified}}}"#,
+                    bytes.len(),
+                    sha256_hex(bytes)
+                )
+            })
+            .collect();
+        std::fs::create_dir_all(root.join("manifest")).unwrap();
+        let manifest = format!(r#"{{{extra}"files": [{}]}}"#, listed.join(", "));
+        std::fs::write(root.join("manifest/dataset.json"), manifest).unwrap();
+    }
+
+    #[test]
+    fn the_archive_serves_a_kept_source_before_upstream() {
+        let scratch = Scratch::new("archive-serves");
+        let store = Store::at(scratch.0.join("store"));
+        let (actual, log) = serve(|_, _| not_found());
+        let url = actual.replacen("http://", "https://", 1);
+        let path = format!("mirror/{}", url.strip_prefix("https://").unwrap());
+        let root = scratch.0.join("archive");
+        archive(&root, &[(&path, b"land")], r#""version": "2026-10-28", "#, "2026-10-05");
+        std::fs::write(root.join("manifest/broken.json"), "{").unwrap();
+        let mut land = source(&url, "date");
+        let http = || Http::loopback(&actual).with_archive(&root);
+        fn request(source: &Source) -> Request<'_> {
+            Request { refresh: false, source, version: None, params: vec![] }
+        }
+
+        let err = fetch(&tooling_root(), &store, &http(), &request(&land)).unwrap_err();
+        assert!(err.ends_with("HTTP 404"), "only a source with `keep = \"archive\"` reads the archive: {err}");
+        land.keep = crate::sources::Keep::Archive;
+        let refresh = Request { refresh: true, ..request(&land) };
+        let err = fetch(&tooling_root(), &store, &http(), &refresh).unwrap_err();
+        assert!(err.ends_with("HTTP 404"), "a refresh asks upstream: {err}");
+        // A part that an older build linked to the archive file.
+        let part = store.partial(&format!("{}.archive", http::key(&url)));
+        std::fs::create_dir_all(part.parent().unwrap()).unwrap();
+        std::fs::hard_link(root.join(&path), &part).unwrap();
+        let before = log.lock().unwrap().len();
+        let snapshot = fetch(&tooling_root(), &store, &http(), &request(&land)).unwrap();
+        assert_eq!(std::fs::read(root.join(&path)).unwrap(), b"land", "the copy leaves the archive file whole");
+        assert_eq!(log.lock().unwrap().len(), before, "upstream is not asked, and a bad manifest only warns");
+        assert_eq!(snapshot.version, "2026-10-05", "the day of the archived file");
+        let file = &snapshot.files[0];
+        assert_eq!((file.url.as_str(), file.archive.as_deref()), (url.as_str(), Some(path.as_str())));
+        assert_eq!(std::fs::read(store.object(&file.sha256)).unwrap(), b"land");
+        assert!(!std::fs::metadata(root.join(&path)).unwrap().permissions().readonly(), "a copy, not a link");
+
+        std::fs::write(root.join(&path), b"lane").unwrap();
+        let err = fetch(&tooling_root(), &Store::at(scratch.0.join("other")), &http(), &request(&land)).unwrap_err();
+        assert!(archive::mismatch(&err), "{err}");
+        let stored = Request { version: Some("2026-10-05".into()), ..request(&land) };
+        fetch(&tooling_root(), &store, &http(), &stored).expect("the store serves before the archive");
+        std::fs::write(root.join(&path), b"longer").unwrap();
+        let err = fetch(&tooling_root(), &Store::at(scratch.0.join("third")), &http(), &request(&land)).unwrap_err();
+        assert!(err.ends_with("HTTP 404"), "a file of another size only warns: {err}");
+    }
+
+    #[test]
+    fn an_archive_file_of_another_version_is_not_served() {
+        let scratch = Scratch::new("archive-version");
+        let (actual, _) = serve(|_, _| whole(b"upstream"));
+        let url = actual.replacen("http://", "https://", 1);
+        let path = format!("mirror/{}", url.strip_prefix("https://").unwrap());
+        let root = scratch.0.join("archive");
+        archive(&root, &[(&path, b"land")], r#""version": "2026-10-20", "#, "");
+        let http = Http::loopback(&actual).with_archive(&root);
+        for (version, scheme) in [("2026-10-10".to_string(), "date"), (sha256_hex(b"upstream"), "digest")] {
+            let mut land = source(&url, scheme);
+            land.keep = crate::sources::Keep::Archive;
+            let request = Request { refresh: false, source: &land, version: Some(version), params: vec![] };
+            let store = Store::at(scratch.0.join(scheme));
+            let file = fetch(&tooling_root(), &store, &http, &request).unwrap().files.remove(0);
+            assert_eq!(file.archive, None, "{scheme}: newer than the version, or other bytes");
+            assert_eq!(std::fs::read(store.object(&file.sha256)).unwrap(), b"upstream");
+        }
+    }
+
+    #[test]
+    fn a_corine_capture_takes_the_archived_zip_without_the_key() {
+        let scratch = Scratch::new("archive-corine");
+        let root = scratch.0.join("archive");
+        let zip = scratch.0.join("clc.zip");
+        let python = crate::engine::python_executable(&tooling_root()).unwrap();
+        let made = std::process::Command::new(python)
+            .args(["-I", "-c", "import sys, zipfile; zipfile.ZipFile(sys.argv[1], 'w').writestr('clc/DATA/U2018_CLC2018_V2020_20u1.tif', b'raster')"])
+            .arg(&zip)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let path = "mirror/land.copernicus.eu/api/en/products/corine-land-cover/clc2018/clc.zip";
+        let ids = r#""version": "2026-10-28", "clms_dataset_uid": "0407d497d3c44bcd93ce8fd5bf78596a", "clms_file_id": "3d9e2413-46ca-4f6e-abf8-b6eb429a4e48", "#;
+        archive(&root, &[(path, &std::fs::read(&zip).unwrap())], ids, "");
+        let mut corine = crate::sources::embedded("corine-land-cover").clone();
+        corine.credential =
+            Some(crate::sources::Credential { file: Some("~/.obc-test-no-such-key".into()), ..Default::default() });
+        let request = Request { refresh: false, source: &corine, version: None, params: vec![] };
+        let store = Store::at(scratch.0.join("store"));
+        // A capture of a box, from before the source lost its params.
+        let boxed = vec![("bbox".to_string(), "8.6,46.85,8.67,46.9".to_string())];
+        let tile = sha256_hex(b"tile");
+        let old = FileRecord {
+            name: "#bbox/a.png".into(),
+            url: "https://example.org/#bbox/a.png".into(),
+            size: 4,
+            sha256: tile,
+            retrieved: String::new(),
+            archive: None,
+        };
+        store
+            .put_snapshot(&Snapshot { source: corine.id.clone(), version: "2026-10-25".into(), files: vec![old] })
+            .unwrap();
+        store
+            .put_requested(
+                &corine.id,
+                &Requested { version: "2026-10-25".into(), params: boxed.clone(), files: vec!["#bbox/a.png".into()] },
+            )
+            .unwrap();
+        let mut inputs = crate::product::Inputs::default();
+        inputs.serving.insert((corine.id.clone(), boxed), "2026-10-25".into());
+        let version = crate::product::version(&inputs, &store, &corine.id, &[]).unwrap();
+        assert_eq!(version.map_err(|wanted| wanted.version), Err(None), "a box never serves a request without params");
+
+        let err = fetch(&tooling_root(), &store, &quick(), &request).unwrap_err();
+        assert!(err.contains("credential missing"), "{err}");
+        let snapshot = fetch(&tooling_root(), &store, &quick().with_archive(&root), &request).unwrap();
+        let file = &snapshot.files[0];
+        assert!(file.url.ends_with("/U2018_CLC2018_V2020_20u1.tif"), "{}", file.url);
+        assert_eq!(file.archive.as_deref(), Some(path));
+        assert_eq!(std::fs::read(store.object(&file.sha256)).unwrap(), b"raster");
+
+        let mut bytes = std::fs::read(root.join(path)).unwrap();
+        bytes[0] ^= 1;
+        std::fs::write(root.join(path), bytes).unwrap();
+        let other = Store::at(scratch.0.join("other"));
+        let err = fetch(&tooling_root(), &other, &quick().with_archive(&root), &request).unwrap_err();
+        assert!(archive::mismatch(&err), "{err}");
     }
 
     fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {

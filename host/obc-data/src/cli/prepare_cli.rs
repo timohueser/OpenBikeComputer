@@ -1,10 +1,10 @@
-//! `obc data source prepare ID`: make a version of a prepared source and publish it to a target, as
-//! [`crate::prepared`] says. It reviews the work, holds the lock of the source on the target, runs
-//! detached, uploads each file once it is finished and writes the manifest last. The same command
+//! `obc data source prepare ID`: make a version of a prepared source in its home in the archive, as
+//! [`crate::prepared`] says. It reviews the work, holds the lock of the source, runs detached, moves
+//! each file into the home once it is finished and writes the manifest last. The same command
 //! resumes a run that stopped.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::Args;
@@ -16,7 +16,7 @@ use super::{print_json, print_table, Code, Error};
 use crate::engine::runs::{self, Event, Phase, Run};
 use crate::fetch::http::Http;
 use crate::lock::Held;
-use crate::prepared::{self, Job, Manifest, Opening, Prepared, Scope, PROD};
+use crate::prepared::{self, Job, Manifest, Opening, Prepared, Scope};
 use crate::settings::Settings;
 use crate::sources::{FetchKind, Registry, Source};
 use crate::store::{sha256_hex, Store};
@@ -26,33 +26,28 @@ use crate::target::Target;
 pub struct PrepareArgs {
     /// The prepared source, as `data/sources.toml` names it.
     id: String,
-    /// Only a region of `data/regions/`, or Geofabrik paths joined by `,`. For `prod`, only `wiki`, `terrain` and `forest` take a region.
+    /// Only a region of `data/regions/`, or Geofabrik paths joined by `,`.
     #[arg(long, conflicts_with = "bbox")]
     region: Option<String>,
-    /// Only a box: west,south,east,north in degrees. For `prod`, only `wiki`, `terrain` and `forest` take a region.
+    /// Only a box: west,south,east,north in degrees.
     #[arg(long = "box", allow_hyphen_values = true)]
     bbox: Option<String>,
     /// Wiki article languages, joined by commas; all supported languages by default.
     #[arg(long, value_delimiter = ',', num_args = 1)]
     languages: Vec<String>,
-    /// The target that gets the version.
-    #[arg(long, default_value = PROD)]
-    to: String,
     /// Show the review, and change nothing.
     #[arg(long)]
     dry_run: bool,
     /// Start only when the review has this id, as `--dry-run` showed it.
     #[arg(long, value_name = "ID", conflicts_with = "dry_run")]
     expect: Option<String>,
-    /// Do not ask before a prepare for an R2 target. Required without a terminal.
-    #[arg(long)]
-    yes: bool,
 }
 
-/// What a prepare reads besides its target and its run.
+/// What a prepare reads besides its run.
 pub(super) struct Context<'a> {
     pub root: &'a Path,
     pub store: &'a Store,
+    /// Its archive holds the home of each prepared source.
     pub http: &'a Http,
     pub prepared: &'a [&'a dyn Prepared],
 }
@@ -71,18 +66,20 @@ pub(super) struct Asked<'a> {
 /// they are the ones that a person read.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct PrepareReview {
-    /// The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the
+    /// The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the root, the
     /// version, the format, the revision, the scope, the languages, `publish_text` and each planned
     /// input, including archive paths, URLs, sizes and object identities.
     pub id: String,
     pub source: String,
-    pub target: String,
-    /// The version that the run makes: the UTC date when its first run started.
+    /// The archive root of the home of the source.
+    pub root: PathBuf,
+    /// The version that the run makes: the UTC date when its first run started, with `.2`, `.3`
+    /// and so on after the first version of that day.
     pub version: String,
     /// The version that a stopped run of this machine started and that this run does not resume:
-    /// the target has a newer complete version. `null` when there is none.
+    /// the home has a newer complete version. `null` when there is none.
     pub abandoned: Option<String>,
-    /// Whether the manifest of the version is on the target and names the files of the journal: the
+    /// Whether the manifest of the version is in the home and names the files of the journal: the
     /// run only lists the version, and makes and writes nothing else.
     pub listing: bool,
     pub format: u32,
@@ -96,7 +93,8 @@ pub struct PrepareReview {
     /// Whether the version publishes its article text: `publish_text` of the source; `null` for a
     /// source without text.
     pub publish_text: Option<bool>,
-    /// The files that earlier runs of the version uploaded: this run does not upload them again.
+    /// The files that earlier runs of the version moved into the home: this run does not make them
+    /// again.
     pub done: Downloads,
     pub cost: PreparedCost,
     pub machine: MachineCheck,
@@ -119,14 +117,15 @@ pub struct PreparedInput {
     pub download_bytes: Option<u64>,
 }
 
-/// Estimates from the newest version that the target lists; `null` without one.
+/// Estimates from the newest version in the home; `null` without one.
 #[derive(Debug, Default, Serialize, JsonSchema)]
 pub struct PreparedCost {
     pub wall_ms: Option<u64>,
     pub peak_rss_bytes: Option<u64>,
-    /// What goes into the store: the inputs that it lacks, and the files of the version.
+    /// What goes into the store: the inputs that it lacks.
     pub store_bytes: u64,
-    pub upload_bytes: Option<u64>,
+    /// What goes into the archive: the files of the version that earlier runs did not move.
+    pub archive_bytes: Option<u64>,
     /// The inputs whose size the store does not know, as `SOURCE@VERSION`.
     pub unknown: Vec<String>,
 }
@@ -144,18 +143,17 @@ pub struct StaleReaders {
 pub struct Done {
     pub source: String,
     pub version: String,
-    pub target: String,
+    /// The archive root of the home.
+    pub root: PathBuf,
     pub files: usize,
     pub bytes: u64,
-    /// The files that this run uploaded.
+    /// The files that this run moved into the home.
     pub uploaded: u64,
     pub manifest_sha256: String,
 }
 
 pub fn command(root: &Path, prepared: &[&dyn Prepared], args: PrepareArgs, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
-    let target = crate::target::find(root, &args.to, &store).map_err(|e| Code::Usage.error(e))?;
-    super::api::writable(&args.to, &target, true)?;
     let (http, today) = (Http::new(), crate::date::format(crate::date::today()));
     let context = Context { root, store: &store, http: &http, prepared };
     let asked = Asked {
@@ -166,10 +164,10 @@ pub fn command(root: &Path, prepared: &[&dyn Prepared], args: PrepareArgs, json:
     };
     let print = |done: &Done| {
         println!(
-            "{}@{} on {}: {} files, {}, manifest {}; this run uploaded {}",
+            "{}@{} in {}: {} files, {}, manifest {}; this run moved {}",
             done.source,
             done.version,
-            done.target,
+            done.root.display(),
             done.files,
             runs::bytes(done.bytes),
             &done.manifest_sha256[..12],
@@ -177,12 +175,13 @@ pub fn command(root: &Path, prepared: &[&dyn Prepared], args: PrepareArgs, json:
         );
         Ok(())
     };
-    let work = |run: &mut Run| prepare(&context, (&args.to, &target), &asked, &today, run);
+    let work = |run: &mut Run| prepare(&context, &asked, &today, run);
     if let Some(done) = super::api::detached(&store, work, print) {
         return done;
     }
-    let mut review = plan(&context, (&args.to, &target), &asked, &today)?.review;
-    review.args = ["source", "prepare", &args.id, "--to", &args.to].map(String::from).into();
+    prepared::warn_shadowed(http.roots(), &args.id);
+    let mut review = plan(&context, &home(&http, &args.id)?, &asked, &today)?.review;
+    review.args = ["source", "prepare", &args.id].map(String::from).into();
     args.region.iter().for_each(|region| review.args.extend(["--region".into(), region.clone()]));
     args.bbox.iter().for_each(|bbox| review.args.extend(["--box".into(), bbox.clone()]));
     if !review.languages.is_empty() {
@@ -193,11 +192,16 @@ pub fn command(root: &Path, prepared: &[&dyn Prepared], args: PrepareArgs, json:
         return print_review(&review, json);
     }
     check(&review, asked.expect)?;
-    let what = format!("a prepare for `{}`", args.to);
-    let dry_run = format!("obc data source prepare {} --to {} --dry-run`", args.id, args.to);
-    let question = format!("Publish {}@{} to `{}`", review.source, review.version, args.to);
-    super::api::approved(&target, (asked.expect.is_some(), args.yes), (&what, &dry_run, &question))?;
     super::api::start(&store, &review.args, Some(&review.id), json)
+}
+
+/// The archive root of the home of `id` in the archive of `http`, as [`prepared::place`] chooses it.
+pub(super) fn home(http: &Http, id: &str) -> Result<PathBuf, Error> {
+    prepared::place(http.roots(), id).map_err(|e| {
+        Code::Blocked
+            .error(format!("`{id}`: {e}; nothing changed"))
+            .fix("Set OBC_DATA_ARCHIVE to the roots of the archive, separated by `:`, and mount their drives.")
+    })
 }
 
 /// What a prepare decides before it changes anything.
@@ -212,13 +216,9 @@ struct Planned<'a> {
     made: prepared::Plan,
 }
 
-/// Find the producer of the source, its version and its scope, and review the work.
-fn plan<'a>(
-    context: &Context<'a>,
-    (name, target): (&str, &Target),
-    asked: &Asked,
-    today: &str,
-) -> Result<Planned<'a>, Error> {
+/// Find the producer of the source, its version and its scope, and review the work in the home in
+/// the archive root `home`.
+fn plan<'a>(context: &Context<'a>, home: &Path, asked: &Asked, today: &str) -> Result<Planned<'a>, Error> {
     let Context { root, store, .. } = *context;
     let id = asked.id;
     let sources = Registry::load(root).map_err(|e| Code::InvalidData.error(e))?.sources;
@@ -238,45 +238,36 @@ fn plan<'a>(
     update_cli::select(root, asked.scope, &mut settings)?;
     let scope = (!settings.region.is_empty())
         .then(|| Scope { region: settings.region.clone(), definitions: settings.definitions.clone() });
-    if scope.is_some() && name == PROD && !producer.regional() {
-        return Err(Code::Usage
-            .error(format!(
-                "a version of a region or a box is not for `{PROD}`, whose versions every target reads; nothing changed"
-            ))
-            .fix(format!(
-                "Prepare the region for another target, such as `--to local`, or all of `{id}` for `{PROD}`."
-            )));
-    }
     let languages = producer.languages(asked.languages).map_err(|e| Code::Usage.error(e))?;
-    let listed = prepared::versions(target, id)?;
-    let newest = listed.iter().map(|listed| listed.version.as_str()).max();
-    // A run never writes a key of a complete version. When the manifest of a stopped version is
+    let folder = prepared::folder(home, id);
+    let listed = prepared::versions(&folder, id)?;
+    uncopied(root, store, &folder, id)?;
+    let newest = listed.iter().filter_map(|listed| prepared::order(&listed.version)).max();
+    // A run never writes a file of a complete version. When the manifest of a stopped version is
     // the one of its journal, that run crashed before it listed the version: this run lists it.
-    let started = prepared::started(store, name, id)?;
-    let journaled = started.as_ref().map_or(Vec::new(), |started| prepared::journaled(store, name, id, started));
-    let kept = started.as_ref().map(|started| prepared::manifest(target, id, started)).transpose()?.flatten();
+    let started = prepared::started(store, id)?;
+    let journaled = started.as_ref().map_or(Vec::new(), |started| prepared::journaled(store, id, started));
+    let kept = started.as_ref().map(|started| prepared::manifest(&folder, id, started)).transpose()?.flatten();
     let (resumed, abandoned) = match started {
         Some(started) if kept.as_ref().is_some_and(|kept| kept.files == journaled) => (Some(started), None),
-        Some(started) if kept.is_some() || newest.is_some_and(|newest| newest >= started.as_str()) => {
+        Some(started) if kept.is_some() || newest.is_some_and(|newest| Some(newest) >= prepared::order(&started)) => {
             (None, Some(started))
         }
         started => (started, None),
     };
     let listing = kept.is_some() && abandoned.is_none();
     let fresh = resumed.is_none();
-    let version = resumed.unwrap_or_else(|| today.to_string());
-    if fresh && prepared::manifest(target, id, &version)?.is_some() {
-        return Err(Code::Usage
-            .error(format!("{id}@{version} is complete on `{name}`; nothing changed"))
-            .fix("The next version starts on the next day, by UTC."));
-    }
-    let plan_path = prepared::job_dir(store, name, id, &version).join("state/plan.json");
+    let version = match resumed {
+        Some(resumed) => resumed,
+        None => prepared::next(&folder, id, today, &listed)?,
+    };
+    let plan_path = prepared::job_dir(store, id, &version).join("state/plan.json");
     let made: prepared::Plan = if !fresh && plan_path.is_file() {
         let selection = plan_path.parent().unwrap().parent().unwrap().join("selection.json");
-        let expected = serde_json::to_vec(&(&scope, &languages)).expect("selection serializes");
+        let expected = prepared::selection(home, scope.as_ref(), &languages).map_err(|e| Code::Blocked.error(e))?;
         if std::fs::read(selection).map_err(|e| e.to_string())? != expected {
             return Err(Code::Usage.error(
-                "a run for another region or language selection stopped; resume it with its original selection",
+                "a run for another archive root, region or language selection stopped; resume it with its original selection",
             ));
         }
         serde_json::from_slice(&std::fs::read(plan_path).map_err(|e| e.to_string())?)
@@ -336,14 +327,14 @@ fn plan<'a>(
     }
     let journaled = if fresh { Vec::new() } else { journaled };
     let done = Downloads { files: journaled.len() as u64, bytes: journaled.iter().map(|file| file.size).sum() };
+    let store_bytes = store_bytes + made.work_bytes;
     let mut cost = PreparedCost { store_bytes, unknown, ..PreparedCost::default() };
     if let Some(newest) = listed.last() {
-        let manifest = prepared::manifest(target, id, &newest.version)?;
+        let manifest = prepared::manifest(&folder, id, &newest.version)?;
         if let Some(manifest) = manifest.filter(|m| m.scope == scope && m.languages == languages) {
             cost.wall_ms = Some(manifest.cost.wall_ms);
             cost.peak_rss_bytes = manifest.cost.peak_rss_bytes;
-            cost.store_bytes += newest.bytes;
-            cost.upload_bytes = Some(newest.bytes.saturating_sub(done.bytes));
+            cost.archive_bytes = Some(newest.bytes.saturating_sub(done.bytes));
         }
     }
 
@@ -356,6 +347,9 @@ fn plan<'a>(
         ));
     }
     machine.refusals.extend(update_cli::disk_refusal(&machine, cost.store_bytes));
+    if let Err(reason) = crate::store::check_free(home, cost.archive_bytes.unwrap_or(0)) {
+        machine.refusals.push(reason);
+    }
     let archive_bytes = inputs.iter().filter_map(|input| input.download_bytes).sum();
     let directories: BTreeSet<_> =
         made.inputs.iter().filter_map(|input| input.archive.as_ref()?.path.parent()).collect();
@@ -370,10 +364,10 @@ fn plan<'a>(
             machine.refusals.push(format!("`{read}` needs {}, which this machine lacks", credential.describe()));
         }
     }
-    let stale = stale(root, store, (name, target), id, &version)?;
+    let stale = stale(root, store, id, &version)?;
     let decisions = serde_json::json!({
         "source": id,
-        "target": name,
+        "root": home,
         "version": version,
         "format": producer.format(),
         "revision": producer.revision(),
@@ -386,7 +380,7 @@ fn plan<'a>(
     let review = PrepareReview {
         id: sha256_hex(&canonical)[..12].to_string(),
         source: id.into(),
-        target: name.into(),
+        root: home.into(),
         version,
         abandoned,
         listing,
@@ -406,19 +400,10 @@ fn plan<'a>(
     Ok(Planned { review, producer, source, sources, scope, fresh, made })
 }
 
-/// The layers of each target that read a version of `id` older than `version`. Every target reads
-/// the versions of `prod`; another target reads only its own besides.
-fn stale(
-    root: &Path,
-    store: &Store,
-    (name, target): (&str, &Target),
-    id: &str,
-    version: &str,
-) -> Result<Vec<StaleReaders>, Error> {
-    let targets = match name {
-        PROD => crate::target::load(root, store).map_err(|e| Code::InvalidData.error(e))?.into_iter().collect(),
-        _ => vec![(name.to_string(), target.clone())],
-    };
+/// The layers of each target of `data/targets.toml` that read a version of `id` older than
+/// `version`: each target reads the versions of the archive.
+fn stale(root: &Path, store: &Store, id: &str, version: &str) -> Result<Vec<StaleReaders>, Error> {
+    let targets = crate::target::load(root, store).map_err(|e| Code::InvalidData.error(e))?;
     let mut stale = Vec::new();
     for (name, target) in targets {
         let read = || -> Result<Vec<String>, Error> {
@@ -426,7 +411,7 @@ fn stale(
             let release = update_cli::read(&name, &target, &serving.serving.id)?;
             let old = |output: &&crate::release::Output| {
                 let read = output.snapshots.get(id).and_then(|read| prepared::unpin(&read.version));
-                read.is_some_and(|(read, _)| read < version)
+                read.is_some_and(|(read, _)| prepared::order(read) < prepared::order(version))
             };
             let layers: BTreeSet<String> =
                 release.outputs.iter().filter(old).map(|output| output.layer.clone()).collect();
@@ -454,43 +439,81 @@ fn check(review: &PrepareReview, expect: Option<&str>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Prepare the source of `asked` for `target` while the run holds the lock of the source there:
-/// review again, make and upload each file, then write the manifest and list the version.
-pub(super) fn prepare(
-    context: &Context,
-    (name, target): (&str, &Target),
-    asked: &Asked,
-    today: &str,
+/// Refuse a prepare of `id` while a target of `data/targets.toml` lists a version in its legacy
+/// folder `sources/<id>/` that the home `folder` lacks: each goes into the archive first, so a new
+/// version extends the newest one and takes no name twice. It goes with `obc data source copy`.
+fn uncopied(root: &Path, store: &Store, folder: &Target, id: &str) -> Result<(), Error> {
+    for (name, target) in crate::target::load(root, store).map_err(|e| Code::InvalidData.error(e))? {
+        let unread = |e: String| {
+            Code::Blocked
+                .error(format!("`{name}` cannot be read ({e}); nothing changed"))
+                .fix(format!("Run again when `{name}` answers: it can hold versions of `{id}` to copy first."))
+        };
+        let theirs = prepared::versions(&target.within(&format!("sources/{id}")), id).map_err(unread)?;
+        if let Some(entry) = prepared::uncopied(folder, id, &theirs)? {
+            return Err(Code::Blocked
+                .error(format!(
+                    "`{name}` lists {id}@{} in sources/{id}/, which the archive lacks; nothing changed",
+                    entry.version
+                ))
+                .fix(format!("Copy it first: `obc data source copy {id} --from {name}`.")));
+        }
+    }
+    Ok(())
+}
+
+/// The label of the lock of the source `id`, and the command that frees it.
+pub(super) fn lock_names(id: &str) -> (String, String) {
+    (format!("source `{id}` in the archive"), format!("obc data unlock --source {id}"))
+}
+
+/// Do `work` while `run` holds the lock of the source `id` in the archive root `home`. When the run
+/// made the home and fails, the home goes again while it holds only the lock: a refusal never fixes
+/// the home on a root.
+pub(super) fn locked<T>(
+    store: &Store,
+    (home, id): (&Path, &str),
     run: &mut Run,
-) -> Result<Done, Error> {
+    work: impl FnOnce(&mut Run, &Held) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let new = !prepared::path(home, id).exists();
+    let (label, unlock) = lock_names(id);
+    let done = update_cli::locked_as(store, (&label, &unlock), &prepared::folder(home, id), run, work);
+    if done.is_err() && new {
+        prepared::unmake(home, id);
+    }
+    done
+}
+
+/// Prepare the source of `asked` while the run holds the lock of the source: review again, make each
+/// file and move it into the home, then write the manifest and list the version.
+pub(super) fn prepare(context: &Context, asked: &Asked, today: &str, run: &mut Run) -> Result<Done, Error> {
     let id = asked.id;
-    let label = format!("source `{id}` on `{name}`");
-    let unlock = format!("obc data unlock {name} --source {id}");
-    update_cli::locked_as(context.store, (&label, &unlock), &prepared::folder(target, id), run, |run, held| {
+    let home = home(context.http, id)?;
+    if let Some(warning) = prepared::shadow_warning(context.http.roots(), id) {
+        run.line(&warning)?;
+    }
+    locked(context.store, (&home, id), run, |run, held| {
         run.record(&Event::Phase { phase: Phase::Prepare })?;
-        let planned = plan(context, (name, target), asked, today)?;
+        let planned = plan(context, &home, asked, today)?;
         if !held.beat(Some(&planned.review.id), None, crate::date::now())? {
-            return Err(update_cli::lost(&label));
+            return Err(update_cli::lost(&lock_names(id).0));
         }
         check(&planned.review, asked.expect)?;
-        make(context, (name, target), planned, (run, held))
+        make(context, &home, planned, (run, held))
     })
 }
 
-fn make(
-    context: &Context,
-    (name, target): (&str, &Target),
-    planned: Planned,
-    (run, held): (&mut Run, &Held),
-) -> Result<Done, Error> {
+fn make(context: &Context, home: &Path, planned: Planned, (run, held): (&mut Run, &Held)) -> Result<Done, Error> {
     let Planned { review, producer, source, sources, scope, fresh, made } = planned;
     let (id, version) = (source.id.as_str(), review.version.as_str());
-    let (label, again) = (format!("source `{id}` on `{name}`"), format!("obc data source prepare {id} --to {name}"));
+    let folder = prepared::folder(home, id);
+    let (label, again) = (lock_names(id).0, format!("obc data source prepare {id}"));
     let lock = (label.as_str(), again.as_str());
     let done = |listed: prepared::Version, uploaded| Done {
         source: id.into(),
         version: version.into(),
-        target: name.into(),
+        root: home.into(),
         files: review.done.files as usize,
         bytes: listed.bytes,
         uploaded,
@@ -498,40 +521,34 @@ fn make(
     };
     if review.listing {
         update_cli::enter_as((run, held), lock, Phase::Upload)?;
-        let journaled = prepared::journaled(context.store, name, id, version);
-        if let Some(missing) = prepared::absent(&prepared::folder(target, id), version, &journaled)?.first() {
+        let journaled = prepared::journaled(context.store, id, version);
+        if let Some(missing) = prepared::absent(&folder, version, &journaled)?.first() {
             return Err(Code::Failed
-                .error(format!("sources/{id}/{missing} is not on `{name}`; the version is not listed"))
+                .error(format!("{id}/{missing} is not in the archive; the version is not listed"))
                 .fix(format!(
                     "Delete {}: the next run makes a new version.",
-                    prepared::job_dir(context.store, name, id, version).display()
+                    prepared::job_dir(context.store, id, version).display()
                 )));
         }
-        let listed = prepared::list(target, id, version)?;
-        prepared::forget(context.store, name, id, version)?;
+        let listed = prepared::list(&folder, id, version)?;
+        prepared::forget(context.store, id, version)?;
         return Ok(done(listed, 0));
     }
     update_cli::enter_as((run, held), lock, Phase::Build)?;
     if let Some(abandoned) = &review.abandoned {
-        prepared::forget(context.store, name, id, abandoned)?;
+        prepared::forget(context.store, id, abandoned)?;
     }
     if fresh {
-        // Nothing resumes an older version without a manifest: a stopped run left it.
-        for (at, key) in prepared::incomplete(target, id, version)?.iter().enumerate() {
+        // Nothing resumes this version or an older one without a manifest: a stopped run left it.
+        for (at, key) in prepared::incomplete(&folder, id, version)?.iter().enumerate() {
             if at % 100 == 0 && !held.beat(None, None, crate::date::now())? {
                 return Err(update_cli::lost(lock.0));
             }
-            target.remove(key)?;
+            folder.remove(key)?;
         }
     }
     let start = Instant::now();
-    let opening = Opening {
-        root: context.root,
-        store: context.store,
-        http: context.http,
-        sources: &sources,
-        target: (name, target),
-    };
+    let opening = Opening { root: context.root, store: context.store, http: context.http, sources: &sources, home };
     let (files, reused, extends, inputs, uploaded, peak_rss_bytes) = {
         let mut job = Job::open(opening, (id, version), scope.clone(), &review.languages, run)?;
         crate::store::write_atomic(&job.state.join("plan.json"), &serde_json::to_vec(&made).expect("plan serializes"))?;
@@ -547,7 +564,7 @@ fn make(
         )
     };
     if files.is_empty() {
-        return Err(Code::RunFailed.error(format!("{id}@{version}: the producer made no file; nothing is published")));
+        return Err(Code::RunFailed.error(format!("{id}@{version}: the producer made no file; nothing is listed")));
     }
     update_cli::enter_as((run, held), lock, Phase::Upload)?;
     let manifest = Manifest {
@@ -561,14 +578,15 @@ fn make(
         scope,
         extends,
         languages: review.languages.clone(),
+        publish_text: source.publish_text,
         licence: source.licence.clone(),
         attribution: source.attribution.clone(),
         machine: crate::machine(),
         time: crate::date::timestamp(crate::date::now()),
         cost: prepared::Cost { wall_ms: start.elapsed().as_millis() as u64, peak_rss_bytes },
     };
-    let listed = prepared::complete(target, &manifest)?;
-    prepared::forget(context.store, name, id, version)?;
+    let listed = prepared::complete(&folder, &manifest)?;
+    prepared::forget(context.store, id, version)?;
     Ok(Done { files: manifest.files.len(), ..done(listed, uploaded) })
 }
 
@@ -576,7 +594,7 @@ fn print_review(review: &PrepareReview, json: bool) -> Result<(), Error> {
     if json {
         return print_json(review);
     }
-    println!("review {} of {}@{} for {}", review.id, review.source, review.version, review.target);
+    println!("review {} of {}@{} in {}", review.id, review.source, review.version, review.root.display());
     let mut rows = Vec::new();
     let scope = review.scope.as_ref().map_or("all".to_string(), |scope| format!("region {}", scope.region));
     rows.push(vec!["  scope".into(), scope]);
@@ -591,11 +609,11 @@ fn print_review(review: &PrepareReview, json: bool) -> Result<(), Error> {
         rows.push(vec!["  text".into(), if published { "text published" } else { "text kept local" }.into()]);
     }
     if let Some(abandoned) = &review.abandoned {
-        let text = format!("{abandoned} stays incomplete: the target has a newer complete version");
+        let text = format!("{abandoned} stays incomplete: the home has a newer complete version");
         rows.push(vec!["  abandon".into(), text]);
     }
     if review.listing {
-        rows.push(vec!["  list".into(), "the manifest is on the target: the run only lists the version".into()]);
+        rows.push(vec!["  list".into(), "the manifest is in the home: the run only lists the version".into()]);
     }
     for input in &review.inputs {
         let mut size = input.bytes.map_or("size unknown".into(), runs::bytes);
@@ -608,13 +626,14 @@ fn print_review(review: &PrepareReview, json: bool) -> Result<(), Error> {
     if review.done.files > 0 {
         rows.push(vec![
             "  resume".into(),
-            format!("{} files, {} on the target", review.done.files, runs::bytes(review.done.bytes)),
+            format!("{} files, {} in the home", review.done.files, runs::bytes(review.done.bytes)),
         ]);
     }
     let cost = &review.cost;
     let mut text = format!("{} into the store", runs::bytes(cost.store_bytes));
-    if let Some(upload) = cost.upload_bytes {
-        text += &format!(", {} to the target", runs::bytes(upload));
+    match cost.archive_bytes {
+        Some(archive) => text += &format!(", {} into the archive", runs::bytes(archive)),
+        None => text += ", archive bytes unknown",
     }
     if let Some(wall_ms) = cost.wall_ms {
         text += &format!(", about {}", runs::duration(wall_ms));
@@ -654,6 +673,7 @@ pub(super) mod tests {
     use crate::product::{Inputs, Pointer, Product, Steps, Unplanned, Wanted};
     use crate::regions::Regions;
     use crate::release::POINTERS;
+    use crate::target::Target;
     use std::fs;
 
     const SOURCES: &str = r#"
@@ -663,6 +683,7 @@ pub(super) mod tests {
         licence = "MIT"
         fetch = { kind = "http", url = "https://example.org/head.txt" }
         version = "release"
+        keep = "store"
         redistribute = true
 
         [[source]]
@@ -673,6 +694,7 @@ pub(super) mod tests {
         fetch = { kind = "prepared" }
         version = "date"
         refresh = 1
+        keep = "prepared"
         redistribute = true
     "#;
 
@@ -705,7 +727,7 @@ pub(super) mod tests {
             _: Option<&Scope>,
             _: &[String],
         ) -> Result<prepared::Plan, String> {
-            Ok(prepared::Plan { inputs: vec![(head(), None).into()], files: Some(3) })
+            Ok(prepared::Plan { inputs: vec![(head(), None).into()], files: Some(3), work_bytes: 0 })
         }
 
         fn prepare(&self, job: &mut Job) -> Result<(), String> {
@@ -807,8 +829,9 @@ pub(super) mod tests {
         }
     }
 
-    /// A store and a repository with `sample`, and the dir targets `prod` and `local`.
-    fn setup(name: &str) -> (Fixture, Target, Target) {
+    /// A store and a repository with `sample`, the dir targets `prod` and `local`, and the archive
+    /// root `archive` of [`http`]: the fixture, the root and the folder of `prod`.
+    pub(in crate::cli) fn setup(name: &str) -> (Fixture, PathBuf, PathBuf) {
         let fixture = fixture(name);
         write(&fixture.root().join("data/sources.toml"), SOURCES);
         let (prod, local) = (fixture.scratch.0.join("prod"), fixture.scratch.0.join("local"));
@@ -818,41 +841,47 @@ pub(super) mod tests {
             local.display()
         );
         write(&fixture.root().join("data/targets.toml"), &targets);
-        (fixture, Target::Dir(prod), Target::Dir(local))
+        let archive = fixture.scratch.0.join("archive");
+        fs::create_dir_all(&archive).unwrap();
+        (fixture, archive, prod)
     }
 
-    /// Prepare `sample` of format 1 for the target `name` on the day `today`.
-    fn prepare(fixture: &Fixture, name: &str, today: &str, asked: Asked) -> Result<Done, Error> {
-        prepare_with(fixture, &Sample(1), (name, today), asked)
+    /// A client whose archive is the root of [`setup`].
+    pub(in crate::cli) fn http(fixture: &Fixture) -> Http {
+        Http::new().with_archive(&fixture.scratch.0.join("archive"))
+    }
+
+    fn target(fixture: &Fixture, name: &str) -> Target {
+        crate::target::find(&fixture.root(), name, &fixture.store).unwrap()
+    }
+
+    /// Prepare `sample` of format 1 on the day `today`.
+    pub(in crate::cli) fn prepare(fixture: &Fixture, today: &str, asked: Asked) -> Result<Done, Error> {
+        prepare_with(fixture, (&Sample(1), &http(fixture)), today, asked)
     }
 
     fn prepare_with(
         fixture: &Fixture,
-        sample: &Sample,
-        (name, today): (&str, &str),
+        (sample, http): (&Sample, &Http),
+        today: &str,
         asked: Asked,
     ) -> Result<Done, Error> {
-        let (root, http) = (fixture.root(), Http::new());
-        let target = crate::target::find(&root, name, &fixture.store).unwrap();
-        let context = Context { root: &root, store: &fixture.store, http: &http, prepared: &[sample] };
+        let root = fixture.root();
+        let context = Context { root: &root, store: &fixture.store, http, prepared: &[sample] };
         let mut run = Run::create(&fixture.store, ["source", "prepare", "sample"]).unwrap();
-        let done = super::prepare(&context, (name, &target), &Asked { id: "sample", ..asked }, today, &mut run);
+        let done = super::prepare(&context, &Asked { id: "sample", ..asked }, today, &mut run);
         crate::cli::api::finish_run(run, done)
     }
 
     /// Update the target `name` with the producer of format 1.
-    fn update(
-        fixture: &Fixture,
-        target: (&str, &Target),
-        asked: &update_cli::Asked,
-    ) -> Result<update_cli::Updated, Error> {
-        update_with(fixture, &Sample(1), target, asked)
+    fn update(fixture: &Fixture, name: &str, asked: &update_cli::Asked) -> Result<update_cli::Updated, Error> {
+        update_with(fixture, (&Sample(1), &http(fixture)), name, asked)
     }
 
     fn update_with(
         fixture: &Fixture,
-        sample: &Sample,
-        (name, target): (&str, &Target),
+        (sample, http): (&Sample, &Http),
+        name: &str,
         asked: &update_cli::Asked,
     ) -> Result<update_cli::Updated, Error> {
         let mut run = Run::create(&fixture.store, ["update", name]).unwrap();
@@ -860,11 +889,12 @@ pub(super) mod tests {
         let machine = MachineCheck::default();
         let settings = |settings: &mut Settings| if settings.region.is_empty() { region(settings) } else { Ok(()) };
         let code: (&[&dyn Product], &[&dyn Prepared]) = (&products, &[sample]);
+        let target = target(fixture, name);
         let updated = update_cli::update(
             &root,
             &fixture.store,
-            &Http::new(),
-            (name, target),
+            http,
+            (name, &target),
             code,
             settings,
             asked,
@@ -875,15 +905,15 @@ pub(super) mod tests {
     }
 
     /// The layers that an update of the target `name` bakes, with the text of their cause.
-    fn changes(fixture: &Fixture, (name, target): (&str, &Target)) -> Vec<(String, String)> {
+    fn changes(fixture: &Fixture, name: &str) -> Vec<(String, String)> {
         let (products, machine): ([&dyn Product; 2], _) = ([&Reader, &Second], MachineCheck::default());
         let code: (&[&dyn Product], &[&dyn Prepared]) = (&products, &[&Sample(1)]);
-        let (root, http) = (fixture.root(), Http::new());
+        let (root, http, target) = (fixture.root(), http(fixture), target(fixture, name));
         let prepared = update_cli::prepare(
             &root,
             &fixture.store,
             &http,
-            (name, target),
+            (name, &target),
             code,
             |_| Ok(()),
             &[],
@@ -893,136 +923,132 @@ pub(super) mod tests {
         prepared.unwrap().review.layers.into_iter().map(|layer| (layer.layer, layer.text)).collect()
     }
 
-    /// The version of `sample` that the serving release of `target` reads, and the bytes of its
-    /// client file.
-    fn served(target: &Target) -> (String, String) {
-        let (serving, _) = crate::release::serving(target).unwrap().unwrap();
-        let release = crate::release::Release::read(target, &serving.serving.id).unwrap();
+    /// The version of `sample` that the serving release of the target `name` reads, and the bytes of
+    /// its client file.
+    fn served(fixture: &Fixture, name: &str) -> (String, String) {
+        let target = target(fixture, name);
+        let (serving, _) = crate::release::serving(&target).unwrap().unwrap();
+        let release = crate::release::Release::read(&target, &serving.serving.id).unwrap();
         let output = release.outputs.iter().find(|output| output.step == "reader/copy").unwrap();
         let bytes = target.get(&format!("objects/{}", output.files[0].sha256)).unwrap().unwrap();
         (output.snapshots["sample"].version.clone(), String::from_utf8(bytes).unwrap())
     }
 
-    /// The version of `sample` that a step reads for the entry of `day` in `versions.json` of `target`.
-    fn pinned(target: &Target, day: &str) -> String {
-        let listed = prepared::versions(target, "sample").unwrap();
+    /// The version of `sample` that a step reads for the entry of `day` in the home in `root`.
+    fn pinned(root: &Path, day: &str) -> String {
+        let listed = prepared::versions(&prepared::folder(root, "sample"), "sample").unwrap();
         let entry = listed.iter().find(|entry| entry.version == day).unwrap();
         format!("{}/{}", entry.version, entry.manifest_sha256)
     }
 
-    fn keys(target: &Target, prefix: &str) -> Vec<String> {
-        let listed = target.list().unwrap().into_iter().map(|listed| listed.key);
+    /// The keys of the home of `sample` in `root` that start with `prefix`.
+    fn keys(root: &Path, prefix: &str) -> Vec<String> {
+        let listed = prepared::folder(root, "sample").list().unwrap().into_iter().map(|listed| listed.key);
         listed.filter(|key| key.starts_with(prefix)).collect()
     }
 
+    fn versions(root: &Path) -> Vec<String> {
+        let listed = prepared::versions(&prepared::folder(root, "sample"), "sample").unwrap();
+        listed.into_iter().map(|listed| listed.version).collect()
+    }
+
     #[test]
-    fn the_manifest_comes_last_and_a_resume_uploads_only_what_the_target_lacks() {
-        let (fixture, prod, _) = setup("prepare-resume");
+    fn the_manifest_comes_last_and_a_resume_moves_only_what_the_home_lacks() {
+        let (fixture, archive, _) = setup("prepare-resume");
         write(&fixture.root().join("fail-c.txt"), "");
-        let failed = prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
+        let failed = prepare(&fixture, "2026-10-01", Asked::default()).unwrap_err();
         assert!(failed.message.contains("c.txt failed"), "{}", failed.message);
-        let version = "sources/sample/2026-10-01/";
-        assert_eq!(keys(&prod, version), [format!("{version}a.txt"), format!("{version}b.txt")], "no manifest");
-        assert!(prepared::versions(&prod, "sample").unwrap().is_empty());
+        assert_eq!(keys(&archive, "2026-10-01/"), ["2026-10-01/a.txt", "2026-10-01/b.txt"], "no manifest");
+        assert!(versions(&archive).is_empty());
 
         fs::remove_file(fixture.root().join("fail-c.txt")).unwrap();
-        let done = prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap();
+        let done = prepare(&fixture, "2026-10-02", Asked::default()).unwrap();
         assert_eq!(
-            (done.version.as_str(), done.files, done.uploaded),
-            ("2026-10-01", 3, 1),
+            (done.version.as_str(), done.files, done.uploaded, done.root.as_path()),
+            ("2026-10-01", 3, 1, archive.as_path()),
             "the resume keeps its version"
         );
         assert_eq!(fs::read_to_string(fixture.root().join("made")).unwrap(), "a.txt\nb.txt\nc.txt\n");
-        let manifest = prepared::manifest(&prod, "sample", "2026-10-01").unwrap().unwrap();
+        let folder = prepared::folder(&archive, "sample");
+        let manifest = prepared::manifest(&folder, "sample", "2026-10-01").unwrap().unwrap();
         let paths: Vec<&str> = manifest.files.iter().map(|file| file.path.as_str()).collect();
         assert_eq!(paths, ["a.txt", "b.txt", "c.txt"]);
         assert_eq!((manifest.inputs[0].source.as_str(), manifest.licence.as_deref()), ("head", Some("CC0-1.0")));
-        let bytes = prod.get(&format!("{version}manifest.json")).unwrap().unwrap();
-        let listed = prepared::versions(&prod, "sample").unwrap();
+        let bytes = folder.get("2026-10-01/manifest.json").unwrap().unwrap();
+        let listed = prepared::versions(&folder, "sample").unwrap();
         assert_eq!((listed[0].version.as_str(), &listed[0].manifest_sha256), ("2026-10-01", &sha256_hex(&bytes)));
-        assert!(
-            !fixture.store.root().join("prepared/prod/sample").read_dir().unwrap().any(|_| true),
-            "the work is gone"
-        );
-        assert_eq!(lock::read(&prepared::folder(&prod, "sample")).unwrap().unwrap().0, LockFile::Free);
-        let again = prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
-        assert!(again.message.contains("complete on `prod`"), "{}", again.message);
+        assert!(!fixture.store.root().join("prepared/sample").read_dir().unwrap().any(|_| true), "the work is gone");
+        assert_eq!(lock::read(&folder).unwrap().unwrap().0, LockFile::Free);
     }
 
     #[test]
-    fn a_new_version_makes_its_readers_stale_in_a_target_that_reads_an_older_one() {
-        let (fixture, prod, local) = setup("prepare-stale");
-        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
-        update(&fixture, ("prod", &prod), &Default::default()).unwrap();
-        let (root, http) = (fixture.root(), Http::new());
+    fn a_later_version_of_the_same_day_takes_the_next_ordinal_and_extends_the_one_before() {
+        let (fixture, archive, _) = setup("prepare-same-day");
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap();
+        write(&fixture.root().join("reuse-a.txt"), "");
+        write(&fixture.root().join("fail-c.txt"), "");
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap_err();
+        fs::remove_file(fixture.root().join("fail-c.txt")).unwrap();
+        let resumed = prepare(&fixture, "2026-10-01", Asked::default()).unwrap();
+        assert_eq!((resumed.version.as_str(), resumed.uploaded), ("2026-10-01.2", 1), "the stopped run resumes");
+        let second =
+            prepared::manifest(&prepared::folder(&archive, "sample"), "sample", "2026-10-01.2").unwrap().unwrap();
+        assert_eq!(second.reused, [("a.txt".to_string(), "2026-10-01".to_string())].into());
+
+        assert_eq!(prepare(&fixture, "2026-10-01", Asked::default()).unwrap().version, "2026-10-01.3");
+        assert_eq!(versions(&archive), ["2026-10-01", "2026-10-01.2", "2026-10-01.3"]);
+    }
+
+    #[test]
+    fn a_new_version_makes_its_readers_stale_in_each_target_that_reads_an_older_one() {
+        let (fixture, archive, _) = setup("prepare-stale");
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap();
+        update(&fixture, "prod", &Default::default()).unwrap();
+        let (root, http) = (fixture.root(), http(&fixture));
         let context = Context { root: &root, store: &fixture.store, http: &http, prepared: &[&Sample(1)] };
         let review =
-            plan(&context, ("prod", &prod), &Asked { id: "sample", ..Asked::default() }, "2026-10-02").unwrap().review;
+            plan(&context, &archive, &Asked { id: "sample", ..Asked::default() }, "2026-10-02").unwrap().review;
         let stale: Vec<(&str, &[String])> =
             review.stale.iter().map(|readers| (readers.target.as_str(), &readers.layers[..])).collect();
         assert_eq!(stale, [("local", &[][..]), ("prod", &["reads".to_string()][..])]);
-        prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap();
-        update(&fixture, ("local", &local), &Default::default()).unwrap();
+        prepare(&fixture, "2026-10-02", Asked::default()).unwrap();
+        update(&fixture, "local", &Default::default()).unwrap();
 
-        let show = |day: &str| prepared::show(&pinned(&prod, day));
+        let show = |day: &str| prepared::show(&pinned(&archive, day));
         let cause = format!("sample {} → {}", show("2026-10-01"), show("2026-10-02"));
-        assert_eq!(changes(&fixture, ("prod", &prod)), [("reads".to_string(), cause)]);
-        assert_eq!(changes(&fixture, ("local", &local)), [], "it reads the new version already");
+        assert_eq!(changes(&fixture, "prod"), [("reads".to_string(), cause)]);
+        assert_eq!(changes(&fixture, "local"), [], "it reads the new version already");
     }
 
     #[test]
-    fn a_version_reads_a_file_that_it_reuses_from_the_version_before_and_the_collection_keeps_that_one() {
-        let (fixture, prod, _) = setup("prepare-reuse");
-        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
+    fn a_version_reads_a_file_that_it_reuses_from_the_version_before_and_no_collection_deletes_a_version() {
+        let (fixture, archive, _) = setup("prepare-reuse");
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap();
         write(&fixture.root().join("reuse-a.txt"), "");
-        prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap();
-        let manifest = prepared::manifest(&prod, "sample", "2026-10-02").unwrap().unwrap();
+        prepare(&fixture, "2026-10-02", Asked::default()).unwrap();
+        let manifest =
+            prepared::manifest(&prepared::folder(&archive, "sample"), "sample", "2026-10-02").unwrap().unwrap();
         assert_eq!(manifest.reused, [("a.txt".to_string(), "2026-10-01".to_string())].into());
-        let Target::Dir(dir) = &prod else { unreachable!() };
-        assert!(!dir.join("sources/sample/2026-10-02/a.txt").exists(), "a reused file is not uploaded again");
-        let updated = update(&fixture, ("prod", &prod), &Default::default()).unwrap();
-        assert_eq!(updated.collection.unwrap().versions, Vec::<String>::new(), "2026-10-02 reads a.txt of 2026-10-01");
-        assert!(dir.join("sources/sample/2026-10-01/a.txt").exists());
+        assert!(keys(&archive, "2026-10-02/a.txt").is_empty(), "a reused file is not moved again");
+        update(&fixture, "prod", &Default::default()).unwrap();
+        assert_eq!(served(&fixture, "prod").0, pinned(&archive, "2026-10-02"));
+        prepare(&fixture, "2026-10-03", Asked::default()).unwrap();
+        update(&fixture, "prod", &Default::default()).unwrap();
+        assert_eq!(versions(&archive), ["2026-10-01", "2026-10-02", "2026-10-03"], "the archive keeps each one");
     }
 
     #[test]
-    fn a_collection_keeps_the_newest_unused_version_an_incomplete_one_and_older_keys() {
-        let (fixture, prod, _) = setup("prepare-collect");
-        for day in ["2026-10-01", "2026-10-02"] {
-            prepare(&fixture, "prod", day, Asked::default()).unwrap();
-        }
-        let updated = update(&fixture, ("prod", &prod), &Default::default()).unwrap();
-        assert_eq!(updated.collection.unwrap().versions, ["sample@2026-10-01"], "older than the version it reads");
-        prepare(&fixture, "prod", "2026-10-03", Asked::default()).unwrap();
-        write(&fixture.root().join("fail-c.txt"), "");
-        prepare(&fixture, "prod", "2026-10-04", Asked::default()).unwrap_err();
-        let Target::Dir(dir) = &prod else { unreachable!() };
-        write(&dir.join("reference/v1/x"), "older publisher");
-
-        let collected = crate::collection::collect(&prod, None, crate::date::now(), &|| Ok(()));
-        assert_eq!((collected.keys, collected.stopped), (0, None));
-        let versions: BTreeSet<String> = keys(&prod, "sources/sample/2026")
-            .into_iter()
-            .map(|key| key["sources/sample/".len()..].split('/').next().unwrap().to_string())
-            .collect();
-        assert_eq!(versions.into_iter().collect::<Vec<_>>(), ["2026-10-02", "2026-10-03", "2026-10-04"]);
-        let listed = prepared::versions(&prod, "sample").unwrap();
-        assert_eq!(
-            listed.iter().map(|listed| listed.version.as_str()).collect::<Vec<_>>(),
-            ["2026-10-02", "2026-10-03"]
-        );
-        assert_eq!(keys(&prod, "reference/"), ["reference/v1/x"]);
-    }
-
-    #[test]
-    fn a_local_bake_reads_a_version_of_prod_and_then_bakes_from_the_store_alone() {
-        let (fixture, prod, local) = setup("prepare-offline");
-        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
-        update(&fixture, ("local", &local), &Default::default()).unwrap();
-        let Target::Dir(dir) = &prod else { unreachable!() };
-        fs::rename(dir, dir.with_file_name("prod-gone")).unwrap();
+    fn a_bake_reads_a_version_of_the_archive_and_then_bakes_from_the_store_without_it() {
+        let (fixture, archive, _) = setup("prepare-offline");
+        let refused = update(&fixture, "local", &Default::default()).unwrap_err();
+        assert_eq!(refused.code, Code::Blocked);
+        assert!(refused.message.contains("the archive lists no version of `sample`"), "{}", refused.message);
+        assert!(refused.fix.contains("OBC_DATA_ARCHIVE"), "{}", refused.fix);
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap();
+        update(&fixture, "local", &Default::default()).unwrap();
+        fs::rename(&archive, archive.with_file_name("unmounted")).unwrap();
         let only = update_cli::Asked { only: vec!["reads".into()], ..Default::default() };
-        let again = update(&fixture, ("local", &local), &only).unwrap();
+        let again = update(&fixture, "local", &only).unwrap();
         assert_eq!(
             again.baked.iter().map(|baked| (baked.step.as_str(), baked.reused)).collect::<Vec<_>>(),
             [("reader/copy", false)]
@@ -1035,29 +1061,36 @@ pub(super) mod tests {
         let gate = fixture.root().join("gate");
         fs::create_dir_all(&gate).unwrap();
         std::thread::scope(|scope| {
-            let first = scope.spawn(|| prepare(&fixture, "prod", "2026-10-01", Asked::default()));
+            let first = scope.spawn(|| prepare(&fixture, "2026-10-01", Asked::default()));
             arrives(&gate.join("waiting"));
-            let second = prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
+            let second = prepare(&fixture, "2026-10-01", Asked::default()).unwrap_err();
             write(&gate.join("open"), "");
             assert_eq!(second.code, Code::Blocked);
-            assert!(second.message.starts_with("source `sample` on `prod`: run "), "{}", second.message);
-            assert!(second.fix.contains("`obc data unlock prod --source sample --from "), "{}", second.fix);
+            assert!(second.message.starts_with("source `sample` in the archive: run "), "{}", second.message);
+            assert!(second.fix.contains("`obc data unlock --source sample --from "), "{}", second.fix);
             first.join().unwrap().unwrap();
         });
     }
 
     #[test]
-    fn a_prepare_refuses_another_review_and_a_region_for_prod() {
-        let (fixture, prod, local) = setup("prepare-refuse");
+    fn a_prepare_refuses_another_review_and_an_archive_that_it_cannot_use() {
+        let (fixture, archive, _) = setup("prepare-refuse");
+        let without = Http::with_backoff(std::time::Duration::ZERO);
+        let refused = prepare_with(&fixture, (&Sample(1), &without), "2026-10-01", Asked::default()).unwrap_err();
+        assert!(refused.message.contains("OBC_DATA_ARCHIVE names no root"), "{}", refused.message);
+        let unmounted = Http::new().with_roots(vec![archive.clone(), fixture.scratch.0.join("unmounted")]);
+        let refused = prepare_with(&fixture, (&Sample(1), &unmounted), "2026-10-01", Asked::default()).unwrap_err();
+        assert!(refused.message.contains("unmounted does not exist"), "{}", refused.message);
+        assert!(!prepared::path(&archive, "sample").exists(), "nothing changed");
         let other = Asked { expect: Some("000000000000"), ..Asked::default() };
-        let refused = prepare(&fixture, "prod", "2026-10-01", other).unwrap_err();
+        let refused = prepare(&fixture, "2026-10-01", other).unwrap_err();
         assert!(refused.message.contains(", not 000000000000: it changed"), "{}", refused.message);
-        let boxed = || Asked { scope: (None, Some("7,47,8,48")), ..Asked::default() };
-        let refused = prepare(&fixture, "prod", "2026-10-01", boxed()).unwrap_err();
-        assert!(refused.message.contains("is not for `prod`"), "{}", refused.message);
-        assert_eq!(keys(&prod, "sources/sample/2026"), Vec::<String>::new(), "nothing changed");
-        prepare(&fixture, "local", "2026-10-01", boxed()).unwrap();
-        let manifest = prepared::manifest(&local, "sample", "2026-10-01").unwrap().unwrap();
+        assert!(versions(&archive).is_empty());
+
+        let boxed = Asked { scope: (None, Some("7,47,8,48")), ..Asked::default() };
+        prepare(&fixture, "2026-10-01", boxed).unwrap();
+        let manifest =
+            prepared::manifest(&prepared::folder(&archive, "sample"), "sample", "2026-10-01").unwrap().unwrap();
         assert_eq!(manifest.scope.map(|scope| scope.region), Some("box".into()));
     }
 
@@ -1073,9 +1106,6 @@ pub(super) mod tests {
             }
             fn revision(&self) -> u32 {
                 1
-            }
-            fn regional(&self) -> bool {
-                true
             }
             fn languages(&self, requested: &[String]) -> Result<Vec<String>, String> {
                 Ok(requested.to_vec())
@@ -1093,109 +1123,164 @@ pub(super) mod tests {
                 Sample(1).prepare(job)
             }
         }
-        let (fixture, prod, _) = setup("wiki-selection");
+        let (fixture, archive, _) = setup("wiki-selection");
         let root = fixture.root();
         let registry = root.join("data/sources.toml");
         fs::write(&registry, fs::read_to_string(&registry).unwrap().replace("id = \"sample\"", "id = \"wiki\""))
             .unwrap();
-        let http = Http::new();
+        let http = http(&fixture);
         let context = Context { root: &root, store: &fixture.store, http: &http, prepared: &[&Wiki] };
         let languages = ["en".into(), "de".into()];
         let asked = Asked { id: "wiki", scope: (None, Some("7,47,8,48")), languages: &languages, ..Default::default() };
-        let review = plan(&context, ("prod", &prod), &asked, "2026-10-01").unwrap().review;
+        let review = plan(&context, &archive, &asked, "2026-10-01").unwrap().review;
         assert_eq!(review.languages, languages);
         assert_eq!(review.scope.as_ref().unwrap().region, "box");
         let english = Asked { languages: &languages[..1], ..asked };
-        let other = plan(&context, ("prod", &prod), &english, "2026-10-01").unwrap().review;
+        let other = plan(&context, &archive, &english, "2026-10-01").unwrap().review;
         assert_ne!(review.id, other.id);
         assert!(check(&other, Some(&review.id)).is_err());
         write(&root.join("fail-c.txt"), "");
         let mut run = Run::create(&fixture.store, ["source", "prepare", "wiki"]).unwrap();
-        assert!(super::prepare(&context, ("prod", &prod), &asked, "2026-10-01", &mut run).is_err());
+        assert!(super::prepare(&context, &asked, "2026-10-01", &mut run).is_err());
         fs::remove_file(root.join("fail-c.txt")).unwrap();
-        let error = super::prepare(&context, ("prod", &prod), &english, "2026-10-01", &mut run).unwrap_err();
-        assert!(error.message.contains("another region or language selection"), "{}", error.message);
-        super::prepare(&context, ("prod", &prod), &asked, "2026-10-01", &mut run).unwrap();
-        let manifest = prepared::manifest(&prod, "wiki", "2026-10-01").unwrap().unwrap();
-        assert_eq!(manifest.languages, languages);
+        let error = super::prepare(&context, &english, "2026-10-01", &mut run).unwrap_err();
+        assert!(error.message.contains("region or language selection"), "{}", error.message);
+        super::prepare(&context, &asked, "2026-10-01", &mut run).unwrap();
+        let manifest = prepared::manifest(&prepared::folder(&archive, "wiki"), "wiki", "2026-10-01").unwrap().unwrap();
+        assert_eq!((manifest.languages.as_slice(), manifest.publish_text), (languages.as_slice(), review.publish_text));
         assert_eq!(manifest.scope, review.scope);
-        let changed = plan(&context, ("prod", &prod), &english, "2026-10-02").unwrap().review;
+        let changed = plan(&context, &archive, &english, "2026-10-02").unwrap().review;
         assert_eq!(changed.cost.wall_ms, None, "another selection has no measured cost");
     }
 
     #[test]
     fn a_bake_refuses_a_file_whose_bytes_are_not_those_of_the_manifest() {
-        let (fixture, prod, local) = setup("prepare-tamper");
-        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
-        let Target::Dir(dir) = &prod else { unreachable!() };
-        let file = dir.join("sources/sample/2026-10-01/a.txt");
+        let (fixture, archive, _) = setup("prepare-tamper");
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap();
+        let file = prepared::path(&archive, "sample").join("2026-10-01/a.txt");
         fs::remove_file(&file).unwrap();
         write(&file, "other bytes");
-        let refused = update(&fixture, ("local", &local), &Default::default()).unwrap_err();
+        let refused = update(&fixture, "local", &Default::default()).unwrap_err();
         assert!(refused.message.contains("2026-10-01/a.txt holds bytes with the SHA-256"), "{}", refused.message);
     }
 
     #[test]
-    fn a_target_reads_its_own_version_until_prod_has_one_and_then_the_one_of_prod() {
-        let (fixture, prod, local) = setup("prepare-identity");
+    fn a_test_root_named_first_holds_the_versions_that_the_targets_read() {
+        let (fixture, archive, _) = setup("prepare-test-root");
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap();
+        let test = fixture.scratch.0.join("test-root");
+        fs::create_dir_all(prepared::path(&test, "sample")).unwrap();
+        let tested = Http::new().with_roots(vec![test.clone(), archive.clone()]);
         let boxed = Asked { scope: (None, Some("7,47,8,48")), ..Asked::default() };
-        prepare(&fixture, "local", "2026-10-01", boxed).unwrap();
-        update(&fixture, ("local", &local), &Default::default()).unwrap();
-        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
-        update(&fixture, ("prod", &prod), &Default::default()).unwrap();
-        let ((prod_reads, prod_bytes), (local_reads, local_bytes)) = (served(&prod), served(&local));
-        assert_eq!((prod_reads, local_reads), (pinned(&prod, "2026-10-01"), pinned(&local, "2026-10-01")));
-        assert_ne!(pinned(&prod, "2026-10-01"), pinned(&local, "2026-10-01"), "one name, two versions");
+        prepare_with(&fixture, (&Sample(1), &tested), "2026-10-01", boxed).unwrap();
+        update_with(&fixture, (&Sample(1), &tested), "local", &Default::default()).unwrap();
+        update(&fixture, "prod", &Default::default()).unwrap();
+        let ((prod_reads, prod_bytes), (local_reads, local_bytes)) =
+            (served(&fixture, "prod"), served(&fixture, "local"));
+        assert_eq!((prod_reads, local_reads), (pinned(&archive, "2026-10-01"), pinned(&test, "2026-10-01")));
+        assert_ne!(pinned(&archive, "2026-10-01"), pinned(&test, "2026-10-01"), "one name, two versions");
         assert!(prod_bytes.contains("for all") && local_bytes.contains("for box"), "{prod_bytes} {local_bytes}");
-        let read = changes(&fixture, ("local", &local));
-        let next = prepared::show(&pinned(&prod, "2026-10-01"));
-        assert!(read.len() == 1 && read[0].1.ends_with(&next), "`local` reads the version of `prod` next: {read:?}");
+        let read = changes(&fixture, "local");
+        let next = prepared::show(&pinned(&archive, "2026-10-01"));
+        assert!(read.len() == 1 && read[0].1.ends_with(&next), "without the test root, the home: {read:?}");
     }
 
     #[test]
-    fn a_prepare_replaces_a_key_that_a_stopped_run_left_with_other_bytes() {
-        let (fixture, prod, _) = setup("prepare-replace");
-        let Target::Dir(dir) = &prod else { unreachable!() };
-        let (key, right) = (dir.join("sources/sample/2026-10-01/a.txt"), "a.txt of 2026-10-01 for all: head\n");
+    fn a_stopped_run_resumes_only_into_its_own_root_and_a_listed_version_never_goes() {
+        let (fixture, archive, _) = setup("prepare-root");
+        write(&fixture.root().join("fail-c.txt"), "");
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap_err();
+        let test = fixture.scratch.0.join("test-root");
+        fs::create_dir_all(prepared::path(&test, "sample")).unwrap();
+        let tested = Http::new().with_roots(vec![test.clone(), archive.clone()]);
+        let refused = prepare_with(&fixture, (&Sample(1), &tested), "2026-10-01", Asked::default()).unwrap_err();
+        assert!(refused.message.contains("another archive root"), "{}", refused.message);
+        assert_eq!(keys(&test, "2026"), Vec::<String>::new(), "the test root gets no file");
+
+        fs::remove_file(fixture.root().join("fail-c.txt")).unwrap();
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap();
+        fs::remove_file(prepared::path(&archive, "sample").join("2026-10-01/manifest.json")).unwrap();
+        let refused = prepare(&fixture, "2026-10-02", Asked::default()).unwrap_err();
+        assert!(refused.message.contains("is in versions.json and has no manifest"), "{}", refused.message);
+        assert_eq!(keys(&archive, "2026-10-01/").len(), 3, "its files stay");
+    }
+
+    #[test]
+    fn a_fetch_with_the_param_file_copies_that_file_of_the_home_into_the_store() {
+        let (fixture, archive, _) = setup("prepare-file");
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap();
+        let (root, http) = (fixture.root(), http(&fixture));
+        let sources = Registry::load(&root).unwrap().sources;
+        let source = sources.iter().find(|source| source.id == "sample").unwrap();
+        let version = Some(pinned(&archive, "2026-10-01"));
+        let params = vec![("file".to_string(), "b.txt".to_string())];
+        let request = crate::fetch::Request { refresh: false, source, version, params };
+        let snapshot = crate::fetch::fetch(&root, &fixture.store, &http, &request).unwrap();
+        let names: Vec<&str> = snapshot.files.iter().map(|file| file.name.as_str()).collect();
+        assert_eq!(names, [prepared::MANIFEST, "b.txt"]);
+        let b = &snapshot.files[1];
+        assert_eq!(b.url, "prepared/sample/2026-10-01/b.txt");
+        let held = fs::read(prepared::path(&archive, "sample").join("2026-10-01/b.txt")).unwrap();
+        assert_eq!(fs::read(fixture.store.object(&b.sha256)).unwrap(), held);
+        let elsewhere = Http::new().with_archive(&fixture.scratch.0.join("other"));
+        let refused = crate::fetch::fetch(
+            &root,
+            &fixture.store,
+            &elsewhere,
+            &crate::fetch::Request {
+                version: Some(pinned(&archive, "2026-10-01").replace("2026-10-01/", "2026-10-02/")),
+                ..request
+            },
+        );
+        assert!(prepared::absent_from_archive(&refused.unwrap_err()));
+    }
+
+    #[test]
+    fn a_prepare_replaces_a_file_that_a_stopped_run_left_with_other_bytes() {
+        let (fixture, archive, _) = setup("prepare-replace");
+        let (key, right) =
+            (prepared::path(&archive, "sample").join("2026-10-01/a.txt"), "a.txt of 2026-10-01 for all: head\n");
         write(&key, &right.replace("a.txt", "z.txt"));
-        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap();
         assert_eq!(fs::read_to_string(&key).unwrap(), right);
-        let manifest = prepared::manifest(&prod, "sample", "2026-10-01").unwrap().unwrap();
+        let manifest =
+            prepared::manifest(&prepared::folder(&archive, "sample"), "sample", "2026-10-01").unwrap().unwrap();
         assert_eq!(manifest.files[0].sha256, sha256_hex(right.as_bytes()));
     }
 
     #[test]
     fn a_new_version_deletes_older_incomplete_ones_and_does_not_resume_one_behind_a_complete_version() {
-        let (fixture, prod, _) = setup("prepare-abandon");
+        let (fixture, archive, _) = setup("prepare-abandon");
         write(&fixture.root().join("fail-c.txt"), "");
-        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap_err();
         fs::remove_file(fixture.root().join("fail-c.txt")).unwrap();
-        // Another machine starts the next version.
-        let (job, aside) =
-            (fixture.store.root().join("prepared/prod/sample/2026-10-01"), fixture.scratch.0.join("aside"));
+        // Another checkout starts the next version.
+        let (job, aside) = (fixture.store.root().join("prepared/sample/2026-10-01"), fixture.scratch.0.join("aside"));
         fs::rename(&job, &aside).unwrap();
-        prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap();
-        assert_eq!(keys(&prod, "sources/sample/2026-10-01"), Vec::<String>::new(), "the stopped version goes");
+        prepare(&fixture, "2026-10-02", Asked::default()).unwrap();
+        assert_eq!(keys(&archive, "2026-10-01"), Vec::<String>::new(), "the stopped version goes");
 
         fs::rename(&aside, &job).unwrap();
-        let (root, http) = (fixture.root(), Http::new());
+        let (root, http) = (fixture.root(), http(&fixture));
         let context = Context { root: &root, store: &fixture.store, http: &http, prepared: &[&Sample(1)] };
         let asked = Asked { id: "sample", ..Asked::default() };
-        let review = plan(&context, ("prod", &prod), &asked, "2026-10-03").unwrap().review;
+        let review = plan(&context, &archive, &asked, "2026-10-03").unwrap().review;
         assert_eq!((review.version.as_str(), review.abandoned.as_deref()), ("2026-10-03", Some("2026-10-01")));
-        prepare(&fixture, "prod", "2026-10-03", Asked::default()).unwrap();
+        prepare(&fixture, "2026-10-03", Asked::default()).unwrap();
         assert!(!job.exists(), "the work of the old version goes");
     }
 
     #[test]
     fn a_target_reads_only_a_version_of_the_format_of_its_producer() {
-        let (fixture, prod, local) = setup("prepare-format");
-        prepare_with(&fixture, &Sample(1), ("prod", "2026-10-01"), Asked::default()).unwrap();
-        prepare_with(&fixture, &Sample(2), ("prod", "2026-10-02"), Asked::default()).unwrap();
-        update(&fixture, ("local", &local), &Default::default()).unwrap();
-        assert_eq!(served(&local).0, pinned(&prod, "2026-10-01"));
-        let refused = update_with(&fixture, &Sample(3), ("prod", &prod), &Default::default()).unwrap_err();
-        assert_eq!((refused.code, refused.fix.as_str()), (Code::Blocked, "Run `obc data source prepare sample`."));
+        let (fixture, archive, _) = setup("prepare-format");
+        let http = http(&fixture);
+        prepare_with(&fixture, (&Sample(1), &http), "2026-10-01", Asked::default()).unwrap();
+        prepare_with(&fixture, (&Sample(2), &http), "2026-10-02", Asked::default()).unwrap();
+        update(&fixture, "local", &Default::default()).unwrap();
+        assert_eq!(served(&fixture, "local").0, pinned(&archive, "2026-10-01"));
+        let refused = update_with(&fixture, (&Sample(3), &http), "prod", &Default::default()).unwrap_err();
+        assert_eq!(refused.code, Code::Blocked);
+        assert!(refused.fix.ends_with("or run `obc data source prepare sample`."), "{}", refused.fix);
     }
 
     /// The inode and the bytes of each file of `folder`, sorted by name.
@@ -1209,84 +1294,66 @@ pub(super) mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_stopped_run_never_rewrites_a_version_that_another_machine_completed() {
-        let (fixture, prod, _) = setup("prepare-completed");
+    fn a_stopped_run_never_rewrites_a_version_that_another_run_completed() {
+        let (fixture, archive, _) = setup("prepare-completed");
         write(&fixture.root().join("fail-c.txt"), "");
-        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap_err();
         fs::remove_file(fixture.root().join("fail-c.txt")).unwrap();
-        let (job, aside) =
-            (fixture.store.root().join("prepared/prod/sample/2026-10-01"), fixture.scratch.0.join("aside"));
+        let (job, aside) = (fixture.store.root().join("prepared/sample/2026-10-01"), fixture.scratch.0.join("aside"));
         fs::rename(&job, &aside).unwrap();
-        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
-        let Target::Dir(dir) = &prod else { unreachable!() };
-        let folder = dir.join("sources/sample/2026-10-01");
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap();
+        let folder = prepared::path(&archive, "sample").join("2026-10-01");
         let state = || inodes(&folder);
         let before = state();
 
         fs::rename(&aside, &job).unwrap();
-        let refused = prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
-        assert!(refused.message.contains("complete on `prod`"), "{}", refused.message);
-        assert_eq!(prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap().version, "2026-10-02");
-        assert_eq!(state(), before, "the keys and the manifest of the complete version stay");
+        assert_eq!(prepare(&fixture, "2026-10-01", Asked::default()).unwrap().version, "2026-10-01.2");
+        assert_eq!(state(), before, "the files and the manifest of the complete version stay");
         assert!(!job.exists());
     }
 
     #[test]
-    fn a_resume_makes_again_the_files_whose_keys_a_newer_version_deleted() {
+    fn a_resume_makes_again_the_files_that_a_newer_version_deleted() {
         let (fixture, _, _) = setup("prepare-pruned");
         write(&fixture.root().join("fail-c.txt"), "");
-        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
-        let jobs = fixture.store.root().join("prepared/prod/sample");
+        prepare(&fixture, "2026-10-01", Asked::default()).unwrap_err();
+        let jobs = fixture.store.root().join("prepared/sample");
         let aside = fixture.scratch.0.join("aside");
         fs::rename(jobs.join("2026-10-01"), &aside).unwrap();
         // Another run starts a newer version, deletes the files of 2026-10-01, and stops too.
-        prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap_err();
+        prepare(&fixture, "2026-10-02", Asked::default()).unwrap_err();
         fs::remove_dir_all(jobs.join("2026-10-02")).unwrap();
         fs::rename(&aside, jobs.join("2026-10-01")).unwrap();
         fs::remove_file(fixture.root().join("fail-c.txt")).unwrap();
-        let done = prepare(&fixture, "prod", "2026-10-03", Asked::default()).unwrap();
+        let done = prepare(&fixture, "2026-10-03", Asked::default()).unwrap();
         assert_eq!((done.version.as_str(), done.files, done.uploaded), ("2026-10-01", 3, 3));
-    }
-
-    #[test]
-    fn a_fetch_skips_a_target_that_it_cannot_read() {
-        let (fixture, _, local) = setup("prepare-unread");
-        let Target::Dir(dir) = &local else { unreachable!() };
-        let targets = format!(
-            "[prod]\nkind = \"r2\"\nbucket = \"b\"\npublic = \"https://127.0.0.1:1\"\n[local]\nkind = \"dir\"\ndir = \"{}\"\n",
-            dir.display()
-        );
-        write(&fixture.root().join("data/targets.toml"), &targets);
-        prepare(&fixture, "local", "2026-10-01", Asked::default()).unwrap();
-        update(&fixture, ("local", &local), &Default::default()).unwrap();
-        assert_eq!(served(&local).0, pinned(&local, "2026-10-01"));
     }
 
     #[cfg(unix)]
     #[test]
     fn a_run_that_stopped_after_its_manifest_is_listed_and_nothing_else_is_written() {
-        let (fixture, prod, _) = setup("prepare-listing");
-        let Target::Dir(dir) = &prod else { unreachable!() };
-        let (gate, versions) = (fixture.root().join("gate"), dir.join("sources/sample/versions.json"));
+        let (fixture, archive, _) = setup("prepare-listing");
+        let home = prepared::path(&archive, "sample");
+        let (gate, versions_file) = (fixture.root().join("gate"), home.join("versions.json"));
         fs::create_dir_all(&gate).unwrap();
         std::thread::scope(|scope| {
-            let first = scope.spawn(|| prepare(&fixture, "prod", "2026-10-01", Asked::default()));
+            let first = scope.spawn(|| prepare(&fixture, "2026-10-01", Asked::default()));
             arrives(&gate.join("waiting"));
             // A folder in its place: the run stops after the manifest, before `versions.json`.
-            fs::create_dir_all(&versions).unwrap();
+            fs::create_dir_all(&versions_file).unwrap();
             write(&gate.join("open"), "");
             first.join().unwrap().unwrap_err();
         });
-        fs::remove_dir(&versions).unwrap();
-        let folder = dir.join("sources/sample/2026-10-01");
+        fs::remove_dir(&versions_file).unwrap();
+        let folder = home.join("2026-10-01");
         let before = inodes(&folder);
         assert!(folder.join("manifest.json").exists());
 
-        let done = prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap();
+        let done = prepare(&fixture, "2026-10-02", Asked::default()).unwrap();
         assert_eq!((done.version.as_str(), done.uploaded), ("2026-10-01", 0));
-        assert_eq!(inodes(&folder), before, "the keys and the manifest stay");
+        assert_eq!(inodes(&folder), before, "the files and the manifest stay");
         assert_eq!(fs::read_to_string(fixture.root().join("made")).unwrap(), "a.txt\nb.txt\nc.txt\n", "no producer");
-        let listed = prepared::versions(&prod, "sample").unwrap();
+        let listed = prepared::versions(&prepared::folder(&archive, "sample"), "sample").unwrap();
         assert_eq!(listed[0].manifest_sha256, sha256_hex(&fs::read(folder.join("manifest.json")).unwrap()));
     }
 }

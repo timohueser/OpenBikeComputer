@@ -1,12 +1,15 @@
-"""The climate bake aggregates local solar days into weeks and writes the bytes of the climate tile spec."""
+"""The climate prepare writes the daily values of local solar days, and the bake aggregates them into weeks and writes
+the bytes of the climate tile spec."""
 
 import datetime as dt
 import gzip
 import hashlib
+import json
 from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
+import urllib.error
 
 import numpy as np
 
@@ -21,6 +24,12 @@ def hourly(cells, t2m=10.0, u10=0.0, v10=-1.0):
     hours = 24 * days + 2 * climate.MARGIN_HOURS
     return {"t2m": np.full((hours, cells), t2m + 273.15), "u10": np.full((hours, cells), u10),
             "v10": np.full((hours, cells), v10), "tp": np.zeros((hours, cells))}
+
+
+def weeks(source, lon):
+    """The weekly fields, monthly means and wind rose of the ten years of hourly `source`."""
+    days = (dt.date(FIRST + climate.YEARS, 1, 1) - dt.date(FIRST, 1, 1)).days
+    return climate.aggregate(*climate.daily(source, lon, days), FIRST)
 
 
 def utc(day, local_hour, offset):
@@ -56,7 +65,7 @@ class AggregateTest(unittest.TestCase):
                 set_("v10", 5, hour, 0.0)
             set_("u10", 5, 8, 100.0)
             set_("u10", 5, 19, 100.0)
-        weekly, monthly, rose = climate.aggregate(source, np.array([0.0, 30.0]), FIRST)
+        weekly, monthly, rose = weeks(source, np.array([0.0, 30.0]))
         for cell in range(2):
             self.assertEqual(weekly["wet_days"][0, 0, cell], 2)
             self.assertAlmostEqual(weekly["rain"][0, 0, cell], (3 * climate.WET_MM + 0.09) * climate.RAIN_FACTORS[0])
@@ -73,7 +82,7 @@ class AggregateTest(unittest.TestCase):
     def test_weekly_rain_takes_the_factor_of_the_month_of_its_fourth_day(self):
         source = hourly(1)
         source["tp"][:] = 0.0001  # 2.4 mm a day: every day is wet
-        weekly, _, _ = climate.aggregate(source, np.array([0.0]), FIRST)
+        weekly, _, _ = weeks(source, np.array([0.0]))
         factor = lambda month: climate.RAIN_FACTORS[month - 1]
         rain = weekly["rain"][:, :, 0] / 2.4
         # Week 4 holds 29 January to 4 February: February. Week 8 is March also in the leap year 2016, as in the client.
@@ -83,13 +92,13 @@ class AggregateTest(unittest.TestCase):
         self.assertTrue((weekly["wet_days"][:2, 51, 0] == [9, 8]).all())
 
     def test_weekly_daytime_wind_takes_one_factor_in_every_month(self):
-        weekly, _, _ = climate.aggregate(hourly(1, u10=3.0, v10=-4.0), np.array([0.0]), FIRST)
+        weekly, _, _ = weeks(hourly(1, u10=3.0, v10=-4.0), np.array([0.0]))
         self.assertTrue(np.allclose(weekly["wind"], 5 * climate.WIND_FACTOR))
 
     def test_a_missing_hour_makes_its_week_missing(self):
         source = hourly(1)
         source["t2m"][utc(9, 5, 0), 0] = np.nan
-        weekly, _, _ = climate.aggregate(source, np.array([0.0]), FIRST)
+        weekly, _, _ = weeks(source, np.array([0.0]))
         self.assertTrue(np.isnan(weekly["tmax"][0, 1, 0]))
         self.assertFalse(np.isnan(weekly["tmax"][0, [0, 2], 0]).any())
         self.assertFalse(np.isnan(weekly["rain"][0, 1, 0]))
@@ -130,22 +139,28 @@ class LapseTest(unittest.TestCase):
 
 class GridTest(unittest.TestCase):
     def test_cells_touch_the_bounds_and_map_to_the_zarr_index(self):
-        region = climate.Region([7.45, 47.5, 10.5, 49.85], pad=0)
+        region = climate.Region.around([7.45, 47.5, 10.5, 49.85], pad=0)
         self.assertEqual((region.lat[[0, -1]].tolist(), region.lon[[0, -1]].round(6).tolist()), ([49.8, 47.5], [7.5, 10.5]))
-        corner = climate.Region([-180, 89.96, -179.96, 90], pad=0)
+        corner = climate.Region.around([-180, 89.96, -179.96, 90], pad=0)
         self.assertEqual((corner.rows.tolist(), corner.cols.tolist()), ([0], [0]))
         self.assertEqual([index.tolist() for index in corner.zarr_index()], [[1800], [3599]])
 
-    def test_the_bake_window_and_the_yearly_roll_read_these_chunks(self):
+    def test_a_year_reads_the_time_chunks_of_its_hours_and_a_block_reads_its_own_chunks(self):
         self.assertEqual(climate.hour(dt.date(1950, 1, 2)), 0)
-        region = climate.Region([7.45, 47.5, 10.5, 49.85])
+        region = climate.Region.around([7.45, 47.5, 10.5, 49.85])
         start, end, times, spatial = climate.chunk_plan(region, FIRST)
-        self.assertEqual((end - start, list(times), len(spatial)), (24 * 3653 + 96, [17, 18, 19], 40))
-        # The next update shares every time chunk but needs final data a year later.
-        self.assertEqual(list(climate.chunk_plan(region, FIRST + 1)[2]), [17, 18, 19])
+        self.assertEqual((end - start, list(times), len(spatial)), (24 * 366 + 96, [17], 40))
+        # Time chunk 18 starts on 24 May 2019.
+        self.assertEqual(list(climate.chunk_plan(region, 2019)[2]), [17, 18])
+        block = climate.Region.block(19, 22)
+        rows, cols = block.zarr_index()
+        self.assertEqual((rows[[0, -1]].tolist(), cols[[0, -1]].tolist()), ([1471, 1408], [1824, 1919]))
+        spatial = climate.chunk_plan(block, FIRST)[3]
+        self.assertEqual((len(spatial), spatial[0], spatial[-1]), (16 * 12, (352, 228), (367, 239)))
+        self.assertEqual(climate.Region.block(37, 28).zarr_index()[1][-1], 3599)
 
     def test_a_tile_holds_its_cells_in_row_order_at_the_spec_offsets(self):
-        region = climate.Region([8.0, 48.0, 8.3, 48.1], pad=0)  # rows 419–420, columns 1880–1883
+        region = climate.Region.around([8.0, 48.0, 8.3, 48.1], pad=0)  # rows 419–420, columns 1880–1883
         shape = (len(region.rows), len(region.cols))
         values = {zoom: {name: np.full((count, *shape), 1.0) for name, count in layout} for zoom, (_, _, layout) in climate.LEVELS.items()}
         values[climate.DETAIL]["tmax"][3] = np.arange(np.prod(shape)).reshape(shape)
@@ -196,63 +211,176 @@ class SourceTest(unittest.TestCase):
                 sources[0].read(newest)
 
 
-class FakeSource(climate.Source):
-    """Deterministic chunks without a cache or network."""
+# Blocks of one Zarr chunk, so a test reads and writes small files.
+SMALL = mock.patch.multiple(climate, BLOCK_ROWS=climate.CHUNK_ROWS, BLOCK_COLS=climate.CHUNK_COLS)
 
-    def __init__(self):
-        super().__init__(0)
 
-    def path(self, variable, name):
-        self.digests[variable][name] = hashlib.sha256(name.encode()).hexdigest()
-        return Path(variable, name)
-
-    def read(self, path):
-        variable, name = path.parent.name, path.name
-        seed = [*map(int, name.split(".")), list(climate.SOURCE).index(variable)]
-        noise = np.random.default_rng(seed).random((climate.TIME_CHUNK, climate.CHUNK_ROWS, climate.CHUNK_COLS))
-        scale, base = {"t2m": (10, 280), "u10": (4, -2), "v10": (4, -2), "tp": (0.0005, 0)}[variable]
-        return (base + scale * noise).astype(np.float32)
+class PrepareTest(unittest.TestCase):
+    @SMALL
+    def test_a_block_writes_the_planes_of_each_year_from_the_final_chunks_and_keeps_no_chunk(self):
+        values = {"t2m": 283.15, "u10": 0.0, "v10": -1.0, "tp": 0.001}  # 1 mm an hour, a 1 m/s north wind
+        shape = (climate.TIME_CHUNK, climate.CHUNK_ROWS, climate.CHUNK_COLS)
+        # The chunks are raw float32 here; `blosc` passes them on.
+        chunk = lambda variable: np.full(shape, values[variable], np.float32).tobytes()
+        hours = climate.final_hour(FIRST + 1)
+        layout = {variable: (f"https://arco.test/{variable}", hours) for variable in climate.SOURCE}
+        asked = []
+        answer = lambda url, key=None: asked.append((url, key)) or chunk(url.rsplit("/", 2)[1])
+        z = np.full((climate.CHUNK_ROWS, climate.CHUNK_COLS), 9806.65, np.float64)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(climate, "token", return_value="KEY"), \
+                mock.patch.object(climate, "stores", return_value=layout), mock.patch.object(climate, "fetch", answer), \
+                mock.patch.object(climate, "geopotential", return_value=z), \
+                mock.patch.object(climate, "blosc", lambda data, dtype: np.frombuffer(data, dtype)):
+            out, work = Path(directory, "out"), Path(directory, "work")
+            climate.prepare((235, 344), [FIRST + 1, FIRST], work, out, orography=Path(directory, "orography"))
+            self.assertFalse(work.exists())
+            files = sorted(str(path.relative_to(out)) for path in out.rglob("*") if path.is_file())
+            self.assertEqual(files, ["2016/235/344.gz", "2017/235/344.gz", "235-344.2016.sha256", "235-344.2017.sha256",
+                                     "235-344.orography.sha256", "orography/235/344.gz"])
+            for name, path in [("2016", "2016/235/344.gz"), ("orography", "orography/235/344.gz")]:
+                mark = (out / f"235-344.{name}.sha256").read_text().strip()
+                self.assertEqual(mark, hashlib.sha256((out / path).read_bytes()).hexdigest())
+            body = gzip.decompress((out / "2016/235/344.gz").read_bytes())
+            orography = np.frombuffer(gzip.decompress((out / "orography/235/344.gz").read_bytes()), "<f8")
+        # Each variable has one chunk of the two years: time chunk 17, downloaded once.
+        self.assertEqual(sorted(asked), [(f"https://arco.test/{v}/{v}/17.344.235", "KEY") for v in sorted(climate.SOURCE)])
+        planes, sector = climate.read_block(body, 366, 32)
+        self.assertTrue((planes["tmax"] == np.float32(283.15)).all() and (planes["tmin"] == np.float32(283.15)).all())
+        self.assertTrue(np.allclose(planes["rain"], 24) and np.allclose(planes["wind"], 1))
+        self.assertTrue((sector == 0).all())
+        self.assertTrue((orography == 9806.65).all())
 
 
 class BakeTest(unittest.TestCase):
-    def test_the_same_inputs_give_the_same_archive(self):
+    @SMALL
+    def test_the_same_files_give_the_same_archive(self):
         from pmtiles.reader import MmapSource, Reader
 
         bounds = [8.0, 48.0, 8.2, 48.1]
-        height = lambda region, key=None, cache=None: 300 + 40 * np.arange(len(region.rows) * len(region.cols), dtype=float).reshape(len(region.rows), -1) % 700
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(climate, "orography", height):
+        rng = np.random.default_rng(1)
+        with tempfile.TemporaryDirectory() as directory:
+            files = {}
+            region = climate.Region.around(bounds)
+            rows, cols = region.zarr_index()
+            for y in np.unique(rows // climate.BLOCK_ROWS):
+                for x in np.unique(cols // climate.BLOCK_COLS):
+                    def put(path, planes):
+                        files[path] = Path(directory, path)
+                        climate.write(files[path], planes)
+                    put(f"orography/{x}/{y}.gz", [(300 + 700 * rng.random(32) * climate.GRAVITY)])
+                    for year in range(FIRST, FIRST + climate.YEARS):
+                        days = (dt.date(year + 1, 1, 1) - dt.date(year, 1, 1)).days
+                        put(f"{year}/{x}/{y}.gz", [
+                            (280 + 10 * rng.random((days, 32))).astype("<f4"), (270 + 10 * rng.random((days, 32))).astype("<f4"),
+                            12 * rng.random((days, 32)) ** 4, 8 * rng.random((days, 32)),
+                            rng.integers(0, climate.SECTORS, (days, 10, 32)).astype(np.uint8)])
             paths = [Path(directory) / f"{k}.pmtiles" for k in range(2)]
             for path in paths:
-                counts = climate.bake(bounds, FIRST, FakeSource(), path, "ERA5-Land {year}")
+                counts = climate.bake(bounds, FIRST, files, path, "ERA5-Land {year}", "2026-10-01")
             self.assertEqual(paths[0].read_bytes(), paths[1].read_bytes())
             self.assertEqual(counts, {8: 1, 9: 1})
             with paths[0].open("rb") as stream:
                 reader = Reader(MmapSource(stream))
                 header, metadata = reader.header(), reader.metadata()
         self.assertEqual((header["min_zoom"], header["max_zoom"], metadata["first_year"], metadata["years"]), (8, 9, FIRST, 10))
-        self.assertEqual((sorted(metadata["inputs"]["chunks"]), metadata["wet_day_mm"]), (sorted(climate.SOURCE), climate.WET_MM))
+        self.assertEqual((sorted(metadata["inputs"]), metadata["wet_day_mm"]), (["climate", "doi", "orography_sha256"], climate.WET_MM))
         self.assertEqual((metadata["rain_factors"], metadata["wind_factor"]), (list(climate.RAIN_FACTORS), climate.WIND_FACTOR))
 
 
 class FetchTest(unittest.TestCase):
-    def test_a_fetch_asks_for_each_planned_chunk_with_the_key_and_keeps_it_in_the_directory(self):
-        bounds = [8.0, 48.0, 8.3, 48.1]
-        _, _, times, spatial = climate.chunk_plan(climate.Region(bounds), FIRST)
-        hours = climate.hour(dt.date(FIRST + climate.YEARS + 1, 1, 1))
-        layout = {variable: (f"https://arco.test/{variable}", hours) for variable in climate.SOURCE}
-        asked = []
-        answer = lambda url, key=None: asked.append((url, key)) or b"chunk"
-        with tempfile.TemporaryDirectory() as out, mock.patch.object(climate, "token", return_value="KEY"), \
-                mock.patch.object(climate, "stores", return_value=layout), mock.patch.object(climate, "fetch", answer), \
-                mock.patch.object(climate, "orography") as orography:
-            climate.fetch_sources(bounds, FIRST, Path(out))
-            files = sorted(str(path.relative_to(out)) for path in Path(out).rglob("*") if path.is_file())
-            orography.assert_called_once_with(mock.ANY, "KEY", cache=Path(out))
-        names = [f"{t}.{y}.{x}" for y, x in spatial for t in times]
-        wanted = {(f"https://arco.test/{variable}/{variable}/{name}", "KEY") for variable in climate.SOURCE for name in names}
-        self.assertEqual(set(asked), wanted)
-        digest = hashlib.sha256(b"chunk").hexdigest()
-        self.assertEqual(files, sorted(f"{variable}/{name}.{hours}.{digest}" for variable in climate.SOURCE for name in names))
+    def test_a_cut_connection_is_tried_again_and_a_missing_chunk_is_not(self):
+        import http.client
+        import urllib.error
+
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b"chunk"
+        cut = [http.client.RemoteDisconnected("closed"), http.client.IncompleteRead(b""), ConnectionResetError(), response]
+        with mock.patch("urllib.request.urlopen", side_effect=cut) as urlopen, mock.patch("time.sleep") as sleep:
+            self.assertEqual(climate.fetch("https://arco.test/a"), b"chunk")
+        self.assertEqual((urlopen.call_count, [call.args[0] for call in sleep.call_args_list]), (4, list(climate.RETRY_SECONDS[:3])))
+        missing = urllib.error.HTTPError("https://arco.test/b", 404, "Not Found", {}, None)
+        with mock.patch("urllib.request.urlopen", side_effect=missing) as urlopen, mock.patch("time.sleep"):
+            with self.assertRaises(urllib.error.HTTPError):
+                climate.fetch("https://arco.test/b")
+        self.assertEqual(urlopen.call_count, 1)
+
+
+class StoresTest(unittest.TestCase):
+    def test_a_newest_time_chunk_that_the_daily_update_has_not_written_yet_is_read_again_after_a_wait(self):
+        hours = climate.TIME_CHUNK + 24  # the store's daily update starts time chunk 1
+        array = {"dtype": "<f4", "shape": [hours, climate.GRID_ROWS, climate.GRID_COLS], "order": "C", "filters": None,
+                 "chunks": [climate.TIME_CHUNK, climate.CHUNK_ROWS, climate.CHUNK_COLS], "compressor": {"id": "blosc"}}
+        meta = {"time/.zarray": {"chunks": [climate.TIME_CHUNK]}, "time/.zattrs": {"units": "hours since 1970-01-01"},
+                **{f"{variable}/.zarray": array for variable in climate.SOURCE}}
+        first = (climate.EPOCH - dt.datetime(1970, 1, 1)) // dt.timedelta(hours=1)
+
+        def missing(url, values):
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+        def stale(url, values):
+            values[23:] = 0  # the fill value in the slots that the update has not written yet
+            return values.tobytes()
+
+        for old_chunk in (missing, stale):
+            asked = []
+
+            def answer(url, key=None):
+                name = url.split("geoChunked.zarr/")[1]
+                asked.append(name)
+                if name.startswith("time/"):
+                    values = (first + int(name[5:]) * climate.TIME_CHUNK + np.arange(climate.TIME_CHUNK)).astype("<i8")
+                    return old_chunk(url, values) if name == "time/1" and asked.count(name) == 1 else values.tobytes()
+                return {".zmetadata": json.dumps({"metadata": meta}).encode(),
+                        "latitude/0": (np.arange(climate.GRID_ROWS) / 10 - 90).tobytes(),
+                        "longitude/0": (np.arange(1, climate.GRID_COLS + 1) / 10 - 180).tobytes()}[name]
+
+            with self.subTest(old_chunk.__name__), mock.patch.object(climate, "fetch", answer), \
+                    mock.patch("time.sleep") as sleep, \
+                    mock.patch.object(climate, "blosc", lambda data, dtype: np.frombuffer(data, dtype)):
+                layout = climate.stores("KEY")
+                self.assertEqual({variable: count for variable, (_, count) in layout.items()},
+                                 dict.fromkeys(climate.SOURCE, hours))
+                self.assertEqual([call.args[0] for call in sleep.call_args_list], [climate.RETRY_SECONDS[0]])
+                self.assertEqual(asked[:3], [".zmetadata", "time/1", ".zmetadata"])
+
+
+class OracleSource(climate.Source):
+    """Chunks in which each cell tells where it is: a 2 m temperature of 273.15 K + (its Zarr row − 1790) + (its Zarr
+    column − 3550) / 100, no rain and a 1 m/s north wind."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(0)
+
+    def path(self, variable, name):
+        return Path(variable, name)
+
+    def read(self, path):
+        _, y, x = map(int, path.name.split("."))
+        rows, cols = climate.CHUNK_ROWS * y + np.arange(climate.CHUNK_ROWS), climate.CHUNK_COLS * x + np.arange(climate.CHUNK_COLS)
+        value = {"t2m": 273.15 + (rows[:, None] - 1790) + (cols[None, :] - 3550) / 100, "u10": 0.0, "v10": -1.0, "tp": 0.0}
+        shape = (climate.TIME_CHUNK, climate.CHUNK_ROWS, climate.CHUNK_COLS)
+        return np.broadcast_to(np.asarray(value[path.parent.name], np.float32), shape)
+
+
+class OrientationTest(unittest.TestCase):
+    def test_each_cell_of_two_edge_blocks_keeps_its_place_from_the_chunks_to_the_bake(self):
+        # Block 37, 28 holds the 9 northernmost rows and the 48 easternmost columns; block 36, 28 is west of it.
+        block = climate.Region.block(37, 28)
+        self.assertEqual((len(block.rows), len(block.cols)), (9, 48))
+        geopotential = lambda region, key, cache: np.add.outer(1000.0 * region.zarr_index()[0], region.zarr_index()[1])
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(climate, "token", return_value="KEY"), \
+                mock.patch.object(climate, "Source", OracleSource), mock.patch.object(climate, "geopotential", geopotential):
+            out = Path(directory, "out")
+            for x in (36, 37):
+                climate.prepare((x, 28), range(FIRST, FIRST + climate.YEARS), Path(directory, "work"), out, Path(directory))
+            files = {str(path.relative_to(out)): path for path in out.rglob("*.gz")}
+            region = climate.Region.around([175.1, 89.6, 175.3, 89.8])
+            weekly, _, _, z = climate.climate(region, FIRST, files)
+        rows, cols = region.zarr_index()
+        # Columns 3548 to 3551 are in block 36, the others in block 37.
+        self.assertEqual((rows[[0, -1]].tolist(), cols[[0, -1]].tolist()), ([1800, 1794], [3548, 3554]))
+        self.assertTrue(np.allclose(weekly["tmax"][0, 0], (rows[:, None] - 1790) + (cols[None, :] - 3550) / 100, atol=1e-4))
+        self.assertTrue((z == 1000 * rows[:, None] + cols[None, :]).all())
 
 
 if __name__ == "__main__":

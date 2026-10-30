@@ -284,8 +284,9 @@ inspect *args:
 # Data targets and the store: a bare `obc data` shows what each target serves and what to run
 # next. `obc data update TARGET` bakes what is stale and switches the target to the new release;
 # `--region`, `--box`, `--add`, `--remove` and `--refresh` change its settings, and `--only LAYER`
-# bakes a layer again. `obc data sources` lists every source with licence, R2 copy, and policy,
-# versions and state per target; `obc data areas` lists regions and Geofabrik areas;
+# bakes a layer again. `obc data sources` lists every source with licence, how this machine holds
+# it and its state per target, and with `--layer` or `--region` what a layer or a region bake
+# reads and still needs; `obc data areas` lists regions and Geofabrik areas;
 # `obc data fetch` puts a source version in the store; `obc data clean` cleans the store.
 # `obc data serve` serves `local` to the apps and follows its updates. `obc data setup` shows
 # what this machine can do; `obc data ui` serves its page, and `obc data open MACHINE` opens the
@@ -315,9 +316,10 @@ data *args:
 #   obc bake clean-r2                 # dry-run removal of the complete maps bucket
 #   obc bake clean-r2 --apply         # purge that bucket before a fresh publish
 #
-# Publish reads its public URL and R2 credentials from tools/obc.local or the
-# environment. The clean command verifies the configured bucket by reading the
-# live catalog at OBC_R2_PREFIX, then deletes every object under that prefix through the
+# Publish reads its public URL from tools/obc.local or the environment, and the R2
+# key from ~/.config/openbikecomputer/credentials.env or the environment. The clean
+# command verifies the configured bucket by reading the live catalog at OBC_R2_PREFIX,
+# then deletes every object under that prefix through the
 # R2 client (`obc data r2`), which asks first and logs each object in removed.jsonl.
 [doc("Bake, verify, publish, or replace R2 objects using $OBC_BAKE_TREE")]
 [group('maps')]
@@ -416,7 +418,7 @@ bake *args:
           _run "${client[@]}" list "$prefix"
         fi ;;
       terrain)
-        # The terrain artifact class, on its own revision track (OBCC_Spec.md §13). Same
+        # The terrain artifact class, on its own revision track (obcc-catalog.md §13). Same
         # tree as `bake`, deliberately a separate command: it needs DEM tiles and no OSM
         # extract, and it must never be a step of a schema re-bake.
         shift
@@ -565,6 +567,15 @@ prose *args:
     source "{{lib}}"; obc_init
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/prose.py" "$@"
+
+[doc("System docs against the code, and the mode of a change. Args: check [--base REF [--pr]] [--update] | mode [KIND [VALUE]] | hash FILE")]
+[group('docs')]
+cairn *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run python3 "$OBC_TOOLS/cairn/cairn.py" "$@"
 
 # Serve the static hosted tier — the no-backend site (phase C of #894), as deployed.
 # Builds and serves it on :4173. Args: [PORT]. It reads the device catalogue of the
@@ -831,7 +842,7 @@ check *args:
     _ok "all run gates passed"
 
 # Dry-run by default: `obc clean`, then `obc clean --days 14 --apply`.
-[doc("Remove old OBC test scratch under the system temp directory. Args: [--apply] [--days N]")]
+[doc("Remove old OBC test scratch and old artifacts in $CARGO_TARGET_DIR. Args: [--apply] [--days N]")]
 [group('build')]
 clean *args:
     #!/usr/bin/env bash

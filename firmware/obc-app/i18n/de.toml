@@ -43,11 +43,6 @@ none_sub = "Keine Stopps"
 none_category_sub = "Nichts dieser Art"
 no_route_sub = "Erst Route laden"
 
-[up_ahead_source]
-both = "Beides"
-waypoints = "Wegpunkte"
-map_pois = "POIs"
-
 # --- Units: the `Units` enum names ---
 [units]
 metric = "Metrisch"

@@ -6,7 +6,7 @@ description: How a firmware package is released, delivered, validated, installed
 # Firmware updates
 
 The device has one application slot and a small bootloader, and the update design reserves storage
-for the previous image. An update package uses the [OBCU format](src:specs/OBCU_Spec.md) and is
+for the previous image. An update package uses the [OBCU format](src:specs/obcu-update.md) and is
 stored as an ordinary object on the card.
 
 Uploading a package does not install it. Installation is a separate, explicit step, and the rider
@@ -49,7 +49,7 @@ The package carries a CRC for integrity and an Ed25519 signature for authenticit
 message covers a context string, the version, the image length, and the image, so a package cannot
 be replayed as a different version. The application verifies the signature before it arms; the
 bootloader verifies the image CRC before it erases. See the
-[OBCU specification](src:specs/OBCU_Spec.md).
+[OBCU specification](src:specs/obcu-update.md).
 
 ## Release publication
 
@@ -128,8 +128,8 @@ during an install.
 
 ## Implementation
 
-- OBCU and boot-state formats: [`OBCU_Spec.md`](src:specs/OBCU_Spec.md)
-- Install protocol: [`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md)
+- OBCU and boot-state formats: [`obcu-update.md`](src:specs/obcu-update.md)
+- Install protocol: [`flat-store-protocol.md`](src:specs/flat-store-protocol.md)
 - Shared update logic: [`obc-dfu`](src:firmware/obc-dfu)
 - Bootloader: [`obc-boot`](src:firmware/obc-boot)
 - Package tool: [`obc-mkimage`](src:host/obc-mkimage)

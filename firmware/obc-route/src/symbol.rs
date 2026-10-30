@@ -1,4 +1,4 @@
-//! The canonical GPX symbol to [`PoiCategory`] mapping. `OBCR_Spec.md` mirrors it row for row.
+//! The canonical GPX symbol to [`PoiCategory`] mapping. `obcr-route.md` mirrors it row for row.
 //!
 //! A GPX `<wpt>` carries its icon as freeform text in `<sym>` or `<type>`. There is no registry,
 //! so this table is a curation read off real exports, not a standard.

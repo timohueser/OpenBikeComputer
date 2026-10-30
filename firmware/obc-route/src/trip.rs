@@ -1,6 +1,6 @@
 //! The trip object: the phone-authored metadata object that describes a trip's days. A trip
 //! references one route object per day, in ride order, and holds no route bytes. The layout is in
-//! `obc-ble-interface-spec.md` §7.7 and pinned by `specs/vectors/trip-v3.bin`.
+//! `ble-interface.md` §7.7 and pinned by `specs/vectors/trip-v3.bin`.
 //!
 //! The object length is fully determined by the header: `64 + 16·day_count` bytes. A decoder
 //! rejects a payload of any other length with [`Error::BadOffset`], which is also the torn-write

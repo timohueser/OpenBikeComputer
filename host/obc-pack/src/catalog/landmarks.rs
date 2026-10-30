@@ -3,7 +3,7 @@
 //! The third artifact class, read on its own terms the way terrain is. Nothing a consumer
 //! downloads: a cell already carries the landmark sections cut from these artifacts, so the
 //! published copies are the provenance and the licence record behind that content
-//! (`OBCC_Spec.md` §14).
+//! (`obcc-catalog.md` §14).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -68,7 +68,7 @@ pub(super) fn read_landmarks(
         if !regions.contains(id.as_str()) {
             return Err(format!(
                 "{}: a landmark artifact for `{id}`, which this catalog publishes no region for — a landmark \
-                 artifact is compiled from one region's boundary and belongs to it (OBCC_Spec.md §14)",
+                 artifact is compiled from one region's boundary and belongs to it (obcc-catalog.md §14)",
                 dir.display()
             ));
         }
@@ -121,7 +121,7 @@ fn read_artifact(id: &str, dir: &Path, base_url: &str) -> Result<LandmarkArtifac
     let text = std::fs::read_to_string(&declaration_path).map_err(|e| {
         format!(
             "{}: {e} — a published landmark artifact MUST declare what it was compiled from; run `obc bake \
-             landmarks {id}` (OBCC_Spec.md §14)",
+             landmarks {id}` (obcc-catalog.md §14)",
             declaration_path.display()
         )
     })?;

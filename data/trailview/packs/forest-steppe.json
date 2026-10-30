@@ -42,6 +42,6 @@
   "goat": { "groups": 1, "size": [1, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
   "horse": { "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable"] }
  },
- "orchard": "hawthorn",
+ "rows": { "orchard": "hawthorn" },
  "style": { "ru-bel": "village-house", "ru-vor": "village-house", "ru": "wood-cabin", "*": "village-house" }
 }

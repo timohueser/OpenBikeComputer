@@ -20,6 +20,7 @@
     let clean = $state<CliQuery<CleanPlan> | null>(null);
     let removed = $state<number | null>(null);
     const goes = (plan: CleanPlan) => plan.store.remove_bytes + plan.store.partial_bytes;
+    const maps = ({ store }: CleanPlan) => (store.unpacked.length ? `, ${count(store.unpacked.length, "unpacked map")}` : "");
     function plan() {
         clean = new CliQuery<CleanPlan>(["clean"]);
         removed = null;
@@ -83,7 +84,7 @@
                 {@const { store } = clean.output}
                 {#if goes(clean.output)}
                     <p>
-                        A clean removes {size(goes(clean.output))}: {count(store.snapshots.length, "record")}, {count(store.objects.length, "object")} and
+                        A clean removes {size(goes(clean.output))}: {count(store.snapshots.length, "record")}, {count(store.objects.length, "object")}{maps(clean.output)} and
                         {size(store.partial_bytes)} of unfinished work. It keeps {size(store.keep_bytes)}: {list([
                             ...new Set(store.kept.flatMap((kept) => kept.because)),
                         ])}. Clean now reads the plan again, and removes what nothing reaches then.
@@ -137,7 +138,7 @@
         gap: 4px;
     }
     .can {
-        border: 2px solid var(--ink);
+        border: 1px solid var(--ink-faint);
     }
     .pair {
         display: flex;

@@ -146,7 +146,7 @@ Shared OSM node identities become junctions. The packer splits ways there, remov
 and drops small disconnected components. A legality filter rejects private access, motor roads, and
 bicycle prohibitions, and each accepted edge is classified by highway and surface into one way-kind
 byte, which is what the profile weights read. See
-[OBCM section 8](src:specs/OBCM_Spec.md).
+[OBCM section 8](src:specs/obcm-map.md).
 
 An assembled map keeps one graph: the assembler copies each surviving edge geometry record
 unchanged and rebuilds the identities, the adjacency, and the indexes.
@@ -154,7 +154,7 @@ unchanged and rebuilds the identities, the adjacency, and the indexes.
 ### Weighting the graph: bike profiles
 
 A map carries four bike profiles in fixed order: Road, Gravel, MTB, and Touring
-([OBCM §8.6](src:specs/OBCM_Spec.md)). A profile gives a multiplier for each highway class and
+([OBCM §8.6](src:specs/obcm-map.md)). A profile gives a multiplier for each highway class and
 surface, and a climb weight.
 
 Every multiplier is at least one, and zero means forbidden. That is not a style choice: A* needs a

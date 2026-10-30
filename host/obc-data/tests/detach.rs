@@ -68,7 +68,7 @@ fn an_update_runs_detached_with_its_review_and_a_follower_gets_its_end() {
 fn a_source_refresh_runs_detached() {
     let repo = Repo::new("refresh");
     let source = "[[source]]\nid = \"earth\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Earth\"\n\
-                  fetch = { kind = \"http\", url = \"https://127.0.0.1:9/earth.zip\" }\nversion = \"digest\"\nredistribute = true\n";
+                  fetch = { kind = \"http\", url = \"https://127.0.0.1:9/earth.zip\" }\nversion = \"digest\"\nkeep = \"store\"\nredistribute = true\n";
     std::fs::write(repo.0.join("repo/data/sources.toml"), source).unwrap();
     let refused = repo.data(&["--json", "source", "refresh", "other"]);
     assert_eq!(refused.status.code(), Some(2), "an unknown source is refused before a run starts");

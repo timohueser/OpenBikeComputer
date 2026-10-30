@@ -246,7 +246,7 @@ pub(super) fn writable(name: &str, target: &crate::target::Target, files: bool) 
     let crate::target::Target::R2(remote) = target else { return Ok(()) };
     remote.writer().map_err(|e| {
         Code::Blocked.error(format!("target `{name}` is an R2 bucket: {e}")).fix(
-            "Set the `OBC_R2_*` variables of the bucket: `tools/obc.local` holds them on a machine that publishes.",
+            "Put the `OBC_R2_*` variables of the bucket in ~/.config/openbikecomputer/credentials.env: one `NAME=VALUE` line each, mode 0600.",
         )
     })?;
     if !files {
@@ -296,7 +296,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{
-        deploy_cli, overview, prepare_cli, r2_cli, rollback_cli, router_cli, runs_cli, serve_cli, setup_cli,
+        copy_cli, deploy_cli, overview, prepare_cli, r2_cli, rollback_cli, router_cli, runs_cli, serve_cli, setup_cli,
         unlock_cli, update_cli,
     };
     use crate::engine::runs::{Status, View};
@@ -314,13 +314,21 @@ mod tests {
             schema("`router`", generator.subschema_for::<router_cli::Router>()),
             schema("`unlock`", generator.subschema_for::<unlock_cli::Unlocked>()),
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
+            schema("`sources --layer`", generator.subschema_for::<crate::cli::holding::SourceLayers>()),
             schema(
-                "`source refresh`, `serve --detach`, `deploy WHAT --expect`, `r2 legacy --delete`",
+                "`sources --region`, `sources --box`",
+                generator.subschema_for::<crate::cli::holding::RegionSources>(),
+            ),
+            schema(
+                "`source refresh`, `source copy`, `serve --detach`, `deploy WHAT --expect`, `r2 legacy --delete`",
                 generator.subschema_for::<Detached>(),
             ),
             schema("`source prepare`", generator.subschema_for::<update_cli::Started>()),
             schema("`source prepare --dry-run`", generator.subschema_for::<prepare_cli::PrepareReview>()),
+            schema("`source copy --dry-run`", generator.subschema_for::<copy_cli::CopyPlan>()),
             schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),
+            schema("`archive status`", generator.subschema_for::<crate::datasets::ArchiveStatus>()),
+            schema("`archive get`, `archive verify`", generator.subschema_for::<crate::datasets::ArchiveDataset>()),
             schema("`areas`", generator.subschema_for::<crate::cli::Areas>()),
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
             schema("`serve`, when it listens", generator.subschema_for::<serve_cli::Listening>()),
@@ -376,7 +384,8 @@ mod tests {
         let mut text = String::from("| Code | Exit | When | Fix |\n| --- | --- | --- | --- |\n");
         for variant in schema["oneOf"].as_array().expect("each code has a description") {
             let code: Code = serde_json::from_value(variant["const"].clone()).unwrap();
-            let when = variant["description"].as_str().unwrap();
+            // A doc comment wraps; a table row must be one line.
+            let when = variant["description"].as_str().unwrap().replace('\n', " ");
             text +=
                 &format!("| `{}` | {} | {when} | {} |\n", variant["const"].as_str().unwrap(), code.exit(), code.fix());
         }
@@ -432,7 +441,7 @@ mod tests {
     /// The operator page's tests read these examples in place of `obc data --json`.
     #[test]
     fn each_example_of_the_page_has_the_schema_of_its_command() {
-        const EXAMPLES: [(&str, &str); 15] = [
+        const EXAMPLES: [(&str, &str); 17] = [
             ("areas.json", "Areas"),
             ("clean.json", "CleanPlan"),
             ("deploy-plan.json", "DeployPlan"),
@@ -446,6 +455,8 @@ mod tests {
             ("run-running.json", "View"),
             ("runs.json", "RunList"),
             ("setup.json", "Setup"),
+            ("sources-layers.json", "SourceLayers"),
+            ("sources-region.json", "RegionSources"),
             ("sources.json", "Sources"),
             ("status.json", "Overview"),
         ];

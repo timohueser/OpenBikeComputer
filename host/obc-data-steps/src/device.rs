@@ -8,6 +8,7 @@
 //! from the `wiki` shards.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::path::Path;
 
 use obc_bake::coverage::Coverage;
 use obc_bake::step::LAND;
@@ -87,6 +88,11 @@ impl Product for Device {
 
     fn pointer(&self) -> Pointer {
         Pointer { key: "cell-catalog/catalog.json", step: catalog::LAYER, path: "catalog.json" }
+    }
+
+    fn reads(&self, _: &Path) -> Vec<String> {
+        let reads = [EXTRACTS, POLY, catalog::INDEX, LAND, TILE_LIST, GLO30, "terrain", "wiki"];
+        reads.map(str::to_string).into()
     }
 
     fn named(&self, outputs: &[Output]) -> Result<Vec<(String, LayerFile)>, String> {
@@ -292,7 +298,7 @@ pub(crate) fn content_declarations(
             };
             let Some((version, paths)) = &shards else {
                 let reason =
-                    format!("no target lists a version of `{WIKI}`. Fix: Run `obc data source prepare {WIKI}`.");
+                    format!("the archive lists no version of `{WIKI}`. Fix: Run `obc data source prepare {WIKI}`.");
                 blocked.push(BlockedLayer::new(name, &DEVICE_LANDMARKS, reason));
                 continue;
             };
@@ -540,10 +546,10 @@ fn reference(
     }))
 }
 
-/// The tiles of `terrain` among some archive tiles: the files `<pool>16/<ti:04>/<tj:04>.tif` of
-/// those tiles in the version that the target reads, and the `<pool>index.json` of the version.
-/// With a `layer`, `notes` on it say where a national model has a height that the version lacks:
-/// the layer uses GLO-30 there until a version adds that region.
+/// The blocks of `terrain` of some archive tiles: the files `<pool>18/<bi:04>/<bj:04>.tif` of the
+/// blocks of those tiles in the version that the target reads, and the `index.json` of the version.
+/// With a `layer`, `notes` on it say where a national model has a height in a block that the
+/// version lacks: the layer uses GLO-30 there until a version adds that region.
 pub(crate) struct Models<'a> {
     pub tiles: &'a BTreeSet<CellId>,
     /// `""` for the maximum, `"mean/"` for the mean.
@@ -565,9 +571,16 @@ impl Models<'_> {
         notes: &mut Vec<Note>,
     ) -> Result<Option<Input>, Unplanned> {
         let id = crate::terrain_reference::ID;
-        let path = |tile: &CellId| format!("{}16/{:04}/{:04}.tif", self.pool, tile.i, tile.j);
+        let path = |tile: &CellId| crate::terrain_reference::block_file(self.pool, tile.i, tile.j);
         let (pinned, held) = match version(inputs, store, id, &[]).map_err(Unplanned::Failed)? {
             Ok(pinned) => match manifest(store, id, &pinned, wanted)? {
+                Some(manifest) if manifest.format != crate::terrain_reference::FORMAT => {
+                    let (version, format) = (manifest.version, crate::terrain_reference::FORMAT);
+                    return Err(invalid(format!(
+                        "{id}@{version} is of format {}, not {format}. Fix: obc data source prepare {id} --region REGION",
+                        manifest.format
+                    )));
+                }
                 Some(manifest) => (Some(pinned), manifest.files.into_iter().map(|file| file.path).collect()),
                 None => return Ok(None),
             },
@@ -598,9 +611,10 @@ impl Models<'_> {
                 }
             }
         }
-        let mut files: Vec<String> = self.tiles.iter().map(path).filter(|path| held.contains(path)).collect();
+        let files: BTreeSet<String> = self.tiles.iter().map(path).filter(|path| held.contains(path)).collect();
+        let mut files: Vec<String> = files.into_iter().collect();
         let Some(pinned) = pinned.filter(|_| !files.is_empty()) else { return Ok(None) };
-        files.push(format!("{}index.json", self.pool));
+        files.push("index.json".into());
         Ok(Some(Input::Snapshot { source: id.into(), version: pinned, params: Vec::new(), files }))
     }
 }
@@ -786,6 +800,7 @@ pub(crate) mod tests {
             extends: Vec::new(),
             scope: None,
             languages: Vec::new(),
+            publish_text: None,
             licence: None,
             attribution: None,
             machine: "test".into(),
@@ -876,7 +891,14 @@ pub(crate) mod tests {
             store.insert(&file, &sha256).unwrap();
             let (url, size) = (format!("https://example.org/{name}"), bytes.len() as u64);
             if snapshot.file(&url).is_none() {
-                snapshot.files.push(FileRecord { name: name.clone(), url, size, sha256, retrieved: String::new() });
+                snapshot.files.push(FileRecord {
+                    name: name.clone(),
+                    url,
+                    size,
+                    sha256,
+                    retrieved: String::new(),
+                    archive: None,
+                });
             }
         }
         store.put_snapshot(&snapshot).unwrap();
@@ -1150,7 +1172,7 @@ pub(crate) mod tests {
         let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
         let blocked: Vec<(&str, &str)> =
             listed.blocked.iter().map(|blocked| (blocked.step.as_str(), blocked.reason.as_str())).collect();
-        let reason = "no target lists a version of `wiki`. Fix: Run `obc data source prepare wiki`.";
+        let reason = "the archive lists no version of `wiki`. Fix: Run `obc data source prepare wiki`.";
         assert_eq!(&blocked[..2], [("device/landmark-content", reason), ("device/peak-content", reason)]);
         assert_eq!(blocked[2].0, catalog::LAYER);
         assert!(!listed.steps.iter().any(|step| step.name.starts_with("device/landmarks/")));
@@ -1270,15 +1292,15 @@ pub(crate) mod tests {
         }
     }
 
-    /// A version of `terrain` whose manifest names `paths` and the two indexes, for the inputs of
-    /// the Grimsel: its pin and the bytes of its manifest.
+    /// A version of `terrain` whose manifest names `paths` and the index, for the inputs of the
+    /// Grimsel: its pin and the bytes of its manifest.
     pub(crate) fn terrain_version(inputs: &mut Inputs, paths: &[&str]) -> (String, Vec<u8>) {
         let file = |path: &str| LayerFile { path: path.into(), size: 1, sha256: sha256_hex(path.as_bytes()) };
-        let paths = paths.iter().copied().chain(["index.json", "mean/index.json"]);
+        let paths = paths.iter().copied().chain(["index.json"]);
         let manifest = Manifest {
             source: "terrain".into(),
             version: "2026-10-01".into(),
-            format: 3,
+            format: crate::terrain_reference::FORMAT,
             revision: 1,
             inputs: Vec::new(),
             files: paths.map(file).collect(),
@@ -1286,6 +1308,7 @@ pub(crate) mod tests {
             extends: Vec::new(),
             scope: None,
             languages: Vec::new(),
+            publish_text: None,
             licence: None,
             attribution: None,
             machine: "test".into(),
@@ -1299,20 +1322,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_leaf_plans_from_the_manifest_of_terrain_and_reads_only_the_tiles_of_its_window() {
+    fn a_leaf_plans_from_the_manifest_of_terrain_and_reads_only_the_blocks_of_its_window() {
         let temp = temp("models");
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &["N46_00_E008"]);
         let (mut inputs, regions) = grimsel(&store, "1");
         let (pinned, manifest) =
-            terrain_version(&mut inputs, &["16/4000/4000.tif", "16/4808/4215.tif", "16/4816/4232.tif"]);
+            terrain_version(&mut inputs, &["18/1000/1000.tif", "18/1202/1053.tif", "18/1204/1058.tif"]);
         let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &inputs, &regions, &store) else {
             panic!("no manifest")
         };
         let swiss = "terrain".to_string();
         assert_eq!(wanted, [Wanted { source: swiss.clone(), version: Some(pinned.clone()), params: Vec::new() }]);
 
-        stored(&store, &swiss, &pinned, &[], &[(MANIFEST.into(), manifest)]);
+        stored(&store, &swiss, &pinned, &[], &[(MANIFEST.into(), manifest.clone())]);
         let steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
         let reads = |leaf: &str| {
             let reference = steps.iter().find(|step| step.name == format!("device/reference/{leaf}")).unwrap();
@@ -1320,8 +1343,8 @@ pub(crate) mod tests {
             assert_eq!((source, version), (&swiss, &pinned));
             files.clone()
         };
-        assert_eq!(reads("0037-0032"), ["16/4808/4215.tif", "index.json"]);
-        assert_eq!(reads("0037-0033"), ["16/4816/4232.tif", "index.json"]);
+        assert_eq!(reads("0037-0032"), ["18/1202/1053.tif", "index.json"]);
+        assert_eq!(reads("0037-0033"), ["18/1204/1058.tif", "index.json"]);
         let reference = steps.iter().find(|step| step.name == "device/reference/0037-0032").unwrap();
         assert_eq!(reference.options["source"], "terrain");
         assert!(reference.client.is_none(), "only the terrain step reads the national models");
@@ -1329,6 +1352,18 @@ pub(crate) mod tests {
         assert!(matches!(terrain.inputs.last(), Some(Input::Step { name, .. }) if *name == reference.name));
         let national = |input: &Input| matches!(input, Input::Snapshot { source, .. } if source.starts_with("dtm-"));
         assert!(!steps.iter().flat_map(|step| &step.inputs).any(national), "no step reads a national model");
+
+        // A version of another format refuses, and names the fix.
+        let mut older: Manifest = serde_json::from_slice(&manifest).unwrap();
+        older.format -= 1;
+        let bytes = older.canonical();
+        let pinned = format!("2026-10-01/{}", sha256_hex(&bytes));
+        inputs.resolved.insert((swiss.clone(), Vec::new()), pinned.clone());
+        stored(&store, &swiss, &pinned, &[], &[(MANIFEST.into(), bytes)]);
+        let Err(Unplanned::Invalid(refused)) = map_steps(&root(), &inputs, &regions, &store) else {
+            panic!("a version of format 3 refuses")
+        };
+        assert!(refused.contains("is of format 3, not 4. Fix: obc data source prepare terrain"), "{refused}");
     }
 
     #[test]
@@ -1338,12 +1373,13 @@ pub(crate) mod tests {
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &["N46_00_E008"]);
         let (mut inputs, regions) = grimsel(&store, "1");
-        // The boxes of `dtm-fr`, `dtm-de-by` and `dtm-it` reach the Grimsel; their polygons stop west, east
-        // and south of it.
+        // The boxes of `dtm-fr`, `dtm-de-by`, `dtm-it` and `dtm-it-21` reach the Grimsel; their polygons stop
+        // west, east and south of it.
         for (area, [west, south, east, north]) in [
             ("europe/france", [-5.0, 42.0, 7.5, 51.0]),
             ("europe/germany/bayern", [8.97, 47.27, 13.84, 50.56]),
             ("europe/italy", [6.6, 35.4, 18.6, 46.0]),
+            ("europe/italy/nord-ovest", [6.6, 43.7, 10.6, 46.0]),
         ] {
             let poly = box_poly(&Bbox { west, south, east, north });
             fetched(&store, POLY, "2", &[("area".into(), area.into())], &[(format!("{area}.poly"), poly)]);
@@ -1359,7 +1395,7 @@ pub(crate) mod tests {
         let release = declared.iter().map(|output| (output.step.as_str(), output)).collect();
 
         // Swiss heights in the west leaf only: the east leaf still says so.
-        let (pinned, manifest) = terrain_version(&mut inputs, &["16/4000/4000.tif", "16/4808/4215.tif"]);
+        let (pinned, manifest) = terrain_version(&mut inputs, &["18/1000/1000.tif", "18/1202/1053.tif"]);
         stored(&store, "terrain", &pinned, &[], &[(MANIFEST.into(), manifest)]);
         let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
         assert_eq!(listed.notes, [note]);
@@ -1369,19 +1405,24 @@ pub(crate) mod tests {
             builds(&update.plan).into_iter().filter(|step| step.starts_with("device/terrain/")).collect();
         assert_eq!(terrain, ["device/terrain/0037-0032"].into(), "the leaf without a Swiss tile is kept");
 
-        // Every tile in the box of the region: the cells read tiles past it, which take GLO-30
-        // without a note.
+        // The block of every tile in the box of the region: the cells read tiles past them, which
+        // take GLO-30 without a note.
         let Area::Box { bbox } = &regions.get("grimsel").unwrap().area else { unreachable!() };
         let tiles = Coverage::parse_poly(&box_poly(bbox)).unwrap().cells(TILE_LOG2.into());
-        let paths: Vec<String> = tiles.iter().map(|tile| format!("16/{:04}/{:04}.tif", tile.i, tile.j)).collect();
+        let paths: BTreeSet<String> =
+            tiles.iter().map(|tile| crate::terrain_reference::block_file("", tile.i, tile.j)).collect();
         let (pinned, manifest) = terrain_version(&mut inputs, &paths.iter().map(String::as_str).collect::<Vec<_>>());
         stored(&store, "terrain", &pinned, &[], &[(MANIFEST.into(), manifest)]);
         let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
         assert_eq!(listed.notes, []);
         let past = listed.steps.iter().filter(|step| step.name.starts_with("device/reference/")).any(|step| {
             let Input::Snapshot { files, .. } = &step.inputs[0] else { panic!() };
-            step.options["tiles"].as_array().unwrap().len() > files.len() - 1
+            step.options["tiles"].as_array().unwrap().iter().any(|tile| {
+                let (ti, tj) = tile.as_str().unwrap().split_once('/').unwrap();
+                let (ti, tj): (i64, i64) = (ti.parse().unwrap(), tj.parse().unwrap());
+                !files.contains(&crate::terrain_reference::block_file("", ti, tj))
+            })
         });
-        assert!(past, "a cell reads a tile past the region");
+        assert!(past, "a cell reads a tile past the blocks of the region");
     }
 }

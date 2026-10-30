@@ -4,7 +4,7 @@ and the lithology from the ground sources of `sources.py`, and the region, joine
 The `obc data` steps (`--step`) are `planner/trailview-material`, `planner/trailview-lithology`,
 `planner/trailview-region` and `planner/trailview-ground`; the option `layer` names the one to bake.
 `ground` joins the other three. `--source ID --fetch OUT` is the capture of a ground source whose
-protocol a capture reads.
+protocol a capture reads; `--archive ZIP --work DIR` gives the file of an `archive-features` source.
 """
 
 import argparse
@@ -349,8 +349,10 @@ def main():
     parser.add_argument("--bounds", type=geo.bounds, required=True)
     parser.add_argument("--source", required=True, help="the id of the ground source")
     parser.add_argument("--fetch", type=Path, required=True, help="write the capture of the source here")
+    parser.add_argument("--archive", type=Path, help="the zip in the archive of an archive-features source")
+    parser.add_argument("--work", type=Path, help="unpack the zip here")
     args = parser.parse_args()
-    sources.fetch(args.source, args.bounds, args.fetch, MATERIAL_ZOOM)
+    sources.fetch(args.source, args.bounds, args.fetch, MATERIAL_ZOOM, archive=args.archive, work=args.work)
 
 
 if __name__ == "__main__":

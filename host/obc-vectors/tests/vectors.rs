@@ -289,7 +289,7 @@ fn trip_vectors_are_self_consistent() {
     assert_eq!(days, TRIP_DAYS);
 }
 
-/// The OBCT terrain shard (`OBCT_Spec.md`): the checked-in bytes parse through the production
+/// The OBCT terrain shard (`obct-terrain.md`): the checked-in bytes parse through the production
 /// `obc-elevation` reader, and the three sampling rules that a second implementation is most likely
 /// to get wrong — the cross-cell fetch, the coverage clamp and `NODATA` propagation — produce the
 /// numbers the spec's worked examples state.

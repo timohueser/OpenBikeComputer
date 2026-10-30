@@ -71,14 +71,16 @@ fn stat_tells_an_absent_object_from_an_empty_one() {
 
 fn obc_data_r2(temp: &Temp, args: &[&str]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_obc-data-plumbing"));
-    // A credential from tools/obc.local must neither reach the child nor clash with the local bucket.
+    // A credential from the environment or the credentials file must neither reach the child nor
+    // clash with the local bucket.
     for (name, _) in std::env::vars_os() {
         let text = name.to_string_lossy();
         if text.starts_with("OBC_R2_") || text.starts_with("OBC_FIXTURE_R2_") {
             command.env_remove(&name);
         }
     }
-    command.arg("r2").args(args).env("OBC_R2_LOCAL_DIR", temp.bucket()).stdin(Stdio::null()).output().unwrap()
+    command.env("HOME", &temp.0).env("OBC_R2_LOCAL_DIR", temp.bucket());
+    command.arg("r2").args(args).stdin(Stdio::null()).output().unwrap()
 }
 
 #[test]
@@ -147,7 +149,7 @@ fn once_the_bucket_has_a_release_only_an_update_writes_its_keys() {
     let status = |args: &[&str]| obc_data_r2(&temp, args).status.code();
     assert_eq!(status(&["put", file, "planner/catalog.json"]), Some(0), "without a release, a pointer is free");
     assert_eq!(status(&["put", file, "release.json"]), Some(0));
-    for key in ["planner/catalog.json", "objects/a", "releases/b.json", "lock.json", "sources/terrain/versions.json"] {
+    for key in ["planner/catalog.json", "objects/a", "releases/b.json", "lock.json"] {
         assert_eq!(status(&["put", file, key]), Some(1), "{key}");
     }
     assert_eq!(status(&["delete", "planner/catalog.json", "--reason", "x", "--yes"]), Some(1));

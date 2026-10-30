@@ -31,7 +31,7 @@ The packer and the device use the same `no_std` sampler,
 the ascent the router weighs, and the device measures the climb the rider sees. If the two sampled
 differently, a route would promise one climb and report another.
 
-[OBCT section 5](src:specs/OBCT_Spec.md) specifies the integer interpolation exactly, so an
+[OBCT section 5](src:specs/obct-terrain.md) specifies the integer interpolation exactly, so an
 independent implementation returns the same whole-meter height. Cells own their seam samples, so a
 position on a cell boundary has one answer.
 
@@ -96,6 +96,12 @@ The planner maps and TrailView read one pyramid of
 [terrain tiles](src:specs/planner-release.md). A national model gives the height where it holds
 the ground, and GLO-30 gives it elsewhere. GLO-30 leaves the sea edge above sea level, and rounds
 a summit into a dome.
+
+GLO-30 is a surface model, so it stands on the forest and the roofs. Next to a national model,
+GLO-30 takes the bias of that model: one median offset per model, which the terrain prepare
+measures once and the version of the terrain keeps. So within one version, a bake of one region
+and a bake of all of Europe give the same heights. The planner routes read their heights through
+the same function as the maps, but without the corrections at coastlines and summits.
 
 Where GLO-30 gives the height, also in the 1 km band where it blends into a national model, the
 bake corrects these faults from OSM. The sea beside the coastline is at sea level. A mapped summit
@@ -163,8 +169,8 @@ nowhere else.
 map.
 
 The posting and the cell size are header fields, so changing them is a re-bake and not a format
-version. See the [OBCT specification](src:specs/OBCT_Spec.md) for the limits and the byte layout,
-and [OBCC section 13](src:specs/OBCC_Spec.md) for the catalog contract.
+version. See the [OBCT specification](src:specs/obct-terrain.md) for the limits and the byte layout,
+and [OBCC section 13](src:specs/obcc-catalog.md) for the catalog contract.
 
 ## Attribution
 
@@ -183,7 +189,7 @@ Map data carries the OpenStreetMap credit of the same registry.
 
 ## Implementation
 
-- OBCT contract: [`OBCT_Spec.md`](src:specs/OBCT_Spec.md)
+- OBCT contract: [`obct-terrain.md`](src:specs/obct-terrain.md)
 - Reader and sampler: [`obc-elevation`](src:firmware/obc-elevation)
 - DEM converter: [`obc-dem`](src:host/obc-dem)
 - Terrain publisher: [`terrain.rs`](src:host/obc-bake/src/terrain.rs)

@@ -1,4 +1,4 @@
-//! The verify pass (`OBCA_Spec.md`): read the finished output back through the real reader — the
+//! The verify pass (`obca-assembly.md`): read the finished output back through the real reader — the
 //! same crate the firmware runs — before anything is handed anywhere.
 //!
 //! This is a precondition of handing a map anywhere, not an optional extra: a catalog artifact was

@@ -1,7 +1,7 @@
 //! Builders for the shared S0 wire-protocol test vectors (`specs/vectors/`).
 //!
 //! Each function constructs one fixture directly from the spec text
-//! (`obc-ble-interface-spec.md` / `OBCR_Spec.md`), independently of the production
+//! (`ble-interface.md` / `obcr-route.md`), independently of the production
 //! codecs on either side. The checked-in fixture files are these builders' output;
 //! `tests/vectors.rs` asserts they haven't drifted.
 //!
@@ -231,7 +231,7 @@ pub fn ride_v6() -> Vec<u8> {
     v
 }
 
-// OBCT terrain (OBCT_Spec.md)
+// OBCT terrain (obct-terrain.md)
 
 /// The terrain fixture's posting and cell size as `log2(µdeg)`. The posting is the v1 value
 /// (`2^9`); the **cell is deliberately not** — a v1 `2^19` cell is 2 MiB of raster, and the whole
@@ -272,7 +272,7 @@ pub fn terrain_coord(base_cell: u32, d: u32) -> i32 {
     (-(1i64 << 28) + ((base_sample + d as i64) << TERRAIN_POSTING_LOG2)) as i32
 }
 
-/// A full **OBCT terrain shard** (`OBCT_Spec.md` §4): the 32-byte header, the row-major `uint32`
+/// A full **OBCT terrain shard** (`obct-terrain.md` §4): the 32-byte header, the row-major `uint32`
 /// offset directory over the 2 × 2 cell rectangle (`0` = the absent cell), then the three present
 /// cell blocks — each 2 × 2 tiles of 16 × 16 `int16` metres, row-major with rows advancing latitude.
 ///
@@ -386,7 +386,7 @@ pub fn update_raw_image() -> Vec<u8> {
     v
 }
 
-/// A full **OBCU update container** (`OBCU_Spec.md` §1, `UPDATE.BIN`): the fixed
+/// A full **OBCU update container** (`obcu-update.md` §1, `UPDATE.BIN`): the fixed
 /// 64-byte header (magic `OBCU`, version 1, raw-image length + CRC-32, NUL-padded
 /// `fw_version`, header CRC-32 over bytes `0..60`) followed by [`update_raw_image`].
 /// Built straight from the spec's field table — independent of the `obc-dfu`
@@ -412,7 +412,7 @@ pub fn update_container_v1() -> Vec<u8> {
     v
 }
 
-/// A full signed OBCU v2 update container (`OBCU_Spec.md` §1): the same
+/// A full signed OBCU v2 update container (`obcu-update.md` §1): the same
 /// 64-byte header table as [`update_container_v1`] — *including* `header_version` still `1`, the
 /// flash-once-bootloader guarantee — with v1's reserved bytes `48..52` now carrying the
 /// signature-scheme marker (`sig_scheme` = 1 · `sig_len` = 64), followed by [`update_raw_image`]
@@ -560,7 +560,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // finished ride-v6 object; headerless sample arrays are not accepted as rides.
         ("track-log.obct", track_log()),
         ("track-export.gpx", track_export_gpx()),
-        // The OBCT terrain shard (`OBCT_Spec.md`): a 2 × 2 cell rectangle with a hole
+        // The OBCT terrain shard (`obct-terrain.md`): a 2 × 2 cell rectangle with a hole
         // and a NODATA sample, over a plane. Not a wire layout — a *storage* one, like
         // `track-log.obct` beside it — and it is here because three implementations will sample it
         // (the device, the `obc-dem` baker's cross-check, and eventually the browser), and the

@@ -25,12 +25,40 @@ WIDTH = max(4, len(str(((2 * ORIGIN) >> CELL) - 1)))
 MAX_CELLS = 16
 
 
-def extract(pbf: Path, out: Path, work: Path, bbox: list[float] | None = None):
-    """Osmium lists the tagged objects. `osmium export` assembles ways and areas for their boxes;
-    an object that it gives no geometry, such as a route relation, has no box. With `bbox`, only
-    the subjects whose box meets it are kept."""
+def extract(pbfs: list[Path], out: Path, work: Path, bbox: list[float] | None = None):
+    """Osmium lists the tagged objects of each extract. An object in several extracts, such as near
+    a border or in extracts of other days, is the object of its highest version; the extracts of
+    one version give the box around their boxes. `osmium export` assembles ways and areas for their
+    boxes; an object that it gives no geometry, such as a route relation, has no box. With `bbox`,
+    only the subjects whose box meets it are kept."""
     binary, _ = probe()
     work.mkdir(parents=True, exist_ok=True)
+    if len(pbfs) == 1:
+        # One extract, such as the planet with a box, needs no map of its subjects.
+        found = (subject for _, subject in objects(binary, pbfs[0], work))
+    else:
+        held = {}
+        for pbf in pbfs:
+            for version, subject in objects(binary, pbf, work):
+                earlier = held.get(subject["osm"])
+                if earlier and earlier[0] == version and (boxes := [s["box"] for s in (earlier[1], subject) if "box" in s]):
+                    subject["box"] = [min(box[0] for box in boxes), min(box[1] for box in boxes),
+                                      max(box[2] for box in boxes), max(box[3] for box in boxes)]
+                if not earlier or earlier[0] <= version:
+                    held[subject["osm"]] = (version, subject)
+        found = (held[osm][1] for osm in sorted(held, key=lambda osm: ("nwr".index(osm[0]), int(osm[1:]))))
+    partial = out.with_suffix(".partial")
+    with partial.open("w") as output:
+        for subject in found:
+            linked = "wikidata" in subject or "wikipedia" in subject
+            if linked and not (bbox and not meets(subject.get("box"), bbox)):
+                output.write(json.dumps(subject, ensure_ascii=False, separators=(",", ":")) + "\n")
+    partial.replace(out)
+
+
+def objects(binary, pbf: Path, work: Path):
+    """The version and the subject of each object of `pbf` with a `wikidata` or `wikipedia` tag. A
+    subject without a valid link has only its `osm` and its box: a newer version can drop a link."""
     filtered = work / "subjects.osm.pbf"
     run(binary, "tags-filter", pbf, "nwr/wikidata", "nwr/wikipedia", "--overwrite", "-o", filtered)
     boxes = {}
@@ -42,27 +70,21 @@ def extract(pbf: Path, out: Path, work: Path, bbox: list[float] | None = None):
             for lon, lat in coordinates(feature["geometry"]["coordinates"]):
                 west, south, east, north = min(west, lon), min(south, lat), max(east, lon), max(north, lat)
             boxes[tags["@type"][0] + str(tags["@id"])] = [west, south, east, north]
-    partial = out.with_suffix(".partial")
-    with partial.open("w") as output:
-        for line in stream(binary, "tags-filter", filtered, "nwr/wikidata", "nwr/wikipedia", "-R", "-f", "opl"):
-            fields = line.split()
-            tags = dict(part.split("=", 1) for part in next(field[1:] for field in fields if field.startswith("T")).split(",") if "=" in part)
-            tags = {decoded(key): decoded(value) for key, value in tags.items()}
-            subject = dict(osm=fields[0])
-            if catalog.QID.fullmatch(tags.get("wikidata", "")):
-                subject["wikidata"] = tags["wikidata"]
-            if LINK.fullmatch(tags.get("wikipedia", "")):
-                subject["wikipedia"] = tags["wikipedia"]
-            if len(subject) == 1:
-                continue
-            if tags.get("natural") == "peak":
-                subject["peak"], subject["tags"] = True, tags
-            if fields[0] in boxes:
-                subject["box"] = boxes[fields[0]]
-            if bbox and not meets(subject.get("box"), bbox):
-                continue
-            output.write(json.dumps(subject, ensure_ascii=False, separators=(",", ":")) + "\n")
-    partial.replace(out)
+    for line in stream(binary, "tags-filter", filtered, "nwr/wikidata", "nwr/wikipedia", "-R", "-f", "opl"):
+        fields = line.split()
+        version = int(fields[1][1:]) if fields[1].startswith("v") else 0
+        tags = dict(part.split("=", 1) for part in next(field[1:] for field in fields if field.startswith("T")).split(",") if "=" in part)
+        tags = {decoded(key): decoded(value) for key, value in tags.items()}
+        subject = dict(osm=fields[0])
+        if catalog.QID.fullmatch(tags.get("wikidata", "")):
+            subject["wikidata"] = tags["wikidata"]
+        if LINK.fullmatch(tags.get("wikipedia", "")):
+            subject["wikipedia"] = tags["wikipedia"]
+        if len(subject) > 1 and tags.get("natural") == "peak":
+            subject["peak"], subject["tags"] = True, tags
+        if fields[0] in boxes:
+            subject["box"] = boxes[fields[0]]
+        yield version, subject
 
 
 def meets(box: list[float] | None, bbox: list[float]) -> bool:

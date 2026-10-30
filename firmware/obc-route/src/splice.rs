@@ -97,7 +97,6 @@ pub struct Splicer {
     phase: Phase,
     leg: Leg,
     adds_avoidance: bool,
-    assistant_candidate: bool,
     split_m: u32,
     rejoin_m: u32,
     name: heapless::String<NAME_CAP>,
@@ -130,23 +129,15 @@ pub struct Splicer {
 }
 
 impl Splicer {
-    /// A splicer for `original[0..split_m] + detour + original[rejoin_m..]`. The stored point
-    /// facts and the final geometry determine the output, so the distance and elevation hints in
-    /// the call shape are unused. `orig_name` supplies the derived route name.
+    /// A splicer for `original[0..split_m] + detour + original[rejoin_m..]`. `orig_name` supplies
+    /// the derived route name.
     ///
     /// A [`Leg::Approach`] leads to `rejoin_m`, then follows the route from there. It adds no
     /// avoidance. One height offset aligns its end with the join point. Tail waypoints follow it.
     ///
     /// A [`Leg::Rest`] is a stored route, so its heights stay as stored. The route follows from
     /// `rejoin_m`, and the output is a built day. The rest's waypoints are not kept.
-    pub fn new(
-        leg: Leg,
-        split_m: u32,
-        rejoin_m: u32,
-        _detour_len_m: u32,
-        _detour_has_elevation: bool,
-        orig_name: &str,
-    ) -> Splicer {
+    pub fn new(leg: Leg, split_m: u32, rejoin_m: u32, orig_name: &str) -> Splicer {
         let mut slot = core::mem::MaybeUninit::uninit();
         // SAFETY: the local slot is aligned, writable and exclusively owned.
         unsafe {
@@ -183,7 +174,6 @@ impl Splicer {
         unsafe {
             core::ptr::addr_of_mut!((*slot).leg).write(leg);
             core::ptr::addr_of_mut!((*slot).adds_avoidance).write(leg == Leg::Detour);
-            core::ptr::addr_of_mut!((*slot).assistant_candidate).write(false);
             core::ptr::addr_of_mut!((*slot).phase).write(Phase::Init);
             core::ptr::addr_of_mut!((*slot).split_m).write(split_m);
             core::ptr::addr_of_mut!((*slot).rejoin_m).write(rejoin_m);
@@ -208,7 +198,6 @@ impl Splicer {
             let Self {
                 leg: _,
                 adds_avoidance: _,
-                assistant_candidate: _,
                 phase: _,
                 split_m: _,
                 rejoin_m: _,
@@ -232,10 +221,6 @@ impl Splicer {
                 waypoint_cursor: _,
             } = &*slot;
         }
-    }
-
-    pub fn set_assistant_candidate(&mut self) {
-        self.assistant_candidate = true;
     }
 
     fn fail(&mut self, e: Error) -> SpliceStep {
@@ -278,8 +263,7 @@ impl Splicer {
                         obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE
                     } else {
                         0
-                    } | if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 }
-                        | obc_formats::obcr::FLAG_TEMPORARY
+                    } | obc_formats::obcr::FLAG_TEMPORARY
                         | if matches!(self.leg, Leg::Rest { .. }) { obc_formats::obcr::FLAG_BUILT_DAY } else { 0 },
                 );
                 // Preserve the sampled heights the planner densified.
@@ -529,18 +513,15 @@ fn blend_ele(sampled: i16, r0: f32, r1: f32, t: f32) -> i16 {
 
 /// One-shot convenience over [`Splicer`] for the headless sim and the tests. Interactive hosts
 /// step the splicer themselves.
-#[allow(clippy::too_many_arguments)]
 pub fn splice_detour(
     leg: Leg,
     orig: &RouteReader,
     detour: &RouteReader,
     split_m: u32,
     rejoin_m: u32,
-    detour_len_m: u32,
-    detour_has_elevation: bool,
     sink: &mut dyn ByteSink,
 ) -> Result<RouteStats, Error> {
-    let mut sp = Splicer::new(leg, split_m, rejoin_m, detour_len_m, detour_has_elevation, orig.name());
+    let mut sp = Splicer::new(leg, split_m, rejoin_m, orig.name());
     loop {
         match sp.step(orig, detour, sink) {
             SpliceStep::Running => {}

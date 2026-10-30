@@ -193,6 +193,8 @@ fn refused(args: &[String]) -> Option<Error> {
     let name = |word: &str| !word.starts_with('-');
     let allowed = match words[..] {
         [] | ["setup"] | ["runs"] | ["areas"] | ["sources"] | ["clean"] | ["deploy"] => true,
+        ["sources", "--layer"] => true,
+        ["sources", "--region", region] => name(region),
         // The page shows the dry run and asks first.
         ["deploy", what, "--dry-run"] => DEPLOYS.contains(&what),
         // The page shows the fingerprint and asks first; the command refuses another one.
@@ -245,16 +247,15 @@ fn reviewed(mut rest: &[&str]) -> bool {
     }
 }
 
-/// Whether the words after `source prepare ID` are scope and target flags with their values, then
-/// `--dry-run` for a review, or `--expect ID` that starts the prepare of a review, with `--yes` for an
-/// R2 target.
+/// Whether the words after `source prepare ID` are scope and language flags with their values, then
+/// `--dry-run` for a review, or `--expect ID` that starts the prepare of a review.
 fn prepared(mut rest: &[&str]) -> bool {
     loop {
         match rest {
             ["--dry-run"] => return true,
-            ["--expect", id] | ["--expect", id, "--yes"] => return !id.starts_with('-'),
+            ["--expect", id] => return !id.starts_with('-'),
             [flag, value, more @ ..]
-                if ["--region", "--box", "--to", "--languages"].contains(flag)
+                if ["--region", "--box", "--languages"].contains(flag)
                     && (*flag == "--box" || !value.starts_with('-')) =>
             {
                 rest = more
@@ -434,10 +435,15 @@ mod tests {
             &["source", "prepare", "wiki"],
             &["source", "credential", "dtm-dk"],
             &["source", "prepare", "wiki", "--yes"],
-            &["source", "prepare", "wiki", "--to", "--dry-run"],
+            &["source", "prepare", "wiki", "--to", "prod", "--dry-run"],
             &["source", "prepare", "wiki", "--dry-run", "--expect", "7a1c"],
-            &["source", "prepare", "wiki", "--expect", "7a1c", "--yes", "--yes"],
+            &["source", "prepare", "wiki", "--expect", "7a1c", "--yes"],
             &["areas", "--at", "8,48"],
+            &["sources", "--region"],
+            &["sources", "--region", "--layer"],
+            &["sources", "--box", "8,46,9,47"],
+            &["sources", "--layer", "planner"],
+            &["sources", "--region", "grimsel", "--check-now"],
             &["update", "local"],
             &["update", "local", "--yes"],
             &["update", "local", "--dry-run", "--expect", "4c1e"],
@@ -480,14 +486,16 @@ mod tests {
             &["runs"],
             &["areas"],
             &["sources"],
+            &["sources", "--layer"],
+            &["sources", "--region", "europe/germany,europe/austria"],
             &["clean"],
             &["clean", "--apply", "--yes"],
             &["source", "refresh", "natural-earth"],
             &["router", "prod"],
             &["serve", "local", "--detach"],
-            &["source", "prepare", "wiki", "--to", "prod", "--dry-run"],
+            &["source", "prepare", "wiki", "--dry-run"],
             &["source", "prepare", "wiki", "--region", "europe/dach", "--languages", "en,de", "--dry-run"],
-            &["source", "prepare", "terrain", "--region", "europe/switzerland", "--expect", "7a1c", "--yes"],
+            &["source", "prepare", "terrain", "--region", "europe/switzerland", "--expect", "7a1c"],
             &["runs", "r1"],
             &["runs", "r1", "--stop"],
             &["update", "local", "--dry-run"],

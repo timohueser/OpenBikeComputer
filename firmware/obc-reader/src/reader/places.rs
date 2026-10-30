@@ -5,7 +5,7 @@ pub use cache::PlaceCache;
 
 use super::poi::{decode_poi_name, PoiCatEntry};
 use super::{Reader, BRANCH_BIT, EMPTY_LEAF};
-use crate::corridor::{project_with_scale, PathProjection};
+use crate::corridor::{project_onto_segment, PathProjection};
 use crate::hours::OpeningStatus;
 use crate::{CorridorPoi, Error, Poi, PoiCategorySet, RoutePath};
 use core::cell::Cell;
@@ -909,10 +909,9 @@ impl<'a> Reach<'a> {
                         cl = cos_lat(segment[0].1).max(1e-3);
                         slot.set((i + 1, cl));
                     }
-                    project_with_scale(segment, 0, place, f32::INFINITY, cl).map(|mut projection| {
-                        projection.dist_along_m += along;
-                        projection
-                    })
+                    let mut projection = project_onto_segment(segment[0], segment[1], place, cl);
+                    projection.dist_along_m += along;
+                    Some(projection)
                 } else {
                     None
                 };

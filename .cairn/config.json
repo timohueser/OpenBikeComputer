@@ -1,0 +1,65 @@
+{
+  "docs": "docs/design",
+  "baseline": ".cairn/baseline.json",
+  "specs": "specs",
+  "fix": {
+    "max_lines": 1000,
+    "tests": ["**/tests/**", "tests.rs", "*_tests.rs", "*_test.py", "*Tests.swift", "*.test.ts"]
+  },
+  "size": {
+    "S": {"systems": 1, "lines": 500},
+    "M": {"systems": 3, "lines": 1500}
+  },
+  "sources": {
+    "extensions": [".rs", ".ts", ".svelte", ".py", ".swift", ".wgsl", ".js", ".mjs", ".sh", ".h", ".c"],
+    "files": ["tools/obc"]
+  },
+  "adapters": {
+    "cargo": {
+      "ignore": ["**/vendor/**"]
+    }
+  },
+  "runtimes": {
+    "firmware/": "device",
+    "firmware/tools/": "host",
+    "host/": "host",
+    "planner/": "host",
+    "sim/": "host",
+    "tools/": "host",
+    "builder/web/": "web",
+    "builder/wasm/": "web",
+    "companion-ios/": "ios"
+  },
+  "tooling": {
+    "path": "tools/",
+    "area": "Tooling"
+  },
+  "roles": {
+    "goldfish-comprehension": { "tier": "balanced", "effort": "medium" },
+    "goldfish-critic":        { "tier": "strong",   "effort": "medium" },
+    "goldfish-readiness":     { "tier": "strong",   "effort": "medium" },
+    "code-review":            { "tier": "strong",   "effort": "high" },
+    "doc-peanut":             { "tier": "balanced", "effort": "medium" },
+    "doc-hay":                { "tier": "balanced", "effort": "medium" },
+    "implementer":            { "tier": "inherit" },
+    "drift":                  { "tier": "balanced", "effort": "low" }
+  },
+  "tiers": {
+    "claude-code": { "strong": "opus",   "balanced": "sonnet", "fast": "haiku" },
+    "api":         { "strong": "claude-opus", "balanced": "claude-sonnet", "fast": "claude-haiku" },
+    "codex":       { "strong": "6.1 Sol", "balanced": "6.1 Terra", "fast": "6 Luna" }
+  },
+  "report": {
+    "budget_usd": 5,
+    "max_input_chars": 40000,
+    "max_tokens": 8000,
+    "timeout_minutes": 180,
+    "ignore": ["*.lock", "package-lock.json", "*.svg", "*.webp", "*.bin", "*.raw", "*.step", "*.stp",
+               "*.kicad_mod", "*.kicad_pcb", "*.kicad_sch", "*.gpx", "*.sha256"],
+    "batch_prices": {
+      "claude-opus-5-5": { "input": 2, "output": 10, "cache_read": 0.1 },
+      "claude-sonnet-5-5": { "input": 1, "output": 5, "cache_read": 0.05 },
+      "claude-haiku-5-5": { "input": 0.05, "output": 0.25, "cache_read": 0.005 }
+    }
+  }
+}

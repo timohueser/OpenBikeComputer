@@ -37,7 +37,7 @@ name: Deploy site
 #    only change by redeploying the site, which is exactly what #905 says a fresh bake
 #    must not require. So the manifest lives **with the artifacts**, on whatever object
 #    storage the bakery (B1 #898) publishes to, where its cache policy is that host's
-#    to set (OBCC_Spec.md §11 states the ≤ 60 s expectation).
+#    to set (obcc-catalog.md §11 states the ≤ 60 s expectation).
 #
 # 2. **No cross-origin isolation, ever, on this host.** Setting
 #    `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy:

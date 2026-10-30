@@ -67,7 +67,7 @@ fn fetched(store: &Store, source: &str, params: &[(&str, &str)], name: &str, pat
         version: VERSION.into(),
         files: Vec::new(),
     });
-    snapshot.files.push(FileRecord { name: name.into(), url, size, sha256, retrieved: String::new() });
+    snapshot.files.push(FileRecord { name: name.into(), url, size, sha256, retrieved: String::new(), archive: None });
     store.put_snapshot(&snapshot).unwrap();
     if !params.is_empty() {
         let params = params.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect();
@@ -93,6 +93,7 @@ fn wiki(store: &Store, dir: &Path) -> String {
         extends: Vec::new(),
         scope: None,
         languages: Vec::new(),
+        publish_text: None,
         licence: None,
         attribution: None,
         machine: "test".into(),
@@ -110,6 +111,7 @@ fn wiki(store: &Store, dir: &Path) -> String {
         size,
         sha256,
         retrieved: String::new(),
+        archive: None,
     };
     let pinned = format!("2026-10-01/{manifest_sha256}");
     let files = vec![record(MANIFEST, bytes.len() as u64, manifest_sha256), record("common.tar.zst", size, sha256)];

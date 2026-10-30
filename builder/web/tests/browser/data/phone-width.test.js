@@ -10,14 +10,16 @@ const ANSWERS = {
   '["runs"]': fixture('runs'),
   '["areas"]': fixture('areas'),
   '["sources"]': fixture('sources'),
+  '["sources","--layer"]': fixture('sources-layers'),
+  '["sources","--region","grimsel"]': fixture('sources-region'),
   '["router","prod"]': fixture('router'),
   '["deploy"]': fixture('deploy'),
-  [JSON.stringify(['source', 'prepare', 'wiki', '--to', 'prod', '--region', 'europe/dach', '--languages', 'en,de', '--dry-run'])]: fixture('prepare-review'),
+  [JSON.stringify(['source', 'prepare', 'wiki', '--region', 'europe/dach', '--languages', 'en,de', '--dry-run'])]: fixture('prepare-review'),
   [JSON.stringify(['runs', running.id])]: running,
   [JSON.stringify(['runs', failed.id])]: failed,
   [JSON.stringify(['runs', planned.id])]: planned,
 };
-const WIKI = '#/references/wiki/prepare?to=prod&region=europe/dach';
+const WIKI = '#/sources/wiki/prepare?region=europe/dach';
 // Each screen, and a text that it shows once its answers came.
 const SCREENS = [
   ['#/', 'Country, region or saved area'],
@@ -25,9 +27,11 @@ const SCREENS = [
   ['#/prod', 'Router · serves'],
   ['#/local', 'Serve local'],
   [`#/bake?plan=${planned.id}`, 'reuses 1 from earlier bakes'],
-  ['#/downloads', 'What bakes fetch from the internet'],
-  ['#/downloads/geofabrik-extracts', 'Licence and access'],
-  ['#/references', 'A run on laptop stopped without freeing the lock'],
+  ['#/sources', 'Map styles and tools'],
+  ['#/sources/geofabrik-extracts', 'Licence and credit'],
+  ['#/sources/forest', 'A run on laptop stopped without freeing the lock'],
+  ['#/sources?by=layer', 'By region tells'],
+  ['#/sources?by=region&region=grimsel', 'OSM per update'],
   [WIKI, 'When it finishes'],
   ['#/runs', 'The runs of this machine'],
   [`#/runs/${running.id}`, 'Layers in this run'],
@@ -53,7 +57,8 @@ test('every screen fits a phone with no horizontal page scroll', async ({ page }
       expect(await page.evaluate(() => document.documentElement.scrollWidth), 'wiki options').toBeLessThanOrEqual(390);
       await page.getByRole('button', { name: 'Review preparation' }).click();
     }
-    await expect(page.locator('nav a[aria-current="page"]')).toHaveAttribute('href', hash.split('/').slice(0, 2).join('/'));
+    const tab = hash.startsWith('#/sources') ? '#/sources' : hash.split('/').slice(0, 2).join('/');
+    await expect(page.locator('nav a[aria-current="page"]')).toHaveAttribute('href', tab);
     await expect(page.getByText(shows).first()).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth), hash).toBeLessThanOrEqual(390);
     if (hash === WIKI) {

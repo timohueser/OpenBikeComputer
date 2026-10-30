@@ -1,17 +1,25 @@
 //! Fetchers that run a program: it writes the files of one request into a directory, and the
 //! store takes them. A service answers with today's data, so another day comes from the store.
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use super::archive::{Archive, Held};
 use super::{check_version, file_name, merge, snapshot_lock, Request};
 use crate::date;
 use crate::sources::{Refresh, Source};
-use crate::store::{self, FileRecord, Snapshot, Store};
+use crate::store::{self, FileRecord, Lock, Snapshot, Store};
 
 /// A source of `kind = "capture"`: the program that captures it, with the `NAME=VALUE` it takes.
-pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snapshot, String> {
+/// The `archive` of a source that it keeps serves before upstream, where the program can read it.
+pub(crate) fn run(
+    root: &Path,
+    store: &Store,
+    archive: Option<&Archive>,
+    request: &Request,
+) -> Result<Snapshot, String> {
     let source = request.source;
     match source.id.as_str() {
         "modis-snow" | "hr-wsi" => {
@@ -28,6 +36,7 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                 |_| &[0],
                 // HR-WSI has no product in parts of its extent.
                 source.id == "hr-wsi",
+                None,
                 |_, out| {
                     let mut command = python(root, Some("planner-snow"))?;
                     command.args(["-m", "tools.planner_snow", "--source", kind, &format!("--bounds={bbox}")]);
@@ -49,6 +58,7 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                 &[source],
                 |_| &[0],
                 false,
+                None,
                 |_, out| {
                     let mut command = python(root, Some("trailview"))?;
                     command
@@ -58,31 +68,11 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                 },
             )
         }
-        "era5-land" => {
-            let [bbox, first] = values(request, ["bbox", "first-year"])?;
-            let bbox = parse_bbox(bbox)?;
-            if !year(first) {
-                return Err(format!("`first-year={first}` is not a year"));
-            }
-            capture(
-                store,
-                request,
-                &format!("bbox={bbox}&first-year={first}"),
-                &[source],
-                |_| &[0],
-                false,
-                |_, out| {
-                    let mut command = python(root, Some("planner-climate"))?;
-                    command.args(["-m", "tools.planner_climate", &format!("--bounds={bbox}"), "--first-year", first]);
-                    command.arg("--fetch").arg(out);
-                    Ok(command)
-                },
-            )
-        }
         "corine-land-cover" => {
             let [] = values(request, [])?;
             // The dataset CLC 2018 and its prepackaged raster of Europe.
             let (dataset, file) = ("0407d497d3c44bcd93ce8fd5bf78596a", "3d9e2413-46ca-4f6e-abf8-b6eb429a4e48");
+            let held = archive.and_then(|archive| archive.clms(dataset, file));
             capture(
                 store,
                 request,
@@ -90,11 +80,16 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                 &[source],
                 |_| &[0],
                 false,
+                held.as_ref().map(|held| held.path.as_str()),
                 |work, out| {
                     let mut command = python(root, None)?;
                     command.args(["-m", "tools.clms", "--dataset", dataset, "--file", file]);
                     command.args(["--member", "U2018_CLC2018_V2020_20u1.tif", "--work"]).arg(work);
                     command.arg("--fetch").arg(out);
+                    if let Some(held) = &held {
+                        held.verify()?;
+                        command.arg("--archive").arg(&held.file);
+                    }
                     Ok(command)
                 },
             )
@@ -111,6 +106,10 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                     "source `{id}`: `ground={digest}` is not the digest of its entry in data/trailview/ground.json, which changed since the plan"
                 ));
             }
+            let url = source.fetch.url.as_deref().unwrap_or_default();
+            let held = archive.filter(|_| entry.archived()).and_then(|archive| archive.find(url));
+            // Held while the program makes the copy.
+            let mut copy_lock = None;
             capture(
                 store,
                 request,
@@ -119,7 +118,19 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                 |_| &[0],
                 // A national map has no feature in parts of its extent.
                 true,
+                held.as_ref().map(|held| held.path.as_str()),
                 |_, out| {
+                    // Never upstream: a routine bake downloads only OSM.
+                    let held = match (entry.archived(), &held) {
+                        (true, None) => {
+                            return Err(format!(
+                                "source `{id}` reads {url} from the archive, and no root of OBC_DATA_ARCHIVE holds it: \
+                                 mount the archive drive and name its root in OBC_DATA_ARCHIVE, or get the dataset \
+                                 that `obc data archive status` names for the source"
+                            ))
+                        }
+                        (_, held) => held.as_ref(),
+                    };
                     let mut command = python(root, Some("trailview"))?;
                     command.args([
                         "-m",
@@ -130,11 +141,36 @@ pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snaps
                         "--fetch",
                     ]);
                     command.arg(out);
+                    if let Some(held) = held {
+                        let (args, lock) = copy_args(store, held)?;
+                        command.args(args);
+                        copy_lock = lock;
+                    }
                     Ok(command)
                 },
             )
         }
     }
+}
+
+/// `--archive ZIP --work COPY`: the archive file `held` and its unpacked copy in the store. A whole
+/// copy needs no lock and no check, as the zip was checked when the copy was made. Else the lock
+/// of the copy comes back, to hold while the program makes it, and the zip is checked first.
+fn copy_args(store: &Store, held: &Held) -> Result<(Vec<OsString>, Option<Lock>), String> {
+    let copy = store.unpacked(&held.sha256);
+    let copy = std::path::absolute(&copy).map_err(|e| format!("{}: {e}", copy.display()))?;
+    let complete = copy.join(".complete");
+    let args = vec!["--archive".into(), held.file.clone().into(), "--work".into(), copy.into()];
+    if complete.is_file() {
+        return Ok((args, None));
+    }
+    let lock = store.lock(&format!("unpacked-{}", held.sha256))?;
+    // Another capture can have made it while this one waited.
+    if complete.is_file() {
+        return Ok((args, None));
+    }
+    held.verify()?;
+    Ok((args, Some(lock)))
 }
 
 /// Whether a capture can give the version `version` of `source` for a request that the store lacks.
@@ -154,7 +190,8 @@ pub(crate) fn can_fetch(store: &Store, source: &Source, version: &str) -> Result
 /// from its path. A run that fails keeps both directories, so the next run resumes, unless they
 /// are older than the `refresh` in days of the source. The program writes each file whole, so a
 /// resumed run keeps only whole files. With `empty`, a run that writes no file gives a fetch
-/// without files; else it fails.
+/// without files; else it fails. `archive` is the path in the archive of the file that the program
+/// reads instead of upstream: then it needs no credential, and each record names that path.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn capture(
     store: &Store,
@@ -163,6 +200,7 @@ pub(super) fn capture(
     sources: &[&Source],
     owners: impl Fn(&str) -> &'static [usize],
     empty: bool,
+    archive: Option<&str>,
     command: impl FnOnce(&Path, &Path) -> Result<Command, String>,
 ) -> Result<Snapshot, String> {
     let source = request.source;
@@ -191,7 +229,7 @@ pub(super) fn capture(
             source.id
         ));
     }
-    for source in sources {
+    for source in sources.iter().filter(|_| archive.is_none()) {
         if let Some(credential) = source.credential.as_ref().filter(|credential| !credential.present()) {
             return Err(format!("source `{}` is blocked: credential missing: {}", source.id, credential.describe()));
         }
@@ -236,6 +274,7 @@ pub(super) fn capture(
                 size,
                 sha256: sha256.clone(),
                 retrieved: date::timestamp(date::now()),
+                archive: archive.map(str::to_string),
             });
         }
     }
@@ -343,6 +382,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_archived_map_is_checked_and_locked_only_while_its_copy_is_made() {
+        let scratch = crate::store::tests::Scratch::new("capture-copy");
+        let (root, store) = (scratch.0.join("archive"), Store::at(scratch.0.join("store")));
+        fs::create_dir_all(root.join("mirror/example.org")).unwrap();
+        fs::create_dir_all(root.join("manifest")).unwrap();
+        fs::write(root.join("mirror/example.org/map.zip"), b"zip").unwrap();
+        let listed = |sha256: &str| {
+            let file = format!(r#"{{"path": "mirror/example.org/map.zip", "bytes": 3, "sha256": "{sha256}"}}"#);
+            fs::write(root.join("manifest/map.json"), format!(r#"{{"version": "v1", "files": [{file}]}}"#)).unwrap();
+            Archive::new(vec![root.clone()]).find("https://example.org/map.zip").unwrap()
+        };
+        let other = listed("00");
+        let refused = copy_args(&store, &other).err().unwrap();
+        assert!(crate::fetch::archive::mismatch(&refused), "a new copy checks the zip");
+        let held = listed(&store::sha256_hex(b"zip"));
+        let (args, lock) = copy_args(&store, &held).unwrap();
+        let copy = std::path::absolute(store.unpacked(&held.sha256)).unwrap();
+        let want: Vec<OsString> =
+            vec!["--archive".into(), held.file.clone().into(), "--work".into(), copy.clone().into()];
+        assert_eq!(args, want);
+        assert!(lock.is_some());
+        assert!(store.try_lock(&format!("unpacked-{}", held.sha256)).unwrap().is_none(), "one capture makes it");
+        drop(lock);
+        fs::create_dir_all(&copy).unwrap();
+        fs::write(copy.join(".complete"), b"").unwrap();
+        fs::create_dir_all(store.unpacked("00")).unwrap();
+        fs::write(store.unpacked("00").join(".complete"), b"").unwrap();
+        let (args, lock) = copy_args(&store, &other).unwrap();
+        assert!(lock.is_none() && args.len() == 4, "a whole copy needs no check and no lock");
+    }
+
+    #[test]
     fn a_retained_empty_capture_needs_no_runtime_or_checkout() {
         let scratch = crate::store::tests::Scratch::new("capture-retained-no-runtime");
         let store = Store::at(scratch.0.join("store"));
@@ -356,7 +427,7 @@ mod tests {
             )
             .unwrap();
         let request = Request { refresh: false, source, version: Some(version.clone()), params };
-        let snapshot = run(&scratch.0.join("absent-checkout"), &store, &request).unwrap();
+        let snapshot = run(&scratch.0.join("absent-checkout"), &store, None, &request).unwrap();
         assert_eq!(snapshot.version, version);
         assert!(snapshot.files.is_empty());
         assert!(!scratch.0.join("absent-checkout").exists());

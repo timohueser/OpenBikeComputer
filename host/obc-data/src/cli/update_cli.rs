@@ -472,21 +472,17 @@ pub(super) fn prepare(
     }
     let requests = freshness::discover(root, products, &inputs, &regions, store, http, &sources)?;
     for (key, newer) in freshness::newer(store, http, &sources, &requests, &inputs.serving) {
-        match newer {
-            Some(version) => {
-                inputs.resolved.insert(key, version);
-            }
-            None => {
-                inputs.due.insert(key);
-            }
+        if let Some(version) = newer {
+            inputs.resolved.insert(key.clone(), version);
         }
+        inputs.due.insert(key);
     }
     // The discovery ends at the first fetch that the store lacks, which can be before a step that
     // reads a prepared source: so every prepared source gets its version.
     let prepared = sources.iter().filter(|source| source.fetch.kind == FetchKind::Prepared);
     let read: BTreeSet<_> =
         requests.iter().cloned().chain(prepared.map(|source| (source.id.clone(), Vec::new()))).collect();
-    crate::prepared::resolve(root, store, (name, target), (&sources, &read, producers), &mut inputs)?;
+    crate::prepared::resolve(http.roots(), (&sources, &read, producers), &mut inputs)?;
     let listed = {
         let mut fetch = listing::fetcher(root, store, http, &sources, run, true);
         // The listing asks for what the store lacks.
@@ -1351,7 +1347,7 @@ pub(super) mod tests {
             &fixture.root().join("data/sources.toml"),
             &format!(
                 "[[source]]\nid = \"head\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Head\"\n\
-                 fetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"date\"\nrefresh = 1\nredistribute = true\n"
+                 fetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"date\"\nrefresh = 1\nkeep = \"store\"\nredistribute = true\n"
             ),
         );
         fixture.fetched_version("head", "2026-01-01", "head.txt", b"head\n");
@@ -1363,6 +1359,40 @@ pub(super) mod tests {
         let moved = update_with(&fixture, &target, &http, |_| Ok(())).unwrap();
         assert_eq!(steps(&moved), ["test/upper", "test/join", "test/count"]);
         assert_eq!(read(&moved.serving), "2026-10-05", "the policy is due, and upstream names a newer day");
+    }
+
+    #[test]
+    fn a_due_source_whose_upstream_fails_reads_the_stored_version() {
+        use crate::fetch::tests::{not_found, serve};
+        let (actual, _) = serve(|_, _| not_found());
+        let actual = actual.replacen("file.bin", "head.txt", 1);
+        let fixture = fixture("update-due-offline");
+        let url = actual.replacen("http://", "https://", 1);
+        write(
+            &fixture.root().join("data/sources.toml"),
+            &format!(
+                "[[source]]\nid = \"head\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Head\"\n\
+                 fetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"date\"\nrefresh = 1\nkeep = \"store\"\nredistribute = true\n"
+            ),
+        );
+        fixture.fetched_version("head", "2026-01-01", "head.txt", b"head\n");
+        let (target, http) = (Target::Dir(fixture.scratch.0.join("local")), Http::loopback(&actual));
+        update_with(&fixture, &target, &http, region).unwrap();
+
+        let (root, products): (_, [&dyn Product; 2]) = (fixture.root(), [&Pipeline, &Counter]);
+        let machine = MachineCheck::default();
+        let code = (&products[..], &[][..]);
+        let plan = (Some(&machine), Vec::new as fn() -> Vec<String>);
+        let prepared = prepare(&root, &fixture.store, &http, ("local", &target), code, |_| Ok(()), &[], plan, None);
+        let review = prepared.unwrap().review;
+        assert!(
+            review.notes.iter().any(|note| note.text.contains("this update reads 2026-01-01")),
+            "{:?}",
+            review.notes
+        );
+        let kept = update_with(&fixture, &target, &http, |_| Ok(())).unwrap();
+        let read = Release::read(&target, &kept.serving).unwrap().versions()[&("head".to_string(), Vec::new())].clone();
+        assert_eq!(read, "2026-01-01", "the policy is due, and upstream fails");
     }
 
     #[test]
@@ -1633,7 +1663,7 @@ pub(super) mod tests {
             &fixture.root().join("data/sources.toml"),
             &format!(
                 "[[source]]\nid = \"natural-earth\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Earth\"\n\
-                 fetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"digest\"\nredistribute = true\n"
+                 fetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"digest\"\nkeep = \"store\"\nredistribute = true\n"
             ),
         );
         write(&fixture.root().join("earth"), "");

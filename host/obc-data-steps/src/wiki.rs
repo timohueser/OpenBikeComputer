@@ -14,8 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use obc_data::prepared::{Job, Plan, Prepared, Scope};
+use obc_data::prepared::{Job, Manifest, Plan, Prepared, Scope};
 use obc_data::product::Wanted;
+use obc_data::regions::Area;
 use obc_data::settings::Settings;
 use obc_data::sources::Source;
 use obc_data::store::{hash_file, write_atomic};
@@ -24,9 +25,11 @@ use obc_pack::landmarks::shared::Landmarks;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::prepared_tiles;
+
 /// The directory of the dumps on the machine that prepares.
 const DUMPS: &str = "OBC_WIKI_DUMPS";
-/// The shards of one upload.
+/// The shards of one move into the home.
 const BATCH: usize = 64;
 
 pub struct Wiki {
@@ -57,8 +60,8 @@ impl Prepared for Wiki {
         1
     }
 
-    fn regional(&self) -> bool {
-        true
+    fn reads(&self, source: &Source) -> bool {
+        obc_data::sources::WIKI_INPUTS.contains(&source.id.as_str())
     }
 
     /// Reuse cached inputs and discover missing inputs from metadata. The review names each
@@ -74,7 +77,7 @@ impl Prepared for Wiki {
             return Err("the row `wiki` names no `publish_text`: set it to `true` or `false`".into());
         }
         let inputs = downloads::plan(context, scope, languages)?;
-        Ok(Plan { inputs, files: None })
+        Ok(Plan { inputs, files: None, work_bytes: 0 })
     }
 
     fn languages(&self, requested: &[String]) -> Result<Vec<String>, String> {
@@ -95,6 +98,7 @@ impl Prepared for Wiki {
     /// Each step resumes: a step whose output is in `state/` does not run again, and `tools.wiki`
     /// does not repeat an import that finished with the same input.
     fn prepare(&self, job: &mut Job) -> Result<(), String> {
+        let before = earlier(job, self.format())?;
         let pin = pin(job)?;
         let state = job.state.clone();
         let (work, subjects, selection) =
@@ -120,9 +124,11 @@ impl Prepared for Wiki {
             Ok(command)
         };
         if !subjects.exists() {
-            let osm = &pin.dumps.iter().find(|dump| dump.key == "osm").expect("the dumps have OSM").path;
             let mut command = step("subjects")?;
-            command.arg("--osm").arg(osm).arg("--out").arg(&subjects);
+            for dump in pin.osm_dumps() {
+                command.arg("--osm").arg(&dump.path);
+            }
+            command.arg("--out").arg(&subjects);
             let box_scope = job.scope.as_ref().filter(|_| pin.dumps.iter().any(|dump| dump.source == "osm-planet"));
             if let Some([west, south, east, north]) = box_scope.map(bounds).transpose()? {
                 command.arg(format!("--bbox={west},{south},{east},{north}"));
@@ -145,19 +151,27 @@ impl Prepared for Wiki {
         let failed = commons::rounds(job, &step, self.wait, &pin)?;
         let counts = state.join("counts.json");
         write_atomic(&counts, json!({"photo_compile_failures": failed}).to_string().as_bytes())?;
-        // The shards that the target has are not written again.
+        // The shards that the home has are not written again.
         let done: BTreeMap<&str, Value> =
             job.files().map(|file| (file.path.as_str(), json!({"sha256": file.sha256, "bytes": file.size}))).collect();
         let done_file = state.join("done.json");
         write_atomic(&done_file, &serde_json::to_vec(&done).expect("done serializes"))?;
         let mut command = step("shards")?;
         command.arg("--out").arg(&job.work).arg("--done").arg(&done_file).arg("--counts").arg(&counts);
+        if let Some((_, keep)) = &before {
+            let file = state.join("keep.json");
+            write_atomic(&file, keep.to_string().as_bytes())?;
+            command.arg("--keep").arg(file);
+        }
         if !pin.publish_text {
             command.arg("--no-text");
         }
         job.program(&mut command)?;
         let index: Value = read_json(&job.work.join("index.json"))?;
         let shards = index["shards"].as_array().ok_or("the index of the shards lists no shard")?;
+        if let Some((before, _)) = &before {
+            reuse_unchanged(job, before, shards)?;
+        }
         let shards: Vec<String> = shards.iter().filter_map(|shard| shard["path"].as_str()).map(String::from).collect();
         for batch in shards.iter().filter(|path| !job.done(path)).cloned().collect::<Vec<_>>().chunks(BATCH) {
             job.finish(batch)?;
@@ -199,6 +213,21 @@ impl Dump {
 struct Pin {
     publish_text: bool,
     dumps: Vec<Dump>,
+}
+
+impl Pin {
+    /// The OSM dumps: the planet, or the extract of each area.
+    fn osm_dumps(&self) -> impl Iterator<Item = &Dump> {
+        self.dumps.iter().filter(|dump| dump.key == "osm" || dump.key.starts_with("osm:"))
+    }
+
+    /// The SHA-256 of the one OSM dump, or of the SHA-256 of each extract.
+    fn osm(&self) -> String {
+        match self.osm_dumps().map(|dump| dump.sha256.as_str()).collect::<Vec<_>>()[..] {
+            [one] => one.into(),
+            ref several => obc_data::store::sha256_hex(several.join("\n").as_bytes()),
+        }
+    }
 }
 
 /// The pin of the version of `job`. The first run takes the newest dumps and hashes them once; a
@@ -261,18 +290,55 @@ fn dumps_dir() -> Option<PathBuf> {
     std::env::var_os(DUMPS).filter(|dir| !dir.is_empty()).map(PathBuf::from)
 }
 
-/// A Geofabrik scope reads its extract; a box clips the planet input.
-fn regional_osm(scope: Option<&Scope>) -> Result<Option<String>, String> {
-    let Some(scope) = scope else { return Ok(None) };
-    let settings =
-        Settings { region: scope.region.clone(), definitions: scope.definitions.clone(), ..Settings::default() };
-    let regions = settings.regions()?;
-    let region = regions.get(&scope.region).ok_or("the wiki region is absent")?;
-    match &region.area {
-        obc_data::regions::Area::Geofabrik { areas } if areas.len() == 1 => Ok(Some(areas[0].clone())),
-        _ if regions.bounds(&scope.region).is_some() => Ok(None),
-        _ => Err("prepare wiki for one Geofabrik area (for DACH: --region europe/dach) or a box".into()),
+/// The Geofabrik areas of the region of `scope`, each read from its extract; none for a box, which
+/// clips the planet input.
+fn regional_osm(scope: Option<&Scope>) -> Result<Vec<String>, String> {
+    let Some(scope) = scope else { return Ok(Vec::new()) };
+    let (regions, id) = prepared_tiles::regions(scope)?;
+    let areas = regions.leaves(&id)?.into_iter().map(|leaf| match &regions.get(leaf)?.area {
+        Area::Geofabrik { areas } => Some(areas.clone()),
+        _ => None,
+    });
+    match areas.collect::<Option<Vec<_>>>() {
+        Some(areas) => Ok(areas.concat().into_iter().collect::<BTreeSet<_>>().into_iter().collect()),
+        None if regions.bounds(&id).is_some() => Ok(Vec::new()),
+        None => Err("prepare wiki for Geofabrik regions (for DACH: --region europe/dach) or a box".into()),
     }
+}
+
+/// The version before that a version of a region extends, and `keep.json` for `shards --keep`:
+/// each shard of that version with its index entry and its file in the store.
+fn earlier(job: &mut Job, format: u32) -> Result<Option<(Manifest, Value)>, String> {
+    if job.scope.is_none() {
+        return Ok(None);
+    }
+    let Some(before) = job.extend(format)? else { return Ok(None) };
+    if let (Some(was), Some(now)) = (before.publish_text, job.source.publish_text) {
+        if was != now {
+            return Err(format!(
+                "wiki@{} has `publish_text = {was}` and the row has `{now}`: a version that extends it keeps its articles, so its manifest would state the text wrongly. Fix: set `publish_text = {was}`, or prepare a version of everything",
+                before.version
+            ));
+        }
+    }
+    let index: Value = read_json(&job.earlier_file(&before, "index.json")?)?;
+    let mut shards = index["shards"].as_array().ok_or("the index of the version before lists no shard")?.clone();
+    for shard in &mut shards {
+        let path = shard["path"].as_str().ok_or("a shard of the version before has no path")?;
+        shard["file"] = json!(job.earlier_file(&before, path)?);
+    }
+    Ok(Some((before, json!({"before": shards}))))
+}
+
+/// Keep each shard of `shards` that has its bytes in the version before, without a move.
+fn reuse_unchanged(job: &mut Job, before: &Manifest, shards: &[Value]) -> Result<(), String> {
+    for shard in shards {
+        let (path, sha256) = (shard["path"].as_str(), shard["sha256"].as_str());
+        if before.files.iter().any(|file| Some(file.path.as_str()) == path && Some(file.sha256.as_str()) == sha256) {
+            job.reuse(before, path.expect("a held path"))?;
+        }
+    }
+    Ok(())
 }
 
 /// The subjects of the compilers, whose articles and photos the version holds: each subject that
@@ -321,11 +387,11 @@ mod tests {
     use super::*;
     use crate::device::tests::temp;
     use obc_data::engine::runs::Run;
+    use obc_data::engine::LayerFile;
     use obc_data::fetch::http::Http;
     use obc_data::prepared::Opening;
     use obc_data::sources::Registry;
     use obc_data::store::Store;
-    use obc_data::target::Target;
 
     #[test]
     fn the_selection_is_each_subject_of_a_landmark_category_and_each_summit_with_its_categories() {
@@ -369,6 +435,94 @@ mod tests {
         assert_eq!(categories[1].1, &BTreeSet::from(["Category:Summits".to_string()]));
     }
 
+    #[test]
+    fn a_version_reads_each_shard_of_the_version_before_and_keeps_those_it_does_not_change() {
+        let temp = temp("wiki-keep");
+        let root = temp.0.join("repository");
+        fs::create_dir_all(root.join("data")).unwrap();
+        fs::write(root.join("data/sources.toml"), SOURCES).unwrap();
+        let (store, archive) = (Store::at(temp.0.join("store")), temp.0.join("archive"));
+        let (folder, dir) = (obc_data::prepared::folder(&archive, "wiki"), archive.join("prepared/wiki"));
+        let (sources, http) = (Registry::load(&root).unwrap().sources, Http::new());
+        let scope = |id: &str, [west, south, east, north]: [f64; 4]| {
+            let text = format!("name = \"{id}\"\nkind = \"box\"\nbox = [{west}, {south}, {east}, {north}]\n");
+            Scope { region: id.into(), definitions: [(id.into(), text)].into() }
+        };
+        // wiki@2026-10-01 holds a cell in Colorado; wiki@2026-10-02 adds the two Swiss cells 0300-0262
+        // and 0300-0263, and keeps the cell of Colorado.
+        let (far, west, east) = ("cells/0293-0155.tar.zst", "cells/0300-0262.tar.zst", "cells/0300-0263.tar.zst");
+        let put = |version: &str, path: &str, bytes: &[u8]| {
+            let at = dir.join(version).join(path);
+            fs::create_dir_all(at.parent().unwrap()).unwrap();
+            fs::write(at, bytes).unwrap();
+            LayerFile { path: path.into(), size: bytes.len() as u64, sha256: obc_data::store::sha256_hex(bytes) }
+        };
+        let complete = |version: &str, scope: Scope, files: Vec<LayerFile>, extends: Vec<Option<Scope>>| {
+            // The cell of Colorado is the one file that a later version keeps.
+            let reused = files.iter().filter(|file| file.path == far && version != "2026-10-01");
+            let reused = reused.map(|file| (file.path.clone(), "2026-10-01".to_string())).collect();
+            let manifest = Manifest {
+                source: "wiki".into(),
+                version: version.into(),
+                format: 1,
+                revision: 1,
+                inputs: Vec::new(),
+                files,
+                reused,
+                scope: Some(scope),
+                extends,
+                languages: Vec::new(),
+                publish_text: Some(false),
+                licence: None,
+                attribution: None,
+                machine: "test".into(),
+                time: format!("{version}T00:00:00Z"),
+                cost: obc_data::prepared::Cost { wall_ms: 0, peak_rss_bytes: None },
+            };
+            obc_data::prepared::complete(&folder, &manifest).unwrap();
+            manifest.scope.unwrap()
+        };
+        let colorado = put("2026-10-01", far, b"colorado");
+        let first =
+            complete("2026-10-01", scope("colorado", [-105.5, 39.5, -105.0, 40.0]), vec![colorado.clone()], vec![]);
+        let entry =
+            |file: &LayerFile| json!({"path": file.path, "sha256": file.sha256, "bytes": file.size, "facts": 1});
+        let (west, east) = (put("2026-10-02", west, b"west"), put("2026-10-02", east, b"east"));
+        let index = json!({"shards": [entry(&colorado), entry(&west), entry(&east)], "counts": {}}).to_string();
+        let files = vec![
+            colorado.clone(),
+            west,
+            east,
+            put("2026-10-02", "common.tar.zst", b"common"),
+            put("2026-10-02", "index.json", index.as_bytes()),
+        ];
+        let second = complete("2026-10-02", scope("alps", [7.0, 46.5, 8.0, 46.6]), files, vec![Some(first.clone())]);
+        // A region next to the one before, and inside neither.
+        let mut run = Run::create(&store, ["source", "prepare", "wiki"]).unwrap();
+        let opening = Opening { root: &root, store: &store, http: &http, sources: &sources, home: &archive };
+        let region = scope("west", [6.0, 46.5, 7.2, 46.6]);
+        let mut job = Job::open(opening, ("wiki", "2026-10-03"), Some(region), &[], &mut run).unwrap();
+        let (before, keep) = earlier(&mut job, 1).unwrap().unwrap();
+        let shards = keep["before"].as_array().unwrap();
+        let files: Vec<Vec<u8>> =
+            shards.iter().map(|shard| fs::read(shard["file"].as_str().unwrap()).unwrap()).collect();
+        assert_eq!(files, [&b"colorado"[..], b"west", b"east"]);
+        assert_eq!(job.extends(), [Some(first), Some(second)]);
+        // `shards` gives Colorado as it was and the west cell with the facts of this run.
+        let changed = json!({"path": "cells/0300-0262.tar.zst", "sha256": "ab".repeat(32)});
+        reuse_unchanged(&mut job, &before, &[entry(&colorado), changed]).unwrap();
+        assert_eq!(job.reused(), &[(far.to_string(), "2026-10-01".to_string())].into());
+        drop(job);
+        // A version that would publish text over one that kept it local refuses.
+        let mut flipped = sources.clone();
+        flipped[0].publish_text = Some(true);
+        let opening = Opening { root: &root, store: &store, http: &http, sources: &flipped, home: &archive };
+        let region = scope("west", [6.0, 46.5, 7.2, 46.6]);
+        let mut job = Job::open(opening, ("wiki", "2026-10-03"), Some(region), &[], &mut run).unwrap();
+        let refused = earlier(&mut job, 1).unwrap_err();
+        assert!(refused.starts_with("wiki@2026-10-02 has `publish_text = false`"), "{refused}");
+    }
+
     const SOURCES: &str = r#"
         [[source]]
         id = "wiki"
@@ -376,6 +530,7 @@ mod tests {
         licence = "LicenseRef-Wikimedia-per-record"
         fetch = { kind = "prepared" }
         version = "date"
+        keep = "prepared"
         redistribute = true
         publish_text = false
     "#;
@@ -410,7 +565,7 @@ esac
     }
 
     #[test]
-    fn a_resume_runs_no_step_again_whose_output_it_has_and_uploads_only_new_shards() {
+    fn a_resume_runs_no_step_again_whose_output_it_has_and_moves_only_new_shards() {
         let temp = temp("wiki-resume");
         let (root, dumps) = (temp.0.join("repository"), temp.0.join("dumps"));
         fs::create_dir_all(root.join("data")).unwrap();
@@ -432,7 +587,7 @@ esac
             fs::write(dumps.join(name), name).unwrap();
         }
         std::env::set_var(DUMPS, &dumps);
-        let (store, target) = (Store::at(temp.0.join("store")), Target::Dir(temp.0.join("target")));
+        let (store, archive) = (Store::at(temp.0.join("store")), temp.0.join("archive"));
         let sources = Registry::load(&root).unwrap().sources;
         let (producer, http) = (Wiki { tools: script, wait: Duration::ZERO }, Http::new());
         let languages = producer.languages(&["de".into(), "en".into(), "de".into()]).unwrap();
@@ -464,7 +619,7 @@ esac
         let prepare = |sources: &[Source]| {
             let _ = fs::remove_file(root.join("calls"));
             let mut run = Run::create(&store, ["source", "prepare", "wiki"]).unwrap();
-            let opening = Opening { root: &root, store: &store, http: &http, sources, target: ("t", &target) };
+            let opening = Opening { root: &root, store: &store, http: &http, sources, home: &archive };
             let done = Job::open(opening, ("wiki", "2026-10-01"), Some(scope.clone()), &languages, &mut run).and_then(
                 |mut job| {
                     job.plan = plan.clone();
@@ -491,7 +646,7 @@ esac
         let wikidata = dumps.join("wikidata-20260915-all.json.bz2");
         assert_eq!(inputs["wikidata"]["path"], json!(wikidata));
         assert_eq!(inputs["languages"], json!(["en", "de"]));
-        assert_eq!(inputs["osm"]["path"], json!(dumps.join("europe/dach-260914.osm.pbf")));
+        assert_eq!(inputs["osm"]["europe/dach"]["path"], json!(dumps.join("europe/dach-260914.osm.pbf")));
         assert_eq!(inputs["wikidata"]["sha256"], json!(hash_file(&wikidata).unwrap().0));
         assert_eq!(fs::read_to_string(root.join("selected.seen")).unwrap(), r#"["Q1"]"#);
         for step in ["facts", "shards"] {
@@ -499,8 +654,7 @@ esac
         }
         let counts: Value = read_json(&root.join("counts.seen")).unwrap();
         assert_eq!(counts, json!({"photo_compile_failures": 1}), "the castle has no facts");
-        let Target::Dir(dir) = &target else { unreachable!() };
-        let version = dir.join("sources/wiki/2026-10-01");
+        let version = archive.join("prepared/wiki/2026-10-01");
         for path in ["common.tar.zst", "cells/0300-0262.tar.zst", "index.json"] {
             assert!(version.join(path).is_file(), "{path}");
         }

@@ -27,6 +27,6 @@
   "cattle": { "model": "brown-cattle", "groups": 1, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland"] },
   "goat": { "groups": 1, "size": [8, 30], "on": ["scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] }
  },
- "orchard": "holm-oak",
+ "rows": { "orchard": "holm-oak" },
  "style": "village-house"
 }

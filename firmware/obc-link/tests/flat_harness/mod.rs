@@ -5,7 +5,7 @@
 //! The device is the assembly the browser's tests run on too, so a behaviour proved here is proved
 //! against the same engine and the same card. The harness is what only a Rust test wants: a pump
 //! that collects every record of one exchange into a [`Wire`], store probes, and request bytes
-//! written at the offsets `FLAT_Store_Protocol.md` states. The device never encodes a request, so
+//! written at the offsets `flat-store-protocol.md` states. The device never encodes a request, so
 //! writing those bytes by hand keeps the tests honest about what a phone would send.
 
 #![allow(dead_code)]
@@ -300,7 +300,7 @@ impl obc_formats::io::ByteSink for VecSink {
 
 use obc_storage::flat::seam::Store;
 
-/// Request bytes, written at the offsets `FLAT_Store_Protocol.md` states.
+/// Request bytes, written at the offsets `flat-store-protocol.md` states.
 pub mod client {
     use super::*;
 

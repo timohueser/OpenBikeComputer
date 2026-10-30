@@ -2,10 +2,12 @@
 
 No test here reaches the network. A request is held as the URL it would send, and the one
 adapter that parses bytes itself — France, which is served raw float32 over WMS — is held
-against a synthetic answer. The live probes are in `README.md`, with the summit each
-source was verified against.
+against a synthetic answer. The live check is a row's `summit`, where the row has one:
+`check_summit` in `ingest/cli.py` holds the model to it once per prepare.
 """
 
+import http.client
+import json
 import os
 import sys
 import unittest
@@ -28,10 +30,12 @@ import ingest  # noqa: E402
 import ingest.sources.base  # noqa: E402
 import ingest.sources.bulk  # noqa: E402
 import ingest.sources.cog  # noqa: E402
+import ingest.sources.si  # noqa: E402
 import ingest.sources.stac  # noqa: E402
 from ingest.sources import de as de_module  # noqa: E402
 from ingest.sources import fr as fr_module  # noqa: E402
 from ingest.sources import gb as gb_module  # noqa: E402
+from ingest.sources import pt as pt_module  # noqa: E402
 from ingest.sources import sk as sk_module  # noqa: E402
 from ingest.sources.grid import grid_squares  # noqa: E402
 from ingest.sources.nz import sheets as nz_sheets  # noqa: E402
@@ -40,9 +44,8 @@ from http_serving import serve  # noqa: E402
 
 BOX = (6.8255, 45.9257, 6.8495, 45.9417)  # about 1.9 x 1.8 km over Chamonix
 
-#: The verification box of every source with an adapter, exactly as `README.md` documents
-#: it. A request is only ever built from a box the split has already cut, so these tests
-#: go through `request_boxes` the way `TiledService.fetch` does.
+#: One small box per source with an adapter. A request is only ever built from a box the split
+#: has already cut, so these tests go through `request_boxes` the way `TiledService.fetch` does.
 BOXES = {
     "ch": (8.3800, 46.7800, 8.4200, 46.8200),
     "fr": (2.8019, 45.5204, 2.8259, 45.5364),
@@ -349,6 +352,26 @@ class NamedGrids(unittest.TestCase):
                     self.assertTrue(url.startswith(source.base))
                     self.assertTrue(url.endswith(name))
 
+    def test_a_slovenian_square_is_named_in_the_folder_of_its_flight_block(self):
+        """The block is not arithmetic: Triglav's square is in `b_37`, a square 16 km east of
+        it in `b_36`, and a square at sea is not published at all."""
+
+        source = ingest.SOURCES["si"]
+        self.assertEqual(source.files((13.8360, 46.3780, 13.8370, 46.3790)),
+                         [("TM1_410_138.xyz", "https://gis.arso.gov.si/lidar/dmr1/b_37/D96TM/TM1_410_138.txt")])
+        self.assertEqual((ingest.sources.si.blocks()[425, 138], ingest.sources.si.blocks()[426, 138]), (37, 36))
+        self.assertEqual(source.files((13.30, 45.40, 13.31, 45.41)), [])
+
+    def test_a_friulian_box_names_the_zip_of_each_map_element_it_meets(self):
+        """Monte Canin is in element 050023; a box on the corner of four elements needs four."""
+
+        source = ingest.SOURCES["it-36"]
+        self.assertEqual(source.files((13.4400, 46.3590, 13.4410, 46.3600)),
+                         [("DTM01_PCR_050023_RDN2008_TM33.zip",
+                           "https://irdat.regione.fvg.it/cartogdownload/DTM_PCR/1M/6708/DTM01_PCR_050023_RDN2008_TM33.zip")])
+        self.assertEqual(len(source.files((13.4570, 46.3740, 13.4580, 46.3750))), 4)
+        self.assertEqual(source.files((12.0, 45.0, 12.1, 45.1)), [])
+
     def test_a_two_kilometre_grid_only_names_even_squares(self):
         """Saxony publishes 2 km squares, so an odd kilometre is not a file."""
 
@@ -535,6 +558,135 @@ class StacSearch(unittest.TestCase):
         self.assertIn("gateway timeout", str(refusal.exception))
 
 
+class PortugalDataCentre(unittest.TestCase):
+    """The DGT data centre: a search sent as a POST, and downloads behind a login session."""
+
+    #: One item of the CDD's answer, as recorded: the `bbox` is on the national grid.
+    ITEM = {"id": "MDT-2m-244374-05-2024", "bbox": [44000, 2, 0, 74000, 0, -2],
+            "assets": {"data": {"href": "https://cdd.dgterritorio.gov.pt/dgt-be/v1/download/05810f70"}},
+            "geometry": {"type": "Polygon", "coordinates": [[[-7.6153, 40.3336], [-7.6154, 40.3246],
+                                                             [-7.6036, 40.3245], [-7.6036, 40.3335]]]}}
+    #: The login form as Keycloak renders it, with its `&amp;`.
+    FORM = ('<form id="kc-form-login" onsubmit="login.disabled = true; return true;" action="https://'
+            'auth.cdd.dgterritorio.gov.pt/realms/dgterritorio/login-actions/authenticate?session_code=a'
+            '&amp;execution=b&amp;client_id=aai-oidc-dgt" method="post">')
+
+    def setUp(self):
+        self.source = ingest.SOURCES["pt"]
+        self.sent = []
+        for module, name in ((ingest.sources.stac, "http_get"), (ingest.sources.bulk, "http_download")):
+            self.addCleanup(setattr, module, name, getattr(module, name))
+
+    def test_the_search_is_a_post_that_follows_the_token_of_the_next_page(self):
+        second = dict(self.ITEM, id="MDT-2m-243374-05-2024")
+        pages = [{"features": [self.ITEM], "links": [
+                     {"rel": "next", "method": "POST", "href": "https://cdd.dgterritorio.gov.pt/dgt-be/v1/search?undefined",
+                      "body": {"bbox": [-7.62, 40.315, -7.605, 40.33], "token": "next:MDT-2m:1"}}]},
+                 {"features": [second], "links": []}]
+
+        def get(url, data=None, headers=None):
+            self.sent.append((url, json.loads(data), headers))
+            return json.dumps(pages[len(self.sent) - 1]).encode()
+
+        ingest.sources.stac.http_get = get
+        names = [name for name, _ in self.source.files((-7.62, 40.315, -7.605, 40.33))]
+        self.assertEqual(names, ["MDT-2m-243374-05-2024.tif", "MDT-2m-244374-05-2024.tif"])
+        self.assertEqual(self.sent[0][1], {"bbox": [-7.62, 40.315, -7.605, 40.33],
+                                           "collections": ["MDT-2m"], "limit": 500})
+        self.assertEqual(self.sent[0][2], {"Content-Type": "application/json"})
+        self.assertEqual(self.sent[1][1]["token"], "next:MDT-2m:1")
+
+    def test_the_password_goes_only_to_the_dgt_login_form(self):
+        self.assertEqual(pt_module.login_action(self.FORM, "pt login"),
+                         "https://auth.cdd.dgterritorio.gov.pt/realms/dgterritorio/login-actions/"
+                         "authenticate?session_code=a&execution=b&client_id=aai-oidc-dgt")
+        for page in (self.FORM.replace("auth.cdd.dgterritorio.gov.pt", "dgterritorio.gov.pt.example.com"),
+                     self.FORM.replace("https://", "http://"), "<html>maintenance</html>"):
+            with self.subTest(page[-40:]), self.assertRaises(ingest.Refuse):
+                pt_module.login_action(page, "pt login")
+
+    def sign_in(self, landed, cookies):
+        """`sign_in` against a recorded login page: the form it posted, or its refusal."""
+
+        class Response:
+            def __init__(self, body=b"", url=""):
+                self.body, self.url = body, url
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return self.body
+
+            def geturl(self):
+                return self.url
+
+        class Opener:
+            def open(opener, request, timeout=None):  # noqa: N805 — a stand-in of urllib's opener
+                if isinstance(request, str):
+                    return Response(self.FORM.encode())
+                self.sent.append((request.full_url, urllib.parse.parse_qs(request.data.decode())))
+                jar.extend(cookies)
+                return Response(url=landed)
+
+        jar = []
+        cookies = [type("Cookie", (), {"name": name, "value": value})() for name, value in cookies]
+        with unittest.mock.patch.object(pt_module, "session_opener", lambda: (Opener(), jar)), \
+                unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_PT_USER": "u@example.org",
+                                                      "OBC_REFERENCE_PT_PASSWORD": "p"}):
+            return self.source.sign_in()
+
+    def test_the_login_posts_the_form_and_keeps_the_session_cookie(self):
+        session = self.sign_in("https://cdd.dgterritorio.gov.pt/", [("KC_RESTART", "k"), ("connect.sid", "s2")])
+        self.assertEqual(session, "connect.sid=s2")
+        action, form = self.sent[0]
+        self.assertEqual(action, "https://auth.cdd.dgterritorio.gov.pt/realms/dgterritorio/login-actions/"
+                                 "authenticate?session_code=a&execution=b&client_id=aai-oidc-dgt")
+        self.assertEqual((form["username"], form["password"]), (["u@example.org"], ["p"]))
+
+    def test_a_login_that_lands_on_its_form_again_is_refused(self):
+        for landed, cookies in (("https://auth.cdd.dgterritorio.gov.pt/realms/dgterritorio/login-actions/x",
+                                 [("connect.sid", "s2")]),
+                                ("https://cdd.dgterritorio.gov.pt/", [])):
+            with self.subTest(landed), self.assertRaises(ingest.Refuse) as refusal:
+                self.sign_in(landed, cookies)
+            self.assertIn("OBC_REFERENCE_PT_USER", str(refusal.exception))
+
+    def test_a_search_over_the_sea_signs_in_nowhere_and_a_login_page_is_refused(self):
+        ingest.sources.stac.http_get = lambda url, data=None, headers=None: b'{"features": [], "links": []}'
+        with unittest.mock.patch.object(type(self.source), "sign_in", side_effect=AssertionError("signed in")):
+            self.assertEqual(self.source.fetch((-9.9, 39.0, -9.8, 39.1), Path("/nonexistent")), [])
+        ingest.sources.stac.http_get = lambda url, data=None, headers=None: b"<!DOCTYPE html><title>Sign in</title>"
+        with self.assertRaises(ingest.Refuse) as refusal:
+            self.source.files((-9.9, 39.0, -9.8, 39.1))
+        self.assertIn("not a STAC answer", str(refusal.exception))
+
+    def test_a_download_that_is_the_login_page_is_refused_and_not_kept(self):
+        """The CDD answers an ended session with its login page, and a cached page would be
+        read as a tile by every later run."""
+
+        def download(url, path, optional=False, headers=None, what=None):
+            self.sent.append(headers)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"<!DOCTYPE html><title>Sign in</title>")
+            return path
+
+        ingest.sources.bulk.http_download = download
+        with TemporaryDirectory() as directory, \
+                unittest.mock.patch.object(type(self.source), "sign_in", return_value="connect.sid=s1"), \
+                unittest.mock.patch.object(type(self.source), "files",
+                                           return_value=[("a.tif", self.ITEM["assets"]["data"]["href"])]), \
+                unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_PT_USER": "u", "OBC_REFERENCE_PT_PASSWORD": "p"}):
+            with self.assertRaises(ingest.Refuse) as refusal:
+                self.source.fetch((-7.62, 40.315, -7.605, 40.33), Path(directory))
+            self.assertIn("login page", str(refusal.exception))
+            self.assertFalse((Path(directory) / "a.tif").exists())
+        self.assertEqual(self.sent, [{"Cookie": "connect.sid=s1"}])
+
+
 class RangeHandler(SimpleHTTPRequestHandler):
     """A static file server that answers byte ranges, which is what a COG reader needs."""
 
@@ -565,6 +717,47 @@ class RangeHandler(SimpleHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
         self.wfile.write(chunk)
+
+
+class SharedZipWindows(TempCase):
+    """Madeira's rasters are in one zip: one download a prepare, and a window of it for each tile."""
+
+    def test_the_tiles_of_a_prepare_download_the_zip_once_and_read_their_own_window(self):
+        (lo_x, lo_y, hi_x, hi_y), _ = ingest.sources.protocols.projected_box(BOX, 32632)
+        raster = self.inputs / "island.tif"
+        with rasterio.open(raster, "w", driver="GTiff", width=600, height=600, count=1, dtype="float32",
+                           crs=CRS.from_epsg(32632), nodata=-9999.0,
+                           transform=Affine(5, 0, round(lo_x) - 500, 0, -5, round(hi_y) + 500)) as dst:
+            dst.write(np.full((600, 600), 1234.0, dtype="float32"), 1)
+        served = self.inputs / "island.zip"
+        with zipfile.ZipFile(served, "w") as bundle:
+            bundle.write(raster, "island.tif")
+        source = ingest.sources.cog.SharedZip("xx", "Nowhere", "MDT 5 m", 5.0, "CC0", "EGM2008",
+                                              base=f"file://{served}", epsg=32632)
+        source.shared = self.root / "shared"
+        downloads = []
+        real = ingest.sources.cog.http_download
+        self.addCleanup(setattr, ingest.sources.cog, "http_download", real)
+        ingest.sources.cog.http_download = lambda *a, **kw: downloads.append(a) or real(*a, **kw)
+
+        for tile in ("a", "b"):
+            cut = source.fetch(BOX, self.root / tile)
+            self.assertEqual(len(cut), 1)
+            with rasterio.open(cut[0]) as src:
+                self.assertLess(src.width * src.height, 600 * 600)
+        self.assertEqual(len(downloads), 1)
+        self.assertEqual(source.fetch((6.0, 45.0, 6.001, 45.001), self.root / "c"), [])
+
+    def test_a_download_that_is_not_a_zip_is_refused_and_deleted(self):
+        served = self.inputs / "island.zip"
+        served.write_bytes(b"<!DOCTYPE html><title>Maintenance</title>")
+        source = ingest.sources.cog.SharedZip("xx", "Nowhere", "MDT 5 m", 5.0, "CC0", "EGM2008",
+                                              base=f"file://{served}", epsg=32632)
+        source.shared = self.root / "shared"
+        with self.assertRaises(ingest.Refuse) as refusal:
+            source.fetch(BOX, self.root / "a")
+        self.assertIn("not a zip", str(refusal.exception))
+        self.assertFalse((self.root / "shared" / "xx" / "island.zip").exists())
 
 
 class RemoteWindows(TempCase):
@@ -847,6 +1040,29 @@ class BulkArchives(unittest.TestCase):
             rasters = source.fetch((0, 0, 1, 1), Path(directory) / "work")
             self.assertEqual([path.name for path in rasters], ["tile.tif"])
 
+    def test_a_download_shorter_than_its_content_length_is_refused_and_not_kept(self):
+        class Short(SimpleHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                self.wfile.write(b"x" * 40)
+                self.close_connection = True
+
+            def log_message(self, *args):
+                pass
+
+        real = ingest.sources.base.RETRY_DELAYS
+        ingest.sources.base.RETRY_DELAYS = ()
+        self.addCleanup(setattr, ingest.sources.base, "RETRY_DELAYS", real)
+        server = serve(self, Short)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "state.zip"
+            with self.assertRaises(ingest.Refuse) as refusal:
+                ingest.sources.base.http_download(f"http://127.0.0.1:{server.server_address[1]}/z", path)
+            self.assertIn("40 of the 100 bytes", str(refusal.exception))
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
     def test_an_archive_with_no_raster_says_so(self):
         with TemporaryDirectory() as directory:
             archive = self.bundle(directory, {"readme.txt": b"licence only"})
@@ -897,13 +1113,77 @@ class Registry(unittest.TestCase):
         self.assertEqual(body, b"II*\x00ok")
         self.assertEqual(len(calls), 2)
 
+    def test_a_body_the_server_cuts_short_is_retried(self):
+        attempts = []
+
+        def attempt():
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise http.client.IncompleteRead(b"", 11308800)
+            return b"ok"
+
+        real = ingest.sources.base.RETRY_DELAYS
+        ingest.sources.base.RETRY_DELAYS = (0,)
+        self.addCleanup(setattr, ingest.sources.base, "RETRY_DELAYS", real)
+
+        self.assertEqual(ingest.sources.base.with_retry(attempt, "short"), b"ok")
+        self.assertEqual(len(attempts), 2)
+
+    def serve_truncated_then_valid(self):
+        """A server that answers a tiled TIFF with a truncated tile, then the valid TIFF; no retry
+        waits. It returns the URL, the valid TIFF and the answers not yet sent."""
+
+        with rasterio.MemoryFile() as memory:
+            with memory.open(driver="GTiff", width=64, height=64, count=1, dtype="float32",
+                             tiled=True, blockxsize=32, blockysize=32, crs="EPSG:4326",
+                             transform=Affine(0.001, 0, 0, 0, -0.001, 51)) as dst:
+                dst.write(np.ones((1, 64, 64), dtype="float32"))
+            valid = memory.read()
+        answers = [valid[:-1000], valid]
+
+        class Truncated(SimpleHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                body = answers.pop(0)
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = serve(self, Truncated)
+        real = ingest.sources.base.RETRY_DELAYS
+        ingest.sources.base.RETRY_DELAYS = (0,)
+        self.addCleanup(setattr, ingest.sources.base, "RETRY_DELAYS", real)
+        return f"http://127.0.0.1:{server.server_address[1]}/tile.tif", valid, answers
+
+    def test_a_tiff_with_a_truncated_tile_is_retried_and_never_returned(self):
+        """A service can answer a 200 with a whole body whose header opens and whose tile is cut
+        short; only the read of that block fails, so the fetch has to read every block."""
+
+        url, valid, answers = self.serve_truncated_then_valid()
+        body = ingest.sources.protocols.raster_bytes(url, "cut")
+        self.assertEqual(body, valid)
+        self.assertEqual(answers, [])
+
+    def test_a_downloaded_tiff_with_a_truncated_tile_is_retried_and_never_kept(self):
+        url, _, answers = self.serve_truncated_then_valid()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "tile.tif"
+            self.assertEqual(ingest.sources.base.http_download(url, path), path)
+            with rasterio.open(path) as src:
+                self.assertTrue((src.read(1) == 1).all())
+            self.assertEqual(list(Path(directory).iterdir()), [path])
+        self.assertEqual(answers, [])
+
     def test_a_service_that_answers_xml_instead_of_a_raster_is_refused_by_name(self):
         """Out of coverage, renamed, or down: every one of them arrives as a 200 and XML."""
 
         real = ingest.sources.protocols.http_get
         self.addCleanup(lambda: setattr(ingest.sources.protocols, "http_get", real))
         ingest.sources.protocols.http_get = (
-            lambda url, what=None: b"<ExceptionReport>no such coverage</ExceptionReport>")
+            lambda url, **kw: b"<ExceptionReport>no such coverage</ExceptionReport>")
         with self.assertRaises(ingest.Refuse) as refusal:
             ingest.SOURCES["de-nw"].request(BOX)
         self.assertIn("no such coverage", str(refusal.exception))

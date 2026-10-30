@@ -283,5 +283,13 @@ class FetchTest(unittest.TestCase):
         self.assertEqual(sorted(call.args[0] for call in subset.call_args_list), [href("a"), href("b")])
 
 
+class ModisSearchTest(unittest.TestCase):
+    def test_the_search_asks_for_whole_days_as_rfc_3339_times(self):
+        asked = []
+        with mock.patch.object(snow, "http_json", side_effect=lambda url, body=None: asked.append(body) or {"features": []}):
+            snow.modis_items([-10.0, 51.0, -9.0, 52.0], dt.date(2025, 9, 1), dt.date(2026, 8, 31))
+        self.assertEqual(asked[0]["datetime"], "2025-09-01T00:00:00Z/2026-08-31T23:59:59Z")
+
+
 if __name__ == "__main__":
     unittest.main()

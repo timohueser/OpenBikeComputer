@@ -1,5 +1,6 @@
 // What `obc data sources --json` and `source prepare --dry-run --json` write.
-import { list, size, type Holder } from "./shapes";
+import type { Held } from "./holding";
+import { list, type Holder, type Status } from "./shapes";
 
 export type SourceState = "blocked" | "stale" | "ok" | "unused";
 
@@ -22,6 +23,7 @@ export interface SourceRow {
     hosts?: string[];
     version: string;
     refresh: number | "manual";
+    keep: "archive" | "prepared" | "store";
     credential?: { env?: string[]; file?: string | null };
     credential_missing: boolean;
     /** Whether `source refresh` moves the source. */
@@ -45,9 +47,11 @@ export interface SourceRow {
             }[];
         }
     >;
-    /** A prepared source, by target: its complete versions, and the run that prepares it there.
-     *  `error` says why they cannot be read. */
-    prepared: Record<string, { versions: PreparedVersion[]; lock: Holder | null; error: string | null }>;
+    /** A prepared source: the archive root of its home (`null` without one), its complete versions
+     *  there, and the run that prepares it. `error` says why they cannot be read. `null` for another
+     *  source. */
+    prepared: { root: string | null; versions: PreparedVersion[]; lock: Holder | null; error: string | null } | null;
+    held: Held;
 }
 
 export interface StoredRequest {
@@ -69,7 +73,8 @@ export interface PreparedVersion {
 export interface PrepareReview {
     id: string;
     source: string;
-    target: string;
+    /** The archive root of the home of the source. */
+    root: string;
     version: string;
     abandoned: string | null;
     scope: { region: string; definitions: Record<string, string> } | null;
@@ -79,7 +84,7 @@ export interface PrepareReview {
     files: number | null;
     /** Whether the version publishes its article text; `null` for a source without text. */
     publish_text: boolean | null;
-    cost: { wall_ms: number | null; peak_rss_bytes: number | null; store_bytes: number; upload_bytes: number | null; unknown: string[] };
+    cost: { wall_ms: number | null; peak_rss_bytes: number | null; store_bytes: number; archive_bytes: number | null; unknown: string[] };
     machine: { refusals: string[] };
     /** The layers of each target that are stale once the version is complete. */
     stale: { target: string; layers: string[]; error: string | null }[];
@@ -92,11 +97,23 @@ export const policy = (refresh: number | "manual"): string => (refresh === "manu
 /** A reference: `obc data source prepare` makes its versions. Every other source is a download. */
 export const isReference = (row: SourceRow): boolean => row.fetch.kind === "prepared";
 
-/** The headings of Downloads, in order, as `group` in data/sources.toml names them. */
-export const GROUPS = ["OpenStreetMap", "Elevation", "Wikimedia", "Climate and snow", "Land cover and imagery", "Map styles and tools"];
+/** The headings of the source list, in order: the references, then each `group` of
+ *  data/sources.toml. */
+export const GROUPS = ["Prepared", "OpenStreetMap", "Elevation", "Wikimedia", "Climate and snow", "Land cover and imagery", "Map styles and tools"];
 
-/** The parts of a bake, as `used_by` names them. */
-export const PARTS: Record<string, string> = { device: "Bike computer maps", planner: "Planner", search: "Search", trailview: "Trail View" };
+export const groupOf = (row: SourceRow): string => row.group ?? (isReference(row) ? "Prepared" : "Other");
+
+/** Where `target` is, as a person names it. */
+export const placeOf = (target: string, status: Status | null): string =>
+    (status?.targets.find((at) => at.target === target)?.kind ?? (target === "prod" ? "r2" : "dir")) === "r2" ? "Production" : "This computer";
+
+/** What a person acts on: a release that reads an old or blocked version, by where it is. */
+export const due = (row: SourceRow, status: Status | null): string[] =>
+    Object.entries(row.targets).flatMap(([target, at]) =>
+        at.requests
+            .filter((request) => request.state === "stale" || request.state === "blocked")
+            .map((request) => `Due again for ${placeOf(target, status).toLowerCase()}: ${request.reason ?? request.state}`),
+    );
 
 /** The hosts that a fetch of `row` reaches. */
 export function hostsOf(row: SourceRow): string[] {
@@ -113,23 +130,10 @@ export function daysOld(version: string, now = Date.now()): number | null {
 /** What the first param of a request names, singular and plural. */
 const NOUNS: Record<string, [string, string]> = { area: ["area", "areas"], bbox: ["box", "boxes"], tile: ["tile", "tiles"] };
 
-const days = (n: number) => `${n} ${n === 1 ? "day" : "days"}`;
+export const daysText = (n: number) => `${n} ${n === 1 ? "day" : "days"}`;
 
 /** The age in days of `request`: since its fetch, else since its date version. */
 export const requestAge = (request: StoredRequest, now = Date.now()): number | null => daysOld(request.fetched?.slice(0, 10) ?? request.version, now);
-
-/** `16 areas · 8–16 days old · 6.3 GB`: the requests of a source in the store, and the `bytes` of
- *  its versions there. Requests can share files, so their sizes do not add up. */
-export function requestsLine(requests: StoredRequest[], bytes: number, now = Date.now()): string {
-    const key = requests[0].params[0]?.[0];
-    const [one, many] = NOUNS[key] ?? ["request", "requests"];
-    const values = new Set(requests.flatMap((request) => request.params.filter(([name]) => name === key).map(([, value]) => value)));
-    const count = NOUNS[key] ? values.size : requests.length;
-    const ages = requests.map((request) => requestAge(request, now)).filter((age) => age !== null);
-    const [young, old] = [Math.min(...ages), Math.max(...ages)];
-    const age = ages.length ? [`${young === old ? days(old) : `${young}–${days(old)}`} old`] : [];
-    return [`${count} ${count === 1 ? one : many}`, ...age, size(bytes)].join(" · ");
-}
 
 /** What a request fetches: area names, a box as W,S,E,N, tiles as a count with the first few. */
 export function requestLabel(request: StoredRequest, areaName: (id: string) => string): string {
@@ -144,7 +148,7 @@ export function requestLabel(request: StoredRequest, areaName: (id: string) => s
         .join(" · ");
 }
 
-/** The references, as the References screen names them. Each version covers an area. A version of
+/** The references, as the page names them. Each version covers an area. A version of
  *  a reference of national models, the downloads `<models><country>`, adds its area to the one before. */
 export const REFERENCES: { id: string; title: string; about: string; add: string; models?: { prefix: string; noun: string } }[] = [
     { id: "wiki", title: "Wiki", about: "Facts, article text and photos of landmarks and peaks, from the Wikimedia dumps", add: "Prepare a newer version" },
@@ -162,6 +166,7 @@ export const REFERENCES: { id: string; title: string; about: string; add: string
         add: "Add an area",
         models: { prefix: "canopy-", noun: "canopy model" },
     },
+    { id: "climate", title: "Climate", about: "Daily ERA5-Land temperature, rain and wind for the climate layer", add: "Add an area" },
 ];
 
 export const referenceOf = (id: string) => REFERENCES.find((reference) => reference.id === id);
@@ -182,23 +187,21 @@ export function globalModelOf(id: string, rows: SourceRow[]): SourceRow | undefi
 }
 
 /** Where a reference is: what a person acts on first. */
-export type Coverage = "lock" | "preparing" | "r2" | "local" | "none";
+export type Coverage = "lock" | "preparing" | "archive" | "none";
 
 export const COVERAGE: Record<Coverage, { label: string; color: string }> = {
-    r2: { label: "On R2", color: "var(--ready)" },
-    local: { label: "On this computer only", color: "var(--stale)" },
+    archive: { label: "In the archive", color: "var(--ready)" },
     preparing: { label: "Being prepared", color: "var(--running)" },
     lock: { label: "Lock left by a stopped run", color: "var(--missing)" },
     none: { label: "Not prepared", color: "var(--ink-faint)" },
 };
 
-/** The coverage of `row` from its locks and versions; `r2` tells which targets are R2 buckets. */
-export function coverage(row: SourceRow, r2: (target: string) => boolean): Coverage {
-    const on = Object.entries(row.prepared);
-    if (on.some(([, at]) => at.lock && (at.lock.died || at.lock.stale))) return "lock";
-    if (on.some(([, at]) => at.lock)) return "preparing";
-    const held = on.filter(([, at]) => at.versions.length).map(([target]) => target);
-    return held.some(r2) ? "r2" : held.length ? "local" : "none";
+/** The coverage of `row` from its lock and versions. */
+export function coverage(row: SourceRow): Coverage {
+    const lock = row.prepared?.lock;
+    if (lock && (lock.died || lock.stale)) return "lock";
+    if (lock) return "preparing";
+    return row.prepared?.versions.length ? "archive" : "none";
 }
 
 /** The boxes of the coverage map of reference `row`: the extent of each of its `models`, not
@@ -206,16 +209,12 @@ export function coverage(row: SourceRow, r2: (target: string) => boolean): Cover
 export function coverageCells(
     row: SourceRow,
     models: SourceRow[],
-    r2: (target: string) => boolean,
     bounds: (region: string) => [number, number, number, number] | null,
 ): { box: [number, number, number, number]; state: Coverage; label: string }[] {
     const available = models.flatMap((model) => (model.extent ? [{ box: model.extent, state: "none" as Coverage, label: `${model.use ?? model.id} · ${COVERAGE.none.label}` }] : []));
-    const made = Object.entries(row.prepared).flatMap(([target, at]) =>
-        at.versions.flatMap((version) => {
-            const box = version.region ? bounds(version.region) : null;
-            const state: Coverage = r2(target) ? "r2" : "local";
-            return box ? [{ box, state, label: `${version.region} · ${COVERAGE[state].label}` }] : [];
-        }),
-    );
+    const made = (row.prepared?.versions ?? []).flatMap((version) => {
+        const box = version.region ? bounds(version.region) : null;
+        return box ? [{ box, state: "archive" as Coverage, label: `${version.region} · ${COVERAGE.archive.label}` }] : [];
+    });
     return [...available, ...new Map(made.map((cell) => [cell.label, cell])).values()];
 }

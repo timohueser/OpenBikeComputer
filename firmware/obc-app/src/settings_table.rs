@@ -340,11 +340,9 @@ macro_rules! settings_table {
         };
 
         /// The payload length of a blob written by version `v`: the offset past the last row that
-        /// version declared. Pinned against hand-written literals at the declaration, because an
-        /// assert derived from the `since` column could not fail.
-        ///
-        /// Only `MIN_SUPPORTED..=VERSION` is ever decoded; a lower `v` still answers, which gives
-        /// the literal block something to catch a mistyped `since` with.
+        /// version declared. Only `MIN_SUPPORTED..=VERSION` is ever decoded. A table's tests pin it
+        /// with hand-written blobs or literals, because an assert derived from the `since` column
+        /// could not fail.
         const fn payload_len(v: u8) -> usize {
             let mut len = 1; // byte 0 is the version, which is not a field
             $(

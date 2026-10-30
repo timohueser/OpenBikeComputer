@@ -13,7 +13,7 @@ use serde::Serialize;
 use super::{find, print_json, print_table, registry, Code, Error};
 use crate::credentials;
 use crate::r2::{Bucket, Credentials};
-use crate::sources::{Credential, Registry, Source};
+use crate::sources::{Credential, FetchKind, Keep, Registry, Source};
 use crate::store::Store;
 
 /// What `setup` writes.
@@ -96,7 +96,7 @@ pub struct CredentialSet {
     pub names: Vec<String>,
     /// The sources that the credential serves; none for a credential of `deploy`.
     pub sources: Vec<String>,
-    /// The names that the environment of the command sets, for example from `tools/obc.local`:
+    /// The names that the environment of the command sets, from the shell or `tools/obc.local`:
     /// the environment wins over the file, so the new value serves only once they are removed
     /// there.
     pub overridden: Vec<String>,
@@ -218,7 +218,7 @@ pub fn setup(root: &Path, json: bool) -> Result<(), Error> {
     }
     credentials.extend(accounts.iter().map(|(credential, sources)| CredentialState {
         name: credential.describe(),
-        needed_for: format!("fetch {}", sources.iter().map(|source| source.id.as_str()).collect::<Vec<_>>().join(", ")),
+        needed_for: sources.iter().copied().map(needed_for).collect::<Vec<_>>().join(", "),
         state: if credential.present() { Readiness::Ready } else { Readiness::Optional },
         set: Some(["source", "credential", &sources[0].id].map(String::from).to_vec()),
         fields: credentials::place(credential).map(|place| place.names).unwrap_or_default(),
@@ -255,7 +255,10 @@ pub fn setup(root: &Path, json: bool) -> Result<(), Error> {
         reason: match publish.is_empty() {
             true => "rclone and the R2 key are present.".into(),
             false if r2 => format!("Needs {}. Install it, then check again.", list(&publish)),
-            false => format!("Needs {}. Ask the owner for the key, then put it in tools/obc.local.", list(&publish)),
+            false => format!(
+                "Needs {}. Ask the owner for the key, then put it in ~/.config/openbikecomputer/credentials.env with mode 0600.",
+                list(&publish)
+            ),
         },
     };
     let unset = accounts.iter().filter(|(credential, _)| !credential.present()).count();
@@ -359,7 +362,10 @@ pub(super) fn print_set(set: &CredentialSet, json: bool) -> Result<(), Error> {
     let serves = if set.sources.is_empty() { String::new() } else { format!(" for {}", list(&set.sources)) };
     println!("Wrote {} to {}{serves}.", list(&set.names), set.file.display());
     if !set.overridden.is_empty() {
-        eprintln!("The environment sets {}, and it wins: remove it from tools/obc.local.", list(&set.overridden));
+        eprintln!(
+            "The environment sets {}, and it wins: remove it from the shell or tools/obc.local.",
+            list(&set.overridden)
+        );
     }
     Ok(())
 }
@@ -421,6 +427,15 @@ fn used(dir: &Path) -> u64 {
             _ => 0,
         })
         .sum()
+}
+
+/// What the credential of `source` is for: its fetch, or the prepare that reads a source that only a
+/// prepare reads, such as `era5-land`.
+fn needed_for(source: &Source) -> String {
+    match source.keep == Keep::Prepared && source.fetch.kind != FetchKind::Prepared {
+        true => format!("the prepare that reads {}", source.id),
+        false => format!("fetch {}", source.id),
+    }
 }
 
 /// `a`, `a and b`, `a, b and c`.

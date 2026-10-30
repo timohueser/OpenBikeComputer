@@ -4,7 +4,7 @@
 import { rgb } from '../structures/mesh';
 import { Model, type Vec } from './flat';
 
-/** Grey body, a lit top and lichen. A wall face in GREY takes the colour of the rock under it. */
+/** Grey body, a lit top and lichen. A stone face (STONE of anchored.ts) in GREY takes the colour of the rock under it. */
 export const GREY = rgb('#8e908a');
 const BODY = ['#7d7f78', '#8e908a', '#a3a49c'].map(h => rgb(h)), LICHEN = rgb('#9c9a72');
 

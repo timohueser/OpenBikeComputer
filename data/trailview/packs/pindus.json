@@ -42,6 +42,6 @@
   "cattle": { "model": "highland-cow", "latin": "Bos taurus (Busha)", "groups": 1, "size": [2, 10], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
   "horse": { "groups": 1, "size": [1, 5], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
- "orchard": "hawthorn",
+ "rows": { "orchard": "hawthorn" },
  "style": "village-house"
 }

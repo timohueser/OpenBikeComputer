@@ -40,6 +40,6 @@
   "dairy-cattle": { "groups": 1, "size": [10, 40], "on": ["pasture", "grassland", "arable"] },
   "horse": { "groups": 2, "size": [1, 6], "on": ["pasture", "grassland", "arable", "heath"] }
  },
- "orchard": "hawthorn",
+ "rows": { "orchard": "hawthorn" },
  "style": "house"
 }

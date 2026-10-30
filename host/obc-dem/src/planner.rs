@@ -2,14 +2,17 @@
 //! archive gives the height where it holds the ground, GLO-30 elsewhere, and the two meet in a
 //! feathered seam.
 //!
-//! GLO-30 is a surface model: it stands on roofs and on the forest canopy. Its bias is the median
-//! of archive − GLO-30 over the overlap, and GLO-30 takes it near the archive. A coverage cell is
-//! full where the archive has each of its pixels. The depth of a point is its distance into the
+//! GLO-30 is a surface model: it stands on roofs and on the forest canopy. The terrain prepare
+//! measures the bias of each national model once, the median of model − GLO-30 ([`biases`]), and
+//! the index of the archive states it. Near the archive, GLO-30 takes the bias of the best model of
+//! the tile, and outside the archive that of the nearest full cell. A coverage cell is full where
+//! the archive has each of its pixels. The depth of a point is its distance into the
 //! full cells, or minus its distance to them, less the diagonal of a cell: the cells next to the
 //! edge, on both sides, have depth 0. The weight of the archive rises from 0 at depth 0 to 1 at
 //! [`FEATHER_M`], and the bias fades out from depth 0 to −[`FEATHER_M`]. So the weight is 0
 //! wherever the archive misses a pixel near a point, also at a concave edge such as a national
-//! border, and the height is continuous everywhere.
+//! border, and the height is continuous everywhere. The seam reads the coverage of one ring of
+//! tiles around the bounds ([`reach`]), so a height does not depend on the bounds of the bake.
 //!
 //! Where GLO-30 has weight, [`crate::shape`] corrects it at the coastlines and summits of OSM.
 
@@ -26,6 +29,19 @@ use crate::geotiff::{DemMosaic, DemTile};
 use crate::reference::{ReferenceArchive, ReferenceTile, TileLookup, Window, ORIGIN, STEP, TILE_PIXELS, TILE_UDEG};
 use crate::shape::{Features, Shapes, READ_M};
 
+/// A bias sample is each pixel of a tile whose row and column, counted north and east, are
+/// [`SAMPLE`] modulo [`SAMPLES`]: 16 × 16 pixels a tile.
+pub const SAMPLES: usize = 64;
+pub const SAMPLE: usize = 32;
+/// A bias sample: latitude and longitude in µdeg, and the height of the model in metres.
+pub type Sample = (i64, i64, f64);
+/// The fewest samples with GLO-30 that a bias is measured from: those of four full tiles, so that a
+/// test version of one tile does not fix the bias of a model.
+pub const MIN_SAMPLES: usize = 4 * (TILE_PIXELS / SAMPLES) * (TILE_PIXELS / SAMPLES);
+/// How a version of `terrain` without the bias of a model gets it.
+pub const BIAS_FIX: &str = "a prepare of a box of about four tiles inside the extent of the model extends the \
+     version and measures it: obc data source prepare terrain --box W,S,E,N --dry-run";
+
 /// The width of each ramp of the seam in metres. A canopy step of 20 m between the archive and
 /// GLO-30 ramps over it at 2 %, which the relief does not show as an edge.
 pub const FEATHER_M: f64 = 1000.0;
@@ -41,6 +57,18 @@ const M_PER_UDEG: f64 = 0.111_32;
 pub fn tiles([west, south, east, north]: [f64; 4]) -> Vec<TileId> {
     let lats = south.floor() as i32..=north.floor() as i32;
     lats.flat_map(|lat| (west.floor() as i32..=east.floor() as i32).map(move |lon| TileId { lat, lon })).collect()
+}
+
+/// The archive pixels that the heights in `bounds` (west, south, east, north in degrees) read:
+/// those of its tiles and of the ring of tiles around them.
+pub fn reach([west, south, east, north]: [f64; 4]) -> Window {
+    let udeg = |degrees: f64| (degrees * 1e6) as i64;
+    Window {
+        lat_lo: udeg(south) - TILE_UDEG,
+        lat_hi: udeg(north) + 1 + TILE_UDEG,
+        lon_lo: udeg(west) - TILE_UDEG,
+        lon_hi: udeg(east) + 1 + TILE_UDEG,
+    }
 }
 
 /// The GLO-30 files of `bounds` in `dir`: a square without a file is sea.
@@ -82,9 +110,7 @@ pub struct Terrain {
     /// every zoom, so a tile decodes once for the whole sweep.
     decoded: Mutex<Tiles>,
     seam: Seam,
-    /// The median of archive − GLO-30 over the overlap, in metres.
-    bias: f64,
-    /// The SHA-256 of each GLO-30 file, then of each reference tile that `bounds` reaches.
+    /// The SHA-256 of each GLO-30 file, then of each reference tile of [`reach`].
     pub identities: Vec<String>,
     used: Mutex<BTreeSet<String>>,
     /// The credit of GLO-30.
@@ -97,8 +123,7 @@ pub struct Terrain {
 impl Terrain {
     /// The GLO-30 files `glo30`, in the order of [`tiles`], with their `credit`, and the reference
     /// archive at `reference`, for heights in `bounds`. Each file is hashed and its header checked.
-    /// With an archive, its tiles in `bounds` decode once for the seam and the bias, with the
-    /// GLO-30 squares under them.
+    /// With an archive, its tiles of [`reach`] decode once for the seam.
     pub fn open(
         glo30: &[(TileId, PathBuf)],
         credit: &str,
@@ -115,68 +140,26 @@ impl Terrain {
             files.entry(tile.lat).or_default().push(path.clone());
         }
         let reference = reference.map(ReferenceArchive::open).transpose()?;
-        let window = Window {
-            lat_lo: (bounds[1] * 1e6) as i64,
-            lat_hi: (bounds[3] * 1e6) as i64 + 1,
-            lon_lo: (bounds[0] * 1e6) as i64,
-            lon_hi: (bounds[2] * 1e6) as i64 + 1,
+        let seam = match &reference {
+            Some(archive) => {
+                identities.extend(archive.held_digests(reach(bounds)).into_iter().map(|(_, _, hash)| hash.to_owned()));
+                Seam::measure(archive, reach(bounds))?
+            }
+            None => Seam::default(),
         };
-        if let Some(archive) = &reference {
-            identities.extend(archive.held_digests(window).into_iter().map(|(_, _, hash)| hash.to_owned()));
-        }
-        let mut terrain = Self {
+        Ok(Self {
             glo30: files,
             fallback: DemMosaic::default(),
             loaded: BTreeSet::new(),
             reference,
             decoded: Mutex::default(),
-            seam: Seam::default(),
-            bias: 0.0,
+            seam,
             identities,
             used: Mutex::default(),
             credit: credit.into(),
             shapes: Shapes::default(),
             shapes_credit: None,
-        };
-        terrain.measure_seam(window)?;
-        Ok(terrain)
-    }
-
-    /// The full coverage cells of each archive tile in `window`, for `seam`, and the bias from the
-    /// archive pixels whose row and column are 8 modulo 16. Tile rows go north to south, so each
-    /// GLO-30 square decodes once.
-    fn measure_seam(&mut self, window: Window) -> Result<(), String> {
-        let Some(archive) = self.reference.take() else { return Ok(()) };
-        let held: Vec<(u32, u32)> = archive.held_digests(window).into_iter().map(|(ti, tj, _)| (ti, tj)).collect();
-        let (mut full, mut differences) = (BTreeMap::new(), Vec::new());
-        for &(ti, tj) in held.iter().rev() {
-            let south = (ORIGIN + i64::from(ti) * TILE_UDEG) as i32;
-            self.load(*squares(south).start()..=*squares(south + TILE_UDEG as i32).end())?;
-            let TileLookup::Held { tile, .. } = archive.tile(ti, tj)? else { continue };
-            let (lat0, lon0) = tile.origin_udeg();
-            let mut cells = vec![0u16; CELLS * CELLS];
-            for r in 0..TILE_PIXELS {
-                for c in 0..TILE_PIXELS {
-                    let Some(height) = tile.height(r, c) else { continue };
-                    cells[(r >> CELL_LOG2) * CELLS + (c >> CELL_LOG2)] += 1;
-                    if r % 16 == 8 && c % 16 == 8 {
-                        let (lat, lon) = (lat0 + r as i64 * STEP + STEP / 2, lon0 + c as i64 * STEP + STEP / 2);
-                        if let Some(glo30) = self.fallback.height(lat as f64 * 1e-6, lon as f64 * 1e-6) {
-                            differences.push(f64::from(height) - glo30);
-                        }
-                    }
-                }
-            }
-            full.insert((ti, tj), cells.iter().map(|&count| count == 1 << (2 * CELL_LOG2)).collect());
-        }
-        if !differences.is_empty() {
-            let middle = differences.len() / 2;
-            self.bias = *differences.select_nth_unstable_by(middle, f64::total_cmp).1;
-            eprintln!("GLO-30 bias {:.2} m from {} reference samples", self.bias, differences.len());
-        }
-        self.seam = Seam::new(&full);
-        self.reference = Some(archive);
-        Ok(())
+        })
     }
 
     /// The terrain with GLO-30 shaped by the coastlines and summits of OSM, whose credit is
@@ -215,10 +198,10 @@ impl Terrain {
         let glo30 = || self.shapes.height(lat as f64 * 1e-6, lon as f64 * 1e-6, &fallback);
         let Some(archive) = &self.reference else { return Ok(glo30()) };
         let national = self.national(archive, lat, lon, recent)?;
-        let depth = self.seam.depth(lat, lon);
+        let (depth, bias) = self.seam.at(lat, lon);
         // Where the archive holds the ground alone, GLO-30 has no weight.
         let glo30 = if national.is_some() && depth >= FEATHER_M { None } else { glo30() };
-        Ok(blend(national, glo30, depth, self.bias))
+        Ok(blend(national, glo30, depth, bias))
     }
 
     /// Whether the archive holds the ground somewhere in `bounds` (west, south, east, north in
@@ -226,7 +209,7 @@ impl Terrain {
     pub fn national_in(&self, [west, south, east, north]: [f64; 4]) -> bool {
         let cell = |degrees: f64| ((degrees * 1e6 - ORIGIN as f64) / CELL_UDEG).floor() as i64;
         let (rows, cols) = (cell(south)..=cell(north), cell(west)..=cell(east));
-        rows.flat_map(|i| cols.clone().map(move |j| (i, j))).any(|(i, j)| self.seam.cell(i, j) > 0.0)
+        rows.flat_map(|i| cols.clone().map(move |j| (i, j))).any(|(i, j)| self.seam.cell(i, j)[0] > 0.0)
     }
 
     /// The archive height at a point, bilinear between the four pixel centres around it. A
@@ -327,46 +310,145 @@ pub fn blend(national: Option<f64>, glo30: Option<f64>, depth: f64, bias: f64) -
     }
 }
 
-/// The depth of each coverage cell in the archive, by archive tile. A tile that is not here is
+/// The bias of each national model: the median of model − GLO-30 in metres, to the centimetre,
+/// over its samples, with GLO-30 from the squares of `glo30`, which must hold the square of each
+/// sample. A sample without a GLO-30 height does not count. A model with fewer than
+/// [`MIN_SAMPLES`] has no bias. Each thread decodes one square at a time.
+pub fn biases(
+    samples: &BTreeMap<String, Vec<Sample>>,
+    glo30: &[(TileId, PathBuf)],
+) -> Result<BTreeMap<String, f64>, String> {
+    let mut by_square: BTreeMap<(i32, i32), Vec<(&str, Sample)>> = BTreeMap::new();
+    for (key, points) in samples {
+        for &(lat, lon, metres) in points {
+            let square = (lat.div_euclid(1_000_000) as i32, lon.div_euclid(1_000_000) as i32);
+            by_square.entry(square).or_default().push((key, (lat, lon, metres)));
+        }
+    }
+    let files: BTreeMap<(i32, i32), &PathBuf> = glo30.iter().map(|(tile, path)| ((tile.lat, tile.lon), path)).collect();
+    let squares = by_square.into_iter().map(|((lat, lon), points)| match files.get(&(lat, lon)) {
+        Some(path) => Ok((*path, points)),
+        None => Err(format!("no GLO-30 square {} for {} bias samples", TileId { lat, lon }.stem(), points.len())),
+    });
+    let squares = squares.collect::<Result<Vec<_>, String>>()?;
+    let differences = squares
+        .into_par_iter()
+        .map(|(path, points)| {
+            let mut mosaic = DemMosaic::default();
+            mosaic.push(DemTile::open(path)?);
+            let glo30 = |lat: i64, lon: i64| mosaic.height(lat as f64 * 1e-6, lon as f64 * 1e-6);
+            Ok(points
+                .into_iter()
+                .filter_map(|(key, (lat, lon, metres))| Some((key, metres - glo30(lat, lon)?)))
+                .collect())
+        })
+        .collect::<Result<Vec<Vec<_>>, String>>()?;
+    let mut by_model: BTreeMap<&str, Vec<f64>> = samples.keys().map(|key| (key.as_str(), Vec::new())).collect();
+    for (key, difference) in differences.into_iter().flatten() {
+        by_model.get_mut(key).expect("a model of the samples").push(difference);
+    }
+    let mut measured = BTreeMap::new();
+    for (key, mut values) in by_model {
+        let n = values.len();
+        if n < MIN_SAMPLES {
+            eprintln!("GLO-30 bias of `{key}`: {n} samples with GLO-30, fewer than {MIN_SAMPLES}: no bias");
+            continue;
+        }
+        let bias = (*values.select_nth_unstable_by(n / 2, f64::total_cmp).1 * 100.0).round() / 100.0;
+        eprintln!("GLO-30 bias of `{key}`: {bias:.2} m from {n} samples");
+        measured.insert(key.to_string(), bias);
+    }
+    Ok(measured)
+}
+
+/// The bias samples of archive tile `(ti, tj)`, from `height` of pixel `(r, c)`, `r` counting north.
+pub fn samples(ti: u32, tj: u32, height: impl Fn(usize, usize) -> Option<f64>) -> Vec<Sample> {
+    let (lat0, lon0) = (ORIGIN + i64::from(ti) * TILE_UDEG, ORIGIN + i64::from(tj) * TILE_UDEG);
+    let pixels = || (SAMPLE..TILE_PIXELS).step_by(SAMPLES);
+    let centre = |origin: i64, pixel: usize| origin + pixel as i64 * STEP + STEP / 2;
+    let points = pixels().flat_map(|r| pixels().map(move |c| (r, c)));
+    points.filter_map(|(r, c)| Some((centre(lat0, r), centre(lon0, c), height(r, c)?))).collect()
+}
+
+/// The coverage cells of an archive tile: whether the archive has each of their pixels, and the
+/// bias of the best model of the tile.
+struct Coverage {
+    full: Vec<bool>,
+    bias: f32,
+}
+
+/// The depth and the bias of each coverage cell, by archive tile. A tile that is not here is
 /// [`FEATHER_M`] or more outside.
 #[derive(Default)]
-struct Seam(BTreeMap<(u32, u32), Vec<f32>>);
+struct Seam(BTreeMap<(u32, u32), Vec<[f32; 2]>>);
 
 impl Seam {
-    /// The depths around the archive tiles of `full`, from whether each of their cells is full.
-    fn new(full: &BTreeMap<(u32, u32), Vec<bool>>) -> Self {
+    /// The seam of the archive tiles of `window`. Each held tile decodes once.
+    fn measure(archive: &ReferenceArchive, window: Window) -> Result<Self, String> {
+        let held = archive.held_digests(window);
+        let coverage = held.par_iter().map(|&(ti, tj, _)| {
+            let TileLookup::Held { tile, .. } = archive.tile(ti, tj)? else { return Ok(None) };
+            let Some((best, bias)) = archive.bias(ti, tj) else { return Ok(None) };
+            let bias = bias.ok_or_else(|| {
+                format!(
+                    "the archive index states no `glo30_bias_m` of `{best}`, the best model of tile {ti}/{tj}. \
+                     Fix: {BIAS_FIX}"
+                )
+            })?;
+            let mut cells = vec![0u16; CELLS * CELLS];
+            for r in 0..TILE_PIXELS {
+                for c in 0..TILE_PIXELS {
+                    cells[(r >> CELL_LOG2) * CELLS + (c >> CELL_LOG2)] += u16::from(tile.height(r, c).is_some());
+                }
+            }
+            let full = cells.iter().map(|&count| count == 1 << (2 * CELL_LOG2)).collect();
+            Ok(Some(((ti, tj), best, Coverage { full, bias: bias as f32 })))
+        });
+        let coverage = coverage.collect::<Result<Vec<_>, String>>()?;
+        let used: BTreeMap<&str, f32> = coverage.iter().flatten().map(|(_, best, cells)| (*best, cells.bias)).collect();
+        for (key, bias) in used {
+            eprintln!("GLO-30 bias {bias:.2} m next to `{key}`");
+        }
+        Ok(Self::new(&coverage.into_iter().flatten().map(|(tile, _, cells)| (tile, cells)).collect()))
+    }
+
+    /// The depths and the biases around the archive tiles of `full`.
+    fn new(full: &BTreeMap<(u32, u32), Coverage>) -> Self {
         let near: BTreeSet<(u32, u32)> = full
             .keys()
             .flat_map(|&(ti, tj)| (ti - 1..=ti + 1).flat_map(move |i| (tj - 1..=tj + 1).map(move |j| (i, j))))
             .collect();
         let depths = near.into_iter().map(|(ti, tj)| ((ti, tj), depths(full, ti, tj)));
-        Self(depths.filter(|(_, cells)| cells.iter().any(|&depth| f64::from(depth) > -FEATHER_M)).collect())
+        Self(depths.filter(|(_, cells)| cells.iter().any(|&[depth, _]| f64::from(depth) > -FEATHER_M)).collect())
     }
 
-    /// The depth of the coverage cell `(i, j)`, counted from the lattice origin.
-    fn cell(&self, i: i64, j: i64) -> f64 {
+    /// The depth and the bias of the coverage cell `(i, j)`, counted from the lattice origin.
+    fn cell(&self, i: i64, j: i64) -> [f64; 2] {
         let size = CELLS as i64;
         let at = (i.rem_euclid(size) * size + j.rem_euclid(size)) as usize;
         let tile = (i.div_euclid(size) as u32, j.div_euclid(size) as u32);
-        self.0.get(&tile).map_or(-FEATHER_M, |cells| f64::from(cells[at]))
+        self.0.get(&tile).map_or([-FEATHER_M, 0.0], |cells| cells[at].map(f64::from))
     }
 
-    /// The depth at a point, bilinear between the centres of the coverage cells. Where the archive
-    /// misses a pixel, the four cells around a point are full cells next to the edge or not full,
-    /// so the depth is 0 or less.
-    fn depth(&self, lat: i32, lon: i32) -> f64 {
+    /// The depth and the bias at a point, bilinear between the centres of the coverage cells. Where
+    /// the archive misses a pixel, the four cells around a point are full cells next to the edge or
+    /// not full, so the depth is 0 or less.
+    fn at(&self, lat: i32, lon: i32) -> (f64, f64) {
         let cell = |udeg: i32| (f64::from(udeg) - ORIGIN as f64) / CELL_UDEG - 0.5;
         let (y, x) = (cell(lat), cell(lon));
         let (i, j, fy, fx) = (y.floor() as i64, x.floor() as i64, y - y.floor(), x - x.floor());
-        let row = |i| self.cell(i, j) * (1.0 - fx) + self.cell(i, j + 1) * fx;
-        row(i) * (1.0 - fy) + row(i + 1) * fy
+        let mix = |a: [f64; 2], b: [f64; 2], f: f64| [0, 1].map(|k| a[k] * (1.0 - f) + b[k] * f);
+        let row = |i| mix(self.cell(i, j), self.cell(i, j + 1), fx);
+        let [depth, bias] = mix(row(i), row(i + 1), fy);
+        (depth, bias)
     }
 }
 
-/// The depth of each coverage cell of tile `(ti, tj)`, from the tile and its eight neighbours: the
-/// distance between cell centres to the nearest cell on the other side of the edge, less the
-/// diagonal of a cell, at most [`FEATHER_M`]; negative outside the full cells.
-fn depths(full: &BTreeMap<(u32, u32), Vec<bool>>, ti: u32, tj: u32) -> Vec<f32> {
+/// The depth and the bias of each coverage cell of tile `(ti, tj)`, from the tile and its eight
+/// neighbours. The depth is the distance between cell centres to the nearest cell on the other side
+/// of the edge, less the diagonal of a cell, at most [`FEATHER_M`]; negative outside the full cells.
+/// A full cell has the bias of its tile, and a cell outside the bias of the nearest full cell.
+fn depths(full: &BTreeMap<(u32, u32), Coverage>, ti: u32, tj: u32) -> Vec<[f32; 2]> {
     const SIDE: usize = 3 * CELLS;
     let lat = (ORIGIN + i64::from(ti) * TILE_UDEG + TILE_UDEG / 2) as f64 * 1e-6;
     let (height, width) = (CELL_UDEG * M_PER_UDEG, CELL_UDEG * M_PER_UDEG * lat.to_radians().cos());
@@ -375,28 +457,31 @@ fn depths(full: &BTreeMap<(u32, u32), Vec<bool>>, ti: u32, tj: u32) -> Vec<f32> 
     let (rows, cols) = ((reach / height).ceil() as usize, (reach / width).ceil() as usize);
     assert!(rows < CELLS && cols < CELLS, "the seam is narrower than a tile");
     // The full cells of the 3 × 3 block of tiles.
+    let tile = |r: usize, c: usize| (ti + (r / CELLS) as u32 - 1, tj + (c / CELLS) as u32 - 1);
     let mut block = vec![false; SIDE * SIDE];
     for (r, row) in block.chunks_mut(SIDE).enumerate() {
         for (c, cell) in row.iter_mut().enumerate() {
-            let tile = (ti + (r / CELLS) as u32 - 1, tj + (c / CELLS) as u32 - 1);
-            *cell = full.get(&tile).is_some_and(|cells| cells[(r % CELLS) * CELLS + c % CELLS]);
+            *cell = full.get(&tile(r, c)).is_some_and(|cells| cells.full[(r % CELLS) * CELLS + c % CELLS]);
         }
     }
-    let mut out = vec![0f32; CELLS * CELLS];
+    let mut out = vec![[0f32; 2]; CELLS * CELLS];
     for r in CELLS..2 * CELLS {
         for c in CELLS..2 * CELLS {
             let inside = block[r * SIDE + c];
-            let mut nearest = reach;
+            let mut nearest = (reach, (ti, tj));
             for dr in r - rows..=r + rows {
                 for dc in c - cols..=c + cols {
                     if block[dr * SIDE + dc] != inside {
                         let metres = ((dr as f64 - r as f64) * height).hypot((dc as f64 - c as f64) * width);
-                        nearest = nearest.min(metres);
+                        if metres < nearest.0 {
+                            nearest = (metres, tile(dr, dc));
+                        }
                     }
                 }
             }
-            let depth = (nearest - diagonal).max(0.0);
-            out[(r - CELLS) * CELLS + c - CELLS] = if inside { depth } else { -depth } as f32;
+            let depth = (nearest.0 - diagonal).max(0.0);
+            let bias = full.get(&if inside { (ti, tj) } else { nearest.1 }).map_or(0.0, |cells| cells.bias);
+            out[(r - CELLS) * CELLS + c - CELLS] = [if inside { depth } else { -depth } as f32, bias];
         }
     }
     out
@@ -428,18 +513,22 @@ mod tests {
     #[test]
     fn the_seam_has_no_step_where_the_archive_stops_at_a_concave_edge() {
         let tiles = [(4810, 4224), (4810, 4225), (4811, 4224)];
-        let seam = Seam::new(&tiles.into_iter().map(|tile| (tile, vec![true; CELLS * CELLS])).collect());
+        let full = |tile| (tile, Coverage { full: vec![true; CELLS * CELLS], bias: -2.0 });
+        let seam = Seam::new(&tiles.into_iter().map(full).collect());
         let corner = |tile: u32| (ORIGIN + i64::from(tile) * TILE_UDEG) as i32;
         let (edge, east) = (corner(4811), corner(4225));
         // North across the edge, 300 m east of the inner corner, in steps of 2 µdeg (0.2 m).
         let lon = east + (300.0 / (M_PER_UDEG * 46.8f64.to_radians().cos())) as i32;
         let heights: Vec<f64> = (edge - 20_000..edge + 20_000)
             .step_by(2)
-            .map(|lat| blend((lat < edge).then_some(500.0), Some(520.0), seam.depth(lat, lon), -2.0).unwrap())
+            .map(|lat| {
+                let (depth, bias) = seam.at(lat, lon);
+                blend((lat < edge).then_some(500.0), Some(520.0), depth, bias).unwrap()
+            })
             .collect();
         let step = heights.windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0, f64::max);
         assert!(step < 0.01, "a step of {step} m at the edge");
-        let inside = seam.depth(corner(4810) + 30_000, corner(4224) + 30_000);
-        assert_eq!(blend(Some(500.0), Some(520.0), inside, -2.0), Some(500.0), "the archive alone");
+        let (inside, bias) = seam.at(corner(4810) + 30_000, corner(4224) + 30_000);
+        assert_eq!(blend(Some(500.0), Some(520.0), inside, bias), Some(500.0), "the archive alone");
     }
 }

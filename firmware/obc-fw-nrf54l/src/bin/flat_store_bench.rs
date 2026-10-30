@@ -2,7 +2,7 @@
 //!
 //!     cargo run --release --bin flat_store_bench
 //!
-//! `FLAT_Store_Format.md` states five figures that only the board can check: a first boot "well
+//! `flat-store-format.md` states five figures that only the board can check: a first boot "well
 //! under a second", a mount "about 100 ms", a commit "about 15-20 ms at a few hundred entries", a
 //! read path that is arithmetic rather than a chain walk, and a resident cost of the 8 KiB free
 //! bitmap plus the ride tail. This binary measures each of them against a card in the slot. It is

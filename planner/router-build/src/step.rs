@@ -88,9 +88,10 @@ fn build(args: Build, mut terrain: Terrain, output: &Path) -> Result<catalog::Re
     catalog::write(output, osm, france)
 }
 
-/// The planner routing step. It reads the OSM files of its input layers and the GLO-30 tiles of
-/// its bounds. The options are `region`, `bounds`, `profiles`, `countries` and `attribution`, as
-/// in [`Build`], and `terrain_attribution`, the credit of GLO-30.
+/// The planner routing step. It reads the OSM files of its input layers, the GLO-30 tiles of its
+/// bounds and, when the request has it, the layer `planner/reference`: the heights of the planner
+/// terrain without its shapes. The options are `region`, `bounds`, `profiles`, `countries` and
+/// `attribution`, as in [`Build`], and `terrain_attribution`, the credit of GLO-30.
 /// The import applies each way's country access defaults. The layer:
 ///
 /// - `routing/`: the package, `overlays.sqlite` and `route-catalog.json`;
@@ -114,11 +115,13 @@ pub fn step(request: &Request) -> Result<(), String> {
     if countries.is_empty() {
         return Err("option `countries` is empty: the routes of each cell come from the route catalog".into());
     }
-    let inputs = request.layers.values().flat_map(|files| files.values().cloned()).collect();
+    let osm = request.layers.iter().filter(|(name, _)| *name != obc_dem::step::REFERENCE);
+    let inputs = osm.flat_map(|(_, files)| files.values().cloned()).collect();
     let (region, profiles, attribution) = (text("region")?, list("profiles")?, text("attribution")?);
     let args = Build { inputs, region, bounds, profiles, countries, attribution };
     let credit = text("terrain_attribution")?;
-    let terrain = Terrain::open(&obc_dem::step::glo30(request, bounds), &credit, None, bounds)?;
+    let reference = obc_dem::step::reference(request)?;
+    let terrain = Terrain::open(&obc_dem::step::glo30(request, bounds), &credit, reference.as_deref(), bounds)?;
     let routing = request.output.join("routing");
     fs::create_dir(&routing).map_err(|e| format!("{}: {e}", routing.display()))?;
     let report = build(args, terrain, &routing)?;

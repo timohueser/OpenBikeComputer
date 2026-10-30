@@ -295,14 +295,14 @@
     }
     .lock,
     .done {
-        border: 2px solid var(--ink);
+        border: 1px solid var(--ink-faint);
     }
     .confirm {
         display: flex;
         flex-direction: column;
         gap: 8px;
         padding: 16px;
-        background: #fdf3e6;
+        background: var(--warn);
         border: 1px solid var(--stale);
         border-radius: 8px;
     }

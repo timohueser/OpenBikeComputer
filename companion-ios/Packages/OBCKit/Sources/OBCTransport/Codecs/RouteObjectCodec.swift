@@ -3,7 +3,7 @@ import OBCDomain
 import OBCHost
 
 /// The Rust OBCR v5 encoder and the Swift decoder. Stored geometry owns the route totals.
-/// Missing elevation and incoming graph validity stay explicit. The exact bytes are in specs/OBCR_Spec.md, and shared
+/// Missing elevation and incoming graph validity stay explicit. The exact bytes are in specs/obcr-route.md, and shared
 /// Rust-produced vectors pin the reader.
 public enum RouteObjectCodec {
     // MARK: Format constants

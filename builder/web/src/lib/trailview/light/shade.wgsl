@@ -34,11 +34,15 @@ struct Look {
     codes: vec4u,
     // x: the debug view of terrain.wgsl. y: the jittered frame's sample, which turns the dithers. z, w: unused.
     modes: vec4u,
-    // xy: this frame's jitter in clip space. z: render pixels per output pixel, the render scale. w: unused.
+    // xy: this frame's jitter in clip space. z: render pixels per output pixel, the render scale. w: the
+    // instances' detail this frame (Params of emit.wgsl).
     screen: vec4f,
     // xyz: toward the sun, which the sky's glow follows also while the moon is the light. w: the warm
     // glow about a low sun.
     sky_sun: vec4f,
+    // rgb: the deep colour of the sea of the regions about the eye, so that all the sea in view has one
+    // colour. w: unused.
+    sea: vec4f,
 }
 
 @group(2) @binding(0) var<uniform> look: Look;

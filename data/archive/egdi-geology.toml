@@ -1,0 +1,4 @@
+name = "EGDI surface geology of Europe 1:1 000 000 (GeologicUnitView), GeoPackage"
+sources = ["egdi-geology"]
+coverage = "Europe"
+urls = ["https://egeologija.si/download/GeologicUnitView.gpkg"]
