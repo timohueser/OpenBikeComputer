@@ -3,9 +3,7 @@
 // each edge square, and a way that curves away near the junction bends no kerb.
 import { PAVED_CODES, type Line } from '../terrain/bins';
 import { cornerAt } from '../terrain/corners';
-import { inTown, outward, ROOM_M, type Meeting, type Way } from './arms';
-import { MAT, sideOf } from './section';
-import { stationAt } from './stations';
+import { inTown, outward, ROOM_M, sideAt, type Meeting, type Way } from './arms';
 
 /** Corner radii: a town street's kerb, a rural road's edge, a track's; the least arc. */
 const TOWN_R = 5, RURAL_R = 7, TRACK_R = 4, LEAST_R = 0.8;
@@ -13,8 +11,6 @@ const TOWN_R = 5, RURAL_R = 7, TRACK_R = 4, LEAST_R = 0.8;
 const WALK_CLEAR_M = 0.6;
 /** An arc tries a smaller radius by this factor while its ends leave a way's room. */
 const SHRINK = 0.8;
-/** The most height between two edges where they cross: what a raised edge can make up. */
-const LEVELS_M = 0.3;
 /** Edges may meet this far behind the junction along a way: on it the arms' edges run on straight. */
 const BEHIND_M = 0.5;
 
@@ -35,16 +31,20 @@ export interface Corner {
     feet: number[][];
     apex: number;
     walk: number;
+    /** The through road whose surface its faces take. */
+    road: Line;
+    /** Its two ways are one line through its vertex, so it stays sharp and nothing is cut. */
+    oneLine: boolean;
 }
 
-/** A way's edge on side `side` of its line, `out` metres past it: its points in metres about the meeting with their heights, and their metres from the junction. */
+/** A way's edge on side `side` of its line, `out` metres past it: its points in metres about the meeting, and their metres from the junction. */
 function edgeOf(way: Way, side: 1 | -1, out: number, { x, y, unit }: Meeting): { points: number[][]; metres: number[] } {
     const list = outward(way), points = list.map(s => {
         const a = side * (s.h + out);
-        return [(s.x + s.ax * a - x) * unit, (s.y + s.ay * a - y) * unit, s.z + s.bank * side * s.h];
+        return [(s.x + s.ax * a - x) * unit, (s.y + s.ay * a - y) * unit];
     });
     const [p, q] = points, l = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1;
-    return { points: [[p[0] - (q[0] - p[0]) * BEHIND_M / l, p[1] - (q[1] - p[1]) * BEHIND_M / l, p[2]], ...points], metres: [-BEHIND_M, ...list.map(s => Math.abs(s.along - way.along))] };
+    return { points: [[p[0] - (q[0] - p[0]) * BEHIND_M / l, p[1] - (q[1] - p[1]) * BEHIND_M / l], ...points], metres: [-BEHIND_M, ...list.map(s => Math.abs(s.along - way.along))] };
 }
 
 type Edge = ReturnType<typeof edgeOf>;
@@ -67,28 +67,22 @@ function crossing(A: Edge, B: Edge): { a: number; b: number } | undefined {
     return undefined;
 }
 
-/** The sidewalk's metres past the carriageway's edge on a side of a way at its junction, 0 without a kerb. */
-function walkOf({ run: { stations }, along, line }: Way, side: 1 | -1): number {
-    const s = stations[stationAt(stations, along)], { parts, edge } = sideOf(line, side, s.v, s.h);
-    return parts.some(({ mat }) => mat === MAT.KERB) ? edge - s.h : 0;
-}
-
 /** The corner from way p to the next way q round their meeting; none where their edges do not meet near it. The stamp holds the ground under its own arcs, so a corner that it rounds takes its radius. */
 export function cornerOf(lines: Line[], meeting: Meeting, p: Way, q: Way): Corner | undefined {
     // Across the line at a step forward is the way's left, and angles grow to its right: y runs south.
     const sp = p.step > 0 ? -1 : 1, sq = q.step > 0 ? 1 : -1;
     const [ep, eq] = [(out: number) => edgeOf(p, sp, out, meeting), (out: number) => edgeOf(q, sq, out, meeting)];
-    const met = crossing(ep(0), eq(0));
-    // Edges that cross at two heights are two levels, as at a ramp: nothing joins them.
-    if (!met || Math.max(met.a, met.b) > ROOM_M || Math.abs(pointAt(ep(0), met.a)[2] - pointAt(eq(0), met.b)[2]) > LEVELS_M) return undefined;
+    // A line that runs on through its vertex has one edge on this side: there is no corner to turn.
+    const oneLine = p.line === q.line && p.v === q.v, met = oneLine ? { a: 0, b: 0 } : crossing(ep(0), eq(0));
+    if (!met || Math.max(met.a, met.b) > ROOM_M) return undefined;
     const paved = PAVED_CODES.includes(p.line.code) && PAVED_CODES.includes(q.line.code), town = inTown(p) || inTown(q), [mx, my] = pointAt(ep(0), met.a);
-    const walk = Math.max(walkOf(p, sp), walkOf(q, sq)), least = walk > 0 ? walk + WALK_CLEAR_M : LEAST_R, stamped = cornerAt(lines, meeting.x + mx / meeting.unit, meeting.y + my / meeting.unit);
+    const walk = Math.max(sideAt(p, sp).walk, sideAt(q, sq).walk), least = walk > 0 ? walk + WALK_CLEAR_M : LEAST_R, stamped = cornerAt(lines, meeting.x + mx / meeting.unit, meeting.y + my / meeting.unit);
     const wanted = stamped ? Math.hypot(stamped.a[0] - stamped.o[0], stamped.a[1] - stamped.o[1]) * meeting.unit : paved ? (town ? TOWN_R : RURAL_R) : TRACK_R;
     const corner = (o: number[], r: number, a: number, b: number): Corner => ({
         meeting, p, q, sp, sq, o, r, ends: [p.along + p.step * Math.max(0, a), q.along + q.step * Math.max(0, b)], meet: [p.along + p.step * Math.max(0, met.a), q.along + q.step * Math.max(0, met.b)],
-        feet: [pointAt(ep(0), a), pointAt(eq(0), b)], apex: Math.hypot(...pointAt(ep(0), met.a).slice(0, 2).map((value, i) => value - o[i])), walk,
+        feet: [pointAt(ep(0), a), pointAt(eq(0), b)], apex: Math.hypot(...pointAt(ep(0), met.a).map((value, i) => value - o[i])), walk, road: (p.through ? p : q).line, oneLine,
     });
-    for (let r = Math.max(wanted, least); ; r = Math.max(r * SHRINK, least)) {
+    for (let r = Math.max(wanted, least); !oneLine; r = Math.max(r * SHRINK, least)) {
         const offset = [ep(r), eq(r)], hit = crossing(offset[0], offset[1]), last = r === least;
         if (hit && (last || (hit.a <= p.room && hit.b <= q.room)) && hit.a >= 0 && hit.b >= 0) return corner(pointAt(offset[0], hit.a), r, hit.a, hit.b);
         if (last) break;

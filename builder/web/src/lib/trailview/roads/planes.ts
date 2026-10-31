@@ -1,14 +1,16 @@
 // The heights of a junction. A side arm's first metres lie on the through road's banked plane, so its mouth meets
 // that edge level; the bake's heights hold the through road's middle only. The stamped ground holds a side arm at
-// its own heights, and it never sinks under them: where the through edge lies lower, that edge rises instead.
-import { footOn, outward, type Way } from './arms';
+// its own heights, and it never sinks under them: where the through edge lies lower, that edge rises instead, and
+// the mouth's faces close what RAISE_M leaves.
+import { footOn, type Way } from './arms';
+import { onward, type Joints } from './joints';
 import { KERB_RISE_M } from './section';
-import { stationAt, type Station } from './stations';
+import { stationOn, type Station } from './stations';
 import type { Mouth } from './junctions';
 import type { PathEnd } from './path-ends';
 
-/** A side arm's edge leaves the through road's plane over this many metres past its mouth, by at most SHIFT_M. */
-const CONFORM_M = 10, SHIFT_M = 0.5;
+/** A side arm's edge leaves the through road's plane over this many metres past its mouth. */
+const CONFORM_M = 10;
 /** A through edge rises at most RAISE_M about its other edge, fully within FLAT_M of the junction or along the mouth, and back over FLATTEN_M more. */
 const RAISE_M = 0.3, FLAT_M = 4, FLATTEN_M = 10;
 /** A path's tread ends this far under a road's shoulder. */
@@ -33,44 +35,43 @@ function edgesOf(s: Station, through: Way[], lift: number): { own: number; plane
     return [1, -1].map(side => ({ own: s.z + s.bank * side * s.h, plane: throughPlane(through, s.x + s.ax * side * s.h, s.y + s.ay * side * s.h).z - lift }));
 }
 
-/** How far each through road's edges rise for the mouths whose side arms lie higher: per station, left and right. */
-function raises(mouths: Mouth[]): Map<Station, [number, number]> {
+/** How far each through road's edges rise for the mouths whose side arms lie higher, on across its joints: per station, left and right. */
+function raises(mouths: Mouth[], joints: Joints): Map<Station, [number, number]> {
     const out = new Map<Station, [number, number]>();
     for (const { way, far, through, reach } of mouths) {
-        const at = way.run.stations[stationAt(way.run.stations, far)], rise = Math.min(RAISE_M, Math.max(...edgesOf(at, through, way.run.lift).map(({ own, plane }) => own - plane)));
+        const at = stationOn(way.run.stations, far), rise = Math.min(RAISE_M, Math.max(...edgesOf(at, through, way.run.lift).map(({ own, plane }) => own - plane))), flat = Math.max(FLAT_M, reach);
         if (rise <= 0) continue;
-        for (const t of through.filter((one, i) => through.findIndex(({ run }) => run === one.run) === i)) {
-            const side = planeAt(t, at.x, at.y).left > 0 ? 0 : 1, { stations } = t.run, flat = Math.max(FLAT_M, reach);
-            for (let j = stationAt(stations, t.along - flat - FLATTEN_M); j < stations.length && stations[j].along <= t.along + flat + FLATTEN_M; j++) {
-                const w = 1 - smooth(clamp((Math.abs(stations[j].along - t.along) - flat) / FLATTEN_M)), r = out.get(stations[j]) ?? out.set(stations[j], [0, 0]).get(stations[j])!;
-                r[side] = Math.max(r[side], rise * w);
+        for (const t of through) {
+            const side = planeAt(t, at.x, at.y).left > 0 ? 0 : 1;
+            for (const { s, metres, flip } of onward(joints, t.run, t.along, t.step, flat + FLATTEN_M)) {
+                const edges = out.get(s) ?? out.set(s, [0, 0]).get(s)!, edge = flip > 0 ? side : 1 - side;
+                edges[edge] = Math.max(edges[edge], rise * (1 - smooth(clamp((metres - flat) / FLATTEN_M))));
             }
         }
     }
     return out;
 }
 
-/** Moves a side arm's edges onto the through road's plane up to its mouth's end, and back to their own heights past it. */
-function conform({ way, far, through }: Mouth): void {
-    const { stations, lift } = way.run, metres = Math.abs(far - way.along), shifts = edgesOf(stations[stationAt(stations, far)], through, lift).map(({ own, plane }) => Math.max(0, Math.min(SHIFT_M, plane - own)));
-    for (const s of outward(way, metres + CONFORM_M)) {
-        const d = Math.abs(s.along - way.along);
-        if (d > metres + CONFORM_M) break;
-        const fade = 1 - smooth(Math.max(0, d - metres) / CONFORM_M), [left, right] = edgesOf(s, through, lift).map(({ own, plane }, side) => (d <= metres ? Math.max(plane, own) : own + shifts[side] * fade));
+/** Moves a side arm's edges onto the through road's plane up to its mouth's end, and back to their own heights past it, on across its joints. */
+function conform({ way, far, through }: Mouth, joints: Joints): void {
+    const { stations, lift } = way.run, reach = Math.abs(far - way.along), shifts = edgesOf(stationOn(stations, far), through, lift).map(({ own, plane }) => Math.max(0, plane - own));
+    for (const { s, metres, flip } of onward(joints, way.run, way.along, way.step, reach + CONFORM_M)) {
+        const fade = 1 - smooth(Math.max(0, metres - reach) / CONFORM_M), edge = (side: number, own: number) => own + shifts[flip > 0 ? side : 1 - side] * fade;
+        const [left, right] = metres <= reach ? edgesOf(s, through, lift).map(({ own, plane }) => Math.max(plane, own)) : [edge(0, s.z + s.bank * s.h), edge(1, s.z - s.bank * s.h)];
         s.z = (left + right) / 2;
         s.bank = (left - right) / (2 * s.h);
     }
 }
 
 /** The heights that a tile's junctions change. */
-export function settleHeights(mouths: Mouth[], ends: PathEnd[]): void {
-    for (const [s, [left, right]] of raises(mouths)) {
+export function settleHeights(mouths: Mouth[], ends: PathEnd[], joints: Joints): void {
+    for (const [s, [left, right]] of raises(mouths, joints)) {
         s.z += (left + right) / 2;
         s.bank += (left - right) / (2 * s.h);
     }
-    for (const mouth of mouths) conform(mouth);
+    for (const mouth of mouths) conform(mouth, joints);
     for (const { way, at, road, walk } of ends) {
-        const s = way.run.stations[stationAt(way.run.stations, at)];
+        const s = stationOn(way.run.stations, at);
         s.z = planeAt(road, s.x, s.y).z + (walk ? KERB_RISE_M : -UNDER_SHOULDER_M) - way.run.lift;
     }
 }

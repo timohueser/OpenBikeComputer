@@ -1,7 +1,8 @@
 // The ways out of the points that a tile's roads and paths share. The bake marks which of them leave as a side.
 import { SIDE_BACK, SIDE_ON } from '../stream/features';
 import { BRIDGE, isPath, metresPerUnit, PATH, RAIL_CODE, ROAD, TUNNEL, type Line } from '../terrain/bins';
-import { stationAt, type Station } from './stations';
+import { MAT, sideOf } from './section';
+import { stationIndex, stationOn, type Station } from './stations';
 import type { Run } from './sweep';
 
 /**
@@ -45,7 +46,7 @@ export interface Meeting { x: number; y: number; unit: number; roads: Arm[]; pat
 /** The stations of a way from its junction out, the first one past `metres` included. */
 export function outward({ run: { stations }, along, step }: Way, metres = WINDOW_M): Station[] {
     const out: Station[] = [];
-    for (let j = stationAt(stations, along); j >= 0 && j < stations.length; j += step) {
+    for (let j = stationIndex(stations, along); j >= 0 && j < stations.length; j += step) {
         out.push(stations[j]);
         if (Math.abs(stations[j].along - along) >= metres) break;
     }
@@ -54,6 +55,15 @@ export function outward({ run: { stations }, along, step }: Way, metres = WINDOW
 
 /** Whether a way has a sidewalk near its junction. A line's far end says nothing: it depends on the tile. */
 export const inTown = (way: Way) => outward(way).some(({ v }) => way.line.sidewalks?.[v]);
+
+/** The station of a way at its junction. */
+export const junctionStation = ({ run: { stations }, along }: Way) => stationOn(stations, along);
+
+/** A side of a way at its junction: its core's outer edge in metres from the middle, and the sidewalk's metres past the carriageway, 0 without a kerb. */
+export function sideAt(way: Way, side: 1 | -1): { edge: number; walk: number } {
+    const s = junctionStation(way), { parts, edge } = sideOf(way.line, side, s.v, s.h);
+    return { edge, walk: parts.some(({ mat }) => mat === MAT.KERB) ? edge - s.h : 0 };
+}
 
 /** A point's foot on a way, a share u from station s to t; its metres from the foot, left of the line, and behind the junction. */
 export function footOn(way: Way, x: number, y: number, list = outward(way)): { s: Station; t: Station; u: number; away: number; left: number; behind: number } {

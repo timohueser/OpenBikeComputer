@@ -8,7 +8,7 @@ import { cornerFaces, mouthFaces } from './junction-faces';
 import { planJunctions, type Junctions } from './junctions';
 import { PieceBuilder, type RoadPiece } from './piece';
 import { corridorLine, frays } from './section';
-import { farStations, reachOf, stationAt, stationsOf } from './stations';
+import { farStations, reachOf, stationIndex, stationsOf } from './stations';
 import { baseOf, cap, liftOf, prioOf, sweep, type Run } from './sweep';
 import { waysOf } from './ways';
 
@@ -44,7 +44,7 @@ export function planOf(lines: Line[]): TilePlan {
         if (open(line, last)) run.caps.push({ j: stations.length - 1, dir: 1 });
     }
     // A way of soil frays into the ground at its end on a road, as at a dead end; a paved one meets the kerb or the shoulder square.
-    for (const { way: { run, step }, at } of junctions.ends) if (frays(run.line)) (run as Planned).caps.push({ j: stationAt(run.stations, at), dir: -step as 1 | -1 });
+    for (const { way: { run, step }, at } of junctions.ends) if (frays(run.line)) (run as Planned).caps.push({ j: stationIndex(run.stations, at), dir: -step as 1 | -1 });
     const plan = { runs, junctions };
     plans.set(lines, plan);
     return plan;
@@ -90,12 +90,13 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node): RoadMesh {
     return { pieces: pieces.flat().map(piece => piece.piece(GROUND_M)) };
 }
 
-/** The heap per station of a plan, and per segment with the tile's shapes, fitted to the V8 heap of fixture tiles. */
-const STATION_BYTES = 240, SEGMENT_BYTES = 430;
+/** The heap per station of a plan, per segment with the tile's shapes, and per corner, mouth and path end, fitted to the V8 heap of fixture tiles. */
+const STATION_BYTES = 240, SEGMENT_BYTES = 430, FACE_BYTES = 750;
 
 /** The heap that hangs from a tile's features once its plan stands. */
 export function planBytes(list: Feature[], tile: Node): number {
-    return planOf(features(list, tile).lines).runs.reduce((sum, { stations, line }) => sum + STATION_BYTES * stations.length + SEGMENT_BYTES * line.z.length, 0);
+    const { runs, junctions: { corners, mouths, ends } } = planOf(features(list, tile).lines);
+    return runs.reduce((sum, { stations, line }) => sum + STATION_BYTES * stations.length + SEGMENT_BYTES * line.z.length, FACE_BYTES * (corners.length + mouths.length + ends.length));
 }
 
 /** Bytes that a mesh holds. */

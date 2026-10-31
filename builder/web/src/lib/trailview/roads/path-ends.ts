@@ -1,10 +1,9 @@
 // A path or a driveway that meets roads at a shared point stops at their outer edge: it does not lie over the
 // carriageway, and its tread meets the road's sidewalk or shoulder level.
-import { footOn, outward, WINDOW_M, type Way } from './arms';
+import { footOn, outward, sideAt, WINDOW_M, type Way } from './arms';
 import { onCorner, type Corner } from './corner';
 import type { Mark } from './junctions';
-import { MAT, sideOf } from './section';
-import { between, CUT, stationAt, type Station } from './stations';
+import { between, CUT, type Station } from './stations';
 
 /** A way's end: metres along its line, the road that it meets, and whether a sidewalk lies there. */
 export interface PathEnd { way: Way; at: number; road: Way; walk: boolean }
@@ -22,20 +21,14 @@ function stationOut(way: Way, list: Station[], metres: number): Station {
     return between(s, t, (way.along + way.step * metres - s.along) / (t.along - s.along));
 }
 
-/** The core's outer edge on a road's side, and whether a sidewalk lies on it. */
-function coreOf({ run: { stations }, along, line }: Way, side: 1 | -1): { edge: number; walk: boolean } {
-    const s = stations[stationAt(stations, along)], { parts, edge } = sideOf(line, side, s.v, s.h);
-    return { edge, walk: parts.some(({ mat }) => mat === MAT.SIDEWALK) };
-}
-
 /** Where each of a junction's paths leaves its roads' cores and its corners: they stop there. */
 export function endsOf(roads: Way[], paths: Way[], corners: Corner[], mark: Mark): PathEnd[] {
-    const cores = roads.map(road => ({ road, list: outward(road), sides: [coreOf(road, 1), coreOf(road, -1)] })), ends: PathEnd[] = [];
+    const cores = roads.map(road => ({ road, list: outward(road), sides: [sideAt(road, 1), sideAt(road, -1)] })), ends: PathEnd[] = [];
     /** The core or the corner that holds a world point. */
     const heldAt = (x: number, y: number) => {
         for (const { road, list, sides } of cores) {
             const { left, behind, s } = footOn(road, x, y, list), core = sides[left > 0 ? 0 : 1];
-            if (behind <= s.h + BEHIND_M && Math.abs(left) < core.edge) return { road, walk: core.walk };
+            if (behind <= s.h + BEHIND_M && Math.abs(left) < core.edge) return { road, walk: core.walk > 0 };
         }
         const corner = corners.find(one => onCorner(one, (x - one.meeting.x) * one.meeting.unit, (y - one.meeting.y) * one.meeting.unit));
         return corner && { road: corner.p, walk: corner.walk > 0 };

@@ -6,7 +6,7 @@ import { cornerFaces, mouthFaces } from './junction-faces';
 import { planOf } from './mesh';
 import { PieceBuilder, ROAD_VERTEX } from './piece';
 import { CF, LOOK } from './section';
-import { CUT, type Station } from './stations';
+import { CUT, stationIndex, stationOn, type Station } from './stations';
 import { sweep } from './sweep';
 
 const O = { x: 2 ** 28, y: 2 ** 29 }, unit = metresPerUnit(O.y), CLASSES = Object.keys(PROFILES);
@@ -57,8 +57,12 @@ function faces(plan: ReturnType<typeof planned>) {
     const b = new PieceBuilder(O.x, O.y, 2 ** 13);
     for (const corner of plan.junctions.corners) cornerFaces(b, corner);
     for (const mouth of plan.junctions.mouths) mouthFaces(b, mouth);
-    const words = new Uint32Array(b.piece(0).vertices), floats = new Float32Array(b.piece(0).vertices);
-    return { b, vertices: Array.from({ length: words.length * 4 / ROAD_VERTEX }, (_, i) => ({ z: floats[4 * i + 1], mat: words[4 * i + 2] & 127, code: (words[4 * i + 2] >> 7) & 15, flags: (words[4 * i + 2] >> 11) & 31 })) };
+    const words = new Uint32Array(b.piece(0).vertices), floats = new Float32Array(b.piece(0).vertices), ints = new Int16Array(b.piece(0).vertices);
+    return {
+        b, vertices: Array.from({ length: words.length * 4 / ROAD_VERTEX }, (_, i) => ({
+            e: ints[8 * i] / 3 * unit, n: -ints[8 * i + 1] / 3 * unit, z: floats[4 * i + 1], mat: words[4 * i + 2] & 127, code: (words[4 * i + 2] >> 7) & 15, flags: (words[4 * i + 2] >> 11) & 31, across: ((words[4 * i + 3] << 20) >> 20) * 16 / 2047,
+        })),
+    };
 }
 
 const through = (extra: Extra = {}) => way([[-100, 0], [0, 0], [100, 0]], extra);
@@ -96,10 +100,20 @@ describe('a T', () => {
         expect((new Uint32Array(before.piece(0).vertices)[4 * before.near[0] + 2] >> 11) & 31).toBe(0);
     });
 
-    it('fills the corners and the mouth in the through road\'s surface', () => {
-        const { vertices } = faces(plan), fillet = vertices.filter(({ mat }) => mat === LOOK.ASPHALT);
+    it('fills the corners and the mouth in the through road\'s surface, also where the side road has another', () => {
+        const { vertices } = faces(planned([through({ code: 1 }), stem([0, 100])])), fillet = vertices.filter(({ mat }) => mat === LOOK.ASPHALT);
         expect(fillet.length).toBeGreaterThan(0);
-        expect(new Set(fillet.map(({ code }) => code))).toEqual(new Set([main.code]));
+        expect(new Set(vertices.map(({ code }) => code))).toEqual(new Set([1]));
+    });
+
+    it('holds a ring\'s metres across positive on both sides: a strip between signed ends would cross the middle', () => {
+        expect(faces(plan).vertices.filter(({ flags }) => flags & (CF.SAMPLE | CF.MESH)).every(({ across }) => across > 0)).toBe(true);
+        expect(faces(plan).vertices.every(({ across }) => across >= 0)).toBe(true);
+    });
+
+    it('sinks a ring\'s band over another way\'s carriageway', () => {
+        const across = way([[-30, 7], [30, 7]]), { vertices } = faces(planned([through(), stem([0, 100]), across]));
+        expect(vertices.some(({ flags }) => flags & CF.UNDER)).toBe(true);
     });
 
     it('keeps its far range on the plan: each cut station, and the faces', () => {
@@ -112,10 +126,44 @@ describe('a T', () => {
 });
 
 describe('a corner that the stamp does not round', () => {
+    /** 152 degrees between the arm and the road's east way, and 28 between it and the west way. */
+    const widest = (plan: ReturnType<typeof planned>) => Math.max(...plan.junctions.corners.map(({ r }) => r));
+
     it('takes a rural road\'s radius: past the stamp\'s widest turn, up to a side arm\'s', () => {
-        // 152 degrees between the arm and the road's east way, and 28 between it and the west way.
-        const plan = planned([through(), stem([-88, 47])]);
-        expect(plan.junctions.corners.map(({ r }) => r).sort((a, b) => b - a)[0]).toBe(7);
+        expect(widest(planned([through(), stem([-88, 47])]))).toBe(7);
+    });
+
+    it('takes a town\'s by the sidewalks near the junction, not by those at the far end of the line', () => {
+        const near = stem([-88, 47], { sidewalks: [LEFT] }), far = way([[0, 0], [-44, 23.5], [-88, 47]], { sideWays: [SIDE_ON, 0, 0], sidewalks: [0, LEFT], profile: profile('residential') });
+        expect(widest(planned([through(), near]))).toBe(5);
+        expect(widest(planned([through(), far]))).toBe(7);
+    });
+});
+
+describe('a side arm that is one line with a through way', () => {
+    it('turns no corner on that line\'s inner edge: the edge runs on, and the mouth ends on it', () => {
+        const line = way([[0, 60], [0, 0], [60, 0]], { sideWays: [0, SIDE_BACK, 0], profile: profile('residential') }), plan = planned([line, way([[-60, 0], [0, 0]], { profile: profile('residential') })]);
+        expect(plan.junctions.mouths).toHaveLength(1);
+        const inner = plan.junctions.corners.find(({ oneLine }) => oneLine)!;
+        expect(inner.r).toBe(0);
+        // The line is its own arm and through way: the side toward the inner bend stays whole.
+        const side = inner.p.line === line ? inner.sp : inner.sq;
+        expect(cuts(plan.stations(line), side * inner.p.step > 0 ? CUT.LEFT : CUT.RIGHT)).toBeDefined();
+        const { b, vertices } = faces(plan);
+        expect(b.near.length).toBeGreaterThan(0);
+        expect(vertices.length).toBeLessThan(200);
+    });
+});
+
+describe('a corner near the next junction', () => {
+    it('stays within its share of the way there', () => {
+        const arm = way([[0, 0], [0, 12], [0, 100]], { sideWays: [SIDE_ON, 0, 0], profile: profile('residential') }), plan = planned([through(), arm, way([[0, 12], [80, 12]])]);
+        const corners = plan.junctions.corners.filter(({ meeting }) => meeting.x === O.x);
+        expect(corners.length).toBeGreaterThan(0);
+        for (const { q, p, ends } of corners) {
+            const end = p.line === arm ? ends[0] : ends[1];
+            expect(end - (p.line === arm ? p : q).along).toBeLessThanOrEqual(0.45 * 12 + 0.01);
+        }
     });
 });
 
@@ -175,6 +223,22 @@ describe('a side arm', () => {
     });
 });
 
+describe('a mouth\'s heights', () => {
+    const edges = (s: Station) => [s.z + s.bank * s.h, s.z - s.bank * s.h];
+
+    it('lay each edge on the through road\'s plane once, whatever the arm\'s own bank', () => {
+        const main = through({ bank: [0.06, 0.06, 0.06] }), arm = stem([0, 100], { bank: [0.04, 0.04] }), plan = planned([main, arm]), T = stationOn(plan.stations(arm), plan.junctions.mouths[0].far);
+        const plane = 1000 + 0.06 * 3 + plan.of(main).lift - plan.of(arm).lift;
+        for (const z of edges(T)) expect(z).toBeCloseTo(plane, 3);
+    });
+
+    it('take the plane of the nearer through way: on a grade the far way\'s is another height', () => {
+        const main = through({ z: [990, 1000, 1010], grade: [0.1, 0.1, 0.1] }), arm = stem([0, 100]), plan = planned([main, arm]), T = stationOn(plan.stations(arm), plan.junctions.mouths[0].far);
+        // The arm runs north, so its right edge is the east one, up the grade. Its left edge lies 0.3 m over the plane, so the through road's edge rises that much.
+        expect(edges(T)[1]).toBeCloseTo(1000 + 0.1 * 3 + 0.3 + plan.of(main).lift - plan.of(arm).lift, 1);
+    });
+});
+
 describe('a track', () => {
     const gravel = 3, dirt = 4;
 
@@ -192,10 +256,8 @@ describe('a track', () => {
         expect(plan.stations(main).some(s => s.cut)).toBe(false);
     });
 
-    it('that joins at a hairpin\'s apex leaves the road through: a better class is no side', () => {
-        // The bake pairs the track with the road's first way, so the road's second way carries the mark.
-        const bend = arc([0, 12], 12, -180, 0), road = way(bend, { sideWays: bend.map((_, v) => (v === 15 ? SIDE_ON : 0)) });
-        const track = stem([0, -60], { profile: profile('track'), code: gravel }), plan = planned([road, track]);
+    it('that joins at a hairpin\'s apex has a mouth on the road, which the bake keeps through', () => {
+        const road = way(arc([0, 4], 4, -180, 0)), track = stem([0, -60], { profile: profile('track'), code: gravel }), plan = planned([road, track]);
         expect(plan.junctions.mouths.map(({ way: { line } }) => line)).toEqual([track]);
         expect(cuts(plan.stations(road), CUT.ROAD)).toBeUndefined();
         expect(plan.junctions.corners).toHaveLength(2);
@@ -279,11 +341,41 @@ describe('a level crossing', () => {
     });
 });
 
-describe('edges that cross at two heights', () => {
-    it('are two levels, as at a ramp: no corner joins them', () => {
+describe('a side arm that leaves the through road steeply', () => {
+    it('keeps its mouth: its surface ramps up, and it never sinks under its own heights', () => {
         const arm = stem([0, 40], { z: [1000, 1012], grade: [0.3, 0.3] }), plan = planned([through(), arm]);
-        expect(plan.junctions.corners).toEqual([]);
-        expect(plan.junctions.mouths).toEqual([]);
+        expect(plan.junctions.mouths).toHaveLength(1);
+        const stations = plan.stations(arm), T = stations[stationIndex(stations, plan.junctions.mouths[0].far)];
+        expect(T.z).toBeGreaterThan(1000.5);
+    });
+
+    const acute = () => {
+        const arm = stem([90, 42], { z: [1000, 1012], grade: [0.12, 0.12] }), plan = planned([through(), arm]), [mouth] = plan.junctions.mouths, stations = plan.stations(arm);
+        /** The heights that the mouth's faces hold at an edge of a station. */
+        const heightsAt = (s: Station, side: number) => {
+            const [e, n] = metresOf({ x: s.x + s.ax * side * s.h, y: s.y + s.ay * side * s.h }), { b, vertices } = faces({ ...plan, junctions: { ...plan.junctions, corners: [] } });
+            return [...new Set(b.near)].map(i => vertices[i]).filter(v => Math.hypot(v.e - e, v.n - n) < 0.1).map(({ z }) => z);
+        };
+        return { plan, mouth, stations, heightsAt };
+    };
+
+    it('stands off the through road where its edge ends on it: both heights stay in the faces, and a face closes the step', () => {
+        const { mouth, stations, heightsAt } = acute(), heights = heightsAt(stationOn(stations, mouth.far), -1);
+        expect(Math.max(...heights) - Math.min(...heights)).toBeGreaterThan(1);
+    });
+
+    it('bounds its mouth by its own edge up to the arc, where the sweep\'s kerb stands on that edge\'s heights', () => {
+        const { mouth: { far, left }, stations, heightsAt } = acute(), end = left.ends[left.p.through ? 1 : 0], inside = stations.filter(({ along, cut }) => along > end + 0.1 && along < far - 0.1 && cut);
+        expect(inside.length).toBeGreaterThan(2);
+        for (const s of inside) expect(heightsAt(s, 1).length).toBeGreaterThan(0);
+    });
+});
+
+describe('a side arm far under the through road', () => {
+    it('climbs to its plane over the 10 m past its mouth, with no step', () => {
+        const arm = stem([0, 100]), plan = planned([through({ z: [1002, 1002, 1002] }), arm]), stations = plan.stations(arm), j = stationIndex(stations, plan.junctions.mouths[0].far);
+        expect(stations[j].z).toBeCloseTo(1002, 1);
+        for (let k = j; k < j + 8; k++) expect(Math.abs(stations[k + 1].z - stations[k].z) / (stations[k + 1].along - stations[k].along)).toBeLessThan(0.35);
     });
 });
 
@@ -305,6 +397,28 @@ describe('a junction across a tile border', () => {
 });
 
 describe('two lines of a road that OSM splits', () => {
+    const edge = (s: Station, side: number) => s.z + s.bank * side * s.h;
+
+    it('rise as one where a side road climbs off them: no crack where the raise reaches the split', () => {
+        const a = way([[-100, 0], [0, 0], [6, 0]], { sideWays: [0, 0, 0] }), b = way([[6, 0], [100, 0]]), arm = stem([0, 100], { z: [1000, 1008], grade: [0.08, 0.08] }), plan = planned([a, b, arm]);
+        const [s, t] = [plan.stations(a).at(-1)!, plan.stations(b)[0]];
+        expect(s.z).toBeGreaterThan(1000.01);
+        for (const side of [1, -1]) expect(edge(s, side)).toBeCloseTo(edge(t, side), 3);
+    });
+
+    it('fade as one where a side arm leaves a through plane: no crack where the arm is split', () => {
+        const main = through({ bank: [0.06, 0.06, 0.06] }), a = way([[0, 0], [0, 7]], { sideWays: [SIDE_ON, 0], profile: profile('residential') }), b = way([[0, 7], [0, 100]], { profile: profile('residential') }), plan = planned([main, a, b]);
+        const [s, t] = [plan.stations(a).at(-1)!, plan.stations(b)[0]];
+        expect(s.z).toBeGreaterThan(1000.01);
+        for (const side of [1, -1]) expect(edge(s, side)).toBeCloseTo(edge(t, side), 3);
+    });
+
+    it('fade as one where the lines run head to head: a left is a right across the joint', () => {
+        const main = through({ bank: [0.06, 0.06, 0.06] }), a = way([[0, 0], [0, 7]], { sideWays: [SIDE_ON, 0], profile: profile('residential') }), b = way([[0, 100], [0, 7]], { profile: profile('residential') }), plan = planned([main, a, b]);
+        const [s, t] = [plan.stations(a).at(-1)!, plan.stations(b).at(-1)!];
+        for (const side of [1, -1]) expect(edge(s, side)).toBeCloseTo(edge(t, -side), 3);
+    });
+
     it('share a bank where they meet, whatever each fit ends on, so their edges stand on one height', () => {
         const a = way([[-100, 0], [0, 0]], { bank: [0.06, 0.06] }), b = way([[0, 0], [100, 0]], { bank: [-0.02, -0.02] }), plan = planned([a, b]);
         expect(plan.stations(a).at(-1)!.bank).toBeCloseTo(0.02, 6);

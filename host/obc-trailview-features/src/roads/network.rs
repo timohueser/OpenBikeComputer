@@ -50,6 +50,9 @@ pub(crate) struct Network {
     pub length: Vec<f64>,
 }
 
+/// A road way out of a junction: its occurrence, step, class, and the direction of its first segment.
+type Road = (usize, i64, usize, [f64; 2]);
+
 /// The side directions of the junctions: per side its occurrence, step and approach metres,
 /// and the through directions of its junction as (occurrence, step), the second one None where there
 /// is one.
@@ -322,8 +325,11 @@ impl Network {
                     self.sides.through.push([Some(t1), t2]);
                 }
             }
-            let roads: Vec<(usize, i64, usize)> =
-                group.iter().filter(|&&i| rank[i] < classes.path).map(|&i| (rows[i].0, rows[i].1, rank[i])).collect();
+            let roads: Vec<Road> = group
+                .iter()
+                .filter(|&&i| rank[i] < classes.path)
+                .map(|&i| (rows[i].0, rows[i].1, rank[i], rows[i].2))
+                .collect();
             let (tracks, ways): (Vec<_>, Vec<_>) = roads.iter().copied().partition(|road| classes.rows[road.2].rail);
             if !tracks.is_empty() && ways.len() > 2 {
                 self.look_arms(&tracks);
@@ -357,16 +363,27 @@ impl Network {
         [d[0] / norm, d[1] / norm]
     }
 
-    /// The arms of a junction of `roads` (occurrence, step, class). Its through pair in the look holds
-    /// the best class that has a pair, then the best class beside that, then runs most nearly straight
-    /// on. So a road runs on into a lesser class, and a stem that ends on a straight road leaves it as
-    /// an arm. Two ways run on, and a junction with no pair has no arms. A level crossing of three road
-    /// ways or more has two rounds: the tracks' and the roads', so that the roads keep a through pair.
-    fn look_arms(&mut self, roads: &[(usize, i64, usize)]) {
+    /// The arms of a junction of `roads`. Its through pair in the look holds the best class that has
+    /// a pair, then the best class beside that, then runs most nearly straight on. So a road runs on
+    /// into a lesser class, and a stem that ends on a straight road leaves it as an arm. The only two
+    /// ways of the best class are the pair where they leave the point opposite: at a hairpin's apex
+    /// their points 8 m along lie close. Two ways run on, and a junction with no pair has no arms. A
+    /// level crossing of three road ways or more has two rounds: the tracks' and the roads', so that
+    /// the roads keep a through pair.
+    fn look_arms(&mut self, roads: &[Road]) {
         if roads.len() <= 2 {
             return;
         }
-        let out: Vec<[f64; 2]> = roads.iter().map(|&(o, step, _)| self.way_out(o, step)).collect();
+        let first = roads.iter().map(|road| road.2).min();
+        let top: Vec<usize> = (0..roads.len()).filter(|&n| Some(roads[n].2) == first).collect();
+        if let [i, k] = top[..] {
+            if dot(roads[i].3, roads[k].3) <= LOOK_COS {
+                let arms = (0..roads.len()).filter(|&n| n != i && n != k);
+                self.arms.extend(arms.map(|n| (roads[n].0, roads[n].1)));
+                return;
+            }
+        }
+        let out: Vec<[f64; 2]> = roads.iter().map(|&(o, step, ..)| self.way_out(o, step)).collect();
         let mut best: Option<((usize, usize, f64), usize, usize)> = None;
         for i in 0..roads.len() {
             for k in i + 1..roads.len() {

@@ -7,6 +7,8 @@ import { decodeFeatures, DEEPEST } from '../stream/features';
 import { LEFT } from '../terrain/town';
 import { CHILD, OWNER, size } from '../terrain/lod';
 import { REACH_M, type Meeting } from './arms';
+import { jointsOf } from './joints';
+import { cornerFaces, mouthFaces } from './junction-faces';
 import { meshBytes, planOf, roadMesh } from './mesh';
 import { RANGE_M } from './roads';
 import { lookWord, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
@@ -71,7 +73,7 @@ const decoded = ({ vertices, x, y }: RoadPiece) => {
 describe('the corridor meshes of the fixture', () => {
     const meshes = tiles.flatMap(tile => tile.meshes), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions: 205416 vertices and 5.52 MiB at most, 20027 and 0.54 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions: 205578 vertices and 5.53 MiB at most, 20085 and 0.55 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
         expect(Math.max(...count)).toBeLessThanOrEqual(206_000);
         expect(Math.max(...bytes)).toBeLessThanOrEqual(5.6 * 2 ** 20);
@@ -155,25 +157,75 @@ describe('where a way leaves a tile', () => {
 });
 
 describe('a junction that two tiles hold', () => {
-    it('has the same corners and mouths in both, within the reach of its plan', () => {
-        const metresOut = ({ x, y, unit }: Meeting, { level, x: tx, y: ty }: Node) => {
-            const side = size(level), dx = Math.max(tx * side - x, 0, x - (tx + 1) * side), dy = Math.max(ty * side - y, 0, y - (ty + 1) * side);
-            return Math.hypot(dx, dy) * unit;
-        };
-        const plans = tiles.map(({ tile, list }) => ({ tile, junctions: planOf(features(list, tile).lines).junctions }));
-        const named = plans.map(({ junctions }) => new Set(junctions.corners.map(({ meeting: { x, y }, p, q, r, ends, meet }) => [x, y, p.angle.toFixed(2), q.angle.toFixed(2), r.toFixed(2), ...[ends[0] - p.along, ends[1] - q.along, meet[0] - p.along, meet[1] - q.along].map(v => Math.abs(v).toFixed(2))].join())));
-        let shared = 0;
-        plans.forEach(({ tile, junctions }, i) => {
-            for (const corner of junctions.corners) {
+    const metresOut = ({ x, y, unit }: Meeting, { level, x: tx, y: ty }: Node) => {
+        const side = size(level), dx = Math.max(tx * side - x, 0, x - (tx + 1) * side), dy = Math.max(ty * side - y, 0, y - (ty + 1) * side);
+        return Math.hypot(dx, dy) * unit;
+    };
+    const metres = (values: number[]) => values.map(v => Math.abs(v).toFixed(2));
+    /** The faces of a junction about its point: their index lists and look words, and their heights, which a way's lift moves by the tile's order of the lines. */
+    const facesOf = (x: number, y: number, draw: (b: PieceBuilder) => void) => {
+        const b = new PieceBuilder(x, y);
+        draw(b);
+        const { vertices } = b.piece(0), words = new Uint32Array(vertices), floats = new Float32Array(vertices);
+        return { shape: [...b.near, -1, ...b.far, -1, ...words.filter((_, i) => i % 4 > 1)].join(), z: Array.from({ length: words.length / 4 }, (_, i) => floats[4 * i + 1]) };
+    };
+    /** What a tile plans: per thing of a junction its name, the point that it belongs to, and its faces. */
+    const planned = ({ tile, list }: typeof tiles[number]) => {
+        const { junctions } = planOf(features(list, tile).lines), named = new Map<string, { point: Meeting; faces?: ReturnType<typeof facesOf> }>();
+        for (const corner of junctions.corners) {
+            const { meeting, p, q, r, ends, meet } = corner, { x, y } = meeting;
+            named.set(['corner', x, y, p.angle.toFixed(2), q.angle.toFixed(2), r.toFixed(2), ...metres([ends[0] - p.along, ends[1] - q.along, meet[0] - p.along, meet[1] - q.along])].join(), { point: meeting, faces: facesOf(x, y, b => cornerFaces(b, corner)) });
+        }
+        for (const mouth of junctions.mouths) {
+            const { way, far, reach, left: { meeting } } = mouth, { x, y } = meeting;
+            named.set(['mouth', x, y, way.angle.toFixed(2), ...metres([far - way.along, reach])].join(), { point: meeting, faces: facesOf(x, y, b => mouthFaces(b, mouth)) });
+        }
+        for (const { way, at, walk } of junctions.ends) {
+            const [x, y] = way.line.xy.slice(2 * way.v, 2 * way.v + 2);
+            named.set(['end', x, y, way.angle.toFixed(2), ...metres([at - way.along]), walk].join(), { point: { x, y, unit: way.unit } as Meeting });
+        }
+        return { tile, named };
+    };
+
+    it('has the same corners, mouths, path ends and faces in both, within the reach of its plan', () => {
+        const plans = tiles.map(planned);
+        let corners = 0, mouths = 0, ends = 0;
+        plans.forEach(({ tile, named }, i) => {
+            for (const [name, { point, faces }] of named) {
                 plans.forEach((other, k) => {
-                    if (k === i || metresOut(corner.meeting, tile) > REACH_M || metresOut(corner.meeting, other.tile) > REACH_M) return;
-                    const { meeting: { x, y }, p, q, r, ends, meet } = corner;
-                    shared++;
-                    expect(named[k].has([x, y, p.angle.toFixed(2), q.angle.toFixed(2), r.toFixed(2), ...[ends[0] - p.along, ends[1] - q.along, meet[0] - p.along, meet[1] - q.along].map(v => Math.abs(v).toFixed(2))].join()), `${x}, ${y}`).toBe(true);
+                    if (k === i || metresOut(point, tile) > REACH_M || metresOut(point, other.tile) > REACH_M) return;
+                    const theirs = other.named.get(name);
+                    expect(theirs, name).toBeDefined();
+                    corners += +name.startsWith('corner');
+                    mouths += +name.startsWith('mouth');
+                    ends += +name.startsWith('end');
+                    if (!faces) return;
+                    expect(theirs!.faces!.shape, name).toBe(faces.shape);
+                    faces.z.forEach((z, v) => expect(Math.abs(z - theirs!.faces!.z[v]), name).toBeLessThan(0.02));
                 });
             }
         });
-        expect(shared).toBeGreaterThan(20);
+        expect(Math.min(corners, mouths, ends)).toBeGreaterThan(5);
+    }, 30_000);
+});
+
+describe('the joints of the fixture', () => {
+    it('hold a split road\'s edges on one height: at most 1 cm by the final stations, with the lifts; 5.5 mm measured on the fixture of format 3', () => {
+        let joints = 0, worst = 0;
+        for (const fixtureTile of tiles) {
+            const { lines } = features(fixtureTile.list, fixtureTile.tile), { runs } = planOf(lines), edges = (run: Run, s: Station, side: number) => s.z + run.lift + s.bank * side * s.h;
+            for (const [run, ends] of jointsOf(lines, runs)) {
+                ends.forEach((joint, end) => {
+                    const s = run.stations[end ? run.stations.length - 1 : 0];
+                    if (!joint || squareOf(s, DEEPEST) !== `${fixtureTile.tile.x},${fixtureTile.tile.y}`) return;
+                    const o = joint.run.stations[joint.end ? joint.run.stations.length - 1 : 0];
+                    joints++;
+                    for (const side of [1, -1]) worst = Math.max(worst, Math.abs(edges(run, s, side) - edges(joint.run, o, side * joint.flip)));
+                });
+            }
+        }
+        expect(joints).toBeGreaterThan(400);
+        expect(worst).toBeLessThanOrEqual(0.01);
     });
 });
 

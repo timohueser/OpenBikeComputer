@@ -4,20 +4,18 @@
 // rows that the sweep keeps there.
 import type { Way } from './arms';
 import type { Corner } from './corner';
-import { stationOn, type Mouth } from './junctions';
+import type { Mouth } from './junctions';
 import { lookWord, type PieceBuilder } from './piece';
 import { planeAt } from './planes';
 import { carriageway, CF, junctionFace, LIFT_M, LOOK, MAT, sideOf, type Part } from './section';
-import { stationAt, type Station } from './stations';
+import { SAME_M, stationIndex, stationOn, type Station } from './stations';
 import { quad, under, type Run } from './sweep';
 
 /** Columns of an arc, and the far range's step over them. */
 const ARC_STEPS = 8, FAR_STEP = 2;
-/** Stations lie this far from where the plan asked for them at most. */
-const SAME_M = 0.011;
-/** A triangle narrower than this, in world units, stays out: it has no pixels of its own, and a plan's rounding could give it dark ones. */
+/** A triangle narrower than this in plan, in world units, stays out, unless it stands up as a step's face: a flat one has no pixels of its own, and a plan's rounding could give it dark ones. */
 const SLIVER_UNITS = 0.02;
-/** Where a side arm's edge ends this near the through road's, in metres, the two are one point in a face, whose height is the through road's. */
+/** Where a side arm's edge ends this near the through road's, in metres, by plan and by height, the two are one point in a face, whose height is the through road's. */
 const ONE_POINT_M = 0.05;
 
 /** A row of a ring: a point of a section at each end of the arc, in metres past the carriageway's edge. */
@@ -29,9 +27,9 @@ interface Surface { word: number; across: number }
 const mix = (a: number, b: number, t: number) => a + (b - a) * t;
 
 /** A corner's surface: its through road's, so tone never mixes within a triangle. */
-function surfaceOf({ p, q }: Corner, prio: number): Surface & { code: number } {
-    const { code } = (p.through ? p : q).line, { mat, half, across } = junctionFace((p.through ? p : q).line)!;
-    return { word: lookWord(mat, code, 0, prio, half), across, code };
+function surfaceOf({ road }: Corner, prio: number): Surface & { code: number } {
+    const { mat, half, across } = junctionFace(road)!;
+    return { word: lookWord(mat, road.code, 0, prio, half), across, code: road.code };
 }
 
 /** The rows of a side in metres past the carriageway's edge, and its core's outer edge there. */
@@ -59,45 +57,55 @@ function ringRows(A: Part[], B: Part[]): Row[] {
 }
 
 /** A vertex in the plan. */
-type Point = { i: number; x: number; y: number };
+type Point = { i: number; x: number; y: number; z: number };
 
 /** The vertices of a line's carriageway edge on side `side`, from metres along `from` to `to`, both included. */
 function edgeChain(b: PieceBuilder, { stations, line, lift }: Run, side: 1 | -1, from: number, to: number, { word, across }: Surface): Point[] {
     const lo = Math.min(from, to) - SAME_M, hi = Math.max(from, to) + SAME_M, out: Point[] = [];
-    for (let j = stationAt(stations, lo); j < stations.length && stations[j].along <= hi; j++) {
+    for (let j = stationIndex(stations, lo); j < stations.length && stations[j].along <= hi; j++) {
         const s = stations[j];
         if (s.along < lo) continue;
-        const road = carriageway(line, s.h, s.bank), { a, dz } = road[side > 0 ? 0 : road.length - 1], x = s.x + s.ax * a, y = s.y + s.ay * a;
-        out.push({ i: b.vertex(x, y, s.z + s.bank * a + lift + dz, word, across, 0), x, y });
+        const road = carriageway(line, s.h, s.bank), { a, dz } = road[side > 0 ? 0 : road.length - 1], x = s.x + s.ax * a, y = s.y + s.ay * a, z = s.z + s.bank * a + lift + dz;
+        out.push({ i: b.vertex(x, y, z, word, across, 0), x, y, z });
     }
     return from <= to ? out : out.reverse();
 }
 
-const onePoint = (p: Point, q: Point, unit: number) => Math.hypot(p.x - q.x, p.y - q.y) * unit < ONE_POINT_M;
+const onePoint = (p: Point, q: Point, unit: number) => Math.hypot(p.x - q.x, p.y - q.y) * unit < ONE_POINT_M && Math.abs(p.z - q.z) < ONE_POINT_M;
 
-/** Triangles between two chains of vertices that run side by side, each from its first to its last, facing up. */
+/** A chain on from another, with their meeting as one point where it is one. */
+const onTo = (A: Point[], B: Point[], unit: number) => (A.length && B.length && onePoint(A[A.length - 1], B[0], unit) ? [...A.slice(0, -1), ...B] : [...A, ...B]);
+
+/** The metres along a side arm's edge that end its stretch next to the mouth: its arc's end, or the mouth where the arc ends past it. */
+const nearMouth = ({ step, mouth }: Way, end: number) => (step > 0 ? Math.min(end, mouth!) : Math.max(end, mouth!));
+
+/** Triangles between two chains of vertices that run side by side, each from its first to its last, facing up; a step's face takes the sense of the rest. */
 function zipper(list: number[], A: Point[], B: Point[]): void {
     const shares = (C: Point[]) => {
         const out = [0];
         for (let k = 1; k < C.length; k++) out.push(out[k - 1] + Math.hypot(C[k].x - C[k - 1].x, C[k].y - C[k - 1].y));
         return out.map(v => v / (out[out.length - 1] || 1));
     };
-    const ta = shares(A), tb = shares(B);
+    const ta = shares(A), tb = shares(B), triangles: { p: Point; q: Point; r: Point; area: number; thin: boolean }[] = [];
     for (let i = 0, k = 0; i + 1 < A.length || k + 1 < B.length;) {
         const onA = k + 1 >= B.length || (i + 1 < A.length && ta[i + 1] <= tb[k + 1]), [p, q, r] = onA ? [A[i], A[i + 1], B[k]] : [A[i], B[k + 1], B[k]];
         if (onA) i++;
         else k++;
         // World y runs south.
         const area = (q.x - p.x) * -(r.y - p.y) + (q.y - p.y) * (r.x - p.x), longest = Math.max(Math.hypot(q.x - p.x, q.y - p.y), Math.hypot(r.x - q.x, r.y - q.y), Math.hypot(p.x - r.x, p.y - r.y));
-        if (Math.abs(area) < SLIVER_UNITS * longest) continue;
-        if (area > 0) list.push(p.i, q.i, r.i);
+        const thin = Math.abs(area) < SLIVER_UNITS * longest;
+        if (!thin || Math.max(p.z, q.z, r.z) - Math.min(p.z, q.z, r.z) >= ONE_POINT_M) triangles.push({ p, q, r, area, thin });
+    }
+    const sense = triangles.reduce((sum, { area }) => sum + area, 0);
+    for (const { p, q, r, area, thin } of triangles) {
+        if ((thin ? sense : area) > 0) list.push(p.i, q.i, r.i);
         else list.push(p.i, r.i, q.i);
     }
 }
 
 /** The faces of a corner: the fillet between the edges and the arc, then the kerb, the sidewalk and the band round the arc. */
 export function cornerFaces(b: PieceBuilder, corner: Corner): void {
-    const { p, q, sp, sq, o, r, ends, meeting: { x: jx, y: jy, unit } } = corner, sa = stationOn(p.run, ends[0]), sb = stationOn(q.run, ends[1]);
+    const { p, q, sp, sq, o, r, ends, meeting: { x: jx, y: jy, unit } } = corner, sa = stationOn(p.run.stations, ends[0]), sb = stationOn(q.run.stations, ends[1]);
     if (r <= 0) return;
     const prio = Math.max(p.run.prio, q.run.prio), half = Math.min(sa.h, sb.h), ways = p.run.ways, side = (s: Station, sign: number, a: number) => [(s.x + s.ax * sign * a - jx) * unit, (s.y + s.ay * sign * a - jy) * unit];
     const at0 = side(sa, sp, sa.h), at1 = side(sb, sq, sb.h), r0 = Math.hypot(at0[0] - o[0], at0[1] - o[1]), r1 = Math.hypot(at1[0] - o[0], at1[1] - o[1]);
@@ -155,8 +163,8 @@ export function cornerFaces(b: PieceBuilder, corner: Corner): void {
     ring(b.near, 1, () => true);
     ring(b.far, FAR_STEP, ({ from }) => from.far);
     fillet(b, corner, surface, t => {
-        const [mx, my] = ringAt(t, 0), x = jx + mx / unit, y = jy + my / unit;
-        return { x, y, i: b.vertex(x, y, edgeZ[t] + LIFT_M, surface.word, surface.across, 0) };
+        const [mx, my] = ringAt(t, 0), x = jx + mx / unit, y = jy + my / unit, z = edgeZ[t] + LIFT_M;
+        return { x, y, z, i: b.vertex(x, y, z, surface.word, surface.across, 0) };
     });
 }
 
@@ -167,8 +175,7 @@ function fillet(b: PieceBuilder, { p, q, sp, sq, ends, meet, meeting: { unit } }
     /** One way's edge from its arc's end to P: a side arm's as far as its whole carriageway, and on to P across its mouth. */
     const toMeet = (way: Way, side: 1 | -1, end: number, met: number) => {
         if (way.through || !P) return edgeChain(b, way.run, side, end, met, surface);
-        const mouth = way.mouth!, beyond = way.step > 0 ? end > mouth : end < mouth, edge = edgeChain(b, way.run, side, end, beyond ? mouth : end, surface);
-        return onePoint(edge[edge.length - 1], P, unit) ? [...edge.slice(0, -1), P] : [...edge, P];
+        return onTo(edgeChain(b, way.run, side, end, nearMouth(way, end), surface), [P], unit);
     };
     const hp = toMeet(p, sp, ends[0], meet[0]), hq = toMeet(q, sq, ends[1], meet[1]);
     if (!hp.length || !hq.length) return;
@@ -182,21 +189,23 @@ function fillet(b: PieceBuilder, { p, q, sp, sq, ends, meet, meeting: { unit } }
     zipper(b.far, chain, [first, ...keep, last]);
 }
 
-/** A side arm's mouth: its carriageway from the through road's own edge to the arm's first whole station. */
+/** A side arm's mouth: its carriageway from the arm's first whole station to the through road's own edge, bounded by the arm's own edges, whose heights may stand off the through road's. */
 export function mouthFaces(b: PieceBuilder, { way, far, left, right }: Mouth): void {
-    const surface = surfaceOf(left, way.run.prio), chain: Point[] = [];
-    for (const [corner, leftSide] of [[left, true], [right, false]] as const) {
-        const onP = corner.p.through, t = onP ? corner.p : corner.q, side = onP ? corner.sp : corner.sq, met = corner.meet[onP ? 0 : 1];
-        const part = edgeChain(b, t.run, side, leftSide ? met : t.along, leftSide ? t.along : met, surface);
-        if (!part.length) return;
-        chain.push(...(chain.length && Math.hypot(chain[chain.length - 1].x - part[0].x, chain[chain.length - 1].y - part[0].y) === 0 ? part.slice(1) : part));
-    }
-    const T = stationOn(way.run, far), road = carriageway(way.line, T.h, T.bank), { unit } = left.meeting, ends = [chain[0], chain[chain.length - 1]];
-    const across = (parts: Part[]) => parts.map(({ a, dz }, k) => {
-        const x = T.x + T.ax * a, y = T.y + T.ay * a, point = { x, y, i: 0 }, end = k === 0 ? ends[0] : k === parts.length - 1 ? ends[1] : undefined;
-        if (end && onePoint(end, point, unit)) return end;
-        return { x, y, i: b.vertex(x, y, T.z + T.bank * a + way.run.lift + dz, surface.word, surface.across, 0) };
+    const surface = surfaceOf(left, way.run.prio), { unit } = left.meeting;
+    const rim = (corner: Corner, side: 1 | -1) => edgeChain(b, way.run, side, far, nearMouth(way, corner.ends[corner.p.through ? 1 : 0]), surface);
+    const roadEdge = (corner: Corner, toJunction: boolean) => {
+        const onP = corner.p.through, t = onP ? corner.p : corner.q, met = corner.meet[onP ? 0 : 1];
+        // Where the arm and the through way are one line, the arm's own edge bounds the mouth.
+        return corner.oneLine ? [] : edgeChain(b, t.run, onP ? corner.sp : corner.sq, toJunction ? met : t.along, toJunction ? t.along : met, surface);
+    };
+    const chain = [rim(left, 1), roadEdge(left, true), roadEdge(right, false), rim(right, -1).reverse()].reduce((A, B) => onTo(A, B, unit));
+    if (!chain.length) return;
+    const T = stationOn(way.run.stations, far), road = carriageway(way.line, T.h, T.bank);
+    // The chain starts and ends on the arm's edges at T, so the faces fan from the section between them, across those edges.
+    const between = (parts: Part[]) => parts.slice(1, -1).map(({ a, dz }) => {
+        const x = T.x + T.ax * a, y = T.y + T.ay * a, z = T.z + T.bank * a + way.run.lift + dz;
+        return { x, y, z, i: b.vertex(x, y, z, surface.word, surface.across, 0) };
     });
-    zipper(b.near, chain, across(road));
-    zipper(b.far, chain, across(road.filter(part => part.far)));
+    zipper(b.near, chain, between(road));
+    zipper(b.far, chain, between(road.filter(part => part.far)));
 }

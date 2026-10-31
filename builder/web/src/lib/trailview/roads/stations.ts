@@ -19,6 +19,8 @@ const FOLD = 0.9;
 /** The far range keeps a station every this many metres at most, and where a chord would leave the skipped ones by more than these. */
 const FAR_STEP_M = 10, FAR_SAG_M = 0.1, FAR_SAG_Z_M = 0.05;
 
+/** Two stations this near are one. */
+export const SAME_M = 0.01;
 /** What a junction leaves out of the faces from a station to the next: its carriageway, its left side, its right side. */
 export const CUT = { ROAD: 1, LEFT: 2, RIGHT: 4, ALL: 7 } as const;
 
@@ -85,7 +87,7 @@ export function stationsOf(line: Line, half: (v: number) => number): Station[] {
 }
 
 /** The index of the station nearest to metres `along`. */
-export function stationAt(stations: Station[], along: number): number {
+export function stationIndex(stations: Station[], along: number): number {
     let lo = 0, hi = stations.length - 1;
     while (lo < hi) {
         const middle = (lo + hi) >> 1;
@@ -94,6 +96,9 @@ export function stationAt(stations: Station[], along: number): number {
     }
     return lo > 0 && along - stations[lo - 1].along < stations[lo].along - along ? lo - 1 : lo;
 }
+
+/** The station nearest to metres `along`: where the plan asked for one, within SAME_M of them. */
+export const stationOn = (stations: Station[], along: number) => stations[stationIndex(stations, along)];
 
 /** A station a share u of the way from s to t. */
 export function between(s: Station, t: Station, u: number): Station {
