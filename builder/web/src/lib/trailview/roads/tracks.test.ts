@@ -135,8 +135,10 @@ describe('a detail\'s reach', () => {
     const looks = readFileSync(new URL('./track-looks.wgsl', import.meta.url), 'utf8');
 
     it('ends where the look of its way has taken over, at the range that culls it', () => {
-        const { detail_fade: fade } = shaderFunctions<{ detail_fade: (distance: number) => number }>(looks, ['detail_fade']);
+        const { detail_fade: fade, detail_painted: painted } = shaderFunctions<{ detail_fade: (distance: number) => number; detail_painted: (distance: number) => boolean }>(looks, ['detail_fade', 'detail_painted']);
         expect(fade(140)).toBe(0);
         expect(fade(DETAIL_END_M)).toBe(1);
+        // A pixel that a face discards shows the paint in full, so a rail keeps its strength through the fade.
+        expect([139, 140, 165].map(painted)).toEqual([false, true, true]);
     });
 });

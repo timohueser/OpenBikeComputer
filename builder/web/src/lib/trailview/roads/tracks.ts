@@ -1,14 +1,14 @@
 // What stands on a way near the eye: a track's sleepers, rails, rack and funicular cable, and the treads,
 // risers and cheeks of steps. They draw in pieces of their own (mesh.ts), and cast.
 import { PATH, RAIL_CODE, type Line } from '../terrain/bins';
-import { PART, SLEEPER_TOP_M } from './parts';
+import { NARROW_GAUGE_M, PART, RAIL_GAUGE_M, SLEEPER_TOP_M } from './parts';
 import { lookWord, type PieceBuilder } from './piece';
 import { CF, classOf, LOOK } from './section';
-import type { Station } from './stations';
+import { stationAt, type Station } from './stations';
 import { countOf, type Run } from './sweep';
 
-/** The piece of the station where a node owns it. */
-type Pick = (s: Station) => PieceBuilder | undefined;
+/** The piece of a station where a node owns it. */
+type PieceOf = (s: Station) => PieceBuilder | undefined;
 
 /** A rail's cross-section from right to left: metres across from its middle and up from the sleeper's top, for a rail 0.125 m high. */
 const RAIL: [number, number][] = [[-0.05, 0], [-0.05, 0.012], [-0.009, 0.028], [-0.009, 0.088], [-0.03, 0.097], [-0.031, 0.125], [0.031, 0.125], [0.03, 0.097], [0.009, 0.088], [0.009, 0.028], [0.05, 0.012], [0.05, 0]];
@@ -27,7 +27,7 @@ interface Gauge { rail: number; scale: number; rack: boolean; cable: boolean; sl
 function gaugeOf(line: Line): Gauge {
     const narrow = ((line.code - RAIL_CODE) & 1) !== 0, cls = classOf(line), wood = cls === 'funicular' || cls === 'rack';
     return {
-        rail: narrow ? 0.53 : 0.7525, scale: narrow ? 1 : 1.2, rack: line.code >= RAIL_CODE + 2 || cls === 'rack', cable: cls === 'funicular',
+        rail: narrow ? NARROW_GAUGE_M : RAIL_GAUGE_M, scale: narrow ? 1 : 1.2, rack: line.code >= RAIL_CODE + 2 || cls === 'rack', cable: cls === 'funicular',
         sleeper: narrow ? (wood ? PART.TIMBER_NARROW : PART.SLEEPER_NARROW) : wood ? PART.TIMBER : PART.SLEEPER,
     };
 }
@@ -41,11 +41,11 @@ function vertex(b: PieceBuilder, run: Run, s: Station, a: number, up: number, ma
 const face = (b: PieceBuilder, [p, q, r, s]: number[]) => b.near.push(p, q, r, p, r, s);
 
 /** A cross-section (metres across, up), from right to left, swept along the stations that a node owns; the face from point k takes material mat(k). */
-function swept(run: Run, pick: Pick, shape: [number, number][], up: number, mat: (k: number) => number): void {
+function swept(run: Run, pieceOf: PieceOf, shape: [number, number][], up: number, mat: (k: number) => number): void {
     const { stations } = run, ring = (b: PieceBuilder, s: Station) => shape.map(([a, rise], k) => vertex(b, run, s, a, up + rise, mat(k)));
     let last: { b: PieceBuilder; j: number; ring: number[] } | undefined;
     for (let j = 0; j + 1 < stations.length; j++) {
-        const b = pick(stations[j]);
+        const b = pieceOf(stations[j]);
         if (!b) continue;
         const from = last?.b === b && last.j === j ? last.ring : ring(b, stations[j]), to = ring(b, stations[j + 1]);
         for (let k = 0; k + 1 < shape.length; k++) face(b, [from[k], to[k], to[k + 1], from[k + 1]]);
@@ -54,10 +54,10 @@ function swept(run: Run, pick: Pick, shape: [number, number][], up: number, mat:
 }
 
 /** Places a part at each `at` of the owned segments: `at` gives the shares along a segment. */
-function placed(run: Run, pick: Pick, part: number, at: (s: Station, t: Station) => number[]): void {
+function placed(run: Run, pieceOf: PieceOf, part: number, at: (s: Station, t: Station) => number[]): void {
     const { stations, lift } = run;
     for (let j = 0; j + 1 < stations.length; j++) {
-        const s = stations[j], t = stations[j + 1], b = pick(s), grade = (t.z - s.z) / Math.max(t.along - s.along, 1e-6);
+        const s = stations[j], t = stations[j + 1], b = pieceOf(s), grade = (t.z - s.z) / Math.max(t.along - s.along, 1e-6);
         for (const u of b ? at(s, t) : []) {
             const mix = (p: number, q: number) => p + (q - p) * u;
             b!.place(part, mix(s.x, t.x), mix(s.y, t.y), mix(s.z, t.z) + lift, Math.atan2(-mix(s.ay, t.ay), mix(s.ax, t.ax)), grade);
@@ -66,18 +66,18 @@ function placed(run: Run, pick: Pick, part: number, at: (s: Station, t: Station)
 }
 
 /** A track's sleepers at each whole count, its rails, and a rack or a cable on its rollers. */
-function track(run: Run, pick: Pick): void {
+function track(run: Run, pieceOf: PieceOf): void {
     const g = gaugeOf(run.line);
-    placed(run, pick, g.sleeper, (s, t) => {
+    placed(run, pieceOf, g.sleeper, (s, t) => {
         const [lo, hi] = [Math.min(s.sleepers!, t.sleepers!), Math.max(s.sleepers!, t.sleepers!)], out: number[] = [];
         for (let k = Math.ceil(lo); k < hi; k++) out.push((k - s.sleepers!) / (t.sleepers! - s.sleepers!));
         return out;
     });
-    for (const side of [1, -1]) swept(run, pick, RAIL.map(([a, up]) => [side * g.rail + a, up * g.scale]), SLEEPER_TOP_M, k => (k === HEAD_EDGE ? LOOK.RAIL_HEAD : LOOK.RAIL));
-    if (g.rack) swept(run, pick, RACK, SLEEPER_TOP_M, () => LOOK.RACK);
+    for (const side of [1, -1]) swept(run, pieceOf, RAIL.map(([a, up]) => [side * g.rail + a, up * g.scale]), SLEEPER_TOP_M, k => (k === HEAD_EDGE ? LOOK.RAIL_HEAD : LOOK.RAIL));
+    if (g.rack) swept(run, pieceOf, RACK, SLEEPER_TOP_M, () => LOOK.RACK);
     if (g.cable) {
-        swept(run, pick, CABLE, SLEEPER_TOP_M, () => LOOK.CABLE);
-        placed(run, pick, PART.ROLLER, (s, t) => {
+        swept(run, pieceOf, CABLE, SLEEPER_TOP_M, () => LOOK.CABLE);
+        placed(run, pieceOf, PART.ROLLER, (s, t) => {
             const out: number[] = [];
             for (let a = Math.ceil(s.along / ROLLER_M) * ROLLER_M; a < t.along; a += ROLLER_M) out.push((a - s.along) / (t.along - s.along));
             return out;
@@ -85,29 +85,20 @@ function track(run: Run, pick: Pick): void {
     }
 }
 
-/** The station `along` metres on a line. */
-function stationAt(stations: Station[], along: number): Station {
-    let j = 0;
-    while (j + 2 < stations.length && stations[j + 1].along <= along) j++;
-    const s = stations[j], t = stations[j + 1], u = Math.max(0, Math.min(1, (along - s.along) / Math.max(t.along - s.along, 1e-6)));
-    const mix = (p: number, q: number) => p + (q - p) * u;
-    return { ...s, x: mix(s.x, t.x), y: mix(s.y, t.y), z: mix(s.z, t.z), ax: mix(s.ax, t.ax), ay: mix(s.ay, t.ay), bank: 0, along };
-}
-
 /**
  * Steps along a line: treads about RISE_M apart in height, each level at the higher end of its stretch, so
  * the flight stands on the sloped core; risers face down the flight; cheeks close the sides down under the
  * drawn ground, which the shader reads, so a flight across a slope stands on it and never over a gap.
  */
-function steps(run: Run, pick: Pick): void {
+function steps(run: Run, pieceOf: PieceOf): void {
     const { line, stations } = run, total = stations[stations.length - 1].along, rise = Math.abs(stations[stations.length - 1].z - stations[0].z);
     if (total < 0.5) return;
     const count = Math.max(1, Math.round(rise / RISE_M)), tread = Math.min(TREAD_MAX_M, Math.max(TREAD_MIN_M, total / count));
     const n = Math.max(1, Math.round(total / tread)), half = Math.max(0.6, Math.min(line.h * 0.8, 1.4));
     let prev = -Infinity;
     for (let k = 0; k < n; k++) {
-        const a0 = (k * total) / n, a1 = ((k + 1) * total) / n, s = stationAt(stations, a0), t = stationAt(stations, a1), b = pick(s);
-        const level = Math.max(s.z, t.z) + TREAD_LIFT_M, at = (p: Station, a: number, z: number, mat: number, along: number, flags = 0) => vertex(b!, run, { ...p, z }, a, 0, mat, along, flags);
+        const a0 = (k * total) / n, a1 = ((k + 1) * total) / n, s = stationAt(stations, a0), t = stationAt(stations, a1), b = pieceOf(s);
+        const level = Math.max(s.z, t.z) + TREAD_LIFT_M, at = (p: Station, a: number, z: number, mat: number, along: number, flags = 0) => vertex(b!, run, { ...p, z, bank: 0 }, a, 0, mat, along, flags);
         if (b) {
             // A tread's `along` is metres back from its nosing, at its start going up the line, else at its end.
             const up = s.z <= t.z, ns = up ? 0 : a1 - a0, nt = up ? a1 - a0 : 0;
@@ -122,9 +113,9 @@ function steps(run: Run, pick: Pick): void {
     }
 }
 
-/** What stands on a line, in the pieces that `pick` gives. */
-export function tracks(run: Run, pick: Pick): void {
+/** What stands on a line, in the pieces that `pieceOf` gives. */
+export function tracks(run: Run, pieceOf: PieceOf): void {
     const { line } = run;
-    if (line.code >= RAIL_CODE && line.sleepers) track(run, pick);
-    else if (line.kind === PATH && classOf(line) === 'steps') steps(run, pick);
+    if (line.code >= RAIL_CODE && line.sleepers) track(run, pieceOf);
+    else if (line.kind === PATH && classOf(line) === 'steps') steps(run, pieceOf);
 }

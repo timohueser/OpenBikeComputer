@@ -186,7 +186,7 @@ fn part_point(v: PartIn) -> vec2f {
     return vec2f(v.point - surface.anchor) + vec2f(f32((v.pose >> 16u) & 15u), f32((v.pose >> 20u) & 15u)) / PART_FINE;
 }
 
-// A vertex of a part in render space about the eye, and its height in the z of the returned vector's w.
+// A vertex of a part: xyz in render space about the eye, w its height.
 fn part_at(v: PartIn, u: vec2f) -> vec4f {
     let turn = f32(v.pose & 65535u) / PART_TURN * 6.2831853;
     let left = vec2f(cos(turn), sin(turn));

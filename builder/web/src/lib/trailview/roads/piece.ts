@@ -1,5 +1,5 @@
-// A corridor mesh's piece, as corridor.wgsl reads it: the faces of one L16 child of an owner, in 16 bytes
-// per vertex and 16-bit indices. A face takes its material from its first vertex, so faces that meet in a
+// A corridor mesh's piece, as corridor.wgsl reads it: the faces of one square of an owner, an L16 child or
+// for its details an L18 square, in 16 bytes per vertex and 16-bit indices. A face takes its material from its first vertex, so faces that meet in a
 // point of a cross-section share its vertex. Its instances of parts.ts lie behind its vertices.
 import { CHILD, size } from '../terrain/lod';
 
@@ -16,11 +16,13 @@ const VERTICES = 65536;
 /** A cross-section or a dead end adds fewer vertices than this. */
 const ROOM = 1024;
 /** Steps per world unit of an instance's point past its whole units, of its turn and per unit of its grade. As PART_* of corridor.wgsl. */
-const PART_FINE = 16, PART_TURN = 65536, PART_GRADE = 64, PART_GRADE_MOST = 127;
+export const PART_FINE = 16, PART_TURN = 65536, PART_GRADE = 64;
+const PART_GRADE_MOST = 127;
 /** Numbers per instance that `place` keeps. */
 const PLACE_FIELDS = 5;
 /** A look word's fields, from its low bit: material (7 bits), surface code (4), flags (5), the band's priority (3), half-width (9), then the low bits of x and of y. */
-const CODE_SHIFT = 7, FLAGS_SHIFT = 11, PRIO_SHIFT = 16, HALF_SHIFT = 19, FINE_SHIFT = 28;
+const CODE_SHIFT = 7, FLAGS_SHIFT = 11, PRIO_SHIFT = 16, HALF_SHIFT = 19;
+export const FINE_SHIFT = 28;
 
 /** An index range of a piece, and the vertices that it reaches. */
 export interface PieceRange { first: number; count: number; vertices: number }
@@ -37,7 +39,7 @@ export interface RoadPiece {
     /** The heights that its vertices can reach. */
     low: number;
     high: number;
-    /** World units that its vertices reach past the child's square. */
+    /** World units that its vertices reach past its square. */
     over: number;
     /** Its vertices, then its instances. */
     vertices: ArrayBuffer;

@@ -25,8 +25,8 @@ function box(long: number, half: number, low: number, high: number): Face[] {
 /** A sleeper's top over a track's plane, which stands SLEEPER_UP_M over the ballast, and its width along the track and its depth, which the ballast hides in part. */
 const SLEEPER_UP_M = 0.05, SLEEPER_W = 0.26, SLEEPER_DEPTH_M = 0.12;
 export const SLEEPER_TOP_M = LIFT_M + BED_M + SLEEPER_UP_M;
-/** Half the length of a sleeper of each gauge. */
-const SLEEPER_HALF_M = 1.3, NARROW_SLEEPER_HALF_M = 0.9;
+/** The middle of a rail from a track's middle, and half the length of a sleeper, of each gauge. As track-looks.wgsl. */
+export const RAIL_GAUGE_M = 0.7525, NARROW_GAUGE_M = 0.53, SLEEPER_HALF_M = 1.3, NARROW_SLEEPER_HALF_M = 0.9;
 const NARROW_CODE = Object.keys(SURFACES).indexOf('narrow') + 1;
 const sleeper = (half: number) => box(SLEEPER_W, half, SLEEPER_TOP_M - SLEEPER_DEPTH_M, SLEEPER_TOP_M);
 

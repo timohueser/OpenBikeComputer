@@ -13,8 +13,8 @@ export const MAT = { GROUND: 1, KERB: 2, SIDEWALK: 3 } as const;
 /** The looks of the ways, as LOOK_* of looks.wgsl. */
 export const LOOK = { ASPHALT: 20, MAIN: 21, MOTORWAY: 22, CONCRETE: 23, SETT: 24, PAVERS: 25, GRAVEL: 26, DIRT: 27, TRAIL: 28, BALLAST: 29, STRIPS: 30, TREAD: 31, RISER: 32, SLEEPER: 33, TIMBER: 34, RAIL: 35, RAIL_HEAD: 36, RACK: 37, CABLE: 38 } as const;
 /**
- * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a band's row on the stamped ground. MESH: a band's row
- * under the drawn mesh. UNDER: a band's row over another way's carriageway, which it passes under.
+ * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a band's row on the stamped ground. MESH: a band's row or
+ * the foot of a cheek of steps under the drawn mesh. UNDER: a band's row over another way's carriageway, which it passes under.
  * NO_LEFT_LINE, NO_RIGHT_LINE: a carriageway without its edge line on that side, at a junction's mouth.
  */
 export const CF = { SAMPLE: 1, MESH: 2, UNDER: 4, NO_LEFT_LINE: 8, NO_RIGHT_LINE: 16 } as const;

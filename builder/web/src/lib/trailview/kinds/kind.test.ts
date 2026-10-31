@@ -8,7 +8,7 @@ import { KINDS } from '.';
 import { facing, type Build, type Placement } from './kind';
 import { streetLamps } from '../roads/lamps';
 import { lampKind } from '../structures/lamps';
-import { BRIDGE, metresPerUnit, PROFILES, RAIL, ROAD, type Line } from '../terrain/bins';
+import { BRIDGE, metresPerUnit, PROFILES, RAIL, ROAD, TUNNEL, type Line } from '../terrain/bins';
 import { RIGHT } from '../terrain/town';
 
 describe('kinds', () => {
@@ -113,6 +113,20 @@ describe('kinds', () => {
             const side = [112 * m, y, 112 * m, y + 50 * m];
             expect(along([main, road(side)])).toEqual([16, 48, 80, 120, 152, 184, 216, 248, 280, 312]);
             expect(along([main, road(side, { kind: BRIDGE })])).toEqual([16, 48, 80, 120, 152, 184, 216, 248, 280, 312]);
+        });
+
+        it('in no mouth where a road runs straight into a bridge or a tunnel', () => {
+            for (const kind of [BRIDGE, TUNNEL]) {
+                // The lamp due at 80 m moves back past the mouth: 2.5 m of road, 1.5 m of sidewalk and 4 m.
+                expect(along([road([0, y, 81 * m, y], { sidewalks: [RIGHT, RIGHT] }), road([81 * m, y, 300 * m, y], { kind })], { buildings: [] })).toEqual([16, 48, 72]);
+            }
+        });
+
+        it('far from the other lamps of the tile, whichever way they belong to', () => {
+            // A second way starts 2 m past the first's start, 1 m to its side: without the rule its lamps stand beside the first's.
+            const lamps = places([main, road([2 * m, y + 2 * m, 320 * m, y + 2 * m], { sidewalks: [RIGHT, RIGHT] })], { buildings: [] });
+            expect(lamps).toHaveLength(10);
+            for (const lamp of lamps) for (const other of lamps) if (other !== lamp) expect(Math.hypot(lamp.x - other.x, lamp.y - other.y) / m).toBeGreaterThanOrEqual(16);
         });
 
         it('in no driveway and no corner, on no other carriageway and no track', () => {

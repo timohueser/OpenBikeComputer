@@ -344,8 +344,7 @@ fn trail_look(region: u32, su: vec2f, w: WayPixel, slope: f32, altitude: f32) ->
 fn ballast_look(code: u32, w: WayPixel) -> WayLook {
     var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let p = w.p;
-    let narrow = ((code - RAIL_CODE) & 1u) != 0u;
-    let gauge = select(0.7525, 0.53, narrow);
+    let gauge = rail_gauge(code);
     let x = abs(w.across);
     // Crushed stone: two sizes over each other, each stone its own tone, shallow gaps.
     let peb = pebbles(p, 0.032, w.pw);
@@ -361,20 +360,18 @@ fn ballast_look(code: u32, w: WayPixel) -> WayLook {
     out.bump = 0.9 * seen(0.038, w.pw) * facet;
     // Past the bed: the formation's dirt, weeds and the ground.
     out.ground = smoothstep(0.0, 0.35, frayed(p, x - w.half, 0.25));
-    let far = detail_fade(length(p - look.place.xy));
-    if (far > 0.0 && x < w.half - 0.3) {
+    if (detail_painted(length(p - look.place.xy)) && x < w.half - 0.3) {
         // Sleepers 0.26 m wide, rail heads 6 cm, rusty sides, a rack between.
-        let reach = select(1.3, 0.9, narrow);
+        let reach = sleeper_half(code);
         let off = (fract(w.along + 0.5) - 0.5) * SLEEPER_SPACING_M;
         let along_m = w.aw * SLEEPER_SPACING_M;
         let lying = mix(band(off, -0.13, 0.13, along_m), 0.26 / SLEEPER_SPACING_M, smoothstep(0.1, 0.4, along_m));
-        var t = mix(c, vec3f(0.2, 0.195, 0.185), lying * band(w.across, -reach, reach, w.cw));
-        t = mix(t, vec3f(0.13, 0.075, 0.045), band(x - gauge, -0.05, 0.05, w.cw));
-        t = mix(t, vec3f(0.42, 0.43, 0.44), band(x - gauge, -0.031, 0.031, w.cw));
+        c = mix(c, vec3f(0.2, 0.195, 0.185), lying * band(w.across, -reach, reach, w.cw));
+        c = mix(c, vec3f(0.13, 0.075, 0.045), band(x - gauge, -0.05, 0.05, w.cw));
+        c = mix(c, vec3f(0.42, 0.43, 0.44), band(x - gauge, -0.031, 0.031, w.cw));
         if (code >= RAIL_CODE + 2u) {
-            t = mix(t, vec3f(0.1), band(w.across, -0.08, 0.08, w.cw));
+            c = mix(c, vec3f(0.1), band(w.across, -0.08, 0.08, w.cw));
         }
-        c = mix(c, t, far);
     }
     out.albedo = c;
     return out;

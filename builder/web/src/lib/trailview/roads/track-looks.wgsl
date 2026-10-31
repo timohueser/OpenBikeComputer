@@ -2,10 +2,15 @@
 // sleepers, rails, rack and cable.
 // #include looks.wgsl
 
-// Near the eye these faces draw over the way; from DETAIL_M to DETAIL_END_M the way's look takes them over.
-// DETAIL_END_M as roads.ts, which culls them past it.
+// Near the eye these faces draw over the way. From DETAIL_M to DETAIL_END_M they discard a growing share of their
+// pixels, over a way that paints them in full, so the two add up to one. DETAIL_END_M as roads.ts, which culls them past it.
 const DETAIL_M: f32 = 140.0;
 const DETAIL_END_M: f32 = 190.0;
+// As parts.ts: the middle of a rail from a track's middle, and half a sleeper, of each gauge.
+const RAIL_GAUGE_M: f32 = 0.7525;
+const NARROW_GAUGE_M: f32 = 0.53;
+const SLEEPER_HALF_M: f32 = 1.3;
+const NARROW_SLEEPER_HALF_M: f32 = 0.9;
 const LOOK_TREAD: u32 = 31u;
 const LOOK_RISER: u32 = 32u;
 const LOOK_SLEEPER: u32 = 33u;
@@ -30,9 +35,26 @@ fn riser_lit(l: WayLook, n: vec3f, su: vec2f, relative: vec3f, altitude: f32) ->
     return atmosphere(light_up(l.albedo, normalize(n + vec3f(0.0, 0.0, RISER_LEAN)), sun_at(su), 1.0, look.horizon.w), relative, altitude);
 }
 
-// The share of a pixel `distance` metres off that its way's look takes from these faces.
+// The share of its pixels that a face discards `distance` metres off.
 fn detail_fade(distance: f32) -> f32 {
     return smoothstep(DETAIL_M, DETAIL_END_M, distance);
+}
+
+// Whether a way paints these faces `distance` metres off: nearer, they hide all that it could paint.
+fn detail_painted(distance: f32) -> bool {
+    return distance >= DETAIL_M;
+}
+
+fn narrow_gauge(code: u32) -> bool {
+    return ((code - RAIL_CODE) & 1u) != 0u;
+}
+
+fn rail_gauge(code: u32) -> f32 {
+    return select(RAIL_GAUGE_M, NARROW_GAUGE_M, narrow_gauge(code));
+}
+
+fn sleeper_half(code: u32) -> f32 {
+    return select(SLEEPER_HALF_M, NARROW_SLEEPER_HALF_M, narrow_gauge(code));
 }
 
 // Steps: concrete or stone treads in a town, each its own tone with a lighter worn middle and a nosing; on a
@@ -69,7 +91,7 @@ fn step_look(mat: u32, code: u32, region: u32, w: WayPixel, altitude: f32) -> Wa
 
 // Concrete sleepers, the dark pads and clips of the rails on their top; `up` is the face's normal's z.
 fn sleeper_look(code: u32, w: WayPixel, up: f32) -> vec3f {
-    let gauge = select(0.7525, 0.53, ((code - RAIL_CODE) & 1u) != 0u);
+    let gauge = rail_gauge(code);
     let x = abs(w.across);
     let c = vec3f(0.2, 0.195, 0.185) * (0.9 + 0.15 * noise(w.p / 0.2)) * mix(vec3f(1.0), vec3f(1.1, 0.92, 0.8), smoothstep(0.35, 0.0, abs(x - gauge))) * (1.0 + 0.1 * seen(0.02, w.pw) * (noise(w.p / 0.01) - 0.5));
     return mix(c, vec3f(0.05, 0.045, 0.04), band(x, gauge - 0.11, gauge + 0.11, w.cw) * step(0.8, up));
