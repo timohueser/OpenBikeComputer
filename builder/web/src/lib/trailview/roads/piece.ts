@@ -63,10 +63,10 @@ export class PieceBuilder {
 
     /** Makes faces whose vertices have no fixed limit, here if they fit. Otherwise it leaves no trace of them and says so. */
     attempt(make: (piece: PieceBuilder) => void): boolean {
-        const { count, near: { length: near }, far: { length: far } } = this;
+        const { count, low, high, out, near: { length: near }, far: { length: far } } = this;
         make(this);
         if (this.count <= VERTICES) return true;
-        this.count = count;
+        Object.assign(this, { count, low, high, out });
         this.near.length = near;
         this.far.length = far;
         return false;

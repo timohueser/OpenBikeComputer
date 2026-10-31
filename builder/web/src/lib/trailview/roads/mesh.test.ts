@@ -330,8 +330,9 @@ describe('a piece', () => {
             piece.far.push(0);
         };
         expect(b.attempt(make(60000))).toBe(true);
-        expect(b.attempt(make(6000))).toBe(false);
+        expect(b.attempt(piece => { piece.vertex(9000, 0, 500, 0, 0, 0); make(6000)(piece); })).toBe(false);
         expect(b.count).toBe(60000);
+        expect(b.piece(0)).toMatchObject({ low: 0, high: 0, over: 0 });
         expect(b.near.length).toBe(60000);
         expect(b.far.length).toBe(1);
         expect(new PieceBuilder(0, 0).attempt(make(6000))).toBe(true);
