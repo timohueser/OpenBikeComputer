@@ -120,11 +120,12 @@ const WALL_TEST: Test = { out: WALL_OUT_M, dir: -1, level: CUT_M, step: WALL_STE
  * By samples along a side of a line, from a point `at` metres along: the metres to the nearest sample that a test
  * passes, short of a zone `zone` metres away; the weighted mean of how far the ground lies past the edge, up to
  * `limit`; and a mapped height. A crossing between two samples is interpolated, and a mapped barrier passes the test
- * of its kind and stops the other.
+ * of its kind and stops the other. A point with a passing sample each way lies in a gap, which a detail bridges: a
+ * dip in a wall's top would read as two walls.
  */
 function tested(line: Line, stations: Station[], j: number, side: 1 | -1, test: Test, limit: number, zone: number, ground: GroundAt, barriers: Barriers) {
     const mapped = barriers.segments.length > 0;
-    let d = Infinity, last = -1, sum = 0, weights = 0, tagged = 0;
+    let d = Infinity, last = -1, sum = 0, weights = 0, tagged = 0, before = false, after = false;
     for (let k = -SAMPLES; k <= SAMPLES; k++) {
         const x = k * test.step, s = stationAt(stations, j, x), edge = edgeOf(line, s), out = (a: number) => [s.x + side * s.ax * (edge + a), s.y + side * s.ay * (edge + a)] as const;
         const g = ground(...out(test.out)), r = test.dir * (s.z + side * s.bank * edge - g), osm = mapped ? barrierAt(barriers, ...out(BARRIER_OUT_M)) : undefined;
@@ -136,11 +137,15 @@ function tested(line: Line, stations: Station[], j: number, side: 1 | -1, test: 
             weights += weight;
             if (osm?.wall === test.wall) tagged = Math.max(tagged, osm.height ?? 0);
         }
-        if (v > 0) d = Math.min(d, Math.abs(x));
+        if (v > 0) {
+            d = Math.min(d, Math.abs(x));
+            before ||= k < 0;
+            after ||= k > 0;
+        }
         if (k > -SAMPLES && v > 0 !== last > 0) d = Math.min(d, Math.abs(x - test.step * v / (v - last)));
         last = v;
     }
-    return { d, mean: sum / (weights || 1), tagged };
+    return { d: before && after ? 0 : d, mean: sum / (weights || 1), tagged };
 }
 
 /**

@@ -58,6 +58,12 @@ describe('what stands beside a road', () => {
         expect(rail.every(share => share === 0)).toBe(true);
     });
 
+    it('bridges a gap between two cuts, with no dip in its top', () => {
+        const { line, stations } = road(), climbs = (m: number) => (m >= 60 && m <= 76) || (m >= 90 && m <= 106);
+        const { wall } = stands(line, stations, -1, (x, y) => 1000 + (climbs(alongOf(x)) && y > Y ? 5 : 0));
+        for (let m = 62; m < 104; m += 2) expect(at(stations, wall, m)).toBe(1);
+    });
+
     it('reads no ground past a mouth, so a cut in the mouth raises no stub', () => {
         const { line, stations } = road(), mouths = zonesOf(stations, j => Math.abs(stations[j].along - 95) < 8);
         const { wall } = stands(line, stations, -1, (x, y) => 1000 + (alongOf(x) > 90 && alongOf(x) < 100 && y > Y ? 5 : 0), mouths);
