@@ -154,6 +154,36 @@ fn a_track_runs_through_a_level_crossing_and_a_junction_with_no_pair_has_no_side
 }
 
 #[test]
+fn a_hairpin_keeps_its_two_ways_as_the_pair_where_a_track_joins_at_its_apex() {
+    // The road turns round 4 m about (0, 4) and runs back: its ways leave the apex opposite, and 8 m along they
+    // have folded back to about 70 degrees.
+    let turn = (0..=30).map(|k| (k as f64 * TAU / 60.0 - TAU / 4.0).sin_cos()).map(|(s, c)| (-4.0 * c, 4.0 + 4.0 * s));
+    let bend: Vec<(f64, f64)> = [(200.0, 0.0)].into_iter().chain(turn).chain([(200.0, 8.0)]).collect();
+    let track = [(bend[16].0, bend[16].1), (-200.0, 4.0)];
+    let ways: [(&str, &[(f64, f64)]); 2] = [("tertiary", &bend), ("track", &track)];
+    assert_eq!(sides_at(&ways, bend[16]), [0, SIDE_ON]);
+}
+
+#[test]
+fn an_l_bend_on_stubs_of_osm_is_no_hairpin_a_way_straight_on_keeps_the_pair() {
+    // The tertiary's first segments lie opposite, but 8 m along its legs stand at a right angle.
+    let north = [(0.0, 0.0), (-1.0, 0.0), (-1.0, 200.0)];
+    let east = [(0.0, 0.0), (200.0, 0.0)];
+    let on = [(0.0, 0.0), (-200.0, -30.0)];
+    let ways: [(&str, &[(f64, f64)]); 3] = [("tertiary", &north), ("tertiary", &east), ("service", &on)];
+    assert_eq!(sides_at(&ways, (0.0, 0.0)), [SIDE_ON, 0, 0]);
+}
+
+#[test]
+fn roads_of_three_ways_on_a_level_crossing_keep_a_through_pair() {
+    let through = [(-200.0, 0.0), (0.0, 0.0), (200.0, 0.0)];
+    let stem = [(0.0, 0.0), (140.0, 140.0)];
+    let rail = [(0.0, -200.0), (0.0, 0.0), (0.0, 200.0)];
+    let ways: [(&str, &[(f64, f64)]); 3] = [("tertiary", &through), ("tertiary", &stem), ("rail", &rail)];
+    assert_eq!(sides_at(&ways, (0.0, 0.0)), [0, SIDE_ON, 0]);
+}
+
+#[test]
 fn a_way_out_runs_toward_its_point_8_m_along_past_a_stub_of_osm() {
     // The first segment of the service road leaves the secondary at a right angle, then it runs straight on.
     let west = [(-200.0, 0.0), (0.0, 0.0)];

@@ -4,11 +4,14 @@ import { PATH, RAIL_CODE, type Line } from '../terrain/bins';
 import { NARROW_GAUGE_M, PART, RAIL_GAUGE_M, SLEEPER_TOP_M } from './parts';
 import { lookWord, type PieceBuilder } from './piece';
 import { CF, classOf, LOOK } from './section';
-import { stationAt, type Station } from './stations';
+import { CUT, stationAt, type Station } from './stations';
 import { countOf, type Run } from './sweep';
 
 /** The piece of a station where a node owns it. */
 type PieceOf = (s: Station) => PieceBuilder | undefined;
+
+/** Whether a road stops the way from a station on. */
+const stopped = ({ cut = 0 }: Station) => (cut & CUT.ROAD) !== 0;
 
 /** A rail's cross-section from right to left: metres across from its middle and up from the sleeper's top, for a rail 0.125 m high. */
 const RAIL: [number, number][] = [[-0.05, 0], [-0.05, 0.012], [-0.009, 0.028], [-0.009, 0.088], [-0.03, 0.097], [-0.031, 0.125], [0.031, 0.125], [0.03, 0.097], [0.009, 0.088], [0.009, 0.028], [0.05, 0.012], [0.05, 0]];
@@ -95,15 +98,20 @@ function steps(run: Run, pieceOf: PieceOf): void {
     if (total < 0.5) return;
     const count = Math.max(1, Math.round(rise / RISE_M)), tread = Math.min(TREAD_MAX_M, Math.max(TREAD_MIN_M, total / count));
     const n = Math.max(1, Math.round(total / tread)), half = Math.max(0.6, Math.min(line.h * 0.8, 1.4));
-    let prev = -Infinity;
+    // NaN: no riser before a flight's first tread or after a road.
+    let prev = NaN;
     for (let k = 0; k < n; k++) {
         const a0 = (k * total) / n, a1 = ((k + 1) * total) / n, s = stationAt(stations, a0), t = stationAt(stations, a1), b = pieceOf(s);
+        if (stopped(s) || stopped(t)) {
+            prev = NaN;
+            continue;
+        }
         const level = Math.max(s.z, t.z) + TREAD_LIFT_M, at = (p: Station, a: number, z: number, mat: number, along: number, flags = 0) => vertex(b!, run, { ...p, z, bank: 0 }, a, 0, mat, along, flags);
         if (b) {
             // A tread's `along` is metres back from its nosing, at its start going up the line, else at its end.
             const up = s.z <= t.z, ns = up ? 0 : a1 - a0, nt = up ? a1 - a0 : 0;
             face(b, [at(s, -half, level, LOOK.TREAD, ns), at(t, -half, level, LOOK.TREAD, nt), at(t, half, level, LOOK.TREAD, nt), at(s, half, level, LOOK.TREAD, ns)]);
-            if (k > 0 && Math.abs(level - prev) > 0.01) {
+            if (Math.abs(level - prev) > 0.01) {
                 const lo = Math.min(level, prev), hi = Math.max(level, prev), [right, left] = level > prev ? [half, -half] : [-half, half];
                 face(b, [at(s, right, lo, LOOK.RISER, a0), at(s, left, lo, LOOK.RISER, a0), at(s, left, hi, LOOK.RISER, a0), at(s, right, hi, LOOK.RISER, a0)]);
             }
@@ -113,9 +121,9 @@ function steps(run: Run, pieceOf: PieceOf): void {
     }
 }
 
-/** What stands on a line, in the pieces that `pieceOf` gives. */
-export function tracks(run: Run, pieceOf: PieceOf): void {
-    const { line } = run;
+/** What stands on a line, up to the roads that stop it, in the pieces that `pieceOf` gives. */
+export function tracks(run: Run, detailAt: PieceOf): void {
+    const { line } = run, pieceOf: PieceOf = s => (stopped(s) ? undefined : detailAt(s));
     if (line.code >= RAIL_CODE && line.sleepers) track(run, pieceOf);
     else if (line.kind === PATH && classOf(line) === 'steps') steps(run, pieceOf);
 }

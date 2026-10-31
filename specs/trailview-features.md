@@ -275,10 +275,12 @@ A way out is a way of a road or a track that leaves a point, toward its point 8 
 three or more ways out leave a point, `side` marks each one but the through pair of the point. Of
 the pairs that open by at least the angle of cosine −0.3, this is the pair that holds the first
 class of the table, then the first class beside that, then that runs most nearly straight on. So
-a road runs on into a lesser class, and a road that ends on a straight road is a side of it. This
-rule serves the drawing. The heights follow the through road of the solver (see Heights), which can
+a road runs on into a lesser class, and a road that ends on a straight road is a side of it. Where
+only two ways out hold the first class, they are the pair at the apex of a hairpin: their first OSM
+segments open by that angle, and their points 8 m along lie at cosine 0.25 or more. This rule serves the drawing. The heights follow the through road of the solver (see Heights), which can
 differ. A point with no such pair has no `side`, two ways out both run through, and a path has
-`side` 0 and is never a way out. The tiles keep each vertex that has a `side`. Below zoom 13 a tile
+`side` 0 and is never a way out. Where a track crosses three or more ways out of roads, the tracks and
+the roads each take this rule alone, so each keeps a pair. The tiles keep each vertex that has a `side`. Below zoom 13 a tile
 has no `side`, so each way there runs through.
 
 ### Structures

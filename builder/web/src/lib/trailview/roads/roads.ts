@@ -9,6 +9,7 @@ import { PART_VERTEX, partMeshes } from './parts';
 import type { FeatureTiles } from '../terrain/stamps';
 import { Pool } from '../structures/pool';
 import { stopped } from '../stream/terrain';
+import { REACH_M } from './arms';
 import { meshBytes, type RoadMesh } from './mesh';
 import { ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 
@@ -20,6 +21,8 @@ export const DETAIL_END_M = 190;
 const FAR_FROM_M = 200;
 /** An owner builds this far before it comes into range: about 20 s at the speed of a car in a valley. */
 const AHEAD_M = 300;
+/** What corridors hold short of a piece `d` metres off that does not draw: its junctions' faces are gone, and their cuts reach up to REACH_M into its neighbours, where the paint must take every pixel. */
+const heldTo = (d: number) => Math.max(0, d - REACH_M);
 /** The GPU pools, with the middles of the draws under the owner's budget of 48 MiB. */
 const VERTEX_BYTES = 27 * 2 ** 20, INDEX_BYTES = 20 * 2 ** 20;
 /** Bytes of meshes kept on the CPU: with the stamps' 64 MiB, the 96 MiB of the owner's budget. */
@@ -139,7 +142,7 @@ export class Roads {
             // The farthest owners give way when the nearer ones fill the cache.
             const name = key(node), mesh = held < MESH_BYTES ? this.mesh(node, name, build) : undefined;
             if (mesh) wanted.add(name);
-            if (!mesh || mesh === FAILED) built = Math.min(built, d);
+            if (!mesh || mesh === FAILED) built = Math.min(built, heldTo(d));
             if (!mesh) continue;
             held += meshBytes(mesh);
             for (const piece of mesh.pieces) {
@@ -164,7 +167,7 @@ export class Roads {
         const middles = new Int32Array(2 * Math.min(DRAWS, this.pieces.length));
         for (let slot = 0; 2 * slot < middles.length; slot++) middles.set([this.pieces[slot].piece.x, this.pieces[slot].piece.y], 2 * slot);
         if (middles.length) r.device.queue.writeBuffer(r.middles, 0, middles);
-        return Math.min(this.built, ...this.pieces.filter(({ piece }, slot) => piece.level === CHILD && (slot >= DRAWS || !r.pool.at(piece))).map(({ d }) => d));
+        return Math.min(this.built, ...this.pieces.filter(({ piece }, slot) => piece.level === CHILD && (slot >= DRAWS || !r.pool.at(piece))).map(({ d }) => heldTo(d)));
     }
 
     /** Before the terrain: early depth then rejects the terrain under a road. */
