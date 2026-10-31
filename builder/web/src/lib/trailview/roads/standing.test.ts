@@ -58,6 +58,13 @@ describe('what stands beside a road', () => {
         expect(rail.every(share => share === 0)).toBe(true);
     });
 
+    it('holds the section\'s bank past a line\'s end, so two near stations make no drop out of it', () => {
+        const { line, stations } = road(), last = stations.length - 1;
+        stations[last - 1].along = stations[last].along - 2;
+        stations[last].bank = 0.2;
+        expect(stands(line, stations, 1, () => 1000).rail.every(share => share === 0)).toBe(true);
+    });
+
     /** Per stretch of a field that stands, how often its share rises again after it fell. */
     const dipsOf = (shares: Float64Array) => {
         const runs: number[] = [];

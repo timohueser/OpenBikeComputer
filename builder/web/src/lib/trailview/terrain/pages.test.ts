@@ -78,7 +78,7 @@ describe('the page pools', () => {
             if (failing) throw new Error('A tile failed.');
             return fetch(z, x, y);
         };
-        const pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {}), byFetch = pages as unknown as { fetch(z: number, x: number, y: number): void };
+        const pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {}), byFetch = pages as unknown as { fetch(z: number, x: number, y: number): void; stored(node: { level: number; x: number; y: number }): string };
         await expect(pages.body(5, 1, 2)).rejects.toThrow();
         await expect(pages.body(5, 1, 2)).rejects.toThrow();
         byFetch.fetch(5, 2, 2);
@@ -86,7 +86,9 @@ describe('the page pools', () => {
         await expect(pages.body(5, 2, 2)).rejects.toThrow();
         failing = false;
         expect(await pages.body(5, 1, 2)).toBeDefined();
+        expect(byFetch.stored({ level: 6, x: 4, y: 4 })).toBe('no');
         expect(await pages.body(5, 2, 2)).toBeDefined();
+        expect(byFetch.stored({ level: 6, x: 4, y: 4 })).not.toBe('no');
         expect(tiles.fetched).toEqual(['5/1/2', '5/2/2']);
     });
 

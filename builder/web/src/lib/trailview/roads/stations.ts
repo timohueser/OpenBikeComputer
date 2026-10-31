@@ -100,7 +100,7 @@ export function stationIndex(stations: Station[], along: number): number {
 /** The station nearest to metres `along`: where the plan asked for one, within SAME_M of them. */
 export const stationOn = (stations: Station[], along: number) => stations[stationIndex(stations, along)];
 
-/** A station a share u of the way from s to t; a share past 1 runs straight on. */
+/** A station a share u of the way from s to t. */
 export function between(s: Station, t: Station, u: number): Station {
     const mix = (a: number, b: number) => a + (b - a) * u;
     return {

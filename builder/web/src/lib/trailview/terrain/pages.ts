@@ -470,6 +470,8 @@ export class Pages {
         if (data) {
             this.bytes += data.byteLength;
             this.keep(name, data);
+            // A tile that failed and now came back no longer stays out for the pages.
+            if (this.tiles.get(name)?.state === 'absent') this.tiles.delete(name);
         } else this.tiles.set(name, { state: 'absent' });
         this.broken.delete(name);
         return data;
