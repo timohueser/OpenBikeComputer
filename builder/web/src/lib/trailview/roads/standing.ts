@@ -6,7 +6,7 @@ import { metresPerUnit, PROFILES, ROAD, type Barrier, type Line } from '../terra
 import { along as share, gridOf, LEFT, near, RIGHT, type Grid } from '../terrain/town';
 import type { GroundAt } from './ground';
 import { classOf, shoulderOf } from './section';
-import type { Station } from './stations';
+import { stationAt, type Station } from './stations';
 
 /** The classes with guardrails and delineator posts outside towns, and those with retaining walls. */
 const RAILED = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified']);
@@ -114,20 +114,18 @@ interface Test { out: number; dir: 1 | -1; level: number; step: number; wall: bo
 const RAIL_TEST: Test = { out: DROP_OUT_M, dir: 1, level: DROP_M, step: RAIL_STEP_M, wall: false };
 const WALL_TEST: Test = { out: WALL_OUT_M, dir: -1, level: CUT_M, step: WALL_STEP_M, wall: true };
 
-/** A station on a side: its metres to the edge, the edge's height and its grade per metre along. */
-interface Edge { s: Station; side: 1 | -1; edge: number; height: number; grade: number }
-
 /**
- * By samples along a station's tangent: the metres to the nearest point that a test passes, short of a zone `zone`
- * metres along; the weighted mean of how far the ground lies past the edge, up to `limit`; and a mapped height. A
- * crossing between two samples is interpolated, and a mapped barrier passes the test of its kind and stops the other.
+ * By samples along a side of a line, from a point `at` metres along: the metres to the nearest sample that a test
+ * passes, short of a zone `zone` metres away; the weighted mean of how far the ground lies past the edge, up to
+ * `limit`; and a mapped height. A crossing between two samples is interpolated, and a mapped barrier passes the test
+ * of its kind and stops the other.
  */
-function tested({ s, side, edge, height, grade }: Edge, test: Test, limit: number, zone: number, ground: GroundAt, barriers: Barriers) {
+function tested(line: Line, stations: Station[], j: number, side: 1 | -1, test: Test, limit: number, zone: number, ground: GroundAt, barriers: Barriers) {
     const mapped = barriers.segments.length > 0;
     let d = Infinity, last = -1, sum = 0, weights = 0, tagged = 0;
     for (let k = -SAMPLES; k <= SAMPLES; k++) {
-        const x = k * test.step, out = (a: number) => [s.x + side * s.ax * (edge + a) - s.ay * x, s.y + side * s.ay * (edge + a) + s.ax * x] as const;
-        const g = ground(...out(test.out)), r = test.dir * (height + grade * x - g), osm = mapped ? barrierAt(barriers, ...out(BARRIER_OUT_M)) : undefined;
+        const x = k * test.step, s = stationAt(stations, j, x), edge = edgeOf(line, s), out = (a: number) => [s.x + side * s.ax * (edge + a), s.y + side * s.ay * (edge + a)] as const;
+        const g = ground(...out(test.out)), r = test.dir * (s.z + side * s.bank * edge - g), osm = mapped ? barrierAt(barriers, ...out(BARRIER_OUT_M)) : undefined;
         let v = -1;
         if (!Number.isNaN(g) && Math.abs(x) < zone) {
             v = osm ? (osm.wall === test.wall ? 1 : -1) : r - test.level;
@@ -152,12 +150,10 @@ export function standingOf(line: Line, stations: Station[], side: 1 | -1, ground
     const clear = zonesOf(stations, j => walked(line, stations[j], side)), free = towns.map((town, j) => Math.min(town, clear[j]));
     const rail = new Float64Array(n), wall = new Float64Array(n), high = new Float64Array(n);
     for (let j = 0; j < n; j++) {
-        const s = stations[j], p = stations[Math.max(0, j - 1)], q = stations[Math.min(n - 1, j + 1)], edge = edgeOf(line, s);
-        const at: Edge = { s, side, edge, height: s.z + side * s.bank * edge, grade: q.along > p.along ? (q.z - p.z) / (q.along - p.along) : 0 };
-        if (railed && free[j] > 0) rail[j] = eased(tested(at, RAIL_TEST, 0, free[j], ground, barriers).d, RAIL_NEAR_M, RAIL_RAMP_M, free[j]);
+        if (railed && free[j] > 0) rail[j] = eased(tested(line, stations, j, side, RAIL_TEST, 0, free[j], ground, barriers).d, RAIL_NEAR_M, RAIL_RAMP_M, free[j]);
         const zone = Math.min(mouths[j], clear[j]);
         if (!walled || zone <= 0) continue;
-        const { d, mean, tagged } = tested(at, WALL_TEST, cone, zone, ground, barriers);
+        const { d, mean, tagged } = tested(line, stations, j, side, WALL_TEST, cone, zone, ground, barriers);
         wall[j] = eased(d, WALL_NEAR_M, WALL_RAMP_M, zone);
         high[j] = Math.max(WALL_LEAST_M, Math.min(WALL_MOST_M, tagged || mean + WALL_OVER_M));
     }

@@ -79,6 +79,22 @@ export function stationsOf(line: Line, half: (v: number) => number): Station[] {
     return out;
 }
 
+/** The station a share u of the way from s to t; a share past 1 runs straight on. */
+export function between(s: Station, t: Station, u: number): Station {
+    const f = (p: number, q: number) => p + (q - p) * u;
+    return { ...s, x: f(s.x, t.x), y: f(s.y, t.y), z: f(s.z, t.z), ax: f(s.ax, t.ax), ay: f(s.ay, t.ay), along: f(s.along, t.along), bank: f(s.bank, t.bank) };
+}
+
+/** The point of a line `x` metres along from station j, straight on past its ends: a way that meets it there runs on. */
+export function stationAt(stations: Station[], j: number, x: number): Station {
+    const m = stations[j].along + x, last = stations.length - 2;
+    let i = Math.min(j, last);
+    while (i < last && stations[i + 1].along < m) i++;
+    while (i > 0 && stations[i].along > m) i--;
+    const s = stations[i], t = stations[i + 1];
+    return between(s, t, (m - s.along) / (t.along - s.along || 1));
+}
+
 /**
  * Of each station, the most metres across that its sides reach on its left and its right, where a tight
  * bend stops them. An offset that shortens a step to nothing folds; the ends of a step share its limit.

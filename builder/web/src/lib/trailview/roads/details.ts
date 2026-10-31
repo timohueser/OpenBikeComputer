@@ -7,7 +7,7 @@ import type { GroundAt } from './ground';
 import { lookWord, type PieceBuilder } from './piece';
 import { CF, MAT, type Part } from './section';
 import { allowed, coneOf, edgeOf, WALL_OUT_M, type Standing } from './standing';
-import type { Station } from './stations';
+import { between, type Station } from './stations';
 import { countOf, point, quad, type Run } from './sweep';
 
 /** A point of a section: metres past the edge, metres over the edge, its material, whether the far range keeps it. */
@@ -111,12 +111,6 @@ function delineator(b: PieceBuilder, run: Run, side: 1 | -1, s: Station, edge: n
     sides(b.casters, rings[0], rings[3]);
     const shine = (al: number, over: number) => place(near - REFLECTOR_OUT_M, al, over, REFLECTOR);
     face(b.near, shine(-REFLECTOR_HALF_M, z[1] + REFLECTOR_INSET_M), shine(REFLECTOR_HALF_M, z[1] + REFLECTOR_INSET_M), shine(REFLECTOR_HALF_M, z[2] - REFLECTOR_INSET_M), shine(-REFLECTOR_HALF_M, z[2] - REFLECTOR_INSET_M));
-}
-
-/** The station a share u of the way from s to t. */
-function between(s: Station, t: Station, u: number): Station {
-    const f = (p: number, q: number) => p + (q - p) * u;
-    return { ...s, x: f(s.x, t.x), y: f(s.y, t.y), z: f(s.z, t.z), ax: f(s.ax, t.ax), ay: f(s.ay, t.ay), along: f(s.along, t.along), bank: f(s.bank, t.bank) };
 }
 
 /** Whether a line turns more than BEND_RAD about station j. */
