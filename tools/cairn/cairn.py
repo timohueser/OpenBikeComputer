@@ -692,6 +692,14 @@ def map_data(docs: list[Doc], files: list[str], lines: dict[str, int], result: R
     return json.dumps(data, indent=1, ensure_ascii=False) + "\n"
 
 
+def map_shape(data: str) -> dict:
+    """The JSON map without its counts. Most code changes alter a count, so the stale check ignores
+    them, and the site deploy writes the file again."""
+    found = json.loads(data)
+    counts = ("violations", "lines", "problems")
+    return {**found, "systems": [{k: v for k, v in s.items() if k not in counts} for s in found.get("systems", [])]}
+
+
 def with_map(page: str, block: str, name: str) -> str:
     """The page with its generated block replaced by `block`. `name` is the page's path."""
     head, *rest = page.split(MAP_BEGIN)
@@ -788,6 +796,9 @@ def main(argv: list[str] | None = None) -> int:
             data_page.write_text(data, encoding="utf-8")
             print(f"cairn: wrote {page.relative_to(ROOT)} and {data_page.relative_to(ROOT)}")
             return 0
+        stale = [] if current == drawn else [page]
+        if not data_page.is_file() or map_shape(data_page.read_text(encoding="utf-8")) != map_shape(data):
+            stale.append(data_page)
         commit = merge_base(ROOT, args.base) if args.base else None
         base = base_baseline(shown_at(ROOT, commit)) if commit else None
         # An approval at the base still holds, so a change cannot lift it to hide its own violation.
@@ -823,7 +834,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\ncairn: skill tokens (bytes / 4) in {config['skill']['path']}:")
         for name, tokens, limit in skill:
             print(f"  {'FAIL' if name in over else '    '} {name}: {tokens:,} of {limit:,}")
-    stale = [p for p, text in ((page, current), (data_page, data)) if not p.is_file() or p.read_text(encoding="utf-8") != text]
     for p in stale:
         print(f"\ncairn: {p.relative_to(ROOT)} is out of date; run `obc cairn map` or `python3 tools/cairn/cairn.py map`")
     return 1 if failing or added or over or stale else 0

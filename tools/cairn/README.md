@@ -21,7 +21,7 @@ python3 -m unittest discover -s tools/cairn/tests
 | File | Holds |
 | --- | --- |
 | `docs/design/README.md` | the system map. `cairn map` rewrites the block between its two comments. `check` fails when the block is stale. Two merged pull requests can leave it stale on `develop`; `obc cairn map` fixes it. |
-| `docs/design/map.json` | the same map as data: for each system its purpose, dependencies, line count and violations, then the edges and the cycles. `cairn map` writes it, `check` fails when it is stale, and the system explorer on the docs site shows it. Agents read it directly. |
+| `docs/design/map.json` | the same map as data: for each system its purpose, dependencies, line count and violations, then the edges and the cycles. `cairn map` writes it, and the system explorer on the docs site shows it. Agents read it directly. `check` fails when it is stale, but ignores `lines`, `violations` and `problems`, because most code changes alter them. So those three can lag in git; the site deploy writes the file again. |
 | `docs/design/<system>.md` | the header of one system or shell: `kind`, `area` (systems only), `purpose`, `owns`, `depends_on`, `test_depends_on`, `status` |
 | `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4, the globs of test files, the `specs` folder, the size thresholds of a change, the leaf limits, the skill budget, the model roles and tiers, and the report settings |
 | `.cairn/baseline.json` | the known violations, by ID, with a size |

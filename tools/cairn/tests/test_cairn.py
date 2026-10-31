@@ -126,7 +126,12 @@ class MapTests(unittest.TestCase):
                 self.assertEqual(cairn.main(["check"]), 0)
                 data = page.with_name(cairn.MAP_DATA)
                 self.assertEqual(json.loads(data.read_text())["systems"][0]["name"], "routing")
-                data.write_text("{}\n")
+                written = json.loads(data.read_text())
+                written["systems"][0].update(lines=99, violations=9, problems=[{"rule": "R3", "message": "9 lines"}])
+                data.write_text(json.dumps(written))
+                self.assertEqual(cairn.main(["check"]), 0)
+                written["systems"][0]["purpose"] = "Old."
+                data.write_text(json.dumps(written))
                 self.assertEqual(cairn.main(["check"]), 1)
                 self.assertIn("map.json is out of date", out.getvalue())
             self.assertTrue(page.read_text().startswith("# Map\n\nMine.\n\n"))
