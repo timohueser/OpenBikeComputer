@@ -211,7 +211,7 @@ fn part_vertex(v: PartIn) -> CorridorOut {
     let u = part_point(v);
     let p = part_at(v, u);
     var out: CorridorOut;
-    out.clip = frame.view_proj * vec4f(corridor_biased(p.xyz), 1.0);
+    out.clip = frame.view_proj * vec4f(corridor_biased(p.xyz, false), 1.0);
     if (frame.debug == 3u || frame.debug == 4u) {
         out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
     }
