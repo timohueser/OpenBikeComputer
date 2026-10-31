@@ -8,15 +8,16 @@ import { LEFT } from '../terrain/town';
 import { halfAt, partnersOf } from '../terrain/corners';
 import { CHILD, OWNER, size } from '../terrain/lod';
 import { meshBytes, roadMesh } from './mesh';
-import { RANGE_M } from './roads';
-import { lookWord, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
+import { DETAIL_END_M, RANGE_M } from './roads';
+import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
+import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
 import { CF, corridorLine, LOOK, lookOf, MAT, sideOf } from './section';
 import { farStations, reachOf, stationsOf, type Station } from './stations';
 import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
 
 const shader = readFileSync(new URL('./corridor.wgsl', import.meta.url), 'utf8');
-const looks = readFileSync(new URL('./looks.wgsl', import.meta.url), 'utf8');
+const looks = readFileSync(new URL('./looks.wgsl', import.meta.url), 'utf8') + readFileSync(new URL('./track-looks.wgsl', import.meta.url), 'utf8');
 const root = new URL('../../../../tests/browser/trailview/fixture/features/', import.meta.url);
 
 /** The tiles of the fixture, each with the corridor mesh of its owners. */
@@ -35,7 +36,7 @@ const waysIn = ({ tile, list }: typeof tiles[number]) => {
 const squareOf = ({ x, y }: { x: number; y: number }, level: number) => `${Math.floor(x / size(level))},${Math.floor(y / size(level))}`;
 /** The plan of a range of a piece: per grid cell of 2^10 world units, its triangles by their first vertex. */
 function rangeCells(piece: RoadPiece, { first, count }: PieceRange) {
-    const steps = new Int16Array(piece.vertices), at = (i: number) => [piece.x + steps[8 * i] / 3, piece.y + steps[8 * i + 1] / 3], cells = new Map<string, number[][][]>();
+    const steps = new Int16Array(piece.vertices), words = new Uint32Array(piece.vertices), at = (i: number) => [piece.x + (steps[8 * i] * 4 + ((words[4 * i + 2] >>> 28) & 3)) / 12, piece.y + (steps[8 * i + 1] * 4 + (words[4 * i + 2] >>> 30)) / 12], cells = new Map<string, number[][][]>();
     for (let t = first; t < first + count; t += 3) {
         const face = [at(piece.indices[t]), at(piece.indices[t + 1]), at(piece.indices[t + 2])], name = `${face[0][0] >> 10},${face[0][1] >> 10}`;
         (cells.get(name) ?? cells.set(name, []).get(name)!).push(face);
@@ -69,7 +70,8 @@ const runOf = (line: Line, others: Line[] = []): Run => {
 const decoded = ({ vertices, x, y }: RoadPiece) => {
     const words = new Uint32Array(vertices), floats = new Float32Array(vertices), ints = new Int16Array(vertices);
     return Array.from({ length: vertices.byteLength / ROAD_VERTEX }, (_, i) => ({
-        x: x + ints[8 * i] / 3, y: y + ints[8 * i + 1] / 3, z: floats[4 * i + 1], mat: words[4 * i + 2] & 127, flags: (words[4 * i + 2] >> 11) & 31, half: (words[4 * i + 2] >>> 19) * 0.025,
+        x: x + (ints[8 * i] * 4 + ((words[4 * i + 2] >>> 28) & 3)) / 12, y: y + (ints[8 * i + 1] * 4 + (words[4 * i + 2] >>> 30)) / 12, z: floats[4 * i + 1],
+        mat: words[4 * i + 2] & 127, flags: (words[4 * i + 2] >> 11) & 31, half: ((words[4 * i + 2] >>> 19) & 511) * 0.025,
         across: ((words[4 * i + 3] << 20) >> 20) * 16 / 2047, along: (words[4 * i + 3] >>> 12) / 64,
     }));
 };
@@ -77,29 +79,30 @@ const decoded = ({ vertices, x, y }: RoadPiece) => {
 describe('the corridor meshes of the fixture', () => {
     const meshes = tiles.flatMap(tile => tile.meshes), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 3: 194188 vertices and 5.24 MiB at most, 19509 and 0.53 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 3 with track details: 216498 vertices and instances and 5.76 MiB at most, 20145 and 0.55 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
-        expect(Math.max(...count)).toBeLessThanOrEqual(195_000);
-        expect(Math.max(...bytes)).toBeLessThanOrEqual(5.3 * 2 ** 20);
-        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(20_000);
-        expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.54 * 2 ** 20);
+        expect(Math.max(...count)).toBeLessThanOrEqual(217_000);
+        expect(Math.max(...bytes)).toBeLessThanOrEqual(5.8 * 2 ** 20);
+        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(20_500);
+        expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.55 * 2 ** 20);
     });
 
     it('hold 16 bytes per vertex, indices in range, and a far range of about a fifth of the near one', () => {
-        for (const { vertices, indices, near, far, casters, over } of pieces) {
+        for (const { level, vertices, indices, near, far, casters, over, parts } of pieces) {
             expect(vertices.byteLength % ROAD_VERTEX).toBe(0);
+            const count = vertices.byteLength / ROAD_VERTEX - parts.reduce((sum, part) => sum + part.count, 0);
             // The frustum test counts all that a piece reaches past its square.
-            expect(new Int16Array(vertices).reduce((most, step, i) => (i % 8 < 2 ? Math.max(most, Math.abs(step) / 3) : most), 0)).toBeLessThanOrEqual(size(CHILD) / 2 + over + 1);
-            expect(vertices.byteLength / ROAD_VERTEX).toBeLessThanOrEqual(65536);
-            expect(indices.every(index => index < vertices.byteLength / ROAD_VERTEX)).toBe(true);
+            expect(new Int16Array(vertices, 0, 8 * count).reduce((most, step, i) => (i % 8 < 2 ? Math.max(most, Math.abs(step) / 3) : most), 0)).toBeLessThanOrEqual(size(level) / 2 + over + 1);
+            expect(count).toBeLessThanOrEqual(65536);
+            expect(indices.every(index => index < count)).toBe(true);
             expect(indices.byteLength % 4).toBe(0);
             expect(near.first + near.count).toBe(far.first);
             expect(far.first + far.count).toBeLessThanOrEqual(indices.length);
             expect(far.vertices).toBeLessThanOrEqual(near.vertices);
-            // Faces on the ground cast nothing, and every face so far lies on the ground.
-            expect(casters.count).toBe(0);
+            // Faces on the ground cast nothing; a detail's do.
+            expect(casters.count).toBe(level === CHILD ? 0 : near.count);
         }
-        const sum = (field: 'near' | 'far') => pieces.reduce((total, piece) => total + piece[field].vertices, 0);
+        const sum = (field: 'near' | 'far') => pieces.filter(({ level }) => level === CHILD).reduce((total, piece) => total + piece[field].vertices, 0);
         expect(sum('far')).toBeLessThan(0.25 * sum('near'));
     });
 });
@@ -232,10 +235,23 @@ describe('a piece', () => {
     it('holds a vertex past its range at the edge, and has no room left before 16-bit indices end', () => {
         const b = new PieceBuilder(0, 0);
         b.vertex(40000, -40000, 0, 0, 0, 0);
-        expect(decoded(b.piece(0))[0]).toMatchObject({ x: 32767 / 3, y: -32768 / 3 });
+        expect(decoded(b.piece(0))[0]).toMatchObject({ x: (2 ** 17 - 1) / 12, y: -(2 ** 17) / 12 });
         while (b.roomy) b.vertex(0, 0, 0, 0, 0, 0);
         expect(b.count).toBeLessThan(65536);
         expect(b.count).toBeGreaterThan(64000);
+    });
+});
+
+describe('a kerb', () => {
+    it('keeps its heading to 0.1° across a road at any angle, so a flat-shaded face never steps from light to shade', () => {
+        const angle = 0.65, zero = [0, 0], reach = 200 / metres, [dx, dy] = [Math.round(reach * Math.cos(angle)), Math.round(reach * Math.sin(angle))];
+        const line = straight(1, { xy: [2 ** 28, 2 ** 29, 2 ** 28 + dx, 2 ** 29 + dy], h: 2.5, sidewalks: [LEFT], profile: Object.keys(PROFILES).indexOf('residential'), plan: { tangent: [Math.atan2(dy, dx), Math.atan2(dy, dx)], grade: zero, bank: zero, widen: zero } });
+        const run = runOf(line), b = new PieceBuilder(line.xy[0], line.xy[1]);
+        for (let j = 0; j + 1 < run.stations.length; j++) sweep(b, b.near, run, j, j + 1, false);
+        const edge = decoded(b.piece(0)).filter(({ mat, across }) => mat === MAT.KERB && Math.abs(across - 2.5) < 0.01).sort((p, q) => p.along - q.along);
+        const headings = edge.slice(1).map((v, i) => Math.atan2(v.y - edge[i].y, v.x - edge[i].x) * 180 / Math.PI);
+        expect(edge.length).toBeGreaterThan(90);
+        expect(Math.max(...headings) - Math.min(...headings)).toBeLessThan(0.2);
     });
 });
 
@@ -259,9 +275,11 @@ describe('the cross-section', () => {
 describe('corridor.wgsl', () => {
     it('reads the vertex as piece.ts packs it', () => {
         const number = (name: string) => Number(new RegExp(`const ${name}: [fu]32 = ([\\d.]+)u?;`).exec(shader + looks)![1]);
-        expect(number('CORRIDOR_STEP')).toBeCloseTo(1 / 3, 6);
+        expect(number('CORRIDOR_STEP')).toBeCloseTo(1 / 12, 6);
         expect(number('ACROSS_STEP_M')).toBeCloseTo(16 / 2047, 6);
         expect(number('ALONG_STEP')).toBe(1 / 64);
+        expect(number('FINE_SHIFT')).toBe(FINE_SHIFT);
+        for (const [name, value] of Object.entries({ PART_FINE, PART_TURN, PART_GRADE, RAIL_GAUGE_M, NARROW_GAUGE_M, SLEEPER_HALF_M, NARROW_SLEEPER_HALF_M, DETAIL_END_M })) expect(number(name), name).toBe(value);
         expect(lookWord(5, 9, 3, 2, number('HALF_STEP_M') * 80)).toBe((5 | (9 << number('CODE_SHIFT')) | (3 << number('FLAGS_SHIFT')) | (2 << number('PRIO_SHIFT')) | (80 << number('HALF_SHIFT'))) >>> 0);
         expect(number('MAT_GROUND')).toBe(MAT.GROUND);
         expect(number('MAT_KERB')).toBe(MAT.KERB);

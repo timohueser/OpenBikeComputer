@@ -79,6 +79,14 @@ export function stationsOf(line: Line, half: (v: number) => number): Station[] {
     return out;
 }
 
+/** The station `metres` along stations of a line, at most at its ends. */
+export function stationAt(stations: Station[], metres: number): Station {
+    let j = 0;
+    while (j + 2 < stations.length && stations[j + 1].along <= metres) j++;
+    const s = stations[j], t = stations[j + 1], u = Math.max(0, Math.min(1, (metres - s.along) / Math.max(t.along - s.along, 1e-6))), mix = (p: number, q: number) => p + (q - p) * u;
+    return { ...s, x: mix(s.x, t.x), y: mix(s.y, t.y), z: mix(s.z, t.z), ax: mix(s.ax, t.ax), ay: mix(s.ay, t.ay), bank: mix(s.bank, t.bank), h: mix(s.h, t.h), along: metres };
+}
+
 /**
  * Of each station, the most metres across that its sides reach on its left and its right, where a tight
  * bend stops them. An offset that shortens a step to nothing folds; the ends of a step share its limit.

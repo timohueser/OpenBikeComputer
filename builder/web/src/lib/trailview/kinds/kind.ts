@@ -38,6 +38,8 @@ export interface Build {
     buildings: Shapes['buildings'];
     /** Whether a point lies in a junction's corner, which paints its asphalt and its sidewalk. */
     cornered: (x: number, y: number) => boolean;
+    /** Whether corridors draw the roads: they stand the street lamps from their stations. */
+    corridors: boolean;
 }
 
 export interface Kind {

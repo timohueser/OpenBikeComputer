@@ -16,7 +16,7 @@ const REPEAT = 720;
 export interface Run { id: number; line: Line; stations: Station[]; reach: Float64Array; lift: number; prio: number; base: number; ways: Ways }
 
 /** What a station counts along its line, from the base of the run: sleepers on a track, else metres. */
-const countOf = ({ line, base }: Run, s: Station) => (line.kind === RAIL ? s.sleepers ?? 0 : s.along) - base;
+export const countOf = ({ line, base }: Run, s: Station) => (line.kind === RAIL ? s.sleepers ?? 0 : s.along) - base;
 
 /** The base of a run from its first station in an owner. */
 export const baseOf = (line: Line, s: Station) => Math.floor((line.kind === RAIL ? s.sleepers ?? 0 : s.along) / REPEAT) * REPEAT;

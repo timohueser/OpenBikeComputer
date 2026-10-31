@@ -3,11 +3,12 @@
 import type { Feature } from '../stream/features';
 import { features, junctions, type Line, type Node } from '../terrain/bins';
 import { halfAt, partnersOf } from '../terrain/corners';
-import { CHILD, size } from '../terrain/lod';
+import { CHILD, DETAIL, size } from '../terrain/lod';
 import { PieceBuilder, type RoadPiece } from './piece';
 import { corridorLine } from './section';
 import { farStations, reachOf, stationsOf, type Station } from './stations';
 import { baseOf, cap, liftOf, prioOf, sweep, type Run } from './sweep';
+import { tracks } from './tracks';
 import { waysOf } from './ways';
 
 /** The ground beside a road stands within this many metres of its plane: a piece's heights reach this far past its vertices. */
@@ -40,11 +41,19 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node): RoadMesh {
     const runs = planOf(features(list, tile).lines), side = size(CHILD), pieces: PieceBuilder[][] = [[], [], [], []];
     const x0 = owner.x * 2 * side, y0 = owner.y * 2 * side;
     const owns = ({ x, y }: Station) => x >= x0 && x < x0 + 2 * side && y >= y0 && y < y0 + 2 * side;
+    const close = new Map<number, PieceBuilder[]>(), cell = size(DETAIL);
+    /** The piece of the details of a station that the owner holds, with room for its faces. */
+    const detailAt = (s: Station) => {
+        if (!owns(s)) return undefined;
+        const [i, j] = [Math.floor(s.x / cell), Math.floor(s.y / cell)], list = close.get(i * 2 ** 20 + j) ?? close.set(i * 2 ** 20 + j, []).get(i * 2 ** 20 + j)!;
+        const last = list[list.length - 1];
+        return last?.roomy ? last : list[list.push(new PieceBuilder((i + 0.5) * cell, (j + 0.5) * cell, DETAIL, true)) - 1];
+    };
     /** The piece of the child that holds a station, with room for its faces. */
     const pieceAt = ({ x, y }: Station) => {
         const i = Math.floor((x - x0) / side), j = Math.floor((y - y0) / side), list = pieces[j * 2 + i];
         const last = list[list.length - 1];
-        return last?.roomy ? last : list[list.push(new PieceBuilder(x0 + (i + 0.5) * side, y0 + (j + 0.5) * side, side / 2)) - 1];
+        return last?.roomy ? last : list[list.push(new PieceBuilder(x0 + (i + 0.5) * side, y0 + (j + 0.5) * side)) - 1];
     };
     for (const planned of runs) {
         const { stations, far, ends, line } = planned, first = stations.find(owns);
@@ -68,8 +77,9 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node): RoadMesh {
             cap(piece, piece.near, run, j, dir, false);
             cap(piece, piece.far, run, j, dir, true);
         }
+        tracks(run, detailAt);
     }
-    return { pieces: pieces.flat().map(piece => piece.piece(GROUND_M)) };
+    return { pieces: [...pieces.flat(), ...[...close.values()].flat()].map(piece => piece.piece(GROUND_M)) };
 }
 
 /** The heap per station of a plan, and per segment with the tile's shapes, fitted to the V8 heap of fixture tiles. */

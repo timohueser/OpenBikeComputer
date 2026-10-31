@@ -5,6 +5,7 @@ import { CASTER_DEPTH, CASTER_PRIMITIVE } from '../light/shadow';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import { featureTile } from '../terrain/bins';
 import { CHILD, key, OWNER, size, type Node } from '../terrain/lod';
+import { PART_VERTEX, partMeshes } from './parts';
 import type { FeatureTiles } from '../terrain/stamps';
 import { Pool } from '../structures/pool';
 import { stopped } from '../stream/terrain';
@@ -13,6 +14,8 @@ import { ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 
 /** Roads draw as corridors this far from the eye; past it the paint draws them. The one value of the range. */
 export const RANGE_M = 600;
+/** A corridor's details draw this far from the eye; past it the look of their way draws them. As DETAIL_END_M of track-looks.wgsl. */
+export const DETAIL_END_M = 190;
 /** A piece draws its far range from this far from the eye. */
 const FAR_FROM_M = 200;
 /** An owner builds this far before it comes into range: about 20 s at the speed of a car in a valley. */
@@ -26,25 +29,32 @@ const REQUESTS = 4;
 /** Pieces that a frame draws at most: more than lie within the range, also with their split towns. */
 const DRAWS = 256;
 const NOTHING: RoadMesh = { pieces: [] }, FAILED: RoadMesh = { pieces: [] };
-/** Half the side of a child in world units. */
-const HALF = size(CHILD) / 2;
+/** The meshes of the parts. */
+const PARTS = partMeshes();
 
 /** What the last frame drew, and what the pools hold back. */
-export interface RoadStats { pieces: number; vertices: number; triangles: number; near: number; far: number; dropped: number }
+export interface RoadStats { pieces: number; vertices: number; triangles: number; near: number; far: number; dropped: number; instances: number }
 
 interface Resources {
     device: GPUDevice;
     pipeline: GPURenderPipeline;
     caster: GPURenderPipeline;
+    parts: GPURenderPipeline;
+    partCaster: GPURenderPipeline;
     group: GPUBindGroup;
     sunGroup: GPUBindGroup;
     pool: Pool;
     /** Per draw the middle of its piece, an instance. */
     middles: GPUBuffer;
+    /** The meshes of the parts. */
+    partVertices: GPUBuffer;
+    partIndices: GPUBuffer;
 }
 
 /** The metres from a world point to the square of a piece. */
-const away = ({ x, y }: RoadPiece, ex: number, ey: number, unit: number) => Math.hypot(Math.max(Math.abs(x - ex) - HALF, 0), Math.max(Math.abs(y - ey) - HALF, 0)) * unit;
+const away = ({ level, x, y }: RoadPiece, ex: number, ey: number, unit: number) => Math.hypot(Math.max(Math.abs(x - ex) - size(level) / 2, 0), Math.max(Math.abs(y - ey) - size(level) / 2, 0)) * unit;
+/** How far from the eye a piece draws. */
+const rangeOf = ({ level }: RoadPiece) => (level === CHILD ? RANGE_M : DETAIL_END_M);
 
 /**
  * The corridors of the owners about the eye: their meshes from a worker of their own, the fixed pools, and
@@ -88,18 +98,22 @@ export class Roads {
     get stats(): RoadStats {
         const draws = this.draws.filter(({ slot }) => this.resources?.pool.at(this.pieces[slot].piece));
         const count = (reach: 'near' | 'far') => draws.filter(({ slot, range }) => range === this.pieces[slot].piece[reach]).length;
+        const parts = draws.flatMap(({ slot }) => this.pieces[slot].piece.parts), of = (per: (range: typeof PARTS.ranges[number]) => number) => parts.reduce((sum, { part, count }) => sum + count * per(PARTS.ranges[part]), 0);
         return {
-            pieces: draws.length, vertices: draws.reduce((sum, { range }) => sum + range.vertices, 0), triangles: draws.reduce((sum, { range }) => sum + range.count / 3, 0),
-            near: count('near'), far: count('far'), dropped: this.resources?.pool.dropped ?? 0,
+            pieces: draws.length, vertices: draws.reduce((sum, { range }) => sum + range.vertices, of(({ vertices }) => vertices)), triangles: draws.reduce((sum, { range }) => sum + range.count / 3, of(({ count }) => count / 3)),
+            near: count('near'), far: count('far'), dropped: this.resources?.pool.dropped ?? 0, instances: of(() => 1),
         };
     }
 
     async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[]): Promise<void> {
         this.resources = undefined;
-        const { device } = gpu, { layout, pipeline, caster } = await gpu.once(roadPipelines);
+        const { device } = gpu, { layout, pipeline, caster, parts, partCaster } = await gpu.once(roadPipelines);
         const group = (buffer: GPUBuffer) => device.createBindGroup({ layout, entries: [{ binding: 0, resource: { buffer } }] });
+        const partVertices = gpu.buffer('roads', PARTS.vertices.byteLength, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), partIndices = gpu.buffer('roads', PARTS.indices.byteLength, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST);
+        device.queue.writeBuffer(partVertices, 0, PARTS.vertices);
+        device.queue.writeBuffer(partIndices, 0, PARTS.indices);
         this.resources = {
-            device, pipeline, caster, group: group(frame), sunGroup: group(sunFrame),
+            device, pipeline, caster, parts, partCaster, partVertices, partIndices, group: group(frame), sunGroup: group(sunFrame),
             pool: new Pool(device, gpu.buffer('roads', VERTEX_BYTES, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), gpu.buffer('roads', INDEX_BYTES, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST), ROAD_VERTEX),
             middles: gpu.buffer('roads', 8 * DRAWS, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST),
         };
@@ -130,7 +144,7 @@ export class Roads {
             held += meshBytes(mesh);
             for (const piece of mesh.pieces) {
                 const d = away(piece, eye.x, eye.y, eye.unit);
-                if (d < RANGE_M) pieces.push({ piece, d });
+                if (d < rangeOf(piece)) pieces.push({ piece, d });
             }
         }
         this.trim(wanted);
@@ -150,7 +164,7 @@ export class Roads {
         const middles = new Int32Array(2 * Math.min(DRAWS, this.pieces.length));
         for (let slot = 0; 2 * slot < middles.length; slot++) middles.set([this.pieces[slot].piece.x, this.pieces[slot].piece.y], 2 * slot);
         if (middles.length) r.device.queue.writeBuffer(r.middles, 0, middles);
-        return Math.min(this.built, ...this.pieces.filter(({ piece }, slot) => slot >= DRAWS || !r.pool.at(piece)).map(({ d }) => d));
+        return Math.min(this.built, ...this.pieces.filter(({ piece }, slot) => piece.level === CHILD && (slot >= DRAWS || !r.pool.at(piece))).map(({ d }) => d));
     }
 
     /** Before the terrain: early depth then rejects the terrain under a road. */
@@ -160,16 +174,20 @@ export class Roads {
         [r.group, surface, ground, features].forEach((group, k) => pass.setBindGroup(k, group));
         pass.setPipeline(r.pipeline);
         this.drawRanges(pass, r, this.draws);
+        pass.setPipeline(r.parts);
+        this.drawParts(pass, r, this.draws);
     }
 
     /** Draws the faces that cast into the shadow map (light/shadow.ts). */
     cast(pass: GPURenderPassEncoder, surface: GPUBindGroup): void {
-        const r = this.resources, casters = this.pieces.slice(0, DRAWS).flatMap(({ piece }, slot) => (piece.casters.count ? [{ slot, range: piece.casters }] : []));
+        const r = this.resources, casters = this.pieces.slice(0, DRAWS).flatMap(({ piece }, slot) => (piece.casters.count || piece.parts.length ? [{ slot, range: piece.casters }] : []));
         if (!r || !casters.length) return;
         pass.setBindGroup(0, r.sunGroup);
         pass.setBindGroup(1, surface);
         pass.setPipeline(r.caster);
         this.drawRanges(pass, r, casters);
+        pass.setPipeline(r.partCaster);
+        this.drawParts(pass, r, casters);
     }
 
     private drawRanges(pass: GPURenderPassEncoder, r: Resources, draws: { slot: number; range: PieceRange }[]): void {
@@ -179,7 +197,19 @@ export class Roads {
         // The first instance names the middle of the piece.
         for (const { slot, range } of draws) {
             const at = r.pool.at(this.pieces[slot].piece);
-            if (at) pass.drawIndexed(range.count, 1, at.first + range.first, at.base, slot);
+            if (at && range.count) pass.drawIndexed(range.count, 1, at.first + range.first, at.base, slot);
+        }
+    }
+
+    /** The instances of the pieces of `draws`, which read their pool as a vertex buffer. */
+    private drawParts(pass: GPURenderPassEncoder, r: Resources, draws: { slot: number }[]): void {
+        pass.setVertexBuffer(0, r.partVertices);
+        pass.setVertexBuffer(1, r.pool.vertices);
+        pass.setIndexBuffer(r.partIndices, 'uint16');
+        for (const { slot } of draws) {
+            const { piece } = this.pieces[slot], at = r.pool.at(piece);
+            if (!at) continue;
+            for (const { part, first, count } of piece.parts) pass.drawIndexed(PARTS.ranges[part].count, count, PARTS.ranges[part].first, 0, at.base + first);
         }
     }
 
@@ -244,16 +274,19 @@ async function roadPipelines(gpu: Gpu) {
             { shaderLocation: 2, offset: 8, format: 'uint32' }, { shaderLocation: 3, offset: 12, format: 'uint32' },
         ],
     }, { arrayStride: 8, stepMode: 'instance', attributes: [{ shaderLocation: 4, offset: 0, format: 'sint32x2' }] }];
-    const [pipeline, caster] = await Promise.all([
-        device.createRenderPipelineAsync({
-            label: 'corridors', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surface, ground, features] }), vertex: { module, entryPoint: 'corridor_vertex', buffers },
-            // The band shades as the ground without its paint.
-            fragment: { module, entryPoint: 'corridor_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { BAND: 1 } },
-            primitive: { topology: 'triangle-list', cullMode: 'back' }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
-        }),
-        device.createRenderPipelineAsync({
-            label: 'corridor casters', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surface] }), vertex: { module, entryPoint: 'corridor_caster', buffers }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH,
-        }),
+    const partBuffers: GPUVertexBufferLayout[] = [{
+        arrayStride: PART_VERTEX, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'uint32' }],
+    }, {
+        arrayStride: ROAD_VERTEX, stepMode: 'instance', attributes: [{ shaderLocation: 2, offset: 0, format: 'sint32x2' }, { shaderLocation: 3, offset: 8, format: 'float32' }, { shaderLocation: 4, offset: 12, format: 'uint32' }],
+    }];
+    const fragment = { module, entryPoint: 'corridor_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { BAND: 1 } }, drawn = { primitive: { topology: 'triangle-list', cullMode: 'back' }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' } } as const;
+    const main = device.createPipelineLayout({ bindGroupLayouts: [layout, surface, ground, features] }), casters = device.createPipelineLayout({ bindGroupLayouts: [layout, surface] });
+    const [pipeline, caster, parts, partCaster] = await Promise.all([
+        // The band shades as the ground without its paint.
+        device.createRenderPipelineAsync({ label: 'corridors', layout: main, vertex: { module, entryPoint: 'corridor_vertex', buffers }, fragment, ...drawn }),
+        device.createRenderPipelineAsync({ label: 'corridor casters', layout: casters, vertex: { module, entryPoint: 'corridor_caster', buffers }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH }),
+        device.createRenderPipelineAsync({ label: 'corridor parts', layout: main, vertex: { module, entryPoint: 'part_vertex', buffers: partBuffers }, fragment, ...drawn }),
+        device.createRenderPipelineAsync({ label: 'corridor part casters', layout: casters, vertex: { module, entryPoint: 'part_caster', buffers: partBuffers }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH }),
     ]);
-    return { layout, pipeline, caster };
+    return { layout, pipeline, caster, parts, partCaster };
 }
