@@ -4,7 +4,7 @@
 import { RAIL, type Line } from '../terrain/bins';
 import { lookWord, type PieceBuilder } from './piece';
 import { carriageway, CF, sideOf, type Part } from './section';
-import type { Station } from './stations';
+import { CUT, type Station } from './stations';
 import { onWay, type Ways } from './ways';
 
 /** Steps of a dead end's half circle near the eye, and in the far range. */
@@ -21,6 +21,11 @@ const countOf = ({ line, base }: Run, s: Station) => (line.kind === RAIL ? s.sle
 /** The base of a run from its first station in an owner. */
 export const baseOf = (line: Line, s: Station) => Math.floor((line.kind === RAIL ? s.sleepers ?? 0 : s.along) / REPEAT) * REPEAT;
 
+/** A vertex's flags: a band's row over another way's carriageway sinks under it. */
+export function under(ways: Ways, flags: number, x: number, y: number): number {
+    return flags & (CF.SAMPLE | CF.MESH) && onWay(ways, x, y) ? flags | CF.UNDER : flags;
+}
+
 /**
  * The vertex of point `part` of a cross-section at station j, `a` metres across, in signed metres. A band's
  * vertex holds the road's plane in z, so the shader can tell a cut, and the core's outer edge `edge` for its half-width.
@@ -29,28 +34,30 @@ function point(b: PieceBuilder, run: Run, j: number, part: Part, a: number, edge
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!;
     for (const slot of slots) if (slot.a === a && slot.dz === part.dz && slot.flags === part.flags) return slot.index;
     const s = run.stations[j], plane = s.z + s.bank * a + run.lift, x = s.x + s.ax * a, y = s.y + s.ay * a, band = (part.flags & (CF.SAMPLE | CF.MESH)) !== 0;
-    const flags = band && onWay(run.ways, x, y) ? part.flags | CF.UNDER : part.flags;
-    const index = b.vertex(x, y, band ? plane : plane + part.dz, lookWord(part.mat, run.line.code, flags, run.prio, band ? edge : s.h), a, countOf(run, s));
+    const index = b.vertex(x, y, band ? plane : plane + part.dz, lookWord(part.mat, run.line.code, under(run.ways, part.flags, x, y), run.prio, band ? edge : s.h), a, countOf(run, s));
     slots.push({ a, dz: part.dz, flags: part.flags, index });
     return index;
 }
 
 /** The two triangles of a quad, each with its first vertex on q at the first station. */
-function quad(list: number[], ps: number, qs: number, qt: number, pt: number, left: boolean): void {
+export function quad(list: number[], ps: number, qs: number, qt: number, pt: number, left: boolean): void {
     if (left) list.push(qs, pt, qt, qs, ps, pt);
     else list.push(qs, qt, pt, qs, pt, ps);
 }
 
 /** The faces between stations j and k into `list`: the carriageway, then each side out to the end of its band. `far` keeps the points of the far range. */
 export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: number, far: boolean): void {
-    const { line, stations, reach } = run, s = stations[j], t = stations[k];
-    const roads = [carriageway(line, s.h, s.bank), carriageway(line, t.h, t.bank)].map(road => (far ? road.filter(part => part.far) : road));
+    const { line, stations, reach } = run, s = stations[j], t = stations[k], cut = s.cut ?? 0;
+    // A face's flags are on its first vertex, at the first station.
+    const flags = (cut & CUT.LEFT ? CF.NO_LEFT_LINE : 0) | (cut & CUT.RIGHT ? CF.NO_RIGHT_LINE : 0);
+    const roads = [carriageway(line, s.h, s.bank).map(part => ({ ...part, flags })), carriageway(line, t.h, t.bank)].map(road => (far ? road.filter(part => part.far) : road));
     const [road, next] = roads, last = road.length - 1;
-    for (let c = 0; c < last; c++) {
+    for (let c = 0; c < last && !(cut & CUT.ROAD); c++) {
         const ps = point(b, run, j, road[c], road[c].a, 0), qs = point(b, run, j, road[c + 1], road[c + 1].a, 0), qt = point(b, run, k, next[c + 1], next[c + 1].a, 0), pt = point(b, run, k, next[c], next[c].a, 0);
         quad(list, ps, qs, qt, pt, false);
     }
     for (const side of [1, -1] as const) {
+        if (cut & (side > 0 ? CUT.LEFT : CUT.RIGHT)) continue;
         const outer = side > 0 ? 0 : last, here = sideOf(line, side, t.v, s.h), there = sideOf(line, side, t.v, t.h), parts = here.parts, others = there.parts;
         const most = side > 0 ? 0 : 1, reachS = reach[2 * j + most], reachT = reach[2 * k + most];
         let ps = point(b, run, j, road[outer], road[outer].a, 0), pt = point(b, run, k, next[outer], next[outer].a, 0);
@@ -70,8 +77,8 @@ export function cap(b: PieceBuilder, list: number[], run: Run, j: number, dir: 1
     const { parts, edge } = sideOf(line, 1, s.v, s.h), fx = -s.ay * dir, fy = s.ax * dir, count = countOf(run, s);
     const at = (r: number, step: number, part: Part) => {
         const angle = Math.PI * step / steps, cos = Math.cos(angle), sin = Math.sin(angle), x = s.x + (s.ax * cos + fx * sin) * r, y = s.y + (s.ay * cos + fy * sin) * r;
-        const band = (part.flags & (CF.SAMPLE | CF.MESH)) !== 0, flags = band && onWay(run.ways, x, y) ? part.flags | CF.UNDER : part.flags;
-        return b.vertex(x, y, s.z + run.lift + (band ? 0 : part.dz), lookWord(part.mat, line.code, flags, run.prio, band ? edge : s.h), r, count);
+        const band = (part.flags & (CF.SAMPLE | CF.MESH)) !== 0;
+        return b.vertex(x, y, s.z + run.lift + (band ? 0 : part.dz), lookWord(part.mat, line.code, under(run.ways, part.flags, x, y), run.prio, band ? edge : s.h), r, count);
     };
     const centre = b.vertex(s.x, s.y, s.z + run.lift + middle.dz, lookWord(middle.mat, line.code, 0, run.prio, s.h), 0, count);
     const ahead = dir > 0;
