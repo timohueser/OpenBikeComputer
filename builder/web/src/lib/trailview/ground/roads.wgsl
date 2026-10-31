@@ -227,7 +227,7 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, edge - walk));
     let cuts = select(0.0, shaped, masks.corridors > 0.0 && half >= PATH_HALF_M);
     // The bench reaches a metre past the edge: the band and a texel of the heights about it.
-    let bench = select(0.0, 1.0 - smoothstep(0.75, 1.25, edge), masks.corridors > 0.0 && half < PATH_HALF_M);
+    let bench = select(0.0, reach * (1.0 - smoothstep(0.75, 1.25, edge)), masks.corridors > 0.0 && half < PATH_HALF_M);
     if (edge - walk > w + 0.5) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, bench);
     }
@@ -255,7 +255,7 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     // is the way.
     let corridor = code >= CODE_GRAVEL && code <= CODE_PATH && !paint_draws(distance, pixel);
     // A triangle that rises over a sidewalk's edge would carry its paint up the cut: a corridor draws the sidewalk.
-    let riding = edge > 0.0 && flat < 0.86 && masks.corridors > 0.0;
+    let riding = edge > 0.0 && flat < 0.86 && masks.corridors > 0.0 && !paint_draws(distance, pixel);
     let cover = select(1.0, 0.0, corridor || riding) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
     return Road(surface.rgb, cover, surface.w, wall, shaped, cuts, bench);
 }

@@ -7,6 +7,7 @@ import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
 import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WALK, WARP_M, waterAt, type Line, type Profile } from './bins';
 import { cornersOf, halfAt, partnersOf } from './corners';
+import { FINEST } from './lod';
 import { LEFT, RIGHT } from './town';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
@@ -47,7 +48,8 @@ describe('the stamp data of a node', () => {
         expect(table.length).toBe(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES + 4);
         // Only corridors hold a path's bench level: without them the stamp stays as it was.
         expect(table[PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES]).toBe(0);
-        expect(profileTable(true)[PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES]).toBeGreaterThan(0.45);
+        // The bench holds more than a texel of the finest level, so the bilinear heights at a path's edge stay on it.
+        expect(profileTable(true)[PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES]).toBeGreaterThan(gateTexel(FINEST));
         for (const [surface, code] of [['main', 1], ['grass', 5], ['path', 6], ['oneway', 7]] as const) expect(table[PROFILE_ROWS * PROFILE_FLOATS + code]).toBeCloseTo(SHOULDER_M[surface] ?? 0, 6);
         for (const [name, row] of Object.entries(PROFILES)) for (const field of fields) expect(row[field], `${name}.${field}`).toBeGreaterThanOrEqual(0);
         // The shaders know the surfaces by their codes, and the mask holds a code in 4 bits.

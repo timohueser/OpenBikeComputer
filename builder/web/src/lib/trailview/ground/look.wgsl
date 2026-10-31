@@ -437,8 +437,7 @@ fn coarse_read(level: u32, home: i32, base: vec2i, p: vec2f) -> vec3f {
 }
 
 // The ground under a point of a node of `level`, from the page of its level or the next coarser one
-// that is resident. `world` is the point in the frame, for the brush of the texel edges; `sloped` reads
-// the coarse relief too. The satellite decides snow only where the data has none, and a snow edge is crisper than the texels'
+// that is resident. `world` is the point in the frame, for the brush of the texel edges. The satellite decides snow only where the data has none, and a snow edge is crisper than the texels'
 // blend across it.
 fn ground_at(level: u32, s: vec2f, world: vec2f, footprint: f32) -> Ground {
     let held = held_at(s, level);
