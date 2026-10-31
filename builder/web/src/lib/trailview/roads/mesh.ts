@@ -78,7 +78,9 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node, ground: Groun
             cap(piece, piece.near, run, j, dir, false);
             cap(piece, piece.far, run, j, dir, true);
         }
-        if (run.mouths.length) for (const way of [1, -1] as const) roadside(run, way, standingOf(line, stations, way, ground, run.mouths, run.towns, run.barriers), ground, owns, pieceAt);
+        // A face ends on the station after the owner's last.
+        const wanted = (j: number) => owns(stations[j]) || (j > 0 && owns(stations[j - 1]));
+        if (run.mouths.length) for (const way of [1, -1] as const) roadside(run, way, standingOf(line, stations, run.reach, way, ground, run.mouths, run.towns, run.barriers, wanted), ground, owns, pieceAt);
     }
     return { pieces: pieces.flat().map(piece => piece.piece(GROUND_M)) };
 }

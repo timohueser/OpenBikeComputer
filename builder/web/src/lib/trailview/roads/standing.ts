@@ -22,11 +22,13 @@ const DROP_M = 1.35, DROP_OUT_M = 4, RAIL_STEP_M = 2.5, RAIL_NEAR_M = 4, RAIL_RA
  */
 export const WALL_OUT_M = 2.2;
 const CUT_M = 2.3, WALL_STEP_M = 3, WALL_NEAR_M = 5, WALL_RAMP_M = 7;
+/** No wall stands inside a bend so tight that its side folds this far out: there the slope belongs to both legs of a hairpin. */
+const WALL_ROOM_M = 15;
 /** A wall's height over the edge: the cut's mean over its samples plus WALL_OVER_M, so its top runs with the grade. */
 const WALL_OVER_M = 0.3, WALL_LEAST_M = 0.6, WALL_MOST_M = 3.5;
 /** Where a road's cut starts past its ditch, as in stamp-core.wgsl. */
 const DITCH_OUT_M = 0.7;
-/** A detail ramps down over ZONE_RAMP_M before a mouth, a town or a sidewalk. A mouth reaches past the junction's widest way by MOUTH_M. */
+/** A detail ramps down over ZONE_RAMP_M before what stops it. A mouth reaches past the junction's widest way by MOUTH_M. */
 const ZONE_RAMP_M = 5, MOUTH_M = 5;
 /** A town: TOWN_BUILDINGS buildings within TOWN_M. */
 const TOWN_BUILDINGS = 3, TOWN_M = 40;
@@ -143,15 +145,18 @@ function tested(line: Line, stations: Station[], j: number, side: 1 | -1, test: 
 
 /**
  * What stands on `side` of a line. `mouths` and `towns` are the metres to a line's nearest mouth, and to its nearest
- * mouth or town, per station. A station that the ground does not reach holds nothing.
+ * mouth or town, per station, and `folds` how far each side reaches (reachOf of stations.ts). A station that `wanted`
+ * leaves out, or that the ground does not reach, holds nothing.
  */
-export function standingOf(line: Line, stations: Station[], side: 1 | -1, ground: GroundAt, mouths: Float64Array, towns: Float64Array, barriers: Barriers): Standing {
+export function standingOf(line: Line, stations: Station[], folds: Float64Array, side: 1 | -1, ground: GroundAt, mouths: Float64Array, towns: Float64Array, barriers: Barriers, wanted: (j: number) => boolean = () => true): Standing {
     const { railed, walled } = allowed(line), n = stations.length, cone = coneOf(line, WALL_OUT_M);
     const clear = zonesOf(stations, j => walked(line, stations[j], side)), free = towns.map((town, j) => Math.min(town, clear[j]));
+    const walls = zonesOf(stations, j => folds[2 * j + (side > 0 ? 0 : 1)] < WALL_ROOM_M);
     const rail = new Float64Array(n), wall = new Float64Array(n), high = new Float64Array(n);
     for (let j = 0; j < n; j++) {
+        if (!wanted(j)) continue;
         if (railed && free[j] > 0) rail[j] = eased(tested(line, stations, j, side, RAIL_TEST, 0, free[j], ground, barriers).d, RAIL_NEAR_M, RAIL_RAMP_M, free[j]);
-        const zone = Math.min(mouths[j], clear[j]);
+        const zone = Math.min(mouths[j], clear[j], walls[j]);
         if (!walled || zone <= 0) continue;
         const { d, mean, tagged } = tested(line, stations, j, side, WALL_TEST, cone, zone, ground, barriers);
         wall[j] = eased(d, WALL_NEAR_M, WALL_RAMP_M, zone);

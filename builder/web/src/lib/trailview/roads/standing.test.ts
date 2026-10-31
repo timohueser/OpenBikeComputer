@@ -31,7 +31,7 @@ const bump = (left: number, right: number): GroundAt => (x, y) => {
     return 1000 + (m >= 60 && m <= 100 ? (y < Y ? left : right) : 0);
 };
 const far = (stations: Station[]) => new Float64Array(stations.length).fill(Infinity);
-const stands = (line: Line, stations: Station[], side: 1 | -1, ground: GroundAt, mouths: Float64Array = far(stations), towns = mouths, mapped: Barrier[] = []) => standingOf(line, stations, side, ground, mouths, towns, barriersOf(mapped));
+const stands = (line: Line, stations: Station[], side: 1 | -1, ground: GroundAt, mouths: Float64Array = far(stations), towns = mouths, mapped: Barrier[] = []) => standingOf(line, stations, foldsOf(stations), side, ground, mouths, towns, barriersOf(mapped));
 /** The value of a station-wise field at metres along. */
 const at = (stations: Station[], values: Float64Array, m: number) => values[stations.findIndex(s => s.along >= m)];
 
