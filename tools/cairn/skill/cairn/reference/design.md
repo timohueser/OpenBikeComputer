@@ -1,5 +1,7 @@
 # design #N
 
+<!-- Changed from the Elephant-Goldfish Model `egm-draft` skill (Apache-2.0); see ../NOTICE. -->
+
 Writes the plan of a change into the body of its issue, one section at a time with the user. It ends with `Status: designed`, and with `Status: approved` when the user approves.
 
 ## 1. Read
@@ -62,11 +64,11 @@ Send one message for each section, in order. For an S change, send all sections 
 1. Show the section's text in the chat.
 2. Ask the questions of that section together. Each stands alone, as the router's rule 3 says.
 3. End with: "Approve and continue, or tell me what to change."
-4. Wait. Apply the changes, and write the section into the issue body. Keep the old `Status:` line until the Goldfish tests have run.
+4. Wait. Apply the changes, and write the section into the issue body. Keep the old `Status:` line until the Goldfish tests have run. A new issue has no `Status:` line until then.
 
 ## Epics
 
-An L change is an epic. Its Plan lists its sub-issues, one line each: `- [ ] #N <title>`. When the user approves the Plan section, open each sub-issue: its own short TL;DR, a `Systems:` line that is a subset of the epic's, its plan steps, and `Depends on #x` when the order matters. Each sub-issue is one pull request.
+An L change is an epic. Its Plan lists its sub-issues, one line each: `- [ ] #N <title>`. When the user approves the Plan section, open each sub-issue: its own short TL;DR, its own `Status:` and `Size:` lines, a `Systems:` line that is a subset of the epic's, its plan steps, and `Depends on #x` when the order matters. Each sub-issue is one pull request.
 
 ## 4. Goldfish
 

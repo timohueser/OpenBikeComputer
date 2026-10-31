@@ -4,7 +4,7 @@ Builds an approved design: the code, the system doc update, and one pull request
 
 ## 1. Read
 
-Read the issue and the docs of the systems on its `Systems:` line. If its status is not `approved`, say so once and suggest `design` or an approval. If the user wants to go ahead, go ahead, and the pull request records `Mode: skip: <reason>`. For an S change, the user's request to build is the approval: set `Status: approved` and say so.
+Read the issue and the docs of the systems on its `Systems:` line. For an S change, the user's request to build is the approval: set `Status: approved` and say so. Otherwise, if its status is not `approved`, say so once and suggest `design` or an approval. If the user wants to go ahead, go ahead, and the pull request records `Mode: skip: <reason>`.
 
 ## 2. Build
 
@@ -16,15 +16,11 @@ When the change grows past its size, touches a system that is not on its `System
 
 ## 3. Pull request
 
-Open one pull request, and fill the pull request template. Its `Mode:` line is `change #N`. Its body says what changed and the checks that ran, and has `Closes #N`.
+Open one pull request, and fill the pull request template. Its `Mode:` line is `change #N`, or the skip of step 1. Its body says what changed and the checks that ran, and has `Closes #N`.
 
-Then review it as [review.md](review.md) says.
+Some `Done when` steps only the user can do, such as a flash test on the board. Ask the user for each one now, so that it runs during the review. Say exactly what to check, and what a pass and a fail look like. If a step fails, fix the cause and ask again.
 
-## 4. Steps for the user
-
-Some `Done when` steps only the user can do, such as a flash test on the board. Ask for them when the pull request opens, so that they run during the review. Ask the user to do each one. Say exactly what to check, and what a pass and a fail look like. Wait for the result before you tell the user that the change is ready. If a step fails, fix the cause and ask again.
-
-When the pull request merges, set `Status: done`.
+Then review it as [review.md](review.md) says. It merges only after those steps pass. When the pull request merges, set `Status: done`.
 
 ## Epics
 

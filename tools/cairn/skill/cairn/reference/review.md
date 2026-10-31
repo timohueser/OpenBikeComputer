@@ -42,6 +42,6 @@ Fix the findings. If the fixes are large, send the same reviewer only the delta:
 
 ## Merge and close
 
-Merge the pull request when CI is green and no fix-now or ask-the-user finding is open. Do not merge when the user asked to look at the change first, when a decision waits for the user, or when a step that only the user can do has not passed. In those cases, tell the user that the change is ready and what it waits for.
+Merge the pull request with `gh pr merge N --merge` when CI is green and no fix-now or ask-the-user finding is open. Do not merge when the user asked to look at the change first, when a decision waits for the user, or when a step that only the user can do has not passed. In those cases, tell the user that the change is ready and what it waits for.
 
 After the merge, check each issue that the pull request finished with `gh issue view N --json state`, and close it if GitHub did not: `gh issue close N`. For a sub-issue, also tick its line in the epic. Close the epic when its last sub-issue is closed.
