@@ -5,7 +5,6 @@ diagnostic(off, derivative_uniformity);
 // leaves to the ground, and the share that the paint takes near the end of the corridors' reach, discard: the
 // terrain draws those pixels once. The two shares draw by separate dithers, and the frames resolve them.
 // #include ../ground/look.wgsl
-// #include details.wgsl
 // #include looks.wgsl
 
 // As Frame of terrain.wgsl, which shares its buffer.

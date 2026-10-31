@@ -1,6 +1,7 @@
 // The looks of what stands beside a road (details.ts): galvanised rails on posts, delineators and masonry walls.
-// corridor.wgsl includes it, and looks.wgsl's way_look calls it.
+// way_look of looks.wgsl calls it.
 // #include ../ground/look.wgsl
+// #include looks.wgsl
 
 // As MAT of section.ts.
 const MAT_RAIL: u32 = 40u;

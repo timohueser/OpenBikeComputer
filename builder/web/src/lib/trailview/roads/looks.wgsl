@@ -5,6 +5,7 @@
 // What moves a way's shape reads the place, so it runs on over any border. Only what shades reads the way's count,
 // which takes a new base at most once in REPEAT of sweep.ts: a puddle or a streak can stop at an owner's border.
 // #include ../ground/look.wgsl
+// #include details.wgsl
 
 // As MAT and LOOK of section.ts.
 const MAT_KERB: u32 = 2u;
