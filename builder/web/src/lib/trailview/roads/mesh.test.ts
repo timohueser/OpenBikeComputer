@@ -290,6 +290,13 @@ describe('corridor.wgsl', () => {
         expect(road('tertiary', { surface: 'concrete:plates' })).toBe(false);
     });
 
+    it('lays concrete strips only on a track', () => {
+        const look = (name: string) => lookOf(straight(1, { profile: Object.keys(PROFILES).indexOf(name), code: 2, h: 1, surface: 'concrete' }));
+        expect(look('track')).toBe(LOOK.STRIPS);
+        expect(look('footway')).toBe(LOOK.CONCRETE);
+        expect(look('service')).toBe(LOOK.CONCRETE);
+    });
+
     it('hands the pixels of a way over to the paint in the last metres that corridors hold', () => {
         const features = readFileSync(new URL('../terrain/features.wgsl', import.meta.url), 'utf8'), paint = readFileSync(new URL('../ground/roads.wgsl', import.meta.url), 'utf8');
         const { paint_share: share } = shaderFunctions<{ paint_share: (distance: number) => number }>(features, ['paint_share']), scope = globalThis as { masks?: { corridors: number } };

@@ -18,6 +18,7 @@ const LOOK_GRAVEL: u32 = 26u;
 const LOOK_DIRT: u32 = 27u;
 const LOOK_TRAIL: u32 = 28u;
 const LOOK_BALLAST: u32 = 29u;
+const LOOK_STRIPS: u32 = 30u;
 // As CF of section.ts.
 const CF_NO_LEFT_LINE: u32 = 8u;
 const CF_NO_RIGHT_LINE: u32 = 16u;
@@ -172,8 +173,8 @@ fn paved_look(mat: u32, code: u32, region: u32, w: WayPixel, flags: u32) -> WayL
     return out;
 }
 
-// Concrete: slabs 5 m long with sealed joints; on a narrow way two strips on the way's asphalt.
-fn concrete_look(code: u32, region: u32, w: WayPixel) -> WayLook {
+// Concrete: slabs 5 m long with sealed joints; on a narrow track two strips on the way's asphalt.
+fn concrete_look(code: u32, region: u32, w: WayPixel, track: bool) -> WayLook {
     var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let p = w.p;
     let across = w.across;
@@ -191,7 +192,7 @@ fn concrete_look(code: u32, region: u32, w: WayPixel) -> WayLook {
     c *= 1.0 - 0.5 * step(hash(slab + 8.0), 0.3) * band(diag + 0.05 * (noise(p / 0.2) - 0.5), -0.005, 0.005, w.cw + w.aw) * seen(0.05, w.pw);
     c *= 1.0 - 0.15 * smoothstep(0.5, 0.0, w.half - abs(across));
     out.albedo = c;
-    if (!wide) {
+    if (track && !wide) {
         // 0.55 m wide, their middles 0.75 m out.
         out.albedo = mix(asphalt(code, region, p, w.pw), out.albedo * (0.95 + 0.1 * smoothstep(0.2, 0.0, abs(abs(across) - 0.75))), band(abs(across), 0.48, 1.03, w.cw));
     }
@@ -385,8 +386,8 @@ fn way_look(mat: u32, code: u32, region: u32, su: vec2f, w: WayPixel, flags: u32
         case MAT_SIDEWALK: {
             return WayLook(paving(region, w.p, w.pw), vec2f(0.0), 0.0, 0.0, 0.0);
         }
-        case LOOK_CONCRETE: {
-            return concrete_look(code, region, w);
+        case LOOK_CONCRETE, LOOK_STRIPS: {
+            return concrete_look(code, region, w, mat == LOOK_STRIPS);
         }
         case LOOK_SETT: {
             return sett_look(region, w);
