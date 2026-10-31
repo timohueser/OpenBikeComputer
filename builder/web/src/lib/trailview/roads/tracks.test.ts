@@ -6,7 +6,7 @@ import { DETAIL_END_M } from './roads';
 import { PART, partMeshes, SLEEPER_TOP_M } from './parts';
 import { PieceBuilder, ROAD_VERTEX, type RoadPiece } from './piece';
 import { CF, LOOK } from './section';
-import { reachOf, stationsOf } from './stations';
+import { CUT, reachOf, stationsOf } from './stations';
 import type { Run } from './sweep';
 import { tracks } from './tracks';
 
@@ -18,8 +18,8 @@ function way(metres: number, rise: number, profile: string, extra: Partial<Line>
 }
 
 /** The piece of the details of a line, all of it in one square. */
-function detailsOf(line: Line): RoadPiece {
-    const stations = stationsOf(line, () => line.h), b = new PieceBuilder(stations[0].x, stations[0].y, 18, true), run: Run = { id: 0, line, stations, reach: reachOf(stations), lift: 0, prio: 0, base: 0, ways: { boxes: [], cells: new Map(), marks: new Uint32Array(0), query: 0, segments: [] } };
+function detailsOf(line: Line, cut: (along: number) => number | undefined = () => undefined): RoadPiece {
+    const stations = stationsOf(line, () => line.h).map(s => ({ ...s, cut: cut(s.along) })), b = new PieceBuilder(stations[0].x, stations[0].y, 18, true), run: Run = { id: 0, line, stations, reach: reachOf(stations), lift: 0, prio: 0, base: 0, ways: { boxes: [], cells: new Map(), marks: new Uint32Array(0), query: 0, segments: [] } };
     tracks(run, () => b);
     return b.piece(0);
 }
@@ -112,6 +112,24 @@ describe('the steps of a path', () => {
         const { list } = flight(6, 3.2), feet = list.filter(({ flags }) => flags !== 0);
         expect(feet.length).toBeGreaterThan(0);
         for (const { mat, flags } of feet) expect([mat, flags]).toEqual([LOOK.RISER, CF.MESH]);
+    });
+});
+
+describe('a road that stops a way', () => {
+    const stop = (along: number) => (along >= 20 ? CUT.ROAD : undefined);
+
+    it('stops its steps', () => {
+        const line = way(40, 6, 'steps', { kind: PATH, h: 1, code: code('path') }), piece = detailsOf(line, along => (along >= 20 && along < 30 ? CUT.ROAD : undefined));
+        const { list } = read(piece), east = list.map(({ x }) => (x - line.xy[0]) * metresPerUnit(y0));
+        expect(east.filter(e => e > 20.1 && e < 29.9)).toEqual([]);
+        expect(east.some(e => e > 30)).toBe(true);
+        expect(list.some(({ mat }) => mat === LOOK.TREAD)).toBe(true);
+    });
+
+    it('stops its rails and its sleepers', () => {
+        const line = way(40, 0, 'rail', { sleepers: [0, 66] }), piece = detailsOf(line, stop), { list } = read(piece);
+        expect(Math.max(...list.map(({ x }) => (x - line.xy[0]) * metresPerUnit(y0)))).toBeLessThan(23);
+        expect(piece.parts[0].count).toBeLessThan(40);
     });
 });
 

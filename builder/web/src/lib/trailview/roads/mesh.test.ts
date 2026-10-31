@@ -13,13 +13,13 @@ import { meshBytes, planOf, roadMesh } from './mesh';
 import { DETAIL_END_M, RANGE_M } from './roads';
 import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
-import { CF, corridorLine, LOOK, lookOf, MAT, sideOf } from './section';
-import { farStations, reachOf, stationIndex, stationsOf, type Station } from './stations';
+import { CF, LOOK, lookOf, MAT, sideOf } from './section';
+import { reachOf, stationIndex, stationsOf, type Station } from './stations';
 import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
 
 const shader = readFileSync(new URL('./corridor.wgsl', import.meta.url), 'utf8');
-const looks = readFileSync(new URL('./looks.wgsl', import.meta.url), 'utf8') + readFileSync(new URL('./track-looks.wgsl', import.meta.url), 'utf8');
+const looks = ['looks', 'track-looks', 'details'].map(name => readFileSync(new URL(`./${name}.wgsl`, import.meta.url), 'utf8')).join('');
 const root = new URL('../../../../tests/browser/trailview/fixture/features/', import.meta.url);
 
 /** The tiles of the fixture, each with the corridor mesh of its owners. */
@@ -28,7 +28,7 @@ const tiles = readdirSync(new URL(`${DEEPEST}/`, root)).flatMap(x => readdirSync
     return { tile, list, meshes: Array.from({ length: 16 }, (_, i) => roadMesh(list, tile, { level: OWNER, x: tile.x * 4 + i % 4, y: tile.y * 4 + (i >> 2) })) };
 }));
 /** The ways of a tile: each line's stations and those that its far range keeps. */
-const waysIn = ({ tile, list }: typeof tiles[number]) => planOf(features(list, tile).lines).runs;
+const waysIn = ({ tile, list }: typeof tiles[number]) => planOf(features(list, tile)).runs;
 const squareOf = ({ x, y }: { x: number; y: number }, level: number) => `${Math.floor(x / size(level))},${Math.floor(y / size(level))}`;
 /** The plan of a range of a piece: per grid cell of 2^10 world units, its triangles by their first vertex. */
 function rangeCells(piece: RoadPiece, { first, count }: PieceRange) {
@@ -75,12 +75,12 @@ const decoded = ({ vertices, x, y }: RoadPiece) => {
 describe('the corridor meshes of the fixture', () => {
     const meshes = tiles.flatMap(tile => tile.meshes), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions: 205977 vertices and 5.54 MiB at most, 20097 and 0.55 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions and track details: 228099 vertices and instances and 6.06 MiB at most, 20717 and 0.56 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
-        expect(Math.max(...count)).toBeLessThanOrEqual(206_000);
-        expect(Math.max(...bytes)).toBeLessThanOrEqual(5.6 * 2 ** 20);
-        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(20_500);
-        expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.55 * 2 ** 20);
+        expect(Math.max(...count)).toBeLessThanOrEqual(229_000);
+        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.1 * 2 ** 20);
+        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_000);
+        expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.57 * 2 ** 20);
     });
 
     it('hold 16 bytes per vertex, indices in range, and a far range of about a fifth of the near one', () => {
@@ -174,7 +174,7 @@ describe('a junction that two tiles hold', () => {
     };
     /** What a tile plans: per thing of a junction its name, the point that it belongs to, and its faces. */
     const planned = ({ tile, list }: typeof tiles[number]) => {
-        const { junctions } = planOf(features(list, tile).lines), named = new Map<string, { point: Meeting; faces?: ReturnType<typeof facesOf> }>();
+        const { junctions } = planOf(features(list, tile)), named = new Map<string, { point: Meeting; faces?: ReturnType<typeof facesOf> }>();
         for (const corner of junctions.corners) {
             const { meeting, p, q, r, ends, meet } = corner, { x, y } = meeting;
             named.set(['corner', x, y, p.angle.toFixed(2), q.angle.toFixed(2), r.toFixed(2), ...metres([ends[0] - p.along, ends[1] - q.along, meet[0] - p.along, meet[1] - q.along])].join(), { point: meeting, faces: facesOf(x, y, b => cornerFaces(b, corner)) });
@@ -216,8 +216,8 @@ describe('the joints of the fixture', () => {
     it('hold a split road\'s edges on one height: at most 1 cm by the final stations, with the lifts; 5.5 mm measured on the fixture of format 3', () => {
         let joints = 0, worst = 0;
         for (const fixtureTile of tiles) {
-            const { lines } = features(fixtureTile.list, fixtureTile.tile), { runs } = planOf(lines), edges = (run: Run, s: Station, side: number) => s.z + run.lift + s.bank * side * s.h;
-            for (const [run, ends] of jointsOf(lines, runs)) {
+            const { runs } = planOf(features(fixtureTile.list, fixtureTile.tile)), edges = (run: Run, s: Station, side: number) => s.z + run.lift + s.bank * side * s.h;
+            for (const [run, ends] of jointsOf(features(fixtureTile.list, fixtureTile.tile).lines, runs)) {
                 ends.forEach((joint, end) => {
                     const s = run.stations[end ? run.stations.length - 1 : 0];
                     if (!joint || squareOf(s, DEEPEST) !== `${fixtureTile.tile.x},${fixtureTile.tile.y}`) return;
@@ -236,7 +236,7 @@ describe('the mouths of the fixture', () => {
     it('leave a side arm\'s edges with no step: a grade of 0.89 at most, measured on the fixture of format 3, over the stations past a mouth', () => {
         let worst = 0;
         for (const { list, tile } of tiles) {
-            for (const { way: { run: { stations }, step }, far } of planOf(features(list, tile).lines).junctions.mouths) {
+            for (const { way: { run: { stations }, step }, far } of planOf(features(list, tile)).junctions.mouths) {
                 const j = stationIndex(stations, far), edge = (s: Station, side: number) => s.z + s.bank * side * s.h;
                 for (let k = 0; k < 6 && stations[j + (k + 1) * step]; k++) {
                     const s = stations[j + k * step], t = stations[j + (k + 1) * step], d = Math.abs(t.along - s.along);
@@ -381,9 +381,7 @@ describe('corridor.wgsl', () => {
         expect(number('FINE_SHIFT')).toBe(FINE_SHIFT);
         for (const [name, value] of Object.entries({ PART_FINE, PART_TURN, PART_GRADE, RAIL_GAUGE_M, NARROW_GAUGE_M, SLEEPER_HALF_M, NARROW_SLEEPER_HALF_M, DETAIL_END_M })) expect(number(name), name).toBe(value);
         expect(lookWord(5, 9, 3, 2, number('HALF_STEP_M') * 80)).toBe((5 | (9 << number('CODE_SHIFT')) | (3 << number('FLAGS_SHIFT')) | (2 << number('PRIO_SHIFT')) | (80 << number('HALF_SHIFT'))) >>> 0);
-        expect(number('MAT_GROUND')).toBe(MAT.GROUND);
-        expect(number('MAT_KERB')).toBe(MAT.KERB);
-        expect(number('MAT_SIDEWALK')).toBe(MAT.SIDEWALK);
+        for (const [name, value] of Object.entries(MAT)) expect(number(`MAT_${name}`)).toBe(value);
         for (const [name, value] of Object.entries(CF)) expect(number(`CF_${name}`)).toBe(value);
         for (const [, name, value] of looks.matchAll(/^const LOOK_(\w+): u32 = (\d+)u;/gm)) expect(LOOK[name as keyof typeof LOOK]).toBe(Number(value));
     });

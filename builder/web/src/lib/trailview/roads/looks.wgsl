@@ -6,6 +6,7 @@
 // which takes a new base at most once in REPEAT of sweep.ts: a puddle or a streak can stop at an owner's border.
 // #include ../ground/look.wgsl
 // #include track-looks.wgsl
+// #include details.wgsl
 
 // As MAT and LOOK of section.ts.
 const MAT_KERB: u32 = 2u;
@@ -29,6 +30,9 @@ const CORRIDOR_RANGE_M: f32 = 600.0;
 // A lane line on a motorway 6 m on, 12 m off; as DASH_PERIOD_M, its period divides REPEAT of sweep.ts.
 const LANE_ON_M: f32 = 6.0;
 const LANE_PERIOD_M: f32 = 18.0;
+
+// The first material of details.wgsl.
+const DETAIL_MATS: u32 = 40u;
 
 struct WayLook {
     albedo: vec3f,
@@ -384,6 +388,9 @@ fn ballast_look(code: u32, w: WayPixel) -> WayLook {
 
 // The look of a face of material `mat`; `slope` is its normal's z and `altitude` its height.
 fn way_look(mat: u32, code: u32, region: u32, su: vec2f, w: WayPixel, flags: u32, slope: f32, altitude: f32) -> WayLook {
+    if (mat >= DETAIL_MATS) {
+        return detail_look(mat, su, w, altitude);
+    }
     switch mat {
         case MAT_KERB: {
             return WayLook(rule(region, slot_kerb()).rgb * (0.94 + 0.12 * noise(w.p / 0.9)), vec2f(0.0), 0.0, 0.0, 0.0);
@@ -413,7 +420,7 @@ fn way_look(mat: u32, code: u32, region: u32, su: vec2f, w: WayPixel, flags: u32
             return ballast_look(code, w);
         }
         case LOOK_TREAD, LOOK_RISER, LOOK_SLEEPER, LOOK_TIMBER, LOOK_RAIL, LOOK_RAIL_HEAD, LOOK_RACK, LOOK_CABLE: {
-            return detail_look(mat, code, region, w, slope, altitude);
+            return track_look(mat, code, region, w, slope, altitude);
         }
         default: {
             return paved_look(mat, code, region, w, flags);

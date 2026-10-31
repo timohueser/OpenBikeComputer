@@ -104,7 +104,7 @@ fn rack_look(w: WayPixel, up: f32) -> vec3f {
 }
 
 // The look of a face of tracks.ts or parts.ts.
-fn detail_look(mat: u32, code: u32, region: u32, w: WayPixel, up: f32, altitude: f32) -> WayLook {
+fn track_look(mat: u32, code: u32, region: u32, w: WayPixel, up: f32, altitude: f32) -> WayLook {
     switch mat {
         case LOOK_SLEEPER: {
             return WayLook(sleeper_look(code, w, up), vec2f(0.0), 0.0, 0.0, 0.0);

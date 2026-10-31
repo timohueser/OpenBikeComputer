@@ -12,19 +12,17 @@ export const UNKNOWN16 = 0xffff;
  */
 export interface PageData { texels: Uint16Array<ArrayBuffer>; min: number; max: number; complete: boolean; offset: number; scale: number }
 
-/**
- * The pages of the north-west, north-east, south-west and south-east quadrants of a tile's RGBA
- * pixels; null for a quadrant without a known height. A pixel is R × 256 + G + B / 256 − 32768
- * metres, and unknown unless it is opaque.
- */
+/** The height of pixel `p` of a tile's RGBA pixels: R × 256 + G + B / 256 − 32768 metres, and unknown unless it is opaque. */
+export const heightOf = (rgba: ArrayLike<number>, p: number) => (rgba[p + 3] === 255 ? rgba[p] * 256 + rgba[p + 1] + rgba[p + 2] / 256 - 32768 : NaN);
+
+/** The pages of the north-west, north-east, south-west and south-east quadrants of a tile's RGBA pixels; null for a quadrant without a known height. */
 export function tilePages(rgba: ArrayLike<number>, size: number): (PageData | null)[] {
     if (size !== 2 * PAGE) throw new Error(`A terrain tile has ${size} px, not ${2 * PAGE}.`);
     return [0, 1, 2, 3].map(q => {
         const heights = new Float32Array(PAGE * PAGE);
         let min = Infinity, max = -Infinity, known = 0;
         for (let j = 0; j < PAGE; j++) for (let i = 0; i < PAGE; i++) {
-            const p = 4 * ((j + (q >> 1) * PAGE) * size + i + (q & 1) * PAGE);
-            const h = rgba[p + 3] === 255 ? rgba[p] * 256 + rgba[p + 1] + rgba[p + 2] / 256 - 32768 : NaN;
+            const h = heightOf(rgba, 4 * ((j + (q >> 1) * PAGE) * size + i + (q & 1) * PAGE));
             heights[j * PAGE + i] = h;
             if (h < min) min = h;
             if (h > max) max = h;

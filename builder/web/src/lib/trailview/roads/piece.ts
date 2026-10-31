@@ -30,7 +30,7 @@ export interface PieceRange { first: number; count: number; vertices: number }
 /** The instances of a part in a piece: slots of ROAD_VERTEX bytes from the start of its `vertices`. */
 export interface PartRange { part: number; first: number; count: number }
 
-/** The faces of a square near the eye, far from it, and those that cast; they share the vertices. */
+/** The faces of a square near the eye, far from it, and those that cast, the tail of the far range or a square of details' near faces; they share the vertices. */
 export interface RoadPiece {
     /** The level of its square, and the square's middle in world units: its vertices count from it. */
     level: number;
@@ -65,6 +65,8 @@ export class PieceBuilder {
     count = 0;
     readonly near: number[] = [];
     readonly far: number[] = [];
+    /** Faces of the far range that also cast. */
+    readonly casters: number[] = [];
     /** The vertices made per station of a line. */
     readonly made = new Map<number, { a: number; dz: number; flags: number; index: number }[]>();
     /** Per part, PLACE_FIELDS numbers per instance. */
@@ -124,7 +126,7 @@ export class PieceBuilder {
 
     /** The piece, `reach` metres of height past its vertices either way. */
     piece(reach: number): RoadPiece {
-        const { near, far, count, placed } = this, total = near.length + far.length;
+        const { near, far, casters, count, placed } = this, drawn = near.length + far.length, total = drawn + casters.length;
         const instances = [...placed.values()].reduce((sum, list) => sum + list.length / PLACE_FIELDS, 0), vertices = new ArrayBuffer((count + instances) * ROAD_VERTEX);
         new Uint8Array(vertices).set(new Uint8Array(this.bytes, 0, count * ROAD_VERTEX));
         const ints = new Int32Array(vertices), floats = new Float32Array(vertices), packed = new Uint32Array(vertices), parts: PartRange[] = [];
@@ -142,6 +144,8 @@ export class PieceBuilder {
         const indices = new Uint16Array(total + (total & 1));
         indices.set(near);
         indices.set(far, near.length);
+        indices.set(casters, drawn);
+        indices.set(casters, drawn);
         const reached = (list: number[]) => {
             const seen = new Uint8Array(count);
             let vertices = 0;
@@ -154,7 +158,7 @@ export class PieceBuilder {
         const closeBy = { first: 0, count: near.length, vertices: reached(near) };
         return {
             level: this.level, x: this.x, y: this.y, low: this.low - reach, high: this.high + reach, over: Math.max(0, this.out - size(this.level) / 2), vertices, indices, parts,
-            near: closeBy, far: { first: near.length, count: far.length, vertices: reached(far) }, casters: this.casts ? closeBy : { first: total, count: 0, vertices: 0 },
+            near: closeBy, far: { first: near.length, count: far.length + casters.length, vertices: reached([...far, ...casters]) }, casters: this.casts ? closeBy : { first: drawn, count: casters.length, vertices: reached(casters) },
         };
     }
 }

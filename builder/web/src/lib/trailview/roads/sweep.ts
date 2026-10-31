@@ -21,19 +21,25 @@ export const countOf = ({ line, base }: Run, s: Station) => (line.kind === RAIL 
 /** The base of a run from its first station in an owner. */
 export const baseOf = (line: Line, s: Station) => Math.floor((line.kind === RAIL ? s.sleepers ?? 0 : s.along) / REPEAT) * REPEAT;
 
+/** A band's row: a backfill's row holds both of these flags, and stands at its own height. */
+function bandRow(flags: number): boolean {
+    const row = flags & CF.FILL;
+    return row === CF.SAMPLE || row === CF.MESH;
+}
+
 /** A vertex's flags: a band's row over another way's carriageway sinks under it. */
 export function under(ways: Ways, flags: number, x: number, y: number): number {
-    return flags & (CF.SAMPLE | CF.MESH) && onWay(ways, x, y) ? flags | CF.UNDER : flags;
+    return bandRow(flags) && onWay(ways, x, y) ? flags | CF.UNDER : flags;
 }
 
 /**
  * The vertex of point `part` of a cross-section at station j, `a` metres across, in signed metres. A band's
  * vertex holds the road's plane in z, so the shader can tell a cut, and the core's outer edge `edge` for its half-width.
  */
-function point(b: PieceBuilder, run: Run, j: number, part: Part, a: number, edge: number): number {
+export function point(b: PieceBuilder, run: Run, j: number, part: Part, a: number, edge: number): number {
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!;
     for (const slot of slots) if (slot.a === a && slot.dz === part.dz && slot.flags === part.flags) return slot.index;
-    const s = run.stations[j], plane = s.z + s.bank * a + run.lift, x = s.x + s.ax * a, y = s.y + s.ay * a, band = (part.flags & (CF.SAMPLE | CF.MESH)) !== 0;
+    const s = run.stations[j], plane = s.z + s.bank * a + run.lift, x = s.x + s.ax * a, y = s.y + s.ay * a, band = bandRow(part.flags);
     const index = b.vertex(x, y, band ? plane : plane + part.dz, lookWord(part.mat, run.line.code, under(run.ways, part.flags, x, y), run.prio, band ? edge : s.h), a, countOf(run, s));
     slots.push({ a, dz: part.dz, flags: part.flags, index });
     return index;
