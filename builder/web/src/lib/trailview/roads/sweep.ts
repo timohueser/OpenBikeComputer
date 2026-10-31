@@ -3,7 +3,7 @@
 // counter-clockwise), and a face that stands upright on a side faces the line's middle, as a kerb does.
 import { RAIL, type Line } from '../terrain/bins';
 import { lookWord, type PieceBuilder } from './piece';
-import { carriageway, CF, MAT, sideOf, type Part } from './section';
+import { carriageway, CF, sideOf, type Part } from './section';
 import type { Station } from './stations';
 import { onWay, type Ways } from './ways';
 
@@ -29,8 +29,8 @@ function point(b: PieceBuilder, run: Run, j: number, part: Part, a: number, edge
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!;
     for (const slot of slots) if (slot.a === a && slot.dz === part.dz && slot.flags === part.flags) return slot.index;
     const s = run.stations[j], plane = s.z + s.bank * a + run.lift, x = s.x + s.ax * a, y = s.y + s.ay * a, band = (part.flags & (CF.SAMPLE | CF.MESH)) !== 0;
-    const flags = part.mat === MAT.GROUND && onWay(run.ways, x, y) ? part.flags | CF.UNDER : part.flags;
-    const index = b.vertex(x, y, band ? plane : plane + part.dz, lookWord(part.mat, run.line.code, flags, run.prio, part.mat === MAT.GROUND ? edge : s.h), a, countOf(run, s));
+    const flags = band && onWay(run.ways, x, y) ? part.flags | CF.UNDER : part.flags;
+    const index = b.vertex(x, y, band ? plane : plane + part.dz, lookWord(part.mat, run.line.code, flags, run.prio, band ? edge : s.h), a, countOf(run, s));
     slots.push({ a, dz: part.dz, flags: part.flags, index });
     return index;
 }
@@ -70,10 +70,10 @@ export function cap(b: PieceBuilder, list: number[], run: Run, j: number, dir: 1
     const { parts, edge } = sideOf(line, 1, s.v, s.h), fx = -s.ay * dir, fy = s.ax * dir, count = countOf(run, s);
     const at = (r: number, step: number, part: Part) => {
         const angle = Math.PI * step / steps, cos = Math.cos(angle), sin = Math.sin(angle), x = s.x + (s.ax * cos + fx * sin) * r, y = s.y + (s.ay * cos + fy * sin) * r;
-        const band = (part.flags & (CF.SAMPLE | CF.MESH)) !== 0, flags = part.mat === MAT.GROUND && onWay(run.ways, x, y) ? part.flags | CF.UNDER : part.flags;
-        return b.vertex(x, y, s.z + run.lift + (band ? 0 : part.dz), lookWord(part.mat, line.code, flags, run.prio, part.mat === MAT.GROUND ? edge : s.h), r, count);
+        const band = (part.flags & (CF.SAMPLE | CF.MESH)) !== 0, flags = band && onWay(run.ways, x, y) ? part.flags | CF.UNDER : part.flags;
+        return b.vertex(x, y, s.z + run.lift + (band ? 0 : part.dz), lookWord(part.mat, line.code, flags, run.prio, band ? edge : s.h), r, count);
     };
-    const centre = b.vertex(s.x, s.y, s.z + run.lift + middle.dz, lookWord(middle.mat, line.code, middle.flags, run.prio, s.h), 0, count);
+    const centre = b.vertex(s.x, s.y, s.z + run.lift + middle.dz, lookWord(middle.mat, line.code, 0, run.prio, s.h), 0, count);
     const ahead = dir > 0;
     let inner = Array.from({ length: steps + 1 }, (_, step) => at(s.h, step, road[0]));
     for (let step = 0; step < steps; step++) list.push(...(ahead ? [centre, inner[step + 1], inner[step]] : [centre, inner[step], inner[step + 1]]));

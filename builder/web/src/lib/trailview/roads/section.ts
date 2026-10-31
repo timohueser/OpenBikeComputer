@@ -13,7 +13,7 @@ export const MAT = { GROUND: 1, KERB: 2, SIDEWALK: 3 } as const;
 /** The looks of the ways, as LOOK_* of looks.wgsl. */
 export const LOOK = { ASPHALT: 20, MAIN: 21, MOTORWAY: 22, CONCRETE: 23, SETT: 24, PAVERS: 25, GRAVEL: 26, DIRT: 27, TRAIL: 28, BALLAST: 29 } as const;
 /**
- * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a band's row or a trail's face on the stamped ground. MESH: a band's row
+ * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a band's row on the stamped ground. MESH: a band's row
  * under the drawn mesh. UNDER: a band's row over another way's carriageway, which it passes under.
  * NO_LEFT_LINE, NO_RIGHT_LINE: a carriageway without its edge line on that side, at a junction's mouth.
  */
@@ -72,8 +72,6 @@ function mirrored(points: [number, number][], mat: number): Part[] {
 export function carriageway(line: Line, h: number, bank: number): Part[] {
     const mat = lookOf(line), r = Math.min(1, h / line.h);
     if (mat === LOOK.BALLAST) return mirrored([[h, 0], [h - BED_SLOPE_M * r, BED_M], [0, BED_M]], mat);
-    // A path's bench tilts with the hillside (`tilt` of roads.json): a trail lies on it, or the hill covers its uphill side.
-    if (mat === LOOK.TRAIL) return mirrored([[h, 0], [0, 0]], mat).map(part => ({ ...part, flags: CF.SAMPLE }));
     // Ruts worn into a track, the middle left higher; a narrower station pulls them in.
     if (mat === LOOK.DIRT && line.h >= 1.2) return mirrored([[h, 0], [1.0 * r, 0], [0.75 * r, -0.04], [0.5 * r, 0], [0, 0.025]], mat);
     if (mat === LOOK.GRAVEL && line.h >= 1.3) return mirrored([[h, 0], [1.05 * r, 0], [0.78 * r, -0.025], [0.5 * r, 0], [0, 0.01]], mat);
