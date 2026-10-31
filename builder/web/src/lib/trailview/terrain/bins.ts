@@ -206,6 +206,8 @@ export interface Line {
     /** The `surface` tag of its way. */
     surface?: string;
 }
+/** An OSM guardrail or retaining wall beside a road, in world units, with a wall's `height` tag. */
+export interface Barrier { xy: number[]; wall: boolean; height?: number }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
 /** A building: whether it holds cars, and the outward unit direction of the wall that its walk leaves, in world units. */
@@ -214,7 +216,7 @@ export interface Building { rings: number[][]; outer: boolean[]; cars: boolean; 
  * The shapes of a tile: lines, lakes and the sea with heights, the river areas, which lie on the drawn
  * surface, the pads under the platforms, the buildings and the walks to them.
  */
-export interface Shapes { lines: Line[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; walks: Line[] }
+export interface Shapes { lines: Line[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; walks: Line[]; barriers: Barrier[] }
 
 /**
  * The numbers of stamp-core.wgsl that the gates of a line, the shore samples of the audit, the edges
@@ -261,7 +263,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         const sag = Object.hasOwn(PATH_HALF, tags.highway) && ![...PAVED_ROADS, 'paving'].includes(surfaceOf(tags, true)) ? PATH_SAG : ROAD_SAG;
         return curves.get(part) ?? curves.set(part, curveOf(part, edge, sag, scale, y => scale * metresPerUnit((oy + y) * scale))).get(part)!;
     };
-    const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [];
+    const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [], barriers: Barrier[] = [];
     const area = (parts: Feature['parts']) => ({ rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
     const buildings: Building[] = list.filter(({ kind }) => kind === 'building').map(({ tags, parts }) => ({ ...area(parts), cars: CARS.includes(tags.building) }));
     const town = townOf(buildings), beds = bedsOf(list, world, drawn);
@@ -279,6 +281,10 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         if (kind === 'platform') {
             const tops = parts.flatMap(({ z }) => Array.from(z ?? []).filter(v => !Number.isNaN(v)));
             if (tops.length) pads.push({ level: Math.min(...tops) - PLATFORM_GAP_M, ...area(parts) });
+            continue;
+        }
+        if (kind === 'guard-rail' || kind === 'retaining-wall') {
+            for (const { xy } of parts) barriers.push({ xy: Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat(), wall: kind === 'retaining-wall', height: parseFloat(tags.height) || undefined });
             continue;
         }
         const river = kind === 'river' || kind === 'stream';
@@ -334,7 +340,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     }
     junctionPlanes(lines);
     abutments(lines);
-    return { lines, lakes, seas, areas, pads, buildings, walks: walks(lines, buildings, town) };
+    return { lines, lakes, seas, areas, pads, buildings, walks: walks(lines, buildings, town), barriers };
 }
 
 /**

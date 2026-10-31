@@ -114,6 +114,10 @@ export class Pages {
     readonly pages = new Map<string, Page>();
     private readonly tiles = new Map<string, Tile>();
     private readonly bodies = new Map<string, ArrayBuffer>();
+    /** The requests for bodies in flight. */
+    private readonly requested = new Map<string, Promise<ArrayBuffer | undefined>>();
+    /** Tiles that failed: they stay out for the pages as an absent one does, but they may exist, so the roads ask again. */
+    private readonly broken = new Set<string>();
     private bodyBytes = 0;
     private readonly free: Record<Kind, number[]>;
     private maskFree: number[];
@@ -444,6 +448,33 @@ export class Pages {
         return wished;
     }
 
+    /** The body of a stored tile for the roads, undefined where it is absent: a request in flight serves them too. */
+    body(z: number, x: number, y: number): Promise<ArrayBuffer | undefined> {
+        const name = `${z}/${x}/${y}`, kept = this.bodies.get(name);
+        if (kept || (this.tiles.get(name)?.state === 'absent' && !this.broken.has(name))) return Promise.resolve(kept);
+        const request = this.requested.get(name) ?? this.request(z, x, y);
+        return request.then(data => this.arrived(name, data));
+    }
+
+    private request(z: number, x: number, y: number): Promise<ArrayBuffer | undefined> {
+        const name = `${z}/${x}/${y}`, request = this.source.fetch(z, x, y);
+        this.requests++;
+        this.requested.set(name, request);
+        request.catch(() => this.requested.delete(name));
+        return request;
+    }
+
+    /** Keeps the body of a request that ended, once; its absence stays known. */
+    private arrived(name: string, data: ArrayBuffer | undefined): ArrayBuffer | undefined {
+        if (!this.requested.delete(name)) return data;
+        if (data) {
+            this.bytes += data.byteLength;
+            this.keep(name, data);
+        } else this.tiles.set(name, { state: 'absent' });
+        this.broken.delete(name);
+        return data;
+    }
+
     /** Requests a stored tile, or decodes its kept body again. */
     private fetch(z: number, x: number, y: number): void {
         const name = `${z}/${x}/${y}`, tile = this.tiles.get(name);
@@ -453,11 +484,8 @@ export class Pages {
         (async () => {
             let data = body;
             if (!data) {
-                this.requests++;
-                data = await this.source.fetch(z, x, y);
+                data = this.arrived(name, await (this.requested.get(name) ?? this.request(z, x, y)));
                 if (!data) return this.tiles.set(name, { state: 'absent' });
-                this.bytes += data.byteLength;
-                this.keep(name, data);
             }
             const quadrants = await this.source.decode(data);
             this.tiles.set(name, { state: 'done', empty: quadrants.map(quadrant => !quadrant) });
@@ -469,6 +497,7 @@ export class Pages {
             // A tile that fails stays out for this page, as an absent one.
             if (!stopped(error)) console.warn(`Terrain tile ${name}: ${error instanceof Error ? error.message : error}`);
             this.failed++;
+            this.broken.add(name);
             this.tiles.set(name, { state: 'absent' });
         }).finally(() => {
             this.loads--;

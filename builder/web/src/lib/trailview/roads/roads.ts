@@ -8,6 +8,7 @@ import { CHILD, key, OWNER, size, type Node } from '../terrain/lod';
 import type { FeatureTiles } from '../terrain/stamps';
 import { Pool } from '../structures/pool';
 import { stopped } from '../stream/terrain';
+import { groundBodies, type StoredBody } from './ground';
 import { meshBytes, type RoadMesh } from './mesh';
 import { ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 
@@ -67,8 +68,8 @@ export class Roads {
     private draws: { slot: number; range: PieceRange }[] = [];
     failed = 0;
 
-    /** An abort of `stop` ends the worker. */
-    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal) {
+    /** `stored` gives the terrain's tiles, whose ground decides what stands beside a road. An abort of `stop` ends the worker. */
+    constructor(private readonly tiles: FeatureTiles | undefined, private readonly stored: StoredBody, private readonly changed: () => void, stop: AbortSignal) {
         if (!tiles) return;
         const worker = this.worker = new Worker(new URL('./road-worker.ts', import.meta.url), { type: 'module' });
         stop.addEventListener('abort', () => worker.terminate());
@@ -226,10 +227,10 @@ export class Roads {
     private async ask(tile: Node, owner: Node): Promise<RoadMesh> {
         const body = await this.tiles!(tile.level, tile.x, tile.y);
         if (!body) return NOTHING;
-        const id = this.next++;
+        const ground = await groundBodies(owner, this.stored), id = this.next++;
         return new Promise<RoadMesh>((resolve, reject) => {
             this.waiting.set(id, { resolve, reject });
-            this.worker!.postMessage({ id, tile, owner, body }, [body]);
+            this.worker!.postMessage({ id, tile, owner, body, ground }, [body]);
         });
     }
 }

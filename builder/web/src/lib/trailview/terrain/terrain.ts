@@ -214,7 +214,7 @@ export class Terrain {
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / bytes / LAYER_PAGES) * LAYER_PAGES, synth = Math.floor((BUDGET.synth - MASK_BYTES) / bytes);
         this.stamps = new Stamps(features, changed, stop, corridors);
-        if (corridors) this.roads = new Roads(features, changed, stop);
+        if (corridors) this.roads = new Roads(features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
         this.pages = new Pages(source, { stored: pages - synth, synth }, this.bounds, changed, this.stamps, MASKS);

@@ -16,7 +16,7 @@ const REPEAT = 720;
 export interface Run { id: number; line: Line; stations: Station[]; reach: Float64Array; lift: number; prio: number; base: number; ways: Ways }
 
 /** What a station counts along its line, from the base of the run: sleepers on a track, else metres. */
-const countOf = ({ line, base }: Run, s: Station) => (line.kind === RAIL ? s.sleepers ?? 0 : s.along) - base;
+export const countOf = ({ line, base }: Run, s: Station) => (line.kind === RAIL ? s.sleepers ?? 0 : s.along) - base;
 
 /** The base of a run from its first station in an owner. */
 export const baseOf = (line: Line, s: Station) => Math.floor((line.kind === RAIL ? s.sleepers ?? 0 : s.along) / REPEAT) * REPEAT;
@@ -25,10 +25,10 @@ export const baseOf = (line: Line, s: Station) => Math.floor((line.kind === RAIL
  * The vertex of point `part` of a cross-section at station j, `a` metres across, in signed metres. A band's
  * vertex holds the road's plane in z, so the shader can tell a cut, and the core's outer edge `edge` for its half-width.
  */
-function point(b: PieceBuilder, run: Run, j: number, part: Part, a: number, edge: number): number {
+export function point(b: PieceBuilder, run: Run, j: number, part: Part, a: number, edge: number): number {
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!;
     for (const slot of slots) if (slot.a === a && slot.dz === part.dz && slot.flags === part.flags) return slot.index;
-    const s = run.stations[j], plane = s.z + s.bank * a + run.lift, x = s.x + s.ax * a, y = s.y + s.ay * a, band = (part.flags & (CF.SAMPLE | CF.MESH)) !== 0;
+    const s = run.stations[j], plane = s.z + s.bank * a + run.lift, x = s.x + s.ax * a, y = s.y + s.ay * a, row = part.flags & CF.FILL, band = row !== 0 && row !== CF.FILL;
     const flags = band && onWay(run.ways, x, y) ? part.flags | CF.UNDER : part.flags;
     const index = b.vertex(x, y, band ? plane : plane + part.dz, lookWord(part.mat, run.line.code, flags, run.prio, band ? edge : s.h), a, countOf(run, s));
     slots.push({ a, dz: part.dz, flags: part.flags, index });
@@ -36,7 +36,7 @@ function point(b: PieceBuilder, run: Run, j: number, part: Part, a: number, edge
 }
 
 /** The two triangles of a quad, each with its first vertex on q at the first station. */
-function quad(list: number[], ps: number, qs: number, qt: number, pt: number, left: boolean): void {
+export function quad(list: number[], ps: number, qs: number, qt: number, pt: number, left: boolean): void {
     if (left) list.push(qs, pt, qt, qs, ps, pt);
     else list.push(qs, qt, pt, qs, pt, ps);
 }

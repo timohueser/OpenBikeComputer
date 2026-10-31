@@ -16,7 +16,7 @@ import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
 
 const shader = readFileSync(new URL('./corridor.wgsl', import.meta.url), 'utf8');
-const looks = readFileSync(new URL('./looks.wgsl', import.meta.url), 'utf8');
+const looks = readFileSync(new URL('./looks.wgsl', import.meta.url), 'utf8') + readFileSync(new URL('./details.wgsl', import.meta.url), 'utf8');
 const root = new URL('../../../../tests/browser/trailview/fixture/features/', import.meta.url);
 
 /** The tiles of the fixture, each with the corridor mesh of its owners. */
@@ -263,9 +263,7 @@ describe('corridor.wgsl', () => {
         expect(number('ACROSS_STEP_M')).toBeCloseTo(16 / 2047, 6);
         expect(number('ALONG_STEP')).toBe(1 / 64);
         expect(lookWord(5, 9, 3, 2, number('HALF_STEP_M') * 80)).toBe((5 | (9 << number('CODE_SHIFT')) | (3 << number('FLAGS_SHIFT')) | (2 << number('PRIO_SHIFT')) | (80 << number('HALF_SHIFT'))) >>> 0);
-        expect(number('MAT_GROUND')).toBe(MAT.GROUND);
-        expect(number('MAT_KERB')).toBe(MAT.KERB);
-        expect(number('MAT_SIDEWALK')).toBe(MAT.SIDEWALK);
+        for (const [name, value] of Object.entries(MAT)) expect(number(`MAT_${name}`)).toBe(value);
         for (const [name, value] of Object.entries(CF)) expect(number(`CF_${name}`)).toBe(value);
         for (const [, name, value] of looks.matchAll(/^const LOOK_(\w+): u32 = (\d+)u;/gm)) expect(LOOK[name as keyof typeof LOOK]).toBe(Number(value));
     });
