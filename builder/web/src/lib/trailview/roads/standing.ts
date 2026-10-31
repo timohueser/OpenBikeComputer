@@ -23,7 +23,7 @@ export const WALL_OUT_M = 2.2;
 const WALL_NEAR_M = 5, WALL_RAMP_M = 7;
 /** Chosen on the fixture: the stored ground, before the stamp, climbs 2.3 m and more at the reference's walls, and under 2 m at the slopes it leaves bare. */
 const CUT_M = 2.3;
-/** A mapped retaining wall stands where the ground this far past WALL_OUT_M climbs at least this much over the edge. */
+/** A mapped retaining wall stands where the ground WALL_OUT_M past the edge climbs at least this much over it. */
 const WALL_MAPPED_M = 0.3;
 /** No wall stands inside a bend so tight that its side folds this far out: there the slope belongs to both legs of a hairpin. */
 const WALL_ROOM_M = 15;
