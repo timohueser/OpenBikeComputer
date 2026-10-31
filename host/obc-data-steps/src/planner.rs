@@ -57,7 +57,7 @@ pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER])
 pub static PLANNER_SNOW: Layer = Layer { revision: 2, ..whole("planner/snow", 1, &[&WEB_PLANNER]) };
 /// Its format is `features_format` of `specs/trailview-features.md`.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 7, ..whole("planner/trailview-features", 3, &[&WEB_PLANNER]) };
+    Layer { revision: 8, ..whole("planner/trailview-features", 3, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
