@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Gpu } from '../gpu/device';
 import { CHILD, size } from '../terrain/lod';
+import { REACH_M } from './arms';
 import type { RoadMesh } from './mesh';
 import type { RoadPiece } from './piece';
 import { Pool } from '../structures/pool';
@@ -36,7 +37,7 @@ async function attached(mesh: RoadMesh, error?: string) {
         device: { createBindGroup: () => ({}), queue: { writeBuffer: () => {} } },
         once: async () => ({ layout: {}, pipeline: {}, caster: {} }), buffer: (_: string, bytes: number) => ({ size: bytes / 64 }),
     };
-    const roads = new Roads(async () => new ArrayBuffer(8), () => {}, new AbortController().signal);
+    const roads = new Roads(async () => new ArrayBuffer(8), async () => undefined, () => {}, new AbortController().signal);
     await roads.attach(gpu as unknown as Gpu, [{}, {}] as GPUBuffer[]);
     return roads;
 }
@@ -58,7 +59,7 @@ afterEach(() => void vi.unstubAllGlobals());
 describe('the corridors', () => {
     it('ask for no mesh until the first view lets them', () => {
         vi.stubGlobal('Worker', workerOf({ pieces: [] }));
-        const roads = new Roads(async () => new ArrayBuffer(8), () => {}, new AbortController().signal);
+        const roads = new Roads(async () => new ArrayBuffer(8), async () => undefined, () => {}, new AbortController().signal);
         roads.update(eye, () => true, false);
         expect(roads.loading).toBe(false);
         roads.update(eye, () => true, true);
@@ -110,7 +111,7 @@ describe('the corridors under pressure', () => {
         const big = 128 * 1024, first = pieceAt(0, 0, big), { roads } = await roadsWith({ pieces: [pieceAt(1, 1, big), pieceAt(0, 1, big), first, pieceAt(1, 0, big)] });
         const reach = roads.write();
         expect(roads.stats).toMatchObject({ pieces: 2, near: 1, far: 1, dropped: 2 });
-        // The nearest piece that did not fit starts half a child from the eye: no way past it loses its paint.
-        expect(reach).toBeCloseTo(side / 2 * unit, 3);
+        // The nearest piece that did not fit starts half a child from the eye, and its junctions cut ways up to REACH_M short of that.
+        expect(reach).toBeCloseTo(side / 2 * unit - REACH_M, 3);
     });
 });

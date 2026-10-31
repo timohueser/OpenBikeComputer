@@ -61,6 +61,37 @@ describe('the page pools', () => {
         expect(map.filter(entry => entry >>> 16).length).toBe(ready.filter(page => page.kind === 'stored').length);
     });
 
+    it('serve the roads and the pages from one request of a tile', async () => {
+        const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
+        await Promise.all([pages.body(5, 1, 2), pages.body(5, 1, 2), pages.body(20, 1, 2)]);
+        expect(await pages.body(5, 1, 2)).toBeDefined();
+        expect(tiles.fetched.filter(name => name === '5/1/2')).toHaveLength(1);
+        expect(await pages.body(20, 1, 2)).toBeUndefined();
+        expect(tiles.fetched.filter(name => name === '20/1/2')).toHaveLength(1);
+    });
+
+    it('ask again for a tile that failed, and never call it absent, whoever met the failure first', async () => {
+        const tiles = source();
+        let failing = true;
+        const fetch = tiles.fetch;
+        tiles.fetch = async (z, x, y) => {
+            if (failing) throw new Error('A tile failed.');
+            return fetch(z, x, y);
+        };
+        const pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {}), byFetch = pages as unknown as { fetch(z: number, x: number, y: number): void; stored(node: { level: number; x: number; y: number }): string };
+        await expect(pages.body(5, 1, 2)).rejects.toThrow();
+        await expect(pages.body(5, 1, 2)).rejects.toThrow();
+        byFetch.fetch(5, 2, 2);
+        await new Promise(resolve => setTimeout(resolve));
+        await expect(pages.body(5, 2, 2)).rejects.toThrow();
+        failing = false;
+        expect(await pages.body(5, 1, 2)).toBeDefined();
+        expect(byFetch.stored({ level: 6, x: 4, y: 4 })).toBe('no');
+        expect(await pages.body(5, 2, 2)).toBeDefined();
+        expect(byFetch.stored({ level: 6, x: 4, y: 4 })).not.toBe('no');
+        expect(tiles.fetched).toEqual(['5/1/2', '5/2/2']);
+    });
+
     it('fill the holes from one coarse tile, then load the tile under the eye, then the nearer tiles first', async () => {
         const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
         await settle(pages, wanted, 300, eye);

@@ -8,6 +8,8 @@ import { CHILD, key, OWNER, size, type Node } from '../terrain/lod';
 import type { FeatureTiles } from '../terrain/stamps';
 import { Pool } from '../structures/pool';
 import { stopped } from '../stream/terrain';
+import { REACH_M } from './arms';
+import { groundBodies, type StoredBody } from './ground';
 import { meshBytes, type RoadMesh } from './mesh';
 import { ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 
@@ -17,6 +19,8 @@ export const RANGE_M = 600;
 const FAR_FROM_M = 200;
 /** An owner builds this far before it comes into range: about 20 s at the speed of a car in a valley. */
 const AHEAD_M = 300;
+/** What corridors hold short of a piece `d` metres off that does not draw: its junctions' faces are gone, and their cuts reach up to REACH_M into its neighbours, where the paint must take every pixel. */
+const heldTo = (d: number) => Math.max(0, d - REACH_M);
 /** The GPU pools, with the middles of the draws under the owner's budget of 48 MiB. */
 const VERTEX_BYTES = 27 * 2 ** 20, INDEX_BYTES = 20 * 2 ** 20;
 /** Bytes of meshes kept on the CPU: with the stamps' 64 MiB, the 96 MiB of the owner's budget. */
@@ -67,8 +71,8 @@ export class Roads {
     private draws: { slot: number; range: PieceRange }[] = [];
     failed = 0;
 
-    /** An abort of `stop` ends the worker. */
-    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal) {
+    /** `stored` gives the terrain's tiles, whose ground decides what stands beside a road. An abort of `stop` ends the worker. */
+    constructor(private readonly tiles: FeatureTiles | undefined, private readonly stored: StoredBody, private readonly changed: () => void, stop: AbortSignal) {
         if (!tiles) return;
         const worker = this.worker = new Worker(new URL('./road-worker.ts', import.meta.url), { type: 'module' });
         stop.addEventListener('abort', () => worker.terminate());
@@ -125,7 +129,7 @@ export class Roads {
             // The farthest owners give way when the nearer ones fill the cache.
             const name = key(node), mesh = held < MESH_BYTES ? this.mesh(node, name, build) : undefined;
             if (mesh) wanted.add(name);
-            if (!mesh || mesh === FAILED) built = Math.min(built, d);
+            if (!mesh || mesh === FAILED) built = Math.min(built, heldTo(d));
             if (!mesh) continue;
             held += meshBytes(mesh);
             for (const piece of mesh.pieces) {
@@ -150,7 +154,7 @@ export class Roads {
         const middles = new Int32Array(2 * Math.min(DRAWS, this.pieces.length));
         for (let slot = 0; 2 * slot < middles.length; slot++) middles.set([this.pieces[slot].piece.x, this.pieces[slot].piece.y], 2 * slot);
         if (middles.length) r.device.queue.writeBuffer(r.middles, 0, middles);
-        return Math.min(this.built, ...this.pieces.filter(({ piece }, slot) => slot >= DRAWS || !r.pool.at(piece)).map(({ d }) => d));
+        return Math.min(this.built, ...this.pieces.filter(({ piece }, slot) => slot >= DRAWS || !r.pool.at(piece)).map(({ d }) => heldTo(d)));
     }
 
     /** Before the terrain: early depth then rejects the terrain under a road. */
@@ -226,10 +230,10 @@ export class Roads {
     private async ask(tile: Node, owner: Node): Promise<RoadMesh> {
         const body = await this.tiles!(tile.level, tile.x, tile.y);
         if (!body) return NOTHING;
-        const id = this.next++;
+        const ground = await groundBodies(owner, this.stored), id = this.next++;
         return new Promise<RoadMesh>((resolve, reject) => {
             this.waiting.set(id, { resolve, reject });
-            this.worker!.postMessage({ id, tile, owner, body }, [body]);
+            this.worker!.postMessage({ id, tile, owner, body, ground }, [body]);
         });
     }
 }
