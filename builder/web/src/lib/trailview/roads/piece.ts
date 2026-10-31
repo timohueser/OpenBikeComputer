@@ -63,6 +63,17 @@ export class PieceBuilder {
         return this.count + ROOM <= VERTICES;
     }
 
+    /** Makes faces whose vertices have no fixed limit, here if they fit. Otherwise it leaves no trace of them and says so. */
+    attempt(make: (piece: PieceBuilder) => void): boolean {
+        const { count, near: { length: near }, far: { length: far } } = this;
+        make(this);
+        if (this.count <= VERTICES) return true;
+        this.count = count;
+        this.near.length = near;
+        this.far.length = far;
+        return false;
+    }
+
     /** A vertex at world point x, y, height z, with its `look` word, `across` metres from the line and `along` a repeat count from its base. */
     vertex(x: number, y: number, z: number, look: number, across: number, along: number): number {
         if (4 * (this.count + 1) > this.packed.length) this.grow();

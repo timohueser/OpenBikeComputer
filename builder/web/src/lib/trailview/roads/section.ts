@@ -8,6 +8,8 @@ const CLASS_NAMES = Object.keys(PROFILES), SURFACE_NAMES = Object.keys(SURFACES)
 export const classOf = (line: Line) => CLASS_NAMES[line.profile];
 const surfaceName = (line: Line) => SURFACE_NAMES[(line.code & 15) - 1];
 
+export { LIFT_M };
+
 /** Face materials, as MAT_* of corridor.wgsl and details.wgsl: the ground under the face, the stone of a town street, and what stands beside a road. */
 export const MAT = { GROUND: 1, KERB: 2, SIDEWALK: 3, RAIL: 40, RAIL_POST: 41, RAIL_BLOCK: 42, DELI: 44, DELI_BAND: 45, REFLECTOR: 46, WALL: 48, CAP: 49 } as const;
 /** The looks of the ways, as LOOK_* of looks.wgsl. */
@@ -29,9 +31,12 @@ const CROWN = 0.025;
 /** How far a paved shoulder lies under the carriageway's edge. */
 const SHOULDER_DROP_M = 0.02;
 /** A town road's kerb: its rise over the core at the sidewalk, and the width of its top. */
-const KERB_RISE_M = 0.12, KERB_TOP_M = 0.16;
+export const KERB_RISE_M = 0.12;
+const KERB_TOP_M = 0.16;
 /** Ballast spilt past a track's bed. */
 const SPILL_M = 0.35;
+/** A junction's faces are one surface with no edge in its look: this far across a way this wide on each side. */
+const FACE_ACROSS_M = 2, FACE_HALF_M = 12;
 /**
  * The band's rows past the road's outer edge: the stamped ground along the road, so its creases run with
  * the road. The last row sinks under the drawn mesh, where the terrain takes over.
@@ -57,6 +62,19 @@ export function lookOf(line: Line): number {
     if (name === 'dirt' || name === 'grass') return line.kind === PATH ? LOOK.TRAIL : LOOK.DIRT;
     if (name === 'path') return LOOK.TRAIL;
     return !marked(line) ? LOOK.ASPHALT : MOTORWAYS.includes(cls) ? LOOK.MOTORWAY : LOOK.MAIN;
+}
+
+/** Whether a way's look frays into the ground at its edges. */
+export const frays = (line: Line) => ([LOOK.GRAVEL, LOOK.DIRT, LOOK.TRAIL] as number[]).includes(lookOf(line));
+
+/**
+ * The surface of a junction's faces on a road of this line's look: its own material without lines or ruts, and
+ * the metres across and half-width that give it. A way of soil has none: only its ruts are its surface.
+ */
+export function junctionFace(line: Line): { mat: number; across: number; half: number } | undefined {
+    const look = lookOf(line);
+    if (look === LOOK.DIRT || look === LOOK.TRAIL) return undefined;
+    return { mat: look === LOOK.GRAVEL ? look : LOOK.ASPHALT, across: FACE_ACROSS_M, half: FACE_HALF_M };
 }
 
 /** A shape's points from an edge to the middle, mirrored to the other edge. The far range keeps the edges and the middle. */

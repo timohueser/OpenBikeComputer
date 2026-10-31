@@ -170,7 +170,7 @@ function withoutStubs(shares: Float64Array, stations: Station[], least: number):
 
 /** A line's stations, and past each end the straight way on: a way that meets it there runs on. */
 function reached(stations: Station[]): Station[] {
-    const n = stations.length, on = (s: Station, t: Station) => Array.from({ length: TAIL_STEPS }, (_, k) => between(s, t, 1 + (k + 1) * TAIL_STEP_M / (Math.abs(t.along - s.along) || 1)));
+    const n = stations.length, on = (s: Station, t: Station) => Array.from({ length: TAIL_STEPS }, (_, k) => ({ ...between(s, t, 1 + (k + 1) * TAIL_STEP_M / (Math.abs(t.along - s.along) || 1)), h: t.h }));
     return [...on(stations[1], stations[0]).reverse(), ...stations, ...on(stations[n - 2], stations[n - 1])];
 }
 

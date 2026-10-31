@@ -5,7 +5,7 @@ import { DEEPEST, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature, type Feat
 import { PAGE } from '../stream/heights';
 import { addPlan, curveOf, PATH_SAG, planPart, ROAD_SAG, type Curve, type Plan } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
-import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
+import { boxOf, cornersOf, halfAt, partnersOf, stopAtCorners } from './corners';
 import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
 
 /** Words of a primitive record. */
@@ -856,7 +856,7 @@ export interface NodeStamps {
  * that it can act on, so the shader sees every primitive that can reach a texel. A cell keeps the
  * order of stamp-core.wgsl: a lake's edges before its marker, a line's segments together.
  */
-export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps {
+export function nodeStamps(list: Feature[], tile: Node, node: Node, corridors = false): NodeStamps {
     const { lines, lakes, seas, pads, areas, buildings, walks } = features(list, tile);
     const shift = 22 - node.level, cell = CELL * 2 ** shift;
     const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, span = GRID * cell;
@@ -896,7 +896,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     const partners = partnersOf(lines);
     // A record holds a line's index in 16 bits.
     if (lines.length + walks.length > 0x10000) throw new Error(`nodeStamps: ${lines.length + walks.length} lines pass the 16-bit index`);
-    [...lines, ...walks].forEach((line, id) => {
+    [...lines, ...(corridors ? stopAtCorners(lines, walks) : walks)].forEach((line, id) => {
         const stamps = shows(line, gateTexel(node.level));
         if (line.kind === STREAM || (!stamps && node.level < NEAR)) return;
         // A path acts no farther than its bench, and on the near levels than the mask reads it; a walk only there.
