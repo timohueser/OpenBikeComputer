@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { metresPerUnit, PROFILES, ROAD, SURFACES, type Barrier, type Line } from '../terrain/bins';
+import { features, metresPerUnit, PROFILES, ROAD, SURFACES, type Barrier, type Line } from '../terrain/bins';
 import { size } from '../terrain/lod';
 import { LEFT } from '../terrain/town';
 import { roadside } from './details';
@@ -84,6 +84,13 @@ describe('what stands beside a road', () => {
         const climbs = stands(line, stations, 1, bump(1, 0), undefined, undefined, [wall]);
         expect(at(stations, climbs.wall, 80)).toBe(1);
         expect(at(stations, climbs.high, 80)).toBe(2.5);
+    });
+
+    it('reads the barriers of a tile from its features, a wall with its height', () => {
+        const part = { outer: false, xy: new Int32Array([100, 100, 200, 100]), z: null };
+        const { barriers } = features([{ kind: 'guard-rail', tags: {}, geometry: 'line', parts: [part] }, { kind: 'retaining-wall', tags: { height: '2.5' }, geometry: 'line', parts: [part] }], { level: 13, x: 4286, y: 2888 });
+        expect(barriers.map(({ wall, height }) => [wall, height])).toEqual([[false, undefined], [true, 2.5]]);
+        expect(barriers[0].xy).toHaveLength(4);
     });
 
     it('stands nothing beside a sidewalk, and ramps down before it', () => {
