@@ -55,11 +55,20 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node): RoadMesh {
     const { runs, junctions } = planOf(features(list, tile).lines), side = size(CHILD), pieces: PieceBuilder[][] = [[], [], [], []];
     const x0 = owner.x * 2 * side, y0 = owner.y * 2 * side;
     const owns = ({ x, y }: { x: number; y: number }) => x >= x0 && x < x0 + 2 * side && y >= y0 && y < y0 + 2 * side;
-    /** The piece of the child that holds a point, with room for its faces. */
-    const pieceAt = ({ x, y }: { x: number; y: number }) => {
-        const i = Math.floor((x - x0) / side), j = Math.floor((y - y0) / side), list = pieces[j * 2 + i];
-        const last = list[list.length - 1];
-        return last?.roomy ? last : list[list.push(new PieceBuilder(x0 + (i + 0.5) * side, y0 + (j + 0.5) * side, side / 2)) - 1];
+    const listAt = ({ x, y }: { x: number; y: number }) => pieces[Math.floor((y - y0) / side) * 2 + Math.floor((x - x0) / side)];
+    /** A new piece of the child that holds a point. */
+    const newPiece = (at: { x: number; y: number }) => {
+        const i = Math.floor((at.x - x0) / side), j = Math.floor((at.y - y0) / side), list = listAt(at);
+        return list[list.push(new PieceBuilder(x0 + (i + 0.5) * side, y0 + (j + 0.5) * side, side / 2)) - 1];
+    };
+    /** The piece of the child that holds a point, with room for a cross-section. */
+    const pieceAt = (at: { x: number; y: number }) => {
+        const list = listAt(at), last = list[list.length - 1];
+        return last?.roomy ? last : newPiece(at);
+    };
+    /** A junction's faces, whole in one piece: a dense line gives them any number of stations. */
+    const facesAt = (at: { x: number; y: number }, make: (piece: PieceBuilder) => void) => {
+        if (!pieceAt(at).attempt(make)) make(newPiece(at));
     };
     for (const planned of runs) {
         const { stations, far, caps, line } = planned, first = stations.find(owns);
@@ -85,8 +94,8 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node): RoadMesh {
         }
     }
     // A junction's faces go to the child that holds its point, so one owner of the tiles that hold them draws them.
-    for (const corner of junctions.corners) if (owns(corner.meeting)) cornerFaces(pieceAt(corner.meeting), corner);
-    for (const mouth of junctions.mouths) if (owns(mouth.left.meeting)) mouthFaces(pieceAt(mouth.left.meeting), mouth);
+    for (const corner of junctions.corners) if (owns(corner.meeting)) facesAt(corner.meeting, piece => cornerFaces(piece, corner));
+    for (const mouth of junctions.mouths) if (owns(mouth.left.meeting)) facesAt(mouth.left.meeting, piece => mouthFaces(piece, mouth));
     return { pieces: pieces.flat().map(piece => piece.piece(GROUND_M)) };
 }
 

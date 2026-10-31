@@ -322,6 +322,20 @@ describe('a piece', () => {
         expect(b.count).toBeLessThan(65536);
         expect(b.count).toBeGreaterThan(64000);
     });
+
+    it('leaves no trace of faces that do not fit, so a junction never wraps a 16-bit index', () => {
+        const b = new PieceBuilder(0, 0);
+        const make = (vertices: number) => (piece: PieceBuilder) => {
+            for (let k = 0; k < vertices; k++) piece.near.push(piece.vertex(0, 0, 0, 0, 0, 0));
+            piece.far.push(0);
+        };
+        expect(b.attempt(make(60000))).toBe(true);
+        expect(b.attempt(make(6000))).toBe(false);
+        expect(b.count).toBe(60000);
+        expect(b.near.length).toBe(60000);
+        expect(b.far.length).toBe(1);
+        expect(new PieceBuilder(0, 0).attempt(make(6000))).toBe(true);
+    });
 });
 
 describe('the cross-section', () => {
