@@ -114,7 +114,7 @@ flowchart LR
 | [foundations](foundations.md) | Holds the policy-free building blocks that every crate uses: byte codecs, CRC, host interfaces, the map-scene contract. | draft |  | board-inputs, card-storage, content, device-firmware, device-link, device-map-baking, device-runtime, firmware-update, host-runtime, map-assembly, map-reading, navigation, obc-data, rendering-display, repository-tooling, simulators, source-preparation |
 | [map-reading](map-reading.md) | Reads the device's map content from the card: OBCM maps, OBCT terrain. | draft | device-map-baking, foundations | content, device-firmware, device-map-baking, device-runtime, host-runtime, map-assembly, navigation, repository-tooling, simulators, source-preparation |
 | [navigation](navigation.md) | Guides the rider along a route. | draft | foundations, map-reading | device-firmware, device-link, device-runtime, host-runtime, map-assembly, repository-tooling, simulators |
-| [rendering-display](rendering-display.md) | Turns a map scene or a screen's draw calls into pixels on the panel. | approved | foundations | content, device-firmware, device-map-baking, device-runtime, host-runtime, map-assembly, simulators |
+| [rendering-display](rendering-display.md) | Draws the map and the screens, and updates the display panel. | approved | foundations | content, device-firmware, device-map-baking, device-runtime, host-runtime, map-assembly, simulators |
 | [ride-recording](ride-recording.md) | Records the ride: its track, its measurements, its archive on the card. | draft |  |  |
 | [rider-interface](rider-interface.md) | Connects the rider to the device: screens, gestures, sound. | draft |  |  |
 
