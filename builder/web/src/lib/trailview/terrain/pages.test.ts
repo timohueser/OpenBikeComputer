@@ -64,6 +64,7 @@ describe('the page pools', () => {
     it('serve the roads and the pages from one request of a tile', async () => {
         const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
         await Promise.all([pages.body(5, 1, 2), pages.body(5, 1, 2), pages.body(20, 1, 2)]);
+        expect(await pages.body(5, 1, 2)).toBeDefined();
         expect(tiles.fetched.filter(name => name === '5/1/2')).toHaveLength(1);
         expect(await pages.body(20, 1, 2)).toBeUndefined();
         expect(tiles.fetched.filter(name => name === '20/1/2')).toHaveLength(1);

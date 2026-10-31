@@ -225,9 +225,9 @@ export class Roads {
     }
 
     private async ask(tile: Node, owner: Node): Promise<RoadMesh> {
-        const [body, ground] = await Promise.all([this.tiles!(tile.level, tile.x, tile.y), groundBodies(owner, this.stored)]);
+        const body = await this.tiles!(tile.level, tile.x, tile.y);
         if (!body) return NOTHING;
-        const id = this.next++;
+        const ground = await groundBodies(owner, this.stored), id = this.next++;
         return new Promise<RoadMesh>((resolve, reject) => {
             this.waiting.set(id, { resolve, reject });
             this.worker!.postMessage({ id, tile, owner, body, ground }, [body]);

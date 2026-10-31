@@ -1,7 +1,7 @@
 // The corridor mesh of an L15 owner from its feature tile: one piece per L16 child, or more where a child
 // holds more vertices than 16-bit indices reach. A segment belongs to the child that holds its first station.
 import type { Feature } from '../stream/features';
-import { features, junctions, metresPerUnit, type Line, type Node, type Shapes } from '../terrain/bins';
+import { features, junctions, metresPerUnit, ROAD, type Line, type Node, type Shapes } from '../terrain/bins';
 import { halfAt, partnersOf } from '../terrain/corners';
 import { CHILD, size } from '../terrain/lod';
 import { townOf } from '../terrain/town';
@@ -38,7 +38,8 @@ function planOf({ lines, buildings, barriers: mapped }: Shapes): Planned[] {
         const stations = stationsOf(line, v => halfAt(line, v, partners)), joins = mouthsOn(line, shared), ends: [boolean, boolean] = [open(line, 0), open(line, line.z.length - 1)], last = stations.length - 1;
         // A detail also ramps down before a dead end, where its section would stand open.
         const inMouth = (j: number) => (ends[0] && j === 0) || (ends[1] && j === last) || joins.some(({ x, y, gap }) => Math.hypot(x - stations[j].x, y - stations[j].y) * metresPerUnit(y) < gap);
-        const { railed, walled } = allowed(line), mouths = zonesOf(railed || walled ? stations : [], inMouth), towns = railed ? zonesOf(stations, j => inMouth(j) || townish(town, stations[j].x, stations[j].y)) : mouths;
+        const { railed, walled } = allowed(line), mapped = barriers.segments.length > 0 && line.kind === ROAD, mouths = zonesOf(railed || walled || mapped ? stations : [], inMouth);
+        const towns = railed ? zonesOf(stations, j => inMouth(j) || townish(town, stations[j].x, stations[j].y)) : mouths;
         return [{ id, line, stations, reach: reachOf(stations), lift: liftOf(line, id), prio: prioOf(line), base: 0, ways, far: farStations(line, stations, size(CHILD)), ends, mouths, towns, barriers }];
     });
     plans.set(lines, runs);
@@ -78,9 +79,7 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node, ground: Groun
             cap(piece, piece.near, run, j, dir, false);
             cap(piece, piece.far, run, j, dir, true);
         }
-        // A face ends on the station after the owner's last.
-        const wanted = (j: number) => owns(stations[j]) || (j > 0 && owns(stations[j - 1]));
-        if (run.mouths.length) for (const way of [1, -1] as const) roadside(run, way, standingOf(line, stations, run.reach, way, ground, run.mouths, run.towns, run.barriers, wanted), ground, owns, pieceAt);
+        if (run.mouths.length) for (const way of [1, -1] as const) roadside(run, way, standingOf(line, stations, run.reach, way, ground, run.mouths, run.towns, run.barriers), owns, pieceAt);
     }
     return { pieces: pieces.flat().map(piece => piece.piece(GROUND_M)) };
 }

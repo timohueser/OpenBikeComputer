@@ -1,31 +1,34 @@
 // What stands beside a road: per station and side, how far a guardrail and a retaining wall stand, and how high.
 // Each station decides once, here in the worker, so every vertex of a station holds one decision. An OSM barrier
 // comes first; else a rail stands where the ground drops away, a wall where it climbs. Ends ramp down as real
-// terminals do, and no decision reaches past a junction's mouth, a town or a sidewalk.
+// terminals do. No decision reaches past a junction's mouth or a sidewalk, and no rail past a town; a wall stands in
+// a town, as a town's cuts need one.
 import { metresPerUnit, PROFILES, ROAD, type Barrier, type Line } from '../terrain/bins';
 import { along as share, gridOf, LEFT, near, RIGHT, type Grid } from '../terrain/town';
 import type { GroundAt } from './ground';
 import { classOf, shoulderOf } from './section';
-import { stationAt, type Station } from './stations';
+import { between, type Station } from './stations';
 
 /** The classes with guardrails and delineator posts outside towns, and those with retaining walls. */
 const RAILED = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified']);
 const WALLED = new Set([...RAILED, 'residential', 'living_street']);
-/** A station samples the ground SAMPLES steps along each way. */
-const SAMPLES = 4;
+/** A line's stations run on this many steps past each end: as far as a gap closes, so a wall runs on across two ways that meet. */
+const TAIL_STEPS = 13, TAIL_STEP_M = 2.5;
+/** Two stretches stay apart by at least this much of open ground, past their two ramps: a narrower break reads as a notch. */
+const BREAK_M = 8;
 /** A rail stands where the road's edge lies DROP_M over the ground DROP_OUT_M past it, and RAIL_NEAR_M along past that; then it ramps down over RAIL_RAMP_M. */
-const DROP_M = 1.35, DROP_OUT_M = 4, RAIL_STEP_M = 2.5, RAIL_NEAR_M = 4, RAIL_RAMP_M = 6;
-/**
- * A wall stands where the ground WALL_OUT_M past the edge climbs CUT_M over it, and WALL_NEAR_M along past that; then
- * it ramps down over WALL_RAMP_M. The stored ground reads before the stamp: its cut stops at the cone (coneOf), so
- * CUT_M lies over the cone's top there, and a slope that a cone barely shapes keeps no wall.
- */
+const DROP_M = 1.35, DROP_OUT_M = 4, RAIL_NEAR_M = 4, RAIL_RAMP_M = 6;
+/** A wall stands where the ground WALL_OUT_M past the edge climbs CUT_M over it, and WALL_NEAR_M along past that; then it ramps down over WALL_RAMP_M. */
 export const WALL_OUT_M = 2.2;
-const CUT_M = 2.3, WALL_STEP_M = 3, WALL_NEAR_M = 5, WALL_RAMP_M = 7;
+const WALL_NEAR_M = 5, WALL_RAMP_M = 7;
+/** Chosen on the fixture: the stored ground, before the stamp, climbs 2.3 m and more at the reference's walls, and under 2 m at the slopes it leaves bare. */
+const CUT_M = 2.3;
+/** A mapped retaining wall stands where the ground this far past WALL_OUT_M climbs at least this much over the edge. */
+const WALL_MAPPED_M = 0.3;
 /** No wall stands inside a bend so tight that its side folds this far out: there the slope belongs to both legs of a hairpin. */
 const WALL_ROOM_M = 15;
-/** A wall's height over the edge: the cut's mean over its samples plus WALL_OVER_M, so its top runs with the grade. */
-const WALL_OVER_M = 0.3, WALL_LEAST_M = 0.6, WALL_MOST_M = 3.5;
+/** A wall's height over the edge: the mean of the cut that its stretch passes within WALL_MEAN_M, plus WALL_OVER_M, so its top runs with the grade. */
+const WALL_MEAN_M = 12, WALL_OVER_M = 0.3, WALL_LEAST_M = 0.6, WALL_MOST_M = 3.5;
 /** Where a road's cut starts past its ditch, as in stamp-core.wgsl. */
 const DITCH_OUT_M = 0.7;
 /** A detail ramps down over ZONE_RAMP_M before what stops it. A mouth reaches past the junction's widest way by MOUTH_M. */
@@ -104,68 +107,126 @@ export interface Standing {
     wall: Float64Array;
     /** A standing wall's height over the road's edge. */
     high: Float64Array;
-    /** The metres along to the nearest mouth, town or sidewalk: a delineator keeps away from them. */
+    /** The metres along to the nearest mouth, town or sidewalk, none where the ground is unknown: a delineator keeps away from them. */
     free: Float64Array;
 }
 
 /** The metres from a line's middle to the edge that details stand on: the outer edge of its shoulder. */
 export const edgeOf = (line: Line, s: Station) => s.h + shoulderOf(line);
 
-/** A test of the ground `out` metres past the edge: dir 1 for how far it lies under the edge's grade line, -1 for how far over. */
-interface Test { out: number; dir: 1 | -1; level: number; step: number; wall: boolean }
-const RAIL_TEST: Test = { out: DROP_OUT_M, dir: 1, level: DROP_M, step: RAIL_STEP_M, wall: false };
-const WALL_TEST: Test = { out: WALL_OUT_M, dir: -1, level: CUT_M, step: WALL_STEP_M, wall: true };
+/** Metres along of a line's samples, and whether each is a place that stops a detail. */
+interface Samples { along: Float64Array; stops: (i: number) => boolean }
 
 /**
- * By samples along a side of a line, from a point `at` metres along: the metres to the nearest sample that a test
- * passes, short of a zone `zone` metres away; the weighted mean of how far the ground lies past the edge, up to
- * `limit`; and a mapped height. A crossing between two samples is interpolated, and a mapped barrier passes the test
- * of its kind and stops the other. A point with a passing sample each way lies in a gap, which a detail bridges: a
- * dip in a wall's top would read as two walls.
+ * The stretches of a line where a detail must stand, from the samples that pass its test: a gap of `bridge` metres or
+ * less closes, so two stretches never meet in a dip, and no stretch runs over a stop. So each stretch rises and falls
+ * once, and every station of a gap holds one answer.
  */
-function tested(line: Line, stations: Station[], j: number, side: 1 | -1, test: Test, limit: number, zone: number, ground: GroundAt, barriers: Barriers) {
-    const mapped = barriers.segments.length > 0;
-    let d = Infinity, last = -1, sum = 0, weights = 0, tagged = 0, before = false, after = false;
-    for (let k = -SAMPLES; k <= SAMPLES; k++) {
-        const x = k * test.step, s = stationAt(stations, j, x), edge = edgeOf(line, s), out = (a: number) => [s.x + side * s.ax * (edge + a), s.y + side * s.ay * (edge + a)] as const;
-        const g = ground(...out(test.out)), r = test.dir * (s.z + side * s.bank * edge - g), osm = mapped ? barrierAt(barriers, ...out(BARRIER_OUT_M)) : undefined;
-        let v = -1;
-        if (!Number.isNaN(g) && Math.abs(x) < zone) {
-            v = osm ? (osm.wall === test.wall ? 1 : -1) : r - test.level;
-            const weight = SAMPLES + 1 - Math.abs(k);
-            sum += weight * Math.max(0, Math.min(limit, r));
-            weights += weight;
-            if (osm?.wall === test.wall) tagged = Math.max(tagged, osm.height ?? 0);
+function stretches({ along, stops }: Samples, passes: Uint8Array, bridge: number): Uint8Array {
+    const out = new Uint8Array(passes.length);
+    let first = -1, last = -1;
+    const close = () => {
+        if (first >= 0) out.fill(1, first, last + 1);
+        first = -1;
+    };
+    for (let i = 0; i < passes.length; i++) {
+        if (stops(i)) close();
+        else if (passes[i]) {
+            if (first >= 0 && along[i] - along[last] > bridge) close();
+            if (first < 0) first = i;
+            last = i;
         }
-        if (v > 0) {
-            d = Math.min(d, Math.abs(x));
-            before ||= k < 0;
-            after ||= k > 0;
-        }
-        if (k > -SAMPLES && v > 0 !== last > 0) d = Math.min(d, Math.abs(x - test.step * v / (v - last)));
-        last = v;
     }
-    return { d: before && after ? 0 : d, mean: sum / (weights || 1), tagged };
+    close();
+    return out;
+}
+
+/** Per sample the metres to the nearest stretch that no stop cuts it off from. */
+function metresTo({ along, stops }: Samples, marks: Uint8Array): Float64Array {
+    const out = new Float64Array(marks.length).fill(Infinity), n = marks.length;
+    for (let i = 0, from = -Infinity; i < n; i++) {
+        if (stops(i)) from = -Infinity;
+        else if (marks[i]) from = along[i];
+        out[i] = along[i] - from;
+    }
+    for (let i = n - 1, from = Infinity; i >= 0; i--) {
+        if (stops(i)) from = Infinity;
+        else if (marks[i]) from = along[i];
+        out[i] = Math.min(out[i], from - along[i]);
+    }
+    return out;
+}
+
+/** Takes away a stretch of `shares` shorter than `least` metres that lies inside the line: a stub between two stops. */
+function withoutStubs(shares: Float64Array, stations: Station[], least: number): void {
+    for (let j = 0, from = -1; j <= shares.length; j++) {
+        const stands = j < shares.length && shares[j] > 0;
+        if (stands && from < 0) from = j;
+        if (stands || from < 0) continue;
+        if (from > 0 && j < shares.length && stations[j].along - stations[from].along < least) shares.fill(0, from, j);
+        from = -1;
+    }
+}
+
+/** A line's stations, and past each end the straight way on: a way that meets it there runs on. */
+function reached(stations: Station[]): Station[] {
+    const n = stations.length, on = (s: Station, t: Station) => Array.from({ length: TAIL_STEPS }, (_, k) => between(s, t, 1 + (k + 1) * TAIL_STEP_M / (Math.abs(t.along - s.along) || 1)));
+    return [...on(stations[1], stations[0]).reverse(), ...stations, ...on(stations[n - 2], stations[n - 1])];
 }
 
 /**
  * What stands on `side` of a line. `mouths` and `towns` are the metres to a line's nearest mouth, and to its nearest
- * mouth or town, per station, and `folds` how far each side reaches (reachOf of stations.ts). A station that `wanted`
- * leaves out, or that the ground does not reach, holds nothing.
+ * mouth or town, per station, and `folds` how far each side reaches (reachOf of stations.ts). A station that the ground
+ * does not reach passes no test. A mapped rail stands past a class's or a town's rule, and stays out of a mouth.
  */
-export function standingOf(line: Line, stations: Station[], folds: Float64Array, side: 1 | -1, ground: GroundAt, mouths: Float64Array, towns: Float64Array, barriers: Barriers, wanted: (j: number) => boolean = () => true): Standing {
-    const { railed, walled } = allowed(line), n = stations.length, cone = coneOf(line, WALL_OUT_M);
-    const clear = zonesOf(stations, j => walked(line, stations[j], side)), free = towns.map((town, j) => Math.min(town, clear[j]));
-    const walls = zonesOf(stations, j => folds[2 * j + (side > 0 ? 0 : 1)] < WALL_ROOM_M);
+export function standingOf(line: Line, stations: Station[], folds: Float64Array, side: 1 | -1, ground: GroundAt, mouths: Float64Array, towns: Float64Array, barriers: Barriers): Standing {
+    const { railed, walled } = allowed(line), n = stations.length, all = reached(stations), m = all.length, cone = coneOf(line, WALL_OUT_M), mapped = barriers.segments.length > 0;
+    const inner = (i: number) => (i >= TAIL_STEPS && i < TAIL_STEPS + n ? i - TAIL_STEPS : -1);
+    const rails = new Uint8Array(m), walls = new Uint8Array(m), mappedRail = new Uint8Array(n), rise = new Float64Array(m), tags = new Float64Array(m), unknown = new Float64Array(n);
+    for (let i = 0; i < m; i++) {
+        const s = all[i], e = edgeOf(line, s), edge = s.z + side * s.bank * e, at = (a: number) => [s.x + side * s.ax * (e + a), s.y + side * s.ay * (e + a)] as const;
+        const cut = ground(...at(WALL_OUT_M)) - edge, drop = edge - ground(...at(DROP_OUT_M)), j = inner(i);
+        const found = mapped ? barrierAt(barriers, ...at(BARRIER_OUT_M)) : undefined;
+        // A mapped wall on the low side of a road holds the road up, and shows nothing over it.
+        const osm = found && (!found.wall || cut > WALL_MAPPED_M) ? found : undefined;
+        rails[i] = osm ? +!osm.wall : +(railed && drop > DROP_M);
+        walls[i] = osm ? +osm.wall : +(walled && cut > CUT_M);
+        rise[i] = Math.max(0, Math.min(cone, cut));
+        if (j >= 0) unknown[j] = cut;
+        tags[i] = osm?.height ?? 0;
+        if (j >= 0 && osm && !osm.wall) mappedRail[j] = 1;
+    }
+    const along = Float64Array.from(all, s => s.along), clear = zonesOf(stations, j => walked(line, stations[j], side)), free = towns.map((town, j) => Math.min(town, clear[j]));
+    const stopsAt = (stop: (j: number) => boolean) => (i: number) => inner(i) >= 0 && stop(inner(i));
+    // A town or a tight bend of less than BREAK_M stops nothing: a detail would dive for it and rise again.
+    const lasting = (stop: (j: number) => boolean) => {
+        const marks = Float64Array.from(stations, (_, j) => +stop(j));
+        withoutStubs(marks, stations, BREAK_M);
+        return marks;
+    };
+    const town = lasting(j => towns[j] <= 0), tight = lasting(j => folds[2 * j + (side > 0 ? 0 : 1)] < WALL_ROOM_M);
+    const stopsRail = (j: number) => mouths[j] <= 0 || (!mappedRail[j] && (clear[j] <= 0 || town[j] > 0));
+    const stopsWall = (j: number) => mouths[j] <= 0 || clear[j] <= 0 || tight[j] > 0;
+    const zoneRail = zonesOf(stations, stopsRail), zoneWall = zonesOf(stations, stopsWall), samplesRail = { along, stops: stopsAt(stopsRail) }, samplesWall = { along, stops: stopsAt(stopsWall) };
+    const toRail = metresTo(samplesRail, stretches(samplesRail, rails, 2 * (RAIL_NEAR_M + RAIL_RAMP_M) + BREAK_M));
+    const toWall = metresTo(samplesWall, stretches(samplesWall, walls, 2 * (WALL_NEAR_M + WALL_RAMP_M) + BREAK_M));
     const rail = new Float64Array(n), wall = new Float64Array(n), high = new Float64Array(n);
     for (let j = 0; j < n; j++) {
-        if (!wanted(j)) continue;
-        if (railed && free[j] > 0) rail[j] = eased(tested(line, stations, j, side, RAIL_TEST, 0, free[j], ground, barriers).d, RAIL_NEAR_M, RAIL_RAMP_M, free[j]);
-        const zone = Math.min(mouths[j], clear[j], walls[j]);
-        if (!walled || zone <= 0) continue;
-        const { d, mean, tagged } = tested(line, stations, j, side, WALL_TEST, cone, zone, ground, barriers);
-        wall[j] = eased(d, WALL_NEAR_M, WALL_RAMP_M, zone);
-        high[j] = Math.max(WALL_LEAST_M, Math.min(WALL_MOST_M, tagged || mean + WALL_OVER_M));
+        rail[j] = eased(toRail[j + TAIL_STEPS], RAIL_NEAR_M, RAIL_RAMP_M, zoneRail[j]);
+        wall[j] = eased(toWall[j + TAIL_STEPS], WALL_NEAR_M, WALL_RAMP_M, zoneWall[j]);
     }
-    return { rail, wall, high, free };
+    withoutStubs(rail, stations, 2 * RAIL_RAMP_M);
+    withoutStubs(wall, stations, 2 * WALL_RAMP_M);
+    for (let j = 0; j < n; j++) {
+        if (wall[j] <= 0) continue;
+        let sum = 0, count = 0, tag = 0;
+        for (let i = 0; i < m; i++) {
+            if (!walls[i] || Math.abs(along[i] - along[j + TAIL_STEPS]) > WALL_MEAN_M) continue;
+            sum += rise[i];
+            count++;
+            tag = Math.max(tag, tags[i]);
+        }
+        high[j] = Math.max(WALL_LEAST_M, Math.min(WALL_MOST_M, tag || (count ? sum / count : cone) + WALL_OVER_M));
+    }
+    return { rail, wall, high, free: free.map((metres, j) => (Number.isNaN(unknown[j]) ? 0 : metres)) };
 }

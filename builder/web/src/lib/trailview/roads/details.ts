@@ -3,10 +3,9 @@
 // nothing here reads the ground in the vertex stage but a backfill's outer rows. Every face casts but the backfill's
 // last, under the ground; the wall alone, seen from the sun, would let the sun past its foot.
 import { LIFT_M } from '../terrain/bins';
-import type { GroundAt } from './ground';
 import { lookWord, type PieceBuilder } from './piece';
 import { CF, MAT, type Part } from './section';
-import { allowed, coneOf, edgeOf, WALL_OUT_M, type Standing } from './standing';
+import { allowed, edgeOf, WALL_OUT_M, type Standing } from './standing';
 import { between, type Station } from './stations';
 import { countOf, point, quad, type Run } from './sweep';
 
@@ -30,8 +29,8 @@ const FACE_M = 0.03, CAP_FRONT_M = -0.01, CAP_BACK_M = 0.37, FOOT_M = 0.25;
 const CAP_UNDER_M = 0.08, CAP_OVER_M = 0.04;
 /** The backfill leaves the capstone this far under the wall's top, and dives under the ground this far past WALL_OUT_M. */
 const FILL_UNDER_M = 0.03, FILL_DIVE_M = 0.3;
-/** A delineator: its middle past the edge, half its depth and width, its foot under the ground, then its band and top over the ground. */
-const DELI_M = 0.55, DELI_HALF_M = [0.05, 0.06], DELI_Z = [-0.3, 0.74, 0.9, 1];
+/** A delineator: its middle past the edge, half its depth and width, its foot under a ditch, then its band and top over the edge. */
+const DELI_M = 0.55, DELI_HALF_M = [0.05, 0.06], DELI_Z = [-0.5, 0.74, 0.9, 1];
 /** Metres between delineators on a straight and in a bend, and how far from a mouth, a town or a sidewalk they keep. */
 const DELI_STEP_M = 40, DELI_BEND_M = 22, DELI_CLEAR_M = 5;
 /** A way bends where it turns this far within BEND_STATIONS each way. */
@@ -96,9 +95,9 @@ function post(b: PieceBuilder, run: Run, side: 1 | -1, s: Station, edge: number,
     face(b.casters, lo[0], lo[5], lo[2], lo[1]);
 }
 
-/** A delineator at station s, with its foot's ground `ground` metres over the edge: white, with a black band and an amber reflector toward the road. */
-function delineator(b: PieceBuilder, run: Run, side: 1 | -1, s: Station, edge: number, ground: number): void {
-    const place = placer(b, run, side, s, edge), [depth, width] = DELI_HALF_M, near = DELI_M - depth, out = DELI_M + depth, z = DELI_Z.map(v => v + ground);
+/** A delineator at station s: white, with a black band and an amber reflector toward the road. */
+function delineator(b: PieceBuilder, run: Run, side: 1 | -1, s: Station, edge: number): void {
+    const place = placer(b, run, side, s, edge), [depth, width] = DELI_HALF_M, near = DELI_M - depth, out = DELI_M + depth, z = DELI_Z;
     const ring = (over: number, mat: number) => [place(near, -width, over, mat), place(near, width, over, mat), place(out, width, over, mat), place(out, -width, over, mat)];
     const rings = [ring(z[0], DELI), ring(z[1], BAND), ring(z[2], DELI), ring(z[3], DELI)];
     const sides = (list: number[], low: number[], high: number[]) => {
@@ -127,7 +126,7 @@ function farOf(far: number[], share: Float64Array): number[] {
 }
 
 /** One side of a line's details in the stations that `pieceAt` holds. */
-export function roadside(run: Run & { far: number[] }, side: 1 | -1, standing: Standing, ground: GroundAt, owns: (s: Station) => boolean, pieceAt: (s: Station) => PieceBuilder): void {
+export function roadside(run: Run & { far: number[] }, side: 1 | -1, standing: Standing, owns: (s: Station) => boolean, pieceAt: (s: Station) => PieceBuilder): void {
     const { line, stations, far } = run, { rail, wall, high, free } = standing, last = stations.length - 1, delineated = allowed(line).railed;
     const edgeAt = (j: number) => edgeOf(line, stations[j]);
     const wallAt = (j: number) => wallSection(stations[j], side, edgeAt(j), wall[j], high[j]);
@@ -146,11 +145,7 @@ export function roadside(run: Run & { far: number[] }, side: 1 | -1, standing: S
         }
         if (delineated && free[j] >= DELI_CLEAR_M && free[j + 1] >= DELI_CLEAR_M && !rail[j] && !rail[j + 1] && !wall[j] && !wall[j + 1]) {
             const step = bent(stations, j) ? DELI_BEND_M : DELI_STEP_M;
-            for (let m = Math.ceil(s.along / step) * step; m < t.along; m += step) {
-                const at = between(s, t, (m - s.along) / (t.along - s.along)), edge = edgeAt(j), reach = coneOf(line, DELI_M);
-                const over = ground(at.x + side * at.ax * (edge + DELI_M), at.y + side * at.ay * (edge + DELI_M)) - at.z - side * at.bank * edge;
-                if (!Number.isNaN(over)) delineator(b, run, side, at, edge, Math.max(-reach, Math.min(reach, over)));
-            }
+            for (let m = Math.ceil(s.along / step) * step; m < t.along; m += step) delineator(b, run, side, between(s, t, (m - s.along) / (t.along - s.along)), edgeAt(j));
         }
     }
     for (const [share, sectionAt] of [[wall, wallAt], [rail, railAt]] as const) {

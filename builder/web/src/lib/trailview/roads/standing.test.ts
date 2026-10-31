@@ -58,10 +58,45 @@ describe('what stands beside a road', () => {
         expect(rail.every(share => share === 0)).toBe(true);
     });
 
-    it('bridges a gap between two cuts, with no dip in its top', () => {
-        const { line, stations } = road(), climbs = (m: number) => (m >= 60 && m <= 76) || (m >= 90 && m <= 106);
-        const { wall } = stands(line, stations, -1, (x, y) => 1000 + (climbs(alongOf(x)) && y > Y ? 5 : 0));
-        for (let m = 62; m < 104; m += 2) expect(at(stations, wall, m)).toBe(1);
+    /** Per stretch of a field that stands, how often its share rises again after it fell. */
+    const dipsOf = (shares: Float64Array) => {
+        const runs: number[] = [];
+        let falling = false;
+        shares.forEach((share, j) => {
+            const last = shares[j - 1] ?? 0;
+            if (share > 0 && last === 0) {
+                runs.push(0);
+                falling = false;
+            }
+            if (share > last && falling) runs[runs.length - 1]++;
+            falling ||= share < last;
+        });
+        return runs;
+    };
+
+    it.each([[-3, 0, 1, 'rail', 28], [0, 5, -1, 'wall', 32]] as const)('closes a gap of up to two ramps and a break whole, and opens a wider one to nothing, with one rise and one fall to a stretch', (left, right, side, field, width) => {
+        const { line, stations } = road();
+        for (let gap = 2; gap <= 50; gap += 2) {
+            const off = (x: number) => Math.abs(alongOf(x) - 100);
+            const standing = stands(line, stations, side, (x, y) => 1000 + (off(x) >= gap / 2 && off(x) <= gap / 2 + 25 ? (y < Y ? left : right) : 0));
+            const dips = dipsOf(standing[field]);
+            if (gap <= width - 4) expect(dips).toEqual([0]);
+            else if (gap >= width + 2) expect(dips).toEqual([0, 0]);
+            else expect(dips.every(count => count === 0)).toBe(true);
+            if (gap <= width - 4) expect(at(stations, standing[field], 100)).toBe(1);
+        }
+    });
+
+    it('leaves no stub between two stops', () => {
+        const { line, stations } = road(), mouths = zonesOf(stations, j => Math.abs(stations[j].along - 80) < 8 || Math.abs(stations[j].along - 100) < 8);
+        const { wall } = stands(line, stations, -1, bump(0, 5), mouths);
+        expect(at(stations, wall, 90)).toBe(0);
+    });
+
+    it('holds one height across a closed gap', () => {
+        const { line, stations } = road(), climbs = (m: number) => (m >= 60 && m <= 76) || (m >= 96 && m <= 112);
+        const { high } = stands(line, stations, -1, (x, y) => 1000 + (climbs(alongOf(x)) && y > Y ? 5 : 0));
+        for (let m = 62; m < 110; m += 2) expect(at(stations, high, m)).toBeCloseTo(coneOf(line, 2.2) + 0.3, 3);
     });
 
     it('reads no ground past a mouth, so a cut in the mouth raises no stub', () => {
@@ -80,16 +115,31 @@ describe('what stands beside a road', () => {
         expect(at(stations, wall, 91)).toBe(0);
     });
 
-    it('takes a mapped barrier first: a rail on level ground, and no rail test beside a mapped wall', () => {
+    it('takes a mapped barrier first: a rail on level ground, a wall where the ground climbs less than a cut', () => {
         const { line, stations } = road(), north = Y - 4.5 / unit;
         const rail: Barrier = { xy: [xOf(80), north, xOf(120), north], wall: false };
         expect(at(stations, stands(line, stations, 1, bump(0, 0), undefined, undefined, [rail]).rail, 100)).toBe(1);
         const wall: Barrier = { xy: [xOf(70), north, xOf(90), north], wall: true, height: 2.5 };
-        const { rail: dropped } = stands(line, stations, 1, bump(-3, 0), undefined, undefined, [wall]);
-        expect(at(stations, dropped, 80)).toBe(0);
         const climbs = stands(line, stations, 1, bump(1, 0), undefined, undefined, [wall]);
         expect(at(stations, climbs.wall, 80)).toBe(1);
         expect(at(stations, climbs.high, 80)).toBe(2.5);
+    });
+
+    it('stands a mapped wall only where the ground climbs: on the low side it holds the road up, and the drop test stands', () => {
+        const { line, stations } = road(), north = Y - 4.5 / unit, wall: Barrier = { xy: [xOf(70), north, xOf(90), north], wall: true, height: 3 };
+        const { wall: shares, rail } = stands(line, stations, 1, bump(-6, 0), undefined, undefined, [wall]);
+        expect(shares.every(share => share === 0)).toBe(true);
+        expect(at(stations, rail, 80)).toBe(1);
+    });
+
+    it('stands a mapped rail at any class and in a town, and out of a mouth', () => {
+        const { line, stations } = road({ profile: Object.keys(PROFILES).indexOf('service') }), north = Y - 4.5 / unit, rail: Barrier = { xy: [xOf(80), north, xOf(120), north], wall: false };
+        const town = zonesOf(stations, j => stations[j].along > 60 && stations[j].along < 140);
+        expect(at(stations, stands(line, stations, 1, bump(0, 0), far(stations), town, [rail]).rail, 100)).toBe(1);
+        const mouth = zonesOf(stations, j => Math.abs(stations[j].along - 100) < 8);
+        const { rail: split } = stands(line, stations, 1, bump(0, 0), mouth, mouth, [rail]);
+        expect(at(stations, split, 100)).toBe(0);
+        expect(at(stations, split, 86)).toBeGreaterThan(0);
     });
 
     it('reads the barriers of a tile from its features, a wall with its height', () => {
@@ -112,7 +162,7 @@ describe('what stands beside a road', () => {
 function built(ground: GroundAt, side: 1 | -1): { b: PieceBuilder } {
     const { line, stations } = road(), b = new PieceBuilder(xOf(100), Y, size(16) / 2);
     const run = { id: 1, line, stations, reach: foldsOf(stations), lift: 0, prio: 0, base: 0, ways: waysOf([line]), far: stations.flatMap(({ along }, j) => (j === 0 || j === stations.length - 1 || Math.floor(along / 10) !== Math.floor(stations[j - 1].along / 10) ? [j] : [])) };
-    roadside(run, side, stands(line, stations, side, ground), ground, () => true, () => b);
+    roadside(run, side, stands(line, stations, side, ground), () => true, () => b);
     return { b };
 }
 

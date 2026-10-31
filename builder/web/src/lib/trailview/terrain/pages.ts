@@ -446,33 +446,43 @@ export class Pages {
         return wished;
     }
 
-    /** The body of a stored tile, undefined where it is absent: the roads read it too, so one request serves both. */
+    /** The body of a stored tile for the roads, undefined where it is absent: a request in flight serves them too. */
     body(z: number, x: number, y: number): Promise<ArrayBuffer | undefined> {
         const name = `${z}/${x}/${y}`, kept = this.bodies.get(name);
         if (kept || this.tiles.get(name)?.state === 'absent') return Promise.resolve(kept);
-        let request = this.requested.get(name);
-        if (!request) {
-            this.requests++;
-            request = this.source.fetch(z, x, y).then(data => {
-                if (data) {
-                    this.bytes += data.byteLength;
-                    this.keep(name, data);
-                } else this.tiles.set(name, { state: 'absent' });
-                return data;
-            }).finally(() => this.requested.delete(name));
-            this.requested.set(name, request);
-        }
+        const request = this.requested.get(name) ?? this.request(z, x, y);
+        return request.then(data => this.arrived(name, data));
+    }
+
+    private request(z: number, x: number, y: number): Promise<ArrayBuffer | undefined> {
+        const name = `${z}/${x}/${y}`, request = this.source.fetch(z, x, y);
+        this.requests++;
+        this.requested.set(name, request);
         return request;
+    }
+
+    /** Keeps the body of a request that ended, once; its absence stays known. */
+    private arrived(name: string, data: ArrayBuffer | undefined): ArrayBuffer | undefined {
+        if (!this.requested.delete(name)) return data;
+        if (data) {
+            this.bytes += data.byteLength;
+            this.keep(name, data);
+        } else this.tiles.set(name, { state: 'absent' });
+        return data;
     }
 
     /** Requests a stored tile, or decodes its kept body again. */
     private fetch(z: number, x: number, y: number): void {
         const name = `${z}/${x}/${y}`, tile = this.tiles.get(name);
+        const body = this.bodies.get(name);
         this.loads++;
-        this.tiles.set(name, { state: this.bodies.has(name) ? 'decoding' : 'loading', empty: tile?.empty });
+        this.tiles.set(name, { state: body ? 'decoding' : 'loading', empty: tile?.empty });
         (async () => {
-            const data = await this.body(z, x, y);
-            if (!data) return;
+            let data = body;
+            if (!data) {
+                data = this.arrived(name, await (this.requested.get(name) ?? this.request(z, x, y)));
+                if (!data) return this.tiles.set(name, { state: 'absent' });
+            }
             const quadrants = await this.source.decode(data);
             this.tiles.set(name, { state: 'done', empty: quadrants.map(quadrant => !quadrant) });
             quadrants.forEach((data, q) => {

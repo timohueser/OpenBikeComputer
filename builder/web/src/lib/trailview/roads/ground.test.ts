@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PAGE } from '../stream/heights';
 import { TILE_ZOOM } from '../stream/terrain';
 import { OWNER, size } from '../terrain/lod';
-import { groundAt, groundBodies, type GroundTile } from './ground';
+import { decodedGround, groundAt, groundBodies, type GroundTile } from './ground';
 
 const SIDE = 2 * PAGE, Z = TILE_ZOOM, UNITS = 2 ** (30 - Z);
 /** A tile with heights from `height` per pixel. */
@@ -32,6 +32,23 @@ describe('the ground of the road worker', () => {
         });
         expect(bodies.map(({ z, x, y }) => `${z}/${x}/${y}`)).toEqual([`${Z - 1}/50/100`]);
         expect(asked).toEqual([`${Z}/100/200`, `${Z - 1}/50/100`]);
+    });
+
+    it('leaves a tile that fails without ground, not on a coarser tile', async () => {
+        const owner = { level: OWNER, x: 4 * 100 + 1, y: 4 * 200 + 1 }, asked: string[] = [];
+        const bodies = await groundBodies(owner, async (z, x, y) => {
+            asked.push(`${z}/${x}/${y}`);
+            throw new Error('A tile failed.');
+        });
+        expect(bodies).toEqual([]);
+        expect(asked).toEqual([`${Z}/100/200`]);
+    });
+
+    it('keeps no failed decode: a tile that does not decode has no ground, and decodes anew', async () => {
+        const body = { z: Z, x: 1, y: 2, body: new ArrayBuffer(8) };
+        expect(await decodedGround(body)).toBeUndefined();
+        expect(await decodedGround(body)).toBeUndefined();
+        expect(groundAt([undefined])(0, 0)).toBeNaN();
     });
 
     it('reads the tile past an owner\'s edge within its margin', async () => {
