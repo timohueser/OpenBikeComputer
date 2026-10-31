@@ -63,6 +63,7 @@ A Goldfish is a fresh subagent that tests one document. [goldfish.md](reference/
 | Path | Holds |
 | --- | --- |
 | `docs/design/README.md` | the map: every system, its purpose and its dependencies. Read it first to find the systems that a task touches. |
+| `docs/design/map.json` | the map as data, with the line counts and the violations of each system. `cairn map` writes it. |
 | `docs/design/<system>.md` | one system doc: a header (`owns`, `depends_on`, `status`) and the body |
 | `docs/design/glossary.md` | the words to use and the words to avoid, when the file exists |
 | `tools/cairn/README.md` | the tool's commands and rules |
