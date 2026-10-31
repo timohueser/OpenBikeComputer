@@ -13,3 +13,7 @@ Simplified Technical English and adds fixed output formats.
 reference/writing.md takes ideas, not text, from SimpleEnglish
 (https://github.com/AminBlg/SimpleEnglish, MIT): two registers, terms
 explained at first use, and few rules with examples.
+
+reference/design.md adapts the section approval gate and the check of a
+draft against its brainstorm from skills/egm-draft/SKILL.md of the
+Elephant-Goldfish Model (Apache-2.0, as above).
