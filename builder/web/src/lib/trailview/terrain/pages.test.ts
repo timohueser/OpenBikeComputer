@@ -70,6 +70,26 @@ describe('the page pools', () => {
         expect(tiles.fetched.filter(name => name === '20/1/2')).toHaveLength(1);
     });
 
+    it('ask again for a tile that failed, and never call it absent, whoever met the failure first', async () => {
+        const tiles = source();
+        let failing = true;
+        const fetch = tiles.fetch;
+        tiles.fetch = async (z, x, y) => {
+            if (failing) throw new Error('A tile failed.');
+            return fetch(z, x, y);
+        };
+        const pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {}), byFetch = pages as unknown as { fetch(z: number, x: number, y: number): void };
+        await expect(pages.body(5, 1, 2)).rejects.toThrow();
+        await expect(pages.body(5, 1, 2)).rejects.toThrow();
+        byFetch.fetch(5, 2, 2);
+        await new Promise(resolve => setTimeout(resolve));
+        await expect(pages.body(5, 2, 2)).rejects.toThrow();
+        failing = false;
+        expect(await pages.body(5, 1, 2)).toBeDefined();
+        expect(await pages.body(5, 2, 2)).toBeDefined();
+        expect(tiles.fetched).toEqual(['5/1/2', '5/2/2']);
+    });
+
     it('fill the holes from one coarse tile, then load the tile under the eye, then the nearer tiles first', async () => {
         const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
         await settle(pages, wanted, 300, eye);

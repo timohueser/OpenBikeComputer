@@ -116,6 +116,8 @@ export class Pages {
     private readonly bodies = new Map<string, ArrayBuffer>();
     /** The requests for bodies in flight. */
     private readonly requested = new Map<string, Promise<ArrayBuffer | undefined>>();
+    /** Tiles that failed: they stay out for the pages as an absent one does, but they may exist, so the roads ask again. */
+    private readonly broken = new Set<string>();
     private bodyBytes = 0;
     private readonly free: Record<Kind, number[]>;
     private maskFree: number[];
@@ -449,7 +451,7 @@ export class Pages {
     /** The body of a stored tile for the roads, undefined where it is absent: a request in flight serves them too. */
     body(z: number, x: number, y: number): Promise<ArrayBuffer | undefined> {
         const name = `${z}/${x}/${y}`, kept = this.bodies.get(name);
-        if (kept || this.tiles.get(name)?.state === 'absent') return Promise.resolve(kept);
+        if (kept || (this.tiles.get(name)?.state === 'absent' && !this.broken.has(name))) return Promise.resolve(kept);
         const request = this.requested.get(name) ?? this.request(z, x, y);
         return request.then(data => this.arrived(name, data));
     }
@@ -458,6 +460,7 @@ export class Pages {
         const name = `${z}/${x}/${y}`, request = this.source.fetch(z, x, y);
         this.requests++;
         this.requested.set(name, request);
+        request.catch(() => this.requested.delete(name));
         return request;
     }
 
@@ -468,6 +471,7 @@ export class Pages {
             this.bytes += data.byteLength;
             this.keep(name, data);
         } else this.tiles.set(name, { state: 'absent' });
+        this.broken.delete(name);
         return data;
     }
 
@@ -493,6 +497,7 @@ export class Pages {
             // A tile that fails stays out for this page, as an absent one.
             if (!stopped(error)) console.warn(`Terrain tile ${name}: ${error instanceof Error ? error.message : error}`);
             this.failed++;
+            this.broken.add(name);
             this.tiles.set(name, { state: 'absent' });
         }).finally(() => {
             this.loads--;

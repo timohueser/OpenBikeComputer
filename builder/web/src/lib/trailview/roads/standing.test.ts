@@ -142,6 +142,13 @@ describe('what stands beside a road', () => {
         expect(at(stations, split, 86)).toBeGreaterThan(0);
     });
 
+    it('keeps a mapped rail off a sidewalk: its beam would stand on it', () => {
+        const { line, stations } = road({ xy: [xOf(0), Y, xOf(90), Y, xOf(LENGTH), Y], z: [1000, 1000, 1000], anchors: [true, true, true], sidewalks: [0, LEFT] }), north = Y - 4.5 / unit;
+        const { rail } = stands(line, stations, 1, bump(0, 0), undefined, undefined, [{ xy: [xOf(40), north, xOf(160), north], wall: false }]);
+        expect(at(stations, rail, 60)).toBe(1);
+        expect(at(stations, rail, 120)).toBe(0);
+    });
+
     it('reads the barriers of a tile from its features, a wall with its height', () => {
         const part = { outer: false, xy: new Int32Array([100, 100, 200, 100]), z: null };
         const { barriers } = features([{ kind: 'guard-rail', tags: {}, geometry: 'line', parts: [part] }, { kind: 'retaining-wall', tags: { height: '2.5' }, geometry: 'line', parts: [part] }], { level: 13, x: 4286, y: 2888 });

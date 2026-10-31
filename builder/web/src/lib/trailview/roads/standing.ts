@@ -177,7 +177,7 @@ function reached(stations: Station[]): Station[] {
 /**
  * What stands on `side` of a line. `mouths` and `towns` are the metres to a line's nearest mouth, and to its nearest
  * mouth or town, per station, and `folds` how far each side reaches (reachOf of stations.ts). A station that the ground
- * does not reach passes no test. A mapped rail stands past a class's or a town's rule, and stays out of a mouth.
+ * does not reach passes no test. A mapped rail stands past a class's or a town's rule, and stays out of a mouth and off a sidewalk.
  */
 export function standingOf(line: Line, stations: Station[], folds: Float64Array, side: 1 | -1, ground: GroundAt, mouths: Float64Array, towns: Float64Array, barriers: Barriers): Standing {
     const { railed, walled } = allowed(line), n = stations.length, all = reached(stations), m = all.length, cone = coneOf(line, WALL_OUT_M), mapped = barriers.segments.length > 0;
@@ -205,7 +205,7 @@ export function standingOf(line: Line, stations: Station[], folds: Float64Array,
         return marks;
     };
     const town = lasting(j => towns[j] <= 0), tight = lasting(j => folds[2 * j + (side > 0 ? 0 : 1)] < WALL_ROOM_M);
-    const stopsRail = (j: number) => mouths[j] <= 0 || (!mappedRail[j] && (clear[j] <= 0 || town[j] > 0));
+    const stopsRail = (j: number) => mouths[j] <= 0 || clear[j] <= 0 || (!mappedRail[j] && town[j] > 0);
     const stopsWall = (j: number) => mouths[j] <= 0 || clear[j] <= 0 || tight[j] > 0;
     const zoneRail = zonesOf(stations, stopsRail), zoneWall = zonesOf(stations, stopsWall), samplesRail = { along, stops: stopsAt(stopsRail) }, samplesWall = { along, stops: stopsAt(stopsWall) };
     const toRail = metresTo(samplesRail, stretches(samplesRail, rails, 2 * (RAIL_NEAR_M + RAIL_RAMP_M) + BREAK_M));
