@@ -1,73 +1,11 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OBC System Explorer</title>
-<style>
-__CSS__
-</style>
-</head>
-<body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
-  <defs>
-    <marker id="ah-edge" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" orient="auto"><path class="ah-edge" d="M0,0 L10,5 L0,10 z"/></marker>
-    <marker id="ah-bad" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path class="ah-bad" d="M0,0 L10,5 L0,10 z"/></marker>
-    <marker id="ah-warn" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path class="ah-warn" d="M0,0 L10,5 L0,10 z"/></marker>
-    <marker id="ah-uses" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" orient="auto"><path class="ah-uses" d="M0,0 L10,5 L0,10 z"/></marker>
-    <marker id="ah-usedby" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" orient="auto"><path class="ah-usedby" d="M0,0 L10,5 L0,10 z"/></marker>
-  </defs>
-</svg>
-<div class="wrap">
-  <header class="top">
-    <h1>System explorer</h1>
-    <div class="top-row">
-      <p class="note">Generated from the system docs and the code. Do not edit by hand.</p>
-      <div class="stats" id="stats"></div>
-    </div>
-  </header>
-
-  <div class="toolbar">
-    <div class="tabs" role="tablist" aria-label="View">
-      <button role="tab" data-view="focus">Focus</button>
-      <button role="tab" data-view="matrix">Matrix</button>
-      <button role="tab" data-view="overview">Overview</button>
-    </div>
-    <label class="search"><input id="q" type="search" list="names" placeholder="Find a system" autocomplete="off" spellcheck="false" aria-label="Find a system"></label>
-    <datalist id="names"></datalist>
-    <div class="filters">
-      <fieldset id="areas"><legend>Areas</legend></fieldset>
-      <div class="sep"></div>
-      <label><input type="checkbox" id="opt-test" checked> Include test-only dependencies</label>
-      <label><input type="checkbox" id="opt-problems"> Problems only</label>
-    </div>
-  </div>
-
-  <div class="subbar">
-    <nav class="trail" id="trail" aria-label="Recent selections"></nav>
-    <div class="legend" id="legend"></div>
-  </div>
-
-  <main>
-    <section class="view" id="view-focus" role="tabpanel"></section>
-    <section class="view" id="view-matrix" role="tabpanel" hidden></section>
-    <section class="view" id="view-overview" role="tabpanel" hidden></section>
-  </main>
-</div>
-<div class="tip" id="tip" hidden></div>
-
-<script type="application/json" id="system-map">
-__MAP_JSON__
-</script>
-<script>
 (function () {
   "use strict";
   const MAP = JSON.parse(document.getElementById("system-map").textContent);
   const $ = (sel, root) => (root || document).querySelector(sel);
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const fmt = (n) => Number(n).toLocaleString("en-US");
-  // The docs site replaces this with its own rendered page for a system.
-  const DOC_URL = "https://github.com/timohueser/openbikecomputer/blob/develop/docs/design/{name}.md";
+  // Relative to the explorer page: build_docs.py renders each system doc under it.
+  const DOC_URL = "{name}/";
   const docUrl = (name) => DOC_URL.replace("{name}", encodeURIComponent(name));
   const RULE_LABELS = {
     cycle: "Cycle",
@@ -189,16 +127,18 @@ __MAP_JSON__
     });
 
     // One delegated click handler for every element that names a system.
-    document.querySelector("main").addEventListener("click", (ev) => {
+    $(".views").addEventListener("click", (ev) => {
       const t = ev.target.closest("[data-name]");
       if (!t) return;
       // A click re-renders the overview, so a dblclick event would reach a detached chip; use the click count.
-      const toFocus = t.matches(".rl, .cl") || (t.matches(".chip") && ev.detail > 1);
-      select(t.dataset.name, toFocus ? { view: "focus" } : undefined);
+      // The first click can wrap the trail and move the chips, so the second one opens the chip of the first.
+      const again = t.matches(".chip") && ev.detail > 1;
+      const toFocus = t.matches(".rl, .cl") || again;
+      select(again ? state.selected : t.dataset.name, toFocus ? { view: "focus" } : undefined);
     });
 
     const ro = new ResizeObserver(() => drawWires());
-    ro.observe(document.querySelector("main"));
+    ro.observe($(".views"));
   }
 
   function renderTrail() {
@@ -306,10 +246,7 @@ __MAP_JSON__
           ? `<p class="with">With ${peers.map((n) => `<button data-name="${esc(n)}">${esc(n)}</button>`).join(", ")}</p>` : "";
         body = with_ + `<ul>${items.map(cycleRow).join("")}</ul>`;
       } else {
-        // The checker can report one finding more than once; show it once with its count.
-        const seen = items.reduce((m, p) => m.set(p.message, (m.get(p.message) || 0) + 1), new Map());
-        body = `<ul>${[...seen].map(([msg, k]) =>
-          `<li>${esc(msg)}${k > 1 ? `<span class="dup" title="Reported ${k} times">×${k}</span>` : ""}</li>`).join("")}</ul>`;
+        body = `<ul>${items.map((p) => `<li>${esc(p.message)}</li>`).join("")}</ul>`;
       }
       const n = items.length ? `<span class="n">${items.length}</span>` : "";
       h += `<div class="pgroup ${rule === "cycle" ? "cycle" : ""}"><h4>${esc(RULE_LABELS[rule] || rule)}${n}</h4>${body}</div>`;
@@ -547,6 +484,3 @@ __MAP_JSON__
   const fromHash = decodeURIComponent(location.hash.slice(1));
   select(byName.has(fromHash) ? fromHash : defaultName);
 })();
-</script>
-</body>
-</html>
