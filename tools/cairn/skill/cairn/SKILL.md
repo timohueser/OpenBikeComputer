@@ -1,6 +1,6 @@
 ---
 name: cairn
-description: Keeps one design document for each system of this repository, and moves a designed change through the `Status:` line of its GitHub issue. Use it whenever the user asks to document a system or write a system doc; to review a document, a design or an issue design (not code and not a pull request); or to explore a problem, plan or design a change, approve a design, implement or build an issue (#N), or fix a bug or the findings of an issue. Use it also when the request does not name cairn.
+description: Keeps one design document for each system of this repository, and moves a designed change through the `Status:` line of its GitHub issue. Use it whenever the user asks to document a system or write a system doc; to review a document, a design or an issue design (not code and not a pull request); or to explore a problem or a new feature, plan or design a change, approve a design, implement or build an issue (#N), or fix a bug or the findings of an issue. Use it also when the request does not name cairn.
 ---
 
 # cairn
@@ -32,7 +32,7 @@ Choose the command from the request. If two commands fit, ask once. Read the com
 | Command | Use it when | Reference |
 | --- | --- | --- |
 | `init` | once per project: the config, an empty map, a glossary draft | not written yet |
-| `explore` | the problem or the direction is still open | [explore.md](reference/explore.md) |
+| `explore` | a new feature, or a problem whose direction is still open | [explore.md](reference/explore.md) |
 | `design #N` | the direction is clear and the change needs a plan | [design.md](reference/design.md) |
 | `build #N` | the design is approved | [build.md](reference/build.md) |
 | `fix` | a bug, a small tweak, or the small findings of a findings issue | [fix.md](reference/fix.md) |

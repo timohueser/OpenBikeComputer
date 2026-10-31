@@ -22,7 +22,7 @@ Then review it as [review.md](review.md) says.
 
 ## 4. Steps for the user
 
-Some `Done when` steps only the user can do, such as a flash test on the board. Ask the user to do each one. Say exactly what to check, and what a pass and a fail look like. Wait for the result before you tell the user that the change is ready. If a step fails, fix the cause and ask again.
+Some `Done when` steps only the user can do, such as a flash test on the board. Ask for them when the pull request opens, so that they run during the review. Ask the user to do each one. Say exactly what to check, and what a pass and a fail look like. Wait for the result before you tell the user that the change is ready. If a step fails, fix the cause and ask again.
 
 When the pull request merges, set `Status: done`.
 

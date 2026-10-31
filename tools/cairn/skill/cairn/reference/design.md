@@ -6,7 +6,7 @@ Writes the plan of a change into the body of its issue, one section at a time wi
 
 Read the issue, the map, the docs of the systems that the change touches, and the code that the plan changes.
 
-A design needs a problem, a chosen direction and at least one rejected alternative. If one is missing, ask for it, or suggest `explore` once. If the change has no issue, open one in step 3, when the user approves the TL;DR: `gh api repos/{owner}/{repo}/issues -X POST -f title="<the goal>" -F body=@FILE`.
+`design` is a valid start: a change does not need `explore` first. If the problem is unclear, ask. If the direction is still open, suggest `explore` once. If the change has no issue, open one in step 3, when the user approves the TL;DR: `gh api repos/{owner}/{repo}/issues -X POST -f title="<the goal>" -F body=@FILE`.
 
 ## 2. Size
 
@@ -15,14 +15,14 @@ Set the size from its signals. One signal of a larger size is enough to move up.
 | Size | Signals | Goldfish tests |
 | --- | --- | --- |
 | S | 1 system, no contract change, no new dependency between systems, up to 500 changed lines | none |
-| M | 2 or 3 systems, a compatible contract change, a new dependency between systems, or up to 1,500 changed lines | comprehension |
+| M | 2 or 3 systems, a compatible contract change, a new dependency between systems, or up to 1,500 changed lines | critic |
 | L | more than 3 systems, a breaking contract change, a new or split system, more than 1,500 changed lines, or a change that released devices cannot easily undo, such as the settings blob or the formats on the card | comprehension, critic and readiness |
 
 When you are not sure between two sizes, take the larger one. Only the user makes a size smaller. An S design can be short: the TL;DR and a few plan steps.
 
 ## 3. Section by section
 
-The body has this layout. Below `## Done when`, keep a section that `explore` wrote, such as Limits, when the design still needs it.
+The body has this layout. Below `## Done when`, keep a section that `explore` wrote, such as Limits, when the design still needs it. Add `## Out of scope` only when the user or you want to say what this change must not include.
 
 ```text
 Status: designed
@@ -32,7 +32,7 @@ Status: designed
 **Goal:** <what is true when the change is done, in one sentence>
 **Problem:** <what is wrong now>
 **Decision:** <the chosen direction>
-**Rejected:** <each alternative, and why>
+**Rejected:** <each alternative that you or the user considered, and why, or none>
 **Systems:** <the system slugs from the map>
 **Contracts:** <the files in `specs/` or the system doc headers that change, or none>
 **Size:** <S, M or L> (<its signals>)
