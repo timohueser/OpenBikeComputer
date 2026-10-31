@@ -40,4 +40,8 @@ You decide the route. The reviewer's severity is a hint: it does not know the de
 
 Fix the findings. If the fixes are large, send the same reviewer only the delta: `git diff <the noted commit>..HEAD`. Continue that subagent (Claude Code: `SendMessage`; Codex: `followup_task`). If it is gone, start a new reviewer with the earlier findings and the delta. When the same finding comes back a third time, stop and ask the user.
 
-The change is ready when CI is green and no fix-now or ask-the-user finding is open. Merge it only if the user asked you to. Otherwise tell the user that it is ready.
+## Merge and close
+
+Merge the pull request with `gh pr merge N --merge` when CI is green and no fix-now or ask-the-user finding is open. Do not merge when the user asked to look at the change first, when a decision waits for the user, or when a step that only the user can do has not passed. In those cases, tell the user that the change is ready and what it waits for.
+
+After the merge, check each issue that the pull request finished with `gh issue view N --json state`, and close it if GitHub did not: `gh issue close N`. For a sub-issue, also tick its line in the epic. Close the epic when its last sub-issue is closed.
