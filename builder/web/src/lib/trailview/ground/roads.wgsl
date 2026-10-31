@@ -15,7 +15,9 @@ struct Road {
     wall: f32,
     // The share of the ground that a road's or a path's cut or fill shaped: within its reach of the edge.
     shaped: f32,
-    // Of that share, a path's bench, which lights as its hillside does.
+    // Where corridors draw the ways: the share of the ground on a road's cut or fill, whose detail runs up its
+    // face, and on a path's bench, which lights as its hillside does.
+    cuts: f32,
     bench: f32,
 }
 
@@ -195,16 +197,16 @@ fn masonry(stone: vec3f, along: f32, altitude: f32, w: f32) -> vec3f {
 // normal of the drawn triangle.
 fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32) -> Road {
     if (!DETAIL) {
-        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0);
+        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
     let level = lod(s);
     let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
     if (reach <= 0.0) {
-        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0);
+        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
     let mask = mask_at(s, u32(ceil(level)), true);
     if (mask.level == 0u || mask.kind.x == 0u) {
-        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0);
+        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
     let code = mask.kind.x;
     let paved = code <= 2u || code == 7u || code == PAVING_CODE;
@@ -223,9 +225,11 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     let half = max(mask.half, 0.05);
     let shaped_m = select(SHAPED_M, PATH_SHAPED_M, half < PATH_HALF_M);
     let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, edge - walk));
-    let bench = select(0.0, shaped, masks.corridors > 0.0 && half < PATH_HALF_M);
+    let cuts = select(0.0, shaped, masks.corridors > 0.0 && half >= PATH_HALF_M);
+    // The bench reaches a metre past the edge: the band and a texel of the heights about it.
+    let bench = select(0.0, 1.0 - smoothstep(0.75, 1.25, edge), masks.corridors > 0.0 && half < PATH_HALF_M);
     if (edge - walk > w + 0.5) {
-        return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, bench);
+        return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, bench);
     }
     let across = abs(mask.across);
     // The pixel's span across the road: far off, a pixel is long along the view and narrow across it,
@@ -250,8 +254,8 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     // corridor leaves it. A paved way keeps its paint: where the stamped ground lies over its corridor, the paint
     // is the way.
     let corridor = code >= CODE_GRAVEL && code <= CODE_PATH && !paint_draws(distance, pixel);
-    // A triangle that rises over a sidewalk's edge would carry its paint up the cut. A corridor draws the sidewalk.
-    let riding = select(0.0, (1.0 - paint_share(distance)) * (1.0 - smoothstep(0.8, 0.92, flat)), edge > 0.0);
-    let cover = select(1.0, 0.0, corridor) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach * (1.0 - riding);
-    return Road(surface.rgb, cover, surface.w, wall, shaped, bench);
+    // A triangle that rises over a sidewalk's edge would carry its paint up the cut: a corridor draws the sidewalk.
+    let riding = edge > 0.0 && flat < 0.86 && masks.corridors > 0.0;
+    let cover = select(1.0, 0.0, corridor || riding) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
+    return Road(surface.rgb, cover, surface.w, wall, shaped, cuts, bench);
 }
