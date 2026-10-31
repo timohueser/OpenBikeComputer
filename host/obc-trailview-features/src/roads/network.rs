@@ -7,6 +7,9 @@ use crate::metres;
 const LOOK_COS: f64 = -0.3;
 /// A way out runs toward its point this far along it: the first segment of OSM can be a stub.
 const LOOK_M: f64 = 8.0;
+/// The legs of a hairpin lie closer than this cosine 8 m along. Chosen between a right angle, where an
+/// L-bend's legs stand, and the 65 degrees of a road that turns round 4 m.
+const FOLD_COS: f64 = 0.25;
 
 /// The ways as arrays. An OSM vertex is an occurrence of a point in a way; ways that share a point
 /// share its variable. Between two occurrences a way gets vertices so that no segment is longer
@@ -366,24 +369,24 @@ impl Network {
     /// The arms of a junction of `roads`. Its through pair in the look holds the best class that has
     /// a pair, then the best class beside that, then runs most nearly straight on. So a road runs on
     /// into a lesser class, and a stem that ends on a straight road leaves it as an arm. The only two
-    /// ways of the best class are the pair where they leave the point opposite: at a hairpin's apex
-    /// their points 8 m along lie close. Two ways run on, and a junction with no pair has no arms. A
-    /// level crossing of three road ways or more has two rounds: the tracks' and the roads', so that
-    /// the roads keep a through pair.
+    /// ways of the best class are the pair at a hairpin's apex: they leave it opposite, and 8 m along
+    /// they have folded back. Two ways run on, and a junction with no pair has no arms. A level
+    /// crossing of three road ways or more has two rounds: the tracks' and the roads', so that the
+    /// roads keep a through pair.
     fn look_arms(&mut self, roads: &[Road]) {
         if roads.len() <= 2 {
             return;
         }
+        let out: Vec<[f64; 2]> = roads.iter().map(|&(o, step, ..)| self.way_out(o, step)).collect();
         let first = roads.iter().map(|road| road.2).min();
         let top: Vec<usize> = (0..roads.len()).filter(|&n| Some(roads[n].2) == first).collect();
         if let [i, k] = top[..] {
-            if dot(roads[i].3, roads[k].3) <= LOOK_COS {
+            if dot(roads[i].3, roads[k].3) <= LOOK_COS && dot(out[i], out[k]) >= FOLD_COS {
                 let arms = (0..roads.len()).filter(|&n| n != i && n != k);
                 self.arms.extend(arms.map(|n| (roads[n].0, roads[n].1)));
                 return;
             }
         }
-        let out: Vec<[f64; 2]> = roads.iter().map(|&(o, step, ..)| self.way_out(o, step)).collect();
         let mut best: Option<((usize, usize, f64), usize, usize)> = None;
         for i in 0..roads.len() {
             for k in i + 1..roads.len() {

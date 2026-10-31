@@ -13,7 +13,7 @@ import { meshBytes, planOf, roadMesh } from './mesh';
 import { RANGE_M } from './roads';
 import { lookWord, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 import { CF, LOOK, lookOf, MAT, sideOf } from './section';
-import { reachOf, stationsOf, type Station } from './stations';
+import { reachOf, stationIndex, stationsOf, type Station } from './stations';
 import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
 
@@ -73,7 +73,7 @@ const decoded = ({ vertices, x, y }: RoadPiece) => {
 describe('the corridor meshes of the fixture', () => {
     const meshes = tiles.flatMap(tile => tile.meshes), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions: 205578 vertices and 5.53 MiB at most, 20085 and 0.55 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions: 205977 vertices and 5.54 MiB at most, 20097 and 0.55 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
         expect(Math.max(...count)).toBeLessThanOrEqual(206_000);
         expect(Math.max(...bytes)).toBeLessThanOrEqual(5.6 * 2 ** 20);
@@ -226,6 +226,22 @@ describe('the joints of the fixture', () => {
         }
         expect(joints).toBeGreaterThan(400);
         expect(worst).toBeLessThanOrEqual(0.01);
+    });
+});
+
+describe('the mouths of the fixture', () => {
+    it('leave a side arm\'s edges with no step: a grade of 0.89 at most, measured on the fixture of format 3, over the stations past a mouth', () => {
+        let worst = 0;
+        for (const { list, tile } of tiles) {
+            for (const { way: { run: { stations }, step }, far } of planOf(features(list, tile).lines).junctions.mouths) {
+                const j = stationIndex(stations, far), edge = (s: Station, side: number) => s.z + s.bank * side * s.h;
+                for (let k = 0; k < 6 && stations[j + (k + 1) * step]; k++) {
+                    const s = stations[j + k * step], t = stations[j + (k + 1) * step], d = Math.abs(t.along - s.along);
+                    if (d > 0.05) for (const side of [1, -1]) worst = Math.max(worst, Math.abs(edge(s, side) - edge(t, side)) / d);
+                }
+            }
+        }
+        expect(worst).toBeLessThanOrEqual(1);
     });
 });
 

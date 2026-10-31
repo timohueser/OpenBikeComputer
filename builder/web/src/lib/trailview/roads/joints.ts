@@ -22,7 +22,8 @@ export function jointsOf(lines: Line[], runs: Run[]): Joints {
     return new Map(runs.map(run => [run, ([0, 1] as const).map(end => {
         const other = partners.get(run.line)?.[end], them = other && runOf.get(other);
         if (!them) return undefined;
-        const s = endOf(run, end), meets = [0, 1].find(at => endOf(them, at as 0 | 1).x === s.x && endOf(them, at as 0 | 1).y === s.y) as 0 | 1 | undefined;
+        // A closed line's end meets its other end, not itself.
+        const s = endOf(run, end), meets = (them === run ? [1 - end] : [0, 1]).find(at => endOf(them, at as 0 | 1).x === s.x && endOf(them, at as 0 | 1).y === s.y) as 0 | 1 | undefined;
         return meets === undefined ? undefined : { run: them, end: meets, flip: (end === 1) === (meets === 0) ? 1 : -1 };
     })] as const));
 }
@@ -47,14 +48,16 @@ export function mitre(joints: Joints): void {
     for (const move of moved) move();
 }
 
-/** The stations up to `metres` from metres `along` of a run, stepping `step`, on across its joints: each with its metres from there, and -1 where its left is the first run's right. */
+/** The stations up to `metres` from metres `along` of a run, stepping `step`, on across its joints, once each on a small ring: each with its metres from there, and -1 where its left is the first run's right. */
 export function* onward(joints: Joints, run: Run, along: number, step: 1 | -1, metres: number): Generator<{ s: Station; metres: number; flip: 1 | -1 }> {
+    const seen = new Set<Station>();
     let flip: 1 | -1 = 1, done = 0;
     for (;;) {
         const { stations } = run;
         for (let j = stationIndex(stations, along); j >= 0 && j < stations.length; j += step) {
             const d = done + Math.abs(stations[j].along - along);
-            if (d > metres) return;
+            if (d > metres || seen.has(stations[j])) return;
+            seen.add(stations[j]);
             yield { s: stations[j], metres: d, flip };
         }
         const joint = joints.get(run)?.[step > 0 ? 1 : 0];

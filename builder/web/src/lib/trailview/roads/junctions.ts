@@ -9,7 +9,7 @@ import { cornerOf, type Corner } from './corner';
 import { jointsOf, mitre } from './joints';
 import { endsOf, type PathEnd } from './path-ends';
 import { settleHeights } from './planes';
-import { junctionFace } from './section';
+import { junctionFace, LOOK } from './section';
 import { between, CUT, SAME_M, stationIndex } from './stations';
 import type { Run } from './sweep';
 
@@ -77,7 +77,7 @@ function mouthsAt(ways: Arm[], corners: Corner[], pair: Arm[]): Mouth[] {
 function junctionAt(lines: Line[], meeting: Meeting, out: Junctions, mark: Mark): { drives: Way[]; corners: Corner[] } {
     const arms = meeting.roads, pair = arms.filter(({ through }) => through);
     if (arms.length < 3 || pair.length !== 2 || groundOf(arms).length < 2) return { drives: [], corners: [] };
-    const drives = drivesOf(arms, pair), road = pair.find(({ line }) => junctionFace(line))?.line;
+    const drives = drivesOf(arms, pair), faced = pair.map(({ line }) => line).filter(line => junctionFace(line)), road = faced.find(line => junctionFace(line)!.mat === LOOK.ASPHALT) ?? faced[0];
     // A pair of soil has no surface to join: the ruts cross, and the ground shows between.
     if (!road) return { drives, corners: [] };
     const ways = arms.filter(arm => !(drives as Arm[]).includes(arm)), found = cornersAt(lines, meeting, ways), mouths = mouthsAt(ways, found, pair);

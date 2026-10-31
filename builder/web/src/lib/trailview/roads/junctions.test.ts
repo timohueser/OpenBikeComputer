@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { SIDE_BACK, SIDE_ON } from '../stream/features';
 import { metresPerUnit, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
+import { jointsOf, onward } from './joints';
 import { cornerFaces, mouthFaces } from './junction-faces';
 import { planOf } from './mesh';
 import { PieceBuilder, ROAD_VERTEX } from './piece';
@@ -256,6 +257,12 @@ describe('a track', () => {
         expect(plan.stations(main).some(s => s.cut)).toBe(false);
     });
 
+    it('through a junction with a paved road leaves its faces to the road\'s surface', () => {
+        const road = way([[-100, 0], [0, 0]]), plan = planned([way([[0, 0], [100, 0]], { profile: profile('track'), code: gravel }), road, stem([0, 100])]);
+        expect(plan.junctions.corners).not.toHaveLength(0);
+        for (const corner of plan.junctions.corners) expect(corner.road).toBe(road);
+    });
+
     it('that joins at a hairpin\'s apex has a mouth on the road, which the bake keeps through', () => {
         const road = way(arc([0, 4], 4, -180, 0)), track = stem([0, -60], { profile: profile('track'), code: gravel }), plan = planned([road, track]);
         expect(plan.junctions.mouths.map(({ way: { line } }) => line)).toEqual([track]);
@@ -429,6 +436,27 @@ describe('two lines of a road that OSM splits', () => {
         const a = way([[-100, 0], [0, 0]], { bank: [0.06, 0.06] }), b = way([[100, 0], [0, 0]], { bank: [0.02, 0.02] }), plan = planned([a, b]);
         expect(plan.stations(a).at(-1)!.bank).toBeCloseTo(0.02, 6);
         expect(plan.stations(b).at(-1)!.bank).toBeCloseTo(-0.02, 6);
+    });
+});
+
+describe('a closed line', () => {
+    /** A circle of radius r metres that ends on its first point, with a side road at that point. */
+    const ring = (r: number, extra: Extra = {}) => {
+        const line = way(arc([0, 0], r, 0, 360, 15), extra);
+        line.xy.splice(-2, 2, line.xy[0], line.xy[1]);
+        return [line, way([[r, 0], [r + 60, 0]], { sideWays: [SIDE_ON, 0], profile: profile('residential') })];
+    };
+
+    it('joins its end to its other end, not to itself, so its edges hold across the joint', () => {
+        const lines = ring(30, { bank: new Array(25).fill(0.06) }), plan = planned(lines), stations = plan.stations(lines[0]), [s, t] = [stations[0], stations.at(-1)!];
+        expect(s.bank).toBeGreaterThan(0.01);
+        for (const side of [1, -1]) expect(s.z + s.bank * side * s.h).toBeCloseTo(t.z + t.bank * side * t.h, 3);
+    });
+
+    it('takes each station once on a ring shorter than a junction\'s reach, so a height is not added twice', () => {
+        const lines = ring(3), plan = planned(lines), run = plan.of(lines[0]), walked = [...onward(jointsOf(lines, plan.runs), run, 0, 1, 60)].map(({ s }) => s);
+        expect(new Set(walked).size).toBe(walked.length);
+        expect(walked).toHaveLength(run.stations.length);
     });
 });
 

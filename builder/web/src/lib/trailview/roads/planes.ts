@@ -55,9 +55,13 @@ function raises(mouths: Mouth[], joints: Joints): Map<Station, [number, number]>
 /** Moves a side arm's edges onto the through road's plane up to its mouth's end, and back to their own heights past it, on across its joints. */
 function conform({ way, far, through }: Mouth, joints: Joints): void {
     const { stations, lift } = way.run, reach = Math.abs(far - way.along), shifts = edgesOf(stationOn(stations, far), through, lift).map(({ own, plane }) => Math.max(0, plane - own));
-    for (const { s, metres, flip } of onward(joints, way.run, way.along, way.step, reach + CONFORM_M)) {
+    // A through way can be this line, so every height is read before any is written.
+    const moved = [...onward(joints, way.run, way.along, way.step, reach + CONFORM_M)].map(({ s, metres, flip }) => {
         const fade = 1 - smooth(Math.max(0, metres - reach) / CONFORM_M), edge = (side: number, own: number) => own + shifts[flip > 0 ? side : 1 - side] * fade;
         const [left, right] = metres <= reach ? edgesOf(s, through, lift).map(({ own, plane }) => Math.max(plane, own)) : [edge(0, s.z + s.bank * s.h), edge(1, s.z - s.bank * s.h)];
+        return { s, left, right };
+    });
+    for (const { s, left, right } of moved) {
         s.z = (left + right) / 2;
         s.bank = (left - right) / (2 * s.h);
     }

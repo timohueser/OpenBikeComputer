@@ -91,7 +91,7 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node): RoadMesh {
 }
 
 /** The heap per station of a plan, per segment with the tile's shapes, and per corner, mouth and path end, fitted to the V8 heap of fixture tiles. */
-const STATION_BYTES = 240, SEGMENT_BYTES = 430, FACE_BYTES = 750;
+const STATION_BYTES = 240, SEGMENT_BYTES = 430, FACE_BYTES = 3500;
 
 /** The heap that hangs from a tile's features once its plan stands. */
 export function planBytes(list: Feature[], tile: Node): number {
