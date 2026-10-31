@@ -1,6 +1,7 @@
 // The faces of what stands beside a road: W-beam guardrails on posts, masonry retaining walls and delineators.
 // A rail or a wall is a cross-section swept like the road's own (sweep.ts), and its heights come from standing.ts, so
-// nothing here reads the ground in the vertex stage but a backfill's outer rows. Every face but the backfill casts.
+// nothing here reads the ground in the vertex stage but a backfill's outer rows. Every face casts but the backfill's
+// last, under the ground; the wall alone, seen from the sun, would let the sun past its foot.
 import { LIFT_M } from '../terrain/bins';
 import type { GroundAt } from './ground';
 import { lookWord, type PieceBuilder } from './piece';
@@ -53,7 +54,7 @@ function wallSection(s: Station, side: 1 | -1, edge: number, share: number, high
     return parts;
 }
 
-/** Faces between the sections of stations j and k, up to where a bend's fold stops them. A far face that casts joins the casters. */
+/** Faces between the sections of stations j and k, up to where a bend's fold stops them. A far face that casts goes to the casters. */
 function strip(b: PieceBuilder, run: Run, side: 1 | -1, j: number, k: number, parts: Part[], others: Part[], far: boolean): void {
     const most = side > 0 ? 0 : 1, reachS = run.reach[2 * j + most], reachT = run.reach[2 * k + most];
     const at = (station: number, part: Part) => point(b, run, station, part, side * part.a, run.stations[station].h);
@@ -61,7 +62,7 @@ function strip(b: PieceBuilder, run: Run, side: 1 | -1, j: number, k: number, pa
     for (let c = 1; c < parts.length && parts[c].a <= reachS && others[c].a <= reachT; c++) {
         if (far && !parts[c].far) continue;
         const qs = at(j, parts[c]), qt = at(k, others[c]);
-        quad(!far ? b.near : parts[c].mat === GROUND ? b.far : b.casters, ps, qs, qt, pt, side > 0);
+        quad(!far ? b.near : parts[c].flags === CF.MESH ? b.far : b.casters, ps, qs, qt, pt, side > 0);
         ps = qs;
         pt = qt;
     }

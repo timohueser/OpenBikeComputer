@@ -163,7 +163,10 @@ fn corridor_vertex(v: CorridorIn) -> CorridorOut {
 // A vertex of a caster, which stands at its height: the bias would shadow the band.
 @vertex
 fn corridor_caster(v: CorridorIn) -> @builtin(position) vec4f {
-    var p = vec3f(to_render(lod_space(corridor_at(v))), v.z - frame.eye);
+    let s = lod_space(corridor_at(v));
+    let flags = (v.word >> FLAGS_SHIFT) & FLAGS_BITS;
+    let z = select(v.z, band_height(s, v.z, v.word, flags, 0.0, 0.0), (flags & CF_FILL) != 0u);
+    var p = vec3f(to_render(s), z - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
     return frame.view_proj * vec4f(p, 1.0);
 }

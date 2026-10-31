@@ -21,7 +21,7 @@ const DROP_M = 1.35, DROP_OUT_M = 4, RAIL_STEP_M = 2.5, RAIL_NEAR_M = 4, RAIL_RA
  * CUT_M lies over the cone's top there, and a slope that a cone barely shapes keeps no wall.
  */
 export const WALL_OUT_M = 2.2;
-const CUT_M = 2, WALL_STEP_M = 3, WALL_NEAR_M = 5, WALL_RAMP_M = 7;
+const CUT_M = 2.3, WALL_STEP_M = 3, WALL_NEAR_M = 5, WALL_RAMP_M = 7;
 /** A wall's height over the edge: the cut's mean over its samples plus WALL_OVER_M, so its top runs with the grade. */
 const WALL_OVER_M = 0.3, WALL_LEAST_M = 0.6, WALL_MOST_M = 3.5;
 /** Where a road's cut starts past its ditch, as in stamp-core.wgsl. */

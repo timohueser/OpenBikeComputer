@@ -35,10 +35,11 @@ function planOf({ lines, buildings, barriers: mapped }: Shapes): Planned[] {
     const open = (line: Line, v: number) => !shared.has(`${line.xy[2 * v]},${line.xy[2 * v + 1]}`);
     const runs = lines.flatMap((line, id) => {
         if (!corridorLine(line) || line.z.length < 2) return [];
-        const stations = stationsOf(line, v => halfAt(line, v, partners)), joins = mouthsOn(line, shared);
-        const inMouth = (j: number) => joins.some(({ x, y, gap }) => Math.hypot(x - stations[j].x, y - stations[j].y) * metresPerUnit(y) < gap);
-        const mouths = zonesOf(stations, inMouth), towns = allowed(line).railed ? zonesOf(stations, j => inMouth(j) || townish(town, stations[j].x, stations[j].y)) : mouths;
-        return [{ id, line, stations, reach: reachOf(stations), lift: liftOf(line, id), prio: prioOf(line), base: 0, ways, far: farStations(line, stations, size(CHILD)), ends: [open(line, 0), open(line, line.z.length - 1)] as [boolean, boolean], mouths, towns, barriers }];
+        const stations = stationsOf(line, v => halfAt(line, v, partners)), joins = mouthsOn(line, shared), ends: [boolean, boolean] = [open(line, 0), open(line, line.z.length - 1)], last = stations.length - 1;
+        // A detail also ramps down before a dead end, where its section would stand open.
+        const inMouth = (j: number) => (ends[0] && j === 0) || (ends[1] && j === last) || joins.some(({ x, y, gap }) => Math.hypot(x - stations[j].x, y - stations[j].y) * metresPerUnit(y) < gap);
+        const { railed, walled } = allowed(line), mouths = zonesOf(railed || walled ? stations : [], inMouth), towns = railed ? zonesOf(stations, j => inMouth(j) || townish(town, stations[j].x, stations[j].y)) : mouths;
+        return [{ id, line, stations, reach: reachOf(stations), lift: liftOf(line, id), prio: prioOf(line), base: 0, ways, far: farStations(line, stations, size(CHILD)), ends, mouths, towns, barriers }];
     });
     plans.set(lines, runs);
     return runs;
@@ -77,8 +78,7 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node, ground: Groun
             cap(piece, piece.near, run, j, dir, false);
             cap(piece, piece.far, run, j, dir, true);
         }
-        const { railed, walled } = allowed(line);
-        if (railed || walled) for (const way of [1, -1] as const) roadside(run, way, standingOf(line, stations, way, ground, run.mouths, run.towns, run.barriers), ground, owns, pieceAt);
+        if (run.mouths.length) for (const way of [1, -1] as const) roadside(run, way, standingOf(line, stations, way, ground, run.mouths, run.towns, run.barriers), ground, owns, pieceAt);
     }
     return { pieces: pieces.flat().map(piece => piece.piece(GROUND_M)) };
 }

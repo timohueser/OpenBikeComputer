@@ -5,7 +5,7 @@ import { LEFT } from '../terrain/town';
 import { roadside } from './details';
 import type { GroundAt } from './ground';
 import { PieceBuilder } from './piece';
-import { MAT } from './section';
+import { CF, MAT } from './section';
 import { barriersOf, coneOf, standingOf, zonesOf } from './standing';
 import { reachOf as foldsOf, stationsOf, type Station } from './stations';
 import { waysOf } from './ways';
@@ -111,12 +111,12 @@ describe('the faces of what stands', () => {
     };
     const uniq = (list: number[]) => [...new Set(list)];
 
-    it('stand a wall to its top from one height per station, with its backfill out of the casters', () => {
+    it('stand a wall to its top from one height per station, with the last face of its backfill out of the casters', () => {
         const { b } = built(bump(0, 5), -1), vertex = vertices(b);
         expect(b.near.length).toBeGreaterThan(0);
         expect(uniq(b.near.map(i => vertex(i).mat))).toEqual(expect.arrayContaining([MAT.GROUND, MAT.WALL, MAT.CAP]));
         expect(b.casters.some(i => vertex(i).mat === MAT.WALL)).toBe(true);
-        expect(b.casters.every((i, k) => k % 3 > 0 || vertex(i).mat !== MAT.GROUND)).toBe(true);
+        expect(b.casters.every((i, k) => k % 3 > 0 || vertex(i).flags !== CF.MESH)).toBe(true);
         expect(b.far.every((i, k) => k % 3 > 0 || vertex(i).mat === MAT.GROUND)).toBe(true);
         expect(Math.max(...b.casters.map(i => vertex(i).z))).toBeGreaterThan(1.5);
     });
