@@ -57,6 +57,9 @@ const TAKEN_FLAG: u32 = 8u;
 // A mesh vertex moves onto a road edge within this many texels of its level: 3/4 of a mesh cell, so
 // that on every level with masks each triangle along an edge has a vertex on it.
 const SNAP_TEXELS: f32 = 3.0;
+// Where corridors draw the ways, a vertex outside an edge moves from this far, under a mesh cell: past 3 texels a
+// triangle from it reaches the far edge of a path, and rises over its tread.
+const SNAP_OUT_TEXELS: f32 = 3.75;
 // Where a road's cut or fill meets the ground, the ground rounds over DAYLIGHT_M of height instead of a
 // crease. Near the road the slope keeps its crease: the rounding grows from SOFT_FROM_M to SOFT_FULL_M past
 // the core.
@@ -172,7 +175,7 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
     let to_edge = 0.25 * (d[0] + d[1] + d[2] + d[3]) + dot(g, vec2f(corner - low - vec2i(1))) * metres;
     let at = to_edge - select(shoulder, walk, walk > 0.0);
     let g2 = dot(g, g);
-    let reach_m = SNAP_TEXELS * metres;
+    let reach_m = select(SNAP_TEXELS, SNAP_OUT_TEXELS, stamp_rules.bench > 0.0 && at > 0.0) * metres;
     var moved = vec2i(0);
     // Off the ridges of the distance, where it turns from one edge to another.
     if (road && g2 >= 0.25 && g2 <= 4.0 && abs(at) <= reach_m) {

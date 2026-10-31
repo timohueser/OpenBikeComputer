@@ -33,6 +33,8 @@ struct Profile {
 struct Rules {
     profiles: array<Profile, PROFILE_ROWS>,
     shoulders: array<vec4f, 4>,
+    // Where corridors draw the ways near the eye, the metres past a path's edge that its bench holds its level; else 0.
+    bench: f32,
 }
 @group(0) @binding(4) var<uniform> stamp_rules: Rules;
 const PROFILE_ROWS: u32 = 32u;
@@ -676,14 +678,18 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             } else if (kind == PATH && path_shows(own, rule, level)) {
                 let x = max(0.0, g.lateral - h);
                 let tol = rule.tol + rule.tilt * min(g.lateral, h);
+                // A corridor's face lies flat on the path's plane: the ground stays under it and a texel past
+                // its edge, or it rises through the tread; downhill it follows the hillside under the face.
+                let over = select(tol, rule.tol, stamp_rules.bench > 0.0);
+                let dug = max(0.0, x - stamp_rules.bench);
                 if (g.core && g.lateral <= h) {
                     lo[PATH_CORE] = max(lo[PATH_CORE], g.z - tol);
-                    hi[PATH_CORE] = min(hi[PATH_CORE], g.z + tol);
+                    hi[PATH_CORE] = min(hi[PATH_CORE], g.z + over);
                 }
                 if ((g.core || g.cone) && x < rule.reach) {
                     // A path's slopes meet the slopes of the roads beside it as two roads' slopes meet.
                     let l = g.z - tol - widen(x, rule.reach, rule.fill);
-                    let u = g.z + tol + widen(x, rule.reach, rule.cut);
+                    let u = g.z + over + widen(dug, rule.reach - stamp_rules.bench, rule.cut);
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
                         cone_lo_x = x;

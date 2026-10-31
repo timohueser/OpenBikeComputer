@@ -591,6 +591,17 @@ fn crag(p: vec2f, size: f32) -> vec3f {
     return vec3f(facing, abs(2.0 * noise(q * 1.4 + 7.0) - 1.0));
 }
 
+// A road's cut or fill at `q` metres in the plane of its face, seen by a pixel `w` metres wide: bare `earth` in
+// the `ground`, in patches longer along the face than up it. Each scale fades to its mean once a pixel spans it.
+fn cut_face(ground: vec3f, earth: vec3f, q: vec2f, w: f32) -> vec3f {
+    let p = q * vec2f(1.0, 1.8);
+    let wide = noise(p / 1.7);
+    let tuft = mix(0.5, noise(p / 0.6), 1.0 - smoothstep(0.2, 0.9, w));
+    let grain = mix(0.5, noise(p / 0.17), 1.0 - smoothstep(0.05, 0.25, w));
+    let bare = smoothstep(0.6, 0.68, 0.5 * wide + 0.5 * tuft);
+    return mix(ground * (0.86 + 0.28 * tuft), mix(earth, ground, 0.45) * (0.8 + 0.4 * tuft), bare) * (0.82 + 0.36 * grain);
+}
+
 // A distinct colour for each code, by the golden angle round the hue circle.
 fn key(code: u32) -> vec3f {
     let h = fract(f32(code) * 0.618034);
@@ -622,7 +633,8 @@ fn ground_debug(view: u32, level: u32, s: vec2f, g: Ground) -> vec3f {
 // The colour of the ground at a point: `s` in LOD space, `relative` in render space about the eye,
 // `altitude` above sea level, on a node of `level`, in linear light with the haze, at the screen's `pixel`.
 // The sizes of a pixel are those of an output pixel, so the detail follows the canvas at any render scale.
-fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32, pixel: vec2f) -> vec3f {
+// `bench` is 1 on a path's band, which reads no mask.
+fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32, pixel: vec2f, bench: f32) -> vec3f {
     let world = look.place.xy + relative.xy;
     let scale = look.screen.z;
     let dx = dpdx(relative.xy) * scale;
@@ -638,16 +650,18 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32, pixel: ve
     var n = render_normal(drawn);
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
     // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
-    let skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, BAND);
+    var skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, BAND);
     let sloped = n.z < 0.95 || skirt > 0.0;
     let g = ground_at(level, s, world, footprint, sloped);
     var open = g.open;
     let region = g.region;
     // The road paint first, so that only the Road stays live through the rest.
-    var road = Road(vec3f(0.0), 0.0, 0.0, 0.0, 1.0);
+    var road = Road(vec3f(0.0), 0.0, 0.0, 0.0, 1.0, bench);
     if (!BAND) {
-        road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region, pixel);
+        road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region, pixel, facet.z);
     }
+    // A road's own facets are no cliff: the mesh cuts across the creases of its cut or fill.
+    skirt *= select(1.0, 1.0 - road.shaped, masks.corridors > 0.0);
     // A road's retaining wall, but for a cut in bare rock, and in woodland, as rock walls.
     let masoned = road.wall * (1.0 - road.cover) * (1.0 - g.barren) * (1.0 - g.tree);
     // The masonry runs along the world axis nearer to the wall, cross-faded within about 6° of 45°. By
@@ -656,6 +670,8 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32, pixel: ve
     // A cliff spans few texels across and many metres up, so its fine slopes would streak down the
     // face; it takes its normal from coarser levels instead.
     let cliff = 1.0 - smoothstep(0.4, 0.7, n.z);
+    // Within a road's reach a slope past the 40° of its cut and fill is one of them, and its plan's texels stretch up it.
+    let face = select(0.0, (road.shaped - road.bench) * (1.0 - smoothstep(0.62, 0.84, n.z)), masks.corridors > 0.0);
     // How steep the land is a few texels across: a road cutting or a bank is steep only at the finest
     // level, and stays vegetated.
     var broad = 0.0;
@@ -664,9 +680,13 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32, pixel: ve
         // A slope that a road shaped is a cut or a fill: it stays as the satellite sees it, rock only
         // where that is bare.
         broad *= 1.0 - road.shaped * (1.0 - g.barren);
-        let towards = max(cliff, skirt);
+        let towards = max(max(cliff, skirt), max(face, road.bench));
         n = normalize(mix(n, g.coarse, towards));
         open = mix(open, g.coarse_open, towards);
+    } else if (road.bench > 0.0) {
+        // A path's bench is flatter than its hillside, and would show as a pale strip beside the tread.
+        let hill = level_normal(s, max(level, COARSEST + 2u) - 2u);
+        n = normalize(mix(n, render_normal(vec3f(hill, sqrt(max(1.0 - dot(hill, hill), 1e-4)))), road.bench));
     }
     let banded = g.banded;
     let slope = n.z;
@@ -693,6 +713,19 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32, pixel: ve
     }
     let mottle = 0.14 * (n15 - 0.5) * (1.0 - smoothstep(4.0, 16.0, footprint)) + (0.22 * n25 + 0.12 * n08 - 0.17) * (1.0 - smoothstep(0.3, 2.0, footprint));
     var albedo = g.albedo * (1.0 + mottle);
+    if (DETAIL && face > 0.0) {
+        // Grass holds a bank up to about 55°; past that it stands bare, as rock where the ground is barren.
+        let bare = mix(rule(region, slot_roads() + i32(CODE_DIRT) - 1).rgb, rule(region, slot_lithologies() + i32(g.lithology)).rgb, g.barren);
+        let earth = mix(bare, albedo, smoothstep(0.45, 0.62, n.z));
+        var torn = vec3f(0.0);
+        if (east < 1.0) {
+            torn = cut_face(albedo, earth, vec2f(world.y, altitude), surface_size);
+        }
+        if (east > 0.0) {
+            torn = mix(torn, cut_face(albedo, earth, vec2f(world.x, altitude), surface_size), east);
+        }
+        albedo = mix(albedo, torn, face);
+    }
     // Tussocks and low shrubs, more in some stretches about 60 m across than in others: tufts about 1 m,
     // shrubs about 3 m and thickets about 15 m across on the mottle's highs, and bushes 1 to 5 m long,
     // each darker and more olive than the sward. Each fades to its mean once a pixel spans it. The ground

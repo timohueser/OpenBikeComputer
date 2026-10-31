@@ -168,7 +168,7 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     let mat = in.word & 127u;
     let su = lod_space(in.u);
     if (mat == MAT_GROUND) {
-        return vec4f(ground_colour(su, in.relative, in.altitude, u32(ceil(lod(su))), in.clip.xy), 1.0);
+        return vec4f(ground_colour(su, in.relative, in.altitude, u32(ceil(lod(su))), in.clip.xy, select(0.0, 1.0, in.road.y < PATH_HALF_M)), 1.0);
     }
     var n = normalize(cross(dpdx(in.relative), dpdy(in.relative)));
     n *= -sign(dot(n, in.relative));
