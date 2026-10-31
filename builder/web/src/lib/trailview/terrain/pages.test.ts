@@ -61,6 +61,14 @@ describe('the page pools', () => {
         expect(map.filter(entry => entry >>> 16).length).toBe(ready.filter(page => page.kind === 'stored').length);
     });
 
+    it('serve the roads and the pages from one request of a tile', async () => {
+        const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
+        await Promise.all([pages.body(5, 1, 2), pages.body(5, 1, 2), pages.body(20, 1, 2)]);
+        expect(tiles.fetched.filter(name => name === '5/1/2')).toHaveLength(1);
+        expect(await pages.body(20, 1, 2)).toBeUndefined();
+        expect(tiles.fetched.filter(name => name === '20/1/2')).toHaveLength(1);
+    });
+
     it('fill the holes from one coarse tile, then load the tile under the eye, then the nearer tiles first', async () => {
         const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
         await settle(pages, wanted, 300, eye);

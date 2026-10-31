@@ -36,7 +36,7 @@ async function attached(mesh: RoadMesh, error?: string) {
         device: { createBindGroup: () => ({}), queue: { writeBuffer: () => {} } },
         once: async () => ({ layout: {}, pipeline: {}, caster: {} }), buffer: (_: string, bytes: number) => ({ size: bytes / 64 }),
     };
-    const roads = new Roads(async () => new ArrayBuffer(8), () => {}, new AbortController().signal);
+    const roads = new Roads(async () => new ArrayBuffer(8), async () => undefined, () => {}, new AbortController().signal);
     await roads.attach(gpu as unknown as Gpu, [{}, {}] as GPUBuffer[]);
     return roads;
 }
@@ -58,7 +58,7 @@ afterEach(() => void vi.unstubAllGlobals());
 describe('the corridors', () => {
     it('ask for no mesh until the first view lets them', () => {
         vi.stubGlobal('Worker', workerOf({ pieces: [] }));
-        const roads = new Roads(async () => new ArrayBuffer(8), () => {}, new AbortController().signal);
+        const roads = new Roads(async () => new ArrayBuffer(8), async () => undefined, () => {}, new AbortController().signal);
         roads.update(eye, () => true, false);
         expect(roads.loading).toBe(false);
         roads.update(eye, () => true, true);

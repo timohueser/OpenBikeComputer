@@ -114,6 +114,8 @@ export class Pages {
     readonly pages = new Map<string, Page>();
     private readonly tiles = new Map<string, Tile>();
     private readonly bodies = new Map<string, ArrayBuffer>();
+    /** The requests for bodies in flight. */
+    private readonly requested = new Map<string, Promise<ArrayBuffer | undefined>>();
     private bodyBytes = 0;
     private readonly free: Record<Kind, number[]>;
     private maskFree: number[];
@@ -444,21 +446,33 @@ export class Pages {
         return wished;
     }
 
+    /** The body of a stored tile, undefined where it is absent: the roads read it too, so one request serves both. */
+    body(z: number, x: number, y: number): Promise<ArrayBuffer | undefined> {
+        const name = `${z}/${x}/${y}`, kept = this.bodies.get(name);
+        if (kept || this.tiles.get(name)?.state === 'absent') return Promise.resolve(kept);
+        let request = this.requested.get(name);
+        if (!request) {
+            this.requests++;
+            request = this.source.fetch(z, x, y).then(data => {
+                if (data) {
+                    this.bytes += data.byteLength;
+                    this.keep(name, data);
+                } else this.tiles.set(name, { state: 'absent' });
+                return data;
+            }).finally(() => this.requested.delete(name));
+            this.requested.set(name, request);
+        }
+        return request;
+    }
+
     /** Requests a stored tile, or decodes its kept body again. */
     private fetch(z: number, x: number, y: number): void {
         const name = `${z}/${x}/${y}`, tile = this.tiles.get(name);
-        const body = this.bodies.get(name);
         this.loads++;
-        this.tiles.set(name, { state: body ? 'decoding' : 'loading', empty: tile?.empty });
+        this.tiles.set(name, { state: this.bodies.has(name) ? 'decoding' : 'loading', empty: tile?.empty });
         (async () => {
-            let data = body;
-            if (!data) {
-                this.requests++;
-                data = await this.source.fetch(z, x, y);
-                if (!data) return this.tiles.set(name, { state: 'absent' });
-                this.bytes += data.byteLength;
-                this.keep(name, data);
-            }
+            const data = await this.body(z, x, y);
+            if (!data) return;
             const quadrants = await this.source.decode(data);
             this.tiles.set(name, { state: 'done', empty: quadrants.map(quadrant => !quadrant) });
             quadrants.forEach((data, q) => {

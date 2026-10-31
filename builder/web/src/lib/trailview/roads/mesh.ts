@@ -1,11 +1,15 @@
 // The corridor mesh of an L15 owner from its feature tile: one piece per L16 child, or more where a child
 // holds more vertices than 16-bit indices reach. A segment belongs to the child that holds its first station.
 import type { Feature } from '../stream/features';
-import { features, junctions, type Line, type Node } from '../terrain/bins';
+import { features, junctions, metresPerUnit, type Line, type Node, type Shapes } from '../terrain/bins';
 import { halfAt, partnersOf } from '../terrain/corners';
 import { CHILD, size } from '../terrain/lod';
+import { townOf } from '../terrain/town';
+import { roadside } from './details';
+import type { GroundAt } from './ground';
 import { PieceBuilder, type RoadPiece } from './piece';
 import { corridorLine } from './section';
+import { allowed, barriersOf, mouthsOn, standingOf, townish, zonesOf, type Barriers } from './standing';
 import { farStations, reachOf, stationsOf, type Station } from './stations';
 import { baseOf, cap, liftOf, prioOf, sweep, type Run } from './sweep';
 import { waysOf } from './ways';
@@ -15,29 +19,34 @@ const GROUND_M = 15;
 
 export interface RoadMesh { pieces: RoadPiece[] }
 
-/** A line's corridor as the owners of a tile share it: the stations of its far range, and whether each end is a dead end. */
-type Planned = Run & { far: number[]; ends: [boolean, boolean] };
+/**
+ * A line's corridor as the owners of a tile share it: the stations of its far range, whether each end is a dead end,
+ * and per station the metres to its nearest junction's mouth, and to that or a town; the barriers beside it.
+ */
+type Planned = Run & { far: number[]; ends: [boolean, boolean]; mouths: Float64Array; towns: Float64Array; barriers: Barriers };
 
-const plans = new WeakMap<Line[], Planned[]>();
+const plans = new WeakMap<Shapes['lines'], Planned[]>();
 
 /** The lines of a tile as runs, made once. */
-function planOf(lines: Line[]): Planned[] {
+function planOf({ lines, buildings, barriers: mapped }: Shapes): Planned[] {
     const known = plans.get(lines);
     if (known) return known;
-    const ways = waysOf(lines), shared = junctions(lines), partners = partnersOf(lines);
+    const ways = waysOf(lines), shared = junctions(lines), partners = partnersOf(lines), town = townOf(buildings), barriers = barriersOf(mapped);
     const open = (line: Line, v: number) => !shared.has(`${line.xy[2 * v]},${line.xy[2 * v + 1]}`);
     const runs = lines.flatMap((line, id) => {
         if (!corridorLine(line) || line.z.length < 2) return [];
-        const stations = stationsOf(line, v => halfAt(line, v, partners));
-        return [{ id, line, stations, reach: reachOf(stations), lift: liftOf(line, id), prio: prioOf(line), base: 0, ways, far: farStations(line, stations, size(CHILD)), ends: [open(line, 0), open(line, line.z.length - 1)] as [boolean, boolean] }];
+        const stations = stationsOf(line, v => halfAt(line, v, partners)), joins = mouthsOn(line, shared);
+        const inMouth = (j: number) => joins.some(({ x, y, gap }) => Math.hypot(x - stations[j].x, y - stations[j].y) * metresPerUnit(y) < gap);
+        const mouths = zonesOf(stations, inMouth), towns = allowed(line).railed ? zonesOf(stations, j => inMouth(j) || townish(town, stations[j].x, stations[j].y)) : mouths;
+        return [{ id, line, stations, reach: reachOf(stations), lift: liftOf(line, id), prio: prioOf(line), base: 0, ways, far: farStations(line, stations, size(CHILD)), ends: [open(line, 0), open(line, line.z.length - 1)] as [boolean, boolean], mouths, towns, barriers }];
     });
     plans.set(lines, runs);
     return runs;
 }
 
 /** The corridor mesh of an owner. */
-export function roadMesh(list: Feature[], tile: Node, owner: Node): RoadMesh {
-    const runs = planOf(features(list, tile).lines), side = size(CHILD), pieces: PieceBuilder[][] = [[], [], [], []];
+export function roadMesh(list: Feature[], tile: Node, owner: Node, ground: GroundAt = () => NaN): RoadMesh {
+    const runs = planOf(features(list, tile)), side = size(CHILD), pieces: PieceBuilder[][] = [[], [], [], []];
     const x0 = owner.x * 2 * side, y0 = owner.y * 2 * side;
     const owns = ({ x, y }: Station) => x >= x0 && x < x0 + 2 * side && y >= y0 && y < y0 + 2 * side;
     /** The piece of the child that holds a station, with room for its faces. */
@@ -68,16 +77,18 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node): RoadMesh {
             cap(piece, piece.near, run, j, dir, false);
             cap(piece, piece.far, run, j, dir, true);
         }
+        const { railed, walled } = allowed(line);
+        if (railed || walled) for (const way of [1, -1] as const) roadside(run, way, standingOf(line, stations, way, ground, run.mouths, run.towns, run.barriers), ground, owns, pieceAt);
     }
     return { pieces: pieces.flat().map(piece => piece.piece(GROUND_M)) };
 }
 
 /** The heap per station of a plan, and per segment with the tile's shapes, fitted to the V8 heap of fixture tiles. */
-const STATION_BYTES = 240, SEGMENT_BYTES = 430;
+const STATION_BYTES = 256, SEGMENT_BYTES = 430;
 
 /** The heap that hangs from a tile's features once its plan stands. */
 export function planBytes(list: Feature[], tile: Node): number {
-    return planOf(features(list, tile).lines).reduce((sum, { stations, line }) => sum + STATION_BYTES * stations.length + SEGMENT_BYTES * line.z.length, 0);
+    return planOf(features(list, tile)).reduce((sum, { stations, line }) => sum + STATION_BYTES * stations.length + SEGMENT_BYTES * line.z.length, 0);
 }
 
 /** Bytes that a mesh holds. */
