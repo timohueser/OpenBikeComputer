@@ -677,7 +677,7 @@
    ],
    "test_depends_on": [],
    "violations": 3,
-   "lines": 18277,
+   "lines": 18292,
    "problems": [
     {
      "rule": "R2",
