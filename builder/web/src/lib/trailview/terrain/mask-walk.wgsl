@@ -1,15 +1,26 @@
-// The byte of a mask texel that holds what lies past a road's edge, unless the texel is a track's: the
-// width of the sidewalk on the texel's side, and whether the road holds a shoulder.
+// The byte of a mask texel that holds what lies past a way's bare surface, unless the texel is a track's: the
+// width of the sidewalk on the texel's side, whether the road holds a shoulder, whether the way is trodden, and
+// whether the road wears lines. A sidewalk is at most 2 m wide (SIDEWALK_M of bins.ts).
 
 const WALK_STEP_M: f32 = 0.1;
+const MARKED_BIT: u32 = 32u;
+const TRODDEN_BIT: u32 = 64u;
 const SHOULDER_BIT: u32 = 128u;
 
-fn walk_byte(walk: f32, shoulder: bool) -> u32 {
-    return u32(round(walk / WALK_STEP_M)) | select(0u, SHOULDER_BIT, shoulder);
+fn walk_byte(walk: f32, shoulder: bool, trodden: bool, marked: bool) -> u32 {
+    return u32(round(walk / WALK_STEP_M)) | select(0u, SHOULDER_BIT, shoulder) | select(0u, TRODDEN_BIT, trodden) | select(0u, MARKED_BIT, marked);
 }
 
 fn walk_metres(byte: u32) -> f32 {
-    return f32(byte & (SHOULDER_BIT - 1u)) * WALK_STEP_M;
+    return f32(byte & (MARKED_BIT - 1u)) * WALK_STEP_M;
+}
+
+fn is_trodden(byte: u32) -> bool {
+    return (byte & TRODDEN_BIT) != 0u;
+}
+
+fn is_marked(byte: u32) -> bool {
+    return (byte & MARKED_BIT) != 0u;
 }
 
 fn holds_shoulder(byte: u32) -> bool {

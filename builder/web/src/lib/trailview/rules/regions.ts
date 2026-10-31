@@ -42,6 +42,8 @@ export interface Look {
     bedding?: { strike: number; dip: number };
     roads?: string[];
     roadLine?: string;
+    concrete?: string;
+    setts?: string;
     sea: { deep: string; shallow: string };
     grade: { shadow: [number, number, number]; light: [number, number, number]; saturation: number };
     weather?: Partial<Record<Preset, Partial<WeatherKeys>>>;

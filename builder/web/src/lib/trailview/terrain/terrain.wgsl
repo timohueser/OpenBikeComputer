@@ -119,7 +119,7 @@ fn fragment_main(in: Fragment) -> @location(0) vec4f {
         discard;
     }
     if (frame.debug == 0u || (frame.debug > 4u && frame.debug != MASK_VIEW)) {
-        return vec4f(ground_colour(in.s, in.relative, in.h, in.level), 1.0);
+        return vec4f(ground_colour(in.s, in.relative, in.h, in.level, in.clip.xy), 1.0);
     }
     let n = render_normal(drawn_normal(in.s));
     let light = max(dot(n, frame.sun.xyz), 0.0) * frame.sun.w + 0.3;

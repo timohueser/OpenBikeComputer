@@ -60,6 +60,9 @@ const CORNER: u32 = 14u;
 // As RAIL_CODE and SLEEPER_M of bins.ts: the surface code of the first track, and the spacing of its sleepers.
 const TRACK_CODE: u32 = 9u;
 const SLEEPER_M: f32 = 0.6;
+// As SURFACES of bins.ts: the codes of dirt, grass and path.
+const DIRT_CODE: u32 = 4u;
+const PATH_CODE: u32 = 6u;
 const FORD: u32 = 1u;
 const CORE_A: u32 = 2u;
 const CORE_B: u32 = 4u;
@@ -67,6 +70,7 @@ const CONE_A: u32 = 8u;
 const CONE_B: u32 = 16u;
 const JOIN_A: u32 = 32u;
 const JOIN_B: u32 = 64u;
+const MARKED: u32 = 128u;
 // A segment's code byte holds its surface code in the low 4 bits, and above them the sides with a
 // sidewalk, as LEFT and RIGHT of town.ts: its left and its right.
 const SURFACE_BITS: u32 = 15u;
@@ -386,12 +390,16 @@ struct Stamp {
     taken: bool,
     // Whether the painted road holds a shoulder past its edge.
     shoulder: bool,
+    // Whether the painted way is a path of soil or grass, where feet wear only a tread.
+    trodden: bool,
+    // Whether the painted road wears lines.
+    marked: bool,
 }
 
 // The stamp of world point p, a texel centre of a node of `level` whose first texel is `first`, from
 // the node's data at `data`.
 fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
-    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, 0.0, false, 0.0, INF, false, false, INF, INF, false, false);
+    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, 0.0, false, 0.0, INF, false, false, INF, INF, false, false, false, false);
     if (data == NO_DATA) {
         return out;
     }
@@ -499,6 +507,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 out.ford = false;
                 out.sleepers = 0.0;
                 out.shoulder = false;
+                out.trodden = false;
+                out.marked = false;
             }
         } else if (kind == EDGE) {
             // Relative to the cell's origin and to the edge, so that every node that holds the edge gets the same bits.
@@ -624,6 +634,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 out.ford = ((word(r + 5u) >> 8u) & FORD) != 0u;
                 out.sleepers = select(0.0, sleepers_at(r, kind, g), out.surface >= TRACK_CODE);
                 out.shoulder = plain;
+                out.trodden = kind == PATH && out.surface >= DIRT_CODE && out.surface <= PATH_CODE;
+                out.marked = ((word(r + 5u) >> 8u) & MARKED) != 0u;
             }
             // A gallery's floor runs flat to a mesh cell past its walls and pillars, so the mesh's slope up to
             // the hill lies behind its wall. Past that, on the hill side, the hill holds the top of its roof
@@ -692,6 +704,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         out.road = min(out.road, corner_d);
         out.walk = corner_walk;
         out.shoulder = false;
+        out.trodden = false;
+        out.marked = false;
     }
     out.water = water_in;
     out.taken = out.taken || water_in > -1e30;
