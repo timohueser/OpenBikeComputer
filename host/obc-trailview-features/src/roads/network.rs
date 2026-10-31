@@ -324,7 +324,13 @@ impl Network {
             }
             let roads: Vec<(usize, i64, usize)> =
                 group.iter().filter(|&&i| rank[i] < classes.path).map(|&i| (rows[i].0, rows[i].1, rank[i])).collect();
-            self.look_arms(&roads);
+            let (tracks, ways): (Vec<_>, Vec<_>) = roads.iter().copied().partition(|road| classes.rows[road.2].rail);
+            if !tracks.is_empty() && ways.len() > 2 {
+                self.look_arms(&tracks);
+                self.look_arms(&ways);
+            } else {
+                self.look_arms(&roads);
+            }
             s = e;
         }
     }
@@ -354,7 +360,8 @@ impl Network {
     /// The arms of a junction of `roads` (occurrence, step, class). Its through pair in the look holds
     /// the best class that has a pair, then the best class beside that, then runs most nearly straight
     /// on. So a road runs on into a lesser class, and a stem that ends on a straight road leaves it as
-    /// an arm. Two ways run on, and a junction with no pair has no arms.
+    /// an arm. Two ways run on, and a junction with no pair has no arms. A level crossing of three road
+    /// ways or more has two rounds: the tracks' and the roads', so that the roads keep a through pair.
     fn look_arms(&mut self, roads: &[(usize, i64, usize)]) {
         if roads.len() <= 2 {
             return;

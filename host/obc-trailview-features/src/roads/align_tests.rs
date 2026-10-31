@@ -154,6 +154,15 @@ fn a_track_runs_through_a_level_crossing_and_a_junction_with_no_pair_has_no_side
 }
 
 #[test]
+fn roads_of_three_ways_on_a_level_crossing_keep_a_through_pair() {
+    let through = [(-200.0, 0.0), (0.0, 0.0), (200.0, 0.0)];
+    let stem = [(0.0, 0.0), (140.0, 140.0)];
+    let rail = [(0.0, -200.0), (0.0, 0.0), (0.0, 200.0)];
+    let ways: [(&str, &[(f64, f64)]); 3] = [("tertiary", &through), ("tertiary", &stem), ("rail", &rail)];
+    assert_eq!(sides_at(&ways, (0.0, 0.0)), [0, SIDE_ON, 0]);
+}
+
+#[test]
 fn a_way_out_runs_toward_its_point_8_m_along_past_a_stub_of_osm() {
     // The first segment of the service road leaves the secondary at a right angle, then it runs straight on.
     let west = [(-200.0, 0.0), (0.0, 0.0)];

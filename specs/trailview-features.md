@@ -278,7 +278,8 @@ class of the table, then the first class beside that, then that runs most nearly
 a road runs on into a lesser class, and a road that ends on a straight road is a side of it. This
 rule serves the drawing. The heights follow the through road of the solver (see Heights), which can
 differ. A point with no such pair has no `side`, two ways out both run through, and a path has
-`side` 0 and is never a way out. The tiles keep each vertex that has a `side`. Below zoom 13 a tile
+`side` 0 and is never a way out. Where a track crosses three or more ways out of roads, the tracks and
+the roads each take this rule alone, so each keeps a pair. The tiles keep each vertex that has a `side`. Below zoom 13 a tile
 has no `side`, so each way there runs through.
 
 ### Structures
