@@ -98,7 +98,7 @@ const CONES: u32 = 8u;
 const TROUGH: u32 = 9u;
 const COVER: u32 = 10u;
 const BUCKETS: u32 = 11u;
-// As KERB_M of roads.wgsl: a corner's slab keeps its kerb where its sidewalk narrows to nothing.
+// As KERB_M of roads.wgsl: a corner keeps its kerb where its sidewalk narrows to nothing.
 const CORNER_KERB_M: f32 = 0.18;
 
 const PI: f32 = 3.14159265;
@@ -477,7 +477,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             // Between the ends of a corner's arc seen from its centre, off both roads or less than the narrower
             // one's half-width onto them, the arc is the nearest edge, as inCorner of corners.ts has it. The corner
             // paints its asphalt and the sidewalk round it and holds their ground: each road's surface carried on
-            // from its end, as heightAt has it, and the slab with it. On a road's carriageway
+            // from its end. On a road's carriageway
             // the road paints and holds, but for its edge there, which the arc replaces; the corner takes only the
             // slivers beside it where a road bends inside it. Its record: the centre, the first end, the heights at
             // the ends, the sidewalks' widths in decimetres, the slopes per metre east and south of the first road
@@ -504,7 +504,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 corner_walk = walk;
             }
             if (d <= select(walk, max(walk, CORNER_KERB_M), walks != 0u)) {
-                // As heightAt of corners.ts: by the distances past each road's sidewalk from the first road's side,
+                // By the distances past each road's sidewalk from the first road's side,
                 // the centre to its end and on to the roads' corner c, and from the second's.
                 let c = ea + vec2f(-ea.y, ea.x) * dot(eb - ea, eb) / dot(vec2f(-ea.y, ea.x), eb);
                 let da = max(0.0, min(segment_distance(e, vec2f(0.0), ea), segment_distance(e, ea, c)) * unit - f32(walks & 0xffu) * 0.1);

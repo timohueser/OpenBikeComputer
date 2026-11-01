@@ -167,8 +167,8 @@ fn corridor_vertex(v: CorridorIn) -> CorridorOut {
     var out: CorridorOut;
     let mat = v.word & MAT_BITS;
     out.clip = frame.view_proj * vec4f(corridor_biased(p, mat == MAT_WALL || mat == MAT_CAP), 1.0);
-    // The crack and surface views show the terrain alone: past the near plane, the triangle clips.
-    if (frame.debug == 3u || frame.debug == 4u) {
+    // The debug views show the terrain alone: past the near plane, the triangle clips.
+    if (frame.debug != 0u) {
         out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
     }
     out.u = u;
@@ -212,7 +212,7 @@ fn part_vertex(v: PartIn) -> CorridorOut {
     let p = part_at(v, u);
     var out: CorridorOut;
     out.clip = frame.view_proj * vec4f(corridor_biased(p.xyz, false), 1.0);
-    if (frame.debug == 3u || frame.debug == 4u) {
+    if (frame.debug != 0u) {
         out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
     }
     out.u = u;

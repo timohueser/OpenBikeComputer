@@ -156,7 +156,7 @@ export class Terrain {
     readonly stamps: Stamps;
     /** Whether the last frame draws other content than the frame before it: new pages, masks, nodes or water. */
     newContent = false;
-    /** The metres on the ground from the eye to the nearest page whose heights the last frame changed, 0 for new structures: casters stand on them. */
+    /** The metres on the ground from the eye to the nearest page whose heights the last frame changed or corridor casters that arrived, 0 for new structures: casters stand on them. */
     reshaped = Infinity;
     private readonly water: Water;
     private readonly structures: Structures;
@@ -467,7 +467,7 @@ export class Terrain {
         this.lonLat = view.lonLat;
         this.seen = view.z === undefined ? undefined : { viewProj: view.viewProj, z: view.z, forward };
         const level = { anchor, above: 0 }, pages = [...work.uploads, ...work.syntheses, ...work.stamps.filter(({ mode }) => mode & MODE.HEIGHTS)];
-        this.reshaped = structures ? 0 : Math.min(Infinity, ...pages.map(({ page }) => distances(level, page.node)[0]));
+        this.reshaped = structures ? 0 : Math.min(this.roads.arrived, ...pages.map(({ page }) => distances(level, page.node)[0]));
         this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || structures || roads || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length);
     }
 

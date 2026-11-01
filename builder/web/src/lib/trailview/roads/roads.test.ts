@@ -91,6 +91,24 @@ describe('the last owner to arrive', () => {
     });
 });
 
+describe('casters that arrive', () => {
+    it('count once, for the shadow maps, and an owner without casters does not', async () => {
+        const seen = async (mesh: RoadMesh) => {
+            const roads = await attached(mesh), arrivals: number[] = [roads.arrived];
+            for (let round = 0; round < 40; round++) {
+                roads.update(eye, () => true, true);
+                arrivals.push(roads.arrived);
+                await new Promise(resolve => setTimeout(resolve));
+            }
+            return arrivals.filter(Number.isFinite).length;
+        };
+        const piece = pieceAt(0, 0, 1024);
+        expect(await seen({ pieces: [piece] })).toBe(0);
+        const casting = { ...piece, casters: { first: 0, count: 3, vertices: 3 } };
+        expect(await seen({ pieces: [casting] })).toBe(1);
+    });
+});
+
 describe('a mesh that the cache evicts', () => {
     it('leaves the pool too, so its bytes do not outlive the budget', async () => {
         const forget = vi.spyOn(Pool.prototype, 'forget'), big = pieceAt(0, 0, 33 * 2 ** 20), { roads } = await roadsWith({ pieces: [big] });

@@ -80,6 +80,9 @@ export class Roads {
     /** Of the pieces in view, each one's place in `pieces` and its range. */
     private draws: { slot: number; range: PieceRange }[] = [];
     failed = 0;
+    /** The metres to the nearest owner in range whose casters arrived since the last frame. A piece that only crosses the range does not count. */
+    arrived = Infinity;
+    private readonly castersNew = new Set<string>();
 
     /** `stored` gives the terrain's tiles, whose ground decides what stands beside a road. An abort of `stop` ends the worker. */
     constructor(private readonly tiles: FeatureTiles | undefined, private readonly stored: StoredBody, private readonly changed: () => void, stop: AbortSignal) {
@@ -138,19 +141,22 @@ export class Roads {
             }
         }
         const pieces: { piece: RoadPiece; d: number }[] = [], wanted = new Set<string>();
-        let held = 0, built = RANGE_M;
+        let held = 0, built = RANGE_M, arrived = Infinity;
         for (const { node, d } of owners.sort((a, b) => a.d - b.d)) {
             // The farthest owners give way when the nearer ones fill the cache.
             const name = key(node), mesh = held < MESH_BYTES ? this.mesh(node, name, build) : undefined;
             if (mesh) wanted.add(name);
             if (!mesh || mesh === FAILED) built = Math.min(built, heldTo(d));
             if (!mesh) continue;
+            if (d < RANGE_M && this.castersNew.has(name)) arrived = Math.min(arrived, d);
             held += meshBytes(mesh);
             for (const piece of mesh.pieces) {
                 const d = away(piece, eye.x, eye.y, eye.unit);
                 if (d < rangeOf(piece)) pieces.push({ piece, d });
             }
         }
+        this.arrived = arrived;
+        this.castersNew.clear();
         this.trim(wanted);
         pieces.sort((a, b) => a.d - b.d);
         const changed = built !== this.built || pieces.length !== this.pieces.length || pieces.some(({ piece }, i) => piece !== this.pieces[i].piece);
@@ -244,6 +250,7 @@ export class Roads {
     private keep(name: string, mesh: RoadMesh): void {
         this.held += meshBytes(mesh) - (this.meshes.has(name) ? meshBytes(this.meshes.get(name)!) : 0);
         this.meshes.set(name, mesh);
+        if (mesh.pieces.some(({ casters, parts }) => casters.count || parts.length)) this.castersNew.add(name);
     }
 
     /** Past the budget, the meshes that have gone longest without use go, but none that the frame wants. */
