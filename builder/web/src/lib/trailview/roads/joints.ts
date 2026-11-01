@@ -1,6 +1,6 @@
 // Where OSM splits a road, its two end stations are one section: the bisector of the fit's tangents, so no wedge
 // opens between the ways where they turn, and the mean of their banks, as two fitted strokes can end on two banks.
-// What a junction does to a way's heights runs on across such a joint.
+// What a junction does to a way's heights runs on across such a joint, and ends short of a deck.
 import { partnersOf } from '../terrain/corners';
 import { BRIDGE, type Line } from '../terrain/bins';
 import { stationIndex, type Station } from './stations';
@@ -55,7 +55,7 @@ export function mitre(joints: Joints): void {
 }
 
 /** The stations up to `metres` from metres `along` of a run, stepping `step`, on across its joints, once each on a small ring: each with its metres from there, and -1 where its left is the first run's right. */
-export function* onward(joints: Joints, run: Run, along: number, step: 1 | -1, metres: number): Generator<{ s: Station; metres: number; flip: 1 | -1 }> {
+export function* onward(joints: Joints, run: Run, along: number, step: 1 | -1, metres: number): Generator<{ s: Station; run: Run; metres: number; flip: 1 | -1 }> {
     const seen = new Set<Station>();
     let flip: 1 | -1 = 1, done = 0;
     for (;;) {
@@ -64,7 +64,7 @@ export function* onward(joints: Joints, run: Run, along: number, step: 1 | -1, m
             const d = done + Math.abs(stations[j].along - along);
             if (d > metres || seen.has(stations[j])) return;
             seen.add(stations[j]);
-            yield { s: stations[j], metres: d, flip };
+            yield { s: stations[j], run, metres: d, flip };
         }
         const joint = joints.get(run)?.[step > 0 ? 1 : 0];
         if (!joint) return;

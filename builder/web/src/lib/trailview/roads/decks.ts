@@ -14,8 +14,10 @@ const TEE_SHARE = 0.5;
 const NARROW_M = 2;
 /** A deck that runs on another deck's road within MEET_M of its height joins it there. */
 const MEET_M = 1.0;
-/** A road that leaves a deck's end counts with its way out this far, its core this far past its carriageway, and within SLACK_M past the deck's outer face. */
-const LEAVES_M = 20, CORE_M = 0.6, SLACK_M = 0.5;
+/** A road's core reaches this far past its carriageway, where it gives way or holds a deck's level. */
+export const CORE_M = 0.6;
+/** A road that leaves a deck's end counts with its way out this far, and within SLACK_M past the deck's outer face. */
+const LEAVES_M = 20, SLACK_M = 0.5;
 /** A side gives way over at most this share of the deck, and this far past the leaving road's core. */
 const GIVE_SHARE = 0.45, GIVE_CLEAR_M = 0.3;
 

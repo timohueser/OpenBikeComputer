@@ -3,7 +3,7 @@
 // its own heights, and it never sinks under them: where the through edge lies lower, that edge rises instead, and
 // the mouth's faces close what RAISE_M leaves.
 import { footOn, outward, sideAt, type Way } from './arms';
-import { isDeck, PARAPET_M } from './decks';
+import { CORE_M, isDeck, PARAPET_M } from './decks';
 import { onward, type Joints } from './joints';
 import { KERB_RISE_M } from './section';
 import { stationOn, type Station } from './stations';
@@ -12,8 +12,6 @@ import type { PathEnd } from './path-ends';
 
 /** A side arm's edge leaves the through road's plane over this many metres past its mouth. */
 const CONFORM_M = 10;
-/** A side arm's core reaches this far past its carriageway, where it holds a deck's level. */
-const CORE_M = 0.6;
 /** A through edge rises at most RAISE_M about its other edge, fully within FLAT_M of the junction or along the mouth, and back over FLATTEN_M more. */
 const RAISE_M = 0.3, FLAT_M = 4, FLATTEN_M = 10;
 /** A path's tread ends this far under a road's shoulder. */
@@ -71,8 +69,11 @@ function heldTo({ way, far, through }: Mouth): number {
 function conform(mouth: Mouth, joints: Joints): void {
     const { way, through } = mouth, { stations, lift } = way.run, reach = heldTo(mouth), shifts = edgesOf(stationOn(stations, way.along + way.step * reach), through, lift).map(({ own, plane }) => Math.max(0, plane - own));
     // A through way can be this line, so every height is read before any is written.
-    const moved = [...onward(joints, way.run, way.along, way.step, reach + CONFORM_M)].map(({ s, metres, flip }) => {
-        const fade = 1 - smooth(Math.max(0, metres - reach) / CONFORM_M), edge = (side: number, own: number) => own + shifts[flip > 0 ? side : 1 - side] * fade;
+    const reached = [...onward(joints, way.run, way.along, way.step, reach + CONFORM_M)];
+    // A deck's structure stands at the bake's heights: the fade ends on the last station short of it.
+    const deck = reached.findIndex(({ run }) => run !== way.run && isDeck(run.line)), fadeM = deck > 0 ? reached[deck - 1].metres - reach : CONFORM_M;
+    const moved = reached.slice(0, deck < 0 ? undefined : deck).map(({ s, metres, flip }) => {
+        const fade = 1 - smooth(clamp((metres - reach) / fadeM)), edge = (side: number, own: number) => own + shifts[flip > 0 ? side : 1 - side] * fade;
         const [left, right] = metres <= reach ? edgesOf(s, through, lift).map(({ own, plane }) => Math.max(plane, own)) : [edge(0, s.z + s.bank * s.h), edge(1, s.z - s.bank * s.h)];
         return { s, left, right };
     });

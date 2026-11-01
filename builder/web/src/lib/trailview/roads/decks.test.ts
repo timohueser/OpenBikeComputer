@@ -2,11 +2,12 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { decodeFeatures, DEEPEST, type Feature, type FeaturePart } from '../stream/features';
-import { features, metresPerUnit, ROAD, type Line } from '../terrain/bins';
+import { features, metresPerUnit, ROAD, TUNNEL, type Line } from '../terrain/bins';
 import { OWNER } from '../terrain/lod';
+import { BORE, curveStops, PAINT, paintOf } from '../structures/mesh';
 import { structureMeshes } from '../structures/node';
 import { decksOf, isDeck } from './decks';
-import { planOf, roadMesh } from './mesh';
+import { planOf } from './mesh';
 import { CUT } from './stations';
 import { countOf } from './sweep';
 
@@ -54,6 +55,16 @@ describe('a road deck', () => {
         expect(yields.flat().filter(d => d > 0).length).toBe(1);
     });
 
+    it('stands on its structure in every tile: what a junction does to a road ends short of the deck', () => {
+        for (const { tile, list } of tiles) {
+            for (const { line, stations } of planOf(features(list, tile)).runs.filter(({ line }) => isDeck(line))) {
+                const stops = curveStops(line);
+                // Less than half of a kerb's rise (KERB_RISE_M), which is what the eye reads as a step.
+                for (const s of stations) expect(Math.abs(s.z - stops.reduce((a, b) => (Math.abs(b.along - s.along) < Math.abs(a.along - s.along) ? b : a)).z)).toBeLessThan(0.06);
+            }
+        }
+    });
+
     it('leaves its walk out on the side that gives way, and has no band', () => {
         const { line, plan: { runs } } = townDeck(), { stations } = runs.find(r => r.line === line)!;
         expect(stations.some(({ cut }) => (cut ?? 0) & (CUT.LEFT | CUT.RIGHT))).toBe(true);
@@ -77,16 +88,13 @@ describe('a road tunnel', () => {
         { kind: 'tunnel', tags: { highway: 'secondary', surface: 'asphalt', tunnel: 'yes' }, parts: [part(1120, 4, 120)] },
     ] as unknown as Feature[], tile = { level: DEEPEST, x: 0, y: 0 }, owner = { level: OWNER, x: 0, y: 0 };
 
-    it('has no round end on its road at the portal, whose corridor ends where the bore starts', () => {
-        const { lines } = features(list, tile), road = lines.find(({ kind }) => kind === ROAD)!, { runs } = planOf(features(list, tile));
-        const run = runs.find(r => r.line === road)! as (typeof runs)[number];
-        expect(run.caps.map(({ j }) => j)).toEqual([0]);
-        expect(roadMesh(list, tile, owner).pieces.length).toBeGreaterThan(0);
-        const { far: { structures } } = structureMeshes(list, tile, owner, true);
-        expect(structures).not.toBeNull();
-        const words = new Int32Array(structures!.vertices), last = run.stations[run.stations.length - 1];
-        let nearest = Infinity;
-        for (let i = 0; i < words.length; i += 6) nearest = Math.min(nearest, Math.hypot(words[i] - last.x, words[i + 1] - last.y));
-        expect(nearest * metresPerUnit(last.y)).toBeLessThan(road.h + 1);
+    it('counts its bore on in the metres of the stroke, as the corridor at its portal counts its dashes', () => {
+        const { lines } = features(list, tile), road = lines.find(({ kind }) => kind === ROAD)!, tunnel = lines.find(({ kind }) => kind === TUNNEL)!, { runs } = planOf(features(list, tile));
+        expect(runs.find(r => r.line === road)!.caps.map(({ j }) => j)).toEqual([0]);
+        const { far: { structures } } = structureMeshes(list, tile, owner, true), words = new Int32Array(structures!.vertices), floats = new Float32Array(structures!.vertices);
+        const paint = paintOf(tunnel, PAINT | BORE);
+        const counts = Array.from({ length: words.length / 6 }, (_, k) => k).filter(k => words[6 * k + 3] >>> 0 === paint).map(k => floats[6 * k + 5]);
+        expect(Math.min(...counts)).toBe(tunnel.stroke!.at);
+        expect(Math.max(...counts)).toBeGreaterThan(tunnel.stroke!.at);
     });
 });

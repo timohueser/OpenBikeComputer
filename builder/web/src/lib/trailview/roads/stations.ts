@@ -45,6 +45,9 @@ export interface Station {
     cut?: number;
 }
 
+/** The metres along its stroke of a point `along` metres from a line's start, or those metres where it has no stroke. */
+export const strokeMetres = ({ stroke }: Line, along: number) => (stroke ? stroke.at + stroke.sign * along : along);
+
 const angle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 
 /**

@@ -5,7 +5,7 @@ import { RAIL, type Line } from '../terrain/bins';
 import { lookWord, type PieceBuilder } from './piece';
 import { isDeck, PARAPET_M } from './decks';
 import { carriageway, CF, junctionFace, sideOf, type Part } from './section';
-import { CUT, type Station } from './stations';
+import { CUT, type Station, strokeMetres } from './stations';
 import { sideStop, type Shore } from './shore';
 import { onWay, type Ways } from './ways';
 
@@ -30,7 +30,7 @@ export function stopsOf(line: Line, stations: Station[], shore: Shore): Float64A
 }
 
 /** What a station counts along its line: sleepers on a track, metres along its stroke on a road, else metres. */
-const counted = ({ kind, stroke }: Line, s: Station) => (kind === RAIL ? s.sleepers ?? 0 : stroke ? stroke.at + stroke.sign * s.along : s.along);
+const counted = (line: Line, s: Station) => (line.kind === RAIL ? s.sleepers ?? 0 : strokeMetres(line, s.along));
 
 /** What a station counts from the base of the run. */
 export const countOf = ({ line, base }: Run, s: Station) => counted(line, s) - base;

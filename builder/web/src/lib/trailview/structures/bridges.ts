@@ -153,10 +153,13 @@ function segment(b: MeshBuilder, s: Station, t: Station, line: Line, depth: numb
     railing(b, s, t, h, length, WOOD, BAR_M);
 }
 
+/** The paint's height over a deck: under a corridor it shows until the corridor's road arrives, then lies hidden. */
+const paintLift = (corridor: boolean) => (corridor ? LIFT_M - WALK_INSIDE_M : LIFT_M);
+
 /** The road on a deck, painted as the road on the ground. */
 function roadway(b: MeshBuilder, s: Station, t: Station, line: Line, corridor: boolean): void {
-    const h = line.h, paint = paintOf(line, PAINT, corridor);
-    b.quad([b.at(s, [-h, LIFT_M], paint, -h, h), b.at(s, [h, LIFT_M], paint, h, h), b.at(t, [h, LIFT_M], paint, h, h), b.at(t, [-h, LIFT_M], paint, -h, h)], b.outward(s, t, [0, 1]));
+    const h = line.h, paint = paintOf(line, PAINT), up = paintLift(corridor);
+    b.quad([b.at(s, [-h, up], paint, -h, h), b.at(s, [h, up], paint, h, h), b.at(t, [h, up], paint, h, h), b.at(t, [-h, up], paint, -h, h)], b.outward(s, t, [0, 1]));
 }
 
 /**
@@ -164,12 +167,12 @@ function roadway(b: MeshBuilder, s: Station, t: Station, line: Line, corridor: b
  * parapet on each side, the deck's faces and its underside. A side that gives way has neither, only a level top.
  */
 function roadBridge(b: MeshBuilder, s: Station, t: Station, line: Line, depth: number, { walks, given, corridor }: Span): void {
-    const h = line.h, [pw, ph] = PARAPET, kerb = LIFT_M + KERB_RISE_M - WALK_INSIDE_M, foot = h + WALK_INSIDE_M, paint = paintOf(line, PAINT, corridor);
+    const h = line.h, [pw, ph] = PARAPET, kerb = LIFT_M + KERB_RISE_M - WALK_INSIDE_M, foot = h + WALK_INSIDE_M, paint = paintOf(line, PAINT), up = paintLift(corridor);
     roadway(b, s, t, line, corridor);
     for (const [side, walk, gives] of [[1, walks[0], given[0]], [-1, walks[1], given[1]]] as [number, number, boolean][]) {
         const inner = h + walk, outer = side * (inner + pw);
         if (gives) {
-            b.quad([b.at(s, [side * h, LIFT_M], paint, side * h, h), b.at(s, [outer, LIFT_M], paint, outer, h), b.at(t, [outer, LIFT_M], paint, outer, h), b.at(t, [side * h, LIFT_M], paint, side * h, h)], b.outward(s, t, [0, 1]));
+            b.quad([b.at(s, [side * h, up], paint, side * h, h), b.at(s, [outer, up], paint, outer, h), b.at(t, [outer, up], paint, outer, h), b.at(t, [side * h, up], paint, side * h, h)], b.outward(s, t, [0, 1]));
             b.strip(s, t, [outer, LIFT_M], [outer, -depth], CONCRETE, [side, 0]);
             continue;
         }

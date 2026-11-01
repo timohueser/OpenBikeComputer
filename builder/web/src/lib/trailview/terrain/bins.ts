@@ -195,7 +195,7 @@ export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS /
  */
 export interface Line {
     kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; profile: number; anchors?: boolean[]; plan?: Plan; tilt?: number[]; join?: [boolean, boolean];
-    /** On a road or a bridge, the metres along its stroke at its first vertex, and their sense along it, so that its dashes run on into the next way. */
+    /** On a road, a bridge or a tunnel, the metres along its stroke at its first vertex, and their sense along it, so that its dashes run on into the next way. */
     stroke?: { at: number; sign: 1 | -1 };
     /**
      * A bridge's deck depth, a tunnel's bore height or the height of a gallery's roof at its hill, a
@@ -328,7 +328,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
                     const whole: Shape = 'anchors' in curve ? { xy: run, z: heights, anchors: curve.anchors.slice(start, end), plan: planPart(curve.plan, start, end) } : smoothed(run, heights);
                     const [shape, sides] = sidewalk || paving ? townPieces(whole, town, sidewalk ? clearOf(beds, feature, h, sidewalk) : undefined) : [whole, []];
                     const n = shape.z.length, paved = (v: number) => paving && sides[v] !== 0, sideWays = sideWaysOf?.(shape.xy);
-                    const stroke = part.plan && (type === ROAD || type === BRIDGE) ? strokeAt(part.plan, xy, start, world) : undefined;
+                    const stroke = part.plan && (type === ROAD || type === BRIDGE || type === TUNNEL) ? strokeAt(part.plan, xy, start, world) : undefined;
                     for (let from = 0, to = 1; to < n; to++) {
                         if (to < n - 1 && paved(to) === paved(from)) continue;
                         const line: Line = {
