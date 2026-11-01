@@ -294,6 +294,14 @@ class Requests(unittest.TestCase):
                 self.assertEqual(len(values["subset"]), 2)
         self.assertIn("scalesize", query(ingest.SOURCES["de-he"].url(split("de-he")[0]))[1])
 
+    def test_only_a_row_that_opts_in_asks_for_a_compressed_tiff(self):
+        """Some servers refuse the parameter, so it is never the default."""
+
+        self.assertIn("geotiff:compression", query(ingest.SOURCES["pl"].url(split("pl")[0]))[1])
+        self.assertNotIn("geotiff:compression", query(ingest.SOURCES["de-he"].url(split("de-he")[0]))[1])
+        self.assertEqual(query(ingest.SOURCES["cz"].url(split("cz")[0]))[1]["compression"], ["LZ77"])
+        self.assertNotIn("compression", query(ingest.SOURCES["us"].url(split("us")[0]))[1])
+
     def test_the_czech_request_names_a_nodata_and_3dep_does_not(self):
         """Without one, ČÚZK answers 0 for the land abroad, which is a height."""
 

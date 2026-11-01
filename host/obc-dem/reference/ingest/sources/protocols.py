@@ -204,11 +204,12 @@ class ArcGisSource(TiledService):
 
     `nodata` is for a service that states none: ČÚZK's answers 0 for the land abroad unless it
     is given one, and with one it also keeps the void out of the interpolation at the border.
+    `compress` is for a service that answers the same pixels in fewer bytes when asked.
     """
 
-    def __init__(self, *args, url, nodata=None, **kw):
+    def __init__(self, *args, url, nodata=None, compress=False, **kw):
         super().__init__(*args, **kw)
-        self.service, self.nodata = url, nodata
+        self.service, self.nodata, self.compress = url, nodata, compress
 
     def url(self, box) -> str:
         px, py = output_size(box, self.resolution_m, f"{self.key} {box}")
@@ -217,6 +218,7 @@ class ArcGisSource(TiledService):
             "imageSR": 4326, "format": "tiff", "pixelType": "F32",
             "interpolation": "RSP_BilinearInterpolation", "f": "image",
             **({"noData": self.nodata} if self.nodata is not None else {}),
+            **({"compression": "LZ77"} if self.compress else {}),
         })
         return f"{self.service}?{query}"
 
@@ -237,12 +239,15 @@ class Wcs20Source(TiledService):
     void, so `fetch` reads the envelope out of `DescribeCoverage` once and every request is
     clipped to it. A country box then runs past the state's border without a refusal, and a
     box wholly outside is not asked for at all.
+
+    `compress` is for a server that answers the same pixels in fewer bytes when asked. Servers
+    never gzip a raster on the wire, and some refuse this parameter, so a row opts in.
     """
 
-    def __init__(self, *args, url, coverage, epsg, axes, scale=True, **kw):
+    def __init__(self, *args, url, coverage, epsg, axes, scale=True, compress=False, **kw):
         super().__init__(*args, **kw)
         self.service, self.coverage, self.epsg, self.axes = url, coverage, epsg, axes
-        self.scale = scale
+        self.scale, self.compress = scale, compress
         #: `(lo_x, lo_y, hi_x, hi_y)` on the coverage's own grid, or `None` before `fetch`.
         self.envelope = None
 
@@ -284,6 +289,8 @@ class Wcs20Source(TiledService):
                  f"&subset={ax}({lo_x},{hi_x})&subset={ay}({lo_y},{hi_y})")
         if self.scale:
             query += f"&scalesize={ax}({px}),{ay}({py})"
+        if self.compress:
+            query += "&geotiff:compression=Deflate"
         return query + "&format=image/tiff"
 
 

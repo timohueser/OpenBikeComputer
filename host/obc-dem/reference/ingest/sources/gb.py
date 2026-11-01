@@ -129,6 +129,7 @@ ENG = Wcs20Source(
     "Open Government Licence v3",
     "Ordnance Datum Newlyn",
     url="https://environment.data.gov.uk/spatialdata/lidar-composite-digital-terrain-model-dtm-1m/wcs",
+    compress=True,
     coverage="13787b9a-26a4-4775-8523-806d13af58fc__Lidar_Composite_Elevation_DTM_1m",
     epsg=27700,
     axes=("E", "N"),
