@@ -501,6 +501,13 @@ describe('a town', () => {
         expect(features([road], tile).lines[0].sidewalks).toEqual([0]);
     });
 
+    it('lifts the ground through no road: a core takes the lower of two heights, and a stream\'s edge stays under it', () => {
+        const body = functionOf(shader, 'stamp_at');
+        expect(body).toContain('lo[WATER] = min(edge.x, hi[ROAD_CORE]);');
+        expect(body).toContain('lo[ROAD_CORE] = min(lo[ROAD_CORE], hi[ROAD_CORE]);');
+        expect(body).toContain('l = select(l, u, b == ROAD_CORE);');
+    });
+
     it('keeps a sidewalk out of the bed of a line beside the road in every tile alike, and out of no culvert', () => {
         // Lines 5 m north of the road's middle, on its left: a bed there takes the left sidewalk's band.
         const y = Math.round(4000 - 5 / metres), beside = (kind: string, tags: Record<string, string>, xy: number[], heights = true) =>

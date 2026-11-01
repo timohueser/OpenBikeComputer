@@ -149,6 +149,11 @@ pub fn climate_first_year() -> Result<u16, String> {
     Ok(config()?.climate.first_year)
 }
 
+/// `trailview.colour_year` of `data/planner.toml`: the year of the satellite colour.
+pub fn colour_year() -> Result<u16, String> {
+    Ok(config()?.trailview.colour_year)
+}
+
 pub struct Planner;
 
 impl Product for Planner {
@@ -542,7 +547,7 @@ impl Planner {
                 client: Client::All,
             });
         }
-        steps.extend(trailview(root, inputs, store, &on, bounds, &config.trailview, &mut wanted)?);
+        steps.extend(trailview(root, inputs, store, &on, (bounds, &requested), &config.trailview, &mut wanted)?);
         if on("trailview-canopy") {
             steps.extend(trailview_canopy(inputs, store, (bounds, &requested), &mut wanted)?);
         }
@@ -961,6 +966,21 @@ fn trailview_canopy(
     )))
 }
 
+/// The version of `colour` that the target reads, and its files of `year` of the blocks that `outline`
+/// meets. None while the store lacks the manifest; then `wanted` has its fetch.
+fn trailview_colour(
+    inputs: &Inputs,
+    store: &Store,
+    outline: &Coverage,
+    year: u16,
+    wanted: &mut Vec<Wanted>,
+) -> Result<Option<(String, Vec<String>)>, Unplanned> {
+    use crate::colour_reference::{files, FORMAT, ID};
+    let needed = files(&crate::forest_reference::region(outline).map_err(Unplanned::Failed)?, year);
+    let held = |manifest: &Manifest| Ok(manifest.files.iter().map(|file| file.path.clone()).collect());
+    prepared(inputs, store, (ID, FORMAT), &needed, held, wanted)
+}
+
 /// The TrailView layers of `bounds`, as `specs/trailview-tiles.md` defines them. The ruleset step is the
 /// one reader of `data/trailview/`: its option `ruleset` is the digest of the files, and the ground
 /// steps read its outputs, so the region ids of the tiles are those of `rules.json`. The material, the
@@ -971,7 +991,7 @@ fn trailview(
     inputs: &Inputs,
     store: &Store,
     on: &dyn Fn(&str) -> bool,
-    bounds: [f64; 4],
+    (bounds, outline): ([f64; 4], &Coverage),
     config: &TrailView,
     wanted: &mut Vec<Wanted>,
 ) -> Result<Vec<Step>, Unplanned> {
@@ -1009,7 +1029,14 @@ fn trailview(
     }
     let bbox = ("bbox".to_string(), bounds.map(|degrees| degrees.to_string()).join(","));
     let year = config.colour_year.to_string();
-    let mosaics = vec![bbox.clone(), ("year".to_string(), year.clone())];
+    let colour = match on("trailview-ground") || on("trailview-colour") {
+        true => trailview_colour(inputs, store, outline, config.colour_year, wanted)?,
+        false => None,
+    };
+    let colour_input = || {
+        let (version, files) = colour.clone().unwrap_or_default();
+        Input::Snapshot { source: crate::colour_reference::ID.into(), version, params: Vec::new(), files }
+    };
     let credit = |sources: &[&str]| {
         sources.iter().map(|id| attribution(id).replace("{year}", &year)).collect::<Vec<_>>().join("; ")
     };
@@ -1023,11 +1050,15 @@ fn trailview(
             worldcover_tiles(bounds, &grid)?.into_iter().map(|tile| ("tile".to_string(), tile)).collect();
         let ground = |layer: &str, reads: Vec<Input>| {
             let output = format!("{layer}.pmtiles");
+            let mut options = json!({"layer": layer, "bounds": bounds});
+            if layer == "material" {
+                options["year"] = json!(config.colour_year);
+            }
             python(
                 &PLANNER_TRAILVIEW_GROUND,
                 &format!("planner/trailview-{layer}"),
                 reads,
-                json!({"layer": layer, "bounds": bounds}),
+                options,
                 tool("tools.trailview.ground"),
                 &[&output],
             )
@@ -1039,7 +1070,7 @@ fn trailview(
                 reads.push(match id {
                     "osm-planet" => layer_files("planner/osm", &["osm.pbf"]),
                     "esa-worldcover" => snapshot(inputs, store, id, tiles.clone(), wanted)?,
-                    "sentinel-2-mosaics" => snapshot(inputs, store, id, mosaics.clone(), wanted)?,
+                    crate::colour_reference::ID => colour_input(),
                     _ if step.per_box() => {
                         let digest = ("ground".to_string(), step.capture_digest());
                         snapshot(inputs, store, id, vec![bbox.clone(), digest], wanted)?
@@ -1071,7 +1102,7 @@ fn trailview(
         let colour = python(
             &PLANNER_TRAILVIEW_COLOUR,
             "planner/trailview-colour",
-            vec![snapshot(inputs, store, "sentinel-2-mosaics", mosaics, wanted)?],
+            vec![colour_input()],
             json!({"bounds": bounds, "year": config.colour_year, "variant": config.colour,
                    "attribution": credit(&["sentinel-2-mosaics"])}),
             tool("tools.trailview.colour"),
@@ -1248,7 +1279,7 @@ mod tests {
         "modis-snow",
         "esa-worldcover",
         "corine-land-cover",
-        "sentinel-2-mosaics",
+        "colour",
         "egdi-geology",
         "igme5000",
     ];
@@ -1328,6 +1359,17 @@ mod tests {
             &[],
             &[(MANIFEST.into(), String::from_utf8(climate.canonical()).unwrap())],
         );
+        // The colour of the box, block 534, 355, and of the Kerry box.
+        let blocks = [(534, 355), (484, 337), (484, 338)].into();
+        let colour_files = crate::colour_reference::files(&blocks, 2025);
+        let colour = prepared_manifest("colour", crate::colour_reference::FORMAT, colour_files);
+        fetched(
+            &store,
+            "colour",
+            "2026-10-01",
+            &[],
+            &[(MANIFEST.into(), String::from_utf8(colour.canonical()).unwrap())],
+        );
         for day in days {
             crate::device::tests::extracted(&store, day, &area, &format!("{AREA}-{day}.osm.pbf"));
             let pbf = include_bytes!("../tests/data/planner.osm.pbf").to_vec();
@@ -1340,14 +1382,24 @@ mod tests {
     /// except `without`.
     fn climate_manifest(format: u32, blocks: &[(u32, u32)], without: &[&str]) -> Manifest {
         let paths = crate::climate_reference::files(&blocks.iter().copied().collect(), 2016);
+        prepared_manifest("climate", format, paths.into_iter().filter(|path| !without.contains(&path.as_str())))
+    }
+
+    /// The files of `colour` of the box of `AREA` in 2025: block 534, 355.
+    fn colour_files() -> BTreeSet<String> {
+        crate::colour_reference::files(&[(534, 355)].into(), 2025)
+    }
+
+    /// A manifest of `source` of 2026-10-01 in `format` with `paths`.
+    fn prepared_manifest(source: &str, format: u32, paths: impl IntoIterator<Item = String>) -> Manifest {
         let file = |path: String| LayerFile { sha256: obc_data::store::sha256_hex(path.as_bytes()), path, size: 1 };
         Manifest {
-            source: "climate".into(),
+            source: source.into(),
             version: "2026-10-01".into(),
             format,
             revision: 1,
             inputs: Vec::new(),
-            files: paths.into_iter().filter(|path| !without.contains(&path.as_str())).map(file).collect(),
+            files: paths.into_iter().map(file).collect(),
             reused: BTreeMap::new(),
             scope: None,
             extends: Vec::new(),
@@ -1703,6 +1755,34 @@ mod tests {
         assert_eq!(pois.options["time_zone"], "UTC");
     }
 
+    /// `prepare` makes only the blocks that the outlines meet, so a bake of a region whose box holds
+    /// other blocks finds each block that it reads.
+    #[test]
+    fn the_colour_reads_the_blocks_of_the_outline_and_not_of_its_box() {
+        let temp = temp("planner-colour");
+        let store = Store::at(temp.0.join("store"));
+        let id = crate::colour_reference::ID;
+        let part = |west, east| {
+            let bbox = Bbox { west, south: 46.84, east, north: 46.85 };
+            Coverage::parse_poly(&crate::device::box_poly(&bbox)).unwrap()
+        };
+        let (near, far) = (part(8.40, 8.41), part(9.40, 9.41));
+        let outline = Coverage::union(&[&near, &far]).unwrap();
+        let blocks: BTreeSet<(u32, u32)> =
+            [&near, &far].iter().flat_map(|part| crate::forest_reference::region(part).unwrap()).collect();
+        let needed = crate::colour_reference::files(&blocks, 2025);
+        let manifest = prepared_manifest(id, crate::colour_reference::FORMAT, needed.clone());
+        let bytes = manifest.canonical();
+        let pinned = format!("2026-10-20/{}", obc_data::store::sha256_hex(&bytes));
+        fetched(&store, id, &pinned, &[], &[(MANIFEST.into(), String::from_utf8(bytes).unwrap())]);
+        let mut inputs = Inputs::default();
+        inputs.resolved.insert((id.into(), Vec::new()), pinned.clone());
+
+        let (version, files) = trailview_colour(&inputs, &store, &outline, 2025, &mut Vec::new()).unwrap().unwrap();
+        assert_eq!(version, pinned);
+        assert_eq!(files.into_iter().collect::<BTreeSet<_>>(), needed);
+    }
+
     #[test]
     fn the_canopy_reads_the_blocks_of_the_outline_and_refuses_a_version_that_lacks_one() {
         use obc_data::prepared::{Cost, Read};
@@ -2045,7 +2125,7 @@ mod tests {
                 r#"planner/trailview-rules["materials.json", "ground.json"]"#,
                 r#"planner/trailview-lithology["lithology.pmtiles"]"#,
                 r#"esa-worldcover[("tile", "N45E006")]"#,
-                r#"sentinel-2-mosaics[("bbox", "7.79,47.99,7.82,48.02"), ("year", "2025")]"#,
+                "colour[]",
                 r#"planner/osm["osm.pbf"]"#,
                 "corine-land-cover[]",
             ]
@@ -2071,6 +2151,10 @@ mod tests {
             .map(|step| (step.name.as_str(), &step.options["kind"]))
             .collect();
         assert_eq!(grids.len(), 6, "the ruleset, the ground archive and four colour archives: {grids:?}");
+        let colour = get("planner/trailview-colour");
+        let [Input::Snapshot { source, files, .. }] = &colour.inputs[..] else { panic!("one snapshot") };
+        assert_eq!((source.as_str(), files), ("colour", &colour_files().into_iter().collect::<Vec<_>>()));
+        assert_eq!(get("planner/trailview-material").options["year"], 2025);
         let q1 = get("planner/trailview-colour/q1/grid");
         assert_eq!(read(q1), [r#"planner/trailview-colour["q1.pmtiles"]"#]);
         let index = get("planner/index");
@@ -2088,7 +2172,7 @@ mod tests {
             |chain| ground_sources(chain, kerry).unwrap().iter().map(|step| step.source.clone()).collect::<Vec<_>>();
         assert_eq!(
             ids(&chains.material.sources),
-            ["esa-worldcover", "sentinel-2-mosaics", "osm-planet", "corine-land-cover", "land-cover-ie"]
+            ["esa-worldcover", "colour", "osm-planet", "corine-land-cover", "land-cover-ie"]
         );
         assert_eq!(ids(&chains.lithology.sources), ["igme5000", "egdi-geology"]);
         let unknown: obc_data::ground::Ground =
@@ -2108,6 +2192,9 @@ mod tests {
         let on = |layer: &str| ["trailview-rules", "trailview-ground"].contains(&layer);
         let mut inputs = inputs(AREA, &[]);
         let mut wanted = Vec::new();
+        let [west, south, east, north] = kerry;
+        let outline = Coverage::parse_poly(&crate::device::box_poly(&Bbox { west, south, east, north })).unwrap();
+        let kerry = (kerry, &outline);
         trailview(&root(), &inputs, &store, &on, kerry, &config, &mut wanted).unwrap();
         wanted.iter().for_each(|wanted| inputs.resolve(wanted, "2026-10-01".into()));
         let steps = trailview(&root(), &inputs, &store, &on, kerry, &config, &mut Vec::new()).unwrap();

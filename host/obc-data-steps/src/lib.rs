@@ -2,6 +2,7 @@
 //! producers of prepared sources.
 
 pub mod climate_reference;
+pub mod colour_reference;
 pub mod device;
 pub mod forest_reference;
 mod functions;
@@ -28,6 +29,7 @@ pub const PREPARED: &[&dyn Prepared] = &[
     &terrain_reference::TERRAIN_REFERENCE,
     &forest_reference::FOREST_REFERENCE,
     &climate_reference::CLIMATE_REFERENCE,
+    &colour_reference::COLOUR_REFERENCE,
     &wiki::WIKI,
 ];
 
