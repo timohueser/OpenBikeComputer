@@ -127,6 +127,10 @@ jobs:
         with:
           tool: trunk@0.21.14,wasm-pack@0.15.0
 
+      # The stale check ignores the map's counts, so git can hold old ones.
+      - name: Refresh the system map for the explorer page
+        run: python3 tools/cairn/cairn.py map
+
       # --public-url ./ rather than /<repo>/: relative asset URLs work under the
       # project-Pages sub-path AND at a domain root, so the move costs a DNS record
       # instead of a rebuild. --release turns on wasm-opt (see data-wasm-opt in

@@ -33,6 +33,12 @@
       ]
     },
     {
+      "title": "Systems",
+      "pages": [
+        { "path": "systems/index", "title": "System explorer" }
+      ]
+    },
+    {
       "title": "Rechtliches",
       "pages": [
         { "path": "impressum", "title": "Impressum" },

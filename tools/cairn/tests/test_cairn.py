@@ -94,6 +94,20 @@ class MapTests(unittest.TestCase):
         self.assertEqual(tangles, ["- A cycle between a, b: a -> b, b -> a", "- c -> a is not in the doc of c"])
         self.assertNotIn("### Shells", cairn.system_map(docs[:-1], analyse(docs[:-1], [], units[:-1], edges[:-1])))
 
+    def test_map_data_gives_each_system_its_lines_and_problems(self):
+        docs = [doc("a", ["a/**", "tools/a.py"], depends_on=["b"]), doc("b", ["b/**"], kind="shell")]
+        units = [unit("ca", "a/src/lib.rs"), unit("cb", "b/src/lib.rs")]
+        files = [u["entry"] for u in units] + ["tools/a.py"]
+        result = analyse(docs, files, units, [("ca", "cb", False)])
+        data = json.loads(cairn.map_data(docs, files, {"a/src/lib.rs": 10, "tools/a.py": 5, "b/src/lib.rs": 7}, result))
+        a, b = data["systems"]
+        self.assertEqual((a["name"], a["lines"], a["area"], a["depends_on"]), ("a", 15, "Device", ["b"]))
+        self.assertEqual((b["lines"], b["area"]), (7, "Shells"))
+        self.assertEqual(a["violations"], len(a["problems"]))
+        self.assertIn("R4", {p["rule"] for p in a["problems"]})
+        self.assertEqual(data["edges"], [{"from": "a", "to": "b", "test": False, "undeclared": False}])
+        self.assertEqual(data["cycles"], [])
+
     def test_check_fails_on_a_stale_map_and_map_keeps_the_owners_text(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -110,6 +124,16 @@ class MapTests(unittest.TestCase):
                 self.assertIn("run `obc cairn map`", out.getvalue())
                 self.assertEqual(cairn.main(["map"]), 0)
                 self.assertEqual(cairn.main(["check"]), 0)
+                data = page.with_name(cairn.MAP_DATA)
+                self.assertEqual(json.loads(data.read_text())["systems"][0]["name"], "routing")
+                written = json.loads(data.read_text())
+                written["systems"][0].update(lines=99, violations=9, problems=[{"rule": "R3", "message": "9 lines"}])
+                data.write_text(json.dumps(written))
+                self.assertEqual(cairn.main(["check"]), 0)
+                written["systems"][0]["purpose"] = "Old."
+                data.write_text(json.dumps(written))
+                self.assertEqual(cairn.main(["check"]), 1)
+                self.assertIn("map.json is out of date", out.getvalue())
             self.assertTrue(page.read_text().startswith("# Map\n\nMine.\n\n"))
             self.assertIn("| [routing](routing.md) |", page.read_text())
         block = f"{cairn.MAP_BEGIN}\n{cairn.MAP_END}"
@@ -206,6 +230,8 @@ class RuleTests(unittest.TestCase):
         docs = [doc("maps", ["host/bake/**", "tools/bake.py", "firmware/read/**"])]
         result = analyse(docs, ["host/bake/lib.rs", "tools/bake.py", "firmware/read/lib.rs"])
         self.assertEqual(ids(result, "R2"), ["R2 maps host host/", "R2 maps host tools/"])
+        self.assertEqual(sorted(v.message for v in result.violations if v.rule == "R2"),
+                         ["maps has host code in host/, and also in tools/", "maps has host code in tools/, and also in host/"])
 
     def test_r3_records_every_shell_with_code_of_its_own(self):
         docs = [doc("app", ["app/**"], kind="shell"), doc("web", ["web/**"], kind="shell"), doc("nav", ["app/src/nav.rs"])]
