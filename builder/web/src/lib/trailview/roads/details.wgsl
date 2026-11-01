@@ -15,10 +15,13 @@ const MAT_CAP: u32 = 49u;
 // A stone of a wall: its cell along and up. Stones lie flat.
 const STONE_LONG_M: f32 = 0.267;
 const STONE_HIGH_M: f32 = 0.125;
-// The share of a stone that a pixel spans where it starts to fade, and where it has gone: stones flicker under 2.2 pixels,
-// measured on a walk beside the wall. Along the wall a stone doubles its length from STONE_FROM instead of fading.
+// The share of a stone that a pixel spans along the wall where its length starts to double: seen along a wall, stones
+// merge along it long before they merge up it. Single stones flicker sooner than 2 pixels, measured on a walk beside the wall.
 const STONE_FROM: f32 = 0.25;
-const STONE_TO: f32 = 0.45;
+// The share of a stone that a pixel spans up the wall where the stones start to fade, and where they have gone, by 1.5
+// pixels. Chosen on `main-road-eye`: an earlier fade leaves a tall stretch of plain wall that reads as a second look.
+const FADE_FROM: f32 = 0.4;
+const FADE_TO: f32 = 0.67;
 // The mean colour of the stones, and the size of the patches of tone that stay past them.
 const RUBBLE_MEAN: vec3f = vec3f(0.33, 0.32, 0.30);
 const RUBBLE_PATCH: vec2f = vec2f(5.0, 1.3);
@@ -67,7 +70,7 @@ fn rubble_stones(q: vec2f, pixel: f32) -> vec3f {
 fn rubble(along: f32, altitude: f32, aw: f32, vw: f32) -> vec3f {
     let mean = RUBBLE_MEAN * (0.9 + 0.2 * noise(vec2f(along, altitude) / RUBBLE_PATCH));
     let up = vw / STONE_HIGH_M;
-    let shown = 1.0 - smoothstep(STONE_FROM, STONE_TO, up);
+    let shown = 1.0 - smoothstep(FADE_FROM, FADE_TO, up);
     if (shown <= 0.0) {
         return mean;
     }
