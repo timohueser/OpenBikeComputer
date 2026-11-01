@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { features, metresPerUnit, PROFILES, ROAD, SURFACES, type Barrier, type Line } from '../terrain/bins';
-import { size } from '../terrain/lod';
 import { LEFT } from '../terrain/town';
 import { roadside } from './details';
 import type { GroundAt } from './ground';
@@ -174,7 +173,7 @@ describe('what stands beside a road', () => {
 
 /** The faces of one side of a road on `ground`: one piece, its builder and what stands. */
 function built(ground: GroundAt, side: 1 | -1): { b: PieceBuilder } {
-    const { line, stations } = road(), b = new PieceBuilder(xOf(100), Y, size(16) / 2);
+    const { line, stations } = road(), b = new PieceBuilder(xOf(100), Y);
     const run = { id: 1, line, stations, reach: foldsOf(stations), lift: 0, prio: 0, base: 0, ways: waysOf([line]), far: stations.flatMap(({ along }, j) => (j === 0 || j === stations.length - 1 || Math.floor(along / 10) !== Math.floor(stations[j - 1].along / 10) ? [j] : [])) };
     roadside(run, side, stands(line, stations, side, ground), () => true, () => b);
     return { b };

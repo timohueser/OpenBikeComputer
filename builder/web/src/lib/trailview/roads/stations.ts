@@ -109,6 +109,14 @@ export function between(s: Station, t: Station, u: number): Station {
     };
 }
 
+/** The station `metres` along stations of a line, at most at its ends. It keeps the cut of its segment. */
+export function stationAt(stations: Station[], metres: number): Station {
+    let j = 0;
+    while (j + 2 < stations.length && stations[j + 1].along <= metres) j++;
+    const s = stations[j], t = stations[j + 1];
+    return { ...between(s, t, Math.max(0, Math.min(1, (metres - s.along) / Math.max(t.along - s.along, 1e-6)))), cut: s.cut };
+}
+
 /**
  * Of each station, the most metres across that its sides reach on its left and its right, where a tight
  * bend stops them. An offset that shortens a step to nothing folds; the ends of a step share its limit.

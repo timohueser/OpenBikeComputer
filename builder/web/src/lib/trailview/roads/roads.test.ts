@@ -13,8 +13,8 @@ const owner = { x: 2000, y: 2000 }, eye = { x: (owner.x * 2 + 0.5) * side, y: (o
 
 /** A piece of child (i, j) of the eye's owner, that takes `bytes` of each pool. The eye stands over the middle of child (0, 0). */
 const pieceAt = (i: number, j: number, bytes: number): RoadPiece => ({
-    x: (owner.x * 2 + i + 0.5) * side, y: (owner.y * 2 + j + 0.5) * side, low: 0, high: 1, over: 0, vertices: new ArrayBuffer(bytes), indices: new Uint16Array(bytes / 2),
-    near: { first: 0, count: 300, vertices: 100 }, far: { first: 300, count: 30, vertices: 10 }, casters: { first: 330, count: 0, vertices: 0 },
+    level: CHILD, x: (owner.x * 2 + i + 0.5) * side, y: (owner.y * 2 + j + 0.5) * side, low: 0, high: 1, over: 0, vertices: new ArrayBuffer(bytes), indices: new Uint16Array(bytes / 2),
+    near: { first: 0, count: 300, vertices: 100 }, far: { first: 300, count: 30, vertices: 10 }, casters: { first: 330, count: 0, vertices: 0 }, parts: [],
 });
 
 /** A worker that answers the eye's owner with `mesh`, or with `error`, and each other owner with nothing. */

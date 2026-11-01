@@ -6,24 +6,25 @@ import { LEFT, RIGHT } from '../terrain/town';
 
 const CLASS_NAMES = Object.keys(PROFILES), SURFACE_NAMES = Object.keys(SURFACES) as (keyof typeof SURFACES)[];
 export const classOf = (line: Line) => CLASS_NAMES[line.profile];
-const surfaceName = (line: Line) => SURFACE_NAMES[(line.code & 15) - 1];
+export const surfaceName = (line: Line) => SURFACE_NAMES[(line.code & 15) - 1];
 
 export { LIFT_M };
 
 /** Face materials, as MAT_* of corridor.wgsl and details.wgsl: the ground under the face, the stone of a town street, and what stands beside a road. */
 export const MAT = { GROUND: 1, KERB: 2, SIDEWALK: 3, RAIL: 40, RAIL_POST: 41, RAIL_BLOCK: 42, DELI: 44, DELI_BAND: 45, REFLECTOR: 46, WALL: 48, CAP: 49 } as const;
 /** The looks of the ways, as LOOK_* of looks.wgsl. */
-export const LOOK = { ASPHALT: 20, MAIN: 21, MOTORWAY: 22, CONCRETE: 23, SETT: 24, PAVERS: 25, GRAVEL: 26, DIRT: 27, TRAIL: 28, BALLAST: 29, STRIPS: 30 } as const;
+export const LOOK = { ASPHALT: 20, MAIN: 21, MOTORWAY: 22, CONCRETE: 23, SETT: 24, PAVERS: 25, GRAVEL: 26, DIRT: 27, TRAIL: 28, BALLAST: 29, STRIPS: 30, TREAD: 31, RISER: 32, SLEEPER: 33, TIMBER: 34, RAIL: 35, RAIL_HEAD: 36, RACK: 37, CABLE: 38 } as const;
 /**
- * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a band's row on the stamped ground. MESH: a band's row
- * under the drawn mesh. FILL, both of these: a backfill's row at its height, or under the drawn mesh where that lies
+ * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a band's row on the stamped ground. MESH: a band's row or
+ * the foot of a cheek of steps under the drawn mesh. FILL, both of these: a backfill's row at its height, or under the drawn mesh where that lies
  * lower. UNDER: a band's row over another way's carriageway, which it passes under. NO_LEFT_LINE, NO_RIGHT_LINE: a
  * carriageway without its edge line on that side, at a junction's mouth.
  */
 export const CF = { SAMPLE: 1, MESH: 2, FILL: 3, UNDER: 4, NO_LEFT_LINE: 8, NO_RIGHT_LINE: 16 } as const;
 
 /** The top of a track's ballast over its line, and the width of its slope on each side. */
-const BED_M = 0.25, BED_SLOPE_M = 0.4;
+export const BED_M = 0.25;
+const BED_SLOPE_M = 0.4;
 /** The bed of paving over the core: seen at a grazing angle, the terrain across a narrow core would rise through it. */
 const PAVED_BED_M = 0.05;
 /** The crown of a paved carriageway: its middle over its edges, per metre of half-width. A bend's banking takes it over. */

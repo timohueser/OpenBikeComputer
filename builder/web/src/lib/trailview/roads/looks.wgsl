@@ -5,6 +5,7 @@
 // What moves a way's shape reads the place, so it runs on over any border. Only what shades reads the way's count,
 // which takes a new base at most once in REPEAT of sweep.ts: a puddle or a streak can stop at an owner's border.
 // #include ../ground/look.wgsl
+// #include track-looks.wgsl
 // #include details.wgsl
 
 // As MAT and LOOK of section.ts.
@@ -348,12 +349,11 @@ fn trail_look(region: u32, su: vec2f, w: WayPixel, slope: f32, altitude: f32) ->
 }
 
 // A track's bed: crushed stone, rusty between and beside the rails, darker in the middle; on its slopes and past
-// them dirtier, fraying into the ground; with its sleepers and rails.
+// them dirtier, fraying into the ground; far off the sleepers and rails that its details draw near the eye.
 fn ballast_look(code: u32, w: WayPixel) -> WayLook {
     var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let p = w.p;
-    let narrow = ((code - RAIL_CODE) & 1u) != 0u;
-    let gauge = select(0.7525, 0.53, narrow);
+    let gauge = rail_gauge(code);
     let x = abs(w.across);
     // Crushed stone: two sizes over each other, each stone its own tone, shallow gaps.
     let peb = pebbles(p, 0.032, w.pw);
@@ -369,9 +369,9 @@ fn ballast_look(code: u32, w: WayPixel) -> WayLook {
     out.bump = 0.9 * seen(0.038, w.pw) * facet;
     // Past the bed: the formation's dirt, weeds and the ground.
     out.ground = smoothstep(0.0, 0.35, frayed(p, x - w.half, 0.25));
-    if (x < w.half - 0.3) {
+    if (detail_painted(length(p - look.place.xy)) && x < w.half - 0.3) {
         // Sleepers 0.26 m wide, rail heads 6 cm, rusty sides, a rack between.
-        let reach = select(1.3, 0.9, narrow);
+        let reach = sleeper_half(code);
         let off = (fract(w.along + 0.5) - 0.5) * SLEEPER_SPACING_M;
         let along_m = w.aw * SLEEPER_SPACING_M;
         let lying = mix(band(off, -0.13, 0.13, along_m), 0.26 / SLEEPER_SPACING_M, smoothstep(0.1, 0.4, along_m));
@@ -418,6 +418,9 @@ fn way_look(mat: u32, code: u32, region: u32, su: vec2f, w: WayPixel, flags: u32
         }
         case LOOK_BALLAST: {
             return ballast_look(code, w);
+        }
+        case LOOK_TREAD, LOOK_RISER, LOOK_SLEEPER, LOOK_TIMBER, LOOK_RAIL, LOOK_RAIL_HEAD, LOOK_RACK, LOOK_CABLE: {
+            return track_look(mat, code, region, w, slope, altitude);
         }
         default: {
             return paved_look(mat, code, region, w, flags);

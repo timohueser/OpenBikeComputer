@@ -3,7 +3,7 @@
 import type { Feature } from '../stream/features';
 import { features, junctions as sharedPoints, metresPerUnit, ROAD, type Line, type Node, type Shapes } from '../terrain/bins';
 import { halfAt, partnersOf } from '../terrain/corners';
-import { CHILD, size } from '../terrain/lod';
+import { CHILD, DETAIL, size } from '../terrain/lod';
 import { townOf } from '../terrain/town';
 import { roadside } from './details';
 import type { GroundAt } from './ground';
@@ -12,8 +12,9 @@ import { planJunctions, type Junctions } from './junctions';
 import { PieceBuilder, type RoadPiece } from './piece';
 import { corridorLine, frays } from './section';
 import { allowed, barriersOf, mouthsOn, standingOf, townish, zonesOf, type Barriers } from './standing';
-import { farStations, reachOf, stationIndex, stationsOf } from './stations';
+import { farStations, reachOf, stationIndex, stationsOf, type Station } from './stations';
 import { baseOf, cap, liftOf, prioOf, sweep, type Run } from './sweep';
+import { tracks } from './tracks';
 import { waysOf } from './ways';
 
 /** The ground beside a road stands within this many metres of its plane: a piece's heights reach this far past its vertices. */
@@ -67,11 +68,19 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node, ground: Groun
     const { runs, junctions } = planOf(features(list, tile)), side = size(CHILD), pieces: PieceBuilder[][] = [[], [], [], []];
     const x0 = owner.x * 2 * side, y0 = owner.y * 2 * side;
     const owns = ({ x, y }: { x: number; y: number }) => x >= x0 && x < x0 + 2 * side && y >= y0 && y < y0 + 2 * side;
+    const close = new Map<number, PieceBuilder[]>(), cell = size(DETAIL);
+    /** The piece of the details of a station that the owner holds, with room for its faces. */
+    const detailAt = (s: Station) => {
+        if (!owns(s)) return undefined;
+        const [i, j] = [Math.floor(s.x / cell), Math.floor(s.y / cell)], list = close.get(i * 2 ** 20 + j) ?? close.set(i * 2 ** 20 + j, []).get(i * 2 ** 20 + j)!;
+        const last = list[list.length - 1];
+        return last?.roomy ? last : list[list.push(new PieceBuilder((i + 0.5) * cell, (j + 0.5) * cell, DETAIL, true)) - 1];
+    };
     const listAt = ({ x, y }: { x: number; y: number }) => pieces[Math.floor((y - y0) / side) * 2 + Math.floor((x - x0) / side)];
     /** A new piece of the child that holds a point. */
     const newPiece = (at: { x: number; y: number }) => {
         const i = Math.floor((at.x - x0) / side), j = Math.floor((at.y - y0) / side), list = listAt(at);
-        return list[list.push(new PieceBuilder(x0 + (i + 0.5) * side, y0 + (j + 0.5) * side, side / 2)) - 1];
+        return list[list.push(new PieceBuilder(x0 + (i + 0.5) * side, y0 + (j + 0.5) * side)) - 1];
     };
     /** The piece of the child that holds a point, with room for a cross-section. */
     const pieceAt = (at: { x: number; y: number }) => {
@@ -104,12 +113,13 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node, ground: Groun
             cap(piece, piece.near, run, j, dir, false);
             cap(piece, piece.far, run, j, dir, true);
         }
+        tracks(run, detailAt);
         if (run.mouths.length) for (const way of [1, -1] as const) roadside(run, way, standingOf(line, stations, run.reach, way, ground, run.mouths, run.towns, run.barriers), owns, pieceAt);
     }
     // A junction's faces go to the child that holds its point, so one owner of the tiles that hold them draws them.
     for (const corner of junctions.corners) if (owns(corner.meeting)) facesAt(corner.meeting, piece => cornerFaces(piece, corner));
     for (const mouth of junctions.mouths) if (owns(mouth.left.meeting)) facesAt(mouth.left.meeting, piece => mouthFaces(piece, mouth));
-    return { pieces: pieces.flat().map(piece => piece.piece(GROUND_M)) };
+    return { pieces: [...pieces.flat(), ...[...close.values()].flat()].map(piece => piece.piece(GROUND_M)) };
 }
 
 /** The heap per station of a plan, per segment with the tile's shapes, and per corner, mouth and path end, fitted to the V8 heap of fixture tiles. */

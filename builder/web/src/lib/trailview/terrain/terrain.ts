@@ -11,7 +11,7 @@ import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import { featureTile, NEAR, profileTable, waterAt } from './bins';
-import { cdlod, CHILD, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
+import { cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
 import { OPAQUE, Water } from './water';
@@ -768,9 +768,9 @@ export class Terrain {
     }
 
     /** Whether a corridor piece can show. */
-    private boxVisible({ x, y, low, high, over }: RoadPiece, eye: { anchor: Anchor; above: number }, forward: Float64Array, view: View): boolean {
-        const s = size(CHILD);
-        return view.z === undefined || this.inFrustum({ level: CHILD, x: Math.floor(x / s), y: Math.floor(y / s) }, low, high, eye, forward, view, over * eye.anchor.unit);
+    private boxVisible({ level, x, y, low, high, over }: RoadPiece, eye: { anchor: Anchor; above: number }, forward: Float64Array, view: View): boolean {
+        const s = size(level);
+        return view.z === undefined || this.inFrustum({ level, x: Math.floor(x / s), y: Math.floor(y / s) }, low, high, eye, forward, view, over * eye.anchor.unit);
     }
 
     /** Whether the square of a node, `past` metres wider each way, between heights `lo` and `hi` meets the frustum. */
