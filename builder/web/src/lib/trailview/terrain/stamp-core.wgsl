@@ -9,8 +9,7 @@
 // Per node: the record count, the entry count, GRID² + 1 cell offsets (each with the move of the
 // cell's origin in its top byte, x then y, 8 + units), the cell entries, then RECORD
 // words per primitive. A cell lists its junctions, then per lake, sea polygon and pad its edges and its marker,
-// then the junctions' corners, then the segments of the roads, paths and rivers, line by line, then the walks
-// to the houses: so no list of lakes or lines has a size limit.
+// then the junctions' corners, then the segments of the roads, paths and rivers, line by line: so no list of lakes or lines has a size limit.
 @group(0) @binding(1) var<storage, read> stamp_data: array<u32>;
 
 // The profile of a road or path class, as `Profile` in bins.ts: the core tolerance, the reach of the
@@ -641,8 +640,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             let plain = kind == ROAD && walk == 0.0 && !gallery && road_shows(own, rule, level);
             // The paint follows the carriageway: a road that ends at a junction ends at its mitre line,
             // but for the round cap that fills the outer wedge of a bend where the through road runs on.
-            // A texel in a carriageway takes it, then one in a road's sidewalk that road, so no path or walk
-            // paints over either, and the snap finds the sidewalk's outer edge under a house's forecourt.
+            // A texel in a carriageway takes it, then one in a road's sidewalk that road, so no path paints
+            // over either.
             // Elsewhere, and between sidewalks, the nearest outer edge wins: two roads' sidewalks meet in a
             // corner, and a side road's mouth cuts through the through road's sidewalk.
             let x = g.lateral - h;

@@ -10,10 +10,10 @@ import { stationAt, stationsOf, type Station } from './stations';
 /**
  * A lamp stands SPACING_M from the next, moved up to SEARCH_M along to a free place: on the sidewalk at
  * SIDEWALK_SHARE of its width, else BEHIND_M past the shoulder; CLEAR_M from a building's walls,
- * OFF_ROAD_M from another carriageway, MOUTH_M past the edge of a way that joins, DRIVE_M from a driveway,
+ * OFF_ROAD_M from another carriageway, MOUTH_M past the edge of a way that joins,
  * and APART_M from every other lamp of its tile: each way starts its own count of SPACING_M.
  */
-const SPACING_M = 32, SEARCH_M = 10, SIDEWALK_SHARE = 0.72, BEHIND_M = 0.5, CLEAR_M = 1.5, OFF_ROAD_M = 0.4, MOUTH_M = 4, DRIVE_M = 1.2, APART_M = SPACING_M / 2;
+const SPACING_M = 32, SEARCH_M = 10, SIDEWALK_SHARE = 0.72, BEHIND_M = 0.5, CLEAR_M = 1.5, OFF_ROAD_M = 0.4, MOUTH_M = 4, APART_M = SPACING_M / 2;
 
 /** The roads that have lamps, and how far from the eye a lamp draws. */
 const LIT = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified', 'residential', 'living_street']);
@@ -32,7 +32,7 @@ export const lampKind: Kind = {
 const planned = new WeakMap<Line[], Placement[]>();
 
 /** What decides the place of a lamp. */
-interface Places { out: Pick<Build, 'buildings' | 'cornered'>; town: Town; ways: Line[]; mouths: { x: number; y: number; h: number }[]; walks: Line[]; lamps: Placement[] }
+interface Places { out: Pick<Build, 'buildings' | 'cornered'>; town: Town; ways: Line[]; mouths: { x: number; y: number; h: number }[]; lamps: Placement[] }
 
 /** Whether a point lies within OFF_ROAD_M of a carriageway other than `own`. */
 function inTraffic(ways: Line[], own: Line, x: number, y: number, unit: number): boolean {
@@ -50,10 +50,10 @@ function inTraffic(ways: Line[], own: Line, x: number, y: number, unit: number):
 }
 
 /** Whether a lamp may stand at world point x, y beside `line`, whose sidewalk is `walk` metres wide. */
-function free({ out, town, ways, mouths, walks, lamps }: Places, line: Line, walk: number, x: number, y: number, unit: number): boolean {
+function free({ out, town, ways, mouths, lamps }: Places, line: Line, walk: number, x: number, y: number, unit: number): boolean {
     if (out.cornered(x, y) || mouths.some(j => Math.hypot(j.x - x, j.y - y) * unit < j.h + walk + MOUTH_M)) return false;
     if (lamps.some(lamp => Math.hypot(lamp.x - x, lamp.y - y) * unit < APART_M)) return false;
-    if (walks.some(w => Math.hypot(w.xy[2] - x, w.xy[3] - y) * unit < w.h + walk + DRIVE_M) || inTraffic(ways, line, x, y, unit)) return false;
+    if (inTraffic(ways, line, x, y, unit)) return false;
     let walled = false;
     near(town, x, y, x, y, CLEAR_M / unit, b => (walled ||= insideRings(out.buildings[b].rings, x, y) || ringsDistance(out.buildings[b].rings, x, y) * unit < CLEAR_M));
     return !walled;
@@ -74,12 +74,12 @@ function spot(places: Places, line: Line, st: Station[], metres: number): Placem
 }
 
 /** The lamps of a tile's lit roads. */
-function lampsOf(out: Pick<Build, 'buildings' | 'cornered'>, lines: Line[], walks: Line[]): Placement[] {
+function lampsOf(out: Pick<Build, 'buildings' | 'cornered'>, lines: Line[]): Placement[] {
     const partners = partnersOf(lines), ways = cores(lines), roads = lines.filter(line => line.kind === ROAD && !line.gallery && LIT.has(classOf(line)) && line.z.length > 1);
     // A road can run straight into a bridge or a tunnel, a node of two ways: each end of one is a mouth.
     const ends = lines.filter(({ kind }) => kind === BRIDGE || kind === TUNNEL).flatMap(({ xy, h }) => [{ x: xy[0], y: xy[1], h }, { x: xy[xy.length - 2], y: xy[xy.length - 1], h }]);
     const joins = [...junctions([...ways, ...lines.filter(({ kind }) => kind === PATH)]).values()].filter(j => j.ways > 2), lamps: Placement[] = [];
-    const places = { out, town: townOf(out.buildings), ways, mouths: [...joins, ...ends], walks, lamps };
+    const places = { out, town: townOf(out.buildings), ways, mouths: [...joins, ...ends], lamps };
     for (const line of roads) {
         const st = stationsOf(line, v => halfAt(line, v, partners)), total = st[st.length - 1].along;
         for (let metres = SPACING_M / 2; metres < total; ) {
@@ -100,8 +100,8 @@ function lampsOf(out: Pick<Build, 'buildings' | 'cornered'>, lines: Line[], walk
     return lamps;
 }
 
-/** Stands the lamps of a tile that a node owns. `lines` and `walks` are the tile's. */
-export function streetLamps(out: Pick<Build, 'owns' | 'place' | 'buildings' | 'cornered'>, lines: Line[], walks: Line[]): void {
-    const lamps = planned.get(lines) ?? planned.set(lines, lampsOf(out, lines, walks)).get(lines)!;
+/** Stands the lamps of a tile that a node owns. `lines` are the tile's. */
+export function streetLamps(out: Pick<Build, 'owns' | 'place' | 'buildings' | 'cornered'>, lines: Line[]): void {
+    const lamps = planned.get(lines) ?? planned.set(lines, lampsOf(out, lines)).get(lines)!;
     for (const lamp of lamps) if (out.owns(lamp.x, lamp.y)) out.place(lamp);
 }

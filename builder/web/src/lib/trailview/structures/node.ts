@@ -78,7 +78,7 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side;
     const owns: Owns = (x, y) => x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
     const words: number[] = [], far = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) }, near = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) };
-    const { lines, buildings, walks } = features(list, tile);
+    const { lines, buildings } = features(list, tile);
     bridges(far.mesh, list, tile, lines, owns);
     tunnels(far.mesh, lines, owns);
     galleries(far.mesh, lines, owns);
@@ -92,7 +92,7 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
         KINDS.get(kind)?.build(placed(feature, tile), out);
     }
     kind = 'road';
-    streetLamps(out, lines, walks);
+    streetLamps(out, lines);
     const meshes = ({ mesh, anchored }: typeof far): Meshes => ({ structures: mesh.mesh(), anchored: anchored.mesh() });
     return { far: meshes(far), near: meshes(near), anchors: words.length ? anchorBytes(words) : null, points: points.length ? packPoints(points.filter(p => p.model >= 0)) : null };
 }

@@ -53,9 +53,9 @@ describe('kinds', () => {
         const road = (xy: number[], extra: Partial<Line> = {}) => ({ kind: ROAD, xy, z: xy.filter((_, i) => i % 2 === 0).map(() => 0), h: 2.5, code: 2, ford: false, profile: profile('residential'), ...extra }) as Line;
         // A road 320 m east with a sidewalk on its right, and a house 10 m north of its first 100 m.
         const main = road([0, y, 112 * m, y, 320 * m, y], { sidewalks: [RIGHT, RIGHT] }), house = { rings: [[0, y - 10 * m, 100 * m, y - 10 * m, 100 * m, y - 20 * m]], outer: [true] };
-        const places = (lines: Line[], { buildings = [house] as unknown[], walks = [] as Line[], cornered = (() => false) as (x: number, y: number) => boolean } = {}) => {
+        const places = (lines: Line[], { buildings = [house] as unknown[], cornered = (() => false) as (x: number, y: number) => boolean } = {}) => {
             const placed: Placement[] = [];
-            streetLamps({ owns: () => true, place: p => placed.push(p), buildings, cornered } as Parameters<typeof streetLamps>[0], lines, walks);
+            streetLamps({ owns: () => true, place: p => placed.push(p), buildings, cornered } as Parameters<typeof streetLamps>[0], lines);
             return placed;
         };
         const along = (lines: Line[], others?: Parameters<typeof places>[1]) => places(lines, others).map(p => Math.round(p.x / m));
@@ -96,10 +96,8 @@ describe('kinds', () => {
             for (const lamp of lamps) for (const other of lamps) if (other !== lamp) expect(Math.hypot(lamp.x - other.x, lamp.y - other.y) / m).toBeGreaterThanOrEqual(16);
         });
 
-        it('in no driveway and no corner, on no other carriageway and no track', () => {
-            const drive = { xy: [48 * m, y + 12 * m, 48 * m, y + 4 * m], h: 1.5 } as Line;
+        it('in no corner, on no other carriageway and no track', () => {
             // Without a building, only the sidewalk's side can take a lamp.
-            expect(along([main], { buildings: [], walks: [drive] })).toEqual([16, 54, 86, 118, 150, 182, 214, 246, 278, 310]);
             expect(along([main], { buildings: [], cornered: x => Math.abs(x - 48 * m) < 3 * m })).toEqual([16, 52, 84, 116, 148, 180, 212, 244, 276, 308]);
             const across = (kind: number) => road([0, y + 3.6 * m, 40 * m, y + 3.6 * m], { kind, h: 1 });
             expect(along([main, across(ROAD)], { buildings: [] }).slice(0, 2)).toEqual([48, 80]);
