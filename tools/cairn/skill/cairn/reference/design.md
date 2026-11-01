@@ -24,7 +24,7 @@ When you are not sure between two sizes, take the larger one. Only the user make
 
 ## 3. Section by section
 
-The body has this layout. Below `## Done when`, keep a section that `explore` wrote, such as Limits, when the design still needs it. Add `## Out of scope` only when the user or you want to say what this change must not include.
+The body has this layout. Below `## Done when`, keep a section that `explore` wrote, such as Limits, when the design still needs it, and always keep a `## Prototype` section. Add `## Out of scope` only when the user or you want to say what this change must not include.
 
 ```text
 Status: designed
