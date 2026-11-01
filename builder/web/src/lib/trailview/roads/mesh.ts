@@ -36,8 +36,8 @@ export interface TilePlan { runs: Planned[]; junctions: Junctions }
 const plans = new WeakMap<Line[], TilePlan>();
 
 /** The plan of a tile's shapes, made once. */
-export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas' | 'buildings' | 'barriers'>): TilePlan {
-    const { lines, buildings, barriers: mapped } = shapes, known = plans.get(lines);
+export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas' | 'buildings' | 'barriers'> & Partial<Pick<Shapes, 'crossings'>>): TilePlan {
+    const { lines, buildings, barriers: mapped, crossings } = shapes, known = plans.get(lines);
     if (known) return known;
     const shore = shoreOf(shapes), ways = waysOf(lines), shared = sharedPoints(lines), partners = partnersOf(lines), town = townOf(buildings), barriers = barriersOf(mapped);
     for (const [line, { walks }] of decksOf(lines)) line.sidewalks = new Array(line.z.length - 1).fill((walks[0] ? LEFT : 0) | (walks[1] ? RIGHT : 0));
@@ -47,7 +47,7 @@ export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas'
         if (!corridorLine(line) || line.z.length < 2) return [];
         return [{ id, line, stations: stationsOf(line, v => halfAt(line, v, partners)), reach: new Float64Array(0), lift: liftOf(line, id), prio: prioOf(line), base: 0, ways, shore, far: [], caps: [], mouths: new Float64Array(0), towns: new Float64Array(0), barriers }];
     });
-    const junctions = planJunctions(lines, runs);
+    const junctions = planJunctions(lines, runs, crossings);
     for (const run of runs) {
         const { line, stations } = run, last = stations.length - 1, first = open(line, 0), end = open(line, line.z.length - 1), joins = mouthsOn(line, shared);
         run.reach = reachOf(stations);

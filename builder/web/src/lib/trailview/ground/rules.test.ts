@@ -25,9 +25,20 @@ describe('the rules of the ground', () => {
         expect(SLOT.traits).toBe(33 + 3);
         expect(SLOT.lithologies).toBe(33 + 6);
         expect([SLOT.patches, SLOT.terrain, SLOT.bedding, SLOT.snap, SLOT.sea, SLOT.shapes, SLOT.turf, SLOT.roads].map(slot => slot - SLOT.cliff)).toEqual([1, 3, 4, 5, 6, 8, 9, 10]);
-        expect([SLOT.roadLine, SLOT.concrete, SLOT.setts, SLOT.kinds].map(slot => slot - SLOT.cliff)).toEqual([19, 20, 21, 22]);
+        expect([SLOT.roadLine, SLOT.concrete, SLOT.setts, SLOT.zebra, SLOT.zebraSetts, SLOT.giveWay, SLOT.dashes, SLOT.kinds].map(slot => slot - SLOT.cliff)).toEqual([19, 20, 21, 22, 23, 24, 25, 26]);
         expect(SLOT.hardness).toBe(SLOT.kinds + 3);
         expect(SLOT.rows).toBe(SLOT.hardness + vocabulary.lithologies.length);
+    });
+
+    it('takes a region\'s marks from its rules, else those of the engine', () => {
+        const SLOT = slots(vocabulary), at = (look: Region['look'], i: number) => Array.from(packRulesOn([{ ...region, look }], vocabulary, 318).subarray(4 * i, 4 * i + 4));
+        const white = { ...region.look, zebra: '#ffffff', zebraSetts: '#808080', giveWay: { dash_m: 1, triangle: false }, dashes: { line: [4, 12] as [number, number], lane: [5, 15] as [number, number] } };
+        expect(at(white, SLOT.zebra).slice(0, 3)).toEqual([1, 1, 1]);
+        expect(at(white, SLOT.zebraSetts).slice(0, 3)).toEqual(linear('#808080').map(c => Math.fround(c)));
+        expect(at(white, SLOT.giveWay).slice(0, 2)).toEqual([1, 0]);
+        expect(at(white, SLOT.dashes)).toEqual([4, 12, 5, 15]);
+        expect(at(region.look, SLOT.giveWay).slice(0, 2)).toEqual([0.5, 1]);
+        expect(at(region.look, SLOT.dashes)).toEqual([3, 9, 6, 18]);
     });
 
     it('takes the concrete and the setts that a region names, else those of the engine', () => {

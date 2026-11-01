@@ -41,7 +41,9 @@ export function endsOf(roads: Way[], paths: Way[], corners: Corner[], mark: Mark
             if (!hit) break;
             held = hit;
         }
-        const at = way.along + way.step * metres;
+        const at = way.along + way.step * metres, end = way.step > 0 ? total : 0;
+        // A short way that lies on the road to its last point, as a mapped crossing does, draws none of it.
+        if (held && Math.abs(end - way.along) <= metres + LEAST_M) mark(way, way.along, end, CUT.ALL);
         if (!held || metres >= WINDOW_M || at <= LEAST_M || at >= total - LEAST_M) continue;
         mark(way, way.along, at, CUT.ALL);
         ends.push({ way, at, ...held });

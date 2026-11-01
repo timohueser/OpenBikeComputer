@@ -24,12 +24,23 @@ const LOOK_STRIPS: u32 = 30u;
 // As CF of section.ts.
 const CF_NO_LEFT_LINE: u32 = 8u;
 const CF_NO_RIGHT_LINE: u32 = 16u;
+const LOOK_GIVE_WAY: u32 = 15u;
+const LOOK_ZEBRA: u32 = 16u;
+const LOOK_ZEBRA_SETT: u32 = 17u;
+const LOOK_ZEBRA_PAVERS: u32 = 18u;
+const LOOK_ZEBRA_CONCRETE: u32 = 19u;
 // As RANGE_M of roads.ts: asphalt turns to each class's paint toward it. Not the word `corridors`, which falls
 // while an owner is on its way.
 const CORRIDOR_RANGE_M: f32 = 600.0;
-// A lane line on a motorway 6 m on, 12 m off; as DASH_PERIOD_M, its period divides REPEAT of sweep.ts.
-const LANE_ON_M: f32 = 6.0;
-const LANE_PERIOD_M: f32 = 18.0;
+// A zebra's stripes keep this far off the carriageway's edges.
+const ZEBRA_CLEAR_M: f32 = 0.35;
+// The give-way line, as marks.ts; its dashes keep this far off the edges; then the outlined triangle in the lane that stops, pointing at its driver: metres back from the line, its base, its length and its stroke.
+const GIVE_WAY_M: f32 = 0.3;
+const GIVE_WAY_CLEAR_M: f32 = 0.15;
+const TRIANGLE_BACK_M: f32 = 1.2;
+const TRIANGLE_BASE_M: f32 = 1.2;
+const TRIANGLE_LENGTH_M: f32 = 2.6;
+const TRIANGLE_STROKE_M: f32 = 0.15;
 
 // The first material of details.wgsl.
 const DETAIL_MATS: u32 = 40u;
@@ -108,8 +119,9 @@ fn opens(w: WayPixel, flags: u32) -> bool {
 }
 
 // The lines of a way, by class: `mat` LOOK_MAIN or LOOK_MOTORWAY, `oneway` without a middle line.
-fn markings(mat: u32, oneway: bool, w: WayPixel, flags: u32) -> f32 {
+fn markings(mat: u32, oneway: bool, region: u32, w: WayPixel, flags: u32) -> f32 {
     let inside = w.half - abs(w.across);
+    let dash = rule(region, slot_dashes());
     let edge = select(1.0, 0.0, opens(w, flags));
     var m = 0.0;
     if (mat == LOOK_MOTORWAY) {
@@ -118,7 +130,7 @@ fn markings(mat: u32, oneway: bool, w: WayPixel, flags: u32) -> f32 {
             let lanes = max(1.0, round(2.0 * w.half / 3.5));
             let lane = 2.0 * w.half / lanes;
             for (var k = 1.0; k < lanes; k += 1.0) {
-                m = max(m, band(w.across + w.half - k * lane, -0.075, 0.075, w.cw) * dashes(w.along, LANE_ON_M, LANE_PERIOD_M, k * 3.0, w.aw));
+                m = max(m, band(w.across + w.half - k * lane, -0.075, 0.075, w.cw) * dashes(w.along, dash.z, dash.w, k * 3.0, w.aw));
             }
         } else {
             m = max(m, band(w.across, -0.075, 0.075, w.cw));
@@ -126,13 +138,13 @@ fn markings(mat: u32, oneway: bool, w: WayPixel, flags: u32) -> f32 {
     } else if (w.half >= MARKED_HALF_M) {
         m = band(inside, 0.2, 0.35, w.cw) * edge;
         if (!oneway) {
-            m = max(m, band(w.across, -0.06, 0.06, w.cw) * dashes(w.along, DASH_ON_M, DASH_PERIOD_M, 0.0, w.aw));
+            m = max(m, band(w.across, -0.06, 0.06, w.cw) * dashes(w.along, dash.x, dash.y, 0.0, w.aw));
         } else {
             let lanes = round(2.0 * w.half / 3.4);
             if (lanes >= 2.0) {
                 let lane = 2.0 * w.half / lanes;
                 for (var k = 1.0; k < lanes; k += 1.0) {
-                    m = max(m, band(w.across + w.half - k * lane, -0.06, 0.06, w.cw) * dashes(w.along, DASH_ON_M, DASH_PERIOD_M, 0.0, w.aw));
+                    m = max(m, band(w.across + w.half - k * lane, -0.06, 0.06, w.cw) * dashes(w.along, dash.x, dash.y, 0.0, w.aw));
                 }
             }
         }
@@ -162,7 +174,7 @@ fn paved_look(mat: u32, code: u32, region: u32, w: WayPixel, flags: u32) -> WayL
     }
     var c = asphalt(code, region, p, w.pw);
     if (mat != LOOK_ASPHALT) {
-        let paint = markings(mat, code == CODE_ONEWAY, w, flags);
+        let paint = markings(mat, code == CODE_ONEWAY, region, w, flags);
         let worn = 1.0 - 0.45 * seen(0.02, w.pw) * smoothstep(0.6, 0.7, noise(p / 0.018) * 0.6 + noise(p / 0.4) * 0.5);
         c = mix(c, rule(region, slot_road_line()).rgb * 1.08, paint * worn);
     }
@@ -172,6 +184,47 @@ fn paved_look(mat: u32, code: u32, region: u32, w: WayPixel, flags: u32) -> WayL
         out.ground = 1.0 - smoothstep(0.0, 0.1, edge + 0.08 * (noise(p / 0.3) - 0.5) + 0.04 * (noise(p / 0.07) - 0.5));
     }
     return out;
+}
+
+// Paint on a road, worn in patches.
+fn paint_wear(p: vec2f) -> f32 {
+    return 0.82 + 0.18 * noise(p / 0.7);
+}
+
+// A zebra over its road's own surface: `across` is metres off the straight line through its crossing node.
+fn zebra_look(mat: u32, code: u32, region: u32, w: WayPixel) -> WayLook {
+    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
+    switch mat {
+        case LOOK_ZEBRA_SETT: {
+            out = sett_look(region, w);
+        }
+        case LOOK_ZEBRA_PAVERS: {
+            out = pavers_look(region, w);
+        }
+        case LOOK_ZEBRA_CONCRETE: {
+            out = concrete_look(code, region, w, false);
+        }
+        default: {
+            out.albedo = asphalt(code, region, w.p, w.pw);
+        }
+    }
+    let stripe = band(abs(fract(w.across + 0.5) - 0.5), -0.25, 0.25, w.cw) * band(w.half - abs(w.across), ZEBRA_CLEAR_M, 100.0, w.cw);
+    let paint = rule(region, select(slot_zebra(), slot_zebra_setts(), mat == LOOK_ZEBRA_SETT)).rgb;
+    out.albedo = mix(out.albedo, paint * (0.9 + 0.1 * noise(w.p / 0.3)), stripe * paint_wear(w.p));
+    out.bump *= 1.0 - stripe;
+    return out;
+}
+
+// A give-way line and its triangle on asphalt: `along` is metres back from the line, and `across` is positive toward the lane that stops.
+fn give_way_look(code: u32, region: u32, w: WayPixel) -> WayLook {
+    let form = rule(region, slot_give_way());
+    let dash = band(abs(fract(w.across / (2.0 * form.x) + 0.25) - 0.5), -0.25, 0.25, w.cw / (2.0 * form.x)) * band(w.half - abs(w.across), GIVE_WAY_CLEAR_M, 100.0, w.cw) * band(w.along, 0.0, GIVE_WAY_M, w.aw);
+    let u = w.along - GIVE_WAY_M - TRIANGLE_BACK_M;
+    let side = 0.5 * TRIANGLE_BASE_M * (1.0 - u / TRIANGLE_LENGTH_M);
+    let inside = min(u, (side - abs(w.across - 0.5 * w.half)) * 0.97);
+    let triangle = select(0.0, band(inside, 0.0, TRIANGLE_STROKE_M, w.aw), form.y > 0.0 && u < TRIANGLE_LENGTH_M);
+    let c = mix(asphalt(code, region, w.p, w.pw), rule(region, slot_road_line()).rgb, max(dash, triangle) * paint_wear(w.p));
+    return WayLook(c, vec2f(0.0), 0.0, 0.0, 0.0);
 }
 
 // Concrete: slabs 5 m long with sealed joints; on a narrow track two strips on the way's asphalt.
@@ -389,6 +442,12 @@ fn way_look(mat: u32, code: u32, region: u32, su: vec2f, w: WayPixel, flags: u32
         }
         case MAT_SIDEWALK: {
             return WayLook(paving(region, w.p, w.pw), vec2f(0.0), 0.0, 0.0, 0.0);
+        }
+        case LOOK_ZEBRA, LOOK_ZEBRA_SETT, LOOK_ZEBRA_PAVERS, LOOK_ZEBRA_CONCRETE: {
+            return zebra_look(mat, code, region, w);
+        }
+        case LOOK_GIVE_WAY: {
+            return give_way_look(code, region, w);
         }
         case LOOK_CONCRETE, LOOK_STRIPS: {
             return concrete_look(code, region, w, mat == LOOK_STRIPS);

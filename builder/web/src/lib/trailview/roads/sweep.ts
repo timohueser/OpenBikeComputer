@@ -4,7 +4,8 @@
 import { RAIL, type Line } from '../terrain/bins';
 import { lookWord, type PieceBuilder } from './piece';
 import { isDeck, PARAPET_M } from './decks';
-import { carriageway, CF, junctionFace, sideOf, type Part } from './section';
+import type { Paint } from './marks';
+import { carriageway, CF, drawnCode, junctionFace, lowered, sideOf, type Part } from './section';
 import { CUT, type Station, strokeMetres } from './stations';
 import { sideStop, type Shore } from './shore';
 import { onWay, type Ways } from './ways';
@@ -57,8 +58,18 @@ export function point(b: PieceBuilder, run: Run, j: number, part: Part, a: numbe
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!;
     for (const slot of slots) if (slot.a === a && slot.dz === part.dz && slot.flags === part.flags) return slot.index;
     const s = run.stations[j], plane = s.z + s.bank * a + run.lift, x = s.x + s.ax * a, y = s.y + s.ay * a, band = bandRow(part.flags);
-    const index = b.vertex(x, y, band ? plane : plane + part.dz, lookWord(part.mat, run.line.code, under(run.ways, part.flags, x, y), run.prio, band ? edge : s.h), a, countOf(run, s));
+    const index = b.vertex(x, y, band ? plane : plane + part.dz, lookWord(part.mat, drawnCode(run.line), under(run.ways, part.flags, x, y), run.prio, band ? edge : s.h), a, countOf(run, s));
     slots.push({ a, dz: part.dz, flags: part.flags, index });
+    return index;
+}
+
+/** The vertex of point `part` of paint at station j: faces of one paint share it, and no others. */
+function painted(b: PieceBuilder, run: Run, j: number, part: Part, paint: Paint): number {
+    const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!, flags = -paint.mat;
+    for (const slot of slots) if (slot.a === part.a && slot.flags === flags) return slot.index;
+    const s = run.stations[j], x = s.x + s.ax * part.a, y = s.y + s.ay * part.a, z = s.z + s.bank * part.a + run.lift + part.dz;
+    const index = b.vertex(x, y, z, lookWord(paint.mat, drawnCode(run.line), 0, run.prio, s.h), paint.across(s, x, y, part.a), paint.along(s, countOf(run, s)));
+    slots.push({ a: part.a, dz: part.dz, flags, index });
     return index;
 }
 
@@ -79,7 +90,8 @@ export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: n
     const roads = [carriageway(line, s.h, s.bank).map(part => ({ ...part, flags })), carriageway(line, t.h, t.bank)].map(road => (far ? road.filter(part => part.far) : road));
     const [road, next] = roads, last = road.length - 1;
     for (let c = 0; c < last && !(cut & CUT.ROAD); c++) {
-        const ps = point(b, run, j, road[c], road[c].a, 0), qs = point(b, run, j, road[c + 1], road[c + 1].a, 0), qt = point(b, run, k, next[c + 1], next[c + 1].a, 0), pt = point(b, run, k, next[c], next[c].a, 0);
+        const at = (index: number, part: Part) => (s.paint ? painted(b, run, index, part, s.paint) : point(b, run, index, part, part.a, 0));
+        const ps = at(j, road[c]), qs = at(j, road[c + 1]), qt = at(k, next[c + 1]), pt = at(k, next[c]);
         quad(list, ps, qs, qt, pt, false);
     }
     for (const side of [1, -1] as const) {
@@ -87,7 +99,8 @@ export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: n
             if (isDeck(line) && !(cut & CUT.ROAD)) apron(b, list, run, j, k, side, road[side > 0 ? 0 : last].dz);
             continue;
         }
-        const outer = side > 0 ? 0 : last, here = sideOf(line, side, t.v, s.h), there = sideOf(line, side, t.v, t.h), parts = here.parts, others = there.parts;
+        const outer = side > 0 ? 0 : last, here = sideOf(line, side, t.v, s.h), there = sideOf(line, side, t.v, t.h), which = side > 0 ? 0 : 1;
+        const parts = lowered(here.parts, far ? 0 : s.drop?.[which] ?? 0), others = lowered(there.parts, far ? 0 : t.drop?.[which] ?? 0);
         const most = side > 0 ? 0 : 1, reachS = reach[2 * j + most], reachT = reach[2 * k + most];
         let ps = point(b, run, j, road[outer], road[outer].a, 0), pt = point(b, run, k, next[outer], next[outer].a, 0);
         for (let c = 0; c < parts.length && parts[c].a <= reachS && others[c].a <= reachT; c++) {
@@ -102,7 +115,7 @@ export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: n
 
 /** A deck's top from its carriageway's edge at height `dz` to its outer face, on a side that gives way to a road: one surface with that road's mouth. */
 function apron(b: PieceBuilder, list: number[], run: Run, j: number, k: number, side: 1 | -1, dz: number): void {
-    const { line, stations, prio, lift } = run, { mat, half, across } = junctionFace(line)!, word = lookWord(mat, line.code, 0, prio, half);
+    const { line, stations, prio, lift } = run, { mat, half, across } = junctionFace(line)!, word = lookWord(mat, drawnCode(line), 0, prio, half);
     const edge = (s: Station, a: number) => b.vertex(s.x + s.ax * a, s.y + s.ay * a, s.z + s.bank * a + lift + dz, word, across, 0);
     const [s, t] = [stations[j], stations[k]], outer = (at: Station) => side * (sideOf(line, side, at.v, at.h).edge + PARAPET_M);
     quad(list, edge(s, side * s.h), edge(s, outer(s)), edge(t, outer(t)), edge(t, side * t.h), side > 0);
@@ -116,9 +129,9 @@ export function cap(b: PieceBuilder, list: number[], run: Run, j: number, dir: 1
         const angle = Math.PI * step / steps, cos = Math.cos(angle), sin = Math.sin(angle), dx = s.ax * cos + fx * sin, dy = s.ay * cos + fy * sin;
         const r = run.shore ? Math.min(to, s.h + sideStop(run.shore, s.x + dx * s.h, s.y + dy * s.h, dx, dy, () => edge - s.h)) : to, x = s.x + dx * r, y = s.y + dy * r;
         const band = (part.flags & (CF.SAMPLE | CF.MESH)) !== 0;
-        return b.vertex(x, y, s.z + run.lift + (band ? 0 : part.dz), lookWord(part.mat, line.code, under(run.ways, part.flags, x, y), run.prio, band ? edge : s.h), r, count);
+        return b.vertex(x, y, s.z + run.lift + (band ? 0 : part.dz), lookWord(part.mat, drawnCode(line), under(run.ways, part.flags, x, y), run.prio, band ? edge : s.h), r, count);
     };
-    const centre = b.vertex(s.x, s.y, s.z + run.lift + middle.dz, lookWord(middle.mat, line.code, 0, run.prio, s.h), 0, count);
+    const centre = b.vertex(s.x, s.y, s.z + run.lift + middle.dz, lookWord(middle.mat, drawnCode(line), 0, run.prio, s.h), 0, count);
     const ahead = dir > 0;
     let inner = Array.from({ length: steps + 1 }, (_, step) => at(s.h, step, road[0]));
     for (let step = 0; step < steps; step++) list.push(...(ahead ? [centre, inner[step + 1], inner[step]] : [centre, inner[step], inner[step + 1]]));

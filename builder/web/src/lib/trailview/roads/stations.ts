@@ -2,6 +2,7 @@
 // cuts into chords, each with its height and its frame across the road.
 import { crossSlope, metresPerUnit, mitre, type Line } from '../terrain/bins';
 import { pointOn, spanOf } from '../stream/curve';
+import type { Paint } from './marks';
 
 /** The longest step between two stations: the band anchors to the ground at each. */
 export const STEP_M = 2;
@@ -43,6 +44,10 @@ export interface Station {
     sleepers?: number;
     /** The bits of CUT to the next station. */
     cut?: number;
+    /** The paint in place of the carriageway to the next station. */
+    paint?: Paint;
+    /** The share of its kerb's drop on its left and its right. */
+    drop?: [number, number];
 }
 
 /** The metres along its stroke of a point `along` metres from a line's start, or those metres where it has no stroke. */
@@ -146,14 +151,14 @@ function holds(s: Station, t: Station, p: Station): boolean {
 
 /**
  * The indices of the stations that the far range keeps: the ends, each side of a change of the sidewalks,
- * each station that a junction cuts, whose edges its faces start from, the first station in each square of
+ * each station that a junction cuts, whose edges its faces start from, each that bounds paint, the first station in each square of
  * `side` world units, and enough for its chords. A near range ends on that first station too, so the two
  * ranges meet on it whichever square draws which, and from it on each tile that holds the way keeps the same
  * stations.
  */
 export function farStations(line: Line, stations: Station[], side: number): number[] {
     const square = ({ x, y }: Station) => Math.floor(x / side) * 2 ** 20 + Math.floor(y / side);
-    const stays = (j: number) => line.sidewalks?.[stations[j].v] === line.sidewalks?.[stations[j + 1]?.v] && square(stations[j]) === square(stations[j - 1]) && !stations[j].cut && !stations[j - 1].cut;
+    const stays = (j: number) => line.sidewalks?.[stations[j].v] === line.sidewalks?.[stations[j + 1]?.v] && square(stations[j]) === square(stations[j - 1]) && !stations[j].cut && !stations[j - 1].cut && !stations[j].paint && !stations[j - 1].paint;
     const out = [0];
     for (let from = 0, j = 2; j <= stations.length; j++) {
         const last = j === stations.length, held = !last && stations[j].along - stations[from].along <= FAR_STEP_M && stays(j - 1);

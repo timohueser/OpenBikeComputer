@@ -40,10 +40,6 @@ const KERB_SHADOW_M: f32 = 0.35;
 const RUTS_MEAN_M: f32 = 0.75;
 const GRASSED_MEAN_M: f32 = 0.55;
 const TREAD_MEAN_M: f32 = 0.36;
-// A centre line 3 m on, 6 m off: each period divides REPEAT of sweep.ts, so a dash keeps its phase where a way's
-// count takes a new base.
-const DASH_ON_M: f32 = 3.0;
-const DASH_PERIOD_M: f32 = 9.0;
 // As SURFACES of bins.ts.
 const CODE_GRAVEL: u32 = 3u;
 const CODE_DIRT: u32 = 4u;
@@ -166,8 +162,12 @@ fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, sle
     if (select((code == 1u || oneway) && half >= 3.5, marked && half >= MARKED_HALF_M, held)) {
         let line = rule(region, slot_road_line()).rgb;
         let edge = select(band(inside, 0.25, 0.37, cross_w), band(inside, 0.2, 0.35, cross_w), held);
-        let dash = select(mix(1.0, DASH_ON_M / DASH_PERIOD_M, dash_mean(DASH_ON_M, along_w)), dashes(sleepers, DASH_ON_M, DASH_PERIOD_M, 0.0, along_w), sleepers > NO_SLEEPERS);
-        c = mix(c, line, max(edge, select(band(across, -0.06, 0.06, cross_w) * select(1.0, dash, held), 0.0, oneway)));
+        var dash = 1.0;
+        if (held) {
+            let form = rule(region, slot_dashes());
+            dash = select(mix(1.0, form.x / form.y, dash_mean(form.x, along_w)), dashes(sleepers, form.x, form.y, 0.0, along_w), sleepers > NO_SLEEPERS);
+        }
+        c = mix(c, line, max(edge, select(band(across, -0.06, 0.06, cross_w) * dash, 0.0, oneway)));
     }
     let ruts = band(across, 0.55, 1.05, cross_w);
     if (code == CODE_GRAVEL) {
