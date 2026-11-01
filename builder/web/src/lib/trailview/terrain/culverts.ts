@@ -5,8 +5,8 @@ import type { Feature } from '../stream/features';
 import { metresPerUnit, PATH, RAIL, RIVER, ROAD, STREAM, walkOf, type Line } from './bins';
 import { along, gridOf, LEFT, near, RIGHT } from './town';
 
-/** A ribbon stops this far past a way's edge or its sidewalk, as GIVE_WAY_M of water.wgsl. */
-export const GIVE_WAY_M = 0.5;
+/** A ribbon stops this far past a way's edge or its sidewalk, as GIVE_WAY_M of water.wgsl: past a shoulder, with room for a mouth's wall. */
+export const GIVE_WAY_M = 0.8;
 /** A culvert of a stream up to this long can carry its ribbon: 56 of the 63 of the fixture have up to 52 m, the next 72 m. */
 const CULVERT_M = 60;
 /** A culvert with this many metres along a way buries the stream: on the fixture, 11 have 3 m or more and the others 0.5 m at most. */

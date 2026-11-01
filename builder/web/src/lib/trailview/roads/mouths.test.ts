@@ -23,8 +23,8 @@ describe('the mouths of a stream', () => {
             const mouths = across(list).sort((a, b) => a.north - b.north);
             expect(mouths.map(({ front }) => front)).toEqual([-1, 1]);
             for (const { north, half } of mouths) {
-                expect(Math.abs(north) - half).toBeGreaterThanOrEqual(0.5);
-                expect(Math.abs(north) - half).toBeLessThan(0.8);
+                expect(Math.abs(north) - half).toBeGreaterThanOrEqual(0.8);
+                expect(Math.abs(north) - half).toBeLessThan(0.95);
             }
         }
     });

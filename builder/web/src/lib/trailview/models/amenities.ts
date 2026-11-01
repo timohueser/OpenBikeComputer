@@ -88,12 +88,12 @@ export function streetLamp(): Model {
 
 /**
  * The mouth of a culvert: a low concrete headwall, as wide as a stream's ribbon and 0.25 m on each side, behind the
- * origin, with a ring of 0.7 m round its dark bore. A ribbon ends at the origin, so it does not draw over the ring by
- * its depth bias. The wall's foot lies below the ground of a bank.
+ * origin, with a ring of 0.7 m round its dark bore. A ribbon ends at the origin and draws up to 0.45 m nearer the eye:
+ * so it stays off the ring, and the wall is 0.5 m thick to hide it from behind. The wall's foot lies below a bank.
  */
 export function culvertMouth(): Model {
     const circle = (r: number) => Array.from({ length: 10 }, (_, k): [number, number] => [r * Math.cos((-2 * Math.PI * k) / 10), 0.33 + r * Math.sin((-2 * Math.PI * k) / 10)]);
-    const m = new Model().box([0, 0.15, 0], [2.5, 0.3, 1.4], CONCRETE).box([0, 0.15, 0.71], [2.6, 0.38, 0.05], CONCRETE);
+    const m = new Model().box([0, 0.25, 0], [2.5, 0.5, 1.4], CONCRETE).box([0, 0.25, 0.71], [2.6, 0.58, 0.05], CONCRETE);
     return m.prism(circle(0.35), -0.08, 0, CONCRETE).prism(circle(0.27), -0.09, -0.08, DARK);
 }
 

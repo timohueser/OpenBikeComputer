@@ -10,7 +10,7 @@ import { metresPerUnit, STREAM, type Shapes } from '../terrain/bins';
 const MOUTH_REACH_M = 600;
 const mouth = unitModel(culvertMouth, MOUTH_REACH_M);
 /** A ribbon's stop is found to this many metres along its line. */
-const STEP_M = 0.25;
+const STEP_M = 0.1;
 /** The longest step near a way: a corner of a junction reaches past the way's edge. */
 const NEAR_STEP_M = 2;
 /** Mouths stand at least this far apart: the wall of a mouth is 2.5 m wide. */
