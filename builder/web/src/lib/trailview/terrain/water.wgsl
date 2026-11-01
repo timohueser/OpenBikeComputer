@@ -72,7 +72,8 @@ fn water_ground(s: vec2f) -> f32 {
         if (share > 0.0) {
             let m = mask_at(s, u32(ceil(lod(s))), true);
             if (m.level != 0u && m.kind.x != 0u && m.edge < SNAPPED_M) {
-                let drawn = drawn_height(s), plain = plain_height(s);
+                let drawn = drawn_height(s);
+                let plain = plain_height(s);
                 return select(drawn, mix(plain, drawn, share), known(drawn) && known(plain));
             }
         }
