@@ -5,6 +5,7 @@ import { RAIL, type Line } from '../terrain/bins';
 import { lookWord, type PieceBuilder } from './piece';
 import { carriageway, CF, sideOf, type Part } from './section';
 import { CUT, type Station } from './stations';
+import { sideStop, type Shore } from './shore';
 import { onWay, type Ways } from './ways';
 
 /** Steps of a dead end's half circle near the eye, and in the far range. */
@@ -12,8 +13,20 @@ const CAP_STEPS = 10, FAR_CAP_STEPS = 5;
 /** Repeats along a way divide this count, so a base of whole multiples keeps their phase. */
 const REPEAT = 720;
 
-/** A line's corridor: its stations, the reach of their sides, its height over the core, the band's priority and the base of its counts along. */
-export interface Run { id: number; line: Line; stations: Station[]; reach: Float64Array; lift: number; prio: number; base: number; ways: Ways }
+/**
+ * A line's corridor: its stations, the reach of their sides, its height over the core, the band's priority and the base of its counts along.
+ * Where water lies near: its shore, and per station the metres past the carriageway's edge where its left and its right side stop.
+ */
+export interface Run { id: number; line: Line; stations: Station[]; reach: Float64Array; lift: number; prio: number; base: number; ways: Ways; shore?: Shore; stops?: Float64Array }
+
+/** Per station, the metres past the carriageway's edge where each side of a line stops at water: left, then right. */
+export function stopsOf(line: Line, stations: Station[], shore: Shore): Float64Array {
+    const stops = new Float64Array(2 * stations.length);
+    stations.forEach((s, j) => {
+        for (const side of [1, -1] as const) stops[2 * j + (side > 0 ? 0 : 1)] = sideStop(shore, s.x + s.ax * side * s.h, s.y + s.ay * side * s.h, side * s.ax, side * s.ay, () => sideOf(line, side, s.v, s.h).edge - s.h);
+    });
+    return stops;
+}
 
 /** What a station counts along its line, from the base of the run: sleepers on a track, else metres. */
 export const countOf = ({ line, base }: Run, s: Station) => (line.kind === RAIL ? s.sleepers ?? 0 : s.along) - base;
@@ -51,6 +64,9 @@ export function quad(list: number[], ps: number, qs: number, qt: number, pt: num
     else list.push(qs, qt, pt, qs, pt, ps);
 }
 
+/** `a` metres across a side of station j, held to the water's edge: the rows past it stand there, and the outer one still ends under the mesh. */
+const ashore = ({ stations, stops }: Run, j: number, most: number, a: number) => (stops ? Math.min(a, stations[j].h + stops[2 * j + most]) : a);
+
 /** The faces between stations j and k into `list`: the carriageway, then each side out to the end of its band. `far` keeps the points of the far range. */
 export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: number, far: boolean): void {
     const { line, stations, reach } = run, s = stations[j], t = stations[k], cut = s.cut ?? 0;
@@ -69,7 +85,7 @@ export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: n
         let ps = point(b, run, j, road[outer], road[outer].a, 0), pt = point(b, run, k, next[outer], next[outer].a, 0);
         for (let c = 0; c < parts.length && parts[c].a <= reachS && others[c].a <= reachT; c++) {
             if (far && !parts[c].far) continue;
-            const qs = point(b, run, j, parts[c], side * parts[c].a, here.edge), qt = point(b, run, k, others[c], side * others[c].a, there.edge);
+            const qs = point(b, run, j, parts[c], side * ashore(run, j, most, parts[c].a), here.edge), qt = point(b, run, k, others[c], side * ashore(run, k, most, others[c].a), there.edge);
             quad(list, ps, qs, qt, pt, side > 0);
             ps = qs;
             pt = qt;
@@ -81,8 +97,9 @@ export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: n
 export function cap(b: PieceBuilder, list: number[], run: Run, j: number, dir: 1 | -1, far: boolean): void {
     const { line, stations } = run, s = stations[j], steps = far ? FAR_CAP_STEPS : CAP_STEPS, road = carriageway(line, s.h, 0), middle = road[(road.length - 1) / 2];
     const { parts, edge } = sideOf(line, 1, s.v, s.h), fx = -s.ay * dir, fy = s.ax * dir, count = countOf(run, s);
-    const at = (r: number, step: number, part: Part) => {
-        const angle = Math.PI * step / steps, cos = Math.cos(angle), sin = Math.sin(angle), x = s.x + (s.ax * cos + fx * sin) * r, y = s.y + (s.ay * cos + fy * sin) * r;
+    const at = (to: number, step: number, part: Part) => {
+        const angle = Math.PI * step / steps, cos = Math.cos(angle), sin = Math.sin(angle), dx = s.ax * cos + fx * sin, dy = s.ay * cos + fy * sin;
+        const r = run.shore ? Math.min(to, s.h + sideStop(run.shore, s.x + dx * s.h, s.y + dy * s.h, dx, dy, () => edge - s.h)) : to, x = s.x + dx * r, y = s.y + dy * r;
         const band = (part.flags & (CF.SAMPLE | CF.MESH)) !== 0;
         return b.vertex(x, y, s.z + run.lift + (band ? 0 : part.dz), lookWord(part.mat, line.code, under(run.ways, part.flags, x, y), run.prio, band ? edge : s.h), r, count);
     };

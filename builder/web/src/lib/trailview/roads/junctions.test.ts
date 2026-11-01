@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SIDE_BACK, SIDE_ON } from '../stream/features';
-import { metresPerUnit, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, type Line } from '../terrain/bins';
+import { metresPerUnit, PATH, PROFILES, RAIL, RAIL_CODE, RIVER, ROAD, type Line, type Shapes } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { jointsOf, onward } from './joints';
 import { cornerFaces, mouthFaces } from './junction-faces';
@@ -8,7 +8,7 @@ import { planOf } from './mesh';
 import { PieceBuilder, ROAD_VERTEX } from './piece';
 import { CF, LOOK } from './section';
 import { CUT, stationIndex, stationOn, type Station } from './stations';
-import { sweep } from './sweep';
+import { cap, sweep } from './sweep';
 
 const O = { x: 2 ** 28, y: 2 ** 29 }, unit = metresPerUnit(O.y), CLASSES = Object.keys(PROFILES);
 const profile = (name: string) => CLASSES.indexOf(name);
@@ -48,8 +48,8 @@ function cuts(stations: Station[], bits: number): [number, number] | undefined {
 }
 
 /** The plan of lines, and the stations of each. */
-function planned(lines: Line[]) {
-    const plan = planOf({ lines, buildings: [], barriers: [] }), of = (line: Line) => plan.runs.find(run => run.line === line)!;
+function planned(lines: Line[], areas: Shapes['areas'] = []) {
+    const plan = planOf({ lines, lakes: [], seas: [], areas, buildings: [], barriers: [] }), of = (line: Line) => plan.runs.find(run => run.line === line)!;
     return { ...plan, of, stations: (line: Line) => of(line).stations };
 }
 
@@ -399,7 +399,7 @@ describe('a junction with no through pair', () => {
 describe('a junction across a tile border', () => {
     it('plans alike from what each tile holds: a way cut short past the window changes nothing', () => {
         const whole = [through(), stem([0, 100])], cutA = [way([[-100, 0], [0, 0], [24, 0]]), stem([0, 100])], cutB = [way([[-24, 0], [0, 0], [100, 0]]), stem([0, 24])];
-        const [A, B, C] = [whole, cutA, cutB].map(planned);
+        const [A, B, C] = [whole, cutA, cutB].map(lines => planned(lines));
         const key = (plan: typeof A) => plan.junctions.corners.map(({ r, p, q, ends, meet }) => [r, ends[0] - p.along, ends[1] - q.along, meet[0] - p.along, meet[1] - q.along].map(v => Math.abs(v).toFixed(2)));
         expect(key(B)).toEqual(key(A));
         expect(key(C)).toEqual(key(A));
@@ -501,5 +501,41 @@ describe('the surface of a junction', () => {
                 expect(covers(b, b.far, e, n), `far ${e}, ${n}`).toBe(true);
             }
         }
+    });
+});
+
+describe('a way at the water', () => {
+    /** The vertices of a plan's corridors, its dead ends and its corners. */
+    function drawn(plan: ReturnType<typeof planned>) {
+        const b = new PieceBuilder(O.x, O.y);
+        for (const run of plan.runs) {
+            for (let j = 0; j + 1 < run.stations.length; j++) sweep(b, b.near, run, j, j + 1, false);
+            for (const { j, dir } of run.caps) cap(b, b.near, run, j, dir, false);
+        }
+        for (const corner of plan.junctions.corners) cornerFaces(b, corner);
+        return decoded(b);
+    }
+    const river = (e0: number, n0: number, e1: number, n1: number, h: number) => way([[e0, n0], [e1, n1]], { kind: RIVER, h });
+    const road = () => way([[-50, 0], [50, 0]]);
+
+    it('stops its side at a river beside it, and its other side keeps its band', () => {
+        const ns = drawn(planned([road(), river(-200, 7, 200, 7, 2)])).map(({ n }) => n);
+        expect(Math.max(...ns)).toBeCloseTo(5, 1);
+        expect(Math.min(...ns)).toBeCloseTo(-6.6, 1);
+    });
+
+    it('keeps its carriageway and a narrow verge where the water reaches them', () => {
+        expect(Math.max(...drawn(planned([road(), river(-200, 4, 200, 4, 2)])).map(({ n }) => n))).toBeCloseTo(3.4, 1);
+    });
+
+    it('stops the rings of a dead end at the water', () => {
+        expect(Math.max(...drawn(planned([road(), river(55, -200, 55, 200, 0.5)])).map(({ e }) => e))).toBeCloseTo(54.5, 1);
+    });
+
+    it('stops the rows of a corner at a lake in its wedge', () => {
+        const [low, high] = [5.5, 30], ring = [[low, low], [high, low], [high, high], [low, high]].flatMap(([e, n]) => [O.x + e / unit, O.y - n / unit]);
+        const lines = () => [through(), stem([0, 100])], beyond = (vertices: { e: number; n: number }[]) => Math.max(...vertices.filter(({ e, n }) => e < high && n < high).map(({ e, n }) => Math.min(e, n)));
+        expect(beyond(drawn(planned(lines())))).toBeGreaterThan(low + 1);
+        expect(beyond(drawn(planned(lines(), [{ rings: [ring], outer: [true] }])))).toBeLessThan(low + 0.05);
     });
 });

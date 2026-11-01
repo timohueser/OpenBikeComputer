@@ -1,7 +1,7 @@
 // #include water-cut.wgsl
 // The water: the meshes of water-mesh.ts, hidden where the terrain stands above them. Each drawn node
 // draws the mesh of the node whose page it draws and keeps the part over its own square. A lake lies
-// at its level, a river area on the mesh without its snap (plain_height). A river or a stream is a
+// at its level, a river area on the mesh (water_ground). A river or a stream is a
 // ribbon on it at its width, at least RIBBON_PIXELS wide, and fades with its share of that width. The
 // shading is the prototype's: a still body, dark from above and a mirror of the sky toward the
 // horizon, with a sun glint; white where a ribbon runs down a steep bed. The sea's body is the deep
@@ -57,6 +57,30 @@ const RIBBON_PIXELS: f32 = 1.5;
 // The level of a vertex that lies on the drawn surface, as DRAPED of water-mesh.ts.
 const DRAPED: f32 = -1e30;
 
+// Where corridors draw the roads, water near a road and near the eye lies on the drawn mesh, which its snap
+// moves. plain_height reads a ninth of the vertices, so the rest of the water lies on it. Without corridors
+// the drawn mesh is never read, so that the compiled water has the plain path's exact values.
+override SNAPPED_WATER: bool = false;
+const SNAPPED_M: f32 = 8.0;
+const SNAPPED_RANGE_M: f32 = 200.0;
+// The shore moves visibly between the two heights, so the last metres of the range blend them.
+const SNAPPED_BLEND_M: f32 = 20.0;
+
+fn water_ground(s: vec2f) -> f32 {
+    if (SNAPPED_WATER) {
+        let share = 1.0 - smoothstep(SNAPPED_RANGE_M - SNAPPED_BLEND_M, SNAPPED_RANGE_M, length(to_render(s)));
+        if (share > 0.0) {
+            let m = mask_at(s, u32(ceil(lod(s))), true);
+            if (m.level != 0u && m.kind.x != 0u && m.edge < SNAPPED_M) {
+                let drawn = drawn_height(s);
+                let plain = plain_height(s);
+                return select(drawn, mix(plain, drawn, share), known(drawn) && known(plain));
+            }
+        }
+    }
+    return plain_height(s);
+}
+
 @vertex
 fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut {
     let drawn = water_nodes[instance];
@@ -78,7 +102,7 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
     }
     var z = v.level;
     if (v.half != 0.0 || v.level <= DRAPED) {
-        z = plain_height(lod_space(u));
+        z = water_ground(lod_space(u));
     }
     if (v.half != 0.0) {
         // At the middle of the ribbon, along the flow: across it, turned a right angle, in LOD space axes (y north).
