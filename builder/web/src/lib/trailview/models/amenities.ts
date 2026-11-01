@@ -9,6 +9,7 @@ const FLAME = rgb('#ff7a1c'), CORE = rgb('#ffd04a'), POST = rgb('#2f7fc1'), PUMP
 // As the logo, brand/signpost.svg.
 const OLIVE = rgb('#5c5a2e'), SIGN = rgb('#f4a81d');
 const POLE = rgb('#4a4f54'), LAMP = rgb('#fff1c4');
+const CONCRETE = rgb('#a8a59c'), DARK = rgb('#15181a');
 const BAG = rgb('#f08a24'), CROSS = rgb('#2fa84f'), HOSPITAL = rgb('#1f5fae'), WHITE = rgb('#f7f7f2');
 
 /** A park bench: a seat, a back and two pairs of legs. */
@@ -83,6 +84,17 @@ export function streetLamp(): Model {
     m.box([x, y, z + 0.195], [0.3, 0.56, 0.05], POLE);
     const glass = m.triangles;
     return m.box([x, y, z + 0.085], [0.24, 0.48, 0.17], LAMP).glowing(glass);
+}
+
+/**
+ * The mouth of a culvert: a low concrete headwall, as wide as a stream's ribbon and 0.25 m on each side, behind the
+ * origin, with a ring of 0.7 m round its dark bore. A ribbon ends at the origin, so it does not draw over the ring by
+ * its depth bias. The wall's foot lies below the ground of a bank.
+ */
+export function culvertMouth(): Model {
+    const circle = (r: number) => Array.from({ length: 10 }, (_, k): [number, number] => [r * Math.cos((-2 * Math.PI * k) / 10), 0.33 + r * Math.sin((-2 * Math.PI * k) / 10)]);
+    const m = new Model().box([0, 0.15, 0], [2.5, 0.3, 1.4], CONCRETE).box([0, 0.15, 0.71], [2.6, 0.38, 0.05], CONCRETE);
+    return m.prism(circle(0.35), -0.08, 0, CONCRETE).prism(circle(0.27), -0.09, -0.08, DARK);
 }
 
 /** A drinking fountain: a stone trough of water with a pillar and its spout. */

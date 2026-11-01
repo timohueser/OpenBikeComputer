@@ -55,7 +55,7 @@ const FOAM_LOW: f32 = 0.4;
 const FOAM_HIGH: f32 = 1.0;
 const FOAM_MOST: f32 = 0.7;
 const RIBBON_PIXELS: f32 = 1.5;
-// A ribbon stops this far past a way's edge or its sidewalk: over a shoulder, SHOULDER_M of bins.ts, by 0.1 m at most.
+// A ribbon stops this far past a way's edge or its sidewalk, as GIVE_WAY_M of culverts.ts: over a shoulder, SHOULDER_M of bins.ts, by 0.1 m at most.
 const GIVE_WAY_M: f32 = 0.5;
 // A ribbon draws this far toward the eye, plus a share of its distance, as a corridor does (corridor_biased of
 // corridor.wgsl) and past the crease that its band leaves over the mesh (BAND_SINK_M): it lies over a way's band.

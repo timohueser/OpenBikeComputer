@@ -6,6 +6,7 @@ import { PAGE } from '../stream/heights';
 import { addPlan, curveOf, PATH_SAG, planPart, ROAD_SAG, type Curve, type Plan } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
+import { joinCulverts, runOnToWays, type CulvertEnd } from './culverts';
 import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
 
 /** Words of a primitive record. */
@@ -224,7 +225,7 @@ export interface Building { rings: number[][]; outer: boolean[]; front?: [number
  * The shapes of a tile: lines, lakes and the sea with heights, the river areas, which lie on the drawn
  * surface, the pads under the platforms and the buildings.
  */
-export interface Shapes { lines: Line[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; barriers: Barrier[]; crossings: { x: number; y: number }[] }
+export interface Shapes { lines: Line[]; culvertEnds: CulvertEnd[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; barriers: Barrier[]; crossings: { x: number; y: number }[] }
 
 /**
  * The numbers of stamp-core.wgsl that the gates of a line, the shore samples of the audit, the edges
@@ -367,49 +368,12 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
             flush(z.length);
         }
     }
-    joinCulverts(list, lines, world);
+    const culvertEnds = joinCulverts(list, lines, world);
+    runOnToWays(lines, culvertEnds);
     junctionPlanes(lines);
     abutments(lines);
     faceRoads(lines, buildings, town);
-    return { lines, lakes, seas, areas, pads, buildings, barriers, crossings };
-}
-
-/** A culvert of a stream up to this long carries it under the ways that it crosses, and a longer one buries it: 56 of the 63 of the fixture have up to 52 m, the next 72 m. */
-const CULVERT_M = 60;
-
-/**
- * Joins each short culvert of a stream to the stream at its ends, so that the stream runs on to the way that passes
- * over it. A culvert has no water level, and a ribbon needs one only for its width on screen: it keeps the level before it.
- */
-function joinCulverts(list: Feature[], lines: Line[], world: (xy: ArrayLike<number>, v: number) => number[]): void {
-    const last = (xy: number[]) => xy.length / 2 - 1, same = (a: number[], v: number, b: number[], w: number) => a[2 * v] === b[2 * w] && a[2 * v + 1] === b[2 * w + 1];
-    const endingAt = (xy: number[], v: number) => lines.find(line => line.kind === STREAM && same(line.xy, last(line.xy), xy, v));
-    const startingAt = (xy: number[], v: number) => lines.find(line => line.kind === STREAM && same(line.xy, 0, xy, v));
-    for (const { kind, tags, parts } of list) {
-        if (kind !== 'stream' || (tags.tunnel ?? 'no') === 'no') continue;
-        for (const { xy: part, z } of parts) {
-            if (z?.some(Number.isFinite)) continue;
-            let xy = Array.from({ length: part.length / 2 }, (_, v) => world(part, v)).flat(), metres = 0;
-            for (let v = 0; v < last(xy); v++) metres += Math.hypot(xy[2 * v + 2] - xy[2 * v], xy[2 * v + 3] - xy[2 * v + 1]) * metresPerUnit(xy[2 * v + 1]);
-            if (metres > CULVERT_M) continue;
-            // OSM draws a culvert as it likes, and the bake turns only the ways that it solves.
-            if (!endingAt(xy, 0) && !startingAt(xy, last(xy))) xy = Array.from({ length: xy.length / 2 }, (_, v) => [xy[xy.length - 2 * v - 2], xy[xy.length - 2 * v - 1]]).flat();
-            const up = endingAt(xy, 0), down = startingAt(xy, last(xy));
-            if (!up && !down) continue;
-            const line = up ?? { ...down!, xy: xy.slice(0, 2), z: [down!.z[0]], anchors: [true] }, level = line.z[line.z.length - 1];
-            const append = (more: number[], heights: number[]) => {
-                line.xy.push(...more);
-                line.z.push(...heights);
-                line.anchors?.push(...heights.map(() => true));
-            };
-            append(xy.slice(2), Array<number>(last(xy)).fill(level));
-            if (down && down !== line) {
-                append(down.xy.slice(2), down.z.slice(1).map(z => Math.min(z, level)));
-                lines.splice(lines.indexOf(down), 1);
-            }
-            if (!up) lines.push(line);
-        }
-    }
+    return { lines, lakes, seas, areas, pads, buildings, barriers, crossings, culvertEnds };
 }
 
 /**
