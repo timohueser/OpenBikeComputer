@@ -126,7 +126,11 @@ fn slot_kerb() -> i32 { return slot_cliff() + 18; }
 fn slot_road_line() -> i32 { return slot_cliff() + 19; }
 fn slot_concrete() -> i32 { return slot_cliff() + 20; }
 fn slot_setts() -> i32 { return slot_cliff() + 21; }
-fn slot_kinds() -> i32 { return slot_cliff() + 22; }
+fn slot_zebra() -> i32 { return slot_cliff() + 22; }
+fn slot_zebra_setts() -> i32 { return slot_cliff() + 23; }
+fn slot_give_way() -> i32 { return slot_cliff() + 24; }
+fn slot_dashes() -> i32 { return slot_cliff() + 25; }
+fn slot_kinds() -> i32 { return slot_cliff() + 26; }
 fn slot_hardness() -> i32 { return slot_kinds() + i32(look.codes.y); }
 fn slot_rows() -> i32 { return slot_hardness() + i32(look.codes.z); }
 

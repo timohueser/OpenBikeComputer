@@ -44,6 +44,10 @@ export interface Look {
     roadLine?: string;
     concrete?: string;
     setts?: string;
+    zebra?: string;
+    zebraSetts?: string;
+    giveWay?: { dash_m: number; triangle: boolean };
+    dashes?: { line: [number, number]; lane: [number, number] };
     sea: { deep: string; shallow: string };
     grade: { shadow: [number, number, number]; light: [number, number, number]; saturation: number };
     weather?: Partial<Record<Preset, Partial<WeatherKeys>>>;
@@ -177,6 +181,9 @@ function merge(a: Record<string, unknown>, b: Record<string, unknown>): Record<s
 }
 
 /** A value by place, `{"es-ga": …, "es": …, "*": …}`: the entry of the place, else of its country, else `"*"`. */
+/** The values by place of a look. */
+const BY_PLACE = ['roadLine', 'zebra', 'zebraSetts', 'giveWay', 'dashes'];
+
 const local = (value: unknown, place: string) =>
     isObject(value) ? (value[place] ?? value[place.split('-')[0]] ?? value['*']) : value;
 
@@ -226,7 +233,7 @@ export function rulesOf(json: {
         // A cover's ramp comes whole from the nearest region that names it.
         const ramps = Object.assign({}, ...files.map(file => (file.look as Look | undefined)?.ramps));
         const merged = resolved.look as Record<string, unknown>;
-        const look = { ...merged, ramps, roadLine: local(merged.roadLine, place) } as Look;
+        const look = { ...merged, ramps, ...Object.fromEntries(BY_PLACE.map(key => [key, local(merged[key], place)])) } as Look;
         return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack, place),
             trees: entriesOf<TreeRule>(json.packs, resolved.pack, 'trees'), herds: entriesOf<HerdRule>(json.packs, resolved.pack, 'herds'),
             ground: entriesOf<GroundRule>(json.packs, resolved.pack, 'ground'), rows: rowsOf(json.packs, resolved.pack) };

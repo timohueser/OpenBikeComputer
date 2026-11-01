@@ -27,6 +27,10 @@ RAMP_COVERS = (*(cover for cover in COVER_ORDER if cover != "tree"), "needle", "
 PLACE = re.compile(r"^([a-z]{2}(-[a-z0-9]{1,3})?|\*)$")
 # A region id is one byte of the region tiles, and 255 is no data there.
 MAX_REGION_IDS = 255
+# What a corridor counts along its way repeats after: REPEAT of sweep.ts.
+DASH_REPEAT_M = 720
+# The values of a look by place.
+LOOK_BY_PLACE = ("roadLine", "zebra", "zebraSetts", "giveWay", "dashes")
 # A material code is 6 bits of the ground tiles (specs/trailview-tiles.md#ground).
 MAX_MATERIALS = 64
 # The patches of a region's look that the ground draws (PATCHES of ground/rules.ts).
@@ -116,6 +120,11 @@ def by_place(check):
     return by
 
 
+def dash(v, p):
+    """Metres on and each period of a line's dashes: a corridor counts along its way in repeats of DASH_REPEAT_M."""
+    return listed(number(0.1, DASH_REPEAT_M), 2)(v, p) or ([] if v[0] < v[1] and DASH_REPEAT_M % v[1] == 0 else wrong(p, f"{said(v)} is not less than a period that divides {DASH_REPEAT_M} m"))
+
+
 def point(v, p):
     return [] if isinstance(v, list) and len(v) == 2 and all(map(is_number, v)) else wrong(p, f"{said(v)} is not a [lon, lat]")
 
@@ -173,7 +182,9 @@ def tables(materials):
         "bare_luma": lambda v, p: listed(number(0, 1), 4)(v, p) if isinstance(v, list) else number(0, 1)(v, p),
         "outcrops": number(0, 1), "turf_deg": number(0, 90), "rock": colour, "cliff": colour,
         "snow_share": number(0, 1), "bedding": obj({"strike": number(0, 360), "dip": number(0, 90)}), "roads": listed(colour, 6),
-        "roadLine": by_place(colour), "concrete": colour, "setts": colour, "sea": obj({"deep": colour, "shallow": colour}), "windswept_m": number(0, 5000),
+        "roadLine": by_place(colour), "concrete": colour, "setts": colour, "zebra": by_place(colour), "zebraSetts": by_place(colour),
+        "giveWay": by_place(obj({"dash_m": number(0.1, 2), "triangle": one_of(True, False)})),
+        "dashes": by_place(obj({"line": dash, "lane": dash})), "sea": obj({"deep": colour, "shallow": colour}), "windswept_m": number(0, 5000),
         "swell": number(0, 360),
         "grade": obj({"shadow": listed(number(-0.1, 0.1), 3), "light": listed(number(-0.1, 0.1), 3), "saturation": number(0, 3)}),
         "weather": each(("sunny", "cloudy", "rainy"), weather),
@@ -448,12 +459,13 @@ def merged(table, name):
 
 def region_ids(ruleset):
     """Each region id as [region, place]: per region by name, "*" and then each country or
-    subdivision that its pack's `style` or its `look.roadLine` names."""
+    subdivision that its pack's `style` or a value by place of its look names."""
     out = []
     for name in sorted(ruleset["regions"]):
         region = merged(ruleset["regions"], name)
         pack = merged(ruleset["packs"], region["pack"]) if "pack" in region else {}
-        places = {key for value in (pack.get("style"), region.get("look", {}).get("roadLine")) if isinstance(value, dict) for key in value}
+        look = region.get("look", {})
+        places = {key for value in (pack.get("style"), *(look.get(name) for name in LOOK_BY_PLACE)) if isinstance(value, dict) for key in value}
         out += [[name, place] for place in ["*", *sorted(places - {"*"})]]
     return out
 

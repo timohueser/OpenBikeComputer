@@ -13,7 +13,7 @@ export { LIFT_M };
 /** Face materials, as MAT_* of corridor.wgsl and details.wgsl: the ground under the face, the stone of a town street, and what stands beside a road. */
 export const MAT = { GROUND: 1, KERB: 2, SIDEWALK: 3, RAIL: 40, RAIL_POST: 41, RAIL_BLOCK: 42, DELI: 44, DELI_BAND: 45, REFLECTOR: 46, WALL: 48, CAP: 49 } as const;
 /** The looks of the ways, as LOOK_* of looks.wgsl. */
-export const LOOK = { ASPHALT: 20, MAIN: 21, MOTORWAY: 22, CONCRETE: 23, SETT: 24, PAVERS: 25, GRAVEL: 26, DIRT: 27, TRAIL: 28, BALLAST: 29, STRIPS: 30, TREAD: 31, RISER: 32, SLEEPER: 33, TIMBER: 34, RAIL: 35, RAIL_HEAD: 36, RACK: 37, CABLE: 38 } as const;
+export const LOOK = { GIVE_WAY: 15, ZEBRA: 16, ZEBRA_SETT: 17, ZEBRA_PAVERS: 18, ZEBRA_CONCRETE: 19, ASPHALT: 20, MAIN: 21, MOTORWAY: 22, CONCRETE: 23, SETT: 24, PAVERS: 25, GRAVEL: 26, DIRT: 27, TRAIL: 28, BALLAST: 29, STRIPS: 30, TREAD: 31, RISER: 32, SLEEPER: 33, TIMBER: 34, RAIL: 35, RAIL_HEAD: 36, RACK: 37, CABLE: 38 } as const;
 /**
  * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a band's row on the stamped ground. MESH: a band's row or
  * the foot of a cheek of steps under the drawn mesh. FILL, both of these: a backfill's row at its height, or under the drawn mesh where that lies
@@ -34,6 +34,8 @@ const SHOULDER_DROP_M = 0.02;
 /** A town road's kerb: its rise over the core at the sidewalk, and the width of its top. */
 export const KERB_RISE_M = 0.12;
 const KERB_TOP_M = 0.16;
+/** A lowered kerb's fall: its top stays 2.5 cm over the carriageway. */
+const KERB_DROP_M = KERB_RISE_M - 0.025;
 /** Ballast spilt past a track's bed. */
 const SPILL_M = 0.35;
 /** A junction's faces are one surface with no edge in its look: this far across a way this wide on each side. */
@@ -110,6 +112,13 @@ function kerb(a: number, dz: number, walk: number): Part[] {
         point(a, dz + 0.1, MAT.KERB), point(a + 0.025, dz + 0.125, MAT.KERB, true), point(a + KERB_TOP_M, dz + 0.125, MAT.KERB), point(a + KERB_TOP_M + 0.01, dz + KERB_RISE_M, MAT.KERB),
         point(a + walk - 0.1, dz + KERB_RISE_M, MAT.SIDEWALK, true), point(a + walk - 0.1, dz + 0.135, MAT.KERB), point(a + walk, dz + 0.135, MAT.KERB), point(a + walk + 0.01, dz + 0.07, MAT.KERB, true),
     ];
+}
+
+/** A side's points with the kerb before its sidewalk lowered by a share of its drop; the sidewalk's own level and its outer stone stay. */
+export function lowered(parts: Part[], share: number): Part[] {
+    if (!share) return parts;
+    const walk = parts.findIndex(({ mat }) => mat === MAT.SIDEWALK);
+    return parts.map((part, i) => (i < walk ? { ...part, dz: part.dz - share * KERB_DROP_M } : part));
 }
 
 /** The width of the sidewalk on a side of a line at segment v. */

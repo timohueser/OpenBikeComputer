@@ -201,6 +201,8 @@ export interface Line {
     sleepers?: number[]; wire?: boolean;
     /** A town road's sides with a sidewalk per segment, LEFT and RIGHT of town.ts, as townPieces decides them. */
     sidewalks?: number[];
+    /** Whether it is a roundabout's ring. */
+    roundabout?: boolean;
     /** Per vertex, the ways out of it that leave its junction as a side: SIDE_BACK and SIDE_ON. */
     sideWays?: number[];
     /** The `surface` tag of its way. */
@@ -216,7 +218,7 @@ export interface Building { rings: number[][]; outer: boolean[]; cars: boolean; 
  * The shapes of a tile: lines, lakes and the sea with heights, the river areas, which lie on the drawn
  * surface, the pads under the platforms, the buildings and the walks to them.
  */
-export interface Shapes { lines: Line[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; walks: Line[]; barriers: Barrier[] }
+export interface Shapes { lines: Line[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; walks: Line[]; barriers: Barrier[]; crossings: { x: number; y: number }[] }
 
 /**
  * The numbers of stamp-core.wgsl that the gates of a line, the shore samples of the audit, the edges
@@ -238,6 +240,12 @@ export function shows({ kind, h, profile }: Line, texel: number): boolean {
     if (kind === STREAM || kind === WALK) return false;
     if (kind === PATH) return 2 * h >= texel && h + reach <= limit;
     return 2 * h >= texel && h + least <= limit;
+}
+
+/** Whether a crossing node's tags say that stripes lie on the road: `crossing:markings` decides, else `crossing`. A signal says nothing of its marks. */
+export function zebraTagged(tags: Record<string, string>): boolean {
+    const markings = tags['crossing:markings'];
+    return markings ? /^(zebra|ladder|yes)/.test(markings) : ['zebra', 'marked', 'uncontrolled'].includes(tags.crossing);
 }
 
 /** The shapes of each decoded tile, made once: the stamps and the water of each of its nodes read them. */
@@ -263,7 +271,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         const sag = Object.hasOwn(PATH_HALF, tags.highway) && ![...PAVED_ROADS, 'paving'].includes(surfaceOf(tags, true)) ? PATH_SAG : ROAD_SAG;
         return curves.get(part) ?? curves.set(part, curveOf(part, edge, sag, scale, y => scale * metresPerUnit((oy + y) * scale))).get(part)!;
     };
-    const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [], barriers: Barrier[] = [];
+    const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [], barriers: Barrier[] = [], crossings: Shapes['crossings'] = [];
     const area = (parts: Feature['parts']) => ({ rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
     const buildings: Building[] = list.filter(({ kind }) => kind === 'building').map(({ tags, parts }) => ({ ...area(parts), cars: CARS.includes(tags.building) }));
     const town = townOf(buildings), beds = bedsOf(list, world, drawn);
@@ -285,6 +293,10 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         }
         if (kind === 'guard-rail' || kind === 'retaining-wall') {
             for (const { xy } of parts) barriers.push({ xy: Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat(), wall: kind === 'retaining-wall', height: parseFloat(tags.height) || undefined });
+            continue;
+        }
+        if (kind === 'crossing') {
+            if (zebraTagged(tags)) for (const { xy } of parts) crossings.push({ x: world(xy, 0)[0], y: world(xy, 0)[1] });
             continue;
         }
         const river = kind === 'river' || kind === 'stream';
@@ -318,7 +330,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
                         const line: Line = {
                             kind: type, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1), plan: shape.plan && planPart(shape.plan, from, to + 1),
                             h: paved(from) ? halfWidth(tags, 'paving') : h, code: paved(from) ? PAVING_CODE : code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
-                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined, sideWays: sideWays?.slice(from, to + 1), surface: tags.surface,
+                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined, sideWays: sideWays?.slice(from, to + 1), surface: tags.surface, roundabout: tags.junction === 'roundabout' || undefined,
                         };
                         if (type === RAIL) line.sleepers = sleepers(line);
                         lines.push(line);
@@ -340,7 +352,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     }
     junctionPlanes(lines);
     abutments(lines);
-    return { lines, lakes, seas, areas, pads, buildings, walks: walks(lines, buildings, town), barriers };
+    return { lines, lakes, seas, areas, pads, buildings, walks: walks(lines, buildings, town), barriers, crossings };
 }
 
 /**

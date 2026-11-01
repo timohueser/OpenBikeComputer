@@ -3,7 +3,8 @@
 // counter-clockwise), and a face that stands upright on a side faces the line's middle, as a kerb does.
 import { RAIL, type Line } from '../terrain/bins';
 import { lookWord, type PieceBuilder } from './piece';
-import { carriageway, CF, sideOf, type Part } from './section';
+import type { Paint } from './marks';
+import { carriageway, CF, lowered, sideOf, type Part } from './section';
 import { CUT, type Station } from './stations';
 import { onWay, type Ways } from './ways';
 
@@ -45,6 +46,16 @@ export function point(b: PieceBuilder, run: Run, j: number, part: Part, a: numbe
     return index;
 }
 
+/** The vertex of point `part` of paint at station j: faces of one paint share it, and no others. */
+function painted(b: PieceBuilder, run: Run, j: number, part: Part, paint: Paint): number {
+    const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!, flags = -paint.mat;
+    for (const slot of slots) if (slot.a === part.a && slot.flags === flags) return slot.index;
+    const s = run.stations[j], x = s.x + s.ax * part.a, y = s.y + s.ay * part.a, z = s.z + s.bank * part.a + run.lift + part.dz;
+    const index = b.vertex(x, y, z, lookWord(paint.mat, run.line.code, 0, run.prio, s.h), paint.across(s, x, y, part.a), paint.along(s, countOf(run, s)));
+    slots.push({ a: part.a, dz: part.dz, flags, index });
+    return index;
+}
+
 /** The two triangles of a quad, each with its first vertex on q at the first station. */
 export function quad(list: number[], ps: number, qs: number, qt: number, pt: number, left: boolean): void {
     if (left) list.push(qs, pt, qt, qs, ps, pt);
@@ -59,12 +70,14 @@ export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: n
     const roads = [carriageway(line, s.h, s.bank).map(part => ({ ...part, flags })), carriageway(line, t.h, t.bank)].map(road => (far ? road.filter(part => part.far) : road));
     const [road, next] = roads, last = road.length - 1;
     for (let c = 0; c < last && !(cut & CUT.ROAD); c++) {
-        const ps = point(b, run, j, road[c], road[c].a, 0), qs = point(b, run, j, road[c + 1], road[c + 1].a, 0), qt = point(b, run, k, next[c + 1], next[c + 1].a, 0), pt = point(b, run, k, next[c], next[c].a, 0);
+        const at = (index: number, part: Part) => (s.paint ? painted(b, run, index, part, s.paint) : point(b, run, index, part, part.a, 0));
+        const ps = at(j, road[c]), qs = at(j, road[c + 1]), qt = at(k, next[c + 1]), pt = at(k, next[c]);
         quad(list, ps, qs, qt, pt, false);
     }
     for (const side of [1, -1] as const) {
         if (cut & (side > 0 ? CUT.LEFT : CUT.RIGHT)) continue;
-        const outer = side > 0 ? 0 : last, here = sideOf(line, side, t.v, s.h), there = sideOf(line, side, t.v, t.h), parts = here.parts, others = there.parts;
+        const outer = side > 0 ? 0 : last, here = sideOf(line, side, t.v, s.h), there = sideOf(line, side, t.v, t.h), which = side > 0 ? 0 : 1;
+        const parts = lowered(here.parts, far ? 0 : s.drop?.[which] ?? 0), others = lowered(there.parts, far ? 0 : t.drop?.[which] ?? 0);
         const most = side > 0 ? 0 : 1, reachS = reach[2 * j + most], reachT = reach[2 * k + most];
         let ps = point(b, run, j, road[outer], road[outer].a, 0), pt = point(b, run, k, next[outer], next[outer].a, 0);
         for (let c = 0; c < parts.length && parts[c].a <= reachS && others[c].a <= reachT; c++) {

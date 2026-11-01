@@ -4,9 +4,11 @@
 // a path or a driveway stops at the road's outer edge. The plan adds to each line the stations that the junctions
 // need, and marks what the sweep leaves out to the junction's faces (junction-faces.ts).
 import { PROFILES, ROAD, type Line } from '../terrain/bins';
+import { LEFT, RIGHT } from '../terrain/town';
 import { inTown, junctionStation, meetingsOf, sideAt, type Arm, type Meeting, type Way } from './arms';
 import { cornerOf, type Corner } from './corner';
 import { jointsOf, mitre } from './joints';
+import { giveWay, lowerAt, zebras, type Paint, type RoadMarks } from './marks';
 import { endsOf, type PathEnd } from './path-ends';
 import { settleHeights } from './planes';
 import { junctionFace, LOOK } from './section';
@@ -25,8 +27,11 @@ export interface Mouth { way: Way; far: number; left: Corner; right: Corner; thr
 
 export interface Junctions { corners: Corner[]; mouths: Mouth[]; ends: PathEnd[] }
 
-/** What a junction does to a line: faces left out, and stations it needs. */
-type Marks = { cuts: { from: number; to: number; bits: number }[]; breaks: number[] };
+/** A lowered kerb ramps back up over this many metres past its stretch. Two paths out of a point, at this cosine or less, are one that runs on. */
+const RAMP_M = 1.2, RUNS_ON_COS = -0.5;
+
+/** What a junction does to a line: faces left out, stations it needs, its paint and its lowered kerbs. */
+type Marks = { cuts: { from: number; to: number; bits: number }[]; breaks: number[]; paints: { from: number; to: number; paint: Paint }[]; drops: { from: number; to: number; side: 1 | -1 }[] };
 /** Marks a way from metres `from` to `to` with bits of CUT, and asks for a station at `to`. */
 export type Mark = (way: Way, from: number, to: number, bits: number) => void;
 
@@ -74,7 +79,7 @@ function mouthsAt(ways: Arm[], corners: Corner[], pair: Arm[]): Mouth[] {
 }
 
 /** Plans a junction of three road ways or more; gives back its corners, and the arms that end at its roads' edges instead. */
-function junctionAt(lines: Line[], meeting: Meeting, out: Junctions, mark: Mark): { drives: Way[]; corners: Corner[] } {
+function junctionAt(lines: Line[], meeting: Meeting, out: Junctions, mark: Mark, marks: RoadMarks): { drives: Way[]; corners: Corner[] } {
     const arms = meeting.roads, pair = arms.filter(({ through }) => through);
     if (arms.length < 3 || pair.length !== 2 || groundOf(arms).length < 2) return { drives: [], corners: [] };
     const drives = drivesOf(arms, pair), faced = pair.map(({ line }) => line).filter(line => junctionFace(line)), road = faced.find(line => junctionFace(line)!.mat === LOOK.ASPHALT) ?? faced[0];
@@ -90,15 +95,19 @@ function junctionAt(lines: Line[], meeting: Meeting, out: Junctions, mark: Mark)
             if (way.through) mark(way, corner.meet[end], corner.meet[end], 0);
         });
     }
-    for (const { way, far } of mouths) mark(way, way.along, far, CUT.ROAD);
+    for (const { way, far, through } of mouths) {
+        mark(way, way.along, far, CUT.ROAD);
+        giveWay(way, far, through, marks);
+    }
     out.corners.push(...corners);
     out.mouths.push(...mouths);
     return { drives, corners };
 }
 
 /** Adds a line's stations and sets its cuts. */
-function settle(run: Run, { cuts, breaks }: Marks): void {
-    const stations = run.stations.slice(), wanted = [...new Set(breaks)].sort((p, q) => p - q);
+function settle(run: Run, { cuts, breaks, paints, drops }: Marks): void {
+    const asked = [...breaks, ...paints.flatMap(({ from, to }) => [from, to]), ...drops.flatMap(({ from, to }) => [from - RAMP_M, from, to, to + RAMP_M])];
+    const stations = run.stations.slice(), wanted = [...new Set(asked)].sort((p, q) => p - q);
     for (const along of wanted) {
         const j = stationIndex(stations, along), near = stations[j];
         if (Math.abs(near.along - along) < SAME_M) continue;
@@ -111,7 +120,16 @@ function settle(run: Run, { cuts, breaks }: Marks): void {
         let bits = 0;
         for (const { from, to, bits: cut } of cuts) if (middle > Math.min(from, to) && middle < Math.max(from, to)) bits |= cut;
         stations[j].cut = bits || undefined;
+        stations[j].paint = paints.find(({ from, to }) => middle > from && middle < to)?.paint;
     }
+    if (drops.length) stations.forEach((s, j) => {
+        // A corner's ring stands on the full kerb of the station where the side's sweep stops.
+        const share = (side: 1 | -1, bit: number) => (((s.cut ?? 0) | (stations[j - 1]?.cut ?? 0)) & bit ? 0 : Math.max(0, ...drops.filter(drop => drop.side === side).map(({ from, to }) => {
+            const past = Math.max(from - s.along, s.along - to, 0) / RAMP_M;
+            return past < 1 ? 1 - past * past * (3 - 2 * past) : 0;
+        })));
+        s.drop = [share(1, CUT.LEFT), share(-1, CUT.RIGHT)];
+    });
     run.stations = stations;
 }
 
@@ -120,17 +138,29 @@ function settle(run: Run, { cuts, breaks }: Marks): void {
  * junction within REACH_M reads the same WINDOW_M of its ways, so they all give it the same corners and cuts. Heights
  * chain further: a mouth past a tile's buffer can raise a through way that a nearer junction then reads.
  */
-export function planJunctions(lines: Line[], runs: Run[]): Junctions {
+export function planJunctions(lines: Line[], runs: Run[], crossings: { x: number; y: number }[] = []): Junctions {
     const out: Junctions = { corners: [], mouths: [], ends: [] }, marks = new Map<Run, Marks>();
+    const marksOf = (run: Run) => marks.get(run) ?? marks.set(run, { cuts: [], breaks: [], paints: [], drops: [] }).get(run)!;
+    const roadMarks: RoadMarks = {
+        paint: (run, from, to, paint) => marksOf(run).paints.push({ from: Math.min(from, to), to: Math.max(from, to), paint }),
+        lower: (run, from, to, side) => {
+            if (run.line.sidewalks?.some(walks => walks & (side > 0 ? LEFT : RIGHT))) marksOf(run).drops.push({ from, to, side });
+        },
+    };
     const mark = ({ run }: Way, from: number, to: number, bits: number) => {
-        const entry = marks.get(run) ?? marks.set(run, { cuts: [], breaks: [] }).get(run)!;
+        const entry = marksOf(run);
         entry.breaks.push(to);
         if (bits) entry.cuts.push({ from, to, bits });
     };
     for (const meeting of meetingsOf(lines, runs)) {
-        const { drives, corners } = junctionAt(lines, meeting, out, mark), ground = groundOf(meeting.roads).filter(arm => !drives.includes(arm));
-        if (ground.length >= 2) out.ends.push(...endsOf(ground, [...meeting.paths, ...drives], corners, mark));
+        const { drives, corners } = junctionAt(lines, meeting, out, mark, roadMarks), ground = groundOf(meeting.roads).filter(arm => !drives.includes(arm));
+        if (ground.length < 2) continue;
+        const ends = endsOf(ground, [...meeting.paths, ...drives], corners, mark);
+        // A driveway crosses the sidewalk, and a path that runs on crosses the road. A path that stops on the sidewalk leaves its kerb whole.
+        for (const { way, walk } of ends) if (walk && (drives.includes(way) || ends.some(other => other.way.u[0] * way.u[0] + other.way.u[1] * way.u[1] < RUNS_ON_COS))) lowerAt(way, ground, roadMarks);
+        out.ends.push(...ends);
     }
+    zebras(runs, crossings, roadMarks);
     for (const [run, entry] of marks) settle(run, entry);
     const joints = jointsOf(lines, runs);
     mitre(joints);

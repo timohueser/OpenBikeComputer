@@ -34,6 +34,15 @@ describe('rulesOf', () => {
         expect(insubric.look.roadLine).toBe('#d6d4cc');
     });
 
+    it('takes a zebra by the place of the region id, a subdivision by its country', () => {
+        const rules = rulesOf({
+            format: 3, materials, ids: [['world', '*'], ['world', 'ch'], ['world', 'ch-ti']],
+            regions: { world: { leaf: 'mixed', look: { ...look, zebra: { ch: '#e5bf21', '*': '#ffffff' }, zebraSetts: { '*': '#ffffff' } } } },
+        });
+        expect(rules.regions.map(region => region.look.zebra)).toEqual(['#ffffff', '#e5bf21', '#e5bf21']);
+        expect(rules.regions[1].look.zebraSetts).toBe('#ffffff');
+    });
+
     it('gives a region id the value of its place, else of its country, else "*"', () => {
         const style = (name: string) => ({ name, pitch: [40, 45], eave: 0.5, verge: 0.3, hip: 0, timber: 'none', shutters: false, chimneys: 1, palette: {} });
         const rules = rulesOf({
