@@ -443,7 +443,9 @@ function townPieces({ xy, z, anchors, plan }: Shape, town: Town, clear?: Clear):
         const [ax, ay, bx, by] = xy.slice(2 * v, 2 * v + 4), dx = bx - ax, dy = by - ay, unit = metresPerUnit(ay), count = Math.max(1, Math.ceil(Math.hypot(dx, dy) * unit / PIECE_M));
         const pieces = Array.from({ length: count }, (_, k) => {
             const x = ax + dx * (k + 0.5) / count, y = ay + dy * (k + 0.5) / count;
-            if (!builtNear(town, x, y, BUILT_M / unit)) return 0;
+            // A piece between two built ones keeps its sidewalk, so a short stretch between houses leaves no gap.
+            const reach = BUILT_M / unit, ahead = PIECE_M / unit / (Math.hypot(dx, dy) || 1);
+            if (!builtNear(town, x, y, reach) && !(builtNear(town, x + dx * ahead, y + dy * ahead, reach) && builtNear(town, x - dx * ahead, y - dy * ahead, reach))) return 0;
             return clear ? (clear(x, y, dx, dy, LEFT) ? LEFT : 0) | (clear(x, y, dx, dy, RIGHT) ? RIGHT : 0) : LEFT | RIGHT;
         });
         for (let k = 1; k <= count; k++) {

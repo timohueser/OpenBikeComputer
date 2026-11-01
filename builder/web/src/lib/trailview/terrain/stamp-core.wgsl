@@ -111,7 +111,7 @@ const BUFFER_M: f32 = 40.0;
 // its texel at 45° N, so that a feature shows on all of a level or on none of it.
 const GATE_COS: f32 = 0.70710678;
 const MESH_TEXELS: f32 = 4.0;
-// Near a junction, where the cores of its roads overlap, they hold the middle of their heights where
+// Near a junction, where the cores of its roads overlap, they hold the lower of their heights where
 // these disagree; the reach of a junction is at most JUNCTION_CAP.
 const JUNCTION_CAP: f32 = 15.0;
 // A lake's bed falls from its shore at SHORE_SLOPE to BED_DEPTH. On the levels that can hold it, the
@@ -748,7 +748,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         lo[BANKS] = -INF;
         hi[BANKS] = INF;
     } else if (!abutment) {
-        lo[WATER] = edge.x;
+        // The floor of a stream's edge never lifts the ground through a road: it stays under the road's core.
+        lo[WATER] = min(edge.x, hi[ROAD_CORE]);
         hi[WATER] = edge.y;
     }
     // A bank or a cut digs no deeper than a bore's cover: a lake's shore ramp, a river's bank and the cut
@@ -758,22 +759,18 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         hi[CONES] = lo[COVER];
         cone_hi_road = false;
     }
-    // Near a junction the cores of its roads hold the middle of their heights where they disagree by
-    // the centimetres of the solver, and a core outranks the cones. Past the cores their cones ramp as
-    // anywhere else, so a wall between two roads grows from nothing at their junction.
+    // Near a junction the cores of its roads hold the lower of their heights where they disagree, as a side
+    // way's core does on a slope, so the ground rises through no corridor; and a core outranks the cones. Past
+    // the cores their cones ramp as anywhere else, so a wall between two roads grows from nothing at their junction.
     if (junction) {
-        if (lo[ROAD_CORE] > hi[ROAD_CORE]) {
-            let middle = 0.5 * (lo[ROAD_CORE] + hi[ROAD_CORE]);
-            lo[ROAD_CORE] = middle;
-            hi[ROAD_CORE] = middle;
-        }
+        lo[ROAD_CORE] = min(lo[ROAD_CORE], hi[ROAD_CORE]);
         if (hi[ROAD_CORE] < INF) {
             lo[CONES] = -INF;
             hi[CONES] = INF;
         }
     }
     // A conflict, which the mask flags: an empty bucket holds the middle of its bounds, but for the
-    // cones, and a bucket outside the interval pulls it to its nearest end. So the height has no step
+    // cones and the road cores, and a bucket outside the interval pulls it to its nearest end. So the height has no step
     // where a conflict begins.
     for (var b = 0u; b < BUCKETS; b++) {
         if (lo[b] <= -INF && hi[b] >= INF) {
@@ -792,6 +789,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         if (l > u) {
             out.conflict = true;
             l = select(0.5 * (l + u), mix(l, u, cone_lo_x / max(cone_lo_x + cone_hi_x, 1e-3)), ramp);
+            // Two road cores with no junction: the lower, as at a junction.
+            l = select(l, u, b == ROAD_CORE);
             u = l;
         }
         if (l > out.hi || u < out.lo) {
