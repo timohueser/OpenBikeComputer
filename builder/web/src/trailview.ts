@@ -3,7 +3,6 @@ import { activeRelease, pageRelease } from './lib/planner/release';
 import { TrailView } from './lib/trailview/engine';
 import { Gpu } from './lib/trailview/gpu/device';
 import { hud } from './lib/trailview/hud';
-import { labsOf } from './lib/trailview/labs';
 import { scaleOf } from './lib/trailview/resolve/targets';
 import { defaultView, formatView, parseView } from './lib/trailview/view';
 
@@ -19,7 +18,6 @@ function notice(text: string): void {
 }
 
 async function main(): Promise<void> {
-    const labs = labsOf(location.search);
     const preview: string | undefined = import.meta.env.VITE_PLANNER_CONFIG;
     const config = (async () => plannerConfig(preview ? JSON.parse(preview) : await activeRelease()))();
     config.catch(() => {});
@@ -30,7 +28,7 @@ async function main(): Promise<void> {
     const release = await config;
     pageRelease(release.id);
     const view = parseView(location.search, defaultView(release.bounds));
-    const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view, scaleOf(location.search), labs);
+    const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view, scaleOf(location.search));
 
     const address = () => `${location.origin}${location.pathname}${formatView(engine.view, location.search)}`;
     let writing: ReturnType<typeof setTimeout> | undefined;
@@ -56,7 +54,7 @@ async function main(): Promise<void> {
     const credits = document.querySelector<HTMLElement>('#credits')!;
     credits.textContent = [release.terrain_attribution, ...engine.attribution].filter(Boolean).join(' · ');
     credits.hidden = !credits.textContent;
-    hud(document.querySelector<HTMLElement>('#hud')!, engine, labs);
+    hud(document.querySelector<HTMLElement>('#hud')!, engine);
     Object.assign(window, { trailView: engine });
 }
 

@@ -1,6 +1,5 @@
 // Where a feature tile is built up: its buildings' outlines in a grid of world cells, made once per tile.
 // The town rules read it: the sidewalks, the paved footways, the walks to the houses and the street lamps.
-// The sidewalks' slabs use the grid for the roads near them.
 import type { Shapes } from './bins';
 
 /**
@@ -12,7 +11,7 @@ import type { Shapes } from './bins';
 export const BUILT_M = 20;
 /** The sides of a line from a to b; world y runs south, so its right is where the cross product is positive. */
 export const LEFT = 1, RIGHT = 2;
-/** The granite of a town's kerbs: the ground's paint and the sidewalks' slabs. */
+/** The granite of a town's kerbs: the ground's paint and the corridors. */
 export const KERB = '#c3c0b8';
 /** Cells of 2^SHIFT world units: about 50 m in the Alps. */
 const SHIFT = 11;

@@ -1,10 +1,10 @@
 // Street lamps from the stations of a lit road: where the corridor draws its sidewalk or behind its shoulder.
-import type { Build, Placement } from '../kinds/kind';
-import { BRIDGE, cores, insideRings, junctions, metresPerUnit, PATH, ringsDistance, ROAD, SHOULDER_M, TUNNEL, walkOf, type Line } from '../terrain/bins';
+import { BRIDGE, cores, insideRings, junctions, metresPerUnit, PATH, ringsDistance, ROAD, TUNNEL, walkOf, type Line } from '../terrain/bins';
 import { halfAt, partnersOf } from '../terrain/corners';
 import { along, BUILT_M, builtNear, LEFT, near, RIGHT, townOf, type Town } from '../terrain/town';
-import { lamp, LIT } from '../structures/lamps';
-import { classOf, surfaceName } from './section';
+import { LANTERN, streetLamp } from '../models/amenities';
+import { unitModel, type Build, type Kind, type Placement } from '../kinds/kind';
+import { classOf, shoulderOf } from './section';
 import { stationAt, stationsOf, type Station } from './stations';
 
 /**
@@ -14,6 +14,19 @@ import { stationAt, stationsOf, type Station } from './stations';
  * and APART_M from every other lamp of its tile: each way starts its own count of SPACING_M.
  */
 const SPACING_M = 32, SEARCH_M = 10, SIDEWALK_SHARE = 0.72, BEHIND_M = 0.5, CLEAR_M = 1.5, OFF_ROAD_M = 0.4, MOUTH_M = 4, DRIVE_M = 1.2, APART_M = SPACING_M / 2;
+
+/** The roads that have lamps, and how far from the eye a lamp draws. */
+const LIT = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified', 'residential', 'living_street']);
+
+const LAMP_REACH_M = 600;
+const lamp = unitModel(streetLamp, LAMP_REACH_M);
+
+/** The kind of the lit roads. `streetLamps` places their lamps, from the road's stations. */
+export const lampKind: Kind = {
+    build() {},
+    models: { lamp: lamp.spec },
+    lights: { lamp: { colour: '#ffc98a', radius: 16, at: LANTERN, housed: true } },
+};
 
 /** The lamps of each tile, made once: the stations of its lit roads are many, its lamps few. */
 const planned = new WeakMap<Line[], Placement[]>();
@@ -51,7 +64,7 @@ function spot(places: Places, line: Line, st: Station[], metres: number): Placem
     if (metres < 0 || metres > st[st.length - 1].along) return undefined;
     const s = stationAt(st, metres), unit = metresPerUnit(s.y), walk = walkOf(line);
     for (const side of [-1, 1]) {
-        const walked = (line.sidewalks?.[s.v] ?? 0) & (side > 0 ? LEFT : RIGHT), a = s.h + (walked ? walk * SIDEWALK_SHARE : (SHOULDER_M[surfaceName(line)] ?? 0) + BEHIND_M);
+        const walked = (line.sidewalks?.[s.v] ?? 0) & (side > 0 ? LEFT : RIGHT), a = s.h + (walked ? walk * SIDEWALK_SHARE : shoulderOf(line) + BEHIND_M);
         const x = s.x + side * s.ax * a, y = s.y + side * s.ay * a;
         if ((!walked && !builtNear(places.town, s.x, s.y, BUILT_M / unit)) || !free(places, line, walk, x, y, unit)) continue;
         // The arm reaches toward −y of the model: over the road, toward the line's middle.

@@ -57,7 +57,7 @@ const TAKEN_FLAG: u32 = 8u;
 // A mesh vertex moves onto a road edge within this many texels of its level: 3/4 of a mesh cell, so
 // that on every level with masks each triangle along an edge has a vertex on it.
 const SNAP_TEXELS: f32 = 3.0;
-// Where corridors draw the ways, a vertex outside an edge moves from this far, under a mesh cell: past 3 texels a
+// A vertex outside an edge moves from this far, under a mesh cell: past 3 texels a
 // triangle from it reaches the far edge of a path, and rises over its tread.
 const SNAP_OUT_TEXELS: f32 = 3.75;
 // How far past a way's edge the snap compares the ground, past the bench that a path's stamp holds level.
@@ -221,7 +221,7 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
     // side, so a way whose far side differs keeps the distance.
     let rise = rise_of(across, metres);
     let near = dot(g, g);
-    if (stamp_rules.bench > 0.0 && road && to_edge < outer && dot(rise, rise) >= 0.25 && dot(rise, rise) <= 4.0) {
+    if (road && to_edge < outer && dot(rise, rise) >= 0.25 && dot(rise, rise) <= 4.0) {
         let middle = corner_value(across, rise, past);
         let half = abs(across[0]) - d[0];
         let side = higher_side(job, corner, rise, middle, half + outer + UPHILL_TEXELS * metres, metres);
@@ -237,7 +237,7 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
     }
     let at = to_edge - outer;
     let g2 = dot(g, g);
-    let reach_m = select(SNAP_TEXELS, SNAP_OUT_TEXELS, stamp_rules.bench > 0.0 && at > 0.0) * metres;
+    let reach_m = select(SNAP_TEXELS, SNAP_OUT_TEXELS, at > 0.0) * metres;
     var moved = vec2i(0);
     // Off the ridges of the distance, where it turns from one edge to another.
     if (road && g2 >= 0.25 && g2 <= 4.0 && abs(at) <= reach_m) {

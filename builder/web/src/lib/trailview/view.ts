@@ -63,7 +63,7 @@ export function parseView(search: string, fallback: View): View {
     };
 }
 
-/** The query string of a view. Parameters that are not part of a view, such as `lab`, stay as they are in `search`. */
+/** The query string of a view. Parameters that are not part of a view stay as they are in `search`. */
 export function formatView(view: View, search = ''): string {
     const q = new URLSearchParams(search);
     for (const key of ['lat', 'lon', 'heading', 'pitch', 'eye', 'alt', 'date', 'time', 'weather', 'debug']) q.delete(key);
@@ -76,6 +76,6 @@ export function formatView(view: View, search = ''): string {
     q.set('time', view.time);
     q.set('weather', view.weather);
     if (view.debug !== 'off') q.set('debug', view.debug);
-    // A copied address stays readable: `lab=a:x,b:y`, not `lab=a%3Ax%2Cb%3Ay`.
-    return `?${q}`.replace(/%3A/g, ':').replace(/%2C/g, ',');
+    // A copied address stays readable: `time=15:00`, not `time=15%3A00`.
+    return `?${q}`.replace(/%3A/g, ':');
 }

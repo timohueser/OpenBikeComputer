@@ -415,10 +415,10 @@ describe('corridor.wgsl', () => {
 
     it('hands the pixels of a way over to the paint in the last metres that corridors hold', () => {
         const features = readFileSync(new URL('../terrain/features.wgsl', import.meta.url), 'utf8'), paint = readFileSync(new URL('../ground/roads.wgsl', import.meta.url), 'utf8');
-        const { paint_share: share } = shaderFunctions<{ paint_share: (distance: number) => number }>(features, ['paint_share']), scope = globalThis as { masks?: { corridors: number } };
-        scope.masks = { corridors: 600 };
+        const { paint_share: share } = shaderFunctions<{ paint_share: (distance: number) => number }>(features, ['paint_share']), scope = globalThis as { masks?: { held: number } };
+        scope.masks = { held: 600 };
         expect([100, 560, 600, 5000].map(share)).toEqual([0, 0, 1, 1]);
-        scope.masks = { corridors: 0 };
+        scope.masks = { held: 0 };
         expect(share(100)).toBe(1);
         delete scope.masks;
         expect(functionOf(shader, 'corridor_fragment')).toMatch(/if \(paint_draws\(.*\)\) \{\s+discard;/);

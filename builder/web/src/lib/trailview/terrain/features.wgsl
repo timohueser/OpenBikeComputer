@@ -4,10 +4,10 @@
 // #include mask-walk.wgsl
 
 // Metres from the eye that the mask pool holds the near pages to, metres from the eye that corridors hold
-// every way to (0 without corridors), and per page layer the mask layer + 1, 0 for none.
+// every way to (0 until a road arrives), and per page layer the mask layer + 1, 0 for none.
 struct Masks {
     reach: f32,
-    corridors: f32,
+    held: f32,
     layer: array<u32>,
 }
 @group(3) @binding(0) var<storage, read> masks: Masks;
@@ -184,11 +184,11 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
 // a track, or nearer to their outer edge than `clear` metres.
 fn kept_off(s: vec2f, clear: f32) -> bool {
     let mask = mask_at(s, u32(ceil(lod(s))), true);
-    let edge = select(mask.edge - mask.walk, abs(mask.across) - TREAD_CLEAR_M + TREAD_GRACE_M, mask.trodden && masks.corridors > 0.0);
+    let edge = select(mask.edge - mask.walk, abs(mask.across) - TREAD_CLEAR_M + TREAD_GRACE_M, mask.trodden);
     return mask.level != 0u && ((mask.kind.y & TAKEN) != 0u || (mask.kind.x != 0u && edge < clear));
 }
 
 // The share of a way that the paint draws at `distance` metres from the eye: past what corridors hold, all of it.
 fn paint_share(distance: f32) -> f32 {
-    return select(1.0, smoothstep(masks.corridors - CORRIDOR_FADE_M, masks.corridors, distance), masks.corridors > 0.0);
+    return smoothstep(masks.held - CORRIDOR_FADE_M, masks.held, distance);
 }

@@ -15,7 +15,7 @@ struct Road {
     wall: f32,
     // The share of the ground that a road's or a path's cut or fill shaped: within its reach of the edge.
     shaped: f32,
-    // Where corridors draw the ways: the share of the ground on a road's cut or fill, whose detail runs up its
+    // The share of the ground on a road's cut or fill, whose detail runs up its
     // face, and on a path's bench, which lights as its hillside does.
     cuts: f32,
     bench: f32,
@@ -155,18 +155,14 @@ fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, sle
     var c = rule(region, slot_roads() + i32(code) - 1).rgb;
     // Patched asphalt, compacted gravel: broad tone, too faint to alias far off, and a grain near by.
     c *= 0.94 + 0.1 * noise(p / 4.0) + 0.06 * (noise(p / 0.35) - 0.5) * (1.0 - smoothstep(0.05, 0.3, w));
-    // The mask holds no metres along the road for dashes: the middle line is solid. With corridors the paint takes
-    // their lines, so the two hand over unseen: `marked`, their widths, and far off the share of their dashes. A
-    // deck or a bore has the metres in `sleepers`, and the dashes themselves.
-    let held = masks.corridors > 0.0;
-    if (select((code == 1u || oneway) && half >= 3.5, marked && half >= MARKED_HALF_M, held)) {
+    // The mask holds no metres along the road for dashes. The paint takes the corridors' lines, so the two hand
+    // over unseen: `marked`, their widths, and far off the share of their dashes. A deck or a bore has the metres
+    // in `sleepers`, and the dashes themselves.
+    if (marked && half >= MARKED_HALF_M) {
         let line = rule(region, slot_road_line()).rgb;
-        let edge = select(band(inside, 0.25, 0.37, cross_w), band(inside, 0.2, 0.35, cross_w), held);
-        var dash = 1.0;
-        if (held) {
-            let form = rule(region, slot_dashes());
-            dash = select(mix(1.0, form.x / form.y, dash_mean(form.x, along_w)), dashes(sleepers, form.x, form.y, 0.0, along_w), sleepers > NO_SLEEPERS);
-        }
+        let edge = band(inside, 0.2, 0.35, cross_w);
+        let form = rule(region, slot_dashes());
+        let dash = select(mix(1.0, form.x / form.y, dash_mean(form.x, along_w)), dashes(sleepers, form.x, form.y, 0.0, along_w), sleepers > NO_SLEEPERS);
         c = mix(c, line, max(edge, select(band(across, -0.06, 0.06, cross_w) * dash, 0.0, oneway)));
     }
     let ruts = band(across, 0.55, 1.05, cross_w);
@@ -234,9 +230,9 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     let half = max(mask.half, 0.05);
     let shaped_m = select(SHAPED_M, PATH_SHAPED_M, half < PATH_HALF_M);
     let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, edge - walk));
-    let cuts = select(0.0, shaped, masks.corridors > 0.0 && half >= PATH_HALF_M);
+    let cuts = select(0.0, shaped, half >= PATH_HALF_M);
     // The bench reaches a metre past the edge: the band and a texel of the heights about it.
-    let bench = select(0.0, reach * (1.0 - smoothstep(0.75, 1.25, edge)), masks.corridors > 0.0 && half < PATH_HALF_M);
+    let bench = select(0.0, reach * (1.0 - smoothstep(0.75, 1.25, edge)), half < PATH_HALF_M);
     if (edge - walk > w + 0.5) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, bench);
     }
@@ -248,7 +244,7 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     let ahead = vec2f(-mask.axis.y, mask.axis.x);
     let along_w = select(w, max(length(vec2f(dot(ds[0], ahead), dot(ds[1], ahead))), 1e-3), known);
     var surface = road_surface(region, code, max(-edge, 0.0), across, half, select(NO_SLEEPERS, mask.sleepers, code >= RAIL_CODE), p, w, cross_w, along_w, mask.marked);
-    if (masks.corridors > 0.0 && code >= CODE_DIRT && code <= CODE_PATH) {
+    if (code >= CODE_DIRT && code <= CODE_PATH) {
         surface.w = mix(surface.w, ground_mean(code, half, mask.trodden), smoothstep(0.1, 0.4, cross_w));
     }
     if (walk > 0.0) {
@@ -264,7 +260,7 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     // is the way.
     let corridor = code >= CODE_GRAVEL && code <= CODE_PATH && !paint_draws(distance, pixel);
     // A triangle that rises over a sidewalk's edge would carry its paint up the cut: a corridor draws the sidewalk.
-    let riding = edge > 0.0 && flat < 0.86 && masks.corridors > 0.0 && !paint_draws(distance, pixel);
+    let riding = edge > 0.0 && flat < 0.86 && !paint_draws(distance, pixel);
     let cover = select(1.0, 0.0, corridor || riding) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
     return Road(surface.rgb, cover, surface.w, wall, shaped, cuts, bench);
 }

@@ -1,9 +1,9 @@
 // Flies scripted paths through the built TrailView page, one frame per step, and prints per flight
 // the GPU time per pass, the CPU time, the terrain selection, nodes, triangles and pages, the
-// corridors that the lab draws, and the requests.
+// corridors, and the requests.
 //
 //   npm run pretest:trailview --prefix builder/web/tests/browser     # build against the fixture
-//   node builder/web/tests/browser/trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--cracks N] [--audit N] [--resolve MS]
+//   node builder/web/tests/browser/trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--cracks N] [--audit N] [--resolve MS]
 //
 // A pass prints its median, p95 and max over the frames that ran it, their number, and `amortized`,
 // its time summed over the flight per frame: the `ground` compute runs only on frames with arriving pages.
@@ -15,7 +15,7 @@
 // its colour variant, --features a folder of feature tiles `z/x/y.bin`. The stamp line pairs the GPU
 // time of each timed frame with that frame's own stamp jobs, as the readback of its timestamps returns
 // them frames later: the time per job, the time per job of the frames that stamp near pages only (a
-// dense village node is one such page), and the jobs by kind. --lab adds `lab=LAB` to each view. --cracks N
+// dense village node is one such page), and the jobs by kind. --cracks N
 // draws with the red clear colour and counts the red pixels of every Nth frame as it is, pages in
 // flight too: the flight must look down on known terrain. --audit N waits until every Nth frame is
 // idle and adds up its invariant audit (`trailView.audit()`). --resolve names the expected median of the
@@ -34,7 +34,6 @@ const { values } = parseArgs({
         ground: { type: 'string' },
         colour: { type: 'string' },
         features: { type: 'string' },
-        lab: { type: 'string' },
         cracks: { type: 'string' },
         audit: { type: 'string' },
         resolve: { type: 'string' },
@@ -97,8 +96,7 @@ try {
         const [width, height] = flight.viewport ?? [1280, 800];
         const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 2 });
         await routeFixture(page, values.tiles, values.ground, values.colour, values.features);
-        const from = values.lab ? `${flight.from}&lab=${values.lab}` : flight.from;
-        await page.goto(`${origin}/trailview.html${values.cracks ? `${from}&debug=cracks` : from}`);
+        await page.goto(`${origin}/trailview.html${values.cracks ? `${flight.from}&debug=cracks` : flight.from}`);
         await page.waitForFunction(() => window.trailView, null, { timeout: 60_000 });
         await page.evaluate(() => window.trailView.waitForIdle());
         if (values.cracks) await page.addStyleTag({ content: '#hud { display: none; }' });
