@@ -36,9 +36,9 @@ profiles = [
 first_year = 2016
 
 [snow]
-# The first and the last season of HR-WSI Snow Phenology and of MODIS, each from 1 September. The
-# HR-WSI catalogue has the seasons 2016 to 2024 over Baden-Württemberg.
-seasons = [2016, 2024]
+# The first and the last season of the snow layer and of a version of `snow`, each from 1 September.
+# HR-WSI Snow Phenology and MODIS have each season from 2016 to 2025.
+seasons = [2016, 2025]
 
 [trailview]
 # The year of `colour` that the TrailView colour and material read, and the colour variant

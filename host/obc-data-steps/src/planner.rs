@@ -144,6 +144,11 @@ fn config() -> Result<Config, String> {
     toml::from_str(include_str!("../../../data/planner.toml")).map_err(|e| format!("data/planner.toml: {e}"))
 }
 
+/// `snow.seasons` of `data/planner.toml`: the first and the last season of the snow layer.
+pub fn snow_seasons() -> Result<[u16; 2], String> {
+    Ok(config()?.snow.seasons)
+}
+
 /// `climate.first_year` of `data/planner.toml`: the first of the ten years that the climate layer reads.
 pub fn climate_first_year() -> Result<u16, String> {
     Ok(config()?.climate.first_year)
@@ -193,9 +198,7 @@ impl Product for Planner {
             "nominatim-country-data",
             "wiki",
             "climate",
-            "hr-wsi",
-            "modis-snow",
-            "hansen-gfc",
+            crate::snow_reference::ID,
             "esa-worldcover",
             WORLDCOVER_GRID,
             crate::forest_reference::ID,
@@ -525,7 +528,7 @@ impl Planner {
             steps.extend(climate(inputs, store, (bounds, &requested), config.climate.first_year, &mut wanted)?);
         }
         if on("snow") {
-            steps.push(snow(inputs, store, bounds, config.snow.seasons, &mut wanted)?);
+            steps.extend(snow(inputs, store, (bounds, &requested), config.snow.seasons, &mut wanted)?);
         }
         if on("trailview-features") {
             osmium.map_err(Unplanned::Invalid)?;
@@ -825,43 +828,33 @@ fn tiles(bounds: [f64; 4], land: &HashSet<&str>, glo30: &str) -> Vec<Input> {
     }
 }
 
-/// The snow layer of `bounds`: HR-WSI where it has data, and MODIS elsewhere. Outside the extent
-/// of HR-WSI, or where its fetch has no files, it reads MODIS only.
+/// The snow layer of the region of `outline`: the files of `snow` of its blocks for each season.
+/// None while the store lacks the manifest; then `wanted` has its fetch.
 fn snow(
     inputs: &Inputs,
     store: &Store,
-    bounds: [f64; 4],
+    (bounds, outline): ([f64; 4], &Coverage),
     [first, last]: [u16; 2],
     wanted: &mut Vec<Wanted>,
-) -> Result<Step, Unplanned> {
-    let bbox = ("bbox".to_string(), bounds.map(|degrees| degrees.to_string()).join(","));
-    let params = vec![bbox, ("seasons".to_string(), format!("{first}-{last}"))];
-    let tiles = canopy_tiles(bounds).into_iter().map(|tile| ("tile".to_string(), tile)).collect();
-    let mut reads = vec![
-        snapshot(inputs, store, "modis-snow", params.clone(), wanted)?,
-        snapshot(inputs, store, "hansen-gfc", tiles, wanted)?,
-    ];
+) -> Result<Option<Step>, Unplanned> {
+    use crate::snow_reference::{blocks, files, FORMAT, ID};
+    let needed = files(&blocks(outline).map_err(Unplanned::Failed)?, first..=last);
+    let held = |manifest: &Manifest| Ok(manifest.files.iter().map(|file| file.path.clone()).collect());
+    let Some((pinned, files)) = prepared(inputs, store, (ID, FORMAT), &needed, held, wanted)? else { return Ok(None) };
     let mut credit = format!("{}; tree canopy: {}", attribution("modis-snow"), attribution("hansen-gfc"));
-    let mut year = None;
     if embedded("hr-wsi").meets(bounds) {
-        let hr_wsi = snapshot(inputs, store, "hr-wsi", params, wanted)?;
-        let Input::Snapshot { version, params, .. } = &hr_wsi else { unreachable!("a fetch is a snapshot input") };
-        let files = snapshot_files(store, "hr-wsi", version, params, &[]).map_err(Unplanned::Failed)?;
-        if !files.is_some_and(|files| files.is_empty()) {
-            // The credit of HR-WSI names a year: the year of the capture.
-            year = version.get(..4).and_then(|year| year.parse::<u16>().ok());
-            credit = format!("{}; {credit}", attribution("hr-wsi"));
-            reads.insert(0, hr_wsi);
-        }
+        credit = format!("{}; {credit}", attribution("hr-wsi"));
     }
-    Ok(python(
+    // The credit of HR-WSI names a year: the year of the version.
+    let year = obc_data::prepared::day(&pinned).get(..4).and_then(|year| year.parse::<u16>().ok());
+    Ok(Some(python(
         &PLANNER_SNOW,
         "planner/snow",
-        reads,
+        vec![Input::Snapshot { source: ID.into(), version: pinned, params: Vec::new(), files }],
         json!({"bounds": bounds, "seasons": [first, last], "year": year, "attribution": credit}),
         ("tools.planner_snow", Some("planner-snow")),
         &["snow.pmtiles"],
-    ))
+    )))
 }
 
 /// The files among `needed` of the version of the prepared source `id` that the target reads, with
@@ -1219,21 +1212,6 @@ fn worldcover_squares([west, south, east, north]: [f64; 4]) -> Vec<String> {
     lats.iter().flat_map(|&lat| lons.iter().map(move |&lon| name(lat, lon))).collect()
 }
 
-/// The 10° Hansen GFC tiles that `bounds` overlaps with one MODIS pixel, 1/240° of latitude, of
-/// margin: the snow layer samples the MODIS pixels around its edge. Named by their north-west corner.
-fn canopy_tiles([west, south, east, north]: [f64; 4]) -> Vec<String> {
-    let pad = 1.0 / 240.0;
-    let widen = pad / south.abs().max(north.abs()).to_radians().cos();
-    let [west, south, east, north] = [west - widen, south - pad, east + widen, north + pad];
-    let lats = (south / 10.0).floor() as i32 + 1..=(north / 10.0).ceil() as i32;
-    let lons = (west / 10.0).floor() as i32..(east / 10.0).ceil() as i32;
-    let name = |lat: i32, lon: i32| {
-        let (ns, ew) = (if lat >= 0 { 'N' } else { 'S' }, if lon >= 0 { 'E' } else { 'W' });
-        format!("{:02}{ns}_{:03}{ew}", (lat * 10).abs(), (lon * 10).abs())
-    };
-    lats.flat_map(|lat| lons.clone().map(move |lon| name(lat, lon))).collect()
-}
-
 /// `bounds` and at least `margin_m` metres around them, within ±180° and ±90°: Osmium makes a box
 /// with a corner outside them a point, without an error.
 fn around([west, south, east, north]: [f64; 4], margin_m: f64) -> [f64; 4] {
@@ -1273,16 +1251,8 @@ mod tests {
     use obc_data::settings::Settings;
 
     const AREA: &str = "europe/test";
-    const OPTIONAL_SOURCES: [&str; 8] = [
-        "climate",
-        "hr-wsi",
-        "modis-snow",
-        "esa-worldcover",
-        "corine-land-cover",
-        "colour",
-        "egdi-geology",
-        "igme5000",
-    ];
+    const OPTIONAL_SOURCES: [&str; 7] =
+        ["climate", "snow", "esa-worldcover", "corine-land-cover", "colour", "egdi-geology", "igme5000"];
     const OPTIONAL: [&str; 6] =
         ["climate", "snow", "trailview-features", "trailview-rules", "trailview-ground", "trailview-colour"];
     /// The day of the version of `wiki` in the store.
@@ -1350,26 +1320,17 @@ mod tests {
         // The box of the region touches the WorldCover squares N45E006 and N48E006; the second is sea here.
         let grid = r#"{"features": [{"properties": {"ll_tile": "N45E006"}}, {"properties": {"ll_tile": "N45E003"}}]}"#;
         fetched(&store, WORLDCOVER_GRID, "v200", &[], &[("esa_worldcover_grid.geojson".into(), grid.into())]);
-        // The climate of the box: the files of block 19, 21.
+        // The climate of the box: the files of block 19, 21; its snow: block 33, 22.
         let climate = climate_manifest(crate::climate_reference::FORMAT, &[(19, 21)], &[]);
-        fetched(
-            &store,
-            "climate",
-            "2026-10-01",
-            &[],
-            &[(MANIFEST.into(), String::from_utf8(climate.canonical()).unwrap())],
-        );
+        let snow = snow_manifest(crate::snow_reference::FORMAT, &[(33, 22)], &[]);
         // The colour of the box, block 534, 355, and of the Kerry box.
         let blocks = [(534, 355), (484, 337), (484, 338)].into();
         let colour_files = crate::colour_reference::files(&blocks, 2025);
         let colour = prepared_manifest("colour", crate::colour_reference::FORMAT, colour_files);
-        fetched(
-            &store,
-            "colour",
-            "2026-10-01",
-            &[],
-            &[(MANIFEST.into(), String::from_utf8(colour.canonical()).unwrap())],
-        );
+        for (source, manifest) in [("climate", climate), ("snow", snow), ("colour", colour)] {
+            let manifest = String::from_utf8(manifest.canonical()).unwrap();
+            fetched(&store, source, "2026-10-01", &[], &[(MANIFEST.into(), manifest)]);
+        }
         for day in days {
             crate::device::tests::extracted(&store, day, &area, &format!("{AREA}-{day}.osm.pbf"));
             let pbf = include_bytes!("../tests/data/planner.osm.pbf").to_vec();
@@ -1383,6 +1344,13 @@ mod tests {
     fn climate_manifest(format: u32, blocks: &[(u32, u32)], without: &[&str]) -> Manifest {
         let paths = crate::climate_reference::files(&blocks.iter().copied().collect(), 2016);
         prepared_manifest("climate", format, paths.into_iter().filter(|path| !without.contains(&path.as_str())))
+    }
+
+    /// A manifest of `snow` in `format` with the files of `blocks` of the seasons 2016 to 2025,
+    /// except `without`.
+    fn snow_manifest(format: u32, blocks: &[(u32, u32)], without: &[&str]) -> Manifest {
+        let paths = crate::snow_reference::files(&blocks.iter().copied().collect(), 2016..=2025);
+        prepared_manifest("snow", format, paths.into_iter().filter(|path| !without.contains(&path.as_str())))
     }
 
     /// The files of `colour` of the box of `AREA` in 2025: block 534, 355.
@@ -2057,43 +2025,44 @@ mod tests {
     }
 
     #[test]
-    fn snow_reads_hr_wsi_where_it_has_data_and_modis_and_the_canopy_everywhere() {
-        let temp = temp("planner-snow");
-        let store = store(&temp, &[]);
-        let sources = |bounds: [f64; 4]| {
-            let (mut inputs, mut wanted) = (inputs(AREA, &["snow"]), Vec::new());
-            snow(&inputs, &store, bounds, [2016, 2024], &mut wanted).unwrap();
-            wanted.iter().for_each(|wanted| inputs.resolve(wanted, "2026-10-01".into()));
-            let step = snow(&inputs, &store, bounds, [2016, 2024], &mut Vec::new()).unwrap();
-            let inputs = step.inputs.iter().map(|input| match input {
-                Input::Snapshot { source, params, .. } => (source.clone(), params.clone()),
-                Input::Step { .. } => panic!("a step input"),
-            });
-            (inputs.collect::<Vec<_>>(), step.options)
+    fn snow_reads_the_seasons_of_the_blocks_of_the_region_and_credits_hr_wsi_inside_its_extent() {
+        use obc_data::store::sha256_hex;
+
+        let temp = temp("planner-snow-files");
+        let store = Store::at(temp.0.join("store"));
+        let mut inputs = Inputs::default();
+        let mut pin = |manifest: &Manifest| {
+            let bytes = manifest.canonical();
+            let pinned = format!("2026-10-01/{}", sha256_hex(&bytes));
+            inputs.resolved.insert(("snow".into(), Vec::new()), pinned.clone());
+            fetched(&store, "snow", &pinned, &[], &[(MANIFEST.into(), String::from_utf8(bytes).unwrap())]);
+            inputs.clone()
         };
-        let (inputs, options) = sources([7.5, 47.5, 10.5, 49.8]);
-        let names: Vec<&str> = inputs.iter().map(|(source, _)| source.as_str()).collect();
-        assert_eq!(names, ["hr-wsi", "modis-snow", "hansen-gfc"]);
-        assert_eq!(inputs[2].1, [("tile".to_string(), "50N_000E".to_string()), ("tile".into(), "50N_010E".into())]);
-        assert_eq!(options["year"], 2026);
-        assert!(options["attribution"].as_str().unwrap().starts_with("© European Union"));
+        let read = |inputs: &Inputs, [west, south, east, north]: [f64; 4]| {
+            let outline = Coverage::parse_poly(&crate::device::box_poly(&Bbox { west, south, east, north })).unwrap();
+            snow(inputs, &store, ([west, south, east, north], &outline), [2016, 2025], &mut Vec::new())
+        };
+        let format = crate::snow_reference::FORMAT;
 
-        let (inputs, options) = sources([-106.0, 39.5, -105.0, 40.5]);
-        let names: Vec<&str> = inputs.iter().map(|(source, _)| source.as_str()).collect();
-        assert_eq!(names, ["modis-snow", "hansen-gfc"], "Colorado is outside HR-WSI");
-        assert_eq!(inputs[1].1, [("tile".to_string(), "40N_110W".to_string()), ("tile".into(), "50N_110W".into())]);
-        assert_eq!(options["year"], serde_json::Value::Null);
-        assert!(options["attribution"].as_str().unwrap().starts_with("MODIS"));
+        // A box across 11.25° E reads the blocks 33, 22 and 34, 22, and not 34, 21.
+        let inputs = pin(&snow_manifest(format, &[(33, 22), (34, 22), (34, 21)], &[]));
+        let step = read(&inputs, [11.0, 47.0, 11.5, 47.5]).unwrap().unwrap();
+        let [Input::Snapshot { files, .. }] = &step.inputs[..] else { panic!("one snapshot") };
+        let both = crate::snow_reference::files(&[(33, 22), (34, 22)].into(), 2016..=2025);
+        assert_eq!(files, &both.into_iter().collect::<Vec<_>>());
+        assert_eq!(step.options["year"], 2026);
+        assert!(step.options["attribution"].as_str().unwrap().starts_with("© European Union"));
 
-        // Morocco is inside the extent of HR-WSI, and its fetch has no files. The canopy reaches one
-        // MODIS pixel west of 10° W.
-        let params = [("bbox".to_string(), "-10,31,-7,32".to_string()), ("seasons".into(), "2016-2024".into())];
-        fetched(&store, "hr-wsi", "2026-10-01", &params, &[]);
-        let (inputs, options) = sources([-10.0, 31.0, -7.0, 32.0]);
-        let names: Vec<&str> = inputs.iter().map(|(source, _)| source.as_str()).collect();
-        assert_eq!(names, ["modis-snow", "hansen-gfc"]);
-        assert_eq!(inputs[1].1, [("tile".to_string(), "40N_020W".to_string()), ("tile".into(), "40N_010W".into())]);
-        assert_eq!(options["year"], serde_json::Value::Null);
+        let inputs = pin(&snow_manifest(format, &[(33, 22)], &["2025/33/22.pmtiles"]));
+        let Err(Unplanned::Invalid(message)) = read(&inputs, [11.0, 47.0, 11.1, 47.1]) else {
+            panic!("a version without a season refuses")
+        };
+        assert!(message.contains("does not cover") && message.contains("obc data source prepare snow"), "{message}");
+
+        // Colorado is outside the extent of HR-WSI.
+        let inputs = pin(&snow_manifest(format, &[(13, 24)], &[]));
+        let step = read(&inputs, [-106.0, 39.5, -105.5, 40.0]).unwrap().unwrap();
+        assert!(step.options["attribution"].as_str().unwrap().starts_with("MODIS"));
     }
 
     #[test]

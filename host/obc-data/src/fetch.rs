@@ -1144,25 +1144,16 @@ pub(crate) mod tests {
     fn a_capture_names_its_parameters_and_its_missing_credential() {
         let scratch = Scratch::new("credential");
         let store = Store::at(&scratch.0);
-        let mut snow = located(FetchKind::Capture, "https://example.org/snow");
-        snow.id = "hr-wsi".into();
-        snow.credential =
+        let mut source = located(FetchKind::Capture, "https://example.org/source");
+        source.id = "corine-land-cover".into();
+        source.credential =
             Some(crate::sources::Credential { file: Some("~/.obc-test-no-such-key".into()), ..Default::default() });
         let params = |pairs: &[(&str, &str)]| pairs.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
-        let request = |params| Request { refresh: false, source: &snow, version: None, params };
+        let request = |params| Request { refresh: false, source: &source, version: None, params };
         let err =
             fetch(&tooling_root(), &store, &quick(), &request(params(&[("bbox", "7.6,47.9,8.0,48.1")]))).unwrap_err();
-        assert!(err.contains("takes bbox=… seasons=…"), "{err}");
-        let err = fetch(
-            &tooling_root(),
-            &store,
-            &quick(),
-            &request(params(&[("bbox", "8,48,7,49"), ("seasons", "2016-2017")])),
-        )
-        .unwrap_err();
-        assert!(err.contains("west < east"), "{err}");
-        let good = params(&[("seasons", "2016-2017"), ("bbox", "7.6,47.9,8.0,48.1")]);
-        let err = fetch(&tooling_root(), &store, &quick(), &request(good)).unwrap_err();
+        assert!(err.contains("takes no NAME=VALUE"), "{err}");
+        let err = fetch(&tooling_root(), &store, &quick(), &request(params(&[]))).unwrap_err();
         assert!(err.contains("blocked: credential missing: ~/.obc-test-no-such-key"), "{err}");
     }
 

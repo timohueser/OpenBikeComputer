@@ -167,6 +167,7 @@ export const REFERENCES: { id: string; title: string; about: string; add: string
         models: { prefix: "canopy-", noun: "canopy model" },
     },
     { id: "climate", title: "Climate", about: "Daily ERA5-Land temperature, rain and wind for the climate layer", add: "Add an area" },
+    { id: "snow", title: "Snow", about: "Snow onset and melt-out of each season, from HR-WSI and MODIS, for the snow layers", add: "Add an area" },
     { id: "colour", title: "Colour", about: "Quarterly Sentinel-2 colour of each texel for the Trail View colour and ground", add: "Add an area" },
 ];
 

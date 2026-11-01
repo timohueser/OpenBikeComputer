@@ -20,6 +20,20 @@ export function snowMeta(json: Record<string, unknown>): SnowMeta {
     return meta;
 }
 
+/** The max zoom of MODIS. The archive has a tile above it only where HR-WSI has data. */
+const MODIS_ZOOM = 8;
+
+/**
+ * The tile that covers tile z/x/y at `maxZoom` or less: its own, else, above the MODIS zoom, the
+ * nearest ancestor of zoom 8 or more that the archive has. `data` is null where none covers it.
+ */
+export async function covering<T>(tile: (z: number, x: number, y: number) => Promise<T | null>, maxZoom: number, z: number, x: number, y: number): Promise<{ data: T | null; zoom: number }> {
+    for (let zoom = Math.min(z, maxZoom); ; zoom--) {
+        const scale = 2 ** (z - zoom), data = await tile(zoom, Math.floor(x / scale), Math.floor(y / scale));
+        if (data || zoom <= MODIS_ZOOM) return { data, zoom };
+    }
+}
+
 /** The season and day index of an ISO date. A leap day counts as 28 February, so each season has 183 indices. */
 export function seasonDay(date: string): { season: number; index: number } {
     const [year, month, day] = date.split('-').map(Number);
