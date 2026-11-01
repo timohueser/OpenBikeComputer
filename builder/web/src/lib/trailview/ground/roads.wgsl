@@ -69,6 +69,14 @@ fn dash_mean(on: f32, along_w: f32) -> f32 {
     return smoothstep(0.15 * on, 0.6 * on, along_w);
 }
 
+// The share of a pixel `aw` metres long along a line that falls on a dash, `on` metres of each `period`; far
+// off, the dashes' share of the paint's line.
+fn dashes(along: f32, on: f32, period: f32, phase: f32, aw: f32) -> f32 {
+    let x = fract((along + phase) / period) * period;
+    let cov = band(x, 0.0, on, aw) + band(x, period, period + on, aw) + band(x, -period, on - period, aw);
+    return mix(min(cov, 1.0), on / period, dash_mean(on, aw));
+}
+
 // Whether the paint draws this pixel of a way that a corridor draws, at `distance` metres from the eye. The
 // corridor discards exactly these pixels, so the two hand over without a pixel drawn twice or left out.
 fn paint_draws(distance: f32, pixel: vec2f) -> bool {
@@ -152,13 +160,14 @@ fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, sle
     // Patched asphalt, compacted gravel: broad tone, too faint to alias far off, and a grain near by.
     c *= 0.94 + 0.1 * noise(p / 4.0) + 0.06 * (noise(p / 0.35) - 0.5) * (1.0 - smoothstep(0.05, 0.3, w));
     // The mask holds no metres along the road for dashes: the middle line is solid. With corridors the paint takes
-    // their lines, so the two hand over unseen: `marked`, their widths, and far off the share of their dashes.
+    // their lines, so the two hand over unseen: `marked`, their widths, and far off the share of their dashes. A
+    // deck or a bore has the metres in `sleepers`, and the dashes themselves.
     let held = masks.corridors > 0.0;
     if (select((code == 1u || oneway) && half >= 3.5, marked && half >= MARKED_HALF_M, held)) {
         let line = rule(region, slot_road_line()).rgb;
         let edge = select(band(inside, 0.25, 0.37, cross_w), band(inside, 0.2, 0.35, cross_w), held);
-        let dashes = select(1.0, mix(1.0, DASH_ON_M / DASH_PERIOD_M, dash_mean(DASH_ON_M, along_w)), held);
-        c = mix(c, line, max(edge, select(band(across, -0.06, 0.06, cross_w) * dashes, 0.0, oneway)));
+        let dash = select(mix(1.0, DASH_ON_M / DASH_PERIOD_M, dash_mean(DASH_ON_M, along_w)), dashes(sleepers, DASH_ON_M, DASH_PERIOD_M, 0.0, along_w), sleepers > NO_SLEEPERS);
+        c = mix(c, line, max(edge, select(band(across, -0.06, 0.06, cross_w) * select(1.0, dash, held), 0.0, oneway)));
     }
     let ruts = band(across, 0.55, 1.05, cross_w);
     if (code == CODE_GRAVEL) {
@@ -238,7 +247,7 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     let cross_w = select(w, max(length(vec2f(dot(ds[0], mask.axis), dot(ds[1], mask.axis))), 1e-3), known);
     let ahead = vec2f(-mask.axis.y, mask.axis.x);
     let along_w = select(w, max(length(vec2f(dot(ds[0], ahead), dot(ds[1], ahead))), 1e-3), known);
-    var surface = road_surface(region, code, max(-edge, 0.0), across, half, mask.sleepers, p, w, cross_w, along_w, mask.marked);
+    var surface = road_surface(region, code, max(-edge, 0.0), across, half, select(NO_SLEEPERS, mask.sleepers, code >= RAIL_CODE), p, w, cross_w, along_w, mask.marked);
     if (masks.corridors > 0.0 && code >= CODE_DIRT && code <= CODE_PATH) {
         surface.w = mix(surface.w, ground_mean(code, half, mask.trodden), smoothstep(0.1, 0.4, cross_w));
     }

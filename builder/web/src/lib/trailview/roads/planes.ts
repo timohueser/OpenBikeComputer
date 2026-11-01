@@ -2,7 +2,8 @@
 // that edge level; the bake's heights hold the through road's middle only. The stamped ground holds a side arm at
 // its own heights, and it never sinks under them: where the through edge lies lower, that edge rises instead, and
 // the mouth's faces close what RAISE_M leaves.
-import { footOn, type Way } from './arms';
+import { footOn, outward, sideAt, type Way } from './arms';
+import { CORE_M, isDeck, PARAPET_M } from './decks';
 import { onward, type Joints } from './joints';
 import { KERB_RISE_M } from './section';
 import { stationOn, type Station } from './stations';
@@ -52,12 +53,27 @@ function raises(mouths: Mouth[], joints: Joints): Map<Station, [number, number]>
     return out;
 }
 
-/** Moves a side arm's edges onto the through road's plane up to its mouth's end, and back to their own heights past it, on across its joints. */
-function conform({ way, far, through }: Mouth, joints: Joints): void {
-    const { stations, lift } = way.run, reach = Math.abs(far - way.along), shifts = edgesOf(stationOn(stations, far), through, lift).map(({ own, plane }) => Math.max(0, plane - own));
+/** The metres of a side arm from its junction that its plane holds: to its mouth's end, and on while its core lies on the footprint of a deck that it leaves. */
+function heldTo({ way, far, through }: Mouth): number {
+    const decks = through.filter(t => isDeck(t.line)), core = way.line.h + CORE_M;
+    let reach = Math.abs(far - way.along);
+    const on = (x: number, y: number) => decks.some(t => {
+        const { left, away, behind } = footOn(t, x, y);
+        return behind === 0 && away <= sideAt(t, left > 0 ? 1 : -1).edge + PARAPET_M;
+    });
+    if (decks.length) for (const s of outward(way, reach + CONFORM_M)) if (Math.abs(s.along - way.along) > reach && [-core, 0, core].some(a => on(s.x + s.ax * a, s.y + s.ay * a))) reach = Math.abs(s.along - way.along);
+    return reach;
+}
+
+/** Moves a side arm's edges onto the through road's plane as far as `heldTo`, and back to their own heights past it, on across its joints. */
+function conform(mouth: Mouth, joints: Joints): void {
+    const { way, through } = mouth, { stations, lift } = way.run, reach = heldTo(mouth), shifts = edgesOf(stationOn(stations, way.along + way.step * reach), through, lift).map(({ own, plane }) => Math.max(0, plane - own));
     // A through way can be this line, so every height is read before any is written.
-    const moved = [...onward(joints, way.run, way.along, way.step, reach + CONFORM_M)].map(({ s, metres, flip }) => {
-        const fade = 1 - smooth(Math.max(0, metres - reach) / CONFORM_M), edge = (side: number, own: number) => own + shifts[flip > 0 ? side : 1 - side] * fade;
+    const reached = [...onward(joints, way.run, way.along, way.step, reach + CONFORM_M)];
+    // A deck's structure stands at the bake's heights: the fade ends on the last station short of it.
+    const deck = reached.findIndex(({ run }) => run !== way.run && isDeck(run.line)), fadeM = deck > 0 ? reached[deck - 1].metres - reach : CONFORM_M;
+    const moved = reached.slice(0, deck < 0 ? undefined : deck).map(({ s, metres, flip }) => {
+        const fade = 1 - smooth(clamp((metres - reach) / fadeM)), edge = (side: number, own: number) => own + shifts[flip > 0 ? side : 1 - side] * fade;
         const [left, right] = metres <= reach ? edgesOf(s, through, lift).map(({ own, plane }) => Math.max(plane, own)) : [edge(0, s.z + s.bank * s.h), edge(1, s.z - s.bank * s.h)];
         return { s, left, right };
     });
