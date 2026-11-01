@@ -104,13 +104,14 @@ const isTrack = (tags: Record<string, string>) => TRACKS.includes(tags.railway) 
 const classOf = (tags: Record<string, string>) => (isTrack(tags) ? (tags.rack && tags.rack !== 'no' ? 'rack' : tags.railway) : tags.highway ?? '');
 /** The row of a line's class; a class that the table lacks takes the row of its kind. */
 const profileOf = (kind: string, name = '') => CLASSES.indexOf(kind === 'river' ? 'river' : Object.hasOwn(PROFILES, name) ? name : kind === 'path' ? 'path' : 'road');
-/** The table as stamp-core.wgsl reads it: PROFILE_ROWS rows of 8 floats, then the shoulder of each of the SURFACE_CODES surface codes. */
+/** The table as `Rules` of stamp-core.wgsl reads it: PROFILE_ROWS rows of 8 floats, the shoulder of each of the SURFACE_CODES surface codes, then whether corridors draw the roads, in a row of 4 floats. */
 export const PROFILE_ROWS = 32, PROFILE_FLOATS = 8, SURFACE_CODES = 16;
-export function profileTable(): Float32Array<ArrayBuffer> {
-    const rows = Object.values(PROFILES), table = new Float32Array(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES);
+export function profileTable(corridors = false): Float32Array<ArrayBuffer> {
+    const rows = Object.values(PROFILES), table = new Float32Array(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES + 4);
     if (rows.length > PROFILE_ROWS) throw new Error(`stamp-core.wgsl holds ${PROFILE_ROWS} profiles, not ${rows.length}.`);
     rows.forEach(({ tol, reach, least, cut, fill, tilt, walk, ditch }, i) => table.set([tol, reach, least, cut, fill, tilt, walk, ditch], PROFILE_FLOATS * i));
     for (const [surface, metres] of Object.entries(SHOULDER_M)) table[PROFILE_ROWS * PROFILE_FLOATS + codeOf(surface as Surface)] = metres;
+    table[PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES] = corridors ? 1 : 0;
     return table;
 }
 /** The half-width of a waterway without a `width` tag. */

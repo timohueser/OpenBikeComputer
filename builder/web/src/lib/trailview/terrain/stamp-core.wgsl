@@ -33,6 +33,8 @@ struct Profile {
 struct Rules {
     profiles: array<Profile, PROFILE_ROWS>,
     shoulders: array<vec4f, 4>,
+    // Above 0 where corridors draw the roads: a way gives way at the water's edge.
+    corridors: f32,
 }
 @group(0) @binding(4) var<uniform> stamp_rules: Rules;
 const PROFILE_ROWS: u32 = 32u;
@@ -78,7 +80,8 @@ const LEFT_WALK: u32 = 16u;
 const RIGHT_WALK: u32 = 32u;
 
 // The buckets, from the top.
-const WATER_CORE: u32 = 0u;
+// The water's own shape: its core under water, and elsewhere its edge (edge_cap), which no way outranks.
+const WATER: u32 = 0u;
 // Nothing on the ground rises through the road of a deck.
 const DECK: u32 = 1u;
 const ROAD_CORE: u32 = 2u;
@@ -246,6 +249,13 @@ fn water_lift(texel: f32) -> f32 {
 fn shore_cap(d: f32, texel: f32) -> f32 {
     let band = shore_band(texel);
     return SHORE_SLOPE * d + widen(max(0.0, d - band), reach_limit(texel) - band, 1.0);
+}
+
+// How far the ground may leave the water's level d metres past its edge, whatever way holds it: a bank's
+// slope at the edge that steepens to nothing at the end of the shore band. It is looser than a river's
+// banks and a lake's ramp, so it binds only where a way holds the ground beyond them.
+fn edge_cap(d: f32, texel: f32) -> f32 {
+    return widen(d, shore_band(texel), SHORE_SLOPE);
 }
 
 // How far a junction's cores reach, with the widest half-width of its roads: twice that is its reach.
@@ -429,6 +439,9 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     var shore = INF;
     var water_in = -1e30;
     var in_lake = false;
+    // The bounds of the water's edge, and whether p lies on a bridge's abutment, which keeps its ground against them.
+    var edge = vec2f(-INF, INF);
+    var abutment = false;
     // The road line of the segments so far: whether p lies in its core band, and whether a segment
     // holds it there. Inside a bend tighter than the core, none does: a conflict, which the mask flags.
     var line = NO_DATA;
@@ -534,7 +547,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             let lake = kind == LAKE;
             if (((entry & INSIDE) != 0u) != crossed) {
                 let bed = select(max(0.0, shore - sea_band(texel)), shore, lake);
-                let bucket = select(SEA_BED, WATER_CORE, lake);
+                let bucket = select(SEA_BED, WATER, lake);
                 hi[bucket] = min(hi[bucket], water - min(BED_DEPTH, SHORE_SLOPE * bed));
                 water_in = max(water_in, water);
                 in_lake = true;
@@ -542,6 +555,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             } else if (lake) {
                 if (shore_shows(level)) {
                     hi[BANKS] = min(hi[BANKS], water + shore_cap(shore, texel));
+                    edge.y = min(edge.y, water + edge_cap(shore, texel));
                 }
                 out.lake = min(out.lake, shore);
             }
@@ -559,14 +573,17 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             }
             let x = g.lateral - h;
             if (g.core && x <= 0.0) {
-                lo[WATER_CORE] = max(lo[WATER_CORE], g.z - rule.tol);
-                hi[WATER_CORE] = min(hi[WATER_CORE], g.z + rule.tol);
+                lo[WATER] = max(lo[WATER], g.z - rule.tol);
+                hi[WATER] = min(hi[WATER], g.z + rule.tol);
                 water_in = max(water_in, g.z);
             }
             let reach = cone_reach(h, rule, texel);
             if (g.cone && max(x, 0.0) < reach) {
                 lo[BANKS] = max(lo[BANKS], g.z - (rule.tol + widen(max(x, 0.0), reach, rule.fill)));
                 hi[BANKS] = min(hi[BANKS], g.z + (rule.tol + widen(max(x, 0.0), reach, rule.cut)));
+            }
+            if (g.cone && x > 0.0 && shore_shows(level)) {
+                edge = vec2f(max(edge.x, g.z - rule.tol - edge_cap(x, texel)), min(edge.y, g.z + rule.tol + edge_cap(x, texel)));
             }
         } else {
             if ((word(r + 13u) & 0xffffu) != line) {
@@ -655,6 +672,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                     let bucket = select(ROAD_CORE, PORTAL_CORE, kind == TUNNEL);
                     lo[bucket] = max(lo[bucket], g.z - tol);
                     hi[bucket] = min(hi[bucket], g.z + tol);
+                    abutment = abutment || bridge;
                 }
                 let x = max(0.0, g.lateral - core_half);
                 let reach = cone_reach(core_half, rule, texel);
@@ -715,10 +733,14 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     if (under_deck) {
         lo[CONES] = -INF;
     }
-    // Under water no bank holds: where a river meets a lake or another river.
-    if (hi[WATER_CORE] < INF) {
+    // Under water no bank holds: where a river meets a lake or another river. Elsewhere the water's edge
+    // holds, but on a bridge's abutment: its deck hides the step, and its road meets the deck.
+    if (hi[WATER] < INF) {
         lo[BANKS] = -INF;
         hi[BANKS] = INF;
+    } else if (stamp_rules.corridors > 0.0 && !abutment) {
+        lo[WATER] = edge.x;
+        hi[WATER] = edge.y;
     }
     // A bank or a cut digs no deeper than a bore's cover: a lake's shore ramp, a river's bank and the cut
     // of a road or a path leave a tunnel buried.

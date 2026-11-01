@@ -44,7 +44,8 @@ describe('the stamp data of a node', () => {
         rows.forEach((row, i) => expect(Array.from(table.subarray(PROFILE_FLOATS * i, PROFILE_FLOATS * i + fields.length))).toEqual(fields.map(field => Math.fround(row[field]))));
         // The shoulders follow the rows, one per surface code, as `Rules` of stamp-core.wgsl has them.
         expect(Number(/shoulders: array<vec4f, (\d+)>/.exec(shader)?.[1]) * 4).toBe(SURFACE_CODES);
-        expect(table.length).toBe(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES);
+        expect(table.length).toBe(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES + 4);
+        expect(profileTable(true)[PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES]).toBeGreaterThan(table[PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES]);
         for (const [surface, code] of [['main', 1], ['grass', 5], ['path', 6], ['oneway', 7]] as const) expect(table[PROFILE_ROWS * PROFILE_FLOATS + code]).toBeCloseTo(SHOULDER_M[surface] ?? 0, 6);
         for (const [name, row] of Object.entries(PROFILES)) for (const field of fields) expect(row[field], `${name}.${field}`).toBeGreaterThanOrEqual(0);
         // The shaders know the surfaces by their codes, and the mask holds a code in 4 bits.
