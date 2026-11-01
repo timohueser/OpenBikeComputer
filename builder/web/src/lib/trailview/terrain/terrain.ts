@@ -215,7 +215,7 @@ export class Terrain {
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / bytes / LAYER_PAGES) * LAYER_PAGES, synth = Math.floor((BUDGET.synth - MASK_BYTES) / bytes);
         this.profileTable = profileTable(corridors);
         this.stamps = new Stamps(features, changed, stop, corridors);
-        if (corridors) this.roads = new Roads(features, changed, stop);
+        if (corridors) this.roads = new Roads(features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
         this.pages = new Pages(source, { stored: pages - synth, synth }, this.bounds, changed, this.stamps, MASKS);

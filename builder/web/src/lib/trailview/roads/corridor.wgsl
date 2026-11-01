@@ -1,7 +1,7 @@
 diagnostic(off, derivative_uniformity);
 // The corridors of roads/: swept meshes of each road, track and path within the range, drawn before the
 // terrain. A band's rows stand on the stamped ground, read in the vertex stage; every other vertex stands
-// at its height from the bake. A face takes its material from its first vertex. The share of a pixel that a look
+// at its height from the worker. A face takes its material from its first vertex. The share of a pixel that a look
 // leaves to the ground, and the share that the paint takes near the end of the corridors' reach, discard: the
 // terrain draws those pixels once. The two shares draw by separate dithers, and the frames resolve them.
 // #include ../ground/look.wgsl
@@ -24,6 +24,7 @@ const CORRIDOR_STEP: f32 = 0.33333334;
 const HALF_STEP_M: f32 = 0.025;
 const ACROSS_STEP_M: f32 = 0.0078163;
 const ALONG_STEP: f32 = 0.015625;
+const MAT_BITS: u32 = 127u;
 const CODE_SHIFT: u32 = 7u;
 const FLAGS_SHIFT: u32 = 11u;
 const FLAGS_BITS: u32 = 31u;
@@ -33,6 +34,7 @@ const HALF_SHIFT: u32 = 19u;
 const MAT_GROUND: u32 = 1u;
 const CF_SAMPLE: u32 = 1u;
 const CF_MESH: u32 = 2u;
+const CF_FILL: u32 = 3u;
 const CF_UNDER: u32 = 4u;
 
 // Where the ground climbs or falls BAND_STEEP per metre from the core's outer edge out to a band's row, the
@@ -53,6 +55,9 @@ const BAND_PRIO_M: f32 = 0.004;
 // hold the same ground the band wins, and a hill in front of a road still hides it.
 const CORRIDOR_BIAS_M: f32 = 0.06;
 const CORRIDOR_BIAS_SHARE: f32 = 0.003;
+// A wall's face and capstone draw this far nearer still: a coarse triangle of the terrain can cut the crease at a
+// wall's foot and stand in front of it.
+const WALL_BIAS_M: f32 = 0.3;
 // Moves the look's dither off the paint's, so the two shares are independent.
 const FRAY_DITHER: vec2f = vec2f(19.0, 53.0);
 
@@ -102,16 +107,17 @@ fn band_dive(ground: f32, plane: f32, out: f32) -> f32 {
 fn band_height(s: vec2f, plane: f32, word: u32, flags: u32, across: f32, edge: f32) -> f32 {
     let ground = band_ground(s, plane);
     if ((flags & CF_MESH) != 0u) {
-        return ground - BAND_SINK_M;
+        // A backfill's row holds its height where the ground lies over it.
+        return select(ground - BAND_SINK_M, min(plane, ground - BAND_SINK_M), (flags & CF_FILL) == CF_FILL);
     }
     let prio = f32((word >> PRIO_SHIFT) & 7u);
     return ground + prio * BAND_PRIO_M - band_dive(ground, plane, abs(across) - edge) - select(0.0, BAND_UNDER_M, (flags & CF_UNDER) != 0u);
 }
 
 // A point at render-space `p` about the eye, moved toward the eye.
-fn corridor_biased(p: vec3f) -> vec3f {
+fn corridor_biased(p: vec3f, wall: bool) -> vec3f {
     let d = length(p);
-    return p * max(0.0, 1.0 - (CORRIDOR_BIAS_M + CORRIDOR_BIAS_SHARE * d) / max(d, 1e-3));
+    return p * max(0.0, 1.0 - (CORRIDOR_BIAS_M + select(0.0, WALL_BIAS_M, wall) + CORRIDOR_BIAS_SHARE * d) / max(d, 1e-3));
 }
 
 fn across_of(place: u32) -> f32 {
@@ -134,11 +140,12 @@ fn corridor_vertex(v: CorridorIn) -> CorridorOut {
     let flags = (v.word >> FLAGS_SHIFT) & FLAGS_BITS;
     let across = across_of(v.place);
     let half = half_of(v.word);
-    let z = select(v.z, band_height(s, v.z, v.word, flags, across, half), (flags & (CF_SAMPLE | CF_MESH)) != 0u);
+    let z = select(v.z, band_height(s, v.z, v.word, flags, across, half), (flags & CF_FILL) != 0u);
     var p = vec3f(to_render(s), z - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
     var out: CorridorOut;
-    out.clip = frame.view_proj * vec4f(corridor_biased(p), 1.0);
+    let mat = v.word & MAT_BITS;
+    out.clip = frame.view_proj * vec4f(corridor_biased(p, mat == MAT_WALL || mat == MAT_CAP), 1.0);
     // The crack and surface views show the terrain alone: past the near plane, the triangle clips.
     if (frame.debug == 3u || frame.debug == 4u) {
         out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
@@ -155,7 +162,10 @@ fn corridor_vertex(v: CorridorIn) -> CorridorOut {
 // A vertex of a caster, which stands at its height: the bias would shadow the band.
 @vertex
 fn corridor_caster(v: CorridorIn) -> @builtin(position) vec4f {
-    var p = vec3f(to_render(lod_space(corridor_at(v))), v.z - frame.eye);
+    let s = lod_space(corridor_at(v));
+    let flags = (v.word >> FLAGS_SHIFT) & FLAGS_BITS;
+    let z = select(v.z, band_height(s, v.z, v.word, flags, 0.0, 0.0), (flags & CF_FILL) != 0u);
+    var p = vec3f(to_render(s), z - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
     return frame.view_proj * vec4f(p, 1.0);
 }
@@ -165,7 +175,7 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     if (paint_draws(length(in.relative.xy), in.clip.xy)) {
         discard;
     }
-    let mat = in.word & 127u;
+    let mat = in.word & MAT_BITS;
     let su = lod_space(in.u);
     if (mat == MAT_GROUND) {
         return vec4f(ground_colour(su, in.relative, in.altitude, u32(ceil(lod(su))), in.clip.xy, select(0.0, 1.0, in.road.y < PATH_HALF_M)), 1.0);
