@@ -20,7 +20,7 @@ Repeat steps 2 and 3 while the user corrects you. Do not ask again what the user
 
 ## 4. Write the issue
 
-Write this body. Open a new issue with `gh api repos/{owner}/{repo}/issues -X POST -f title="<the problem>" -F body=@FILE`, or replace the body of issue #N.
+Write this body. Open a new issue with `gh api repos/{owner}/{repo}/issues -X POST -f title="<the problem>" -F body=@FILE`, or replace the body of issue #N and keep its `## Prototype` sections.
 
 ```text
 Status: explored
