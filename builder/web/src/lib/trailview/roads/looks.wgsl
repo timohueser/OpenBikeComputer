@@ -1,7 +1,7 @@
 // The looks of the faces of a corridor but its band: asphalt with its grain and markings by class; concrete, setts
 // and pavers; gravel, dirt and grass tracks; trodden trails; a track's ballast; a town street's kerb and sidewalk. Each detail
 // fades to its mean once a pixel spans it, so the far look keeps the colour of the paint. A look says the share
-// of the ground that shows through it, and corridor.wgsl draws that share of its pixels as the ground.
+// of the ground that shows through it, and corridor.wgsl mixes that share of the ground's colour into it.
 // What moves a way's shape reads the place, so it runs on over any border. Only what shades reads the way's count,
 // which takes a new base at most once in REPEAT of sweep.ts: a puddle or a streak can stop at an owner's border.
 // #include ../ground/look.wgsl
@@ -371,9 +371,10 @@ fn trail_look(region: u32, su: vec2f, w: WayPixel, slope: f32, altitude: f32) ->
     let centre = room * 0.45 * (noise(p / 13.0 + 1.0) - 0.5) + 0.08 * (noise(p / 4.0 + 2.0) - 0.5);
     let tread = min(0.23 + 0.16 * noise(p / 5.0 + 3.0) + 0.1 * rocky, w.half - 0.05);
     let d = frayed(p, tread - abs(w.across - centre), 0.22);
-    // A trampled margin: grass with soil showing through.
+    // A trampled margin: grass with soil showing through in patches, which keep its mean once a pixel spans them.
     let solid = smoothstep(-0.03, 0.05, d);
-    out.ground = clamp(1.0 - solid - 0.35 * smoothstep(-0.3, -0.03, d) * (1.0 - solid), 0.0, 1.0);
+    let patches = mix(1.0, 0.3 + 1.4 * noise(p / 0.13), seen(0.13, w.pw));
+    out.ground = clamp(1.0 - solid - 0.35 * patches * smoothstep(-0.3, -0.03, d) * (1.0 - solid), 0.0, 1.0);
     if (out.ground >= 1.0) {
         return out;
     }
@@ -386,7 +387,7 @@ fn trail_look(region: u32, su: vec2f, w: WayPixel, slope: f32, altitude: f32) ->
     c *= (1.0 + 0.5 * peb.x) * mix(0.8, 1.0, peb.y);
     // Rocks set in the tread, more on rocky ground: domed, in the colour of the rock under it.
     let r = voronoi(p, mix(0.12, 0.17, rocky));
-    let set_in = step(1.0 - mix(0.08, 0.25, rocky), r.x) * smoothstep(0.05, 0.16, r.y) * seen(0.2, w.pw);
+    let set_in = solid * step(1.0 - mix(0.08, 0.25, rocky), r.x) * smoothstep(0.05, 0.16, r.y) * seen(0.2, w.pw);
     c = mix(c, rock * (0.95 + 0.3 * r.z) * mix(0.8, 1.08, smoothstep(0.05, 0.4, r.y)), set_in);
     out.albedo = c;
     out.bump = set_in * 1.2 * (vec2f(hash(floor(p / 0.2) + 1.0), r.z) - 0.5);

@@ -1,10 +1,11 @@
 diagnostic(off, derivative_uniformity);
 // The corridors of roads/: swept meshes of each road, track and path within the range, drawn before the
 // terrain. A band's rows stand on the stamped ground, read in the vertex stage; every other vertex stands
-// at its height from the worker. A face takes its material from its first vertex. The share of a pixel that a look
-// leaves to the ground, and the share that the paint takes near the end of the corridors' reach, discard: the
-// terrain draws those pixels once. The two shares draw by separate dithers, and the frames resolve them. The
-// parts of parts.ts are instances that share the fragment stage.
+// at its height from the worker. A face takes its material from its first vertex. A look's share of the ground mixes
+// the ground's colour into the way, so an edge stays in place as the eye moves and fades as the paint's does. What is
+// all ground, and the share that the paint takes near the end of the corridors' reach, discard: the terrain draws
+// those pixels once. The paint's share draws by a dither, and the frames resolve it. The parts of parts.ts are
+// instances that share the fragment stage.
 // #include ../ground/look.wgsl
 // #include looks.wgsl
 
@@ -61,9 +62,7 @@ const CORRIDOR_BIAS_SHARE: f32 = 0.003;
 // A wall's face and capstone draw this far nearer still: a coarse triangle of the terrain can cut the crease at a
 // wall's foot and stand in front of it.
 const WALL_BIAS_M: f32 = 0.3;
-// Moves the look's dither off the paint's, so the two shares are independent.
-const FRAY_DITHER: vec2f = vec2f(19.0, 53.0);
-// Moves the dither of a detail's fade off the other two.
+// Moves the dither of a detail's fade off the paint's.
 const DETAIL_DITHER: vec2f = vec2f(61.0, 7.0);
 // As piece.ts: an instance's fine place, turn and grade.
 const PART_FINE: f32 = 16.0;
@@ -229,6 +228,11 @@ fn part_caster(v: PartIn) -> @builtin(position) vec4f {
     return frame.view_proj * vec4f(part_at(v, part_point(v)).xyz, 1.0);
 }
 
+// The ground at a pixel of a corridor; a path's band reads no mask.
+fn corridor_ground(in: CorridorOut, su: vec2f) -> vec3f {
+    return ground_colour(su, in.relative, in.altitude, u32(ceil(lod(su))), in.clip.xy, select(0.0, 1.0, in.road.y < PATH_HALF_M));
+}
+
 @fragment
 fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     if (paint_draws(length(in.relative.xy), in.clip.xy)) {
@@ -240,7 +244,7 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     }
     let su = lod_space(in.u);
     if (mat == MAT_GROUND) {
-        return vec4f(ground_colour(su, in.relative, in.altitude, u32(ceil(lod(su))), in.clip.xy, select(0.0, 1.0, in.road.y < PATH_HALF_M)), 1.0);
+        return vec4f(corridor_ground(in, su), 1.0);
     }
     var n = normalize(cross(dpdx(in.relative), dpdy(in.relative)));
     n *= -sign(dot(n, in.relative));
@@ -251,11 +255,18 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     let way = WayPixel(p, in.road.x, in.road.y, in.along, pw, cw, aw);
     let code = (in.word >> CODE_SHIFT) & 15u;
     let l = way_look(mat, code, region_at(su), su, way, (in.word >> FLAGS_SHIFT) & FLAGS_BITS, n.z, in.altitude);
-    if (dither(in.clip.xy + FRAY_DITHER) < l.ground) {
+    if (l.ground >= 1.0) {
         discard;
     }
+    var lit: vec3f;
     if (mat == LOOK_RISER && soil_steps(code)) {
-        return vec4f(riser_lit(l, n, su, in.relative, in.altitude), 1.0);
+        lit = riser_lit(l, n, su, in.relative, in.altitude);
+    } else {
+        lit = way_lit(l, n, su, in.relative, in.altitude);
     }
-    return vec4f(way_lit(l, n, su, in.relative, in.altitude), 1.0);
+    if (l.ground <= 0.0) {
+        return vec4f(lit, 1.0);
+    }
+    // The branch starts where the share is near 0, so the derivatives that a neighbour outside it leaves stale weigh nothing.
+    return vec4f(mix(lit, corridor_ground(in, su), l.ground), 1.0);
 }

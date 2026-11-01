@@ -66,5 +66,7 @@
     {"name": "forecourt-top", "view": "?lat=46.82225&lon=8.42460&heading=0.0&pitch=-80.0&eye=28&date=2026-08-15&time=10:30&weather=sunny"},
     {"name": "stream-bridge-far", "view": "?lat=46.804594&lon=8.413104&heading=0&pitch=-25&alt=1634&date=2026-08-15&time=10:30&weather=sunny"},
     {"name": "stream-lake-far", "view": "?lat=46.790972&lon=8.442784&heading=0&pitch=-25&alt=1682&date=2026-08-15&time=10:30&weather=sunny"},
-    {"name": "stream-parallel-road", "view": "?lat=46.818340&lon=8.409863&heading=0&pitch=-45&eye=12&date=2026-08-15&time=10:30&weather=sunny"}
+    {"name": "stream-parallel-road", "view": "?lat=46.818340&lon=8.409863&heading=0&pitch=-45&eye=12&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "path-edge-eye", "view": "?lat=46.815591&lon=8.382807&heading=90.3&pitch=-12.3&eye=1.6&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "path-edge-handover", "view": "?lat=46.815591&lon=8.37546&heading=90.3&pitch=-9&alt=1290&date=2026-08-15&time=10:30&weather=sunny"}
 ]
