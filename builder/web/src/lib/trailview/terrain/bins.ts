@@ -5,7 +5,7 @@ import { DEEPEST, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature, type Feat
 import { PAGE } from '../stream/heights';
 import { addPlan, curveOf, PATH_SAG, planPart, ROAD_SAG, type Curve, type Plan } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
-import { boxOf, cornersOf, halfAt, partnersOf, stopAtCorners } from './corners';
+import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
 import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
 
 /** Words of a primitive record. */
@@ -24,10 +24,9 @@ export const INSIDE = 1 << 30;
  * does, and counts its sleepers where a road has its tilts. A pad holds the ground inside its edges under
  * its level, as a platform does. An area, a building or a river area, holds no ground: the mask takes its
  * inside, where nothing stands. The sea holds the ground inside it under its bed, as a lake does, and
- * leaves the land as it is. A walk from a house to its road only paints. A corner of a junction paints
- * and holds the ground of its asphalt and its sidewalk, as corners.ts makes it.
+ * leaves the land as it is. A corner of a junction paints and holds the ground of its asphalt and its sidewalk, as corners.ts makes it.
  */
-export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6, STREAM = 7, BRIDGE = 8, TUNNEL = 9, RAIL = 10, PAD = 11, AREA = 12, SEA = 13, CORNER = 14, WALK = 15;
+export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6, STREAM = 7, BRIDGE = 8, TUNNEL = 9, RAIL = 10, PAD = 11, AREA = 12, SEA = 13, CORNER = 14;
 /** Road flags: a ford, the round caps of the core and the cone at the start and the end, and of the paint where the through road runs on into another line, and lines on the road. */
 export const FORD = 1, CORE_A = 2, CORE_B = 4, CONE_A = 8, CONE_B = 16, JOIN_A = 32, JOIN_B = 64, MARKED = 128;
 /** No stamp reaches further than the feature tiles' buffer, so a primitive goes to each cell within it. */
@@ -40,7 +39,7 @@ const UNITS = 2 ** 30;
 
 /**
  * The surfaces in the order of the mask's surface code (index + 1) and their half-widths without a `width` tag, from the prototype.
- * `oneway` is a one-way main road: no line in its middle. `paving` is a town's footway and a house's walk.
+ * `oneway` is a one-way main road: no line in its middle. `paving` is a town's footway.
  * Then the ballast beds of the tracks: standard and narrow gauge, each without and with a rack.
  */
 export const SURFACES = { main: 4.5, road: 3.0, gravel: 1.75, dirt: 1.5, grass: 1.25, path: 0.6, oneway: 4.5, paving: 1.25, rail: 1.9, narrow: 1.5, rack: 1.9, 'narrow-rack': 1.5 } as const;
@@ -65,8 +64,6 @@ const GROUND = ['no', 'boardwalk', 'low_water_crossing'];
 const SIDEWALK_M: Record<string, number> = {
     primary: 2, primary_link: 2, secondary: 2, secondary_link: 2, tertiary: 2, tertiary_link: 2, unclassified: 1.5, residential: 1.5,
 };
-/** The buildings that hold cars: a driveway leads to them. */
-const CARS = ['garage', 'garages', 'carport'];
 /** The deck depth of a bridge without the `deck` tag of the bake, and the height of a tunnel's bore for a road, a path and a track, as `bore` of host/obc-trailview-features/src/structures.rs. */
 const DECK_M = 0.6, BORE_M = 5, BORE_PATH_M = 2.6, BORE_RAIL_M = 6.5;
 /** The top of a gallery's roof at its hill, over a road, a path and a track. */
@@ -221,13 +218,13 @@ export interface Line {
 export interface Barrier { xy: number[]; wall: boolean; height?: number }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
-/** A building: whether it holds cars, and the outward unit direction of the wall that its walk leaves, in world units. */
-export interface Building { rings: number[][]; outer: boolean[]; cars: boolean; front?: [number, number] }
+/** A building: the outward unit direction of the wall that faces its road, in world units. */
+export interface Building { rings: number[][]; outer: boolean[]; front?: [number, number] }
 /**
  * The shapes of a tile: lines, lakes and the sea with heights, the river areas, which lie on the drawn
- * surface, the pads under the platforms, the buildings and the walks to them.
+ * surface, the pads under the platforms and the buildings.
  */
-export interface Shapes { lines: Line[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; walks: Line[]; barriers: Barrier[]; crossings: { x: number; y: number }[] }
+export interface Shapes { lines: Line[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; barriers: Barrier[]; crossings: { x: number; y: number }[] }
 
 /**
  * The numbers of stamp-core.wgsl that the gates of a line, the shore samples of the audit, the edges
@@ -246,7 +243,7 @@ export const seaShows = (level: number) => RULES.LIFT_M + RULES.LIFT * RULES.MES
 
 export function shows({ kind, h, profile }: Line, texel: number): boolean {
     const limit = RULES.BUFFER_M - 2 * texel - 1, { reach, least } = Object.values(PROFILES)[profile];
-    if (kind === STREAM || kind === WALK) return false;
+    if (kind === STREAM) return false;
     if (kind === PATH) return 2 * h >= texel && h + reach <= limit;
     return 2 * h >= texel && h + least <= limit;
 }
@@ -292,7 +289,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     };
     const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [], barriers: Barrier[] = [], crossings: Shapes['crossings'] = [];
     const area = (parts: Feature['parts']) => ({ rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
-    const buildings: Building[] = list.filter(({ kind }) => kind === 'building').map(({ tags, parts }) => ({ ...area(parts), cars: CARS.includes(tags.building) }));
+    const buildings: Building[] = list.filter(({ kind }) => kind === 'building').map(({ parts }) => area(parts));
     const town = townOf(buildings), beds = bedsOf(list, world, drawn);
     for (const [feature, { kind, tags, parts }] of list.entries()) {
         if (kind === 'lake' || kind === 'sea') {
@@ -372,7 +369,8 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     }
     junctionPlanes(lines);
     abutments(lines);
-    return { lines, lakes, seas, areas, pads, buildings, walks: walks(lines, buildings, town), barriers, crossings };
+    faceRoads(lines, buildings, town);
+    return { lines, lakes, seas, areas, pads, buildings, barriers, crossings };
 }
 
 /**
@@ -532,18 +530,15 @@ function clearOf(beds: Beds, feature: number, h: number, walk: number): Clear {
     };
 }
 
-/** A walk's ends: this far inside the wall, so no slit shows; widths; the gap to the road under which it is a forecourt, the least and the most of it; the shortest wall it leaves. */
-const INSIDE_M = 0.5, WALK_WIDTH_M = 1.2, DRIVEWAY_M = 3, FORECOURT_M = 6, FRONTAGE_M = [3, 15], WALL_M = 2;
-/** A road or a path this near a building reaches it; a wall faces a point within 60° of its normal. */
-const REACHED_M = 2, FACING_COS = 0.5;
+/** The shortest wall that is a front; a road or a path this near a building reaches it; a wall faces a point within 60° of its normal. */
+const WALL_M = 2, REACHED_M = 2, FACING_COS = 0.5;
 
 /**
- * The walks of paving to the houses: a building whose nearest road on the ground comes within BUILT_M,
- * and no road or path within REACHED_M, gets one from the middle of its nearest wall that faces that road
- * to the road's outer edge. A garage gets a driveway, and a house nearer than FORECOURT_M a forecourt as
- * wide as that wall. Only the house and the lines near it decide, so each tile that holds them all draws it alike.
+ * The fronts of the houses: a building whose nearest road on the ground comes within BUILT_M, and no road or
+ * path within REACHED_M, fronts that road with its nearest wall that faces it. Only the house and the lines
+ * near it decide, so each tile that holds them all draws it alike.
  */
-function walks(lines: Line[], buildings: Building[], town: Town): Line[] {
+function faceRoads(lines: Line[], buildings: Building[], town: Town): void {
     // Per building, the least gap to the edge of a road and that road; -Infinity where a road or a path reaches it.
     const nearest = buildings.map(() => ({ gap: BUILT_M, road: undefined as Line | undefined }));
     for (const line of lines) {
@@ -563,43 +558,36 @@ function walks(lines: Line[], buildings: Building[], town: Town): Line[] {
             });
         }
     }
-    return buildings.flatMap((building, b) => (nearest[b].gap >= REACHED_M && nearest[b].road ? walkTo(building, nearest[b].road) : []));
+    buildings.forEach((building, b) => {
+        if (nearest[b].gap >= REACHED_M && nearest[b].road) building.front = frontOf(building, nearest[b].road);
+    });
 }
 
-/** A building's walk to a road, and the wall that it leaves as the building's front; none where no wall faces the road. */
-function walkTo(building: Building, road: Line): Line[] {
+/** The outward direction of a building's nearest wall that faces a road; none where no wall faces it. */
+function frontOf(building: Building, road: Line): [number, number] | undefined {
     const ring = building.rings[0], n = ring.length / 2, unit = metresPerUnit(ring[1]);
     // The ring's outside lies right of each edge (y south) where its area is positive. About its first vertex: products of world units lose float64 bits.
     let twice = 0;
     for (let i = 0, j = n - 1; i < n; j = i++) twice += (ring[2 * j] - ring[0]) * (ring[2 * i + 1] - ring[1]) - (ring[2 * i] - ring[0]) * (ring[2 * j + 1] - ring[1]);
-    let best: { mx: number; my: number; nx: number; ny: number; d: number; cos: number; wall: number; v: number } | undefined;
+    let front: [number, number] | undefined, least = Infinity;
     for (let i = 0; i < n; i++) {
         const k = (i + 1) % n, length = Math.hypot(ring[2 * k] - ring[2 * i], ring[2 * k + 1] - ring[2 * i + 1]);
         if (length * unit < WALL_M) continue;
         const mx = (ring[2 * i] + ring[2 * k]) / 2, my = (ring[2 * i + 1] + ring[2 * k + 1]) / 2;
         const nx = Math.sign(twice) * (ring[2 * k + 1] - ring[2 * i + 1]) / length, ny = Math.sign(twice) * (ring[2 * i] - ring[2 * k]) / length;
-        const { x, y, v } = closest(road, mx, my), d = Math.hypot(x - mx, y - my), cos = ((x - mx) * nx + (y - my) * ny) / (d || 1);
-        if (cos >= FACING_COS && (!best || d < best.d)) best = { mx, my, nx, ny, d, cos, wall: length * unit, v };
+        const { x, y } = closest(road, mx, my), d = Math.hypot(x - mx, y - my);
+        if ((x - mx) * nx + (y - my) * ny >= FACING_COS * d && d < least) [front, least] = [[nx, ny], d];
     }
-    if (!best) return [];
-    const { mx, my, nx, ny, d, cos, wall, v } = best, [ax, ay, bx, by] = road.xy.slice(2 * v, 2 * v + 4);
-    const side = (bx - ax) * (my - ay) - (by - ay) * (mx - ax) > 0 ? RIGHT : LEFT;
-    // Metres along the walk from the wall to the road's edge, past its sidewalk on this side.
-    const reach = (d * unit - road.h - ((road.sidewalks?.[v] ?? 0) & side ? walkOf(road) : 0)) / cos;
-    if (reach <= 0) return [];
-    const width = reach < FORECOURT_M ? Math.min(Math.max(wall, FRONTAGE_M[0]), FRONTAGE_M[1]) : building.cars ? DRIVEWAY_M : WALK_WIDTH_M;
-    building.front = [nx, ny];
-    const at = (metres: number) => [Math.round(mx + nx * metres / unit), Math.round(my + ny * metres / unit)];
-    return [{ kind: WALK, xy: [...at(-INSIDE_M), ...at(reach)], z: [0, 0], h: width / 2, code: PAVING_CODE, ford: false, profile: 0, anchors: [true, true] }];
+    return front;
 }
 
-/** The point of a line nearest to x, y, and its segment. */
-function closest(line: Line, x: number, y: number): { x: number; y: number; v: number } {
-    let best = { d: Infinity, x, y, v: 0 };
+/** The point of a line nearest to x, y. */
+function closest(line: Line, x: number, y: number): { x: number; y: number } {
+    let best = { d: Infinity, x, y };
     for (let v = 0; v + 1 < line.z.length; v++) {
         const ax = line.xy[2 * v], ay = line.xy[2 * v + 1], dx = line.xy[2 * v + 2] - ax, dy = line.xy[2 * v + 3] - ay;
         const t = Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1))), px = ax + t * dx, py = ay + t * dy, d = (px - x) ** 2 + (py - y) ** 2;
-        if (d < best.d) best = { d, x: px, y: py, v };
+        if (d < best.d) best = { d, x: px, y: py };
     }
     return best;
 }
@@ -889,7 +877,7 @@ export interface NodeStamps {
  * order of stamp-core.wgsl: a lake's edges before its marker, a line's segments together.
  */
 export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps {
-    const { lines, lakes, seas, pads, areas, buildings, walks } = features(list, tile);
+    const { lines, lakes, seas, pads, areas, buildings } = features(list, tile);
     const shift = 22 - node.level, cell = CELL * 2 ** shift;
     const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, span = GRID * cell;
     // Units per metre grow toward the pole: the node's poleward edge bounds them.
@@ -927,12 +915,12 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     let heights = false;
     const partners = partnersOf(lines);
     // A record holds a line's index in 16 bits.
-    if (lines.length + walks.length > 0x10000) throw new Error(`nodeStamps: ${lines.length + walks.length} lines pass the 16-bit index`);
-    [...lines, ...stopAtCorners(lines, walks)].forEach((line, id) => {
+    if (lines.length > 0x10000) throw new Error(`nodeStamps: ${lines.length} lines pass the 16-bit index`);
+    lines.forEach((line, id) => {
         const stamps = shows(line, gateTexel(node.level));
         if (line.kind === STREAM || (!stamps && node.level < NEAR)) return;
-        // A path acts no farther than its bench, and on the near levels than the mask reads it; a walk only there.
-        const reach = line.kind === PATH || line.kind === WALK ? line.h + (node.level >= NEAR ? MASK_RANGE_M : Object.values(PROFILES)[line.profile].reach) : REACH_M;
+        // A path acts no farther than its bench, and on the near levels than the mask reads it.
+        const reach = line.kind === PATH ? line.h + (node.level >= NEAR ? MASK_RANGE_M : Object.values(PROFILES)[line.profile].reach) : REACH_M;
         const n = line.z.length, end = (v: number) => v === 0 || v === n - 1;
         // A bridge's or a tunnel's metres from its start at each vertex: it rests on its abutments, or runs on the ground into its portal, a few mesh cells from an end that meets the ground.
         const along = [0];
@@ -944,7 +932,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             const [mx, my] = mitre(line, v), [nx, ny] = mitre(line, v + 1);
             const dead = (w: number) => end(w) && !joins.has(`${line.xy[2 * w]},${line.xy[2 * w + 1]}`);
             const join = (w: number) => !!line.join?.[w === 0 ? 0 : 1] && end(w);
-            const flags = (line.kind === BRIDGE || line.kind === TUNNEL || line.kind === WALK ? 0 : (line.ford ? FORD : 0) | (dead(v) ? CORE_A : 0) | (dead(v + 1) ? CORE_B : 0) | (end(v) ? CONE_A : 0) | (end(v + 1) ? CONE_B : 0)
+            const flags = (line.kind === BRIDGE || line.kind === TUNNEL ? 0 : (line.ford ? FORD : 0) | (dead(v) ? CORE_A : 0) | (dead(v + 1) ? CORE_B : 0) | (end(v) ? CONE_A : 0) | (end(v + 1) ? CONE_B : 0)
                 | (join(v) ? JOIN_A : 0) | (join(v + 1) ? JOIN_B : 0)) | (marked(line) ? MARKED : 0);
             // The deck, the bore or the roof in decimetres; the top bit marks a gallery whose hill is on its right.
             const deck = Math.min(line.gallery ? 127 : 255, Math.round(10 * (line.deck ?? 0))) | (line.gallery === -1 ? 128 : 0);
