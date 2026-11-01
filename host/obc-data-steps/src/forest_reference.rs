@@ -16,7 +16,7 @@ use obc_data::sources::Source;
 use planner_router_build::grid::mercator;
 
 use crate::device::box_poly;
-use crate::prepared_tiles::{self, outlines, poly, read_on_day, regions, reuse, Tile};
+use crate::prepared_tiles::{self, outlines, poly, read_on_day, regions, reuse, Tile, RUNNING};
 
 /// The id of the prepared source.
 pub const ID: &str = "forest";
@@ -147,7 +147,7 @@ impl Prepared for ForestReference {
             );
             tiles.push(Tile { name: name.clone(), files: vec![(path, format!("{name}.sha256"))], marks: Vec::new() });
         }
-        let digests = prepared_tiles::make(job, &tiles, |job, name| {
+        let digests = prepared_tiles::make(job, &tiles, RUNNING, |job, name| {
             let mut command = (self.tool)(job.root)?;
             command.arg("fetch").args(&args[name]).args(["--block", name, "--out"]).arg(&job.work);
             Ok(command)

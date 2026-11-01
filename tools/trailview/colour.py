@@ -1,15 +1,18 @@
-"""Bake the TrailView colour tiles of one region from the Sentinel-2 quarterly mosaics of CDSE, as the
-prototype's `bake.py` reads them: per quarter the colour and the NDVI, as specs/trailview-tiles.md
-defines them.
+"""The TrailView colour: the colour tiles of one region from the prepared texels of `colour`, and those
+texels of one zoom 10 block from the Sentinel-2 quarterly mosaics of CDSE (specs/obc-data.md#colour,
+specs/trailview-tiles.md#colour).
 
-The `obc data` step is `planner/trailview-colour` (`--step`). `--fetch` is the capture of
-`sentinel-2-mosaics`: the window over a box of each band of each mosaic tile of a year, over CDSE S3
-with the keys of `tools/planner_snow.py`.
+The `obc data` step is `planner/trailview-colour` (`--step`). `prepare --block X-Y --year YEAR` writes the
+file of one block of `colour`: it reads the window over the block of each band of each mosaic tile of the
+year, over CDSE S3 with the keys of `tools/planner_snow.py`.
 """
 
 import argparse
+import hashlib
 import io
+import os
 import re
+import shutil
 import sys
 import threading
 import urllib.parse
@@ -22,6 +25,13 @@ from .. import planner_geo as geo, step_request
 
 STAC = "https://stac.dataspace.copernicus.eu/v1/collections/sentinel-2-global-mosaics/items"
 BANDS = ("B02", "B03", "B04", "B08", "observations")
+# The zoom of a file of `colour`, and of its texels.
+BLOCK_ZOOM, ZOOM = 10, 12
+# A look count of `colour` stops here, so MIN_OBSERVATIONS can be 1 to LOOKS.
+LOOKS = 15
+# Darker than this in red plus near-infrared reflectance, a texel is water or deep shadow, as most
+# reflectance there is noise or clipped below 0: its NDVI is −1.
+DARK_NDVI = 0.001
 # A pixel with fewer valid looks in its quarter falls back to the palette.
 MIN_OBSERVATIONS = 3
 # `trailview_format` of the colour archives, which the readers check.
@@ -37,8 +47,7 @@ BOTTOM_ZOOM = 9
 # Variant: codec, last zoom and chroma subsampling. 4:2:0 halves the chroma resolution of the texels:
 # at zoom 12 the texels are 13 m at 47° N, and the chroma and the NDVI 26 m.
 VARIANTS = {
-    "webp-13": ("webp", 13, "4:2:0"), "webp-12": ("webp", 12, "4:2:0"), "webp-11": ("webp", 11, "4:2:0"),
-    "avif-12": ("avif", 12, "4:2:0"), "avif-11": ("avif", 11, "4:2:0"), "avif444-12": ("avif", 12, "4:4:4"),
+    "webp-12": ("webp", 12, "4:2:0"), "avif-12": ("avif", 12, "4:2:0"), "avif444-12": ("avif", 12, "4:4:4"),
 }
 # Pillow's default WebP quality is 80; AVIF uses the same number.
 QUALITY = 80
@@ -57,7 +66,7 @@ def ndvi(code):
 
 
 def mosaics(files):
-    """{quarter: [{band: path}]}: the band windows of a `sentinel-2-mosaics` capture, by mosaic tile."""
+    """{quarter: [{band: path}]}: the band windows of `fetch`, by mosaic tile."""
     out = {}
     for name, path in sorted(files.items()):
         item, band = name.rsplit("/", 1)
@@ -71,7 +80,7 @@ _open = threading.local()
 
 def dataset(path):
     """The open raster `path`. A worker keeps it open, so that GDAL's block cache keeps the strips of a
-    capture that the next tile reads too; a thread has its own, as a dataset is not thread-safe."""
+    window that the next tile reads too; a thread has its own, as a dataset is not thread-safe."""
     import rasterio
 
     opened = _open.__dict__.setdefault("datasets", {})
@@ -80,9 +89,9 @@ def dataset(path):
     return opened[path]
 
 
-def read(items, transform, texel):
-    """The visible reflectance (3, H, W), the NDVI and the valid texels of one quarter on the EPSG:3857
-    grid `transform`."""
+def measure(items, transform, texel):
+    """The texels of `colour` of one quarter on the EPSG:3857 grid `transform`: the red, green, blue and
+    near-infrared codes (H, W, 4), and the look counts (H, W)."""
     import rasterio
     from rasterio.warp import Resampling, reproject
 
@@ -95,11 +104,22 @@ def read(items, transform, texel):
             reproject(rasterio.band(src, 1), out, dst_transform=transform, dst_crs="EPSG:3857", resampling=resampling,
                       src_nodata=src.nodata, dst_nodata=np.nan, init_dest_nodata=False)
         bands[band] = out
-    looks = np.nan_to_num(bands["observations"])
-    valid = (looks >= MIN_OBSERVATIONS) & np.isfinite(bands["B04"])
-    visible = np.clip(np.nan_to_num(np.stack([bands["B04"], bands["B03"], bands["B02"]])) / 10000.0, 0.0, 1.0)
-    b04, b08 = np.nan_to_num(bands["B04"]), np.nan_to_num(bands["B08"])
-    return visible, np.clip((b08 - b04) / np.maximum(b08 + b04, 1.0), -1.0, 1.0), valid
+    # The floor keeps "looks ≥ n" for a whole n.
+    looks = np.where(np.isfinite(bands["B04"]), np.minimum(np.floor(np.nan_to_num(bands["observations"])), LOOKS), 0)
+    refl = np.clip(np.nan_to_num(np.stack([bands[band] for band in ("B04", "B03", "B02", "B08")], axis=-1)) / 10000.0, 0.0, 1.0)
+    return np.round(255.0 * refl ** (1 / 2.2)).astype(np.uint8), looks.astype(np.uint8)
+
+
+def seen(rgbn, looks):
+    """{quarter: (visible, NDVI, valid)} for `texels` from the texels of `colour` of one tile: (4, H, W, 4)
+    codes and (H, W, 4) looks."""
+    out = {}
+    for q in range(1, 5):
+        refl = (rgbn[q - 1] / 255.0) ** 2.2
+        red, nir = refl[..., 0], refl[..., 3]
+        ndvi_ = np.where(nir + red < DARK_NDVI, -1.0, np.clip((nir - red) / np.maximum(nir + red, 1e-4), -1.0, 1.0))
+        out[q] = (np.moveaxis(refl[..., :3], -1, 0), ndvi_, looks[..., q - 1] >= MIN_OBSERVATIONS)
+    return out
 
 
 def texels(seen):
@@ -152,9 +172,60 @@ def snow_free(quarters):
     return clean
 
 
-def quarters(mosaics, transform, texel):
-    """The four quarters of one tile, RGBA8 and free of snow."""
-    return snow_free(texels({q: read(mosaics.get(q, []), transform, texel) for q in range(1, 5)}))
+def block_path(year, x, y):
+    """The path of the file of block x, y of `colour` of `year`."""
+    return f"{year}/{x}/{y}.pmtiles"
+
+
+_readers = threading.local()
+
+
+class Prepared:
+    """The texels of `colour` of `year` in `files` ({path: file}), as `specs/obc-data.md#colour` defines
+    them. A worker thread opens a file once."""
+
+    def __init__(self, files, year):
+        self.files, self.year = files or {}, year
+
+    def tile(self, x, y):
+        """The codes (4, H, W, 4) and the looks (H, W, 4) of zoom 12 tile x, y; 0 where it has no data."""
+        from pmtiles.reader import MmapSource, Reader
+
+        path = self.files.get(block_path(self.year, x >> (ZOOM - BLOCK_ZOOM), y >> (ZOOM - BLOCK_ZOOM)))
+        opened = _readers.__dict__.setdefault("readers", {})
+        if path is not None and path not in opened:
+            # A block without data is an empty file.
+            opened[path] = Path(path).stat().st_size and Reader(MmapSource(open(path, "rb")))
+        body = opened[path].get(ZOOM, x, y) if path is not None and opened[path] else None
+        if body is None:
+            return np.zeros((4, tiles.TILE, tiles.TILE, 4), np.uint8), np.zeros((tiles.TILE, tiles.TILE, 4), np.uint8)
+        images = []
+        while body:
+            end = 8 + int.from_bytes(body[4:8], "little")
+            images.append(lossless_texels(body[:end]))
+            body = body[end:]
+        return np.stack(images[:4]), images[4]
+
+
+def lossless_texels(image):
+    """The RGBA texels of a lossless WebP image."""
+    from PIL import Image
+
+    return np.asarray(Image.open(io.BytesIO(image)).convert("RGBA"))
+
+
+def quarters(prepared, z, x, y):
+    """The four quarters of tile z/x/y, zoom 12 or finer, RGBA8 after the look minimum, the NDVI, the shadow
+    rule and the snow rule. A finer texel is the zoom 12 texel that holds its centre."""
+    levels = z - ZOOM
+    key = (prepared, x >> levels, y >> levels)
+    # A thread keeps the last zoom 12 tile, which the finer tiles under it read in turn.
+    if getattr(_readers, "last", (None,))[0] != key:
+        _readers.last = key, snow_free(texels(seen(*prepared.tile(key[1], key[2]))))
+    clean = _readers.last[1]
+    size, mask = tiles.TILE >> levels, (1 << levels) - 1
+    rows, cols = slice((y & mask) * size, ((y & mask) + 1) * size), slice((x & mask) * size, ((x & mask) + 1) * size)
+    return {q: t[rows, cols].repeat(1 << levels, axis=0).repeat(1 << levels, axis=1) for q, t in clean.items()}
 
 
 def average(children):
@@ -225,9 +296,16 @@ def encoder(variant):
     return encode
 
 
-def bake(mosaics, bounds, variant, output, metadata):
+def masked(prepared, bounds, z, x, y):
+    """The quarters (4, H, W, 4) of tile z/x/y of the archives: 0 where a texel centre is outside the bounds."""
+    out = np.stack([q for _, q in sorted(quarters(prepared, z, x, y).items())])
+    out[:, ~tiles.inside(bounds, z, x, y)] = 0
+    return out
+
+
+def bake(prepared, bounds, variant, output, metadata):
     """Write the archives of `variant` in `output`; return their bytes per archive and zoom."""
-    stack = lambda z, x, y: np.stack([q for _, q in sorted(quarters(mosaics, tiles.transform(z, x, y), tiles.texel_m(z, y)).items())])
+    stack = lambda z, x, y: masked(prepared, bounds, z, x, y)
     return tiles.pyramid(bounds, range(BOTTOM_ZOOM, VARIANTS[variant][1] + 1), stack, average, encoder(variant), output,
                          {**metadata, "trailview_format": FORMAT})
 
@@ -236,7 +314,8 @@ def step():
     request = step_request.read()
     options = request["options"]
     variant = options["variant"]
-    sizes = bake(mosaics(step_request.files(request, "sentinel-2-mosaics")), options["bounds"], variant, Path(request["output"]),
+    prepared = Prepared(step_request.files(request, "colour"), options["year"])
+    sizes = bake(prepared, options["bounds"], variant, Path(request["output"]),
                  {"attribution": options["attribution"].format(year=options["year"]), "variant": variant})
     step_request.metrics(request, {"bytes_per_zoom": sizes, "bytes_per_km2": per_km2(sizes, options["bounds"])})
 
@@ -262,29 +341,71 @@ def items(bounds, year):
 
 
 def fetch(bounds, year, out):
-    """The capture of `sentinel-2-mosaics`: `<mosaic tile>/<band>.tif`, the window of each band over the
-    bounds, one pixel wider on each side. CDSE S3 allows 4 connections per user."""
-    from concurrent.futures import ThreadPoolExecutor
-
+    """`<mosaic tile>/<band>.tif` in `out`: the window of each band over the bounds, one pixel wider on
+    each side, one at a time. A window that `out` holds stays."""
     from .. import planner_snow
 
     planner_snow.cdse_credentials()
-    found = items(bounds, year)
-    for item in found:
+    # A transient 5xx of CDSE S3 must not end a run of days.
+    os.environ.update(GDAL_HTTP_MAX_RETRY="8", GDAL_HTTP_RETRY_DELAY="3")
+    for item, bands in items(bounds, year).items():
         (out / item).mkdir(parents=True, exist_ok=True)
-    with ThreadPoolExecutor(4) as pool:
-        list(pool.map(lambda job: planner_snow.subset(job[1], bounds, out / job[0]),
-                      [(item, path) for item, bands in found.items() for path in bands.values()]))
-    print(f"sentinel-2-mosaics: {len(found)} mosaic tiles", file=sys.stderr, flush=True)
+        for path in bands.values():
+            planner_snow.subset(path, bounds, out / item)
+
+
+def prepare(block, year, work, out):
+    """Write the file of `block` (x, y) of `colour` of `year` into `out`, then its mark `<x>-<y>.sha256`, the
+    SHA-256 of the file. `work` holds the windows of the mosaic tiles; it stays when the run fails, so the
+    next run downloads no window again."""
+    bx, by = block
+    fetch(geo.tile_bounds(BLOCK_ZOOM, bx, by), year, work)
+    target = out / block_path(year, bx, by)
+    write(mosaics({str(path.relative_to(work)): path for path in work.glob("*/*.tif")}), block, target)
+    with open(target, "rb") as stream:
+        (out / f"{bx}-{by}.sha256").write_text(hashlib.file_digest(stream, "sha256").hexdigest() + "\n")
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def write(found, block, target):
+    """Write the file `target` of `block` (x, y) of `colour` from the band windows `found` of `mosaics`: an
+    empty file where no tile of the block has a look."""
+    from pmtiles.tile import Compression, TileType, zxy_to_tileid
+    from pmtiles.writer import Writer
+
+    bx, by = block
+    span = range(1 << (ZOOM - BLOCK_ZOOM))
+    bodies = {}
+    for x, y in ((bx * len(span) + dx, by * len(span) + dy) for dy in span for dx in span):
+        measured = [measure(found.get(q, []), tiles.transform(ZOOM, x, y), tiles.texel_m(ZOOM, y)) for q in range(1, 5)]
+        looks = np.stack([look for _, look in measured], axis=-1)
+        if looks.any():
+            bodies[zxy_to_tileid(ZOOM, x, y)] = b"".join(tiles.lossless(image)[1] for image in [*(c for c, _ in measured), looks])
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "wb") as stream:
+        if bodies:
+            writer = Writer(stream)
+            for tile_id in sorted(bodies):
+                writer.write_tile(tile_id, bodies[tile_id])
+            e7 = lambda value: round(value * 1e7)
+            west, south, east, north = geo.tile_bounds(BLOCK_ZOOM, bx, by)
+            writer.finalize({
+                "tile_type": TileType.UNKNOWN, "tile_compression": Compression.NONE,
+                "min_lon_e7": e7(west), "min_lat_e7": e7(south), "max_lon_e7": e7(east), "max_lat_e7": e7(north),
+                "center_zoom": ZOOM, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
+            }, {})
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--bounds", type=geo.bounds, required=True)
-    parser.add_argument("--year", type=int, required=True)
-    parser.add_argument("--fetch", type=Path, required=True, help="write the capture of sentinel-2-mosaics here")
+    commands = parser.add_subparsers(dest="command", required=True)
+    command = commands.add_parser("prepare", help="the file of one block of `colour`")
+    command.add_argument("--block", type=lambda text: tuple(map(int, text.split("-"))), required=True, help="X-Y")
+    command.add_argument("--year", type=int, required=True)
+    command.add_argument("--work", type=Path, required=True, help="the directory of the windows, removed at success")
+    command.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    fetch(args.bounds, args.year, args.fetch)
+    prepare(args.block, args.year, args.work, args.out)
 
 
 if __name__ == "__main__":

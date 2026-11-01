@@ -19,7 +19,7 @@ use obc_dem::reference::TILE_LOG2;
 use obc_map_core::grid::CellId;
 
 use crate::device::box_poly;
-use crate::prepared_tiles::{self, outline, outlines, poly, read_on_day, regions, reuse, Tile};
+use crate::prepared_tiles::{self, outline, outlines, poly, read_on_day, regions, reuse, Tile, RUNNING};
 use crate::terrain_bias::Made;
 
 /// The id of the prepared source.
@@ -149,7 +149,7 @@ impl Prepared for TerrainReference {
         for (tile, models) in &keys {
             of.entry(name(&block(tile))).or_default().push(format!("{:04}-{:04}={}", tile.i, tile.j, models.join(",")));
         }
-        let digests = prepared_tiles::make(job, &tiles, |job, name| {
+        let digests = prepared_tiles::make(job, &tiles, RUNNING, |job, name| {
             let mut command = (self.ingest)(job.root)?;
             command.arg("fetch").args(&of[name]).args(["--block", name, "--work"]);
             // A folder per block: `fetch` removes its `--work` at the end, and blocks run at once.
