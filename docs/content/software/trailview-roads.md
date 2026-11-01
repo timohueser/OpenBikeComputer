@@ -83,7 +83,9 @@ the curves of both ways.
 A zebra comes from an OSM tag, never from a road's class. A give-way line and a lowered kerb
 [follow the junction plan](src:builder/web/src/lib/trailview/roads/marks.ts). A [bridge deck](src:builder/web/src/lib/trailview/roads/decks.ts)
 is a corridor too, so its markings run across with the same dash phase. The sides of a way
-[stop at water](src:builder/web/src/lib/trailview/roads/shore.ts).
+[stop at a river or a lake](src:builder/web/src/lib/trailview/roads/shore.ts). A stream passes under
+a way on the ground: its [ribbon stops at the way's edge](src:builder/web/src/lib/trailview/terrain/water.wgsl),
+and a short culvert is part of the stream.
 
 ## A region is rules, not code
 

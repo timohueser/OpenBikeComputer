@@ -175,7 +175,7 @@ async function waterPipelines(gpu: Gpu): Promise<{ pipelines: Record<Kind, GPURe
                 ],
             }],
         },
-        fragment: { module, entryPoint: 'water_fragment', constants: { SEA_DRAW: kind === 'seas' ? 1 : 0 }, targets: [{ format: sceneFormat(gpu), ...(kind === 'ribbons' ? { blend: { color: blend, alpha: blend } } : {}) }] },
+        fragment: { module, entryPoint: kind === 'ribbons' ? 'ribbon_fragment' : 'water_fragment', constants: { SEA_DRAW: kind === 'seas' ? 1 : 0 }, targets: [{ format: sceneFormat(gpu), ...(kind === 'ribbons' ? { blend: { color: blend, alpha: blend } } : {}) }] },
         primitive: { topology: 'triangle-list' },
         depthStencil: { format: DEPTH, depthWriteEnabled: kind !== 'ribbons', depthCompare: kind === 'ribbons' ? 'greater-equal' : 'greater', depthBiasSlopeScale: kind === 'lakes' || kind === 'seas' ? 0 : DRAPE_BIAS },
     });

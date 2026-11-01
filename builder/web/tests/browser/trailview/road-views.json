@@ -55,7 +55,16 @@
     { "name": "zebra-tagged", "view": "?lat=46.81958&lon=8.40860&heading=0.0&pitch=-55.0&eye=15&date=2026-08-15&time=10:30&weather=sunny" },
     {"name": "path-on-cut", "view": "?lat=46.825430&lon=8.379120&heading=346.0&pitch=-25.0&eye=8&date=2026-08-15&time=10:30&weather=sunny"},
     {"name": "j-tt-a", "view": "?lat=46.815757&lon=8.382394&heading=72.2&pitch=-60&eye=6&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "streams-under", "view": "?lat=46.806981&lon=8.438892&heading=38.9&pitch=-42.8&alt=1070.7&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "streams-under-far", "view": "?lat=46.806000&lon=8.437600&heading=38.9&pitch=-30&alt=1110.0&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "stream-culvert-main-road", "view": "?lat=46.819187&lon=8.406504&heading=0&pitch=-50&eye=18&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "stream-culvert-track", "view": "?lat=46.795113&lon=8.377083&heading=0&pitch=-50&eye=18&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "stream-plain-track", "view": "?lat=46.795231&lon=8.378656&heading=0&pitch=-50&eye=18&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "stream-under-bridge", "view": "?lat=46.795012&lon=8.385806&heading=0&pitch=-50&eye=18&date=2026-08-15&time=10:30&weather=sunny"},
     {"name": "tears-zigzag", "view": "?lat=46.815757&lon=8.382387&heading=111.7&pitch=-40.5&alt=1136.4&date=2026-08-15&time=10:30&weather=sunny"},
     {"name": "tears-zigzag-90m", "view": "?lat=46.815757&lon=8.382387&heading=111.7&pitch=-40.5&alt=1220&date=2026-08-15&time=10:30&weather=sunny"},
-    {"name": "forecourt-top", "view": "?lat=46.82225&lon=8.42460&heading=0.0&pitch=-80.0&eye=28&date=2026-08-15&time=10:30&weather=sunny"}
+    {"name": "forecourt-top", "view": "?lat=46.82225&lon=8.42460&heading=0.0&pitch=-80.0&eye=28&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "stream-bridge-far", "view": "?lat=46.804594&lon=8.413104&heading=0&pitch=-25&alt=1634&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "stream-lake-far", "view": "?lat=46.790972&lon=8.442784&heading=0&pitch=-25&alt=1682&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "stream-parallel-road", "view": "?lat=46.818340&lon=8.409863&heading=0&pitch=-45&eye=12&date=2026-08-15&time=10:30&weather=sunny"}
 ]
