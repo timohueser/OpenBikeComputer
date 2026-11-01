@@ -399,7 +399,7 @@ describe('a junction with no through pair', () => {
 describe('a junction across a tile border', () => {
     it('plans alike from what each tile holds: a way cut short past the window changes nothing', () => {
         const whole = [through(), stem([0, 100])], cutA = [way([[-100, 0], [0, 0], [24, 0]]), stem([0, 100])], cutB = [way([[-24, 0], [0, 0], [100, 0]]), stem([0, 24])];
-        const [A, B, C] = [whole, cutA, cutB].map(planned);
+        const [A, B, C] = [whole, cutA, cutB].map(lines => planned(lines));
         const key = (plan: typeof A) => plan.junctions.corners.map(({ r, p, q, ends, meet }) => [r, ends[0] - p.along, ends[1] - q.along, meet[0] - p.along, meet[1] - q.along].map(v => Math.abs(v).toFixed(2)));
         expect(key(B)).toEqual(key(A));
         expect(key(C)).toEqual(key(A));
@@ -536,6 +536,6 @@ describe('a way at the water', () => {
         const [low, high] = [5.5, 30], ring = [[low, low], [high, low], [high, high], [low, high]].flatMap(([e, n]) => [O.x + e / unit, O.y - n / unit]);
         const lines = () => [through(), stem([0, 100])], beyond = (vertices: { e: number; n: number }[]) => Math.max(...vertices.filter(({ e, n }) => e < high && n < high).map(({ e, n }) => Math.min(e, n)));
         expect(beyond(drawn(planned(lines())))).toBeGreaterThan(low + 1);
-        expect(beyond(drawn(planned(lines(), [{ rings: [ring] }])))).toBeLessThan(low + 0.05);
+        expect(beyond(drawn(planned(lines(), [{ rings: [ring], outer: [true] }])))).toBeLessThan(low + 0.05);
     });
 });

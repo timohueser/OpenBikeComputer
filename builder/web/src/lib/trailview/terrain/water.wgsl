@@ -57,12 +57,14 @@ const RIBBON_PIXELS: f32 = 1.5;
 // The level of a vertex that lies on the drawn surface, as DRAPED of water-mesh.ts.
 const DRAPED: f32 = -1e30;
 
-// Where corridors draw the roads, water this near a road lies on the drawn mesh, which its snap moves by
-// decimetres there. plain_height reads a ninth of the vertices, so the rest of the water lies on it.
+// Near the eye, where corridors draw the roads, water this near a road lies on the drawn mesh, which its snap
+// moves by decimetres there: under a pixel past SNAPPED_RANGE_M. plain_height reads a ninth of the vertices, so
+// the rest of the water lies on it.
 const SNAPPED_M: f32 = 8.0;
+const SNAPPED_RANGE_M: f32 = 200.0;
 
 fn water_ground(s: vec2f) -> f32 {
-    if (masks.corridors > 0.0) {
+    if (masks.corridors > 0.0 && length(to_render(s)) < SNAPPED_RANGE_M) {
         let m = mask_at(s, u32(ceil(lod(s))), true);
         if (m.level != 0u && m.kind.x != 0u && m.edge < SNAPPED_M) {
             return drawn_height(s);
