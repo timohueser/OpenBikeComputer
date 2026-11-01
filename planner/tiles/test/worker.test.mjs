@@ -127,7 +127,7 @@ test('range reads deliver decoded tiles and cache tiles, empty coverage and, bri
 
 test('a second read of many archives reads only the tile bytes', async () => {
   const prefix = `releases/${'d'.repeat(64)}`, names = Array.from({ length: 100 }, (_, i) => `archive${i}`), reads = { count: 0 };
-  const env = { BUCKET: bucket(new Map(grid(prefix, Object.fromEntries(names.map(name => [name, archive()])))), reads) };
+  const env = { BUCKET: bucket(new Map(grid(prefix, Object.fromEntries(names.map(name => [name, archive(1, { attribution: name })])))), reads) };
   const read = () => Promise.all(names.map(async name => {
     const url = `https://tiles.example/${prefix}/${name}/0/0/0`;
     assert.equal((await worker.fetch(new Request(url), env, {}, null)).status, 200);

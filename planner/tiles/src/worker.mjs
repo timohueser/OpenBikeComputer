@@ -6,8 +6,13 @@ async function decompress(bytes, compression) {
   if (compression !== Compression.Gzip) throw new Error('Unsupported tile compression');
   return new Response(new Response(bytes).body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
 }
-// Two entries per pack. It holds resolved values only: a Worker cannot share a read between requests.
-const directories = new ResolvedValueCache(2000, undefined, decompress);
+// It holds resolved values only: a Worker cannot share a read between requests. A new pack adds two entries
+// and the upstream `prune` removes one, so without this loop the map never stops growing. 5,000 packs fit in
+// about 27 MiB of the Worker's 128 MB.
+class Directories extends ResolvedValueCache {
+  prune() { while (this.cache.size > this.maxCacheEntries) super.prune(); }
+}
+const directories = new Directories(10000, undefined, decompress);
 const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
   'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' };
 
