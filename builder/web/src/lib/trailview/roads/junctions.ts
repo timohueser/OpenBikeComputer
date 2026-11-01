@@ -4,7 +4,7 @@
 // a path or a driveway stops at the road's outer edge. The plan adds to each line the stations that the junctions
 // need, and marks what the sweep leaves out to the junction's faces (junction-faces.ts). A road bridge's end is a way of
 // its junction: it stays through, and a side arm's mouth runs from its deck's edge.
-import { PROFILES, type Line } from '../terrain/bins';
+import { DRIVEWAYS, PROFILES, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { inTown, junctionStation, meetingsOf, sideAt, type Arm, type Meeting, type Way } from './arms';
 import { cornerOf, type Corner } from './corner';
@@ -19,15 +19,14 @@ import type { Run } from './sweep';
 
 /** The widest turn between two ways that makes a corner where neither is a side arm, by the fit's tangents, and where one is, by the ways' direction. */
 const MAX_TURN = (150 * Math.PI) / 180, MAX_SIDE_TURN = (172 * Math.PI) / 180;
-/** Classes that cross a town road's sidewalk as a driveway. */
-const DRIVES = ['service', 'track'];
 /** A mouth needs this many metres of its way past it. */
 const MOUTH_ROOM_M = 1;
 
 /** A side arm's mouth: the way, metres along it where its whole carriageway starts, its corners by the side of its line, the through ways, and the metres along them that it spans from the junction. */
 export interface Mouth { way: Way; far: number; left: Corner; right: Corner; through: Way[]; reach: number }
 
-export interface Junctions { corners: Corner[]; mouths: Mouth[]; ends: PathEnd[] }
+/** A junction's faces, its ways' ends on roads, and the roads that end where only paths run on. */
+export interface Junctions { corners: Corner[]; mouths: Mouth[]; ends: PathEnd[]; plain: Way[] }
 
 /** A lowered kerb ramps back up over this many metres past its stretch. Two paths out of a point, at this cosine or less, are one that runs on. */
 const RAMP_M = 1.2, RUNS_ON_COS = -0.5;
@@ -55,7 +54,7 @@ const kerbedToward = (p: Way, w: Arm) => sideAt(p, (w.u[0] * p.u[1] - w.u[1] * p
 function drivesOf(arms: Arm[], pair: Arm[]): Way[] {
     // A deck's walk ends at its parapet's cap: what leaves there has a mouth.
     if (!pair.every(({ run }) => run) || pair.some(({ line }) => isDeck(line))) return [];
-    return arms.filter((arm): arm is Way => !arm.through && !!arm.run && DRIVES.includes(CLASSES[arm.line.profile]) && !inTown(arm as Way) && pair.some(p => kerbedToward(p as Way, arm)));
+    return arms.filter((arm): arm is Way => !arm.through && !!arm.run && DRIVEWAYS.includes(CLASSES[arm.line.profile]) && !inTown(arm as Way) && pair.some(p => kerbedToward(p as Way, arm)));
 }
 
 /** The corners between neighbouring ways: none between two side arms, and none where the through pair runs on in about one curve. */
@@ -143,7 +142,7 @@ function settle(run: Run, { cuts, breaks, paints, drops }: Marks): void {
  * chain further: a mouth past a tile's buffer can raise a through way that a nearer junction then reads.
  */
 export function planJunctions(lines: Line[], runs: Run[], crossings: { x: number; y: number }[] = []): Junctions {
-    const out: Junctions = { corners: [], mouths: [], ends: [] }, marks = new Map<Run, Marks>();
+    const out: Junctions = { corners: [], mouths: [], ends: [], plain: [] }, marks = new Map<Run, Marks>();
     const marksOf = (run: Run) => marks.get(run) ?? marks.set(run, { cuts: [], breaks: [], paints: [], drops: [] }).get(run)!;
     const roadMarks: RoadMarks = {
         paint: (run, from, to, paint) => marksOf(run).paints.push({ from: Math.min(from, to), to: Math.max(from, to), paint }),
@@ -158,7 +157,8 @@ export function planJunctions(lines: Line[], runs: Run[], crossings: { x: number
     };
     for (const meeting of meetingsOf(lines, runs)) {
         const { drives, corners } = junctionAt(lines, meeting, out, mark, roadMarks), ground = groundOf(meeting.roads).filter(arm => !drives.includes(arm));
-        if (ground.length < 2) continue;
+        if (!ground.length) continue;
+        if (meeting.roads.length === 1 && meeting.paths.length) out.plain.push(ground[0]);
         const ends = endsOf(ground, [...meeting.paths, ...drives], corners, mark);
         // A driveway crosses the sidewalk, and a path that runs on crosses the road. A path that stops on the sidewalk leaves its kerb whole.
         for (const { way, walk } of ends) if (walk && (drives.includes(way) || ends.some(other => other.way.u[0] * way.u[0] + other.way.u[1] * way.u[1] < RUNS_ON_COS))) lowerAt(way, ground, roadMarks);
