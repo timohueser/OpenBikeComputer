@@ -11,7 +11,7 @@ The document is a path, or an issue `#N`. If `gh api repos/{owner}/{repo}/issues
 | Document | Tests |
 | --- | --- |
 | a system doc in `docs/design/` | comprehension |
-| an issue design, by its `Size:` line | S or M: comprehension; L: comprehension, critic and readiness |
+| an issue design, by its `Size:` line | S: comprehension; M: critic; L: comprehension, critic and readiness |
 | any other document | comprehension |
 
 The user can ask for any test. When a design has no `Size:` line, run comprehension and say that the line is missing. An S design gets no test only in the automatic run at the end of `design`; this command runs comprehension on it.
