@@ -49,6 +49,7 @@
     { "name": "funicular-eye", "view": "?lat=46.815513&lon=8.395130&heading=212.7&pitch=-3&eye=2.0&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "lake-shore", "view": "?lat=46.796975&lon=8.3872&heading=0&pitch=-25&alt=1772&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "river-area-track", "view": "?lat=46.81652&lon=8.3932&heading=350&pitch=-35&alt=1004&date=2026-08-15&time=10:30&weather=sunny" },
+    { "name": "zebra-tagged", "view": "?lat=46.81948&lon=8.40860&heading=0.0&pitch=-35.0&eye=15&date=2026-08-15&time=10:30&weather=sunny" },
     {"name": "path-on-cut", "view": "?lat=46.825430&lon=8.379120&heading=346.0&pitch=-25.0&eye=8&date=2026-08-15&time=10:30&weather=sunny"},
     {"name": "j-tt-a", "view": "?lat=46.815757&lon=8.382394&heading=72.2&pitch=-60&eye=6&date=2026-08-15&time=10:30&weather=sunny"},
     {"name": "forecourt-top", "view": "?lat=46.82225&lon=8.42460&heading=0.0&pitch=-80.0&eye=28&date=2026-08-15&time=10:30&weather=sunny"}

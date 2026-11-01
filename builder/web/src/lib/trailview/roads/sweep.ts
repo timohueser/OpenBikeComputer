@@ -4,7 +4,7 @@
 import { RAIL, type Line } from '../terrain/bins';
 import { lookWord, type PieceBuilder } from './piece';
 import type { Paint } from './marks';
-import { carriageway, CF, lowered, sideOf, type Part } from './section';
+import { carriageway, CF, drawnCode, lowered, sideOf, type Part } from './section';
 import { CUT, type Station } from './stations';
 import { sideStop, type Shore } from './shore';
 import { onWay, type Ways } from './ways';
@@ -54,7 +54,7 @@ export function point(b: PieceBuilder, run: Run, j: number, part: Part, a: numbe
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!;
     for (const slot of slots) if (slot.a === a && slot.dz === part.dz && slot.flags === part.flags) return slot.index;
     const s = run.stations[j], plane = s.z + s.bank * a + run.lift, x = s.x + s.ax * a, y = s.y + s.ay * a, band = bandRow(part.flags);
-    const index = b.vertex(x, y, band ? plane : plane + part.dz, lookWord(part.mat, run.line.code, under(run.ways, part.flags, x, y), run.prio, band ? edge : s.h), a, countOf(run, s));
+    const index = b.vertex(x, y, band ? plane : plane + part.dz, lookWord(part.mat, drawnCode(run.line), under(run.ways, part.flags, x, y), run.prio, band ? edge : s.h), a, countOf(run, s));
     slots.push({ a, dz: part.dz, flags: part.flags, index });
     return index;
 }
@@ -64,7 +64,7 @@ function painted(b: PieceBuilder, run: Run, j: number, part: Part, paint: Paint)
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!, flags = -paint.mat;
     for (const slot of slots) if (slot.a === part.a && slot.flags === flags) return slot.index;
     const s = run.stations[j], x = s.x + s.ax * part.a, y = s.y + s.ay * part.a, z = s.z + s.bank * part.a + run.lift + part.dz;
-    const index = b.vertex(x, y, z, lookWord(paint.mat, run.line.code, 0, run.prio, s.h), paint.across(s, x, y, part.a), paint.along(s, countOf(run, s)));
+    const index = b.vertex(x, y, z, lookWord(paint.mat, drawnCode(run.line), 0, run.prio, s.h), paint.across(s, x, y, part.a), paint.along(s, countOf(run, s)));
     slots.push({ a: part.a, dz: part.dz, flags, index });
     return index;
 }
@@ -114,9 +114,9 @@ export function cap(b: PieceBuilder, list: number[], run: Run, j: number, dir: 1
         const angle = Math.PI * step / steps, cos = Math.cos(angle), sin = Math.sin(angle), dx = s.ax * cos + fx * sin, dy = s.ay * cos + fy * sin;
         const r = run.shore ? Math.min(to, s.h + sideStop(run.shore, s.x + dx * s.h, s.y + dy * s.h, dx, dy, () => edge - s.h)) : to, x = s.x + dx * r, y = s.y + dy * r;
         const band = (part.flags & (CF.SAMPLE | CF.MESH)) !== 0;
-        return b.vertex(x, y, s.z + run.lift + (band ? 0 : part.dz), lookWord(part.mat, line.code, under(run.ways, part.flags, x, y), run.prio, band ? edge : s.h), r, count);
+        return b.vertex(x, y, s.z + run.lift + (band ? 0 : part.dz), lookWord(part.mat, drawnCode(line), under(run.ways, part.flags, x, y), run.prio, band ? edge : s.h), r, count);
     };
-    const centre = b.vertex(s.x, s.y, s.z + run.lift + middle.dz, lookWord(middle.mat, line.code, 0, run.prio, s.h), 0, count);
+    const centre = b.vertex(s.x, s.y, s.z + run.lift + middle.dz, lookWord(middle.mat, drawnCode(line), 0, run.prio, s.h), 0, count);
     const ahead = dir > 0;
     let inner = Array.from({ length: steps + 1 }, (_, step) => at(s.h, step, road[0]));
     for (let step = 0; step < steps; step++) list.push(...(ahead ? [centre, inner[step + 1], inner[step]] : [centre, inner[step], inner[step + 1]]));

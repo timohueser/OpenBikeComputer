@@ -2,7 +2,7 @@
 // and the lowered kerb under a zebra, a path's end or a driveway. looks.wgsl draws the paint from what each vertex carries.
 import { metresPerUnit, ROAD } from '../terrain/bins';
 import type { Way } from './arms';
-import { classOf, LOOK, lookOf, surfaceName } from './section';
+import { classOf, LOOK, lookOf } from './section';
 import type { Station } from './stations';
 import type { Run } from './sweep';
 
@@ -20,8 +20,8 @@ const LINE_ROOM_M = 1, TRIANGLE_ROOM_M = 2;
 const MAIN = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link'];
 /** A lowered kerb's stretch is this much wider than the way that crosses it; a way at a shallow angle crosses at no less than this sine. */
 const DROP_CLEAR_M = 0.5, LEAST_SINE = 0.3;
-/** The surfaces that take a give-way line. */
-const PAVED_SURFACES = ['main', 'road', 'oneway'];
+/** The looks that take a give-way line: it draws on asphalt. */
+const ASPHALT_LOOKS: number[] = [LOOK.ASPHALT, LOOK.MAIN, LOOK.MOTORWAY];
 
 /** Paint on a carriageway: its material, and the metres across and the count along that each vertex carries. */
 export interface Paint {
@@ -70,9 +70,9 @@ export function zebras(runs: Run[], crossings: { x: number; y: number }[], { pai
     }
 }
 
-/** Whether a side arm gives way to its through ways: at a roundabout, or a minor paved road at a main one. A one-way arm that leaves has no traffic to stop. */
+/** Whether a side arm gives way to its through ways: at a roundabout, or a minor asphalt road at a main one. A ring runs on, and a one-way arm that leaves has no traffic to stop. */
 function givesWay({ line, step }: Way, through: Way[]): boolean {
-    if (!PAVED_SURFACES.includes(surfaceName(line)) || (surfaceName(line) === 'oneway' && step > 0)) return false;
+    if (line.roundabout || !ASPHALT_LOOKS.includes(lookOf(line)) || line.oneway === step) return false;
     if (through.some(({ line: road }) => road.roundabout)) return true;
     const main = MAIN.indexOf(classOf(through.reduce((best, way) => (way.line.profile < best.line.profile ? way : best)).line));
     return main >= 0 && !MAIN.slice(0, main + 2).includes(classOf(line));

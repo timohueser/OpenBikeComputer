@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { SIDE_ON } from '../stream/features';
-import { metresPerUnit, PATH, PROFILES, ROAD, zebraTagged, type Line } from '../terrain/bins';
+import { features, metresPerUnit, PATH, PROFILES, ROAD, zebraTagged, type Line } from '../terrain/bins';
 import { LEFT } from '../terrain/town';
 import { planOf } from './mesh';
-import { lowered, LOOK, MAT, sideOf } from './section';
+import { drawnCode, lowered, LOOK, lookOf, MAT, sideOf } from './section';
 import { CUT, type Station } from './stations';
 
 const O = { x: 2 ** 28, y: 2 ** 29 }, unit = metresPerUnit(O.y), CLASSES = Object.keys(PROFILES);
@@ -20,8 +20,14 @@ function way(points: number[][], extra: Partial<Line> = {}): Line {
         anchors: new Array(count).fill(true), plan: { tangent, grade: zero, bank: zero, widen: zero }, ...extra,
     };
 }
+/** What the pipeline makes of a road's tags. */
+function tagged(tags: Record<string, string>): Partial<Line> {
+    const part = { outer: false, xy: Int32Array.from([0, 0, 400, 0]), z: new Float32Array(2).fill(1000) };
+    const { code, h, profile, oneway, roundabout } = features([{ kind: 'road', tags, geometry: 'line', parts: [part] }], { level: 13, x: 4287, y: 2889 }).lines[0];
+    return { code, h, profile, oneway, roundabout };
+}
 const at = (e: number, n: number) => ({ x: O.x + e / unit, y: O.y - n / unit });
-const plan = (lines: Line[], crossings: { x: number; y: number }[] = []) => planOf({ lines, buildings: [], barriers: [], crossings });
+const plan = (lines: Line[], crossings: { x: number; y: number }[] = []) => planOf({ lines, lakes: [], seas: [], areas: [], buildings: [], barriers: [], crossings });
 const painted = (stations: Station[], mat: number) => stations.filter(({ paint }) => paint?.mat === mat);
 const stationsOf = (lines: Line[], line: Line, crossings: { x: number; y: number }[] = []) => plan(lines, crossings).runs.find(run => run.line === line)!.stations;
 const main = () => way([[-100, 0], [100, 0]]);
@@ -138,6 +144,8 @@ describe('a give-way line', () => {
         expect(painted(stationsOf([through(), link], link), LOOK.GIVE_WAY)).toEqual([]);
         const gravel = stem('residential', { code: 3 });
         expect(painted(stationsOf([through(), gravel], gravel), LOOK.GIVE_WAY)).toEqual([]);
+        const setts = stem('residential', { surface: 'sett' });
+        expect(painted(stationsOf([through(), setts], setts), LOOK.GIVE_WAY)).toEqual([]);
         const quiet = stem('residential');
         expect(painted(stationsOf([through('residential'), quiet], quiet), LOOK.GIVE_WAY)).toEqual([]);
     });
@@ -150,17 +158,18 @@ describe('a give-way line', () => {
 });
 
 describe('a roundabout', () => {
-    /** A ring of radius 15 m, closed at its east point, drawn clockwise as one way is, with a road at each quarter. */
+    const RING = { highway: 'tertiary', junction: 'roundabout' };
+    /** A tertiary ring of radius 15 m, closed at its east point, drawn clockwise as one way is, with a road at each quarter. */
     const ring = (arms: number[]) => {
         const points = Array.from({ length: 49 }, (_, k) => {
             const t = (-k * 7.5 * Math.PI) / 180;
             return [15 * Math.cos(t), 15 * Math.sin(t)];
-        }), line = way(points, { roundabout: true, code: 7, profile: profile('tertiary'), h: 3 });
+        }), line = way(points, tagged(RING));
         const out = arms.map(degrees => {
             const t = (-degrees * Math.PI) / 180, v = degrees / 7.5;
             line.sideWays = line.sideWays ?? new Array(49).fill(0);
             const start = points[v];
-            return way([start, [85 * Math.cos(t), 85 * Math.sin(t)]], { sideWays: [SIDE_ON, 0], profile: profile('tertiary') });
+            return way([start, [85 * Math.cos(t), 85 * Math.sin(t)]], { sideWays: [SIDE_ON, 0], ...tagged({ highway: 'tertiary' }) });
         });
         return { line, out };
     };
@@ -171,16 +180,20 @@ describe('a roundabout', () => {
         for (const arm of out) expect(painted(of(arm), LOOK.GIVE_WAY).length).toBeGreaterThan(0);
     });
 
-    it('lets out a one-way road that leaves it, and stops one that enters', () => {
-        const { line } = ring([]), leaves = way([[0, -15], [0, -85]], { sideWays: [SIDE_ON, 0], code: 7 }), enters = way([[0, 85], [0, 15]], { sideWays: [0, 1], code: 7 });
-        const { runs } = plan([line, leaves, enters]), of = (one: Line) => runs.find(run => run.line === one)!.stations;
+    it('lets out a one-way road that leaves it, and stops one that enters, whichever way its line runs', () => {
+        const one = (points: number[][], sideWays: number[], oneway: string) => way(points, { sideWays, ...tagged({ highway: 'tertiary', oneway }) });
+        const { line } = ring([]), leaves = one([[0, -15], [0, -85]], [SIDE_ON, 0], 'yes'), enters = one([[0, 85], [0, 15]], [0, 1], 'yes'), against = one([[-85, 0], [-15, 0]], [0, 1], '-1');
+        const { runs } = plan([line, leaves, enters, against]), of = (one: Line) => runs.find(run => run.line === one)!.stations;
         expect(painted(of(leaves), LOOK.GIVE_WAY)).toEqual([]);
+        expect(painted(of(against), LOOK.GIVE_WAY)).toEqual([]);
         expect(painted(of(enters), LOOK.GIVE_WAY).length).toBeGreaterThan(0);
     });
 
-    it('draws its ring as a one-way road: no middle line, from its surface alone', () => {
-        const { line } = ring([]);
-        expect(line.roundabout).toBe(true);
-        expect(plan([line]).runs[0].stations.some(({ cut }) => cut)).toBe(false);
+    it('takes no middle line in its mesh and keeps its code on the ground, from its tags alone', () => {
+        const ring = way([[0, 0], [10, 0]], tagged(RING)), street = way([[0, 0], [10, 0]], tagged({ highway: 'tertiary' }));
+        expect(lookOf(ring)).toBe(LOOK.MAIN);
+        expect([ring.code, drawnCode(ring)]).toEqual([2, 7]);
+        expect([street.code, drawnCode(street)]).toEqual([2, 2]);
+        expect(drawnCode(way([[0, 0], [10, 0]], tagged({ ...RING, oneway: 'no' })))).toBe(2);
     });
 });

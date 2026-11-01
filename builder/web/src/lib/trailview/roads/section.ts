@@ -7,6 +7,8 @@ import { LEFT, RIGHT } from '../terrain/town';
 const CLASS_NAMES = Object.keys(PROFILES), SURFACE_NAMES = Object.keys(SURFACES) as (keyof typeof SURFACES)[];
 export const classOf = (line: Line) => CLASS_NAMES[line.profile];
 export const surfaceName = (line: Line) => SURFACE_NAMES[(line.code & 15) - 1];
+/** The surface code of a way's mesh. A one-way road of a minor class keeps code `road` in its record, as the ground without corridors draws it, and loses its middle line only here. */
+export const drawnCode = (line: Line) => (line.oneway !== undefined && surfaceName(line) === 'road' ? SURFACE_NAMES.indexOf('oneway') + 1 : line.code);
 
 export { LIFT_M };
 

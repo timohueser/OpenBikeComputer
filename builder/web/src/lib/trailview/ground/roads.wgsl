@@ -40,8 +40,6 @@ const KERB_SHADOW_M: f32 = 0.35;
 const RUTS_MEAN_M: f32 = 0.75;
 const GRASSED_MEAN_M: f32 = 0.55;
 const TREAD_MEAN_M: f32 = 0.36;
-// A centre line 3 m on, 6 m off: each period divides REPEAT of sweep.ts, so a dash keeps its phase where a way's
-// count takes a new base.
 // As SURFACES of bins.ts.
 const CODE_GRAVEL: u32 = 3u;
 const CODE_DIRT: u32 = 4u;

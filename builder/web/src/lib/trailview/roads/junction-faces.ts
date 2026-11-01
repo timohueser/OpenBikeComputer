@@ -7,7 +7,7 @@ import type { Corner } from './corner';
 import type { Mouth } from './junctions';
 import { lookWord, type PieceBuilder } from './piece';
 import { planeAt } from './planes';
-import { carriageway, CF, junctionFace, LIFT_M, LOOK, MAT, sideOf, type Part } from './section';
+import { carriageway, CF, drawnCode, junctionFace, LIFT_M, LOOK, MAT, sideOf, type Part } from './section';
 import { sideStop } from './shore';
 import { SAME_M, stationIndex, stationOn, type Station } from './stations';
 import { quad, under, type Run } from './sweep';
@@ -32,7 +32,8 @@ const mix = (a: number, b: number, t: number) => a + (b - a) * t;
 /** A corner's surface: its through road's, so tone never mixes within a triangle. */
 function surfaceOf({ road }: Corner, prio: number): Surface & { code: number } {
     const { mat, half, across } = junctionFace(road)!;
-    return { word: lookWord(mat, road.code, 0, prio, half), across, code: road.code };
+    const code = drawnCode(road);
+    return { word: lookWord(mat, code, 0, prio, half), across, code };
 }
 
 /** The rows of a side in metres past the carriageway's edge, and its core's outer edge there. */

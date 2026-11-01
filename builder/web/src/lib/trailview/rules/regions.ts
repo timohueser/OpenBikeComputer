@@ -180,10 +180,10 @@ function merge(a: Record<string, unknown>, b: Record<string, unknown>): Record<s
     return out;
 }
 
-/** A value by place, `{"es-ga": …, "es": …, "*": …}`: the entry of the place, else of its country, else `"*"`. */
 /** The values by place of a look. */
 const BY_PLACE = ['roadLine', 'zebra', 'zebraSetts', 'giveWay', 'dashes'];
 
+/** A value by place, `{"es-ga": …, "es": …, "*": …}`: the entry of the place, else of its country, else `"*"`. */
 const local = (value: unknown, place: string) =>
     isObject(value) ? (value[place] ?? value[place.split('-')[0]] ?? value['*']) : value;
 

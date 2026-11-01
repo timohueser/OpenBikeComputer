@@ -4,7 +4,7 @@
 // last, under the ground; the wall alone, seen from the sun, would let the sun past its foot.
 import { LIFT_M } from '../terrain/bins';
 import { lookWord, type PieceBuilder } from './piece';
-import { CF, MAT, type Part } from './section';
+import { CF, drawnCode, MAT, type Part } from './section';
 import { allowed, edgeOf, WALL_OUT_M, type Standing } from './standing';
 import { between, type Station } from './stations';
 import { countOf, point, quad, type Run } from './sweep';
@@ -75,7 +75,7 @@ function placer(b: PieceBuilder, run: Run, side: 1 | -1, s: Station, edge: numbe
     const base = s.z + side * s.bank * edge + run.lift + LIFT_M;
     return (a: number, al: number, over: number, mat: number) => {
         const out = side * (edge + a), on = side * al;
-        return b.vertex(s.x + s.ax * out - s.ay * on, s.y + s.ay * out + s.ax * on, base + over, lookWord(mat, run.line.code, 0, run.prio, s.h), out, countOf(run, s));
+        return b.vertex(s.x + s.ax * out - s.ay * on, s.y + s.ay * out + s.ax * on, base + over, lookWord(mat, drawnCode(run.line), 0, run.prio, s.h), out, countOf(run, s));
     };
 }
 

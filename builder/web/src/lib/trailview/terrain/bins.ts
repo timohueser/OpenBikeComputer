@@ -130,13 +130,20 @@ export function featureTile({ level, x, y }: Node): Node | undefined {
     return z < LOW ? undefined : { level: z, x: x >> (level - z), y: y >> (level - z) };
 }
 
+/**
+ * How traffic runs on a one-way road: 1 along its line, -1 against it, 0 by turns; none on a two-way road.
+ * A motorway and a roundabout are one-way unless OSM says otherwise.
+ */
+function onewayOf({ highway = '', oneway = '', junction = '' }: Record<string, string>): Line['oneway'] {
+    if (!oneway) return ['motorway', 'motorway_link'].includes(highway) || junction === 'roundabout' ? 1 : undefined;
+    return ({ yes: 1, true: 1, 1: 1, '-1': -1, reverse: -1, reversible: 0, alternating: 0 } as Record<string, 1 | -1 | 0>)[oneway];
+}
+
 /** The prototype's road surface of a highway (`road_surface` in its bake); `town` where a building is near. */
 export function surfaceOf(tags: Record<string, string>, town = false): Surface {
-    const { highway = '', surface = '', tracktype = '', oneway = '', junction = '' } = tags;
-    // A motorway and a roundabout are one-way unless OSM says otherwise. Traffic that takes turns, or
-    // changes its direction, keeps no line in the middle either.
-    const implied = ['motorway', 'motorway_link'].includes(highway) || junction === 'roundabout';
-    const main = (oneway ? ['yes', 'true', '1', '-1', 'reverse', 'reversible', 'alternating'].includes(oneway) : implied) ? 'oneway' : 'main';
+    const { highway = '', surface = '', tracktype = '' } = tags;
+    // Traffic that takes turns, or changes its direction, keeps no line in the middle either.
+    const main = onewayOf(tags) !== undefined ? 'oneway' : 'main';
     if (['asphalt', 'paved', 'concrete', 'paving_stones', 'sett', 'chipseal'].includes(surface)) return MAIN.slice(0, 4).includes(highway) ? main : 'road';
     if (['gravel', 'compacted', 'fine_gravel', 'pebblestone'].includes(surface)) return 'gravel';
     if (['dirt', 'ground', 'earth', 'mud', 'unpaved', 'sand'].includes(surface)) return 'dirt';
@@ -204,8 +211,8 @@ export interface Line {
     sleepers?: number[]; wire?: boolean;
     /** A town road's sides with a sidewalk per segment, LEFT and RIGHT of town.ts, as townPieces decides them. */
     sidewalks?: number[];
-    /** Whether it is a roundabout's ring. */
-    roundabout?: boolean;
+    /** Whether it is a roundabout's ring; how its traffic runs where it is one-way, as `onewayOf` says. */
+    roundabout?: boolean; oneway?: 1 | -1 | 0;
     /** Per vertex, the ways out of it that leave its junction as a side: SIDE_BACK and SIDE_ON. */
     sideWays?: number[];
     /** The `surface` tag of its way. */
@@ -333,7 +340,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
                         const line: Line = {
                             kind: type, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1), plan: shape.plan && planPart(shape.plan, from, to + 1),
                             h: paved(from) ? halfWidth(tags, 'paving') : h, code: paved(from) ? PAVING_CODE : code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
-                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined, sideWays: sideWays?.slice(from, to + 1), surface: tags.surface, roundabout: tags.junction === 'roundabout' || undefined,
+                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined, sideWays: sideWays?.slice(from, to + 1), surface: tags.surface, roundabout: tags.junction === 'roundabout' || undefined, oneway: onewayOf(tags),
                         };
                         if (type === RAIL) line.sleepers = sleepers(line);
                         lines.push(line);
