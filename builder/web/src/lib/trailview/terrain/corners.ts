@@ -1,6 +1,6 @@
 // The corners of the junctions of paved roads. Where two roads leave a shared vertex less than MAX_TURN
 // apart, their kerb turns from the edge of the one to the edge of the other round an arc: the stamps paint
-// its asphalt and the sidewalk round it and hold their ground, and the slabs follow it. A corner that
+// its asphalt and the sidewalk round it and hold their ground. A corner that
 // another line's band reaches into stays sharp, so its paint covers no other way or water.
 import { crossSlope, junctionWays, metresPerUnit, PAVED_CODES, ROAD, ROAD_CODE, splitThrough, walkOf, type Line } from './bins';
 import { gridOf, LEFT, near, RIGHT, type Grid } from './town';
@@ -44,7 +44,7 @@ export function partnersOf(lines: Line[]): Map<Line, [Line?, Line?]> {
     return partner;
 }
 
-/** A road's half-width at its vertex v with the widening of a bend: halfway to its partner's at an end that runs on into one, so the paint's and the slab's edges run on across the joint. */
+/** A road's half-width at its vertex v with the widening of a bend: halfway to its partner's at an end that runs on into one, so the paint's and the corridor's edges run on across the joint. */
 export function halfAt(line: Line, v: number, partners: Map<Line, [Line?, Line?]>): number {
     const other = v === 0 ? partners.get(line)?.[0] : v === line.z.length - 1 ? partners.get(line)?.[1] : undefined;
     return (other ? (line.h + other.h) / 2 : line.h) + (line.plan?.widen[v] ?? 0);
@@ -161,8 +161,7 @@ function cornerOf(p: Way, q: Way, partners: Map<Line, [Line?, Line?]>): Corner |
     if (!(r >= LEAST_M)) return undefined;
     const o = centre(r);
     // An end of the arc: the foot of its centre on its road's edge, where the arc meets the edge square and
-    // the road's slab stops across it; with the kerb's height, the surface's slope and the sidewalk's width
-    // there, as that slab and the road's core have them.
+    // with the kerb's height, the surface's slope and the sidewalk's width there, as the road's core has them.
     const end = ({ line, v, step }: Way, n: number[]): [[number, number], number, [number, number], number] => {
         const ox = x + o[0] / unit, oy = y + o[1] / unit;
         let s = Math.min(v, v + step), u = 0, dx = 0, dy = 0;
@@ -188,25 +187,6 @@ function cornerOf(p: Way, q: Way, partners: Map<Line, [Line?, Line?]>): Corner |
         o: [Math.round(x + o[0] / unit), Math.round(y + o[1] / unit)], a, b, z: [za, zb], grad: [ga, gb], walk: [wa, wb],
         code: p.line.code === q.line.code ? p.line.code : ROAD_CODE, profile: narrow.profile, h: narrow.h,
     };
-}
-
-/**
- * The height of a corner's ground at a point: each road's surface carried on from its end to the point, by the
- * point's distances past each road's sidewalk from the corner's two sides: the first road's, from the centre to
- * its end and on along its edge to the roads' corner, and the second's. So the ground is each road's own within
- * its sidewalk's width of its side, where that road's core holds it too.
- */
-export function heightAt({ o, a, b, z, grad, walk }: Corner, x: number, y: number): number {
-    const unit = metresPerUnit(a[1]), ea = [a[0] - o[0], a[1] - o[1]], eb = [b[0] - o[0], b[1] - o[1]], e = [x - o[0], y - o[1]];
-    const s = ((eb[0] - ea[0]) * eb[0] + (eb[1] - ea[1]) * eb[1]) / (-ea[1] * eb[0] + ea[0] * eb[1]), c = [ea[0] - s * ea[1], ea[1] + s * ea[0]];
-    const gap = (p: number[], q: number[]) => {
-        const t = Math.min(1, Math.max(0, ((e[0] - p[0]) * (q[0] - p[0]) + (e[1] - p[1]) * (q[1] - p[1])) / ((q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2 || 1)));
-        return Math.hypot(e[0] - p[0] - t * (q[0] - p[0]), e[1] - p[1] - t * (q[1] - p[1]));
-    };
-    const da = Math.max(0, Math.min(gap([0, 0], ea), gap(ea, c)) * unit - walk[0]), db = Math.max(0, Math.min(gap(c, eb), gap(eb, [0, 0])) * unit - walk[1]);
-    const w = da + db > 0 ? da / (da + db) : 0.5;
-    const za = z[0] + (grad[0][0] * (x - a[0]) + grad[0][1] * (y - a[1])) * unit;
-    return za + (z[1] + (grad[1][0] * (x - b[0]) + grad[1][1] * (y - b[1])) * unit - za) * w;
 }
 
 /**
@@ -240,7 +220,7 @@ export function boxOf({ o, a, b, h }: Corner): number[] {
 /**
  * Whether a point lies in a corner: between the ends of its arc seen from its centre, and off both roads or
  * less than the narrower road's half-width onto them, where the arc is the nearest kerb. So no road's edge
- * that the arc replaces paints or holds a slab where a road bends inside the corner.
+ * that the arc replaces paints where a road bends inside the corner.
  */
 export function inCorner({ o, a, b, h }: Corner, x: number, y: number, onto = h): boolean {
     const ea = [a[0] - o[0], a[1] - o[1]], eb = [b[0] - o[0], b[1] - o[1]], e = [x - o[0], y - o[1]], reach = onto / metresPerUnit(o[1]);

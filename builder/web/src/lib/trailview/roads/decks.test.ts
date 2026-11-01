@@ -91,7 +91,7 @@ describe('a road tunnel', () => {
     it('counts its bore on in the metres of the stroke, as the corridor at its portal counts its dashes', () => {
         const { lines } = features(list, tile), road = lines.find(({ kind }) => kind === ROAD)!, tunnel = lines.find(({ kind }) => kind === TUNNEL)!, { runs } = planOf(features(list, tile));
         expect(runs.find(r => r.line === road)!.caps.map(({ j }) => j)).toEqual([0]);
-        const { far: { structures } } = structureMeshes(list, tile, owner, true), words = new Int32Array(structures!.vertices), floats = new Float32Array(structures!.vertices);
+        const { far: { structures } } = structureMeshes(list, tile, owner), words = new Int32Array(structures!.vertices), floats = new Float32Array(structures!.vertices);
         const paint = paintOf(tunnel, PAINT | BORE);
         const counts = Array.from({ length: words.length / 6 }, (_, k) => k).filter(k => words[6 * k + 3] >>> 0 === paint).map(k => floats[6 * k + 5]);
         expect(Math.min(...counts)).toBe(tunnel.stroke!.at);

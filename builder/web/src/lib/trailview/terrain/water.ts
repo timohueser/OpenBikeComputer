@@ -56,11 +56,11 @@ export class Water {
     dropped = 0;
     private drawn = '';
 
-    constructor(private readonly stamps: Stamps, private readonly corridors: boolean) {}
+    constructor(private readonly stamps: Stamps) {}
 
     async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer): Promise<void> {
         this.resources = undefined;
-        const { device } = gpu, { pipelines, layout } = await gpu.once(this.corridors ? snappedPipelines : plainPipelines);
+        const { device } = gpu, { pipelines, layout } = await gpu.once(waterPipelines);
         // A node index and a level per instance, at most one instance per node.
         const instances = gpu.buffer('water', nodes.size / 2, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         this.placed.clear();
@@ -156,7 +156,7 @@ export class Water {
 }
 
 /** The draws of the kinds, and their group 0. */
-async function waterPipelines(gpu: Gpu, snapped: boolean): Promise<{ pipelines: Record<Kind, GPURenderPipeline>; layout: GPUBindGroupLayout }> {
+async function waterPipelines(gpu: Gpu): Promise<{ pipelines: Record<Kind, GPURenderPipeline>; layout: GPUBindGroupLayout }> {
     const { device } = gpu, V = GPUShaderStage.VERTEX, { surface, ground, features } = gpu.once(layouts);
     const layout = device.createBindGroupLayout({ entries: [
         { binding: 0, visibility: V | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
@@ -168,7 +168,7 @@ async function waterPipelines(gpu: Gpu, snapped: boolean): Promise<{ pipelines: 
     const pipeline = (kind: Kind) => device.createRenderPipelineAsync({
         label: kind, layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surface, ground, features] }),
         vertex: {
-            module, entryPoint: 'water_vertex', constants: { SEA_DRAW: kind === 'seas' ? 1 : 0, SNAPPED_WATER: snapped ? 1 : 0 }, buffers: [{
+            module, entryPoint: 'water_vertex', constants: { SEA_DRAW: kind === 'seas' ? 1 : 0 }, buffers: [{
                 arrayStride: WATER_VERTEX * 4, attributes: [
                     { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'float32' },
                     { shaderLocation: 2, offset: 12, format: 'float32x2' }, { shaderLocation: 3, offset: 20, format: 'float32' },
@@ -181,4 +181,3 @@ async function waterPipelines(gpu: Gpu, snapped: boolean): Promise<{ pipelines: 
     });
     return { pipelines: Object.fromEntries(await Promise.all(KINDS.map(async kind => [kind, await pipeline(kind)]))) as Record<Kind, GPURenderPipeline>, layout };
 }
-const plainPipelines = (gpu: Gpu) => waterPipelines(gpu, false), snappedPipelines = (gpu: Gpu) => waterPipelines(gpu, true);

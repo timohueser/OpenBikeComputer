@@ -1,4 +1,4 @@
-// Roads: street lamps along the lit ones in built-up places; the terrain draws the road itself.
-import { lampKind } from '../structures/lamps';
+// Roads: their street lamps. A corridor or the paint draws the road itself.
+import { lampKind } from '../roads/lamps';
 
-export default lampKind(3.5);
+export default lampKind;

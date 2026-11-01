@@ -57,25 +57,21 @@ const RIBBON_PIXELS: f32 = 1.5;
 // The level of a vertex that lies on the drawn surface, as DRAPED of water-mesh.ts.
 const DRAPED: f32 = -1e30;
 
-// Where corridors draw the roads, water near a road and near the eye lies on the drawn mesh, which its snap
-// moves. plain_height reads a ninth of the vertices, so the rest of the water lies on it. Without corridors
-// the drawn mesh is never read, so that the compiled water has the plain path's exact values.
-override SNAPPED_WATER: bool = false;
+// Water near a road and near the eye lies on the drawn mesh, which its snap moves. plain_height reads a
+// ninth of the vertices, so the rest of the water lies on it.
 const SNAPPED_M: f32 = 8.0;
 const SNAPPED_RANGE_M: f32 = 200.0;
 // The shore moves visibly between the two heights, so the last metres of the range blend them.
 const SNAPPED_BLEND_M: f32 = 20.0;
 
 fn water_ground(s: vec2f) -> f32 {
-    if (SNAPPED_WATER) {
-        let share = 1.0 - smoothstep(SNAPPED_RANGE_M - SNAPPED_BLEND_M, SNAPPED_RANGE_M, length(to_render(s)));
-        if (share > 0.0) {
-            let m = mask_at(s, u32(ceil(lod(s))), true);
-            if (m.level != 0u && m.kind.x != 0u && m.edge < SNAPPED_M) {
-                let drawn = drawn_height(s);
-                let plain = plain_height(s);
-                return select(drawn, mix(plain, drawn, share), known(drawn) && known(plain));
-            }
+    let share = 1.0 - smoothstep(SNAPPED_RANGE_M - SNAPPED_BLEND_M, SNAPPED_RANGE_M, length(to_render(s)));
+    if (share > 0.0) {
+        let m = mask_at(s, u32(ceil(lod(s))), true);
+        if (m.level != 0u && m.kind.x != 0u && m.edge < SNAPPED_M) {
+            let drawn = drawn_height(s);
+            let plain = plain_height(s);
+            return select(drawn, mix(plain, drawn, share), known(drawn) && known(plain));
         }
     }
     return plain_height(s);

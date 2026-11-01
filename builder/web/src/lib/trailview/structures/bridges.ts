@@ -6,7 +6,7 @@ import { BRIDGE, isPath, LIFT_M, metresPerUnit, RAIL_CODE, type Line, type Node 
 import { decksOf, isPaved, onDeck, PARAPET_M, teesOf, wider, type DeckPlan } from '../roads/decks';
 import { KERB_RISE_M } from '../roads/section';
 import type { Owns } from './node';
-import { curveStops, GROUND, MeshBuilder, mix, PAINT, paintOf, posts, rgb, stationsOf, type Corner, type Station } from './mesh';
+import { curveStops, GROUND, MeshBuilder, mix, PAINT, paintOf, posts, rgb, type Corner, type Station } from './mesh';
 
 /** A road's parapet: width and height above the road. */
 const PARAPET: Corner = [PARAPET_M, 1.0];
@@ -32,33 +32,22 @@ const pierColour = (road: boolean) => (road ? CONCRETE : rgb('#8d8a82'));
 /** A railway's bridge: no parapets, which would stand between the decks of two tracks side by side, but a steel railing. */
 const isTrack = (line: Line) => line.code >= RAIL_CODE;
 
-/** A bridge's stations and their metres along it: on its vertices, or with `corridors` on the curve that they draw. */
-function stopsOf(line: Line, corridors: boolean): { at: (k: number) => Station; metres: number[] } {
-    if (corridors) {
-        const stops = curveStops(line);
-        return { at: k => stops[k], metres: stops.map(({ along }) => along) };
-    }
-    const metres = [0];
-    for (let v = 1; v < line.z.length; v++) metres.push(metres[v - 1] + Math.hypot(line.xy[2 * v] - line.xy[2 * v - 2], line.xy[2 * v + 1] - line.xy[2 * v - 1]) * metresPerUnit(line.xy[2 * v + 1]));
-    return { at: stationsOf(line), metres };
-}
-
 /** A bridge without a corridor's plan. */
 const NO_DECK: DeckPlan = { walks: [0, 0], yields: [[0, 0], [0, 0]] };
 
-/** The bridges of a feature tile's `list` and `lines` whose pieces a square `owns`. Where `corridors` draw the decks of road bridges, these hand over to them. */
-export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[], owns: Owns, corridors = false): void {
+/** The bridges of a feature tile's `list` and `lines` whose pieces a square `owns`. Corridors draw the decks of road bridges, and these hand over to them. */
+export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[], owns: Owns): void {
     const lines = all.filter(line => line.kind === BRIDGE);
     if (!lines.length) return;
     // Ends that two bridge lines share are joints: no cap there.
     const ends = new Map<string, number>();
     const endKey = (line: Line, v: number) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
     for (const line of lines) for (const v of [0, line.z.length - 1]) ends.set(endKey(line, v), (ends.get(endKey(line, v)) ?? 0) + 1);
-    const tees = teesOf(all), plans = corridors ? decksOf(all) : undefined;
+    const tees = teesOf(all), plans = decksOf(all);
     for (const line of lines) {
-        const n = line.z.length, path = isPath(line), t = line.deck ?? 0.6, h = line.h, { at, metres } = stopsOf(line, corridors), last = metres.length - 1;
+        const n = line.z.length, path = isPath(line), t = line.deck ?? 0.6, h = line.h, curve = curveStops(line), at = (k: number) => curve[k], metres = curve.map(({ along }) => along), last = metres.length - 1;
         // The deck runs from `from` to `to`, short of an end that leaves a road at a T.
-        const total = metres[last], [from, to] = tees(line, total), deck = plans?.get(line) ?? NO_DECK, { walks } = deck, corridor = !!plans?.has(line);
+        const total = metres[last], [from, to] = tees(line, total), deck = plans.get(line) ?? NO_DECK, { walks } = deck, corridor = plans.has(line);
         const point = (d: number) => {
             let v = 0;
             while (v + 2 <= last && metres[v + 1] < d) v++;

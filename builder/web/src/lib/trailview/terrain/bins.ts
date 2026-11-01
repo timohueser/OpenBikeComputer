@@ -104,16 +104,13 @@ const isTrack = (tags: Record<string, string>) => TRACKS.includes(tags.railway) 
 const classOf = (tags: Record<string, string>) => (isTrack(tags) ? (tags.rack && tags.rack !== 'no' ? 'rack' : tags.railway) : tags.highway ?? '');
 /** The row of a line's class; a class that the table lacks takes the row of its kind. */
 const profileOf = (kind: string, name = '') => CLASSES.indexOf(kind === 'river' ? 'river' : Object.hasOwn(PROFILES, name) ? name : kind === 'path' ? 'path' : 'road');
-/** The table as stamp-core.wgsl reads it: PROFILE_ROWS rows of 8 floats, the shoulder of each of the SURFACE_CODES surface codes, then a vec4 that holds the bench. */
+/** The table as stamp-core.wgsl reads it: PROFILE_ROWS rows of 8 floats, and the shoulder of each of the SURFACE_CODES surface codes. */
 export const PROFILE_ROWS = 32, PROFILE_FLOATS = 8, SURFACE_CODES = 16;
-/** Where corridors draw the ways, the texels past a path's edge that its bench holds level: more than one, so the bilinear heights at the edge stay on it. */
-const BENCH_TEXELS = 1.25;
-export function profileTable(corridors = false): Float32Array<ArrayBuffer> {
-    const rows = Object.values(PROFILES), table = new Float32Array(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES + 4);
+export function profileTable(): Float32Array<ArrayBuffer> {
+    const rows = Object.values(PROFILES), table = new Float32Array(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES);
     if (rows.length > PROFILE_ROWS) throw new Error(`stamp-core.wgsl holds ${PROFILE_ROWS} profiles, not ${rows.length}.`);
     rows.forEach(({ tol, reach, least, cut, fill, tilt, walk, ditch }, i) => table.set([tol, reach, least, cut, fill, tilt, walk, ditch], PROFILE_FLOATS * i));
     for (const [surface, metres] of Object.entries(SHOULDER_M)) table[PROFILE_ROWS * PROFILE_FLOATS + codeOf(surface as Surface)] = metres;
-    table[PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES] = corridors ? BENCH_TEXELS : 0;
     return table;
 }
 /** The half-width of a waterway without a `width` tag. */
@@ -891,7 +888,7 @@ export interface NodeStamps {
  * that it can act on, so the shader sees every primitive that can reach a texel. A cell keeps the
  * order of stamp-core.wgsl: a lake's edges before its marker, a line's segments together.
  */
-export function nodeStamps(list: Feature[], tile: Node, node: Node, corridors = false): NodeStamps {
+export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps {
     const { lines, lakes, seas, pads, areas, buildings, walks } = features(list, tile);
     const shift = 22 - node.level, cell = CELL * 2 ** shift;
     const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, span = GRID * cell;
@@ -931,7 +928,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, corridors = 
     const partners = partnersOf(lines);
     // A record holds a line's index in 16 bits.
     if (lines.length + walks.length > 0x10000) throw new Error(`nodeStamps: ${lines.length + walks.length} lines pass the 16-bit index`);
-    [...lines, ...(corridors ? stopAtCorners(lines, walks) : walks)].forEach((line, id) => {
+    [...lines, ...stopAtCorners(lines, walks)].forEach((line, id) => {
         const stamps = shows(line, gateTexel(node.level));
         if (line.kind === STREAM || (!stamps && node.level < NEAR)) return;
         // A path acts no farther than its bench, and on the near levels than the mask reads it; a walk only there.

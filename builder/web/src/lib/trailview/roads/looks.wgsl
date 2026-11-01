@@ -29,7 +29,7 @@ const LOOK_ZEBRA: u32 = 16u;
 const LOOK_ZEBRA_SETT: u32 = 17u;
 const LOOK_ZEBRA_PAVERS: u32 = 18u;
 const LOOK_ZEBRA_CONCRETE: u32 = 19u;
-// As RANGE_M of roads.ts: asphalt turns to each class's paint toward it. Not the word `corridors`, which falls
+// As RANGE_M of roads.ts: asphalt turns to each class's paint toward it. Not `masks.held`, which falls
 // while an owner is on its way.
 const CORRIDOR_RANGE_M: f32 = 600.0;
 // A zebra's stripes keep this far off the carriageway's edges.

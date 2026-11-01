@@ -90,8 +90,8 @@ export interface TerrainStats {
     /** Water and structure meshes of the last frame that did not fit in their pools. */
     waterDropped: number;
     structuresDropped: number;
-    /** The corridors of the last frame; none without the lab. */
-    roads?: RoadStats;
+    /** The corridors of the last frame. */
+    roads: RoadStats;
 }
 
 /** What the audit counts, as audit.wgsl does. */
@@ -156,11 +156,11 @@ export class Terrain {
     readonly stamps: Stamps;
     /** Whether the last frame draws other content than the frame before it: new pages, masks, nodes or water. */
     newContent = false;
-    /** The metres on the ground from the eye to the nearest page whose heights the last frame changed, 0 for new structures: casters stand on them. */
+    /** The metres on the ground from the eye to the nearest page whose heights the last frame changed or corridor casters that arrived, 0 for new structures: casters stand on them. */
     reshaped = Infinity;
     private readonly water: Water;
     private readonly structures: Structures;
-    private readonly roads?: Roads;
+    private readonly roads: Roads;
     private roadsFree = false;
     /**
      * The probed ground under the eye at `lonLat`: NaN where no level knows it, a slope of 0 where no
@@ -206,17 +206,17 @@ export class Terrain {
     private readonly profileTable: Float32Array<ArrayBuffer>;
 
     /** An abort of `stop` ends the stamp worker. */
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, corridors = false) {
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // 16-bit heights.
         const bytes = PAGE * PAGE * 2;
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / bytes / LAYER_PAGES) * LAYER_PAGES, synth = Math.floor((BUDGET.synth - MASK_BYTES) / bytes);
-        this.profileTable = profileTable(corridors);
-        this.stamps = new Stamps(features, changed, stop, corridors);
-        if (corridors) this.roads = new Roads(features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
-        this.water = new Water(this.stamps, corridors);
+        this.profileTable = profileTable();
+        this.stamps = new Stamps(features, changed, stop);
+        this.roads = new Roads(features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
+        this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
         this.pages = new Pages(source, { stored: pages - synth, synth }, this.bounds, changed, this.stamps, MASKS);
     }
@@ -227,12 +227,12 @@ export class Terrain {
 
     /** The feature tiles and road meshes that failed. */
     get failed(): number {
-        return this.stamps.failed + (this.roads?.failed ?? 0);
+        return this.stamps.failed + this.roads.failed;
     }
 
     /** Whether road meshes are on their way. The view about the eye waits for none. */
     get roadsLoading(): boolean {
-        return !!this.roads?.loading;
+        return this.roads.loading;
     }
 
     /**
@@ -284,7 +284,7 @@ export class Terrain {
         }
         return {
             nodes: this.nodes.length, triangles: 2 * GRID * GRID * this.nodes.length, selection: this.selection, resident, capacity: { ...this.pages.capacity }, quality: this.quality,
-            jobs: this.jobs, masks, waterDropped: this.water.dropped, structuresDropped: this.structures.dropped, roads: this.roads?.stats,
+            jobs: this.jobs, masks, waterDropped: this.water.dropped, structuresDropped: this.structures.dropped, roads: this.roads.stats,
         };
     }
 
@@ -396,7 +396,7 @@ export class Terrain {
     async attachParts(frames: GPUBuffer[]): Promise<void> {
         const r = this.resources!;
         await Promise.all([
-            this.water.attach(r.gpu, frames[0], r.nodes), this.structures.attach(r.gpu, frames, r.holes), this.roads?.attach(r.gpu, frames),
+            this.water.attach(r.gpu, frames[0], r.nodes), this.structures.attach(r.gpu, frames, r.holes), this.roads.attach(r.gpu, frames),
             r.gpu.once(holedPipeline).then(pipeline => void (r.holedMesh = pipeline)),
         ]);
     }
@@ -442,7 +442,7 @@ export class Terrain {
         const structures = this.structures.update(this.nodes, { x: ex, y: ey, unit: anchor.unit });
         // The first view about the eye comes first: until then a road's worker would take its share of the CPU.
         this.roadsFree ||= this.eye || this.pages.idle;
-        const roads = this.roads?.update({ x: ex, y: ey, unit: anchor.unit }, piece => this.boxVisible(piece, eye, forward, view), this.roadsFree) ?? false;
+        const roads = this.roads.update({ x: ex, y: ey, unit: anchor.unit }, piece => this.boxVisible(piece, eye, forward, view), this.roadsFree);
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
@@ -467,7 +467,7 @@ export class Terrain {
         this.lonLat = view.lonLat;
         this.seen = view.z === undefined ? undefined : { viewProj: view.viewProj, z: view.z, forward };
         const level = { anchor, above: 0 }, pages = [...work.uploads, ...work.syntheses, ...work.stamps.filter(({ mode }) => mode & MODE.HEIGHTS)];
-        this.reshaped = structures ? 0 : Math.min(Infinity, ...pages.map(({ page }) => distances(level, page.node)[0]));
+        this.reshaped = structures ? 0 : Math.min(this.roads.arrived, ...pages.map(({ page }) => distances(level, page.node)[0]));
         this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || structures || roads || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length);
     }
 
@@ -569,7 +569,7 @@ export class Terrain {
         const r = this.resources;
         if (!r) return;
         this.structures.cast(pass, r.surfaceGroup, r.featureGroup);
-        this.roads?.cast(pass, r.surfaceGroup);
+        this.roads.cast(pass, r.surfaceGroup);
     }
 
     draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {
@@ -580,7 +580,7 @@ export class Terrain {
         // hidden-surface removal, where the draw order decides what early-Z rejects. The ribbons blend
         // over the terrain.
         this.structures.draw(pass, r.surfaceGroup, ground, r.featureGroup);
-        this.roads?.draw(pass, r.surfaceGroup, ground, r.featureGroup);
+        this.roads.draw(pass, r.surfaceGroup, ground, r.featureGroup);
         this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup, OPAQUE);
         pass.setBindGroup(0, r.meshGroup);
         pass.setBindGroup(1, r.surfaceGroup);
@@ -851,7 +851,7 @@ export class Terrain {
         this.instances = instances;
         this.water.write();
         this.structures.write();
-        if (this.roads) device.queue.writeBuffer(r.masks, 4, new Float32Array([this.roads.write()]));
+        device.queue.writeBuffer(r.masks, 4, new Float32Array([this.roads.write()]));
         return changed;
     }
 }

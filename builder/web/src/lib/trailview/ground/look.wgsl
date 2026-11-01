@@ -673,7 +673,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32, pixel: ve
         road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region, pixel, facet.z);
     }
     // A road's own facets are no cliff: the mesh cuts across the creases of its cut or fill.
-    if (skirt > 0.0 && masks.corridors > 0.0) {
+    if (skirt > 0.0) {
         skirt *= 1.0 - road.shaped;
     }
     // A road's retaining wall, but for a cut in bare rock, and in woodland, as rock walls.
