@@ -389,7 +389,8 @@ function joinCulverts(list: Feature[], lines: Line[], world: (xy: ArrayLike<numb
     const startingAt = (xy: number[], v: number) => lines.find(line => line.kind === STREAM && same(line.xy, 0, xy, v));
     for (const { kind, tags, parts } of list) {
         if (kind !== 'stream' || (tags.tunnel ?? 'no') === 'no') continue;
-        for (const { xy: part } of parts) {
+        for (const { xy: part, z } of parts) {
+            if (z?.some(Number.isFinite)) continue;
             let xy = Array.from({ length: part.length / 2 }, (_, v) => world(part, v)).flat(), metres = 0;
             for (let v = 0; v < last(xy); v++) metres += Math.hypot(xy[2 * v + 2] - xy[2 * v], xy[2 * v + 3] - xy[2 * v + 1]) * metresPerUnit(xy[2 * v + 1]);
             if (metres > CULVERT_M) continue;

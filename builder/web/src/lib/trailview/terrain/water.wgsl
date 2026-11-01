@@ -59,6 +59,7 @@ const RIBBON_PIXELS: f32 = 1.5;
 const GIVE_WAY_M: f32 = 0.5;
 // A ribbon draws this far toward the eye, plus a share of its distance, as a corridor does (corridor_biased of
 // corridor.wgsl) and past the crease that its band leaves over the mesh (BAND_SINK_M): it lies over a way's band.
+// Where corridors end, so do their bands and the bias: past them it would show a ribbon through a deck or a lake.
 const RIBBON_BIAS_M: f32 = 0.36;
 const RIBBON_BIAS_SHARE: f32 = 0.003;
 // The level of a vertex that lies on the drawn surface, as DRAPED of water-mesh.ts.
@@ -123,7 +124,8 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
     var p = vec3f(to_render(out.lod), z - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
     let d = length(p);
-    let toward = select(1.0, max(0.0, 1.0 - (RIBBON_BIAS_M + RIBBON_BIAS_SHARE * d) / max(d, 1e-3)), v.half != 0.0);
+    let bias = (RIBBON_BIAS_M + RIBBON_BIAS_SHARE * d) * (1.0 - paint_share(d));
+    let toward = select(1.0, max(0.0, 1.0 - bias / max(d, 1e-3)), v.half != 0.0);
     out.clip = frame.view_proj * vec4f(p * toward, 1.0);
     out.relative = p;
     out.altitude = z;
