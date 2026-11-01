@@ -183,7 +183,7 @@ export function tileHouses(list: Feature[], tile: Node, owned: Node = tile): Til
     let building = -1;
     for (const feature of list) {
         if (feature.kind !== 'building') continue;
-        // The outward direction of the wall that its walk leaves, in world units; features() lists the buildings in this order.
+        // The outward direction of the wall that faces its road, in world units; features() lists the buildings in this order.
         const front = buildings[++building].front;
         const tag = feature.tags.building ?? 'yes', part = feature.parts.find(p => p.outer);
         if (SKIPPED.has(tag) || !part || part.xy.length < 6) continue;

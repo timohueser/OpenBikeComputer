@@ -633,7 +633,7 @@ fn fit(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) loc
     d.windows = select(params.styles[out.style].windows, 1.0, params.styles[out.style].windows <= 0.0);
     let below = out.ground;
     d.ground = vec2u(pack2x16float(below.xy), pack2x16float(below.zw));
-    // The door is in the wall that the walk from the road reaches, else in the wall whose ground lies nearest the floor.
+    // The door is in the wall that faces the road, else in the wall whose ground lies nearest the floor.
     let mids = abs(0.5 * (below + below.yzwx));
     let nearest = min(min(mids.x, mids.y), min(mids.z, mids.w));
     let walked = (h.bits >> 8u) & 7u;
