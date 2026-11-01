@@ -125,6 +125,19 @@ test('range reads deliver decoded tiles and cache tiles, empty coverage and, bri
   delete globalThis.caches;
 });
 
+test('a second read of many archives reads only the tile bytes', async () => {
+  const prefix = `releases/${'d'.repeat(64)}`, names = Array.from({ length: 100 }, (_, i) => `archive${i}`), reads = { count: 0 };
+  const env = { BUCKET: bucket(new Map(grid(prefix, Object.fromEntries(names.map(name => [name, archive(1, { attribution: name })])))), reads) };
+  const read = () => Promise.all(names.map(async name => {
+    const url = `https://tiles.example/${prefix}/${name}/0/0/0`;
+    assert.equal((await worker.fetch(new Request(url), env, {}, null)).status, 200);
+  }));
+  await read();
+  reads.count = 0;
+  await read();
+  assert.equal(reads.count, names.length);
+});
+
 test('grid archives share download objects and assets stream from their pointers', async () => {
   const id = 'c'.repeat(64), prefix = `releases/${id}`, asset = new TextEncoder().encode('{"hello":"map"}');
   const glyphs = new Uint8Array([10, 2, 8, 0]), packed = gzipSync(glyphs);
