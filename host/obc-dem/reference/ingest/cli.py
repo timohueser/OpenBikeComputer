@@ -1,9 +1,10 @@
-"""The two steps of `obc data source prepare terrain`: one archive tile, and the index.
+"""The two steps of `obc data source prepare terrain`: one block of 4 x 4 archive tiles, and the index.
 
-The archive is one format: pooled bare-earth height on the OBCT lattice at 2^6 µdeg, one
-GeoTIFF per 2^16 µdeg tile: the maximum in `int16` metres, and the mean in `int32` decimetres.
+The archive is one format: pooled bare-earth height on the OBCT lattice at 2^6 µdeg, in tiles of
+2^16 µdeg: the maximum in `int16` metres, and the mean in `int32` decimetres. A prepared version
+packs them into one GeoTIFF per 2^18 µdeg block and pool.
 Every country branch is an adapter in `ingest/sources/`. The baker knows the tiles only, and
-`README.md` beside this file holds the contract both sides read.
+`host/obc-dem/reference/README.md` holds the tile contract both sides read.
 
 A source adapter has one job: give the shared tail rasters that cover the box, in any CRS
 and any dtype. The tail pools them onto the lattice by the contract's rule — a lattice
@@ -23,12 +24,11 @@ import time
 from pathlib import Path
 
 import numpy as np
-import rasterio
 
-from .archive import (MEAN, coarse, fold_tiles, local_rasters, padded, pool_tile, priority_rank, samples,
-                      tile_digest, write_tile)
-from .lattice import (MEAN_NODATA, NODATA, TILE_PX, Refuse, check_world, covering_window, tile_bounds, tile_path,
-                      tile_window)
+from .archive import (MEAN, coarse, local_rasters, padded, pixel_digest, pool_tile, priority_rank, samples,
+                      write_raster)
+from .lattice import (BLOCK_PX, BLOCK_TILES, MEAN_NODATA, NODATA, TILE_PX, Refuse, block_path, block_window,
+                      check_world, covering_window, in_block, tile_bounds, tile_window)
 from .sources import SOURCES, ManualSource
 
 
@@ -39,21 +39,18 @@ def registered(key: str):
 
 
 def command_fetch(args) -> int:
-    """One archive tile of a version of `terrain`, for `obc data source prepare`: each model of
-    `source` (keys joined by commas) pooled onto the lattice and folded into the tile of the
-    version before (`--base`, an archive root, whose tile came from `--held`), best rule of
-    `fold_tiles`. It writes `16/<ti>/<tj>.tif`, the maximum, and `mean/16/<ti>/<tj>.tif`, the mean;
-    then `<ti>-<tj>.keys`, the sources of the tile best first, and `<ti>-<tj>.samples`, the bias
-    samples of the mean (`samples`); then `<ti>-<tj>.mean.sha256` and
-    `<ti>-<tj>.sha256`, the digests of their pixels. Where no model has a height in the tile it
-    writes only the empty `<ti>-<tj>.none`, and the version keeps the tile before.
+    """One block of a version of `terrain`, for `obc data source prepare`: each tile `<ti>-<tj>=<keys>`
+    of `--block`, its models (keys joined by commas) pooled onto the lattice and folded worst first,
+    so that the best model with a height holds each pixel. It writes `18/<bi>/<bj>.tif`, the maximum,
+    and `mean/18/<bi>/<bj>.tif`, the mean; then `<bi>-<bj>.tiles`, the sources of each tile with a
+    height, best first, and its bias samples (`samples`); then `<bi>-<bj>.mean.sha256` and
+    `<bi>-<bj>.sha256`, the digests of their pixels. Where no model has a height in the block it
+    writes only the empty `<bi>-<bj>.none`.
 
-    The raw rasters go to `--work`, which is removed at the end whatever happens, so disk holds
-    only the rasters of the tiles that run and the store never sees them. `--shared` is what the
-    tiles of one prepare share: the summit check of each model, and a file that a whole region is
-    published in.
-
-    The models are folded in the order of `fold_order`, whatever order they come in.
+    The raw rasters of a tile go to `--work` and go when the tile is pooled; `--work` is removed at
+    the end whatever happens, so disk holds only the rasters of the tiles that run and the store
+    never sees them. `--shared` is what the blocks of one prepare share: the summit check of each
+    model, and a file that a whole region is published in.
     """
 
     def stop(*_):
@@ -64,62 +61,53 @@ def command_fetch(args) -> int:
 
     signal.signal(signal.SIGTERM, stop)
     stop_with_parent()
-    ti, tj = parse_tile(args.tile)
+    bi, bj = parse_tile(args.block, "--block")
     work, out = Path(args.work), Path(args.out)
     shared = Path(args.shared) if args.shared else work / "shared"
-    check_world(tile_bounds(ti, tj), f"--tile {args.tile}")
-    held = set(filter(None, (args.held or "").split(",")))
-    folded = {}
-    if args.base:
-        for root in (MEAN, ""):
-            path = tile_path(Path(args.base) / root, ti, tj)
-            if path.is_file():
-                with rasterio.open(path) as src:
-                    folded[root] = src.read(1)
+    tiles = {}
+    for text in args.tiles:
+        tile, _, keys = text.partition("=")
+        ti, tj = parse_tile(tile, "a tile")
+        if (ti // BLOCK_TILES, tj // BLOCK_TILES) != (bi, bj) or not keys:
+            raise Refuse(f"{text} is not <ti>-<tj>=<keys> of a tile of block {args.block}")
+        check_world(tile_bounds(ti, tj), text)
+        tiles[ti, tj] = keys.split(",")
+    blocks = {MEAN: np.full((BLOCK_PX, BLOCK_PX), MEAN_NODATA, "int32"),
+              "": np.full((BLOCK_PX, BLOCK_PX), NODATA, "int16")}
+    made = {}
     try:
-        fetched = False
-        for key in fold_order(args.source.split(","), held):
-            pooled = pool_model(registered(key), ti, tj, work / key, shared)
-            if pooled is None:
-                continue
-            fetched = True
-            for root, tile, nodata in ((MEAN, pooled[1], MEAN_NODATA), ("", pooled[0], NODATA)):
-                folded[root] = tile if root not in folded else fold_tiles(folded[root], tile, held, key, nodata)
-            held.add(key)
+        for (ti, tj), keys in sorted(tiles.items()):
+            into = in_block(ti, tj)
+            source = np.full((TILE_PX, TILE_PX), -1, "int8")
+            ranked = sorted(set(keys), key=priority_rank)
+            for rank in reversed(range(len(ranked))):
+                pooled = pool_model(registered(ranked[rank]), ti, tj, work / f"{ti:04}-{tj:04}" / ranked[rank], shared)
+                if pooled is None:
+                    continue
+                for root, tile, nodata in (("", pooled[0], NODATA), (MEAN, pooled[1], MEAN_NODATA)):
+                    held = tile != nodata
+                    blocks[root][into][held] = tile[held]
+                    if root == "":
+                        source[held] = rank
+            if (source >= 0).any():
+                made[f"{ti:04}/{tj:04}"] = {"sources": [key for k, key in enumerate(ranked) if (source == k).any()],
+                                            "samples": samples(blocks[MEAN][into])}
         out.mkdir(parents=True, exist_ok=True)
-        name = f"{ti:04}-{tj:04}"
-        if not fetched:
+        name = f"{bi:04}-{bj:04}"
+        if not made:
             (out / f"{name}.none").touch()
             return 0
-        (out / f"{name}.keys").write_text(",".join(sorted(held, key=priority_rank)), encoding="utf-8")
-        (out / f"{name}.samples").write_text(samples(folded[MEAN]), encoding="utf-8")
+        (out / f"{name}.tiles").write_text(json.dumps(made, sort_keys=True), encoding="utf-8")
         for root, mark in ((MEAN, "mean.sha256"), ("", "sha256")):
-            written, path = tile_path(work / "pooled" / root, ti, tj), tile_path(out / root, ti, tj)
-            write_tile(written, ti, tj, folded[root])
+            written, path = block_path(work / "pooled" / root, bi, bj), block_path(out / root, bi, bj)
+            write_raster(written, block_window(bi, bj), blocks[root])
             path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(written, path)
-            # Last, and the maximum last of all: a digest names a whole tile.
-            (out / f"{name}.{mark}").write_text(tile_digest(path), encoding="utf-8")
+            # Last, and the maximum last of all: a digest names a whole block.
+            (out / f"{name}.{mark}").write_text(pixel_digest(blocks[root]), encoding="utf-8")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return 0
-
-
-def fold_order(keys, held: set[str]) -> list[str]:
-    """The order to fold the new models `keys` into a tile whose version before holds `held`.
-
-    `fold_tiles` lets a model overwrite only where it beats every source already held, else it fills
-    gaps. So the models that beat every source of the version before come first, worst first, and
-    each overwrites the one before it; then the others, best first, fill the gaps. A source of the
-    version before that beats a new model still keeps its pixels: the tile does not record which
-    source each pixel came from.
-    """
-
-    def beats(key):
-        return all(priority_rank(key) < priority_rank(other) for other in held - {key})
-
-    first = sorted((key for key in keys if beats(key)), key=priority_rank, reverse=True)
-    return first + sorted((key for key in keys if not beats(key)), key=priority_rank)
 
 
 def pool_model(source, ti: int, tj: int, work: Path, shared: Path):
@@ -130,7 +118,10 @@ def pool_model(source, ti: int, tj: int, work: Path, shared: Path):
     box = tile_bounds(ti, tj)
     if coarse(source, ti, tj):
         box = padded(box, source)
-    return pool_tile(rasters(source, box, work), source, ti, tj)
+    try:
+        return pool_tile(rasters(source, box, work), source, ti, tj)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 # How far the highest pooled height near a row's summit may stand from the surveyed one. The geoid
@@ -216,15 +207,22 @@ def rasters(source, box, work: Path):
 
 
 def command_index_terrain(args) -> int:
-    """`index.json` of `--pool` in a version of `terrain`: the index of the version before
-    (`--base`) with each tile of `--digests` (tile id to pixel digest) and `--keys` (tile id to its
-    sources, best first). The models of `--models` were fetched on `--fetched`. A model keeps the
-    `glo30_bias_m` of the version before, else takes the one of `--biases` (model to metres)."""
+    """`index.json` of a version of `terrain`: the index of the version before (`--base`), where the
+    tiles of `--keys` (tile id to its sources, best first) replace the tiles of the blocks of
+    `--blocks` (block ids), the blocks that this version made. The models of `--models` were
+    fetched on `--fetched`. A model keeps the `glo30_bias_m` of the version before, else takes the
+    one of `--biases` (model to metres)."""
 
     base = json.loads(Path(args.base).read_text(encoding="utf-8")) if args.base else {}
-    digests = json.loads(Path(args.digests).read_text(encoding="utf-8"))
     keys = json.loads(Path(args.keys).read_text(encoding="utf-8"))
-    contributors = {**base.get("contributors", {}), **{tile: keys[tile] for tile in digests}}
+    remade = set(json.loads(Path(args.blocks).read_text(encoding="utf-8")))
+
+    def block(tile):
+        ti, tj = (int(part) for part in tile.split("/"))
+        return f"{ti // BLOCK_TILES:04}/{tj // BLOCK_TILES:04}"
+
+    contributors = {tile: held for tile, held in base.get("contributors", {}).items() if block(tile) not in remade}
+    contributors.update(keys)
     sources = dict(base.get("sources", {}))
     for key in filter(None, args.models.split(",")):
         source = registered(key)
@@ -235,12 +233,9 @@ def command_index_terrain(args) -> int:
     for key, metres in json.loads(Path(args.biases).read_text(encoding="utf-8")).items():
         sources[key] = {**sources[key], "glo30_bias_m": metres}
     used = {key for held in contributors.values() for key in held}
-    index = {"schema": 1, "step_log2": 6, "tile_log2": 16, "pool": args.pool,
-             "sources": {key: facts for key, facts in sorted(sources.items()) if key in used},
-             "tiles": {tile: held[0] for tile, held in sorted(contributors.items())},
-             "contributors": dict(sorted(contributors.items())),
-             "sha256": dict(sorted({**base.get("sha256", {}), **digests}.items()))}
-    Path(args.out).write_text(json.dumps(index, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+    index = {"block_log2": 18, "step_log2": 6, "tile_log2": 16, "contributors": contributors,
+             "sources": {key: facts for key, facts in sources.items() if key in used}}
+    Path(args.out).write_text(json.dumps(index, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
                               encoding="utf-8")
     return 0
 
@@ -264,32 +259,30 @@ def stop_with_parent() -> None:
         threading.Thread(target=watch, daemon=True).start()
 
 
-def parse_tile(text: str) -> tuple[int, int]:
-    ti, _, tj = text.partition("-")
-    if not (len(ti) == len(tj) == 4 and ti.isdigit() and tj.isdigit()):
-        raise Refuse(f"--tile {text} is <ti>-<tj>, two four-digit archive tile indices")
-    return int(ti), int(tj)
+def parse_tile(text: str, what: str) -> tuple[int, int]:
+    i, _, j = text.partition("-")
+    if not (len(i) == len(j) == 4 and i.isdigit() and j.isdigit()):
+        raise Refuse(f"{what} {text} is <i>-<j>, two four-digit indices")
+    return int(i), int(j)
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
 
-    fetch = commands.add_parser("fetch", help="one archive tile of a version of terrain into --out, for obc data")
-    fetch.add_argument("source", help=f"source keys joined by commas: {', '.join(sorted(SOURCES))}")
-    fetch.add_argument("--tile", required=True, help="<ti>-<tj>, the archive tile")
+    fetch = commands.add_parser("fetch", help="one block of a version of terrain into --out, for obc data")
+    fetch.add_argument("tiles", nargs="+", help=f"<ti>-<tj>=<keys>: a tile and its source keys joined by commas, "
+                                                f"of {', '.join(sorted(SOURCES))}")
+    fetch.add_argument("--block", required=True, help="<bi>-<bj>, the block of 4 x 4 archive tiles")
     fetch.add_argument("--work", required=True, help="where the raw rasters go; removed at the end")
-    fetch.add_argument("--out", required=True, help="where the pooled tile goes")
-    fetch.add_argument("--base", help="the archive root of the version before, which holds the tile")
-    fetch.add_argument("--held", help="the sources of the tile of --base, joined by commas")
-    fetch.add_argument("--shared", help="what the tiles of one prepare share; default: inside --work")
+    fetch.add_argument("--out", required=True, help="where the pooled block goes")
+    fetch.add_argument("--shared", help="what the blocks of one prepare share; default: inside --work")
     fetch.set_defaults(run=command_fetch)
 
     tiles = commands.add_parser("index-terrain", help="index.json of a version of terrain, for obc data")
-    tiles.add_argument("--pool", choices=("max", MEAN), default="max", help="the pool of the tiles")
     tiles.add_argument("--base", help="index.json of the version before")
-    tiles.add_argument("--digests", required=True, help="a JSON object of tile id to pixel digest")
     tiles.add_argument("--keys", required=True, help="a JSON object of tile id to its sources, best first")
+    tiles.add_argument("--blocks", required=True, help="a JSON list of the ids of the blocks that the version made")
     tiles.add_argument("--models", required=True, help="the source keys that this version fetched")
     tiles.add_argument("--biases", required=True, help="a JSON object of source key to its GLO-30 bias in metres")
     tiles.add_argument("--fetched", required=True, help="the day of the data, YYYY-MM-DD")

@@ -239,7 +239,7 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
     }
 }
 
-/// The trip day a ride started on (`specs/obc-ble-interface-spec.md` §7.2).
+/// The trip day a ride started on (`specs/ble-interface.md` §7.2).
 public struct RideTrip: Equatable, Sendable {
     /// The trip key of the trip object; never 0.
     public var key: UInt64

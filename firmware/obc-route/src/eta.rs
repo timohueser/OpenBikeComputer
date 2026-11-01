@@ -1,6 +1,6 @@
 //! Time to go along a route: the ride's ETA and TIME TO GO tiles.
 //!
-//! The estimate itself is [`BikeType::ride_time_s`], the contract table of `OBCR_Spec.md` §1.2
+//! The estimate itself is [`BikeType::ride_time_s`], the contract table of `obcr-route.md` §1.2
 //! that the phone shares. This module only feeds it the remaining distance and the remaining
 //! ascent from [`Profile::ascent_between_m`], the curve the elevation profile already builds.
 

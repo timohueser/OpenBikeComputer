@@ -196,11 +196,11 @@ fn validate_doc(doc: &TerrainDoc) -> Result<(), String> {
         return Err("`dataset_id` and `dataset_version` must be non-empty — they are half the lockstep key".into());
     }
     if doc.attribution.trim().is_empty() {
-        return Err("`attribution` must be non-empty — the credit travels with the data (OBCC_Spec.md §13.5)".into());
+        return Err("`attribution` must be non-empty — the credit travels with the data (obcc-catalog.md §13.5)".into());
     }
     obc_formats::obct::cell_samples_log2(doc.posting_log2, doc.cell_log2).ok_or_else(|| {
         format!(
-            "posting 2^{} µdeg with cell 2^{} µdeg is not a pairing OBCT permits (OBCT_Spec.md §1.3)",
+            "posting 2^{} µdeg with cell 2^{} µdeg is not a pairing OBCT permits (obct-terrain.md §1.3)",
             doc.posting_log2, doc.cell_log2
         )
     })?;

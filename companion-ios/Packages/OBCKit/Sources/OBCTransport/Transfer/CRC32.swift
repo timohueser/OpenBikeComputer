@@ -1,9 +1,9 @@
 import Foundation
 
 /// Whole-object CRC-32: the end-to-end integrity check, verified once before commit
-/// (`OBCProtocol.md`). The BLE Link Layer already CRCs and retransmits every packet, so this
-/// adds only what the link CRC cannot: coverage of the whole path from the phone's encode to
-/// MCU flash. One CRC per object, never per chunk.
+/// (`specs/flat-store-protocol.md` Conventions and §3.6). The BLE Link Layer already CRCs and
+/// retransmits every packet, so this adds only what the link CRC cannot: coverage of the whole path
+/// from the phone's encode to MCU flash. One CRC per object, never per chunk.
 ///
 /// Standard CRC-32/IEEE: reflected, poly `0xEDB88320`, init and xorout `0xFFFFFFFF`, check
 /// value `crc32("123456789") == 0xCBF43926`. The `Hasher` streams chunk by chunk with O(1)

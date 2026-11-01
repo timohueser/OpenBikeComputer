@@ -442,7 +442,11 @@ pub(crate) fn params(source: &Source) -> Vec<&str> {
 
 /// The URLs of `template` with every `{name}` filled: `{version}` from the version, `{yymmdd}`
 /// from a date version, every other name from `params`.
-fn expand(template: &str, version: Option<&str>, params: &[(String, String)]) -> Result<Vec<String>, String> {
+pub(crate) fn expand(
+    template: &str,
+    version: Option<&str>,
+    params: &[(String, String)],
+) -> Result<Vec<String>, String> {
     let names = placeholders(template);
     if let Some((name, _)) = params.iter().find(|(name, _)| fixed(name) || !names.contains(&name.as_str())) {
         return Err(format!("`{name}=` names no placeholder of {template}"));
@@ -1077,20 +1081,28 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_ground_capture_refuses_a_digest_that_its_entry_lacks() {
+    fn a_ground_capture_refuses_a_digest_that_its_entry_lacks_and_an_archived_map_that_the_archive_lacks() {
         let scratch = Scratch::new("ground-digest");
         let store = Store::at(scratch.0.join("store"));
         let root = scratch.0.join("repository");
-        let mut map = located(FetchKind::Capture, "https://example.org/wfs");
+        let mut map = located(FetchKind::Capture, "https://example.org/map.zip");
         map.id = "map".into();
-        let entry = r#"{"source": "map", "protocol": "wfs", "layer": "a", "field": "F", "sort": "id"}"#;
+        let entry = r#"{"source": "map", "protocol": "archive-features", "layer": "a", "field": "F"}"#;
         std::fs::create_dir_all(root.join("data/trailview")).unwrap();
         let ground = format!(r#"{{"material": {{"sources": [{entry}]}}, "lithology": {{"sources": []}}}}"#);
         std::fs::write(root.join("data/trailview/ground.json"), ground).unwrap();
-        let params = vec![("bbox".into(), "7,46,8,47".into()), ("ground".into(), "000000000000".into())];
-        let request = Request { refresh: false, source: &map, version: None, params };
-        let err = capture::run(&root, &store, None, &request).unwrap_err();
+        let request = |digest: &str| {
+            let params = vec![("bbox".into(), "7,46,8,47".into()), ("ground".into(), digest.into())];
+            Request { refresh: false, source: &map, version: None, params }
+        };
+        let err = capture::run(&root, &store, None, &request("000000000000")).unwrap_err();
         assert!(err.contains("is not the digest of its entry"), "{err}");
+        let digest = crate::ground::Ground::load(&root).unwrap().entry("map").unwrap().capture_digest();
+        let archive = Archive::new(vec![scratch.0.join("archive")]);
+        for archive in [None, Some(&archive)] {
+            let err = capture::run(&root, &store, archive, &request(&digest)).unwrap_err();
+            assert!(err.contains("reads https://example.org/map.zip from the archive"), "{err}");
+        }
     }
 
     #[cfg(unix)]
@@ -1132,20 +1144,24 @@ pub(crate) mod tests {
     fn a_capture_names_its_parameters_and_its_missing_credential() {
         let scratch = Scratch::new("credential");
         let store = Store::at(&scratch.0);
-        let mut mosaics = located(FetchKind::Capture, "https://example.org/mosaics");
-        mosaics.id = "sentinel-2-mosaics".into();
-        mosaics.credential =
+        let mut snow = located(FetchKind::Capture, "https://example.org/snow");
+        snow.id = "hr-wsi".into();
+        snow.credential =
             Some(crate::sources::Credential { file: Some("~/.obc-test-no-such-key".into()), ..Default::default() });
         let params = |pairs: &[(&str, &str)]| pairs.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
-        let request = |params| Request { refresh: false, source: &mosaics, version: None, params };
+        let request = |params| Request { refresh: false, source: &snow, version: None, params };
         let err =
             fetch(&tooling_root(), &store, &quick(), &request(params(&[("bbox", "7.6,47.9,8.0,48.1")]))).unwrap_err();
-        assert!(err.contains("takes bbox=… year=…"), "{err}");
-        let err =
-            fetch(&tooling_root(), &store, &quick(), &request(params(&[("bbox", "8,48,7,49"), ("year", "2015")])))
-                .unwrap_err();
+        assert!(err.contains("takes bbox=… seasons=…"), "{err}");
+        let err = fetch(
+            &tooling_root(),
+            &store,
+            &quick(),
+            &request(params(&[("bbox", "8,48,7,49"), ("seasons", "2016-2017")])),
+        )
+        .unwrap_err();
         assert!(err.contains("west < east"), "{err}");
-        let good = params(&[("year", "2015"), ("bbox", "7.6,47.9,8.0,48.1")]);
+        let good = params(&[("seasons", "2016-2017"), ("bbox", "7.6,47.9,8.0,48.1")]);
         let err = fetch(&tooling_root(), &store, &quick(), &request(good)).unwrap_err();
         assert!(err.contains("blocked: credential missing: ~/.obc-test-no-such-key"), "{err}");
     }

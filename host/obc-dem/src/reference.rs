@@ -155,55 +155,80 @@ impl ReferenceTile {
 
     /// Decode and validate the tile at `path`, which must be the tile the id names.
     pub fn open(path: &Path, ti: u32, tj: u32, pool: Pool) -> Result<ReferenceTile, String> {
-        let name = || path.display().to_string();
-        let file = File::open(path).map_err(|e| format!("{}: {e}", name()))?;
-        // The `tiff` crate's default limits allow a 256 MiB decoding buffer; a tile is 2 MiB, so the
-        // archive never approaches them.
-        let mut dec =
-            Decoder::new(BufReader::new(file)).map_err(|e| format!("{}: not a readable TIFF ({e})", name()))?;
-
-        let (width, height) = dec.dimensions().map_err(|e| format!("{}: no dimensions ({e})", name()))?;
-        if (width as usize, height as usize) != (TILE_PIXELS, TILE_PIXELS) {
-            return Err(format!("{}: {width}×{height} — an archive tile is {TILE_PIXELS}²", name()));
-        }
-        if let Ok(bands) = dec.get_tag_u32(Tag::SamplesPerPixel) {
-            if bands != 1 {
-                return Err(format!("{}: {bands} bands — an archive tile has one", name()));
-            }
-        }
-        expect_lattice(&mut dec, ti, tj, &name)?;
-        let nodata = match pool {
-            Pool::Max => f64::from(NO_PIXEL),
-            Pool::Mean => f64::from(NO_MEAN),
-        };
-        if let Ok(text) = dec.get_tag_ascii_string(Tag::GdalNodata) {
-            let declared = text.trim().trim_end_matches('\0').parse::<f64>().ok();
-            if declared != Some(nodata) {
-                return Err(format!("{}: nodata {text:?} — the archive's nodata is {nodata}", name()));
-            }
-        }
-
-        let north_up: Vec<f32> = match (pool, dec.read_image().map_err(|e| format!("{}: decode failed ({e})", name()))?)
-        {
-            (Pool::Max, DecodingResult::I16(values)) => {
-                values.into_iter().map(|v| if v == NO_PIXEL { f32::NAN } else { f32::from(v) }).collect()
-            }
-            (Pool::Mean, DecodingResult::I32(values)) => {
-                values.into_iter().map(|v| if v == NO_MEAN { f32::NAN } else { v as f32 / 10.0 }).collect()
-            }
-            (Pool::Max, _) => return Err(format!("{}: not int16 — a max archive stores whole metres", name())),
-            (Pool::Mean, _) => return Err(format!("{}: not int32 — a mean archive stores decimetres", name())),
-        };
-        if north_up.len() != TILE_PIXELS * TILE_PIXELS {
-            return Err(format!("{}: decoded {} samples for a {TILE_PIXELS}² raster", name(), north_up.len()));
-        }
-        let mut pixels = vec![0f32; north_up.len()];
-        for r in 0..TILE_PIXELS {
-            let src = &north_up[(TILE_PIXELS - 1 - r) * TILE_PIXELS..(TILE_PIXELS - r) * TILE_PIXELS];
-            pixels[r * TILE_PIXELS..(r + 1) * TILE_PIXELS].copy_from_slice(src);
-        }
-        Ok(ReferenceTile { ti, tj, pixels })
+        let north_up = decode(path, (ti, tj), 1, pool)?;
+        Ok(ReferenceTile::flipped(ti, tj, &north_up, 0, 0, TILE_PIXELS))
     }
+
+    /// Decode the block of a prepared version of `terrain` at `path`, 4 × 4 tiles in one raster, and
+    /// give its tile `(ti, tj)`.
+    pub fn open_in_block(path: &Path, ti: u32, tj: u32, pool: Pool) -> Result<ReferenceTile, String> {
+        let side = BLOCK_TILES * TILE_PIXELS;
+        let north_up = decode(path, (ti / BLOCK_TILES as u32, tj / BLOCK_TILES as u32), BLOCK_TILES, pool)?;
+        let row = (BLOCK_TILES - 1 - ti as usize % BLOCK_TILES) * TILE_PIXELS;
+        let col = tj as usize % BLOCK_TILES * TILE_PIXELS;
+        Ok(ReferenceTile::flipped(ti, tj, &north_up, row, col, side))
+    }
+
+    /// The tile whose north-up pixels start at `(row, col)` of a raster `side` pixels wide.
+    fn flipped(ti: u32, tj: u32, north_up: &[f32], row: usize, col: usize, side: usize) -> ReferenceTile {
+        let mut pixels = vec![0f32; TILE_PIXELS * TILE_PIXELS];
+        for r in 0..TILE_PIXELS {
+            let start = (row + TILE_PIXELS - 1 - r) * side + col;
+            pixels[r * TILE_PIXELS..(r + 1) * TILE_PIXELS].copy_from_slice(&north_up[start..start + TILE_PIXELS]);
+        }
+        ReferenceTile { ti, tj, pixels }
+    }
+}
+
+/// Tiles along one side of a block of a prepared version of `terrain`.
+const BLOCK_TILES: usize = 4;
+
+/// The north-up heights of the raster at `path`: `tiles` × `tiles` archive tiles whose south-west
+/// tile is `tiles × (i, j)`, held to the lattice and to the nodata of `pool`.
+fn decode(path: &Path, (i, j): (u32, u32), tiles: usize, pool: Pool) -> Result<Vec<f32>, String> {
+    let name = || path.display().to_string();
+    let side = tiles * TILE_PIXELS;
+    let file = File::open(path).map_err(|e| format!("{}: {e}", name()))?;
+    // The `tiff` crate's default limits allow a 256 MiB decoding buffer; a block of the mean is
+    // 64 MiB, so the archive never approaches them.
+    let mut dec = Decoder::new(BufReader::new(file)).map_err(|e| format!("{}: not a readable TIFF ({e})", name()))?;
+
+    let (width, height) = dec.dimensions().map_err(|e| format!("{}: no dimensions ({e})", name()))?;
+    if (width as usize, height as usize) != (side, side) {
+        return Err(format!("{}: {width}×{height} — the raster is {side}²", name()));
+    }
+    if let Ok(bands) = dec.get_tag_u32(Tag::SamplesPerPixel) {
+        if bands != 1 {
+            return Err(format!("{}: {bands} bands — an archive tile has one", name()));
+        }
+    }
+    let (ti, tj) = (i * tiles as u32, j * tiles as u32);
+    expect_lattice(&mut dec, (ti + tiles as u32 - 1, tj), &name)?;
+    let nodata = match pool {
+        Pool::Max => f64::from(NO_PIXEL),
+        Pool::Mean => f64::from(NO_MEAN),
+    };
+    if let Ok(text) = dec.get_tag_ascii_string(Tag::GdalNodata) {
+        let declared = text.trim().trim_end_matches('\0').parse::<f64>().ok();
+        if declared != Some(nodata) {
+            return Err(format!("{}: nodata {text:?} — the archive's nodata is {nodata}", name()));
+        }
+    }
+
+    let north_up: Vec<f32> = match (pool, dec.read_image().map_err(|e| format!("{}: decode failed ({e})", name()))?) {
+        (Pool::Max, DecodingResult::I16(values)) => {
+            values.into_iter().map(|v| if v == NO_PIXEL { f32::NAN } else { f32::from(v) }).collect()
+        }
+        (Pool::Mean, DecodingResult::I32(values)) => {
+            values.into_iter().map(|v| if v == NO_MEAN { f32::NAN } else { v as f32 / 10.0 }).collect()
+        }
+        (Pool::Max, _) => return Err(format!("{}: not int16 — a max archive stores whole metres", name())),
+        (Pool::Mean, _) => return Err(format!("{}: not int32 — a mean archive stores decimetres", name())),
+    };
+    if north_up.len() != side * side {
+        return Err(format!("{}: decoded {} samples for a {side}² raster", name(), north_up.len()));
+    }
+    Ok(north_up)
 }
 
 /// The pixel indices of a tile whose centres lie in a half-open µdeg span, given the tile's own
@@ -218,7 +243,8 @@ fn ceil_div(a: i64, b: i64) -> i64 {
     a.div_euclid(b) + i64::from(a.rem_euclid(b) != 0)
 }
 
-/// Hold a tile's georeferencing to the lattice its id implies, and refuse the file by name.
+/// Hold a raster's georeferencing to the lattice, with the north-west corner of tile `(ti, tj)` as
+/// its own, and refuse the file by name.
 ///
 /// [`read_north_up`] has already refused anything that is not a north-up WGS 84 grid. What is left
 /// is what an archive tile adds: the grid must be this tile's square of the lattice, and a pixel
@@ -226,8 +252,7 @@ fn ceil_div(a: i64, b: i64) -> i64 {
 /// tile, a wrong tie point slides it, `PixelIsPoint` shifts it half a pixel.
 fn expect_lattice<R: std::io::Read + std::io::Seek>(
     dec: &mut Decoder<R>,
-    ti: u32,
-    tj: u32,
+    (ti, tj): (u32, u32),
     name: &impl Fn() -> String,
 ) -> Result<(), String> {
     let north_up = read_north_up(dec, name)?;

@@ -1,6 +1,6 @@
 import { featureTile, type NodeStamps } from './bins';
 import { key, type Node } from './lod';
-import type { StampSource } from './pages';
+import { STAMP_WORDS, type StampSource } from './pages';
 import type { Request } from './stamp-worker';
 import type { NodeMeshes } from '../structures/node';
 import type { WaterMesh } from './water-mesh';
@@ -19,7 +19,7 @@ export interface NodeFeatures extends NodeStamps {
     portals: Float64Array<ArrayBuffer> | null;
 }
 
-const NOTHING: NodeFeatures = { data: null, heights: false, water: null, meshes: null, floors: null, portals: null };
+const NOTHING: NodeFeatures = { data: null, heights: false, mask: false, water: null, meshes: null, floors: null, portals: null };
 const meshBytes = (mesh: { vertices: ArrayBuffer; indices: Uint32Array } | null) => (mesh ? mesh.vertices.byteLength + mesh.indices.byteLength : 0);
 const kindBytes = ({ far, near, anchors, points }: NodeMeshes) =>
     [far.structures, far.anchored, near.structures, near.anchored].reduce((n, mesh) => n + meshBytes(mesh), (anchors?.byteLength ?? 0) + (points?.byteLength ?? 0));
@@ -80,7 +80,12 @@ export class Stamps implements StampSource {
         const name = key(node);
         if (!this.pending.has(name) && this.pending.size < REQUESTS) {
             this.pending.add(name);
-            this.ask<NodeFeatures>(tile, node, 'stamps').then(stamps => this.keep(name, stamps), error => {
+            this.ask<NodeFeatures>(tile, node, 'stamps').then(stamps => {
+                // A frame takes at most STAMP_WORDS: a node with more would wait forever, so it stamps nothing.
+                if ((stamps.data?.length ?? 0) <= STAMP_WORDS) return this.keep(name, stamps);
+                console.warn(`Node ${name}: ${stamps.data!.length} words of stamps, more than a frame takes`);
+                this.keep(name, { ...stamps, data: null, heights: false, mask: false });
+            }, error => {
                 // A tile that fails stamps nothing, as an absent one.
                 if (!stopped(error)) console.warn(`Feature tile ${key(tile)}: ${error instanceof Error ? error.message : error}`);
                 this.failed++;

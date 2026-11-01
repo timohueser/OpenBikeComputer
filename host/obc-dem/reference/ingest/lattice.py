@@ -16,6 +16,8 @@ GRID_ORIGIN = -268435456  # −2^28 µdeg, the OBCT grid origin on both axes
 STEP = 1 << 6  # µdeg per pixel: about 7.1 m of latitude
 TILE = 1 << 16  # µdeg per tile side
 TILE_PX = TILE // STEP  # 1024 pixels per tile side
+BLOCK_TILES = 4  # tiles per block side: a block of a prepared version is 2^18 µdeg
+BLOCK_PX = BLOCK_TILES * TILE_PX
 NODATA = -32768
 MEAN_NODATA = -(1 << 31)  # the nodata of a mean tile, `int32` decimetres
 DEGREE = 1_000_000  # µdeg per degree
@@ -60,6 +62,18 @@ def tile_path(root: Path, ti: int, tj: int) -> Path:
     return root / "16" / f"{ti:04d}" / f"{tj:04d}.tif"
 
 
+def block_path(root: Path, bi: int, bj: int) -> Path:
+    return root / "18" / f"{bi:04d}" / f"{bj:04d}.tif"
+
+
+def in_block(ti: int, tj: int):
+    """The slice of tile `ti`, `tj` in the north-up array of its block."""
+
+    row = (BLOCK_TILES - 1 - ti % BLOCK_TILES) * TILE_PX
+    col = tj % BLOCK_TILES * TILE_PX
+    return np.s_[row:row + TILE_PX, col:col + TILE_PX]
+
+
 @dataclass(frozen=True)
 class Window:
     """A rectangle of lattice pixels. Rows count north from the grid origin."""
@@ -96,6 +110,10 @@ def covering_window(bounds: tuple[float, float, float, float], pad: int = 0) -> 
 
 def tile_window(ti: int, tj: int) -> Window:
     return Window(ti * TILE_PX, tj * TILE_PX, TILE_PX, TILE_PX)
+
+
+def block_window(bi: int, bj: int) -> Window:
+    return Window(bi * BLOCK_PX, bj * BLOCK_PX, BLOCK_PX, BLOCK_PX)
 
 
 def tile_bounds(ti: int, tj: int) -> tuple[float, float, float, float]:

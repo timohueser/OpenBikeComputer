@@ -55,19 +55,24 @@ fn plan_in(
 
 type Kind = (String, String, String, String, Option<String>);
 fn kinds(scope: Option<&Scope>, languages: &[String]) -> Result<Vec<Kind>, String> {
-    let area = regional_osm(scope)?;
+    let areas = regional_osm(scope)?;
     let mut kinds = vec![
         ("wikidata".into(), "wikidata".into(), "wikidata-".into(), "-all.json.bz2".into(), None),
         ("wikidata_pages".into(), "wikidata".into(), "wikidatawiki-".into(), "-page.sql.gz".into(), None),
         ("wikidata_redirects".into(), "wikidata".into(), "wikidatawiki-".into(), "-redirect.sql.gz".into(), None),
-        (
-            "osm".into(),
-            if area.is_some() { "geofabrik-extracts" } else { "osm-planet" }.into(),
-            area.as_ref().map_or("planet-".into(), |v| format!("{v}-")),
-            ".osm.pbf".into(),
-            area,
-        ),
     ];
+    if areas.is_empty() {
+        kinds.push(("osm".into(), "osm-planet".into(), "planet-".into(), ".osm.pbf".into(), None));
+    }
+    for area in areas {
+        kinds.push((
+            format!("osm:{area}"),
+            "geofabrik-extracts".into(),
+            format!("{area}-"),
+            ".osm.pbf".into(),
+            Some(area),
+        ));
+    }
     for language in languages {
         kinds.push((
             format!("langlinks:{language}"),
@@ -131,7 +136,7 @@ fn discover(context: &Planning, key: &str, prefix: &str, suffix: &str, area: Opt
         }
         return Ok((date.into(), name, url, size, etag));
     }
-    if key == "osm" {
+    if key == "osm" || key.starts_with("osm:") {
         let base = area.map_or("https://planet.openstreetmap.org/pbf/".into(), |area| {
             format!("https://download.geofabrik.de/{}.html", area)
         });
@@ -287,20 +292,21 @@ mod tests {
     #[test]
     fn cached_archives_are_reused_and_only_missing_selected_inputs_are_discovered() {
         let dir = tempfile::tempdir().unwrap();
-        let scope = Scope {
-            region: "europe/dach".into(),
-            definitions: [(
-                "europe/dach".into(),
-                "name = \"DACH\"\nkind = \"geofabrik\"\nareas = [\"europe/dach\"]\n".into(),
-            )]
-            .into(),
-        };
+        // A union of two Geofabrik regions reads the extract of each area once.
+        let geofabrik = |areas: &str| format!("name = \"Test\"\nkind = \"geofabrik\"\nareas = [{areas}]\n");
+        let union = "name = \"Europe\"\nkind = \"union\"\nunion = [\"alps\", \"islands\"]\n".to_string();
+        let definitions = [
+            ("alps".into(), geofabrik("\"europe/dach\", \"europe/italy\"")),
+            ("islands".into(), geofabrik("\"africa/canary-islands\", \"europe/italy\"")),
+            ("europe".into(), union),
+        ];
+        let scope = Scope { region: "europe".into(), definitions: definitions.into() };
         let languages = vec!["en".into(), "de".into()];
         for (key, _, prefix, suffix, _) in kinds(Some(&scope), &languages).unwrap() {
             if key == "wikipedia:de" {
                 continue;
             }
-            let date = if key == "osm" { "261001" } else { "20261001" };
+            let date = if key.starts_with("osm:") { "261001" } else { "20261001" };
             let path = dir.path().join(format!("{prefix}{date}{suffix}"));
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, b"cached").unwrap();
@@ -318,7 +324,14 @@ mod tests {
         })
         .unwrap();
         assert_eq!(asked, ["wikipedia:de"]);
-        assert_eq!(inputs.len(), 8);
+        assert_eq!(inputs.len(), 10);
+        let extracts: Vec<_> = inputs.iter().filter(|i| i.wanted.source == "geofabrik-extracts").collect();
+        let files = extracts.iter().map(|i| i.archive.as_ref().unwrap().path.strip_prefix(dir.path()).unwrap());
+        let files: Vec<_> = files.map(|path| path.to_str().unwrap()).collect();
+        assert_eq!(
+            files,
+            ["africa/canary-islands-261001.osm.pbf", "europe/dach-261001.osm.pbf", "europe/italy-261001.osm.pbf"]
+        );
         assert_eq!(inputs.iter().filter(|i| i.archive.as_ref().unwrap().url.is_some()).count(), 1);
         assert_eq!(inputs.last().unwrap().bytes, Some(42));
         assert!(inputs.iter().all(|i| !i.wanted.params.iter().any(|(_, v)| v.starts_with("frwiki"))));

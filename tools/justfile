@@ -284,8 +284,9 @@ inspect *args:
 # Data targets and the store: a bare `obc data` shows what each target serves and what to run
 # next. `obc data update TARGET` bakes what is stale and switches the target to the new release;
 # `--region`, `--box`, `--add`, `--remove` and `--refresh` change its settings, and `--only LAYER`
-# bakes a layer again. `obc data sources` lists every source with licence, R2 copy, and policy,
-# versions and state per target; `obc data areas` lists regions and Geofabrik areas;
+# bakes a layer again. `obc data sources` lists every source with licence, how this machine holds
+# it and its state per target, and with `--layer` or `--region` what a layer or a region bake
+# reads and still needs; `obc data areas` lists regions and Geofabrik areas;
 # `obc data fetch` puts a source version in the store; `obc data clean` cleans the store.
 # `obc data serve` serves `local` to the apps and follows its updates. `obc data setup` shows
 # what this machine can do; `obc data ui` serves its page, and `obc data open MACHINE` opens the
@@ -417,7 +418,7 @@ bake *args:
           _run "${client[@]}" list "$prefix"
         fi ;;
       terrain)
-        # The terrain artifact class, on its own revision track (OBCC_Spec.md §13). Same
+        # The terrain artifact class, on its own revision track (obcc-catalog.md §13). Same
         # tree as `bake`, deliberately a separate command: it needs DEM tiles and no OSM
         # extract, and it must never be a step of a schema re-bake.
         shift
@@ -566,6 +567,15 @@ prose *args:
     source "{{lib}}"; obc_init
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/prose.py" "$@"
+
+[doc("System docs against the code. Args: check [--base REF] [--update | --accept] | map | leaves SYSTEM | model ROLE | report [--publish] [--drift]")]
+[group('docs')]
+cairn *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run python3 "$OBC_TOOLS/cairn/cairn.py" "$@"
 
 # Serve the static hosted tier — the no-backend site (phase C of #894), as deployed.
 # Builds and serves it on :4173. Args: [PORT]. It reads the device catalogue of the

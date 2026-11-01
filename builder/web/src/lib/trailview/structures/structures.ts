@@ -4,11 +4,12 @@ import { wgsl } from '../gpu/wgsl';
 import { CASTER_DEPTH, CASTER_PRIMITIVE, NEAR_CASTERS_M } from '../light/shadow';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import { metresPerUnit } from '../terrain/bins';
-import { key, size, type Node } from '../terrain/lod';
+import { key, OWNER, size, type Node } from '../terrain/lod';
 import type { Stamps } from '../terrain/stamps';
 import { ANCHOR_WORDS, ANCHORED_VERTEX } from './anchored';
 import { STRUCTURE_VERTEX } from './mesh';
-import { FLOOR, OWNER, type NodeMeshes } from './node';
+import { FLOOR, type NodeMeshes } from './node';
+import { Pool, type Mesh } from './pool';
 
 /**
  * The structure meshes and the anchored meshes on the GPU, fixed pools; the anchors of the anchored
@@ -24,51 +25,6 @@ const REACH_M = 3;
 const NEAR_LEVEL = 17;
 /** Anchor ends per workgroup of `anchor_heights`. */
 const ANCHOR_GROUP = 64;
-
-interface Mesh { vertices: ArrayBuffer; indices: Uint32Array<ArrayBuffer> }
-
-/**
- * Meshes in a vertex and an index buffer of fixed size. A new mesh goes after the others; when one does
- * not fit and the pool holds meshes that the frame does not draw, the pool starts again with the meshes
- * of the frame.
- */
-class Pool {
-    private readonly placed = new Map<Mesh, { first: number; base: number }>();
-    private vertexEnd = 0;
-    private indexEnd = 0;
-    /** The meshes of the last frame that did not fit. */
-    dropped = 0;
-
-    constructor(private readonly device: GPUDevice, readonly vertices: GPUBuffer, readonly indices: GPUBuffer, private readonly stride: number) {}
-
-    write(draws: Mesh[]): void {
-        const placeAll = () => {
-            for (const mesh of draws) if (!this.placed.has(mesh)) this.place(mesh);
-        };
-        const missing = () => draws.filter(mesh => !this.placed.has(mesh)).length;
-        placeAll();
-        const used = new Set(draws);
-        if (missing() && [...this.placed.keys()].some(mesh => !used.has(mesh))) {
-            this.placed.clear();
-            this.vertexEnd = this.indexEnd = 0;
-            placeAll();
-        }
-        this.dropped = missing();
-    }
-
-    at(mesh: Mesh): { first: number; base: number } | undefined {
-        return this.placed.get(mesh);
-    }
-
-    private place(mesh: Mesh): void {
-        if (this.vertexEnd + mesh.vertices.byteLength > this.vertices.size || this.indexEnd + mesh.indices.byteLength > this.indices.size) return;
-        this.device.queue.writeBuffer(this.vertices, this.vertexEnd, mesh.vertices);
-        this.device.queue.writeBuffer(this.indices, this.indexEnd, mesh.indices);
-        this.placed.set(mesh, { first: this.indexEnd / 4, base: this.vertexEnd / (this.stride * 4) });
-        this.vertexEnd += mesh.vertices.byteLength;
-        this.indexEnd += mesh.indices.byteLength;
-    }
-}
 
 interface Resources {
     device: GPUDevice;
@@ -122,7 +78,7 @@ export class Structures {
         const heights = gpu.buffer('kinds', ANCHORS * 8, GPUBufferUsage.STORAGE);
         const count = gpu.buffer('kinds', 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         const pool = (label: string, vertexBytes: number, indexBytes: number, stride: number) =>
-            new Pool(device, gpu.buffer(label, vertexBytes, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), gpu.buffer(label, indexBytes, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST), stride);
+            new Pool(device, gpu.buffer(label, vertexBytes, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), gpu.buffer(label, indexBytes, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST), 4 * stride);
         this.drawn = [];
         this.fresh = true;
         const frameGroup = (frame: GPUBuffer) => device.createBindGroup({ layout, entries: [[0, frame], [1, anchors], [4, heights], [5, portals]].map(([binding, buffer]) => ({ binding: binding as number, resource: { buffer: buffer as GPUBuffer } })) });

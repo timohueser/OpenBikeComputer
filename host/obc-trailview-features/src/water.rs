@@ -803,7 +803,7 @@ mod tests {
             level: Level::Natural,
             half: 1.0,
             ele: f64::NAN,
-            parts: vec![Part { outer: kind == Kind::Lake, points, z: None }],
+            parts: vec![Part { outer: kind == Kind::Lake, points, z: None, plan: None }],
         }
     }
 
@@ -952,7 +952,10 @@ mod tests {
         // The island's ring is closed: its last vertex repeats the first.
         let island = vec![at(40.0, 40.0), at(360.0, 40.0), at(360.0, 360.0), at(40.0, 360.0), at(40.0, 40.0)];
         let ground = terrain(|e, s| if e > 40.0 && e < 360.0 && s > 40.0 && s < 360.0 { 760.0 } else { 700.0 });
-        let parts = [Part { outer: true, points: square(), z: None }, Part { outer: false, points: island, z: None }];
+        let parts = [
+            Part { outer: true, points: square(), z: None, plan: None },
+            Part { outer: false, points: island, z: None, plan: None },
+        ];
         let h = ground.heights(&interior(&parts, ground.top()));
         assert!(!h.is_empty());
         assert!(h.iter().all(|&v| v == 700.0));

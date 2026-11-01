@@ -2,6 +2,7 @@
 //! producers of prepared sources.
 
 pub mod climate_reference;
+pub mod colour_reference;
 pub mod device;
 pub mod forest_reference;
 mod functions;
@@ -28,6 +29,7 @@ pub const PREPARED: &[&dyn Prepared] = &[
     &terrain_reference::TERRAIN_REFERENCE,
     &forest_reference::FOREST_REFERENCE,
     &climate_reference::CLIMATE_REFERENCE,
+    &colour_reference::COLOUR_REFERENCE,
     &wiki::WIKI,
 ];
 
@@ -96,5 +98,31 @@ mod tests {
         let mut keys: Vec<&str> = super::PRODUCTS.iter().map(|product| product.pointer().key).collect();
         keys.sort();
         assert_eq!(keys, obc_data::release::POINTERS);
+    }
+
+    /// The source overview gives a source that only a prepare reads the need of its producer.
+    #[test]
+    fn each_source_that_only_a_prepare_reads_has_one_producer() {
+        use obc_data::sources::{FetchKind, Keep, Kind};
+        let only_prepared = obc_data::sources::all().iter().filter(|source| {
+            source.kind == Kind::Data && source.keep == Keep::Prepared && source.fetch.kind != FetchKind::Prepared
+        });
+        for source in only_prepared {
+            let producers: Vec<&str> =
+                super::PREPARED.iter().filter(|p| p.reads(source)).map(|producer| producer.name()).collect();
+            assert_eq!(producers.len(), 1, "`{}` is read by {producers:?}", source.id);
+        }
+    }
+
+    #[test]
+    fn each_source_that_a_product_can_read_is_a_row_of_the_registry() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for product in super::PRODUCTS {
+            let reads = product.reads(&root);
+            assert!(reads.len() > 5, "{}", product.name());
+            for id in reads {
+                assert!(obc_data::sources::all().iter().any(|source| source.id == id), "{}: `{id}`", product.name());
+            }
+        }
     }
 }

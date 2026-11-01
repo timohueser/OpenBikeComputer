@@ -9,7 +9,7 @@ only its folder index states. All of them are keyless.
 Bavaria's INSPIRE WCS answers 401 and its credentials come from the LDBV by post, so
 Bavaria is a download. Saxony and Thuringia publish no WCS at all. Brandenburg's WCS
 answers float32 metres but names no CRS and its heights do not agree with two published
-Brandenburg summits, so it is not a row until that is understood; `README.md` says so.
+Brandenburg summits, so it is not a row until that is understood.
 
 The axis labels differ between the WCS states even though the grid is the same UTM zone:
 NRW's coverage is `x`/`y` and the two INSPIRE coverages are `E`/`N`. A server refuses a

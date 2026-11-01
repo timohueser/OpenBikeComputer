@@ -234,7 +234,7 @@ promises a rideable connection.
 The line shows the remaining route, with places ahead below the rider. Settlements group
 nearby services; waypoints and the route end stay visible through filters. Larger spaces
 mark long distances between stops. Select opens details. Hold refreshes the list.
-Service records follow the [map format](src:specs/OBCM_Spec.md).
+Service records follow the [map format](src:specs/obcm-map.md).
 
 ### Nearby landmarks
 

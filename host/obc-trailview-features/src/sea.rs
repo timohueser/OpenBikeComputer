@@ -46,7 +46,7 @@ fn read(mut shapefile: impl Read, tiles: &Tiles) -> Result<Vec<Vec<Part>>, Strin
             continue;
         }
         let corner = |x: usize, y: usize| world(double(&record, x), double(&record, y));
-        let frame = Part { outer: true, points: vec![corner(4, 28), corner(20, 12)], z: None };
+        let frame = Part { outer: true, points: vec![corner(4, 28), corner(20, 12)], z: None, plan: None };
         if !tiles.meets(MIN_ZOOM, &[frame]) {
             continue;
         }
@@ -87,7 +87,7 @@ fn grouped(rings: Vec<Vec<[f64; 2]>>) -> Vec<Part> {
         let inside =
             |hole: &&Vec<[f64; 2]>| outers.len() == 1 || outers.iter().position(|o| contains(&[o], hole[0])) == Some(k);
         for (ring, is_outer) in [(outer, true)].into_iter().chain(holes.iter().filter(inside).map(|h| (h, false))) {
-            parts.push(Part { outer: is_outer, points: ring.clone(), z: Some(vec![0.0; ring.len()]) });
+            parts.push(Part { outer: is_outer, points: ring.clone(), z: Some(vec![0.0; ring.len()]), plan: None });
         }
     }
     parts

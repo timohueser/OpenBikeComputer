@@ -1087,13 +1087,33 @@ keep = "archive"
 redistribute = true
 credential = { file = "~/.config/openbikecomputer/clms-key.json", register = "https://land.copernicus.eu", hint = "Sign in, create a token under API Tokens in your profile, then save its JSON as this file with mode 0600." }
 
-# The band windows over a box of the Sentinel-2 quarterly mosaics of a year, from Sentinel-2 L2A.
+# The Sentinel-2 texels of the zoom 12 tiles per quarter of a year. A version extends the version
+# before by blocks and years.
+[[source]]
+id = "colour"
+kind = "data"
+used_by = ["trailview"]
+use = "Quarterly satellite colour for the TrailView colour and material"
+licence = "LicenseRef-Copernicus-Sentinel"
+licence_url = "https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice"
+attribution = "Contains modified Copernicus Sentinel data {year}"
+obligations = "Credit the Copernicus Sentinel data and its year; state modifications"
+fetch = { kind = "prepared" }
+hosts = ["stac.dataspace.copernicus.eu", "eodata.dataspace.copernicus.eu"]
+extent = [-180.0, -90.0, 180.0, 90.0]
+version = "date"
+refresh = 365
+keep = "prepared"
+redistribute = true
+
+# Only the producer of `colour` reads it: the band windows over a block of the Sentinel-2 quarterly
+# mosaics of a year, from Sentinel-2 L2A.
 [[source]]
 id = "sentinel-2-mosaics"
 kind = "data"
 group = "Land cover and imagery"
 used_by = ["trailview"]
-use = "Quarterly satellite colour for the TrailView colour and material"
+use = "Quarterly satellite colour: the input of `colour`"
 licence = "LicenseRef-Copernicus-Sentinel"
 licence_url = "https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice"
 attribution = "Contains modified Copernicus Sentinel data {year}"
@@ -1101,7 +1121,7 @@ obligations = "Credit the Copernicus Sentinel data and its year; state modificat
 fetch = { kind = "capture", url = "https://stac.dataspace.copernicus.eu/v1/collections/sentinel-2-global-mosaics/items" }
 hosts = ["eodata.dataspace.copernicus.eu"]
 version = "date"
-keep = "store"
+keep = "prepared"
 redistribute = true
 credential = { file = "~/.config/openbikecomputer/cdse-s3.env", register = "https://eodata-s3keysmanager.dataspace.copernicus.eu", hint = "Sign in with a free Copernicus Data Space account, add a credential, then copy its access key and secret key." }
 
@@ -1152,7 +1172,7 @@ licence = "CC-BY-4.0"
 licence_url = "https://creativecommons.org/licenses/by/4.0/"
 attribution = "National Land Cover Map 2018 © Tailte Éireann and the Environmental Protection Agency"
 obligations = "Credit the source as the attribution says; state modifications"
-fetch = { kind = "capture", url = "https://services-eu1.arcgis.com/FH5XCsx8rYXqnjF5/arcgis/rest/services/MapGenieNationalLandCover2018ITM/FeatureServer/0" }
+fetch = { kind = "capture", url = "https://services-eu1.arcgis.com/FH5XCsx8rYXqnjF5/arcgis/rest/services/MapGenieNationalLandCover2018ITM/FeatureServer/replicafilescache/MapGenieNationalLandCover2018ITM_2196705754881737910.zip" }
 extent = [-11, 51, -5, 56]
 version = "date"
 refresh = "manual"
@@ -1169,9 +1189,7 @@ licence = "OGL-UK-3.0"
 licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
 attribution = "Contains NatureScot information licensed under the Open Government Licence v3.0"
 obligations = "Credit the source as the attribution says"
-fetch = { kind = "capture", url = "https://ogc.nature.scot/geoserver/ows" }
-# The archive keeps the HabMoS GeoPackages of the download site.
-hosts = ["gis-downloads.nature.scot"]
+fetch = { kind = "capture", url = "https://gis-downloads.nature.scot/HABMOS-NVC-CLEANED_SCOTLAND_GPKG_27700.zip" }
 extent = [-10, 54, 0, 61]
 version = "date"
 refresh = "manual"

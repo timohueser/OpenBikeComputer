@@ -196,7 +196,7 @@ impl Asking<'_, '_> {
                 })?,
             }
         }
-        let planet = &self.pin.dumps.iter().find(|dump| dump.key == "osm").expect("the dumps have a planet").sha256;
+        let osm = self.pin.osm();
         for summits in self.peaks.chunks(CHUNK) {
             let links: Vec<[Option<&String>; 2]> =
                 summits.iter().map(|summit| [summit.tags.get("wikidata"), summit.tags.get("wikipedia")]).collect();
@@ -218,7 +218,7 @@ impl Asking<'_, '_> {
             let name = |summit: &Summit| format!("OSM node {}", summit.node_id);
             chosen(&summits, requests, &mut failed, name, |summits| {
                 fresh(&[&view, &out])?;
-                let source = SummitSource { schema: 1, osm_sha256: planet.clone(), summits: summits.to_vec() };
+                let source = SummitSource { schema: 1, osm_sha256: osm.clone(), summits: summits.to_vec() };
                 write_atomic(&view.join("summits.json"), &serde_json::to_vec(&source).expect("summits serialize"))?;
                 Ok(peak_photos(&files, [&view, &out, &world]))
             })?;

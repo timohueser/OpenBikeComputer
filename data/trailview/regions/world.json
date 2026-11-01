@@ -5,6 +5,9 @@
  "pack": "base",
  "look": {
   "snap": 0.4,
+  "zebra": {"*": "#e2e0d8"}, "zebraSetts": {"*": "#e2e0d8"},
+  "giveWay": {"*": {"dash_m": 0.5, "triangle": true}},
+  "dashes": {"*": {"line": [3, 9], "lane": [6, 18]}},
   "hazeKm": 35, "hazeHeight": 2500, "mistTop": 0,
   "softness": 0.08, "gradient": 0.35,
   "turf": "heath",

@@ -36,8 +36,10 @@ pub struct PresentStats {
 /// until the transport is done with the bytes. On the shipping board the coprocessor scans the
 /// resident frame directly, so that borrow is load-bearing.
 ///
-/// Errors are transport outcomes: the frame did not fully reach glass and the caller may retry
-/// with the same bytes. Presenting must never report success for pixels it dropped.
+/// Errors are transport outcomes: the frame did not fully reach glass. A self-diffing presenter
+/// may already have recorded the frame as pushed, so a plain retry pushes nothing: the retry needs
+/// [`damage_full`](Self::damage_full) or the presenter's own re-arm. Presenting must never report
+/// success for pixels it dropped.
 #[allow(async_fn_in_trait)] // single-core executors on-device + a synchronous host backend — no Send bound wanted
 pub trait Presenter<F: NativeFrame> {
     /// This presenter's damage description for one present. The caller constructs it only through

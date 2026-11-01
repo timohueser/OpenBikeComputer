@@ -30,8 +30,9 @@ test('the page draws the fixture with no WebGPU error, and the probe gives the h
     await page.setViewportSize({ width: 480, height: 300 });
     const errors = errorsOf(page);
     await open(page, DOWN);
-    const { drawn, failed } = await page.evaluate(() => window.trailView.stats());
+    const { drawn, failed, terrain } = await page.evaluate(() => window.trailView.stats());
     expect(drawn).toBeGreaterThan(0);
+    expect(terrain.roads.pieces).toBeGreaterThan(0);
     expect(failed).toBe(0);
     const points = Array.from({ length: 16 }, (_, i) => [8.415 + 0.002 * Math.cos(i), 46.7975 + 0.0015 * Math.sin(2 * i)]);
     const { probe, instance } = await page.evaluate(points => window.trailView.check(points), points);

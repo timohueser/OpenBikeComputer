@@ -1,0 +1,19 @@
+The Goldfish prompts in reference/goldfish.md adapt the reviewer prompts of
+the Elephant-Goldfish Model: agents/comprehension.md, agents/design_critic.md
+and agents/implementation_readiness.md in
+https://github.com/google/elephant-goldfish-model
+
+Copyright 2026 Google LLC.
+Licensed under the Apache License, Version 2.0. A copy is in LICENSE-EGM,
+and at https://www.apache.org/licenses/LICENSE-2.0
+
+The cairn version is changed: it shortens the prompts, rewrites them in
+Simplified Technical English and adds fixed output formats.
+
+reference/writing.md takes ideas, not text, from SimpleEnglish
+(https://github.com/AminBlg/SimpleEnglish, MIT): two registers, terms
+explained at first use, and few rules with examples.
+
+reference/design.md adapts the section approval gate and the check of a
+draft against its brainstorm from skills/egm-draft/SKILL.md of the
+Elephant-Goldfish Model (Apache-2.0, as above).

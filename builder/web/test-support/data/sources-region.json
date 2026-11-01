@@ -1,0 +1,326 @@
+{
+  "region": "grimsel",
+  "name": "Grimsel Pass",
+  "boxes": [
+    {
+      "west": 8.15034,
+      "south": 46.48261,
+      "east": 8.46007,
+      "north": 46.7207
+    }
+  ],
+  "countries": [
+    "CH"
+  ],
+  "products": [
+    {
+      "product": "device",
+      "incomplete": false,
+      "reason": null
+    },
+    {
+      "product": "planner",
+      "incomplete": true,
+      "reason": "the store lacks `sentinel-2-mosaics` bbox=8.15034,46.48261,8.46007,46.7207 year=2025; 6 fetches failed: climate 1, hr-wsi 1, modis-snow 1, sentinel-2-mosaics 2, terrain 1; `obc data fetch sentinel-2-mosaics bbox=8.15034,46.48261,8.46007,46.7207 year=2025` gets it."
+    }
+  ],
+  "layers": [
+    {
+      "layer": "device/terrain",
+      "need": "held",
+      "sources": [
+        "terrain",
+        "copernicus-glo-30"
+      ],
+      "reason": null
+    },
+    {
+      "layer": "planner",
+      "need": "unknown",
+      "sources": [],
+      "reason": "the store lacks `sentinel-2-mosaics` bbox=8.15034,46.48261,8.46007,46.7207 year=2025; 6 fetches failed: climate 1, hr-wsi 1, modis-snow 1, sentinel-2-mosaics 2, terrain 1; `obc data fetch sentinel-2-mosaics bbox=8.15034,46.48261,8.46007,46.7207 year=2025` gets it."
+    }
+  ],
+  "sources": [
+    {
+      "source": "geofabrik-extracts",
+      "held": {
+        "rule": "live",
+        "covers": "World",
+        "status": "live",
+        "where": "store",
+        "dataset": null,
+        "prepared_by": null,
+        "bytes": 19385488683,
+        "download_bytes": null,
+        "date": "2026-10-28",
+        "archive_files": null,
+        "store_versions": 5,
+        "store_requests": 11,
+        "gap": false,
+        "no_dataset": false,
+        "error": null
+      },
+      "for_region": {
+        "need": "held",
+        "requests": 1,
+        "held_requests": 1,
+        "held_bytes": 549114239,
+        "download_bytes": 0,
+        "unknown_requests": 0,
+        "read_by": null,
+        "after_stop": false
+      }
+    },
+    {
+      "source": "copernicus-glo-30",
+      "held": {
+        "rule": "keep",
+        "covers": "World",
+        "status": "partial",
+        "where": "store",
+        "dataset": "copernicus-glo-30",
+        "prepared_by": null,
+        "bytes": 10809076035,
+        "download_bytes": 589148446615,
+        "date": "2026-10-28",
+        "archive_files": null,
+        "store_versions": 1,
+        "store_requests": 14,
+        "gap": false,
+        "no_dataset": false,
+        "error": null
+      },
+      "for_region": {
+        "need": "held",
+        "requests": 2,
+        "held_requests": 2,
+        "held_bytes": 252286558,
+        "download_bytes": 0,
+        "unknown_requests": 0,
+        "read_by": null,
+        "after_stop": false
+      }
+    },
+    {
+      "source": "terrain",
+      "held": {
+        "rule": "prepare",
+        "covers": "central-switzerland + alps-black-forest + box",
+        "status": "prepared",
+        "where": "/media/archive/prepared/terrain",
+        "dataset": null,
+        "prepared_by": "terrain",
+        "bytes": 2691203367,
+        "download_bytes": null,
+        "date": "2026-10-28",
+        "archive_files": null,
+        "store_versions": 0,
+        "store_requests": 0,
+        "gap": false,
+        "no_dataset": false,
+        "error": null
+      },
+      "for_region": {
+        "need": "held",
+        "requests": 1,
+        "held_requests": 1,
+        "held_bytes": 0,
+        "download_bytes": 0,
+        "unknown_requests": 0,
+        "read_by": null,
+        "after_stop": false
+      }
+    },
+    {
+      "source": "climate",
+      "held": {
+        "rule": "prepare",
+        "covers": "box",
+        "status": "prepared",
+        "where": "/media/archive/prepared/climate",
+        "dataset": null,
+        "prepared_by": "climate",
+        "bytes": 398114924,
+        "download_bytes": null,
+        "date": "2026-10-28",
+        "archive_files": null,
+        "store_versions": 0,
+        "store_requests": 0,
+        "gap": false,
+        "no_dataset": false,
+        "error": null
+      },
+      "for_region": {
+        "need": "prepare",
+        "requests": 1,
+        "held_requests": 0,
+        "held_bytes": 0,
+        "download_bytes": 0,
+        "unknown_requests": 0,
+        "read_by": null,
+        "after_stop": false
+      }
+    },
+    {
+      "source": "hansen-gfc",
+      "held": {
+        "rule": "keep",
+        "covers": "World",
+        "status": "archived",
+        "where": "/media/archive",
+        "dataset": "hansen-gfc-treecover2000-v1.11",
+        "prepared_by": null,
+        "bytes": 58875630436,
+        "download_bytes": null,
+        "date": "2026-10-28",
+        "archive_files": {
+          "verified": 506,
+          "listed": 506
+        },
+        "store_versions": 1,
+        "store_requests": 3,
+        "gap": false,
+        "no_dataset": false,
+        "error": null
+      },
+      "for_region": {
+        "need": "held",
+        "requests": 1,
+        "held_requests": 1,
+        "held_bytes": 374428822,
+        "download_bytes": 0,
+        "unknown_requests": 0,
+        "read_by": null,
+        "after_stop": false
+      }
+    },
+    {
+      "source": "sentinel-2-mosaics",
+      "held": {
+        "rule": "store",
+        "covers": "World",
+        "status": "partial",
+        "where": "store",
+        "dataset": null,
+        "prepared_by": null,
+        "bytes": 7263774938,
+        "download_bytes": null,
+        "date": "2026-10-28",
+        "archive_files": null,
+        "store_versions": 3,
+        "store_requests": 4,
+        "gap": false,
+        "no_dataset": false,
+        "error": null
+      },
+      "for_region": {
+        "need": "download",
+        "requests": 1,
+        "held_requests": 0,
+        "held_bytes": 0,
+        "download_bytes": 0,
+        "unknown_requests": 1,
+        "read_by": null,
+        "after_stop": false
+      }
+    },
+    {
+      "source": "qrank",
+      "held": {
+        "rule": "keep",
+        "covers": "World",
+        "status": "held",
+        "where": "store",
+        "dataset": null,
+        "prepared_by": null,
+        "bytes": 125991450,
+        "download_bytes": null,
+        "date": "2026-10-16",
+        "archive_files": null,
+        "store_versions": 1,
+        "store_requests": 0,
+        "gap": false,
+        "no_dataset": false,
+        "error": null
+      },
+      "for_region": {
+        "need": "held",
+        "requests": 1,
+        "held_requests": 1,
+        "held_bytes": 125991450,
+        "download_bytes": 0,
+        "unknown_requests": 0,
+        "read_by": null,
+        "after_stop": false
+      }
+    },
+    {
+      "source": "dtm-ch",
+      "held": {
+        "rule": "prepare",
+        "covers": "CH, LI",
+        "status": "prepared",
+        "where": "/media/archive/prepared/terrain",
+        "dataset": null,
+        "prepared_by": "terrain",
+        "bytes": null,
+        "download_bytes": null,
+        "date": "2026-10-28",
+        "archive_files": null,
+        "store_versions": 0,
+        "store_requests": 0,
+        "gap": false,
+        "no_dataset": false,
+        "error": null
+      },
+      "for_region": {
+        "need": "held",
+        "requests": 0,
+        "held_requests": 0,
+        "held_bytes": 0,
+        "download_bytes": 0,
+        "unknown_requests": 0,
+        "read_by": "terrain",
+        "after_stop": false
+      }
+    },
+    {
+      "source": "era5-land",
+      "held": {
+        "rule": "prepare",
+        "covers": "World",
+        "status": "prepared",
+        "where": "/media/archive/prepared/climate",
+        "dataset": null,
+        "prepared_by": "climate",
+        "bytes": null,
+        "download_bytes": null,
+        "date": "2026-10-28",
+        "archive_files": null,
+        "store_versions": 0,
+        "store_requests": 0,
+        "gap": false,
+        "no_dataset": false,
+        "error": null
+      },
+      "for_region": {
+        "need": "prepare",
+        "requests": 0,
+        "held_requests": 0,
+        "held_bytes": 0,
+        "download_bytes": 0,
+        "unknown_requests": 0,
+        "read_by": "climate",
+        "after_stop": false
+      }
+    }
+  ],
+  "download_bytes": 0,
+  "unknown": [
+    "sentinel-2-mosaics"
+  ],
+  "prepare": [
+    "climate"
+  ]
+}

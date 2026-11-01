@@ -72,7 +72,7 @@ public final class RouteDetailModel {
     /// False for a ride whose points carry no elevation, or that has no points and no climb, so
     /// its climb and descent read as unknown, not 0.
     private let hasElevation: Bool
-    /// The `OBCR_Spec.md` §1.2 estimate. Distance and climb hold the upload's header figures, so it
+    /// The `obcr-route.md` §1.2 estimate. Distance and climb hold the upload's header figures, so it
     /// is the estimate the device shows for this route and type.
     private var estimatedDuration: TimeInterval? {
         if case .tracked = dressing { return nil }

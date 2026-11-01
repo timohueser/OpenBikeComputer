@@ -1,10 +1,16 @@
 # Route API
 
-`POST /v1/route` on the [route service](../planner/service/README.md) calculates
-routes. `POST /v1/shape` finds the plan points of a route that follows a line. The
-native provider answers both with the same code (`planner_router_call` with the call
-`route` or `shape`). `GET /v1/region` describes the routing package. Request and
-answer bodies are UTF-8 JSON.
+`POST /v1/route` calculates routes. `POST /v1/shape` finds the plan points of a route that follows a
+line. `GET /v1/region` describes the routing package. Request and answer bodies are UTF-8 JSON.
+
+- Writers: the [route service](../planner/service/README.md); the native provider answers `route`
+  and `shape` with the same code (`planner_router_call` with the call `route` or `shape`). The
+  answer encoder is `planner/router/src/answer.rs`.
+- Readers: the web planner (`builder/web/src/lib/planner/routing.ts`, `route-answer.ts`), the
+  companion app (`OBCPlanner/PlannerService.swift`, `RouteAnswer.swift`).
+- Test vectors: [`vectors/route-answer.json`](vectors/route-answer.json): two routes before and
+  after encoding. The encoder test and each decoder test read it.
+- Related: [route package](route-package.md), [route catalog](route-catalog.md).
 
 ## Request
 
@@ -23,13 +29,12 @@ The service rejects unknown fields.
 
 ## Answer
 
-The answer is `{"routes": [...]}`. The first route is the primary route. With
-`alternatives_only`, the answer holds only the alternative routes, and it can be
-empty. `alternatives_only` overrides `alternatives` when both are `true`. When the
-primary route fails, an `alternatives_only` request fails with that error, not
-with an empty answer. When the deadline or a limit stops the search for
-alternatives after the primary route, the answer holds the routes found before
-it. Each route has these fields:
+The answer is `{"routes": [...]}`. The first route is the primary route. With `alternatives_only`,
+the answer holds only the alternative routes, and it can be empty. `alternatives_only` overrides
+`alternatives` when both are `true`. When the primary route fails, an `alternatives_only` request
+fails with that error, not with an empty answer. When the deadline or a limit stops the search for
+alternatives after the primary route, the answer holds the routes found before it. Each route has
+these fields:
 
 | Field | Value |
 | --- | --- |
@@ -48,26 +53,24 @@ it. Each route has these fields:
 
 ### Deltas
 
-`coordinates_udeg` holds two integers for each point: longitude, then latitude.
-The first pair is absolute. Each pair after it is the difference from the
-previous point. Add the pairs in sequence and divide by 1,000,000 to get degrees.
+`coordinates_udeg` holds two integers for each point: longitude, then latitude. The first pair is
+absolute. Each pair after it is the difference from the previous point. Add the pairs in sequence
+and divide by 1,000,000 to get degrees.
 
-`elevation_dm` and `elapsed_s` hold one integer for each point. Each value is the
-difference from the previous value. The value before the first point is zero.
-Add the values in sequence. Divide the heights by 10 to get metres. A `null`
-height adds nothing: the next height is a difference from the last known height.
-The first elapsed value is zero.
+`elevation_dm` and `elapsed_s` hold one integer for each point. Each value is the difference from
+the previous value. The value before the first point is zero. Add the values in sequence. Divide the
+heights by 10 to get metres. A `null` height adds nothing: the next height is a difference from the
+last known height. The first elapsed value is zero.
 
-The encoder rounds the absolute value of each point and then calculates the
-difference. Thus rounding errors do not add up along the route.
+The encoder rounds the absolute value of each point and then calculates the difference, so rounding
+errors do not add up.
 
 ### Edges
 
-An edge joins point `i` and point `i + 1`. A route with `n` points has `n - 1`
-edges. `edges` maps each channel name to a list of runs `[value, edge count]`.
-Each run gives one value and the number of consecutive edges with that value.
-The run lengths of a channel add up to `n - 1`. A missing channel is `null` on
-every edge. A client accepts a channel that it does not know.
+An edge joins point `i` and point `i + 1`. A route with `n` points has `n - 1` edges. `edges` maps
+each channel name to a list of runs `[value, edge count]`. Each run gives one value and the number
+of consecutive edges with that value. The run lengths of a channel add up to `n - 1`. A missing
+channel is `null` on every edge. A client accepts a channel that it does not know.
 
 | Channel | Value of an edge |
 | --- | --- |
@@ -76,15 +79,12 @@ every edge. A client accepts a channel that it does not know.
 | `closures` | `null`, or a list of possible closures, each `{"kind", "condition"}` |
 | `sac_scale` | The OSM `sac_scale` as an integer from `0` (`strolling`) through `1` (`hiking`, T1) to `6` (`difficult_alpine_hiking`, T6), or `null` when the way has none |
 
-The router blocks a mode only for the access value `no`; `dismount` blocks
-riding only. It uses an edge that is possibly closed for the mode that the route
-uses on it, and reports it. A closure on a node, such as a gate, belongs to the
-edges of the road that arrives at the node. A closure applies only to the
-direction of travel that its tag names. A closure from an access value makes
-the road cost three times its length, and a node cost as much as 300 m of good
-road. Thus a route uses the road only where every alternative is more than three
-times as long, or where a shaping point is on it. A `seasonal` or `conditional`
-closure adds no cost:
+The router blocks a mode only for the access value `no`; `dismount` blocks riding only. It uses an
+edge that is possibly closed for the mode that the route uses on it, and reports it. A closure on a
+node, such as a gate, belongs to the edges of the road that arrives at the node. A closure applies
+only to the direction of travel that its tag names. A closure from an access value makes the road
+cost three times its length, and a node cost as much as 300 m of good road. A `seasonal` or
+`conditional` closure adds no cost:
 
 | `kind` | Source | `condition` |
 | --- | --- | --- |
@@ -100,52 +100,47 @@ closure adds no cost:
 
 ### Legs and totals
 
-`legs[k].from_index` and `legs[k].to_index` are inclusive point indices. The
-first leg starts at index 0. Each leg starts where the previous leg ends. The
-last leg ends at index `n - 1`. `surface_m` gives metres for each surface, in
-the order above. `seconds` is moving time. Distances and heights are metres.
+`legs[k].from_index` and `legs[k].to_index` are inclusive point indices. The first leg starts at
+index 0. Each leg starts where the previous leg ends. The last leg ends at index `n - 1`.
+`surface_m` gives metres for each surface, in the order above. `seconds` is moving time. Distances
+and heights are metres.
 
 ### Leg positions
 
-`start` and `end` are opaque strings. Each names the snapped road position of
-a leg end: the road and the direction of travel on it. Where a point is not a
-turnaround, the `end` of one leg equals the `start` of the next leg. A client
-compares positions only for equality and sends them back unchanged.
+`start` and `end` are opaque strings. Each names the snapped road position of a leg end: the road
+and the direction of travel on it. Where a point is not a turnaround, the `end` of one leg equals
+the `start` of the next leg. A client compares positions only for equality and sends them back
+unchanged.
 
-A pinned point keeps only the road candidate at that position. Thus a request
-for some legs of a trip joins the legs before and after it in the same
-direction. The service ignores a position that is not a candidate of the
-point, for example a position from a different `package`.
+A pinned point keeps only the road candidate at that position. Thus a request for some legs of a
+trip joins the legs before and after it in the same direction. The service ignores a position that
+is not a candidate of the point, for example a position from a different `package`.
 
-`legs[k].totals` has the fields of the route `totals`, for that leg only. The
-sum of the leg totals is the route total. Only `seconds` can differ, by up to
-0.5 s for each leg.
+`legs[k].totals` has the fields of the route `totals`, for that leg only. The sum of the leg totals
+is the route total. Only `seconds` can differ, by up to 0.5 s for each leg.
 
 ### Precision
 
-Coordinates are exact: the routing engine stores microdegrees. Heights are
-within 0.05 m of the engine value. Elapsed and total seconds are within 0.5 s.
-The [vector](vectors/route-answer.json) gives two routes before and after
-encoding. The encoder test and each decoder test read it.
+Coordinates are exact: the routing engine stores microdegrees. Heights are within 0.05 m of the
+engine value. Elapsed and total seconds are within 0.5 s.
 
 ## Compression
 
-The service compresses with brotli or gzip, as `Accept-Encoding` permits. It
-prefers brotli.
+The service compresses with brotli or gzip, as `Accept-Encoding` permits. It prefers brotli.
 
 ## Shape
 
-`POST /v1/shape` finds plan points for a line, for example a GPX track. A route
-request with these points and the same profile follows the line.
+`POST /v1/shape` finds plan points for a line, for example a GPX track. A route request with these
+points and the same profile follows the line.
 
 | Field | Value |
 | --- | --- |
 | `line` | 2 to 2,000 `[longitude, latitude]` pairs in degrees, at most 200 km long |
 | `profile` | A profile ID from `GET /v1/region` |
 
-The service rejects unknown fields. The body limit is 64 KiB for both requests.
-Simplify a track within 10 m and send 6 decimals before the request: then a
-200 km track fits. The service also simplifies the line within 10 m.
+The service rejects unknown fields. The body limit is 64 KiB for both requests. Simplify a track
+within 10 m and send 6 decimals before the request: then a 200 km track fits. The service also
+simplifies the line within 10 m.
 
 The answer is `{"points": [...], "turnarounds": [...]}`:
 
@@ -154,18 +149,17 @@ The answer is `{"points": [...], "turnarounds": [...]}`:
 | `points` | 2 to 64 `[longitude, latitude]` pairs in degrees, in route order |
 | `turnarounds` | Ascending indices in `points` where the line turns back |
 
-Each point is on a road, where the route attaches it. The first point is the
-start of the line, and the last point is the end of the line. Send
-`turnarounds` unchanged as the `turnarounds` of the route request.
+Each point is on a road, where the route attaches it. The first point is the start of the line, and
+the last point is the end of the line. Send `turnarounds` unchanged as the `turnarounds` of the
+route request.
 
-The route follows the line when its deviation is at most 2 % of the line length.
-The deviation is the length of the route farther than 30 m from the line, plus
-the length of the line farther than 30 m from the route. The line turns back at
-a point when, for 150 m before and after the point, it stays within 30 m of
-itself. A hairpin bend is not a turnaround.
+The route follows the line when its deviation is at most 2 % of the line length. The deviation is
+the length of the route farther than 30 m from the line, plus the length of the line farther than 30
+m from the route. The line turns back at a point when, for 150 m before and after the point, it
+stays within 30 m of itself. A hairpin bend is not a turnaround.
 
-One shape request uses one profile and at most 200 route calculations. Each has
-the limits of a route request. The deadline is 30 s.
+One shape request uses one profile and at most 200 route calculations. Each has the limits of a
+route request. The deadline is 30 s.
 
 ## Region
 
@@ -180,30 +174,27 @@ the limits of a route request. The deadline is 30 s.
 | `attribution` | Data credits |
 | `warnings` | Strings that name known limits of the package data |
 
-A profile ID is an activity, such as `touring`, or an activity, `/` and a variant:
-`touring/shorter` or `touring/less-climbing`. Two variants are skill choices.
-`mtb/technical` permits every MTB grade; `mtb` permits S2 at most.
-`hiking/alpine` permits T4; `hiking` permits T2 at most. Cycling profiles never
-use steps. The clients offer the presets of the profiles that the region serves.
+A profile ID is an activity, such as `touring`, or an activity, `/` and a variant: `touring/shorter`
+or `touring/less-climbing`. Two variants are skill choices. `mtb/technical` permits every MTB grade;
+`mtb` permits S2 at most. `hiking/alpine` permits T4; `hiking` permits T2 at most. Cycling profiles
+never use steps. The clients offer the presets of the profiles that the region serves.
 
 ## Errors
 
 An error answer is `{"code", "message"}`. It never contains a substitute route.
 
-The service attaches each point to the nearest road that the profile can use
-and that lies in a large connected part of its road graph, within 250 m. When
-none is that near, it uses the nearest such road within 1 km. `no_snap` means
-that no such road is within 1 km. `no_path` means that no legal route joins two
-consecutive points; the service does not try other roads for them.
+The service attaches each point to the nearest road that the profile can use and that lies in a
+large connected part of its road graph, within 250 m. When none is that near, it uses the nearest
+such road within 1 km. `no_snap` means that no such road is within 1 km. `no_path` means that no
+legal route joins two consecutive points; the service does not try other roads for them.
 
-`line_too_long` means that a shape line has more than 2,000 points or is longer
-than 200 km. `line_not_reproducible` means that the search found no plan of at
-most 64 points that follows the line, within its 200 route calculations.
+`line_too_long` means that a shape line has more than 2,000 points or is longer than 200 km.
+`line_not_reproducible` means that the search found no plan of at most 64 points that follows the
+line, within its 200 route calculations.
 
-`busy` means that no worker became free within 1 s. `internal` means that the
-service failed, not the request or the data. Send the request again. A body
-larger than the limit is an `invalid_request`. A call other than `route` and
-`shape` is `not_found`.
+`busy` means that no worker became free within 1 s. `internal` means that the service failed, not
+the request or the data. Send the request again. A body larger than the limit is an
+`invalid_request`. A call other than `route` and `shape` is `not_found`.
 
 | Code | Status |
 | --- | --- |

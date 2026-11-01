@@ -1,7 +1,7 @@
 //! Every test vector in both frozen specs, pinned byte for byte.
 //!
-//! `FLAT_Store_Format.md`'s vectors are the on-card ones, and this crate encodes them, so they are
-//! pinned against the encoder's own output. `FLAT_Store_Protocol.md`'s frames belong to the engine;
+//! `flat-store-format.md`'s vectors are the on-card ones, and this crate encodes them, so they are
+//! pinned against the encoder's own output. `flat-store-protocol.md`'s frames belong to the engine;
 //! what is pinned of them here is the half this contract owns — they carry the format's objects and
 //! offsets, and the two documents agree about them or one of the two is wrong.
 //!
@@ -247,7 +247,7 @@ fn capacity_table() {
     assert_eq!(TAIL_CAPACITY, 16_384);
 }
 
-/// `FLAT_Store_Protocol.md`'s `LIST` response carries the two objects. Its 88-byte entries are the
+/// `flat-store-protocol.md`'s `LIST` response carries the two objects. Its 88-byte entries are the
 /// format entries' metadata, and this is the seam between the two specs.
 #[test]
 fn wire_list_entries_carry_the_same_metadata() {

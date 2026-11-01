@@ -3,14 +3,13 @@
 //!
 //! Screens are immediate-mode, so tracking writes would mark everything dirty. Instead the present
 //! layer re-hashes each row, pushes only the contiguous spans whose hash changed, and updates the
-//! store. A Home clock ticking a minute re-presents a handful of rows instead of all 320: a few ms
-//! against a 44 ms full frame on the LS021.
+//! store. A Home clock ticking a minute re-presents a handful of rows instead of all 320.
 //!
 //! The only failure mode, a changed row hashing equal and so being skipped, is about 2⁻³² per row
-//! change and self-heals. [`spans_missed_changes`] is the exact-diff oracle for host tests.
+//! change and self-heals. [`spans_missed_changes`] is the exact-diff oracle for hosts.
 //!
 //! Pixel-format-agnostic: the diff is over raw row bytes with a caller-supplied stride, and the
-//! hash pass is word-at-a-time and well under a millisecond over the 75 KB device plane.
+//! hash pass runs a word at a time.
 
 /// FNV-1a (32-bit) over one framebuffer row, mixed a pre-avalanched `u32` word at a time. It runs
 /// over the whole framebuffer on every map-dirty present, so folding four bytes per multiply
@@ -248,12 +247,12 @@ mod tests {
     fn byte_lane_confined_changes_never_collide() {
         use std::collections::HashSet;
 
-        // The exact measured colliding pair of the pre-fix hash.
+        // A pair that collides under plain word-FNV.
         let zero = [0u8; 8];
         let mut pair = zero;
         pair[3] = 0x02;
         pair[7] = 0x2E;
-        assert_ne!(row_hash(&pair), row_hash(&zero), "the #626 pair must not collide");
+        assert_ne!(row_hash(&pair), row_hash(&zero), "the word-FNV pair must not collide");
 
         // Every two-word row whose device-64 pixels vary only in one byte lane hashes uniquely.
         for lane in 0..4 {

@@ -10,19 +10,11 @@ The [data contract](../../specs/obc-data.md) defines bytes and admission checks.
 Prepare Rust, Python with `uv`, GEOS and Osmium before an update, and a Java 21 JDK and Maven for
 the planner layers; `obc data` does not install them.
 `obc data setup` shows what this machine can do and the tools and credentials that it has.
-A changed producer does not rebuild its layer. Raise the `revision` of the layer in the change
-that changes its output; a reader that needs new data raises its `format`.
-
-Each step runs in a process of its own. A Rust step shows as `obc-data obc_data_step FUNCTION`
-in `ps`. Add the function of a new Rust step to `host/obc-data-steps/src/functions.rs`: a
-function that is not there fails its step. A test binary that runs a Rust step needs a test
-`obc_data_step` that calls `obc_data::engine::child` with its functions. Without that test, the
-step fails because it did not write its output.
 
 `data/targets.toml` names the targets: `local` is a folder beside the store, and `prod` the
 public bucket. An update or a rollback of `prod` needs the `OBC_R2_*` variables and rclone. The
-settings of a target (region, parts, refresh policies) are in the release that it
-serves, so they need no commit.
+settings of a target (region, parts, refresh policies) are in the release that it serves; they
+need no commit.
 
 | Configuration or credential | Purpose |
 | --- | --- |
@@ -45,13 +37,13 @@ serves, so they need no commit.
 | `UV_PYTHON` | Selected prepared Python interpreter |
 | `~/.config/openbikecomputer/credentials.env` | `env` credentials of sources; the environment wins |
 | `~/.cdsapirc` | CDS credential for a prepare of `climate` |
-| `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |
+| `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch and a prepare of `colour` |
 | `~/.config/openbikecomputer/clms-key.json` | CLMS service key for the CORINE fetch; save the JSON of the token whole, mode 0600 |
 
 Set a source credential on the Machine screen, or pipe it to `obc data source credential ID`.
 Put other secrets, such as the R2 key, in `credentials.env`, never in `tools/obc.local`.
 
-## Daily commands
+## Run
 
 | Command | Action |
 | --- | --- |
@@ -88,12 +80,6 @@ or stops frees the lock. A crash or an out-of-memory kill keeps it; the next run
 machine takes it over. From another machine, `obc data unlock TARGET --from MACHINE` frees it
 after 10 minutes without a heartbeat.
 
-`cargo test -p obc-data --test r2_live -- --ignored` writes the bucket of the `OBC_R2_*` variables
-in a throwaway folder `test/<time>-<pid>/`; it skips without them. A plain test run leaves it out.
-
-On a host with `KillUserProcesses=yes` in logind, an SSH logout ends a detached run, unless
-`loginctl enable-linger USER` is set for the user.
-
 On the page of a target, open **Plan update**, choose the area, then **Plan update on MACHINE**.
 The plan run shows each download, then the plan. **Start bake** runs that plan.
 
@@ -103,8 +89,7 @@ inputs, then prepares the region. A stopped run resumes with the same selection 
 Existing archives stay in place; the [wiki contract](../../specs/obc-data.md#wiki) gives their names.
 Select **Worldwide** only for a global version. Changing the selection requires a new review.
 
-The [page README](../../builder/web/src/components/data/README.md) tells how to run and develop
-the page.
+The [page README](../../builder/web/src/components/data/README.md) covers the page.
 
 ## Serve
 
@@ -137,3 +122,21 @@ It gives only the planner API, on `127.0.0.1`.
   of network, start `obc data serve` again.
 - The services read their files from `<store>/serve/local/`. Serve removes it when it starts and
   when it stops; `obc data clean` does not touch it.
+
+## Test
+
+`cargo test -p obc-data --test r2_live -- --ignored` writes the bucket of the `OBC_R2_*` variables
+in a throwaway folder `test/<time>-<pid>/`; it skips without them. A plain test run leaves it out.
+
+## Pitfalls
+
+- A changed producer does not rebuild its layer. Raise the `revision` of the layer in the change
+  that changes its output; a reader that needs new data raises its `format`.
+- Each step runs in a process of its own. A Rust step shows as `obc-data obc_data_step FUNCTION`
+  in `ps`. Add the function of a new Rust step to `host/obc-data-steps/src/functions.rs`: a
+  function that is not there fails its step.
+- A test binary that runs a Rust step needs a test `obc_data_step` that calls
+  `obc_data::engine::child` with its functions. Without that test, the step fails because it did
+  not write its output.
+- On a host with `KillUserProcesses=yes` in logind, an SSH logout ends a detached run, unless
+  `loginctl enable-linger USER` is set for the user.

@@ -7,7 +7,7 @@ the heights of roads, paths, tracks, bridges, tunnels, rivers and lakes, and the
 `obc-data-steps` runs the step as the function `obc-trailview-features/features`. The step needs
 Osmium (`osmium-tool`) on the path.
 
-## Direct bake
+## Run
 
 The binary bakes the archive of a box without `obc data`, with the kind table and the road classes
 of the checkout, and the terrain of a `planner-dem` MBTiles. Without `--sea`, the archive has no sea:
@@ -31,7 +31,7 @@ The water networks run on all cores. The road jobs run on a core each, the large
 at once as fit in the memory that is free past a quarter of RAM, less what the process holds. With
 no memory free, one job runs at a time.
 
-## Tests
+## Test
 
 `obc test -p obc-trailview-features`. Without Osmium, the tests of the cut and of the bake of a small
 region return at once, except in CI (`CI` set), where they fail.

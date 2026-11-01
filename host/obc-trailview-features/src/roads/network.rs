@@ -3,6 +3,14 @@
 use super::{Classes, Feature, APPROACH_M, APPROACH_PATH_M, VERTEX_M};
 use crate::metres;
 
+/// Two ways out run on in the look when they open at least this far: the cosine of their angle.
+const LOOK_COS: f64 = -0.3;
+/// A way out runs toward its point this far along it: the first segment of OSM can be a stub.
+const LOOK_M: f64 = 8.0;
+/// The legs of a hairpin lie closer than this cosine 8 m along. Chosen between a right angle, where an
+/// L-bend's legs stand, and the 65 degrees of a road that turns round 4 m.
+const FOLD_COS: f64 = 0.25;
+
 /// The ways as arrays. An OSM vertex is an occurrence of a point in a way; ways that share a point
 /// share its variable. Between two occurrences a way gets vertices so that no segment is longer
 /// than VERTEX_M, and one at the approach distance of a side road. `vertex_*` lists every vertex of
@@ -28,15 +36,13 @@ pub(crate) struct Network {
     pub sides: Sides,
     /// The through roads of two ways: (occurrence, step) of each.
     pub pairs: Vec<[(usize, i64); 2]>,
+    /// The ways out, (occurrence, step), that no through pair of the look holds.
+    pub arms: Vec<(usize, i64)>,
     pub osm_position: Vec<usize>,
     pub vertex_xy: Vec<[f64; 2]>,
     pub vertex_var: Vec<usize>,
     pub vertex_osm: Vec<bool>,
     pub vertex_junction: Vec<bool>,
-    pub vertex_fixed: Vec<bool>,
-    /// The OSM segment of each vertex, None for the last vertex of a way, and its place along it.
-    pub vertex_segment: Vec<Option<usize>>,
-    pub vertex_t: Vec<f64>,
     pub count: usize,
     pub way_first: Vec<usize>,
     pub way_last: Vec<usize>,
@@ -47,8 +53,12 @@ pub(crate) struct Network {
     pub length: Vec<f64>,
 }
 
-/// The side directions of the junctions: per side its occurrence, step and approach metres, and the
-/// through directions of its junction as (occurrence, step), the second one None where there is one.
+/// A road way out of a junction: its occurrence, step, class, and the direction of its first segment.
+type Road = (usize, i64, usize, [f64; 2]);
+
+/// The side directions of the junctions: per side its occurrence, step and approach metres,
+/// and the through directions of its junction as (occurrence, step), the second one None where there
+/// is one.
 #[derive(Default)]
 pub(crate) struct Sides {
     pub occurrence: Vec<usize>,
@@ -164,14 +174,12 @@ impl Network {
             junction,
             sides: Sides::default(),
             pairs: Vec::new(),
+            arms: Vec::new(),
             osm_position: Vec::new(),
             vertex_xy: Vec::new(),
             vertex_var: Vec::new(),
             vertex_osm: Vec::new(),
             vertex_junction: Vec::new(),
-            vertex_fixed: Vec::new(),
-            vertex_segment: Vec::new(),
-            vertex_t: Vec::new(),
             count: 0,
             way_first: Vec::new(),
             way_last: Vec::new(),
@@ -200,8 +208,8 @@ impl Network {
                 kept.push((s, t));
             }
         }
-        // Per OSM segment, its cuts in order: (t, whether at an approach distance).
-        let mut cuts: Vec<Vec<(f64, bool)>> = vec![Vec::new(); sa.len()];
+        // Per OSM segment, its cuts in order.
+        let mut cuts: Vec<Vec<f64>> = vec![Vec::new(); sa.len()];
         let mut at = 0;
         for (s, cut) in cuts.iter_mut().enumerate() {
             let begin = at;
@@ -213,11 +221,11 @@ impl Network {
             for k in 1..regular {
                 let t = k as f64 / regular as f64;
                 if !approaches.iter().any(|&(_, other)| (t - other).abs() * lengths[s] <= 1.0) {
-                    cut.push((t, false));
+                    cut.push(t);
                 }
             }
-            cut.extend(approaches.iter().map(|&(_, t)| (t, true)));
-            cut.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap());
+            cut.extend(approaches.iter().map(|&(_, t)| t));
+            cut.sort_by(|p, q| p.partial_cmp(q).unwrap());
         }
         let cut_count: usize = cuts.iter().map(Vec::len).sum();
         let total = net.osm_xy.len() + cut_count;
@@ -225,28 +233,19 @@ impl Network {
         net.vertex_xy = Vec::with_capacity(total);
         net.vertex_var = Vec::with_capacity(total);
         net.vertex_osm = Vec::with_capacity(total);
-        net.vertex_fixed = Vec::with_capacity(total);
-        net.vertex_segment = Vec::with_capacity(total);
-        net.vertex_t = Vec::with_capacity(total);
         let mut next_var = net.osm_count;
         for (o, &s) in segment_of.iter().enumerate() {
             net.osm_position.push(net.vertex_xy.len());
             net.vertex_xy.push(net.osm_xy[o]);
             net.vertex_var.push(net.osm_var[o]);
             net.vertex_osm.push(true);
-            net.vertex_fixed.push(true);
-            net.vertex_segment.push((s != usize::MAX).then_some(s));
-            net.vertex_t.push(0.0);
             if s != usize::MAX {
-                for &(t, at_approach) in &cuts[s] {
+                for &t in &cuts[s] {
                     let (p, d) = (net.osm_xy[o], d[s]);
                     net.vertex_xy.push([p[0] + t * d[0], p[1] + t * d[1]]);
                     net.vertex_var.push(next_var);
                     next_var += 1;
                     net.vertex_osm.push(false);
-                    net.vertex_fixed.push(at_approach);
-                    net.vertex_segment.push(Some(s));
-                    net.vertex_t.push(t);
                 }
             }
         }
@@ -329,7 +328,78 @@ impl Network {
                     self.sides.through.push([Some(t1), t2]);
                 }
             }
+            let roads: Vec<Road> = group
+                .iter()
+                .filter(|&&i| rank[i] < classes.path)
+                .map(|&i| (rows[i].0, rows[i].1, rank[i], rows[i].2))
+                .collect();
+            let (tracks, ways): (Vec<_>, Vec<_>) = roads.iter().copied().partition(|road| classes.rows[road.2].rail);
+            if !tracks.is_empty() && ways.len() > 2 {
+                self.look_arms(&tracks);
+                self.look_arms(&ways);
+            } else {
+                self.look_arms(&roads);
+            }
             s = e;
+        }
+    }
+
+    /// The direction of a way out of occurrence `o`.
+    fn way_out(&self, o: usize, step: i64) -> [f64; 2] {
+        let (way, start) = (self.osm_way[o], self.osm_xy[o]);
+        let (mut k, mut left, mut end) = (o, LOOK_M, start);
+        loop {
+            let next = k as i64 + step;
+            if next < 0 || next as usize >= self.osm_xy.len() || self.osm_way[next as usize] != way {
+                break;
+            }
+            let (a, b) = (self.osm_xy[k], self.osm_xy[next as usize]);
+            let length = hypot(sub(b, a)) * metres(a[1]);
+            if length >= left {
+                end = [a[0] + (b[0] - a[0]) * left / length, a[1] + (b[1] - a[1]) * left / length];
+                break;
+            }
+            (k, left, end) = (next as usize, left - length, b);
+        }
+        let d = sub(end, start);
+        let norm = hypot(d).max(1e-300);
+        [d[0] / norm, d[1] / norm]
+    }
+
+    /// The arms of a junction of `roads`. Its through pair in the look holds the best class that has
+    /// a pair, then the best class beside that, then runs most nearly straight on. So a road runs on
+    /// into a lesser class, and a stem that ends on a straight road leaves it as an arm. The only two
+    /// ways of the best class are the pair at a hairpin's apex: they leave it opposite, and 8 m along
+    /// they have folded back. Two ways run on, and a junction with no pair has no arms. A level
+    /// crossing of three road ways or more has two rounds: the tracks' and the roads', so that the
+    /// roads keep a through pair.
+    fn look_arms(&mut self, roads: &[Road]) {
+        if roads.len() <= 2 {
+            return;
+        }
+        let out: Vec<[f64; 2]> = roads.iter().map(|&(o, step, ..)| self.way_out(o, step)).collect();
+        let first = roads.iter().map(|road| road.2).min();
+        let top: Vec<usize> = (0..roads.len()).filter(|&n| Some(roads[n].2) == first).collect();
+        if let [i, k] = top[..] {
+            if dot(roads[i].3, roads[k].3) <= LOOK_COS && dot(out[i], out[k]) >= FOLD_COS {
+                let arms = (0..roads.len()).filter(|&n| n != i && n != k);
+                self.arms.extend(arms.map(|n| (roads[n].0, roads[n].1)));
+                return;
+            }
+        }
+        let mut best: Option<((usize, usize, f64), usize, usize)> = None;
+        for i in 0..roads.len() {
+            for k in i + 1..roads.len() {
+                let (straight, (a, b)) = (dot(out[i], out[k]), (roads[i].2, roads[k].2));
+                let rank = (a.min(b), a.max(b), straight);
+                if straight <= LOOK_COS && best.is_none_or(|(most, _, _)| rank < most) {
+                    best = Some((rank, i, k));
+                }
+            }
+        }
+        if let Some((_, i, k)) = best {
+            let arms = (0..roads.len()).filter(|&n| n != i && n != k);
+            self.arms.extend(arms.map(|n| (roads[n].0, roads[n].1)));
         }
     }
 }

@@ -50,7 +50,7 @@ export interface StampSource {
     known(node: Node): NodeStamps | undefined;
 }
 
-const NO_STAMPS: StampSource = { get: () => ({ data: null, heights: false }), known: () => ({ data: null, heights: false }) };
+const NO_STAMPS: StampSource = { get: () => ({ data: null, heights: false, mask: false }), known: () => ({ data: null, heights: false, mask: false }) };
 
 /**
  * A stamp job: its page's heights are in `out` (the synthesized base, or none for a stored page,
@@ -114,6 +114,10 @@ export class Pages {
     readonly pages = new Map<string, Page>();
     private readonly tiles = new Map<string, Tile>();
     private readonly bodies = new Map<string, ArrayBuffer>();
+    /** The requests for bodies in flight. */
+    private readonly requested = new Map<string, Promise<ArrayBuffer | undefined>>();
+    /** Tiles that failed: they stay out for the pages as an absent one does, but they may exist, so the roads ask again. */
+    private readonly broken = new Set<string>();
     private bodyBytes = 0;
     private readonly free: Record<Kind, number[]>;
     private maskFree: number[];
@@ -303,7 +307,7 @@ export class Pages {
      * page under the eye does not wait behind the near pages.
      */
     private holders(wanted: Node[], anchor: Anchor): Map<string, Node> {
-        const near = wanted.filter(node => node.level >= NEAR && this.stamps.known(node)?.data)
+        const near = wanted.filter(node => node.level >= NEAR && this.stamps.known(node)?.mask)
             .map(node => ({ node, distance: distances({ anchor, above: 0 }, node)[0] })).sort((a, b) => a.distance - b.distance);
         const reach = near.length > this.maskCapacity ? near[this.maskCapacity].distance : NO_LIMIT;
         if (reach !== this.maskReach) this.masksDirty = true;
@@ -444,6 +448,35 @@ export class Pages {
         return wished;
     }
 
+    /** The body of a stored tile for the roads, undefined where it is absent: a request in flight serves them too. */
+    body(z: number, x: number, y: number): Promise<ArrayBuffer | undefined> {
+        const name = `${z}/${x}/${y}`, kept = this.bodies.get(name);
+        if (kept || (this.tiles.get(name)?.state === 'absent' && !this.broken.has(name))) return Promise.resolve(kept);
+        const request = this.requested.get(name) ?? this.request(z, x, y);
+        return request.then(data => this.arrived(name, data));
+    }
+
+    private request(z: number, x: number, y: number): Promise<ArrayBuffer | undefined> {
+        const name = `${z}/${x}/${y}`, request = this.source.fetch(z, x, y);
+        this.requests++;
+        this.requested.set(name, request);
+        request.catch(() => this.requested.delete(name));
+        return request;
+    }
+
+    /** Keeps the body of a request that ended, once; its absence stays known. */
+    private arrived(name: string, data: ArrayBuffer | undefined): ArrayBuffer | undefined {
+        if (!this.requested.delete(name)) return data;
+        if (data) {
+            this.bytes += data.byteLength;
+            this.keep(name, data);
+            // A tile that failed and now came back no longer stays out for the pages.
+            if (this.tiles.get(name)?.state === 'absent') this.tiles.delete(name);
+        } else this.tiles.set(name, { state: 'absent' });
+        this.broken.delete(name);
+        return data;
+    }
+
     /** Requests a stored tile, or decodes its kept body again. */
     private fetch(z: number, x: number, y: number): void {
         const name = `${z}/${x}/${y}`, tile = this.tiles.get(name);
@@ -453,11 +486,8 @@ export class Pages {
         (async () => {
             let data = body;
             if (!data) {
-                this.requests++;
-                data = await this.source.fetch(z, x, y);
+                data = this.arrived(name, await (this.requested.get(name) ?? this.request(z, x, y)));
                 if (!data) return this.tiles.set(name, { state: 'absent' });
-                this.bytes += data.byteLength;
-                this.keep(name, data);
             }
             const quadrants = await this.source.decode(data);
             this.tiles.set(name, { state: 'done', empty: quadrants.map(quadrant => !quadrant) });
@@ -469,6 +499,7 @@ export class Pages {
             // A tile that fails stays out for this page, as an absent one.
             if (!stopped(error)) console.warn(`Terrain tile ${name}: ${error instanceof Error ? error.message : error}`);
             this.failed++;
+            this.broken.add(name);
             this.tiles.set(name, { state: 'absent' });
         }).finally(() => {
             this.loads--;
@@ -540,11 +571,11 @@ export class Pages {
         return map;
     }
 
-    /** As `Masks` in features.wgsl: the reach of the paint, then per layer the mask layer + 1, 0 for none. */
+    /** As `Masks` in features.wgsl: the reach of the paint, a word that terrain.ts writes, then per layer the mask layer + 1, 0 for none. */
     private masks(): Uint32Array<ArrayBuffer> {
-        const masks = new Uint32Array(1 + this.capacity.stored + this.capacity.synth);
+        const masks = new Uint32Array(2 + this.capacity.stored + this.capacity.synth);
         new Float32Array(masks.buffer, 0, 1)[0] = this.maskReach;
-        for (const page of this.pages.values()) if (page.drawn !== undefined && page.mask !== undefined) masks[1 + page.drawn] = page.mask + 1;
+        for (const page of this.pages.values()) if (page.drawn !== undefined && page.mask !== undefined) masks[2 + page.drawn] = page.mask + 1;
         return masks;
     }
 }

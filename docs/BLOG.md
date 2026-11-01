@@ -1,9 +1,9 @@
 # Writing a log entry
 
-The blog ("expedition log") is markdown in `docs/content/blog/<slug>/index.md`,
-rendered by the same stdlib-only `build_docs.py` that builds the docs, published at
-`/blog/` by the same Trunk build. One folder per post; images and models sit next to
-the markdown and are copied verbatim next to the rendered page.
+The blog ("expedition log") is markdown in `docs/content/blog/<slug>/index.md`. The docs build
+(`build_docs.py`, standard library only) renders it, and the same Trunk build publishes it at
+`/blog/`. One folder per post; images and models sit next to the markdown and are copied verbatim
+next to the rendered page.
 
 ## The loop
 
@@ -13,10 +13,9 @@ trunk serve --config docs/Trunk.toml               # live preview at 127.0.0.1:8
 python3 docs/tools/paste_images.py my-post-title   # paste/drop images -> post folder
 ```
 
-`trunk serve` re-renders on every save (the `pre_build` hook) and hot-reloads the
-browser. The paste tool (port 8091) saves clipboard images or dropped files into the
-post folder — downscaled to 1600 px if Pillow is installed — and puts the matching
-`![](file.png)` line on your clipboard.
+`trunk serve` re-renders on every save (the `pre_build` hook) and reloads the browser. The paste
+tool (port 8091) saves clipboard images or dropped files into the post folder, downscaled to
+1600 px if Pillow is installed, and puts the matching `![](file.png)` line on your clipboard.
 
 ## Front matter
 
@@ -28,18 +27,17 @@ description: One-line teaser.    # shown on the timeline + in the Atom feed
 ---
 ```
 
-The h1 comes from `title:` — start the body with a paragraph, not a heading. The
-first paragraph renders as the lede. Posts are sorted newest-first and grouped by
-month on `/blog/`; an Atom feed is generated at `/blog/feed.xml`.
+The h1 comes from `title:`: start the body with a paragraph, not a heading. The first paragraph
+renders as the lede. `/blog/` sorts posts newest first and groups them by month; the Atom feed is
+`/blog/feed.xml`.
 
-HTML comments (`<!-- … -->` starting at the beginning of a line) are stripped from
-the rendered page — use them for drafts, notes-to-self, or to park an example
-without publishing it (the scaffold does exactly that).
+The renderer strips HTML comments (`<!-- … -->` at the start of a line) from the page. Use them
+for drafts and notes, or to park an example without publishing it, as the scaffold does.
 
 ## Images
 
-A paragraph containing just one image becomes a framed, click-to-zoom exhibit
-(the alt text is the lightbox caption):
+A paragraph with only one image becomes a framed, click-to-zoom exhibit. The alt text is the
+lightbox caption:
 
 ```markdown
 ![The first assembled unit](assembly.png)
@@ -59,8 +57,8 @@ caption: What changed.     # optional
 
 ## Interactive 3D models
 
-Convert a STEP export once, commit the `.glb` (and the `.step`, if you want the
-download button) next to `index.md`:
+Convert a STEP export once. Commit the `.glb` next to `index.md`, and the `.step` too if you want
+the download button:
 
 ```sh
 pip install cascadio    # one-time; prebuilt OpenCascade wheels
@@ -75,10 +73,10 @@ caption: Drag to orbit.    # optional
 ```
 ````
 
-The viewer (`assets/glb-viewer.js`) is hand-rolled WebGL for the subset our
-converter emits — keep models under ~4 MB (coarsen `--linear` if needed).
+The viewer (`assets/glb-viewer.js`) reads only the subset that the converter writes. Keep models
+under about 4 MB; coarsen `--linear` if necessary.
 
 ## Publishing
 
-Commit the post folder and push — CI renders and link-checks the whole site
-(`python3 docs/build_docs.py --check-links` runs the same check locally).
+Commit the post folder and push. CI renders and link-checks the whole site;
+`python3 docs/build_docs.py --check-links` runs the same check locally.

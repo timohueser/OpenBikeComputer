@@ -127,14 +127,14 @@ pub struct SchemaEntry {
     pub styles: Vec<StyleAssignment>,
     /// Routing facts baked into the cells. The island-prune threshold is schema data:
     /// two cells pruned at different thresholds do not assemble into a graph with
-    /// consistent semantics (`OBCA_Spec.md` §3.5).
+    /// consistent semantics (`obca-assembly.md` §3.5).
     pub routing: RoutingEntry,
-    /// The per-LOD chunk capacity bound the cells were written with (`OBCM_Spec.md`
+    /// The per-LOD chunk capacity bound the cells were written with (`obcm-map.md`
     /// §3). An assembler re-checks every copied offset pair against it.
     pub chunk_size: u32,
 }
 
-/// `OBCA_Spec.md` §1.1's constants. Published so a consumer computing a cell's square
+/// `obca-assembly.md` §1.1's constants. Published so a consumer computing a cell's square
 /// or an assembly bbox never hard-codes a power of two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GridEntry {
@@ -150,14 +150,14 @@ pub struct LodEntry {
     /// Ladder index, `0` = coarsest.
     pub index: u32,
     /// Meters-per-pixel upper bound; `null` for the `+inf` coarsest level
-    /// (`OBCM_Spec.md` §3).
+    /// (`obcm-map.md` §3).
     pub max_mpp: Option<f64>,
     /// The band whose cells carry this LOD.
     pub band: String,
 }
 
 /// Which file of a volume set a band's content assembles into
-/// (`OBCA_Spec.md`).
+/// (`obca-assembly.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum BandRole {
@@ -175,9 +175,9 @@ pub enum BandRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum BandSection {
-    /// The navigation graph (`OBCM_Spec.md` §8).
+    /// The navigation graph (`obcm-map.md` §8).
     Nav,
-    /// POIs and the hours pool (`OBCM_Spec.md` §7).
+    /// POIs and the hours pool (`obcm-map.md` §7).
     Poi,
 }
 
@@ -199,7 +199,7 @@ pub struct BandEntry {
 /// One feature type's canonical style id — the assignment baked into every chunk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StyleAssignment {
-    /// 1-based style id, as referenced by feature headers (`OBCM_Spec.md` §2, §5.2).
+    /// 1-based style id, as referenced by feature headers (`obcm-map.md` §2, §5.2).
     pub id: u8,
     /// `<tag_key>.<tag_value>`, e.g. `highway.primary`.
     pub feature_type: String,
@@ -209,10 +209,10 @@ pub struct StyleAssignment {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RoutingEntry {
     /// Island-prune threshold, applied at **assembly** over the merged graph
-    /// (`OBCA_Spec.md` §3.5/§4.6) — a cell bake prunes only strictly interior
+    /// (`obca-assembly.md` §3.5/§4.6) — a cell bake prunes only strictly interior
     /// components.
     pub min_component_edges: u32,
-    /// Profile names in `OBCM_Spec.md` §8.6 table order.
+    /// Profile names in `obcm-map.md` §8.6 table order.
     pub profiles: Vec<String>,
 }
 
@@ -225,7 +225,7 @@ pub struct SkinEntry {
     pub description: String,
     /// The skin's content version. No cell carries a skin.
     pub version: u32,
-    /// RGB565 user-position marker color (`OBCM_Spec.md` §1).
+    /// RGB565 user-position marker color (`obcm-map.md` §1).
     pub marker_color: u16,
     /// One entry per `schema.styles` feature type, in schema id order. A skin that
     /// misses one would ship a map with an invisible layer; one that names a feature
@@ -247,7 +247,7 @@ pub struct SkinPreview {
 
 /// One feature type's presentation values — the bytes of a style record a skin owns (colors,
 /// weight, z, priority and the `Flags` bits). The **id** is not here: it belongs to the schema, and
-/// a skin may not renumber it (`OBCA_Spec.md` §4.7).
+/// a skin may not renumber it (`obca-assembly.md` §4.7).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SkinStyle {
     pub feature_type: String,
@@ -365,7 +365,7 @@ pub struct KnownEmptyRun {
 /// the generator verifies the artifact's header against it (§8).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CellEntry {
-    /// Canonical cell id, `<log2>/<i>/<j>` (`OBCA_Spec.md` §1.3).
+    /// Canonical cell id, `<log2>/<i>/<j>` (`obca-assembly.md` §1.3).
     pub id: String,
     pub bytes: u64,
     pub sha256: String,
@@ -373,7 +373,7 @@ pub struct CellEntry {
     /// Every source extract this cell was baked from, sorted by `extract_id`.
     pub sources: Vec<CellSource>,
     /// `true` iff those sources do not fully cover the cell's square
-    /// (`OBCA_Spec.md` §3.7). A consumer MUST NOT present a partial cell as canonical
+    /// (`obca-assembly.md` §3.7). A consumer MUST NOT present a partial cell as canonical
     /// coverage.
     pub partial: bool,
 }
@@ -405,7 +405,7 @@ pub struct RegionCellsDocument {
 }
 
 /// The catalog's terrain block: what the raster is, at what resolution, and the one
-/// pinned index that lists its cells (`OBCC_Spec.md` §13.1).
+/// pinned index that lists its cells (`obcc-catalog.md` §13.1).
 ///
 /// `dataset_version`, `posting_log2` and `cell_log2` bind the terrain index to the root. Nothing about the
 /// OBCM store appears here, and nothing about terrain appears in [`SchemaEntry`] —
@@ -417,7 +417,7 @@ pub struct TerrainEntry {
     /// That dataset's release identity, e.g. `2021-1`. Opaque to a consumer: it is
     /// compared for equality, never parsed.
     pub dataset_version: String,
-    /// `log2(P)` of the sample lattice, µdeg (`OBCT_Spec.md` §1.1).
+    /// `log2(P)` of the sample lattice, µdeg (`obct-terrain.md` §1.1).
     pub posting_log2: u8,
     /// `log2(S)` of the terrain cell, µdeg. Independent of any band's `cell_log2`.
     pub cell_log2: u8,
@@ -496,7 +496,7 @@ pub struct TerrainCellEntry {
 
 /// An inclusive row run of terrain cells that are all `NODATA` — open ocean, which
 /// [`obc-dem`](https://github.com/timohueser/OpenBikeComputer) does not write an object
-/// for at all (`OBCT_Spec.md` §4.3 makes an absent cell and an all-void one answer
+/// for at all (`obct-terrain.md` §4.3 makes an absent cell and an all-void one answer
 /// identically). The catalog says so instead, so a hole is still distinguishable from
 /// a coverage gap.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -517,7 +517,7 @@ pub struct RegionTerrain {
 }
 
 /// The catalog's landmark block: the class's credit, and one entry per compiled region
-/// (`OBCC_Spec.md` §14).
+/// (`obcc-catalog.md` §14).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LandmarkEntry {
     /// The class's required credit, verbatim, for the same reason the terrain block carries

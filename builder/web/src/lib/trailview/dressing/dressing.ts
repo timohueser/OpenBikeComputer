@@ -9,9 +9,9 @@ import { geometry, type Model } from '../models/flat';
 import { rock } from '../models/rocks';
 import { bits, named, type Rules } from '../rules/regions';
 
-/** Herds stand within this many metres, rocks within this many; as HERDS and SLABS of dressing.wgsl. */
-const HERD_REACH_M = 1500, ROCK_REACH_M = 300, HERDS = 4, SLABS = 3;
-/** Units along a herd cell and a rock point's cell, as HERD_SHIFT and ROCK_SHIFT of dressing.wgsl. */
+/** Herds stand within this many metres, rocks within this many; as HERDS and SLABS of dressing.wgsl and ROCK_REACH_M of rocks.wgsl. */
+const HERD_REACH_M = 1500, ROCK_REACH_M = 1000, HERDS = 4, SLABS = 3;
+/** Units along a herd cell and a rock point's cell, as HERD_SHIFT of dressing.wgsl and ROCK_SHIFT of rocks.wgsl. */
 const HERD_CELL = 2 ** 14, ROCK_CELL = 2 ** 7;
 /** Words of `Herd` and bytes of `Dressing` in dressing.wgsl. */
 const HERD_WORDS = 8, DRESSING_BYTES = 48;
@@ -32,7 +32,8 @@ export class Dressing implements Producer {
     constructor(rules: Rules, private readonly instances: Instances) {
         instances.produce(this);
         const spec = (model: Model, until: number) => ({ tiers: [{ mesh: geometry(model), until }] });
-        this.rockModel = instances.add(...(['slab', 'boulder'] as const).flatMap(name => Array.from({ length: SLABS }, (_, k) => spec(rock(name, k + 1), ROCK_REACH_M))));
+        // No fade of the rocks' tier: rocks_of ends each rock at its own distance before the reach.
+        this.rockModel = instances.add(...(['slab', 'boulder'] as const).flatMap(name => Array.from({ length: SLABS }, (_, k) => ({ ...spec(rock(name, k + 1), ROCK_REACH_M), fade: 0 }))));
         const breeds = new Map<string, number>(), used = new Set(rules.regions.flatMap(region => region.herds.map(herd => herd.model)).filter(name => name in BREEDS));
         for (const name of used) {
             const first = instances.add(...BREEDS[name].coats.map((_, coat) => spec(animal(name, coat), HERD_REACH_M)));
@@ -80,7 +81,7 @@ export class Dressing implements Producer {
         words.set([this.herdSide, this.rockSide], 2);
         ints.set([Math.floor(ux / ROCK_CELL) - this.rockSide / 2, Math.floor(uy / ROCK_CELL) - this.rockSide / 2], 4);
         words[6] = this.rockModel ?? 0;
-        floats.set([HERD_REACH_M, ROCK_REACH_M], 8);
+        floats[8] = HERD_REACH_M;
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
     }
 

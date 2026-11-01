@@ -14,9 +14,9 @@ device, and keeps the rides as a journal on the phone. Three rules shape the des
   changes after sync.
 
 The contracts are the trip object (§7.7) and the ride footer (§7.2) in the
-[BLE interface spec](src:specs/obc-ble-interface-spec.md), the route format with its bike-type
-table in [OBCR](src:specs/OBCR_Spec.md), and the device's trip progress record in the
-[ride-archive Metadata](src:specs/Ride_Archive_Metadata.md).
+[BLE interface spec](src:specs/ble-interface.md), the route format with its bike-type
+table in [OBCR](src:specs/obcr-route.md), and the device's trip progress record in the
+[ride-archive Metadata](src:specs/ride-archive-metadata.md).
 
 ## One line on the phone, day routes on the device
 

@@ -40,6 +40,12 @@ pub trait Product: Sync {
     /// The pointer that its clients read first: one of [`crate::release::POINTERS`].
     fn pointer(&self) -> Pointer;
 
+    /// The sources that its step lists can read, for any region. When a listing stops before its
+    /// last step, the source overview names the others from it.
+    fn reads(&self, _root: &Path) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The files that its clients find by name: each path in its folder, and the client file of an
     /// output that has its bytes.
     fn named(&self, _outputs: &[Output]) -> Result<Vec<(String, LayerFile)>, String> {

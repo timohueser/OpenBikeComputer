@@ -11,7 +11,7 @@ use std::sync::{Condvar, Mutex, PoisonError};
 use super::fit::Graph;
 use super::network::{distinct, hypot, sub, unique};
 use super::rows::{root, union};
-use super::{solve, Classes, Feature, Metrics, River, Solved};
+use super::{align, solve, Classes, Feature, Metrics, River, Solved, Way};
 use crate::geometry::{bounds, Boxes};
 use crate::{metres, Terrain};
 
@@ -252,7 +252,7 @@ pub fn solve_by_area(
         }
     });
     let mut solved = Solved {
-        heights: features.iter().map(|f| vec![None; f.parts.len()]).collect(),
+        ways: features.iter().map(|f| vec![None; f.parts.len()]).collect(),
         metrics: Metrics::default(),
         ..Default::default()
     };
@@ -261,25 +261,30 @@ pub fn solve_by_area(
         for (way, runs) in job.found {
             pieces.entry(way).or_default().extend(runs);
         }
+        solved.joins.extend(job.joins.into_iter().filter(|join| join.iter().all(|end| end.0 < count)));
         solved.culverts.extend(job.culverts.into_iter().filter(|&f| f < count));
         solved.underpasses.extend(job.underpasses.into_iter().filter(|&f| f < count));
         solved.metrics.add(&job.metrics);
     }
     for ((f, p), mut runs) in pieces.into_iter().filter(|((f, _), _)| *f < count) {
         runs.sort_by_key(|run| run.0);
-        let points = runs.iter().flat_map(|run| run.1.iter().copied()).collect();
-        let heights = runs.iter().flat_map(|run| run.2.iter().copied()).collect();
-        solved.heights[f][p] = Some((points, heights));
+        let mut way = Way::default();
+        for (_, run) in &runs {
+            (0..run.points.len()).for_each(|i| way.add(run, i));
+        }
+        solved.ways[f][p] = Some(way);
     }
+    align::measure(&mut solved.ways, &solved.joins);
     solved
 }
 
-/// The vertices of a way from one OSM vertex of an area on: (the OSM vertex, points, heights).
-type Run = (usize, Vec<[f64; 2]>, Vec<f64>);
+/// The vertices of a way from one OSM vertex of an area on: (the OSM vertex, the vertices).
+type Run = (usize, Way);
 
 struct Job {
     /// Per way (feature, part) that the job solves, the runs of its vertices in the area.
     found: Vec<((usize, usize), Vec<Run>)>,
+    joins: Vec<[(usize, usize, bool); 2]>,
     culverts: BTreeSet<usize>,
     underpasses: BTreeSet<usize>,
     metrics: Metrics,
@@ -302,32 +307,24 @@ fn solve_area(
     let subset: Vec<&Feature> = chosen.iter().map(|&f| features[f]).collect();
     let solved = solve(&subset, terrain, &near, classes, Some(&owned));
     let mut found = Vec::new();
-    for (&f, parts) in chosen.iter().zip(&solved.heights) {
+    for (&f, parts) in chosen.iter().zip(&solved.ways) {
         for (p, part) in parts.iter().enumerate() {
-            let Some((points, heights)) = part else { continue };
-            let osm = distinct(&features[f].parts[p]);
-            let mine: Vec<bool> = osm.iter().map(|&xy| owned(xy)).collect();
-            // The solve keeps every OSM vertex: a point that is the next one starts its stretch.
-            let (mut runs, mut k, mut last): (Vec<Run>, usize, Option<usize>) = (Vec::new(), 0, None);
-            for (i, (&point, &z)) in points.iter().zip(heights).enumerate() {
-                if k + 1 < osm.len() && point == osm[k + 1] {
-                    k += 1;
+            let Some(way) = part else { continue };
+            let mine: Vec<bool> = distinct(&features[f].parts[p]).iter().map(|&xy| owned(xy)).collect();
+            let (mut runs, mut last): (Vec<Run>, Option<usize>) = (Vec::new(), None);
+            for i in (0..way.points.len()).filter(|&i| mine[way.osm[i]]) {
+                if last.is_none_or(|l| l + 1 != i) {
+                    runs.push((way.osm[i], Way::default()));
                 }
-                if mine[k] {
-                    if last.is_none_or(|l| l + 1 != i) {
-                        runs.push((k, Vec::new(), Vec::new()));
-                    }
-                    let run = runs.last_mut().unwrap();
-                    run.1.push(point);
-                    run.2.push(z);
-                    last = Some(i);
-                }
+                runs.last_mut().unwrap().1.add(way, i);
+                last = Some(i);
             }
             found.push(((f, p), runs));
         }
     }
     Job {
         found,
+        joins: solved.joins.iter().map(|join| join.map(|(f, p, end)| (chosen[f], p, end))).collect(),
         culverts: solved.culverts.iter().map(|&i| chosen[i]).collect(),
         underpasses: solved.underpasses.iter().map(|&i| chosen[i]).collect(),
         metrics: solved.metrics,

@@ -61,7 +61,7 @@ def plain_route(stage: Stage) -> Staging:
 
 
 def _ride(samples, name, start, distance_m, moving_s, climb_m, descent_m, hr, trip):
-    """A ride object as `specs/obc-ble-interface-spec.md` §7.2 lays it out: 20-byte samples, then
+    """A ride object as `specs/ble-interface.md` §7.2 lays it out: 20-byte samples, then
     the 154-byte footer. `samples` are `(lon, lat, ele)`; `hr` is one heart rate per sample or
     `None`, and a ride with heart rate records a 185 bpm max HR and a 250 W FTP; `trip` is
     `(key, day index, day count, name)` or `None`.
@@ -136,7 +136,7 @@ def tracks(stage: Stage) -> Staging:
 
 
 def _shift_route_lon(route: bytearray, dlon: int) -> None:
-    """Move a waypoint-less OBCR east by `dlon` µdeg (`specs/OBCR_Spec.md`: the header start and
+    """Move a waypoint-less OBCR east by `dlon` µdeg (`specs/obcr-route.md`: the header start and
     bbox, and each chunk meta's bbox and anchor). Points are deltas from the anchor, so they follow.
     """
     for off in (8, 16, 24):
@@ -149,7 +149,7 @@ def _shift_route_lon(route: bytearray, dlon: int) -> None:
 
 
 def _rename_route(route: bytearray, name: str) -> None:
-    """Rewrite an OBCR header's name (`specs/OBCR_Spec.md` §1: Name Len at 6, Name at 64)."""
+    """Rewrite an OBCR header's name (`specs/obcr-route.md` §1: Name Len at 6, Name at 64)."""
     raw = name.encode()
     route[6] = len(raw)
     route[64:112] = raw.ljust(48, b"\0")
@@ -181,7 +181,7 @@ def trips(stage: Stage) -> Staging:
 def trip_week(stage: Stage) -> Staging:
     """A seven-day trip, "Alpen Traverse Nord", on seven renamed copies of the plain vector route,
     starting Monday 2025-09-29. Its day list scrolls, so the title bar shows the counter. The trip
-    object is written here as `specs/obc-ble-interface-spec.md` §7.7 lays it out; the simulator
+    object is written here as `specs/ble-interface.md` §7.7 lays it out; the simulator
     maps each day's route index to the imported route.
     """
     where = stage.dir("trip-week")

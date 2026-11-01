@@ -1,0 +1,860 @@
+# Flat store seam and protocol
+
+The flat store's public seam inside the firmware (§2), the wire protocol between the device and a
+phone, a cable client or the simulator (§3, §4), and its bindings to BLE and USB (§5).
+
+- Version: wire major 4, never negotiated (§3). A peer that reads a major it does not implement
+  sends no frame (§5). The USB record binding has its own major, 5 (§5.2).
+- Writers: the device engine `firmware/obc-link` (`src/flat/`) with its BLE and USB adapters in
+  `firmware/obc-fw-nrf54l` (`src/ble/v4.rs`, `src/usb/`); the store seam in `firmware/obc-storage`
+  (`src/flat/seam.rs`); the simulator device `sim/flat-device`; the clients: the companion app
+  (`OBCProtocolV4` in `companion-ios/Packages/OBCKit`), the web builder (`builder/web/src/lib/usb/`)
+  and the desktop app (`builder/usb`).
+- Readers: the same crates.
+- Test vectors: §3.11, and [`vectors/flat-store-v4/`](vectors/flat-store-v4/manifest.json), produced
+  by `firmware/obc-link/src/flat/vectors.rs`.
+- Related: [flat store on-card format](flat-store-format.md), [BLE interface](ble-interface.md),
+  [OBCU update](obcu-update.md), [ride archive receipts](ride-archive-receipts.md).
+
+## Conventions
+
+- Integers are unsigned little-endian; signed fields say so and are two's complement at their
+  stated width. Reserved bytes are zero and rejected when nonzero.
+- Every message is a fixed layout with no extension block: a frame carrying a byte past the end of
+  its stated layout is a framing error, as a short one is.
+- `MUST`, `MUST NOT`, `SHOULD` and `MAY` have their RFC 2119 meanings.
+- CRC is the CRC-32/IEEE of [`obc-crc`](../firmware/obc-crc)
+  ([format conventions](flat-store-format.md#conventions)). It covers whole object payloads, never
+  frames. Frame integrity belongs to the link (BLE Link Layer CRC and retransmission, USB packet
+  CRC and retry).
+- `ObjectId`, `Revision`, `StoreId`, object kinds and entry flags are defined by
+  [`flat-store-format.md`](flat-store-format.md) §3 and §5.3 and carry the same values here.
+
+## 2. The store seam
+
+Five object operations, and beside them the housekeeping a caller needs: the two releases, the
+catalog view and its mode, the four facts a `LIST` page and an admission are built from, and the
+ride exception. Nothing above this boundary names a block, an extent, an LBA, a path or a filename;
+`ObjectId`, `Revision`, byte offsets and byte lengths are the whole vocabulary.
+
+```rust
+/// The card, as everything above it sees it.
+pub trait Store {
+    type Handle;
+
+    /// Reserve space for `bytes`. RAM state until a commit names it; released by `cancel` and by
+    /// the next mount, which rebuilds the free map from the catalog and cannot see it.
+    fn allocate(&self, bytes: u64) -> Result<Allocation, StoreError>;
+
+    /// Append to an allocation. Writes are sequential and the total may not exceed the reservation.
+    fn write(&self, allocation: &mut Allocation, bytes: &[u8]) -> Result<(), StoreError>;
+
+    /// Apply `mutations` atomically and return the new catalog commit sequence. The one durable
+    /// transition: it makes new bytes visible and old bytes free in the same instant.
+    fn commit(&self, mutations: &[Mutation]) -> Result<u64, StoreError>;
+
+    /// Resolve an object. `revision` of `None` takes the head; `Some(r)` takes exactly that
+    /// revision, which is how a retained previous revision is reached.
+    fn open(&self, id: ObjectId, revision: Option<Revision>) -> Result<Self::Handle, StoreError>;
+
+    /// Random access inside an open object. Returns bytes read, short only at end of payload.
+    fn read(&self, handle: &Self::Handle, offset: u64, buf: &mut [u8]) -> Result<usize, StoreError>;
+
+    // Beside the five, and not object operations.
+
+    /// Release a reservation without publishing it. **Mandatory** on every path that abandons a
+    /// transfer — a cancel, a refusal, a validator rejection, a lost link — because dropping an
+    /// `Allocation` releases nothing.
+    fn cancel(&self, allocation: Allocation);
+
+    /// Close an open object, releasing its hold. **Mandatory** for the same reason: dropping a
+    /// `Handle` leaks its row and the extents it is holding until the next mount, so `open` and
+    /// `close` are a pair.
+    fn close(&self, handle: Self::Handle);
+
+    /// Read-only catalog view. LIST, every menu, and the free-space answer come from here.
+    /// It mutates nothing and names nothing below the seam, so it is not a sixth verb.
+    /// A media failure or catalog change returns one error, then ends the traversal.
+    /// Each traversal owns its result. Starting another traversal cannot change that result.
+    fn entries(&self) -> impl Iterator<Item = Result<EntryMeta, StoreError>> + '_;
+
+    /// Why this store refuses writes, if it does — the `readOnly` details of §3.9 come from here.
+    fn mode(&self) -> Mode;
+
+    /// The card's identity, which every `LIST` page carries.
+    fn store_id(&self) -> StoreId;
+
+    /// The catalog commit sequence: the staleness hint a paged listing is checked against.
+    fn commit_sequence(&self) -> u64;
+
+    /// The next `ObjectId` the cursor will hand out. **Reading it reserves nothing**: two creates
+    /// that both read it before either commits name the same id, and the second commit is refused
+    /// as a duplicate key. Safe only because the device serves one transfer at a time (§3.2), and
+    /// safest read at the commit rather than held across one.
+    fn next_object_id(&self) -> ObjectId;
+
+    /// The ride exception, and the only way bytes become durable without a commit. Performs both
+    /// halves of `flat-store-format.md` §7.2: reconstruct the store-owned 16 KiB tail snapshot from
+    /// its previous slot plus the bounded append, and gate any whole payload-page rollover.
+    fn journal(&self, checkpoint: RideCheckpoint) -> Result<(), StoreError>;
+}
+
+pub enum Mutation {
+    /// Publish a revision.
+    Put { meta: EntryMeta, source: PutSource },
+    /// Remove one entry. Its extents are free at the gate.
+    Remove { id: ObjectId, revision: Revision },
+}
+
+pub enum PutSource {
+    /// Publish the extents of a freshly written allocation, consuming it.
+    Fresh(Allocation),
+    /// Keep the extents the named entry already holds and change only its metadata —
+    /// the flag, name, length and CRC edits that end a ride or retain a bundle.
+    Amend,
+}
+
+pub const RIDE_RESUME_LEN: usize = 96;
+
+pub struct RideCheckpoint<'a> {
+    /// The entry carrying RECORDING; the store rejects a checkpoint naming anything else.
+    pub id: ObjectId,
+    pub revision: Revision,
+    /// Bytes appended after the last `journal` call that returned `Ok`, oldest first. Success
+    /// consumes the complete slice; after `Err` the caller blocks new samples and retries these
+    /// exact bytes before recomputing resume state or adding terminal/footer bytes. A discard may
+    /// instead remove the RECORDING entry. Storage reconstructs the full durable tail snapshot
+    /// media-to-media.
+    pub append: &'a [u8],
+    /// CRC-32 of the whole ride payload after `append`, carried by the caller across checkpoints
+    /// and recovered from the journal after a cut.
+    pub payload_crc: u32,
+    /// Versioned recorder-owned continuation state for precisely this logical checkpoint. Storage
+    /// CRC-protects these bytes but never interprets them.
+    pub resume: &'a [u8; RIDE_RESUME_LEN],
+}
+
+/// Why a mounted store refuses writes, or refuses everything (`flat-store-format.md` §5.6). The
+/// `readOnly` details of §3.9 are chosen from it: the two exhausted cases still serve reads, and
+/// `CardTooSmall` — the card is not the card the superblock describes — reads out as `unformatted`.
+pub enum Mode {
+    ReadWrite,
+    RevisionSpaceExhausted,
+    SequenceSpaceExhausted,
+    CatalogUnreadable,
+    /// The last catalog gate write or barrier failed and can have published. Only handles that are
+    /// already open still read, until the next mount.
+    RemountRequired,
+    Unformatted,
+    CardTooSmall,
+}
+
+pub enum StoreError {
+    NotFound,
+    RevisionConflict { current: Revision },
+    NoSpace { required: u64 },
+    TooFragmented,
+    CatalogFull,
+    Invalid,
+    Media,
+    ReadOnly,
+    /// A store table or object is in use now: every reservation row or hold row is taken, or the
+    /// active journey uses the route. Retry later.
+    Busy,
+}
+```
+
+A binding may name these members differently or fold the four facts into one. What is normative is
+that each is reachable and that nothing else is.
+
+**Local sealed producer storage.**
+
+A local producer may seal an unpublished allocation for immutable reads while it writes another
+allocation. This adds no wire opcode, catalog entry, or durable record. The existing two reservation
+slots remain the bound. A sealed allocation uses no open-object hold row.
+
+`seal` MUST flush a partial tail block before it returns the sealed owner. It MUST rotate the
+reservation nonce only after that write succeeds. Every prior writable token MUST then fail write,
+patch, reseal, and fresh publication checks; cancel with a prior token MUST NOT free the reservation.
+A failed seal MUST leave the input token valid for retry or cancellation. Seal does not make the
+payload durable across remount.
+
+The sealed owner MUST be non-copyable, bound to its originating mount, and keep that mount alive.
+It retains a private cleanup capability and an immutable ranges/length snapshot. Its byte source
+MUST borrow that owner and MUST NOT borrow the reservation table while it reads. Thus a reader of
+sealed leg A remains serviceable while a writer holds reservation B during a card command.
+Wrong-mount cleanup MUST return the unchanged owner. Cleanup on a mount that requires remount MUST
+retain uncertain extents until remount, as for ordinary allocations.
+
+The board passes a seal-result slot inside its held planner arena to the serialized writer. A
+pending ticket owns that slot until completion; the executor MUST NOT read, overwrite, change the
+arena phase, or release the arena during that interval. Cancellation drains the ticket before it
+consumes the result. A full request queue MUST return any non-copyable cleanup owner to the caller.
+
+A detour retains the boot map lease and another reference to the exact active route revision.
+That reference shares the active route's hold row. A replaced original can continue to occupy its
+old row; the existing swap row covers that overlap, and further contention returns `Busy`. The six
+hold rows and two reservation rows do not grow. A recording start or transfer that cannot reserve
+space while detour output uses both slots MUST refuse through its existing bounded path.
+
+**Every operation takes a shared reference to the store, the mutators included.** A store is shared,
+not owned: a mounted map holds its object open for the life of the image while an upload commits and
+a ride journals. An implementation carries the interior mutability that needs, under two rules.
+
+1. **Granularity is per card command for the state a reader needs.** The catalog, the free map and
+   whatever table records open objects must be unheld at every card command a write path issues, so
+   that `open`, `read`, `entries` and the free-space answer are all serviceable
+   throughout a `commit`.
+
+   Writer-private state — a reservation's staging buffer, which no read operation names — may be held
+   across the commands that drain it. An implementation taking this carve-out states which state it
+   covers and for how many commands. State must never be held across an `await`, across a callback,
+   or across another seam call, carve-out or not.
+2. **`close` on an object another reader still holds is a runtime refusal, not a teardown.** The
+   reader refcount of `flat-store-format.md` §6.2 decides it: such a `close` spends a count and
+   returns, and the extents come back only when the last reader lets go.
+
+The `&mut` on `write`'s allocation is the caller's own token: an `Allocation` carries a cursor that
+has to advance with the store's row. Mount and initialization are lifecycle constructors, not seam,
+and are exempt: nothing else can reach the store while one runs. Initialization is destructive and
+explicit (`flat-store-format.md` §8).
+
+`EntryMeta` is the metadata half of a catalog entry — kind, flags, `ObjectId`, `Revision`, payload
+length, payload CRC, display name — and nothing else. `Allocation` is opaque: it exposes its
+reserved length. **Neither carries an extent.** Extents enter the store through `allocate` and never
+leave it; a caller holds only the opaque token that stands for them.
+
+### 2.1 What a caller may rely on
+
+- A `commit` that returns `Ok` is durable. A commit error reports no success and leaves the
+  served catalog unchanged. A media error can occur after the new gate is durable, so remount
+  can recover the old or the complete new generation (`flat-store-format.md` §5.5). After an
+  uncertain commit, the owner must stop mutations and retain its allocation until remount; it must
+  not cancel or reuse it.
+- Bytes written to an `Allocation` that is never committed are unreachable and their space is free
+  again at the next mount, or immediately on `cancel`. There is no cleanup step and nothing to sweep.
+- An open `Handle` keeps reading the revision it resolved, even across a commit that replaces or
+  removes it, until it is **closed**. This hold is RAM-only. A dropped `Handle` or `Allocation`
+  releases nothing until the next mount: `close` and `cancel` are the only ways back, and every
+  abandonment path owes one of them.
+- `read` costs one media read: the address is arithmetic on the entry's ranges
+  (`flat-store-format.md` §6.1).
+- A `journal` that returns `Ok` has consumed exactly `append` once, including when it completed a
+  payload-page repair left by an earlier failed call; the caller clears its bounded append buffer. A
+  `journal` that returns `Err` may have durably gated that logical checkpoint, but never reports it as
+  consumed: the caller keeps the exact append and resume image, accepts no new samples, and retries.
+  It also defers terminal/footer mutation until that retry succeeds. The retry and the discard follow
+  `flat-store-format.md` §7.2.
+- A `write` that returns `Err` has advanced the allocation by nothing: the caller may retry the same
+  bytes — a fragmented allocation is several media writes, and the ones that landed are the bytes the
+  retry writes there again — or abandon the transfer, and a `cancel` of an allocation a `write` failed on
+  always releases its row and its extents.
+
+## 3. Protocol v4
+
+Wire major **4**. There is no negotiation: the major is a transport fact readable before any frame
+(§5), the frame ceiling is a property of the link, and every message below fits inside the smallest
+ceiling either link offers. There is no Hello, no capability page, no capability discovery, and no
+minor.
+
+A client learns the store's identity and the freshness of its cache from `LIST`, which every client
+issues before it does anything else. A `StoreId` it has not seen means the card was re-initialized
+and everything it cached is void.
+
+### 3.1 Control frame
+
+Every control record carries exactly one control frame with this 16-byte header:
+
+| Offset | Size | Field | Rule |
+| --: | --: | :-- | :-- |
+| 0 | 4 | magic | ASCII `OBC4` (`4F 42 43 34`) |
+| 4 | 1 | wire major | `4` |
+| 5 | 1 | opcode | §3.2 |
+| 6 | 2 | flags | response bit 0, error bit 1, more bit 2; bits `3..15` zero |
+| 8 | 2 | payload length | exact bytes after this header |
+| 10 | 2 | reserved | zero |
+| 12 | 4 | `RequestId` | nonzero; a response echoes its request |
+
+Requests carry no flags. A successful response sets `response`; an error sets `response|error` and
+its payload is exactly one 16-byte `ErrorBody` (§3.9). `more` is valid only on a `LIST` response.
+There are no unsolicited control frames.
+
+A `RequestId` is chosen by the client and is not reused while its request is outstanding. A zero
+`RequestId` is unanswerable — a response would have to echo it — so a receiver emits nothing and
+closes that record stream.
+
+**`RequestId` is also the transfer identifier.** A `PUT` or `GET` is one long-running request: the
+device answers it exactly once, when the transfer terminates, and the stream frames that belong to it
+carry the same value (§3.8). There is no session identifier.
+
+### 3.2 Opcodes
+
+| Opcode | Operation | Durable effect |
+| --: | :-- | :-- |
+| `0x01` | `LIST` | none |
+| `0x02` | `STATUS` | none |
+| `0x03` | `GET` | none |
+| `0x04` | `PUT` | one commit, on success only |
+| `0x05` | `REMOVE` | one commit |
+| `0x06` | `CANCEL` | none |
+| `0x07` | `ARM` | one commit, then the boot handoff and a reboot |
+| `0x08` | `FORMAT` | replaces the entire card with an empty store, then reboots |
+| `0x09` | `ARCHIVE_RIDE` | persists exact client archive possession for the synced indicator |
+
+An unknown opcode is `unsupported` with detail `opcode 1`. Its error response carries opcode `LIST`
+(`0x01`), because the unknown value names no operation to echo. There is no generic forwarding path.
+
+The device MUST serve at most one `PUT` or `GET` at a time. A second one is refused `busy` with
+detail `transfer` (§3.9). BLE and USB are byte-identical adapters over that one transfer engine
+(§5).
+
+### 3.3 `LIST`
+
+Request, 32 bytes:
+
+| Offset | Size | Field |
+| --: | --: | :-- |
+| 0 | 2 | kind filter; `0` lists every kind |
+| 2 | 2 | flags: cursor bit 0; other bits zero |
+| 4 | 4 | zero |
+| 8 | 8 | cursor `ObjectId`; zero unless the cursor bit is set |
+| 16 | 8 | cursor `Revision`; zero unless the cursor bit is set |
+| 24 | 8 | expected commit sequence; zero unless the cursor bit is set |
+
+The cursor is the **pair**, and the page resumes strictly after it: the catalog is keyed by
+`(ObjectId, Revision)` and an object may hold two entries, the retained one sorting first
+(`flat-store-format.md` §5.3).
+
+Response payload is a 24-byte prefix followed by `n` entries:
+
+| Offset | Size | Field |
+| --: | --: | :-- |
+| 0 | 16 | `StoreId` |
+| 16 | 8 | catalog commit sequence |
+
+| Entry offset | Size | Field |
+| --: | --: | :-- |
+| 0 | 8 | `ObjectId` |
+| 8 | 8 | `Revision` |
+| 16 | 8 | payload length |
+| 24 | 4 | payload CRC-32 |
+| 28 | 2 | kind |
+| 30 | 2 | flags |
+| 32 | 1 | display-name length, `0..=48` |
+| 33 | 3 | zero |
+| 36 | 48 | display name, UTF-8, unused bytes zero |
+| 84 | 4 | zero |
+
+Entries are 88 bytes and arrive in the catalog's own `(ObjectId, Revision)` order, so the cursor for
+the next page is the last entry's pair. The device sets `more` when a further page exists; the client
+then repeats the request with the cursor bit, that pair, and the commit sequence it was told. A paged
+request whose expected commit sequence no longer matches is `catalogChanged` with the current
+sequence in the error body; the client restarts the listing. A first page never fails that way,
+because it declares no expectation.
+
+A retained revision appears as its own entry, flagged `RETAINED`. A client that does not care about
+retention takes the greater `Revision` for an `ObjectId`.
+
+### 3.4 `STATUS`
+
+The reconcile path for everything that named an object. Request, 16 bytes: `ObjectId u64`,
+`Revision u64`. Response, 24 bytes:
+
+| Offset | Size | Field |
+| --: | --: | :-- |
+| 0 | 1 | state: absent `0`, committed `1`, superseded `2` |
+| 1 | 3 | zero |
+| 4 | 8 | current head `Revision`; zero when absent |
+| 12 | 8 | current head payload length; zero when absent |
+| 20 | 4 | current head payload CRC-32; zero when absent |
+
+`committed` means the catalog holds exactly the revision asked about as the head. `superseded` means
+the object exists at a different revision. `absent` means no entry names that `ObjectId`.
+
+A client whose link broke with a **replace** outstanding asks `STATUS` for the `ObjectId` and the
+`Revision` it expected to produce. `committed` means the upload landed; anything else means it did
+not, and re-sending is safe, because a replace that in fact landed fails its compare-and-swap the
+second time.
+
+A **create** cannot be reconciled this way: the client sent `ObjectId` zero, the device assigned
+the id, and that assignment was in the response that was lost. There is nothing to ask `STATUS`
+about. The client reconciles a lost create with `LIST`, matching on
+`(kind, payload length, payload CRC, display name)`; the CRC makes that match sound. Finding it
+means the create landed; not finding it means it did not. A false negative costs one duplicate
+object, which the client removes with `REMOVE` once it sees both.
+
+A `STATUS` naming `ObjectId` zero is `invalidRequest`; the identity of the store comes from `LIST`.
+
+### 3.5 `GET`
+
+Request, 16 bytes: `ObjectId u64`, `Revision u64` (`0` = current head).
+
+The device resolves and opens the object, then streams its payload on the stream channel in ascending
+contiguous offsets under the request's `RequestId`. When the last byte has been handed to the
+transport it answers the request, 24 bytes:
+
+| Offset | Size | Field |
+| --: | --: | :-- |
+| 0 | 8 | `Revision` served |
+| 8 | 8 | payload length |
+| 16 | 4 | payload CRC-32 |
+| 20 | 4 | zero |
+
+The client verifies length and CRC itself. A refusal — `notFound`, `busy`, `mediaIo` — is an error
+response to the same `RequestId`, and it may arrive before, during or instead of the stream; a client
+that sees it discards whatever it has.
+
+A `GET` on an entry carrying `RESERVED` or `RECORDING` is `invalidRequest`: the store did not write
+the reserve's bytes, and a recording ride's length and CRC are zero until the commit that ends it. A
+client syncs a ride once `RECORDING` has cleared from its `LIST` entry.
+
+The open handle of §2.1 lives for the transfer, so a replace or a remove committed while a download
+is running changes what is visible without disturbing the bytes being read.
+
+### 3.6 `PUT`
+
+Request, 84 bytes:
+
+| Offset | Size | Field |
+| --: | --: | :-- |
+| 0 | 8 | `ObjectId`; `0` creates a new object |
+| 8 | 8 | expected `Revision`; zero when creating |
+| 16 | 8 | declared payload length |
+| 24 | 4 | declared payload CRC-32 |
+| 28 | 2 | kind |
+| 30 | 2 | reserved; must be zero |
+| 32 | 1 | display-name length, `0..=48` |
+| 33 | 3 | zero |
+| 36 | 48 | display name, UTF-8, unused bytes zero |
+
+The client streams the payload on the stream channel under this `RequestId`, from offset zero,
+contiguous and ascending, ending at the declared length. It **may begin immediately**, without
+waiting for an acceptance: the device has admitted the request and allocated by the time it processes
+the first stream frame, and if it refuses it answers the request and discards frames bearing that
+`RequestId`. This relies on the cross-channel ordering every adapter supplies (§5).
+
+On the last byte the device verifies the length and the whole-payload CRC, runs the kind's validator,
+and commits. The response, 32 bytes:
+
+| Offset | Size | Field |
+| --: | --: | :-- |
+| 0 | 8 | `ObjectId`, assigned when the request created one |
+| 8 | 8 | new `Revision` |
+| 16 | 8 | committed payload length |
+| 24 | 4 | committed payload CRC-32 |
+| 28 | 4 | zero |
+
+The expected `Revision` is checked at admission and again immediately before the commit. `0` in
+`ObjectId` means create and both fields must be zero; a nonzero `ObjectId` means replace and the
+expected `Revision` must be the value the device last reported for it. Zero is not a wildcard in
+either field.
+
+A `PUT` naming an entry that carries `RECORDING` or `RESERVED` is refused `invalidRequest`, and a
+`PUT` of kind `3` (ride), `8` (rollback reserve), or `9` (metadata) is refused the same way whether
+it creates or replaces: the device produces those kinds. Metadata writes require device policy
+admission under [ride-archive-metadata.md](ride-archive-metadata.md); remote writes cannot establish
+archive proof.
+
+One commit publishes the new head and removes both the displaced head and any retained revision.
+
+**Any break before the commit leaves the card as if nothing happened**: the allocation is released,
+the written bytes are anonymous, the catalog is untouched, and the client restarts from zero. That
+holds for a cable pull, a cancel, a CRC failure, a validator refusal, and a power cut alike.
+
+### 3.7 `REMOVE`
+
+Request, 16 bytes: `ObjectId u64`, expected `Revision u64`. One commit removes the entry and frees
+its extents; a retained previous revision of the same object goes with it. Response, 8 bytes: the new
+catalog commit sequence.
+
+A `REMOVE` of metadata kind `9`, or an entry carrying `RECORDING` or `RESERVED`, is
+`invalidRequest`. Metadata removal is device-owned. Stopping a ride and settling an armed update
+are device-local acts, not wire ones.
+
+### 3.8 `CANCEL` and the stream channel
+
+Every stream record carries one 16-byte frame and no payload checksum:
+
+| Offset | Size | Field |
+| --: | --: | :-- |
+| 0 | 4 | `RequestId` of the `PUT` or `GET` this belongs to |
+| 4 | 8 | absolute payload offset |
+| 12 | 2 | payload length, nonzero |
+| 14 | 2 | zero |
+
+A stream record is this 16-byte frame immediately followed by exactly `payload length` payload
+bytes. On USB one record is one length-prefixed link record. On BLE the CoC is a byte stream, and
+the frame header sets the record boundaries (§5.1). The frame carries no direction byte: the
+`RequestId` names a `PUT` or a `GET`, which settles the direction.
+
+Frames are contiguous and ascending; the offset equals the receiver's next expected offset. A gap, an
+overlap, a zero length, a length disagreeing with the record, or a length above the link's ceiling
+terminates the transfer with an error response on the control channel. There are no fault frames, no
+terminal flags and no acknowledgements on this channel: the transfer's one outcome is the answer to
+its control request.
+
+A frame bearing a `RequestId` that is not the live transfer's is discarded in silence. A frame
+bearing the `RequestId` of a live **`GET`** is discarded the same way: bytes arriving against the
+direction that identifier names belong to no transfer the receiver can be sure of.
+
+A client **SHOULD NOT** reuse a `RequestId` immediately after the answer to the request that carried
+it. A `PUT` terminated mid-stream can leave in-flight stream frames on the link; a new transfer that
+reuses the identifier absorbs them as its own, and a stale offset kills it with
+`invalidRequest`/`streamOffset`.
+
+**Cancel is bilateral and symmetric.** The client cancels with `CANCEL`, request 4 bytes
+(`RequestId u32`), response 1 byte: `0` cancelled, `1` no such transfer. The cancelled `PUT` or `GET`
+also receives its own error response, `cancelled`. The device cancels by answering the outstanding
+`PUT` or `GET` with an error and dropping the transfer. Either way the allocation is released and the
+catalog is unchanged; there is nothing else to unwind.
+
+A transfer that moves **no payload byte for 21 seconds** is one such device-side cancel. The
+deadline is on *progress*, never on duration.
+
+Link teardown is the third form of the same thing: the adapter calls the engine once, the live
+transfer is dropped, the allocation is released, and no record of it exists.
+
+### 3.9 Errors
+
+An error response payload is exactly this 16-byte body:
+
+| Offset | Size | Field |
+| --: | --: | :-- |
+| 0 | 2 | code |
+| 2 | 2 | detail, code-scoped; `0` means no narrower fact |
+| 4 | 8 | context, code-scoped; zero when the code defines none |
+| 12 | 4 | zero |
+
+There is no diagnostic text.
+
+| Code | Name | Context | Details |
+| --: | :-- | :-- | :-- |
+| 1 | `unsupported` | — | opcode `1`, kind `2`, wire major `3` |
+| 2 | `invalidFrame` | — | magic `1`, length `2`, truncated `3`, trailing `4` |
+| 3 | `invalidRequest` | — | reservedBits `1`, unknownEnum `2`, badCombination `3`, streamOffset `4` |
+| 4 | `notFound` | — | object `1`, revision `2` |
+| 5 | `revisionConflict` | current head `Revision` | headDiffers `1`, headAbsent `2` |
+| 6 | `noSpace` | bytes required | extents `1`, catalogFull `2`, tooFragmented `3` |
+| 7 | `checksumFailure` | declared payload CRC | payload `1` |
+| 8 | `mediaIo` | — | read `1`, write `2`, sync `3` |
+| 9 | `busy` | `RequestId` of the live transfer, when there is one | transfer `1`, holds `2` |
+| 10 | `cancelled` | — | byClient `1`, byDevice `2`, linkLost `3` |
+| 11 | `rejected` | kind-specific | the kind's validator owns the detail space |
+| 12 | `internal` | — | — |
+| 13 | `catalogChanged` | current commit sequence | listing `1` |
+| 14 | `readOnly` | — | catalogUnreadable `1`, revisionSpaceExhausted `2`, unformatted `3` |
+
+Code `0` is invalid and is treated as a malformed body. A receiver reads a code it does not know as a
+failure it cannot classify; it never treats an unknown code as success.
+
+`busy` has **three** answers. `transfer 1` is the one-at-a-time rule of §3.2: another `PUT` or
+`GET` is live, and its `RequestId` is the context. `holds 2` is only for a `GET` whose `open` finds
+every row of the store's open-object table taken by a reader that has not closed yet; it names no
+request and carries no context. Detail `0` is every other `Busy` from the store (§2): a store table
+or object is in use now, for example a full reservation table or a route that the active journey
+uses. It carries no context. A client retries later. None of the three is `invalidRequest`: the
+request is well formed and can succeed against the same device a moment later.
+
+`readOnly` is the wire face of a store that cannot be written: no usable catalog, an exhausted
+revision space, or a card §5.6 step 1 classified as **not a flat store**
+(`flat-store-format.md` §3, §5.6). Every opcode returns it in the unformatted and unreadable cases,
+including the reads, because there is nothing to read; only the exhausted case still serves reads.
+`FORMAT` is the sole exception: it is the explicit destructive recovery operation in §3.10.
+
+Several of the store's modes share one detail:
+
+| `Mode` (§2) | detail |
+| :-- | :-- |
+| `CatalogUnreadable` | `catalogUnreadable 1` |
+| `RemountRequired` | `catalogUnreadable 1` — the catalog the next mount finds is not known yet |
+| `RevisionSpaceExhausted` | `revisionSpaceExhausted 2` |
+| `SequenceSpaceExhausted` | `revisionSpaceExhausted 2` — no third value is registered, and from a client's side both are this card's counters running out |
+| `Unformatted` | `unformatted 3` |
+| `CardTooSmall` | `unformatted 3` — the card the superblock describes is not the card in the slot, so there is no flat store here either |
+
+An error means the mutation did not happen, with exactly one exception a client must handle: a
+response lost after the commit. That is what §3.4 is for, and it is why no error code claims an
+uncertain outcome.
+
+### 3.10 `FORMAT`
+
+`FORMAT` initializes the card as a new, empty flat store. It is transport-neutral: a protocol-v4
+peer may issue it over USB or BLE, with no transport-specific gate.
+
+Request, 32 bytes:
+
+| Offset | Size | Field |
+| --: | --: | :-- |
+| 0 | 16 | expected current `StoreId`; all zero only when `LIST` refused the card as unformatted or catalog-unreadable |
+| 16 | 16 | replacement `StoreId`; non-zero and different from expected |
+
+The expected identity is a destructive compare-and-swap. A readable store accepts only the exact
+identity returned by `LIST`; an unformatted or catalog-unreadable store accepts only zero. A stale
+page or a card swap cannot turn a confirmation for one card into erasure of another. The
+replacement identity is generated by the client from a cryptographically strong random source. It
+is an era identifier, not a secret, but reuse would make cached object identities from the erased
+store appear to belong to the new one.
+
+Success response, 16 bytes: the replacement `StoreId`.
+
+Formatting writes the empty catalog and both superblocks durably, with commit sequence `1`, then
+returns the success response and reboots. The response must leave the transport before reset. Once
+the media operation begins, a media-error response is terminal too: the old superblocks were
+invalidated first, so the running in-memory store must not continue serving requests and the device
+reboots after that response. A preflight refusal (busy, stale identity, malformed request) does not
+change the card and does not reboot.
+
+The empty store contains no map. Boot must still enumerate USB in that state so the web or desktop
+client can upload the first map; showing a no-map fault on the display must not take the recovery
+transport down.
+
+### 3.11 Vectors
+
+`StoreId` and the two objects are those of [`flat-store-format.md`](flat-store-format.md) §5.7.
+
+`PUT` creating the route, `RequestId 0x00002A01`, 100 bytes on the wire:
+
+```
+0000  4F 42 43 34 04 04 00 00 54 00 00 00 01 2A 00 00
+0010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0020  99 A4 00 00 00 00 00 00 21 7E 4A 9C 01 00 00 00
+0030  0C 00 00 00 47 72 69 6D 73 65 6C 20 4C 6F 6F 70
+0040  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0050  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0060  00 00 00 00
+```
+
+A stream frame of that upload: offset 40,960, 1024 payload bytes, followed on the wire by those 1024
+bytes.
+
+```
+0000  01 2A 00 00 00 A0 00 00 00 00 00 00 00 04 00 00
+```
+
+The error response if the route already exists at another revision — `revisionConflict`, detail
+`headDiffers`, current head `Revision 5`:
+
+```
+0000  4F 42 43 34 04 04 03 00 10 00 00 00 01 2A 00 00
+0010  05 00 01 00 05 00 00 00 00 00 00 00 00 00 00 00
+```
+
+A complete `LIST` response, `RequestId 0x00002A02`, both entries, no further page, 216 bytes:
+
+```
+0000  4F 42 43 34 04 01 01 00 C8 00 00 00 02 2A 00 00
+0010  8F 2C 41 D9 6B 07 4E A3 B1 55 9C 20 7D E8 34 66
+0020  07 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00
+0030  03 00 00 00 00 00 00 00 99 A4 00 00 00 00 00 00
+0040  21 7E 4A 9C 01 00 00 00 0C 00 00 00 47 72 69 6D
+0050  73 65 6C 20 4C 6F 6F 70 00 00 00 00 00 00 00 00
+0060  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0070  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0080  02 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00
+0090  00 00 00 00 00 00 00 00 00 00 00 00 03 00 01 00
+00a0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00b0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00c0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00d0  00 00 00 00 00 00 00 00
+```
+
+### 3.12 `ARCHIVE_RIDE`
+
+The client MUST send this request only after its archive persistence barriers complete, or after
+it revalidates an existing durable archive. GET completion, a UI flag and deletion history are not
+archive proof. See [the archive contract](ride-archive-receipts.md).
+
+**Request — 44 bytes**
+
+| Offset | Type | Field |
+| :-- | :-- | :-- |
+| 0 | 16 bytes | `StoreId` |
+| 16 | `u64` | `ObjectId` |
+| 24 | `u64` | `Revision` |
+| 32 | `u64` | payload length |
+| 40 | `u32` | payload CRC-32/IEEE |
+
+The StoreId MUST be nonzero. ObjectId, Revision and payload length MUST each be nonzero.
+CRC zero is valid. The device MUST match every field against a current Ride entry whose flags are
+exactly `NONE`. An absent object, wrong card, replaced revision, retained-only revision, recording,
+wrong kind or content mismatch returns `invalidRequest / badCombination` without changing metadata.
+The request has no catalog sequence: unrelated commits do not invalidate exact archive possession.
+
+The shared engine invokes a synchronous archive hook in its Store adapter. Stores without that
+hook return `unsupported / 0`; an active transfer returns `busy / transfer`. Unreadable cards
+return the existing `readOnly` detail. Exhausted but readable cards can acknowledge an existing
+proof; they refuse a new metadata commit. Other storage errors retain the existing `busy`,
+`noSpace` and `readOnly` mappings. An unreadable or invalid metadata payload returns `mediaIo / 0`,
+never an empty default. An uncertain commit or committed readback failure returns no success and
+fences further mutations until remount.
+
+The hook validates and reconciles the card metadata, then inserts the exact Ride row with timestamp
+zero through an atomic metadata replacement and readback. An exact existing row returns its stored
+timestamp without writing payload or changing the catalog sequence. Before acknowledging a
+duplicate, the hook MUST complete a media sync barrier: a live-medium remount can read a gate whose
+previous final sync failed. A failed duplicate barrier fences mutations until remount and returns
+no success. A duplicate MUST preserve the existing proof.
+A zero timestamp records possession without a known archive date. No background task changes it.
+
+**Response — 16 bytes**
+
+| Offset | Type | Field |
+| :-- | :-- | :-- |
+| 0 | `u64` | current catalog commit sequence |
+| 8 | `u32` | stored archive timestamp; zero means unknown |
+| 12 | 4 bytes | reserved, zero |
+
+The opcode and RequestId correlate the response. No stream records accompany it. If the response
+is lost, the client can restore the link, check StoreId and retry the exact source with a new
+RequestId. A committed proof remains idempotent after remount. If the first attempt did not commit,
+a retry must complete the write or fail. If the ride was removed or replaced meanwhile, the source
+mismatch is terminal for that receipt; the device does not recreate the ride or its proof.
+
+## 4. Firmware update
+
+An update package arrives as an ordinary `PUT` of kind `7`. Uploading never installs. `ARM` is the
+one explicit step that makes an installed image the next boot.
+
+Request, 16 bytes: package `ObjectId u64`, expected `Revision u64`. The device then, in this order:
+
+1. **Validates the pinned package**: `obc-dfu` checks the OBCU structure, the image CRC, the Ed25519
+   signature, and version monotonicity against the running image. It refuses a package that is not
+   strictly newer. It also refuses while a ride is recording or the battery is below the install
+   threshold. Every one of those refusals, the ride-recording one included, is `rejected` with the
+   update kind's detail and changes nothing.
+2. **Allocates and commits the rollback reserve**: one entry of kind `8` with the `RESERVED` flag and
+   enough extents for the running image. This is the one commit `ARM` makes; the bootloader cannot
+   allocate, and it only reads the extents the boot handoff names.
+3. **Writes the boot handoff**: both extent lists, resolved to absolute 512-byte block runs, into the
+   RRAM boot-state page, then reads it back and verifies. The page format and the bootloader's
+   decision logic are [`obcu-update.md`](obcu-update.md) §2; its `Extent { start_block, blocks }` is
+   exactly what `flat-store-format.md` §6.1 computes.
+4. **Answers and drains**: the response, 16 bytes — rollback `ObjectId u64`, new catalog commit
+   sequence `u64` — must reach the transport before the reboot, or the adapter's bounded drain
+   timeout must expire.
+5. **Reboots.**
+
+Step 3 is the one place an `ARM` can fail with a commit already made. When the page does not read
+back, the device takes step 2's commit back and answers `internal`, so §3.9's rule that an error
+means the mutation did not happen holds. If that removal is refused too, the device answers the
+error and stops: what it leaves is the state a cut leaves — a boot page that does not decode and an
+orphaned reserve — which the next boot's reconciliation settles with one commit.
+
+`ARM` is not cancellable once it has been answered. A cut anywhere before step 3 completes leaves a
+boot page that does not decode, which the bootloader reads as *no pending update*; the rollback
+reserve is then an ordinary object the next boot removes. A cut after step 3 is the bootloader's
+business: its trial boot and rollback are [`obcu-update.md`](obcu-update.md) §2.
+
+The rollback reserve is the single exception to the format's rule that the store writes an object's
+bytes: the device's update path writes the running image into those extents, and the bootloader
+reads them. The entry exists to keep them out of the allocator, and post-install reconciliation
+removes it with one commit.
+
+There is no card-sideload path. The card is not user-accessible and the only delivery routes are
+BLE, USB and the builder.
+
+## 5. Transport bindings
+
+The frame bytes of §3 are identical on both links. An adapter owns record boundaries, pacing,
+timeouts, drain, and nothing else. It never parses a payload, never mints an identifier, and never
+originates a frame.
+
+**Version before framing.** Neither peer can negotiate a major it cannot frame, so each binding
+exposes the major as a transport fact readable before the first frame. A peer that reads a major it
+does not implement takes its own mismatch path and never sends a frame it would have to misparse.
+
+**Cross-channel ordering.** An adapter MUST deliver a control frame to the engine before any stream
+frame bearing the same `RequestId`. The two channels are independent transports (an ATT write and an
+L2CAP CoC, two USB endpoint pairs), and neither orders itself against the other. This is the
+guarantee that lets a `PUT` stream without an acceptance (§3.6): without it the first frame arrives
+pre-admission, is discarded as belonging to no live transfer, and the upload dies on a gap at offset
+zero. An adapter that cannot order the two MUST hold one link-ceiling stream frame for a `RequestId`
+it has not yet seen admitted; it MUST NOT deliver it, and it MUST NOT drop it. While it holds that
+frame it MUST withhold link credit (CoC credits on BLE, ceasing to accept stream records on USB)
+rather than buffer a second one. Backpressure is the only bound, because §3.6 lets a client stream
+as fast as the link allows.
+
+### 5.1 BLE
+
+The device serves protocol v4 on three characteristics of the advertised OBC Control service:
+`protocolVersion` (two bytes, `u16` = `4`), `psm` (the `u16` dynamic L2CAP PSM of the stream
+channel) and `objectControl` (the control channel). [`ble-interface.md`](ble-interface.md) §3.3 has
+their UUIDs and properties, and §8 has access, bonding and reconnect.
+
+- One `objectControl` Write Request value carries one complete control frame; one confirmed
+  indication carries its response. A client enables indications before its first write.
+- The L2CAP CoC on the advertised PSM is a byte stream of consecutive stream frames. Receivers use
+  each frame's 16-byte header and `payloadLength` to recover record boundaries; a frame may span
+  SDUs and one SDU may contain the end of one frame and the start of the next. This is required by
+  platforms such as CoreBluetooth, which expose the CoC through partial `InputStream` /
+  `OutputStream` operations rather than an SDU-preserving API.
+- The control ceiling is `ATT_MTU - 3`; the device's preferred 247-byte MTU
+  ([`ble-interface.md`](ble-interface.md) §3.4) gives 244 bytes. The
+  largest fixed message in §3 is the 100-byte `PUT`, and a `LIST` page carries as many 88-byte
+  entries as the ceiling allows — two on BLE, tens on USB — so the protocol floor is the 128 bytes a
+  single-entry page needs. A link below that floor cannot carry this protocol and the adapter refuses
+  the connection rather than truncating. The stream ceiling is the CoC SDU, fixed at channel
+  establishment; it is the maximum complete stream-frame length, independent of how that frame is
+  segmented into SDUs.
+- CoC credits are pacing. They acknowledge nothing about durability.
+- Before an `ARM` reboot, the terminal indication must be confirmed and accepted outbound records
+  must complete, or the drain timeout must expire.
+
+### 5.2 USB
+
+The vendor interface keeps `bInterfaceClass = 0xFF`, `bInterfaceSubClass = 0x00`, and reports
+`bInterfaceProtocol = 5`; the device descriptor's `bcdDevice` carries the **USB-binding** major in
+its high byte, `0x0500`. Matching therefore settles the USB record binding before a record is
+exchanged. This binding version is separate from §3's application-protocol major, which remains 4
+in every frame and on BLE. Enumeration is the
+authorization boundary on this link: physical possession of the port is the trust decision, and the
+package signature and version check are what bound what may run on the device.
+
+- One control bulk endpoint pair and one stream bulk endpoint pair. Each USB-binding-v5 record is
+  `record_length u32` little-endian, exactly that many frame bytes, then `0..=3` zero bytes until the
+  total frame extent is a multiple of four. Packet boundaries carry no protocol meaning; a record
+  may span packets, but records are neither interleaved nor concatenated without their prefixes.
+- The four-byte prefix and zero padding are an alignment contract, not reserved application fields.
+  A record starts on a word boundary, its 16-byte §3 header and following stream payload therefore
+  start on word boundaries, and the padded wire span keeps the next record aligned. A receiver MUST
+  reject non-zero padding rather than assign it a meaning.
+- **The control bulk pair carries §3 control frames and nothing else.** There is no selector, no
+  envelope and no second framing on either pair; a record's bytes are a §3 frame from its first byte.
+- A zero, out-of-range, truncated or overrun record length, or non-zero alignment padding, is
+  `invalidFrame` and resets that record stream before teardown is reported to the engine.
+- Before an `ARM` reboot, the response record and every earlier IN record must complete at the
+  device-controller layer, or the drain timeout must expire.
+
+**Record ceilings are a constant of this binding, not a negotiation:**
+
+| Direction / channel | Ceiling | Why this number |
+| :-- | --: | :-- |
+| device → host, either channel | 8,208 B | §3.8's 16-byte stream frame plus 8,192 payload bytes. It is also the `LIST` page ceiling, which makes a page 92 entries. |
+| host → device, stream channel | 8,208 B | the same, so a client frames uploads and downloads against one number |
+| host → device, control channel | 256 B | §3's largest request is the 100-byte `PUT`; the device sizes this buffer to the protocol rather than to the ceiling, and a longer control record is `invalidFrame` with detail `length` |
+
+A client MUST NOT send a stream record whose payload exceeds 8,192 bytes; §3.8 already makes a
+length above the link's ceiling terminate the transfer.
+
+#### 5.2.1 Identity and device information: EP0 vendor requests
+
+§5.2 gives both bulk endpoint pairs to §3, so the device's identity and device information are read
+on **EP0**. These requests sit below the record framing: they are readable the moment the interface
+is claimed and before any record is exchanged.
+
+| Field | Value |
+| :-- | :-- |
+| `bmRequestType` | `0xC1` — device-to-host, vendor, recipient **interface** |
+| `bRequest` | `0x20`, `GET_DEVICE_INFO` |
+| `wValue` | zero |
+| `wIndex` | the vendor interface's number |
+| `wLength` | at least the payload below; the device returns a short transfer |
+
+The payload is `len u8 · UTF-8`, three times, in this order: **firmware revision**, **hardware
+revision**, **serial number**. Each length is `0..=255` and each string is at most 48 bytes; the whole
+payload is at most 192 bytes. The firmware revision is the value an update check compares; it
+carries the same bytes as the BLE Firmware Revision String, whose dialect is
+[`ble-interface.md`](ble-interface.md) §3.1.
+
+Recipient is **interface** rather than device so this request cannot collide with the device-level
+MS OS 2.0 descriptor request (`bRequest = 0x01`, `wIndex = 7`) the same device answers for Windows.

@@ -15,7 +15,7 @@ use crate::roads::{self, Classes, River};
 use crate::structures::{self, class_of, is_bridge, is_track, leading_number, road_half};
 use crate::tiles::{simplified, Geometry, Tiles, BUFFER_M, EXTENT, FORMAT, MAX_ZOOM, MIN_ZOOM, TOLERANCE};
 use crate::water::{self, Kind, Level};
-use crate::{lifts, rails, sea, world, Part, Tags, Terrain};
+use crate::{lifts, metres, rails, sea, world, Part, Tags, Terrain};
 
 const EARTH_RADIUS_KM: f64 = 6371.0088;
 /// The waterways and lakes that the water solver sets, and the falls, weirs and dams that keep the
@@ -73,7 +73,7 @@ impl Placer {
 }
 
 fn line(points: Vec<[f64; 2]>, z: Option<Vec<f64>>) -> Vec<Part> {
-    vec![Part { outer: false, points, z }]
+    vec![Part { outer: false, points, z, plan: None }]
 }
 
 /// Write the archive of the region to `output` from the OSM `pbf` and the `terrain`; the metrics.
@@ -237,10 +237,10 @@ pub fn bake(
         road_metrics.insert("cut_features".into(), cut.len().into());
         let culverts: Vec<usize> = solved.culverts.iter().map(|&i| kept[i]).collect();
         let underpasses: Vec<usize> = solved.underpasses.iter().map(|&i| kept[i]).collect();
-        for (&f, parts) in kept.iter().zip(solved.heights) {
-            for (part, solved) in ways[f].2.iter_mut().zip(parts) {
-                if let Some((points, z)) = solved {
-                    (part.points, part.z) = (points, Some(z));
+        for (&f, parts) in kept.iter().zip(solved.ways) {
+            for (part, way) in ways[f].2.iter_mut().zip(parts) {
+                if let Some(way) = way {
+                    (part.points, part.z, part.plan) = (way.points, Some(way.z), Some(way.plan));
                 }
             }
         }
@@ -267,16 +267,20 @@ pub fn bake(
                 .map(|(_, _, parts)| parts.iter().map(|p| p.points.as_slice()).collect())
                 .chain(river_areas.iter().map(|rings| rings.iter().map(Vec::as_slice).collect()))
                 .collect();
-            let under: Vec<(f64, &[[f64; 2]])> = ways
+            // A pier stands on the curve of its deck, and beside the curve of a road under it.
+            let deck_curves: Vec<Part> = decks.iter().map(|&n| roads::polyline(&ways[n].2[0])).collect();
+            let grounded = ways
                 .iter()
                 .filter(|(e, tags, _)| !is_bridge(&kinds[*e].kind, tags))
-                .flat_map(|(_, tags, parts)| parts.iter().map(move |p| (road_half(tags), p.points.as_slice())))
-                .collect();
+                .flat_map(|(_, tags, parts)| parts.iter().map(move |p| (road_half(tags), p)));
+            let under = near_decks(&deck_curves, grounded);
+            let under: Vec<(f64, &[[f64; 2]])> = under.iter().map(|(half, p)| (*half, p.points.as_slice())).collect();
             let deck_ways: Vec<structures::Way> = decks
                 .iter()
-                .map(|&n| {
-                    let (e, tags, parts) = &ways[n];
-                    (kinds[*e].kind.as_str(), tags, parts[0].points.as_slice(), parts[0].z.as_deref().unwrap())
+                .zip(&deck_curves)
+                .map(|(&n, curve)| {
+                    let (e, tags, _) = &ways[n];
+                    (kinds[*e].kind.as_str(), tags, curve.points.as_slice(), curve.z.as_deref().unwrap())
                 })
                 .collect();
             let (added, piers, bridge_metrics) = structures::bridges(&deck_ways, &waterways, &areas, terrain, &under);
@@ -314,9 +318,8 @@ pub fn bake(
                 let mut all = tags.clone();
                 all.extend(extra.get(&n).cloned().unwrap_or_default());
                 if is_track(&tags) {
-                    tracks.extend(
-                        parts.iter().filter(|p| p.z.is_some()).map(|p| (entry.kind.clone(), tags.clone(), p.clone())),
-                    );
+                    let curves = parts.iter().filter(|p| p.z.is_some()).map(roads::polyline);
+                    tracks.extend(curves.map(|p| (entry.kind.clone(), tags.clone(), p)));
                 }
                 placer.entry(entry, all, parts);
             }
@@ -372,6 +375,20 @@ pub fn bake(
     out.insert("bytes_per_km2".into(), (size as f64 / area_km2(options.bounds)).round_ties_even().into());
     out.extend(metrics.into_iter().filter(|(_, v)| !v.as_object().is_some_and(Map::is_empty)));
     Ok(Value::Object(out))
+}
+
+/// The curves of the `ways`, (half-width, part), that can hold a pier off a deck. Only these get a
+/// polyline: the ways of a region would take gigabytes of them.
+fn near_decks<'a>(decks: &[Part], ways: impl Iterator<Item = (f64, &'a Part)>) -> Vec<(f64, Part)> {
+    let reach = |p: &Part| {
+        let [x0, y0, x1, y1] = bounds(&p.points);
+        let r = structures::REACH_M / metres(y0);
+        [x0 - r, y0 - r, x1 + r, y1 + r]
+    };
+    let boxes = Boxes::new(&decks.iter().map(reach).collect::<Vec<_>>());
+    ways.filter(|(_, p)| !boxes.overlapping(bounds(&p.points)).is_empty())
+        .map(|(half, p)| (half, roads::polyline(p)))
+        .collect()
 }
 
 fn track((_, tags, part): &(String, Tags, Part)) -> rails::Track<'_> {
@@ -583,13 +600,38 @@ mod tests {
     }
 
     fn square(x: f64, y: f64, side: f64) -> Vec<Part> {
-        vec![Part { outer: true, points: vec![[x, y], [x + side, y], [x + side, y + side], [x, y + side]], z: None }]
+        vec![Part {
+            outer: true,
+            points: vec![[x, y], [x + side, y], [x + side, y + side], [x, y + side]],
+            z: None,
+            plan: None,
+        }]
+    }
+
+    #[test]
+    fn a_road_beside_a_deck_holds_its_piers_off_and_one_far_away_gets_no_polyline() {
+        let y = 0.3218;
+        let unit = 1.0 / metres(y);
+        let line = |north: f64, east: f64| Part {
+            points: vec![[0.25, y - north * unit], [0.25 + east * unit, y - north * unit]],
+            ..Part::default()
+        };
+        let deck = line(0.0, 120.0);
+        let (beside, far) = (line(3.5, 120.0), line(300.0, 120.0));
+        let near = near_decks(std::slice::from_ref(&deck), [(3.0, &beside), (3.0, &far)].into_iter());
+        assert_eq!(near.len(), 1);
+        let none = Tags::new();
+        let ways = [("road", &none, deck.points.as_slice(), &[510.0, 510.0][..])];
+        let under = [(near[0].0, near[0].1.points.as_slice())];
+        let flat = |_: f64, _: f64| 500.0;
+        assert!(structures::bridges(&ways, &[], &[], &flat, &under).1.is_empty(), "the road takes the whole deck");
     }
 
     #[test]
     fn a_building_shows_the_strongest_use_of_its_own_its_points_and_the_areas_about_it() {
-        let point =
-            |x: f64, y: f64, u: &str| (tags(&[("use", u)]), vec![Part { outer: false, points: vec![[x, y]], z: None }]);
+        let point = |x: f64, y: f64, u: &str| {
+            (tags(&[("use", u)]), vec![Part { outer: false, points: vec![[x, y]], z: None, plan: None }])
+        };
         // A shop with a pharmacy in it; a building in a hospital's grounds with a kiosk in it; a shop of its
         // own; a building with nothing but a shop at a corner of its outline.
         let (own, plain) = (tags(&[("use", "shop")]), tags(&[]));

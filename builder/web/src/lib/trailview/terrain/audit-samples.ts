@@ -1,8 +1,8 @@
 // The samples of the invariant audit in a node, as audit.wgsl reads them: across each carriageway,
-// in each lake and on its shore, along each river; and the checks of a tile's water levels. A worker uses it.
+// in each lake and on its shore, in the sea, along each river; and the checks of a tile's water levels. A worker uses it.
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
-import { BRIDGE, cores, crossSlope, features, insideRings, junctions, metresPerUnit, mitre, RAIL, ringsDistance, RIVER, ROAD, RULES, STREAM, type Line, type Node } from './bins';
+import { BRIDGE, cores, crossSlope, features, insideRings, junctions, metresPerUnit, mitre, RAIL, ringsDistance, RIVER, ROAD, RULES, SEA, seaShows, STREAM, type Line, type Node } from './bins';
 
 /** Words of a sample, and its kinds. */
 export const SAMPLE = 12;
@@ -68,7 +68,7 @@ export function waterLevels(list: Feature[], tile: Node): { lakes: number; mixed
 
 /** The audit samples of a node from the features of its feature tile: SAMPLE words each. */
 export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Array<ArrayBuffer> {
-    const { lines, lakes } = features(list, tile);
+    const { lines, lakes, seas } = features(list, tile);
     const shift = 22 - node.level, side = PAGE * 2 ** shift;
     const x0 = node.x * side, y0 = node.y * side, unit = metresPerUnit(y0 + side / 2), texel = unit * 2 ** shift;
     // The band of a lake's ramp on the node's level, where audit.wgsl checks the shore.
@@ -124,10 +124,10 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
             }
         }
     }
-    // A shore sample has no other water near: a river's mouth, another lake.
-    const rivers = lines.filter(line => line.kind === RIVER), near = DRY_TEXELS * texel;
+    // A shore sample has no other water near: a river's mouth, another lake, the sea.
+    const rivers = lines.filter(line => line.kind === RIVER), near = DRY_TEXELS * texel, waters = [...lakes, ...seas];
     const wet = (x: number, y: number, self: unknown) =>
-        lakes.some(lake => lake !== self && (insideRings(lake.rings, x, y) || ringsDistance(lake.rings, x, y) * unit < near)) ||
+        waters.some(lake => lake !== self && (insideRings(lake.rings, x, y) || ringsDistance(lake.rings, x, y) * unit < near)) ||
         rivers.some(line => lineDistance(line, x, y) * unit < line.h + near);
     for (const lake of lakes) {
         const { level, rings } = lake;
@@ -147,6 +147,17 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
                     if (inNode(x, y) && !wet(x, y, lake)) push(x, y, insideRings(rings, x, y) ? IN_WATER : ON_BANK, level, 0, ringsDistance(rings, x, y) * unit);
                 }
             }
+        }
+    }
+    // The sea, on the levels that cut it: a grid over the node, far enough from the coast that the mesh,
+    // also of the coarser level in a morph band (twice the texel), reads only the bed. Its distance from
+    // the coast counts from where the bed of that coarser level starts to slope.
+    if (seaShows(node.level) && seaShows(node.level - 1)) {
+        const grid = side / 32, start = 2 * band, read = 2 * (RULES.MESH_TEXELS + 1) * texel;
+        for (let y = y0 + grid / 2; y < y0 + side; y += grid) for (let x = x0 + grid / 2; x < x0 + side; x += grid) {
+            const [px, py] = [Math.round(x), Math.round(y)];
+            const sea = seas.find(({ rings }) => insideRings(rings, px, py)), shore = sea && ringsDistance(sea.rings, px, py) * unit - start;
+            if (sea && shore! >= read && !wet(px, py, sea)) push(px, py, IN_WATER | (SEA << 8), sea.level, 0, shore!);
         }
     }
     // The side of the shores: a finer grid near them, at the distance from the nearest shore, negative in a lake.
@@ -174,7 +185,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
             const count = Math.ceil(length / step), steepest = Math.max(grade(line, v - 1), grade(line, v), grade(line, v + 1));
             for (let i = 0; i < count; i++) {
                 const t = (i + 0.5) / count, cx = Math.round(ax + t * (bx - ax)), cy = Math.round(ay + t * (by - ay)), z = roadHeight(line, [cx, cy], line.h / unit, unit);
-                if (inNode(cx, cy) && !Number.isNaN(z) && !lakes.some(({ rings }) => insideRings(rings, cx, cy) || ringsDistance(rings, cx, cy) * unit < near)) push(cx, cy, IN_WATER | (line.profile << 8), z, line.h, 0, Infinity, 0, [0, 0], steepest);
+                if (inNode(cx, cy) && !Number.isNaN(z) && !waters.some(({ rings }) => insideRings(rings, cx, cy) || ringsDistance(rings, cx, cy) * unit < near)) push(cx, cy, IN_WATER | (line.profile << 8), z, line.h, 0, Infinity, 0, [0, 0], steepest);
             }
         }
     }
