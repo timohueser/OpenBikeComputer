@@ -346,7 +346,6 @@ def subset(path, bounds, out):
     The file keeps the name of the source file. A file whose raster misses the bounds writes nothing.
     """
     import math
-    import os
 
     import rasterio
     from rasterio.warp import transform_bounds
@@ -381,8 +380,6 @@ def fetch(bounds, year, out):
     from .. import planner_snow
 
     planner_snow.cdse_credentials()
-    # A transient 5xx of CDSE S3 must not end a run of days.
-    os.environ.update(GDAL_HTTP_MAX_RETRY="8", GDAL_HTTP_RETRY_DELAY="3")
     for item, bands in items(bounds, year).items():
         (out / item).mkdir(parents=True, exist_ok=True)
         for path in bands.values():

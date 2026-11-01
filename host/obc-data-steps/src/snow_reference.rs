@@ -13,12 +13,12 @@ use obc_bake::coverage::Coverage;
 use obc_data::fetch::archive::{self, Manifest};
 use obc_data::prepared::{Job, Plan, Prepared, Scope};
 use obc_data::product::Wanted;
-use obc_data::regions::{Area, Bbox};
+use obc_data::regions::Bbox;
 use obc_data::sources::Source;
 use planner_router_build::grid::tile_bounds;
 
 use crate::device::box_poly;
-use crate::prepared_tiles::{self, outlines, poly, read_on_day, regions, reuse, Tile, BATCH, RUNNING};
+use crate::prepared_tiles::{self, outlines, planned, read_on_day, reuse, Tile, BATCH, RUNNING};
 
 /// The id of the prepared source.
 pub const ID: &str = "snow";
@@ -86,27 +86,14 @@ impl Prepared for SnowReference {
     ) -> Result<Plan, String> {
         modis_manifest(&(self.roots)())?;
         let mut inputs = vec![(Wanted { source: HR_WSI.into(), version: None, params: Vec::new() }, None).into()];
-        let mut held = Some(BTreeSet::new());
-        match scope {
-            None => held = Some(every()),
+        let held = match scope {
+            None => Some(every()),
             Some(scope) => {
-                let (regions, id) = regions(scope)?;
-                for leaf in regions.leaves(&id)? {
-                    match &regions.get(leaf).expect("a leaf is a region").area {
-                        Area::Box { bbox } => {
-                            if let Some(held) = &mut held {
-                                held.extend(blocks(&Coverage::parse_poly(&box_poly(bbox))?)?);
-                            }
-                        }
-                        Area::Geofabrik { areas } => {
-                            inputs.extend(areas.iter().map(|area| (poly(area, None), None).into()));
-                            held = None;
-                        }
-                        Area::Union { .. } => {}
-                    }
-                }
+                let (polygons, outlines) = planned(scope)?;
+                inputs.extend(polygons);
+                outlines.as_deref().map(blocks_of).transpose()?
             }
-        }
+        };
         if let Some(blocks) = &held {
             let tiles: BTreeSet<String> = blocks.iter().flat_map(|&block| canopy_tiles(block_bounds(block))).collect();
             inputs.push((canopy(planning.sources, tiles)?, None).into());
@@ -124,13 +111,7 @@ impl Prepared for SnowReference {
         let previous = job.extend(FORMAT)?;
         let held: BTreeSet<&str> = previous.iter().flat_map(|manifest| &manifest.files).map(|f| &f.path[..]).collect();
         let region = match outlines(job)? {
-            Some(outlines) => {
-                let mut region = BTreeSet::new();
-                for outline in &outlines {
-                    region.extend(blocks(outline)?);
-                }
-                region
-            }
+            Some(outlines) => blocks_of(&outlines)?,
             None => every(),
         };
         let (root, manifest) = modis_manifest(&(self.roots)())?;
@@ -328,6 +309,15 @@ fn seasons() -> Result<RangeInclusive<u16>, String> {
 
 fn block_bounds((x, y): (u32, u32)) -> [f64; 4] {
     tile_bounds(BLOCK_ZOOM, x, y)
+}
+
+/// The blocks of each of `outlines`.
+fn blocks_of(outlines: &[Coverage]) -> Result<BTreeSet<(u32, u32)>, String> {
+    let mut found = BTreeSet::new();
+    for outline in outlines {
+        found.extend(blocks(outline)?);
+    }
+    Ok(found)
 }
 
 /// The blocks that `outline` meets, as `(x, y)`.
