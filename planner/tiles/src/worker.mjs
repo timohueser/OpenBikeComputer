@@ -6,7 +6,8 @@ async function decompress(bytes, compression) {
   if (compression !== Compression.Gzip) throw new Error('Unsupported tile compression');
   return new Response(new Response(bytes).body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
 }
-const directories = new ResolvedValueCache(25, undefined, decompress);
+// Two entries per pack. It holds resolved values only: a Worker cannot share a read between requests.
+const directories = new ResolvedValueCache(2000, undefined, decompress);
 const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
   'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' };
 
