@@ -37,7 +37,7 @@ need no commit.
 | `UV_PYTHON` | Selected prepared Python interpreter |
 | `~/.config/openbikecomputer/credentials.env` | `env` credentials of sources; the environment wins |
 | `~/.cdsapirc` | CDS credential for a prepare of `climate` |
-| `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |
+| `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch and a prepare of `colour` |
 | `~/.config/openbikecomputer/clms-key.json` | CLMS service key for the CORINE fetch; save the JSON of the token whole, mode 0600 |
 
 Set a source credential on the Machine screen, or pipe it to `obc data source credential ID`.

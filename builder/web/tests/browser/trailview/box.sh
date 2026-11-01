@@ -71,7 +71,8 @@ get() {  # URL FILE
 }
 
 # The tiles of a kind that a box touches, one per line: glo30 and worldcover squares, and the blocks
-# of `forest` (`10-x-y`) and of `terrain` (`bi-bj`), each with its tiles in the box and `=ch`.
+# of `forest` (`10-x-y`) and of `terrain` (`bi-bj`), each with its tiles in the box and `=ch`; of `colour`
+# (`z10`, `x-y`).
 tiles() {  # KIND BOX
   python3 - "$@" <<'EOF'
 import math, sys
@@ -86,6 +87,12 @@ elif kind == "worldcover":
     for lat in range(math.floor(s / 3) * 3, math.floor(n / 3) * 3 + 1, 3):
         for lon in range(math.floor(w / 3) * 3, math.floor(e / 3) * 3 + 1, 3):
             print(name(lat, lon))
+elif kind == "z10":
+    x = lambda lon: math.floor((lon + 180) / 360 * 1024)
+    y = lambda lat: math.floor((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * 1024)
+    for tx in range(x(w), x(e) + 1):
+        for ty in range(y(n), y(s) + 1):
+            print(f"{tx}-{ty}")
 else:
     blocks = {}
     if kind == "forest":  # zoom 12 tiles in zoom 10 blocks
@@ -115,7 +122,7 @@ import json, sys
 from pathlib import Path
 output, options, layers, snapshots = sys.argv[1:]
 data = lambda folder: {p.relative_to(folder).as_posix(): str(p) for p in sorted(Path(folder).rglob("*"))
-                       if p.suffix in (".tif", ".png", ".json", ".gpkg", ".zip")}
+                       if p.suffix in (".tif", ".png", ".json", ".gpkg", ".zip", ".pmtiles")}
 print(json.dumps({"options": json.loads(options), "layers": json.loads(layers), "output": output,
                   "metrics": f"{output}.metrics.json",
                   "snapshots": {source: data(folder) for source, folder in json.loads(snapshots).items()}}))
@@ -146,9 +153,12 @@ if [[ ! -s $SRC/corine/U2018_CLC2018_V2020_20u1.tif ]]; then
     --member U2018_CLC2018_V2020_20u1.tif --work "$SRC/corine-work" --fetch "$SRC/corine"
   rm -rf "$SRC/corine-work"
 fi
-if [[ ! -e $OUT/sentinel-2/.done ]]; then
-  _run "${PY[@]}" -m tools.trailview.colour --bounds "$BOX" --year "$YEAR" --fetch "$OUT/sentinel-2" && touch "$OUT/sentinel-2/.done"
-fi
+# The Sentinel-2 texels of `colour`, one zoom 10 block at a time, as the prepare runs them.
+for block in $(tiles z10 "$BOX"); do
+  [[ -s $OUT/colour/$block.sha256 ]] && continue
+  _run "${PY[@]}" -m tools.trailview.colour prepare --block "$block" --year "$YEAR" --work "$OUT/colour-work/$block" \
+    --out "$OUT/colour"
+done
 
 # The blocks of the prepares, with only the tiles of DETAIL: at most JOBS at a time.
 in_turn() {  # JOBS COMMAND…
@@ -243,8 +253,8 @@ if [[ ! -s $GROUND/lithology.pmtiles ]]; then
   mv "$OUT/step/lithology.pmtiles" "$GROUND/"
 fi
 if [[ ! -s $GROUND/material.pmtiles ]]; then
-  step tools.trailview.ground "{\"layer\": \"material\", \"bounds\": $(bounds "$BOX"), \"attribution\": \"ESA WorldCover, CORINE, Copernicus Sentinel data, OpenStreetMap\"}" "$RULES" \
-    "{\"sentinel-2-mosaics\": \"$OUT/sentinel-2\", \"corine-land-cover\": \"$SRC/corine\", \"esa-worldcover\": \"$SRC/esa-worldcover\"}"
+  step tools.trailview.ground "{\"layer\": \"material\", \"bounds\": $(bounds "$BOX"), \"year\": $YEAR, \"attribution\": \"ESA WorldCover, CORINE, Copernicus Sentinel data, OpenStreetMap\"}" "$RULES" \
+    "{\"colour\": \"$OUT/colour\", \"corine-land-cover\": \"$SRC/corine\", \"esa-worldcover\": \"$SRC/esa-worldcover\"}"
   mv "$OUT/step/material.pmtiles" "$GROUND/"
 fi
 # The region tiles follow the regions of the ruleset, so they bake each run too; they are small.
@@ -253,7 +263,7 @@ step tools.trailview.ground "{\"layer\": \"region\", \"bounds\": $(bounds "$BOX"
 mv "$OUT/step/region.pmtiles" "$GROUND/"
 if [[ ! -s $GROUND/colour/$VARIANT/q1.pmtiles ]]; then
   step tools.trailview.colour "{\"variant\": \"$VARIANT\", \"bounds\": $(bounds "$BOX"), \"year\": $YEAR, \"attribution\": \"Contains modified Copernicus Sentinel data {year}\"}" \
-    '{}' "{\"sentinel-2-mosaics\": \"$OUT/sentinel-2\"}"
+    '{}' "{\"colour\": \"$OUT/colour\"}"
   mkdir -p "$GROUND/colour/$VARIANT" && mv "$OUT/step/"*.pmtiles "$GROUND/colour/$VARIANT/"
 fi
 if [[ ! -s $GROUND/trailview-canopy.pmtiles ]]; then

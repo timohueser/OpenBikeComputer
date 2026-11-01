@@ -99,7 +99,7 @@ it("lists every source by group with its status, what needs a hand first, and fi
             "Land cover and imagery",
             "Map styles and tools",
         ]);
-        expect([...document.querySelectorAll(".summary button")].map((at) => text(at))).toEqual(["Archived 2", "Prepared 4", "Held 1", "Partial 1", "Missing 1", "Live 4"]);
+        expect([...document.querySelectorAll(".summary button")].map((at) => text(at))).toEqual(["Archived 2", "Prepared 5", "Held 1", "Partial 1", "Missing 1", "Live 4"]);
         const rows = () => [...document.querySelectorAll("tbody tr")];
         const osm = [...document.querySelectorAll("details")[1].querySelectorAll("tbody tr")];
         expect(text(osm[0]), "a stale source comes first, with why").toContain("Due again for this computer: 7 days old; the policy is 7 days");
@@ -121,8 +121,8 @@ it("lists every source by group with its status, what needs a hand first, and fi
         search.value = "media/archive/prepared";
         search.dispatchEvent(new Event("input", { bubbles: true }));
         flushSync();
-        expect(rows().map((row) => row.querySelector("code")?.textContent)).toEqual(["wiki", "forest", "terrain", "dtm-ch"]);
-        expect(text(document.querySelector(".summary")!), "the counts follow the search").toContain("Prepared 4");
+        expect(rows().map((row) => row.querySelector("code")?.textContent)).toEqual(["wiki", "forest", "colour", "terrain", "dtm-ch"]);
+        expect(text(document.querySelector(".summary")!), "the counts follow the search").toContain("Prepared 5");
     } finally {
         await unmount(shown);
     }
